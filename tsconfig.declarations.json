@@ -279,6 +279,10 @@
     "apps/operator/scripts/hooks/cc/posttooluse-no-proc-path-fixture-nudge.mjs",
     "apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs",
     "apps/operator/scripts/hooks/cc/regenerate-declaration-before-lock-release.mjs",
+    // managed-carry-lifecycle-enforcement P-002 — imported directly by its
+    // TypeScript behavior test. Enroll the inferred surface so the test cannot
+    // absorb a TS7016 while declaration generation reports a false success.
+    "apps/operator/scripts/hooks/cc/precompact-managed-carry.mjs",
     // Registered for this list's FIRST reason: it is imported directly by
     // artifact-url-delivery-guard.test.ts, which pulls six named exports off it
     // (harvestLedgerIds, isArtifactTool, isDurableWriteTool, lastAssistantText,

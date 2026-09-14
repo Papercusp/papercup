@@ -1303,6 +1303,32 @@ export function findLiveHostFor(ownerId, { verifyIdentity = pidLooksLikePsuHost 
 }
 
 /**
+ * Admission verdict for a second host targeting the same logical owner.
+ *
+ * A discovery record is blocking only when it belongs to this owner, points at
+ * another live process, and that process is identity-verified as a psu host.
+ * Missing/corrupt, owner-mismatched, self, dead, and PID-reuse records stay
+ * admissible so pruneDead/the ordinary stale-socket cleanup can recover them.
+ */
+export function duplicateHostAdmission(
+  ownerId,
+  priorMeta,
+  { currentPid = process.pid, isAlive = pidAlive, verifyIdentity = pidLooksLikePsuHost } = {},
+) {
+  const pid = Number(priorMeta?.pid);
+  const duplicate =
+    priorMeta?.ownerId === ownerId &&
+    Number.isInteger(pid) &&
+    pid > 0 &&
+    pid !== currentPid &&
+    isAlive(pid) &&
+    verifyIdentity(pid);
+  return duplicate
+    ? { admitted: false, reason: 'live-duplicate-host', ownerId, pid }
+    : { admitted: true, reason: 'no-verified-live-duplicate' };
+}
+
+/**
  * How long a live host has been INERT, from the activity stamps its own
  * discovery record already carries (EI-20289007209260909).
  *
@@ -4961,25 +4987,18 @@ export function hostThroughPty(o) {
   const metaPath = metaPathFor(ownerId);
   // A stale socket from a crashed prior session of the SAME owner would block
   // bind; remove it (pruneDead already cleared dead ones, but be defensive).
-  // WI-3455: but never SILENTLY — if the prior key holder is STILL a live psu
-  // host (a resume of a live session, an env-inherited SID), taking the key
-  // strands that session's injection path (wake / turn:interrupt / /compact →
-  // no_live_pty_host, the 2026-07-08 su-a8f52 stranding). The launcher's
-  // resume-of-live guard refuses the common case up front; if we still get
-  // here, say so loudly — and the older host's self-heal tick reclaims the key
-  // once this host ends, so the takeover is convergent, not permanent.
+  // managed-carry-lifecycle-enforcement P-003: fail CLOSED when the prior key
+  // holder is still a live identity-verified psu host. The old warning+takeover
+  // path unlinked the first host's socket, spawned a second child, and let both
+  // hosts continue with independent retry/dedup state. A delayed teardown from
+  // either could then strand or kill the apparent successor. Refuse before the
+  // socket unlink and before pty.spawn; the original host stays injectable.
   const priorMeta = readDiscoveryMeta(ownerId);
-  if (
-    priorMeta &&
-    priorMeta.pid &&
-    priorMeta.pid !== process.pid &&
-    pidAlive(priorMeta.pid) &&
-    pidLooksLikePsuHost(priorMeta.pid)
-  ) {
-    process.stderr.write(
-      `psu: ⚠ another LIVE psu host already serves ${ownerId} (pid ${priorMeta.pid}) — ` +
-        `taking over its discovery key; that session keeps running but cannot receive ` +
-        `wakes//compact injection until this one ends (it self-heals afterwards).\n`,
+  const hostAdmission = duplicateHostAdmission(ownerId, priorMeta);
+  if (!hostAdmission.admitted) {
+    throw new Error(
+      `psu-pty-host: refusing duplicate startup for ${ownerId} — live psu host pid ` +
+        `${hostAdmission.pid} already owns this logical session; its socket and child were left intact`,
     );
   }
   for (const p of [sock]) {

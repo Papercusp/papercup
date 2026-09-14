@@ -513,6 +513,12 @@ export function writeCodexLockHooks(
      *  (the dispatcher's own invariant 3 would exit 0 silently anyway). */
     injectSid?: string;
     agentSession?: boolean;
+    /** Exact per-session MCP URL. The managed PreCompact hook reuses this
+     * route verbatim so role/workspace/harness/signature boundaries survive. */
+    mcpUrl?: string;
+    /** Superuser homes authenticate with the same on-disk bearer as their MCP
+     * config; role homes keep their signed no-bearer route. */
+    mcpUsesSuperuserToken?: boolean;
   } = {},
 ): boolean {
   const dir = join(homedir(), '.papercusp', 'hooks', 'cc');
@@ -527,7 +533,10 @@ export function writeCodexLockHooks(
     ? ` PAPERCUSP_LOCK_SID=${shellSingleQuote(opts.lockSid)} PAPERCUSP_SID=${shellSingleQuote(opts.lockSid)}`
     : '';
 
-  type CodexHook = { matcher: string; hooks: { type: 'command'; command: string }[] };
+  type CodexHook = {
+    matcher: string;
+    hooks: { type: 'command'; command: string; timeout?: number }[];
+  };
   const postToolUse: CodexHook[] = [
     {
       matcher: CODEX_LOCK_POST_MATCHER,
@@ -647,6 +656,40 @@ export function writeCodexLockHooks(
     });
   }
 
+  // managed-carry-lifecycle-enforcement P-002: Codex native AUTO compaction
+  // bypasses the deterministic carry/checkpoint/lifecycle path. Official Codex
+  // PreCompact semantics make this the synchronous veto seam: the hook asks the
+  // existing session:request-compaction tool to queue the managed boundary and
+  // returns continue:false regardless of outcome, so a refusal/transport fault
+  // leaves the current session intact instead of falling through to native
+  // compaction. Use the exact MCP route already baked into config.toml — role
+  // signatures and SU authority must not be widened by the hook.
+  const preCompact: CodexHook[] = [];
+  const managedPreCompact = join(dir, 'precompact-managed-carry.mjs');
+  if (opts.activitySid && opts.mcpUrl && existsSync(managedPreCompact)) {
+    let harnessSlug = '';
+    try {
+      harnessSlug = new URL(opts.mcpUrl).searchParams.get('harness')?.trim() ?? '';
+    } catch {
+      /* the existing config writer/test owns URL validation; empty is diagnostic only */
+    }
+    const identity =
+      `PAPERCUSP_MCP_URL=${shellSingleQuote(opts.mcpUrl)} ` +
+      `PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)} ` +
+      `PAPERCUSP_HARNESS_SLUG=${shellSingleQuote(harnessSlug)}` +
+      (opts.mcpUsesSuperuserToken ? ' PAPERCUSP_MCP_AUTH=superuser-token' : '');
+    preCompact.push({
+      matcher: '^auto$',
+      hooks: [
+        {
+          type: 'command',
+          command: `${identity} ${managedPreCompact}`,
+          timeout: 600,
+        },
+      ],
+    });
+  }
+
   const preToolUse: CodexHook[] = [
     {
       matcher: CODEX_LOCK_PRE_MATCHER,
@@ -726,6 +769,7 @@ export function writeCodexLockHooks(
       ...(userPromptSubmit.length > 0 ? { UserPromptSubmit: userPromptSubmit } : {}),
       ...(sessionStart.length > 0 ? { SessionStart: sessionStart } : {}),
       ...(sessionEnd.length > 0 ? { SessionEnd: sessionEnd } : {}),
+      ...(preCompact.length > 0 ? { PreCompact: preCompact } : {}),
     },
   };
   writeFileSync(join(codexHome, 'hooks.json'), JSON.stringify(hooks, null, 2), { mode: 0o600 });
@@ -778,6 +822,7 @@ export function repairSuCodexHomeIdentity(
   codexHome: string,
   sid: string,
   advSessionId?: string | number,
+  mcpUrl?: string,
 ): { repaired: boolean; hooksInstalled: boolean; reason?: 'no-home' } {
   if (!existsSync(codexHome)) return { repaired: false, hooksInstalled: false, reason: 'no-home' };
 
@@ -827,7 +872,41 @@ export function repairSuCodexHomeIdentity(
       return false;
     }
   })();
-  if (hooksMatch && diagnosticsMatch && sentinelMatches && lifecycleHooksMatch) {
+  const preCompactHookMatches = (() => {
+    if (!hooksExpected || !mcpUrl) return true;
+    try {
+      const parsed = JSON.parse(hooksText) as {
+        hooks?: Record<
+          string,
+          Array<{
+            matcher?: string;
+            hooks?: Array<{ command?: string; timeout?: number }>;
+          }>
+        >;
+      };
+      return parsed.hooks?.PreCompact?.some(
+        (group) =>
+          group.matcher === '^auto$' &&
+          group.hooks?.some(
+            (hook) =>
+              hook.timeout === 600 &&
+              hook.command?.includes('precompact-managed-carry.mjs') &&
+              hook.command.includes(`PAPERCUSP_SID='${sid}'`) &&
+              hook.command.includes(`PAPERCUSP_MCP_URL=${shellSingleQuote(mcpUrl)}`) &&
+              hook.command.includes('PAPERCUSP_MCP_AUTH=superuser-token'),
+          ),
+      ) === true;
+    } catch {
+      return false;
+    }
+  })();
+  if (
+    hooksMatch &&
+    diagnosticsMatch &&
+    sentinelMatches &&
+    lifecycleHooksMatch &&
+    preCompactHookMatches
+  ) {
     return { repaired: false, hooksInstalled: hooksExpected };
   }
 
@@ -838,6 +917,8 @@ export function repairSuCodexHomeIdentity(
     advSessionId,
     objectiveSid: sid,
     injectSid: sid,
+    mcpUrl,
+    mcpUsesSuperuserToken: true,
   });
   const lockRuntime = readCodexLockRuntimeVerdict({ ownerId: sid, hooksConfigured: hooksInstalled });
   const nextDiagnostics = {
@@ -955,6 +1036,7 @@ export function writeRoleCodexHome(opts: {
     objectiveSid: opts.sid,
     injectSid: opts.sid,
     agentSession: true,
+    mcpUrl: opts.mcpUrl,
   });
   const lockRuntime = readCodexLockRuntimeVerdict({
     ownerId: opts.sid ?? `role-${opts.sessionKey}`,
@@ -1031,6 +1113,14 @@ export interface SuCodexConfigInput {
   trustDir?: string | null;
 }
 
+/** Append the per-session MCP client exactly once without reserializing signed
+ * role URLs (query order/encoding are part of their signature). */
+function mcpUrlWithClient(mcpUrl: string, sid: string): string {
+  if (/[?&]client=/.test(mcpUrl)) return mcpUrl;
+  const sep = mcpUrl.includes('?') ? '&' : '?';
+  return `${mcpUrl}${sep}client=${encodeURIComponent(sid)}`;
+}
+
 /**
  * The su `config.toml` body. ONE renderer, two callers: `writeSuCodexHome`
  * (fresh home) and `ensureSuCodexHomeConfig` (repair an existing home). Kept
@@ -1044,8 +1134,7 @@ export interface SuCodexConfigInput {
  * Authorization (D-006 — the env-var form doesn't deliver on codex 0.135).
  */
 export function suCodexConfigToml(opts: SuCodexConfigInput): string {
-  const sep = opts.mcpUrl.includes('?') ? '&' : '?';
-  const url = `${opts.mcpUrl}${sep}client=${encodeURIComponent(opts.sid)}`;
+  const url = mcpUrlWithClient(opts.mcpUrl, opts.sid);
   const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId, {
     gatewayOn: opts.codexGatewayAuto,
     ownerId: opts.sid,
@@ -1146,7 +1235,12 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & { sessionKey:
   if (!configReady) {
     writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir, codexHome }), { mode: 0o600 });
   }
-  const identity = repairSuCodexHomeIdentity(codexHome, opts.sid, opts.sessionKey);
+  const identity = repairSuCodexHomeIdentity(
+    codexHome,
+    opts.sid,
+    opts.sessionKey,
+    mcpUrlWithClient(opts.mcpUrl, opts.sid),
+  );
   return {
     codexHome,
     configPath,
@@ -1242,6 +1336,8 @@ export function writeSuCodexHome(opts: {
     advSessionId: opts.sessionKey,
     objectiveSid: opts.sid,
     injectSid: opts.sid,
+    mcpUrl: mcpUrlWithClient(opts.mcpUrl, opts.sid),
+    mcpUsesSuperuserToken: true,
   });
   const lockRuntime = readCodexLockRuntimeVerdict({ ownerId: opts.sid, hooksConfigured: hooksInstalled });
   const agentsText = codexAgentsPrompt(opts.promptText, lockRuntime);

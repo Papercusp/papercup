@@ -857,6 +857,9 @@ function extensionCandidates(operatorAppRoot: string, explicitRoot: boolean): st
 // EI-20782070131658758, each of which shipped a working guard that never installed.
 export const CC_HOOK_FILES = [
   'pretooluse-locks-acquire.sh',
+  // Managed Codex automatic compaction must enter Papercusp's deterministic
+  // carry path instead of cutting around its checkpoint/authority gate.
+  'precompact-managed-carry.mjs',
   'posttooluse-locks-release.sh',
   // WI-7182: shared Claude/Codex/OMP edit-path filter + targeted declaration
   // generator, invoked while the edited source's lock is still held.

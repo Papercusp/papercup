@@ -791,6 +791,31 @@ describe('boot-apply cross-boot failure cooldown (EI-19403856469813053)', () => 
     const state = JSON.parse(raw) as Record<string, unknown>;
     expect(state[filename]).toBeUndefined();
   });
+
+  it('ignores and clears a cooldown entry for a migration absent from the selected sql tree', async () => {
+    const cooldownFile = freshCooldownFile();
+    process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE = cooldownFile;
+    process.env.PAPERCUSP_MIGRATION_COOLDOWN_MS = String(60_000);
+    const staleFilename = '966-staging-only-broken.sql';
+    h.bootSqlDir = makeSqlDir({});
+    writeFileSync(
+      cooldownFile,
+      JSON.stringify({
+        [staleFilename]: {
+          lastFailedAt: Date.now(),
+          error: 'failure recorded by a different sql tree',
+          attempts: 3,
+        },
+      }),
+    );
+
+    const result = await applyPendingMigrationsNow();
+
+    expect(result).toMatchObject({ applied: 0, failed: [] });
+    const raw = await readFile(cooldownFile, 'utf8').catch(() => '{}');
+    const state = JSON.parse(raw) as Record<string, unknown>;
+    expect(state[staleFilename]).toBeUndefined();
+  });
 });
 
 describe('migration reservation reconciliation (WI-38354)', () => {

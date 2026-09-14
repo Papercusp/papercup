@@ -32,6 +32,7 @@ import {
   killPtyProcessTree,
   handoffPathFor,
   MAX_CONTROL_PAYLOAD_BYTES,
+  PSU_PTY_DIR,
 } from '../scripts/psu-pty-host.mjs';
 // The REAL operator-side force-interrupt leg (turn-lifecycle-control Phase 4
 // pty-force, reused by e8630's turn:interrupt tool). Importing the published
@@ -358,6 +359,96 @@ describe('session-port managed seed + native persistence helpers', () => {
 });
 
 describe('hostThroughPty real round-trip', () => {
+  it(
+    'refuses a second live host before spawn/unlink and leaves the original socket injectable',
+    async () => {
+      const ownerId = `su-duplicate-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      mkdirSync(PSU_PTY_DIR, { recursive: true });
+      const originalCode = [
+        "const fs=require('node:fs');const net=require('node:net');",
+        `const sock=${JSON.stringify(sock)},meta=${JSON.stringify(meta)},owner=${JSON.stringify(ownerId)};`,
+        "try{fs.unlinkSync(sock)}catch{}",
+        "const server=net.createServer(c=>{let b='';c.setEncoding('utf8');c.on('data',d=>{b+=d;if(b.includes('PROBE\\n')){c.end('ORIGINAL-ACK\\n')}if(b.includes('QUIT\\n')){c.end('BYE\\n');server.close(()=>{try{fs.unlinkSync(meta)}catch{};process.exit(0)})}})});",
+        "server.listen(sock,()=>{fs.writeFileSync(meta,JSON.stringify({ownerId:owner,pid:process.pid,sock}));process.stdout.write('READY\\n')});",
+        "setTimeout(()=>process.exit(3),15000);",
+      ].join('');
+      const original = spawn(
+        execPath,
+        ['-e', originalCode, 'psu-pty-host-decoy'],
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error('original host did not become ready')),
+            5_000,
+          );
+          original.stdout!.setEncoding('utf8');
+          original.stdout!.on('data', (data) => {
+            if (String(data).includes('READY')) {
+              clearTimeout(timer);
+              resolve();
+            }
+          });
+          original.once('exit', (code) => {
+            clearTimeout(timer);
+            reject(new Error(`original host exited early (${code})`));
+          });
+        });
+
+        let onSpawnCalls = 0;
+        expect(() =>
+          hostThroughPty({
+            command: execPath,
+            args: ['-e', 'setTimeout(()=>{},10000)'],
+            cwd: '/tmp',
+            env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+            ownerId,
+            io: fakeIo().io,
+            bridgeTty: false,
+            onSpawn: () => {
+              onSpawnCalls += 1;
+            },
+            onExit: () => {},
+          }),
+        ).toThrow(new RegExp(`refusing duplicate startup.*${ownerId}.*${original.pid}`));
+        expect(onSpawnCalls).toBe(0);
+        expect(existsSync(sock)).toBe(true);
+        expect(JSON.parse(readFileSync(meta, 'utf8')).pid).toBe(original.pid);
+
+        const ack = await new Promise<string>((resolve, reject) => {
+          let text = '';
+          const client = net.createConnection(sock);
+          client.setEncoding('utf8');
+          client.on('connect', () => client.write('PROBE\n'));
+          client.on('data', (data) => {
+            text += data;
+          });
+          client.on('end', () => resolve(text));
+          client.on('error', reject);
+        });
+        expect(ack).toContain('ORIGINAL-ACK');
+      } finally {
+        if (original.exitCode === null) {
+          await new Promise<void>((resolve) => {
+            const client = net.createConnection(sock, () => client.write('QUIT\n'));
+            client.on('data', () => {});
+            client.on('end', resolve);
+            client.on('error', () => {
+              original.kill('SIGKILL');
+              resolve();
+            });
+          });
+          await new Promise<void>((resolve) => original.once('exit', () => resolve()));
+        }
+        try { unlinkSync(sock); } catch { /* server close may already unlink it */ }
+        try { unlinkSync(meta); } catch { /* child cleanup normally removes it */ }
+      }
+    },
+    20_000,
+  );
   it(
     'selects Claude resume-compaction summary before delivering a scripted kickoff',
     async () => {

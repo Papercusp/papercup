@@ -22,8 +22,13 @@ import {
   ensureGhLinked,
   repairPapercuspGitCredentialHelpers,
   ensureAgentClisLinked,
+  CC_HOOK_FILES,
   type GitConfigRunner,
 } from './papercusp-files';
+
+it('ships the managed Codex PreCompact bridge in the CC hook allowlist', () => {
+  expect(CC_HOOK_FILES).toContain('precompact-managed-carry.mjs');
+});
 
 let tmp: string;
 let origExecPath: string;

@@ -93,6 +93,7 @@ async function installFakeHooks() {
   writeFileSync(join(dir, 'posttooluse-locks-release.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-activity-report.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'lifecycle-report.sh'), '#!/bin/sh\n');
+  writeFileSync(join(dir, 'precompact-managed-carry.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'posttooluse-objective-title.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-write-byte-integrity-guard.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'pretooluse-control-bytes-content-guard.mjs'), '#!/usr/bin/env node\n');
@@ -397,6 +398,21 @@ describe('writeRoleCodexHome', () => {
     expect(hooks.hooks.SessionStart[0].hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
     expect(hooks.hooks.SessionStart[0].hooks[0].command).toContain("PAPERCUSP_ADV_SESSION_ID='71'");
     expect(hooks.hooks.SessionEnd[0].hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
+    expect(hooks.hooks.PreCompact).toHaveLength(1);
+    expect(hooks.hooks.PreCompact[0].matcher).toBe('^auto$');
+    expect(hooks.hooks.PreCompact[0].hooks[0].timeout).toBe(600);
+    expect(hooks.hooks.PreCompact[0].hooks[0].command).toContain(
+      'precompact-managed-carry.mjs',
+    );
+    expect(hooks.hooks.PreCompact[0].hooks[0].command).toContain(
+      "PAPERCUSP_SID='role-abc-9'",
+    );
+    expect(hooks.hooks.PreCompact[0].hooks[0].command).toContain(
+      "PAPERCUSP_MCP_URL='http://x/?role=worker&sig=1'",
+    );
+    expect(hooks.hooks.PreCompact[0].hooks[0].command).not.toContain(
+      'PAPERCUSP_MCP_AUTH=superuser-token',
+    );
   });
 
   it('writeCodexLockHooks no-ops (no hooks.json) when the hook scripts are absent', async () => {
@@ -1003,6 +1019,16 @@ describe('writeSuCodexHome', () => {
     expect(diag.requiresExplicitPapercuspLocks).toBe(true);
     expect(diag.lockOwnerSid).toBe('s');
     expect(readFileSync(out.agentsPath, 'utf8')).toContain('papercusp-rule:file-locking=explicit-manual');
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    expect(hooks.hooks.PreCompact).toHaveLength(1);
+    expect(hooks.hooks.PreCompact[0].matcher).toBe('^auto$');
+    expect(hooks.hooks.PreCompact[0].hooks[0].timeout).toBe(600);
+    expect(hooks.hooks.PreCompact[0].hooks[0].command).toContain(
+      'precompact-managed-carry.mjs',
+    );
+    expect(hooks.hooks.PreCompact[0].hooks[0].command).toContain(
+      'PAPERCUSP_MCP_AUTH=superuser-token',
+    );
   });
 
   it('writes exactly one automatic rule after an owner-scoped runtime hook proof', async () => {
@@ -1154,7 +1180,7 @@ describe('writeSuCodexHome', () => {
     expect(hooks.hooks.SessionEnd[0].hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
   });
 
-  it('repairs a same-owner managed home whose pre-WI-41305 hooks omit Codex lifecycle events', async () => {
+  it('repairs a same-owner managed home whose hooks omit lifecycle or managed PreCompact events', async () => {
     await installFakeHooks();
     const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
     const home = writeSuCodexHome({
@@ -1167,6 +1193,7 @@ describe('writeSuCodexHome', () => {
     const oldHooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
     delete oldHooks.hooks.SessionStart;
     delete oldHooks.hooks.SessionEnd;
+    delete oldHooks.hooks.PreCompact;
     writeFileSync(hooksPath, JSON.stringify(oldHooks, null, 2));
 
     const repaired = ensureSuCodexHomeConfig({
@@ -1179,6 +1206,8 @@ describe('writeSuCodexHome', () => {
     const nextHooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
     expect(nextHooks.hooks.SessionStart).toHaveLength(1);
     expect(nextHooks.hooks.SessionEnd).toHaveLength(1);
+    expect(nextHooks.hooks.PreCompact).toHaveLength(1);
+    expect(nextHooks.hooks.PreCompact[0].matcher).toBe('^auto$');
     expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
   });
 

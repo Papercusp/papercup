@@ -1,0 +1,243 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P012 historical source counterexamples and current recurrence guards",
+  "framework": "operational",
+  "command": [
+    "scripts/pc-heavy.sh",
+    "--",
+    "node",
+    ".papercusp/scratch/p012-historical-recurrence-18327.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-14T01:59:38.396Z",
+  "finishedAt": "2026-09-14T01:59:52.977Z",
+  "summary": "Copy-only execution of the committed provider/reader regression tests against frozen current and pre-fix source. Current32+15 tests pass. Historical provider7FAIL and reader6FAIL. Actual original NULLtenant rows remain unmodified and are linked as historical provenance, not newly attributed executions.",
+  "assertions": [
+    {
+      "id": "agent-obligation-providers-current-green",
+      "passed": true,
+      "evidence": "Frozen current subject: 32 pass,0 fail,0 skip; sourceSHA256=f4a9d29e875aac098dce3935b1814c705dc060f921ba204a47e6fcc919aadffa; testSHA256=1b2e2c549aaa5a0079abcde621f183c13a621b54faa8b526164f84a80776be9d"
+    },
+    {
+      "id": "agent-obligation-reader-current-green",
+      "passed": true,
+      "evidence": "Frozen current subject: 15 pass,0 fail,0 skip; sourceSHA256=ab3422692aae6ce9095e8ff1b6389e40b3cf7e499755d4db0e8c03047168db7c; testSHA256=91b871b8fc4aaefdd166a40d9ef230129503cead31551fef88f70d99f2fe00d6"
+    },
+    {
+      "id": "agent-obligation-providers-historical-red",
+      "passed": true,
+      "evidence": "Historical commit0168842a89e7d072409b68684f5287e7385af567: 7 assertion failures with exit1; current control passed same unmodified assertions; sourceSHA256=217f74d91e0562dcca30fdfcd8e6ac4b4a8dcfc0da42a61a8434f20bff85f729"
+    },
+    {
+      "id": "agent-obligation-reader-historical-red",
+      "passed": true,
+      "evidence": "Historical commit2d35adf5a847f97e5b5ebaaac5e42597f48a87cb: 6 assertion failures with exit1; current control passed same unmodified assertions; sourceSHA256=08de1aa9e881b5b82d20999c8d04c7a3b0b1b23f0f22e0d09834b437d9c48f6e"
+    },
+    {
+      "id": "production-unchanged",
+      "passed": true,
+      "evidence": "All source and test bytes compared SHA256 before/after; only disposable relocated copies executed."
+    }
+  ],
+  "workItemId": "WI-10000456",
+  "plan": "goal-agent-behavior-feedback-2026-09-06",
+  "subjects": [
+    {
+      "name": "agent-obligation-providers",
+      "originalTestRunId": 17999352,
+      "historicalCommit": "0168842a89e7d072409b68684f5287e7385af567",
+      "currentSourceSha256": "f4a9d29e875aac098dce3935b1814c705dc060f921ba204a47e6fcc919aadffa",
+      "historicalSourceSha256": "217f74d91e0562dcca30fdfcd8e6ac4b4a8dcfc0da42a61a8434f20bff85f729",
+      "currentTestSha256": "1b2e2c549aaa5a0079abcde621f183c13a621b54faa8b526164f84a80776be9d",
+      "phases": [
+        {
+          "phase": "current",
+          "command": [
+            "${HOME}/.local/node25/bin/node",
+            "${REPO_ROOT}/node_modules/vitest/vitest.mjs",
+            "run",
+            "--config",
+            "${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-providers-current/vitest.config.ts",
+            "--reporter=json",
+            "--outputFile=${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-providers-current/result.json"
+          ],
+          "startedAt": "2026-09-14T01:59:38.427Z",
+          "finishedAt": "2026-09-14T01:59:42.533Z",
+          "exitCode": 0,
+          "signal": null,
+          "passed": 32,
+          "failed": 0,
+          "other": 0,
+          "failures": []
+        },
+        {
+          "phase": "historical",
+          "command": [
+            "${HOME}/.local/node25/bin/node",
+            "${REPO_ROOT}/node_modules/vitest/vitest.mjs",
+            "run",
+            "--config",
+            "${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-providers-historical/vitest.config.ts",
+            "--reporter=json",
+            "--outputFile=${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-providers-historical/result.json"
+          ],
+          "startedAt": "2026-09-14T01:59:42.536Z",
+          "finishedAt": "2026-09-14T01:59:46.865Z",
+          "exitCode": 1,
+          "signal": null,
+          "passed": 25,
+          "failed": 7,
+          "other": 0,
+          "failures": [
+            {
+              "name": "plan placement preserves canonical launch evidence never restarts a paused goal with unfinished plans",
+              "messages": [
+                "AssertionError: expected { Object (ruleId, ruleRevision, ...) } to match object { status: 'not-applicable', \u2026(1) }\n(40 matching properties omitted from actual)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1283:10)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1156:15)\n    at Proxy.methodWrapper (file://${REPO_ROOT}/node_modules/vitest/node_modules/chai/index.js:1700:25)\n    at ${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-providers-historical/agent-obligation-providers.test.ts:293:20\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2027:60\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)"
+              ]
+            },
+            {
+              "name": "plan placement preserves canonical launch evidence never restarts a achieved goal with unfinished plans",
+              "messages": [
+                "AssertionError: expected { Object (ruleId, ruleRevision, ...) } to match object { status: 'not-applicable', \u2026(1) }\n(40 matching properties omitted from actual)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1283:10)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1156:15)\n    at Proxy.methodWrapper (file://${REPO_ROOT}/node_modules/vitest/node_modules/chai/index.js:1700:25)\n    at ${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-providers-historical/agent-obligation-providers.test.ts:293:20\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2027:60\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)"
+              ]
+            },
+            {
+              "name": "plan placement preserves canonical launch evidence never restarts a killed goal with unfinished plans",
+              "messages": [
+                "AssertionError: expected { Object (ruleId, ruleRevision, ...) } to match object { status: 'not-applicable', \u2026(1) }\n(40 matching properties omitted from actual)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1283:10)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1156:15)\n    at Proxy.methodWrapper (file://${REPO_ROOT}/node_modules/vitest/node_modules/chai/index.js:1700:25)\n    at ${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-providers-historical/agent-obligation-providers.test.ts:293:20\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2027:60\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)"
+              ]
+            },
+            {
+              "name": "plan placement preserves canonical launch evidence keeps unresolved goal lifecycle null unknown",
+              "messages": [
+                "AssertionError: expected { Object (ruleId, ruleRevision, ...) } to match object { status: 'unknown', \u2026(2) }\n(44 matching properties omitted from actual)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1283:10)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1156:15)\n    at Proxy.methodWrapper (file://${REPO_ROOT}/node_modules/vitest/node_modules/chai/index.js:1700:25)\n    at ${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-providers-historical/agent-obligation-providers.test.ts:307:20\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2027:60\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)"
+              ]
+            },
+            {
+              "name": "plan placement preserves canonical launch evidence keeps unresolved goal lifecycle unrecognized unknown",
+              "messages": [
+                "AssertionError: expected { Object (ruleId, ruleRevision, ...) } to match object { status: 'unknown', \u2026(2) }\n(44 matching properties omitted from actual)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1283:10)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1156:15)\n    at Proxy.methodWrapper (file://${REPO_ROOT}/node_modules/vitest/node_modules/chai/index.js:1700:25)\n    at ${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-providers-historical/agent-obligation-providers.test.ts:307:20\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2027:60\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)"
+              ]
+            },
+            {
+              "name": "plan placement preserves canonical launch evidence does not turn a different goal portfolio into placement instructions",
+              "messages": [
+                "AssertionError: expected { Object (ruleId, ruleRevision, ...) } to match object { status: 'unknown', \u2026(2) }\n(44 matching properties omitted from actual)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1283:10)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1156:15)\n    at Proxy.methodWrapper (file://${REPO_ROOT}/node_modules/vitest/node_modules/chai/index.js:1700:25)\n    at ${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-providers-historical/agent-obligation-providers.test.ts:321:20\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20"
+              ]
+            },
+            {
+              "name": "plan placement preserves canonical launch evidence advances an eligible plan past a blocked predecessor and clears only on canonical placement effect",
+              "messages": [
+                "AssertionError: expected { Object (ruleId, ruleRevision, ...) } to match object { status: 'due', \u2026(2) }\n(35 matching properties omitted from actual)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1283:10)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1156:15)\n    at Proxy.methodWrapper (file://${REPO_ROOT}/node_modules/vitest/node_modules/chai/index.js:1700:25)\n    at ${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-providers-historical/agent-obligation-providers.test.ts:344:42\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "agent-obligation-reader",
+      "originalTestRunId": 17999375,
+      "historicalCommit": "2d35adf5a847f97e5b5ebaaac5e42597f48a87cb",
+      "currentSourceSha256": "ab3422692aae6ce9095e8ff1b6389e40b3cf7e499755d4db0e8c03047168db7c",
+      "historicalSourceSha256": "08de1aa9e881b5b82d20999c8d04c7a3b0b1b23f0f22e0d09834b437d9c48f6e",
+      "currentTestSha256": "91b871b8fc4aaefdd166a40d9ef230129503cead31551fef88f70d99f2fe00d6",
+      "phases": [
+        {
+          "phase": "current",
+          "command": [
+            "${HOME}/.local/node25/bin/node",
+            "${REPO_ROOT}/node_modules/vitest/vitest.mjs",
+            "run",
+            "--config",
+            "${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-reader-current/vitest.config.ts",
+            "--reporter=json",
+            "--outputFile=${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-reader-current/result.json"
+          ],
+          "startedAt": "2026-09-14T01:59:46.893Z",
+          "finishedAt": "2026-09-14T01:59:49.461Z",
+          "exitCode": 0,
+          "signal": null,
+          "passed": 15,
+          "failed": 0,
+          "other": 0,
+          "failures": []
+        },
+        {
+          "phase": "historical",
+          "command": [
+            "${HOME}/.local/node25/bin/node",
+            "${REPO_ROOT}/node_modules/vitest/vitest.mjs",
+            "run",
+            "--config",
+            "${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-reader-historical/vitest.config.ts",
+            "--reporter=json",
+            "--outputFile=${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-reader-historical/result.json"
+          ],
+          "startedAt": "2026-09-14T01:59:49.462Z",
+          "finishedAt": "2026-09-14T01:59:52.976Z",
+          "exitCode": 1,
+          "signal": null,
+          "passed": 9,
+          "failed": 6,
+          "other": 0,
+          "failures": [
+            {
+              "name": "shared agent obligation reader does not deliver stale reporting work for a paused goal",
+              "messages": [
+                "AssertionError: expected [ { \u2026(22) } ] to deeply equal []\n    at ${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-reader-historical/agent-obligation-reader.test.ts:115:33\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+              ]
+            },
+            {
+              "name": "shared agent obligation reader does not deliver stale reporting work for a achieved goal",
+              "messages": [
+                "AssertionError: expected [ { \u2026(22) } ] to deeply equal []\n    at ${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-reader-historical/agent-obligation-reader.test.ts:115:33\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+              ]
+            },
+            {
+              "name": "shared agent obligation reader does not deliver stale reporting work for a killed goal",
+              "messages": [
+                "AssertionError: expected [ { \u2026(22) } ] to deeply equal []\n    at ${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-reader-historical/agent-obligation-reader.test.ts:115:33\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+              ]
+            },
+            {
+              "name": "shared agent obligation reader does not turn lifecycle null into a reporting duty",
+              "messages": [
+                "AssertionError: expected { ruleId: 'goal-owner-report', \u2026(21) } to match object { status: 'unknown', \u2026(1) }\n(40 matching properties omitted from actual)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1283:10)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1156:15)\n    at Proxy.methodWrapper (file://${REPO_ROOT}/node_modules/vitest/node_modules/chai/index.js:1700:25)\n    at ${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-reader-historical/agent-obligation-reader.test.ts:127:86\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+              ]
+            },
+            {
+              "name": "shared agent obligation reader does not turn lifecycle unrecognized into a reporting duty",
+              "messages": [
+                "AssertionError: expected { ruleId: 'goal-owner-report', \u2026(21) } to match object { status: 'unknown', \u2026(1) }\n(40 matching properties omitted from actual)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1283:10)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1156:15)\n    at Proxy.methodWrapper (file://${REPO_ROOT}/node_modules/vitest/node_modules/chai/index.js:1700:25)\n    at ${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-reader-historical/agent-obligation-reader.test.ts:127:86\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+              ]
+            },
+            {
+              "name": "shared agent obligation reader keeps a mismatched portfolio unknown in the consumed reporting agenda",
+              "messages": [
+                "AssertionError: expected { ruleId: 'goal-owner-report', \u2026(21) } to match object { status: 'unknown', \u2026(1) }\n(40 matching properties omitted from actual)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1283:10)\n    at Proxy.<anonymous> (file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/expect/dist/index.js:1156:15)\n    at Proxy.methodWrapper (file://${REPO_ROOT}/node_modules/vitest/node_modules/chai/index.js:1700:25)\n    at ${REPO_ROOT}/packages/operator-core/lib/.papercusp/scratch/p012-replay-18327-yGNSMe/agent-obligation-reader-historical/agent-obligation-reader.test.ts:139:86\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://${REPO_ROOT}/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "verifierSource": "// Work item WI-10000456. Disposable copy-only execution, not a new product surface.\nimport { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';\nimport { resolve, dirname, join } from 'node:path';\nimport { createHash } from 'node:crypto';\nimport { spawnSync, execFileSync } from 'node:child_process';\n\nconst root = process.cwd();\nconst pkg = join(root, 'packages/operator-core');\nconst sourceDir = join(pkg, 'lib');\nconst scratchRoot = join(sourceDir, '.papercusp/scratch');\nmkdirSync(scratchRoot, { recursive: true });\nconst dir = mkdtempSync(join(scratchRoot, 'p012-replay-18327-'));\nconst hash = (value) => createHash('sha256').update(value).digest('hex');\nconst subjects = [\n  { name: 'agent-obligation-providers', before: 'a0631e37ec^', absent: 'const goalStatus = portfolio.goal.status;', control: 'export function planPlacementObligation', originalTestRunId: 17999352 },\n  { name: 'agent-obligation-reader', before: '1d46df0059^', absent: 'const lifecycleUnknown =', control: 'export async function readAgentObligationAgenda', originalTestRunId: 17999375 },\n];\nconst startedAt = new Date().toISOString();\nconst result = { schemaVersion: 1, workItemId: 'WI-10000456', startedAt, copyOnly: true, subjects: [], verdict: 'incomplete' };\n// Current tests are relocated without changing assertions. Source imports\n// resolve to canonical dependencies, except the explicit adjacent subject copy.\nfunction relocate(text, subject) {\n  return text.replace(/(['\"])(\\.{1,2}\\/[^'\"]+)\\1/g, (_whole, quote, spec) => {\n    const mapped = spec === `./${subject}` ? `./${subject}.ts` : resolve(sourceDir, spec);\n    return `${quote}${mapped}${quote}`;\n  });\n}\nconst snapshots = new Map();\ntry {\n  for (const subject of subjects) {\n    const file = join(sourceDir, `${subject.name}.ts`);\n    const testFile = join(sourceDir, `${subject.name}.test.ts`);\n    const current = readFileSync(file, 'utf8');\n    const test = readFileSync(testFile, 'utf8');\n    snapshots.set(file, hash(current));\n    snapshots.set(testFile, hash(test));\n    const commit = execFileSync('git', ['rev-parse', subject.before], { cwd: root, encoding: 'utf8' }).trim();\n    const historical = execFileSync('git', ['show', `${commit}:packages/operator-core/lib/${subject.name}.ts`], { cwd: root, encoding: 'utf8' });\n    if (!current.includes(subject.absent) || historical.includes(subject.absent)\n      || !current.includes(subject.control) || !historical.includes(subject.control)) throw new Error(`Invalid historical selection for ${subject.name}`);\n    const row = { name: subject.name, originalTestRunId: subject.originalTestRunId, historicalCommit: commit,\n      currentSourceSha256: hash(current), historicalSourceSha256: hash(historical), currentTestSha256: hash(test), phases: [] };\n    result.subjects.push(row);\n    for (const [phase, source] of [['current', current], ['historical', historical]]) {\n      const phaseDir = join(dir, `${subject.name}-${phase}`);\n      mkdirSync(phaseDir);\n      writeFileSync(join(phaseDir, `${subject.name}.ts`), relocate(source, ''));\n      writeFileSync(join(phaseDir, `${subject.name}.test.ts`), relocate(test, subject.name));\n      const config = join(phaseDir, 'vitest.config.ts');\n      // Reuse the actual project framework, setup and reporter; remove only its\n      // default scratch-directory exclusion for these exact copied test paths.\n      writeFileSync(config, `import base from ${JSON.stringify(join(pkg, 'vitest.config.ts'))};\\nexport default {...base, test:{...base.test, include:[${JSON.stringify(join(phaseDir, `${subject.name}.test.ts`))}], exclude:['**/node_modules/**']}};\\n`);\n      const report = join(phaseDir, 'result.json');\n      const args = [join(root, 'node_modules/vitest/vitest.mjs'), 'run', '--config', config, '--reporter=json', `--outputFile=${report}`];\n      const phaseStart = new Date().toISOString();\n      const execution = spawnSync(process.execPath, args, { cwd: pkg, encoding: 'utf8',\n        env: { ...process.env, PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_MUTATION_PHASE: phase, PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace', PAPERCUSP_TEST_RUN_HARNESS: 'papercusp' },\n        timeout: 180000, maxBuffer: 4 * 1024 * 1024 });\n      const details = JSON.parse(readFileSync(report, 'utf8'));\n      const assertions = details.testResults.flatMap((file) => file.assertionResults);\n      const record = { phase, command: [process.execPath, ...args], startedAt: phaseStart, finishedAt: new Date().toISOString(),\n        exitCode: execution.status, signal: execution.signal, passed: assertions.filter((test) => test.status === 'passed').length,\n        failed: assertions.filter((test) => test.status === 'failed').length,\n        other: assertions.filter((test) => !['passed', 'failed'].includes(test.status)).length,\n        failures: assertions.filter((test) => test.status === 'failed').map((test) => ({ name: test.fullName, messages: test.failureMessages })) };\n      row.phases.push(record);\n      console.log(JSON.stringify({ name: subject.name, phase, passed: record.passed, failed: record.failed, other: record.other, exitCode: record.exitCode }));\n      if (phase === 'current' && (execution.status !== 0 || record.failed !== 0 || record.other !== 0)) throw new Error(`Current calibration failed: ${subject.name}`);\n      if (phase === 'historical' && (execution.status !== 1 || record.failed === 0 || record.other !== 0)) throw new Error(`Historical comparison is not an assertion failure: ${subject.name}`);\n    }\n  }\n  result.verdict = 'historical-failures-caught';\n} catch (error) {\n  result.error = String(error);\n  process.exitCode = 1;\n} finally {\n  result.sourceUnchanged = [...snapshots].every(([file, sha]) => hash(readFileSync(file)) === sha);\n  if (!result.sourceUnchanged) { result.verdict = 'source-changed-during-probe'; process.exitCode = 1; }\n  result.finishedAt = new Date().toISOString();\n  writeFileSync('/tmp/goal-feedback-p012-historical-recurrence-18327.json', JSON.stringify(result, null, 2));\n  rmSync(dir, { recursive: true, force: true });\n  console.log(JSON.stringify({ verdict: result.verdict, error: result.error, sourceUnchanged: result.sourceUnchanged }));\n}\n",
+  "verifierSha256": "348af57c16186f312d402a783bdcd4f1e4607614fec73f185a56734c1f108544",
+  "limitations": [
+    "The historical reader comparison includes six failures: the original filtered five plus the subsequently added scope-mismatch guard. It is not a re-execution of the original five-test selector.",
+    "Only provider or reader subject is historical per arm; dependencies remain current canonical modules.",
+    "This establishes falsifiability and recurrence, not live-model behavioral effect.",
+    "Original17999352/17999375 NULLtenant rows retain their original scope and dirty-tree limitations."
+  ],
+  "pathNormalization": {
+    "purpose": "Avoid embedding a single developer home in release artifacts while preserving exact observations. Placeholders are display-only, not claims that the original subprocess argv contained variables.",
+    "REPO_ROOT": "Absolute working directory of the recorded repository-root command.",
+    "HOME": "Executing account home; obtained at runtime.",
+    "originalArtifactSha256": "95c6ac1d62cbb8eab1fc309387cd28dbff4b9fa3b112527a7ff51f5a6e51ad3d",
+    "unchanged": "Original test/source fingerprints, timestamps, exit codes, assertion outcomes and historical commit IDs.",
+    "rawExecutionRecord": "/tmp/goal-feedback-p012-historical-recurrence-18327.json"
+  }
+}
