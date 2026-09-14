@@ -92,6 +92,7 @@ import {
 import { gateVerdictTargetFromEnv } from "@papercusp/operator-core/lib/release/gate-verdict-target";
 import { gateFireIdFromEnv } from "@papercusp/operator-core/lib/release/gate-fire-ledger";
 import type { FleetLogsGcResult } from "@papercusp/operator-core/lib/fleet-logs-gc";
+import type { SnapCacheOutcome } from "@papercusp/operator-core/lib/storage/snap-cache-retention";
 import {
   DEPENDENCY_PREBUILD_WAIT_MS,
   awaitDependencyPrebuildState,
@@ -16529,6 +16530,12 @@ export function realCheckpointDeps(
     | CheckpointCargoReclaimResult
     | null
     | Promise<CheckpointCargoReclaimResult | null>,
+  /** EI-23195476432045730: focused-test seam for Snapd's manager-owned
+   * downloads-cache cleanup request. The production path only asks Snapd to
+   * run its native policy and verifies the result; it never unlinks cache files. */
+  reclaimSnapCacheHeadroomOverride?: () =>
+    | SnapCacheOutcome
+    | Promise<SnapCacheOutcome>,
 ): CheckpointDeps {
   const notifyProgress = (detail?: string) => {
     try {
@@ -16619,6 +16626,13 @@ export function realCheckpointDeps(
         stopWhen: () =>
           detectCriticalWriteHeadroom([sampleTarget()], policy).length === 0,
       });
+    });
+  const reclaimCheckpointSnap =
+    reclaimSnapCacheHeadroomOverride ??
+    (async (): Promise<SnapCacheOutcome> => {
+      const { runSnapCacheRetention } =
+        await import("@papercusp/operator-core/lib/storage/snap-cache-retention");
+      return runSnapCacheRetention();
     });
   const checkpointDiskPolicy = async (): Promise<DiskInfraFaultPolicy> => {
     const { diskPolicyFromEnv } =
@@ -17240,6 +17254,21 @@ export function realCheckpointDeps(
       } catch (error) {
         reclamationParts.push(
           `Cargo cleanup failed safely (${error instanceof Error ? error.message : error})`,
+        );
+      }
+      try {
+        const snap = await reclaimCheckpointSnap();
+        const status = snap.status === "cleaned" ? "cleaned" : snap.status;
+        const detail =
+          snap.reclaimedBytes > 0
+            ? `freed ${(snap.reclaimedBytes / gib).toFixed(2)} GiB`
+            : snap.note ?? "no bytes reclaimed";
+        reclamationParts.push(
+          `Snapd downloads-cache ${status} (${(snap.beforeBytes / gib).toFixed(2)} GiB before, ${detail})`,
+        );
+      } catch (error) {
+        reclamationParts.push(
+          `Snapd downloads-cache cleanup failed safely (${error instanceof Error ? error.message : error})`,
         );
       }
       const reclamationSummary = `bounded disk GC: ${reclamationParts.join("; ")}`;
