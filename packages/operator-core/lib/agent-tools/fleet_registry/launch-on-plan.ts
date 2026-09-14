@@ -132,7 +132,9 @@ import { getModes, getModeSubject } from '../../modes/store';
 import { modeInstructionsFactKey } from '../mode/set';
 import {
   composeModelSpec,
+  deriveFreshLaunchEvidenceSummary,
   foldMemberSpec,
+  formatFreshLaunchEvidenceSummary,
   injectLaunchedByArg,
   memberLaunchCommand as sharedMemberLaunchCommand,
   memberSpecSchema,
@@ -5220,12 +5222,35 @@ export default defineTool({
       }
     };
     const launchCompletion = completeLaunch();
+    const currentLaunchEvidence = () => {
+      const openedIdsForEvidence = new Set(opened.map((member) => member.ownerId));
+      const workerAttestations = launchTransaction.workerAttestations
+        ?.filter((attestation) => attestation.ownerId != null && openedIdsForEvidence.has(attestation.ownerId))
+        ?? null;
+      const firstTurn = opened.length === 0
+        ? null
+        : opened.every((member) => launchTransaction.verifiedMemberIds.includes(member.ownerId))
+          ? true
+          : launchTransaction.failed.some(
+              (failure) =>
+                openedIdsForEvidence.has(failure.ownerId) &&
+                (failure.phase === 'verification' || failure.phase === 'attestation'),
+            )
+            ? false
+            : null;
+      return deriveFreshLaunchEvidenceSummary({
+        opened: opened.length,
+        firstTurn,
+        workerAttestations,
+      });
+    };
     const responseRace = await raceLaunchResponseWithinBudget(launchCompletion);
     const ignoredRoleNote = ignoredRoleDiagnostics.length
       ? `⚠ ignored persisted GOAL launch slot role(s): ${ignoredRoleDiagnostics.map((diagnostic) => `\`${diagnostic.role}\``).join(', ')} — omitted from psu persona validation and member commands.`
       : null;
     if (responseRace.timedOut) {
       stampLaunchOutcome(ctx, fleetSlug, launchTransaction);
+      const launchEvidence = currentLaunchEvidence();
       const completionHandle = {
         transactionId: launchTransaction.transactionId,
         fleet: fleetSlug,
@@ -5253,6 +5278,7 @@ export default defineTool({
           requested: count,
           liveMembers,
           requestedOpenCount,
+          launchEvidence,
           completionPending: true,
           completionHandle,
           launchTransaction,
@@ -5264,6 +5290,7 @@ export default defineTool({
           message:
             `Launch response bounded at ${LAUNCH_RESPONSE_DEADLINE_MS}ms; transaction ` +
             `\`${launchTransaction.transactionId}\` continues in the background. ` +
+            `${formatFreshLaunchEvidenceSummary(launchEvidence)} ` +
             (ignoredRoleNote ? `${ignoredRoleNote} ` : '') +
             `Use ${completionHandle.nextAction} to inspect the durable result before replaying.`,
         },
@@ -5382,6 +5409,7 @@ export default defineTool({
     const clampSuffix = capacityClamp?.clamped
       ? `; the deficit was capacity-clamped ${requestedOpenCount}→${openCount}`
       : '';
+    const launchEvidence = currentLaunchEvidence();
     lines.push(
       opened.length
         ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole})${planSlug ? ` on plan \`${planSlug}\`` : ' (claim-spec fleet)'} — ${fill.clause}${args.headless ? ' (no desktop windows — tail the per-member log paths below)' : ''}${carryMode === 'cold' ? ' [COLD carry]' : ''}${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${clampSuffix}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
@@ -5394,6 +5422,7 @@ export default defineTool({
             clampReason: capacityClamp?.clamped ? capacityClamp.reason : null,
           }),
     );
+    lines.push(`  ↳ ${formatFreshLaunchEvidenceSummary(launchEvidence)}`);
     for (const o of opened) {
       const displayNote = o.display ? ` [DISPLAY=${o.display}]` : '';
       lines.push(`  • ${o.terminal} (pid ${o.pid ?? '?'})${displayNote} — ${o.command}`);
@@ -5587,6 +5616,7 @@ export default defineTool({
         // a caller must treat them as possibly-live (verify via coord:presence),
         // never as a shortfall to relaunch into.
         unverifiedMembers: unconfirmed.length ? unconfirmed.map((u) => ({ ownerId: u.ownerId, note: u.note })) : null,
+        launchEvidence,
         // P-006: the MACHINE-READABLE fill verdict, so a caller never has to infer "did I get the
         // fleet I asked for?" from an opened count whose denominator is the post-clamp attempt.
         fleetSize: fill.fleetSize,

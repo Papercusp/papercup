@@ -1038,6 +1038,13 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
       deduped: false,
       opened: 1,
       failed: 0,
+      launchEvidence: {
+        version: 1,
+        processOpened: 1,
+        sessionRegistered: null,
+        firstTurn: null,
+        taskDisposition: { claimed: 0, noClaim: 0, unknown: 1 },
+      },
       tasks: [{
         taskId: 'task777',
         logPath: '/tmp/papercusp-ws/fleet-logs/judge.log',
@@ -1047,6 +1054,7 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
       }],
     });
     expect(textOf(res)).toContain('grep-safe log: /tmp/papercusp-ws/fleet-logs/judge.normalized.log');
+    expect(textOf(res)).toContain('Process open alone is not proof that an agent is working.');
     expect(textOf(res)).toContain('EI-9748');
   });
 

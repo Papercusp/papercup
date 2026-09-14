@@ -3357,6 +3357,16 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       ready: false,
       failures: [{ code: 'durable-wake-missing' }],
     });
+    expect(payload.launchEvidence).toEqual({
+      version: 1,
+      processOpened: 2,
+      sessionRegistered: 2,
+      firstTurn: true,
+      taskDisposition: { claimed: 0, noClaim: 2, unknown: 0 },
+    });
+    expect((res as any).content[0].text).toContain(
+      'Process open alone is not proof that an agent is working.',
+    );
   });
 
   it('keeps opening the pre-pinned cohort when the canary remains unconfirmed', async () => {

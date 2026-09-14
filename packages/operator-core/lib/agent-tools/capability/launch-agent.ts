@@ -62,7 +62,9 @@ import {
   buildAgentLaunchCommand,
   claimAgentLaunch,
   composeModelSpec,
+  deriveFreshLaunchEvidenceSummary,
   foldMemberSpec,
+  formatFreshLaunchEvidenceSummary,
   injectFleetArg,
   injectLaunchedByArg,
   isStaleHeadlessAgentHost,
@@ -1990,6 +1992,12 @@ export default defineTool({
       );
     }
 
+    const launchEvidence = deriveFreshLaunchEvidenceSummary({
+      opened: opened.length,
+      firstTurn: freshVerdict?.agentStarted ?? null,
+      workerAttestations: freshVerdict?.sessions.map((session) => session.workerAttestation) ?? null,
+    });
+
     const lines: string[] = [];
     if (opened.length) {
       const allHeadless = foldedConfigs.every((f) => !!f.headless);
@@ -2021,7 +2029,7 @@ export default defineTool({
         lines.push(
           isResume
             ? "  ↪ the brief is QUEUED as the resumed session's next turn (psu's managed pty injects it once the agent reaches its prompt). Delivery alone is not proof the turn began; read the verification verdict below."
-            : "  ↪ the brief is the agent's first turn — it starts working on boot, it does not park idle.",
+            : "  ↪ the brief was supplied as the agent's first turn prompt. Process open does not prove that turn began; read the launch evidence below before treating the agent as working.",
         );
       } else if (hasLaunchPlan) {
         lines.push(
@@ -2030,6 +2038,7 @@ export default defineTool({
       } else {
         lines.push('  ⚠ no `brief` — the agent opens IDLE. It will not do anything until someone gives it a turn.');
       }
+      lines.push(`  ↳ ${formatFreshLaunchEvidenceSummary(launchEvidence)}`);
       if (anyHeadless) {
         lines.push(
           `  ⓘ headless logs: ${headlessLogDir}. EI-9748: a \`:3170\` restart reaps headless children — prefer a visible launch for long-lived work on the dev box.`,
@@ -2080,6 +2089,7 @@ export default defineTool({
       mode: isSuccessor ? 'successor' : isResume ? (fork ? 'fork' : 'resume') : 'fresh',
       resumedOwnerId: resumeOwnerId,
       ownerIds: memberOwnerIds,
+      launchEvidence,
       ...(kickoffProofFailures.length > 0
         ? {
             kickoffProof: {

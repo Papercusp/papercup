@@ -1470,6 +1470,77 @@ export function deriveFreshLaunchWorkerAttestation(
   };
 }
 
+/**
+ * Small, aggregate launch receipt for callers that should not have to interpret
+ * the full worker-attestation graph before reporting what actually happened.
+ *
+ * The detailed attestation remains the writer-owned evidence. This projection is
+ * deliberately count-preserving: partial registration and mixed task dispositions
+ * remain visible, while every opened process without a satisfied disposition is
+ * counted as unknown rather than being collapsed into success or failure.
+ */
+export interface FreshLaunchEvidenceSummary {
+  version: 1;
+  processOpened: number;
+  sessionRegistered: number | null;
+  firstTurn: boolean | null;
+  taskDisposition: {
+    claimed: number;
+    noClaim: number;
+    unknown: number;
+  };
+}
+
+export function deriveFreshLaunchEvidenceSummary(args: {
+  opened: number;
+  firstTurn: boolean | null;
+  workerAttestations?: readonly (FreshLaunchWorkerAttestation | null | undefined)[] | null;
+}): FreshLaunchEvidenceSummary {
+  const opened = Number.isFinite(args.opened) ? Math.max(0, Math.floor(args.opened)) : 0;
+  const seen = new Set<string>();
+  const observed: FreshLaunchWorkerAttestation[] = [];
+  for (const [index, attestation] of (args.workerAttestations ?? []).entries()) {
+    if (!attestation) continue;
+    const ownerId = attestation.ownerId?.trim();
+    const key = ownerId ? `owner:${ownerId}` : `anonymous:${index}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    observed.push(attestation);
+  }
+  const relevant = observed.slice(0, opened);
+  const dispositions = relevant.map((attestation) => attestation.stages.disposition);
+  const claimed = dispositions.filter(
+    (item) => item.status === 'satisfied' && item.kind === 'claimed',
+  ).length;
+  const noClaim = dispositions.filter(
+    (item) => item.status === 'satisfied' && item.kind === 'no-claim',
+  ).length;
+
+  return {
+    version: 1,
+    processOpened: opened,
+    sessionRegistered: relevant.length > 0 ? relevant.length : null,
+    firstTurn: opened > 0 ? args.firstTurn : null,
+    taskDisposition: {
+      claimed,
+      noClaim,
+      unknown: Math.max(0, opened - claimed - noClaim),
+    },
+  };
+}
+
+export function formatFreshLaunchEvidenceSummary(summary: FreshLaunchEvidenceSummary): string {
+  const observed = (value: boolean | null): string => value == null ? 'unknown' : String(value);
+  const registered = summary.sessionRegistered == null ? 'unknown' : String(summary.sessionRegistered);
+  return (
+    `Launch evidence (aggregate): processOpened=${summary.processOpened}; ` +
+    `sessionRegistered=${registered}; firstTurn=${observed(summary.firstTurn)}; ` +
+    `taskDisposition=claimed:${summary.taskDisposition.claimed},` +
+    `noClaim:${summary.taskDisposition.noClaim},unknown:${summary.taskDisposition.unknown}. ` +
+    'Process open alone is not proof that an agent is working.'
+  );
+}
+
 export interface FreshLaunchSessionProbe {
   advSessionId: number;
   /** Native session id recorded for this launch, when bootstrap had one. */

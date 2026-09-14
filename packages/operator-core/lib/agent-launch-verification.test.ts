@@ -22,7 +22,9 @@ import {
   FRESH_VERIFY_SILENCE_MS,
   LAUNCH_STATUSLINE_TOOLS,
   classifyAgentLaunchCommand,
+  deriveFreshLaunchEvidenceSummary,
   deriveFreshLaunchWorkerAttestation,
+  formatFreshLaunchEvidenceSummary,
   launchAttestationFromLedger,
   normalizeLaunchAttestationModelSpec,
   verifyFreshLaunchStarted,
@@ -387,6 +389,53 @@ describe('fresh-launch worker attestation — productive capacity is four distin
       probe: fixedProbe([session({ successfulCalls: 2, workerAttestation })]),
     });
     expect(verdict).toMatchObject({ agentStarted: true, workerReady: true });
+  });
+
+  it('keeps a spawn-only result unknown instead of reporting a registered or working agent', () => {
+    const summary = deriveFreshLaunchEvidenceSummary({
+      opened: 1,
+      firstTurn: null,
+      workerAttestations: [],
+    });
+
+    expect(summary).toEqual({
+      version: 1,
+      processOpened: 1,
+      sessionRegistered: null,
+      firstTurn: null,
+      taskDisposition: { claimed: 0, noClaim: 0, unknown: 1 },
+    });
+    expect(formatFreshLaunchEvidenceSummary(summary)).toContain(
+      'Process open alone is not proof that an agent is working.',
+    );
+  });
+
+  it('names an aggregate disposition only when every opened process has the same satisfied evidence', () => {
+    const claimed = deriveFreshLaunchWorkerAttestation(evidence());
+    const noClaim = deriveFreshLaunchWorkerAttestation(evidence({
+      ownerId: 'su-no-claim',
+      schedulerDisposition: { kind: 'no-claim', reason: 'fleet_lane_drained' },
+      claimedWorkItemId: null,
+    }));
+
+    expect(deriveFreshLaunchEvidenceSummary({
+      opened: 1,
+      firstTurn: true,
+      workerAttestations: [claimed],
+    })).toMatchObject({
+      sessionRegistered: 1,
+      firstTurn: true,
+      taskDisposition: { claimed: 1, noClaim: 0, unknown: 0 },
+    });
+    expect(deriveFreshLaunchEvidenceSummary({
+      opened: 2,
+      firstTurn: true,
+      workerAttestations: [claimed, noClaim],
+    })).toMatchObject({
+      sessionRegistered: 2,
+      firstTurn: true,
+      taskDisposition: { claimed: 1, noClaim: 1, unknown: 0 },
+    });
   });
 });
 
