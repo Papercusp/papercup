@@ -362,3 +362,72 @@ rejecting carry/reset marker reads, followed by the handler's fallback path.
 No real database connection was permitted by those guards. That warning
 cannot be represented as successful testing of the true carry-marker path,
 nor does it establish a production outage.
+
+## P-001 continuation inventory — September 14, 05:52 UTC
+
+Independent review `WI-10001308` is complete. Card
+`EI-23212685237920927` passed the exact refreshed subject of
+`EI-23211811916557156`, hash
+`04039db9c69d0c1d88e7f48d9169faed9e8e491bdb8a43c884903ca5afde70a0`.
+This supersedes the pending-review statements above. D-006 remains the
+governing decision; no new decision was added to churn the acceptance pins.
+The source-conversation audit at sequence 4 remains the recovery reference;
+the latest owner instruction is to continue, with no change of scope or route.
+
+`plans:start` approved the plan and materialized its work items. Its final
+admission response was nevertheless `floor-gated`, so it is not recorded as a
+successful automatic pull. Current plan status is `ready`, version 12 after
+the generated Promoted block. The canonical `plan_items:claim` door then
+successfully claimed P-001 / `WI-10001315` for this explicitly assigned
+SELF/AUTO session. The floor counter only identifies exclusion by the shared
+claim predicate; it does not identify which individual predicate fired.
+No floor was disabled and no plan dependency was removed.
+
+The matrix near the start of this document remains the F01–F18 population.
+Its next-procedure column is the read-only experiment plan. The following
+register makes its diagnostic ownership concrete without treating an
+inventory as completed diagnosis:
+
+| Diagnostic record | Findings / follow-up | Existing work to adopt or distinguish |
+| --- | --- | --- |
+| P-002 / WI-10001316 | F01, F12, F13 query and hook contracts | Saved private-PG session proof; EI-22734497115199029 source repair; EI-23202546557685868 independently repeated the same seven tests successfully and changed no source. |
+| P-003 / WI-10001317 | F02, F03, F15 wake lifecycle | EI-23212384525517772 real-host counterexample; carry-specific boundaries belong to WI-10001256. |
+| P-004 / WI-10001318 | F04, F05, F06 recovery and versions | WI-10001256 remains assigned to su-c77f160e-1bd4-4436-9090-bb0360873809. Adopt its verified evidence; retain general reconnect/host residue here. |
+| P-005 / WI-10001319 | F07, F08, F09 retrieval | WI-10001232 remains assigned to su-8ee55568-a37b-4b6b-84f3-e02e11c10d86. Its checkpoint preserves retrieval behind a newer owner-directed GitNexus priority; it is not completed or abandoned. Read the existing deadline audit and coordinate any implementation overlap. |
+| P-006 / WI-10001320 | F10, F11, F16 scheduler and demand | Preserve the exact loop/epoch proof above; classify other routine causes individually. |
+| P-007 / WI-10001321 | F14, F15 incident identity and writes | WI-10001183, EI-22536211469362868 and EI-23198068959671510 are terminal source-fix candidates, not proof of current runtime resolution. |
+| P-008 / WI-10001322 | F17 regression selection and evidence | EI-23210600888560844 owns the demonstrated main-selection gap; WI-2143001 is open and unassigned for coverage attribution. |
+| P-009 / WI-10001323 | F18 recovery artifacts | WI-2145397, WI-2146225 and WI-40561 are terminal prior art for probe/destination/writer changes. Recheck current artifacts and isolate any restore. |
+| P-010 / WI-10001324 | F09, F16, F17 plus workflow follow-up | Waiting/running semantics, report bookkeeping authorization, no-event hosts, stale facts and oversized discovery metadata remain explicit diagnostic obligations. |
+
+Permitted workspace scope was read from `workspace:work_scope_status`:
+enforced `papercusp` only. No other project's ambient alarm expands this
+mission. Production reads are observational; writes, aborts, fault injection
+and restore experiments use disposable fixtures. Live gate operations are
+reserved for the later shipment lane and its ownership check.
+
+The authoritative input report and evidence JSON were re-read. At source
+HEAD `bf50b6fef61c9e5f561021cfb7b42fdd74b88700`, their SHA-256 values were
+`0ea02471af876683ffc9cbeb066a2409567980f63476ed4c9f10f524b970e903`
+and `6dfdd8e2285ab81d45bd95537822768a0bbf4846127a12867cce6885169549c8`.
+The inspected PTY host still has the exact hash of the real F03 reproduction.
+Current source fingerprints for the next query/hook experiments are:
+
+| Source | SHA-256 |
+| --- | --- |
+| packages/operator-core/lib/agent-tools/sessions/read.ts | bc10cf90ce350216413f79264e6368d4addb9e025181bb9fa65f7e031ffd79d0 |
+| packages/operator-core/lib/pg-bounded-txn.ts | f88f255f5fefc8ed72efdcadc8dd0da1951bd37571f1a2d6804f7b653c502858 |
+| packages/operator-core/lib/agent-tools/activity/report.ts | da70dad393979f26da1df5d8a6aeab6b9a4c1caffa85905a47fc8556390650e4 |
+
+A default-endpoint `sessions:read` still reproduced `invalid escape string`
+during this continuation; the explicit staging endpoint returned the current
+and predecessor transcript. The occurrence coalesced onto
+`EI-23214099637699228`. This establishes endpoint behavior, not the precise
+currently loaded revision of every server or a shipment verdict.
+
+No production repair, instrumentation, configuration or recovery operation
+has been performed by this driver. P-011/P-012 stay closed until the remaining
+diagnostic records contain their distinguishing evidence. In particular,
+real-PG cancellation, actual projected hook compatibility, backup restore and
+causal pressure attribution are still open; inventory completion cannot
+substitute for them.
