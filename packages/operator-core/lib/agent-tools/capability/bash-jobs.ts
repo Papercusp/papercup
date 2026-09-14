@@ -49,7 +49,7 @@ import {
   finishSyncEnrolment,
   syncEnrolmentScopePath,
 } from '../../task-manager/enroll-sync';
-import { isReadOnlyHeadPipeline } from './bash-effect';
+import { isReadOnlyHeadPipeline, isReadOnlyRgCountPipeline } from './bash-effect';
 import { onTaskKillRequested } from '../../task-manager/kill-notify';
 import { warmScopeProbe } from '../../task-manager/managed-spawn';
 import type { CgroupCpuSample } from './cgroup-cpu';
@@ -2061,6 +2061,22 @@ export function normalizeExpectedSigpipeResult(
   return { status, exitCode };
 }
 
+/**
+ * Ripgrep uses exit code 1 for a valid no-match result. In a read-only count
+ * pipeline, a downstream wc has already converted that result into a useful
+ * zero count; pipefail must not turn it back into a failed capability call.
+ */
+export function normalizeExpectedRgNoMatchResult(
+  command: string,
+  status: BashStatus,
+  exitCode: number | null,
+): { status: BashStatus; exitCode: number | null } {
+  if (status === 'failed' && exitCode === 1 && isReadOnlyRgCountPipeline(command)) {
+    return { status: 'completed', exitCode: 0 };
+  }
+  return { status, exitCode };
+}
+
 function createMissingCommandMarkerDetector(token: string): { push: (chunk: string) => void; seen: () => boolean } {
   const marker = `${MISSING_COMMAND_SENTINEL_PREFIX} token=${token} `;
   let tail = '';
@@ -2405,7 +2421,12 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     });
     child.on('close', (code) => {
       const status: BashStatus = timedOut ? 'timed_out' : aborted ? 'killed' : code === 0 ? 'completed' : 'failed';
-      const normalized = normalizeExpectedSigpipeResult(opts.command, status, code);
+      const sigpipeNormalized = normalizeExpectedSigpipeResult(opts.command, status, code);
+      const normalized = normalizeExpectedRgNoMatchResult(
+        opts.command,
+        sigpipeNormalized.status,
+        sigpipeNormalized.exitCode,
+      );
       finish(normalized.status, normalized.exitCode);
     });
   });
@@ -2734,7 +2755,12 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   });
   child.on('close', (code) => {
     if (job.status === 'running') {
-      const normalized = normalizeExpectedSigpipeResult(opts.command, code === 0 ? 'completed' : 'failed', code);
+      const sigpipeNormalized = normalizeExpectedSigpipeResult(opts.command, code === 0 ? 'completed' : 'failed', code);
+      const normalized = normalizeExpectedRgNoMatchResult(
+        opts.command,
+        sigpipeNormalized.status,
+        sigpipeNormalized.exitCode,
+      );
       job.status = normalized.status;
       job.exitCode = normalized.exitCode;
     } else {
