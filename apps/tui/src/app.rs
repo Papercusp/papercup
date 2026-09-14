@@ -241,6 +241,7 @@ pub enum Action {
     /// Read-only connection recheck for the new-session form.
     CheckSessionSetup,
     ReconnectSessionSetup(crate::session_config::SetupReconnect),
+    RegisterSetupProject { slug: String, path: String },
     /// Open the fresh agent-chat identity already created by the Sessions
     /// Continue/Fork route. Unlike `OpenSuSession`, this must never create a
     /// second chat row when there is no initial owner turn.
@@ -6711,6 +6712,9 @@ impl App {
         if !identity.capabilities.attached_su_session {
             return Some("Operator does not support windowless SU sessions; update it before starting.".into());
         }
+        if !identity.capabilities.attached_su_session_approvals {
+            return Some("Operator does not advertise safe native approvals. Update it before starting a new session.".into());
+        }
         if setup.endpoint != identity.endpoint {
             return Some("Operator selection changed. Close and reopen setup to review the new endpoint.".into());
         }
@@ -6754,8 +6758,53 @@ impl App {
     fn session_setup_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
         let projects = self.setup_projects();
         let setup = self.session_setup.as_mut().expect("setup key requires setup");
+        if let Some(field) = setup.project_entry {
+            if setup.project_pending { return Action::Render; }
+            match code {
+                KeyCode::Esc => { setup.project_entry = None; setup.note = None; }
+                KeyCode::BackTab | KeyCode::Tab => {
+                    setup.project_entry = Some(if field == 0 { 1 } else { 0 });
+                }
+                KeyCode::Enter if field < 2 => { setup.project_entry = Some(field + 1); }
+                KeyCode::Enter => {
+                    let slug = setup.project_name.trim();
+                    if slug.is_empty() || !slug.bytes().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == b'-')
+                        || !slug.as_bytes()[0].is_ascii_alphanumeric() {
+                        setup.note = Some("Use a project name starting with a letter or number, then lowercase letters, numbers or hyphens.".into());
+                        setup.project_entry = Some(0);
+                    } else if !std::path::Path::new(setup.project_path.trim()).is_absolute() {
+                        setup.note = Some("Enter the absolute path of an existing directory on the selected operator host.".into());
+                        setup.project_entry = Some(1);
+                    } else if self.backend_identity.is_none() || self.backend_identity_error.is_some() {
+                        setup.note = Some("Connect to the selected operator before registering a project.".into());
+                    } else {
+                        setup.project_pending = true;
+                        setup.note = Some("Registering project…".into());
+                        return Action::RegisterSetupProject { slug: slug.into(), path: setup.project_path.trim().into() };
+                    }
+                }
+                _ if field < 2 => {
+                    let input = if field == 0 { &mut setup.project_name } else { &mut setup.project_path };
+                    match code {
+                        KeyCode::Backspace => { input.pop(); }
+                        KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => input.clear(),
+                        KeyCode::Char(ch) if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                            && !ch.is_control() && input.len() < 4096 => input.push(ch),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+            return Action::Render;
+        }
         if setup.show_help {
-            setup.show_help = false;
+            match code {
+                KeyCode::Down => setup.help_scroll = setup.help_scroll.saturating_add(1).min(30),
+                KeyCode::Up => setup.help_scroll = setup.help_scroll.saturating_sub(1),
+                KeyCode::PageDown => setup.help_scroll = setup.help_scroll.saturating_add(8).min(30),
+                KeyCode::PageUp => setup.help_scroll = setup.help_scroll.saturating_sub(8),
+                _ => setup.show_help = false,
+            }
             return Action::Render;
         }
         if setup.editing_token || setup.endpoint_input.is_some() {
@@ -6845,6 +6894,9 @@ impl App {
                 setup.endpoint_input = Some(setup.endpoint.clone());
                 setup.note = None;
                 Action::Render
+            }
+            KeyCode::Char('c') if setup.step == 0 => {
+                setup.project_entry = Some(0); setup.note = None; Action::Render
             }
             KeyCode::Char('?') => { setup.show_help = true; Action::Render }
             KeyCode::Down | KeyCode::Char('j') if setup.step == 0 => {
@@ -8980,7 +9032,12 @@ impl App {
                 // flattened in the palette because its command/argument editor
                 // is one line; they are never replayed as Enter keypresses.
                 if let Some(setup) = self.session_setup.as_mut() {
-                    if setup.editing_token {
+                    if let Some(field) = setup.project_entry {
+                        if !setup.project_pending && field < 2 {
+                            let input = if field == 0 { &mut setup.project_name } else { &mut setup.project_path };
+                            input.extend(text.chars().filter(|ch| !ch.is_control()).take(4096usize.saturating_sub(input.len())));
+                        }
+                    } else if setup.editing_token {
                         setup.token.0.extend(text.chars().filter(|ch| !ch.is_control()).take(4096usize.saturating_sub(setup.token.0.len())));
                     } else if let Some(input) = setup.endpoint_input.as_mut() {
                         input.extend(text.chars().filter(|ch| !ch.is_control()).take(4096usize.saturating_sub(input.len())));
@@ -10096,6 +10153,27 @@ impl App {
             }
             Event::Error(e) => {
                 self.last_error = Some(e);
+                Action::Render
+            }
+            Event::SetupProjectCreated { slug, result } => {
+                match result {
+                    Ok(projects) => {
+                        self.set_harnesses(projects);
+                        if let Some(setup) = self.session_setup.as_mut() {
+                            setup.project_pending = false;
+                            setup.project_entry = None;
+                            setup.project_query = slug;
+                            setup.project_cursor = 0;
+                            setup.note = Some("Project registered. Enter selects it; Review is still required before launch.".into());
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(setup) = self.session_setup.as_mut() {
+                            setup.project_pending = false;
+                            setup.note = Some(error);
+                        }
+                    }
+                }
                 Action::Render
             }
             Event::BackendIdentity(result) => {
@@ -14841,7 +14919,7 @@ mod tests {
             "store":{"id":"store-test","target":"test","source":"test"},
             "build":{"version":"test","sha":null},
             "agentChat":{"scope":"workspace:ws-test","route":"/api/agent-chats"},
-            "capabilities":{"attachedSuSession":true}
+            "capabilities":{"attachedSuSession":true,"attachedSuSessionApprovals":true}
         })).unwrap());
         a.set_harnesses(vec![HarnessRef { slug: "chosen-project".into(), path: None }]);
         a.operator_config.agent = Some(serde_json::from_value(json!({
@@ -14890,6 +14968,42 @@ mod tests {
         assert!(a.setup_blocker().unwrap().contains("unavailable"));
         assert!(a.su_pending_turn.is_none());
         assert!(a.launched.is_empty());
+    }
+
+    #[test]
+    fn session_setup_refuses_an_operator_without_native_approval_guarantee() {
+        let mut a = setup_app();
+        a.backend_identity.as_mut().unwrap().capabilities.attached_su_session_approvals = false;
+        a.open_session_setup();
+        assert!(a.setup_blocker().unwrap().contains("safe native approvals"));
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
+        assert!(a.su_pending_turn.is_none());
+    }
+
+    #[test]
+    fn session_setup_registers_project_only_after_review_then_requires_selection() {
+        let mut a = setup_app();
+        a.chat_input = "keep first draft".into();
+        a.open_session_setup();
+        a.on_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        a.update(Event::Paste("new-project".into()));
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
+        a.update(Event::Paste("/operator/projects/new".into()));
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::RegisterSetupProject {
+            slug: "new-project".into(), path: "/operator/projects/new".into(),
+        });
+        // Repeated Enter cannot duplicate the pending write.
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
+        a.update(Event::SetupProjectCreated { slug: "new-project".into(), result: Ok(vec![
+            HarnessRef { slug: "new-project".into(), path: Some("/operator/projects/new".into()) }
+        ]) });
+        assert_eq!(a.session_setup.as_ref().unwrap().message, "keep first draft");
+        assert!(a.session_setup.as_ref().unwrap().project.is_empty());
+        assert!(a.su_pending_turn.is_none());
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(a.session_setup.as_ref().unwrap().project, "new-project");
+        assert_eq!(a.session_setup.as_ref().unwrap().step, 1);
     }
 
     #[test]

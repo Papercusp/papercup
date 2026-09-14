@@ -4671,11 +4671,29 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
     let Some(setup) = &app.session_setup else { return; };
     let area = f.area().inner(Margin { horizontal: 1, vertical: 1 });
     let title = ["1 Context", "2 Runtime", "3 Review"][setup.step as usize];
+    if let Some(field) = setup.project_entry {
+        let lines = vec![
+            Line::from(format!("Operator: {}", setup.endpoint)),
+            Line::from(format!("Project name: {}{}", setup.project_name, if field == 0 { "▏" } else { "" })),
+            Line::from(format!("Existing directory: {}{}", setup.project_path, if field == 1 { "▏" } else { "" })),
+            Line::from("The directory is on the operator host, not necessarily this device."),
+            Line::from("Registration adds project configuration and prepares its data store."),
+            Line::from(if field == 2 { "Enter REGISTER PROJECT · Tab edit · Esc cancel" }
+                else { "Enter next · Tab switch field · Ctrl-U clear · Esc cancel" }),
+            Line::from(setup.note.clone().unwrap_or_default()),
+        ];
+        f.render_widget(Clear, area);
+        f.render_widget(Paragraph::new(lines).style(Theme::popup())
+            .block(Theme::popup_block(" Register project ".into())).wrap(Wrap { trim: false }), area);
+        return;
+    }
     if setup.show_help {
         let text = "Setup and recovery\n\nContext: e edits the operator address; Tab enters its token (masked). Enter reconnects this PUI; Esc cancels. A different address never receives the old operator token.\n\nRuntime: b engine, a account, m model, e effort, u mode. Default uses the operator host's credential; auto routes its configured account pool. No account? Configure one on that operator, then r refresh.\n\nAuthentication failure: enter a token issued by the selected operator. Provider login belongs on the operator host: use your engine's login or its existing account setup. PUI does not store provider keys.\n\nUnreachable: check the address and start the operator. TLS: check scheme and certificate. Missing engine: install it on the operator host. Missing capability: update that operator.\n\nManual mode is the initial setting. Review is required before any session starts.\n\nAny key returns to setup (draft retained).";
+        let text = format!("{text}\n\nAccount setup: {}/settings/deploy-accounts\nOperator tokens entered here last for this PUI process only.", setup.endpoint);
         f.render_widget(Clear, area);
         f.render_widget(Paragraph::new(text).style(Theme::popup())
-            .block(Theme::popup_block(" Setup help ".into()))
+            .block(Theme::popup_block(" Setup help · ↑/↓ scroll · Esc back ".into()))
+            .scroll((setup.help_scroll, 0))
             .wrap(Wrap { trim: false }), area);
         return;
     }
@@ -4702,7 +4720,7 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
             else if app.backend_identity.is_some() { "Connection: Connected" } else { "Connection: Checking" }),
     ];
     if setup.step == 0 {
-        lines.push(Line::from("e edit endpoint / token · r retry · ? setup help"));
+        lines.push(Line::from("e endpoint / token · c register project · r retry · ? help"));
         lines.push(Line::from(format!("Project search: {}{}", setup.project_query, if setup.project_searching { "▏" } else { "" })));
         let projects = app.setup_projects();
         if projects.is_empty() { lines.push(Line::from("No matching projects. Wait for connection or change the search.")); }
@@ -4720,6 +4738,7 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
             Line::from(format!("m Model: {}", setup.model.as_deref().unwrap_or("Server default model"))),
             Line::from(format!("e Effort: {}", setup.effort.as_deref().unwrap_or("Default effort"))),
             Line::from(format!("u Mode: {}", setup.mode.as_deref().unwrap_or("Manual"))),
+            Line::from("Permissions: native approval prompts"),
         ]);
         if setup.step == 2 {
             lines.push(Line::from(format!("First message: {}", if setup.message.is_empty() { "(none)" } else { &setup.message })));
@@ -7132,6 +7151,7 @@ mod tests {
             },
             capabilities: OperatorCapabilities {
                 attached_su_session: true,
+                attached_su_session_approvals: true,
             },
         });
         let text = render(&app, 260, 12);
@@ -8069,7 +8089,7 @@ mod tests {
         assert!(text.contains("Your workbench is zellij")); // block title
         assert!(text.contains("step 3/4"));
         assert!(text.contains("Alt")); // the zellij keybinds
-        assert!(text.contains("relaunches")); // r-to-relaunch teaching
+        assert!(text.contains("Sessions n opens PUI setup"));
     }
 
     #[test]
