@@ -28,8 +28,8 @@ const MIGRATION_1140 = fileURLToPath(
 const MIGRATION_1141_BASE = fileURLToPath(
   new URL('../../../libs/papercusp/libs/db/sql/1141-enforce-capability-class-passing-bindings.sql', import.meta.url),
 );
-const MIGRATION_1160_PROFILE = fileURLToPath(
-  new URL('../../../libs/papercusp/libs/db/sql/1160-capability-class-embedding-profile.sql', import.meta.url),
+const MIGRATION_1161_PROFILE = fileURLToPath(
+  new URL('../../../libs/papercusp/libs/db/sql/1161-capability-class-embedding-profile.sql', import.meta.url),
 );
 const embedding = (): number[] => Array.from({ length: PROSE_VECTOR_DIMS }, () => 0.2);
 const verbs = {
@@ -63,7 +63,7 @@ describe('capability class registry (real PG)', () => {
     await db.sql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
     await applyMigrationForTest(db.sql, MIGRATION_1140);
     await applyMigrationForTest(db.sql, MIGRATION_1141_BASE);
-    await applyMigrationForTest(db.sql, MIGRATION_1160_PROFILE);
+    await applyMigrationForTest(db.sql, MIGRATION_1161_PROFILE);
   }, 120_000);
 
   afterAll(async () => {
