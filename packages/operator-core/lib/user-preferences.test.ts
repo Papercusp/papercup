@@ -114,6 +114,8 @@ describe('VOICE_USER_OVERRIDE_KEYS', () => {
       'silenceVoice',
       'operatorBackstoryEnabled',
       'memoryEmbedderMode',
+      'previousMemoryEmbedderMode',
+      'previousMemoryEmbedderProfileId',
       'humanFacingRole',
     ]);
   });
