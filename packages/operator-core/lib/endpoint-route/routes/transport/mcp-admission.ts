@@ -249,6 +249,10 @@ const CRITICAL_WORK_ITEMS_COMPLETE_MAX_STRING_CHARS = 8_000;
 const CRITICAL_WORK_ITEMS_COMPLETE_MAX_ARRAY_ITEMS = 100;
 const CRITICAL_WORK_ITEMS_COMPLETE_MAX_OBJECT_KEYS = 64;
 const CRITICAL_WORK_ITEMS_COMPLETE_MAX_NESTING = 8;
+// `work_items:get`'s bounded thread path clamps its effective window to 10
+// posts. Keep the pressure exception at that effective bound; full detail,
+// bulk reads, and larger caller requests remain on the ordinary shed path.
+const CRITICAL_WORK_ITEMS_GET_THREAD_LIMIT_MAX = 10;
 const CRITICAL_WORK_ITEMS_COMPLETE_FLAT_FIELDS = new Set([
   'workItem',
   'title',
@@ -600,9 +604,13 @@ function isBoundedScratchCapabilityReadArgs(args: unknown): boolean {
   );
   if (paths.length !== 1) return false;
   const path = paths[0];
+  // Result-door uses `.spill` for self-describing scratch references and `.md`
+  // for the ordinary text spill path. Both are recoverable scratch pages and
+  // must remain available under critical pressure; requiring either extension
+  // keeps arbitrary scratch files outside the recovery reserve.
   const scratchSpill =
     path.startsWith('papercusp://scratch/') ||
-    /(?:^|[/\\])\.papercusp[/\\]scratch[/\\].+\.spill$/.test(path);
+    /(?:^|[/\\])\.papercusp[/\\]scratch[/\\].+\.(?:spill|md)$/.test(path);
   if (!scratchSpill) return false;
   if (!Number.isInteger(record.byte_offset) || (record.byte_offset as number) < 0) return false;
   if (
@@ -630,8 +638,18 @@ function isBoundedWorkItemsGetArgs(args: unknown): boolean {
     && typeof record.ids[0] === 'string'
     && record.id === undefined;
   if (!singleId && !singleIds) return false;
-  if (record.detail !== undefined && record.detail !== false) return false;
-  if (record.threadLimit !== undefined && record.threadLimit !== 0) return false;
+  const boundedThread =
+    typeof record.threadLimit === 'number' &&
+    Number.isInteger(record.threadLimit) &&
+    record.threadLimit >= 1 &&
+    record.threadLimit <= CRITICAL_WORK_ITEMS_GET_THREAD_LIMIT_MAX;
+  const detailDisabled = record.detail === undefined || record.detail === false || record.detail === 'summary';
+  const detailEnabled = record.detail === true || record.detail === 'full';
+  // The handler gives an explicit bounded threadLimit precedence over
+  // detail:true, so this combination is still the cheap thread-window path.
+  // A detail request without that bound must remain shed.
+  if (!detailDisabled && !(detailEnabled && boundedThread)) return false;
+  if (record.threadLimit !== undefined && record.threadLimit !== 0 && !boundedThread) return false;
   return true;
 }
 

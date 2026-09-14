@@ -309,14 +309,25 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     expect(classifyMcpRequest(body)).toBe('diagnostic');
   });
 
-  it('keeps bulk/detail/thread work_items:get reads sheddable under critical pressure', () => {
+  it('keeps bulk and full-detail work_items:get reads sheddable under critical pressure', () => {
     for (const args of [
       { ids: ['EI-1', 'EI-2'] },
       { id: 'EI-1', detail: true },
-      { id: 'EI-1', threadLimit: 1 },
+      { id: 'EI-1', detail: true, threadLimit: 0 },
+      { id: 'EI-1', threadLimit: 11 },
     ]) {
       expect(classifyMcpBody(toolsCall(12, 'work_items:get', args))).toEqual({ sheddable: true, id: 12 });
     }
+  });
+
+  it.each([
+    ['thread window', { id: 'EI-1', threadLimit: 1 }],
+    ['detail alias plus thread window', { id: 'EI-1', detail: true, threadLimit: 10 }],
+    ['full alias plus thread window', { id: 'EI-1', detail: 'full', threadLimit: 10 }],
+  ])('does NOT shed a bounded work_items:get thread-window read under critical pressure: %s', (_label, args) => {
+    const body = toolsCall(12, 'work_items:get', args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
   });
 
   it.each([
@@ -1876,6 +1887,7 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
   it.each([
     ['uri', { uri: 'papercusp://scratch/papercusp-workspace/result.spill', byte_offset: 0, byte_limit: 4096 }],
     ['file_path', { file_path: '/home/builduser/.papercusp/scratch/papercusp-workspace/result.spill', byte_offset: 0, byte_limit: 4096 }],
+    ['file_path markdown spill', { file_path: '/home/builduser/.papercusp/scratch/papercusp-workspace/result-door-1789368949483.md', byte_offset: 0, byte_limit: 4096 }],
   ])('recognizes bounded scratch capability:read through tools:invoke (%s)', (_shape, args) => {
     const body = JSON.stringify({
       jsonrpc: '2.0',
@@ -1892,6 +1904,7 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
 
   it.each([
     ['non-scratch path', { file_path: '/tmp/result.spill', byte_offset: 0, byte_limit: 4096 }],
+    ['unsupported scratch extension', { file_path: '/home/builduser/.papercusp/scratch/papercusp-workspace/result.txt', byte_offset: 0, byte_limit: 4096 }],
     ['line window', { uri: 'papercusp://scratch/papercusp-workspace/result.spill', tail: 25 }],
     ['oversized page', { uri: 'papercusp://scratch/papercusp-workspace/result.spill', byte_offset: 0, byte_limit: 4097 }],
   ])('still sheds unsafe capability:read recovery shapes through tools:invoke (%s)', (_shape, args) => {
@@ -2234,6 +2247,21 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     const req = post(toolsCall(8, 'work_items:get', { id: 'EI-22381211295936796' }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('work_items:get');
+  });
+  it('admits a bounded detail-plus-thread work_items:get under critical pressure', async () => {
+    const req = post(
+      toolsCall(8, 'work_items:get', {
+        id: 'EI-22381211295936796',
+        detail: true,
+        threadLimit: 10,
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.arguments).toMatchObject({
+      id: 'EI-22381211295936796',
+      detail: true,
+      threadLimit: 10,
+    });
   });
   it('admits a bounded caller-owned work_items:list under critical pressure and preserves the body', async () => {
     const req = post(
@@ -2941,6 +2969,28 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     );
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('admits a markdown result-door spill page through tools:invoke under critical pressure', async () => {
+    const req = post(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 41,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: {
+            name: 'mcp__papercusp_su__capability_read',
+            args: {
+              file_path: '/home/builduser/.papercusp/scratch/papercusp-workspace/result-door-1789368949483.md',
+              byte_offset: 0,
+              byte_limit: 4096,
+            },
+          },
+        },
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.arguments.args.file_path).toMatch(/\.md$/);
   });
   it('still sheds an unbounded work_items:get read under critical pressure', async () => {
     const shed = await evaluateAdmission(
