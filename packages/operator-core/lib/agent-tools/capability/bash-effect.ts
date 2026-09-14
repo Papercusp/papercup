@@ -147,6 +147,7 @@ const READ_ONLY_COMMANDS = new Set([
   'sort',
   'ss',
   'stat',
+  'strings',
   'tail',
   'test',
   'tr',
