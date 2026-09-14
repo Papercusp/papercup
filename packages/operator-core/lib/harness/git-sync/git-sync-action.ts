@@ -4209,11 +4209,100 @@ interface ServingHiveGitActor extends HiveGitActor {
   assertServing(): Promise<void>;
 }
 
+interface GitServingRecoveryHandle {
+  getGitServingCapability?(request: GitServingRequest): Promise<GitServingState>;
+}
+
+interface GitServingBootResult {
+  state: 'booted' | 'already-booted' | 'failed' | 'deferred';
+  error?: string;
+}
+
+export interface GitServingResolutionDeps {
+  getBootedHarness?(workspaceId: string, harnessSlug: string): GitServingRecoveryHandle | null;
+  bootSingleHarness?(workspaceId: string, harnessSlug: string): Promise<GitServingBootResult>;
+  getPgGitServingCapability?(request: GitServingRequest): Promise<GitServingState>;
+}
+
+/**
+ * Resolve the current serving-owner capability, recovering an omitted local
+ * handle through the existing lazy-boot primitive before giving up.
+ *
+ * WI-10000734: the old fire-and-forget recovery discarded BootSingleResult.
+ * When the owner snapshot was live but `handles=[]`, every git-sync leg
+ * returned `absent`, launched the same background boot, and continued without
+ * learning whether it failed. The next 10s publisher beat stayed empty and the
+ * next 3m git-sync tick repeated the loop, stranding signed root publication.
+ * Await the coalesced boot once, then read the newly registered in-process
+ * handle immediately; a failure remains fail-closed but now carries its exact
+ * reason instead of the misleading outer `no_device_identity` label.
+ */
+export async function resolveGitServingStateWithBootRecovery(
+  request: GitServingRequest,
+  deps: GitServingResolutionDeps = {},
+): Promise<GitServingState> {
+  const bootAll = deps.getBootedHarness && deps.bootSingleHarness ? null : await import('../../sync/hyperbee/boot-all');
+  const getBootedHarness = deps.getBootedHarness ?? bootAll!.getBootedHarness;
+  const bootSingleHarness = deps.bootSingleHarness ?? bootAll!.bootSingleHarness;
+  const getPgGitServingCapability =
+    deps.getPgGitServingCapability ??
+    (await import('../../sync/hyperbee/substrate-booted-handles-pg')).getPgGitServingCapability;
+
+  const readLocal = async (): Promise<GitServingState | null> => {
+    let localAnswer: GitServingState | null = null;
+    for (const servingSlug of new Set([request.installSlug, request.potHomeSlug])) {
+      const handle = getBootedHarness(request.workspaceId, servingSlug);
+      if (!handle) continue;
+      const answer = validateGitServingState(await handle.getGitServingCapability?.(request), request);
+      if (answer.status === 'ready') return answer;
+      localAnswer ??= answer;
+    }
+    return localAnswer;
+  };
+
+  const local = await readLocal();
+  if (local?.status === 'ready') return local;
+  const advertised = validateGitServingState(await getPgGitServingCapability(request), request);
+  if (advertised.status === 'ready') return advertised;
+  // A real local handle answered, but is not currently serving this request.
+  // bootSingleHarness would only return already-booted and cannot repair that
+  // state; preserve its more direct evidence instead of obscuring it.
+  if (local) return local;
+
+  let boot: GitServingBootResult;
+  try {
+    boot = await bootSingleHarness(request.workspaceId, request.installSlug);
+  } catch (error) {
+    return {
+      status: 'unknown',
+      retryable: true,
+      reason: `lazy serving recovery threw: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (boot.state === 'failed') {
+    return {
+      status: 'unknown',
+      retryable: true,
+      reason: `lazy serving recovery failed: ${boot.error ?? 'boot returned no error detail'}`,
+    };
+  }
+  const recovered = await readLocal();
+  if (recovered) return recovered;
+  const refreshed = validateGitServingState(await getPgGitServingCapability(request), request);
+  if (refreshed.status === 'ready') return refreshed;
+  return {
+    status: 'unknown',
+    retryable: true,
+    reason: `lazy serving recovery returned ${boot.state}, but no serving handle was registered (${refreshed.status}: ${refreshed.reason})`,
+  };
+}
+
 export async function resolveHiveGitActor(
   workspaceId: string,
   installSlug: string,
   potHomeSlug: string,
   repoKey: string,
+  deps: GitServingResolutionDeps = {},
 ): Promise<ServingHiveGitActor | null> {
   try {
     const request: GitServingRequest = {
@@ -4222,26 +4311,7 @@ export async function resolveHiveGitActor(
       potHomeSlug,
       scope: await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey),
     };
-    const resolve = async (): Promise<GitServingState> => {
-      const { getBootedHarness, bootSingleHarness } = await import('../../sync/hyperbee/boot-all');
-      let localAnswer: GitServingState | null = null;
-      for (const servingSlug of new Set([installSlug, potHomeSlug])) {
-        const handle = getBootedHarness(workspaceId, servingSlug);
-        if (!handle) continue;
-        const answer = validateGitServingState(await handle.getGitServingCapability?.(request), request);
-        if (answer.status === 'ready') return answer;
-        localAnswer ??= answer;
-      }
-      if (localAnswer) return localAnswer;
-      const { getPgGitServingCapability } = await import('../../sync/hyperbee/substrate-booted-handles-pg');
-      const state = await getPgGitServingCapability(request);
-      if (state.status !== 'ready') {
-        // A tick is real demand, but boot completion is never inferred here.
-        // The boot API arbitrates process ownership and coalesces requests.
-        void bootSingleHarness(workspaceId, installSlug).catch(() => {});
-      }
-      return state;
-    };
+    const resolve = (): Promise<GitServingState> => resolveGitServingStateWithBootRecovery(request, deps);
     const state = validateGitServingState(await resolve(), request);
     if (state.status !== 'ready') {
       console.warn(

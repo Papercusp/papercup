@@ -2697,7 +2697,18 @@ export function reportSessionRespawned(advSessionId: any, sessionId: any, { coor
     operatorUrl?: any;
     token?: null | undefined;
     timeoutMs?: number | undefined;
-}): Promise<void>;
+}): Promise<boolean>;
+/**
+ * Complete a stale-host carry adoption's lifecycle report before announcing
+ * `session:compacted`. The detached event wakes members that may immediately
+ * claim work, so it is only safe after the operator has re-anchored the
+ * successor and cleared the predecessor's context estimate. Exported for a
+ * deterministic ordering regression test; both operations remain fail-soft.
+ */
+export function announceAdoptedCarryRespawn(ownerId: any, advSessionId: any, nativeId: any, { reportImpl, emitImpl, }?: {
+    reportImpl?: typeof reportSessionRespawned | undefined;
+    emitImpl?: typeof fireSessionCompactedEvent | undefined;
+}): Promise<boolean>;
 /**
  * Ask the operator to RE-RENDER this session's base persona from current prompt
  * sources, and return the fresh file's path (or null).
@@ -4114,6 +4125,7 @@ export type RunWrapperOptions = {
 };
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { fireSessionCompactedEvent } from "./psu-pty-host.mjs";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 /** Numeric pid entries under `/proc`. Exported for tests via the injectable. */
 declare function defaultListProcPids(): number[];

@@ -31,6 +31,23 @@ function normalizeIsoBoundary(value: string | undefined): string | undefined {
   return value === undefined ? undefined : new Date(value).toISOString();
 }
 
+// EI-23219101783641313: the handler returns a structured `data` root, so publish
+// that shape for MCP/code:run discovery instead of leaving `returns` null. Without
+// this contract, callers reasonably guessed the outer content envelope and then
+// hit the structured_result_shape guard on their first call.
+const ACTIVITY_TOOL_LOG_RESULT_SCHEMA = z.object({
+  ok: z.boolean(),
+  calls: z.number().int().nonnegative(),
+  rawRows: z.number().int().nonnegative(),
+  span: z
+    .object({
+      from: z.string().nullable(),
+      to: z.string().nullable(),
+    })
+    .nullable(),
+  log: z.string(),
+});
+
 type OwnerResolutionFailure = {
   ok: false;
   error: 'owner_resolution_unavailable' | 'owner_not_found' | 'owner_ambiguous';
@@ -147,6 +164,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   rolesQuota: { operator: { perRun: 60 } },
+  result: ACTIVITY_TOOL_LOG_RESULT_SCHEMA,
   args: z.object({
     /** Scope to one owner (coordination id); the literal 'self' resolves you. */
     owner: z.string().min(1).max(256).optional(),

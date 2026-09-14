@@ -17,8 +17,9 @@ export function resolvePtoolOperatorBase(env?: NodeJS.ProcessEnv): string;
  * Resolve the implicit operator candidates for ptool. An operator-host shell
  * can retain a dead PAPERCUSP_HONO_PORT after its per-session host exits; the
  * canonical green operator is still a safe recovery target in that case.
- * Keep this fallback limited to the self-port route so an explicit --url or a
- * bare PAPERCUSP_OPERATOR_URL remains an authoritative pin.
+ * Keep this fallback limited to the implicit self-port route so an explicit
+ * --url or a bare PAPERCUSP_OPERATOR_URL without a self-port remains an
+ * authoritative pin.
  *
  * @param {EnvironmentMap} [env]
  * @param {string | null} [explicitUrl]
@@ -560,12 +561,12 @@ export function connectWithLocalRetry<T>(connectOnce: (url: string, scope: objec
  * @param {(url: string, scope: object, options?: {timeoutMs: number}) => Promise<T>} connectOnce
  * @param {string[]} operatorUrls
  * @param {object} scope
- * @param {{primaryAttemptOptions?: object, onFallback?: ((url: string, error: unknown) => void) | null, ...object}} [options]
+ * @param {Record<string, any> & {primaryAttemptOptions?: object, onFallback?: ((url: string, error: unknown) => void) | null}} [options]
  * @returns {Promise<{client: T, operatorUrl: string}>}
  */
 export function connectWithOperatorCandidates<T>(connectOnce: (url: string, scope: object, options?: {
     timeoutMs: number;
-}) => Promise<T>, operatorUrls: string[], scope: object, { primaryAttemptOptions, onFallback, ...retryOptions }?: {
+}) => Promise<T>, operatorUrls: string[], scope: object, { primaryAttemptOptions, onFallback, ...retryOptions }?: Record<string, any> & {
     primaryAttemptOptions?: object;
     onFallback?: ((url: string, error: unknown) => void) | null;
 }): Promise<{

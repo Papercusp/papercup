@@ -32,6 +32,9 @@ type Guidance = { when?: string };
 
 const argsSchema = (tool as unknown as { args: ArgsSchema }).args;
 const guidance = (tool as unknown as { guidance?: Guidance }).guidance;
+const resultSchema = (tool as unknown as {
+  result?: { safeParse: (value: unknown) => { success: boolean } };
+}).result;
 
 type HandlerResult = {
   isError?: boolean;
@@ -143,5 +146,25 @@ describe('activity:tool-log timestamp boundaries', () => {
   it('documents that both boundaries are absolute ISO timestamps', () => {
     expect(guidance?.when ?? '').toMatch(/absolute ISO 8601 timestamps/i);
     expect(guidance?.when ?? '').toMatch(/relative durations.*not supported/i);
+  });
+});
+
+describe('activity:tool-log structured return contract (EI-23219101783641313)', () => {
+  it('publishes the handler data shape for tools:find and code:run callers', () => {
+    expect(resultSchema).toBeDefined();
+    expect(resultSchema?.safeParse({
+      ok: true,
+      calls: 2,
+      rawRows: 3,
+      span: { from: '2026-09-14T07:00:00.000Z', to: '2026-09-14T07:01:00.000Z' },
+      log: 'activity:tool-log ✓',
+    }).success).toBe(true);
+  });
+
+  it('requires the actual structured keys instead of an invented content envelope', () => {
+    expect(resultSchema?.safeParse({
+      ok: true,
+      content: [{ type: 'text', text: JSON.stringify({ calls: 2 }) }],
+    }).success).toBe(false);
   });
 });
