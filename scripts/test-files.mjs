@@ -2712,7 +2712,9 @@ export async function main(
       if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
       if (result.error) {
-        if (!result.governedAdmissionError) {
+        if (result.governedAdmissionError) {
+          console.error(`TEST_FILE_ADMISSION_ERROR kind=${result.governedAdmissionFailureKind ?? 'undetermined'} detail=${JSON.stringify(result.error.message)}`);
+        } else {
           console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Node:test: ${result.error.message}`));
         }
       }
@@ -2937,7 +2939,9 @@ export async function main(
       }
     }
     if (result.error) {
-      if (!result.governedAdmissionError) {
+      if (result.governedAdmissionError) {
+        console.error(`TEST_FILE_ADMISSION_ERROR kind=${result.governedAdmissionFailureKind ?? 'undetermined'} detail=${JSON.stringify(result.error.message)}`);
+      } else {
         console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Vitest: ${result.error.message}`));
         if (looksLikeMidInstallCorruption(result.error.message)) {
           console.error(MID_INSTALL_HINT);

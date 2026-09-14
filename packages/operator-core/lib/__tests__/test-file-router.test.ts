@@ -1247,7 +1247,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     errSpy.mockRestore();
   });
 
-  it('emits a strict NOT-MEASURED marker and exit 2 for an admission refusal', async () => {
+  it.each(['admission-starved', 'undetermined'])('preserves the admission cause alongside NOT-MEASURED for %s', async (failureKind) => {
     const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
     const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
     delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
@@ -1265,7 +1265,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
             timedOut: false,
             error: Object.assign(new Error('statement timeout'), { code: 'GOVERNED_ADMISSION_FAILED' }),
             governedAdmissionError: true,
-            governedAdmissionFailureKind: 'admission-starved',
+            governedAdmissionFailureKind: failureKind,
           }),
         },
       );
@@ -1278,9 +1278,8 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
 
     expect(code).toBe(2);
     const output = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
-    expect(output).toMatch(
-      /TEST_FILE_NOT_MEASURED requested=1 executed=0 matched=1 measuredFiles=0 status=not-measured reason=admission-starved\b/,
-    );
+    expect(output).toContain(`TEST_FILE_NOT_MEASURED requested=1 executed=0 matched=1 measuredFiles=0 status=not-measured reason=${failureKind}`);
+    expect(output).toContain(`TEST_FILE_ADMISSION_ERROR kind=${failureKind} detail="statement timeout"`);
     expect(output).not.toContain('TEST_FILE_RESULT');
   });
 });
