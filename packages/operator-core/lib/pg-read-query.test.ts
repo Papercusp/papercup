@@ -1223,6 +1223,35 @@ describe('buildTenantScopeAdvisory — test_runs CI-row null trap (EI-1932463348
     expect(calls).toHaveLength(0);
   });
 
+  // EI-22641981769449390: local dev:pg_query evidence can have a harness fence
+  // but no workspace_id. Requiring the exact run group AND exact file path keeps
+  // this exception limited to one local reporter identity instead of permitting
+  // a broad harness-scoped historical read.
+  it('allows an exact harness-scoped local run/file read without workspace_id', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT id, file_path, status FROM harness_shared.test_runs " +
+        "WHERE harness_slug = 'papercusp' " +
+        "AND run_group_id = 'e31d1e34-7c58-4d8f-9a7b-1c2f4b6d8e90' " +
+        "AND file_path = 'packages/operator-core/lib/pg-read-query.test.ts'",
+      { client: sql, harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('keeps the CI-null warning when the harness-scoped local file identity is open-ended', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT id, file_path, status FROM harness_shared.test_runs " +
+        "WHERE harness_slug = 'papercusp' " +
+        "AND run_group_id = 'e31d1e34-7c58-4d8f-9a7b-1c2f4b6d8e90' " +
+        "AND file_path LIKE 'packages/operator-core/lib/%' LIMIT 1",
+      { client: sql, harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('NULL-by-design');
+  });
+
   it('keeps the CI-null warning for an exact file path without a result cap', async () => {
     const { sql } = stubClient([]);
     const advisory = await buildTenantScopeAdvisory(
@@ -2268,6 +2297,18 @@ describe('buildSchemaColumnRedirect (known physical-column vocabulary)', () => {
     expect(out).toContain('metadata_json');
     expect(out).toContain('requestOrigin');
     expect(out).toContain('harness_shared.tool_invocations');
+  });
+
+  it('redirects the API created_ts alias to coord_thread_posts.created_at', () => {
+    const out = buildSchemaColumnRedirect(
+      'SELECT created_ts FROM harness_shared.coord_thread_posts ORDER BY created_ts DESC LIMIT 1',
+      'column "created_ts" does not exist',
+    );
+    expect(out).toContain('API projections');
+    expect(out).toContain('created_at');
+    expect(out).toContain('timestamptz');
+    expect(out).toContain('recency filters and ordering');
+    expect(out).toContain('harness_shared.coord_thread_posts');
   });
 
   it('redirects migration_number probes to the reservation ledger num column', () => {

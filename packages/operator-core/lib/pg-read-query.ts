@@ -529,8 +529,10 @@ const CORPUS_NAMESPACED_TABLES = new Set([
  * generic/override checks below and gets its own advisory ({@link buildTestRunsAdvisory}). An
  * exact run_group_id, bounded row-id group, or bounded exact file_path read fenced by BOTH
  * explicit tenant predicates is the separate safe case: it is an intentional per-run/local
- * evidence read, so it must not be rejected as an unscoped query. Broad/partial tenant filters
- * retain the CI warning.
+ * evidence read, so it must not be rejected as an unscoped query. A local evidence lookup may
+ * instead carry only `harness_slug` when it also fixes BOTH `run_group_id` and `file_path` exactly;
+ * that three-part identity is the narrow local reporter shape filed in EI-22641981769449390.
+ * Broad/partial tenant filters retain the CI warning.
  */
 const TEST_RUNS_TABLE = 'test_runs';
 
@@ -592,6 +594,11 @@ function buildTestRunsAdvisory(stripped: string, tables: string[]): string | nul
   const explicitTenantFence =
     hasTenantPredicate(stripped, 'workspace_id') &&
     hasTenantPredicate(stripped, 'harness_slug');
+  const harnessScopedLocalEvidenceFence =
+    tables.length === 1 &&
+    hasExactPredicate(stripped, 'harness_slug') &&
+    hasExactPredicate(stripped, 'run_group_id') &&
+    hasExactPredicate(stripped, 'file_path');
   const testRunsReferences = extractTestRunsReferences(stripped);
   // A bounded reporter id range is the local equivalent of an exact run_group_id
   // fence (EI-22633261796522656). Keep the exception narrow: `id > ...` and other
@@ -625,6 +632,7 @@ function buildTestRunsAdvisory(stripped: string, tables: string[]): string | nul
       stripped,
     );
   if (
+    harnessScopedLocalEvidenceFence ||
     (explicitTenantFence && (boundedLocalGroup || boundedLocalFileRead)) ||
     joinedBoundedLocalGroup ||
     joinedBoundedLocalFileRead
@@ -953,6 +961,13 @@ const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
       'telemetry origin is split across `call_origin` (who chose the call) and ' +
       '`call_origin_source` (declared versus derived); request metadata, when needed, is nested under ' +
       '`metadata_json` at `requestOrigin`',
+  },
+  {
+    relation: 'coord_thread_posts',
+    missing: 'created_ts',
+    message:
+      'the coordination store exposes this timestamp as `created_ts` in API projections, but the physical ' +
+      'Postgres column is `created_at` (`timestamptz`); use `created_at` for SQL recency filters and ordering',
   },
   {
     relation: 'migration_reservations',
@@ -3003,6 +3018,17 @@ function hasBoundedPredicate(strippedSql: string, column: string): boolean {
     `\\b${escaped}\\b${cast}\\s*(?:=|\\bIN\\s*\\(|\\bBETWEEN\\b)`,
     'i',
   ).test(strippedSql);
+}
+
+/**
+ * An exact identity predicate is deliberately narrower than a bounded value/range predicate:
+ * `IN (...)` and `BETWEEN` can name several historical rows, while a local run/file lookup must
+ * fix one harness, one run group, and one file path before it may omit workspace_id.
+ */
+function hasExactPredicate(strippedSql: string, column: string): boolean {
+  const escaped = column.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const cast = `(?:\\s*::\\s*[A-Za-z_][A-Za-z0-9_.]*)*`;
+  return new RegExp(`\\b${escaped}\\b${cast}\\s*=`, 'i').test(strippedSql);
 }
 
 function hasPredicateForTestRunsReference(
