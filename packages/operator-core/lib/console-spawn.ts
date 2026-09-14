@@ -67,6 +67,26 @@ import { agentSpawnScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } fro
 /** Shared with psu-pty-host.mjs; kept as a literal here because this TypeScript
  * module is also imported by the launcher-side plain-ESM boundary. */
 export const HEADLESS_NORMALIZED_LOG_ENV = 'PAPERCUSP_PSU_HEADLESS_NORMALIZED_LOG';
+export const HEADLESS_AGENT_TERM = 'xterm-256color';
+
+/**
+ * Headless agents still run an interactive CLI inside the managed pty. A service
+ * environment commonly supplies TERM=dumb (or no TERM at all), which Codex
+ * refuses before it can register its session. Preserve a caller's supported
+ * terminal type, but give headless launches a real terminal capability when the
+ * inherited value cannot drive an interactive CLI.
+ */
+export function normalizeHeadlessAgentEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = scrubTerminalContextEnv(env);
+  return normalizeHeadlessAgentTerm(out);
+}
+
+/** Apply only the interactive-terminal correction to an already-scrubbed env. */
+export function normalizeHeadlessAgentTerm(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = { ...env };
+  if (!out.TERM || out.TERM.toLowerCase() === 'dumb') out.TERM = HEADLESS_AGENT_TERM;
+  return out;
+}
 
 warmScopeProbe();
 
@@ -2537,7 +2557,7 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       // would tell the psu it is running inside the OPERATOR's multiplexer pane,
       // which it is not. pui and `psu --brain` both drive zellij, so that is a
       // live wrong-answer, not a hypothetical one.
-      env: scrubTerminalContextEnv({ ...process.env, ...launchEnv }),
+      env: normalizeHeadlessAgentTerm(scrubTerminalContextEnv({ ...process.env, ...launchEnv })),
     });
     // Keep a second, persistent observer before the bounded boot probes remove
     // their own listeners. The consult reviver consumes this promise to turn a

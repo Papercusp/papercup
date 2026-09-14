@@ -1,5 +1,7 @@
 /** Shared runtime guard for the migration-number reservation contract. */
 
+import type postgres from 'postgres';
+
 /** Mirrors scripts/lint-migrations.mjs's reservation-enforcement epoch. */
 export const RESERVATION_ENFORCED_FROM = 494;
 
@@ -9,6 +11,17 @@ export function migrationNumberOf(filename: string): number | null {
   if (!match) return null;
   const number = Number.parseInt(match[1], 10);
   return Number.isFinite(number) ? number : null;
+}
+
+const MIGRATION_SQL_PATH_RE = /(?:^|\/)libs\/db\/sql\/([^/]+\.sql)$/;
+
+/** Return an enforced migration basename for a live `libs/db/sql` path. */
+export function armedMigrationFilename(path: string): string | null {
+  const normalized = path.replaceAll('\\', '/');
+  const filename = MIGRATION_SQL_PATH_RE.exec(normalized)?.[1];
+  if (!filename) return null;
+  const num = migrationNumberOf(filename);
+  return num !== null && num >= RESERVATION_ENFORCED_FROM ? filename : null;
 }
 
 export interface MigrationReservationRow {
@@ -77,4 +90,29 @@ export function migrationReservationGuardSql(filename: string, enforcedFrom = RE
     `END\n` +
     `$papercusp_migration_reservation_guard$;\n`
   );
+}
+
+/** Fail closed before native boot/gate-preflight applies a mismatched file. */
+export async function assertMigrationReservation(client: postgres.Sql, filename: string): Promise<void> {
+  const num = migrationNumberOf(filename);
+  if (num === null || num < RESERVATION_ENFORCED_FROM) return;
+  const rows = await client<{ filename: string | null }[]>`
+    SELECT filename FROM harness_shared.migration_reservations WHERE num = ${num}`;
+  const reservedFilename = rows[0]?.filename ?? null;
+  if (reservedFilename === filename) return;
+  if (reservedFilename === null) {
+    throw new Error(`[migration-reservation-guard] ${filename} has no reservation row`);
+  }
+  throw new Error(`[migration-reservation-guard] ${filename} cannot use ${num}; reserved for ${reservedFilename}`);
+}
+
+/** Check only enforced migrations in a dirty-path census against the shared ledger. */
+export async function assertDirtyMigrationReservations(
+  client: postgres.Sql,
+  dirtyPaths: readonly string[],
+): Promise<void> {
+  const filenames = [
+    ...new Set(dirtyPaths.map(armedMigrationFilename).filter((filename): filename is string => filename !== null)),
+  ];
+  for (const filename of filenames) await assertMigrationReservation(client, filename);
 }

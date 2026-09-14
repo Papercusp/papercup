@@ -27,6 +27,8 @@ import {
   wrapHeadlessSigtermDiagnostic,
   buildHeadlessSpawnCommand,
   buildConsoleScopedSpawnCommand,
+  normalizeHeadlessAgentEnv,
+  normalizeHeadlessAgentTerm,
   _resetTerminalCacheForTests,
   pickLinuxTerminal,
   resolveTerminalPreference,
@@ -629,6 +631,29 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     const [bin] = spawnMock.mock.calls[0];
     expect(bin).toBe('bash');
   }, 10_000);
+});
+
+describe('normalizeHeadlessAgentEnv — interactive CLI TERM contract', () => {
+  it('replaces inherited TERM=dumb with a supported terminal type', () => {
+    expect(normalizeHeadlessAgentEnv({ TERM: 'dumb', TMUX: '/tmp/operator-pane' })).toMatchObject({
+      TERM: 'xterm-256color',
+    });
+    expect(normalizeHeadlessAgentEnv({ TERM: 'dumb', TMUX: '/tmp/operator-pane' })).not.toHaveProperty('TMUX');
+  });
+
+  it('supplies TERM when the headless service environment omitted it', () => {
+    expect(normalizeHeadlessAgentEnv({}).TERM).toBe('xterm-256color');
+  });
+
+  it('preserves a supported TERM while still scrubbing terminal-context markers', () => {
+    expect(normalizeHeadlessAgentEnv({ TERM: 'screen-256color', ZELLIJ: 'session' })).toEqual({
+      TERM: 'screen-256color',
+    });
+  });
+
+  it('normalizes an already-scrubbed environment without reintroducing context markers', () => {
+    expect(normalizeHeadlessAgentTerm({ TERM: 'dumb' })).toEqual({ TERM: 'xterm-256color' });
+  });
 });
 
 describe('buildHeadlessSpawnCommand (EI-9748 Route A — cgroup escape)', () => {

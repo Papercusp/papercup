@@ -210,6 +210,8 @@ export default defineTool({
         'Plain JavaScript body only (TypeScript annotations such as `: any` are not supported). Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
           'No ambient `exec`/shell helper exists -- `tools` exposes ONLY `tools.ns.verb(args)` calls; ' +
           'to run a shell command, call `tools.capability.bash({ command })` like any other tool. ' +
+          'Nested tool calls return their typed result root, not an MCP `content`/`text` envelope: for example, ' +
+          'read `result.output`, `result.exit_code`, and `result.status` from capability:bash; do not read `result.content[0].text`. ' +
           'To emit final media, return exactly `{ summary, media: [{ type: "image"|"audio", data: "<base64>", mimeType }] }`; ' +
           'media from intermediate tool calls is never emitted implicitly. ' +
           'Compatibility helpers are ambient: `notify(value)` and `yield_control()` stream through the current transport; ' +

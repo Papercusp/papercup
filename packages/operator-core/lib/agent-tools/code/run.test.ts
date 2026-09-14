@@ -132,6 +132,16 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('a NUL and is rejected before bash runs');
   });
 
+  it('documents typed nested tool results rather than the MCP content envelope', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('Nested tool calls return their typed result root');
+    expect(scriptDescription).toContain('read `result.output`, `result.exit_code`, and `result.status`');
+    expect(scriptDescription).toContain('do not read `result.content[0].text`');
+  });
+
   it('documents JavaScript escaping for literal shell backslashes', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =

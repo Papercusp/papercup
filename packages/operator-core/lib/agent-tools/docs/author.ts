@@ -388,6 +388,21 @@ export function composeDoc(fm: FrontmatterInput, rawBody: string): string {
   return `${buildFrontmatter(fm)}\n\n${trimmed}\n`;
 }
 
+/**
+ * Add a targeted hint when MDX interprets a raw less-than comparison as JSX.
+ * `@mdx-js/mdx` reports the `=` position, so inspect the source character just
+ * before it rather than broad-matching every equals-sign syntax error.
+ */
+export function mdxAuthorHint(
+  content: string,
+  error: { line: number | null; col: number | null },
+): string {
+  if (error.line == null || error.col == null) return '';
+  const sourceLine = content.split(/\r?\n/)[error.line - 1] ?? '';
+  if (sourceLine[error.col - 2] !== '<' || sourceLine[error.col - 1] !== '=') return '';
+  return ' Raw less-than comparisons such as `<=0.8x` are parsed as an MDX tag opener; use `≤0.8x`, `&lt;=0.8x`, or wrap the comparison in backticks.';
+}
+
 // ── Truncated-body guards (EI-21940075757786953) ────────────────────────────────
 //
 // `docs:get` is the sanctioned READER and this tool is the sanctioned WRITER, and
@@ -820,8 +835,9 @@ export default defineTool({
       if (mdxError) {
         const at = mdxError.line != null ? `:${mdxError.line}${mdxError.col != null ? `:${mdxError.col}` : ''}` : '';
         return err(
-          `invalid_mdx — ${docId}${at}: ${mdxError.reason}. ` +
-            'Fix the MDX syntax before authoring (for example, put literal angle-bracket placeholders in backticks).',
+            `invalid_mdx — ${docId}${at}: ${mdxError.reason}. ` +
+            'Fix the MDX syntax before authoring (for example, put literal angle-bracket placeholders in backticks).' +
+            mdxAuthorHint(content, mdxError),
         );
       }
     } catch (e) {

@@ -44,6 +44,7 @@ import { detectUnsafeDeletions, normalizeModulePath, RESOLVABLE_EXTS } from './d
 import { detectWholesaleDeletion } from './wholesale-deletion-guard';
 import { detectQuarantineImporters } from './quarantine-import-guard';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
+import { armedMigrationFilename } from '../../migration-reservation';
 import {
   groupFilesForAttribution,
   attributionMapForRepo,
@@ -3379,7 +3380,31 @@ interface CommitRepoOpts {
   forceCatchAllPaths?: string[];
   /** WI-38594 (flag GIT_SYNC_DIFF_SUBJECTS): diff-derived commit subjects (see RunGitSyncOpts). */
   diffSubjects?: boolean;
+  /** Fail-closed reservation check for newly armed migration files, before staging. */
+  migrationReservationChecker?: MigrationReservationChecker;
 }
+
+/** The commit-stage seam for the shared migration reservation admission guard. */
+export type MigrationReservationChecker = (dirtyPaths: readonly string[]) => Promise<void>;
+
+const migrationPaths = (paths: readonly string[]): string[] =>
+  paths.filter((path) => armedMigrationFilename(path) !== null);
+
+async function checkMigrationReservations(
+  options: CommitRepoOpts,
+  paths: readonly string[],
+): Promise<string | null> {
+  if (!options.migrationReservationChecker) return null;
+  const candidates = migrationPaths(paths);
+  if (candidates.length === 0) return null;
+  try {
+    await options.migrationReservationChecker(candidates);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 
 /** The network half intentionally needs fewer knobs than the commit half.
  * Keeping this contract narrow prevents a caller that already completed
