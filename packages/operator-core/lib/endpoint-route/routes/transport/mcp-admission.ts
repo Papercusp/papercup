@@ -197,6 +197,7 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'session:request-compaction',
     'testing:run-status',
     'sessions:search',
+    'sessions:timeline',
     'loop:status',
     'loop:checkpoint',
   ].map(normalizeMcpName),
@@ -310,6 +311,14 @@ const SESSIONS_SEARCH_NAME = normalizeMcpName('sessions:search');
 const CRITICAL_SESSIONS_SEARCH_MAX_QUERY_CHARS = 500;
 const CRITICAL_SESSIONS_SEARCH_MAX_LIMIT = 5;
 const CRITICAL_SESSIONS_SEARCH_MAX_CONTEXT = 2;
+const SESSIONS_TIMELINE_NAME = normalizeMcpName('sessions:timeline');
+const CRITICAL_SESSIONS_TIMELINE_MAX_OWNER_CHARS = 120;
+const CRITICAL_SESSIONS_TIMELINE_MAX_BOUND_CHARS = 40;
+const CRITICAL_SESSIONS_TIMELINE_MAX_LIMIT = 100;
+const CRITICAL_SESSIONS_TIMELINE_MAX_TOOL_CHARS = 160;
+const CRITICAL_SESSIONS_TIMELINE_MAX_STATUS_CHARS = 80;
+const CRITICAL_SESSIONS_TIMELINE_MAX_GOAL_REF_CHARS = 200;
+const CRITICAL_SESSIONS_TIMELINE_MAX_CURSOR_CHARS = 512;
 const WORK_ITEMS_SET_STATE_NAME = normalizeMcpName('work_items:set_state');
 const PLANS_GET_NAME = normalizeMcpName('plans:get');
 const WORK_ITEMS_CHECKPOINT_NAME = normalizeMcpName('work_items:checkpoint');
@@ -1098,6 +1107,84 @@ export function isBoundedSessionsSearchArgs(args: unknown): boolean {
   ) {
     return false;
   }
+  return true;
+}
+
+/**
+ * `sessions:timeline` is the historical recovery read used to reconstruct a
+ * stale wake's actual tool/coord activity, but its normal page may request up
+ * to 300 merged entries from three sources. Keep the critical-pressure
+ * exception to one owner and a bounded page, with only the published filters
+ * and cursor controls. Invalid, expanded, and unknown fields stay on the
+ * ordinary pressure-shed path so this recovery reserve cannot become an
+ * unrestricted timeline export lane.
+ */
+export function isBoundedSessionsTimelineArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set([
+    'owner',
+    'since',
+    'until',
+    'limit',
+    'kinds',
+    'tool',
+    'status',
+    'goalRef',
+    'include_auto',
+    'group_repeated',
+    'cursor',
+  ]);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (
+    typeof args.owner !== 'string' ||
+    args.owner.trim().length === 0 ||
+    args.owner.length > CRITICAL_SESSIONS_TIMELINE_MAX_OWNER_CHARS
+  ) {
+    return false;
+  }
+  for (const field of ['since', 'until'] as const) {
+    if (
+      args[field] !== undefined &&
+      (typeof args[field] !== 'string' ||
+        args[field].trim().length === 0 ||
+        args[field].length > CRITICAL_SESSIONS_TIMELINE_MAX_BOUND_CHARS)
+    ) {
+      return false;
+    }
+  }
+  if (
+    args.limit !== undefined &&
+    (!Number.isInteger(args.limit) ||
+      (args.limit as number) < 1 ||
+      (args.limit as number) > CRITICAL_SESSIONS_TIMELINE_MAX_LIMIT)
+  ) {
+    return false;
+  }
+  if (
+    args.kinds !== undefined &&
+    (!Array.isArray(args.kinds) ||
+      args.kinds.length > 3 ||
+      args.kinds.some((kind) => !['turn', 'tool', 'coord'].includes(kind as string)))
+  ) {
+    return false;
+  }
+  for (const [field, max] of [
+    ['tool', CRITICAL_SESSIONS_TIMELINE_MAX_TOOL_CHARS],
+    ['status', CRITICAL_SESSIONS_TIMELINE_MAX_STATUS_CHARS],
+    ['goalRef', CRITICAL_SESSIONS_TIMELINE_MAX_GOAL_REF_CHARS],
+    ['cursor', CRITICAL_SESSIONS_TIMELINE_MAX_CURSOR_CHARS],
+  ] as const) {
+    if (
+      args[field] !== undefined &&
+      (typeof args[field] !== 'string' ||
+        args[field].trim().length === 0 ||
+        args[field].length > max)
+    ) {
+      return false;
+    }
+  }
+  if (args.include_auto !== undefined && typeof args.include_auto !== 'boolean') return false;
+  if (args.group_repeated !== undefined && typeof args.group_repeated !== 'boolean') return false;
   return true;
 }
 
@@ -2328,6 +2415,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === SESSION_REQUEST_COMPACTION_NAME) return isBoundedSessionRequestCompactionArgs(args);
   if (normalized === TESTING_RUN_STATUS_NAME) return isBoundedTestingRunStatusArgs(args);
   if (normalized === SESSIONS_SEARCH_NAME) return isBoundedSessionsSearchArgs(args);
+  if (normalized === SESSIONS_TIMELINE_NAME) return isBoundedSessionsTimelineArgs(args);
   return true;
 }
 

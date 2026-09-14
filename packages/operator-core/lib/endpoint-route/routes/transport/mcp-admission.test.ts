@@ -29,6 +29,7 @@ import {
   isBoundedSessionRequestCompactionArgs,
   isBoundedLoopArmArgs,
   isBoundedLoopCheckpointArgs,
+  isBoundedSessionsTimelineArgs,
   isBoundedLocksQueueArgs,
   isBoundedLocksReleaseArgs,
   isBoundedSessionsSearchArgs,
@@ -841,6 +842,60 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
         arguments: {
           name: 'mcp__papercusp_su__sessions_search',
           args: { query: 'resume the current lane', session: 'self', mode: 'verbatim', limit: 1, context: 0 },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    'sessions:timeline',
+    'sessions_timeline',
+    'mcp__papercusp-su__sessions_timeline',
+    'mcp__papercusp_su__sessions_timeline',
+  ])('does NOT shed a bounded stale-wake timeline read under critical pressure: %s', (name) => {
+    const args = {
+      owner: 'self',
+      since: '2026-09-14T07:00:00Z',
+      limit: 100,
+      kinds: ['tool', 'coord'],
+      include_auto: true,
+    };
+    expect(isBoundedSessionsTimelineArgs(args)).toBe(true);
+    const body = toolsCall(19, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps malformed, expanded, and enriched sessions:timeline reads sheddable under critical pressure', () => {
+    for (const args of [
+      {},
+      { owner: '' },
+      { owner: 'self', limit: 101 },
+      { owner: 'self', kinds: ['turn', 'tool', 'coord', 'extra'] },
+      { owner: 'self', include_auto: 'true' },
+      { owner: 'self', cursor: 'x'.repeat(513) },
+      { owner: 'self', extra: 'unbounded' },
+      { owner: 'x'.repeat(121) },
+    ]) {
+      expect(isBoundedSessionsTimelineArgs(args)).toBe(false);
+      const body = toolsCall(20, 'sessions:timeline', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 20 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a bounded sessions:timeline stale-wake read through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 21,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__sessions_timeline',
+          args: { owner: 'self', since: '2026-09-14T07:00:00Z', limit: 1 },
         },
       },
     });
@@ -2557,6 +2612,29 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
   it('still sheds broad sessions:search under critical pressure', async () => {
     const shed = await evaluateAdmission(
       post(toolsCall(41, 'sessions:search', { query: 'resume the current lane', session: 'self' })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
+  it('admits a bounded sessions:timeline stale-wake read under critical pressure', async () => {
+    const req = post(toolsCall(42, 'sessions:timeline', {
+      owner: 'self',
+      since: '2026-09-14T07:00:00Z',
+      limit: 100,
+      kinds: ['tool', 'coord'],
+      include_auto: true,
+    }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('sessions:timeline');
+  });
+  it('still sheds an unbounded sessions:timeline read under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(43, 'sessions:timeline', { owner: 'self', limit: 101 })),
       'critical',
       true,
     );
