@@ -3540,6 +3540,53 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.arguments.args.file_path).toMatch(/\.md$/);
   });
+  it('admits bounded content-index selection through direct and deferred capability:read calls under critical pressure', async () => {
+    const args = {
+      uri: 'papercusp://scratch/papercusp-workspace/result.spill',
+      content_indexes: [1],
+      raw: true,
+    };
+    const direct = post(toolsCall(42, 'capability:read', args));
+    expect(classifyMcpRequest(await direct.clone().text())).toBe('diagnostic');
+    expect(await evaluateAdmission(direct, 'critical', true)).toBeNull();
+
+    const deferred = post(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 43,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: { name: 'mcp__papercusp_su__capability_read', args },
+        },
+      }),
+    );
+    expect(classifyMcpRequest(await deferred.clone().text())).toBe('diagnostic');
+    expect(await evaluateAdmission(deferred, 'critical', true)).toBeNull();
+  });
+  it('keeps malformed or mixed content-index capability:read calls shed under critical pressure', async () => {
+    const reference = 'papercusp://scratch/papercusp-workspace/result.spill';
+    const cases: Record<string, unknown>[] = [
+      { uri: reference, content_indexes: [] },
+      { uri: reference, content_indexes: Array.from({ length: 65 }, (_, index) => index) },
+      { uri: reference, content_indexes: [-1] },
+      { uri: reference, content_indexes: [1.5] },
+      { uri: reference, content_indexes: [1], byte_offset: 0, byte_limit: 1 },
+      { uri: reference, content_indexes: [1], offset: 1 },
+      { uri: reference, content_indexes: [1], evidence_class: 'event' },
+      { uri: reference, file_path: reference, content_indexes: [1] },
+      { uri: reference, content_indexes: [1], raw: 'true' },
+      { uri: reference, content_indexes: [1], unexpected: true },
+    ];
+    for (const args of cases) {
+      const shed = await evaluateAdmission(post(toolsCall(44, 'capability:read', args)), 'critical', true);
+      expect(shed).not.toBeNull();
+      expect((await shed!.json()).error.data).toMatchObject({
+        retryable: true,
+        reason: 'loop_pressure_critical',
+      });
+    }
+  });
   it('still sheds an unbounded work_items:get read under critical pressure', async () => {
     const shed = await evaluateAdmission(
       post(toolsCall(9, 'work_items:get', { ids: ['EI-1', 'EI-2'] })),
@@ -3557,6 +3604,15 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     // Proves the admission above is the ALLOWLIST working, not critical-pressure shedding
     // having stopped working altogether — without this, the test above would still pass if the
     // gate were disabled entirely.
+    expect(shed).not.toBeNull();
+    expect(shed!.status).toBe(429);
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
+  it('CONTROL: still sheds generic capability:bash under critical pressure', async () => {
+    const shed = await evaluateAdmission(post(toolsCall(53, 'capability:bash', { command: 'printf test' })), 'critical', true);
     expect(shed).not.toBeNull();
     expect(shed!.status).toBe(429);
     expect((await shed!.json()).error.data).toMatchObject({
