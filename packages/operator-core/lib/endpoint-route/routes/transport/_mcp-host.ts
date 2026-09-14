@@ -168,8 +168,15 @@ import {
 import { buildMcpPrelude } from '../../../memory/mcp-prelude';
 import { INSIGHTS_DIR } from '../../../memory/knowledge-read';
 import { getSessionUserOrDefault } from '../../../auth';
-import { advertisedArgsSchema, decode, type ResultFormat } from '@papercusp/result-encoding';
+import { advertisedArgsSchema } from '@papercusp/result-encoding';
 import type { ResultDoorSkipReason } from '@papercusp/tooldef';
+import { MCP_SERVER_CAPABILITIES } from './mcp-contract';
+import { withMcpDiagnosticWarnings, type McpCallResult } from './mcp-diagnostic-warnings';
+import { parseMcpToolText } from './mcp-result-text';
+
+export { MCP_SERVER_CAPABILITIES } from './mcp-contract';
+export { withMcpDiagnosticWarnings } from './mcp-diagnostic-warnings';
+export type { McpCallResult } from './mcp-diagnostic-warnings';
 
 /* ─── Helpers ────────────────────────────────────────────────────────── */
 // `bearerFromExtra` / `urlFromExtra` / `headersFromExtra` are imported from
@@ -197,19 +204,6 @@ export function ensureOperatorToolsLoaded(): Promise<void> {
   }
   return operatorToolsLoad;
 }
-
-/**
- * The shape every `tools/call` handler returns. Exported as the single owner of
- * this shape so handler-path tests can DERIVE their result type from it instead
- * of hand-mirroring it — a mirrored copy drifted the moment `structuredContent`
- * was added here (EI-21573072389650825).
- */
-export type McpCallResult = {
-  content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
-  isError?: boolean;
-  _meta?: Record<string, unknown>;
-  structuredContent?: unknown;
-};
 
 // `tools:invoke` returns the target's MCP-shaped result through the wrapper
 // dispatcher, so the outer result-door choke point cannot inspect the target's
@@ -436,17 +430,11 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function parseToolText(text: string): unknown {
-  const marker = /^format: (\w+)\n/.exec(text);
-  if (!marker) return JSON.parse(text);
-  return decode(text.slice(marker[0].length), marker[1] as ResultFormat);
-}
-
 function resultRows(result: McpCallResult): unknown[] {
   if (Array.isArray(result.structuredContent)) return result.structuredContent;
   const text = (result.content[0] as { text?: unknown } | undefined)?.text;
   if (typeof text !== 'string') throw new Error('delta proxy cannot parse non-text tool result');
-  const parsed = parseToolText(text);
+  const parsed = parseMcpToolText(text);
   if (!Array.isArray(parsed)) {
     // Some semantic tools diff a flattened row set while returning a grouped object
     // (for example plans:attention). A generic proxy cannot reconstruct that
@@ -474,7 +462,7 @@ function adaptDeltaResponse(result: McpCallResult): DeltaResponse {
       mode: 'delta',
       cursor,
       checksum: typeof delta?.checksum === 'string' ? delta.checksum : undefined,
-      changes: parseToolText(text) as never,
+      changes: parseMcpToolText(text) as never,
       itemKeyField,
     };
   }
@@ -2063,177 +2051,6 @@ async function dispatchWithSynthesizedTx<T>(
 }
 
 /**
- * WI-6734: annotate a tool result with a scope-guess warning when this call's
- * workspace was NOT resolved from an explicit param/header/adv-session lookup
- * but GUESSED from the box's active-workspace registry (see
- * `BuiltSpawnContext.workspaceResolution`'s doc comment for the full story).
- *
- * The bug this exists to prevent: the guess is silently indistinguishable
- * from a real resolution, so a caller whose data actually lives in a
- * DIFFERENT workspace gets a confident, well-formed empty/not-found result
- * from every tool for the rest of the session — with nothing to signal that
- * the miss is a scoping failure rather than genuine absence. This does not
- * (and cannot, without per-tool semantics) know whether a given result IS an
- * empty/not-found — so it annotates every result while the guess is in
- * effect. That is deliberately broad: the guess itself is rare (it only fires
- * when the SID→adv-row lookup missed), so the added noise is rare too, and
- * the alternative (staying silent) is the exact failure mode WI-6734 reports.
- *
- * No-op (byte-identical passthrough) whenever `workspaceResolution` is unset —
- * the overwhelmingly common case — so this changes nothing for a normally-
- * scoped session.
- */
-function withMcpDiagnosticWarning<T extends McpCallResult>(
-  result: T,
-  jsonKey: string,
-  metaKey: string,
-  warning: string,
-): T {
-  const content = Array.isArray(result.content) ? result.content : [];
-  const first = content[0];
-  if (first && 'type' in first && first.type === 'text' && typeof (first as { text?: unknown }).text === 'string') {
-    try {
-      const parsed: unknown = JSON.parse((first as { text: string }).text);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        (parsed as Record<string, unknown>)[jsonKey] = warning;
-        return {
-          ...result,
-          content: [{ type: 'text' as const, text: JSON.stringify(parsed) }, ...content.slice(1)],
-        };
-      }
-    } catch {
-      /* non-JSON text content (or a malformed body) — fall through to _meta */
-    }
-  }
-  return { ...result, _meta: { ...(result._meta ?? {}), [metaKey]: warning } };
-}
-
-/**
- * The proxy warning is useful when a response could be an empty/not-found
- * transport result, but it is noise on a successful response that contains
- * data. Keep this deliberately envelope-oriented: only an explicit `ok:true`
- * result (or a JSON array) is classified as populated/empty; a source may also
- * explicitly mark an otherwise empty result as authoritative. Unknown shapes
- * retain the warning rather than pretending that their payload was verified.
- */
-function hasPopulatedMcpResult(result: McpCallResult): boolean {
-  const first = Array.isArray(result.content) ? result.content[0] : undefined;
-  if (!first || !('type' in first) || first.type !== 'text' || typeof first.text !== 'string') return false;
-
-  let parsed: unknown;
-  try {
-    // MCP's compact default prefixes bulk envelopes with `format: toon`.
-    // Reuse the host parser so a populated compact result is not mistaken for
-    // an unparseable/empty response during the proxy warning window.
-    parsed = parseToolText(first.text);
-  } catch {
-    return false;
-  }
-  if (Array.isArray(parsed)) return parsed.length > 0;
-  if (!parsed || typeof parsed !== 'object') return false;
-
-  const body = parsed as Record<string, unknown>;
-  // Some successful sources can answer with an empty result without an `ok`
-  // envelope. Only an explicit boolean marker may bypass the proxy warning;
-  // empty arrays and unknown shapes remain warning-eligible by default.
-  if (body.authoritative === true) return true;
-  if (body.notFound === true || body.not_found === true || body.missing === true) return false;
-  if (typeof body.status === 'string' && body.status.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') {
-    return false;
-  }
-  if (typeof body.code === 'string' && body.code.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') {
-    return false;
-  }
-
-  // coord:inbox is a successful read envelope without an `ok` field. A
-  // non-empty entries array is nevertheless direct proof that the response is
-  // populated; an empty entries array remains warning-eligible.
-  if (Array.isArray(body.entries) && body.entries.length > 0) return true;
-
-  // coord:whoami is a successful identity envelope without an `ok` field or a
-  // generic result field. A resolved ownerId together with its source proves
-  // the identity lookup populated the response; an unresolved fallback has no
-  // ownerId and remains warning-eligible.
-  if (
-    typeof body.ownerId === 'string' &&
-    body.ownerId.trim().length > 0 &&
-    typeof body.source === 'string' &&
-    body.source.trim().length > 0
-  ) {
-    return true;
-  }
-
-  if (body.ok !== true) return false;
-
-  // Lifecycle tools return concrete success markers instead of one of the
-  // generic result-bearing fields below. These values prove that the requested
-  // transition landed, so an earlier proxy retry cannot make this response an
-  // ambiguous empty/not-found result.
-  if (body.ended === true || body.verified === true) return true;
-  if (
-    (typeof body.await_id === 'number' && Number.isSafeInteger(body.await_id) && body.await_id > 0) ||
-    (typeof body.await_id === 'string' && body.await_id.trim().length > 0)
-  ) {
-    return true;
-  }
-
-  // These are the standard result-bearing fields emitted by the tool
-  // envelopes. `presence` is the populated success payload returned by
-  // coord:declare-intent. An explicitly empty field means the response is
-  // still a candidate for the proxy's empty/not-found warning. Unknown
-  // `ok:true` shapes remain diagnostic-safe rather than being treated as
-  // populated.
-  let sawResultField = false;
-  let hasPopulatedField = false;
-  for (const key of ['results', 'items', 'data', 'result', 'value', 'presence']) {
-    if (!(key in body)) continue;
-    sawResultField = true;
-    const value = body[key];
-    if (value === null || value === undefined || value === '') continue;
-    if (Array.isArray(value)) {
-      hasPopulatedField ||= value.length > 0;
-      continue;
-    }
-    if (typeof value === 'object') {
-      hasPopulatedField ||= Object.keys(value as object).length > 0;
-      continue;
-    }
-    hasPopulatedField = true;
-  }
-  return sawResultField && hasPopulatedField;
-}
-
-/**
- * Fold rare transport/scoping uncertainty into otherwise well-formed tool
- * results. Both warnings use the same JSON-body-or-_meta annotation contract so
- * clients have one diagnostic shape to inspect.
- */
-export function withMcpDiagnosticWarnings<T extends McpCallResult>(result: T, spawnCtx: BuiltSpawnContext): T {
-  if (!result || result.isError) return result;
-  let annotated = result;
-  if (spawnCtx.workspaceResolution === 'registry-fallback') {
-    const warning =
-      `⚠ SCOPE GUESSED, NOT VERIFIED: this session's workspace could not be resolved from an explicit ` +
-      `param, header, or launch record — it was scoped to '${spawnCtx.workspaceId}' as a REGISTRY-FALLBACK ` +
-      `GUESS (the box's active workspace), which can be wrong on a multi-workspace box. If this result ` +
-      `looks like an unexpected empty/not-found for something you expect to exist, suspect WRONG-WORKSPACE ` +
-      `SCOPING before concluding data is missing — verify independently (dev:pg_query / psql against the ` +
-      `expected workspace) rather than trusting this result at face value.`;
-    annotated = withMcpDiagnosticWarning(annotated, '_scopeGuessWarning', 'scopeGuessWarning', warning);
-  }
-  if (spawnCtx.dataPlaneDegradedAtMs && !hasPopulatedMcpResult(annotated)) {
-    const observedAt = new Date(spawnCtx.dataPlaneDegradedAtMs).toISOString();
-    const warning =
-      `⚠ DATA PLANE MAY BE DEGRADED: this session's local MCP proxy observed an upstream retry or ` +
-      `connection failure at ${observedAt}. During this short warning window, an unexpected empty/not-found ` +
-      `result may be a transport symptom rather than authoritative absence. Retry or verify independently ` +
-      `before concluding that data is missing.`;
-    annotated = withMcpDiagnosticWarning(annotated, '_dataPlaneMayBeDegraded', 'dataPlaneMayBeDegraded', warning);
-  }
-  return annotated;
-}
-
-/**
  * Build a full UnifiedToolContext for an MCP tool invocation. Combines:
  *   - spawn fields parsed from URL
  *   - per-call helpers (log, progress, spawn, secret)
@@ -2791,33 +2608,6 @@ async function buildMcpToolContext(
 }
 
 /* ─── MCP handler ────────────────────────────────────────────────────── */
-
-/**
- * Server capabilities declared in the MCP `initialize` response. Includes
- * the Papercusp typed-events extension so third-party MCP clients can
- * discover that this server emits `notifications/papercusp/event` frames
- * outside the JSON-RPC core spec.
- *
- * Exported for the regression test in `mcp-notifications.test.ts` —
- * inlining the object made the capability a string-grep target instead
- * of a unit-testable contract.
- */
-export const MCP_SERVER_CAPABILITIES = {
-  // listChanged: true — this server GROWS a session's advertised tool set at
-  // runtime (dynamic-tool-surface-2026-07-01). A seeded session (small ?tools=
-  // core) expands on intent via ctx.activateTools (tools:find), and the
-  // transport fires notifications/tools/list_changed so the client re-fetches
-  // tools/list and can call the surfaced tools. Clients that honor the
-  // notification (omp, codex) get "small seed + full reachability on demand";
-  // clients that ignore it are unaffected. Claude is never sent the
-  // notification (it launches un-seeded → no surface → no fire).
-  tools: { listChanged: true },
-  resources: {},
-  prompts: {},
-  experimental: {
-    'papercusp/typedEvents': { version: '1' },
-  },
-} as const;
 
 /**
  * Static MCP `initialize.instructions` field — surfaced to LLM clients

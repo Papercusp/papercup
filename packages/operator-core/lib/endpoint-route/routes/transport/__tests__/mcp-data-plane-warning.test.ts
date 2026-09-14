@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { encode } from '@papercusp/result-encoding';
-import { withMcpDiagnosticWarnings, type BuiltSpawnContext, type McpCallResult } from '../_mcp-handler';
+import { type BuiltSpawnContext } from '../_mcp-host';
+import { withMcpDiagnosticWarnings, type McpCallResult } from '../mcp-diagnostic-warnings';
 
 function context(overrides: Partial<BuiltSpawnContext> = {}): BuiltSpawnContext {
   return {
