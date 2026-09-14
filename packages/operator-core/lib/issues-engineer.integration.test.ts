@@ -387,6 +387,54 @@ describe('engineer issues surface (real PG)', () => {
     expect(readAgentStateStamp('agB').goalRef).toBeNull();
   });
 
+  it('EI-23167326985120403: stamps a new-holder subject baseline and preserves it across same-holder/truncated reclaims', async () => {
+    const original = await issues.createIssue({
+      title: 'original watchdog subject',
+      body: 'original watchdog observation',
+      createdBy: 'agA',
+      payload: { watchdogKey: 'repeated-tool-error:original' },
+    });
+
+    const firstClaim = await issues.claimIssue(original.id, 'agB');
+    const firstBaseline = (firstClaim?.payload as Record<string, unknown>)?._claimSubjectBaseline;
+    expect(firstBaseline).toEqual({
+      kind: 'bug',
+      title: 'original watchdog subject',
+      summary: 'original watchdog observation',
+      body: 'original watchdog observation',
+      watchdogKey: 'repeated-tool-error:original',
+    });
+
+    // Simulate the exact watchdog coalescer mutation: visible subject + exact-key identity
+    // change while the original holder is still working.
+    await issues.updateIssue(original.id, {
+      title: 'new coalesced subject',
+      body: 'new coalesced observation',
+      silent: true,
+      confirmShrink: true,
+    });
+    await issues.mergeIssuePayload(original.id, { watchdogKey: 'repeated-tool-error:new' });
+
+    // Idempotent same-holder reclaim must NOT move the baseline to the refreshed subject.
+    const sameHolder = await issues.claimIssue(original.id, 'agB');
+    expect((sameHolder?.payload as Record<string, unknown>)?._claimSubjectBaseline).toEqual(firstBaseline);
+
+    // A truncated-assignee self-heal is also the same holder, not a new claim.
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'ag' WHERE feature_id = ${original.id}`;
+    const truncatedReclaim = await issues.claimIssue(original.id, 'agB');
+    expect((truncatedReclaim?.payload as Record<string, unknown>)?._claimSubjectBaseline).toEqual(firstBaseline);
+
+    // A genuine handover gets a fresh baseline for the subject now being accepted.
+    const handover = await issues.claimIssue(original.id, 'agC', { fromHolder: 'agB' });
+    expect((handover?.payload as Record<string, unknown>)?._claimSubjectBaseline).toEqual({
+      kind: 'bug',
+      title: 'new coalesced subject',
+      summary: 'new coalesced observation',
+      body: 'new coalesced observation',
+      watchdogKey: 'repeated-tool-error:new',
+    });
+  });
+
   // WI-2142171: no-op lifecycle writes used to re-fan the FULL subscriber set. Claiming
   // BY ID bypasses the claim floors on purpose, so a holder re-claiming its own item
   // matched the UPDATE every time and emitted a fresh notify (random msg_id, so the
