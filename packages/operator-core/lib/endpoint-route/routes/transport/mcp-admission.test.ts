@@ -75,6 +75,10 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     'dev_pg_query',
     'mcp__papercusp-su__dev_pg_query',
     'mcp__papercusp_su__dev_pg_query',
+    'dev:pg_active_queries',
+    'dev_pg_active_queries',
+    'mcp__papercusp-su__dev_pg_active_queries',
+    'mcp__papercusp_su__dev_pg_active_queries',
     // EI-21574538947513211 — the tool used to OBSERVE loop pressure was itself being shed by
     // the pressure gate (94 retryable -32000s, reason loop_pressure_critical, on a bounded
     // 149-index ownLogProbe walk). Listed in every name form the normalizer must collapse,
@@ -85,6 +89,19 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     'mcp__papercusp-su__dev_dogfood_substrate_status',
   ])('does NOT shed bounded critical-pressure diagnostic %s', (name) => {
     expect(classifyMcpBody(toolsCall(11, name))).toEqual({ sheddable: false, id: null });
+  });
+
+  it('keeps similarly named but unreserved pg diagnostics shed under critical pressure', () => {
+    for (const name of [
+      'dev:pg_hot_queries',
+      'dev_pg_hot_queries',
+      'mcp__papercusp-su__dev_pg_table_sizes',
+      'mcp__papercusp_su__dev_pg_table_sizes',
+    ]) {
+      const body = toolsCall(12, name);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 12 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
   });
 
   it.each([
@@ -1613,6 +1630,21 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     expect(classifyMcpRequest(body)).toBe('diagnostic');
   });
 
+  it.each([
+    ['canonical', 'coord:send'],
+    ['underscore', 'coord_send'],
+    ['mcp-advertised', 'mcp__papercusp_su__coord_send'],
+  ])('admits one bounded @fleet-leader coord:send under critical pressure: %s', (_label, name) => {
+    const body = toolsCall(45, name, {
+      to: ['@fleet-leader:nonp2p-bug-drain-luna-max-50'],
+      summary: 'critical-pressure fleet status recorded',
+      expects: 'none',
+      body: [{ text: 'The fleet status is recorded; retry detailed coordination after recovery.' }],
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
   it('admits one bounded coord:send through tools:invoke', () => {
     const body = JSON.stringify({
       jsonrpc: '2.0',
@@ -1635,6 +1667,28 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     expect(classifyMcpRequest(body)).toBe('diagnostic');
   });
 
+  it('admits one bounded @fleet-leader coord:send through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 47,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__coord_send',
+          args: {
+            to: ['@fleet-leader:nonp2p-bug-drain-luna-max-50'],
+            summary: 'critical-pressure fleet status recorded',
+            expects: 'none',
+            body: [{ text: 'The fleet status is recorded.' }],
+          },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
   it('keeps broad or enriched coord:send writes sheddable under critical pressure', () => {
     for (const args of [
       {
@@ -1645,6 +1699,16 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
       {
         to: ['@fleet:nonp2p-bug-drain-luna-max-50'],
         summary: 'audience',
+        expects: 'none',
+      },
+      {
+        to: ['@fleet-leader:'],
+        summary: 'empty leader audience',
+        expects: 'none',
+      },
+      {
+        to: ['@topic:coordination'],
+        summary: 'broad audience',
         expects: 'none',
       },
       {
@@ -2349,6 +2413,42 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     const req = post(toolsCall(6, 'dev:pg_query'));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('dev:pg_query');
+  });
+  it.each([
+    ['canonical', 'dev:pg_active_queries'],
+    ['underscore', 'dev_pg_active_queries'],
+    ['mcp-advertised hyphen', 'mcp__papercusp-su__dev_pg_active_queries'],
+    ['mcp-advertised underscore', 'mcp__papercusp_su__dev_pg_active_queries'],
+  ])('admits bounded dev:pg_active_queries under critical pressure: %s', async (_label, name) => {
+    const req = post(toolsCall(7, name, { limit: 50 }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe(name);
+  });
+  it('admits dev:pg_active_queries through deferred tools:invoke under critical pressure', async () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 8,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__dev_pg_active_queries',
+          args: { limit: 50 },
+        },
+      },
+    });
+    const req = post(body);
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.arguments.name).toBe('mcp__papercusp_su__dev_pg_active_queries');
+  });
+  it('keeps the neighboring dev:pg_hot_queries diagnostic shed end-to-end', async () => {
+    const shed = await evaluateAdmission(post(toolsCall(9, 'dev:pg_hot_queries')), 'critical', true);
+    expect(shed).not.toBeNull();
+    expect(shed!.status).toBe(429);
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
   });
   it('admits a bounded dev:telemetry rollup under critical pressure so recovery diagnostics stay live', async () => {
     const req = post(toolsCall(24, 'dev:telemetry', { hours: 24, limit: 50 }));

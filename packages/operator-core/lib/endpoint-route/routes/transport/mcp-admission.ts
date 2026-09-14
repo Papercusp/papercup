@@ -180,6 +180,7 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
   [
     'dev:service_health',
     'dev:pg_query',
+    'dev:pg_active_queries',
     'dev:dogfood_substrate_status',
     'coord:whoami',
     'coord:declare-intent',
@@ -2157,10 +2158,11 @@ function isBoundedCriticalText(value: unknown, max: number, oneLine = false): va
 /**
  * Preserve the smallest useful coordination message while critical pressure is
  * shedding ordinary tools. This is intentionally stricter than coord:send's
- * normal schema: one concrete recipient, one plain text section, and only the
- * core envelope fields. Wakes, audience selectors, replies, provenance, and
- * other enrichment remain on the retryable path so this reserve cannot become
- * a second coordination/bulkhead lane.
+ * normal schema: one concrete recipient (or the single bounded
+ * @fleet-leader:<slug> audience used to reach a fleet's durable leader), one
+ * plain text section, and only the core envelope fields. Wakes, other audience
+ * selectors, replies, provenance, and other enrichment remain on the retryable
+ * path so this reserve cannot become a second coordination/bulkhead lane.
  */
 export function isBoundedCoordSendArgs(args: unknown): boolean {
   if (!isRecord(args)) return false;
@@ -2168,11 +2170,20 @@ export function isBoundedCoordSendArgs(args: unknown): boolean {
   if (Object.keys(args).some((key) => !allowed.has(key))) return false;
   if (!Array.isArray(args.to) || args.to.length !== 1) return false;
   const recipient = args.to[0];
+  const fleetLeaderPrefix = '@fleet-leader:';
+  const isBoundedFleetLeaderSelector =
+    isBoundedCriticalText(recipient, CRITICAL_TARGET_OWNER_MAX_STRING_CHARS, true) &&
+    recipient.startsWith(fleetLeaderPrefix) &&
+    isBoundedCriticalText(
+      recipient.slice(fleetLeaderPrefix.length),
+      CRITICAL_TARGET_OWNER_MAX_STRING_CHARS - fleetLeaderPrefix.length,
+      true,
+    );
   if (
     !isBoundedCriticalText(recipient, CRITICAL_TARGET_OWNER_MAX_STRING_CHARS, true) ||
     recipient === '*' ||
     recipient === 'human' ||
-    recipient.startsWith('@')
+    (recipient.startsWith('@') && !isBoundedFleetLeaderSelector)
   ) {
     return false;
   }
