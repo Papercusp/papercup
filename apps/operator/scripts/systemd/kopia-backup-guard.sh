@@ -342,9 +342,22 @@ run_scheduled_command() {
 }
 
 if [ "$mode" = scheduled ]; then
+  # Lock contention is another deferral path. Arm the staleness floor before
+  # the nonblocking flock so a scheduled producer cannot defer forever without
+  # ever recording that it has crossed its recovery-point deadline. Once the
+  # floor is armed, become a priority waiter: the existing wait-mode handoff
+  # lets a hot sweep yield the shared lock instead of starving this producer.
+  arm_staleness_override || true
   if ! flock -n 9; then
-    guard_log "result=deferred reason=lock-held"
-    exit "$scheduled_defer_exit"
+    if [ "$pressure_escalated" = 1 ]; then
+      register_priority_request
+      guard_log "result=waiting reason=staleness-override-lock $staleness_override_reason"
+      flock 9 || exit "$scheduled_defer_exit"
+      cleanup_priority_request
+    else
+      guard_log "result=deferred reason=lock-held $staleness_override_reason"
+      exit "$scheduled_defer_exit"
+    fi
   fi
 
   # WHY THE CGROUP AND NOT /proc/pressure -- measured on this host 2026-09-05.
@@ -396,10 +409,11 @@ if [ "$mode" = scheduled ]; then
   fi
   guard_log "result=psi-scope scope=$psi_scope memory_path=$memory_path io_path=$io_path"
 
-  # Evaluate every admission signal first, then take ONE deferral decision, so
-  # the staleness floor applies to all of them.  An unreadable PSI file defers
-  # exactly like real pressure and so must escalate exactly like it: otherwise a
-  # host that stops publishing pressure never backs up again either.
+  # Evaluate every admission signal before taking ONE deferral decision. The
+  # staleness floor was armed once before lock acquisition and applies to all of
+  # them. An unreadable PSI file defers exactly like real pressure and so must
+  # escalate exactly like it: otherwise a host that stops publishing pressure
+  # never backs up again either.
   admission_block_reason=
   memory_psi=$(read_full_avg10 "$memory_path") || memory_psi=
   io_psi=$(read_full_avg10 "$io_path") || io_psi=
@@ -413,7 +427,6 @@ if [ "$mode" = scheduled ]; then
     admission_block_reason="io-pressure full_avg10=$io_psi limit=$io_limit"
   fi
 
-  arm_staleness_override || true
   if [ -n "$admission_block_reason" ]; then
     if [ "$pressure_escalated" = 1 ]; then
       guard_log "result=admitted-despite-pressure reason=$admission_block_reason $staleness_override_reason"

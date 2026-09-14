@@ -777,6 +777,38 @@ describe('Kopia managed entrypoint contract', () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  it('waits for the lock when a scheduled cycle is already past its staleness deadline', () => {
+    const { dir, env } = fixture();
+    seedDeadlineBase(dir, 'stale-lock', 25_200);
+    const ready = join(dir, 'ready');
+    const marker = join(dir, 'ran');
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode wait --label holder -- bash -c 'touch "$1"; sleep 0.35' _ "$READY" &
+        holder=$!
+        for _ in $(seq 1 100); do [ -e "$READY" ] && break; sleep 0.01; done
+        [ -e "$READY" ] || exit 91
+        out=$("$GUARD" --mode scheduled --label stale-lock -- touch "$MARKER")
+        rc=$?
+        wait "$holder"
+        [ "$rc" -eq 0 ] && [ -e "$MARKER" ] &&
+          grep -q 'result=waiting reason=staleness-override-lock' <<<"$out"
+      `,
+      ],
+      {
+        encoding: 'utf8',
+        env: { ...env, GUARD: guard, READY: ready, MARKER: marker },
+        timeout: 10_000,
+      },
+    );
+
+    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
+  });
+
   it('does not retire an escalated run on the same pressure that admitted it', () => {
     const { dir, env } = fixture(23.84);
     seedDeadlineBase(dir, 'armed', 25_200);

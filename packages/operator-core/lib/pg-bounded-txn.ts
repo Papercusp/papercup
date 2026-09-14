@@ -128,6 +128,12 @@ function cancellableTransaction(
       removeAbortListener = () => signal.removeEventListener('abort', onAbort);
     }
   });
+  // A pre-aborted signal rejects `abort` synchronously, while the transaction
+  // callback still throws from `assertNotAborted()` before it reaches the
+  // Promise.race below. Observe the promise now so that early assertion errors
+  // cannot leave this sibling rejection unhandled; the original rejected
+  // promise remains the one raced when the callback reaches that path.
+  void abort.catch(() => undefined);
   return {
     tx: wrapped,
     assertNotAborted,

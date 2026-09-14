@@ -111,8 +111,31 @@ export type FixPrecheckRunResult =
   | { ran: false; reason: FixPrecheckBusyReason; detail: string; holder?: { pid?: number; elapsedSec: number | null } }
   | { ran: false; reason: 'runner-failed'; detail: string };
 
+/** A durable liveness snapshot for the file currently being measured. */
+export interface FixPrecheckProgress {
+  /** Repo-relative file whose test process is about to run. */
+  currentFile: string;
+  /** Number of files that completed before `currentFile` started. */
+  completedCount: number;
+  /** Total files in this pre-check operation. */
+  totalCount: number;
+  /** Wall-clock time at which this snapshot was observed. */
+  heartbeatAtMs: number;
+}
+
+/**
+ * The progress callback is observability only: a failed persistence attempt must not turn a
+ * measured test result into a runner failure. Implementations should nevertheless await their
+ * CAS write so `op:get` sees the snapshot before the corresponding test process starts.
+ */
+export type FixPrecheckProgressCallback = (progress: FixPrecheckProgress) => Promise<void> | void;
+
 /** The seam the admit door injects: measure `files` at `commit` (a real, unpublished object in the root's store). */
-export type FixPrecheckRunner = (input: { commit: string; files: readonly string[] }) => Promise<FixPrecheckRunResult>;
+export type FixPrecheckRunner = (input: {
+  commit: string;
+  files: readonly string[];
+  onProgress?: FixPrecheckProgressCallback;
+}) => Promise<FixPrecheckRunResult>;
 
 export type FixPrecheckVerdict =
   | {
@@ -333,7 +356,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
   const perFileTimeoutMs = opts.perFileTimeoutMs ?? 10 * 60_000;
   const setupTimeoutMs = opts.setupTimeoutMs ?? 20 * 60_000;
   const log = opts.log ?? (() => {});
-  return async ({ commit, files }) => {
+  return async ({ commit, files, onProgress }) => {
     const held = runLockHeld(opts.integrationRoot);
     if (held.held) {
       return {
@@ -372,7 +395,27 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       };
     }
     const results: FixPrecheckFileResult[] = [];
-    for (const file of files) {
+    const reportProgress = async (progress: FixPrecheckProgress): Promise<void> => {
+      if (!onProgress) return;
+      try {
+        await onProgress(progress);
+      } catch (err) {
+        // Progress is a liveness aid, never a substitute for the measured verdict. A transient
+        // queue/DB write failure must not convert a real test result into runner-failed.
+        log(
+          `[admission-precheck] progress callback failed for ${progress.currentFile}: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    };
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index] as string;
+      await reportProgress({
+        currentFile: file,
+        completedCount: index,
+        totalCount: files.length,
+        heartbeatAtMs: Date.now(),
+      });
       log(`[admission-precheck] test-file ${file} @ ${commit.slice(0, 12)}`);
       const r = await exec(['node', 'scripts/test-files.mjs', file], {
         cwd: opts.checkpointRoot,

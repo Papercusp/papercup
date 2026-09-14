@@ -10,9 +10,14 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/pg-bounded-txn.test.ts
  */
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import { boundedOrgTxn, OrgTxnTimeoutError } from './pg-bounded-txn';
+
+const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+const BOUNDED_TXN_MODULE = pathToFileURL(fileURLToPath(new URL('./pg-bounded-txn.ts', import.meta.url))).href;
 
 /** A fake postgres-js client: `.begin(cb)` invokes cb with a tagged-template `tx`
  *  that records each query's bound params and resolves to []. */
@@ -77,6 +82,80 @@ describe('boundedOrgTxn', () => {
 
     await expect(transaction).rejects.toMatchObject({ name: 'AbortError' });
     expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('observes a pre-aborted signal without emitting an unhandled sibling rejection', async () => {
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const controller = new AbortController();
+      const reason = new Error('f12-before');
+      controller.abort(reason);
+      let fnRan = false;
+
+      const transaction = boundedOrgTxn(
+        async () => {
+          fnRan = true;
+          return 'unreachable';
+        },
+        { client: fakeClient(), signal: controller.signal },
+      );
+
+      await expect(transaction).rejects.toBe(reason);
+      // Node reports a rejected promise without a handler at the end of the
+      // turn. Give that report a chance to arrive before asserting the guard.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(fnRan).toBe(false);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
+  it('handles a pre-aborted signal under Node\'s default unhandled-rejection policy', () => {
+    const childEnv = { ...process.env };
+    // Run without Vitest\'s process hooks or inherited NODE_OPTIONS so this
+    // exercises the same default policy as the packaged Node host.
+    delete childEnv.VITEST;
+    delete childEnv.NODE_OPTIONS;
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          import { boundedOrgTxn } from ${JSON.stringify(BOUNDED_TXN_MODULE)};
+          const tag = () => Promise.resolve([]);
+          const client = { begin: async (cb) => cb(tag) };
+          const controller = new AbortController();
+          controller.abort(new Error('f12-before'));
+          let fnRan = false;
+          await boundedOrgTxn(async () => {
+            fnRan = true;
+            return 'unreachable';
+          }, { client, signal: controller.signal }).then(
+            () => { throw new Error('expected pre-abort rejection'); },
+            (error) => {
+              if (error?.message !== 'f12-before') throw error;
+            },
+          );
+          if (fnRan) throw new Error('pre-aborted transaction invoked fn');
+        `,
+      ],
+      {
+        cwd: REPO_ROOT,
+        env: childEnv,
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      },
+    );
+    expect(child.error).toBeUndefined();
+    expect(child.status).toBe(0);
+    expect(child.signal).toBeNull();
+    expect(child.stderr).toBe('');
   });
 
   it('does not execute tagged or unsafe SQL fragments while tracking cancellable queries', async () => {
