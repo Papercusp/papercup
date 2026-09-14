@@ -70,6 +70,7 @@ function makeDeps(over: Partial<InstallBlueprintCoreDeps> = {}): InstallBlueprin
       cupboardPlugins: new Set<string>(),
       cupboardReachable: true,
     }),
+    validateCapabilityGrants: async () => [],
     reviewCapabilityProviderPackages: async (selections) => ({
       ok: true,
       roots: selections.map((selection) => ({
@@ -288,6 +289,46 @@ describe('installBlueprintFromCupboardCore', () => {
       code: 'required_capability_provider_absent',
       data: { missingRequired: ['crm.email@1.0.0'] },
     });
+    expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
+  });
+
+  it.each(['outside-ceiling', 'policy-unavailable'] as const)(
+    'refuses %s before provider installation, binding writes or identity release',
+    async (cause) => {
+      await writeBlueprint(fixtureRepo, RUNNABLE_YAML + '\ngrants: { requires: [crm.email@1.0.0] }');
+      const install = vi.fn();
+      const bind = vi.fn();
+      const validate = vi.fn(async () => [{
+        code: 'capability_unsatisfied' as const, cause, classRef: 'crm.email@1.0.0',
+        routes: ['operator-notify', 'suggest-provider', 'needs_human'] as const,
+      }]);
+      await expect(installBlueprintFromCupboardCore({
+        githubUrl: 'https://github.com/acme/neat-bp',
+        capabilityContext: { workspaceId: 'workspace-1', potSlug: 'sales-ops', role: 'worker', mode: 'agent',
+          installProviderPackages: true },
+      }, makeDeps({
+        capabilityGrantDeps: { getPotBinding: async () => null, listCandidates: async () => [capabilityCandidate()] },
+        validateCapabilityGrants: validate,
+        installCapabilityProviderPackages: install, commitCapabilitySelections: bind,
+      }))).rejects.toMatchObject({ code: 'capability_unsatisfied', status: 403,
+        data: { failures: [{ cause, classRef: 'crm.email@1.0.0' }] } });
+      expect(validate).toHaveBeenCalledWith(expect.objectContaining({ ok: true }),
+        expect.objectContaining({ role: 'worker', potSlug: 'sales-ops' }));
+      expect(install).not.toHaveBeenCalled();
+      expect(bind).not.toHaveBeenCalled();
+      expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
+    },
+  );
+
+  it('cannot install grants through an adapter that omitted the ceiling validator', async () => {
+    await writeBlueprint(fixtureRepo, RUNNABLE_YAML + '\ngrants: { optional: [crm.email@1.0.0] }');
+    await expect(installBlueprintFromCupboardCore({
+      githubUrl: 'https://github.com/acme/neat-bp',
+      capabilityContext: { workspaceId: 'workspace-1', potSlug: 'sales-ops', mode: 'agent' },
+    }, makeDeps({
+      capabilityGrantDeps: { getPotBinding: async () => null, listCandidates: async () => [] },
+      validateCapabilityGrants: undefined,
+    }))).rejects.toMatchObject({ code: 'capability_policy_unavailable' });
     expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
   });
 

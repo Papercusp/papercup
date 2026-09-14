@@ -76,6 +76,27 @@ export interface IdentityGrantFailure {
   routes: readonly ['operator-notify', 'suggest-provider', 'needs_human'];
 }
 
+/** One ceiling predicate shared by install validation and runtime grants. */
+export function identityGrantToolFailure(input: {
+  toolName: string;
+  ceilings: readonly RoleEnvelope[] | null;
+  tools: ReadonlyMap<string, readonly string[]>;
+  protectedAdditions?: readonly string[];
+}): IdentityGrantFailure['cause'] | null {
+  if (!input.ceilings?.length) return 'policy-unavailable';
+  const capabilities = input.tools.get(input.toolName);
+  if (!capabilities) return 'tool-unavailable';
+  const floor = [...PROTECTED_CAPABILITY_GLOBS, ...(input.protectedAdditions ?? [])];
+  const names = [input.toolName, ...capabilities];
+  if (names.some((name) => matchesAny(name, floor))) return 'outside-ceiling';
+  return input.ceilings.every((ceiling) => {
+    if (ceiling.denyCapabilities && names.some((name) => matchesAny(name, ceiling.denyCapabilities!))) return false;
+    if (ceiling.allowCapabilities === undefined) return true;
+    return matchesAny(input.toolName, ceiling.allowCapabilities) ||
+      (capabilities.length > 0 && capabilities.every((cap) => matchesAny(cap, ceiling.allowCapabilities!)));
+  }) ? null : 'outside-ceiling';
+}
+
 /** A resolved narrowing, never a replacement for the caller's role ceiling. */
 export type IdentityGrantEnvelope =
   | { applied: false }
@@ -137,7 +158,6 @@ export function resolveIdentityGrantEnvelope(input: {
   const pins = specification.inputs.filter((entry) => entry.kind === 'capability-provider');
   const required = new Set(grants.requires ?? []);
   const classes = new Set([...required, ...(grants.optional ?? [])]);
-  const floor = [...PROTECTED_CAPABILITY_GLOBS, ...(input.protectedAdditions ?? [])];
   for (const classRef of classes) {
     const matchingPins = pins.filter((pin) => pin.ref === classRef);
     // An optional class absent at compilation cannot acquire authority later.
@@ -162,21 +182,8 @@ export function resolveIdentityGrantEnvelope(input: {
     const classTools = [...new Set(Object.values(pin.verbBindings))];
     const permitted: string[] = [];
     for (const toolName of classTools) {
-      const capabilities = input.tools.get(toolName);
-      if (!capabilities) {
-        fail('tool-unavailable', classRef, toolName);
-        continue;
-      }
-      const withinCeiling = !matchesAny(toolName, floor) && !capabilities.some((cap) => matchesAny(cap, floor)) &&
-        input.ceilings.every((ceiling) => {
-          if (ceiling.denyCapabilities && [toolName, ...capabilities].some((cap) => matchesAny(cap, ceiling.denyCapabilities!))) return false;
-          if (ceiling.allowCapabilities === undefined) return true;
-          // Explicit empty allow-list means deny all here. Do not inherit the
-          // historical empty-list/default-allow convention of unbound roles.
-          return matchesAny(toolName, ceiling.allowCapabilities) ||
-            (capabilities.length > 0 && capabilities.every((cap) => matchesAny(cap, ceiling.allowCapabilities!)));
-        });
-      if (!withinCeiling) fail('outside-ceiling', classRef, toolName);
+      const cause = identityGrantToolFailure({ ...input, toolName });
+      if (cause) fail(cause, classRef, toolName);
       else permitted.push(toolName);
     }
     permitted.forEach((toolName) => allowedTools.add(toolName));

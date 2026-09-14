@@ -78,6 +78,8 @@ export interface InstallBlueprintFromCupboardInput {
   workspaceId?: string;
   potSlug?: string;
   capabilityMode?: 'interactive' | 'agent';
+  /** Existing administrator role receiving grants; omit only for a single-role pot. */
+  capabilityRole?: string;
   /** Exact class ref to provider package or provider package@version. */
   capabilityProviderSelections?: Readonly<Record<string, string>>;
 }
@@ -178,6 +180,10 @@ function makeInstallCoreDeps(
       return { ...depHostSetsFromCatalog(catalog), cupboardBlueprints, cupboardReachable: catalog.cupboardReachable };
     },
     ...(capabilityScope ? {
+      async validateCapabilityGrants(resolution, context) {
+        const { validateIdentityInstallGrants } = await import('../capability-envelope/identity-grants-port');
+        return validateIdentityInstallGrants({ ...capabilityScope, role: context.role, resolution });
+      },
       capabilityGrantDeps: {
         async getPotBinding(classRef: string) {
           const parsed = parseCapabilityClassRef(classRef);
@@ -377,6 +383,7 @@ export async function installBlueprintFromCupboard(
     ? {
         ...capabilityScope,
         mode: input.capabilityMode ?? 'interactive' as const,
+        role: input.capabilityRole,
         selections: input.capabilityProviderSelections,
         installProviderPackages: input.installPlugins === true,
       }

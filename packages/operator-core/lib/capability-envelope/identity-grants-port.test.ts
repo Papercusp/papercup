@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileAgentSpecification, type ResolvedCapabilityProviderInput } from '@papercusp/orchestrator/blueprint';
 import type { KernelEnforcementRequest } from '@papercusp/agent-mcp';
-import { appliedIdentityArtifact, checkIdentityGrantKernel, readIdentityGrantPolicy, type IdentityGrantPolicy } from './identity-grants-port';
+import { appliedIdentityArtifact, checkIdentityGrantKernel, readIdentityGrantPolicy, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
+import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
 
 const io = vi.hoisted(() => ({
   state: vi.fn(), binding: vi.fn(), load: vi.fn(), source: vi.fn(), flag: vi.fn(), tools: vi.fn(),
@@ -200,5 +201,64 @@ describe('P-005 production policy reader', () => {
     io.source.mockReturnValue({ id: 'sales-pot', extends: 'remote-identity' });
     await expect(readIdentityGrantPolicy(input)).rejects.toThrow('no explicit role capability ceiling');
     expect(io.binding).not.toHaveBeenCalled();
+  });
+
+  it('infers only a single administrator role and refuses an ambiguous install target', async () => {
+    const input = prepare();
+    expect((await readIdentityGrantPolicy({ ...input, role: undefined })).ceilings).toHaveLength(2);
+    io.source.mockReturnValue({ id: 'sales-pot', fleet: { workerRoles: [
+      { id: 'su', capabilities: ['*'] }, { id: 'worker', capabilities: [] },
+    ] } });
+    await expect(readIdentityGrantPolicy({ ...input, role: undefined })).rejects.toThrow('ambiguous');
+  });
+});
+
+describe('P-005 install and runtime use the same ceiling', () => {
+  function installFixture() {
+    const f = fixture();
+    const resolution: CapabilityGrantResolutionVerdict = {
+      ok: true, requirements: [{ classRef: CLASS, optional: false, state: 'satisfied', binding: f.policy.bindings[0] }],
+      satisfied: [CLASS], selected: [], missingRequired: [], requiresChoice: [], missingOptional: [], disclosures: [],
+    };
+    return { ...f, input: { workspaceId: 'ws-a', potSlug: 'sales', role: 'worker', resolution } };
+  }
+
+  it('accepts a conformant bound provider only inside both administrator ceilings', async () => {
+    const f = installFixture();
+    expect(await validateIdentityInstallGrants(f.input, async () => f.policy)).toEqual([]);
+    const narrowed = { ...f.policy, ceilings: [...f.policy.ceilings, { allowCapabilities: [] }] };
+    expect(await validateIdentityInstallGrants(f.input, async () => narrowed))
+      .toMatchObject([{ cause: 'outside-ceiling', classRef: CLASS, toolName: 'mail:send' }]);
+    expect(await checkIdentityGrantKernel(f.request, f.state, f.record, async () => narrowed))
+      .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'outside-ceiling' } } });
+  });
+
+  it('refuses policy failure, foreign-pot evidence and a binding changed since resolution', async () => {
+    const f = installFixture();
+    expect(await validateIdentityInstallGrants(f.input, async () => { throw new Error('offline'); }))
+      .toMatchObject([{ cause: 'policy-unavailable', classRef: CLASS }]);
+    expect(await validateIdentityInstallGrants(f.input, async () => ({ ...f.policy, potSlug: 'foreign' })))
+      .toMatchObject([{ cause: 'policy-unavailable' }]);
+    expect(await validateIdentityInstallGrants(f.input, async () => ({ ...f.policy, bindings: [] })))
+      .toMatchObject([{ cause: 'provider-changed' }]);
+  });
+
+  it('checks a selected candidate without first installing it or binding it', async () => {
+    const f = installFixture();
+    const selection = {
+      classRef: CLASS, providerPackage: 'mail-provider', providerVersion: '1.0.0',
+      reason: 'explicit-selection' as const, disclosureRequired: true,
+    };
+    f.input.resolution.requirements = [{
+      classRef: CLASS, optional: false, state: 'choosable', selection,
+      candidates: [{ ...f.policy.bindings[0], price: null, activePotBindings: 0, passingStructuralRuns: 1, totalStructuralRuns: 1 }],
+    }];
+    f.input.resolution.selected = [selection];
+    const policy = { ...f.policy, bindings: [] };
+    expect(await validateIdentityInstallGrants(f.input, async () => policy)).toEqual([]);
+    expect(await validateIdentityInstallGrants(f.input, async () => ({ ...policy, tools: new Map() })))
+      .toMatchObject([{ cause: 'tool-unavailable', classRef: CLASS }]);
+    expect(await validateIdentityInstallGrants(f.input, async () => ({ ...policy, protectedAdditions: ['mail:*'] })))
+      .toMatchObject([{ cause: 'outside-ceiling', classRef: CLASS }]);
   });
 });

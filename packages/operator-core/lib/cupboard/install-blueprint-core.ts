@@ -56,6 +56,7 @@ import type {
   CapabilityProviderPackageClosureReview,
   CapabilityProviderPackageInstallResult,
 } from './capability-provider-package-closure';
+import type { IdentityGrantFailure } from '../capability-envelope/blueprint-envelopes';
 
 export interface InstallBlueprintCoreInput {
   /** The blueprint repo's GitHub URL (https://github.com/owner/repo[.git]). */
@@ -72,6 +73,7 @@ export interface InstallBlueprintCoreInput {
   capabilityContext?: {
     workspaceId: string;
     potSlug: string;
+    role?: string;
     mode: ResolveCapabilityGrantOptions['mode'];
     selections?: Readonly<Record<string, string>>;
     /** Consent to install the selected provider packages after their complete
@@ -128,6 +130,10 @@ export interface InstallBlueprintCoreDeps {
    */
   resolveHostSets: () => Promise<DependencyHostSets & { cupboardReachable: boolean }>;
   capabilityGrantDeps?: CapabilityGrantResolverDeps;
+  validateCapabilityGrants?: (
+    resolution: CapabilityGrantResolutionVerdict,
+    context: NonNullable<InstallBlueprintCoreInput['capabilityContext']>,
+  ) => Promise<readonly IdentityGrantFailure[]>;
   reviewCapabilityProviderPackages?: (
     selections: readonly CapabilityProviderSelection[],
   ) => Promise<CapabilityProviderPackageClosureReview>;
@@ -378,6 +384,19 @@ export async function installBlueprintFromCupboardCore(
           ? 'required capability class provider absent: ' + absent.join(', ')
           : 'provider choice required for capability class: ' + choices.join(', ');
         throw new InstallBlueprintError(detail, 409, code, capabilityGrantResolution);
+      }
+
+      // Conformance/authenticity do not grant administrator authority. This
+      // seat precedes package installs, binding writes and the release commit.
+      if (!deps.validateCapabilityGrants) {
+        throw new InstallBlueprintError('capability ceiling validator unavailable', 503, 'capability_policy_unavailable');
+      }
+      const ceilingFailures = await deps.validateCapabilityGrants(capabilityGrantResolution, input.capabilityContext);
+      if (ceilingFailures.length) {
+        throw new InstallBlueprintError(
+          `capability class ${ceilingFailures[0].classRef ?? '(unknown)'}: ${ceilingFailures[0].cause}`,
+          403, 'capability_unsatisfied', { failures: ceilingFailures },
+        );
       }
 
       if (capabilityGrantResolution.selected.length > 0) {

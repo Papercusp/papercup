@@ -34,8 +34,9 @@ import { readOperatorState } from '../operator-state-pg';
 import { systemDistinctId } from '../flag-distinct-id';
 import { operatorResolveExtends } from '../blueprint/installed-blueprints';
 import { potSlugsForHarnesses } from '../memory/hive-scope';
-import { resolveIdentityGrantEnvelope, type IdentityGrantFailure } from './blueprint-envelopes';
+import { identityGrantToolFailure, resolveIdentityGrantEnvelope, type IdentityGrantFailure } from './blueprint-envelopes';
 import { ROLE_ENVELOPES, type RoleEnvelope } from './policy';
+import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
 
 export interface IdentityGrantPolicy {
   policyRevision: string;
@@ -49,7 +50,7 @@ export interface IdentityGrantPolicy {
 interface PolicyInput {
   workspaceId: string;
   harnessSlug: string;
-  role: string;
+  role?: string;
   classRefs: readonly string[];
 }
 
@@ -93,13 +94,18 @@ export const readIdentityGrantPolicy: PolicyReader = async (input) => {
   // A remote identity can contribute worker-role configuration too. Its
   // inherited value cannot count as independent administrator authorization.
   const ownSource = BlueprintSourceDocumentSchema.parse(layerSourceDocument(ownLayer));
-  const potRole = ownSource.fleet?.workerRoles?.find((entry) => entry.id === input.role);
+  const roles = ownSource.fleet?.workerRoles ?? [];
+  // A library install may omit a role only for an unambiguous single-role pot.
+  // The installed package never supplies the administrator role selection.
+  const role = input.role ?? (roles.length === 1 ? roles[0].id : null);
+  if (!role) throw new Error('identity grant target role is ambiguous');
+  const potRole = roles.find((entry) => entry.id === role);
   if (potRole?.capabilities === undefined) throw new Error('administrator pot has no explicit role capability ceiling');
   const overridesEnabled = await getFlag(FLAGS.CAPABILITY_ENVELOPE_OVERRIDES, systemDistinctId());
   const overrides = overridesEnabled
     ? await readOperatorState<CapabilityEnvelopeOverrides>('operator_capability_envelopes', input.workspaceId, { fresh: true }) ?? {}
     : {};
-  const ceilings: RoleEnvelope[] = [overrides.roleEnvelopes?.[input.role] ?? ROLE_ENVELOPES[input.role] ?? {}];
+  const ceilings: RoleEnvelope[] = [overrides.roleEnvelopes?.[role] ?? ROLE_ENVELOPES[role] ?? {}];
   ceilings.push({ allowCapabilities: potRole.capabilities });
   const bindings: PotCapabilityProviderBindingRow[] = [];
   for (const classRef of input.classRefs) {
@@ -121,6 +127,65 @@ export const readIdentityGrantPolicy: PolicyReader = async (input) => {
   })).digest('hex');
   return { policyRevision, potSlug, bindings, ceilings, tools, protectedAdditions };
 };
+
+/** Validate resolved choices BEFORE installing packages or writing pot bindings. */
+export async function validateIdentityInstallGrants(
+  input: {
+    workspaceId: string;
+    potSlug: string;
+    role?: string;
+    resolution: CapabilityGrantResolutionVerdict;
+  },
+  readPolicy: PolicyReader = readIdentityGrantPolicy,
+): Promise<readonly IdentityGrantFailure[]> {
+  const failure = (cause: IdentityGrantFailure['cause'], classRef: string | null, toolName?: string): IdentityGrantFailure => ({
+    code: 'capability_unsatisfied', cause, classRef, ...(toolName ? { toolName } : {}),
+    routes: ['operator-notify', 'suggest-provider', 'needs_human'],
+  });
+  const classRefs = input.resolution.requirements.map((entry) => entry.classRef);
+  if (!input.resolution.ok) return [failure('provider-unbound', classRefs[0] ?? null)];
+  let policy: IdentityGrantPolicy;
+  try {
+    policy = await readPolicy({
+      workspaceId: input.workspaceId, harnessSlug: input.potSlug, role: input.role, classRefs,
+    });
+  } catch {
+    return [failure('policy-unavailable', classRefs[0] ?? null)];
+  }
+  if (policy.potSlug !== input.potSlug || !policy.policyRevision || !policy.ceilings.length) {
+    return [failure('policy-unavailable', classRefs[0] ?? null)];
+  }
+  const failures: IdentityGrantFailure[] = [];
+  for (const requirement of input.resolution.requirements) {
+    if (requirement.optional && requirement.state === 'absent') continue;
+    const selected = requirement.selection;
+    const provider = requirement.binding ?? requirement.candidates?.find((candidate) =>
+      candidate.providerPackage === selected?.providerPackage && candidate.providerVersion === selected?.providerVersion);
+    if (!provider || provider.classRef !== requirement.classRef || provider.status !== 'active' ||
+        provider.conformanceStatus !== 'passed') {
+      failures.push(failure('provider-unbound', requirement.classRef));
+      continue;
+    }
+    const current = policy.bindings.find((binding) => binding.classRef === requirement.classRef);
+    if (requirement.binding && (!current ||
+        current.providerPackage !== provider.providerPackage || current.providerVersion !== provider.providerVersion ||
+        current.conformanceRunId !== provider.conformanceRunId || current.registryRevision !== provider.registryRevision ||
+        Object.keys(current.verbBindings).length !== Object.keys(provider.verbBindings).length ||
+        Object.entries(current.verbBindings).some(([verb, name]) => provider.verbBindings[verb] !== name))) {
+      failures.push(failure('provider-changed', requirement.classRef));
+      continue;
+    }
+    if (!requirement.binding && current) {
+      failures.push(failure('provider-changed', requirement.classRef));
+      continue;
+    }
+    for (const toolName of new Set(Object.values(provider.verbBindings))) {
+      const cause = identityGrantToolFailure({ ...policy, toolName });
+      if (cause) failures.push(failure(cause, requirement.classRef, toolName));
+    }
+  }
+  return failures;
+}
 
 function denial(
   cause: IdentityGrantFailure['cause'],
