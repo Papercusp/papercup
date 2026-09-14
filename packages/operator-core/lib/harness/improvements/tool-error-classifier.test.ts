@@ -76,6 +76,29 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
     expect(unknown.classKey).not.toBe(normalizeSuspectedToolFailure(metadataToolFailure).classKey);
   });
 
+  it('does not collapse distinct error codes when contract and runtime metadata are unknown', () => {
+    const saturated = normalizeSuspectedToolFailure({
+      toolName: 'ptool',
+      errorCode: '-32000',
+      status: 'request shed',
+      message: 'operator MCP admission is saturated — request shed; reason=loop_pressure_critical',
+    });
+    const malformed = normalizeSuspectedToolFailure({
+      toolName: 'ptool',
+      errorCode: 'invalid_json',
+      status: 'rejected',
+      message: 'malformed JSON before dispatch',
+    });
+
+    // Both are currently structural, but they are different failure modes. The
+    // class-key arbiter must not coalesce the saturation report onto the malformed
+    // JSON report merely because neither caller supplied schema/runtime metadata.
+    expect(saturated.class).toBe('structural');
+    expect(malformed.class).toBe('structural');
+    expect(saturated.classKey).not.toBe(malformed.classKey);
+    expect(saturated.watchdogKey).not.toBe(malformed.watchdogKey);
+  });
+
   it('a repeated caller rejection does not become direct evidence through legacy booleans', () => {
     expect(normalizeSuspectedToolFailure({
       ...metadataToolFailure, reproduced: true, clearServerMismatch: true, hardInternal: true,

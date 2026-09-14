@@ -6,6 +6,7 @@
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Launching agents — which tool for which door"
 description: "Canonical four-door routing table for agent launches, plan fleets, arbitrary terminal commands, and the desktop console buttons; capability:launch-agent is the flexible general launcher and fleet:launch-on-plan is the ergonomic N-on-plan door."
+type: Insight
 discovered: 2026-07-14
 tags: ["agents", "launch", "fleet", "terminal", "resume", "fork", "console", "spawnConsole"]
 status: active
@@ -22,7 +23,6 @@ documents:
   - "libs/papercusp/packages/harness/blueprints/base/prompts/su.md"
 plans:
   - "bug-drain-luna-2026-07-13"
-type: Insight
 generated:
   by: agent
   at: 2026-07-13
@@ -57,6 +57,19 @@ The desktop “+” and “Resume in new terminal” buttons are UI actions, not
 - If the request is specifically **N agents on a plan**, use `fleet:launch-on-plan`.
 - If the subject is a **command**, use `capability:terminal`.
 - If the action came from the desktop console UI, follow `/console/launch` → `spawnConsole`.
+
+## Queue screening and honest launch evidence
+
+Duplicate screening governs whether a **work item may be claimed automatically**. It does not block opening an authorized agent or fleet process. For an existing-plan fleet, use `plans:start` and `fleet:launch-on-plan` even when an individual item reports `admission-pending`; the member still needs claimable or validly pre-assigned work once it starts. Do not invent a wait-before-launch rule from a queue-screening refusal. Exact-plan, dependency, lock, credential, security, and resource admission remain separate safeguards and are not bypassed by this distinction.
+
+A successful launcher response reports observations, not a promise that every process is already working. Read `launchEvidence` as a count-preserving summary:
+
+- `processOpened` is the number of processes the launcher opened.
+- `sessionRegistered` is the number of those processes observed in the session ledger, or `null` when registration was not observed.
+- `firstTurn` is `true`, `false`, or `null`: observed success, observed failure, or not yet known. Supplying a first-turn request is not evidence that the agent received or executed it.
+- `taskDisposition.claimed`, `.noClaim`, and `.unknown` partition the opened processes. Their counts sum to `processOpened`; an unobserved disposition stays in `unknown`.
+
+Process-open evidence alone must never be paraphrased as “agents are working.” A first turn also does not prove a scheduler pull or task claim. Use the detailed `FreshLaunchWorkerAttestation` / `launchTransaction` evidence, then `fleet:status` or `coord:presence`, when the next action depends on verified pickup. Preserve `null` and `unknown` in summaries instead of upgrading absence of evidence into success.
 
 ## Per-member config + runtime reconfigure (per-member-declarative-launch-specs)
 

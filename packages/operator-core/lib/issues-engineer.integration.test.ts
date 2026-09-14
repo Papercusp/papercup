@@ -323,6 +323,50 @@ describe('engineer issues surface (real PG)', () => {
     expectFresh((await issues.mergeIssuePayload(id, { note: 'x' }))?.updatedAt);
   });
 
+  it('bounds a contended issue release and leaves the claim intact until retry (EI-23215738429986679)', async () => {
+    const issue = await issues.createIssue({ title: `release-contention-${Date.now()}`, createdBy: 'agA' });
+    const claimed = await issues.claimIssue(issue.id, 'agB');
+    expect(claimed?.assignee).toBe('agB');
+
+    let releaseBlocker!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseBlocker = resolve;
+    });
+    let lockedResolve!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      lockedResolve = resolve;
+    });
+    const blocker = db.sql.begin(async (tx) => {
+      await tx`
+        SELECT feature_id
+          FROM harness_shared.work_items
+         WHERE feature_id = ${issue.id}
+         FOR UPDATE`;
+      lockedResolve();
+      await held;
+    });
+
+    await locked;
+    const startedAt = Date.now();
+    let error: unknown;
+    try {
+      await issues.releaseIssue(issue.id, { expectedAssignee: 'agB' });
+    } catch (caught) {
+      error = caught;
+    } finally {
+      releaseBlocker();
+      await blocker;
+    }
+
+    expect(error).toMatchObject({ name: 'OrgTxnTimeoutError', pgCode: '55P03' });
+    expect(Date.now() - startedAt).toBeLessThan(12_000);
+    const stillClaimed = await issues.getIssue(issue.id);
+    expect(stillClaimed?.assignee).toBe('agB');
+
+    const released = await issues.releaseIssue(issue.id, { expectedAssignee: 'agB' });
+    expect(released?.assignee).toBeNull();
+  }, 30_000);
+
   // EI-8497: updateIssue rejects a drastic body-shrink (a fat-finger overwrite of a
   // substantial description) unless the caller confirms it — nothing is written on
   // a trip, and passing confirmShrink applies it.
