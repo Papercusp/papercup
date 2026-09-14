@@ -379,6 +379,7 @@ const CRITICAL_JUDGE_AUDIT_MAX_MIN_DECISIONS = 100_000;
 const CRITICAL_JUDGE_AUDIT_MAX_SINCE_HOURS = 24;
 const CAPABILITY_READ_NAME = normalizeMcpName('capability:read');
 const CRITICAL_CAPABILITY_READ_MAX_BYTES = 4_096;
+const CRITICAL_CAPABILITY_READ_MAX_CONTENT_INDEXES = 64;
 const COORD_PRESENCE_NAME = normalizeMcpName('coord:presence');
 const COORD_ROSTER_NAME = normalizeMcpName('coord:roster');
 const CRITICAL_TARGET_OWNER_MAX_STRING_CHARS = 120;
@@ -639,7 +640,7 @@ export function isBoundedJudgeIssuesListArgs(args: unknown): boolean {
 }
 
 function isBoundedScratchCapabilityReadArgs(args: unknown): boolean {
-  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+  if (!isRecord(args)) return false;
   const record = args as Record<string, unknown>;
   const paths = [record.uri, record.file_path].filter(
     (value): value is string => typeof value === 'string' && value.length > 0,
@@ -654,6 +655,26 @@ function isBoundedScratchCapabilityReadArgs(args: unknown): boolean {
     path.startsWith('papercusp://scratch/') ||
     /(?:^|[/\\])\.papercusp[/\\]scratch[/\\].+\.(?:spill|md)$/.test(path);
   if (!scratchSpill) return false;
+
+  // Structured content selection is a valid recovery mode for stable result-door
+  // references. Keep it separate from byte paging so critical pressure admits only
+  // the bounded selector and cannot be widened with another window or evidence mode.
+  if (record.content_indexes !== undefined) {
+    if (
+      !Array.isArray(record.content_indexes) ||
+      record.content_indexes.length < 1 ||
+      record.content_indexes.length > CRITICAL_CAPABILITY_READ_MAX_CONTENT_INDEXES ||
+      record.content_indexes.some((index) => !Number.isInteger(index) || index < 0)
+    ) return false;
+    if (record.raw !== undefined && typeof record.raw !== 'boolean') return false;
+    for (const field of ['offset', 'limit', 'tail', 'byte_offset', 'byte_limit', 'evidence_class']) {
+      if (record[field] !== undefined) return false;
+    }
+    return Object.keys(record).every((field) =>
+      ['uri', 'file_path', 'content_indexes', 'raw'].includes(field),
+    );
+  }
+
   if (!Number.isInteger(record.byte_offset) || (record.byte_offset as number) < 0) return false;
   if (
     !Number.isInteger(record.byte_limit) ||
