@@ -144,7 +144,10 @@ describe('critical work-item alert reconciliation (EI-20271572335296930)', () =>
     ]);
     const resolveBatch = vi.fn(async () => ({ resolved: 1 }));
 
-    await reconcileCriticalWorkItemAlert(wi({ id: 'WI-1', state, severity: 'critical' }), { listOpen, resolveBatch });
+    await reconcileCriticalWorkItemAlert(wi({ id: 'WI-1', state, severity: 'critical', completionAuthority: 'committed' }), {
+      listOpen,
+      resolveBatch,
+    });
 
     expect(resolveBatch).toHaveBeenCalledWith([
       {
@@ -165,7 +168,7 @@ describe('critical work-item alert reconciliation (EI-20271572335296930)', () =>
       });
       const resolveBatch = vi.fn(async () => ({ resolved: 1 }));
 
-      await reconcileCriticalWorkItemAlert(wi({ id: 'WI-1', state: 'done', severity }), {
+      await reconcileCriticalWorkItemAlert(wi({ id: 'WI-1', state: 'done', severity, completionAuthority: 'committed' }), {
         listOpenBySubject,
         resolveBatch,
       });
@@ -210,6 +213,30 @@ describe('critical work-item alert reconciliation (EI-20271572335296930)', () =>
     expect(listOpen).toHaveBeenCalledOnce();
     expect(resolveBatch).not.toHaveBeenCalled();
   });
+
+  it.each(['proposed', 'validated', 'pending_human', 'invalid', null] as const)(
+    'uses terminal wording instead of settled for %s completion authority',
+    async (completionAuthority) => {
+      const listOpenBySubject = vi.fn(async (subject: string) => [
+        { msg_id: 'announce-1', subjectSignature: subject },
+      ]);
+      const resolveBatch = vi.fn(async () => ({ resolved: 1 }));
+
+      await reconcileCriticalWorkItemAlert(wi({ id: 'WI-1', state: 'done', completionAuthority }), {
+        listOpenBySubject,
+        resolveBatch,
+      });
+
+      expect(resolveBatch).toHaveBeenCalledWith([
+        {
+          msg_id: 'announce-1',
+          choice: 'work-item-terminal',
+          resolver: 'system:work-item-settle',
+          note: `WI-1 reached terminal state with completion authority '${completionAuthority ?? 'unknown'}'; its creation alert is cleared while completion evidence remains unsettled`,
+        },
+      ]);
+    },
+  );
 });
 
 // @covers INV-19

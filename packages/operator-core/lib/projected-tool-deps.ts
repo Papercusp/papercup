@@ -195,12 +195,17 @@ function operatorKernelDenial(
  * Read the authoritative session activation/control projection for one kernel
  * request. This is deliberately a narrow read of the existing
  * `session_briefs.control_state` row — it does not create a second identity or
- * policy store. Missing/unavailable rows remain UNKNOWN (null), while an
- * explicitly malformed activation or lifecycle release is fail-closed.
+ * policy store. A missing row is the legacy path; a failed authority read is
+ * NOT proof of a missing row and must not reopen an opted-in session.
  */
+interface OperatorKernelState extends KernelContextState {
+  identityLaunchRecord?: unknown;
+  authorityUnavailable?: boolean;
+}
+
 export async function readControlAnchorKernelState(
   request: KernelEnforcementRequest,
-): Promise<KernelContextState | null> {
+): Promise<OperatorKernelState | null> {
   let ownerId: string;
   try {
     ownerId = resolveAgentIdentity(request.ctx).ownerId;
@@ -217,24 +222,38 @@ export async function readControlAnchorKernelState(
 
   const { sql } = getOrgPg();
   let stateRow:
-    | { control_state: unknown; control_generation: number | string | null; workspace_id: string | null }
+    | { control_state: unknown; control_generation: number | string | null; workspace_id: string | null; launch_spec?: unknown }
     | undefined;
+  let controlReadFailed = false;
   try {
     const rows = await sql<Array<{
       control_state: unknown;
       control_generation: number | string | null;
       workspace_id: string | null;
+      launch_spec?: unknown;
     }>>`
-      SELECT control_state, control_generation, workspace_id
-        FROM harness_shared.session_briefs
-       WHERE owner_id = ${ownerId}
-         AND workspace_id = ${workspaceId}
+      SELECT b.control_state, b.control_generation, COALESCE(b.workspace_id, a.workspace_id) AS workspace_id,
+             a.launch_spec
+        FROM (
+          SELECT control_state, control_generation, workspace_id
+            FROM harness_shared.session_briefs
+           WHERE owner_id = ${ownerId} AND workspace_id = ${workspaceId}
+           LIMIT 1
+        ) b
+        FULL JOIN (
+          SELECT to_jsonb(s)->'launch_spec' AS launch_spec, s.workspace_id
+            FROM harness_shared.adv_sessions s
+           WHERE s.coord_owner_id = ${ownerId} AND s.workspace_id = ${workspaceId}
+           ORDER BY (s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC
+           LIMIT 1
+        ) a ON true
        LIMIT 1
     `;
     stateRow = rows[0];
   } catch {
-    // A rolling node may not have the control-anchor migration yet. Preserve
-    // the generic fail-soft/unavailable posture in that case.
+    // Unknown authority cannot authorize a new effect. In particular, neither
+    // a missing migration nor a failed join is evidence of a legacy session.
+    controlReadFailed = true;
     stateRow = undefined;
   }
 
@@ -278,11 +297,14 @@ export async function readControlAnchorKernelState(
   // accidentally reopen the session. The writer clears the key entirely on
   // resume; it never uses `released: null` as the clear representation.
   const hasReleaseMarker = Boolean(lifecycle && Object.prototype.hasOwnProperty.call(lifecycle, 'released'));
-  const hasAnyState = Boolean(stateRow || powerUserRevoked);
+  const hasAnyState = Boolean(stateRow || powerUserRevoked || controlReadFailed);
   if (!hasAnyState) return null;
 
   const generation = stateRow?.control_generation == null ? null : String(stateRow.control_generation);
   return {
+    ...(controlReadFailed ? { authorityUnavailable: true } : {}),
+    ...(stateRow && Object.prototype.hasOwnProperty.call(stateRow, 'launch_spec')
+      ? { identityLaunchRecord: stateRow.launch_spec } : {}),
     ...(activation ? { activation } : {}),
     ...(activation?.applied ? { appliedRevision: activation.applied } : {}),
     ...(generation ? { policyRevision: `control:${generation}` } : {}),
@@ -292,9 +314,12 @@ export async function readControlAnchorKernelState(
 
 function evaluateOperatorKernelRequest(
   request: KernelEnforcementRequest,
-  state: KernelContextState | undefined,
+  state: OperatorKernelState | undefined,
 ): KernelEnforcementResult {
   const policyRevision = state?.policyRevision ?? null;
+  if (state?.authorityUnavailable) {
+    return operatorKernelDenial('policy-unavailable', 'current session authority could not be read; no effect authorized', policyRevision);
+  }
   if (state?.revoked === true) {
     return operatorKernelDenial('revoked', 'session or identity authority has been revoked', policyRevision);
   }
@@ -359,8 +384,25 @@ function evaluateOperatorKernelRequest(
 }
 
 /** Live control-anchor resolver installed by the operator bootstrap. */
-export const controlAnchorKernelResolver: KernelEnforcementPort = async (request) =>
-  evaluateOperatorKernelRequest(request, await readControlAnchorKernelState(request) ?? undefined);
+export const controlAnchorKernelResolver: KernelEnforcementPort = async (request) => {
+  const state = await readControlAnchorKernelState(request);
+  const verdict = evaluateOperatorKernelRequest(request, state ?? undefined);
+  if (verdict.decision === 'deny') return verdict;
+  // Applied-state receipts and current policy are host-resolved. This common
+  // seat runs for indirect/rule dispatch and native adapters, before exemptions.
+  if (state && Object.prototype.hasOwnProperty.call(state, 'identityLaunchRecord')) {
+    try {
+      const { checkIdentityGrantKernel } = await import('./capability-envelope/identity-grants-port');
+      const grants = await checkIdentityGrantKernel(request, state, state.identityLaunchRecord);
+      if (grants) return grants;
+    } catch {
+      // The generic optional port catches throws as unavailable/allow. This
+      // resolver owns real authority, so it must publish an explicit denial.
+      return operatorKernelDenial('policy-unavailable', 'identity policy evaluation unavailable; no effect authorized');
+    }
+  }
+  return verdict;
+};
 
 /** Install the DB-backed resolver exactly once at the host's bootstrap seam. */
 export function installControlAnchorKernelResolver(): void {

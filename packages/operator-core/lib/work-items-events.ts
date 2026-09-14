@@ -654,7 +654,7 @@ export function selectCriticalWorkItemAlerts(
  * kinds, including cards whose prose merely mentions this item's id.
  */
 export async function reconcileCriticalWorkItemAlert(
-  wi: Pick<WorkItem, 'id' | 'family' | 'state' | 'severity'>,
+  wi: Pick<WorkItem, 'id' | 'family' | 'state' | 'severity' | 'completionAuthority'>,
   deps: CriticalWorkItemAlertDeps = {},
 ): Promise<void> {
   if (!isSettledWorkItem(wi)) return;
@@ -670,12 +670,24 @@ export async function reconcileCriticalWorkItemAlert(
   const matches = selectCriticalWorkItemAlerts(await listOpen(), wi.id);
   if (matches.length === 0) return;
 
+  // Terminal state and committed completion are separate lifecycle facts. A
+  // close with proposed/unknown authority is out of the claimable pool, but
+  // its evidence still needs settlement reconciliation; calling that row
+  // "settled" makes the alert wake look like committed completion and caused
+  // agents to trust dirty completion rows (EI-23193531614704959). Reserve the
+  // settled wording for the same authority that emits work-item:settled:<id>.
+  const committed = wi.completionAuthority === 'committed';
+  const choice = committed ? 'work-item-settled' : 'work-item-terminal';
+  const note = committed
+    ? `${wi.id} settled; its creation alert is no longer an active owner-facing condition`
+    : `${wi.id} reached terminal state with completion authority '${wi.completionAuthority ?? 'unknown'}'; its creation alert is cleared while completion evidence remains unsettled`;
+
   await resolveBatch(
     matches.map((open) => ({
       msg_id: open.msg_id,
-      choice: 'work-item-settled',
+      choice,
       resolver: CRITICAL_WORK_ITEM_ALERT_RESOLVER,
-      note: `${wi.id} settled; its creation alert is no longer an active owner-facing condition`,
+      note,
     })),
   );
 }
