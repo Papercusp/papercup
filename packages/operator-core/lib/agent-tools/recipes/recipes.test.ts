@@ -29,6 +29,8 @@ const {
   normalizedTrace,
   orgSqlMock,
   resourceSqlMock,
+  searchSimilarRecipesMock,
+  resolvePresenceFleetMock,
   NO_RUNTIME_OBSERVATIONS,
 } = vi.hoisted(() => {
   // OrchestrateResult.runtimeObservations is REQUIRED on purpose, unlike every optional field
@@ -71,6 +73,8 @@ const {
     normalizedTrace: trace,
     orgSqlMock: vi.fn(),
     resourceSqlMock: vi.fn(),
+    searchSimilarRecipesMock: vi.fn(async () => []),
+    resolvePresenceFleetMock: vi.fn(async () => ({ fleetSlug: 'live-fleet', fleetRole: 'member' })),
     NO_RUNTIME_OBSERVATIONS,
   };
 });
@@ -87,6 +91,18 @@ vi.mock('../../code-recipes-store', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getRecipe: getRecipeMock,
   recordRecipeRun: recordRecipeRunMock,
+}));
+vi.mock('../../code-recipes-search', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  searchSimilarRecipes: searchSimilarRecipesMock,
+}));
+vi.mock('../search/embedder', () => ({
+  buildQueryEmbedderResolved: vi.fn(async () => null),
+  interactiveEmbedAcquireBudgetMs: vi.fn(() => 0),
+}));
+vi.mock('../coordination/presence-fleet', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolvePresenceFleet: resolvePresenceFleetMock,
 }));
 vi.mock('../../orchestration-trace', () => ({
   normalizeExecutionTrace: normalizeExecutionTraceMock,
@@ -197,6 +213,10 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     normalizeExecutionTraceMock.mockClear();
     orgSqlMock.mockReset();
     resourceSqlMock.mockReset();
+    searchSimilarRecipesMock.mockReset();
+    searchSimilarRecipesMock.mockResolvedValue([]);
+    resolvePresenceFleetMock.mockReset();
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: 'live-fleet', fleetRole: 'member' });
     orgSqlMock.mockImplementation(async (parts: TemplateStringsArray) => {
       const query = parts.join(' ');
       if (query.includes('plan_item_claims')) return [];
@@ -217,6 +237,69 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       isSuperuser: false,
       uiClientId: 'reuser-test',
     }) as never;
+
+  it('builds search authority from live refs and ignores caller-bound context', async () => {
+    orgSqlMock.mockImplementation(async (parts: TemplateStringsArray) => {
+      const query = parts.join(' ');
+      if (query.includes('plan_item_claims')) {
+        return [{ plan_slug: 'live-plan', harness_slug: 'alpha', item_id: 'WI-live-claim' }];
+      }
+      if (query.includes('harness_shared.work_items')) {
+        return [{ harness_slug: 'alpha', item_id: 'WI-live-item' }];
+      }
+      return [];
+    });
+    resourceSqlMock.mockResolvedValue([{ resource: 'resource-live' }]);
+
+    await findTool('recipes:search').fn(
+      {
+        query: 'read the current lane',
+        context: {
+          fleet: 'spoof-fleet',
+          plan: 'spoof-plan',
+          harness: 'spoof-harness',
+          items: ['WI-spoof'],
+          resources: ['resource-spoof'],
+        },
+      },
+      mkCtx('worker'),
+    );
+
+    expect(searchSimilarRecipesMock).toHaveBeenCalledTimes(1);
+    const [, input] = searchSimilarRecipesMock.mock.calls[0] as [unknown, { recommendationContext: unknown }];
+    expect(input.recommendationContext).toEqual({
+      workspace: 'ws-test',
+      fleet: 'live-fleet',
+      harness: 'alpha',
+      plan: 'live-plan',
+      items: ['WI-live-claim', 'WI-live-item'],
+      resources: ['resource-live'],
+    });
+  });
+
+  it('fails closed for bound search authority when live refs cannot be measured', async () => {
+    orgSqlMock.mockRejectedValue(new Error('live authority unavailable'));
+
+    await findTool('recipes:search').fn(
+      {
+        query: 'read the current lane',
+        context: {
+          plan: 'spoof-plan',
+          items: ['WI-spoof'],
+          resources: ['resource-spoof'],
+        },
+      },
+      mkCtx('worker'),
+    );
+
+    expect(searchSimilarRecipesMock).toHaveBeenCalledTimes(1);
+    const [, input] = searchSimilarRecipesMock.mock.calls[0] as [unknown, { recommendationContext: unknown }];
+    expect(input.recommendationContext).toEqual({
+      workspace: 'ws-test',
+      fleet: 'live-fleet',
+      harness: 'alpha',
+    });
+  });
 
   const emptyManifest = (requirements: string[] = []) => ({
     version: 1 as const,

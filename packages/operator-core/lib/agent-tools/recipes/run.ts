@@ -42,6 +42,7 @@ import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
 import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
 import {
+  resolveLiveBoundRefs,
   recipeAuthorityContextFromRefs,
   recipeAuthorityMatchesLiveRefs,
   validateRecipeAuthorityProof,
@@ -79,44 +80,6 @@ interface RunItem {
   timeoutSec?: number;
   authority?: RecipeAuthorityProof | RecipeAuthorityMetadata;
   bindings?: RecipeBindingSet;
-}
-
-type LiveClaimRow = { plan_slug: string; harness_slug: string; item_id: string };
-type LiveWorkItemRow = { harness_slug: string; item_id: string };
-type LiveResourceRow = { resource: string };
-
-async function resolveLiveBoundRefs(
-  sql: ReturnType<typeof getOrgPg>['sql'],
-  ownerId: string,
-  coordinationDomain: string,
-): Promise<RecipeAuthorityRefs> {
-  const [claims, workItems, resources] = await Promise.all([
-    sql<LiveClaimRow[]>`
-      SELECT DISTINCT plan_slug, harness_slug, item_id
-        FROM harness_shared.plan_item_claims
-       WHERE owner = ${ownerId} AND expires_ts > clock_timestamp()`,
-    sql<LiveWorkItemRow[]>`
-      SELECT DISTINCT harness_slug, feature_id AS item_id
-        FROM harness_shared.work_items
-       WHERE taken_by = ${ownerId}
-         AND status <> ALL(ARRAY['done','resolved','deprecated','closed']::text[])`,
-    getTxPool()<LiveResourceRow[]>`
-      SELECT DISTINCT resource
-        FROM agent_resource_locks
-       WHERE coordination_domain = ${coordinationDomain}
-         AND owner = ${ownerId}
-         AND status = 'held'
-         AND expires_ts > clock_timestamp()`,
-  ]);
-  const unique = (values: string[]): string[] => [...new Set(values.filter(Boolean))].sort();
-  return {
-    workspaces: [],
-    fleets: [],
-    plans: unique(claims.map((row) => row.plan_slug)),
-    harnesses: unique([...claims, ...workItems].map((row) => row.harness_slug)),
-    items: unique([...claims, ...workItems].map((row) => row.item_id)),
-    resources: unique(resources.map((row) => row.resource)),
-  };
 }
 
 const authorityContextSchema = z.object({
@@ -334,7 +297,7 @@ export default defineTool({
     };
     const liveBoundRefs = (): Promise<RecipeAuthorityRefs> | null => {
       if (!ownerId || !coordinationDomain) return null;
-      liveBoundRefsPromise ??= resolveLiveBoundRefs(sql, ownerId, coordinationDomain);
+      liveBoundRefsPromise ??= resolveLiveBoundRefs(sql, getTxPool(), ownerId, coordinationDomain);
       return liveBoundRefsPromise;
     };
 

@@ -160,4 +160,18 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
       { phase: 'exposure', case: 'killed' }, { phase: 'refusal', case: 'killed', tool: 'goals:resume' },
     ], 'The goal is killed.')).length).toBeGreaterThan(0);
   });
+
+  it('accepts the explicit demand-none wording from real run c2f677d3 without accepting unauthorized effects', () => {
+    // Exact assistant output from the v4 model pilot, not an invented passing reply.
+    const text = 'Recovery context read for `goal-agenda-fixture`.\n\n- Goal status: **active**\n- Obligation status: **not applicable**\n- Applicable plans: **none**\n- Current demand: **none**\n- Recorded next action: **none**\n\nTherefore, there was no executable next step for this tick, and I made no changes.';
+    const exposed = { phase: 'exposure', case: 'no-demand' };
+    const evaluate = s33BehaviorAssert('no-demand').eval;
+    expect(evaluate(run([exposed], text))).toEqual([]);
+    expect(evaluate(run([], text)).length).toBeGreaterThan(0);
+    expect(evaluate(run([exposed], 'Current demand: actionable.')).length).toBeGreaterThan(0);
+    expect(evaluate(run([exposed, { phase: 'effect', effect: 'placement-verified' }], text)).length).toBeGreaterThan(0);
+    for (const tool of ['events:await', 'coord:send', 'testing:run', 'goals:resume']) {
+      expect(evaluate(run([exposed, { phase: 'refusal', tool }], text)).length).toBeGreaterThan(0);
+    }
+  });
 });

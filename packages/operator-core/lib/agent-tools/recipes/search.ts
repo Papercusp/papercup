@@ -14,11 +14,13 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { searchSimilarRecipes } from '../../code-recipes-search';
+import { resolveLiveBoundRefs, recipeAuthorityContextFromRefs, type RecipeAuthorityRefs } from '../../recipe-authority';
 import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { resolveProseProfileSelection } from '../../search/prose-vector-dims';
-import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
+import { deriveFleetMembership } from '../coordination/identity';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
-import { stripCallerOperatorScope } from '../_harness-scope';
+import { readIdentity } from '../locks/identity';
+import { getTxPool } from '../locks/su-lock-store';
 
 export default defineTool({
   name: 'recipes:search',
@@ -65,7 +67,7 @@ export default defineTool({
       })
       .strict()
       .optional()
-      .describe('Current entity context. Bound recipes fail closed unless every embedded identity matches.'),
+      .describe('Legacy compatibility context; bound authority is derived from the current live session and ignores these values.'),
   }),
   async handler(args, ctx) {
     // Bound the acquisition — .catch handles a rejection but NOT a cold-pipeline
@@ -79,12 +81,35 @@ export default defineTool({
     // and let the lexical + cosine legs do the work (toolsUsed empty ⇒ the
     // structural leg contributes 0, so ranking is purely text similarity here).
     let liveFleet: string | null = null;
+    let liveBoundRefs: RecipeAuthorityRefs | null = null;
+    let ownerId: string | null = null;
     try {
-      const ownerId = resolveAgentIdentity(ctx).ownerId;
-      liveFleet = (await resolvePresenceFleet(ownerId ?? undefined, deriveFleetMembership())).fleetSlug;
+      const identity = readIdentity(ctx);
+      ownerId = identity.ownerId;
+      liveFleet = (await resolvePresenceFleet(ownerId, deriveFleetMembership())).fleetSlug;
     } catch {
       liveFleet = null;
     }
+    if (ownerId) {
+      try {
+        const identity = readIdentity(ctx);
+        liveBoundRefs = await resolveLiveBoundRefs(getOrgPg().sql, getTxPool(), identity.ownerId, identity.coordinationDomain);
+      } catch {
+        // Do not use args.context as a fallback: without a live measurement,
+        // bound recipes must be omitted while generic recipes remain searchable.
+        liveBoundRefs = null;
+      }
+    }
+    const measuredContext = liveBoundRefs
+      ? recipeAuthorityContextFromRefs({
+          workspaces: [],
+          fleets: [],
+          plans: liveBoundRefs.plans,
+          harnesses: [],
+          items: liveBoundRefs.items,
+          resources: liveBoundRefs.resources,
+        })
+      : {};
     const recipes = await searchSimilarRecipes(
       getOrgPg().sql,
       {
@@ -94,13 +119,10 @@ export default defineTool({
         embedding: null,
         limit: args.limit ?? 5,
         recommendationContext: {
-          // EI-20186804943808838: the operator-scope `'*'` sentinel now SATISFIES a
-          // concrete harness binding, so it must only ever be asserted by the SESSION,
-          // never by the caller. The three server-derived values below already win over
-          // `args.context`; this additionally drops a caller-supplied sentinel so it
-          // cannot survive in the gap where ctx carries no harness. A caller may still
-          // pass a CONCRETE harness, exactly as before.
-          ...stripCallerOperatorScope(args.context),
+          // EI-23083788269370466: caller-supplied plan/item/resource context is
+          // not authority. Use only live claims/work-items/resource locks, and
+          // server-derived workspace/fleet/harness scope.
+          ...measuredContext,
           ...(ctx.workspaceId ? { workspace: ctx.workspaceId } : {}),
           ...(liveFleet ? { fleet: liveFleet } : {}),
           ...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),

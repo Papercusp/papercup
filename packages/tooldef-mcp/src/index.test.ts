@@ -9,6 +9,7 @@ import {
   urlFromExtra,
   headersFromExtra,
   dispatchProjectedToolToMcp,
+  isDispatchValidationFailure,
 } from './index';
 
 const ctx = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext => ({
@@ -83,6 +84,35 @@ describe('dispatchProjectedToolToMcp', () => {
     const r = await dispatchProjectedToolToMcp(tool({ agentRoles: ['architect'] }), 'fix.tool', {}, ctx({ role: 'worker' }), {});
     expect(r.isError).toBe(true);
     expect(r.structuredContent).toBeUndefined();
+  });
+
+  it('marks only mapper-produced validation refusals, without exposing the marker on the wire', async () => {
+    const invalid = await dispatchProjectedToolToMcp(
+      tool({
+        fn: async () => {
+          const error = new Error('invalid_args: value: expected string');
+          Object.defineProperty(error, 'name', { value: 'InvalidInputError' });
+          throw error;
+        },
+      }),
+      'fix.tool',
+      {},
+      ctx(),
+      {},
+    );
+    expect(isDispatchValidationFailure(invalid)).toBe(true);
+    expect(isDispatchValidationFailure({ ...invalid })).toBe(true);
+    expect(JSON.stringify(invalid)).not.toContain('dispatch-validation');
+
+    const handlerError = await dispatchProjectedToolToMcp(
+      tool({ fn: async () => ({ content: [{ type: 'text', text: 'business failure' }], isError: true }) }),
+      'fix.tool',
+      {},
+      ctx(),
+      {},
+    );
+    expect(handlerError.isError).toBe(true);
+    expect(isDispatchValidationFailure(handlerError)).toBe(false);
   });
 
   it('still prefers the target-supplied structuredContent on success (unchanged)', async () => {

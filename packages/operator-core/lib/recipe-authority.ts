@@ -9,6 +9,7 @@
  * content revision that recipes:run can revalidate.
  */
 import { createHash } from 'node:crypto';
+import type postgres from 'postgres';
 import { checkScript, ensureParseCheckReady, type StaticToolCall } from '@papercusp/tooldef';
 import { isAllHarnessSentinel } from './agent-tools/_harness-scope';
 
@@ -28,6 +29,56 @@ export interface RecipeAuthorityContext {
   harness?: string | null;
   items?: string[] | null;
   resources?: string[] | null;
+}
+
+type LiveClaimRow = { plan_slug: string; harness_slug: string; item_id: string };
+type LiveWorkItemRow = { harness_slug: string; item_id: string };
+type LiveResourceRow = { resource: string };
+
+/**
+ * Read the reuser's current plan/item/resource authority from the live
+ * coordination stores. This belongs beside the static authority logic so both
+ * recipes:search and recipes:run use the same authoritative measurement rather
+ * than allowing either call site to drift (EI-23083788269370466).
+ *
+ * A caller must supply both SQL handles because the org work-item/plan claims
+ * and host resource locks are intentionally stored in separate pools. The
+ * caller owns the failure policy: search fails closed for bound recommendations
+ * when this read rejects, while run reports an execution error.
+ */
+export async function resolveLiveBoundRefs(
+  sql: postgres.Sql,
+  resourceSql: postgres.Sql,
+  ownerId: string,
+  coordinationDomain: string,
+): Promise<RecipeAuthorityRefs> {
+  const [claims, workItems, resources] = await Promise.all([
+    sql<LiveClaimRow[]>`
+      SELECT DISTINCT plan_slug, harness_slug, item_id
+        FROM harness_shared.plan_item_claims
+       WHERE owner = ${ownerId} AND expires_ts > clock_timestamp()`,
+    sql<LiveWorkItemRow[]>`
+      SELECT DISTINCT harness_slug, feature_id AS item_id
+        FROM harness_shared.work_items
+       WHERE taken_by = ${ownerId}
+         AND status <> ALL(ARRAY['done','resolved','deprecated','closed']::text[])`,
+    resourceSql<LiveResourceRow[]>`
+      SELECT DISTINCT resource
+        FROM agent_resource_locks
+       WHERE coordination_domain = ${coordinationDomain}
+         AND owner = ${ownerId}
+         AND status = 'held'
+         AND expires_ts > clock_timestamp()`,
+  ]);
+  const unique = (values: string[]): string[] => [...new Set(values.filter(Boolean))].sort();
+  return {
+    workspaces: [],
+    fleets: [],
+    plans: unique(claims.map((row) => row.plan_slug)),
+    harnesses: unique([...claims, ...workItems].map((row) => row.harness_slug)),
+    items: unique([...claims, ...workItems].map((row) => row.item_id)),
+    resources: unique(resources.map((row) => row.resource)),
+  };
 }
 
 /**

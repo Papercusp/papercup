@@ -225,7 +225,7 @@ const verifyFreshLaunchStartedMock = vi.fn(async (_args: unknown) => ({
   // null means "not yet determinable", which is the stub's honest answer.
   agentStarted: null as boolean | null,
   waitedMs: 0,
-  sessions: [] as Array<{ ownerId: string; sessionId?: string | null; successfulCalls: number }>,
+  sessions: [] as Array<{ ownerId: string; advSessionId?: number; sessionId?: string | null; successfulCalls: number }>,
   note: 'test launch verification stub',
 }));
 const verifyResumeStartedMock = vi.fn(async (_ownerId: unknown, opts?: { expectedSessionId?: string | null }) => ({
@@ -300,7 +300,7 @@ beforeEach(() => {
   verifyFreshLaunchStartedMock.mockResolvedValue({
     agentStarted: null,
     waitedMs: 0,
-    sessions: [] as Array<{ ownerId: string; sessionId?: string | null; successfulCalls: number }>,
+    sessions: [] as Array<{ ownerId: string; advSessionId?: number; sessionId?: string | null; successfulCalls: number }>,
     note: 'test launch verification stub',
   });
   verifyResumeStartedMock.mockResolvedValue({

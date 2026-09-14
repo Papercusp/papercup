@@ -124,6 +124,73 @@ describe('prescribedRecurrenceGuardCoverageGap', () => {
     expect(prescribedRecurrenceGuardCoverageGap(item, evidence)).toBeUndefined();
   });
 
+  it('credits a passing replacement test when the prescribed test path is explicitly deleted', () => {
+    const deletedPath =
+      'packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.integration.test.ts';
+    const replacementPath = 'packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts';
+
+    expect(
+      prescribedRecurrenceGuardCoverageGap(
+        {
+          title: `Reproduce and repair ${deletedPath}`,
+          summary: 'The fix must add a recurrence guard and preserve effective replacement coverage.',
+        },
+        {
+          summary: 'Removed the obsolete wrapper; the replacement test remains effective.',
+          verification: {
+            filesDeleted: [deletedPath],
+            filesChanged: [replacementPath],
+            testsRun: `npm run test:file -- ${replacementPath}`,
+            testResult: `PASS ${replacementPath}: 3 passed, 0 failed`,
+          },
+        },
+      ),
+    ).toBeUndefined();
+  });
+
+  it('keeps warning when a deleted prescribed test has no passing replacement evidence', () => {
+    const deletedPath =
+      'packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.integration.test.ts';
+    const replacementPath = 'packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts';
+
+    expect(
+      prescribedRecurrenceGuardCoverageGap(
+        {
+          title: `Reproduce and repair ${deletedPath}`,
+          summary: 'The fix must add a recurrence guard and preserve effective replacement coverage.',
+        },
+        {
+          summary: 'Removed the obsolete wrapper.',
+          filesDeleted: [deletedPath],
+          testsRun: `npm run test:file -- ${replacementPath}`,
+          testResult: `${replacementPath}: 1 failed`,
+        },
+      ),
+    ).toBeDefined();
+  });
+
+  it('keeps warning when replacement evidence explicitly disclaims the guard', () => {
+    const deletedPath =
+      'packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.integration.test.ts';
+    const replacementPath = 'packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts';
+
+    expect(
+      prescribedRecurrenceGuardCoverageGap(
+        {
+          title: `Reproduce and repair ${deletedPath}`,
+          summary: 'The fix must add a recurrence guard and preserve effective replacement coverage.',
+        },
+        {
+          summary: 'Removed the obsolete wrapper; the replacement test was not added.',
+          filesDeleted: [deletedPath],
+          filesChanged: [replacementPath],
+          testsRun: `npm run test:file -- ${replacementPath}`,
+          testResult: `${replacementPath}: 3 passed, 0 failed`,
+        },
+      ),
+    ).toBeDefined();
+  });
+
   // EI-20551121122206657 — the three cases below pin the PER-PART matching rule. The first
   // is the observed false alarm; the second is the flag placement the tool's own description
   // recommends; the third is the calibration that keeps the fix from being a blanket
