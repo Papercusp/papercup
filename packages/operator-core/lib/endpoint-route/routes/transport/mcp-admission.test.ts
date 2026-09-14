@@ -33,6 +33,8 @@ import {
   isBoundedLoopCheckpointArgs,
   isBoundedActivityToolLogArgs,
   isBoundedSessionsTimelineArgs,
+  isBoundedBackupSnapshotListArgs,
+  isBoundedLocksListArgs,
   isBoundedLocksQueueArgs,
   isBoundedLocksReleaseArgs,
   isBoundedSessionsSearchArgs,
@@ -146,6 +148,62 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     });
     expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
     expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    ['canonical', 'backup:snapshot_list'],
+    ['underscore', 'backup_snapshot_list'],
+    ['mcp-advertised hyphen', 'mcp__papercusp-su__backup_snapshot_list'],
+    ['mcp-advertised underscore', 'mcp__papercusp_su__backup_snapshot_list'],
+  ])('does NOT shed a bounded backup:snapshot_list recovery read under critical pressure: %s', (_label, name) => {
+    const args = { limit: 50 };
+    expect(isBoundedBackupSnapshotListArgs(args)).toBe(true);
+    const body = toolsCall(13, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('admits omitted/default backup:snapshot_list but keeps broad forms sheddable', () => {
+    for (const args of [undefined, {}]) {
+      expect(isBoundedBackupSnapshotListArgs(args)).toBe(true);
+      expect(classifyMcpBody(toolsCall(14, 'backup:snapshot_list', args as Record<string, unknown>))).toEqual({
+        sheddable: false,
+        id: null,
+      });
+    }
+    const omitted = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 15,
+      method: 'tools/call',
+      params: { name: 'backup:snapshot_list' },
+    });
+    expect(classifyMcpBody(omitted)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(omitted)).toBe('diagnostic');
+
+    for (const args of [{ limit: 0 }, { limit: 51 }, { limit: 500 }, { limit: 50, unexpected: true }, null]) {
+      expect(isBoundedBackupSnapshotListArgs(args)).toBe(false);
+      expect(classifyMcpBody(toolsCall(16, 'backup:snapshot_list', args as Record<string, unknown>))).toEqual({
+        sheddable: true,
+        id: 16,
+      });
+      expect(classifyMcpRequest(toolsCall(16, 'backup:snapshot_list', args as Record<string, unknown>))).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a bounded backup:snapshot_list through deferred tools:invoke aliases', () => {
+    for (const name of ['backup_snapshot_list', 'mcp__papercusp_su__backup_snapshot_list']) {
+      const body = JSON.stringify({
+        jsonrpc: '2.0',
+        id: 17,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: { name, args: { limit: 50 } },
+        },
+      });
+      expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+      expect(classifyMcpRequest(body)).toBe('diagnostic');
+    }
   });
 
   it.each([
@@ -268,6 +326,52 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     ]) {
       expect(isBoundedLocksQueueArgs(args)).toBe(false);
       expect(classifyMcpBody(toolsCall(13, 'locks:queue', args))).toEqual({ sheddable: true, id: 13 });
+    }
+  });
+
+  it.each([
+    ['exact resource', { resource: 'release-deploy' }],
+    ['bounded browse', { limit: 50 }],
+    ['bounded filtered browse', { q: 'git-sync', limit: 50 }],
+  ])('does NOT shed a bounded locks:list recovery read under critical pressure: %s', (_label, args) => {
+    expect(isBoundedLocksListArgs(args)).toBe(true);
+    const body = toolsCall(18, 'locks:list', args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps broad, mixed-selector, and oversized locks:list reads sheddable under critical pressure', () => {
+    for (const args of [
+      {},
+      { q: 'git-sync' },
+      { resource: 'release-deploy', q: 'release' },
+      { resource: 'release-deploy', limit: 1 },
+      { limit: 0 },
+      { limit: 51 },
+      { limit: 500 },
+      { q: '', limit: 50 },
+      { limit: 50, unexpected: true },
+    ]) {
+      expect(isBoundedLocksListArgs(args)).toBe(false);
+      const body = toolsCall(19, 'locks:list', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 19 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a bounded locks:list through deferred tools:invoke aliases', () => {
+    for (const name of ['locks_list', 'mcp__papercusp_su__locks_list']) {
+      const body = JSON.stringify({
+        jsonrpc: '2.0',
+        id: 20,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: { name, args: { resource: 'release-deploy' } },
+        },
+      });
+      expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+      expect(classifyMcpRequest(body)).toBe('diagnostic');
     }
   });
 
@@ -2520,6 +2624,16 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     expect(isBoundedCoordInboxArgs({ directed: true, unanswered_only: true, limit: 10 })).toBe(true);
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('coord:inbox');
+  });
+  it('admits a bounded backup:snapshot_list recovery read under critical pressure', async () => {
+    const req = post(toolsCall(12, 'backup:snapshot_list', { limit: 50 }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('backup:snapshot_list');
+  });
+  it('admits a bounded locks:list recovery read under critical pressure', async () => {
+    const req = post(toolsCall(13, 'locks:list', { resource: 'release-deploy' }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('locks:list');
   });
   it('still sheds an unfiltered coord:inbox read under critical pressure', async () => {
     const shed = await evaluateAdmission(post(toolsCall(11, 'coord:inbox')), 'critical', true);
