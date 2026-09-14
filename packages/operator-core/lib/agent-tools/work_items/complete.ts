@@ -3563,14 +3563,6 @@ async function completeOne(
       contractVersion: ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION,
     };
   }
-  if (it.validateOnly) {
-    return {
-      ok: true,
-      id: it.id,
-      validationOnly: true,
-      completionContract: completionContract(),
-    };
-  }
   // P-004: the whole decision, in one call. `completionEvidenceFromRecord` returning
   // `undefined` (no evidence fields supplied at all) and returning a PARTIAL object
   // (P-002 measured 4.2% of evidence-bearing rows carry no `verifiedHow`) both land
@@ -4017,6 +4009,23 @@ async function completeOne(
     : undefined;
   const completionAuthority =
     committedContentIdentityMissing || terminalCriteriaUnmet ? 'proposed' : authorityWithFindings;
+  // EI-23241378625604548: validateOnly must use the same read-only settlement verdict as
+  // the real close. Returning above this point exposed only the contract requirements and
+  // skipped the findings that can downgrade an otherwise complete evidence record (for
+  // example, a deferred code-shaped close with no requirement disposition). Keep this
+  // boundary before every persistence/finish leg, and expose the finding that explains any
+  // downgrade so callers can repair the exact input before submitting the real close.
+  if (it.validateOnly) {
+    return {
+      ok: true,
+      id: it.id,
+      validationOnly: true,
+      completionAuthority,
+      countsTowardBurnDown: countsTowardBurnDown(completionAuthority, true, isAbandonedClose),
+      ...(completionEvidenceFindings ? { completionEvidenceFindings } : {}),
+      completionContract: completionContract(),
+    };
+  }
   // EI-20268156880922192: the completion record is durable, but a cited
   // session-local scratch path or account-local artifact URL is not. Scan the
   // exact persisted evidence shape, warn after recording, and fail open if the
