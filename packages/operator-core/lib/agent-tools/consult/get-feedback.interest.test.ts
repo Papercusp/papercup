@@ -154,3 +154,13 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
     );
   });
 });
+
+describe('consult:get_feedback requester guidance', () => {
+  it('clearly distinguishes opening a consult from reading an existing conversation', () => {
+    expect((tool as any).description).toContain('request/creation verb');
+    expect((tool as any).description).toContain('not a reader for an existing conversation');
+    expect((tool as any).description).toContain('conversations:get { id }');
+    expect((tool as any).guidance.notWhen).toContain('Reading an existing conversation');
+    expect((tool as any).guidance.chaining).toContain('does not read an existing conversation');
+  });
+});

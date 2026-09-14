@@ -37,14 +37,14 @@ const ok = (payload: Record<string, unknown>) => ({ data: payload });
 export default defineTool({
   name: 'consult:get_feedback',
   description:
-    'Ask "who knows more than me about THIS?" — discovers a qualified peer from cross-agent history, opens a bounded consult thread, and wakes the selected responder. ARCHIVE-FIRST: closed-consult matches are served instantly. Below the relevance floor, returns an honest no_qualified_responder instead of inventing expertise.',
+    'Open a new feedback consult for a question — this is a request/creation verb, not a reader for an existing conversation. It discovers a qualified peer from cross-agent history, opens a bounded consult thread, and wakes the selected responder. To read a known conversation or consult thread, use conversations:get { id }. ARCHIVE-FIRST: closed-consult matches are served instantly. Below the relevance floor, returns an honest no_qualified_responder instead of inventing expertise.',
   guidance: {
     when:
-      'A peer may already know the answer from their transcripts, code, or prior debugging, and you do not know who. Use this before re-deriving it.',
+      'You need a new answer and a peer may already know it from their transcripts, code, or prior debugging, but you do not know who. Use this before re-deriving it.',
     notWhen:
-      'Live state (query locks:queue / fleet:assignments / work_items:get); owner decisions (coord:ask-owner); a known agent (coord:send / coord:message-agent); or assigning work (consults advise, never hand off).',
+      'Reading an existing conversation or consult thread (use conversations:get { id }); live state (query locks:queue / fleet:assignments / work_items:get); owner decisions (coord:ask-owner); a known agent (coord:send / coord:message-agent); or assigning work (consults advise, never hand off).',
     chaining:
-      "get_feedback → served_from_archive? use `archive` or re-call with archive_floor: 2 → latency_contract:'hard-blocked' parks on park_key until reply → conversations:get { id } reads the thread → declines/expiries advance the cascade; re-call with exclude:[…] only after terminal 'declined'/'expired'. A queued wake proves delivery, not pickup; verify pickup when it matters.",
+      "get_feedback opens a new consult; it does not read an existing conversation. For a known id, use conversations:get { id } first. Then, for a new request: served_from_archive? use `archive` or re-call with archive_floor: 2 → latency_contract:'hard-blocked' parks on park_key until reply → conversations:get { id } reads the thread → declines/expiries advance the cascade; re-call with exclude:[…] only after terminal 'declined'/'expired'. A queued wake proves delivery, not pickup; verify pickup when it matters.",
     returns:
       '{ verdict, conversation_id, thread_id, responder, responder_via (floor | minimum), remaining_candidates, origin_task_ref, latency_contract, expires_at, wake:{ attempted, queued, pickupConfirmed, woke }, park_key, archive? (served_from_archive), hint }',
   },
@@ -52,7 +52,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    question: hardText(LIMITS.ANNOTATION).describe('The question. Name concrete files/symbols where relevant — authorship of the code in question is a routing signal.'),
+    question: hardText(LIMITS.ANNOTATION).describe('The new question to route. This tool opens a new consult; to read an existing conversation, use conversations:get { id }. Name concrete files/symbols where relevant — authorship of the code in question is a routing signal.'),
     tried: hardText(LIMITS.ANNOTATION).optional().describe('What you already tried (grounds the responder; avoids re-suggesting it).'),
     observed: hardText(LIMITS.ANNOTATION).optional().describe('What you observed (evidence, not interpretation).'),
     decision_at_stake: hardText(LIMITS.ANNOTATION).optional().describe('The decision this consult informs — the requester owns it (advice, not consensus).'),

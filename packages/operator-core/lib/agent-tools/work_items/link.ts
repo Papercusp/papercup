@@ -61,14 +61,26 @@ const itemSpec = z.object({
   satisfaction: z
     .enum(['settled', 'success'])
     .optional()
-    .describe('blocks-only outcome requirement; omitted defaults to settled'),
-});
+    .describe(
+      'blocks-only outcome requirement; valid with target_id (or target_kind:"issue"/"feature" + target_ref); plan_item/event/topic targets cannot carry satisfaction; omitted defaults to settled',
+    ),
+}).refine(
+  (item) =>
+    !item.satisfaction ||
+    Boolean(item.target_id) ||
+    ((item.target_kind === 'issue' || item.target_kind === 'feature') && Boolean(item.target_ref)),
+  {
+    path: ['satisfaction'],
+    message:
+      'satisfaction requires a work-item target: use target_id (or target_kind issue/feature + target_ref), not a plan_item/event/topic target',
+  },
+);
 
 export default defineTool({
   name: 'work_items:link',
   profile: 'engineer',
   description:
-    'Link one OR many work-items to targets — single inline { id, rel, target_id } or items:[{ id, rel, target_id | target_kind+target_ref, remove? }] (a source can fan out to many targets in one call). DIRECTION — the source `id` is always the subject: src BLOCKS dst (dst is the one held up), src FIXES dst, src DUPLICATES dst (dst stays canonical), src INVESTIGATES dst, src is ABOUT dst, src was CAUSED-BY dst, src REVISES dst; `relates` is symmetric. Targets are polymorphic: another work-item (target_id) or any coord ObjectRef (target_kind+target_ref — a plan_item, event key, topic). Blocking works across kinds and is default-on validated against the complete typed candidate graph; cycles, endpoint defects, and newly stranded work are rejected atomically with exact evidence. Pass remove:true to unlink. Returns { ok, results:[{ ok, id, rel, dst? | error }], counts }.',
+    'Link one OR many work-items to targets — single inline { id, rel, target_id } or items:[{ id, rel, target_id | target_kind+target_ref, remove? }] (a source can fan out to many targets in one call). DIRECTION — the source `id` is always the subject: src BLOCKS dst (dst is the one held up), src FIXES dst, src DUPLICATES dst (dst stays canonical), src INVESTIGATES dst, src is ABOUT dst, src was CAUSED-BY dst, src REVISES dst; `relates` is symmetric. Targets are polymorphic: another work-item (target_id) or any coord ObjectRef (target_kind+target_ref — a plan_item, event key, topic). `satisfaction` is valid only for `blocks` edges whose target is a work-item (`target_id` or target_kind `issue`/`feature`); plan_item/event/topic targets cannot carry satisfaction. Blocking works across kinds and is default-on validated against the complete typed candidate graph; cycles, endpoint defects, and newly stranded work are rejected atomically with exact evidence. Pass remove:true to unlink. Returns { ok, results:[{ ok, id, rel, dst? | error }], counts }.',
   guidance: {
     when: 'For typed dependencies/relationships. Pick: `blocks` = src gates dst (only scheduler rel; refuses cycles, bad endpoints, and newly stranded work); `fixes` = src resolves dst; `duplicates` = src duplicates dst; `investigates` = src is the digging/diagnosis task for dst; `about` = src concerns a target without fixing/investigating; `caused-by` = src exists because of dst; `revises` = src is a newly-filed revision of dst; `relates` = worth a cross-reference. Use items:[…] for several edges.',
     chaining: 'work_items:get both sides → work_items:link { rel:"blocks", target_id } (or items:[…]).',
@@ -94,7 +106,9 @@ export default defineTool({
       satisfaction: z
         .enum(['settled', 'success'])
         .optional()
-        .describe('blocks-only outcome requirement; omitted defaults to settled'),
+        .describe(
+          'blocks-only outcome requirement; valid with target_id (or target_kind:"issue"/"feature" + target_ref); plan_item/event/topic targets cannot carry satisfaction; omitted defaults to settled',
+        ),
       items: z.array(itemSpec).min(1).max(100).optional().describe('create many edges at once'),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.rel)), {
@@ -104,7 +118,18 @@ export default defineTool({
       // Name them exactly; never elide a required field name in an error hint.
       message:
         'pass { id, rel, target_id } (or target_kind + target_ref instead of target_id) for one, or items:[…] for many',
-    }),
+    })
+    .refine(
+      (args) =>
+        !args.satisfaction ||
+        Boolean(args.target_id) ||
+        ((args.target_kind === 'issue' || args.target_kind === 'feature') && Boolean(args.target_ref)),
+      {
+        path: ['satisfaction'],
+        message:
+          'satisfaction requires a work-item target: use target_id (or target_kind issue/feature + target_ref), not a plan_item/event/topic target',
+      },
+    ),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const items = args.items?.length

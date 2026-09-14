@@ -63,6 +63,47 @@ describe('work_items:link args schema (EI-7049)', () => {
   it("accepts the feedback-lineage rel='revises'", () => {
     expect(tool.args.safeParse({ id: 'EI-2', rel: 'revises', target_id: 'EI-1' }).success).toBe(true);
   });
+
+  it('documents and rejects satisfaction for non-work-item ObjectRef targets', () => {
+    expect(tool.description).toMatch(/plan_item\/event\/topic targets cannot carry satisfaction/i);
+
+    const single = tool.args.safeParse({
+      id: 'WI-1',
+      rel: 'blocks',
+      target_kind: 'plan_item',
+      target_ref: 'plan#P-1',
+      satisfaction: 'success',
+    });
+    expect(single.success).toBe(false);
+    if (!single.success) {
+      expect(single.error.issues.some((issue) => /work-item target.*target_id/i.test(issue.message))).toBe(true);
+    }
+
+    const bulk = tool.args.safeParse({
+      items: [
+        {
+          id: 'WI-1',
+          rel: 'blocks',
+          target_kind: 'event',
+          target_ref: 'work-item:done:WI-2',
+          satisfaction: 'settled',
+        },
+      ],
+    });
+    expect(bulk.success).toBe(false);
+  });
+
+  it('allows satisfaction for an explicitly typed issue/feature target', () => {
+    expect(
+      tool.args.safeParse({
+        id: 'WI-1',
+        rel: 'blocks',
+        target_kind: 'issue',
+        target_ref: 'EI-2',
+        satisfaction: 'success',
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe('work_items:link handler (bulk keyed-array)', () => {
