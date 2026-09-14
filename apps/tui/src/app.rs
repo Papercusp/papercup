@@ -238,6 +238,8 @@ pub enum Action {
         launch: crate::su_session::SuSessionLaunchOptions,
         initial_turn: Option<String>,
     },
+    /// Read-only connection recheck for the new-session form.
+    CheckSessionSetup,
     /// Open the fresh agent-chat identity already created by the Sessions
     /// Continue/Fork route. Unlike `OpenSuSession`, this must never create a
     /// second chat row when there is no initial owner turn.
@@ -2029,6 +2031,11 @@ pub struct App {
     pub session_browser: SessionBrowser,
     /// The open model/account picker overlay (P-005 final lane, WI-41189).
     pub session_picker: Option<crate::session_config::SessionPicker>,
+    pub session_setup: Option<crate::session_config::SessionSetup>,
+    /// Enabled by the interactive host. Reducer-only consumers may construct
+    /// an already-configured App without simulating onboarding.
+    pub require_session_setup: bool,
+    pub session_setup_accepted: bool,
     /// Model override for THIS chat's turns. `None` ⇒ send no `model` at all and
     /// let the server apply the surface default.
     pub chat_model: Option<String>,
@@ -2665,6 +2672,9 @@ impl App {
             session_mru: Vec::new(),
             session_browser: SessionBrowser::default(),
             session_picker: None,
+            session_setup: None,
+            require_session_setup: false,
+            session_setup_accepted: false,
             chat_model: None,
             chat_effort: None,
             chat_account: None,
@@ -3383,6 +3393,7 @@ impl App {
     }
 
     pub fn reset_agent_chat_binding(&mut self) {
+        self.session_setup_accepted = false;
         self.chat_load_token = self.chat_load_token.saturating_add(1);
         self.agent_chat_id = None;
         self.agent_chat_usage = crate::agent_chats::AgentChatUsage::default();
@@ -3492,6 +3503,11 @@ impl App {
         let head_sequence = snapshot.last_sequence;
         state.identity = Some(snapshot.descriptor.identity.clone());
         state.lifecycle = snapshot.descriptor.lifecycle;
+        if state.lifecycle == crate::su_session::SuSessionLifecycleState::Ready
+            && self.su_pending_turn.is_none()
+        {
+            self.chat_streaming = false;
+        }
         state.descriptor = Some(snapshot.descriptor);
         // The replay cursor is the FLOOR of what the host still retains, never
         // its head. Setting it to the head (as this did until P-010) declared the
@@ -3639,6 +3655,11 @@ impl App {
                 let runtime_was_replaced = state.reconciliation
                     == crate::su_session::SuSessionReconciliation::RuntimeReplaced;
                 state.lifecycle = lifecycle;
+                if lifecycle == crate::su_session::SuSessionLifecycleState::Ready
+                    && self.su_pending_turn.is_none()
+                {
+                    self.chat_streaming = false;
+                }
                 if let Some(descriptor) = state.descriptor.as_mut() {
                     descriptor.lifecycle = lifecycle;
                 }
@@ -4320,6 +4341,15 @@ impl App {
     /// reads the conversation's persisted class (P-013) and is not reproducible
     /// by eye at a second call site.
     fn dispatch_chat_turn(&mut self, draft: String) -> Option<Action> {
+        if self.require_session_setup && !self.session_setup_accepted
+            && self.agent_chat_id.is_none() && self.su_session.is_none()
+        {
+            self.open_session_setup();
+            if let Some(setup) = self.session_setup.as_mut() {
+                setup.message = draft;
+            }
+            return Some(Action::CheckSessionSetup);
+        }
         let submitted = self.attachments.attach_to_prompt(&draft);
         if submitted.trim().is_empty() {
             return None;
@@ -5296,7 +5326,7 @@ impl App {
         let open_selection = self.session_picker.as_ref().and_then(|picker| {
             matches!(
                 picker.axis,
-                PickerAxis::Model | PickerAxis::Effort | PickerAxis::Mode
+                PickerAxis::Model | PickerAxis::Effort | PickerAxis::Mode | PickerAxis::Backend
             )
             .then(|| {
                 (
@@ -5309,6 +5339,9 @@ impl App {
             })
         });
         self.operator_config = c;
+        if let Some(setup) = self.session_setup.as_mut() {
+            setup.note = None;
+        }
         let Some((axis, selected_id)) = open_selection else {
             return;
         };
@@ -5316,6 +5349,7 @@ impl App {
             PickerAxis::Model => self.open_model_picker(),
             PickerAxis::Effort => self.open_effort_picker(),
             PickerAxis::Mode => self.open_mode_picker(),
+            PickerAxis::Backend => self.open_backend_picker(),
             _ => unreachable!("only operator-config-backed pickers are captured above"),
         }
         if let (Some(selected_id), Some(picker)) = (selected_id, self.session_picker.as_mut()) {
@@ -5430,7 +5464,21 @@ impl App {
             .agent
             .as_ref()
             .and_then(|a| a.config.surface_models.get("operator").cloned());
-        let opts = crate::session_config::model_options(&tiers, surface_default.as_deref());
+        let mut opts = crate::session_config::model_options(&tiers, surface_default.as_deref());
+        if let Some(setup) = &self.session_setup {
+            opts[0].label = "Server default model".into();
+            for (option, tier) in opts.iter_mut().skip(1).zip(&tiers) {
+                if tier.backend.as_deref().is_some_and(|backend| {
+                    backend != setup.backend.as_str()
+                        && !(backend == "claude-code"
+                            && setup.backend == crate::su_session::SuSessionBackend::Claude)
+                }) {
+                    option.disabled = true;
+                    option.hint = Some(format!("This tier uses {}; choose a {} tier.",
+                        tier.backend.as_deref().unwrap_or("another backend"), setup.backend.label()));
+                }
+            }
+        }
         self.session_picker = Some(crate::session_config::SessionPicker::new(
             crate::session_config::PickerAxis::Model,
             opts,
@@ -5440,24 +5488,29 @@ impl App {
     pub fn open_backend_picker(&mut self) {
         use crate::session_config::{PickerAxis, PickerOption, SessionPicker};
         use crate::su_session::SuSessionBackend;
-        let bound = self.agent_chat_id.is_some() || self.su_session.is_some();
+        let bound = self.session_setup.is_none()
+            && (self.agent_chat_id.is_some() || self.su_session.is_some());
         let options = [
             SuSessionBackend::Claude,
             SuSessionBackend::Codex,
             SuSessionBackend::Omp,
         ]
         .into_iter()
-        .map(|backend| PickerOption {
+        .map(|backend| {
+            let missing = self.session_setup.is_some() && !self.setup_backend_available(backend);
+            PickerOption {
             id: backend.label().to_ascii_lowercase(),
             label: backend.label().to_string(),
-            hint: Some(if bound {
+            hint: Some(if missing {
+                "The selected operator does not report this backend installed.".into()
+            } else if bound {
                 "This conversation keeps its saved backend. Open a new conversation to change it."
                     .into()
             } else {
                 "Use this backend for the new SU session.".into()
             }),
-            disabled: bound,
-        })
+            disabled: bound || missing,
+        }})
         .collect();
         self.session_picker = Some(SessionPicker::new(PickerAxis::Backend, options));
     }
@@ -5540,6 +5593,28 @@ impl App {
                 return Action::Render;
             }
             Ok((id, label)) => {
+                if let Some(setup) = self.session_setup.as_mut() {
+                    use crate::session_config::{self, PickerAxis};
+                    match axis {
+                        PickerAxis::Backend => {
+                            setup.backend = match id.as_str() {
+                                "codex" => crate::su_session::SuSessionBackend::Codex,
+                                "omp" => crate::su_session::SuSessionBackend::Omp,
+                                _ => crate::su_session::SuSessionBackend::Claude,
+                            };
+                            setup.model = None;
+                            setup.effort = None;
+                        }
+                        PickerAxis::Model => setup.model = session_config::model_pick(&id),
+                        PickerAxis::Effort => setup.effort = session_config::effort_pick(&id),
+                        PickerAxis::Account => setup.account = session_config::chat_account_pick(&id),
+                        PickerAxis::Mode => setup.mode = session_config::mode_pick(&id),
+                        PickerAxis::Conversation => return Action::Render,
+                    }
+                    setup.note = Some(format!("Selected {label}"));
+                    self.session_picker = None;
+                    return Action::Render;
+                }
                 match axis {
                     crate::session_config::PickerAxis::Conversation => {
                         if let Some(chat_id) = id.strip_prefix("chat:") {
@@ -6561,12 +6636,7 @@ impl App {
         PaneSpec::new(argv).titled(format!("pui · {agent}"))
     }
 
-    /// The ONE way PUI starts a new SU session: the real PSU interactive
-    /// picker, in a workbench pane. Role is fixed to `su` and `--tui=pui`
-    /// marks the caller origin so PSU hides its recursive PUI destination
-    /// (pui-psu-exact-launch-and-task-latency-2026-09-01 D-001/D-002). PUI
-    /// passes NO backend/model/effort/account/mode/carry — those menus are
-    /// PSU's, and this argv is asserted verbatim by the D-002 test.
+    /// Explicit Advanced PSU launcher. Ordinary sessions use PUI's own setup.
     pub fn new_su_session_spec() -> PaneSpec {
         let argv = vec![
             "psu".to_string(),
@@ -6576,25 +6646,200 @@ impl App {
         PaneSpec::new(argv).titled("psu · new SU session")
     }
 
-    /// Sessions-owned `n` (D-003): open the PSU picker pane, record it in the
-    /// crew roster like every other launch, and arm a bounded refresh burst so
-    /// the Sessions list adopts the session as soon as PSU registers it —
-    /// the interactive picker takes as long as the human takes, so a single
-    /// fixed delay would miss it while an unbounded poll is the anti-pattern.
+    /// Sessions-owned New action reuses the same setup as first send.
     fn launch_new_su_session(&mut self) -> Action {
-        let spec = Self::new_su_session_spec();
-        self.record_launch(&spec);
-        self.session_browser.launch_refresh = Some(LaunchRefresh::default());
-        self.push_notif(Notif {
-            level: "info".into(),
-            message: format!(
-                "⏎ new SU session · {} (pick backend in the pane)",
-                spec.argv.join(" ")
-            ),
-            harness: None,
-            ts: None,
-        });
-        Action::Launch(spec)
+        self.open_session_setup();
+        Action::CheckSessionSetup
+    }
+
+    pub fn open_session_setup(&mut self) {
+        if self.session_setup.is_some() { return; }
+        if self.chat_streaming || self.su_pending_turn.is_some() {
+            self.session_note = Some("Finish or reconcile the current turn before opening a new session.".into());
+            return;
+        }
+        let endpoint = self.backend_identity.as_ref()
+            .map(|identity| identity.endpoint.clone()).unwrap_or_default();
+        let mut setup = crate::session_config::SessionSetup::new(endpoint, self.chat_input.clone());
+        if let Some(config) = self.operator_config.agent.as_ref() {
+            setup.backend = match config.effective_backend.as_str() {
+                "codex" => crate::su_session::SuSessionBackend::Codex,
+                "omp" => crate::su_session::SuSessionBackend::Omp,
+                _ => crate::su_session::SuSessionBackend::Claude,
+            };
+        }
+        if self.agent_chat_id.is_none() && self.su_session.is_none() {
+            setup.backend = self.su_backend.unwrap_or(setup.backend);
+            setup.model = self.chat_model.clone();
+            setup.effort = self.chat_effort.clone();
+            setup.account = self.chat_account.clone().or(Some("default".into()));
+            setup.mode = self.chat_mode.clone();
+        }
+        self.session_setup = Some(setup);
+        self.session_picker = None;
+    }
+
+    pub fn setup_projects(&self) -> Vec<String> {
+        let query = self.session_setup.as_ref()
+            .map(|setup| setup.project_query.to_lowercase()).unwrap_or_default();
+        self.harnesses.iter().filter(|project| project.slug.to_lowercase().contains(&query))
+            .map(|project| project.slug.clone()).collect()
+    }
+
+    fn setup_backend_available(&self, backend: crate::su_session::SuSessionBackend) -> bool {
+        self.operator_config.agent.as_ref()
+            .and_then(|config| config.binaries.get(backend.as_str()))
+            .and_then(|path| path.as_deref()).is_some_and(|path| !path.is_empty())
+    }
+
+    pub fn setup_blocker(&self) -> Option<String> {
+        let setup = self.session_setup.as_ref()?;
+        if self.chat_streaming || self.su_pending_turn.is_some() {
+            return Some("Finish or reconcile the current turn before starting a new session.".into());
+        }
+        if let Some(error) = &self.backend_identity_error { return Some(format!("Operator unavailable: {error}")); }
+        let Some(identity) = &self.backend_identity else { return Some("Checking operator connection…".into()); };
+        if !identity.capabilities.attached_su_session {
+            return Some("Operator does not support windowless SU sessions; update it before starting.".into());
+        }
+        if setup.endpoint != identity.endpoint {
+            return Some("Operator selection changed. Close and reopen setup to review the new endpoint.".into());
+        }
+        if !self.harnesses.iter().any(|project| project.slug == setup.project) {
+            return Some("Select a current project; a previous list cursor is not a selection.".into());
+        }
+        if setup.project != self.harness && !self.attachments.references().is_empty() {
+            return Some("Attached files belong to the previous project. Keep that project or close setup and remove the attachments.".into());
+        }
+        if setup.step > 0 && self.operator_config.agent.is_none() {
+            return Some("Checking runtime configuration…".into());
+        }
+        if setup.step > 0 && !self.setup_backend_available(setup.backend) {
+            return Some(format!("{} is not available on this operator.", setup.backend.label()));
+        }
+        if setup.step > 0 {
+            let Some(config) = self.operator_config.agent.as_ref() else {
+                return Some("Waiting for current runtime configuration.".into());
+            };
+            if setup.model.as_ref().is_some_and(|model| !self.operator_config.tiers.iter()
+                .any(|tier| &tier.spec == model
+                    && tier.loop_capability.as_ref().is_none_or(|cap| cap.executable)
+                    && tier.backend.as_deref().is_none_or(|backend| backend == setup.backend.as_str()
+                        || (backend == "claude-code" && setup.backend == crate::su_session::SuSessionBackend::Claude)))) {
+                return Some("Selected model is no longer available for this backend.".into());
+            }
+            if setup.effort.as_ref().is_some_and(|effort| !config.effort_levels.contains(effort)) {
+                return Some("Selected effort is no longer offered by the operator.".into());
+            }
+            if setup.mode.as_ref().is_some_and(|mode| !config.launchable_modes.iter().any(|row| &row.id == mode)) {
+                return Some("Selected mode is no longer offered by the operator.".into());
+            }
+            if setup.account.as_ref().is_some_and(|account| !["auto", "default"].contains(&account.as_str())
+                && !self.account_rows.iter().any(|row| &row.id == account)) {
+                return Some("Selected account is no longer in the operator account list.".into());
+            }
+        }
+        None
+    }
+
+    fn session_setup_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
+        let projects = self.setup_projects();
+        let setup = self.session_setup.as_mut().expect("setup key requires setup");
+        if setup.editing_message {
+            match code {
+                KeyCode::Esc => setup.editing_message = false,
+                KeyCode::Backspace => { setup.message.pop(); }
+                KeyCode::Enter => setup.message.push('\n'),
+                KeyCode::Char(ch) if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => setup.message.push(ch),
+                _ => {}
+            }
+            return Action::Render;
+        }
+        if setup.project_searching {
+            match code {
+                KeyCode::Esc | KeyCode::Enter => setup.project_searching = false,
+                KeyCode::Backspace => { setup.project_query.pop(); setup.project_cursor = 0; }
+                KeyCode::Char(ch) if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                    setup.project_query.push(ch); setup.project_cursor = 0;
+                }
+                _ => {}
+            }
+            return Action::Render;
+        }
+        match code {
+            KeyCode::Esc => {
+                self.chat_input = setup.message.clone();
+                self.session_setup = None;
+                Action::Render
+            }
+            KeyCode::BackTab | KeyCode::Left if setup.step > 0 => {
+                setup.step -= 1; setup.note = None; Action::Render
+            }
+            KeyCode::Char('/') if setup.step == 0 => {
+                setup.project_searching = true; Action::Render
+            }
+            KeyCode::Down | KeyCode::Char('j') if setup.step == 0 => {
+                setup.project_cursor = (setup.project_cursor + 1).min(projects.len().saturating_sub(1));
+                Action::Render
+            }
+            KeyCode::Up | KeyCode::Char('k') if setup.step == 0 => {
+                setup.project_cursor = setup.project_cursor.saturating_sub(1); Action::Render
+            }
+            KeyCode::Char('i') if setup.step == 2 => {
+                setup.editing_message = true; Action::Render
+            }
+            KeyCode::Char('b') if setup.step == 1 => { self.open_backend_picker(); Action::Render }
+            KeyCode::Char('m') if setup.step == 1 => { self.open_model_picker(); Action::Render }
+            KeyCode::Char('e') if setup.step == 1 => { self.open_effort_picker(); Action::Render }
+            KeyCode::Char('a') if setup.step == 1 => { self.open_account_picker(); Action::Render }
+            KeyCode::Char('u') if setup.step == 1 => { self.open_mode_picker(); Action::Render }
+            KeyCode::Char('r') => Action::CheckSessionSetup,
+            KeyCode::Enter => {
+                if setup.step == 0 {
+                    setup.project = projects.get(setup.project_cursor).cloned().unwrap_or_default();
+                }
+                if let Some(reason) = self.setup_blocker() {
+                    self.session_setup.as_mut().unwrap().note = Some(reason);
+                    return Action::Render;
+                }
+                if self.session_setup.as_ref().unwrap().step < 2 {
+                    self.session_setup.as_mut().unwrap().step += 1;
+                    return Action::Render;
+                }
+                let setup = self.session_setup.take().unwrap();
+                let project_index = self.harnesses.iter().position(|project| project.slug == setup.project).unwrap();
+                if self.harness != setup.project {
+                    // The blocker above preserves any cross-project
+                    // attachments rather than silently discarding them.
+                    self.plan_filter.clear();
+                }
+                self.reset_agent_chat_binding();
+                self.select_harness(project_index);
+                self.harness = setup.project;
+                self.publish_active();
+                self.all_pots = false;
+                self.su_backend = Some(setup.backend);
+                self.agent_chat_role = "operator".into();
+                self.chat_model = setup.model;
+                self.chat_effort = setup.effort;
+                self.chat_account = setup.account;
+                self.chat_mode = setup.mode;
+                self.chat_input = setup.message.clone();
+                self.tab = Tab::Operator;
+                self.operator_dock_focused = false;
+                self.chat_composing = true;
+                self.session_setup_accepted = true;
+                if !setup.message.trim().is_empty() {
+                    return self.dispatch_chat_turn(setup.message).unwrap_or(Action::Render);
+                }
+                self.chat_streaming = true;
+                Action::OpenSuSession {
+                    harness: self.harness.clone(), role: "operator".into(), backend: setup.backend,
+                    carry: "warm".into(), launch: self.su_session_launch_options(), initial_turn: None,
+                }
+            }
+            _ => Action::Render,
+        }
     }
 
     /// 250ms Tick: drive the post-launch Sessions refresh burst, if armed. Each
@@ -7407,9 +7652,14 @@ impl App {
             KeyCode::Char('e') => Some(self.begin_session_rename()),
             KeyCode::Char('d') => Some(self.begin_session_archive()),
             KeyCode::Char('K') => Some(self.continue_selected_session()),
-            // New-session launch belongs to Sessions (D-003) and runs the REAL
-            // PSU interactive picker (D-001/D-002) — never a PUI-owned menu.
+            // Ordinary session setup is PUI-owned (public-release D-002).
             KeyCode::Char('n') => Some(self.launch_new_su_session()),
+            KeyCode::Char('N') => {
+                let spec = Self::new_su_session_spec();
+                self.record_launch(&spec);
+                self.session_browser.launch_refresh = Some(LaunchRefresh::default());
+                Some(Action::Launch(spec))
+            }
             KeyCode::Esc if !self.session_browser.query.is_empty() => {
                 self.session_browser.query.clear();
                 self.session_browser.sel = 0;
@@ -8660,7 +8910,14 @@ impl App {
                 // Text-entry overlays consume the paste as DATA. Newlines are
                 // flattened in the palette because its command/argument editor
                 // is one line; they are never replayed as Enter keypresses.
-                if let Some(editor) = self.context_task_editor.as_mut() {
+                if let Some(setup) = self.session_setup.as_mut() {
+                    if setup.editing_message { setup.message.push_str(&text); }
+                    else if setup.project_searching {
+                        setup.project_query.push_str(&text.replace(['\r', '\n'], " "));
+                        setup.project_cursor = 0;
+                    }
+                    Action::Render
+                } else if let Some(editor) = self.context_task_editor.as_mut() {
                     if !self.context_task_pending {
                         editor.push_text(&text.replace(['\r', '\n'], " "));
                     }
@@ -9771,6 +10028,9 @@ impl App {
             Event::BackendIdentity(result) => {
                 match result {
                     Ok(identity) => {
+                        if let Some(setup) = self.session_setup.as_mut().filter(|setup| setup.endpoint.is_empty()) {
+                            setup.endpoint = identity.endpoint.clone();
+                        }
                         self.backend_identity = Some(identity);
                         self.backend_identity_error = None;
                     }
@@ -10517,9 +10777,29 @@ impl App {
                     self.show_tutorial = false;
                 }
             }
+            if !self.show_tutorial && self.require_session_setup && self.agent_chat_id.is_none() {
+                self.open_session_setup();
+                return Action::CheckSessionSetup;
+            }
             return Action::Render;
         }
         // Notifications history overlay: any key closes it.
+        if self.session_setup.is_some() {
+            if self.session_picker.is_some() {
+                return match code {
+                    KeyCode::Esc => { self.session_picker = None; Action::Render }
+                    KeyCode::Enter => self.commit_session_picker(),
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.session_picker.as_mut().unwrap().move_sel(1); Action::Render
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.session_picker.as_mut().unwrap().move_sel(-1); Action::Render
+                    }
+                    _ => Action::Render,
+                };
+            }
+            return self.session_setup_key(code, mods);
+        }
         if self.show_notifs {
             self.show_notifs = false;
             return Action::Render;
@@ -14436,34 +14716,21 @@ mod tests {
         assert_eq!(picker.options[0].id, "chat:chat-one");
     }
 
-    /// D-002: Sessions owns new-session launch and it IS the real PSU picker —
-    /// role pinned to `su`, origin `--tui=pui`, and nothing else on the argv
-    /// (a backend/model/effort/account/mode flag here would be PUI re-growing
-    /// a launcher menu PSU already owns).
     #[test]
-    fn sessions_n_launches_the_real_psu_picker_with_su_role_and_pui_origin() {
+    fn sessions_n_opens_pui_session_setup_without_launching_a_terminal() {
         let mut a = App::new();
         a.tab = Tab::Sessions;
+        a.agent_chat_id = Some("existing-chat".into());
+        a.chat_input = "retained draft".into();
         let action = a.update(key('n', KeyModifiers::NONE));
-        let Action::Launch(spec) = action else {
-            panic!("expected Action::Launch, got {action:?}");
-        };
-        assert_eq!(spec.argv, vec!["psu", "--role=su", "--tui=pui"]);
-        assert_eq!(spec, App::new_su_session_spec());
-        assert_eq!(
-            a.launched.len(),
-            1,
-            "recorded in the crew roster like every launch"
-        );
-        assert_eq!(
-            a.session_browser.launch_refresh,
-            Some(LaunchRefresh::default()),
-            "the bounded refresh burst is armed"
-        );
-        assert!(a
-            .notifs
-            .iter()
-            .any(|n| n.message.contains("psu --role=su --tui=pui")));
+        assert_eq!(action, Action::CheckSessionSetup);
+        assert!(a.launched.is_empty());
+        assert!(a.session_browser.launch_refresh.is_none());
+        assert_eq!(a.agent_chat_id.as_deref(), Some("existing-chat"));
+        assert_eq!(a.session_setup.as_ref().unwrap().message, "retained draft");
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(a.agent_chat_id.as_deref(), Some("existing-chat"));
+        assert_eq!(a.chat_input, "retained draft");
     }
 
     /// The post-launch refresh burst refetches the Sessions list on the
@@ -14472,7 +14739,7 @@ mod tests {
     fn launch_refresh_burst_refetches_sessions_on_schedule_then_stops() {
         let mut a = App::new();
         a.tab = Tab::Sessions;
-        a.update(key('n', KeyModifiers::NONE));
+        a.session_browser.launch_refresh = Some(LaunchRefresh::default());
         let mut ticks = 0u32;
         let mut fires = 0u32;
         while a.session_browser.launch_refresh.is_some() {
@@ -14490,6 +14757,130 @@ mod tests {
         assert_eq!(ticks, expected_ticks);
         // Idle afterwards: a Tick with no burst armed is a no-op.
         assert_eq!(a.update(Event::Tick), Action::None);
+    }
+
+    fn setup_app() -> App {
+        let mut a = App::new();
+        a.require_session_setup = true;
+        a.backend_identity = Some(serde_json::from_value(json!({
+            "schemaVersion":1,"endpoint":"http://127.0.0.1:3170","selectionSource":"test",
+            "transport":"http","workspaceId":"ws-test",
+            "store":{"id":"store-test","target":"test","source":"test"},
+            "build":{"version":"test","sha":null},
+            "agentChat":{"scope":"workspace:ws-test","route":"/api/agent-chats"},
+            "capabilities":{"attachedSuSession":true}
+        })).unwrap());
+        a.set_harnesses(vec![HarnessRef { slug: "chosen-project".into(), path: None }]);
+        a.operator_config.agent = Some(serde_json::from_value(json!({
+            "effectiveBackend":"claude-code",
+            "binaries":{"claude":"/test/claude","codex":"/test/codex","omp":null}
+        })).unwrap());
+        a
+    }
+
+    #[test]
+    fn session_setup_first_send_requires_review_and_preserves_exact_initial_turn() {
+        let mut a = setup_app();
+        a.tab = Tab::Operator;
+        a.chat_composing = true;
+        a.chat_input = "  first λ 雪  ".into();
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::CheckSessionSetup);
+        assert!(a.su_pending_turn.is_none());
+        assert!(!a.chat_streaming);
+        for step in [1, 2] {
+            assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
+            assert_eq!(a.session_setup.as_ref().unwrap().step, step);
+            assert!(a.su_pending_turn.is_none());
+        }
+        let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(action, Action::OpenSuSession { initial_turn: Some(ref text), .. } if text == "  first λ 雪  "));
+        assert_eq!(a.su_pending_turn.as_ref().unwrap().content, "  first λ 雪  ");
+        assert!(a.session_setup.is_none());
+        assert!(a.session_setup_accepted);
+        assert!(a.launched.is_empty());
+    }
+
+    #[test]
+    fn session_setup_revalidates_project_backend_and_connection_before_start() {
+        let mut a = setup_app();
+        a.open_session_setup();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        a.harnesses.clear();
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
+        assert!(a.session_setup.as_ref().unwrap().note.as_deref().unwrap().contains("current project"));
+        a.harnesses.push(HarnessRef { slug: "chosen-project".into(), path: None });
+        a.session_setup.as_mut().unwrap().backend = crate::su_session::SuSessionBackend::Omp;
+        assert!(a.setup_blocker().unwrap().contains("OMP"));
+        a.session_setup.as_mut().unwrap().backend = crate::su_session::SuSessionBackend::Codex;
+        a.backend_identity_error = Some("connection refused".into());
+        assert!(a.setup_blocker().unwrap().contains("unavailable"));
+        assert!(a.su_pending_turn.is_none());
+        assert!(a.launched.is_empty());
+    }
+
+    #[test]
+    fn session_setup_runtime_readiness_recovers_when_config_arrives() {
+        let mut a = setup_app();
+        let config = a.operator_config.clone();
+        a.operator_config = Default::default();
+        a.open_session_setup();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(a.setup_blocker().unwrap().contains("Checking runtime"));
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(a.session_setup.as_ref().unwrap().step, 1);
+        a.set_operator_config(config);
+        assert!(a.setup_blocker().is_none());
+        assert!(a.session_setup.as_ref().unwrap().note.is_none());
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(a.session_setup.as_ref().unwrap().step, 2);
+        assert!(a.su_pending_turn.is_none());
+    }
+
+    #[test]
+    fn session_setup_project_switch_preserves_attachments_and_refuses_launch() {
+        let mut a = setup_app();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("context.md"), "original context").unwrap();
+        a.attachments.add(crate::file_picker::attach(
+            tmp.path(), std::path::Path::new("context.md")).unwrap());
+        a.harnesses.push(HarnessRef { slug: "another-project".into(), path: None });
+        a.open_session_setup();
+        a.session_setup.as_mut().unwrap().project_cursor = 1;
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
+        assert!(a.setup_blocker().unwrap().contains("Attached files"));
+        assert_eq!(a.attachments.references(), vec!["@context.md"]);
+        assert!(a.su_pending_turn.is_none());
+        assert_eq!(a.harness, "chosen-project");
+    }
+
+    #[test]
+    fn session_setup_pick_and_cancel_never_mutate_a_bound_session() {
+        let mut a = setup_app();
+        a.agent_chat_id = Some("saved-chat".into());
+        a.su_backend = Some(crate::su_session::SuSessionBackend::Claude);
+        a.open_session_setup();
+        a.session_setup.as_mut().unwrap().step = 1;
+        a.on_key(KeyCode::Char('b'), KeyModifiers::NONE);
+        let picker = a.session_picker.as_ref().unwrap();
+        assert!(!picker.options[1].disabled);
+        assert!(picker.options[2].disabled);
+        a.session_picker.as_mut().unwrap().sel = 1;
+        a.commit_session_picker();
+        assert_eq!(a.session_setup.as_ref().unwrap().backend, crate::su_session::SuSessionBackend::Codex);
+        assert_eq!(a.su_backend, Some(crate::su_session::SuSessionBackend::Claude));
+        a.session_setup.as_mut().unwrap().step = 2;
+        a.on_key(KeyCode::Char('i'), KeyModifiers::NONE);
+        a.update(Event::Paste("  multiline\nexact λ  ".into()));
+        assert!(a.chat_input.is_empty());
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        a.on_key(KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(a.session_setup.as_ref().unwrap().step, 1);
+        a.on_key(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert!(a.session_switcher.is_none(), "setup owns modal keys");
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(a.chat_input, "  multiline\nexact λ  ");
+        assert_eq!(a.agent_chat_id.as_deref(), Some("saved-chat"));
     }
 
     #[test]

@@ -899,6 +899,7 @@ async function completeNewSessionSetup(pane: PuiPane): Promise<void> {
   await pane.waitFor(`> ${HARNESS}`);
   pane.enter(); // explicitly choose this project's stable identity
   await pane.waitFor('New SU session — 2 Runtime');
+  await pane.waitFor('Runtime: Ready', { timeoutMs: 45_000 });
   pane.enter();
   await pane.waitFor('New SU session — 3 Review');
   pane.enter(); // sole launch action
@@ -1762,6 +1763,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await pane.waitFor(`> ${HARNESS}`);
       pane.enter();
       await pane.waitFor('New SU session — 2 Runtime');
+      await pane.waitFor('Runtime: Ready', { timeoutMs: 45_000 });
       expect(launchRequests).toEqual([]);
       for (const expected of ['Engine: Claude', 'Account: default', 'Server default model', 'Default effort', 'Mode: Manual']) {
         expect(pane.screen()).toContain(expected);

@@ -12,7 +12,7 @@ use crate::models::{
 use crate::semantic_tool_cards::SemanticTone;
 use crate::theme::Theme;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Position, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Position, Rect},
     style::Style,
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
@@ -210,6 +210,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_pot_picker(f, app);
     } else if let Some(picker) = &app.session_picker {
         draw_session_picker(f, picker);
+    } else if app.session_setup.is_some() {
+        draw_session_setup(f, app);
     } else if let Some(menu) = &app.fleet_action_menu {
         draw_fleet_menu(f, menu);
     } else if let Some(prompt) = &app.crew_restore_prompt {
@@ -804,7 +806,7 @@ fn draw_session_browser(f: &mut Frame, app: &App, area: Rect) {
     } else if browser.mutation_key.is_some() {
         "Applying session action… draft and selection are safe".to_string()
     } else {
-        format!("Enter attach/resume · n new (psu) · {controls} · ^t transcript · / search")
+        format!("Enter attach/resume · n New · N Advanced PSU · {controls} · ^t transcript · / search")
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -4663,6 +4665,56 @@ fn draw_pot_picker(f: &mut Frame, app: &App) {
 /// that silently drops rows it cannot apply misreports what the control does,
 /// and the reason is usually the thing the operator actually needs to learn
 /// (e.g. that a `--account=default` session must be respawned, not re-pinned).
+fn draw_session_setup(f: &mut Frame, app: &App) {
+    let Some(setup) = &app.session_setup else { return; };
+    let area = f.area().inner(Margin { horizontal: 1, vertical: 1 });
+    let title = ["1 Context", "2 Runtime", "3 Review"][setup.step as usize];
+    let mut lines = vec![
+        Line::from(format!("Operator: {}", if setup.endpoint.is_empty() { "(checking)" } else { &setup.endpoint })),
+        Line::from(if app.backend_identity_error.is_some() { "Connection: Unavailable" }
+            else if app.backend_identity.is_some() { "Connection: Connected" } else { "Connection: Checking" }),
+    ];
+    if setup.step == 0 {
+        lines.push(Line::from("Endpoint is the selected PUI_OPERATOR; r rechecks its connection."));
+        lines.push(Line::from(format!("Project search: {}{}", setup.project_query, if setup.project_searching { "▏" } else { "" })));
+        let projects = app.setup_projects();
+        if projects.is_empty() { lines.push(Line::from("No matching projects. Wait for connection or change the search.")); }
+        let available = area.height.saturating_sub(10).max(1) as usize;
+        let start = setup.project_cursor.saturating_sub(available.saturating_sub(1));
+        for (index, project) in projects.iter().enumerate().skip(start).take(available) {
+            lines.push(Line::from(format!("{} {project}", if index == setup.project_cursor { ">" } else { " " })));
+        }
+        lines.push(Line::from("/ search · ↑/↓ choose · Enter select and continue"));
+    } else {
+        lines.extend([
+            Line::from(format!("Project: {}", setup.project)),
+            Line::from(format!("b Engine: {}", setup.backend.label())),
+            Line::from(format!("a Account: {}", setup.account.as_deref().unwrap_or("default"))),
+            Line::from(format!("m Model: {}", setup.model.as_deref().unwrap_or("Server default model"))),
+            Line::from(format!("e Effort: {}", setup.effort.as_deref().unwrap_or("Default effort"))),
+            Line::from(format!("u Mode: {}", setup.mode.as_deref().unwrap_or("Manual"))),
+        ]);
+        if setup.step == 2 {
+            lines.push(Line::from(format!("First message: {}", if setup.message.is_empty() { "(none)" } else { &setup.message })));
+            lines.push(Line::from(if setup.editing_message { "Editing first message — Esc returns to review; Enter adds a line" }
+                else { "i edit first message · Enter START SESSION" }));
+        } else {
+            lines.push(Line::from(if app.operator_config.agent.is_none() { "Runtime: Checking" }
+                else if app.setup_blocker().is_some() { "Runtime: Unavailable — see reason below" }
+                else { "Runtime: Ready" }));
+            lines.push(Line::from("b/a/m/e/u edit runtime · Enter review"));
+        }
+    }
+    if let Some(note) = setup.note.as_ref().cloned().or_else(|| app.setup_blocker()) {
+        lines.push(Line::from(note));
+    }
+    lines.push(Line::from("← / Shift-Tab back · Esc close (message retained) · r check connection"));
+    f.render_widget(Clear, area);
+    f.render_widget(Paragraph::new(lines).style(Theme::popup())
+        .block(Theme::popup_block(format!(" New SU session — {title} ").into()))
+        .wrap(Wrap { trim: false }), area);
+}
+
 fn draw_session_picker(f: &mut Frame, picker: &crate::session_config::SessionPicker) {
     let area = centered_rect(60, 60, f.area());
     let items: Vec<ListItem> = picker
@@ -6812,6 +6864,7 @@ mod tests {
                     surface_models: surf,
                 },
                 effective_backend: "claude-code".into(),
+                binaries: Default::default(),
                 effective_tiers: Vec::new(),
                 effort_levels: Vec::new(),
                 launchable_modes: Vec::new(),
@@ -7386,6 +7439,22 @@ mod tests {
             text.contains("not settable"),
             "the default-account row renders MARKED rather than being hidden"
         );
+    }
+
+    #[test]
+    fn session_setup_review_shows_effective_values_and_action_at_minimum_size() {
+        let mut app = App::new();
+        let mut setup = crate::session_config::SessionSetup::new(
+            "http://127.0.0.1:3170".into(), "exact draft λ".into());
+        setup.step = 2;
+        setup.project = "project-a".into();
+        setup.backend = crate::su_session::SuSessionBackend::Codex;
+        app.session_setup = Some(setup);
+        let text = render(&app, 80, 20);
+        for expected in ["3 Review", "project-a", "Codex", "default", "Server default model",
+            "Default effort", "Manual", "exact draft λ", "START SESSION", "message retained"] {
+            assert!(text.contains(expected), "missing {expected}:\n{text}");
+        }
     }
 
     #[test]

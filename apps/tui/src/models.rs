@@ -2283,6 +2283,9 @@ pub struct AgentConfigResponse {
     pub config: AgentConfigInner,
     #[serde(default)]
     pub effective_backend: String,
+    /// Server-discovered binaries; absent/null is unavailable.
+    #[serde(default)]
+    pub binaries: std::collections::BTreeMap<String, Option<String>>,
     /// Workspace override when present, otherwise the committed tier baseline,
     /// already classified by the server for Agent Chat execution.
     #[serde(default)]

@@ -1115,6 +1115,7 @@ async fn run<B: Backend>(
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
+    app.require_session_setup = true;
     app.su_launch_fleet = launch_fleet;
     app.su_launch_seat = launch_seat;
     // Resolve the same canonical record `pui doctor` prints. This is an
@@ -1942,6 +1943,10 @@ async fn run<B: Backend>(
                             }
                         },
                     }
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::CheckSessionSetup => {
+                    tokio::spawn(backend_identity_fetch(tx.clone()));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
                 Action::OpenSuSession {

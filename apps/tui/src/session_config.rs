@@ -53,6 +53,47 @@
 
 use serde::Deserialize;
 
+/// New-session configuration is isolated from the currently bound chat.
+#[derive(Debug, Clone)]
+pub struct SessionSetup {
+    pub step: u8,
+    pub project: String,
+    pub project_query: String,
+    pub project_searching: bool,
+    pub project_cursor: usize,
+    pub endpoint: String,
+    pub backend: crate::su_session::SuSessionBackend,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub account: Option<String>,
+    pub mode: Option<String>,
+    pub message: String,
+    pub editing_message: bool,
+    pub note: Option<String>,
+}
+
+impl SessionSetup {
+    pub fn new(endpoint: String, message: String) -> Self {
+        Self {
+            step: 0,
+            // A restored scope/list cursor is not an explicit project choice.
+            project: String::new(),
+            project_query: String::new(),
+            project_searching: false,
+            project_cursor: 0,
+            endpoint,
+            backend: crate::su_session::PUI_DEFAULT_SU_BACKEND,
+            model: None,
+            effort: None,
+            account: Some("default".into()),
+            mode: None,
+            message,
+            editing_message: false,
+            note: None,
+        }
+    }
+}
+
 /// One pickable row, in either picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerOption {
