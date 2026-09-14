@@ -20,6 +20,7 @@
     "test:coverage-attribution-venue": "PAPERCUSP_TEST_ATTRIBUTION=1 PAPERCUSP_WORKSPACE_ID=papercusp-workspace PAPERCUSP_TEST_RUN_HARNESS=papercusp vitest run --config vitest.integration.config.ts lib/coverage-census/attribution/persistence-venue.integration.test.ts",
     "test:integration:prose-vector-dims": "vitest run --config vitest.integration.config.ts lib/search/prose-vector-dims.integration.test.ts",
     "test:integration:resource-governor-queue": "vitest run --config vitest.integration.config.ts lib/resource-governor/queue.integration.test.ts",
+    "test:integration:sessions-read": "vitest run --config vitest.integration.config.ts lib/agent-tools/sessions/read.integration.test.ts",
     "lint:chunk-safe": "vitest run lib/child-output-guard.test.ts",
     "gen:prompt-projections": "node ../../scripts/check-prompt-projections.mjs --write",
     "lint:prompt-projections": "node ../../scripts/check-prompt-projections.mjs",
