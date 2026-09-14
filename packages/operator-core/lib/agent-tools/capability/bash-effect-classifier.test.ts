@@ -105,6 +105,17 @@ describe('capability:bash per-call effect classifier (EI-22647418629976526)', ()
     });
   });
 
+  it('classifies a bounded head/strings/head diagnostic as read-only and normalizes producer SIGPIPE', () => {
+    const command =
+      'head -c 16000 packages/operator-core/lib/cell-transcription-detector.test.ts | strings -a | head -n 120';
+
+    expect(classifyCapabilityBashEffect({ command })).toBe('read');
+    expect(normalizeExpectedSigpipeResult(command, 'failed', 141)).toEqual({
+      status: 'completed',
+      exitCode: 0,
+    });
+  });
+
   it('classifies an rg-to-wc no-match count probe as read-only', () => {
     const command = 'rg -l -F absent fixture.txt | wc -l';
     expect(classifyCapabilityBashEffect({ command })).toBe('read');

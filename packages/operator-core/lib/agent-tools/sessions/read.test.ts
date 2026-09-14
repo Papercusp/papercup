@@ -415,6 +415,75 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     });
   });
 
+  it("keeps session:'self' owner-scoped when a sequential range follows a resolver miss", async () => {
+    resolveSearchFilters.mockReset();
+    resolveSearchFilters
+      .mockResolvedValueOnce({
+        filters: { owners: ['su-self'] },
+        selfSession: {
+          sourceKind: 'codex',
+          sessionId: 'sess-current',
+          filePath: '/managed/sess-current.jsonl',
+        },
+      })
+      // The resolver deliberately returns a fail-soft null when the live
+      // transcript cannot be pinned. The owner filter remains usable.
+      .mockResolvedValueOnce({ filters: { owners: ['su-self'] }, selfSession: null });
+
+    const calls: Array<{ sql: string; values: unknown[] }> = [];
+    const tx = vi.fn(async (...args: unknown[]) => {
+      const [strings, ...values] = args;
+      calls.push({
+        sql: Array.isArray(strings) ? (strings as string[]).join(' ? ') : String(strings),
+        values,
+      });
+      return calls.length === 1
+        ? [{
+            source_kind: 'codex', session_id: 'sess-current', turn_idx: 4,
+            speaker: 'assistant', owner: 'su-self', ts: null, text: 'tail survives',
+          }]
+        : [{
+            source_kind: 'codex', session_id: 'sess-predecessor', turn_idx: 2,
+            speaker: 'user', owner: 'su-self', ts: null, text: 'range survives resolver miss',
+          }];
+    });
+
+    const context = {
+      log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+      workspaceId: 'default', role: 'operator',
+      gateBypass: { role: true, capability: true, quota: true },
+      transport: 'mcp' as const, requestedFormat: 'json' as const, requestedStructured: true,
+      tx,
+    };
+    const tail = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { session: 'self', tail: 1 },
+      { ...context, runId: 'read-self-sequential-tail' },
+      {},
+    );
+    const range = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { session: 'self', from_idx: 2, to_idx: 2 },
+      { ...context, runId: 'read-self-sequential-range' },
+      {},
+    );
+
+    expect(tail.ok, JSON.stringify(tail)).toBe(true);
+    expect(range.ok, JSON.stringify(range)).toBe(true);
+    expect(range.result?.structuredContent).toMatchObject({
+      ok: true,
+      turn_count: 1,
+      note: 'self transcript could not be pinned; used owner-scoped session history',
+      turns: [{ ref: 'session_turn:codex:sess-predecessor:2', text: 'range survives resolver miss' }],
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.sql).toContain('owner = ANY');
+    expect(calls[1]?.sql).toContain('owner = ANY');
+    expect(calls[1]?.values).toContainEqual(['su-self']);
+  });
+
   it("ignores malformed session ids in self provenance metadata without rejecting the read", async () => {
     resolveSearchFilters.mockResolvedValueOnce({
       filters: { owners: ['su-self'] },

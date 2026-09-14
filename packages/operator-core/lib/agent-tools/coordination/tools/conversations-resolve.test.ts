@@ -27,6 +27,10 @@ const body = async (args: unknown) => (((await tool.handler(args as never, {} as
 beforeEach(() => vi.clearAllMocks());
 
 describe('conversations:resolve handler (bulk keyed-array)', () => {
+  it('documents that consult threads use the typed close verb', () => {
+    expect(tool.description).toContain('Consult conversations are excluded; use consult:close');
+  });
+
   it('an item missing both accepted answer + post id fails without touching the store', async () => {
     const b = await body({ id: 'c1' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });

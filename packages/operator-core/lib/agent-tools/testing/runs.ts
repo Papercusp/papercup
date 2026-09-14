@@ -162,6 +162,13 @@ export function defaultRollupSource(
   return source ?? (rollup ? 'ci' : null);
 }
 
+/** Accept the output-shaped `runGroupId` spelling as an input compatibility
+ * alias while keeping `runGroup` as the canonical selector name. When both
+ * are supplied, the canonical spelling wins. */
+export function normalizeRunGroupFilter(runGroup?: string, runGroupId?: string): string | null {
+  return runGroup ?? runGroupId ?? null;
+}
+
 /** JSONB may arrive as its parsed object or as serialized JSON, depending on
  * the postgres client/facade serving the read. Normalize before applying the
  * strict versioned parser; malformed strings remain untrusted and map to no
@@ -278,7 +285,7 @@ export function shapeTestingRuns(data: unknown, tier: TestingRunsTier): unknown 
 export default defineTool({
   name: 'testing:runs',
   description:
-    'Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:"commit"|"runGroup"` aggregates ("is this sha green" — total/failed/failing-file counts); rollups default to `source:"ci"` so local or mutation-probe rows cannot contaminate a gate verdict; ordinary row listings exclude mutation-probe evidence unless `source:"mutation-probe"` is explicit. Filter by `testRunIds` (exact durable numeric row IDs), filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.',
+    'Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:"commit"|"runGroup"` aggregates ("is this sha green" — total/failed/failing-file counts); rollups default to `source:"ci"` so local or mutation-probe rows cannot contaminate a gate verdict; ordinary row listings exclude mutation-probe evidence unless `source:"mutation-probe"` is explicit. Filter by `testRunIds` (exact durable numeric row IDs), filePath (substring), commitSha (prefix), runGroup (or compatibility alias runGroupId), status, source, since. Read-only.',
   capability: 'operator:read',
   guidance: {
     when: 'Greening a red gate or triaging CI: find the ACTUAL failing test files at a commit/run instead of guessing or re-running blind. rollup:"commit" answers "is this sha green" in one call.',
@@ -290,6 +297,7 @@ export default defineTool({
     // prompt-weight budgeted (the guard refused the P-002 edit on routines:list).
     returns: [
       'Each row: { id, workspaceId, harnessSlug, root, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. root is the parser-validated absolute checkout root captured in execution_details, or null for legacy/malformed rows. outputTail is populated only for fail/error rows and is truncated.',
+      '`runGroup` is the canonical exact run_group_id input selector; `runGroupId` is accepted as a compatibility alias because output rows expose the same value as runGroupId. If both are supplied, runGroup wins.',
       '`testRunIds` is an exact primary-key selector for evidence-lineage lookups; when supplied without an explicit `latestPerFile`, it defaults to `latestPerFile:false` so every requested receipt remains visible, including multiple attempts for one file. Set `latestPerFile:true` only when intentionally collapsing the selected IDs.',
       '{ count, total, truncatedByLimit, latestPerFile, runs, groups } — `runs` is the row list and `groups` is present for rollups.',
       'Rollup rows: { key, commitSha, commitShaCount, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id. commitSha names the CANDIDATE the group judged — for rollup:"runGroup" it is the only way to tell which sha a run was about; commitShaCount>1 means the group spans several, so commitSha is one arbitrary member and is NOT "the sha this judged". By default each group uses its latest result per file, matching the row-listing view; pass latestPerFile:false to include historical attempts. The response also reports the effective source filter; BOTH rollups default to source:"ci".',
@@ -326,6 +334,11 @@ export default defineTool({
       ),
     commitSha: z.string().max(80).optional().describe('Match commit sha as a PREFIX — a short sha works.'),
     runGroup: z.string().max(200).optional().describe('Exact run_group_id (one suite execution).'),
+    runGroupId: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('Compatibility alias for the exact run_group_id selector; `runGroup` wins if both are supplied.'),
     status: z
       .array(z.enum(['pass', 'fail', 'skip', 'cancelled', 'error', 'running']))
       .min(1)
@@ -414,6 +427,7 @@ export default defineTool({
     filePath?: string;
     commitSha?: string;
     runGroup?: string;
+    runGroupId?: string;
     status?: Array<'pass' | 'fail' | 'skip' | 'cancelled' | 'error' | 'running'>;
     source?: 'ci' | 'local' | 'admin-ui' | 'mutation-probe';
     since?: string;
@@ -431,7 +445,7 @@ export default defineTool({
     const pathLike = args.filePath ? toPathPattern(args.filePath) : null;
     const shaLike = args.commitSha ? toShaPattern(args.commitSha) : null;
     const testRunIds = args.testRunIds ?? null;
-    const runGroup = args.runGroup ?? null;
+    const runGroup = normalizeRunGroupFilter(args.runGroup, args.runGroupId);
     const source = defaultRollupSource(args.rollup, args.source);
     const sourceFilter =
       args.source === undefined && args.rollup === undefined

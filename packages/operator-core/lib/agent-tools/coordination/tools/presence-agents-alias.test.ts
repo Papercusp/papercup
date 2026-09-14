@@ -139,7 +139,7 @@ describe('coord:presence `agents` alias (EI-21845811145701209)', () => {
     expect(out.agents).not.toBe(ROWS);
   });
 
-  it('keeps the shaped activeTruncated disclosure valid for MCP structured output', async () => {
+  it('keeps MCP structured output schema-valid without applying model payload shaping', async () => {
     const active = Array.from({ length: 45 }, (_, index) => ({
       ownerId: `su-${index}`,
       sessionState: 'live',
@@ -180,16 +180,16 @@ describe('coord:presence `agents` alias (EI-21845811145701209)', () => {
 
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
     const structured = dispatched.result?.structuredContent as {
+      active?: unknown[];
       activeTruncated?: Record<string, unknown>;
     };
-    expect(structured.activeTruncated).toMatchObject({
-      censusCount: 45,
-      truncatedByLimit: true,
-      limit: 40,
-    });
-    expect(structured.activeTruncated?.shown).toEqual(expect.any(Number));
-    expect(structured.activeTruncated?.shown).toBeGreaterThan(0);
-    expect(structured.activeTruncated?.shown).toBeLessThan(45);
+    // requestedStructured is a programmatic/output-schema contract. The shared
+    // dispatcher deliberately resolves it to the full raw payload so a generic
+    // tier projection cannot drop schema fields or turn a valid structured
+    // response into an invalid one. `activeTruncated` belongs to the model-facing
+    // trimmed shaper and is covered by coordination-reads-shape.test.ts.
+    expect(structured.active).toHaveLength(45);
+    expect(structured.activeTruncated).toBeUndefined();
     expect(
       (projected.outputJsonSchema?.properties as Record<string, { type?: string }>).activeTruncated?.type,
     ).toBe('object');

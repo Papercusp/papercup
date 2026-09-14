@@ -18,6 +18,7 @@ import { PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import {
   defaultRollupSource,
   isSaturationSuspect,
+  normalizeRunGroupFilter,
   shapeTestingRuns,
   toPathPattern,
   toShaPattern,
@@ -97,6 +98,17 @@ describe('defaultRollupSource', () => {
     // showing an agent its own local runs.
     expect(defaultRollupSource(undefined)).toBeNull();
     expect(defaultRollupSource(undefined, 'ci')).toBe('ci');
+  });
+});
+
+describe('testing:runs run-group input naming', () => {
+  it('accepts the output-shaped runGroupId compatibility alias', () => {
+    expect(normalizeRunGroupFilter(undefined, 'run-alias')).toBe('run-alias');
+    expect(runsTool.args.safeParse({ runGroupId: 'run-alias' }).success).toBe(true);
+  });
+
+  it('keeps runGroup canonical when both spellings are supplied', () => {
+    expect(normalizeRunGroupFilter('run-canonical', 'run-alias')).toBe('run-canonical');
   });
 });
 
@@ -190,6 +202,31 @@ describe('testing:runs rollup source isolation', () => {
     expect(queryText).toContain('max(commit_sha)');
     expect(queryText).toContain('commit_shas');
     expect(data.groups?.[0]).toMatchObject({ commitSha: 'abc123def456', commitShaCount: 1 });
+  });
+});
+
+describe('testing:runs runGroupId compatibility alias', () => {
+  const sqlCalls: Array<{ strings: string[]; values: unknown[] }> = [];
+
+  beforeEach(() => {
+    sqlCalls.length = 0;
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      sqlCalls.push(call);
+      if (call.strings.some((part) => part.includes('WITH filtered'))) return Promise.resolve([]);
+      return call;
+    });
+  });
+
+  it('binds runGroupId to the existing run_group_id filter', async () => {
+    await runsTool.handler({ runGroupId: 'run-from-alias' } as never, {} as never);
+    expect(JSON.stringify(sqlCalls)).toContain('run-from-alias');
+  });
+
+  it('does not bind the alias when canonical runGroup is supplied', async () => {
+    await runsTool.handler({ runGroup: 'run-canonical', runGroupId: 'run-alias' } as never, {} as never);
+    expect(JSON.stringify(sqlCalls)).toContain('run-canonical');
+    expect(JSON.stringify(sqlCalls)).not.toContain('run-alias');
   });
 });
 

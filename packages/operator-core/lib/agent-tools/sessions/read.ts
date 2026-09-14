@@ -212,17 +212,20 @@ export default defineTool({
         { workspaceId },
       );
       const self = resolved.selfSession;
-      if (!self) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'self_session_unresolved', note: 'Could not pin your live transcript; use sessions:list { owner:"self" } to find your sessions.' }) }],
-          isError: true,
-        };
-      }
-      ownerIds = resolved.filters?.owners ?? [callerOwnerId];
+      // `resolveSearchFilters` intentionally fails soft when the live
+      // transcript cannot be pinned (for example, during a carry-respawn or
+      // resolver timeout). Its owner filter still scopes the read across the
+      // caller's indexed history, so do not turn a transient pin miss into a
+      // hard read failure.
+      ownerIds = resolved.filters?.owners ?? (callerOwnerId ? [callerOwnerId] : []);
       querySessionId = undefined;
-      sessionId = self.sessionId;
-      sourceKind = self.sourceKind;
-      selfNote = `resolved self → ${self.sourceKind}:${self.sessionId}`;
+      if (self) {
+        sessionId = self.sessionId;
+        sourceKind = self.sourceKind;
+        selfNote = `resolved self → ${self.sourceKind}:${self.sessionId}`;
+      } else {
+        selfNote = 'self transcript could not be pinned; used owner-scoped session history';
+      }
     } else {
       // Keep the historical/indexed read and archive fall-through unchanged;
       // the helper refreshes only an active target found in adv_sessions.
