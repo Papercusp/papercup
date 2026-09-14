@@ -4162,19 +4162,30 @@ export function renderCoalescedTurn(data, folded) {
 /** The per-host coalescer state machine. admit() returns true when the arrival was
  *  FOLDED into an already-waiting inject (the caller must NOT proceed); false when
  *  the caller became the waiter and must claim() at delivery — or on ANY early exit
- *  (defer/error), so folded wakes never black-hole behind a dead waiter. */
+ *  (defer/error), so folded wakes never black-hole behind a dead waiter. Delivery
+ *  IDs folded into a waiter travel with it so the parent pipeline settles every
+ *  accepted ID together (F03: a deferred parent must not leave a folded retry
+ *  permanently deduped). */
 export function makeTurnCoalescer() {
-  const pending = new Map(); // key -> { data, folded, metadata? }
+  const pending = new Map(); // key -> { data, folded, metadata?, deliveryIds? }
+  const addDeliveryId = (entry, deliveryId) => {
+    if (!deliveryId) return;
+    entry.deliveryIds ??= [];
+    if (!entry.deliveryIds.includes(deliveryId)) entry.deliveryIds.push(deliveryId);
+  };
   return {
-    admit(key, data, metadata) {
+    admit(key, data, metadata, deliveryId) {
       const p = pending.get(key);
       if (p) {
         p.data = data; // newest wins — it carries the freshest checkpoint splice
         if (metadata !== undefined) p.metadata = metadata;
+        addDeliveryId(p, deliveryId);
         p.folded += 1;
         return true;
       }
-      pending.set(key, metadata === undefined ? { data, folded: 0 } : { data, folded: 0, metadata });
+      const entry = metadata === undefined ? { data, folded: 0 } : { data, folded: 0, metadata };
+      addDeliveryId(entry, deliveryId);
+      pending.set(key, entry);
       return false;
     },
     /** Replace the text/metadata of an EXISTING waiter without counting another
@@ -6373,7 +6384,13 @@ export function hostThroughPty(o) {
         msg.routineId && msg.fireNumber != null
           ? { routineId: msg.routineId, fireNumber: msg.fireNumber }
           : undefined;
-      if (coalesceKey != null && turnCoalescer.admit(coalesceKey, msg.data, coalesceMetadata)) {
+      const coalescedDeliveryIds = new Set(msg.deliveryId ? [msg.deliveryId] : []);
+      const claimCoalesced = () => {
+        const claimed = coalesceKey != null ? turnCoalescer.claim(coalesceKey) : null;
+        for (const deliveryId of claimed?.deliveryIds ?? []) coalescedDeliveryIds.add(deliveryId);
+        return claimed;
+      };
+      if (coalesceKey != null && turnCoalescer.admit(coalesceKey, msg.data, coalesceMetadata, msg.deliveryId)) {
         try {
           process.stderr.write(
             `psu-pty-host: duplicate queued turn FOLDED for ${ownerId} (same-source coalesce, P-001a)\n`,
@@ -6381,10 +6398,11 @@ export function hostThroughPty(o) {
         } catch {
           /* diagnostic only */
         }
-        // EI-19311270129974785: this delivery id IS being honored (folded into the
-        // pending waiter's one write) — remember it so a later retry of THIS id
-        // short-circuits instead of folding in a second time / racing a stale fold.
-        if (msg.deliveryId) deliveryDedup.markCompleted(msg.deliveryId);
+        // EI-19311270129974785 / F03: this delivery id is accepted into the
+        // pending waiter's one write, but it is NOT completed until that parent
+        // pipeline commits. If the parent defers or errors, the parent outcome
+        // clears this ID too so the durable pump can retry it.
+        if (msg.deliveryId) deliveryDedup.markPending(msg.deliveryId);
         return { ok: true, reason: 'coalesced-into-pending-turn' };
       }
       // EI-18679050054551625 (WI-5872 follow-up #2): everything from here down —
@@ -6450,7 +6468,7 @@ export function hostThroughPty(o) {
         }
         // P-001a: a deferred waiter must release its coalesce slot; a later wake
         // must be able to start a fresh delivery after the owner submits/cancels.
-        if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
+        claimCoalesced();
         return { ok: false, reason: 'deferred-owner-input' };
       };
       try {
@@ -6591,7 +6609,7 @@ export function hostThroughPty(o) {
             // P-001a: clear the coalesce slot on defer — wakes folded into this
             // waiter are dropped WITH it (same queue-to-next-turn semantics), and
             // later arrivals must start a fresh cycle, never fold into a dead one.
-            if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
+            claimCoalesced();
             return { ok: false, reason: 'deferred-busy-gate' };
           }
           // WI-1386682 (2): don't spend a wake `turn`/`reset` inject into a
@@ -6625,7 +6643,7 @@ export function hostThroughPty(o) {
             } catch {
               /* diagnostic only */
             }
-            if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
+            claimCoalesced();
             return { ok: false, reason: 'deferred-quota-blocked' };
           }
           // The agent gate above yields to the event loop. Re-check immediately
@@ -6673,7 +6691,7 @@ export function hostThroughPty(o) {
             // Same coalesce-slot hygiene as the busy-gate defer path just above —
             // a dropped waiter must release any same-source turn folded into it,
             // never black-hole it; a later arrival starts a fresh cycle.
-            if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
+            claimCoalesced();
             return { ok: false, reason: 'stale-fire-dropped' };
           }
         }
@@ -6718,7 +6736,7 @@ export function hostThroughPty(o) {
           } catch {
             /* diagnostic only */
           }
-          if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
+          claimCoalesced();
           return { ok: false, reason: superseded ? 'superseded' : 'carry-stale' };
         }
         // RECYCLE (su-cold-auto-mode P-004b): a hard cold reset — kill + respawn
@@ -6883,7 +6901,7 @@ export function hostThroughPty(o) {
         // claimed newest text replaces this waiter's own, annotated with the count.
         let deliver = msg;
         if (coalesceKey != null) {
-          const claimed = turnCoalescer.claim(coalesceKey);
+          const claimed = claimCoalesced();
           if (claimed) {
             // The folded text is the newest loop fire, so carry its fire identity
             // forward too. Keeping the first envelope here would make the stale-
@@ -6959,7 +6977,7 @@ export function hostThroughPty(o) {
       } catch (err) {
         // P-001a: an error path must clear the coalesce slot too (claim is
         // idempotent — a no-op when the delivery already claimed it above).
-        if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
+        claimCoalesced();
         // EI-10412: a lifecycle verb (compact/reset/recycle) dying here used to
         // vanish without a trace — for compact that silently killed the whole
         // auto-continuation. The swallow stays (child may have exited mid-inject;
@@ -6985,9 +7003,10 @@ export function hostThroughPty(o) {
         if (!deferMutexRelease && releaseInject) releaseInject();
       }
       };
-      // EI-19311270129974785: the early ACK is only an acceptance commitment;
-      // keep this id pending until the detached pipeline reaches its write/
-      // recycle commitment, or clear it when the attempt is terminally refused.
+      // EI-19311270129974785 / F03: the early ACK is only an acceptance
+      // commitment; keep every ID in this coalesced waiter pending until the
+      // detached pipeline reaches its write/recycle commitment, or clear the
+      // complete set when the attempt is terminally refused.
       if (msg.deliveryId) deliveryDedup.markPending(msg.deliveryId);
       // Fire the gated pipeline and forget it (from the ACK's point of view) —
       // its own try/catch/finally above already handles every expected outcome
@@ -6995,26 +7014,28 @@ export function hostThroughPty(o) {
       // unexpected throw can never surface as an unhandled promise rejection.
       void runGatedDelivery()
         .then((deliveryOutcome) => {
-          if (!msg.deliveryId) return;
-          if (
-            deliveryOutcome?.ok === true &&
-            (deliveryOutcome.reason === "delivered" ||
-              deliveryOutcome.reason === "quota-recovery-delivered")
-          ) {
-            deliveryDedup.markCompleted(msg.deliveryId);
-          } else if (
-            msg.mode === "carry-respawn" &&
-            deliveryOutcome?.reason === "deferred-busy-gate"
-          ) {
-            // carryRearm.schedule() owns a live retry outside this promise; keep
-            // the id pending so a client retry cannot race that re-arm.
-            deliveryDedup.markPending(msg.deliveryId);
-          } else {
-            deliveryDedup.clearPending(msg.deliveryId);
+          if (!coalescedDeliveryIds.size) return;
+          for (const deliveryId of coalescedDeliveryIds) {
+            if (
+              deliveryOutcome?.ok === true &&
+              (deliveryOutcome.reason === "delivered" ||
+                deliveryOutcome.reason === "quota-recovery-delivered")
+            ) {
+              deliveryDedup.markCompleted(deliveryId);
+            } else if (
+              msg.mode === "carry-respawn" &&
+              deliveryOutcome?.reason === "deferred-busy-gate"
+            ) {
+              // carryRearm.schedule() owns a live retry outside this promise; keep
+              // the ID pending so a client retry cannot race that re-arm.
+              deliveryDedup.markPending(deliveryId);
+            } else {
+              deliveryDedup.clearPending(deliveryId);
+            }
           }
         })
         .catch((err) => {
-          if (msg.deliveryId) deliveryDedup.clearPending(msg.deliveryId);
+          for (const deliveryId of coalescedDeliveryIds) deliveryDedup.clearPending(deliveryId);
           try {
             process.stderr.write(
               `psu-pty-host: gated delivery pipeline threw for ${ownerId}: ` +
