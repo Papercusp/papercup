@@ -16,6 +16,7 @@ import { BUDGET, promptWeight } from '../tool-guidance-budget';
 const scopeState = vi.hoisted(() => ({
   scope: null as any,
   quarantinedIds: [] as string[],
+  fleetAssignmentRows: undefined as unknown[] | undefined,
   windingDown: false,
   pauseReason: null as string | null,
 }));
@@ -258,11 +259,15 @@ beforeEach(() => {
   // clearAllMocks() resets call history but deliberately preserves queued
   // mockResolvedValueOnce entries. Reinstall the defaults explicitly so a
   // one-shot branch test cannot leak into the next describe block.
+  scopeState.fleetAssignmentRows = undefined;
   diagnoseFleetScopeLeaderLivenessM.mockReset();
   diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(null);
   reconcileFleetScopeClaimsM.mockImplementation(async () => ({
     scope: scopeState.scope,
     quarantinedIds: scopeState.quarantinedIds,
+    ...(scopeState.fleetAssignmentRows
+      ? { fleetAssignmentRows: scopeState.fleetAssignmentRows }
+      : {}),
   }));
   readFleetPauseStateM.mockImplementation(async () => ({
     windingDown: scopeState.windingDown,
@@ -493,6 +498,7 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     vi.clearAllMocks();
     scopeState.scope = null;
     scopeState.quarantinedIds = [];
+    scopeState.fleetAssignmentRows = undefined;
     scopeState.windingDown = false;
     scopeState.pauseReason = null;
     registryState.projects = [{ slug: 'papercusp' }];
@@ -595,6 +601,26 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
 
     await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
 
+    expect(getNextM).toHaveBeenCalledOnce();
+  });
+
+  it('reuses the reconciliation roster snapshot for leader-liveness preflight', async () => {
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'snapshot-fleet',
+      fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'lane-rev4', revision: 4 } },
+    };
+    scopeState.fleetAssignmentRows = [{ agentId: 'su-leader' }];
+    diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(null);
+    getNextM.mockResolvedValue(null);
+
+    await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+
+    expect(diagnoseFleetScopeLeaderLivenessM).toHaveBeenCalledWith({
+      scope: scopeState.scope,
+      fleetAssignmentRows: scopeState.fleetAssignmentRows,
+    });
     expect(getNextM).toHaveBeenCalledOnce();
   });
 
