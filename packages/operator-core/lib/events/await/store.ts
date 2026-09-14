@@ -1126,6 +1126,14 @@ export async function listActiveAwaitsByKeyPrefix(prefix: string): Promise<Await
 export const INBOX_WAKE_KEY_PREFIX = 'coord:inbox-wake:';
 
 /**
+ * The system halt-rescue wake is deliberately not a message. It shares the
+ * recipient's inbox-wake key so the standing keepalive can rescue a halted
+ * session, but must not consume a separate one-shot await waiting for a real
+ * directed message on that key.
+ */
+const UNGUARDED_HALT_RESCUE_SOURCE = 'unguarded-halt-rescue';
+
+/**
  * P-001 (fleet-member-dx-improvements-2026-07-10, EI-9014): active deliberate
  * awaits for MANY subscribers in ONE round-trip — the "parked-on-event" read
  * that fleet:assignments and the claim-discipline watch derive a member's
@@ -1724,12 +1732,20 @@ export async function countActiveAwaitsByKeyShapes(
 export async function fireAwaitsForKey(input: {
   eventKey: string;
   reason?: 'event' | 'timeout';
+  /** Emitter attribution used for source-specific matching safeguards. */
+  source?: string | null;
   /** EI-8998: the emitted payload — tested against any active payload_filter before a
    *  matching row is allowed to fire. Rows with no payload_filter are unaffected. */
   payload?: unknown;
 }): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  // The rescue wake is a synthetic liveness signal, not directed mail. Exclude
+  // it only from one-shot inbox-wake rows: the always-armed standing row is the
+  // rescue path and must continue to fire, while ordinary coord:send wakes must
+  // still consume one-shot waits on the same key.
+  const suppressRescueInboxOneShot =
+    input.source === UNGUARDED_HALT_RESCUE_SOURCE && input.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX);
 
   // One-shot, EXACT KEY, NO payload_filter: today's single-atomic-UPDATE fast path,
   // unchanged (D-002) — the overwhelmingly common case pays zero extra cost for EI-8998.
@@ -1740,6 +1756,7 @@ export async function fireAwaitsForKey(input: {
        AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
        AND payload_filter IS NULL
        AND policy <> 'announce'
+       AND ${!suppressRescueInboxOneShot}
     RETURNING *
   `;
 
@@ -1754,6 +1771,7 @@ export async function fireAwaitsForKey(input: {
        AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
        AND payload_filter IS NOT NULL
        AND policy <> 'announce'
+       AND ${!suppressRescueInboxOneShot}
   `;
   const onceFilterMatchedIds = onceFilterCandidates
     .filter((r: any) => payloadMatchesFilter(parseJsonb(r.payload_filter), input.payload))

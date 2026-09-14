@@ -332,7 +332,12 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   // 1. One-shot fire the awaits on this key (atomic — D-002). EI-8998: the payload is
   // threaded through so a row carrying a payload_filter is only fired when the
   // emitted payload actually satisfies it (rows with no filter are unaffected).
-  const fired = await fireAwaitsForKey({ eventKey: opts.key, reason: 'event', payload: opts.payload });
+  const fired = await fireAwaitsForKey({
+    eventKey: opts.key,
+    reason: 'event',
+    payload: opts.payload,
+    source: opts.source,
+  });
   // composable-event-awaits-2026-07-11: a fired row tagged with node_id is a composed-await LEAF.
   // It does NOT wake/notify its subscriber directly — its (already atomic, exactly-once) claim
   // PROPAGATES up the threshold tree, and only a ROOT trip queues a single wake. Split composed

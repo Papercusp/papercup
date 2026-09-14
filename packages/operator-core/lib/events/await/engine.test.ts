@@ -318,6 +318,22 @@ afterEach(() => {
 });
 
 describe('emitAwaitedEvent', () => {
+  it('forwards the emitter source into durable await matching', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([]);
+
+    await emitAwaitedEvent({
+      key: 'coord:inbox-wake:su-rescue-source',
+      source: 'unguarded-halt-rescue',
+    });
+
+    expect(h.store.fireAwaitsForKey).toHaveBeenCalledWith({
+      eventKey: 'coord:inbox-wake:su-rescue-source',
+      reason: 'event',
+      payload: undefined,
+      source: 'unguarded-halt-rescue',
+    });
+  });
+
   it('wake awaits → deliveries; notify awaits + to[] → ONE coord message; woken excluded from notify', async () => {
     h.store.fireAwaitsForKey.mockResolvedValueOnce([
       awaitRow({ id: 1, subscriberId: 'su-w', policy: 'wake' }),
