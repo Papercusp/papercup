@@ -770,6 +770,32 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(String(payloadOf(res as never).schemaColumn)).toContain('no inline result JSON');
   });
 
+  it('redirects the coord thread-post API created_ts alias to the physical created_at column', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('column "created_ts" does not exist'), { code: '42703' }),
+    );
+    describeColumnsMock.mockResolvedValue([
+      {
+        table: 'harness_shared.coord_thread_posts',
+        columns: ['created_at: timestamp with time zone', 'thread_id: text', 'body: text'],
+      },
+    ]);
+    const res = await pgQueryTool.handler(
+      {
+        sql: 'SELECT created_ts FROM harness_shared.coord_thread_posts ORDER BY created_ts DESC LIMIT 1',
+      } as never,
+      {} as never,
+    );
+    expect(payloadOf(res as never)).toMatchObject({
+      code: '42703',
+      knownColumns: {
+        'harness_shared.coord_thread_posts': expect.arrayContaining(['created_at: timestamp with time zone']),
+      },
+      schemaColumn: expect.stringContaining('created_at'),
+    });
+    expect(String(payloadOf(res as never).schemaColumn)).toContain('API projections');
+  });
+
   it('redirects a generic created_at guess to tool_invocations.invoked_at', async () => {
     pgReadQueryMock.mockRejectedValue(
       Object.assign(new Error('column "created_at" does not exist'), { code: '42703' }),
