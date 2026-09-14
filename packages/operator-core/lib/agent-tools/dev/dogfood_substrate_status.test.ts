@@ -31,6 +31,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 }));
 
 import {
+  type GetInProcessStatusOpts,
   getInProcessSubstrateStatus,
   type InProcessSubstrateStatus,
 } from '../../sync/hyperbee/in-process-status';
@@ -55,9 +56,13 @@ beforeEach(() => {
 
 describe('dev:dogfood_substrate_status handler', () => {
   it('publishes the harnesses[] root in the registered output contract', () => {
-    expect(tool.guidance?.returns).toContain('harnesses[]');
+    const definition = tool as unknown as {
+      guidance?: { returns?: string };
+      result: { safeParse: (value: unknown) => { success: boolean } };
+    };
+    expect(definition.guidance?.returns).toContain('harnesses[]');
     expect(
-      tool.result.safeParse({
+      definition.result.safeParse({
         substrateActive: true,
         bootedCount: 1,
         summary: { totalHarnesses: 1, worstVerdict: 'healthy' },
@@ -81,9 +86,9 @@ describe('dev:dogfood_substrate_status handler', () => {
   it('refreshes the verdict with real per-harness claim stats (two-pass)', async () => {
     // The composer echoes whatever resolveClaimStats returns for ws::web, so we can
     // observe which stats reached each pass.
-    statusM.mockImplementation((opts: { resolveClaimStats: (w: string, s: string) => unknown }) => ({
+    statusM.mockImplementation((opts?: GetInProcessStatusOpts) => ({
       harnesses: [{ workspaceId: 'ws', harnessSlug: 'web' }],
-      probe: opts.resolveClaimStats('ws', 'web'),
+      probe: opts?.resolveClaimStats?.('ws', 'web'),
     }) as never);
     statsM.mockResolvedValue({ total: 10, won: 8, lost: 1, error: 1 } as never);
 
@@ -157,9 +162,9 @@ describe('dev:dogfood_substrate_status handler', () => {
   });
 
   it('tolerates a claim-stat load failure (falls back to zeroed stats)', async () => {
-    statusM.mockImplementation((opts: { resolveClaimStats: (w: string, s: string) => unknown }) => ({
+    statusM.mockImplementation((opts?: GetInProcessStatusOpts) => ({
       harnesses: [{ workspaceId: 'ws', harnessSlug: 'web' }],
-      probe: opts.resolveClaimStats('ws', 'web'),
+      probe: opts?.resolveClaimStats?.('ws', 'web'),
     }) as never);
     statsM.mockRejectedValue(new Error('pg down'));
     const b = body(await run());
