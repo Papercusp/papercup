@@ -106,7 +106,9 @@ const observedRuntimeSchema = z
       .array(z.number().int().positive())
       .max(64)
       .optional()
-      .describe('exact harness_shared.test_runs ids that can validate the target SHA'),
+      .describe(
+        'OPTIONAL for caller-only runtime evidence; REQUIRED when any provenance query field is supplied. When supplied, all query fields must also be non-empty.',
+      ),
     workspaceId: z.string().min(1).max(160).optional(),
     harnessSlug: z.string().min(1).max(120).optional(),
     runGroupId: z.string().min(1).max(200).optional(),
@@ -657,7 +659,7 @@ export default defineTool({
         observedRuntime: observedRuntimeSchema
           .optional()
           .describe(
-            'explicit runtime provenance for the environment that produced the report. Caller SHA is labeled unverified; when exact testRunIds plus all query fields are supplied, only matching clean server-owned ledger rows can validate the target SHA. This is separate from the runtime that received this capture call.',
+            'explicit runtime provenance for the environment that produced the report. Caller-only form: provide sha plus optional version/endpoint/evidenceRef and omit testRunIds and query fields. Trusted test-run form: provide testRunIds plus every query field (workspaceId, harnessSlug, runGroupId, root, filePaths), all non-empty; only matching clean server-owned ledger rows can validate the target SHA. This is separate from the runtime that received this capture call.',
           ),
         notifyAgents: z
           .array(z.string().min(1))

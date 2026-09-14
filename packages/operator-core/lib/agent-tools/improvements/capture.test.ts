@@ -540,6 +540,39 @@ describe('improvements:capture tool envelope', () => {
     expect(parsed.success).toBe(false);
   });
 
+  it('publishes the conditional testRunIds prerequisite for observed runtime provenance', () => {
+    const argsSchema = captureTool.args as {
+      safeParse: (value: unknown) => { success: boolean };
+    };
+    const json = z.toJSONSchema(captureTool.args as never) as {
+      properties?: {
+        observedRuntime?: {
+          description?: string;
+          properties?: { testRunIds?: { description?: string } };
+        };
+      };
+    };
+    const observed = json.properties?.observedRuntime;
+    const testRunIds = observed?.properties?.testRunIds?.description;
+
+    expect(observed?.description).toContain('Caller-only form');
+    expect(observed?.description).toContain('Trusted test-run form');
+    expect(observed?.description).toContain('testRunIds plus every query field');
+    expect(testRunIds).toContain('OPTIONAL for caller-only runtime evidence');
+    expect(testRunIds).toContain('REQUIRED when any provenance query field is supplied');
+    expect(testRunIds).toContain('all query fields must also be non-empty');
+
+    expect(
+      argsSchema.safeParse({ title: 'caller-only target evidence', observedRuntime: { sha: 'target-sha' } }).success,
+    ).toBe(true);
+    expect(
+      argsSchema.safeParse({
+        title: 'query without test-run evidence',
+        observedRuntime: { sha: 'target-sha', workspaceId: 'ws-target' },
+      }).success,
+    ).toBe(false);
+  });
+
   it('routes a one-off tool failure to correlated non-claimable probation', async () => {
     mockIdentity.mockReturnValue(identity('static-client', 'su-reporter'));
     await callTool({
