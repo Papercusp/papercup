@@ -42,6 +42,7 @@ import {
   getJob,
   isBackgroundTestCommand,
   killJob,
+  normalizeExpectedRgNoMatchResult,
   normalizeExpectedSigpipeResult,
   readJobOutput,
   runForeground,
@@ -186,6 +187,44 @@ describe('runForeground', () => {
     expect(r.status).toBe('completed');
     expect(r.exitCode).toBe(0);
     expect(r.output).toContain(REPO_ROOT + '/');
+  });
+
+  it('treats an rg no-match consumed by wc as a successful zero-count probe', async () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'cap-bash-rg-count-'));
+    const file = join(fixture, 'fixture.txt');
+    writeFileSync(file, 'present\n');
+    const command = `rg -l -F missing ${JSON.stringify(file)} | wc -l`;
+    const r = await runForeground({ command, cwd: fixture, stateDir: fixture }, never, 10_000);
+
+    expect(r.status).toBe('completed');
+    expect(r.exitCode).toBe(0);
+    expect(r.output.trim()).toBe('0');
+  });
+
+  it('keeps a bare rg no-match as a failed search', async () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'cap-bash-rg-no-match-'));
+    const file = join(fixture, 'fixture.txt');
+    writeFileSync(file, 'present\n');
+    const command = `rg -l -F missing ${JSON.stringify(file)}`;
+    const r = await runForeground({ command, cwd: fixture, stateDir: fixture }, never, 10_000);
+
+    expect(r.status).toBe('failed');
+    expect(r.exitCode).toBe(1);
+  });
+
+  it('normalizes only the documented rg count shape', () => {
+    expect(normalizeExpectedRgNoMatchResult('rg -l -F missing fixture.txt | wc -l', 'failed', 1)).toEqual({
+      status: 'completed',
+      exitCode: 0,
+    });
+    expect(normalizeExpectedRgNoMatchResult('rg -l -F missing fixture.txt', 'failed', 1)).toEqual({
+      status: 'failed',
+      exitCode: 1,
+    });
+    expect(normalizeExpectedRgNoMatchResult('rg -l -F missing fixture.txt | wc -l && echo done', 'failed', 1)).toEqual({
+      status: 'failed',
+      exitCode: 1,
+    });
   });
 
   it('does not normalize SIGPIPE outside the narrow bounded-read shape', () => {
