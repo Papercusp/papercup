@@ -118,6 +118,29 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     expect((await call(world, 'coord:orient')).s33.status).toBe('due');
   });
 
+  it('allows only evidence-backed held-task completion after its test, without accepting the plan', async () => {
+    const world = makeS33World('continue');
+    const completion = {
+      summary: 'Held task verified. Independent acceptance remains ungraded.',
+      verification: { testsRun: 'fixture/current-task.test.ts', testResult: 'pass', verifiedHow: 'unit', filesChanged: [] },
+    };
+    const close = { id: 'WI-93301', completion, state: 'done', assumptions: 'none' };
+    expect((await call(world, 'work_items:complete', close)).ok).toBe(false);
+    await call(world, 'testing:run', { files: ['fixture/current-task.test.ts'] });
+    expect((await call(world, 'work_items:complete', { ...close, id: 'WI-93302' })).ok).toBe(false);
+    expect((await call(world, 'work_items:complete', { id: 'WI-93301', summary: completion.summary })).ok).toBe(false);
+    expect((await call(world, 'work_items:complete', { ...close, completion: { ...completion, summary: 'Plan is accepted.' } })).ok).toBe(false);
+    const recorded = await call(world, 'work_items:complete', { id: 'WI-93301', completion });
+    expect(recorded).toMatchObject({ ok: true, taskCompletion: { id: 'WI-93301', state: 'record-only' }, acceptance: { status: 'ungraded' } });
+    expect((await call(world, 'work_items:complete', close)).taskCompletion.state).toBe('done');
+    expect((await call(world, 'work_items:get')).results[0].workItem.state).toBe('done');
+    expect((await call(world, 'plans:get')).results[0].acceptance.status).toBe('ungraded');
+    expect((await call(world, 'coord:orient')).s33.effect).toBe('current-task-test-verified');
+    for (const c of ['verify', 'paused', 'achieved', 'killed'] as const) {
+      expect((await call(makeS33World(c), 'work_items:complete', close)).ok).toBe(false);
+    }
+  });
+
   it('a valid peer-owned wait requires the real event and bounded timeout', async () => {
     const world = makeS33World('wait');
     expect((await call(world, 'events:await', { event: 'invented' })).ok).toBe(false);
