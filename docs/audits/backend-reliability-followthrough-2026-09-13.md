@@ -2,7 +2,7 @@
 
 Plan: `backend-audit-diagnosis-before-repair-2026-09-13`.
 Driver: `WI-10001261`, session `su-6eeda0f9-9087-43b2-b27d-e3856a7cf256`.
-Updated: September 14, 2026, approximately 04:38 UTC (September 14 EDT).
+Updated: September 14, 2026, approximately 04:49 UTC (September 14 EDT).
 
 This is an execution ledger, not a second completed audit or a repair certificate.
 The original report and measurement window remain in
@@ -37,7 +37,7 @@ present in every running build.
 
 | Finding | Current evidence / status | Plan coverage and ownership | Next discriminating evidence |
 | --- | --- | --- | --- |
-| F01 session-history SQL | Open for gate selection and affected-runtime verification. The maintained private-PG regression passed 7/7 with zero skips; it includes the uncast negative control and cast repair. Default-endpoint reads still reproduced `invalid escape string` after this carry; an explicit staging `self` read succeeded. | P-002 / P-014. Reuse existing `read.integration.test.ts`; related incident `EI-23127048402087622` is terminal, not proof of runtime resolution. Recurrence coalesced onto `EI-23195479465396624`. | Adopt the saved test proof below; verify predecessor/readMore coverage and actual promotion selection without treating the staging read as release resolution. |
+| F01 session-history SQL | Cause reproduced by the maintained private-PG regression, which passed 7/7 with zero skips. Its source covers the uncast control, cast repair, predecessor/successor, named scope, search-to-readMore and exact continuation windows. Default-endpoint reads still failed after this carry; staging self-read succeeded. A demonstrated main-selection gap is recorded below. | P-002 / P-014; gate repair P-013/P-023. Recurrence `EI-23195479465396624`; new gate gap `EI-23210600888560844`. | Complete actual producer/transport and affected-runtime coverage; adopt the saved SQL proof rather than rerunning only to reconstruct it. Main selection must be repaired after the all-diagnosis barrier. |
 | F02 busy-boundary deferral | Open. Own host recorded only 144 ms maximum quiet against 1,500 ms, despite native task completion. Deferral counts are not lost-message counts. | P-003 / P-016. Carry-specific boundary repair belongs to the separate carry plan; general wake residue stays here. | Adopt exact carry fixture and native-boundary evidence; test idle repaint versus active reasoning and unsent human input without driving an attended terminal. |
 | F03 folded wake completion | Open. Original actual-factory counterexample leaves folded B completed after parent A defers; current source inspected still marked folded IDs completed at admission. | P-003 / P-015. General delivery/coalescing scope here; coordinate any shared PTY file. | Reproduce through the maintained isolated host/executor fixture, including defer, retry, cancellation and exactly one eventual native turn. |
 | F04 missing carry prompt | Open. Original host repeatedly lacked `session-22472/AGENTS.md`; initiating removal was not established. | P-004 / P-016. Adopt carry-plan prerequisite diagnosis and repair evidence. | Trace launch/archive/cleanup ownership and reproduce a missing prerequisite in a disposable fixture; establish safe recovery or explicit blocking while preserving predecessor. |
@@ -48,8 +48,8 @@ present in every running build.
 | F09 retrieval completeness and use | Open. Retrieved, admitted, delivered and used are distinct. Existing retrieval audit reports indexing falling behind in its bounded window and a delivered historical pointer not followed by an agent. | P-005 / P-010 / P-018. Reuse retrieval-plan fixtures and preserve consumer scope. | Known-answer predecessor/ID reads, indexing freshness denominator, epoch reset, exclusions and actual delivery/utilization; no inference from low scores alone. |
 | F10 scheduler/control starvation | Open, concrete mechanism established below. Due loop is present but critical-pressure policy overrides offered admission to zero. Other delayed routine classes remain to be classified. | P-006 / P-019; this driver's scheduler lane. | Repeated epoch/cohort evidence, correct pressure attribution, sustained-pressure fairness negative control and bounded recovery progress. |
 | F11 standing schedule materialization | Open. Original validator named missing standing-action schedules; not every declaration necessarily belongs active in this workspace. | P-006 / P-019. | Enumerate the exact original named set; reconcile declaration, boot/seed, intended scope and active/disabled/on-demand/retired disposition. |
-| F12 cancellation/SQL fragments | Open historical verification. Original failure population predates an inspected fix preventing thenable assimilation of fragments. | P-002 / P-014. | Execute nested fragments and abort-before/during-query through the real isolated wrapper; establish relevant build vintage rather than reopening historical errors alone. |
-| F13 hook/receiver skew | Open. Original release rejected the current hook's `role` field; staging accepted it. Downstream liveness impact not causally established. | P-002 / P-014. | Actual producer-to-projected-receiver old/new matrix with recorded fixtures; determine evidence loss without injecting production hooks. |
+| F12 cancellation/SQL fragments | Open for real-PG and runtime verification. Existing wrapper unit suite passed 11/11, including no eager tagged/unsafe fragment execution and active-query cancellation. These are mock-client tests, not a real-PG regression or proof that historical runtime errors remain current. | P-002 / P-014. | Execute nested fragments and abort-before/during-query through the real isolated wrapper; establish relevant build vintage rather than reopening historical errors alone. |
+| F13 hook/receiver skew | Open. Original release rejected the current hook's `role` field; staging accepts it. Existing activity lifecycle unit suite passed 15/15, but directly calls the handler, so it does not establish actual producer-to-projected-receiver compatibility. | P-002 / P-014. | Actual old/new producer-to-projected-receiver matrix with recorded fixtures; establish downstream liveness impact without injecting production hooks. Preserve the isolated-test caveats below. |
 | F14 incident identity | Open. Original unique-index failures and repeated title-family filings; related fixes `WI-10001183`, `EI-22536211469362868`, `EI-23198068959671510` are terminal and require verification. | P-007 / P-020. | Real-PG concurrent same/different identity submissions, claimed-content preservation, current runtime replay and stable observation attachment. |
 | F15 communication receipts | Open. Transport acceptance, inbox preservation, native start and requested action completion differ. A peer inbox wake started a turn here while the recurring loop still recorded no fire. | P-003 / P-007 / P-015 / P-020. Adopt carry receipt contract without treating it as all communications coverage. | Commit/abort/ACK-loss and retry lifecycle; exact intended native turn count; inbox fallback remains degraded pickup, not completion. |
 | F16 governor and loop visibility | Open. Original queue combined waiting and running. Current loop status failed to indicate a never-fired overdue loop; recovery later moved its due time without producing a fire. | P-006 / P-010 / P-021. | Trace writer units and unknowns; classify valid versus stale demand; test zero-fire deadline detection independently of manual agent activity. |
@@ -193,8 +193,20 @@ The staging evaluator returned pass with no structural blockers for exact hash
 New terminal spec-quality card `EI-23210288564537863` has **independent
 grading-integrity review pending**. Its exact subject is
 `spec-set:plan-class-bugfix:4ee4155a9b178e0d7b8a280556ef0286c78aacc131f0ae92c60af66b539dcc3b:806b7bd34648328c`.
-The card reader records a router dispatch reservation; that is not proof a
-reviewer has started or completed the audit. Do not reuse the failed card,
+The automatic router selected an already-ended session. Its consult
+`conv-mu0r5bj8-0000-754c5ae7ed0a4645bf4fa354bc5a6029` expired at
+`2026-09-14T04:37:59.048849Z`, with no responder and no posts. A direct wake to
+that recipient was refused; nothing was delivered. This corrects any
+interpretation of the reservation as a progressing audit. The defect is
+registered as `EI-23210715718620697`.
+
+**Temporary mitigation:** review work `WI-10001306` was assigned to the previous
+independent reviewer, `su-c77f160e-1bd4-4436-9090-bb0360873809`, whose current
+presence was parked rather than ended. A shortened action request was
+successfully delivered at `04:46:11Z`, after an oversized request was refused.
+Its wake was queued, with `pickupConfirmed:false`; neither actual pickup nor
+an independent verdict has yet been verified. Repairing the router's dead
+candidate/cascade path remains separate work. Do not reuse the failed card,
 self-audit the new one, or activate before the independent pass.
 
 Continue read-only diagnostic preparation while review is pending. After
@@ -223,3 +235,56 @@ inventory is not all diagnosis complete.
 - The carry's last successful operation and flight record identify the
   pre-boundary compaction request and its activity report. There is no new
   product edit in that recorded blind window.
+
+### Main-promotion selection: demonstrated gap, not missing test
+
+The documented read-only selector was executed with exactly these changed paths:
+
+```text
+packages/operator-core/lib/agent-tools/sessions/read.ts
+packages/operator-core/lib/agent-tools/sessions/read.integration.test.ts
+```
+
+`node scripts/affected-tests.mjs --changed-paths <the two paths> --print-affected`
+exited zero and selected the operator-core unit lanes and applicable lints,
+but no integration task. The same probe with `--integration` is a positive
+control: it selected operator-core `test:integration`. Both outputs were
+untruncated; their complete task lists are retained in
+`.papercusp/scratch/bash-26df0ab1-19a.log` and
+`.papercusp/scratch/bash-2ffd8f4d-28d.log`.
+
+The writer explains the difference: `scripts/affected-tests.mjs` adds the broad
+integration task only when `runIntegration` is true. The root `test:affected`
+command does not pass that flag. Operator-core's ordinary configurations use
+the unit layer, whose shared config in `libs/test-config/src/vitest-config.ts`
+excludes integration-test suffixes. A positional test filter cannot reverse
+that exclusion.
+
+`EI-23210600888560844` records the scoped repair under P-013/P-023: reuse the
+existing focused invariant-guard integration venue, with selection tests for
+relevant source/test/fixture/config/submodule triggers and fail-closed
+execution. Do not turn on the entire integration sweep as a shortcut. No
+current release verdict was read, rerun or changed by these source-selector
+probes.
+
+### Existing cancellation and activity tests
+
+Run `0mu0rhce31kypv2ktsh` / bash `3222fd44-60e`, retained log
+`.papercusp/scratch/bash-3222fd44-60e.log`, completed with exit zero through
+the maintained `npm run test:file` router:
+
+- `packages/operator-core/lib/pg-bounded-txn.test.ts`: 11 passed.
+- `packages/operator-core/lib/agent-tools/activity/report-lifecycle.test.ts`:
+  15 passed.
+- Router: two requested, two executed, 26 passed, zero skips. Tested HEAD
+  `a6bf58a90c0673a21800e66dccfe50ffd588c7f7`; the two test files were clean.
+  Before/after hashes for both tests and both production source files were
+  identical.
+
+These tests do not complete F12/F13 diagnosis. The wrapper test uses a fake
+thenable client; the activity test bypasses projected schema dispatch and
+mocks the persistence/lifecycle seams. The output also reports unit-PG guards
+rejecting carry/reset marker reads, followed by the handler's fallback path.
+No real database connection was permitted by those guards. That warning
+cannot be represented as successful testing of the true carry-marker path,
+nor does it establish a production outage.

@@ -21,7 +21,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const MAX_INPUT_BYTES = 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 590_000;
@@ -220,6 +220,6 @@ async function main() {
   process.stdout.write(`${JSON.stringify(await runManagedPreCompact(payload))}\n`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (isCliEntry(import.meta.url)) {
   await main();
 }

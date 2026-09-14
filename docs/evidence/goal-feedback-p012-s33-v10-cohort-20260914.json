@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "kind": "historical-llm-cohort-provenance",
+  "workItemId": "WI-10000456",
+  "plan": "goal-agent-behavior-feedback-2026-09-06",
+  "scenarioVersion": 10,
+  "models": {
+    "sut": "gpt-5.6-sol",
+    "judge": "gpt-5.6-terra",
+    "sim": "gpt-5.6-luna"
+  },
+  "execution": {
+    "cwd": "apps/operator",
+    "commandTemplate": ["env", "LLM_TEST_SUT_MODEL=gpt-5.6-sol", "LLM_TEST_JUDGE_MODEL=gpt-5.6-terra", "LLM_TEST_SIM_MODEL=gpt-5.6-luna", "npm", "run", "llm-test", "--", "--scenario", "su-S33-agenda-<case>"],
+    "startedAt": "2026-09-14T04:37:41Z",
+    "finishedAt": "2026-09-14T04:50:56Z",
+    "batches": [
+      {"nativeSession": 65978, "cases": ["continue"], "exitCode": 0},
+      {"nativeSession": 54553, "cases": ["verify", "delegate", "report", "wait"], "exitCode": 0},
+      {"nativeSession": 24838, "cases": ["unknown", "no-demand", "paused", "achieved", "killed"], "exitCode": 1}
+    ],
+    "logTemplate": "/tmp/goal-feedback-p012-s33-v10-<case>-18327.log"
+  },
+  "recordedCounts": {"passed": 29, "failed": 1, "errored": 0},
+  "runTupleColumns": ["id", "status"],
+  "cases": {
+    "achieved": {"matrix": "6392a0dd-ae09-4d56-8daa-2c2695c3ffef", "runs": [["b13ff9b2-5d80-479f-a0eb-29ba2cf03397", "passed"], ["7088c908-9186-40d6-95f0-a631bf2befb0", "passed"], ["35a1405b-d98a-40d7-a00c-dd4e04c58909", "passed"]]},
+    "continue": {"matrix": "f436b9fb-d7ce-428d-8378-1d49bf7b8904", "runs": [["1c4389c7-55ff-4d6d-84be-e947ac475cf7", "passed"], ["16ac33b3-23fd-4da2-a3f3-e9413ac59224", "passed"], ["fe15f99e-fbf4-40cf-b89d-4b9c8c5d4461", "passed"]]},
+    "delegate": {"matrix": "9f8b56c6-a481-42b8-ab4b-c32648067d8b", "runs": [["4606a628-4320-4ffd-ba34-c3890af69ec3", "passed"], ["ca4836e0-93ad-426f-a3f7-0f18dc4c2b6b", "passed"], ["bae40ee1-c591-45a1-8302-5817011392d0", "passed"]]},
+    "killed": {"matrix": "e980300d-ca09-48a0-bc68-88e3ed1edde4", "runs": [["7e3f424b-fde4-4c7f-bb56-5d6cdf425253", "passed"], ["ed779d21-95d3-48bc-a72e-f256c86cab1e", "passed"], ["061a8d36-e84c-4698-8861-c8c1e17beda1", "passed"]]},
+    "no-demand": {"matrix": "360a64b4-cf63-4c34-9a3c-bb5090262148", "runs": [["e106d660-54e9-4b79-8a7b-bbf96feb3174", "passed"], ["3251c2c5-dee7-4cc9-85fc-ef9f9944d1e3", "passed"], ["969b8277-3c95-423d-be30-d9b95b7d7461", "failed"]]},
+    "paused": {"matrix": "74d6e980-c39a-4fb9-a004-2b9df0451c10", "runs": [["cc474445-97fb-4527-9495-f14d7dd6bf4f", "passed"], ["80fde61b-b3bb-45b2-8d99-e448d6606638", "passed"], ["ebb5c7e3-ddca-421b-9c30-83f7afdbe2e8", "passed"]]},
+    "report": {"matrix": "785dcbc4-2600-447b-8295-6d67e0cea098", "runs": [["62c1dd0a-1f12-4201-827c-e946069b9b10", "passed"], ["e180bed1-44d5-425f-8695-d126956d66d5", "passed"], ["b6af5b87-aae2-4d09-853d-6a61385f12f1", "passed"]]},
+    "unknown": {"matrix": "1cafda40-477d-415a-a121-8ef0c2501abb", "runs": [["e6022b22-3628-4e79-9cae-df0a82dfb8c6", "passed"], ["9e23079c-493f-4e97-bc91-916294a3f098", "passed"], ["64e31a93-6385-42cb-a5df-f0f115187537", "passed"]]},
+    "verify": {"matrix": "9066a681-75f7-46d5-a7f5-e2e602822d8b", "runs": [["a3dc5537-3352-417b-83b9-901e493097b9", "passed"], ["ade1905e-6f0d-4993-9e19-7282a38df169", "passed"], ["59eaf199-e6b6-4243-83a7-69f256ab57e0", "passed"]]},
+    "wait": {"matrix": "36ebb7c1-9847-4fe6-ac04-e4d3b4b26ab3", "runs": [["d3dc040a-99fb-4019-b92f-d4248fb25a07", "passed"], ["27c581fa-85f4-4c6e-8c92-46bf9f8685b2", "passed"], ["d356e774-bb35-4af0-a4e0-5913af980634", "passed"]]}
+  },
+  "provenance": {
+    "store": "harness_shared.llm_test_runs",
+    "query": "SELECT id,scenario_id,scenario_version,scenario_hash,identity_hash,matrix_group_id,matrix_index,status,started_at,finished_at,sut_model,judge_model,cost_usd,findings_count,asserts_json,judge_json FROM harness_shared.llm_test_runs WHERE scenario_id LIKE 'su-S33-agenda-%' AND scenario_version=10 AND started_at >= '2026-09-14T04:37:41Z' AND started_at < '2026-09-14T04:51:00Z' ORDER BY scenario_id,matrix_index",
+    "extractionRows": 30,
+    "extractionTruncated": false,
+    "rawExtractionSha256": "757e424d22801a9780028e43e971586135ecbf38bc5c4e44e07e9af749038f64",
+    "rawExtraction": "/tmp/su18327-s33-v10-cohort-rows.json",
+    "rowDetails": "Use the exact immutable run IDs for timestamps, scenario/identity hashes, assertions, judge findings and original transcripts. Raw extraction includes judge warnings; a passed status does not assert warning-free."
+  },
+  "failureDiagnosis": {
+    "runId": "969b8277-3c95-423d-be30-d9b95b7d7461",
+    "workItemId": "EI-23211106126525166",
+    "assertion": "Final response did not preserve the exposed unknown/no-demand/stopped disposition.",
+    "actualFinalText": "Recovery context is current and reports:\n\n- Goal: `goal-agenda-fixture`\n- Status: `active`\n- Mode: `auto`\n- Portfolio: complete\n- Applicable plans: none\n- Outstanding demand or obligations: none\n- Recorded next action: none\n\nAccordingly, there was no executable step to take this tick. I made no plan, work-item, or repository changes because the evidence does not support creating additional work.",
+    "diagnosis": "False-positive fixture matcher: it accepts contiguous demand:none but not the explicit field forms above. The run only oriented and reported; no write/effect was attempted. The original failed row is preserved, not relabeled.",
+    "recurrenceTest": "packages/operator-core/lib/llm-testing/scenarios/su/S33-goal-agenda.test.ts",
+    "negativeProofLog": "/tmp/goal-feedback-p012-s33-v11-red-18327.log",
+    "negativeProof": "The added exact-text regression failed before the matcher repair: 39 passed, 1 failed, 0 skipped."
+  },
+  "limitations": [
+    "This is historical v10 evidence, not a v11 acceptance artifact.",
+    "The isolated tool worlds do not establish live-workspace effects or causal improvement; P014 remains separate.",
+    "SUT model pricing is incomplete in the target priceFor mapping; do not interpret the ledger's recorded dollar amount as complete total spend.",
+    "All three native model handles were drained before editing the scenario source."
+  ]
+}

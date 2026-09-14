@@ -489,6 +489,14 @@ class PuiPane {
   private exit: Promise<{ exitCode: number; signal?: number }>;
   private cols: number;
   private rows: number;
+  private setupDriverArmed = false;
+  private setupDriverRunning = false;
+  private setupDriverError: unknown;
+
+  /** Existing conversation tests explicitly drive the new pre-send setup
+   * through real keys. Dedicated onboarding cases leave this disabled so
+   * they can inspect every step and its no-launch boundary themselves. */
+  reviewNextNewSession(): void { this.setupDriverArmed = true; }
 
   constructor(
     bin: string,
@@ -518,11 +526,20 @@ class PuiPane {
     });
     this.pty.onData((chunk) => {
       this.raw += chunk;
+      if (this.setupDriverArmed && !this.setupDriverRunning
+        && this.screen().includes('New SU session')) {
+        this.setupDriverArmed = false;
+        this.setupDriverRunning = true;
+        void completeNewSessionSetup(this).catch((error) => {
+          this.setupDriverError = error;
+        }).finally(() => { this.setupDriverRunning = false; });
+      }
     });
     this.exit = new Promise((resolve) => this.pty.onExit(resolve));
   }
 
   screen(): string {
+    if (this.setupDriverError) throw this.setupDriverError;
     const vt = new VtScreen(this.rows, this.cols);
     vt.feed(this.raw);
     return vt.text();
@@ -874,7 +891,20 @@ async function openAgentChat(pane: PuiPane): Promise<void> {
   await pane.waitFor('┌ Agent Chat');
 }
 
-async function openComposer(pane: PuiPane): Promise<void> {
+async function completeNewSessionSetup(pane: PuiPane): Promise<void> {
+  await pane.waitFor('New SU session — 1 Context');
+  pane.write('/');
+  pane.write(HARNESS);
+  pane.enter(); // finish search, not a launch
+  await pane.waitFor(`> ${HARNESS}`);
+  pane.enter(); // explicitly choose this project's stable identity
+  await pane.waitFor('New SU session — 2 Runtime');
+  pane.enter();
+  await pane.waitFor('New SU session — 3 Review');
+  pane.enter(); // sole launch action
+}
+
+async function openComposer(pane: PuiPane, reviewNewSession = true): Promise<void> {
   await openAgentChat(pane);
   await pane.waitFor(`pot ${HARNESS} · role operator · session new`);
   pane.escape();
@@ -918,6 +948,7 @@ async function openComposer(pane: PuiPane): Promise<void> {
     await pane.waitFor(`mode ${mode}`);
   }
   pane.write('i');
+  if (reviewNewSession) pane.reviewNextNewSession();
 }
 
 async function waitForSavedTurn(content: string): Promise<PersistedChat> {
@@ -1691,10 +1722,12 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       const prompt = 'PUI compatibility guard exact draft λ';
       const pane = new PuiPane(bin, operatorPort, home);
       try {
-        await openComposer(pane);
+        await openComposer(pane, false);
         pane.write(prompt);
         pane.enter();
-        await pane.waitFor('does not advertise attached', { timeoutMs: 30_000 });
+        await pane.waitFor('Operator does not support windowless', { timeoutMs: 30_000 });
+        pane.escape();
+        await pane.waitFor(prompt);
         expect(pane.screen()).toContain(prompt);
         expect(launchRequests).toEqual([]);
         expect(commandPosts).toEqual([]);
@@ -1702,7 +1735,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         expect(nativeTerminalLaunch).not.toHaveBeenCalled();
         // Retrying the retained draft must not fall back to the legacy route.
         pane.enter();
-        await pane.waitFor('does not advertise attached');
+        await pane.waitFor('Operator does not support windowless');
         expect(launchRequests).toEqual([]);
         expect(nativeTerminalLaunch).not.toHaveBeenCalled();
         console.info('PUI_COMPATIBILITY_REFUSAL_ACCEPTANCE', JSON.stringify({
@@ -1713,6 +1746,46 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       } finally { await pane.stop(); }
     },
   );
+
+  test('new-session setup reviews every effective choice and launches only from Review', async () => {
+    const prompt = '  setup exact λ draft  ';
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await openComposer(pane, false);
+      pane.write(prompt);
+      pane.enter();
+      await pane.waitFor('New SU session — 1 Context');
+      expect(launchRequests).toEqual([]);
+      pane.write('/');
+      pane.write(HARNESS);
+      pane.enter();
+      await pane.waitFor(`> ${HARNESS}`);
+      pane.enter();
+      await pane.waitFor('New SU session — 2 Runtime');
+      expect(launchRequests).toEqual([]);
+      for (const expected of ['Engine: Claude', 'Account: default', 'Server default model', 'Default effort', 'Mode: Manual']) {
+        expect(pane.screen()).toContain(expected);
+      }
+      pane.enter();
+      await pane.waitFor('New SU session — 3 Review');
+      expect(pane.screen()).toContain(prompt);
+      expect(launchRequests).toEqual([]);
+      pane.write('\x1b[Z'); // Back preserves fields.
+      await pane.waitFor('New SU session — 2 Runtime');
+      pane.enter();
+      await pane.waitFor('New SU session — 3 Review');
+      expect(pane.screen()).toContain(prompt);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      expect(launchRequests).toEqual([expect.objectContaining({
+        attached_engine: true, agent: 'claude', harness_slug: HARNESS, account: 'default',
+      })]);
+      expect(scriptedEngine.requests).toEqual([prompt]);
+      expect(nativeTerminalLaunch).not.toHaveBeenCalled();
+      expect((await waitForSavedTurn(prompt)).transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
+      console.info('PUI_SETUP_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, traffic: sessionTraffic }));
+    } finally { await pane.stop(); }
+  });
 
   test('first exact draft reaches the structured SU engine, streams tools/reply, and reopens', async () => {
     const prompt = '  PUI exact Unicode draft λ 雪  ';

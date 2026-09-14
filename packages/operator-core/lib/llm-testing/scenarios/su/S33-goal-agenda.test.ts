@@ -235,6 +235,27 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     }
   });
 
+  it('accepts explicit empty-demand fields from real run 969b8277 without accepting unknown or effects', () => {
+    const text = 'Recovery context is current and reports:\n\n- Goal: `goal-agenda-fixture`\n- Status: `active`\n- Mode: `auto`\n- Portfolio: complete\n- Applicable plans: none\n- Outstanding demand or obligations: none\n- Recorded next action: none\n\nAccordingly, there was no executable step to take this tick. I made no plan, work-item, or repository changes because the evidence does not support creating additional work.';
+    const exposed = { phase: 'exposure', case: 'no-demand' };
+    const evaluate = s33BehaviorAssert('no-demand').eval;
+    for (const report of [text, 'Applicable plans: none', 'Outstanding demand or obligations: none']) {
+      expect(evaluate(run([exposed], report))).toEqual([]);
+      expect(evaluate(run([], report)).length).toBeGreaterThan(0);
+      expect(evaluate(run([exposed, { phase: 'effect', effect: 'placement-verified' }], report)).length).toBeGreaterThan(0);
+    }
+    for (const report of [
+      'Applicable plans: actionable',
+      'Outstanding demand or obligations: unknown',
+      'Recorded next action: none; demand is unknown.',
+    ]) {
+      expect(evaluate(run([exposed], report)).length).toBeGreaterThan(0);
+    }
+    for (const tool of ['events:await', 'coord:send', 'testing:run', 'goals:resume']) {
+      expect(evaluate(run([exposed, { phase: 'refusal', tool }], text)).length).toBeGreaterThan(0);
+    }
+  });
+
   it('an effect receipt cannot hide a timeout, error or unusable final response', () => {
     const good = run([
       { phase: 'exposure' }, { phase: 'effect', effect: 'independent-review-requested' },
