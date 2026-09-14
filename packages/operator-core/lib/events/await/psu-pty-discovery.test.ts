@@ -546,6 +546,50 @@ describe('injectIntoHost — compact envelope (WI-1804 auto-continuation)', () =
 });
 
 describe('injectIntoHost — deterministic carry-respawn envelope (P-018)', () => {
+  it('preserves the Codex completion witness through the actual socket and host decoder (WI-10001432)', async () => {
+    const { decodeControl, codexCarryTurnCompleted, makeAgentBusyGate } =
+      await import('../../../../../apps/operator/scripts/psu-pty-host.mjs');
+    const dir = tmpDir();
+    const sessions = join(dir, 'sessions');
+    mkdirSync(sessions);
+    const sourceTranscriptPath = join(sessions, 'rollout-current.jsonl');
+    const receivedAtMs = Date.now() - 1000;
+    const event = (type: string) => `${JSON.stringify({
+      type: 'event_msg',
+      timestamp: new Date().toISOString(),
+      payload: { type, turn_id: 'current-turn' },
+    })}\n`;
+    writeFileSync(sourceTranscriptPath, event('task_started'));
+    const { sock, received } = startSocket(dir, 'su-codex-boundary');
+    const message = {
+      mode: 'carry-respawn' as const,
+      data: 'continue the held work',
+      systemPromptAddendum: 'bounded carry',
+      sourceTranscriptPath,
+      ownerId: 'su-codex-boundary',
+    };
+    expect(await injectIntoHost(sock, message)).toBe(true);
+    const decoded = decodeControl(Buffer.from(await received));
+    expect(decoded).toMatchObject({
+      mode: 'carry-respawn', gated: true, sourceTranscriptPath,
+      ownerId: 'su-codex-boundary',
+    });
+    const probe = () => codexCarryTurnCompleted({
+      agent: 'codex', env: { CODEX_HOME: dir },
+      transcriptPath: decoded.sourceTranscriptPath, receivedAtMs,
+    });
+    expect(probe()).toBe(false);
+    writeFileSync(sourceTranscriptPath, event('task_started') + event('task_complete'));
+    expect(probe()).toBe(true);
+    const gate = makeAgentBusyGate({ lastOutputAt: Date.now, quietMs: 1500, capMs: 30 });
+    await expect(gate.waitAtPrompt(undefined, probe)).resolves.toMatchObject({
+      deferred: false, boundary: 'native-turn-complete',
+    });
+    writeFileSync(sourceTranscriptPath, event('task_complete') + event('task_started'));
+    expect(probe()).toBe(false);
+    await expect(gate.waitAtPrompt(undefined, probe)).resolves.toMatchObject({ deferred: true });
+  });
+
   it('keeps the successor first prompt and system-prompt addendum distinct', async () => {
     const dir = tmpDir();
     const { sock, received } = startSocket(dir, 'su-carry-respawn');

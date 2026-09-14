@@ -1154,9 +1154,9 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
     import.meta.url,
   );
   const mechanicalDedupClauses = [
-    'work_items:get { id, resume:true }',
-    'bounded resume packet',
-    'follow its `readRef`s',
+    "work_items:get { id, harness: '<item-harness>' }",
+    'authoritative claim/state and stored checkpoint',
+    'any references it contains for omitted detail',
     'work_items:checkpoint { id, unchanged:true, contentHash }',
     'not rerun a test matrix solely to reconstruct saved proof',
     'authoritative write responses, state reads',

@@ -958,6 +958,11 @@ export function injectIntoHostWithConfirmation(
     force?: boolean;
     focus?: string;
     systemPromptAddendum?: string;
+    /** Exact requesting Codex rollout. The host validates it within CODEX_HOME
+     * before accepting a post-request native turn completion as a safe carry
+     * boundary. Dropping this on the wire strands carries behind TUI repaint
+     * and consequently defers all warm wakes (WI-10001432). */
+    sourceTranscriptPath?: string;
     /** P-020 opt-in cold-boot drill correlation. Ignored by non-drill
      * carry-respawns and by older hosts (additive v1 fields). */
     drillId?: string;
@@ -1024,6 +1029,7 @@ export function injectIntoHostWithConfirmation(
     force?: boolean;
     focus?: string;
     systemPromptAddendum?: string;
+    sourceTranscriptPath?: string;
     drillId?: string;
     sessionClass?: string;
     fireNumber?: number;
@@ -1043,6 +1049,7 @@ export function injectIntoHostWithConfirmation(
   if (msg.force !== undefined) envelope.force = msg.force;
   if (msg.focus !== undefined) envelope.focus = msg.focus;
   if (msg.systemPromptAddendum !== undefined) envelope.systemPromptAddendum = msg.systemPromptAddendum;
+  if (msg.sourceTranscriptPath !== undefined) envelope.sourceTranscriptPath = msg.sourceTranscriptPath;
   if (msg.drillId !== undefined) envelope.drillId = msg.drillId;
   if (msg.sessionClass !== undefined) envelope.sessionClass = msg.sessionClass;
   if (msg.fireNumber !== undefined) envelope.fireNumber = msg.fireNumber;
