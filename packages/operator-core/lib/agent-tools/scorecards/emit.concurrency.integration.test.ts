@@ -27,7 +27,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
   };
 });
 
-const { emitScorecard, _closeScorecardEmitMutexForTests } = await import('./emit');
+const { emitScorecard, scorecardEmitMutexKey, _closeScorecardEmitMutexForTests } = await import('./emit');
 const { proposeRubric } = await import('../../rubrics');
 const { listScorecards } = await import('../../scorecards');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
@@ -35,6 +35,7 @@ const { activeWorkspaceId } = await import('../../workspace-registry');
 const { _resetHarnessAdminUrlCacheForTests } = await import('../../embedded-pg-discovery');
 
 const RUBRIC = 'scorecard-emit-concurrency-regression';
+const TIMEOUT_RUBRIC = 'scorecard-emit-lock-timeout-regression';
 const SOURCE_HIVE = 'papercusp';
 const OWNER = 'su-scorecard-concurrency';
 const RATINGS = {
@@ -71,6 +72,22 @@ beforeAll(async () => {
     status: 'active',
     by: OWNER,
   });
+  await proposeRubric({
+    rubricId: TIMEOUT_RUBRIC,
+    characteristic: 'scorecard-emission',
+    title: 'Scorecard emit lock-timeout regression',
+    criteria: [
+      {
+        key: 'dedup-safety',
+        title: 'Dedup safety',
+        model: 'A valid emit waits for an in-flight emitter beyond the role lock timeout.',
+        method: 'Hold the dedup advisory lock, then release it after the inherited timeout expires.',
+        driftMarkers: 'A valid emit returns lock_timeout instead of waiting for the lock holder.',
+      },
+    ],
+    status: 'active',
+    by: OWNER,
+  });
 }, 180_000);
 
 afterAll(async () => {
@@ -84,6 +101,40 @@ afterAll(async () => {
 });
 
 describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
+  it('clears inherited lock timeout before waiting for an in-flight emitter', async () => {
+    // Configure only this throwaway database so the newly-created dedicated
+    // mutex session inherits finite lock and statement timeouts. The current
+    // code used to surface 55P03 here after 100ms; the fixed mutex session
+    // clears both settings before pg_advisory_lock and waits for release.
+    const dbIdent = db.dbName.replaceAll('"', '""');
+    await db.adminSql.unsafe(`ALTER DATABASE "${dbIdent}" SET lock_timeout = '100ms'`);
+    await db.adminSql.unsafe(`ALTER DATABASE "${dbIdent}" SET statement_timeout = '100ms'`);
+    const holder = (await import('postgres')).default(db.adminDsn, { max: 1, onnotice: () => {} });
+    const key = scorecardEmitMutexKey({
+      workspaceId: activeWorkspaceId(),
+      rubricRef: TIMEOUT_RUBRIC,
+      sourceHive: SOURCE_HIVE,
+    });
+    try {
+      await holder`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`;
+      const emit = emitScorecard(
+        { rubricRef: TIMEOUT_RUBRIC, ratings: RATINGS },
+        {
+          createdBy: OWNER,
+          ctxHarness: SOURCE_HIVE,
+          workspaceId: activeWorkspaceId(),
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      await holder`SELECT pg_advisory_unlock(hashtextextended(${key}, 0))`;
+      await expect(emit).resolves.toMatchObject({ ok: true, created: true });
+    } finally {
+      await holder.end({ timeout: 5 });
+      await db.adminSql.unsafe(`ALTER DATABASE "${dbIdent}" RESET lock_timeout`);
+      await db.adminSql.unsafe(`ALTER DATABASE "${dbIdent}" RESET statement_timeout`);
+    }
+  }, 120_000);
+
   it('serializes concurrent identical emits and persists exactly one scorecard', async () => {
     const input = {
       createdBy: OWNER,
