@@ -11,6 +11,7 @@ import { useFormWith, SubmitButton } from '@/lib/forms';
 import { useLexicon } from '@/lib/useLexicon';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { useSyncQuery } from '@papercusp/sync';
+import { OperatorSettingsSlot } from '@papercusp/operator-ui/settings-slots';
 
 // Form schema — both fields are free-form markdown, allowed to be empty.
 const ConfigSchema = z.object({
@@ -195,6 +196,12 @@ export default function OperatorSettingsPage() {
           <> Loading workspace prompt store…</>
         )}
       </p>
+
+      {/* The web portal owns which backend/model answers its universal-bar
+          questions, but that is still a Papercup-agent setting. A host slot
+          keeps the control on this canonical page; the desktop renders none. */}
+      <OperatorSettingsSlot name="papercup-agent" />
+
       {loading && (
         <p role="status" style={{ color: 'var(--fg-mute)', marginBottom: 24, fontSize: 13 }}>
           Loading Papercup config…

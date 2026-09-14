@@ -25,6 +25,7 @@ import {
 } from '@/lib/theme';
 import ThemeEditor from './ThemeEditor';
 import SavedPromptsSection from '../../harness/SavedPromptsSection';
+import { OperatorSettingsSlot } from '@papercusp/operator-ui/settings-slots';
 
 const VISUAL_EFFECTS_OPTIONS: Array<{ value: VisualEffectsMode; label: string; description: string }> = [
   {
@@ -173,6 +174,12 @@ export default function PersonalizationSettingsPage() {
       <p className="pc-settings-intro">
         Tune browser-local presentation preferences for this Papercup interface.
       </p>
+
+      {/* A host may own an additional presentation preference while this page
+          still owns where that preference belongs. The desktop supplies no
+          slot; the web portal supplies its light/system/dark preference here
+          instead of rendering a second Settings card above the whole page. */}
+      <OperatorSettingsSlot name="personalization" />
 
       <section className="pc-settings-section">
         <h2>Theme</h2>

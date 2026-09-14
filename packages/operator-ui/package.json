@@ -18,6 +18,11 @@
       "import": "./src/seam.tsx",
       "default": "./src/seam.tsx"
     },
+    "./settings-slots": {
+      "types": "./src/settings-slots.tsx",
+      "import": "./src/settings-slots.tsx",
+      "default": "./src/settings-slots.tsx"
+    },
     "./surfaces": {
       "types": "./src/surfaces/surfaces.d.ts",
       "import": "./src/surfaces/index.tsx",
