@@ -27121,7 +27121,7 @@
           "POST"
         ]
       },
-      "description": "Amend one criterion field, bind a missing acceptance class, replace a started acceptance rubric's complete criterion set, set its structural evidence plane, or update rubric-level refs. Use complete `criteria` when adding a BAR or binding structured checks across an already-seeded contract that rubrics:propose may not replace. A started BAR meaning change uses dryRun:true to preview exact hashes. Since coord:send expects:action caps each body at 600 characters, persist the exact `preview.approval` object on the approval work-item with work_items:update { id:'<work-item-id>', payload:{ acceptanceBarApproval: preview.approval } }, send the reviewer a short coord:send pointer, and have them fetch work_items:get { id:'<work-item-id>', payloadTier:'full' } before posting the exact object as the entire work_items:comment body; then apply with approvalRef:'thread-post:<id>'. Never truncate or manually retype the approval JSON. Reviewer identity and timestamp are read from that authenticated post, never supplied by the caller. The subject Decision, every BAR/spec revision, and open-contract rebind commit atomically. Old proof and grades remain audit history but become revision-ineligible. METHOD append/replace edits retain the existing shrink guard. Stored lifecycle status is preserved.",
+      "description": "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. Use rubrics:propose for standard rubric revisions. For a started BAR meaning change, use dryRun:true, store the returned approval on the work item, send the reviewer a pointer, then apply approvalRef:'thread-post:<id>'. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
       "capabilities": [
         "coord:write"
       ],
@@ -27146,9 +27146,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A targeted rubric improvement, or a complete-set revision of an already-seeded acceptance BAR contract that adds a BAR or structured checks through the atomic amendment/approval path.",
-        "notWhen": "Adding/removing criteria on a standard rubric, renaming stored keys, or changing rating scales — use rubrics:propose. Complete `criteria` here is acceptance-kind only and must preserve every stored key unless the canonical amendment rules explicitly support its removal.",
-        "chaining": "rubrics:get (read the stored field first) → rubrics:amend. For a started BAR meaning change: rubrics:amend { dryRun:true } → work_items:update { id:'<work-item-id>', payload:{ acceptanceBarApproval: preview.approval } } → coord:send a short pointer (the expects:action body cap is 600 characters) → reviewer work_items:get { id:'<work-item-id>', payloadTier:'full' } → work_items:comment with the exact approval object as the entire body → rubrics:amend { approvalRef:'thread-post:<id>' }. Never truncate or manually retype the approval JSON. The result reports `completeness` and `replicationSqlCheck` like propose/ratify."
+        "when": "A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.",
+        "notWhen": "For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.",
+        "chaining": "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → work_items:update { id:'<work-item-id>', payload:{ acceptanceBarApproval: preview.approval } } → send a short coord:send pointer (cap: 600 characters) → reviewer reads work_items:get { id:'<work-item-id>', payloadTier:'full' } → posts the exact approval JSON as work_items:comment → amend { approvalRef:'thread-post:<id>' }. Never truncate or manually retype approval JSON."
       }
     },
     {
