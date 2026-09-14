@@ -93,6 +93,23 @@ describe('docs:author search refresh', () => {
     expect(h.refreshDocPageSections).not.toHaveBeenCalled();
   });
 
+  it('explains that raw less-than comparisons need MDX-safe notation', async () => {
+    const result = await callAuthor({
+      ...baseArgs,
+      slug: 'invalid-mdx-less-than-comparison',
+      body: '# Benchmark notation\n\nThe target is <=0.8x the baseline.\n',
+    });
+    const payload = JSON.parse(result.content[0].text) as { ok: boolean; error?: string };
+
+    expect(result.isError).toBe(true);
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toContain('invalid_mdx');
+    expect(payload.error).toContain('Raw less-than comparisons');
+    expect(payload.error).toContain('≤0.8x');
+    expect(payload.error).toContain('&lt;=0.8x');
+    expect(h.anchorManualDoc).not.toHaveBeenCalled();
+  });
+
   it('invalidates the engineering adapter before refreshing the authored page', async () => {
     const result = await callAuthor(baseArgs);
     const payload = JSON.parse(result.content[0].text) as {

@@ -145,9 +145,21 @@ export async function unresolvedRefsInBody(
     }),
   );
 
-  const resolvedIds = verdicts
-    .filter((v) => v.judged && v.resolved)
-    .map((v) => v.id.toUpperCase());
+  // `known` ids are already resolved by the caller (for example, the item whose
+  // checkpoint is being written), so include exact known refs found in this body
+  // in the prefix fence too. Otherwise a body containing the known full id and a
+  // human-readable shorthand probes only the shorthand and falsely warns about it.
+  const knownResolvedIds = refs
+    .filter((r): r is Extract<HydratableRef, { kind: 'work-item' }> => r.kind === 'work-item')
+    .map((r) => r.id)
+    .filter((id) => known.has(id.toUpperCase()))
+    .map((id) => id.toUpperCase());
+  const resolvedIds = [
+    ...knownResolvedIds,
+    ...verdicts
+      .filter((v) => v.judged && v.resolved)
+      .map((v) => v.id.toUpperCase()),
+  ];
   const missing = verdicts
     .filter((v) => v.judged && !v.resolved)
     .map((v) => v.id)

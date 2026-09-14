@@ -615,15 +615,21 @@ export const PREMISES_REENCODING_RULE = 'premises.unwrap-ref-objects';
 /** Bounded so a pathological nesting cannot make a repair path expensive. */
 const PREMISES_WALK_MAX_DEPTH = 6;
 
-/** Every member is an object carrying a non-empty string `ref` — D-107's auto-run condition. */
+/** Every member is an object carrying ONLY a non-empty string `ref` — no sibling metadata may be discarded. */
 function isRefObjectArray(value: unknown): value is Array<Record<string, unknown>> {
   return (
     Array.isArray(value) &&
     value.length > 0 &&
     value.every((member) => {
       if (!member || typeof member !== 'object' || Array.isArray(member)) return false;
-      const ref = (member as Record<string, unknown>).ref;
-      return typeof ref === 'string' && ref.trim().length > 0;
+      const record = member as Record<string, unknown>;
+      const keys = Object.keys(record);
+      return (
+        keys.length === 1 &&
+        keys[0] === 'ref' &&
+        typeof record.ref === 'string' &&
+        record.ref.trim().length > 0
+      );
     })
   );
 }
@@ -634,7 +640,7 @@ function isRefObjectArray(value: unknown): value is Array<Record<string, unknown
  * WHY THIS ONE, AND WHY IT IS NOT THE BANNED CHANGE. Measured 2026-09-02 over 7d of
  * `tool_invocations`, wrong-shape `premises` is 1,211 rejections across 555 agents — 68% of
  * ALL coord:send rejections — and 99.8% of them send exactly this shape, with >=98% of members
- * carrying a string `ref`. The comment above says why they do it: the section's OTHER
+ * carrying only a string `ref`. The comment above says why they do it: the section's OTHER
  * structured field, `forYouBecause`, IS an object, so `premises: [{ ref }]` is the natural
  * generalization. Unwrapping is total, deterministic, has exactly ONE candidate output, and
  * the output is literally the string the caller already supplied — D-104 RE-ENCODING, so it
@@ -644,8 +650,10 @@ function isRefObjectArray(value: unknown): value is Array<Record<string, unknown
  * a bare STRING in place of structure (prose replacing citations; `provenance` collapsing to
  * an invented 'authored'). Here the caller sent MORE structure than declared and we unwrap to
  * the declared scalar: nothing is invented, no free-text alternative appears, and a citation
- * stays a citation. `SHAPE_REFUSAL_TAIL`'s promise that this is "not sugar-coated to accept a
- * bare string" is untouched — see the two cases this rule deliberately does NOT repair.
+ * stays a citation. The rule intentionally refuses objects with sibling metadata: even though
+ * `ref` is readable, executing that correction would lose caller-supplied meaning.
+ * `SHAPE_REFUSAL_TAIL`'s promise that this is "not sugar-coated to accept a bare string" is
+ * untouched — see the cases this rule deliberately does NOT repair.
  *
  * WHY AUTO-CORRECT RATHER THAN A BETTER MESSAGE — the question D-104 makes you answer before
  * promoting anything to this tier. This field ALREADY GOT the better message:
@@ -660,8 +668,10 @@ function isRefObjectArray(value: unknown): value is Array<Record<string, unknown
  *     banned, and the one failure mode here that would corrupt data rather than waste a call.
  *   - a member with NO `ref` (34 observed, 1.7%) stays refused: choosing which of its keys is
  *     the ref is DISAMBIGUATION, which D-104 assigns to refuse-and-teach.
- * Both fall out of `isRefObjectArray` returning false, so the ordinary taught refusal renders
- * unchanged.
+ *   - a member with sibling metadata stays refused: dropping a caller-supplied key is lossy,
+ *     even when `ref` itself is unambiguous.
+ * All three fall out of `isRefObjectArray` returning false, so the ordinary taught refusal
+ * renders unchanged.
  *
  * PURE BY CONTRACT. Rebuilds only the objects along a changed path and returns the original
  * node by identity otherwise, so `tool_invocations.args_json` keeps the shape the caller
@@ -693,17 +703,11 @@ export const PREMISES_REF_OBJECT_REENCODING: ArgReencoding = {
         const childPath = join(key);
         if (key === 'premises' && isRefObjectArray(value)) {
           const refs = value.map((member) => member.ref as string);
-          // Naming what we discard is what makes the correction admissible (D-107 ruling 1):
-          // dropping a supplied field silently is the EI-10883 hazard in miniature.
-          const dropped = [
-            ...new Set(value.flatMap((member) => Object.keys(member).filter((k) => k !== 'ref'))),
-          ];
           corrections.push({
             path: childPath,
             sent: boundValue(value),
             ran: boundValue(refs),
             rule: PREMISES_REENCODING_RULE,
-            ...(dropped.length > 0 ? { dropped } : {}),
           });
           next[key] = refs;
           changed = true;

@@ -52,7 +52,7 @@ describe('PREMISES_REF_OBJECT_REENCODING — the shape it repairs', () => {
     });
   });
 
-  it('names every dropped sibling key, so no supplied field is discarded silently', () => {
+  it('refuses sibling metadata instead of dropping supplied meaning', () => {
     const out = run(
       withPremises([
         { ref: 'WI-1', provenance: 'authored' },
@@ -60,7 +60,7 @@ describe('PREMISES_REF_OBJECT_REENCODING — the shape it repairs', () => {
       ]),
     );
 
-    expect(out!.corrections[0].dropped).toEqual(['provenance', 'note']);
+    expect(out).toBeNull();
   });
 
   it('omits `dropped` entirely when the members carried nothing but `ref`', () => {
@@ -102,6 +102,7 @@ describe('PREMISES_REF_OBJECT_REENCODING — the shapes it must REFUSE (D-107 ru
     // Partial repair is the worst outcome: it would silently drop the member it could not read
     // while reporting success on the ones it could.
     expect(run(withPremises([{ ref: 'WI-1' }, { id: 'WI-2' }]))).toBeNull();
+    expect(run(withPremises([{ ref: 'WI-1' }, { ref: 'WI-2', provenance: 'authored' }]))).toBeNull();
     expect(run(withPremises([{ ref: 'WI-1' }, 'prose']))).toBeNull();
   });
 
@@ -133,7 +134,7 @@ describe('PREMISES_REF_OBJECT_REENCODING — purity (the decay instrument depend
   it('does not mutate the caller\'s args, so tool_invocations.args_json keeps the shape SENT', () => {
     // args_json is the before/after series D-104's endgame clause measures against. An in-place
     // mutation would destroy it while every functional assertion above still passed.
-    const input = withPremises([{ ref: 'WI-1', provenance: 'authored' }]);
+    const input = withPremises([{ ref: 'WI-1' }]);
     const snapshot = structuredClone(input);
 
     const out = run(input);
