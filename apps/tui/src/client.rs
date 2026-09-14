@@ -227,6 +227,8 @@ pub struct AgentChatIdentity {
 pub struct OperatorCapabilities {
     #[serde(default)]
     pub attached_su_session: bool,
+    #[serde(default)]
+    pub attached_su_session_approvals: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -4545,6 +4547,7 @@ mod tests {
             },
             capabilities: OperatorCapabilities {
                 attached_su_session: true,
+                attached_su_session_approvals: true,
             },
         }
     }
