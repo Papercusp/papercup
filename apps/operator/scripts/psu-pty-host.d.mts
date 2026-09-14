@@ -1520,9 +1520,12 @@ export function renderCoalescedTurn(data: any, folded: any): any;
 /** The per-host coalescer state machine. admit() returns true when the arrival was
  *  FOLDED into an already-waiting inject (the caller must NOT proceed); false when
  *  the caller became the waiter and must claim() at delivery — or on ANY early exit
- *  (defer/error), so folded wakes never black-hole behind a dead waiter. */
+ *  (defer/error), so folded wakes never black-hole behind a dead waiter. Delivery
+ *  IDs folded into a waiter travel with it so the parent pipeline settles every
+ *  accepted ID together (F03: a deferred parent must not leave a folded retry
+ *  permanently deduped). */
 export function makeTurnCoalescer(): {
-    admit(key: any, data: any, metadata: any): boolean;
+    admit(key: any, data: any, metadata: any, deliveryId: any): boolean;
     /** Replace the text/metadata of an EXISTING waiter without counting another
      *  logical fire. A retry of the SAME durable delivery id is not a folded wake,
      *  but its executor-side delivery re-check may have rebuilt the envelope from a
