@@ -9,6 +9,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { workspaceBackupFor } from '../../backup';
 import { durableRestoreInPlace } from '../../backup/durable-ops';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { restoreCloneWithDeadline } from './restore-clone';
 
 const RESTORE_ROLES = ['operator', 'debugger', 'reviewer'] as const;
 
@@ -29,6 +30,7 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
+  skipWorkspaceTx: true,
   agentRoles: [...RESTORE_ROLES],
   args: z.object({
     kopiaSnapshotId: z.string().min(1),
@@ -45,7 +47,12 @@ export default defineTool({
       });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
-    const result = await workspaceBackupFor(ws).restoreToClone(args);
+    const result = await restoreCloneWithDeadline(workspaceBackupFor(ws), {
+      kopiaSnapshotId: args.kopiaSnapshotId,
+      source: args.source,
+      target: args.target,
+      mode: 'clone',
+    });
     return {
       content: [{ type: 'text', text: JSON.stringify(result) }],
     };

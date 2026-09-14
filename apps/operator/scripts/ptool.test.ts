@@ -34,6 +34,7 @@ import {
   printResult,
   stdoutDeliveryError,
   PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS,
+  PTOOL_BACKUP_RESTORE_TIMEOUT_MS,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_CHECKPOINT_RUN_TIMEOUT_MS,
   PTOOL_CONNECT_TIMEOUT_MS,
@@ -438,6 +439,11 @@ describe('ptool call deadlines', () => {
     expect(PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS).toBeGreaterThan(335_000);
     expect(timeoutForTool('git-sync:run')).toBe(PTOOL_GIT_SYNC_RUN_TIMEOUT_MS);
     expect(timeoutForTool('backup:snapshot_create')).toBe(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS);
+    expect(timeoutForTool('backup:restore')).toBe(PTOOL_BACKUP_RESTORE_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'backup:restore',
+      args: { kopiaSnapshotId: 'snapshot-1', mode: 'clone' },
+    })).toBe(PTOOL_BACKUP_RESTORE_TIMEOUT_MS);
     expect(timeoutForTool('templates:new-app')).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);
     expect(timeoutForTool('scorecards:emit')).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
     // EI-22780156976598155: headless boot/kickoff/fresh-launch verification
@@ -716,6 +722,7 @@ describe('ptool call deadlines', () => {
     expect(PTOOL_EVENTS_AWAIT_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(PTOOL_GIT_SYNC_RUN_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(PTOOL_BACKUP_RESTORE_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     // scorecards:emit declares 900s; the MCP transport adds a 5s buffer.
     expect(PTOOL_SCORECARD_EMIT_TIMEOUT_MS).toBeGreaterThan(905_000);
   });

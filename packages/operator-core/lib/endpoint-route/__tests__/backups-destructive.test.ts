@@ -18,6 +18,7 @@ import { Hono } from 'hono';
 
 const h = vi.hoisted(() => ({
   wb: {
+    workspaceRoot: '/workspace/ws',
     restoreToClone: vi.fn(async (a: unknown) => ({ ok: true, mode: 'clone', a })),
     restoreInPlace: vi.fn(async () => ({ ok: true, mode: 'in_place' })),
     rollbackPromote: vi.fn(async () => ({ ok: true, rolledBack: true })),
@@ -67,7 +68,11 @@ describe('destructive backup routes (auth: public)', () => {
     const res = await appWith(restoreRoute).request('/backups/restore', post({ kopiaSnapshotId: 'snap-1' }));
     expect(res.status).toBe(200);
     expect(h.wb.restoreToClone).toHaveBeenCalledTimes(1);
-    expect(h.wb.restoreToClone.mock.calls[0][0]).toMatchObject({ kopiaSnapshotId: 'snap-1', mode: 'clone' });
+    expect(h.wb.restoreToClone.mock.calls[0][0]).toMatchObject({
+      kopiaSnapshotId: 'snap-1',
+      mode: 'clone',
+      target: '/workspace/ws/.restored/snap-1/workspace_ws',
+    });
     expect(h.wb.restoreInPlace).not.toHaveBeenCalled();
   });
 
@@ -104,5 +109,23 @@ describe('destructive backup routes (auth: public)', () => {
     expect(res.status).toBe(500);
     expect(await res.json()).toHaveProperty('error');
     expect(h.wb.restoreToClone).not.toHaveBeenCalled();
+  });
+
+  it('returns a structured continuation when the clone restore outlives the route deadline', async () => {
+    const original = h.wb.restoreToClone;
+    h.wb.restoreToClone = vi.fn(() => new Promise(() => {}));
+    vi.useFakeTimers();
+
+    const responsePromise = appWith(restoreRoute).request('/backups/restore', post({ kopiaSnapshotId: 'snap-slow' }));
+    await vi.advanceTimersByTimeAsync(45_000);
+    const res = await responsePromise;
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ result: {
+      stillRunning: true,
+      targetPath: '/workspace/ws/.restored/snap-slow/workspace_ws',
+    } });
+
+    h.wb.restoreToClone = original;
+    vi.useRealTimers();
   });
 });
