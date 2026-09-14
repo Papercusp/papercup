@@ -77,10 +77,12 @@ import {
   waitForPtyHostGone,
   type FleetMemberDefaults,
   type FreshLaunchVerdict,
+  type FreshLaunchSessionProbe,
   type LaunchMode,
   type MemberSpec,
   resolveLaunchMode,
 } from '../../agent-launch-core';
+import { nativeSessionHandleForAdvSession, type NativeSessionHandle } from '../../native-session-handles';
 // WI-37920 / P-002: check the backend in the env the WINDOW gets, not ours.
 import { preflightBackendLaunch } from '../../backend-bin-resolve.mjs';
 import { describeSessionEndTime, hasAdvSessionTerminalEvidence, markAdvSessionEnded } from '../../adv-sessions';
@@ -186,6 +188,49 @@ function headlessResumeLogNote(tail: string | null): string {
 
 function err(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
+}
+
+/**
+ * Preserve the verifier's durable transcript identity on the public launch
+ * task. `ownerId` is only the coordination identity; it is not a resumable
+ * transcript target once a role session has ended.
+ *
+ * The current fresh-launch probe exposes Claude's native id directly. It does
+ * not yet expose Codex rollout or OMP thread metadata, so those sessions stay
+ * explicitly unresolved instead of manufacturing a second id vocabulary. The
+ * structural `nativeSession` seam also lets a richer verifier result pass its
+ * canonical handle through unchanged.
+ */
+function nativeSessionHandleFromFreshProbe(
+  session: FreshLaunchSessionProbe,
+  agent: string | null | undefined,
+): NativeSessionHandle | null {
+  const projected = (session as FreshLaunchSessionProbe & {
+    nativeSession?: NativeSessionHandle | null;
+  }).nativeSession;
+  if (projected !== undefined) return projected;
+  if (agent !== 'claude' || !session.ownerId || !session.sessionId) return null;
+
+  // Reuse the canonical adv_sessions resolver so the public shape remains the
+  // same backend-neutral NativeSessionHandle used by roster/session consumers.
+  // The launch verifier does not carry config-dir evidence, so make that
+  // uncertainty explicit rather than probing or guessing a transcript path.
+  return nativeSessionHandleForAdvSession(
+    {
+      id: session.advSessionId,
+      agent: 'claude',
+      coordOwnerId: session.ownerId,
+      sessionId: session.sessionId,
+    } as Parameters<typeof nativeSessionHandleForAdvSession>[0],
+    {
+      resolveConfigDir: () => ({
+        dir: null,
+        source: null,
+        tried: ['fresh-launch-verifier'],
+        unresolvedReason: 'config directory was not included in fresh-launch verification',
+      }),
+    },
+  );
 }
 
 /**
@@ -1996,6 +2041,24 @@ export default defineTool({
       lines.push(`✗ launch failed (${f.code}): ${f.error}`);
     }
 
+    // The verifier is the authoritative source for a freshly registered native
+    // transcript. Keep its handle adjacent to the task/log receipt so a caller
+    // can follow up after the role session ends without addressing the mortal
+    // coord owner id. A verifier failure leaves this field absent; a successful
+    // verifier with no resolvable native handle keeps it explicitly null.
+    const nativeSessionByOwner = freshVerdict
+      ? new Map(
+          freshVerdict.sessions.flatMap((session) => {
+            if (!session.ownerId) return [];
+            const memberIndex = memberOwnerIds.indexOf(session.ownerId);
+            const backend = isResume
+              ? resumeAgent
+              : foldedConfigs[memberIndex >= 0 ? memberIndex : 0]?.agent;
+            return [[session.ownerId, nativeSessionHandleFromFreshProbe(session, backend)] as const];
+          }),
+        )
+      : null;
+
     const launchSummary = {
       deduped: false,
       opened: opened.length,
@@ -2044,6 +2107,9 @@ export default defineTool({
                 ownerId: memberOwnerIds[i],
                 headless: !!foldedConfigs[i].headless,
                 kickoffProof: result.kickoffProof ?? null,
+                ...(freshVerdict
+                  ? { nativeSession: nativeSessionByOwner?.get(memberOwnerIds[i] ?? '') ?? null }
+                  : {}),
               },
             ]
           : [],

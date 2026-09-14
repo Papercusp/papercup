@@ -1,11 +1,11 @@
 /**
- * Bounded, explicitly local recovery for the `psu` launcher.
+ * Bounded native recovery support for the `psu` launcher.
  *
- * The operator is deliberately not a dependency of this module. An owner at a
- * real local terminal authorizes one exact argv vector; the resulting grant is
- * HMAC-bound to that argv/cwd/terminal and atomically consumed once. Recovery
- * evidence is appended under ~/.papercusp/recovery and reconciled later by the
- * ordinary launcher path when the operator is reachable again.
+ * Issuance and redemption are temporarily fail-closed until Papercusp has an
+ * owner authority rooted outside managed-agent mutation. The bounded command,
+ * audit/reconciliation, and environment-isolation helpers remain available so
+ * the externally authorized design can reuse them without reviving the
+ * forgeable local HMAC/TTY boundary.
  */
 import { spawn as nodeSpawn, spawnSync } from "node:child_process";
 import {
@@ -32,6 +32,8 @@ import { delimiter, isAbsolute, join, resolve } from "node:path";
 
 export const RECOVERY_PROTOCOL_VERSION = 1;
 export const RECOVERY_CAPABILITY_DIAGNOSTIC = "diagnostic-command";
+export const RECOVERY_DISABLED_REASON =
+  "native-recovery-disabled-external-owner-trust-root-required";
 export const DEFAULT_RECOVERY_TTL_MS = 5 * 60_000;
 export const MAX_RECOVERY_TTL_MS = 15 * 60_000;
 export const DEFAULT_RECOVERY_RUNTIME_MS = 60_000;
@@ -419,6 +421,8 @@ function refusalAudit(grantId, reason, atMs, opts = {}) {
  * @returns {RecoveryGrant}
  */
 export function issueRecoveryGrant(input, opts) {
+  throw new Error(RECOVERY_DISABLED_REASON);
+  /* c8 ignore start -- retained for the externally rooted recovery redesign */
   const { reason, ttlMs, maxRuntimeMs } = validateIssueInput(input);
   const token = validateToken(opts.token);
   const terminalId = String(opts.terminalId ?? "").trim();
@@ -461,6 +465,7 @@ export function issueRecoveryGrant(input, opts) {
     throw error;
   }
   return signed;
+  /* c8 ignore stop */
 }
 
 function readClaimedGrant(grantId, opts = {}) {
@@ -648,6 +653,8 @@ export function executeExactRecoveryCommand(
  * }} opts
  */
 export async function runRecoveryGrant(grantId, opts) {
+  return { ok: false, reason: RECOVERY_DISABLED_REASON };
+  /* c8 ignore start -- retained for the externally rooted recovery redesign */
   const home = opts.home ?? homedir();
   const token = validateToken(opts.token);
   const now = opts.now ?? (() => Date.now());
@@ -699,6 +706,7 @@ export async function runRecoveryGrant(grantId, opts) {
     { home },
   );
   return { ok: true, grant, ...result };
+  /* c8 ignore stop */
 }
 
 /**
@@ -808,6 +816,8 @@ export function recoveryAuthorizationEligibility({
   stdoutIsTTY = Boolean(process.stdout.isTTY),
   ancestorCmdlines = null,
 } = {}) {
+  return { ok: false, reason: RECOVERY_DISABLED_REASON };
+  /* c8 ignore start -- retained for the externally rooted recovery redesign */
   if (INHERITED_AGENT_MARKERS.some((key) => String(env[key] ?? "").length > 0)) {
     return { ok: false, reason: "inherited-agent-identity" };
   }
@@ -821,6 +831,7 @@ export function recoveryAuthorizationEligibility({
     return { ok: false, reason: "interactive-terminal-required" };
   }
   return { ok: true };
+  /* c8 ignore stop */
 }
 
 /**

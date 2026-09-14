@@ -219,6 +219,7 @@ export function readRecoveryAncestorCmdlines({ startPid, maxDepth, platform, run
 }): string[] | null;
 export const RECOVERY_PROTOCOL_VERSION: 1;
 export const RECOVERY_CAPABILITY_DIAGNOSTIC: "diagnostic-command";
+export const RECOVERY_DISABLED_REASON: "native-recovery-disabled-external-owner-trust-root-required";
 export const DEFAULT_RECOVERY_TTL_MS: number;
 export const MAX_RECOVERY_TTL_MS: number;
 export const DEFAULT_RECOVERY_RUNTIME_MS: 60000;

@@ -641,6 +641,62 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     );
   });
 
+  it('projects the verifier native session handle onto the matching task receipt', async () => {
+    const ownerId = 'su-judge-owner';
+    verifyFreshLaunchStartedMock.mockResolvedValueOnce({
+      agentStarted: true,
+      waitedMs: 5,
+      sessions: [{ ownerId, advSessionId: 73, sessionId: 'native-judge', successfulCalls: 1 }],
+      note: 'judge verified',
+    });
+
+    const res = await launchAgent.handler(
+      { brief: 'grade the frozen acceptance evidence', __respawnOwnerId: ownerId } as never,
+      ctx,
+    );
+
+    const task = (dataOf(res)?.launch as { tasks: Array<Record<string, unknown>> }).tasks[0];
+    expect(task).toMatchObject({
+      ownerId,
+      nativeSession: {
+        backend: 'claude',
+        source: 'adv_sessions',
+        ownerId,
+        sessionId: 'native-judge',
+        exactResumeSupported: true,
+        missingReason: null,
+      },
+    });
+    expect(task.nativeSession).not.toBe(ownerId);
+  });
+
+  it('keeps an unresolved verifier handle explicitly null', async () => {
+    const ownerId = 'su-judge-without-native-id';
+    verifyFreshLaunchStartedMock.mockResolvedValueOnce({
+      agentStarted: true,
+      waitedMs: 5,
+      sessions: [{ ownerId, advSessionId: 74, sessionId: null, successfulCalls: 1 }],
+      note: 'judge verified without native id',
+    });
+
+    const res = await launchAgent.handler(
+      { brief: 'grade the evidence', __respawnOwnerId: ownerId } as never,
+      ctx,
+    );
+
+    const task = (dataOf(res)?.launch as { tasks: Array<Record<string, unknown>> }).tasks[0];
+    expect(task).toHaveProperty('nativeSession', null);
+  });
+
+  it('leaves nativeSession absent when verifier instrumentation fails', async () => {
+    verifyFreshLaunchStartedMock.mockRejectedValueOnce(new Error('verifier unavailable'));
+
+    const res = await launchAgent.handler({ brief: 'grade the evidence' }, ctx);
+
+    const task = (dataOf(res)?.launch as { tasks: Array<Record<string, unknown>> }).tasks[0];
+    expect(task).not.toHaveProperty('nativeSession');
+  });
+
   it('wires the flat persona role into a fresh launch command', async () => {
     await launchAgent.handler({ brief: 'run as reviewer', role: 'reviewer' }, ctx);
 
