@@ -583,6 +583,18 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(chaining).not.toContain("loop:arm { carry: 'cold'|'warm' }");
   });
 
+  it('makes carry ownership explicit and keeps carry rejected on loop:checkpoint', () => {
+    const description = (tool as unknown as { description?: string }).description ?? '';
+    const guidance = (tool as unknown as { guidance?: { when?: string } }).guidance?.when ?? '';
+
+    expect(() => parse({ did: 'checkpointed progress', carry: 'cold' })).toThrow(/unrecognized key/i);
+    expect(description).toContain('carry mode belongs to loop:arm');
+    expect(description).toContain('does not accept a `carry` argument');
+    expect(guidance).toContain('carry mode belongs to loop:arm');
+    expect(guidance).toContain('not loop:checkpoint');
+    expect(guidance).toContain('do not retry a rejected `carry` argument here');
+  });
+
   it('structured fields → renderCarryNote, keyed by caller ownerId + ctx harness (the loopScope the wake executor reads)', async () => {
     const b = body(
       await call({ did: 'wired producer', left: 'run tests', insight: 'inject wraps note', next: 'vitest' }),
