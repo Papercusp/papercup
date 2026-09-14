@@ -186,8 +186,11 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'locks:queue',
     'tools:find',
     'plans:get',
+    'plans:search',
     'docs:get',
     'work_items:get',
+    'work_items:list',
+    'work_items:complete',
     'work_items:search',
     'git-sync:run',
     'session:request-compaction',
@@ -225,6 +228,46 @@ const WORK_ITEMS_COMMENT_NAME = normalizeMcpName('work_items:comment');
 const LOCKS_QUEUE_NAME = normalizeMcpName('locks:queue');
 const LOCKS_RELEASE_NAME = normalizeMcpName('locks:release');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
+const WORK_ITEMS_LIST_NAME = normalizeMcpName('work_items:list');
+const WORK_ITEMS_COMPLETE_NAME = normalizeMcpName('work_items:complete');
+const CRITICAL_WORK_ITEMS_LIST_MAX_HARNESS_CHARS = 80;
+const CRITICAL_WORK_ITEMS_LIST_MAX_LIMIT = 20;
+const CRITICAL_WORK_ITEMS_LIST_MAX_STATES = 2;
+const CRITICAL_WORK_ITEMS_LIST_MAX_STATE_CHARS = 40;
+const CRITICAL_WORK_ITEMS_COMPLETE_MAX_ID_CHARS = 200;
+const CRITICAL_WORK_ITEMS_COMPLETE_MAX_HARNESS_CHARS = 80;
+const CRITICAL_WORK_ITEMS_COMPLETE_MAX_STATE_CHARS = 40;
+const CRITICAL_WORK_ITEMS_COMPLETE_MAX_BOUNDARY_NOTE_CHARS = 2_000;
+const CRITICAL_WORK_ITEMS_COMPLETE_MAX_ARGUMENT_CHARS = 64_000;
+const CRITICAL_WORK_ITEMS_COMPLETE_MAX_STRING_CHARS = 8_000;
+const CRITICAL_WORK_ITEMS_COMPLETE_MAX_ARRAY_ITEMS = 100;
+const CRITICAL_WORK_ITEMS_COMPLETE_MAX_OBJECT_KEYS = 64;
+const CRITICAL_WORK_ITEMS_COMPLETE_MAX_NESTING = 8;
+const CRITICAL_WORK_ITEMS_COMPLETE_FLAT_FIELDS = new Set([
+  'workItem',
+  'title',
+  'summary',
+  'status',
+  'whatLanded',
+  'migrations',
+  'tests',
+  'verification',
+  'rootCauseVerification',
+  'coverage',
+  'filesChanged',
+  'filesDeleted',
+  'testsRun',
+  'testResult',
+  'verifiedHow',
+  'addedTests',
+  'selfReview',
+  'deploy',
+  'deferred',
+  'coordNotes',
+  'planSlug',
+  'agent',
+  'duplicateOf',
+]);
 const DOCS_GET_NAME = normalizeMcpName('docs:get');
 const CRITICAL_DOCS_GET_MAX_SLUG_CHARS = 512;
 const CRITICAL_DOCS_GET_MAX_HEADING_CHARS = 256;
@@ -234,6 +277,13 @@ const CRITICAL_WORK_ITEMS_SEARCH_MAX_QUERY_CHARS = 400;
 const CRITICAL_WORK_ITEMS_SEARCH_MAX_HARNESS_CHARS = 80;
 const CRITICAL_WORK_ITEMS_SEARCH_MAX_KIND_CHARS = 80;
 const CRITICAL_WORK_ITEMS_SEARCH_MAX_LIMIT = 20;
+const PLANS_SEARCH_NAME = normalizeMcpName('plans:search');
+const CRITICAL_PLANS_SEARCH_MAX_QUERY_CHARS = 400;
+const CRITICAL_PLANS_SEARCH_MAX_SLUG_CHARS = 200;
+const CRITICAL_PLANS_SEARCH_MAX_HARNESS_CHARS = 120;
+const CRITICAL_PLANS_SEARCH_MAX_LIMIT = 20;
+const CRITICAL_PLANS_SEARCH_MAX_SCOPES = 6;
+const CRITICAL_PLANS_SEARCH_SCOPES = new Set(['slug', 'title', 'now', 'items', 'decisions', 'prose']);
 const GIT_SYNC_RUN_NAME = normalizeMcpName('git-sync:run');
 const CRITICAL_GIT_SYNC_RUN_MAX_SCOPE_CHARS = 120;
 const CRITICAL_GIT_SYNC_RUN_MAX_REASON_CHARS = 1_000;
@@ -514,6 +564,173 @@ function isBoundedWorkItemsGetArgs(args: unknown): boolean {
 }
 
 /**
+ * `work_items:list` is the post-timeout reconciliation read for a caller's
+ * currently held work. Its ordinary form can scan both work-item families and
+ * return up to 500 rows, so it must not become a critical-pressure escape hatch
+ * for backlog browsing. Require an explicit caller-owned selector and a small
+ * page; allow only the cheap lifecycle filters needed to distinguish an open
+ * claim from a terminal/retryable state. `assignee:'self'` and `mine:true` are
+ * the two published spellings of the same caller-relative filter.
+ */
+export function isBoundedWorkItemsListArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set([
+    'harness',
+    'assignee',
+    'mine',
+    'state',
+    'states',
+    'notTerminal',
+    'limit',
+    'includeObservations',
+  ]);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+
+  if (args.mine !== undefined && args.mine !== true) return false;
+  if (args.assignee !== undefined && args.assignee !== 'self') return false;
+  if (args.mine !== true && args.assignee !== 'self') return false;
+  if (
+    args.harness !== undefined &&
+    !isBoundedCriticalText(args.harness, CRITICAL_WORK_ITEMS_LIST_MAX_HARNESS_CHARS, true)
+  ) {
+    return false;
+  }
+  if (
+    !Number.isInteger(args.limit) ||
+    (args.limit as number) < 1 ||
+    (args.limit as number) > CRITICAL_WORK_ITEMS_LIST_MAX_LIMIT
+  ) {
+    return false;
+  }
+  if (args.state !== undefined && args.states !== undefined) return false;
+  const stateFilter = args.state ?? args.states;
+  if (stateFilter !== undefined) {
+    const states = Array.isArray(stateFilter) ? stateFilter : [stateFilter];
+    if (
+      states.length < 1 ||
+      states.length > CRITICAL_WORK_ITEMS_LIST_MAX_STATES ||
+      !states.every((state) =>
+        isBoundedCriticalText(state, CRITICAL_WORK_ITEMS_LIST_MAX_STATE_CHARS, true),
+      )
+    ) {
+      return false;
+    }
+  }
+  if (args.notTerminal !== undefined && args.notTerminal !== true) return false;
+  if (args.includeObservations !== undefined && args.includeObservations !== false) return false;
+  return true;
+}
+
+function isBoundedWorkItemsCompleteJson(value: unknown, depth = 0): boolean {
+  if (depth > CRITICAL_WORK_ITEMS_COMPLETE_MAX_NESTING) return false;
+  if (value === null || typeof value === 'boolean') return true;
+  if (typeof value === 'string') return value.length <= CRITICAL_WORK_ITEMS_COMPLETE_MAX_STRING_CHARS;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) {
+    return (
+      value.length <= CRITICAL_WORK_ITEMS_COMPLETE_MAX_ARRAY_ITEMS &&
+      value.every((entry) => isBoundedWorkItemsCompleteJson(entry, depth + 1))
+    );
+  }
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  return (
+    keys.length <= CRITICAL_WORK_ITEMS_COMPLETE_MAX_OBJECT_KEYS &&
+    keys.every(
+      (key) => key.length <= 120 && isBoundedWorkItemsCompleteJson(value[key], depth + 1),
+    )
+  );
+}
+
+/**
+ * `work_items:complete` is a durable continuation write, and the outer MCP
+ * proxy already gives it a bounded priority lane. Keep the inner pressure
+ * exception to one single-item completion envelope so a valid terminal,
+ * record-only, or `validateOnly` call can finish/reconcile while critical
+ * pressure is active without admitting the normal bulk or arbitrary-payload
+ * surface. Flat completion aliases are accepted because the handler gathers
+ * them into `completion` before schema validation.
+ */
+export function isBoundedWorkItemsCompleteArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set([
+    'id',
+    'harness',
+    'state',
+    'boundaryNote',
+    'completion',
+    'outputPayload',
+    'specAdequacy',
+    'validateOnly',
+    'assumptions',
+    ...CRITICAL_WORK_ITEMS_COMPLETE_FLAT_FIELDS,
+  ]);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (
+    typeof args.id !== 'string' ||
+    args.id.trim().length === 0 ||
+    args.id.length > CRITICAL_WORK_ITEMS_COMPLETE_MAX_ID_CHARS
+  ) {
+    return false;
+  }
+  if (
+    args.harness !== undefined &&
+    (typeof args.harness !== 'string' || args.harness.length > CRITICAL_WORK_ITEMS_COMPLETE_MAX_HARNESS_CHARS)
+  ) {
+    return false;
+  }
+  if (
+    args.state !== undefined &&
+    (typeof args.state !== 'string' ||
+      args.state.trim().length === 0 ||
+      args.state.length > CRITICAL_WORK_ITEMS_COMPLETE_MAX_STATE_CHARS)
+  ) {
+    return false;
+  }
+  if (
+    args.boundaryNote !== undefined &&
+    (typeof args.boundaryNote !== 'string' ||
+      args.boundaryNote.trim().length === 0 ||
+      args.boundaryNote.length > CRITICAL_WORK_ITEMS_COMPLETE_MAX_BOUNDARY_NOTE_CHARS)
+  ) {
+    return false;
+  }
+  if (args.validateOnly !== undefined && typeof args.validateOnly !== 'boolean') return false;
+  if (args.assumptions !== undefined) {
+    if (args.assumptions === 'none') {
+      // Explicitly no assumptions is a valid terminal declaration.
+    } else if (
+      !Array.isArray(args.assumptions) ||
+      args.assumptions.length < 1 ||
+      args.assumptions.length > 10 ||
+      !args.assumptions.every(
+        (key) =>
+          typeof key === 'string' &&
+          key.trim().length > 0 &&
+          key.length <= 120,
+      )
+    ) {
+      return false;
+    }
+  }
+
+  const hasCompletionObject = isRecord(args.completion);
+  const hasFlatCompletion = Object.keys(args).some((key) => CRITICAL_WORK_ITEMS_COMPLETE_FLAT_FIELDS.has(key));
+  if (!hasCompletionObject && !hasFlatCompletion) return false;
+  if (args.completion !== undefined && !hasCompletionObject) return false;
+  if (args.outputPayload !== undefined && !isBoundedWorkItemsCompleteJson(args.outputPayload)) return false;
+  if (args.specAdequacy !== undefined && !isBoundedWorkItemsCompleteJson(args.specAdequacy)) return false;
+
+  let encoded: string;
+  try {
+    encoded = JSON.stringify(args);
+  } catch {
+    return false;
+  }
+  return encoded.length <= CRITICAL_WORK_ITEMS_COMPLETE_MAX_ARGUMENT_CHARS && isBoundedWorkItemsCompleteJson(args);
+}
+
+/**
  * `docs:get` is the canonical runbook read needed to recover a stalled lane,
  * but its normal schema can batch ten pages and page a large source. Keep the
  * critical-pressure exception to one bounded slug and the engine's own capped
@@ -593,6 +810,79 @@ export function isBoundedWorkItemsSearchArgs(args: unknown): boolean {
     return false;
   }
   if (args.includeObservations !== undefined && args.includeObservations !== false) return false;
+  return true;
+}
+
+/**
+ * `plans:search` is the plan/decision lookup used to recover context, but its
+ * default semantic leg invokes the embedder and its normal page can return 50
+ * plans after scanning a 200-row candidate set. Keep that recovery path alive
+ * under critical pressure only for the cheap lexical leg, with bounded query,
+ * scope, and result-page arguments. Legacy `q` and a single-string scope are
+ * accepted because the tool normalizes those forms before its strict schema.
+ */
+export function isBoundedPlansSearchArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set([
+    'query',
+    'q',
+    'slug',
+    'scope',
+    'limit',
+    'includeArchived',
+    'includeLegacy',
+    'harness',
+    'semantic',
+  ]);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+
+  if (
+    args.query !== undefined &&
+    !isBoundedCriticalText(args.query, CRITICAL_PLANS_SEARCH_MAX_QUERY_CHARS, true)
+  ) {
+    return false;
+  }
+  if (args.q !== undefined && !isBoundedCriticalText(args.q, CRITICAL_PLANS_SEARCH_MAX_QUERY_CHARS, true)) {
+    return false;
+  }
+  if (
+    args.slug !== undefined &&
+    !isBoundedCriticalText(args.slug, CRITICAL_PLANS_SEARCH_MAX_SLUG_CHARS, true)
+  ) {
+    return false;
+  }
+  if (args.query === undefined && args.q === undefined && args.slug === undefined) return false;
+
+  if (args.scope !== undefined) {
+    const scopes = typeof args.scope === 'string' ? [args.scope] : args.scope;
+    if (
+      !Array.isArray(scopes) ||
+      scopes.length > CRITICAL_PLANS_SEARCH_MAX_SCOPES ||
+      !scopes.every((scope) => typeof scope === 'string' && CRITICAL_PLANS_SEARCH_SCOPES.has(scope))
+    ) {
+      return false;
+    }
+  }
+  if (
+    args.limit !== undefined &&
+    (!Number.isInteger(args.limit) ||
+      (args.limit as number) < 1 ||
+      (args.limit as number) > CRITICAL_PLANS_SEARCH_MAX_LIMIT)
+  ) {
+    return false;
+  }
+  for (const field of ['includeArchived', 'includeLegacy']) {
+    if (args[field] !== undefined && typeof args[field] !== 'boolean') return false;
+  }
+  // The default is semantic search; requiring the explicit false is what keeps
+  // this exception on the bounded lexical path during critical pressure.
+  if (args.semantic !== false) return false;
+  if (
+    args.harness !== undefined &&
+    !isBoundedCriticalText(args.harness, CRITICAL_PLANS_SEARCH_MAX_HARNESS_CHARS, true)
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -1784,10 +2074,13 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === LOOP_ARM_NAME) return isBoundedLoopArmArgs(args);
   if (normalized === EVENTS_STATUS_NAME) return isBoundedEventsStatusArgs(args);
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
+  if (normalized === WORK_ITEMS_LIST_NAME) return isBoundedWorkItemsListArgs(args);
+  if (normalized === WORK_ITEMS_COMPLETE_NAME) return isBoundedWorkItemsCompleteArgs(args);
   if (normalized === WORK_ITEMS_CHECKPOINT_NAME) return isBoundedWorkItemsCheckpointArgs(args);
   if (normalized === WORK_ITEMS_SET_STATE_NAME) return isBoundedWorkItemsSetStateArgs(args);
   if (normalized === PLANS_GET_NAME) return isBoundedPlansGetArgs(args);
   if (normalized === DOCS_GET_NAME) return isBoundedDocsGetArgs(args);
+  if (normalized === PLANS_SEARCH_NAME) return isBoundedPlansSearchArgs(args);
   if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
   if (normalized === SCORECARDS_EVALUATE_NAME) {
     return isBoundedScorecardsEvaluateArgs(args) || isBoundedJudgeScorecardsEvaluateArgs(args, requestUrl);

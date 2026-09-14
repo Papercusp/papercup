@@ -31,6 +31,7 @@ import {
   isBoundedLocksQueueArgs,
   isBoundedLocksReleaseArgs,
   isBoundedSessionsSearchArgs,
+  isBoundedWorkItemsListArgs,
   isBoundedWorkItemsSearchArgs,
   isBoundedPlansSearchArgs,
   isBoundedWorkItemsCompleteArgs,
@@ -313,6 +314,67 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
       { id: 'EI-1', threadLimit: 1 },
     ]) {
       expect(classifyMcpBody(toolsCall(12, 'work_items:get', args))).toEqual({ sheddable: true, id: 12 });
+    }
+  });
+
+  it.each([
+    ['canonical', 'work_items:list'],
+    ['underscore', 'work_items_list'],
+    ['mcp-advertised hyphen', 'mcp__papercusp-su__work_items_list'],
+    ['mcp-advertised underscore', 'mcp__papercusp_su__work_items_list'],
+  ])('does NOT shed a bounded caller-owned work_items:list under critical pressure: %s', (_label, name) => {
+    const args = {
+      harness: 'papercusp',
+      mine: true,
+      notTerminal: true,
+      limit: 10,
+    };
+    expect(isBoundedWorkItemsListArgs(args)).toBe(true);
+    const body = toolsCall(15, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('accepts assignee:self and lifecycle filters as the alternate bounded reconciliation form', () => {
+    const args = { assignee: 'self', state: ['open', 'failing'], limit: 5, includeObservations: false };
+    expect(isBoundedWorkItemsListArgs(args)).toBe(true);
+    expect(classifyMcpBody(toolsCall(16, 'work_items:list', args))).toEqual({ sheddable: false, id: null });
+  });
+
+  it('recognizes a bounded caller-owned work_items:list through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 17,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__work_items_list',
+          args: { mine: true, limit: 10 },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps unscoped, peer, broad, and enriched work_items:list forms sheddable under critical pressure', () => {
+    for (const args of [
+      { harness: 'papercusp', limit: 10 },
+      { assignee: 'peer-owner', limit: 10 },
+      { mine: true },
+      { mine: true, limit: 21 },
+      { mine: true, limit: 10, includeChildren: true },
+      { mine: true, limit: 10, q: 'reconcile' },
+      { mine: true, limit: 10, includeObservations: true },
+      { mine: true, limit: 10, state: 'open', states: ['open'] },
+      { mine: true, limit: 10, states: [] },
+      { mine: true, limit: 10, notTerminal: false },
+    ]) {
+      expect(isBoundedWorkItemsListArgs(args)).toBe(false);
+      const body = toolsCall(18, 'work_items:list', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 18 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
     }
   });
 
@@ -2064,6 +2126,48 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     const req = post(toolsCall(8, 'work_items:get', { id: 'EI-22381211295936796' }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('work_items:get');
+  });
+  it('admits a bounded caller-owned work_items:list under critical pressure and preserves the body', async () => {
+    const req = post(
+      toolsCall(19, 'work_items:list', {
+        harness: 'papercusp',
+        assignee: 'self',
+        state: 'open',
+        limit: 10,
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('work_items:list');
+  });
+  it('admits a bounded caller-owned work_items:list through tools:invoke under critical pressure', async () => {
+    const req = post(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 20,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: {
+            name: 'mcp__papercusp_su__work_items_list',
+            args: { mine: true, notTerminal: true, limit: 10 },
+          },
+        },
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('still sheds an unscoped work_items:list under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(21, 'work_items:list', { harness: 'papercusp', state: 'open', limit: 10 })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
   });
   it('admits a bounded single-page docs:get under critical pressure so recovery can read the canonical runbook', async () => {
     const req = post(
