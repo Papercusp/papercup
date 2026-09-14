@@ -42,7 +42,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { projectBoundedPayload } from '@papercusp/tooldef';
+import { projectBoundedPayload, type BulkEnvelopeProjectionOpts } from '@papercusp/tooldef';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
 import { buildScratchUri, safeScratchFilesystemPath } from './scratch-uri';
@@ -102,6 +102,13 @@ export interface ResultDoorOpts {
   /** Explicit caller-selected paths that must survive a bounded identity
    * fallback when the result-door is applied after `projection.pick`. */
   preservePaths?: readonly string[];
+  /**
+   * Preserve semantic failures in keyed-array bulk results before projecting
+   * bulky successful rows. `true` uses the canonical `{ results, counts, ok }`
+   * envelope; an object supplies custom key names. Omit to let the projector
+   * infer the canonical envelope from the returned body.
+   */
+  bulkEnvelope?: BulkEnvelopeProjectionOpts | boolean;
 }
 
 export interface ResultDoorAggregateScope {
@@ -1485,6 +1492,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           ? { preserveTopLevelKeys: ['event_inspection'] as const }
           : {}),
       ...(evaluatorCompactBody == null && preservePaths.length > 0 ? { preservePaths } : {}),
+      bulkEnvelope: opts.bulkEnvelope,
     });
     const structuralText = JSON.stringify(projected);
     let inserted = false;
