@@ -311,7 +311,7 @@ export function codexCapabilities(): SuSessionCapabilities {
       approvals: {
         state: 'conditional',
         implementation: 'native',
-        reason: 'the thread starts with approvalPolicy on-request and a workspace-write sandbox only under the acceptance-only toolApproval prompt launch; the default managed launch starts it with never and danger-full-access',
+        reason: 'PUI attached launches and resumptions use approvalPolicy on-request and a workspace-write sandbox; native requests become owner approval cards. Other managed engine callers must opt into toolApproval prompt.',
       },
       context: {
         state: 'unsupported',

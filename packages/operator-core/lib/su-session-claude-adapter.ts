@@ -264,7 +264,7 @@ export function claudeCapabilities(): SuSessionCapabilities {
       approvals: {
         state: 'conditional',
         implementation: 'native',
-        reason: 'permission requests reach the owner as typed PUI cards via canUseTool only under the acceptance-only toolApproval prompt launch; the default managed launch runs permissionMode bypassPermissions and never asks',
+        reason: 'PUI attached launches and resumptions use the native default permission policy; requests reach the owner as typed cards via canUseTool. Other managed engine callers must opt into toolApproval prompt.',
       },
       context: {
         state: 'unsupported',

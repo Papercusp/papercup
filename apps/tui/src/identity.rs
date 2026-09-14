@@ -299,6 +299,7 @@ mod tests {
             },
             capabilities: OperatorCapabilities {
                 attached_su_session: true,
+                attached_su_session_approvals: true,
             },
         }
     }

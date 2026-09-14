@@ -21,16 +21,8 @@ const state = pinModuleState('@papercusp/operator-core.su-attached-launch', () =
   engines: new Map<string, ClaudeSuEngine | SuRpcEngine>(),
 }));
 
-/** The real-provider OS-restart fixture opts into one native approval without
- * changing the ordinary attached-session permission posture. Both sentinels
- * are required so an ambient PUI_REAL_APPROVAL value cannot affect a live
- * workspace or any non-fixture operator process. */
-function acceptanceToolApproval(workspaceId: string): { toolApproval?: 'prompt' } {
-  return process.env.PUI_REAL_APPROVAL === '1'
-    && process.env.PUI_OPERATOR_FIXTURE_WORKSPACE === workspaceId
-    ? { toolApproval: 'prompt' }
-    : {};
-}
+// PUI sessions use native approval prompts on both creation and recovery.
+// Manual/auto mode is a separate agent policy, never a permission bypass.
 
 export interface AttachedSuLaunchInput {
   agent: string;
@@ -85,7 +77,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
         let active: ClaudeSuEngine | SuRpcEngine | undefined;
         try {
           const options = { ...resume.options, host: restored, beforeReady: resume.beforeReady,
-            onExit: resume.onExit, ...acceptanceToolApproval(workspaceId) };
+            onExit: resume.onExit, toolApproval: 'prompt' as const };
           active = previous.backend === 'claude'
             ? startClaudeSuEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'claude' },
               { nativeSession: resume.nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
@@ -164,7 +156,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
         agentChatId: input.agent_chat_id, model: selectedModel, accountRoute: input.account,
         carry: input.carry ?? 'warm', modes: input.mode ? [input.mode] : [],
         onExit: async () => { await markAdvSessionEnded(result.sessionId!, null, 'cleanup', { throwOnError: true }); },
-        ...acceptanceToolApproval(workspaceId),
+        toolApproval: 'prompt' as const,
       };
       engine = result.agent === 'claude'
         ? startClaudeSuEngine(result, binding as PuiSuSessionBinding & { backend: 'claude' },

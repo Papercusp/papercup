@@ -153,7 +153,8 @@ describe('sessions:search explicit session + include_coord scope (EI-23130749427
       coord_search: { requested: true, applied: false },
     });
 
-    const sources = runHybridSearch.mock.calls[0]?.[0] as Array<{ name: string }>;
+    const firstCall = runHybridSearch.mock.calls[0] as unknown as [Array<{ name: string }>];
+    const sources = firstCall[0];
     expect(sources.map((source) => source.name)).toEqual(['session_turn']);
   });
 
@@ -171,9 +172,13 @@ describe('sessions:search explicit session + include_coord scope (EI-23130749427
     }, makeTx([]));
     expect(JSON.parse(res.content[0].text)).toMatchObject({ ok: true, total_hits: 0 });
 
-    const sources = runHybridSearch.mock.calls[0]?.[0] as Array<{ name: string }>;
+    const firstCall = runHybridSearch.mock.calls[0] as unknown as [
+      Array<{ name: string }>,
+      { filters?: { owners?: string[] } },
+    ];
+    const sources = firstCall[0];
     expect(sources.map((source) => source.name)).toEqual(['session_turn', 'coord_message']);
-    const searchParams = runHybridSearch.mock.calls[0]?.[1] as { filters?: { owners?: string[] } };
+    const searchParams = firstCall[1];
     expect(searchParams.filters?.owners).toEqual(['su-self']);
   });
 });

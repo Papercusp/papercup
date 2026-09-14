@@ -251,7 +251,7 @@ export function ompCapabilities(): SuSessionCapabilities {
       },
       approvals: {
         state: 'conditional', implementation: 'native',
-        reason: 'the rpc-ui launch installs OMP native question callbacks and rewrites the managed approval mode to always-ask only under the acceptance-only toolApproval prompt launch; the default managed launch stays yolo',
+        reason: 'PUI attached launches and resumptions install OMP native question callbacks with always-ask approval. Other managed engine callers must opt into toolApproval prompt.',
       },
       context: {
         state: 'unsupported',

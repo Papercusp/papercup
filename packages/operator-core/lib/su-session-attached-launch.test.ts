@@ -71,7 +71,7 @@ describe('attached launch authority', () => {
     await vi.waitFor(() => expect(mocks.pid).toHaveBeenCalledWith(18, 4321, 'pui-structured-claude'));
   });
 
-  it('enables prompt approval only for the matching real-provider fixture workspace', async () => {
+  it('keeps native approval prompts on ordinary PUI launches as well as fixture launches', async () => {
     process.env.PUI_REAL_APPROVAL = '1';
     process.env.PUI_OPERATOR_FIXTURE_WORKSPACE = 'workspace';
     await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'approval-fixture' });
@@ -79,7 +79,7 @@ describe('attached launch authority', () => {
 
     process.env.PUI_OPERATOR_FIXTURE_WORKSPACE = 'other-workspace';
     await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'ordinary-session' });
-    expect(mocks.engine.mock.calls[1][3]).not.toHaveProperty('toolApproval');
+    expect(mocks.engine.mock.calls[1][3]).toMatchObject({ toolApproval: 'prompt' });
   });
 
   it('coalesces simultaneous retries before any engine is started', async () => {
@@ -126,7 +126,7 @@ describe('attached launch authority', () => {
     expect(mocks.bootstrap).not.toHaveBeenCalled();
     expect(mocks.bind).not.toHaveBeenCalled();
     const call = (agent === 'claude' ? mocks.engine : mocks.rpc).mock.calls[0];
-    expect(call[agent === 'claude' ? 3 : 2]).toMatchObject({ ...options, host: restored, beforeReady, onExit,
+    expect(call[agent === 'claude' ? 3 : 2]).toMatchObject({ ...options, host: restored, beforeReady, onExit, toolApproval: 'prompt',
       ...(agent === 'claude' ? { resume: true } : { nativeSession: native }) });
   });
 

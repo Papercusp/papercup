@@ -1911,14 +1911,17 @@ export async function findHarnessTestRunIds(params: HarnessTestRunIdQuery): Prom
       const { getOrgPg } = await import('@papercusp/db-org');
       sql = getOrgPg().sql as unknown as SqlLike;
     }
-    const readIds = (client: SqlLike) => client`
-      SELECT id
-        FROM harness_shared.test_runs
-       WHERE workspace_id = ${params.workspaceId}
-         AND harness_slug = ${params.harnessSlug}
-         AND run_group_id = ${params.runGroupId}
-         AND (${params.filePath ?? null}::text IS NULL OR file_path = ${params.filePath ?? null})
-       ORDER BY id`;
+    const readIds = async (client: SqlLike): Promise<unknown[]> => {
+      const rows = await client`
+        SELECT id
+          FROM harness_shared.test_runs
+         WHERE workspace_id = ${params.workspaceId}
+           AND harness_slug = ${params.harnessSlug}
+           AND run_group_id = ${params.runGroupId}
+           AND (${params.filePath ?? null}::text IS NULL OR file_path = ${params.filePath ?? null})
+         ORDER BY id`;
+      return Array.isArray(rows) ? rows : [];
+    };
     const rows = params.sql
       ? await readIds(sql)
       : await boundedPgReadTxn<unknown[]>(_tx => readIds(_tx as unknown as SqlLike), {

@@ -27964,7 +27964,7 @@
       "guidance": {
         "when": "You are auditing one existing scorecard and must re-run the probe stated in every criterion evidence string. Pass the scorecard issueId returned by scorecards:list or a grading-audit dispatch reservation.",
         "notWhen": "You want scorecard history, trend inputs, or multiple rows — scorecards:list. You want a rubric definition — rubrics:get. You are filing a scorecard — scorecards:emit.",
-        "chaining": "scorecards:get { issueId } → if evidenceRead.complete:false, follow the criterion index and every next page → re-run every complete evidence probe → scorecards:emit the grading-integrity audit. A partial read cannot establish probe absence."
+        "chaining": "scorecards:get { issueId } → if evidenceRead.complete:false, follow the criterion index, then fetch independent criterion roots with Promise.all (keep each criterion’s evidenceRead.next page loop sequential) → concatenate every complete page → re-run every evidence probe → scorecards:emit the grading-integrity audit. A partial read cannot establish probe absence."
       }
     },
     {

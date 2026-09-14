@@ -101,6 +101,7 @@ const identityGet = defineTool({
         // field, so a current client fails closed instead of falling through
         // to the legacy visible-terminal launcher.
         attachedSuSession: true,
+        attachedSuSessionApprovals: true,
       },
     });
   },
