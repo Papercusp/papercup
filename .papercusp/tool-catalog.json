@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 883,
+  "count": 884,
   "tools": [
     {
       "name": "ablation:report",
@@ -6508,6 +6508,42 @@
       "guidance": {
         "when": "You need the full fleet-wide coordination timeline — auditing what agents said to each other, tracing a broadcast/handoff/escalation chain, or backing an observer UI. The all-traffic counterpart to the per-owner coord:inbox.",
         "notWhen": "For YOUR addressed messages use coord:inbox; for open human escalations use coord:escalations; for live \"who is active\" use coord:presence. coord:feed is the read-everything firehose, not a working inbox."
+      }
+    },
+    {
+      "name": "coord:focus-window",
+      "http": {
+        "path": "/api/agent-tools/coord/focus-window",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Focus, raise, activate, or bring to the foreground an EXISTING live managed agent's desktop terminal window by coordination ownerId. Reuses the same observed-activation backend as the HUD's Focus window button and never resumes, forks, terminates, or duplicates the agent. Returns focused:false with a typed reason when the session is headless, unrecorded, missing its window, or the desktop refuses activation.",
+      "capabilities": [
+        "coord:mark-terminal"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "guidance": {
+        "when": "A human asks to focus, foreground, raise, show, or bring forward a known live agent window. Resolve the exact ownerId with coord:presence/fleet:assignments, then call this verb. This is the primary focus action.",
+        "notWhen": "Use coord:mark-terminal only when activation fails and the human wants a loud title marker for manual discovery. Use capability:launch-agent { restoreVisible:true } only when the desktop-window oracle positively says the viewer is dead; it correctly refuses an alive window. Never force-resume or fork a live host as a focus workaround."
       }
     },
     {

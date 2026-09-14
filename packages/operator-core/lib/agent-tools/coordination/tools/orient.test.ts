@@ -3189,13 +3189,14 @@ describe('memory-recall relevance floor — P-004 fleet-member-dx (EI-9017)', ()
   // noise it was written for). A healthy hybrid response returns RRF rank-fusion
   // scores on the SAME numeric band (rank-1 ≈ 0.0164–0.0328 = a STRONG hit), so
   // the old blanket floor silently emptied orient's whole fold on hybrid configs.
-  it('drops near-zero-score hits ONLY on a DEGRADED response (lexical-fallback noise) and surfaces filteredLowScore', async () => {
+  it('drops near-zero-score hits ONLY on a DEGRADED COSINE response and surfaces filteredLowScore', async () => {
     const { call } = fakeCall({
       ...CORE_FLOOR,
       'memory:search': () => ({
         ok: true,
         degraded: true,
         degraded_reason: 'embedding_backend_degraded',
+        score_scale: 'cosine',
         results: [
           { id: 'good', memory: 'a real recall hit', score: 0.42 },
           { id: 'noise1', memory: 'lexical-fallback noise', score: 0.0306 },
@@ -3207,6 +3208,29 @@ describe('memory-recall relevance floor — P-004 fleet-member-dx (EI-9017)', ()
     expect(r.memory?.hits.map((h) => h.id)).toEqual(['good']);
     expect((r.memory as { filteredLowScore?: number }).filteredLowScore).toBe(2);
   });
+
+  it.each(['rrf', 'lexical', 'unknown', undefined] as const)(
+    'a DEGRADED %s response fails open and retains its low-band hits',
+    async (scoreScale) => {
+      const { call } = fakeCall({
+        ...CORE_FLOOR,
+        'memory:search': () => ({
+          ok: true,
+          degraded: true,
+          degraded_reason: 'embedding_backend_degraded',
+          ...(scoreScale !== undefined ? { score_scale: scoreScale } : {}),
+          results: [
+            { id: 'rrf-or-lexical', memory: 'backend-native low-band score', score: 0.0164 },
+            { id: 'another', memory: 'another backend-native low-band score', score: 0.03 },
+          ],
+        }),
+      });
+      const r = await composeOrient({ intent: `scale ${scoreScale ?? 'missing'}` }, call, 'me');
+      expect(r.memory?.hits.map((h) => h.id)).toEqual(['rrf-or-lexical', 'another']);
+      expect(r.memory?.filteredLowScore).toBeUndefined();
+      expect(r.memory?.scoreScale).toBe(scoreScale);
+    },
+  );
 
   it('a HEALTHY response keeps RRF-band scores (0.016–0.033 = rank-1 hybrid hits, not noise)', async () => {
     const { call } = fakeCall({
