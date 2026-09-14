@@ -1205,6 +1205,49 @@ describe('resume + fork (D-004/D-007)', () => {
     },
   };
 
+  it('uses distinct governed admission keys for concurrent exact resumes', async () => {
+    const secondDead = {
+      ...dead,
+      sessionId: 'sid-dead-2',
+      ownerId: 'su-a2a72',
+      advSessionId: 12,
+      binding: {
+        ...dead.binding,
+        coordOwnerId: 'su-a2a72',
+        sessionId: 'sid-dead-2',
+      },
+    };
+    resolveResumeTargetMock.mockImplementation(async (ref: { agentId?: string }) =>
+      ref.agentId === 'su-a2a72' ? secondDead : dead,
+    );
+    findLiveHostMock.mockReturnValue(null);
+    // Reproduce the production collision: separate calls can share one clock
+    // tick, so a timestamp-only internal admission key is not unique.
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_789_390_201_920);
+    try {
+      const results = await Promise.all([
+        launchAgent.handler(
+          { resume: { agentId: 'su-a1a71' }, brief: 'restore the first session', idempotencyKey: 'resume-one' },
+          ctx,
+        ),
+        launchAgent.handler(
+          { resume: { agentId: 'su-a2a72' }, brief: 'restore the second session', idempotencyKey: 'resume-two' },
+          ctx,
+        ),
+      ]);
+
+      expect(results.every((result) => !isError(result))).toBe(true);
+      const admissionKeys = spawnGovernedAgentProcessMock.mock.calls.map(
+        ([input]) => (input as { idempotencyKey: string }).idempotencyKey,
+      );
+      expect(admissionKeys).toHaveLength(2);
+      expect(new Set(admissionKeys).size).toBe(2);
+      expect(admissionKeys.every((key) => key.startsWith('agent-spawn:su-caller:1789390201920:'))).toBe(true);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it('starts an identity-preserving fresh successor for an ended critical source', async () => {
     findLiveHostMock.mockReturnValue(null);
     resolveResumeTargetMock.mockResolvedValue(dead);

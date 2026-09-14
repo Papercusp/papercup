@@ -1617,6 +1617,12 @@ export default defineTool({
     // P-003: the correlation floor for verifyFreshLaunchStarted — only sessions
     // that registered AFTER this instant can belong to this call.
     const spawnStartedAt = Date.now();
+    // Date.now() is only a correlation timestamp, not an invocation identity:
+    // concurrent launch-agent calls can reach this point in the same millisecond
+    // and otherwise reuse the governor's admission idempotency key. Keep the
+    // timestamp for diagnostics, but add one nonce per launch invocation; the
+    // member index still distinguishes processes within a single batch.
+    const spawnAdmissionNonce = randomUUID();
     const memberLabels = memberCommands.map((_, i) => (count > 1 ? `${label} (${i + 1}/${count})` : label));
     // A headless process can be alive and have a durable task/log identity even
     // when the bounded native-transcript kickoff receipt times out. Keep that
@@ -1645,7 +1651,7 @@ export default defineTool({
           return await spawnGovernedAgentProcess(
           {
             workspaceId,
-            idempotencyKey: `agent-spawn:${callerOwnerId ?? 'operator'}:${spawnStartedAt}:${i}`,
+            idempotencyKey: `agent-spawn:${callerOwnerId ?? 'operator'}:${spawnStartedAt}:${spawnAdmissionNonce}:${i}`,
             owner: targetOwnerId ?? `launcher:${callerOwnerId ?? 'operator'}`,
             payloadRef: `capability:launch-agent:${fleetSlug ?? args.plan ?? 'ad-hoc'}:${i}`,
             metadata: {
