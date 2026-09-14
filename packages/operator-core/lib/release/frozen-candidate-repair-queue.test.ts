@@ -69,6 +69,10 @@ describe('frozen-candidate repair queue', () => {
         startedAtMs: T0 + 1,
         updatedAtMs: T0 + 1,
         expiresAtMs: T0 + 60_000,
+        currentFile: 'lib/a.test.ts',
+        completedCount: 0,
+        totalCount: 1,
+        heartbeatAtMs: T0 + 1,
       },
     };
     const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(pending)));
@@ -87,6 +91,39 @@ describe('frozen-candidate repair queue', () => {
       blobs: { 'lib/a.test.ts': C1 },
     });
     expect(admitted.admissionPrecheck).toBeUndefined();
+  });
+
+  it.each([
+    ['currentFile outside the population', { currentFile: 'lib/missing.test.ts' }],
+    ['completedCount is not an integer', { completedCount: 0.5 }],
+    ['totalCount disagrees with files', { totalCount: 2 }],
+    ['heartbeat is newer than the marker version', { heartbeatAtMs: T0 + 2 }],
+  ])('drops malformed admission pre-check progress when %s', (_label, change) => {
+    const raw = {
+      ...fresh(),
+      admissionPrecheck: {
+        schemaVersion: 1,
+        operationId: 'repair-precheck-malformed',
+        status: 'running',
+        candidate: C,
+        repairHead: C,
+        builtCommit: C1,
+        builtTree: C2,
+        files: ['lib/a.test.ts'],
+        actor: 'su-test',
+        startedAtMs: T0 + 1,
+        updatedAtMs: T0 + 1,
+        expiresAtMs: T0 + 60_000,
+        currentFile: 'lib/a.test.ts',
+        completedCount: 0,
+        totalCount: 1,
+        heartbeatAtMs: T0 + 1,
+        ...change,
+      },
+    };
+    const parsed = parseFrozenCandidateRepairQueue(raw);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.admissionPrecheck).toBeUndefined();
   });
 
   it('round-trips committed patch provenance without relabeling it as hook attribution', () => {
