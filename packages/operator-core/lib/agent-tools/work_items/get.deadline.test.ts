@@ -64,6 +64,29 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     warnSpy.mockRestore();
   });
 
+  it('bounds a full-detail read that never settles instead of waiting for the MCP deadline', async () => {
+    getWorkItemDetail.mockImplementation(() => new Promise(() => {}));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const pending = get.handler({ id: 'WI-detail-timeout', detail: true } as never, ctx as never) as Promise<Out>;
+    await vi.advanceTimersByTimeAsync(WORK_ITEMS_GET_BUDGET_MS + 100);
+
+    const out = await pending;
+    expect(out.data.results[0]).toMatchObject({
+      ok: false,
+      id: 'WI-detail-timeout',
+      availability: 'unavailable',
+      error: 'timeout',
+      retryable: true,
+      phase: 'read',
+      budgetMs: WORK_ITEMS_GET_BUDGET_MS,
+    });
+    expect(out.data.results[0]).not.toMatchObject({ error: expect.stringContaining('not found') });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('work_items:get:WI-detail-timeout exceeded'));
+
+    warnSpy.mockRestore();
+  });
+
   it('keeps a completed not-found read distinct from timeout', async () => {
     getWorkItem.mockResolvedValue(null);
 
