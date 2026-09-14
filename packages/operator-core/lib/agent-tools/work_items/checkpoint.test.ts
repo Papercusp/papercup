@@ -4471,7 +4471,26 @@ describe('work_items:checkpoint — prose path continuity lint (EI-2238651493968
     expect(resolveCurrentTokens).toHaveBeenCalledWith([`file:${missing}`, `file:${present}`], {
       workspaceId: 'default',
       harness: 'papercup',
-    });
+    }, { allowDirectories: true });
+  });
+
+  it('does not flag an existing repository directory cited in narrative prose', async () => {
+    const directory = 'apps/tui';
+    const body = `The architecture lives under ${directory}; the implementation is ready.`;
+    resolveCurrentTokens.mockResolvedValue(new Map([[`file:${directory}`, 'present:directory']]));
+    getWorkItem.mockResolvedValue({ id: 'WI-PROSE-DIRECTORY', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-PROSE-DIRECTORY', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result.prosePathLint).toBeUndefined();
+    expect(resolveCurrentTokens).toHaveBeenCalledWith(
+      [`file:${directory}`],
+      { workspaceId: 'default', harness: 'papercup' },
+      { allowDirectories: true },
+    );
   });
 
   it('checks only narrative prose, not paths quoted by a structured recheck row', async () => {
