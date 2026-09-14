@@ -369,7 +369,7 @@ describe('Kopia global backup guard', () => {
         hot=$!
         for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
         [ -e "$HOT_READY" ] || exit 91
-        "$GUARD" --mode wait --label db-dump -- bash -c 'touch "$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1 &
+        "$GUARD" --mode wait --label daily-home-vm -- bash -c 'touch "$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1 &
         db=$!
         wait "$db"
         wait "$hot"
@@ -579,8 +579,10 @@ describe('Kopia managed entrypoint contract', () => {
     expect(hotScript).toContain('--mode scheduled --label hot');
     expect(homeScript).toContain('--mode wait --label daily-home-vm');
     expect(protectedScript).toContain('--mode wait --label protected-manual');
-    expect(dbService).toContain('kopia-backup-guard.sh --mode wait --label db-dump');
+    expect(dbService).toContain('kopia-backup-guard.sh --mode scheduled --label db-dump');
+    expect(dbService).not.toContain('kopia-backup-guard.sh --mode wait --label db-dump');
     expect(dbService).toContain('-- %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh');
+    expect(dbService).toContain('Environment=PC_BACKUP_JOBS=1');
     expect(hotScript).not.toContain('snapshot-all.lock');
     expect(homeScript).not.toContain('home-snapshot.lock');
     expect(hotService).toContain('ExecStopPost=%h/.config/kopia/snapshot-all.sh --cleanup');
@@ -601,7 +603,9 @@ describe('Kopia managed entrypoint contract', () => {
     expect(dbService).toContain('MemoryMax=40G');
     expect(dbService).toContain('MemorySwapMax=0');
     expect(dbService).toContain('OOMPolicy=kill');
-    expect(dbService).toContain('kopia-backup-guard.sh --mode wait --label db-dump');
+    expect(dbService).toContain('kopia-backup-guard.sh --mode scheduled --label db-dump');
+    expect(dbService).not.toContain('kopia-backup-guard.sh --mode wait --label db-dump');
+    expect(dbService).toContain('Environment=PC_BACKUP_JOBS=1');
   });
 
   it('reaps only host-owned database dumps, never the concurrent workspace dump', () => {

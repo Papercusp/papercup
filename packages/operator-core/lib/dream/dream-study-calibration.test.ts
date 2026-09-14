@@ -33,7 +33,7 @@ describe('frozen study calibration evidence preparation', () => {
   it('does not leak metadata through production-shaped truncated narrative priors or their locators', async () => {
     const rows = await runs();
     rows[0]!.review!.priorMatches = [
-      { ref: 'dream:private-run-2', kind: 'rejected-attempt', text: '{"status":"rejected","outcome":{"usage":{"model":"secret-model"},"protocolPin":"private-pin"', contentHash: 'original-hash' },
+      { ref: 'dream:private-run-2', kind: 'rejected-attempt', text: '{"status":"rejected","outcome":{"usage":{"model":"secret-model"},"protocolPin":"private-pin"'.padEnd(12_000, 'x'), contentHash: 'stored-hash', sourceHash: 'full-hash', locator: { kind: 'dream', id: 'private-run-2' } },
       { ref: 'idea:private-run-3', kind: 'idea', text: '{"humanGrade":"reject","routedRef":"private-run-4"}', contentHash: 'idea-hash' },
       { ref: 'plan:private-run-5', kind: 'plan', text: 'Review result private-verdict', contentHash: 'plan-hash' },
       { ref: 'code:private-run-6', kind: 'implementation', text: 'function current() {}', contentHash: 'code-hash', sourceHash: 'source-hash' },
@@ -45,7 +45,68 @@ describe('frozen study calibration evidence preparation', () => {
     expect(blind.cases[0]!.priors.slice(0, 3).every(p => p.text === null && p.kind === 'prior-context')).toBe(true);
     expect(blind.cases[0]!.priors[3]).toMatchObject({ ref: 'prior:4', kind: 'implementation', text: 'function current() {}' });
     expect(key.selected[0]!.priorRefMapping[0]).toMatchObject({ blindRef: 'prior:1', originalRef: 'dream:private-run-2' });
-    expect(key.selected[0]!.originalReview).toEqual(rows[0]!.review);
+    expect(key.selected[0]!.originalReview).not.toBe(rows[0]!.review);
+    const originalReview = key.selected[0]!.originalReview as {
+      priorMatches: Array<{
+        capture: {
+          format: string;
+          parseStatus: string;
+          truncated: boolean;
+          storedChars: number | null;
+          maxStoredChars: number;
+          contentHash: string | null;
+          sourceHash: string | null;
+          fullTextRef: unknown;
+        };
+      }>;
+    };
+    expect(originalReview.priorMatches[0]).toMatchObject({
+      ref: 'dream:private-run-2',
+      capture: {
+        format: 'json',
+        parseStatus: 'truncated',
+        truncated: true,
+        storedChars: 12_000,
+        maxStoredChars: 12_000,
+        contentHash: 'stored-hash',
+        sourceHash: 'full-hash',
+        fullTextRef: {
+          resolver: 'capability-review-sources.readCurrent',
+          ref: 'dream:private-run-2',
+          locator: { kind: 'dream', id: 'private-run-2' },
+        },
+      },
+    });
+    expect(originalReview.priorMatches[1]!.capture).toMatchObject({
+      format: 'json',
+      parseStatus: 'parseable',
+      truncated: false,
+      fullTextRef: null,
+    });
+    const roundTrip = JSON.parse(JSON.stringify(key)) as typeof key;
+    const roundTripReview = roundTrip.selected[0]!.originalReview as typeof originalReview;
+    for (const prior of roundTripReview.priorMatches) {
+      if (prior.capture.format !== 'json') continue;
+      expect(['parseable', 'truncated']).toContain(prior.capture.parseStatus);
+      if (prior.capture.parseStatus === 'truncated')
+        expect(prior.capture.fullTextRef).toMatchObject({ resolver: 'capability-review-sources.readCurrent' });
+    }
+  });
+  it('refuses an unparseable JSON prior without proven truncation and a resolver', async () => {
+    const rows = await runs();
+    rows[0]!.review!.priorMatches = [
+      {
+        ref: 'dream:short-broken',
+        kind: 'rejected-attempt',
+        text: '{"broken":',
+        contentHash: 'same-hash',
+        sourceHash: 'same-hash',
+        locator: { kind: 'dream', id: 'short-broken' },
+      },
+    ];
+    expect(() => buildCalibrationBundle([rows[0]!])).toThrow(
+      'is not marked truncated',
+    );
   });
   it('is deterministic across row order, covers strata, and keeps identity/verdicts out of the blind envelope', async () => {
     const rows = await runs();

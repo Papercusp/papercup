@@ -4,6 +4,113 @@ import { DREAM_UTILITY_CONTRACT } from "../../packages/operator-core/lib/dream/d
 import { dreamCapabilityRun } from "../../packages/operator-core/lib/dream/dream-run-provenance.ts";
 import type { DreamRun } from "../../packages/operator-core/lib/dream/dream-run-store.ts";
 
+const PRIOR_TEXT_LIMIT = 12_000;
+
+type PriorLocator = {
+  kind?: unknown;
+  id?: unknown;
+  subref?: unknown;
+};
+
+/**
+ * The capability-review source reader bounds prior text before it reaches a
+ * review prompt. The unblinded key preserves that bounded evidence, but must
+ * make a mid-token JSON prefix self-describing and resolvable to its full
+ * source. This metadata is derived from the stored hashes and locator; it does
+ * not alter the frozen review or blind packet.
+ */
+export function annotatePriorCaptureMetadata(
+  review: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!review) return null;
+  const matches = Array.isArray(review.priorMatches) ? review.priorMatches : [];
+  return {
+    ...review,
+    priorMatches: matches.map((value, index) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      const prior = value as Record<string, unknown>;
+      const text = typeof prior.text === "string" ? prior.text : null;
+      const ref = typeof prior.ref === "string" ? prior.ref : null;
+      const rawLocator =
+        prior.locator && typeof prior.locator === "object" && !Array.isArray(prior.locator)
+          ? (prior.locator as PriorLocator)
+          : null;
+      const locator =
+        rawLocator && typeof rawLocator.kind === "string" && typeof rawLocator.id === "string"
+          ? {
+              kind: rawLocator.kind,
+              id: rawLocator.id,
+              ...(typeof rawLocator.subref === "string" ? { subref: rawLocator.subref } : {}),
+            }
+          : null;
+      const contentHash = typeof prior.contentHash === "string" ? prior.contentHash : null;
+      const sourceHash = typeof prior.sourceHash === "string" ? prior.sourceHash : null;
+      // Dream/idea/plan priors use sourceHash as the hash of the full
+      // serialized source passed to `prior()`. Code/test priors use it as an
+      // external packet snapshot hash, so a mismatch there is not evidence of
+      // text truncation.
+      const sourceHashCoversFullText =
+        prior.kind === "rejected-attempt" || prior.kind === "idea" || prior.kind === "plan";
+      const hashShowsTruncation =
+        sourceHashCoversFullText &&
+        contentHash !== null &&
+        sourceHash !== null &&
+        contentHash !== sourceHash;
+      const truncated =
+        text !== null &&
+        (text.length > PRIOR_TEXT_LIMIT ||
+          hashShowsTruncation ||
+          (text.length >= PRIOR_TEXT_LIMIT &&
+            sourceHashCoversFullText &&
+            (contentHash === null || sourceHash === null || contentHash !== sourceHash)));
+      const trimmed = text?.trimStart() ?? "";
+      const looksLikeJson = trimmed.startsWith("{") || trimmed.startsWith("[");
+      let format: "json" | "text" | "unknown" = text === null ? "unknown" : "text";
+      let parseStatus: "missing" | "parseable" | "not-json" | "truncated" =
+        text === null ? "missing" : "not-json";
+      if (text !== null && looksLikeJson) {
+        format = "json";
+        try {
+          JSON.parse(text);
+          parseStatus = "parseable";
+        } catch {
+          if (!truncated) {
+            throw new Error(
+              `Unparseable JSON prior ${ref ?? `at index ${index}`} is not marked truncated`,
+            );
+          }
+          if (!ref || !locator) {
+            throw new Error(
+              `Truncated JSON prior ${ref ?? `at index ${index}`} has no resolvable full-text reference`,
+            );
+          }
+          parseStatus = "truncated";
+        }
+      }
+      return {
+        ...prior,
+        capture: {
+          format,
+          parseStatus,
+          truncated,
+          storedChars: text?.length ?? null,
+          maxStoredChars: PRIOR_TEXT_LIMIT,
+          contentHash,
+          sourceHash,
+          fullTextRef:
+            ref && locator
+              ? {
+                  resolver: "capability-review-sources.readCurrent",
+                  ref,
+                  locator,
+                }
+              : null,
+        },
+      };
+    }),
+  };
+}
+
 /** Study artifact only: no provider, settings, verdict or assessment writes.
  * Round-robin strata retain model-block/reason coverage without ranking by appeal.
  * This is an exploratory calibration sample, NEVER held-out confirmation data. */
@@ -134,7 +241,7 @@ export function buildCalibrationBundle(runs: DreamRun[], limit = 6) {
       arm: e.provenance.evaluation!.arm,
       protocolPin: e.provenance.evaluation!.protocolPin,
       sourceSnapshot: e.provenance.sampling?.log.snapshotFingerprint,
-      originalReview: e.run.review,
+      originalReview: annotatePriorCaptureMetadata(e.run.review),
       priorRefMapping: ((e.run.review?.priorMatches ?? []) as Array<Record<string, unknown>>).map((p, i) => ({
         blindRef: "prior:" + (i + 1), originalRef: p.ref, kind: p.kind,
       })),

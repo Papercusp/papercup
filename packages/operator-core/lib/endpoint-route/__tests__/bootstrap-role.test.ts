@@ -46,6 +46,7 @@ const resolveFleetMock = vi.fn(
 // fact via stampFleetMembershipAtBoot (exported by bootstrap-su) — null = success,
 // a string = the loud-409 failure message.
 const stampFleetMembershipMock = vi.fn(async (_opts: unknown) => null as string | null);
+const stampPresenceAtBootMock = vi.fn(async (_opts: unknown) => null as string | null);
 // EI-155: mock the interactive-claude config-dir materializer so this unit test
 // never symlinks the dev box's real ~/.claude into a session dir.
 const writeInteractiveClaudeConfigMock = vi.fn((opts: { sid: string }) => ({
@@ -107,6 +108,7 @@ vi.mock('../routes/agent-mcp/bootstrap-su', () => ({
   // WI-1893: the durable membership stamp replaced the in-memory setPendingFleet
   // placement (which lived in ONE cluster worker and was lost cross-worker).
   stampFleetMembershipAtBoot: (opts: unknown) => stampFleetMembershipMock(opts),
+  stampPresenceAtBoot: (opts: unknown) => stampPresenceAtBootMock(opts),
 }));
 vi.mock('../../interactive-claude-config', () => ({ writeInteractiveClaudeConfig: (opts: { sid: string }) => writeInteractiveClaudeConfigMock(opts) }));
 // No-op the best-effort saved-prompts materialize side effect — this unit test
@@ -177,6 +179,7 @@ beforeEach(() => {
   resolveAccountPinMock.mockResolvedValue({ env: {}, notice: null, accountId: null, provider: null });
   resolveFleetMock.mockResolvedValue({ env: {}, notice: null, fleetSlug: null, fleetRole: null });
   stampFleetMembershipMock.mockResolvedValue(null);
+  stampPresenceAtBootMock.mockReset().mockResolvedValue(null);
   getPlanContextBySlugMock.mockResolvedValue('## Source Plan Context\n\n**Plan:** `p1`');
   writeRoleCodexHomeMock.mockReturnValue({
     codexHome: '/tmp/role-codex-homes/session-7',
@@ -228,6 +231,36 @@ describe('bootstrap-role', () => {
     expect(recordAdvSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({ role: 'worker', feature: 'F-001', agent: 'claude', coordOwnerId: 'role-abc', sessionId: 'nsid-abc' }),
     );
+  });
+
+  it('stamps the role owner into presence after recording the adv session (EI-23204591840754750)', async () => {
+    const json = await (await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' })).json();
+
+    expect(stampPresenceAtBootMock).toHaveBeenCalledWith({
+      workspaceId: 'default',
+      ownerId: 'role-abc',
+      ownerLabel: 'worker · F-001',
+      harnessSlug: 'papercup',
+      agentRole: 'worker',
+    });
+    expect(recordAdvSessionMock.mock.invocationCallOrder[0]).toBeLessThan(
+      stampPresenceAtBootMock.mock.invocationCallOrder[0],
+    );
+    expect(json.envelopeEnv.PAPERCUSP_SID).toBe('role-abc');
+    expect(json.envelopeEnv.PAPERCUSP_AGENT_ROLE).toBe('worker');
+  });
+
+  it('stamps a workspace-level role owner too, without inventing a harness scope', async () => {
+    roleConsumesMock.mockReturnValue({ feature: 'none', plan: 'none' });
+    await callPost({ role: 'scoper', agent: 'codex' });
+
+    expect(stampPresenceAtBootMock).toHaveBeenCalledWith({
+      workspaceId: 'default',
+      ownerId: 'role-abc',
+      ownerLabel: 'scoper',
+      harnessSlug: null,
+      agentRole: 'scoper',
+    });
   });
 
   it('threads explicit stack bindings through role compilation and launch argv', async () => {

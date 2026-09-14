@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "historical-test-run-provenance",
+  "workItemId": "WI-10000456",
+  "plan": "goal-agent-behavior-feedback-2026-09-06",
+  "spec": "AUTO-BAR-R-5-P-012@4",
+  "originalTestRunId": 17999352,
+  "originalRunGroupId": "b95dfa83-1f9f-42cc-ba9f-c8f0458ca587",
+  "framework": "vitest",
+  "file": "packages/operator-core/lib/agent-obligation-providers.test.ts",
+  "status": "fail",
+  "startedAt": "2026-09-13T22:30:22.924Z",
+  "finishedAt": "2026-09-13T22:30:22.971Z",
+  "recordedScope": { "workspaceId": null, "harnessSlug": null },
+  "executionDetails": {
+    "root": "$WORKSPACE_ROOT",
+    "testNamePattern": null,
+    "passed": 25,
+    "failed": 7,
+    "skipped": 0,
+    "collectionFailed": false,
+    "worktreeDirty": true,
+    "commitSha": "0168842a89e7d072409b68684f5287e7385af567"
+  },
+  "observedCounterexample": {
+    "test": "plan placement preserves canonical launch evidence > never restarts a paused goal with unfinished plans",
+    "actual": { "applicableDemand": 1, "status": "due" },
+    "expected": { "applicableDemand": 0, "status": "not-applicable" },
+    "source": "harness_shared.test_runs.output_tail"
+  },
+  "readback": {
+    "tool": "testing:runs",
+    "args": { "testRunIds": [17999352], "latestPerFile": false }
+  },
+  "limitations": [
+    "This archives an actual pre-fix execution, not a fresh replay or a newly executed operational test.",
+    "NULL tenant attribution is retained. The original row is not directly bindable to the tenant-scoped spec ledger.",
+    "The recorded commit does not identify all dirty working-tree bytes.",
+    "The selected output excerpt is not a census of all seven failures.",
+    "No shell exit code is invented and this is not a testing:record-run artifact."
+  ],
+  "relatedCurrentRecurrence": { "testRunId": 18006060, "passed": 32, "failed": 0, "skipped": 0 }
+}

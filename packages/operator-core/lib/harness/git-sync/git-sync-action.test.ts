@@ -44,11 +44,7 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import type { GitSyncOutcome, RunGitSyncOpts } from './run-git-sync';
-import {
-  configureScheduledRegistry,
-  resetScheduledRegistry,
-  type TimerHandle,
-} from '@papercusp/scheduled-registry';
+import { configureScheduledRegistry, resetScheduledRegistry, type TimerHandle } from '@papercusp/scheduled-registry';
 // WI-5960: NOT mocked — the real implementation, so the invariant test below
 // pins the ACTUAL cross-module agreement (a mock would just assert against
 // itself and could drift silently alongside a real-code regression).
@@ -63,18 +59,24 @@ vi.mock('../../hive-store', async (importOriginal) => ({
 }));
 vi.mock('../../sync/pot-git/signed-context-store', () => ({
   resolveStoreProtocolContext: async ({ scope }: { scope: { hive_id: string; repo_key: string } }) => ({
-    ...scope, store_generation: 'sg2-1-' + 'a'.repeat(40),
+    ...scope,
+    store_generation: 'sg2-1-' + 'a'.repeat(40),
   }),
 }));
-const tryAcquireResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean; reason?: string; holders?: unknown[] }> => ({ ok: true }));
-const tryReleaseResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean; released?: number }> => ({ ok: true }));
-const releaseAllResourcesForOwnerMock = vi.fn(
-  async (_tx: unknown, _coordinationDomain: string, _owner: string) => ({
-    released: 3,
-    exclusiveResources: [],
-    waiters: {},
-  }),
+const tryAcquireResourceMock = vi.fn(
+  async (
+    _tx: unknown,
+    _opts: Record<string, unknown>,
+  ): Promise<{ ok: boolean; reason?: string; holders?: unknown[] }> => ({ ok: true }),
 );
+const tryReleaseResourceMock = vi.fn(
+  async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean; released?: number }> => ({ ok: true }),
+);
+const releaseAllResourcesForOwnerMock = vi.fn(async (_tx: unknown, _coordinationDomain: string, _owner: string) => ({
+  released: 3,
+  exclusiveResources: [],
+  waiters: {},
+}));
 const heldResourcesByOwner = new Map<string, string[]>();
 const releaseTrace: string[] = [];
 const readResourceQueueMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>) => ({
@@ -105,7 +107,10 @@ vi.mock('../../agent-tools/locks/su-lock-store', () => ({
     const result = await tryReleaseResourceMock(a[0], opts);
     if (opts.resource) {
       const held = heldResourcesByOwner.get(opts.owner) ?? [];
-      heldResourcesByOwner.set(opts.owner, held.filter((resource) => resource !== opts.resource));
+      heldResourcesByOwner.set(
+        opts.owner,
+        held.filter((resource) => resource !== opts.resource),
+      );
     }
     return result;
   },
@@ -126,9 +131,7 @@ vi.mock('../../agent-tools/locks/su-lock-store', () => ({
     clearResourceWaiterMock(a[0], a[1] as string, a[2] as string, a[3] as string),
 }));
 
-const liveLockHoldingsMock = vi.fn(
-  async (): Promise<Array<{ path: string; owner: string; intent: string }>> => [],
-);
+const liveLockHoldingsMock = vi.fn(async (): Promise<Array<{ path: string; owner: string; intent: string }>> => []);
 const liveLockHoldingsStrictMock = vi.fn(
   async (): Promise<Array<{ path: string; owner: string; intent: string }>> => [],
 );
@@ -171,7 +174,7 @@ vi.mock('../../agent-tools/locks/in-workspace-txn', () => ({
 let registryProjects: Array<Record<string, unknown>> = [];
 let ambientRegistryProjects: Array<Record<string, unknown>> | null = null;
 const loadHarnessRegistryMock = vi.fn(async (workspaceId?: string) => ({
-  projects: workspaceId ? registryProjects : ambientRegistryProjects ?? registryProjects,
+  projects: workspaceId ? registryProjects : (ambientRegistryProjects ?? registryProjects),
 }));
 vi.mock('../../harness-registry', () => ({
   loadHarnessRegistry: (workspaceId?: string) => loadHarnessRegistryMock(workspaceId),
@@ -196,14 +199,16 @@ mkdirSync(join(repoDir, '.git'), { recursive: true });
 mkdirSync(noGitDir, { recursive: true });
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
-const runGitSyncMock = vi.fn(async (_slug: string, _opts: Record<string, unknown>): Promise<GitSyncOutcome> => ({
-  status: 'nothing',
-  dirtyPathCount: 0,
-  committedCount: 0,
-  oversized: [],
-  contentErrors: [],
-  strandedSubmodules: [],
-}));
+const runGitSyncMock = vi.fn(
+  async (_slug: string, _opts: Record<string, unknown>): Promise<GitSyncOutcome> => ({
+    status: 'nothing',
+    dirtyPathCount: 0,
+    committedCount: 0,
+    oversized: [],
+    contentErrors: [],
+    strandedSubmodules: [],
+  }),
+);
 // The stash-check sweep (checkForNewStashes) also imports discoverSubmodulesRecursive
 // from this module — without it on the mock, its best-effort catch console.warns and
 // vitest-fail-on-console reds every test whose tick reaches the sweep (EI-14928 class:
@@ -233,15 +238,14 @@ type CompletionSettlementScope = {
   workspaceId: string;
   repositoryRoot: string;
 };
-const reconcileProposedCompletionsAtCommitMock = vi.fn(async (
-  _commitSha: string,
-  _scope: CompletionSettlementScope,
-) => ({
-  inspected: 0,
-  upgraded: [],
-  residual: 0,
-  unreadable: [],
-}));
+const reconcileProposedCompletionsAtCommitMock = vi.fn(
+  async (_commitSha: string, _scope: CompletionSettlementScope) => ({
+    inspected: 0,
+    upgraded: [],
+    residual: 0,
+    unreadable: [],
+  }),
+);
 vi.mock('./completion-settlement-reconciler', () => ({
   reconcileProposedCompletionsAtCommit: (commitSha: string, scope: CompletionSettlementScope) =>
     reconcileProposedCompletionsAtCommitMock(commitSha, scope),
@@ -285,21 +289,27 @@ vi.mock('./git-sync-events', async (importOriginal) => ({
 const INVOKE_URL = 'http://127.0.0.1:3070/api/agents/invoke?role=merge-resolver';
 const CONTENT_FIX_URL = 'http://127.0.0.1:3070/api/agents/invoke?role=content-fixer';
 const resolveLaunchTargetForEventMock = vi.fn(
-  async (event: string, _opts: Record<string, unknown>): Promise<{ blueprintId: string; role: string; url: string } | null> =>
+  async (
+    event: string,
+    _opts: Record<string, unknown>,
+  ): Promise<{ blueprintId: string; role: string; url: string } | null> =>
     event === 'git-sync:content-error'
       ? { blueprintId: 'content-fix', role: 'content-fixer', url: CONTENT_FIX_URL }
       : { blueprintId: 'merge-resolution', role: 'merge-resolver', url: INVOKE_URL },
 );
 vi.mock('../../blueprint/launch-blueprint', () => ({
-  resolveLaunchTargetForEvent: (...a: unknown[]) => resolveLaunchTargetForEventMock(a[0] as string, a[1] as Record<string, unknown>),
+  resolveLaunchTargetForEvent: (...a: unknown[]) =>
+    resolveLaunchTargetForEventMock(a[0] as string, a[1] as Record<string, unknown>),
 }));
 
 type FakeResponse = { ok: boolean; status: number; json: () => Promise<unknown> };
-const loopbackFetchMock = vi.fn(async (_url: string, _init?: Record<string, unknown>): Promise<FakeResponse> => ({
-  ok: true,
-  status: 200,
-  json: async () => ({ ok: true, exitCode: 0, timedOut: false }),
-}));
+const loopbackFetchMock = vi.fn(
+  async (_url: string, _init?: Record<string, unknown>): Promise<FakeResponse> => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ ok: true, exitCode: 0, timedOut: false }),
+  }),
+);
 vi.mock('../../loopback-fetch', () => ({
   loopbackFetch: (...a: unknown[]) => loopbackFetchMock(a[0] as string, a[1] as Record<string, unknown>),
   describeFetchError: (error: unknown) => {
@@ -491,8 +501,7 @@ const routineUpdateWorkspaceIds = (): unknown[] =>
   unsafeCalls.filter((c) => c.text.includes('UPDATE harness_shared.routines')).map((c) => c.params[1]);
 
 /** WI-1416: the `fire_started_at` breadcrumb patched at the very top of every fire. */
-const fireBreadcrumbs = (): Array<Record<string, unknown>> =>
-  allRoutinePatches().filter((p) => 'fire_started_at' in p);
+const fireBreadcrumbs = (): Array<Record<string, unknown>> => allRoutinePatches().filter((p) => 'fire_started_at' in p);
 
 /** JSONB patches applied to the routine's metadata (recordOutcome + resolver markers) —
  *  the WI-1416 fire_started_at breadcrumb and the stash-check's per-tick
@@ -525,8 +534,7 @@ const escalationUpserts = (): Array<{ text: string; params: unknown[]; body: Rec
 const escalationClears = (): string[][] =>
   unsafeCalls.filter((c) => c.text.includes('SET escalation = NULL')).map((c) => c.params[3] as string[]);
 
-const releasedResources = (): string[] =>
-  releaseTrace;
+const releasedResources = (): string[] => releaseTrace;
 
 const acquiredResources = (): string[] =>
   tryAcquireResourceMock.mock.calls.map(([, o]) => (o as { resource: string }).resource);
@@ -539,9 +547,7 @@ const acquiredLockModes = (): string[] =>
  *  workspace coordination domain for every lock-set member (WI-562584), and an
  *  unqualified table match would silently fold those in as "registrations". */
 const registeredResources = (): string[] =>
-  txQueries
-    .filter((q) => /INSERT\s+INTO\s+agent_resource_registry/i.test(q.text))
-    .map((q) => q.values[0] as string);
+  txQueries.filter((q) => /INSERT\s+INTO\s+agent_resource_registry/i.test(q.text)).map((q) => q.values[0] as string);
 
 /** Resource names whose registry row this tick stamped with the WORKSPACE coordination
  *  domain (WI-562584) — the declaration an agent's `resourceLockDomain()` reads back so
@@ -606,7 +612,13 @@ const contentErrorOutcome: GitSyncOutcome = {
   merged: [],
   oversized: [],
   contentErrors: [
-    { scope: 'superproject', file: 'apps/operator-docs/src/content/docs/x.mdx', detectorKey: 'mdx', error: 'MDX compile error at line 7: closing tag for `<date>`', fixerRole: 'content-fixer' },
+    {
+      scope: 'superproject',
+      file: 'apps/operator-docs/src/content/docs/x.mdx',
+      detectorKey: 'mdx',
+      error: 'MDX compile error at line 7: closing tag for `<date>`',
+      fixerRole: 'content-fixer',
+    },
   ],
   strandedSubmodules: [],
 };
@@ -704,7 +716,14 @@ describe('registry population', () => {
 
 describe('WI-1416 durable-fire breadcrumbs', () => {
   it('stamps fire_started_at as the FIRST metadata write of every fire (before locks/gate)', async () => {
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
+    runGitSyncMock.mockResolvedValue({
+      status: 'nothing',
+      dirtyPathCount: 0,
+      committedCount: 0,
+      oversized: [],
+      contentErrors: [],
+      strandedSubmodules: [],
+    });
 
     await action(ctx);
 
@@ -755,6 +774,21 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     expect(result).toMatchObject({ status: 'synced', headSha: syncedOutcome.headSha, pushed: syncedOutcome.pushed });
   });
 
+  it('refuses every on-demand fire on a request-only host before the git-sync pipeline starts', async () => {
+    const priorBackgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS;
+    process.env.PAPERCUSP_BACKGROUND_WORKERS = '0';
+    try {
+      await expect(fireGitSyncNow(ctx.installSlug, ctx.workspaceId)).rejects.toThrow(
+        /on-demand fire refused on request-only host/,
+      );
+      expect(runGitSyncMock).not.toHaveBeenCalled();
+      expect(unsafeCalls).toHaveLength(0);
+    } finally {
+      if (priorBackgroundWorkers === undefined) delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
+      else process.env.PAPERCUSP_BACKGROUND_WORKERS = priorBackgroundWorkers;
+    }
+  });
+
   it('settles against the canonical emitted checkout root, not the install slug', async () => {
     const alias = join(tmpRoot, 'repo-alias');
     symlinkSync(repoDir, alias);
@@ -763,14 +797,11 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
 
     await action(ctx);
 
-    expect(reconcileProposedCompletionsAtCommitMock).toHaveBeenCalledWith(
-      syncedOutcome.headSha,
-      {
-        installSlug: 'papercup',
-        workspaceId: 'ws-42',
-        repositoryRoot: realpathSync(repoDir),
-      },
-    );
+    expect(reconcileProposedCompletionsAtCommitMock).toHaveBeenCalledWith(syncedOutcome.headSha, {
+      installSlug: 'papercup',
+      workspaceId: 'ws-42',
+      repositoryRoot: realpathSync(repoDir),
+    });
   });
 
   it('scopes every registry read and runs the exact path pinned by a manual fire when an ambient sibling exists', async () => {
@@ -780,17 +811,21 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     mkdirSync(join(ambientSibling, '.git'), { recursive: true });
     registryProjects = [{ slug: 'papercup', path: canonicalRepo }];
     ambientRegistryProjects = [{ slug: 'papercup', path: ambientSibling }];
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
+    runGitSyncMock.mockResolvedValue({
+      status: 'nothing',
+      dirtyPathCount: 0,
+      committedCount: 0,
+      oversized: [],
+      contentErrors: [],
+      strandedSubmodules: [],
+    });
 
     await fireGitSyncNow('papercup', 'ws-42', canonicalRepo);
 
     expect(runGitSyncMock).toHaveBeenCalledWith('papercup', expect.objectContaining({ repoPath: canonicalRepo }));
     expect(loadHarnessRegistryMock).toHaveBeenCalled();
     expect(loadHarnessRegistryMock.mock.calls.every(([workspaceId]) => workspaceId === 'ws-42')).toBe(true);
-    expect(runGitSyncMock).not.toHaveBeenCalledWith(
-      'papercup',
-      expect.objectContaining({ repoPath: ambientSibling }),
-    );
+    expect(runGitSyncMock).not.toHaveBeenCalledWith('papercup', expect.objectContaining({ repoPath: ambientSibling }));
   });
 });
 
@@ -875,24 +910,21 @@ describe('P-004 dependency-generation prebuild handoff', () => {
     process.env.PAPERCUSP_INTEGRATION_ROOT = tmpRoot;
     let releaseHandoff!: (value: boolean) => void;
     enqueueDependencyPrebuildMock.mockImplementation(
-      () => new Promise<boolean>((resolve) => {
-        releaseHandoff = resolve;
-      }),
+      () =>
+        new Promise<boolean>((resolve) => {
+          releaseHandoff = resolve;
+        }),
     );
     try {
       const pending = action(ctx);
       await vi.waitFor(() => expect(releaseHandoff).toBeTypeOf('function'));
       expect(
-        gitSyncActivityPatches().some(
-          (activity) => activity.phase === 'complete' && activity.active === false,
-        ),
+        gitSyncActivityPatches().some((activity) => activity.phase === 'complete' && activity.active === false),
       ).toBe(false);
       releaseHandoff(true);
       await pending;
       expect(
-        gitSyncActivityPatches().some(
-          (activity) => activity.phase === 'complete' && activity.active === false,
-        ),
+        gitSyncActivityPatches().some((activity) => activity.phase === 'complete' && activity.active === false),
       ).toBe(true);
     } finally {
       if (priorToolingRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
@@ -1003,7 +1035,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
       (opts as { resource: string }).resource === 'libs-papercusp-submodule'
         ? { ok: false, reason: 'held by agent:peer' }
-        : { ok: true });
+        : { ok: true },
+    );
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await action(ctx);
@@ -1029,11 +1062,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     // …and the refused resource gets an owner-scoped late-grant cleanup before
     // the partially-acquired locks are released in reverse order. That cleanup
     // cannot delete the peer row because tryReleaseResource checks `owner`.
-    expect(releasedResources()).toEqual([
-      'libs-papercusp-submodule',
-      'git-sync:papercup',
-      'git-sync',
-    ]);
+    expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('a peer holds libs-papercusp-submodule'));
     log.mockRestore();
   });
@@ -1053,7 +1082,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
       (opts as { resource: string }).resource === 'libs-papercusp-submodule'
         ? { ok: false, reason: 'held_exclusive', holders: [holder] }
-        : { ok: true });
+        : { ok: true },
+    );
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
@@ -1083,18 +1113,21 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
       (opts as { resource: string }).resource === 'libs-papercusp-submodule'
         ? { ok: false, reason: 'held by agent:peer', holders: [holder] }
-        : { ok: true });
+        : { ok: true },
+    );
 
     await action(ctx);
 
     expect(emitGitSyncLockRetryEventMock).toHaveBeenCalledWith(
       'libs-papercusp-submodule',
       'held by agent:peer',
-      [{
-        ...holder,
-        acquired_ts: '2026-08-21T10:00:00.000Z',
-        expires_ts: '2026-08-21T10:10:00.000Z',
-      }],
+      [
+        {
+          ...holder,
+          acquired_ts: '2026-08-21T10:00:00.000Z',
+          expires_ts: '2026-08-21T10:10:00.000Z',
+        },
+      ],
       { scope: { installSlug: 'papercup', workspaceId: 'ws-42' } },
     );
   });
@@ -1123,9 +1156,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(allRoutinePatches()).not.toContainEqual(
         expect.objectContaining({ last_skip_reason: 'live-lock-read-failed' }),
       );
-      expect(error).not.toHaveBeenCalledWith(
-        expect.stringContaining('live lock read failed (fail-closed)'),
-      );
+      expect(error).not.toHaveBeenCalledWith(expect.stringContaining('live lock read failed (fail-closed)'));
     } finally {
       error.mockRestore();
     }
@@ -1145,25 +1176,25 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(runGitSyncMock).not.toHaveBeenCalled();
       expect(appendPipelineEventMock).not.toHaveBeenCalled();
       expect(emitGitSyncLockRetryEventMock).not.toHaveBeenCalled();
-      expect(releasedResources()).toEqual([
-        'libs-papercusp-submodule',
-        'git-sync:papercup',
-        'git-sync',
-      ]);
-      expect(allRoutinePatches()).toContainEqual(expect.objectContaining({
-        last_status: 'skipped',
-        local_sync_status: 'skipped',
-        last_skip_reason: 'live-lock-read-failed',
-        last_skipped_at: expect.any(Number),
-        last_lock_read_error: 'side-DB unreachable',
-        last_error: 'live lock read failed (fail-closed): side-DB unreachable',
-        last_errors: ['live-lock-read: side-DB unreachable'],
-      }));
-      expect(gitSyncActivityPatches()).toContainEqual(expect.objectContaining({
-        active: false,
-        phase: 'error',
-        outcome_status: null,
-      }));
+      expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
+      expect(allRoutinePatches()).toContainEqual(
+        expect.objectContaining({
+          last_status: 'skipped',
+          local_sync_status: 'skipped',
+          last_skip_reason: 'live-lock-read-failed',
+          last_skipped_at: expect.any(Number),
+          last_lock_read_error: 'side-DB unreachable',
+          last_error: 'live lock read failed (fail-closed): side-DB unreachable',
+          last_errors: ['live-lock-read: side-DB unreachable'],
+        }),
+      );
+      expect(gitSyncActivityPatches()).toContainEqual(
+        expect.objectContaining({
+          active: false,
+          phase: 'error',
+          outcome_status: null,
+        }),
+      );
       expect(error).toHaveBeenCalledWith(expect.stringContaining('live lock read failed (fail-closed)'));
       expect(warn).not.toHaveBeenCalled();
     } finally {
@@ -1212,11 +1243,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     // Releasing our partial acquisitions cannot release the peer's exclusive row.
     // A retry event here would therefore wake callers into the same no-delta refusal;
     // the resource release/grant path owns the truthful wake instead.
-    expect(sequence).toEqual([
-      'peer-held-refusal',
-      'released:libs-papercusp-submodule',
-      'released-own-lock-set',
-    ]);
+    expect(sequence).toEqual(['peer-held-refusal', 'released:libs-papercusp-submodule', 'released-own-lock-set']);
     expect(peerRowLive).toBe(true);
     expect(emitGitSyncLockRetryEventMock).not.toHaveBeenCalled();
   });
@@ -1229,12 +1256,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       return {
         holders: [],
         draining: false,
-        queue: resource === 'git-sync:papercup'
-          ? [
-              { owner: abandonedOwner },
-              { owner: peerOwner },
-            ]
-          : [],
+        queue: resource === 'git-sync:papercup' ? [{ owner: abandonedOwner }, { owner: peerOwner }] : [],
       };
     });
     runGitSyncMock.mockResolvedValue({
@@ -1318,10 +1340,10 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
   it('SKIPS after workspace-lock contention exhausts retries — it never runs unlocked', async () => {
     vi.useFakeTimers();
     try {
-      const contention = Object.assign(
-        new Error('workspace "ws-42" contended (pg 57014: lock/statement timeout)'),
-        { name: 'WorkspaceContendedError', pgCode: '57014' },
-      );
+      const contention = Object.assign(new Error('workspace "ws-42" contended (pg 57014: lock/statement timeout)'), {
+        name: 'WorkspaceContendedError',
+        pgCode: '57014',
+      });
       tryAcquireResourceMock.mockRejectedValue(contention);
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -1367,7 +1389,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     // the documented fail-open contract: the sync still RUNS
     expect(runGitSyncMock).toHaveBeenCalledTimes(1);
     expect(appendPipelineEventMock).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'git_sync', status: 'synced' }));
+      expect.objectContaining({ kind: 'git_sync', status: 'synced' }),
+    );
     // the partial acquisition was released inside acquireLocks; the unlocked run
     // releases nothing afterwards (exactly one release total)
     expect(releasedResources()).toEqual(['git-sync']);
@@ -1389,12 +1412,15 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       mode: 'shared',
       ttlSec: 600,
     });
-    expect((tryAcquireResourceMock.mock.calls[0][1] as { owner: string }).owner).toMatch(/^system:git-sync:\d+:[0-9a-f-]+$/);
+    expect((tryAcquireResourceMock.mock.calls[0][1] as { owner: string }).owner).toMatch(
+      /^system:git-sync:\d+:[0-9a-f-]+$/,
+    );
     // ONLY the per-slug name is auto-registered (idempotent ON CONFLICT DO NOTHING);
     // the extras are a human-registered coordination surface
     expect(registeredResources()).toEqual(['git-sync:papercup']);
-    expect(txQueries.find((q) => /INSERT\s+INTO\s+agent_resource_registry/i.test(q.text))?.text)
-      .toContain('ON CONFLICT (resource) DO NOTHING');
+    expect(txQueries.find((q) => /INSERT\s+INTO\s+agent_resource_registry/i.test(q.text))?.text).toContain(
+      'ON CONFLICT (resource) DO NOTHING',
+    );
     expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
   });
 
@@ -1441,11 +1467,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     });
     const operation = vi.fn(async () => 'must-not-run');
 
-    const result = await runWithGitSyncPerInstallLease(
-      'papercup',
-      'ws-42',
-      operation,
-    );
+    const result = await runWithGitSyncPerInstallLease('papercup', 'ws-42', operation);
 
     expect(result).toMatchObject({
       state: 'skipped',
@@ -1471,11 +1493,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
     await action(ctx);
 
-    expect(workspaceDomainStampedResources()).toEqual([
-      'git-sync',
-      'git-sync:papercup',
-      'libs-papercusp-submodule',
-    ]);
+    expect(workspaceDomainStampedResources()).toEqual(['git-sync', 'git-sync:papercup', 'libs-papercusp-submodule']);
     // Every acquire in this tick used the workspace domain — which is precisely what
     // the stamp tells a later reader, so the two cannot drift apart silently.
     for (const [, opts] of tryAcquireResourceMock.mock.calls) {
@@ -1518,7 +1536,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
       (opts as { resource: string }).resource === 'git-sync'
         ? { ok: false, reason: 'exclusive_pending', holders: [] }
-        : { ok: true });
+        : { ok: true },
+    );
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
@@ -1526,8 +1545,11 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
       expect(acquiredResources()).toEqual(['git-sync']);
       expect(acquiredLockModes()).toEqual(['shared']);
-      expect(tryAcquireResourceMock.mock.calls.some(([, opts]) =>
-        (opts as { resource: string }).resource === 'git-sync:papercup')).toBe(false);
+      expect(
+        tryAcquireResourceMock.mock.calls.some(
+          ([, opts]) => (opts as { resource: string }).resource === 'git-sync:papercup',
+        ),
+      ).toBe(false);
       expect(runGitSyncMock).not.toHaveBeenCalled();
       expect(releasedResources()).toEqual(['git-sync']);
     } finally {
@@ -1568,19 +1590,24 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
     try {
       await action(ctx);
-      expect(error).toHaveBeenCalledWith(expect.stringContaining(
-        `STALE LOCK RECLAIMED — papercup git-sync holder ${terminalResolverOwner} ` +
-          '(session ended per the shared liveness oracle)',
-      ));
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining(
+          `STALE LOCK RECLAIMED — papercup git-sync holder ${terminalResolverOwner} ` +
+            '(session ended per the shared liveness oracle)',
+        ),
+      );
     } finally {
       error.mockRestore();
     }
 
     expect(endedSessionOwnersMock).toHaveBeenCalledWith([terminalResolverOwner]);
-    expect(tryReleaseResourceMock.mock.calls.some(([, opts]) =>
-      (opts as { owner?: string; lockId?: string }).owner === terminalResolverOwner &&
-      (opts as { lockId?: string }).lockId === terminalResolverHolder.lock_id,
-    )).toBe(true);
+    expect(
+      tryReleaseResourceMock.mock.calls.some(
+        ([, opts]) =>
+          (opts as { owner?: string; lockId?: string }).owner === terminalResolverOwner &&
+          (opts as { lockId?: string }).lockId === terminalResolverHolder.lock_id,
+      ),
+    ).toBe(true);
     const barrierAcquires = tryAcquireResourceMock.mock.calls
       .map(([, opts]) => opts as { resource: string; mode: string })
       .filter(({ resource }) => resource === 'git-sync');
@@ -1631,12 +1658,16 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     }
 
     expect(endedSessionOwnersMock).toHaveBeenCalledWith([liveResolverOwner, opaqueResolverOwner]);
-    expect(tryReleaseResourceMock.mock.calls.some(([, opts]) =>
-      [liveResolverOwner, opaqueResolverOwner].includes((opts as { owner?: string }).owner ?? ''),
-    )).toBe(false);
-    expect(tryReleaseResourceMock.mock.calls.some(([, opts]) =>
-      ['live-resolver-lock', 'opaque-resolver-lock'].includes((opts as { lockId?: string }).lockId ?? ''),
-    )).toBe(false);
+    expect(
+      tryReleaseResourceMock.mock.calls.some(([, opts]) =>
+        [liveResolverOwner, opaqueResolverOwner].includes((opts as { owner?: string }).owner ?? ''),
+      ),
+    ).toBe(false);
+    expect(
+      tryReleaseResourceMock.mock.calls.some(([, opts]) =>
+        ['live-resolver-lock', 'opaque-resolver-lock'].includes((opts as { lockId?: string }).lockId ?? ''),
+      ),
+    ).toBe(false);
     expect(runGitSyncMock).not.toHaveBeenCalled();
   });
 
@@ -1660,17 +1691,9 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
     await action(ctx);
 
-    expect(sequence).toEqual([
-      'release-lock-set',
-      'release-lock-set',
-      'committed-event',
-    ]);
+    expect(sequence).toEqual(['release-lock-set', 'release-lock-set', 'committed-event']);
     expect(releaseAllResourcesForOwnerMock).toHaveBeenCalledTimes(2);
-    expect(releasedResources()).toEqual([
-      'libs-papercusp-submodule',
-      'git-sync:papercup',
-      'git-sync',
-    ]);
+    expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
   });
 
   it('EI-20744916065879285: passes live file-lock paths to the pure pipeline as protected exclusions', async () => {
@@ -1693,14 +1716,14 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
   });
 
   it('EI-22435583452728403: wires a guarded commit-time live-lock refresh into the pure pipeline', async () => {
-    const refreshedHoldings = [{
-      path: 'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
-      owner: 'su-peer',
-      intent: 'lock acquired after the initial git-sync census',
-    }];
-    liveLockHoldingsStrictMock
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce(refreshedHoldings);
+    const refreshedHoldings = [
+      {
+        path: 'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
+        owner: 'su-peer',
+        intent: 'lock acquired after the initial git-sync census',
+      },
+    ];
+    liveLockHoldingsStrictMock.mockResolvedValueOnce([]).mockResolvedValueOnce(refreshedHoldings);
     let observedRefresh: unknown;
     runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
       const refresh = opts.refreshLiveLockHoldings as (() => Promise<unknown>) | undefined;
@@ -1805,7 +1828,12 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       lockId: 'stale-lock-1',
     });
     expect(runGitSyncMock).toHaveBeenCalledOnce();
-    expect(acquiredResources()).toEqual(['git-sync', 'git-sync:papercup', 'git-sync:papercup', 'libs-papercusp-submodule']);
+    expect(acquiredResources()).toEqual([
+      'git-sync',
+      'git-sync:papercup',
+      'git-sync:papercup',
+      'libs-papercusp-submodule',
+    ]);
   });
 
   /** The filed shape (EI-22078335832051825): an AGENT session's `su-…` lease —
@@ -1835,13 +1863,17 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       return { ok: true };
     });
     tryReleaseResourceMock.mockImplementation(async () => ({ ok: true, released: 1 }));
-    endedSessionOwnersMock.mockImplementation(async (owners) => new Set(owners.filter((o) => o === endedAgentHolder.owner)));
+    endedSessionOwnersMock.mockImplementation(
+      async (owners) => new Set(owners.filter((o) => o === endedAgentHolder.owner)),
+    );
     runGitSyncMock.mockResolvedValue(syncedOutcome);
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       await action(ctx);
       expect(error).toHaveBeenCalledWith(
-        expect.stringContaining(`STALE LOCK RECLAIMED — papercup git-sync:papercup holder ${endedAgentHolder.owner} (session ended per the shared liveness oracle)`),
+        expect.stringContaining(
+          `STALE LOCK RECLAIMED — papercup git-sync:papercup holder ${endedAgentHolder.owner} (session ended per the shared liveness oracle)`,
+        ),
       );
     } finally {
       error.mockRestore();
@@ -1857,7 +1889,12 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       lockId: endedAgentHolder.lock_id,
     });
     expect(runGitSyncMock).toHaveBeenCalledOnce();
-    expect(acquiredResources()).toEqual(['git-sync', 'git-sync:papercup', 'git-sync:papercup', 'libs-papercusp-submodule']);
+    expect(acquiredResources()).toEqual([
+      'git-sync',
+      'git-sync:papercup',
+      'git-sync:papercup',
+      'libs-papercusp-submodule',
+    ]);
   });
 
   it('EI-22078335832051825 control: a LIVE agent session keeps its exclusive — the tick skips, nothing is released', async () => {
@@ -2077,11 +2114,13 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
         phase: 'error',
         outcome_status: null,
       });
-      expect(allRoutinePatches()).toContainEqual(expect.objectContaining({
-        last_status: 'error',
-        local_sync_status: 'error',
-        last_error: expect.stringContaining('git-sync action timed out'),
-      }));
+      expect(allRoutinePatches()).toContainEqual(
+        expect.objectContaining({
+          last_status: 'error',
+          local_sync_status: 'error',
+          last_error: expect.stringContaining('git-sync action timed out'),
+        }),
+      );
 
       // The underlying setup promise may eventually resolve, but the guarded
       // await has already rejected and must not let the pipeline resume.
@@ -2156,14 +2195,16 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       await Promise.resolve();
       await Promise.resolve();
       const heartbeatPatches = gitSyncActivityPatches();
-      expect(heartbeatPatches.some(
-        (activity) =>
-          activity.active === true &&
-          activity.phase === 'local-sync' &&
-          typeof activity.updated_at === 'number' &&
-          typeof activity.started_at === 'number' &&
-          activity.updated_at > activity.started_at,
-      )).toBe(true);
+      expect(
+        heartbeatPatches.some(
+          (activity) =>
+            activity.active === true &&
+            activity.phase === 'local-sync' &&
+            typeof activity.updated_at === 'number' &&
+            typeof activity.started_at === 'number' &&
+            activity.updated_at > activity.started_at,
+        ),
+      ).toBe(true);
       await vi.advanceTimersByTimeAsync(15);
       reportProgress();
       // Two progress touches keep the 40ms idle deadline out, but cannot move
@@ -2200,16 +2241,18 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
   // (`|| '*'` here, `activeWorkspaceId() || '*'` there) can't silently diverge
   // without failing a test — set the SAME env var the routine's `ctx.workspaceId`
   // models, and assert coordination-domain.ts resolves to the identical domain.
-  it('WI-5960: the acquired coordinationDomain for git-sync:<slug> agrees with coordination-domain.ts\'s own resourceLockDomain/workspaceScopedLockDomain', async () => {
+  it("WI-5960: the acquired coordinationDomain for git-sync:<slug> agrees with coordination-domain.ts's own resourceLockDomain/workspaceScopedLockDomain", async () => {
     const savedEnv = process.env.PAPERCUSP_WORKSPACE_ID;
     process.env.PAPERCUSP_WORKSPACE_ID = 'ws-42'; // mirrors ctx.workspaceId used above
     try {
       runGitSyncMock.mockResolvedValue(syncedOutcome);
       await action(ctx);
 
-      const acquiredDomain = (tryAcquireResourceMock.mock.calls.find(
-        ([, opts]) => (opts as { resource: string }).resource === 'git-sync:papercup',
-      )?.[1] as { coordinationDomain: string }).coordinationDomain;
+      const acquiredDomain = (
+        tryAcquireResourceMock.mock.calls.find(
+          ([, opts]) => (opts as { resource: string }).resource === 'git-sync:papercup',
+        )?.[1] as { coordinationDomain: string }
+      ).coordinationDomain;
       expect(acquiredDomain).toBe('ws-42');
       // The exact invariant an su's locks:acquire_resource relies on: resolving
       // the SAME resource name through coordination-domain.ts's own logic must
@@ -2225,7 +2268,14 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
   it('a harness with NO extra_lock_resources acquires the shared barrier and its own per-slug resource', async () => {
     registryProjects = [{ slug: 'otherapp', path: repoDir }];
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
+    runGitSyncMock.mockResolvedValue({
+      status: 'nothing',
+      dirtyPathCount: 0,
+      committedCount: 0,
+      oversized: [],
+      contentErrors: [],
+      strandedSubmodules: [],
+    });
 
     await action({ ...ctx, installSlug: 'otherapp', triggerConfig: {} });
 
@@ -2240,7 +2290,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
       (opts as { resource: string }).resource === 'my-deploy-lock'
         ? { ok: false, reason: 'unknown_resource' }
-        : { ok: true });
+        : { ok: true },
+    );
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await action({ ...ctx, triggerConfig: { extra_lock_resources: ['my-deploy-lock'] } });
@@ -2285,11 +2336,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     await expect(action(ctx)).rejects.toThrow(errorMessage);
 
     expect(runGitSyncMock).not.toHaveBeenCalled();
-    expect(releasedResources()).toEqual([
-      'libs-papercusp-submodule',
-      'git-sync:papercup',
-      'git-sync',
-    ]);
+    expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
     expect(gitSyncActivityPatches().slice(-1)[0]).toMatchObject({
       active: false,
       phase: 'error',
@@ -2334,7 +2381,11 @@ describe('P-008 runtime eligibility gate (action half)', () => {
     // …just the logged reason + the 'skipped' metadata patch
     expect(log).toHaveBeenCalledWith(expect.stringContaining(`ineligible (${reason})`));
     expect(routinePatches()).toEqual([
-      expect.objectContaining({ last_status: 'skipped', last_skip_reason: reason, last_skipped_at: expect.any(Number) }),
+      expect.objectContaining({
+        last_status: 'skipped',
+        last_skip_reason: reason,
+        last_skipped_at: expect.any(Number),
+      }),
     ]);
     log.mockRestore();
   }
@@ -2381,13 +2432,16 @@ describe('clean sync outcome', () => {
     await action(ctx);
 
     // trigger config defaults flow into the pipeline (+ WI-1416: the checkpoint seam)
-    expect(runGitSyncMock).toHaveBeenCalledWith('papercup', expect.objectContaining({
-      repoPath: repoDir,
-      config: expect.objectContaining({ push: true, pushSubmodules: true }),
-      deletionGuard: true,
-      diffSubjects: true, // WI-38594: flag-driven (mock getFlag defaults true)
-      step: expect.any(Function),
-    }));
+    expect(runGitSyncMock).toHaveBeenCalledWith(
+      'papercup',
+      expect.objectContaining({
+        repoPath: repoDir,
+        config: expect.objectContaining({ push: true, pushSubmodules: true }),
+        deletionGuard: true,
+        diffSubjects: true, // WI-38594: flag-driven (mock getFlag defaults true)
+        step: expect.any(Function),
+      }),
+    );
 
     // { last_synced_at, last_status, head_sha } + the EI-18 counters on the metadata
     expect(routinePatches()).toEqual([
@@ -2437,7 +2491,8 @@ describe('clean sync outcome', () => {
           dirtyPathCount: 4,
           committedCount: 2,
         }),
-      }));
+      }),
+    );
 
     // a clean pass clears the conflict escalation AND (errTicks 0) the error one —
     // targeting the P-007 constant 'git-sync' phase row. (The content escalation clear is
@@ -2473,7 +2528,14 @@ describe('clean sync outcome', () => {
   });
 
   it("a 'nothing' pass also clears escalations but records no head_sha and runs no doc sweep", async () => {
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
+    runGitSyncMock.mockResolvedValue({
+      status: 'nothing',
+      dirtyPathCount: 0,
+      committedCount: 0,
+      oversized: [],
+      contentErrors: [],
+      strandedSubmodules: [],
+    });
 
     await action(ctx);
 
@@ -2490,7 +2552,8 @@ describe('clean sync outcome', () => {
     expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-strand'], ['git-sync-error']]);
     expect(enqueueDocSweepMock).not.toHaveBeenCalled();
     expect(appendPipelineEventMock).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'git_sync', status: 'nothing' }));
+      expect.objectContaining({ kind: 'git_sync', status: 'nothing' }),
+    );
   });
 
   it('EI-21096441920219468: records skipped-locked holder provenance in metadata and pipeline detail', async () => {
@@ -2526,20 +2589,24 @@ describe('clean sync outcome', () => {
 
     await action(ctx);
 
-    expect(routinePatches()).toContainEqual(expect.objectContaining({
-      last_status: 'skipped-locked',
-      local_sync_status: 'skipped-locked',
-      last_skip_reason: 'locked-path',
-      last_skipped_at: expect.any(Number),
-      last_skipped_paths: skippedPaths,
-      last_pushed: [],
-      last_merged: [],
-    }));
-    expect(appendPipelineEventMock).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'git_sync',
-      status: 'skipped-locked',
-      detail: expect.objectContaining({ skippedPaths }),
-    }));
+    expect(routinePatches()).toContainEqual(
+      expect.objectContaining({
+        last_status: 'skipped-locked',
+        local_sync_status: 'skipped-locked',
+        last_skip_reason: 'locked-path',
+        last_skipped_at: expect.any(Number),
+        last_skipped_paths: skippedPaths,
+        last_pushed: [],
+        last_merged: [],
+      }),
+    );
+    expect(appendPipelineEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'git_sync',
+        status: 'skipped-locked',
+        detail: expect.objectContaining({ skippedPaths }),
+      }),
+    );
     expect(sendMessageMock).toHaveBeenCalledTimes(2);
     const notices = new Map(
       sendMessageMock.mock.calls.map(([, message]) => {
@@ -2576,12 +2643,14 @@ describe('clean sync outcome', () => {
 
     await action(ctx);
 
-    expect(routinePatches()).toContainEqual(expect.objectContaining({
-      last_status: 'synced',
-      last_skip_reason: 'locked-path',
-      last_skipped_at: expect.any(Number),
-      last_skipped_paths: skippedPaths,
-    }));
+    expect(routinePatches()).toContainEqual(
+      expect.objectContaining({
+        last_status: 'synced',
+        last_skip_reason: 'locked-path',
+        last_skipped_at: expect.any(Number),
+        last_skipped_paths: skippedPaths,
+      }),
+    );
     expect(sendMessageMock).toHaveBeenCalledTimes(1);
     const [, notice] = sendMessageMock.mock.calls[0];
     expect(notice).toMatchObject({
@@ -2592,12 +2661,14 @@ describe('clean sync outcome', () => {
   });
 
   it('EI-21743795611133311: a notification failure never fails the partial git-sync tick', async () => {
-    const skippedPaths = [{
-      scope: 'superproject',
-      path: 'packages/operator-core/lib/agent-tools/locks/acquire_resource.test.ts',
-      owner: 'su-peer',
-      intent: 'finishing the lock-release regression test',
-    }];
+    const skippedPaths = [
+      {
+        scope: 'superproject',
+        path: 'packages/operator-core/lib/agent-tools/locks/acquire_resource.test.ts',
+        owner: 'su-peer',
+        intent: 'finishing the lock-release regression test',
+      },
+    ];
     runGitSyncMock.mockResolvedValue({ ...syncedOutcome, skippedPaths });
     sendMessageMock.mockRejectedValue(new Error('coordination store unavailable'));
 
@@ -2614,7 +2685,14 @@ describe('clean sync outcome', () => {
   });
 
   it('maps the routine trigger_config onto the pipeline config', async () => {
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
+    runGitSyncMock.mockResolvedValue({
+      status: 'nothing',
+      dirtyPathCount: 0,
+      committedCount: 0,
+      oversized: [],
+      contentErrors: [],
+      strandedSubmodules: [],
+    });
 
     await action({
       ...ctx,
@@ -2629,30 +2707,40 @@ describe('clean sync outcome', () => {
       },
     });
 
-    expect(runGitSyncMock).toHaveBeenCalledWith('papercup', expect.objectContaining({
-      repoPath: repoDir,
-      config: {
-        push: false,
-        pushSubmodules: false,
-        pushSubmoduleOrigins: false,
-        branch: 'staging',
-        remote: 'upstream',
-        maxBlobBytes: 1024,
-        maxCommitTotalBytes: 2048,
-      },
-      deletionGuard: true,
-      diffSubjects: true, // WI-38594: flag-driven (mock getFlag defaults true)
-      step: expect.any(Function),
-    }));
+    expect(runGitSyncMock).toHaveBeenCalledWith(
+      'papercup',
+      expect.objectContaining({
+        repoPath: repoDir,
+        config: {
+          push: false,
+          pushSubmodules: false,
+          pushSubmoduleOrigins: false,
+          branch: 'staging',
+          remote: 'upstream',
+          maxBlobBytes: 1024,
+          maxCommitTotalBytes: 2048,
+        },
+        deletionGuard: true,
+        diffSubjects: true, // WI-38594: flag-driven (mock getFlag defaults true)
+        step: expect.any(Function),
+      }),
+    );
   });
 
   it.each(['bridged', 'p2p-only'] as const)(
-    "EI-20232774599730947: %s mode makes the superproject truly commit-only while preserving submodule-origin sync",
+    'EI-20232774599730947: %s mode makes the superproject truly commit-only while preserving submodule-origin sync',
     async (mode) => {
       const servingWarning = vi.spyOn(console, 'warn').mockImplementation(() => {});
       potGitMode = mode;
       registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
-      runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
+      runGitSyncMock.mockResolvedValue({
+        status: 'nothing',
+        dirtyPathCount: 0,
+        committedCount: 0,
+        oversized: [],
+        contentErrors: [],
+        strandedSubmodules: [],
+      });
       const log = vi.spyOn(console, 'log').mockImplementation(() => {});
       try {
         await action(ctx);
@@ -2660,15 +2748,18 @@ describe('clean sync outcome', () => {
         log.mockRestore();
       }
 
-      expect(runGitSyncMock).toHaveBeenCalledWith('papercup', expect.objectContaining({
-        config: expect.objectContaining({
-          push: false,
-          pushSubmoduleOrigins: true,
-          reconcileSuperprojectOrigin: false,
-          bridgeContainedReleaseMainOnCommitOnly: mode === 'bridged',
+      expect(runGitSyncMock).toHaveBeenCalledWith(
+        'papercup',
+        expect.objectContaining({
+          config: expect.objectContaining({
+            push: false,
+            pushSubmoduleOrigins: true,
+            reconcileSuperprojectOrigin: false,
+            bridgeContainedReleaseMainOnCommitOnly: mode === 'bridged',
+          }),
+          beforePush: expect.any(Function),
         }),
-        beforePush: expect.any(Function),
-      }));
+      );
       const pushGate = (runGitSyncMock.mock.calls[0][1] as RunGitSyncOpts).beforePush!;
       await expect(pushGate(['push', 'origin', 'HEAD:main'], repoDir)).rejects.toThrow('owning hive key');
       expect(gitSyncActivityPatches().map((activity) => activity.phase)).toEqual([
@@ -2686,7 +2777,14 @@ describe('clean sync outcome', () => {
     const servingWarning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     potGitMode = 'bridged';
     registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
+    runGitSyncMock.mockResolvedValue({
+      status: 'nothing',
+      dirtyPathCount: 0,
+      committedCount: 0,
+      oversized: [],
+      contentErrors: [],
+      strandedSubmodules: [],
+    });
 
     await action({
       ...ctx,
@@ -2695,14 +2793,17 @@ describe('clean sync outcome', () => {
     expect(servingWarning).toHaveBeenCalledWith(expect.stringContaining('serving unavailable'));
     servingWarning.mockRestore();
 
-    expect(runGitSyncMock).toHaveBeenCalledWith('papercup', expect.objectContaining({
-      config: expect.objectContaining({
-        push: false,
-        pushSubmoduleOrigins: true,
-        reconcileSuperprojectOrigin: false,
+    expect(runGitSyncMock).toHaveBeenCalledWith(
+      'papercup',
+      expect.objectContaining({
+        config: expect.objectContaining({
+          push: false,
+          pushSubmoduleOrigins: true,
+          reconcileSuperprojectOrigin: false,
+        }),
+        beforePush: expect.any(Function),
       }),
-      beforePush: expect.any(Function),
-    }));
+    );
   });
 
   it('EI-22154166487566939: a stalled post-legs leg (github-bridge) is bounded by its own liveness guard, names the hung leg, and never reaches the terminal complete write', async () => {
@@ -2749,7 +2850,14 @@ describe('clean sync outcome', () => {
       let hangArmed = false;
       runGitSyncMock.mockImplementationOnce(async () => {
         hangArmed = true;
-        return { status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] };
+        return {
+          status: 'nothing',
+          dirtyPathCount: 0,
+          committedCount: 0,
+          oversized: [],
+          contentErrors: [],
+          strandedSubmodules: [],
+        };
       });
       let bridgeHangStarted!: () => void;
       const bridgeHangStartedPromise = new Promise<void>((resolve) => {
@@ -2761,7 +2869,7 @@ describe('clean sync outcome', () => {
           // Deliberately never settles — this is the hang the fix must bound.
           return new Promise<never>(() => {});
         }
-        return { projects: workspaceId ? registryProjects : ambientRegistryProjects ?? registryProjects };
+        return { projects: workspaceId ? registryProjects : (ambientRegistryProjects ?? registryProjects) };
       });
 
       const running = action(ctx);
@@ -2802,7 +2910,7 @@ describe('clean sync outcome', () => {
       // implementation (vs. just inspecting its calls) — restore the module's
       // own default so a later test never inherits an armed, hanging mock.
       loadHarnessRegistryMock.mockImplementation(async (workspaceId?: string) => ({
-        projects: workspaceId ? registryProjects : ambientRegistryProjects ?? registryProjects,
+        projects: workspaceId ? registryProjects : (ambientRegistryProjects ?? registryProjects),
       }));
       if (savedIdle === undefined) delete process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS;
       else process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = savedIdle;
@@ -2840,9 +2948,10 @@ describe('P-010/P-012 merge-conflict path', () => {
     expect(escalationClears()).toEqual([['git-sync-strand']]);
 
     // dispatch resolved declaratively from the launch blueprint by event key
-    expect(resolveLaunchTargetForEventMock).toHaveBeenCalledExactlyOnceWith(
-      'git-sync:conflict',
-      { installSlug: 'papercup', workspaceId: 'ws-42' });
+    expect(resolveLaunchTargetForEventMock).toHaveBeenCalledExactlyOnceWith('git-sync:conflict', {
+      installSlug: 'papercup',
+      workspaceId: 'ws-42',
+    });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('dispatching merge-resolver'));
 
     // the durable 'dispatched' marker is recorded (GAP-2 observability)
@@ -2867,14 +2976,19 @@ describe('P-010/P-012 merge-conflict path', () => {
     // merge_resolver pipeline event (resolver success rate for the Git tab)
     await vi.waitFor(() => {
       expect(appendPipelineEventMock).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: 'merge_resolver', status: 'ok' }));
+        expect.objectContaining({ kind: 'merge_resolver', status: 'ok' }),
+      );
     });
     expect(routinePatches()).toContainEqual({
       last_resolver: expect.objectContaining({ status: 'ok', httpStatus: 200 }),
     });
 
     // sibling submodules that DID push are still recorded (GAP-1)
-    expect(routinePatches()[0]).toMatchObject({ last_status: 'conflict', last_pushed: ['libs/papercusp'], last_conflicts: ['libs/generic/sync'] });
+    expect(routinePatches()[0]).toMatchObject({
+      last_status: 'conflict',
+      last_pushed: ['libs/papercusp'],
+      last_conflicts: ['libs/generic/sync'],
+    });
     warn.mockRestore();
   });
 
@@ -2931,9 +3045,7 @@ describe('P-010/P-012 merge-conflict path', () => {
 
     expect(loopbackFetchMock).not.toHaveBeenCalled();
     expect(routinePatches().some((p) => 'last_resolver' in p)).toBe(false);
-    expect(appendPipelineEventMock).not.toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'merge_resolver' }),
-    );
+    expect(appendPipelineEventMock).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'merge_resolver' }));
   });
 
   it('skips the dispatch (warning) when no launch blueprint declares git-sync:conflict — escalation still written', async () => {
@@ -2987,10 +3099,14 @@ describe('isResolverInFlight — dedup window (P-006/P-007)', () => {
   });
 
   it('EI-20336929607862174: a fresh DIFFERENT-instance marker is still in flight (shared multi-process dedup)', () => {
-    expect(isResolverInFlight({ status: 'dispatched', at: NOW - 60_000, instance: 'other-live-operator' }, NOW, ME)).toBe(true);
+    expect(
+      isResolverInFlight({ status: 'dispatched', at: NOW - 60_000, instance: 'other-live-operator' }, NOW, ME),
+    ).toBe(true);
     // A genuinely orphaned writer is released by the bounded TTL, never by guessing
     // liveness from process-instance inequality.
-    expect(isResolverInFlight({ status: 'dispatched', at: NOW - 2 * WINDOW, instance: 'prior-incarnation' }, NOW, ME)).toBe(false);
+    expect(
+      isResolverInFlight({ status: 'dispatched', at: NOW - 2 * WINDOW, instance: 'prior-incarnation' }, NOW, ME),
+    ).toBe(false);
   });
 
   it('a legacy marker with NO instance falls back to the pure TTL (no regression, no spurious re-dispatch)', () => {
@@ -3095,7 +3211,8 @@ describe('EI-18 repeated-failure escalation (git-sync-error)', () => {
         kind: 'git_sync',
         status: 'error',
         detail: expect.objectContaining({ consecutiveErrorTicks: 3 }),
-      }));
+      }),
+    );
     warn.mockRestore();
   });
 });
@@ -3133,8 +3250,10 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
     );
 
     // dispatch resolved declaratively from the launch blueprint by the content-error event key
-    expect(resolveLaunchTargetForEventMock).toHaveBeenCalledWith(
-      'git-sync:content-error', { installSlug: 'papercup', workspaceId: 'ws-42' });
+    expect(resolveLaunchTargetForEventMock).toHaveBeenCalledWith('git-sync:content-error', {
+      installSlug: 'papercup',
+      workspaceId: 'ws-42',
+    });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('dispatching content-fixer'));
 
     // the durable 'dispatched' marker is on its OWN key — never the merge-resolver's
@@ -3156,7 +3275,8 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
     // content_fixer pipeline event (the Git-tab timeline)
     await vi.waitFor(() => {
       expect(appendPipelineEventMock).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: 'content_fixer', status: 'ok' }));
+        expect.objectContaining({ kind: 'content_fixer', status: 'ok' }),
+      );
     });
     expect(routinePatches()).toContainEqual({
       last_content_fixer: expect.objectContaining({ status: 'ok', httpStatus: 200 }),
@@ -3249,7 +3369,8 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
           scope: 'superproject',
           file: 'packages/operator-core/lib/retired-module.ts',
           detectorKey: 'unsafe-deletion',
-          error: 'deleting this file would break a still-live import — still imported (relative) by: packages/operator-core/lib/caller.ts. Either restore this file, or finish the deletion by removing the import(s) from the listed file(s) first.',
+          error:
+            'deleting this file would break a still-live import — still imported (relative) by: packages/operator-core/lib/caller.ts. Either restore this file, or finish the deletion by removing the import(s) from the listed file(s) first.',
           fixerRole: 'content-fixer',
         },
       ],
@@ -3278,7 +3399,8 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
           scope: 'superproject',
           file: 'packages/operator-core/lib/retired-module.ts',
           detectorKey: 'unsafe-deletion',
-          error: 'deleting this file would break a still-live import — still imported (relative) by: packages/operator-core/lib/caller.ts. Either restore this file, or finish the deletion by removing the import(s) from the listed file(s) first.',
+          error:
+            'deleting this file would break a still-live import — still imported (relative) by: packages/operator-core/lib/caller.ts. Either restore this file, or finish the deletion by removing the import(s) from the listed file(s) first.',
           fixerRole: 'content-fixer',
         },
       ],
@@ -3521,9 +3643,11 @@ describe('EI-17 deletion-guard kill-switch flag', () => {
 });
 
 describe('acquireWithContentionRetry (EI-1720 — transient pg 57014/55P03 is retried, not skipped)', () => {
-  const contended = () => Object.assign(new Error('workspace "ws" contended (pg 57014: lock/statement timeout)'), {
-    name: 'WorkspaceContendedError', pgCode: '57014',
-  });
+  const contended = () =>
+    Object.assign(new Error('workspace "ws" contended (pg 57014: lock/statement timeout)'), {
+      name: 'WorkspaceContendedError',
+      pgCode: '57014',
+    });
 
   it('retries on contention then succeeds; backs off between attempts', async () => {
     const slept: number[] = [];
@@ -3532,25 +3656,40 @@ describe('acquireWithContentionRetry (EI-1720 — transient pg 57014/55P03 is re
       if (n++ < 2) throw contended();
       return { ok: true };
     });
-    const r = await acquireWithContentionRetry(run, { backoffsMs: [10, 20, 40], sleep: async (ms) => { slept.push(ms); } });
+    const r = await acquireWithContentionRetry(run, {
+      backoffsMs: [10, 20, 40],
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
     expect(r).toEqual({ ok: true });
     expect(run).toHaveBeenCalledTimes(3);
     expect(slept).toEqual([10, 20]); // two backoffs before the 3rd (successful) attempt
   });
 
   it('throws the contention error after exhausting retries (next tick retries)', async () => {
-    const run = vi.fn(async () => { throw contended(); });
-    await expect(
-      acquireWithContentionRetry(run, { backoffsMs: [1, 1], sleep: async () => {} }),
-    ).rejects.toMatchObject({ name: 'WorkspaceContendedError', pgCode: '57014' });
+    const run = vi.fn(async () => {
+      throw contended();
+    });
+    await expect(acquireWithContentionRetry(run, { backoffsMs: [1, 1], sleep: async () => {} })).rejects.toMatchObject({
+      name: 'WorkspaceContendedError',
+      pgCode: '57014',
+    });
     expect(run).toHaveBeenCalledTimes(3); // initial + 2 retries
   });
 
   it('does NOT retry a non-contention error (real bug surfaces immediately)', async () => {
     const slept: number[] = [];
-    const run = vi.fn(async () => { throw new Error('SU-lock DB unreachable'); });
+    const run = vi.fn(async () => {
+      throw new Error('SU-lock DB unreachable');
+    });
     await expect(
-      acquireWithContentionRetry(run, { backoffsMs: [10, 20], sleep: async (ms) => { slept.push(ms); } }),
+      acquireWithContentionRetry(run, {
+        backoffsMs: [10, 20],
+        sleep: async (ms) => {
+          slept.push(ms);
+        },
+      }),
     ).rejects.toThrow('SU-lock DB unreachable');
     expect(run).toHaveBeenCalledTimes(1);
     expect(slept).toEqual([]);

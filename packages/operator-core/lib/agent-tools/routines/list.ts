@@ -304,6 +304,9 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
     'armed_at',
     'fire_started_at',
     'last_synced_at',
+    // `git-sync:run` timeout continuations use this reader to inspect the
+    // writer-backed commit head without reaching into routine metadata directly.
+    'head_sha',
     // EI-21049559233457671: git-sync writes this while its local stage and
     // bridged/P2P post-legs are active. `last_status: synced` is local-stage
     // evidence only until this marker reaches { active:false, phase:'complete' }.

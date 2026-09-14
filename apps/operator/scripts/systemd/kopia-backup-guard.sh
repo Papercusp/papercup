@@ -262,8 +262,8 @@ run_scheduled_command() {
     sleep "$monitor_interval"
     kill -0 "$child_pid" 2>/dev/null || break
 
-    # A wait-mode producer (the hourly DB dump, daily home snapshot, or a
-    # protected/manual snapshot) has priority over a hot sweep. Terminate only
+    # A wait-mode producer (the daily home snapshot or a protected/manual
+    # snapshot) has priority over a hot sweep. Terminate only
     # this scheduled child and release the flock; content-addressed Kopia
     # snapshots are restart-safe, while leaving the waiter blocked is not.
     if has_live_priority_waiter; then

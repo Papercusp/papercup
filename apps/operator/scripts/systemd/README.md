@@ -1118,9 +1118,10 @@ backup stack re-materializes on a fresh machine.
 `serialize-and-slow-kopia-backups-2026-08-20` completed the deferred relocation for
 `snapshot-all.sh`, `home-snapshot.sh`, and `healthcheck.sh`. Their installed paths remain under
 `~/.config/kopia/`, but those paths are symlinks to the versioned files here. One versioned
-`kopia-backup-guard.sh` owns the global flock: hot scheduled work takes it non-blocking and
-defers when memory full PSI is at least 5 or I/O full PSI is at least 10; daily home/VM and
-protected/manual work wait for it. The default lock is the host-global
+`kopia-backup-guard.sh` owns the global flock: the hourly database dump and hot scheduled work
+use its non-blocking low-impact admission and defer when memory full PSI is at least 5 or I/O
+full PSI is at least 10; daily home/VM and protected/manual work wait for it. The default lock is
+the host-global
 `/run/lock/papercusp/kopia-global.lock`, intentionally outside `XDG_RUNTIME_DIR` so a
 root-launched maintenance task and the user-level systemd services cannot enter separate
 effective-UID namespaces. The dedicated non-sticky subdirectory avoids the host's

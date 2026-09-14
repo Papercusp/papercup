@@ -386,6 +386,12 @@ describe('state:read — the unknown stays branchable, and the role fails CLOSED
 
     expect(readCellMock.mock.calls[0][3]).toBe('su-peer');
   });
+
+  it('documents and enforces `as` as a bare subject string, not an object envelope', () => {
+    expect(readTool.args.safeParse({ cell: 'git.pipelinePosition', as: 'apps/operator/x.ts' }).success).toBe(true);
+    expect(readTool.args.safeParse({ cell: 'git.pipelinePosition', as: { path: 'apps/operator/x.ts' } }).success).toBe(false);
+    expect(readTool.description).toContain('bare subject string');
+  });
 });
 
 describe('P-021 — state:subscribe never applies materiality silently', () => {

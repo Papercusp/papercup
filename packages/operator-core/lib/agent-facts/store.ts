@@ -1670,7 +1670,11 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
       throw new InvalidInputError(`facts:assert — measuredAt must be a valid ISO timestamp (got '${measuredAtInput}')`);
     }
     if (measuredAtMs > Date.now() + 60_000) {
-      throw new InvalidInputError('facts:assert — measuredAt cannot be more than 60 seconds in the future');
+      throw new InvalidInputError(
+        'facts:assert — measuredAt cannot be more than 60 seconds in the future. ' +
+          'Obtain a server-aligned timestamp, then retry with that measuredAt; do not retry with ' +
+          'subjectVolatile:true and no measuredAt.',
+      );
     }
     measurement = { subjectVolatile: true, measuredAt: new Date(measuredAtMs).toISOString() };
   }

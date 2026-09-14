@@ -55,14 +55,40 @@ export function StepKeys() {
   }, [voicePrefsSync.data]);
 
   const saveMemMode = async (mode: MemMode) => {
+    if (mode === memMode) return;
     setMemMode(mode);
     setMemSaving(true);
     try {
-      const response = await fetch('/api/agent-mcp/operator-voice-prefs', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ memoryEmbedderMode: mode }),
-      });
+      const response = mode === 'disabled'
+        ? await fetch('/api/user/preferences', {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ memoryEmbedderMode: mode }),
+          })
+        : await (async () => {
+            const manifestResponse = await fetch('/api/user/memory/reembed');
+            const manifest = await manifestResponse.json() as {
+              current?: { mode?: string; profileId?: string } | null;
+              rollback?: { mode?: string; profileId?: string } | null;
+              profiles?: Record<string, { profileId?: string }>;
+            };
+            const current = manifest.current ?? manifest.rollback;
+            const target = manifest.profiles?.[mode];
+            if (!manifestResponse.ok || !current?.mode || !current.profileId || !target?.profileId) {
+              throw new Error('exact memory profile manifest unavailable');
+            }
+            return fetch('/api/user/memory/reembed', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                from: current.mode,
+                to: mode,
+                fromProfileId: current.profileId,
+                toProfileId: target.profileId,
+                cutover: true,
+              }),
+            });
+          })();
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       voicePrefsSync.invalidate();
     } catch {

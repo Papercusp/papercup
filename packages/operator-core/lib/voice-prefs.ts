@@ -16,6 +16,7 @@
 
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
+import type { EmbeddingProfileId } from '@papercusp/memory';
 
 export type SttEngineKind = 'voicemode' | 'webspeech' | 'deepgram' | 'off';
 export type TtsEngineKind = 'kokoro' | 'browser' | 'elevenlabs' | 'openai' | 'cartesia';
@@ -326,6 +327,9 @@ export interface VoicePrefs {
    * switch back. See lib/memory/mem0-client.ts.
    */
   memoryEmbedderMode: 'auto' | 'openai' | 'local' | 'gemma' | 'harrier' | 'disabled';
+  /** Rollback selector retained atomically with the latest cutover. */
+  previousMemoryEmbedderMode: 'openai' | 'local' | 'gemma' | 'harrier' | null;
+  previousMemoryEmbedderProfileId: EmbeddingProfileId | null;
 
   /**
    * Who the operator thinks it's talking to. Controls which audience-mode
@@ -444,6 +448,8 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   // Harrier's own space → memory_vec_harrier (migration 547); switching FROM
   // another mode needs a re-embed (embedding-space-vs-dimension / reembedMemories).
   memoryEmbedderMode: 'harrier',
+  previousMemoryEmbedderMode: null,
+  previousMemoryEmbedderProfileId: null,
   audienceMode: 'engineer',
   // voice-public-release-readiness-2026-07-12 P-002 (owner-ratified D-001):
   // Papercup is THE one user-facing assistant identity — voice and chat both
@@ -504,6 +510,15 @@ export async function loadVoicePrefs(): Promise<VoicePrefs> {
 export async function saveVoicePrefs(patch: Partial<VoicePrefs>): Promise<VoicePrefs> {
   const current = await loadVoicePrefs();
   const next = mergePrefs(current, patch);
+  if (
+    patch.memoryEmbedderMode !== undefined &&
+    patch.memoryEmbedderMode !== 'disabled' &&
+    next.memoryEmbedderMode !== current.memoryEmbedderMode
+  ) {
+    throw new Error(
+      'memory_profile_cutover_required: use the memory re-embed route so exact target coverage is checked atomically',
+    );
+  }
   await writeOperatorState('operator_voice_prefs', next);
   // EI-7279 bug class, memoryEmbedderMode flip point (found live 2026-07-10):
   // the embedder cascade is only EVALUATED when the mem0 client is (re)built,
@@ -571,6 +586,8 @@ const VOICE_NON_TUNABLE_KEYS = new Set<keyof VoicePrefs>([
   'nudgeDedup',
   'webSpeechLeakAcked',
   'kokoroSlowSuggestionDismissed',
+  'previousMemoryEmbedderMode',
+  'previousMemoryEmbedderProfileId',
 ]);
 
 /** Reset workspace voice-prefs to DEFAULT_VOICE_PREFS (clears every override). Writes the full

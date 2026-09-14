@@ -88,7 +88,7 @@ function valueResult(out: Extract<CellRead, { status: 'value' }>) {
 export default defineTool({
   name: 'state:read',
   description:
-    'Read a registered state CELL by name, right now, instead of trusting a value someone transcribed earlier. Returns {status:"value"|"unknown"|"absent"}. "unknown" is IN-BAND and branchable (code: not-applicable | resolver-failed | not-measured | insufficient-data) — never treat it as false or as zero. "absent" means the cell does not exist FOR YOU: unregistered and out-of-audience are deliberately indistinguishable. Omit `cell` to list the cells you may read. A cell relative to a subject (an agent, a path) needs `as`.',
+    'Read a registered state CELL by name, right now, instead of trusting a value someone transcribed earlier. Returns {status:"value"|"unknown"|"absent"}. "unknown" is IN-BAND and branchable (code: not-applicable | resolver-failed | not-measured | insufficient-data) — never treat it as false or as zero. "absent" means the cell does not exist FOR YOU: unregistered and out-of-audience are deliberately indistinguishable. Omit `cell` to list the cells you may read. A caller-relative cell needs `as` as a bare subject string, e.g. `{ cell:"git.pipelinePosition", as:"packages/operator-core/lib/x.ts" }`.',
   guidance: {
     when: 'At the moment you ACT on a value that can change under you — a deploy position, a holder\'s goal, a queue depth. Also whenever you are about to quote such a value into a message or a plan: read it, do not copy it.',
     notWhen: 'A value you just computed this turn. A one-off analytic slice — that is dev:pg_query. Waiting for it to CHANGE — that is state:subscribe, not a poll loop.',
@@ -127,7 +127,7 @@ export default defineTool({
       .max(200)
       .optional()
       .describe(
-        'The SUBJECT for a caller-relative cell — WHAT you are asking about (an ownerId for an agent-scoped cell, a repo path for a per-path one). Where the cell\'s parameter is an agent identity, the literal "self" means you. NOT an identity override: your own audience is always what is checked, so naming a subject can never widen what you may see. Required only when the cell declares callerRelativity.kind="parameter"; the read tells you the parameter name if it is missing.',
+        'The SUBJECT for a caller-relative cell — pass the value directly as a bare string, not an object such as `{path:...}`. Example: `as:"packages/operator-core/lib/x.ts"`. For an agent-scoped cell, the literal "self" means you. Required only when the cell declares callerRelativity.kind="parameter"; the read tells you the parameter name if it is missing.',
       ),
   }),
   async handler(args, ctx) {

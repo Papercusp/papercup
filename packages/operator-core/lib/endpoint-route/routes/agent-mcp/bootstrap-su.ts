@@ -846,8 +846,9 @@ export async function stampFleetMembershipAtBoot(opts: {
  * remained null; hive-scoped coord:presence filtered it out before liveness
  * enrichment. Bootstrap already owns the resolved harness and stable owner id,
  * so stamp the same presence row through the canonical writePresence path once
- * the adv_sessions row exists. The later agent-side declaration remains an
- * idempotent refresh.
+ * the adv_sessions row exists. A role-scoped caller may also provide its fine
+ * role (and a null harness for a workspace-level session); SU callers retain the
+ * `su` default. The later agent-side declaration remains an idempotent refresh.
  *
  * Presence is recoverable coordination state, unlike the fleet-membership fact,
  * so a transient write failure is returned to the caller for logging but does
@@ -857,10 +858,13 @@ export async function stampPresenceAtBoot(opts: {
   workspaceId: string;
   ownerId: string;
   ownerLabel?: string | null;
-  harnessSlug: string;
+  harnessSlug?: string | null;
+  /** Fine-grained role for a role-scoped session; SU launches default to `su`. */
+  agentRole?: string | null;
 }): Promise<string | null> {
   try {
     const { writePresence } = await import('../../../agent-tools/coordination/presence');
+    const agentRole = opts.agentRole?.trim() || 'su';
     await writePresence(
       {
         ownerId: opts.ownerId,
@@ -869,7 +873,7 @@ export async function stampPresenceAtBoot(opts: {
         workspaceId: opts.workspaceId,
         userId: null,
       },
-      { agentRole: 'su' },
+      { agentRole },
       opts.harnessSlug,
     );
     return null;

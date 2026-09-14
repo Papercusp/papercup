@@ -154,6 +154,17 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('code:run returns `compile_error` before bash is dispatched');
   });
 
+  it('documents the valid multiline shell-command string forms', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('backtick template literal for `command`');
+    expect(scriptDescription).toContain('escape each line break as `\\n`');
+    expect(scriptDescription).toContain('literal newline inside a single/double-quoted string');
+    expect(scriptDescription).toContain('before bash dispatch');
+  });
+
   it('documents regex path-slash escaping and safer alternatives', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =

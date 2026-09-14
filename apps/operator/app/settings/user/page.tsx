@@ -147,7 +147,6 @@ const OVERRIDES: readonly OverrideSpec[] = [
       { value: 'gemma', label: 'EmbeddingGemma-300m — uses less resources (~1GB RAM, ~4× faster embeds), local & private, no API key; slightly lower recall than Harrier' },
       { value: 'local', label: 'BGE-small — lightest local (~400MB RAM), no API key; lower quality than Gemma' },
       { value: 'openai', label: 'OpenAI text-embedding-3-small — cloud, needs an API key, memory text leaves your device' },
-      { value: 'auto', label: 'Auto — OpenAI when a key is set, else BGE-small local' },
       { value: 'disabled', label: 'Disabled — turn off persistent memory' },
     ] },
 ] as const;
@@ -201,6 +200,41 @@ export default function UserSettingsPage() {
   }, [userPrefsSync.data, workspacePrefsSync.data]);
 
   const setOverride = useCallback(async (key: string, value: unknown) => {
+    if (key === 'memoryEmbedderMode' && value !== 'disabled') {
+      const manifestResponse = await fetch('/api/user/memory/reembed');
+      const manifest = await manifestResponse.json().catch(() => ({})) as {
+        current?: { mode?: string; profileId?: string } | null;
+        rollback?: { mode?: string; profileId?: string } | null;
+        profiles?: Record<string, { profileId?: string }>;
+      };
+      const current = manifest.current ?? manifest.rollback;
+      const target = typeof value === 'string' ? manifest.profiles?.[value] : undefined;
+      if (!manifestResponse.ok || !current?.mode || !current.profileId || !target?.profileId || typeof value !== 'string') {
+        toast.error('Cannot resolve exact source and target memory profiles for a safe cutover.');
+        return;
+      }
+      const cutoverResponse = await fetch('/api/user/memory/reembed', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          from: current.mode,
+          to: value,
+          fromProfileId: current.profileId,
+          toProfileId: target.profileId,
+          cutover: true,
+        }),
+      });
+      const cutover = await cutoverResponse.json().catch(() => ({}));
+      if (!cutoverResponse.ok) {
+        toast.error(`Memory profile cutover failed: ${cutover.message ?? cutover.error ?? cutoverResponse.status}`);
+        return;
+      }
+      setEffective((p) => ({ ...p, user: { ...p.user, [key]: value } }));
+      userPrefsSync.invalidate();
+      workspacePrefsSync.invalidate();
+      toast.success(`Memory profile → ${value} (${cutover.coverage?.target ?? 0}/${cutover.coverage?.eligible ?? 0} covered)`);
+      return;
+    }
     const r = await fetch('/api/user/preferences', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },

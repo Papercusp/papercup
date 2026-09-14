@@ -426,6 +426,34 @@ describe('routines:list', () => {
     expect(b.routines[0].health.git_sync_exclusions.warning).toContain('last completed sweep');
   });
 
+  it('surfaces the git-sync head_sha through the callable health reader', async () => {
+    const now = Date.now();
+    cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'home-harness',
+        name: 'git-sync',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 */3 * * * *' },
+        target_role: 'system:git-sync',
+        active: true,
+        next_fire_at: new Date(now + 60_000),
+        last_fired_at: new Date(now - 60_000),
+        group_slug: 'git-sync',
+        metadata: {
+          head_sha: 'abc123',
+          last_status: 'synced',
+          last_synced_at: now - 30_000,
+        },
+      },
+    ]);
+
+    const b = body(
+      await listTool.handler({ installSlug: 'home-harness', name: 'git-sync' } as never, { role: 'su' } as never),
+    );
+    expect(b.routines[0].health).toMatchObject({ head_sha: 'abc123' });
+  });
+
   it('leaves the headline last_status untouched when the derived verdict is not degraded', async () => {
     const now = Date.now();
     cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));

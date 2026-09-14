@@ -48,6 +48,7 @@ import { originOf, agentSourceDetailOf, type MemoryOrigin } from './origin';
 import { possibleSecretClasses, possibleSecretTitle } from './possible-secret';
 import { recallHealthLine, type RecallCanaryLatest } from './recall-health';
 import { memoryWindowState } from './window';
+import { reembedConfirmationBody } from './reembed-copy';
 
 interface BrokenAnchor {
   kind: string;
@@ -469,7 +470,7 @@ export default function MemoryPage() {
   const onReembed = useCallback(async (from: 'openai' | 'local' | 'gemma' | 'harrier', to: 'openai' | 'local' | 'gemma' | 'harrier') => {
     const ok = await askConfirm({
       title: `Re-embed memories from "${from}" → "${to}"?`,
-      body: `This may take 30s-5min depending on size. Existing "${to}" memories with the same id will be overwritten.`,
+      body: reembedConfirmationBody(to),
       confirmLabel: 'Re-embed',
     });
     if (!ok) return;

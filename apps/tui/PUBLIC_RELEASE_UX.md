@@ -137,7 +137,17 @@ The in-PUI form has three steps:
 1. Context
    - Project: searchable current projects; no stale list cursor becomes launch
      authority.
+   - c registers an existing directory through the shared project-registration
+     API. The form shows the selected operator, project name and absolute host
+     path, and requires a separate Register confirmation. A successful response
+     refreshes the list; the new project still requires explicit selection.
    - Operator endpoint: effective URL plus Connected, Checking, or Unavailable.
+   - e edits the endpoint; Tab selects masked operator-token entry. Reconnect
+     replaces this PUI's connections together and retains the exact first draft.
+     A changed endpoint never receives the previous endpoint's token. Entered
+     tokens stay in process configuration, outside repository files.
+   - A bound conversation, queued turn, or attachment refuses endpoint reconnect
+     with a repair path; opening another PUI preserves that existing context.
    - Continue stays disabled until both values are valid, with the reason shown.
 2. Runtime
    - Engine: Claude, Codex, or OMP.
@@ -145,12 +155,19 @@ The in-PUI form has three steps:
    - Unsupported choices remain visible but disabled with the server reason.
    - Defaults are explicit: Default system account, Server default model,
      Default effort, and Manual mode unless the server says otherwise.
+   - Native approval prompts are required for new PUI sessions and resumed
+     runtimes. Setup refuses operators that do not advertise this capability.
+     This policy is independent of the agent's Manual/Auto mode.
 3. Review
    - Show project, endpoint, engine, account, model, effort, mode, and optional
      first message.
    - Start session is the sole primary action.
    - Back preserves every field. Esc closes Sessions > New but never discards a
-     typed first message without a confirmation.
+    typed first message without a confirmation.
+
+An unavailable operator still opens the setup form from a clean workbench.
+? opens scrollable help with endpoint, token, TLS, engine and account recovery
+instructions, including the selected operator's existing account settings URL.
 
 Successful launch lands in Agent Chat and changes Starting to Ready before the
 composer unlocks. A pending first message is then submitted exactly once.

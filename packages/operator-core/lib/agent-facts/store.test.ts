@@ -489,7 +489,9 @@ describe('volatile measurement validation (EI-20191740437408337)', () => {
         },
         failSql,
       ),
-    ).rejects.toThrow(/future/);
+    ).rejects.toThrow(
+      /future.*server-aligned timestamp.*retry with that measuredAt.*subjectVolatile:true and no measuredAt/,
+    );
   });
 
   it('parses only the complete, marked measurement shape', () => {

@@ -10,6 +10,8 @@
  */
 import { getSessionUserOrDefault } from '../../../auth';
 import { loadUserPreferences, saveUserPreferences, clearUserPreferenceKey } from '../../../user-preferences';
+import { loadVoicePrefs } from '../../../voice-prefs';
+import { EMBEDDER_DIM_SPECS, invalidateMemoryClient } from '@papercusp/memory';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const get = defineTool({
@@ -33,7 +35,32 @@ const patch = defineTool({
     if (!body || typeof body !== 'object') {
       return Response.json({ error: 'invalid_body' }, { status: 400 });
     }
-    const payload = await saveUserPreferences(user.id, body as Record<string, unknown>);
+    const requestedMemoryMode = 'memoryEmbedderMode' in body
+      ? (body as { memoryEmbedderMode?: unknown }).memoryEmbedderMode
+      : undefined;
+    if (requestedMemoryMode !== undefined && requestedMemoryMode !== 'disabled') {
+      return Response.json(
+        {
+          error: 'memory_profile_cutover_required',
+          message: 'Use POST /api/user/memory/reembed with exact source/target profiles and cutover=true.',
+        },
+        { status: 409 },
+      );
+    }
+    let patch = body as Record<string, unknown>;
+    if (requestedMemoryMode === 'disabled') {
+      const current = await loadVoicePrefs();
+      const currentMode = current.memoryEmbedderMode;
+      if (currentMode === 'openai' || currentMode === 'local' || currentMode === 'gemma' || currentMode === 'harrier') {
+        patch = {
+          ...patch,
+          previousMemoryEmbedderMode: currentMode,
+          previousMemoryEmbedderProfileId: EMBEDDER_DIM_SPECS[currentMode].profileId,
+        };
+      }
+    }
+    const payload = await saveUserPreferences(user.id, patch);
+    if (requestedMemoryMode !== undefined) invalidateMemoryClient();
     return Response.json({ payload });
   },
 });

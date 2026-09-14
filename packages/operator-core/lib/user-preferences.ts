@@ -143,6 +143,10 @@ export const VOICE_USER_OVERRIDE_KEYS = [
   'silenceVoice',
   'operatorBackstoryEnabled',
   'memoryEmbedderMode',
+  // Internal rollback selectors written atomically by the memory migration
+  // cutover. They participate in effective reads but are not editable rows.
+  'previousMemoryEmbedderMode',
+  'previousMemoryEmbedderProfileId',
   // sentinel-herald P-011: per-user repoint of the live converse brain
   // (voice host + text + device) to the Sentinel persona. Default 'operator'.
   'humanFacingRole',

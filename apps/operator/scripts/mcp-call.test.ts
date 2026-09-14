@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildMcpCallParams,
   buildMcpSessionQuery,
   isInvokedDirectly,
   parseSse,
@@ -112,6 +113,25 @@ describe('mcp-call argument parsing', () => {
 
   it('rejects a value flag with no value instead of storing undefined', () => {
     expect(() => parseArgs(['work_items:get', '--json-file'])).toThrow('--json-file requires a value');
+  });
+
+  it('accepts the documented idempotency-key transport flag in both forms', () => {
+    expect(parseArgs(['work_items:checkpoint', '--idempotency-key', 'receipt-space'])
+      .flags.idempotencyKey).toBe('receipt-space');
+    expect(parseArgs(['events:cancel', '--idempotency-key=receipt-equals'])
+      .flags.idempotencyKey).toBe('receipt-equals');
+  });
+
+  it('places idempotency keys in MCP metadata instead of target tool arguments', () => {
+    expect(buildMcpCallParams(
+      'work_items:checkpoint',
+      { id: 'EI-1750' },
+      { idempotencyKey: 'receipt-1' },
+    )).toEqual({
+      name: 'work_items:checkpoint',
+      arguments: { id: 'EI-1750' },
+      _meta: { idempotencyKey: 'receipt-1' },
+    });
   });
 
   it('accepts --all-workspaces as the explicit unscoped transport flag', () => {

@@ -95,6 +95,11 @@ describe('capability:bash per-call effect classifier (EI-22647418629976526)', ()
     });
   });
 
+  it('classifies an rg-to-wc no-match count probe as read-only', () => {
+    const command = 'rg -l -F absent fixture.txt | wc -l';
+    expect(classifyCapabilityBashEffect({ command })).toBe('read');
+  });
+
   it('completes a real bounded find/sort/head listing', async () => {
     const fixture = mkdtempSync(join(tmpdir(), 'cap-bash-find-'));
     const nested = join(fixture, 'nested');

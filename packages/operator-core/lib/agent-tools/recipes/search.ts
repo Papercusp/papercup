@@ -57,6 +57,10 @@ export default defineTool({
   args: z.object({
     query: z.string().min(1).max(500).describe('What you want to do — title/description text, free-form.'),
     limit: z.number().int().min(1).max(50).optional().describe('Top-N to return (default 5).'),
+    semantic: z
+      .boolean()
+      .optional()
+      .describe('default true: include embedding similarity; false = bounded lexical-only search.'),
     context: z
       .object({
         fleet: z.string().min(1).optional(),
@@ -70,9 +74,19 @@ export default defineTool({
       .describe('Legacy compatibility context; bound authority is derived from the current live session and ignores these values.'),
   }),
   async handler(args, ctx) {
-    // Bound the acquisition — .catch handles a rejection but NOT a cold-pipeline
-    // HANG (the EI-9143 ~5% 60s-timeout class); on timeout → null → BM25 (WI-3922).
-    const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
+    // An explicit lexical-only call is the bounded recovery form used while
+    // critical MCP admission pressure is active. Do not even acquire an
+    // embedder in that mode: acquisition can spawn/wait on a cold sidecar and
+    // would defeat the admission gate's bounded-work guarantee. The default
+    // remains semantic for existing callers.
+    //
+    // For semantic calls, bound the acquisition — .catch handles a rejection
+    // but NOT a cold-pipeline HANG (the EI-9143 ~5% 60s-timeout class); on
+    // timeout → null → BM25 (WI-3922).
+    const semanticOn = args.semantic !== false;
+    const resolved = semanticOn
+      ? await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null)
+      : null;
     const embeddingProfile = resolved
       ? resolveProseProfileSelection(resolved.mode, resolved.profile)
       : null;

@@ -140,7 +140,8 @@ describe('UserSettingsPage override surface (shared OverridableSetting)', () => 
     });
     render(<UserSettingsPage />);
     const select = await screen.findByLabelText('Memory system');
-    fireEvent.change(select, { target: { value: 'gemma' } });
+    fireEvent.click(select);
+    fireEvent.click(await screen.findByRole('option', { name: /EmbeddingGemma-300m/ }));
     await waitFor(() => {
       const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
         ([u, init]) => String(u).includes('/api/user/memory/reembed') && (init as RequestInit | undefined)?.method === 'POST',

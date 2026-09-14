@@ -52,6 +52,7 @@ import {
   resolveFleet,
   reconstructPsuLaunchArgv,
   stampFleetMembershipAtBoot,
+  stampPresenceAtBoot,
 } from './bootstrap-su';
 import { backendFeatureGuard } from '../../../backend-feature-capabilities';
 import { resolveCodexModelSelection } from '../../../model-context-budget.mjs';
@@ -480,6 +481,24 @@ const post = defineTool({
       ...(nativeSessionId ? { sessionId: nativeSessionId } : {}),
     });
 
+    // EI-23204591840754750: role sessions use the same launcher supervisor beat
+    // as SU sessions, but that beat can only keep an EXISTING presence row warm.
+    // Stamp the row after recording the session so a role owner remains directly
+    // addressable after the short recorded-session bootstrap rescue window. The
+    // agent's own first coord call still refreshes this row and its liveness data.
+    const presenceStampErr = await stampPresenceAtBoot({
+      workspaceId: workspace,
+      ownerId: sid,
+      ownerLabel: feature ? `${role} · ${feature}` : (planContext ? `${role} · ${plan}` : role),
+      harnessSlug,
+      agentRole: role,
+    });
+    if (presenceStampErr) {
+      process.stderr.write(
+        `[bootstrap-role] presence stamp failed (non-fatal; first coord:orient can repair it): ${presenceStampErr}\n`,
+      );
+    }
+
     // Materialize the launch artifacts. claude/omp consume a `.mcp.json` +
     // a launch-context prompt file; codex (no --mcp-config /
     // --append-system-prompt flags) consumes a per-session CODEX_HOME whose
@@ -658,6 +677,9 @@ const post = defineTool({
         PAPERCUSP_AGENT: agent,
         ...(modelSource ? { PAPERCUSP_MODEL_SOURCE: modelSource } : {}),
         PAPERCUSP_ROLE: role,
+        // deriveAgentRole reads this durable fine-grained key on the role's
+        // first self-registration; keep it aligned with the boot-time stamp.
+        PAPERCUSP_AGENT_ROLE: role,
         PAPERCUSP_SPECIFICATION_REVISION: spec.specificationRevision,
         PAPERCUSP_STATE_REVISION: spec.stateRevision,
         // P-022: per-session coord/lock owner. The lock hooks (claude

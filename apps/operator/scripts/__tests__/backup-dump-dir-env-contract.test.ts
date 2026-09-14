@@ -68,7 +68,7 @@ function scanUnits(): { pairs: Pair[]; unitsScanned: number } {
       new RegExp(`^EnvironmentFile=.*`, 'm').test(body);
 
     // EVERY script token across EVERY ExecStart line — a wrapped ExecStart such as
-    // `kopia-backup-guard.sh --mode wait -- papercusp-db-backup.sh` carries the real
+    // `kopia-backup-guard.sh --mode scheduled -- papercusp-db-backup.sh` carries the real
     // consumer in a LATER token, so stopping at the first one under-reports.
     const execStarts = body
       .split('\n')

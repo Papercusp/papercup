@@ -29,12 +29,20 @@ IOSchedulingClass=idle
 # definition would need `systemctl --user daemon-reexec`, which would disturb every
 # other user unit on this box, so the per-unit form is deliberate.
 Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/backup/db-dumps
+# One pg_dump worker keeps this large recurring producer in the scheduled
+# low-impact lane. The script default remains 4 for deliberate one-off runs,
+# but the hourly service must not recreate the four-worker MCP contention that
+# motivated this admission boundary.
+Environment=PC_BACKUP_JOBS=1
 # A single serialized 4-job dump was measured at 34.25 GiB cgroup memory while
 # the host reached memory PSI some/full 47.78%/34.88% (2026-08-23 12:08Z).
-# Keep the hourly RPO and the shared wait-mode guard, but make the backup's
-# memory footprint reclaim-first and bounded so one dump cannot consume the
-# host's remaining capacity. MemoryMax is a last-resort ceiling; a failed dump
-# leaves the previous validated artifact intact and the healthcheck alerts.
+# Keep the hourly RPO and the shared guard, but admit the dump through the
+# scheduled low-impact policy: unsafe host PSI or a held backup lock defers this
+# cycle, while the guard's persisted staleness floor eventually admits a bounded
+# run. MemoryMax is a last-resort ceiling; a failed dump leaves the previous
+# validated artifact intact and the healthcheck alerts. This admission boundary
+# matters because Nice/idle I/O lower the producer's priority but do not stop
+# PostgreSQL from doing the dump work that competes with interactive MCP reads.
 MemoryAccounting=yes
 MemoryHigh=32G
 MemoryMax=40G
@@ -45,9 +53,10 @@ OOMPolicy=kill
 # The dump atomically rewrites the same source tree Kopia snapshots. Hold the
 # shared backup guard for the whole rewrite so the hourly dump and the
 # 30-minute snapshot timer cannot saturate I/O together or capture different
-# generations from the same run. Wait rather than defer to preserve the hourly
-# database recovery-point objective from D-003.
+# generations from the same run. The database dump is a scheduled producer and
+# defers on unsafe pressure/lock contention; its persisted staleness floor keeps
+# the recovery-point objective bounded. Daily/manual producers retain wait mode.
 # Snapshot both the guard and its nested backup script before starting. Bash
 # reads long-running shell files lazily; an agent edit in the shared checkout
 # must not change the byte stream of an in-flight backup (EI-22458080342999427).
-ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/kopia-backup-guard.sh --mode wait --label db-dump -- %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/kopia-backup-guard.sh --mode scheduled --label db-dump -- %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh

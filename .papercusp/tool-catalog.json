@@ -13221,7 +13221,7 @@
           "POST"
         ]
       },
-      "description": "FIRE git-sync NOW — run the git-sync routine action once on demand instead of waiting for the ≤3-min cron tick. Pass dryRun:true for a read-only preview of the selected checkout; it never commits or pushes. The response distinguishes a LOCAL commit from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists). Same action a cron tick runs (lock, content-guard, attribution). release:deploy fires this first, then follows the normal publication/gate path.",
+      "description": "FIRE git-sync NOW — run the git-sync routine action once on demand instead of waiting for the ≤3-min cron tick. Mutating fires must execute on the background-worker host; a request-only operator refuses before entering git-sync, while dryRun:true remains a read-only preview everywhere. The response distinguishes a LOCAL commit from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists). Same action a cron tick runs (lock, content-guard, attribution). release:deploy fires this first, then follows the normal publication/gate path.",
       "capabilities": [
         "operator:write"
       ],
@@ -13243,7 +13243,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You need the latest work COMMITTED right now — before a (force-)deploy or gate run, or to recover when git-sync is lagging/wedged. (git-sync also auto-runs every ~3 min; this just fires it on demand.) Use dryRun:true first when you only need to inspect the selected checkout.",
-        "notWhen": "To retune the cadence or pause git-sync, use routines:set. To deploy, release:deploy (which already fires git-sync first).",
+        "notWhen": "Do not fire it through a request-only operator (:3070/:3170 on the canonical dev box); route the mutation to the background-worker MCP host. To retune the cadence or pause git-sync, use routines:set. To deploy, release:deploy (which already fires git-sync first).",
         "chaining": "git-sync:run { dryRun:true } → review preview → git-sync:run → release:deploy { op:status } → op:trigger / op:force (now shipping current staging)."
       }
     },
@@ -29115,7 +29115,7 @@
           "POST"
         ]
       },
-      "description": "Read a registered state CELL by name, right now, instead of trusting a value someone transcribed earlier. Returns {status:\"value\"|\"unknown\"|\"absent\"}. \"unknown\" is IN-BAND and branchable (code: not-applicable | resolver-failed | not-measured | insufficient-data) — never treat it as false or as zero. \"absent\" means the cell does not exist FOR YOU: unregistered and out-of-audience are deliberately indistinguishable. Omit `cell` to list the cells you may read. A cell relative to a subject (an agent, a path) needs `as`.",
+      "description": "Read a registered state CELL by name, right now, instead of trusting a value someone transcribed earlier. Returns {status:\"value\"|\"unknown\"|\"absent\"}. \"unknown\" is IN-BAND and branchable (code: not-applicable | resolver-failed | not-measured | insufficient-data) — never treat it as false or as zero. \"absent\" means the cell does not exist FOR YOU: unregistered and out-of-audience are deliberately indistinguishable. Omit `cell` to list the cells you may read. A caller-relative cell needs `as` as a bare subject string, e.g. `{ cell:\"git.pipelinePosition\", as:\"packages/operator-core/lib/x.ts\" }`.",
       "capabilities": [
         "coord:read"
       ],

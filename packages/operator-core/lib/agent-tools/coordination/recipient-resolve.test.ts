@@ -89,6 +89,15 @@ describe('resolveRecipientsAgainst', () => {
     expect(resolveRecipientsAgainst([id], KNOWN).resolved).toEqual([id]);
   });
 
+  it('accepts an exact role-session owner when boot presence makes it known', () => {
+    const id = 'role-5fe8f8dc-3468-4457-823b-0619769326fe';
+    expect(resolveRecipientsAgainst([id], [id])).toEqual({
+      resolved: [id],
+      unknown: [],
+      ambiguous: [],
+    });
+  });
+
   it('flags a concrete id that matches no known agent as unknown — nothing resolved', () => {
     const r = resolveRecipientsAgainst(['su-zzz99999'], KNOWN);
     expect(r.unknown).toEqual(['su-zzz99999']);

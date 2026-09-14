@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "historical-test-run-provenance",
+  "workItemId": "WI-10000456",
+  "plan": "goal-agent-behavior-feedback-2026-09-06",
+  "spec": "AUTO-BAR-R-5-P-012@4",
+  "originalTestRunId": 17999375,
+  "originalRunGroupId": "fec81a89-b841-4a3e-b93f-789dd4e29c60",
+  "framework": "vitest",
+  "file": "packages/operator-core/lib/agent-obligation-reader.test.ts",
+  "status": "fail",
+  "startedAt": "2026-09-13T22:34:14.701Z",
+  "finishedAt": "2026-09-13T22:34:14.742Z",
+  "recordedScope": { "workspaceId": null, "harnessSlug": null },
+  "executionDetails": {
+    "root": "$WORKSPACE_ROOT",
+    "testNamePattern": "does not",
+    "passed": 0,
+    "failed": 5,
+    "skipped": 9,
+    "collectionFailed": false,
+    "worktreeDirty": true,
+    "commitSha": "a0631e37ecbc887e8900efb384393e550fad7774"
+  },
+  "observedCounterexample": {
+    "description": "The retained failure diff includes an owner-report obligation from a pre-stop receipt.",
+    "actualExcerpt": { "family": "owner-report", "reason": "report now", "responsibleOwnerId": "su-goal" },
+    "source": "harness_shared.test_runs.output_tail"
+  },
+  "readback": {
+    "tool": "testing:runs",
+    "args": { "testRunIds": [17999375], "latestPerFile": false }
+  },
+  "limitations": [
+    "This archives an actual filtered pre-fix execution, not a fresh replay or a newly executed operational test.",
+    "The nine nonmatching tests were filtered out, not executed successfully.",
+    "NULL tenant attribution is retained. The original row is not directly bindable to the tenant-scoped spec ledger.",
+    "The recorded commit does not identify all dirty working-tree bytes.",
+    "The retained output tail alone is not a full case-by-case failure transcript.",
+    "No shell exit code is invented and this is not a testing:record-run artifact."
+  ],
+  "relatedCurrentRecurrence": { "testRunId": 18006059, "passed": 15, "failed": 0, "skipped": 0 }
+}

@@ -11,7 +11,7 @@
  * writes attribute correctly.
  *
  * Usage:
- *   node scripts/mcp-call.mjs <tool> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--raw]
+ *   node scripts/mcp-call.mjs <tool> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--idempotency-key <key>|--idempotency-key=<key>] [--raw]
  * Examples:
  *   node scripts/mcp-call.mjs coord:whoami
  *   node scripts/mcp-call.mjs work_items:get '{"id":"EI-1750"}' --harness papercup
@@ -27,6 +27,8 @@
  * Notes: tool names use COLONS (coord:whoami, plans:new, work_items:set_state —
  * arg is `itemId` not `item`). `tools/list` returns empty in this mode, but
  * `tools/call` reaches every tool. Reads the bearer from ~/.papercusp/superuser-token.
+ * For an unknown-outcome retry, pass the same `--idempotency-key` value; it is
+ * sent as transport metadata (`_meta.idempotencyKey`), not as a tool argument.
  */
 import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -116,7 +118,7 @@ export async function fetchWithConnectionRecovery(
  * required for cross-workspace tools when the scoped-superuser clamp is ON.
  */
 export const BOOLEAN_FLAGS = new Set(['raw', 'allWorkspaces', 'help']);
-export const VALUE_FLAGS = new Set(['json', 'jsonFile', 'client', 'workspace', 'harness', 'port']);
+export const VALUE_FLAGS = new Set(['json', 'jsonFile', 'client', 'workspace', 'harness', 'port', 'idempotencyKey']);
 
 /** `json-file` -> `jsonFile`. Leaves an already-camelCase key untouched. */
 export function toCamelCaseFlag(key) {
@@ -296,6 +298,22 @@ export function buildMcpSessionQuery({ client, workspace, harness, allWorkspaces
 }
 
 /**
+ * Build the stateless `tools/call` params for the recovery transport.
+ *
+ * Idempotency belongs to MCP transport metadata. Putting the key in
+ * `arguments` would send it to the target tool schema, where it is either
+ * ignored or rejected as an unrecognized tool argument instead of enabling
+ * result replay after an unknown outcome.
+ */
+export function buildMcpCallParams(tool, args, { idempotencyKey } = {}) {
+  return {
+    name: tool,
+    arguments: args,
+    ...(idempotencyKey !== undefined ? { _meta: { idempotencyKey } } : {}),
+  };
+}
+
+/**
  * Resolve the session workspace. Ordinary calls remain scoped by default so
  * first-party tenant tools keep their workspace transaction. The explicit
  * `--all-workspaces` escape is the only CLI path that selects the unscoped
@@ -357,7 +375,7 @@ export function isInvokedDirectly(
 async function main() {
   const { tool, jsonArgs, flags } = parseArgs(process.argv.slice(2));
   if (flags.help || !tool) {
-    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--raw]');
+    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--idempotency-key <key>|--idempotency-key=<key>] [--raw]');
     process.exit(flags.help ? 0 : 2);
   }
   let tok;
@@ -410,7 +428,12 @@ async function main() {
       accept: 'application/json, text/event-stream',
       authorization: `Bearer ${tok}`,
     },
-    body: JSON.stringify({ jsonrpc: '2.0', id: REQUEST_ID, method: 'tools/call', params: { name: tool, arguments: args } }),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: REQUEST_ID,
+      method: 'tools/call',
+      params: buildMcpCallParams(tool, args, { idempotencyKey: flags.idempotencyKey }),
+    }),
   };
 
   let res;
