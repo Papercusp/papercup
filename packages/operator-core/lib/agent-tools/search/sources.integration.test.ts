@@ -342,12 +342,12 @@ async function seed(s: postgres.Sql): Promise<{ convA: string; convB: string }> 
   await s`INSERT INTO harness_shared.coord_event_log
             (workspace_id, surface, msg_id, body, ts, harness_slug)
           VALUES (${WS_A}, 'messages', 'coord-A',
-                  ${JSON.stringify({ from: 'agent-a', kind: 'message', summary: 'kubernetes coordination note', body: 'shared coordination context' })}::jsonb,
+                  json_build_object('from', 'agent-a', 'kind', 'message', 'summary', 'kubernetes coordination note', 'body', 'shared coordination context'),
                   '2026-01-01T00:04:00Z', 'sheets')`;
   await s`INSERT INTO harness_shared.coord_event_log
             (workspace_id, surface, msg_id, body, ts, harness_slug)
           VALUES (${WS_B}, 'messages', 'coord-B',
-                  ${JSON.stringify({ from: 'agent-b', kind: 'message', summary: 'kubernetes coordination decoy', body: 'another workspace' })}::jsonb,
+                  json_build_object('from', 'agent-b', 'kind', 'message', 'summary', 'kubernetes coordination decoy', 'body', 'another workspace'),
                   '2026-01-01T00:04:00Z', 'decoy')`;
 
   // engineer_issues (EI-6984's work_item source): A (two harness scopes) + B decoy.
@@ -643,14 +643,27 @@ describe('GAP 10 — per-source bm25 SQL: scope isolation + row mapping', () => 
   });
 
   it('coord_message.lexical: unfiltered search returns the workspace-A row', async () => {
-    const out = await byName('coord_message').lexical(params({ query: 'kubernetes coordination' }));
+    const seeded = await sql<Array<{ msg_id: string; summary: string | null; body_text: string | null; matches: boolean }>>`
+      SELECT msg_id, body->>'summary' AS summary, body->>'body' AS body_text,
+             to_tsvector('english', left(coalesce(body->>'summary','') || ' ' || coalesce(body->>'body',''), 20000))
+               @@ plainto_tsquery('english', 'kubernetes') AS matches
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${WS_A} AND surface = 'messages'
+    `;
+    expect(seeded[0], JSON.stringify(seeded)).toMatchObject({
+      msg_id: 'coord-A',
+      summary: 'kubernetes coordination note',
+      body_text: 'shared coordination context',
+      matches: true,
+    });
+    const out = await byName('coord_message').lexical(params({ query: 'kubernetes' }));
     expect(out.map((r) => r.row.source_id)).toEqual(['coord-A']);
     expect(out[0]?.row.source).toBe('coord_message');
   });
 
   it('coord_message.lexical: explicit transcript session fails closed instead of scanning the coord corpus (EI-23130749427955806)', async () => {
     const out = await byName('coord_message').lexical(
-      params({ query: 'kubernetes coordination', filters: { sessionId: P17_SESSION } }),
+      params({ query: 'kubernetes', filters: { sessionId: P17_SESSION } }),
     );
     expect(out).toEqual([]);
   });

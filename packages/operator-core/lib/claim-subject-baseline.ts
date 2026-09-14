@@ -42,7 +42,12 @@ export function claimSubjectBaselineFromPayload(payload: unknown): Partial<Claim
   const baseline: Partial<ClaimSubjectBaseline> = {};
   for (const field of ['kind', 'title', 'summary', 'body', 'watchdogKey'] as const) {
     const value = comparable(baselineRecord[field]);
-    if (value !== undefined) baseline[field] = value;
+    if (value === undefined) continue;
+    if (value === null) {
+      if (field === 'kind' || field === 'watchdogKey') baseline[field] = value;
+      continue;
+    }
+    baseline[field] = value;
   }
   return Object.keys(baseline).length > 0 ? baseline : null;
 }

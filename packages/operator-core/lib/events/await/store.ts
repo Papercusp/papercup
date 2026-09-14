@@ -1116,12 +1116,14 @@ export async function listActiveAwaitsByKeyPrefix(prefix: string): Promise<Await
 export const INBOX_WAKE_KEY_PREFIX = 'coord:inbox-wake:';
 
 /**
- * P-001 (fleet-member-dx-improvements-2026-07-10, EI-9014): active NON-inbox-wake
- * awaits for MANY subscribers in ONE round-trip — the "parked-on-event" read that
- * fleet:assignments and the claim-discipline watch derive a member's deliberate
- * bench state from. An agent holding an active, caller-owned await on a real event
- * key is PARKED (benched awaiting a pushed event), not abandoned. Excludes the
- * always-armed `coord:inbox-wake:%` self-await (see INBOX_WAKE_KEY_PREFIX), the
+ * P-001 (fleet-member-dx-improvements-2026-07-10, EI-9014): active deliberate
+ * awaits for MANY subscribers in ONE round-trip — the "parked-on-event" read
+ * that fleet:assignments and the claim-discipline watch derive a member's
+ * deliberate bench state from. An agent holding an active, caller-owned await
+ * on an event key is PARKED (benched awaiting a pushed event), not abandoned.
+ * Excludes the always-armed, unbounded-expiring `coord:inbox-wake:%` self-await
+ * (see INBOX_WAKE_KEY_PREFIX), but retains a deliberate bounded wake-on-timeout
+ * await on that same key (EI-23154777064754970). Also excludes the
  * PLATFORM-ARMED bindings that are registered FOR an agent rather than BY it —
  * `work-item-claim` (defensive claim-release interest), `fleet-leadership`
  * (a leader's transition watches, armed on taking the fleet), and
@@ -1146,7 +1148,14 @@ export async function listParkedAwaitsForSubscribers(
      WHERE workspace_id = ${ws}
        AND subscriber_id = ANY(${ids as string[]}::text[])
        AND fired_at IS NULL AND cancelled_at IS NULL
-       AND event_key NOT LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+       AND (
+         event_key NOT LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+         OR (
+           event_key LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+           AND expires_ts IS NOT NULL
+           AND timeout_behavior = 'wake'
+         )
+       )
        AND policy <> 'announce'
        -- PLATFORM-ARMED interests are not deliberate parks. These are armed FOR
        -- the agent rather than BY it:

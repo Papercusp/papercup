@@ -313,6 +313,29 @@ export function findLiveHostFor(ownerId: any, { verifyIdentity }?: {
     verifyIdentity?: typeof pidLooksLikePsuHost | undefined;
 }): any;
 /**
+ * Admission verdict for a second host targeting the same logical owner.
+ *
+ * A discovery record is blocking only when it belongs to this owner, points at
+ * another live process, and that process is identity-verified as a psu host.
+ * Missing/corrupt, owner-mismatched, self, dead, and PID-reuse records stay
+ * admissible so pruneDead/the ordinary stale-socket cleanup can recover them.
+ */
+export function duplicateHostAdmission(ownerId: any, priorMeta: any, { currentPid, isAlive, verifyIdentity }?: {
+    currentPid?: number | undefined;
+    isAlive?: typeof pidAlive | undefined;
+    verifyIdentity?: typeof pidLooksLikePsuHost | undefined;
+}): {
+    admitted: boolean;
+    reason: string;
+    ownerId: any;
+    pid: number;
+} | {
+    admitted: boolean;
+    reason: string;
+    ownerId?: undefined;
+    pid?: undefined;
+};
+/**
  * How long a live host has been INERT, from the activity stamps its own
  * discovery record already carries (EI-20289007209260909).
  *

@@ -1419,7 +1419,7 @@ describe('await-event store (PG)', () => {
   });
 
   // ── P-001 (fleet-member-dx-improvements-2026-07-10): parked-on-event read ──
-  it('listParkedAwaitsForSubscribers returns only ACTIVE non-inbox-wake awaits for the asked subscribers', async () => {
+  it('listParkedAwaitsForSubscribers returns active deliberate awaits while excluding the standing inbox-wake keepalive', async () => {
     // sub-a: a genuine parked-on-event await → the ONE row that should surface
     await registerAwait({ subscriberId: 'sub-a', eventKey: 'p2p-git:phase3-open', note: 'benched until phase 3' });
     // sub-a: the always-armed inbox-wake self-key → excluded (liveness, not benching)
@@ -1427,6 +1427,14 @@ describe('await-event store (PG)', () => {
       subscriberId: 'sub-a',
       eventKey: 'coord:inbox-wake:sub-a',
       wakeHandle: { sessionId: 's1' } as never,
+    });
+    // A bounded wake-on-timeout await on the same key is deliberate and must surface.
+    await registerAwait({
+      subscriberId: 'sub-a',
+      eventKey: 'coord:inbox-wake:sub-a',
+      timeoutSec: 1800,
+      timeoutBehavior: 'wake',
+      note: 'explicit bounded inbox-wake park',
     });
     // sub-a: a fired await → excluded
     await registerAwait({ subscriberId: 'sub-a', eventKey: 'k:already-fired', once: true });
@@ -1441,12 +1449,26 @@ describe('await-event store (PG)', () => {
     await registerAwait({ subscriberId: 'sub-b', eventKey: 'k:other-agent' });
 
     const parked = await listParkedAwaitsForSubscribers(['sub-a', 'sub-c']);
-    expect(parked).toHaveLength(1);
-    expect(parked[0]).toMatchObject({
+    expect(parked).toHaveLength(2);
+    expect(parked).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          subscriberId: 'sub-a',
+          eventKey: 'p2p-git:phase3-open',
+          note: 'benched until phase 3',
+        }),
+        expect.objectContaining({
+          subscriberId: 'sub-a',
+          eventKey: 'coord:inbox-wake:sub-a',
+          note: 'explicit bounded inbox-wake park',
+        }),
+      ]),
+    );
+    expect(parked).not.toContainEqual(expect.objectContaining({
       subscriberId: 'sub-a',
-      eventKey: 'p2p-git:phase3-open',
-      note: 'benched until phase 3',
-    });
+      eventKey: 'coord:inbox-wake:sub-a',
+      note: 'always-armed inbox-wake (turn-lifecycle-control)',
+    }));
 
     // empty / all-blank input short-circuits to []
     expect(await listParkedAwaitsForSubscribers([])).toEqual([]);
