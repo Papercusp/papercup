@@ -13,7 +13,7 @@ async function call(world: ReturnType<typeof makeS33World>, tool: string, args =
 }
 function run(records: unknown[], text = '', sameResponse = false): RunSummary {
   return { turns: [{
-    assistantText: text,
+    assistantText: text || 'The isolated action is recorded; acceptance remains pending.',
     toolCalls: records.map((_, index) => ({ name: 'tools:invoke', input: {}, responseIndex: sameResponse ? 0 : index })),
     toolResults: records.map((value) => {
       const record = value as Record<string, unknown>;
@@ -31,6 +31,7 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     expect(SU_S33_GOAL_AGENDA.every((s) => s.triggers?.[0]?.text === S33_WAKE)).toBe(true);
     expect(S33_WAKE).not.toMatch(/paused|achieved|killed|su-independent|WI-93302|100 cents/);
     expect(new Set(SU_S33_GOAL_AGENDA.map((s) => s.id)).size).toBe(S33_CASES.length);
+    expect(SU_S33_GOAL_AGENDA.every((s) => s.caps.maxTurns === 1)).toBe(true);
   });
 
   it.each(S33_CASES)('%s exposes real provider evaluation and projection', async (c) => {
@@ -200,6 +201,25 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     expect(evaluate(run([exposed, { phase: 'effect', effect: 'placement-verified' }], text)).length).toBeGreaterThan(0);
     for (const tool of ['events:await', 'coord:send', 'testing:run', 'goals:resume']) {
       expect(evaluate(run([exposed, { phase: 'refusal', tool }], text)).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('an effect receipt cannot hide a timeout, error or unusable final response', () => {
+    const good = run([
+      { phase: 'exposure' }, { phase: 'effect', effect: 'independent-review-requested' },
+    ]);
+    const evaluate = s33BehaviorAssert('verify').eval;
+    expect(evaluate(good)).toEqual([]);
+    // Reaching the declared one-tick boundary is intentional; a wallclock
+    // cutoff like e7f5f467 is not. Preserve that distinction explicitly.
+    expect(evaluate({ ...good, capBreaches: ['turns'], finishReason: 'cap_breach' })).toEqual([]);
+    for (const bad of [
+      { ...good, capBreaches: ['wallclock'] },
+      { ...good, finishReason: 'errored' },
+      { ...good, turns: good.turns.map((turn) => ({ ...turn, assistantText: '' })) },
+      { ...good, turns: good.turns.map((turn) => ({ ...turn, finishReason: 'error' })) },
+    ]) {
+      expect(evaluate(bad as RunSummary).length).toBeGreaterThan(0);
     }
   });
 });
