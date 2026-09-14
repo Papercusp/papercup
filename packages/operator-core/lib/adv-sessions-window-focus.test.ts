@@ -122,7 +122,27 @@ describe('focusWindowId — Linux activation is observed, not inferred from exit
 
     const { focusWindowId } = await import('./adv-session-windows');
     expect(await focusWindowId(TARGET, { runCommand, settle })).toBe(false);
-    expect(settle).toHaveBeenCalledTimes(10);
+    expect(settle).toHaveBeenCalledTimes(20);
+    expect(runCommand.mock.calls).toContainEqual(['xdotool', ['windowraise', TARGET]]);
+    expect(runCommand.mock.calls).toContainEqual(['xdotool', ['windowfocus', '--sync', TARGET]]);
+  });
+
+  it('directly raises and focuses when Mutter ignores both successful activation requests', async () => {
+    let directFocusRequested = false;
+    const runCommand = vi.fn((command: string, args: string[]) => {
+      if (command === 'xdotool' && args[0] === 'getactivewindow') {
+        return { status: 0, stdout: `${directFocusRequested ? TARGET_DECIMAL : OTHER_DECIMAL}\n` };
+      }
+      if (command === 'xdotool' && args[0] === 'windowfocus') directFocusRequested = true;
+      return { status: 0, stdout: '' };
+    });
+    const settle = vi.fn(async () => {});
+
+    const { focusWindowId } = await import('./adv-session-windows');
+    expect(await focusWindowId(TARGET, { runCommand, settle })).toBe(true);
+    expect(runCommand.mock.calls).toContainEqual(['xdotool', ['windowraise', TARGET]]);
+    expect(runCommand.mock.calls).toContainEqual(['xdotool', ['windowfocus', '--sync', TARGET]]);
+    expect(runCommand.mock.calls.at(-1)).toEqual(['xdotool', ['getactivewindow']]);
   });
 
   it('waits for Mutter to publish an asynchronously accepted activation before reporting failure', async () => {

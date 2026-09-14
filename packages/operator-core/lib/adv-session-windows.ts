@@ -206,7 +206,20 @@ export async function focusWindowId(
     // where wmctrl is a false positive. It is bounded by the runner timeout,
     // and still must pass the same observed-active-window check.
     const xdotool = runCommand('xdotool', ['windowactivate', '--sync', windowId]);
-    if (xdotool.status !== 0) return false;
+    if (xdotool.status === 0 && (await waitForActiveX11Window(windowId, runCommand, settle))) {
+      return true;
+    }
+
+    // Mutter can also ignore BOTH EWMH activation requests while returning
+    // success (observed with two live gnome-terminal windows on the current
+    // desktop). This is an explicit, user-initiated focus action, so make one
+    // final direct X input-focus attempt after raising the exact resolved
+    // window. Never trust either exit status: require _NET_ACTIVE_WINDOW to
+    // converge on the target before reporting success.
+    const raised = runCommand('xdotool', ['windowraise', windowId]);
+    if (raised.status !== 0) return false;
+    const directlyFocused = runCommand('xdotool', ['windowfocus', '--sync', windowId]);
+    if (directlyFocused.status !== 0) return false;
     return await waitForActiveX11Window(windowId, runCommand, settle);
   } catch {
     return false;
