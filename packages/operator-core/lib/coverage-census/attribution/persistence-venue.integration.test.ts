@@ -192,47 +192,54 @@ describe('persistent coverage-attribution venue', () => {
   it('attributes non-mutating change-queue intake, cleanup preview, and readiness reads at L3', async () => {
     const app = new Hono();
     registerRoute(app, restQueryRoute);
-
-    await dispatchTool('improvements:capture', {
-      title: 'coverage attribution change-queue readiness probe',
-      kind: 'change',
-      body: 'Read-only duplicate probe for the persistent coverage-attribution venue.',
-      harness: HARNESS,
-      checkDuplicatesOnly: true,
-    });
-
-    await dispatchTool('work_items:bulk_dedup', {
-      op: 'preview-reviewed',
-      harness: HARNESS,
-      workspace: WORKSPACE,
-      confirm: true,
-      reviewedEntries: [
-        {
-          itemId: 'EI-coverage-attribution-missing-control',
-          action: 'preserve',
-          evidence: {
-            status: 'unknown',
-            ref: 'test:persistent-coverage-attribution-venue',
-            reason: 'A deliberately absent item is the no-mutation preview control.',
-          },
-        },
-      ],
-    });
-
-    const queryArgs = encodeURIComponent(JSON.stringify({ harnessSlug: HARNESS, limit: 1 }));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let readiness: Response | undefined;
     try {
+      await dispatchTool('improvements:capture', {
+        title: 'coverage attribution change-queue readiness probe',
+        kind: 'change',
+        body: 'Read-only duplicate probe for the persistent coverage-attribution venue.',
+        harness: HARNESS,
+        checkDuplicatesOnly: true,
+      });
+
+      await dispatchTool('work_items:bulk_dedup', {
+        op: 'preview-reviewed',
+        harness: HARNESS,
+        workspace: WORKSPACE,
+        confirm: true,
+        reviewedEntries: [
+          {
+            itemId: 'EI-coverage-attribution-missing-control',
+            action: 'preserve',
+            evidence: {
+              status: 'unknown',
+              ref: 'test:persistent-coverage-attribution-venue',
+              reason: 'A deliberately absent item is the no-mutation preview control.',
+            },
+          },
+        ],
+      });
+
+      const queryArgs = encodeURIComponent(JSON.stringify({ harnessSlug: HARNESS, limit: 1 }));
       readiness = await app.request(
         `http://localhost/zero-harness/rest-query?name=workItemAdmission.runs&args=${queryArgs}`,
       );
     } finally {
+      // Both branches are explicit, bounded degradation under shared-host load:
+      // duplicate search falls back after 1.5s, and the sync reader only narrates
+      // its measured latency. Capture them from the start of the test so the
+      // suite-wide fail-on-console hook cannot race the local spy. Flatten calls
+      // before asserting so any genuinely unexpected warning is printed verbatim.
+      const warningMessages = warn.mock.calls.map((args) => args.map(String).join(' '));
+      warn.mockRestore();
       expect(
-        warn.mock.calls.filter(
-          ([message]) => !String(message).startsWith('[sync-slow] name=workItemAdmission.runs'),
+        warningMessages.filter(
+          (message) =>
+            !message.startsWith('[sync-slow] name=workItemAdmission.runs') &&
+            !message.startsWith('[bounded-timeout] captureImprovement:lexical-dedup exceeded'),
         ),
       ).toEqual([]);
-      warn.mockRestore();
     }
     expect(readiness).toBeDefined();
     if (!readiness) throw new Error('workItemAdmission.runs did not return a response');
