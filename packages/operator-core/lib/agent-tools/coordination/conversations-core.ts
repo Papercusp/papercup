@@ -460,6 +460,11 @@ async function appendPost(
   if (conv.state === 'resolved') return { error: 'resolved' };
   if (conv.state === 'closed') return { error: 'closed' };
   if (conv.state === 'superseded') return { error: 'superseded' };
+  // consult:close's requester late-disposition path is intentionally allowed to
+  // write a typed terminal post after the expiry sweep projects this coarse
+  // state. The consult verb has already validated the author/outcome; generic
+  // posts still fail at the consult kind gate above.
+  if (conv.state === 'expired' && !opts.viaConsultVerb) return { error: 'closed' };
   const now = deps.nowIso();
 
   // The durable write — get-or-create the conversation's thread, then append the
@@ -600,7 +605,7 @@ export async function resolveConversationCore(
   // corrupting the record the first resolver captured. The accepted answer is
   // immutable once set; a genuine correction is a fresh conversation, not a
   // re-resolve. (A promoted-closed conversation is likewise terminal.)
-  if (conv.state === 'resolved' || conv.state === 'closed' || conv.state === 'superseded') return { error: 'already_resolved' };
+  if (conv.state === 'resolved' || conv.state === 'closed' || conv.state === 'superseded' || conv.state === 'expired') return { error: 'already_resolved' };
   const now = deps.nowIso();
 
   let answer = input.accepted_answer?.trim();

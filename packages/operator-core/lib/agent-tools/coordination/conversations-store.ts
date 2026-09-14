@@ -24,9 +24,9 @@ export type ConversationScope = 'operator' | 'harness';
 // Canonical lifecycle vocabulary (P-007) plus the conversation-specific terminal
 // state used when an ask is retracted in favor of a replacement. The substrate's
 // generic LifecycleState intentionally stays unchanged; only conversations have
-// this extra state because a retracted question must be visible as such rather
-// than looking like an unresolved gate.
-export type ConversationState = LifecycleState | 'superseded';
+// these extra states because a retracted question or an expired consult must be
+// visible as such rather than looking like an unresolved gate.
+export type ConversationState = LifecycleState | 'superseded' | 'expired';
 
 type QuerySql = Sql | TransactionSql;
 
@@ -567,7 +567,7 @@ export async function ensureConversationsTable(sql: Sql): Promise<void> {
       PRIMARY KEY (workspace_id, id),
       CONSTRAINT coord_conversations_kind_check  CHECK (kind  = ANY (ARRAY['question','discussion','consult'])),
       CONSTRAINT coord_conversations_scope_check CHECK (scope = ANY (ARRAY['operator','harness'])),
-      CONSTRAINT coord_conversations_state_check CHECK (state = ANY (ARRAY['open','resolved','closed','superseded'])),
+      CONSTRAINT coord_conversations_state_check CHECK (state = ANY (ARRAY['open','resolved','closed','superseded','expired'])),
       CONSTRAINT coord_conversations_scope_slug_check CHECK (
           (scope = 'harness'  AND harness_slug IS NOT NULL AND harness_slug <> '')
        OR (scope = 'operator' AND harness_slug IS NULL)
@@ -582,7 +582,7 @@ export async function ensureConversationsTable(sql: Sql): Promise<void> {
   await sql`
     ALTER TABLE harness_shared.coord_conversations
       ADD CONSTRAINT coord_conversations_state_check
-      CHECK (state = ANY (ARRAY['open','resolved','closed','superseded']))`;
+      CHECK (state = ANY (ARRAY['open','resolved','closed','superseded','expired']))`;
   await sql`
     CREATE INDEX IF NOT EXISTS coord_conversations_open_idx
       ON harness_shared.coord_conversations (workspace_id, kind, created_at DESC)

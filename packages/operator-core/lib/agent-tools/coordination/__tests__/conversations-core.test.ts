@@ -543,6 +543,24 @@ describe('the consult kind gate (get-feedback-relevance-consults P-004, D-008 §
     expect(res.post.body).toBe('typed via verb');
   });
 
+  it('keeps an expired consult terminal for generic posts while allowing the typed seam', async () => {
+    const opened = await openConversationCore(deps, ident('requester'), { kind: 'consult', body: 'q' });
+    await store.setState(opened.conversation.id, 'expired', { now_ts: '2030-01-01T01:00:00.000Z' });
+
+    expect(await postReplyCore(deps, ident('requester'), {
+      conversation_id: opened.conversation.id,
+      body: 'untyped late post',
+    })).toEqual({ error: 'consult_requires_typed_verb' });
+
+    const typed = await postReplyCore(deps, ident('requester'), {
+      conversation_id: opened.conversation.id,
+      body: 'typed late disposition',
+      via_consult_verb: true,
+    });
+    if ('error' in typed) throw new Error(typed.error);
+    expect(typed.post.body).toBe('typed late disposition');
+  });
+
   it('non-consult conversations are untouched by the gate', async () => {
     const opened = await openConversationCore(deps, ident('asker'), { kind: 'discussion', body: 'b' });
     const res = await postReplyCore(deps, ident('replier'), { conversation_id: opened.conversation.id, body: 'plain' });

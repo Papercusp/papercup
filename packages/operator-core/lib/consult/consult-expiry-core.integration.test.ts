@@ -58,12 +58,16 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
-  // Minimal landing pad for the migration's coord_conversations kind-CHECK
-  // widening (the real table is migration-132-owned; only `kind` matters here).
+  // The expiry sweep projects the fine-grained terminal state onto this coarse
+  // parent in the same transaction, so the fixture includes the columns that
+  // projection predicates and updates (the real table is migration-132-owned).
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.coord_conversations (
+      workspace_id text NOT NULL DEFAULT 'default',
       id text PRIMARY KEY,
-      kind text NOT NULL DEFAULT 'question'
+      kind text NOT NULL DEFAULT 'question',
+      state text NOT NULL DEFAULT 'open',
+      updated_at timestamptz NOT NULL DEFAULT now()
     )`);
   // The REAL migrations — consult_state + consult_post_meta cannot drift.
   await rootSql.unsafe(readFileSync(MIGRATION_834, 'utf8'));
@@ -86,6 +90,7 @@ async function seedConsult(opts: {
   routing?: unknown;
   cascadeCursor?: number;
   updatedAt?: string;
+  conversationUpdatedAt?: string;
 }): Promise<string> {
   seq += 1;
   const id = `conv-e-${seq}`;
@@ -102,8 +107,14 @@ async function seedConsult(opts: {
     await rootSql`
       UPDATE harness_shared.consult_state
          SET updated_at = ${opts.updatedAt}::timestamptz
-       WHERE workspace_id = ${opts.workspaceId ?? WS} AND conversation_id = ${id}`;
+      WHERE workspace_id = ${opts.workspaceId ?? WS} AND conversation_id = ${id}`;
   }
+  await rootSql`
+    INSERT INTO harness_shared.coord_conversations
+      (workspace_id, id, kind, state, updated_at)
+    VALUES
+      (${opts.workspaceId ?? WS}, ${id}, 'consult', 'open',
+       ${(opts.conversationUpdatedAt ?? PAST)}::timestamptz)`;
   return id;
 }
 
@@ -155,6 +166,17 @@ async function stateOf(id: string, ws = WS): Promise<{ state: string; closed_at:
   return rows[0];
 }
 
+async function conversationStateOf(id: string, ws = WS): Promise<{ state: string; updated_at: string }> {
+  const rows = (await rootSql`
+    SELECT state,
+           to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at
+      FROM harness_shared.coord_conversations
+     WHERE workspace_id = ${ws} AND id = ${id}
+  `) as unknown as Array<{ state: string; updated_at: string }>;
+  expect(rows).toHaveLength(1);
+  return rows[0];
+}
+
 async function setDigest(id: string, digest: unknown[]) {
   await rootSql`
     UPDATE harness_shared.consult_state
@@ -165,7 +187,7 @@ async function setDigest(id: string, digest: unknown[]) {
 // ── Tests ────────────────────────────────────────────────────────────────
 describe('sweepExpiredConsults', () => {
   it('flips ONLY past-due open rows to expired; hard-blocked rows get the latched park-key emit', async () => {
-    const hardDue = await seedConsult({ latency: 'hard-blocked' });
+    const hardDue = await seedConsult({ latency: 'hard-blocked', conversationUpdatedAt: FUTURE });
     const proceedDue = await seedConsult({ latency: 'proceed' });
     const notDue = await seedConsult({ expiresAt: FUTURE });
     const noExpiry = await seedConsult({ expiresAt: null });
@@ -184,6 +206,8 @@ describe('sweepExpiredConsults', () => {
 
     expect(await stateOf(hardDue)).toMatchObject({ state: 'expired' });
     expect((await stateOf(hardDue)).closed_at).not.toBeNull();
+    expect(await conversationStateOf(hardDue)).toEqual({ state: 'expired', updated_at: FUTURE });
+    expect(await conversationStateOf(proceedDue)).toMatchObject({ state: 'expired' });
     expect(await stateOf(proceedDue)).toMatchObject({ state: 'expired' });
     expect(await stateOf(notDue)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
     expect(await stateOf(noExpiry)).toMatchObject({ state: 'awaiting_responder', closed_at: null });

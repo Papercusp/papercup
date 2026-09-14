@@ -238,25 +238,53 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     const answerEvents = priorDigest.filter((e) => e.kind === 'answer');
     const answers = answerEvents.length;
     const answeredBy = [...new Set(answerEvents.map((e) => e.ownerId))];
-    const flipped = (await sql`
-      UPDATE harness_shared.consult_state
-         SET state = 'expired',
-             outcome = COALESCE(${
-               answers > 0
-                 ? sql.json({
-                     disposition: 'cascade_exhausted_with_answers',
-                     answers,
-                     answered_by: answeredBy,
-                   } as never)
-                 : null
-             }::jsonb, outcome),
-             closed_at = ${nowIso}::timestamptz,
-             updated_at = ${nowIso}::timestamptz
-       WHERE workspace_id = ${row.workspace_id}
-         AND conversation_id = ${row.conversation_id}
-         AND closed_at IS NULL
-      RETURNING conversation_id
-    `) as unknown as Array<{ conversation_id: string }>;
+    // The fine-grained terminal flip and its coarse parent projection are one
+    // transaction. Otherwise a crash between these writes leaves the exact
+    // split this sweep exists to repair: consult_state='expired' while
+    // conversations:get/list still report state='open'. The parent predicate
+    // is deliberately narrow: this row's workspace/id and consult kind must
+    // match, and only an open parent may be projected. A concurrent typed close
+    // or other terminal lifecycle is never overwritten.
+    const flipped = await sql.begin(async (tx) => {
+      const terminal = (await tx`
+        UPDATE harness_shared.consult_state
+           SET state = 'expired',
+               outcome = COALESCE(${
+                 answers > 0
+                   ? tx.json({
+                       disposition: 'cascade_exhausted_with_answers',
+                       answers,
+                       answered_by: answeredBy,
+                     } as never)
+                   : null
+               }::jsonb, outcome),
+               closed_at = ${nowIso}::timestamptz,
+               updated_at = ${nowIso}::timestamptz
+         WHERE workspace_id = ${row.workspace_id}
+           AND conversation_id = ${row.conversation_id}
+           AND closed_at IS NULL
+        RETURNING conversation_id
+      `) as unknown as Array<{ conversation_id: string }>;
+      if (terminal.length === 0) return terminal;
+
+      await tx`
+        UPDATE harness_shared.coord_conversations c
+           SET state = 'expired',
+               updated_at = GREATEST(c.updated_at, ${nowIso}::timestamptz)
+         WHERE c.workspace_id = ${row.workspace_id}
+           AND c.id = ${row.conversation_id}
+           AND c.kind = 'consult'
+           AND c.state = 'open'
+           AND EXISTS (
+             SELECT 1
+               FROM harness_shared.consult_state cs
+              WHERE cs.workspace_id = c.workspace_id
+                AND cs.conversation_id = c.id
+                AND cs.state = 'expired'
+           )
+      `;
+      return terminal;
+    }) as unknown as Array<{ conversation_id: string }>;
     if (flipped.length === 0) continue;
     expiredCount += 1;
 
