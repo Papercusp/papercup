@@ -16,6 +16,18 @@
  *  path excludes it, and the real emit stamps its `fired_at` as the LATCH. */
 export type AwaitPolicy = 'wake' | 'notify' | 'announce';
 
+/**
+ * Reserved note prefix written only by `coord:await-inbox` to distinguish its
+ * deliberate idle park from the automatically armed inbox-wake keepalive.
+ * Keep this in the shared await types so every reader uses the same byte-level
+ * marker without importing a lifecycle module back into the store.
+ */
+export const EXPLICIT_PARK_NOTE_MARKER = '[coord:await-inbox:explicit-park]';
+
+export function isExplicitParkNote(note: string | null | undefined): boolean {
+  return note?.startsWith(EXPLICIT_PARK_NOTE_MARKER) === true;
+}
+
 /** What happens when an await's deadline passes without the event (D-009):
  *  `wake` = synthesize a timeout wake (the agent learns the event did NOT
  *  happen — as actionable as the event itself for a blocked agent);
@@ -84,6 +96,8 @@ export interface AwaitRow {
   eventKey: string;
   policy: AwaitPolicy;
   note: string | null;
+  /** True when `coord:await-inbox` deliberately parked on this standing inbox-wake row. */
+  explicitPark?: boolean;
   wakeHandle: WakeHandle | null;
   timeoutBehavior: TimeoutBehavior;
   expiresTs: string | null;

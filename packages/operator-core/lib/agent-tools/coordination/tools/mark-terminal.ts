@@ -100,6 +100,7 @@ export default defineTool({
       "Do not use this as success for 'focus/raise/bring forward' — call coord:focus-window. Not a substitute for coord:presence/fleet:assignments to find WHICH agent is doing what. A headless session cannot be marked; the result says so.",
     returns:
       "{ ok: boolean, ownerId, landed: boolean, via: 'psu-pty' | 'tty' | null, title, reason? }. landed:false with reason describes why (no presence row, no tty on record, claim mismatch, write failed).",
+    seeAlso: ['coord:focus-window (primary focus/raise action before this title-only fallback)'],
   },
   capability: 'coord:mark-terminal',
   requirePrincipal: false,

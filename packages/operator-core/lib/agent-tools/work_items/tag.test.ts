@@ -53,7 +53,8 @@ describe('work_items:tag handler (keyed-array)', () => {
 
     expect(dispatched.ok).toBe(false);
     expect(dispatched.error?.message).toContain('Unrecognized key: "tags"');
-    expect(dispatched.error?.message).toContain('work_items:tag {"id":"<work-item-id>","topic":"<topic>"}');
+    expect(dispatched.error?.message).toContain('work_items:tag({ "id": "WI-1", "topic": "<topic>" })');
+    expect(dispatched.error?.message).not.toContain('declares no counterpart');
     expect(dispatched.error?.message).toContain('pass `topic`');
     expect(dispatched.error?.message).toContain('Check `mirrored`');
     expect(dispatched.error?.meta?.invalidInput).toEqual(

@@ -223,6 +223,72 @@ describe('startColdBootDrill — explicit/default-off live cut', () => {
     expect(owner.ledger).toEqual([]);
   });
 
+  it('requires an explicit retry acknowledgement only for uncertain history', async () => {
+    const uncertainSpec: RespawnLaunchSpec = {
+      ...SPEC,
+      openOwnerQuestion: {
+        crossesOpenOwnerMessage: true,
+        basis: 'history-uncertain',
+        historyStatus: 'truncated',
+      },
+    };
+    const first = startHarness();
+    const refused = await startColdBootDrill(
+      { ownerId: 'su-1', ownerLabel: 'su · 1' },
+      { ...first.deps, buildSpec: async () => uncertainSpec },
+    );
+    expect(refused).toMatchObject({
+      ok: false,
+      error: 'owner_history_uncertain',
+      historyStatus: 'truncated',
+    });
+    expect(first.ledger).toEqual([]);
+    expect(first.injected).toEqual([]);
+
+    const acknowledged = startHarness();
+    const queued = await startColdBootDrill(
+      {
+        ownerId: 'su-1',
+        ownerLabel: 'su · 1',
+        acknowledgeOwnerHistoryUncertainty: true,
+        note: 'live Codex acceptance',
+      },
+      { ...acknowledged.deps, buildSpec: async () => uncertainSpec },
+    );
+    expect(queued).toMatchObject({
+      ok: true,
+      queued: true,
+      ownerHistoryUncertaintyAcknowledged: true,
+    });
+    expect(acknowledged.ledger[0]).toMatchObject({
+      kind: 'carry-drill-requested',
+      detail: 'live Codex acceptance',
+    });
+    expect(acknowledged.injected).toHaveLength(1);
+
+    const knownOpen = startHarness();
+    const stillRefused = await startColdBootDrill(
+      {
+        ownerId: 'su-1',
+        ownerLabel: 'su · 1',
+        acknowledgeOwnerHistoryUncertainty: true,
+      },
+      {
+        ...knownOpen.deps,
+        buildSpec: async () => ({
+          ...SPEC,
+          openOwnerQuestion: {
+            crossesOpenOwnerMessage: true,
+            basis: 'known-unanswered',
+          },
+        }),
+      },
+    );
+    expect(stillRefused).toMatchObject({ ok: false, error: 'open_owner_message' });
+    expect(knownOpen.ledger).toEqual([]);
+    expect(knownOpen.injected).toEqual([]);
+  });
+
   it('records a socket failure and leaves it out of the active rate-limit set', async () => {
     const h = startHarness();
     const result = await startColdBootDrill(

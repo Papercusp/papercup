@@ -38,6 +38,7 @@ import type {
   WakeChannel,
   WakeHandle,
 } from './types';
+import { EXPLICIT_PARK_NOTE_MARKER, isExplicitParkNote } from './types';
 import type { ProducerHealthCertificate, ProducerHealthObservation, VerifiedWaitTimeoutResult } from './verified-wait';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
@@ -104,6 +105,7 @@ function mapAwait(r: any): AwaitRow {
     eventKey: r.event_key,
     policy: r.policy,
     note: r.note ?? null,
+    explicitPark: isExplicitParkNote(r.note),
     wakeHandle: parseJsonb<WakeHandle>(r.wake_handle),
     timeoutBehavior: r.timeout_behavior,
     expiresTs: r.expires_ts ? new Date(r.expires_ts).toISOString() : null,
@@ -600,7 +602,15 @@ export async function upsertInboxWakeAwait(input: {
             AND event_key LIKE 'coord:inbox-wake:%'
     DO UPDATE SET
       wake_handle = COALESCE(EXCLUDED.wake_handle, harness_shared.event_awaits.wake_handle),
-      note = COALESCE(EXCLUDED.note, harness_shared.event_awaits.note),
+      -- Automatic SessionStart re-arms must not erase a deliberate
+      -- coord:await-inbox park annotation. An explicit marker wins when the
+      -- caller intentionally parks; otherwise preserve an existing marker
+      -- over the ordinary lifecycle note.
+      note = CASE
+        WHEN EXCLUDED.note LIKE ${EXPLICIT_PARK_NOTE_MARKER + '%'} THEN EXCLUDED.note
+        WHEN harness_shared.event_awaits.note LIKE ${EXPLICIT_PARK_NOTE_MARKER + '%'} THEN harness_shared.event_awaits.note
+        ELSE COALESCE(EXCLUDED.note, harness_shared.event_awaits.note)
+      END,
       min_sleep_sec = EXCLUDED.min_sleep_sec
     RETURNING *
   `;
@@ -1150,6 +1160,7 @@ export async function listParkedAwaitsForSubscribers(
        AND fired_at IS NULL AND cancelled_at IS NULL
        AND (
          event_key NOT LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+         OR note LIKE ${EXPLICIT_PARK_NOTE_MARKER + '%'}
          OR (
            event_key LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
            AND expires_ts IS NOT NULL
@@ -1554,7 +1565,10 @@ export async function listWakeAwaitsForSubscriber(
        AND subscriber_id = ${subscriberId}
        AND policy = 'wake'
        AND fired_at IS NULL AND cancelled_at IS NULL
-       AND event_key NOT LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+       AND (
+         event_key NOT LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+         OR note LIKE ${EXPLICIT_PARK_NOTE_MARKER + '%'}
+       )
        AND (expires_ts IS NULL OR expires_ts > now())
      ORDER BY created_at DESC
      LIMIT ${limit}

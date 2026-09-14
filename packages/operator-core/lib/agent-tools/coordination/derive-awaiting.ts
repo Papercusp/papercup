@@ -45,6 +45,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeExternalBlockers } from '../../external-blockers';
+import { EXPLICIT_PARK_NOTE_MARKER } from '../../events/await/types';
 
 /** Max entries stamped — a pointer set, not a transcript (basedOn's rule). */
 export const AWAITING_MAX_ENTRIES = 6;
@@ -91,7 +92,10 @@ export async function deriveAwaiting(opts: {
          AND subscriber_id = ${opts.ownerId}
          AND fired_at IS NULL
          AND cancelled_at IS NULL
-         AND event_key NOT LIKE 'coord:inbox-wake:%'
+         AND (
+           event_key NOT LIKE 'coord:inbox-wake:%'
+           OR note LIKE ${EXPLICIT_PARK_NOTE_MARKER + '%'}
+         )
        ORDER BY created_at DESC
        LIMIT ${limit}`;
     for (const row of awaits) {

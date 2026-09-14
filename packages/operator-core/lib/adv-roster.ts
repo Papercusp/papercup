@@ -51,6 +51,7 @@ import { getFleetScheme } from './agent-fleets-store';
 // truth) — stamp each roster entry so pui renders/colors per type.
 import { classifyAgentPane, type AgentPaneKind, type DriveMode } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import { EXPLICIT_PARK_NOTE_MARKER } from './events/await/types';
 import {
   nativeSessionHandleForAdvSession,
   nativeSessionHandleForSpawnedAgent,
@@ -1364,7 +1365,10 @@ export async function openAwaitsByOwner(ownerIds: string[]): Promise<Map<string,
        WHERE fired_at IS NULL
          AND cancelled_at IS NULL
          AND superseded_at IS NULL
-         AND event_key NOT LIKE 'coord:inbox-wake:%'
+         AND (
+           event_key NOT LIKE 'coord:inbox-wake:%'
+           OR note LIKE ${EXPLICIT_PARK_NOTE_MARKER + '%'}
+         )
          AND subscriber_id = ANY(${ownerIds}::text[])
        ORDER BY subscriber_id, created_at ASC
     `) as unknown as Array<{

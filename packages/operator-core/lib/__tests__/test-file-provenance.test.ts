@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -369,6 +369,10 @@ describe('fingerprint + snapshot against the real filesystem', () => {
 describe('end-to-end through the real router', () => {
   it('prints the banner and stamps the terminal marker line', async () => {
     const lines: string[] = [];
+    let sawListProgress = false;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      if (args.join(' ').startsWith('TEST_FILE_LIST_PROGRESS ')) sawListProgress = true;
+    });
     const spy = (...args: unknown[]) => void lines.push(args.join(' '));
     const realLog = console.log;
     console.log = spy as typeof console.log;
@@ -377,9 +381,11 @@ describe('end-to-end through the real router', () => {
       code = await main(['--dry', 'packages/operator-core/lib/__tests__/test-file-provenance.test.ts']);
     } finally {
       console.log = realLog;
+      errorSpy.mockRestore();
     }
 
     expect(code).toBe(0);
+    expect(sawListProgress).toBe(true);
     const banner = lines.find((l) => l.startsWith('TEST_FILE_PROVENANCE '));
     expect(banner).toBeDefined();
     expect(banner).toContain('phase=pre-run');
@@ -400,13 +406,19 @@ describe('end-to-end through the real router', () => {
    */
   it('keeps the existing marker-line contract intact', async () => {
     const lines: string[] = [];
+    let sawListProgress = false;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      if (args.join(' ').startsWith('TEST_FILE_LIST_PROGRESS ')) sawListProgress = true;
+    });
     const realLog = console.log;
     console.log = ((...args: unknown[]) => void lines.push(args.join(' '))) as typeof console.log;
     try {
       await main(['--dry', 'packages/operator-core/lib/__tests__/test-file-provenance.test.ts']);
     } finally {
       console.log = realLog;
+      errorSpy.mockRestore();
     }
+    expect(sawListProgress).toBe(true);
     const terminal = lines.find((l) => l.startsWith('TEST_FILE_DRYRUN'))!;
     expect(terminal).toMatch(/^TEST_FILE_DRYRUN requested=\d+ /);
     expect(/\bstatus=([a-z-]+)/.exec(terminal)?.[1]).toBe('dry-run');

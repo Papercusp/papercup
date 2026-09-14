@@ -1027,7 +1027,11 @@ describe('P-005-request-settlement-regressions: deriveContinuation (pure, P-010)
         answered: false,
         requestHistoryStatus,
       });
-      expect(gateOpenOwnerQuestion(cont).crossesOpenOwnerMessage).toBe(true);
+      expect(gateOpenOwnerQuestion(cont)).toMatchObject({
+        crossesOpenOwnerMessage: true,
+        basis: 'history-uncertain',
+        historyStatus: requestHistoryStatus,
+      });
     }
   });
 
@@ -1055,6 +1059,7 @@ describe('gateOpenOwnerQuestion (pure, P-010)', () => {
   it('trips only on a DELIBERATE boundary across an UNANSWERED owner message', () => {
     const gate = gateOpenOwnerQuestion(open);
     expect(gate.crossesOpenOwnerMessage).toBe(true);
+    expect(gate.basis).toBe('known-unanswered');
     expect(gate.refusalText).toContain('UNANSWERED');
     expect(gate.refusalText).toContain('first prompt');
   });

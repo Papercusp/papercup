@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getLatestActiveAdvSessionByOwner = vi.fn();
-vi.mock('../../../adv-sessions', () => ({
+vi.mock('../../../adv-sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../adv-sessions')>()),
   getLatestActiveAdvSessionByOwner: (ownerId: string) => getLatestActiveAdvSessionByOwner(ownerId),
 }));
 

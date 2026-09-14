@@ -77,6 +77,8 @@ describe('capability policy import graph', () => {
     );
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('scenarios 35');
+    // This is a load/exit guard, not a second hand-maintained scenario census.
+    // New registered scenarios must not red-pin it merely by growing the catalog.
+    expect(result.stdout).toMatch(/^scenarios [1-9]\d*\n$/);
   });
 });

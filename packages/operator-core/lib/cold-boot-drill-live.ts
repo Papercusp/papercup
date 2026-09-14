@@ -247,6 +247,11 @@ export interface StartColdBootDrillInput {
   workspaceId?: string | null;
   sessionClass?: string;
   effectiveWindowTokens?: number;
+  /** Explicit retry acknowledgement for a bounded/unreadable owner-request
+   *  history. Never bypasses a known unresolved owner message. */
+  acknowledgeOwnerHistoryUncertainty?: boolean;
+  /** Optional durable campaign/operator context for the requested ledger row. */
+  note?: string;
   minIntervalMs?: number;
 }
 
@@ -287,8 +292,22 @@ function startDeps(overrides: Partial<StartColdBootDrillDeps>): StartColdBootDri
 }
 
 export type StartColdBootDrillResult =
-  | { ok: true; drillId: string; sessionClass: string; queued: true; nextAllowedAt: string }
-  | { ok: false; error: string; note: string; retryAt?: string; tripwires?: unknown[] };
+  | {
+      ok: true;
+      drillId: string;
+      sessionClass: string;
+      queued: true;
+      nextAllowedAt: string;
+      ownerHistoryUncertaintyAcknowledged?: true;
+    }
+  | {
+      ok: false;
+      error: string;
+      note: string;
+      retryAt?: string;
+      tripwires?: unknown[];
+      historyStatus?: 'truncated' | 'unreadable';
+    };
 
 export async function startColdBootDrill(
   input: StartColdBootDrillInput,
@@ -367,7 +386,26 @@ export async function startColdBootDrill(
   if (!spec) {
     return { ok: false, error: 'carry_build_failed', note: 'The deterministic carry could not be assembled; the current process remains alive.' };
   }
-  if (spec.openOwnerQuestion.crossesOpenOwnerMessage) {
+  const ownerGate = spec.openOwnerQuestion;
+  const acknowledgedHistoryUncertainty =
+    ownerGate.crossesOpenOwnerMessage &&
+    ownerGate.basis === 'history-uncertain' &&
+    input.acknowledgeOwnerHistoryUncertainty === true;
+  if (ownerGate.crossesOpenOwnerMessage && !acknowledgedHistoryUncertainty) {
+    if (ownerGate.basis === 'history-uncertain') {
+      return {
+        ok: false,
+        error: 'owner_history_uncertain',
+        historyStatus: ownerGate.historyStatus,
+        note:
+          `Owner-request history is ${ownerGate.historyStatus ?? 'unknown'}; the drill cannot prove there is no older open request from its bounded tail. ` +
+          'After reconciling the owner request and checkpointing the current lane, retry with acknowledgeOwnerHistoryUncertainty:true. ' +
+          'That acknowledgement never bypasses a known unresolved owner message.',
+      };
+    }
+    // Missing basis is treated as known-unanswered for compatibility with an
+    // older/custom RespawnLaunchSpec: uncertainty is acknowledgeable only when
+    // the canonical builder positively typed it as such.
     return {
       ok: false,
       error: 'open_owner_message',
@@ -382,6 +420,7 @@ export async function startColdBootDrill(
     drillId,
     ownerId,
     sessionClass,
+    ...(input.note?.trim() ? { detail: input.note.trim() } : {}),
   };
   if (!(await deps.appendLedger(requested))) {
     return { ok: false, error: 'drill_ledger_unavailable', note: 'The drill could not be durably registered, so no process was cut.' };
@@ -426,6 +465,7 @@ export async function startColdBootDrill(
     sessionClass,
     queued: true,
     nextAllowedAt: new Date(now + interval).toISOString(),
+    ...(acknowledgedHistoryUncertainty ? { ownerHistoryUncertaintyAcknowledged: true as const } : {}),
   };
 }
 

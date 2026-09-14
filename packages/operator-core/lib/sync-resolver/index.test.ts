@@ -76,9 +76,11 @@ describe('workItemAdmission.runs (work-queue-admission-and-bulk-dedup P-005)', (
           never_claimed: '4',
           ready_cost_covered: '1',
           ready_cost_cents: '250',
+          recurrence_canonical_clusters: '1',
+          recurrence_raw_occurrences: '2',
+          recurrence_duplicate_occurrences: '1',
         },
       ],
-      [{ canonical_clusters: '1', raw_occurrences: '2', duplicate_occurrences: '1' }],
       [
         {
           id: 'run-new',
@@ -123,7 +125,9 @@ describe('workItemAdmission.runs (work-queue-admission-and-bulk-dedup P-005)', (
       sql: fakeSql as never,
     });
 
-    expect(executedSql).toHaveLength(5);
+    // Recurrence is now part of the readiness projection's one CTE-backed row,
+    // so this snapshot performs four top-level reads rather than a fifth query.
+    expect(executedSql).toHaveLength(4);
     expect(executedSql[0]?.slice(1)).toEqual(
       expect.arrayContaining(['ws-active', 'papercusp', 'promoter-tick', 'complete', 200]),
     );

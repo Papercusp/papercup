@@ -15,8 +15,8 @@ vi.mock('../workspace-registry', async (orig) => ({
   activeWorkspaceId: () => 'ws-profile-cutover',
 }));
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: syncInvalidate }));
-vi.mock('@papercusp/memory', async (orig) => ({
-  ...(await orig<typeof import('@papercusp/memory')>()),
+vi.mock('@papercusp/memory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/memory')>()),
   invalidateMemoryClient,
 }));
 

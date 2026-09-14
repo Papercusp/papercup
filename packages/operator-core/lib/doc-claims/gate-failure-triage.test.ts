@@ -146,7 +146,8 @@ describe('doc corpus gate-failure triage claim', () => {
       // the per-file `vitest list` calls must not leave the prose claiming it does. Match
       // syntax, not the formatter's quote style: the old exact string pin went red when
       // Prettier changed this .mjs file from single to double quotes without changing behavior.
-      expect(source).toContain('const perFile = group.routes.map((route) => {');
+      expect(source).toContain('const perFile = [];');
+      expect(source).toContain('for (const route of group.routes) {');
       expect(source).toMatch(
         /\[\s*['"]vitest['"]\s*,\s*['"]list['"]\s*,\s*['"]--filesOnly['"]\s*,\s*\.\.\.configArgs\s*,\s*route\.requested\s*\]/,
       );

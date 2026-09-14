@@ -18,6 +18,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { armInboxWake } from '../../../events/await/inbox-wake-arm';
+import { EXPLICIT_PARK_NOTE_MARKER } from '../../../events/await/types';
 import { probeWakeReachability, type WakeReachabilityVerdict } from '../../../events/await/wake-reachability';
 import { softText, clampText, LIMITS } from '../../limits';
 
@@ -104,7 +105,9 @@ export default defineTool({
     const beforeReachability = await probeWakeReachability(identity.ownerId).catch(() => null);
     const { awaitId, eventKey, handleNote, minSleepSec } = await armInboxWake({
       ownerId: identity.ownerId,
-      note: clampText(args.note, LIMITS.ANNOTATION) ?? 'idle — awaiting work/direction (deliver-and-wake)',
+      note: `${EXPLICIT_PARK_NOTE_MARKER} ${
+        clampText(args.note, LIMITS.ANNOTATION) ?? 'idle — awaiting work/direction (deliver-and-wake)'
+      }`,
       minSleepSec: args.min_sleep_sec,
       planRunId: args.plan_run_id,
       workspaceId: identity.workspaceId ?? undefined,

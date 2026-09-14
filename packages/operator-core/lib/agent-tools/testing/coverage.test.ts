@@ -433,7 +433,9 @@ describe('testing:coverage payload-tier shape', () => {
     gateBypass: { role: true, capability: true, quota: true },
     transport: 'mcp',
     requestedFormat: 'json',
-    requestedStructured: true,
+    // Structured-content negotiation is an explicit lossless/full contract.
+    // This case measures the model-facing session-tier projection instead.
+    requestedStructured: false,
     contextTier,
     tx: {},
   });
@@ -513,11 +515,7 @@ describe('testing:coverage payload-tier shape', () => {
         queryRows: 50,
         droppedRows: 50 - (payload?.rows.length ?? 0),
       });
-      expect(dispatched.result?.structuredContent).toMatchObject({
-        count: payload?.rows.length,
-        total: 50,
-        truncatedByLimit: true,
-      });
+      expect(dispatched.result?.structuredContent).toBeUndefined();
     },
   );
 

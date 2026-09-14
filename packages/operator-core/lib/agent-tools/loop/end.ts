@@ -90,8 +90,13 @@ export function isKeepaliveInboxWake(a: {
   eventKey: string;
   expiresTs?: string | null;
   timeoutBehavior?: string | null;
+  explicitPark?: boolean;
 }): boolean {
   if (!a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX)) return false;
+  // coord:await-inbox deliberately annotates the same standing key. The marker
+  // is authoritative even though this park is unbounded and therefore cannot
+  // be recognized from timeout shape alone.
+  if (a.explicitPark === true) return false;
   // `timeoutBehavior` defaults to 'wake' (the store's own default), matching
   // awaitGuaranteesRewake's reading of the same column.
   return a.expiresTs == null || (a.timeoutBehavior ?? 'wake') !== 'wake';

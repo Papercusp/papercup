@@ -20,6 +20,8 @@ const argsSchema = z.discriminatedUnion('op', [
     op: z.literal('start'),
     sessionClass: z.string().trim().min(1).max(120).optional(),
     effectiveWindowTokens: z.number().int().min(16_000).max(1_000_000).optional(),
+    acknowledgeOwnerHistoryUncertainty: z.literal(true).optional(),
+    note: z.string().trim().max(500).optional(),
   }),
   z.object({
     op: z.literal('grade'),
@@ -55,7 +57,7 @@ export default defineTool({
   capability: 'coord:write',
   guidance: {
     when:
-      'P-020 carry validation, or (op:retire/unretire) P-019 residual-pass retirement once a class clears the miss-rate gate. Call start at a clean boundary; the fresh successor follows the injected marker and calls grade at its next clean boundary.',
+      'P-020 carry validation, or (op:retire/unretire) P-019 residual-pass retirement once a class clears the miss-rate gate. Call start at a clean boundary; the fresh successor follows the injected marker and calls grade at its next clean boundary. If start returns owner_history_uncertain, reconcile the owner request, checkpoint the lane, then explicitly retry with acknowledgeOwnerHistoryUncertainty:true; this never bypasses a known unanswered owner message.',
     notWhen:
       'Routine compaction or ordinary session recovery — use session:request-compaction. Never start while an owner message is unanswered or work is uncheckpointed. Never retire a class without first reading its report — the tool refuses if the class is not yet evidence-clear.',
     seeAlso: ['session:request-compaction', 'coord:orient'],
@@ -74,6 +76,8 @@ export default defineTool({
             workspaceId: identity.workspaceId,
             sessionClass: args.sessionClass,
             effectiveWindowTokens: args.effectiveWindowTokens,
+            acknowledgeOwnerHistoryUncertainty: args.acknowledgeOwnerHistoryUncertainty,
+            note: args.note,
           })
         : args.op === 'grade'
           ? await gradeColdBootDrill(identity.ownerId, args.drillId)
@@ -122,4 +126,3 @@ export default defineTool({
     };
   },
 });
-

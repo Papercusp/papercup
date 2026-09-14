@@ -3665,6 +3665,9 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
           measuredHead: 'c'.repeat(40),
         },
       ],
+      // Current readers fail closed when legacy rows predate the selective
+      // coverage field, so absence materializes as blocked rather than green.
+      selectiveCoverageBlocked: true,
     });
     expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
       1,

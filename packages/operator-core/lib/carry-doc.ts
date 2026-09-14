@@ -815,6 +815,13 @@ export interface OpenOwnerQuestionGate {
    *  tripwire alongside the P-016 flush ladder (which keys on the brief, not the
    *  tail's provenance), so it lives here rather than in the done enforcement gate. */
   crossesOpenOwnerMessage: boolean;
+  /** Why the conservative gate fired. A known unresolved request must never be
+   *  bypassed. Bounded/unreadable history is a different condition: a caller
+   *  may explicitly acknowledge that uncertainty after checkpointing its lane. */
+  basis?: 'known-unanswered' | 'history-uncertain';
+  /** The reader condition behind a history-uncertain gate. Present only when
+   *  `basis === 'history-uncertain'`. */
+  historyStatus?: 'truncated' | 'unreadable';
   /** Actionable refusal text — present only when `crossesOpenOwnerMessage`. */
   refusalText?: string;
 }
@@ -828,18 +835,31 @@ export interface OpenOwnerQuestionGate {
  * wires the actual bounce, mirroring the P-016 gate's single-refuse shape.
  */
 export function gateOpenOwnerQuestion(cont: CarryDocContinuation): OpenOwnerQuestionGate {
+  const pending = unresolvedOwnerRequests(cont);
+  const historyStatus = cont.requestHistoryStatus;
   if (
     !cont.deliberate ||
-    (unresolvedOwnerRequests(cont).length === 0 && !cont.requestHistoryStatus)
+    (pending.length === 0 && !historyStatus)
   ) {
     return { crossesOpenOwnerMessage: false };
   }
+  if (pending.length > 0) {
+    return {
+      crossesOpenOwnerMessage: true,
+      basis: 'known-unanswered',
+      refusalText:
+        "This compaction is HELD: your owner's final message is still UNANSWERED, and this is a " +
+        'DELIBERATE boundary — do not abandon it across the cut. Either answer it first, or, if you are ' +
+        'compacting to gain room to answer, retry: the successor receives that exact message as its ' +
+        'first prompt (never as quoted history), so the question is carried, not lost.',
+    };
+  }
   return {
     crossesOpenOwnerMessage: true,
+    basis: 'history-uncertain',
+    historyStatus,
     refusalText:
-      (cont.requestHistoryStatus
-        ? `This compaction is HELD: owner-request history is ${cont.requestHistoryStatus.toUpperCase()}, so answered/no-demand is UNKNOWN, and this is a `
-        : 'This compaction is HELD: your owner\'s final message is still UNANSWERED, and this is a ') +
+      `This compaction is HELD: owner-request history is ${historyStatus!.toUpperCase()}, so answered/no-demand is UNKNOWN, and this is a ` +
       'DELIBERATE boundary — do not abandon it across the cut. Either answer it first, or, if you are ' +
       'compacting to gain room to answer, retry: the successor receives that exact message as its ' +
       'first prompt (never as quoted history), so the question is carried, not lost.',

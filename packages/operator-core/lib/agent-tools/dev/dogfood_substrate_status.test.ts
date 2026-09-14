@@ -30,7 +30,10 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getOrgPg: vi.fn(() => ({ sql: { unsafe: vi.fn(async () => []) } })),
 }));
 
-import { getInProcessSubstrateStatus } from '../../sync/hyperbee/in-process-status';
+import {
+  getInProcessSubstrateStatus,
+  type InProcessSubstrateStatus,
+} from '../../sync/hyperbee/in-process-status';
 import { getBootedHarness } from '../../sync/hyperbee/boot-all';
 import { loadClaimAttemptStats } from '../../orchestrator/load-claim-attempts';
 import { getPgBootedHandlesSnapshotFallback } from '../../sync/hyperbee/substrate-booted-handles-pg';
@@ -52,13 +55,9 @@ beforeEach(() => {
 
 describe('dev:dogfood_substrate_status handler', () => {
   it('publishes the harnesses[] root in the registered output contract', () => {
-    const definition = tool as unknown as {
-      guidance?: { returns?: string };
-      result: { safeParse: (value: unknown) => { success: boolean } };
-    };
-    expect(definition.guidance?.returns).toContain('harnesses[]');
+    expect(tool.guidance?.returns).toContain('harnesses[]');
     expect(
-      definition.result.safeParse({
+      tool.result.safeParse({
         substrateActive: true,
         bootedCount: 1,
         summary: { totalHarnesses: 1, worstVerdict: 'healthy' },
@@ -125,7 +124,8 @@ describe('dev:dogfood_substrate_status handler', () => {
   });
 
   it('does not report a targeted zero-handle population as healthy', async () => {
-    statusM.mockReturnValue({
+    const zeroHandleStatus: InProcessSubstrateStatus = {
+      substrateActive: true,
       bootedCount: 0,
       harnesses: [],
       logStats: [],
@@ -142,7 +142,9 @@ describe('dev:dogfood_substrate_status handler', () => {
         worstVerdict: 'healthy',
       },
       reachedSubstrateOwner: true,
-    } as never);
+      healthInputsObserved: true,
+    };
+    statusM.mockReturnValue(zeroHandleStatus);
 
     const out = body(await run({
       targetHarness: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },

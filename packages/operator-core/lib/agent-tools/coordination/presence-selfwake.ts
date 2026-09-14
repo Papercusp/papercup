@@ -53,6 +53,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { COORD_INBOX_WAKE_PREFIX, classifyDormantSchedule } from './inbox-wake';
+import { EXPLICIT_PARK_NOTE_MARKER } from '../../events/await/types';
 import type { LoopStatus } from '../../harness/routines/loop';
 
 /**
@@ -190,7 +191,10 @@ export async function fetchSelfWake(ownerIds: string[], db?: Sql): Promise<Map<s
         FROM harness_shared.event_awaits
        WHERE subscriber_id = ANY(${ownerIds}::text[])
          AND policy = 'wake'
-         AND event_key <> ${COORD_INBOX_WAKE_PREFIX} || subscriber_id
+         AND (
+           event_key <> ${COORD_INBOX_WAKE_PREFIX} || subscriber_id
+           OR note LIKE ${EXPLICIT_PARK_NOTE_MARKER + '%'}
+         )
          AND fired_at IS NULL AND cancelled_at IS NULL
          AND (expires_ts IS NULL OR expires_ts > now())`,
   ]);

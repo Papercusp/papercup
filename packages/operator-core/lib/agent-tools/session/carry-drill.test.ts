@@ -29,6 +29,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/session/carry-drill.test.ts
  */
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 // Importing the default exports self-registers both session:* tools into the
 // shared projected-tool registry (their defineTool call runs at module eval).
@@ -39,6 +40,7 @@ import { findTools } from '../../cupboard/tool-find';
 
 /** The full session:* group — both must stay indexed + discoverable. */
 const SESSION_TOOLS = ['session:carry-drill', 'session:request-compaction'] as const;
+const CARRY_DRILL_SOURCE = readFileSync(new URL('./carry-drill.ts', import.meta.url), 'utf8');
 
 type NamedDef = { name: string };
 
@@ -46,6 +48,27 @@ describe('session:* tools are registered + discoverable (EI-12618 guard)', () =>
   it('each session:* tool registers under its exact colon-form name', () => {
     expect((carryDrill as unknown as NamedDef).name).toBe('session:carry-drill');
     expect((requestCompaction as unknown as NamedDef).name).toBe('session:request-compaction');
+  });
+
+  it('start accepts its documented note and explicit history-uncertainty retry acknowledgement', () => {
+    expect(carryDrill.args.safeParse({
+      op: 'start',
+      effectiveWindowTokens: 400_000,
+      acknowledgeOwnerHistoryUncertainty: true,
+      note: 'live Codex acceptance',
+    }).success).toBe(true);
+    expect(carryDrill.args.safeParse({
+      op: 'grade',
+      drillId: 'drill-1',
+      acknowledgeOwnerHistoryUncertainty: true,
+    }).success).toBe(false);
+  });
+
+  it('threads both start-only fields from the public tool handler into the live drill helper', () => {
+    expect(CARRY_DRILL_SOURCE).toContain(
+      'acknowledgeOwnerHistoryUncertainty: args.acknowledgeOwnerHistoryUncertainty',
+    );
+    expect(CARRY_DRILL_SOURCE).toContain('note: args.note');
   });
 
   it('buildCorpus() MCP-indexes every session:* tool (what tools:find searches)', () => {
