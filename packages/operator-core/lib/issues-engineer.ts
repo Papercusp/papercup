@@ -4085,11 +4085,15 @@ export async function searchIssuesForDedup(query: string, limit = 50): Promise<E
  * place the base table's `payload->'_ei'` fold is unpacked into the issue
  * shape, so hydrating anywhere else would re-implement that mapping.
  */
-export async function issuesByIds(ids: string[]): Promise<EngineerIssue[]> {
+export async function issuesByIds(ids: string[], opts: WorkItemReadOptions = {}): Promise<EngineerIssue[]> {
   if (ids.length === 0) return [];
   const { sql } = getOrgPg();
+  const columns = projectWorkItemColumns(
+    opts.includeBody === false ? ISSUE_COLS_BODYLESS : ISSUE_COLS,
+    opts.payloadProjection,
+  );
   const rows = await sql<IssueRowDb[]>`
-    SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
+    SELECT ${sql.unsafe(columns)} FROM harness_shared.engineer_issues
      WHERE workspace_id = ${issuesScopeWorkspace()}
        AND issue_id = ANY(${ids}::text[])`;
   const rank = new Map(ids.map((id, i) => [id, i]));
