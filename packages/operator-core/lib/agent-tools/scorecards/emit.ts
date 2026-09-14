@@ -324,8 +324,7 @@ const specTestAdequacyRerunRecipeSchema = z
   })
   .strict();
 
-export const scorecardEmitArgs = z
-  .object({
+const scorecardEmitBaseShape = {
     rubricRef: z.string().min(1).max(120),
     sourceHive: z
       .string()
@@ -398,22 +397,6 @@ export const scorecardEmitArgs = z
       .describe(
         "WHAT this scorecard grades (stored as observation.subject) — e.g. { kind:'rubric', ref:'<rubricId>' } on a vetting card.",
       ),
-    vettingConsult: z
-      .string()
-      .min(1)
-      .max(120)
-      .optional()
-      .describe(
-        "Vetting linkage for a META-RUBRIC scorecard only (consult-min-max-and-rubric-vetting-2026-08-17 P-004): conversation_id of the get_feedback consult that critiqued the vetted rubric. Requires subject:{ kind:'rubric', ref:'<the vetted rubric id>' }. Do not pass this on the later plan-subject acceptance card; that card cites the separately emitted meta-rubric scorecard instead. The rubric must exist, the consult's durable opening question must name the vetted rubric id or its subject plan, AND the consult must carry at least one third-party critique reply (EI-20821478338037350) — an unrelated or opened-but-unanswered consult is refused, not silently accepted. Stamped as observation.vetting with the critique count and critics.",
-      ),
-    vettingWorkItem: z
-      .string()
-      .min(1)
-      .max(120)
-      .optional()
-      .describe(
-        "Vetting linkage, work-item channel (WI-41477): the WI-/EI- work-item whose third-party COMMENTS carry the critique of the vetted rubric — the channel a LAUNCHED independent reviewer (D-049: certification goes to an agent with no history on the artifact) can actually write to, since consult participants are router-assigned and a launched reviewer is never enrolled. Same predicate as vettingConsult, mirrored clause for clause: the work-item must exist AND carry ≥1 comment authored by neither the emitter nor the vetted rubric's author. Stamped as observation.vetting { workItemId, critiquePosts, critics }. Pass EXACTLY ONE of vettingConsult / vettingWorkItem; the vettingUnanswered waiver is consult-only (a work-item with no third-party comment is not evidence — route a consult instead).",
-      ),
     vettingUnanswered: z
       .boolean()
       .optional()
@@ -450,8 +433,53 @@ export const scorecardEmitArgs = z
       .describe(
         'Acknowledge that complete independent scorecards already exist for this rubric revision. Required to append another; force:true only bypasses unchanged-evidence deduplication and never substitutes for this acknowledgement.',
       ),
-  })
-  .strict();
+};
+
+const vettingConsultField = z
+  .string()
+  .min(1)
+  .max(120)
+  .describe(
+    "Vetting linkage for a META-RUBRIC scorecard only (consult-min-max-and-rubric-vetting-2026-08-17 P-004): conversation_id of the get_feedback consult that critiqued the vetted rubric. Requires subject:{ kind:'rubric', ref:'<the vetted rubric id>' }. Do not pass this on the later plan-subject acceptance card; that card cites the separately emitted meta-rubric scorecard instead. The rubric must exist, the consult's durable opening question must name the vetted rubric id or its subject plan, AND the consult must carry at least one third-party critique reply (EI-20821478338037350) — an unrelated or opened-but-unanswered consult is refused, not silently accepted. Stamped as observation.vetting with the critique count and critics.",
+  );
+
+const vettingWorkItemField = z
+  .string()
+  .min(1)
+  .max(120)
+  .describe(
+    "Vetting linkage, work-item channel (WI-41477): the WI-/EI- work-item whose third-party COMMENTS carry the critique of the vetted rubric — the channel a LAUNCHED independent reviewer (D-049: certification goes to an agent with no history on the artifact) can actually write to, since consult participants are router-assigned and a launched reviewer is never enrolled. Same predicate as vettingConsult, mirrored clause for clause: the work-item must exist AND carry ≥1 comment authored by neither the emitter nor the vetted rubric's author. Stamped as observation.vetting { workItemId, critiquePosts, critics }. Pass EXACTLY ONE of vettingConsult / vettingWorkItem; the vettingUnanswered waiver is consult-only (a work-item with no third-party comment is not evidence — route a consult instead).",
+  );
+
+/**
+ * Keep the alternate vetting channels visible in the published argument schema.
+ * The runtime handler has always refused both links together; a root XOR makes
+ * the same rule discoverable to clients before dispatch while retaining the
+ * valid neither-channel shape for ordinary scorecards.
+ */
+export const scorecardEmitArgs = z.xor([
+  z
+    .object({
+      ...scorecardEmitBaseShape,
+      vettingConsult: vettingConsultField,
+      vettingWorkItem: z.never().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...scorecardEmitBaseShape,
+      vettingConsult: z.never().optional(),
+      vettingWorkItem: vettingWorkItemField,
+    })
+    .strict(),
+  z
+    .object({
+      ...scorecardEmitBaseShape,
+      vettingConsult: z.never().optional(),
+      vettingWorkItem: z.never().optional(),
+    })
+    .strict(),
+]);
 
 type SpecTestAdequacyBindingError = {
   code: 'invalid_spec_test_adequacy_binding';
