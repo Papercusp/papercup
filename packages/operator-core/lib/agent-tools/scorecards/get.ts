@@ -104,7 +104,7 @@ export default defineTool({
     notWhen:
       'You want scorecard history, trend inputs, or multiple rows — scorecards:list. You want a rubric definition — rubrics:get. You are filing a scorecard — scorecards:emit.',
     chaining:
-      'scorecards:get { issueId } → if evidenceRead.complete:false, follow the criterion index and every next page → re-run every complete evidence probe → scorecards:emit the grading-integrity audit. A partial read cannot establish probe absence.',
+      'scorecards:get { issueId } → if evidenceRead.complete:false, follow the criterion index, then fetch independent criterion roots with Promise.all (keep each criterion’s evidenceRead.next page loop sequential) → concatenate every complete page → re-run every evidence probe → scorecards:emit the grading-integrity audit. A partial read cannot establish probe absence.',
     returns:
       'Returns `{ ok, scorecard, evidenceRead }`. Full reads contain every exact criterion; an oversized read contains criteria:[] plus an explicit index, not absent evidence. Criterion pages retain full-card nKeys/missingKeys and report offset/totalChars/next; concatenate before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],

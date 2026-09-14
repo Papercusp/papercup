@@ -104,6 +104,13 @@ export default defineTool({
       .describe(
         'Similarity floor for the archive-first serve (default ~0.8, precision-biased). Pass 2 to bypass the archive entirely (force fresh routing — e.g. when an archived answer did not fit your context); lower it only when a stale-but-close answer beats waking anyone.',
       ),
+    allow_revival: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe(
+        'Allow carry-respawn revival of a dead transcript candidate (default true). Pass false to keep this consult retrieval/live-peer-only and prevent any agent launch.',
+      ),
     topics: z.array(z.string().min(1)).max(8).optional().describe('Area topics to tag the consult with (ambient discoverability).'),
     harness: z.string().optional().describe('Tag the conversation harness-scoped.'),
   }),
@@ -153,7 +160,10 @@ export default defineTool({
       ...(args.archive_floor !== undefined ? { archiveFloor: args.archive_floor } : {}),
       topics: args.topics,
       harnessSlug: args.harness,
-    }, identity, { harnessSlug: ctx.harnessSlug !== '*' ? ctx.harnessSlug : null });
+    }, identity, {
+      harnessSlug: ctx.harnessSlug !== '*' ? ctx.harnessSlug : null,
+      allowRevival: args.allow_revival,
+    });
     let interestWatch;
     if (
       'verdict' in result &&

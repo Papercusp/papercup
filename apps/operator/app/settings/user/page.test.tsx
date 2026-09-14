@@ -52,6 +52,20 @@ function stubFetches(opts: { workspace: Record<string, unknown>; user: Record<st
       const u = String(url);
       const method = init?.method ?? 'GET';
       if (u.includes('/api/auth/me')) return new Response(JSON.stringify(ME), { status: 200 });
+      if (u.includes('/api/user/memory/reembed') && method === 'GET') {
+        return new Response(JSON.stringify({
+          current: { mode: 'harrier', profileId: 'harrier-oss-v1-0.6b-1024@v1' },
+          rollback: null,
+          profiles: { gemma: { profileId: 'gemma-embeddinggemma-300m-768@v1' } },
+        }), { status: 200 });
+      }
+      if (u.includes('/api/user/memory/reembed') && method === 'POST') {
+        return new Response(JSON.stringify({
+          ok: true,
+          coverage: { eligible: 2, source: 2, target: 2, missing: 0 },
+          cutover: { requested: true, applied: true },
+        }), { status: 200 });
+      }
       if (u.includes('/api/user/preferences') && method === 'GET')
         return new Response(JSON.stringify({ payload: opts.user }), { status: 200 });
       if (u.includes('/api/user/preferences')) return new Response('{}', { status: 200 }); // PATCH/DELETE
@@ -117,6 +131,29 @@ describe('UserSettingsPage override surface (shared OverridableSetting)', () => 
         ),
       ).toBe(true),
     );
+  });
+
+  it('routes a memory-system change through exact-profile re-embed + cutover', async () => {
+    stubFetches({
+      workspace: { memoryEmbedderMode: 'harrier' },
+      user: {},
+    });
+    render(<UserSettingsPage />);
+    const select = await screen.findByLabelText('Memory system');
+    fireEvent.change(select, { target: { value: 'gemma' } });
+    await waitFor(() => {
+      const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
+        ([u, init]) => String(u).includes('/api/user/memory/reembed') && (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String((call?.[1] as RequestInit).body))).toEqual({
+        from: 'harrier',
+        to: 'gemma',
+        fromProfileId: 'harrier-oss-v1-0.6b-1024@v1',
+        toProfileId: 'gemma-embeddinggemma-300m-768@v1',
+        cutover: true,
+      });
+    });
   });
 });
 

@@ -59,9 +59,9 @@ const routed = (latencyContract: 'proceed' | 'hard-blocked') => ({
   park_key: latencyContract === 'hard-blocked' ? 'consult:reply:consult-1' : null,
 });
 
-const call = async (latencyContract: 'proceed' | 'hard-blocked') => {
+const call = async (latencyContract: 'proceed' | 'hard-blocked', extra: Record<string, unknown> = {}) => {
   const out = await (tool as any).handler(
-    { question: 'What already failed here?', latency_contract: latencyContract },
+    { question: 'What already failed here?', latency_contract: latencyContract, ...extra },
     { harnessSlug: 'papercusp' },
   );
   return out.data as Record<string, unknown>;
@@ -97,6 +97,24 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
     const out = await call('proceed');
     expect(h.reconcileInterestEventAwaits).not.toHaveBeenCalled();
     expect(out).not.toHaveProperty('interest_watch');
+  });
+
+  it('keeps revival enabled by default but honors an explicit allow_revival opt-out', async () => {
+    h.getFeedbackCore.mockImplementation(async (_request: unknown, deps: { revive?: unknown }) => {
+      expect(deps.revive).toEqual(expect.any(Function));
+      return routed('proceed');
+    });
+    await call('proceed');
+    expect(h.makeConsultReviver).toHaveBeenCalledTimes(1);
+
+    h.getFeedbackCore.mockReset();
+    h.makeConsultReviver.mockClear();
+    h.getFeedbackCore.mockImplementation(async (_request: unknown, deps: { revive?: unknown }) => {
+      expect(deps.revive).toBeUndefined();
+      return routed('proceed');
+    });
+    await call('proceed', { allow_revival: false });
+    expect(h.makeConsultReviver).not.toHaveBeenCalled();
   });
 
   it('uses a live PTY host as positive authority when annotating routing candidates', async () => {

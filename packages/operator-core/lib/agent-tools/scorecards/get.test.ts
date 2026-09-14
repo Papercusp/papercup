@@ -171,6 +171,13 @@ describe('scorecards:get evidence-first projection', () => {
     }
   });
 
+  it('guides oversized audits to parallelize independent criteria while preserving page order', () => {
+    const tool = lookupByMcpName('scorecards:get');
+    const chaining = (tool as unknown as { guidance?: { chaining?: string } }).guidance?.chaining ?? '';
+    expect(chaining).toContain('Promise.all');
+    expect(chaining).toContain('each criterion’s evidenceRead.next page loop sequential');
+  });
+
   it('rejects unknown criterion keys and out-of-range offsets instead of returning empty evidence', async () => {
     readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard });
     await expect(getTool.handler(

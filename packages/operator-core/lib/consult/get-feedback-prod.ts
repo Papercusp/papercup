@@ -8,6 +8,9 @@ export async function getFeedbackProd(
   options: {
     harnessSlug?: string | null;
     filterRoute?: (route: Awaited<ReturnType<GetFeedbackDeps['route']>>) => Promise<Awaited<ReturnType<GetFeedbackDeps['route']>>>;
+    /** Keep the default revival behavior, but let a caller that only wants
+     * retrieval/live-peer routing prevent any carry-respawn side effect. */
+    allowRevival?: boolean;
   } = {},
 ) {
   const [
@@ -86,10 +89,14 @@ export async function getFeedbackProd(
         return null;
       }
     },
-    revive: makeConsultReviver({
-      workspaceId: request.workspaceId,
-      harnessSlug: request.harnessSlug?.trim() || options.harnessSlug || null,
-      launchedBy: identity.ownerId,
-    }),
+    ...(options.allowRevival === false
+      ? {}
+      : {
+          revive: makeConsultReviver({
+            workspaceId: request.workspaceId,
+            harnessSlug: request.harnessSlug?.trim() || options.harnessSlug || null,
+            launchedBy: identity.ownerId,
+          }),
+        }),
   });
 }

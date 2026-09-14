@@ -118,6 +118,17 @@ export function shouldRediscoverOperatorUrl(args = {}, env = process.env) {
   );
 }
 
+/**
+ * Pinned operator URLs are caller-selected endpoints, not managed launcher
+ * routes. A dead pin must report its connection failure promptly instead of
+ * spending the managed route's 120s recovery budget retrying an endpoint that
+ * cannot be rediscovered or rebased. Managed/discoverable routes retain their
+ * bounded retry loop for operator restarts.
+ */
+export function ptoolConnectionRetryOptions(args = {}, env = process.env) {
+  return shouldRediscoverOperatorUrl(args, env) ? {} : { maxAttempts: 1 };
+}
+
 /* ─── arg parsing (pure — exported for tests) ─────────────────────────── */
 
 /**
@@ -2912,8 +2923,10 @@ async function main() {
     toolName: args.tool,
   });
   const scope = { workspace, harness, tokenFile: args.tokenFile, transport: args.transport };
-  const rediscover = shouldRediscoverOperatorUrl(args, process.env) ? discoverOperatorUrl : null;
+  const retryOptions = ptoolConnectionRetryOptions(args, process.env);
+  const rediscover = Object.keys(retryOptions).length === 0 ? discoverOperatorUrl : null;
   const connectOperator = () => connectWithLocalRetry(connect, operatorUrl, scope, {
+    ...retryOptions,
     rediscover,
     onRebase: (freshBase) => {
       operatorUrl = freshBase;

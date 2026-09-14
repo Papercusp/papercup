@@ -38,10 +38,24 @@ import { StepKeys } from './StepKeys';
 let credsBody: unknown;
 let postFails: boolean;
 let posts: unknown[];
+let memoryPosts: unknown[];
 function installFetch() {
   posts = [];
+  memoryPosts = [];
   const fn = vi.fn(async (url: string, init?: RequestInit) => {
-    if (init?.method === 'POST') {
+    const target = String(url);
+    if (target.includes('/api/user/memory/reembed') && !init?.method) {
+      return new Response(JSON.stringify({
+        current: { mode: 'harrier', profileId: 'harrier-oss-v1-0.6b-1024@v1' },
+        rollback: null,
+        profiles: { gemma: { profileId: 'gemma-embeddinggemma-300m-768@v1' } },
+      }), { status: 200 });
+    }
+    if (target.includes('/api/user/memory/reembed') && init?.method === 'POST') {
+      memoryPosts.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ ok: true, cutover: { applied: true } }), { status: 200 });
+    }
+    if (target.includes('/api/credentials') && init?.method === 'POST') {
       posts.push(JSON.parse(String(init.body)));
       if (postFails) return new Response('err', { status: 500 });
       return new Response(JSON.stringify({ openai_api_key: 'sk-***last' }), { status: 200 });
@@ -88,6 +102,19 @@ describe('StepKeys (SetupWizard API-keys step)', () => {
     expect(screen.getByRole('radio', { name: /BGE-small/ })).toBeTruthy();
     expect(screen.getByRole('radio', { name: /OpenAI text-embedding-3-small/ })).toBeTruthy();
     expect(screen.getByRole('radio', { name: /No persistent memory/ })).toBeTruthy();
+  });
+
+  it('routes a memory choice through exact-profile re-embed + cutover', async () => {
+    installFetch();
+    render(<StepKeys />);
+    fireEvent.click(await screen.findByRole('radio', { name: /EmbeddingGemma-300m/ }));
+    await waitFor(() => expect(memoryPosts).toEqual([{
+      from: 'harrier',
+      to: 'gemma',
+      fromProfileId: 'harrier-oss-v1-0.6b-1024@v1',
+      toProfileId: 'gemma-embeddinggemma-300m-768@v1',
+      cutover: true,
+    }]));
   });
 
   it('shows the "Save" button label and no saved-mask chip when no key is stored', async () => {
