@@ -50,7 +50,12 @@ import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { RESERVATION_ENFORCED_FROM, migrationNumberOf, reservationFilenameConflicts } from './migration-reservation';
+import {
+  RESERVATION_ENFORCED_FROM,
+  assertMigrationReservation,
+  migrationNumberOf,
+  reservationFilenameConflicts,
+} from './migration-reservation';
 import { BACKUP_MIGRATION_ADVISORY_LOCK_KEY } from '@papercusp/backup/application-names';
 import {
   preDestructiveSnapshotAdmissionGuardSql,
@@ -58,7 +63,7 @@ import {
 } from '@papercusp/backup/snapshot-admission';
 import { activeWorkspaceId } from './workspace-registry';
 
-export { RESERVATION_ENFORCED_FROM, migrationNumberOf } from './migration-reservation';
+export { RESERVATION_ENFORCED_FROM, assertMigrationReservation, migrationNumberOf } from './migration-reservation';
 
 const BOOT_MIGRATE_IDENTITY: AgentIdentity = {
   ownerId: 'boot-migrate',
@@ -225,20 +230,6 @@ export async function reconcileMigrationReservations(
     log(`migration_reservations reconcile skipped: ${(e as Error)?.message ?? String(e)}`);
     return 0;
   }
-}
-
-/** Fail closed before native boot/gate-preflight applies a mismatched file. */
-export async function assertMigrationReservation(client: postgres.Sql, filename: string): Promise<void> {
-  const num = migrationNumberOf(filename);
-  if (num === null || num < RESERVATION_ENFORCED_FROM) return;
-  const rows = await client<{ filename: string | null }[]>`
-    SELECT filename FROM harness_shared.migration_reservations WHERE num = ${num}`;
-  const reservedFilename = rows[0]?.filename ?? null;
-  if (reservedFilename === filename) return;
-  if (reservedFilename === null) {
-    throw new Error(`[migration-reservation-guard] ${filename} has no reservation row`);
-  }
-  throw new Error(`[migration-reservation-guard] ${filename} cannot use ${num}; reserved for ${reservedFilename}`);
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
