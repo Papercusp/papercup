@@ -29,6 +29,7 @@ import {
   isBoundedSessionRequestCompactionArgs,
   isBoundedLoopArmArgs,
   isBoundedLoopCheckpointArgs,
+  isBoundedActivityToolLogArgs,
   isBoundedSessionsTimelineArgs,
   isBoundedLocksQueueArgs,
   isBoundedLocksReleaseArgs,
@@ -793,6 +794,67 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
         arguments: {
           name: 'mcp__papercusp_su__testing_run_status',
           args: { runId: 'run-1' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    'activity:tool-log',
+    'activity_tool_log',
+    'mcp__papercusp-su__activity_tool_log',
+    'mcp__papercusp_su__activity_tool_log',
+  ])('does NOT shed a bounded activity:tool-log recovery read under critical pressure: %s', (name) => {
+    const args = {
+      owner: 'self',
+      since: '2026-09-14T07:00:00Z',
+      until: '2026-09-14T08:00:00Z',
+      max_lines: 40,
+      top_k: 8,
+    };
+    expect(isBoundedActivityToolLogArgs(args)).toBe(true);
+    const body = toolsCall(16, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('accepts a bounded session-scoped activity:tool-log read and keeps broad forms sheddable', () => {
+    const sessionScoped = { session_id: 'session-123', max_lines: 5, top_k: 1 };
+    expect(isBoundedActivityToolLogArgs(sessionScoped)).toBe(true);
+    expect(classifyMcpBody(toolsCall(17, 'activity:tool-log', sessionScoped))).toEqual({
+      sheddable: false,
+      id: null,
+    });
+
+    for (const args of [
+      {},
+      { max_lines: 40 },
+      { owner: 'self', max_lines: 41 },
+      { owner: 'self', max_lines: 4 },
+      { owner: 'self', top_k: 9 },
+      { owner: 'self', since: '-15 min' },
+      { owner: 'self', until: 'not-an-iso-timestamp' },
+      { owner: 'self', extra: true },
+    ]) {
+      expect(isBoundedActivityToolLogArgs(args)).toBe(false);
+      const body = toolsCall(18, 'activity:tool-log', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 18 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a bounded activity:tool-log read through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 19,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__activity_tool_log',
+          args: { owner: 'self', max_lines: 5, top_k: 3 },
         },
       },
     });

@@ -307,6 +307,13 @@ const CRITICAL_SESSION_COMPACTION_CONTINUE_NOTE_MAX_CHARS = 1_000;
 const CRITICAL_SESSION_COMPACTION_REASON_MAX_CHARS = 600;
 const TESTING_RUN_STATUS_NAME = normalizeMcpName('testing:run-status');
 const CRITICAL_TESTING_RUN_STATUS_MAX_RUN_ID_CHARS = 120;
+const ACTIVITY_TOOL_LOG_NAME = normalizeMcpName('activity:tool-log');
+const CRITICAL_ACTIVITY_TOOL_LOG_MAX_SCOPE_CHARS = 256;
+const CRITICAL_ACTIVITY_TOOL_LOG_MAX_BOUNDARY_CHARS = 64;
+const CRITICAL_ACTIVITY_TOOL_LOG_MAX_LINES = 40;
+const CRITICAL_ACTIVITY_TOOL_LOG_MAX_TOP_K = 8;
+const ACTIVITY_TOOL_LOG_ISO_BOUNDARY_RE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
 const SESSIONS_SEARCH_NAME = normalizeMcpName('sessions:search');
 const CRITICAL_SESSIONS_SEARCH_MAX_QUERY_CHARS = 500;
 const CRITICAL_SESSIONS_SEARCH_MAX_LIMIT = 5;
@@ -1067,6 +1074,64 @@ export function isBoundedTestingRunStatusArgs(args: unknown): boolean {
     args.runId.trim().length > 0 &&
     args.runId.length <= CRITICAL_TESTING_RUN_STATUS_MAX_RUN_ID_CHARS
   );
+}
+
+function isBoundedActivityToolLogBoundary(value: unknown): value is string {
+  return (
+    isBoundedCriticalText(value, CRITICAL_ACTIVITY_TOOL_LOG_MAX_BOUNDARY_CHARS, true) &&
+    ACTIVITY_TOOL_LOG_ISO_BOUNDARY_RE.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+
+/**
+ * `activity:tool-log` is the compact recovery view for reconstructing what a
+ * session or owner actually did. Its normal handler is already decayed and
+ * line-bounded, but an unscoped call can still scan the whole activity ledger.
+ * Keep the critical-pressure reserve to one explicit owner/session scope and
+ * the handler's default-sized display budgets; the normal schema remains the
+ * final authority after admission.
+ */
+export function isBoundedActivityToolLogArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['owner', 'session_id', 'since', 'until', 'max_lines', 'top_k']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+
+  const hasOwner = args.owner !== undefined;
+  const hasSession = args.session_id !== undefined;
+  if (!hasOwner && !hasSession) return false;
+  if (
+    hasOwner &&
+    !isBoundedCriticalText(args.owner, CRITICAL_ACTIVITY_TOOL_LOG_MAX_SCOPE_CHARS, true)
+  ) {
+    return false;
+  }
+  if (
+    hasSession &&
+    !isBoundedCriticalText(args.session_id, CRITICAL_ACTIVITY_TOOL_LOG_MAX_SCOPE_CHARS, true)
+  ) {
+    return false;
+  }
+  for (const field of ['since', 'until']) {
+    if (args[field] !== undefined && !isBoundedActivityToolLogBoundary(args[field])) return false;
+  }
+  if (
+    args.max_lines !== undefined &&
+    (!Number.isInteger(args.max_lines) ||
+      (args.max_lines as number) < 5 ||
+      (args.max_lines as number) > CRITICAL_ACTIVITY_TOOL_LOG_MAX_LINES)
+  ) {
+    return false;
+  }
+  if (
+    args.top_k !== undefined &&
+    (!Number.isInteger(args.top_k) ||
+      (args.top_k as number) < 1 ||
+      (args.top_k as number) > CRITICAL_ACTIVITY_TOOL_LOG_MAX_TOP_K)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -2369,6 +2434,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === COORD_ROSTER_NAME) return isBoundedCoordRosterArgs(args);
   if (normalized === COORD_INBOX_NAME) return isBoundedCoordInboxArgs(args);
   if (normalized === DEV_TELEMETRY_NAME) return isBoundedDevTelemetryArgs(args);
+  if (normalized === ACTIVITY_TOOL_LOG_NAME) return isBoundedActivityToolLogArgs(args);
   if (normalized === SCHEDULER_GET_NEXT_NAME) return isBoundedSchedulerGetNextArgs(args);
   if (normalized === LOOP_STATUS_NAME) return isBoundedLoopStatusArgs(args);
   if (normalized === LOOP_ARM_NAME) return isBoundedLoopArmArgs(args);
