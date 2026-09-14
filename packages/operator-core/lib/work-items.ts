@@ -2028,15 +2028,51 @@ function featureSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSe
 }
 
 /** Batch-hydrate feature-family rows by id (order is restored by the caller). */
-async function featuresByIds(ids: string[]): Promise<WorkItem[]> {
+async function featuresByIds(
+  ids: string[],
+  harness?: string,
+  opts: WorkItemReadOptions = {},
+): Promise<WorkItem[]> {
   if (ids.length === 0) return [];
   const { sql } = getOrgPg();
+  const columns = projectWorkItemColumns(FEATURE_COLS, opts.payloadProjection);
   const rows = await sql<FeatureRowDb[]>`
-    SELECT ${sql.unsafe(FEATURE_COLS)}
+    SELECT ${sql.unsafe(columns)}
       FROM harness_shared.harness_features_consolidated
-     WHERE workspace_id = ${activeWorkspaceId()}
+       WHERE workspace_id = ${activeWorkspaceId()}
+       AND ${harness ? sql`harness_slug = ${harness}` : sql`TRUE`}
        AND feature_id = ANY(${ids}::text[])`;
   return rows.map(featureRowToWorkItem);
+}
+
+/**
+ * Batch-hydrate the unified work-item facade by id.
+ *
+ * The ordinary get path deliberately preserves its issue-first lookup semantics,
+ * but a projected multi-id read should not repeat that two-table lookup once per
+ * id. Under pool pressure six ids otherwise fan out to twelve independent reads
+ * (issue lookup + feature fallback), which can exhaust the org pool before the
+ * shared work_items:get budget expires. Keep this helper set-based: one issue
+ * query, one feature query for ids not found in the issue family, then restore the
+ * caller's order. The optional read projection is used by the completion-evidence
+ * census and keeps the large JSONB payload narrow at the source.
+ */
+export async function getWorkItemsByIds(
+  ids: string[],
+  harness?: string,
+  opts: WorkItemReadOptions = {},
+): Promise<WorkItem[]> {
+  if (ids.length === 0) return [];
+  const uniqueIds = [...new Set(ids)];
+  const issues = await issuesByIds(uniqueIds, opts);
+  const byId = new Map<string, WorkItem>(issues.map((issue) => [issue.id, issueToWorkItem(issue)]));
+  const featureIds = uniqueIds.filter((id) => !byId.has(id));
+  const features = await featuresByIds(featureIds, harness, opts);
+  for (const feature of features) byId.set(feature.id, feature);
+  return ids.flatMap((id) => {
+    const item = byId.get(id);
+    return item ? [item] : [];
+  });
 }
 
 /** The label this consumer's coverage verdict is reported under (WI-9393). */
