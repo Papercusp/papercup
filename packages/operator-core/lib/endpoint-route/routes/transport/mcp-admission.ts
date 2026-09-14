@@ -160,9 +160,10 @@ export function resetMcpAdmissionForTests(): void {
  * `scorecards:emit` is admitted only for one terminal grading-integrity audit of one scorecard;
  * ordinary scorecard writes remain shed. A judge's complete `scorecards:evaluate` payload is
  * admitted only when its ratings/instrument shape is bounded; ordinary complete evaluations
- * remain shed. The three read-only judge audit probes
- * (`plans:evaluate-spec-test-adequacy`, `gates:degenerate-check`, and
- * `plans:get-spec-evidence`) are admitted only for the judge role and bounded argument shapes;
+ * remain shed. The five read-only judge audit probes
+ * (`plans:evaluate-spec-test-adequacy`, `gates:degenerate-check`,
+ * `plans:get-specs`, `plans:get-spec-evidence`, and the exact-ID `issues:list` read) are
+ * admitted only for the judge role and bounded argument shapes;
  * their ordinary callers remain shed. `work_items:checkpoint` is admitted only for a single
  * item, because a bounded durability write is needed to preserve successor state during the
  * pressure condition; bulk checkpoint batches remain shed. `scorecards:get` is admitted only
@@ -197,6 +198,7 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'testing:run-status',
     'sessions:search',
     'loop:status',
+    'loop:checkpoint',
   ].map(normalizeMcpName),
 );
 const DEV_TELEMETRY_NAME = normalizeMcpName('dev:telemetry');
@@ -208,6 +210,7 @@ const DEV_TELEMETRY_TRANSPORTS = new Set(['http', 'mcp', 'ipc', 'in_process', 'u
 const SCHEDULER_GET_NEXT_NAME = normalizeMcpName('scheduler:get_next');
 const LOOP_STATUS_NAME = normalizeMcpName('loop:status');
 const LOOP_ARM_NAME = normalizeMcpName('loop:arm');
+const LOOP_CHECKPOINT_NAME = normalizeMcpName('loop:checkpoint');
 const EVENTS_STATUS_NAME = normalizeMcpName('events:status');
 const CRITICAL_SCHEDULER_MAX_HARNESS_CHARS = 200;
 const CRITICAL_SCHEDULER_MAX_HELD_PATH_CHARS = 512;
@@ -217,6 +220,9 @@ const CRITICAL_LOOP_STATUS_MAX_STRING_CHARS = 120;
 const CRITICAL_LOOP_ARM_MAX_STRING_CHARS = 120;
 const CRITICAL_LOOP_ARM_MAX_GOAL_CHARS = 500;
 const CRITICAL_LOOP_ARM_MAX_INTERVAL_SEC = 15 * 60;
+const CRITICAL_LOOP_CHECKPOINT_MAX_ARGUMENT_CHARS = 16_000;
+const CRITICAL_LOOP_CHECKPOINT_MAX_FIELD_CHARS = 8_000;
+const CRITICAL_LOOP_CHECKPOINT_MAX_ARRAY_ITEMS = 12;
 const CRITICAL_EVENTS_STATUS_MAX_EVENT_CHARS = 200;
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const COORD_SEND_NAME = normalizeMcpName('coord:send');
@@ -277,6 +283,9 @@ const CRITICAL_WORK_ITEMS_SEARCH_MAX_QUERY_CHARS = 400;
 const CRITICAL_WORK_ITEMS_SEARCH_MAX_HARNESS_CHARS = 80;
 const CRITICAL_WORK_ITEMS_SEARCH_MAX_KIND_CHARS = 80;
 const CRITICAL_WORK_ITEMS_SEARCH_MAX_LIMIT = 20;
+const RECIPES_SEARCH_NAME = normalizeMcpName('recipes:search');
+const CRITICAL_RECIPES_SEARCH_MAX_QUERY_CHARS = 400;
+const CRITICAL_RECIPES_SEARCH_MAX_LIMIT = 20;
 const PLANS_SEARCH_NAME = normalizeMcpName('plans:search');
 const CRITICAL_PLANS_SEARCH_MAX_QUERY_CHARS = 400;
 const CRITICAL_PLANS_SEARCH_MAX_SLUG_CHARS = 200;
@@ -308,9 +317,13 @@ const RUBRICS_GET_NAME = normalizeMcpName('rubrics:get');
 const IMPROVEMENTS_CAPTURE_NAME = normalizeMcpName('improvements:capture');
 const EVALUATE_SPEC_TEST_ADEQUACY_NAME = normalizeMcpName('plans:evaluate-spec-test-adequacy');
 const DEGENERATE_CHECK_NAME = normalizeMcpName('gates:degenerate-check');
+const GET_SPECS_NAME = normalizeMcpName('plans:get-specs');
 const GET_SPEC_EVIDENCE_NAME = normalizeMcpName('plans:get-spec-evidence');
+const ISSUES_LIST_NAME = normalizeMcpName('issues:list');
 const CRITICAL_SCORECARDS_LIST_MAX_ROWS = 25;
 const CRITICAL_SCORECARDS_GET_ISSUE_ID_MAX = 120;
+const CRITICAL_ISSUES_LIST_MAX_QUERY_CHARS = 120;
+const CRITICAL_ISSUES_LIST_MAX_LIMIT = 10;
 const CRITICAL_SCORECARDS_EVALUATE_MAX_RATINGS = 64;
 const CRITICAL_SCORECARDS_EVALUATE_MAX_SNAPSHOTS = 64;
 const CRITICAL_SCORECARDS_EVALUATE_MAX_ARGUMENT_CHARS = 64_000;
@@ -518,6 +531,65 @@ function isBoundedJudgeSpecEvidenceArgs(args: unknown): boolean {
     (field) => args[field] !== undefined,
   );
   return hasSelector;
+}
+
+/**
+ * A judge's grading audit also needs the canonical clause read, but
+ * `plans:get-specs` has no result-page limit of its own. Admit only a bounded
+ * current read with an explicit selector; history and selector-free reads stay
+ * on the ordinary pressure-shed path.
+ */
+function isBoundedJudgeGetSpecsArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['harness', 'slug', 'specIds', 'revision', 'includeHistory']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (
+    typeof args.slug !== 'string' ||
+    args.slug.trim().length === 0 ||
+    args.slug.length > CRITICAL_PLANS_SEARCH_MAX_SLUG_CHARS
+  ) {
+    return false;
+  }
+  if (
+    args.harness !== undefined &&
+    !isBoundedCriticalText(args.harness, CRITICAL_PLANS_SEARCH_MAX_HARNESS_CHARS, true)
+  ) {
+    return false;
+  }
+  if (args.includeHistory !== undefined && args.includeHistory !== false) return false;
+  if (args.revision !== undefined && !isBoundedPositiveInt(args.revision, Number.MAX_SAFE_INTEGER)) return false;
+  return (
+    isBoundedStringArray(args.specIds) &&
+    (args.specIds as string[]).every((id) => id.length <= CRITICAL_PLANS_SEARCH_MAX_SLUG_CHARS)
+  );
+}
+
+/**
+ * A grading-integrity audit needs to re-read one authoritative issue after a
+ * validator or scorecard points at it. `issues:list` normally performs a page
+ * plus an unbounded total count and its `q` filter is a title/body substring,
+ * so reserve the critical-pressure lane only for the exact production issue-id
+ * shape, with the body explicitly requested and a small result page. Other
+ * filters, rollups, and free-text searches stay on the ordinary shed path.
+ */
+export function isBoundedJudgeIssuesListArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['q', 'includeBody', 'limit']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (
+    typeof args.q !== 'string' ||
+    args.q.length === 0 ||
+    args.q.length > CRITICAL_ISSUES_LIST_MAX_QUERY_CHARS ||
+    !/^EI-[0-9]+$/.test(args.q)
+  ) {
+    return false;
+  }
+  if (args.includeBody !== true) return false;
+  return (
+    Number.isInteger(args.limit) &&
+    (args.limit as number) >= 1 &&
+    (args.limit as number) <= CRITICAL_ISSUES_LIST_MAX_LIMIT
+  );
 }
 
 function isBoundedScratchCapabilityReadArgs(args: unknown): boolean {
@@ -811,6 +883,21 @@ export function isBoundedWorkItemsSearchArgs(args: unknown): boolean {
   }
   if (args.includeObservations !== undefined && args.includeObservations !== false) return false;
   return true;
+}
+
+/**
+ * `recipes:search` normally acquires an embedder for its semantic leg. During
+ * critical pressure, reserve only the explicit lexical-only recovery form:
+ * require a small query and result page, and reject the context bag so this
+ * exception cannot turn into an authority-enriched search lane.
+ */
+export function isBoundedRecipesSearchArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['query', 'limit', 'semantic']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (!isBoundedCriticalText(args.query, CRITICAL_RECIPES_SEARCH_MAX_QUERY_CHARS, true)) return false;
+  if (args.semantic !== false) return false;
+  return isBoundedPositiveInt(args.limit, CRITICAL_RECIPES_SEARCH_MAX_LIMIT);
 }
 
 /**
@@ -1694,6 +1781,114 @@ function isBoundedWorkItemsCheckpointArgs(args: unknown): boolean {
   );
 }
 
+/**
+ * A loop checkpoint is the smallest durable continuation write for an su
+ * session, so it must remain available while ordinary MCP calls are shed.
+ * Keep the pressure exception to the caller's own note-shaped fields and a
+ * bounded total payload; row retirement, learned cross-item writes, reads,
+ * and owner overrides remain on the ordinary retryable path.
+ */
+export function isBoundedLoopCheckpointArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set([
+    'note',
+    'checkpoint',
+    'did',
+    'left',
+    'insight',
+    'next',
+    'keyInsight',
+    'nextAction',
+    'goal',
+    'workItem',
+    'harness',
+    'walls',
+    'checks',
+    'expectedHash',
+  ]);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+
+  const encoded = (() => {
+    try {
+      return JSON.stringify(args);
+    } catch {
+      return null;
+    }
+  })();
+  if (!encoded || encoded.length > CRITICAL_LOOP_CHECKPOINT_MAX_ARGUMENT_CHARS) return false;
+
+  const textFields = ['note', 'did', 'left', 'insight', 'next', 'keyInsight', 'nextAction', 'goal', 'workItem'];
+  for (const field of textFields) {
+    const value = args[field];
+    if (
+      value !== undefined &&
+      value !== null &&
+      !isBoundedCriticalText(value, CRITICAL_LOOP_CHECKPOINT_MAX_FIELD_CHARS)
+    ) {
+      return false;
+    }
+  }
+  if (args.checkpoint !== undefined) {
+    const checkpoint = args.checkpoint;
+    if (typeof checkpoint === 'string') {
+      if (!isBoundedCriticalText(checkpoint, CRITICAL_LOOP_CHECKPOINT_MAX_FIELD_CHARS)) return false;
+    } else if (isRecord(checkpoint)) {
+      const checkpointKeys = new Set(['did', 'left', 'insight', 'next', 'goal', 'keyInsight', 'nextAction']);
+      if (Object.keys(checkpoint).some((key) => !checkpointKeys.has(key))) return false;
+      for (const value of Object.values(checkpoint)) {
+        if (value !== undefined && value !== null && !isBoundedCriticalText(value, CRITICAL_LOOP_CHECKPOINT_MAX_FIELD_CHARS)) {
+          return false;
+        }
+      }
+    } else {
+      return false;
+    }
+  }
+  if (
+    args.harness !== undefined &&
+    !isBoundedCriticalText(args.harness, 120, true)
+  ) {
+    return false;
+  }
+  if (
+    args.expectedHash !== undefined &&
+    args.expectedHash !== null &&
+    (typeof args.expectedHash !== 'string' || !/^[0-9a-f]{12}$/i.test(args.expectedHash))
+  ) {
+    return false;
+  }
+  for (const field of ['walls', 'checks']) {
+    const value = args[field];
+    if (value === undefined) continue;
+    if (!Array.isArray(value) || value.length > CRITICAL_LOOP_CHECKPOINT_MAX_ARRAY_ITEMS) return false;
+    let encodedRows: string;
+    try {
+      encodedRows = JSON.stringify(value);
+    } catch {
+      return false;
+    }
+    if (encodedRows.length > CRITICAL_LOOP_CHECKPOINT_MAX_FIELD_CHARS) return false;
+  }
+  const writeKeys = new Set([
+    'note',
+    'checkpoint',
+    'did',
+    'left',
+    'insight',
+    'next',
+    'keyInsight',
+    'nextAction',
+    'goal',
+    'walls',
+    'checks',
+  ]);
+  return Object.keys(args).some((key) => {
+    if (!writeKeys.has(key)) return false;
+    const value = args[key];
+    return value !== undefined && value !== null;
+  });
+}
+
 function isBoundedCriticalText(value: unknown, max: number, oneLine = false): value is string {
   return (
     typeof value === 'string' &&
@@ -2072,6 +2267,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === SCHEDULER_GET_NEXT_NAME) return isBoundedSchedulerGetNextArgs(args);
   if (normalized === LOOP_STATUS_NAME) return isBoundedLoopStatusArgs(args);
   if (normalized === LOOP_ARM_NAME) return isBoundedLoopArmArgs(args);
+  if (normalized === LOOP_CHECKPOINT_NAME) return isBoundedLoopCheckpointArgs(args);
   if (normalized === EVENTS_STATUS_NAME) return isBoundedEventsStatusArgs(args);
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
   if (normalized === WORK_ITEMS_LIST_NAME) return isBoundedWorkItemsListArgs(args);
@@ -2094,6 +2290,15 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   }
   if (normalized === DEGENERATE_CHECK_NAME) {
     return isJudgeRoleRequest(requestUrl) && isBoundedJudgeDegenerateCheckArgs(args);
+  }
+  if (normalized === GET_SPECS_NAME) {
+    return isJudgeRoleRequest(requestUrl) && isBoundedJudgeGetSpecsArgs(args);
+  }
+  if (normalized === ISSUES_LIST_NAME) {
+    return isJudgeRoleRequest(requestUrl) && isBoundedJudgeIssuesListArgs(args);
+  }
+  if (normalized === RECIPES_SEARCH_NAME) {
+    return isBoundedRecipesSearchArgs(args);
   }
   if (normalized === GET_SPEC_EVIDENCE_NAME) {
     return isJudgeRoleRequest(requestUrl) && isBoundedJudgeSpecEvidenceArgs(args);

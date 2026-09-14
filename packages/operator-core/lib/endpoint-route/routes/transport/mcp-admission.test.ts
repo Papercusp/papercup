@@ -28,12 +28,14 @@ import {
   isBoundedGitSyncRunArgs,
   isBoundedSessionRequestCompactionArgs,
   isBoundedLoopArmArgs,
+  isBoundedLoopCheckpointArgs,
   isBoundedLocksQueueArgs,
   isBoundedLocksReleaseArgs,
   isBoundedSessionsSearchArgs,
   isBoundedWorkItemsListArgs,
   isBoundedWorkItemsSearchArgs,
   isBoundedPlansSearchArgs,
+  isBoundedRecipesSearchArgs,
   isBoundedWorkItemsCompleteArgs,
   isBoundedWorkItemsSetStateArgs,
 } from './mcp-admission';
@@ -593,6 +595,57 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
   });
 
   it.each([
+    ['canonical', 'recipes:search'],
+    ['underscore', 'recipes_search'],
+    ['mcp-advertised', 'mcp__papercusp-su__recipes_search'],
+    ['mcp-advertised-underscore', 'mcp__papercusp_su__recipes_search'],
+  ])('does NOT shed a bounded lexical-only recipes:search under critical pressure: %s', (_label, name) => {
+    const args = {
+      query: 'find the recovery recipe for this lane',
+      limit: 5,
+      semantic: false,
+    };
+    expect(isBoundedRecipesSearchArgs(args)).toBe(true);
+    const body = toolsCall(15, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps semantic, broad, malformed, and enriched recipes:search forms sheddable under critical pressure', () => {
+    for (const args of [
+      { query: 'recover this', limit: 5 },
+      { query: 'recover this', semantic: true, limit: 5 },
+      { query: 'recover this', semantic: false, limit: 21 },
+      { query: 'recover this', semantic: false, limit: 0 },
+      { query: 'recover this', semantic: false, context: { fleet: 'live-fleet' }, limit: 5 },
+      { query: 'x'.repeat(401), semantic: false, limit: 5 },
+      { query: 'recover this', semantic: false, extra: 'unbounded', limit: 5 },
+    ]) {
+      expect(isBoundedRecipesSearchArgs(args)).toBe(false);
+      const body = toolsCall(16, 'recipes:search', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 16 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a bounded lexical-only recipes:search through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 17,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__recipes_search',
+          args: { query: 'find a recovery recipe', semantic: false, limit: 5 },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
     'git-sync:run',
     'git_sync_run',
     'mcp__papercusp-su__git_sync_run',
@@ -1021,6 +1074,57 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     expect(
       classifyMcpBody(toolsCall(18, 'loop:status', { unexpected: 'unbounded' })),
     ).toEqual({ sheddable: true, id: 18 });
+  });
+
+  it.each([
+    ['canonical', 'loop:checkpoint'],
+    ['underscore', 'loop_checkpoint'],
+    ['mcp-advertised', 'mcp__papercusp_su__loop_checkpoint'],
+  ])('does NOT shed a bounded loop checkpoint under critical pressure: %s', (_label, name) => {
+    const args = {
+      did: 'completed the current lane step',
+      left: 'pull the next admitted item',
+      insight: 'the durable checkpoint preserves the next wake context',
+      next: 'resume scheduler pull',
+      harness: 'papercusp',
+    };
+    expect(isBoundedLoopCheckpointArgs(args)).toBe(true);
+    const body = toolsCall(19, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('recognizes a bounded loop checkpoint through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 20,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__loop_checkpoint',
+          args: { did: 'persist the current wake state', next: 'resume the lane' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps reads, owner overrides, retirement controls, and oversized loop checkpoints sheddable', () => {
+    for (const args of [
+      { read: true },
+      { harness: 'papercusp' },
+      { expectedHash: '551d8e36bd4f' },
+      { did: 'persist', ownerId: 'su-peer' },
+      { did: 'persist', rowsMode: 'replace' },
+      { did: 'x'.repeat(8_001) },
+      { checks: Array.from({ length: 13 }, (_, i) => ({ claim: `check-${i}` })) },
+    ]) {
+      expect(isBoundedLoopCheckpointArgs(args)).toBe(false);
+      expect(classifyMcpBody(toolsCall(21, 'loop:checkpoint', args))).toEqual({ sheddable: true, id: 21 });
+      expect(classifyMcpRequest(toolsCall(21, 'loop:checkpoint', args))).toBe('ordinary');
+    }
   });
 
   it('recognizes a bounded loop status read through tools:invoke', () => {
@@ -1642,6 +1746,7 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
         { slug: 'adequacy-plan', classRef: 'plan-class-investigation', specIds: ['SPEC-001'], limit: 1 },
       ],
       ['gates:degenerate-check', { sinceHours: 24, minDecisions: 30 }],
+      ['plans:get-specs', { slug: 'adequacy-plan', specIds: ['SPEC-001'] }],
       ['plans:get-spec-evidence', { slug: 'adequacy-plan', specIds: ['SPEC-001'], limit: 1 }],
     ] as const;
     for (const [name, args] of cases) {
@@ -1678,6 +1783,8 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
         { slug: 'adequacy-plan', classRef: 'plan-class-investigation', specIds: ['SPEC-001'], limit: 26 },
       ],
       ['gates:degenerate-check', { sinceHours: 25 }],
+      ['plans:get-specs', { slug: 'adequacy-plan' }],
+      ['plans:get-specs', { slug: 'adequacy-plan', specIds: ['SPEC-001'], includeHistory: true }],
       ['plans:get-spec-evidence', { slug: 'adequacy-plan', specIds: ['SPEC-001'] }],
     ] as const;
     for (const [name, args] of cases) {
@@ -1695,6 +1802,7 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
         { slug: 'adequacy-plan', classRef: 'plan-class-investigation', specIds: ['SPEC-001'], limit: 1 },
       ],
       ['gates:degenerate-check', { sinceHours: 24, minDecisions: 30 }],
+      ['plans:get-specs', { slug: 'adequacy-plan', specIds: ['SPEC-001'] }],
       ['plans:get-spec-evidence', { slug: 'adequacy-plan', specIds: ['SPEC-001'], limit: 1 }],
     ] as const) {
       const body = JSON.stringify({
@@ -2245,6 +2353,47 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
   });
+  it('admits a bounded lexical-only recipes:search under critical pressure', async () => {
+    const req = post(
+      toolsCall(53, 'recipes:search', {
+        query: 'find the recovery recipe for this lane',
+        limit: 5,
+        semantic: false,
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('recipes:search');
+  });
+  it('admits a bounded lexical-only recipes:search through tools:invoke under critical pressure', async () => {
+    const req = post(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 54,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: {
+            name: 'mcp__papercusp_su__recipes_search',
+            args: { query: 'find a recovery recipe', semantic: false, limit: 5 },
+          },
+        },
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('still sheds semantic recipes:search under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(55, 'recipes:search', { query: 'find a recovery recipe', limit: 5 })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
   it('still sheds semantic work_items:search under critical pressure', async () => {
     const shed = await evaluateAdmission(
       post(toolsCall(48, 'work_items:search', { query: 'request shed', limit: 5 })),
@@ -2545,6 +2694,43 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
   });
+  it('admits a bounded loop:checkpoint under critical pressure so carry state can be persisted', async () => {
+    const req = post(toolsCall(20, 'loop:checkpoint', {
+      did: 'persist the current wake state',
+      left: 'resume the current lane',
+      next: 'pull the next admitted item',
+    }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('loop:checkpoint');
+  });
+  it('admits a bounded loop:checkpoint through tools:invoke under critical pressure', async () => {
+    const req = post(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 21,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__loop_checkpoint',
+          args: { did: 'persist the current wake state', next: 'resume the lane' },
+        },
+      },
+    }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('still sheds an unsafe loop:checkpoint recovery payload under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(22, 'loop:checkpoint', { read: true })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
   it('admits a bounded single work_items:set_state under critical pressure', async () => {
     const req = post(toolsCall(22, 'work_items:set_state', { id: 'WI-10000607', state: 'wip' }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
@@ -2693,6 +2879,7 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
         { slug: 'adequacy-plan', classRef: 'plan-class-investigation', specIds: ['SPEC-001'], limit: 1 },
       ],
       ['gates:degenerate-check', { sinceHours: 24, minDecisions: 30 }],
+      ['plans:get-specs', { slug: 'adequacy-plan', specIds: ['SPEC-001'] }],
       ['plans:get-spec-evidence', { slug: 'adequacy-plan', specIds: ['SPEC-001'], limit: 1 }],
     ] as const) {
       const req = new Request(judgeRequestUrl, {
@@ -2716,8 +2903,14 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
       true,
     );
     expect(generic).not.toBeNull();
+    const genericSpecs = await evaluateAdmission(
+      post(toolsCall(28, 'plans:get-specs', { slug: 'adequacy-plan', specIds: ['SPEC-001'] })),
+      'critical',
+      true,
+    );
+    expect(genericSpecs).not.toBeNull();
     const nonJudge = await evaluateAdmission(
-      post(toolsCall(28, 'plans:get-spec-evidence', { slug: 'adequacy-plan', specIds: ['SPEC-001'], limit: 1 })),
+      post(toolsCall(29, 'plans:get-spec-evidence', { slug: 'adequacy-plan', specIds: ['SPEC-001'], limit: 1 })),
       'critical',
       true,
     );
