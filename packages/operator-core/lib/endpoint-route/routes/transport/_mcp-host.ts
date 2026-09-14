@@ -975,6 +975,26 @@ function isSelfOwnedCheckpointTransportException(
 }
 
 /**
+ * The coord:presence tool accepts singular and bounded collection aliases for
+ * its targeted owner selector. Keep the transport hive-clamp exemption aligned
+ * with that public schema before the tool boundary normalizes aliases to
+ * `owner`/`owners`; otherwise an exact `ownerId` lookup is rejected before the
+ * handler can honor the targeted workspace-wide exception.
+ */
+function hasTargetedPresenceSelector(callArgs: Record<string, unknown> | null): boolean {
+  if (!callArgs) return false;
+  const singular = ['owner', 'ownerId'].some(
+    (key) => typeof callArgs[key] === 'string' && (callArgs[key] as string).trim().length > 0,
+  );
+  const bounded = ['owners', 'ownerIds'].some(
+    (key) =>
+      Array.isArray(callArgs[key]) &&
+      (callArgs[key] as unknown[]).some((value) => typeof value === 'string' && value.trim().length > 0),
+  );
+  return singular || bounded;
+}
+
+/**
  * Keep the goal-authorized local placement escape identical on the direct and
  * nested MCP paths. The session SID is the stable owner for superuser calls;
  * signed spawns have no SID and use their stable spawn id instead.
@@ -1291,8 +1311,7 @@ async function applyScopedSuperuserTransportClamp(
         }
       }
 
-      const targetedPresenceOwner =
-        toolName === 'coord:presence' && typeof args.owner === 'string' && args.owner.trim().length > 0;
+      const targetedPresenceOwner = toolName === 'coord:presence' && hasTargetedPresenceSelector(args);
       const forbiddenPresenceScope =
         toolName === 'coord:presence' &&
         (args.scope === 'all' || (args.scope === 'workspace' && !targetedPresenceOwner));
@@ -3645,8 +3664,7 @@ export function registerMcpHost(server: McpServer): void {
                 };
               }
             }
-            const targetedPresenceOwner =
-              toolName === 'coord:presence' && typeof hiveArgs?.owner === 'string' && hiveArgs.owner.trim().length > 0;
+            const targetedPresenceOwner = toolName === 'coord:presence' && hasTargetedPresenceSelector(hiveArgs);
             const forbiddenPresenceScope =
               toolName === 'coord:presence' &&
               (hiveArgs?.scope === 'all' || (hiveArgs?.scope === 'workspace' && !targetedPresenceOwner));
