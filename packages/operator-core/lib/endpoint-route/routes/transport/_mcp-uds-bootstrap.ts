@@ -21,6 +21,7 @@ export async function startDesktopAgentMcp(
   };
   try {
     const host = await import('./_mcp-host');
+    await host.ensureOperatorToolsLoaded();
     if (stopping) { detach(); return null; }
     listener = await startAgentMcpServer({
       port, host: {
