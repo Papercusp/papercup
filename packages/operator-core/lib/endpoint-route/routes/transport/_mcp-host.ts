@@ -170,17 +170,33 @@ import { INSIGHTS_DIR } from '../../../memory/knowledge-read';
 import { getSessionUserOrDefault } from '../../../auth';
 import { advertisedArgsSchema, decode, type ResultFormat } from '@papercusp/result-encoding';
 import type { ResultDoorSkipReason } from '@papercusp/tooldef';
-// Side-effect: register every operator-side first-party tool into the
-// projected-tool registry. Required on dev (next dev compiles routes
-// lazily — without this import, MCP requests would arrive before any
-// other route has triggered the agent-tools/index side-effect load).
-// On the standalone production build all routes are bundled together
-// so this is a no-op there.
-import '../../../agent-tools/index';
 
 /* ─── Helpers ────────────────────────────────────────────────────────── */
 // `bearerFromExtra` / `urlFromExtra` / `headersFromExtra` are imported from
 // `@papercusp/tooldef-mcp` (P-031) — generic mcp-handler `extra` extractors.
+
+/**
+ * Load operator-side first-party tools only when a host is actually being
+ * registered or serving a request. Importing this transport module is also
+ * used by small helper probes and tsx boot guards; eagerly loading the full
+ * tool graph there arms host listeners/timers before a request exists and can
+ * keep a one-shot process alive indefinitely. The promise is shared so
+ * concurrent HTTP/UDS initializers register the catalog exactly once, and a
+ * failed load can retry on the next real request.
+ */
+let operatorToolsLoad: Promise<void> | null = null;
+
+export function ensureOperatorToolsLoaded(): Promise<void> {
+  if (!operatorToolsLoad) {
+    operatorToolsLoad = import('../../../agent-tools/index')
+      .then(() => undefined)
+      .catch((error) => {
+        operatorToolsLoad = null;
+        throw error;
+      });
+  }
+  return operatorToolsLoad;
+}
 
 /**
  * The shape every `tools/call` handler returns. Exported as the single owner of
@@ -2960,6 +2976,7 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
       listings: ReturnType<typeof listMcpProjections>;
     }
 > {
+  await ensureOperatorToolsLoaded();
   const spawnRes = await tryBuildSpawnContext(extra);
   // WI-574 (loud auth-fail): carry the rejection reason so tools/list can fail LOUDLY instead of
   // silently advertising an empty tool list (which is indistinguishable from a healthy server).
@@ -3133,6 +3150,7 @@ export function registerMcpHost(server: McpServer): void {
       },
       extra: unknown,
     ) => {
+      await ensureOperatorToolsLoaded();
       const toolName = req.params.name;
       // Wall-clock at handler entry. The dispatcher stamps its own startedAt for
       // a real dispatch; this one exists for the paths that answer WITHOUT
@@ -4628,6 +4646,7 @@ export function registerMcpHost(server: McpServer): void {
   //      surfaces as a `tool:*` prompt so agent clients render the whole
   //      catalog as slash commands. Flag-gated (SLASH_EXPOSURE, default ON).
   server.server.setRequestHandler(sdk.ListPromptsRequestSchema, async (_req: unknown, extra: unknown) => {
+    await ensureOperatorToolsLoaded();
     const bearer = bearerFromExtra(extra);
     const prompts: Array<{
       name: string;
@@ -4665,6 +4684,7 @@ export function registerMcpHost(server: McpServer): void {
   server.server.setRequestHandler(
     sdk.GetPromptRequestSchema,
     async (req: { params: { name: string; arguments?: Record<string, string> } }, extra: unknown) => {
+      await ensureOperatorToolsLoaded();
       const name = req.params.name;
       const args = (req.params.arguments ?? {}) as Record<string, string>;
       if (isSlashPromptName(name)) {
