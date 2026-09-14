@@ -55,6 +55,7 @@ import {
   isBoundedCoordPresenceArgs,
   isBoundedCoordRosterArgs,
   isBoundedJudgeScorecardsEvaluateArgs,
+  isBoundedRecipesSearchArgs,
   isBoundedScorecardsEvaluateArgs,
   isBoundedScorecardsListArgs,
   isBoundedTestingRunStatusArgs,
@@ -783,6 +784,10 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "plans:list",
   "plans:items",
   "plans:search",
+  // Recipe discovery is read-only; the bounded semantic:false form is also
+  // reserved under critical pressure so recovery can find a reusable path
+  // without invoking the embedder.
+  "recipes:search",
   // test-run history
   "testing:runs",
   // harness / fleet status snapshots
@@ -1568,6 +1573,7 @@ const DEV_TELEMETRY_TOOL_NAME = normalizeMcpName("dev:telemetry");
 const COORD_PRESENCE_TOOL_NAME = normalizeMcpName("coord:presence");
 const COORD_ROSTER_TOOL_NAME = normalizeMcpName("coord:roster");
 const TESTING_RUN_STATUS_TOOL_NAME = normalizeMcpName("testing:run-status");
+const RECIPES_SEARCH_TOOL_NAME = normalizeMcpName("recipes:search");
 
 function isReservedControlPlaneTool(name: string, args?: unknown, requestPath?: string): boolean {
   if (name === SCORECARDS_LIST_TOOL_NAME) return isBoundedScorecardsListArgs(args);
@@ -1578,6 +1584,7 @@ function isReservedControlPlaneTool(name: string, args?: unknown, requestPath?: 
   if (name === COORD_PRESENCE_TOOL_NAME) return isBoundedCoordPresenceArgs(args);
   if (name === COORD_ROSTER_TOOL_NAME) return isBoundedCoordRosterArgs(args);
   if (name === TESTING_RUN_STATUS_TOOL_NAME) return isBoundedTestingRunStatusArgs(args);
+  if (name === RECIPES_SEARCH_TOOL_NAME) return isBoundedRecipesSearchArgs(args);
   return RESERVED_CONTROL_PLANE_TOOLS.has(name);
 }
 

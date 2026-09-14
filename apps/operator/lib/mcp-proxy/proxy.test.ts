@@ -325,6 +325,18 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.body).toBe(body); // no idempotencyKey injection — replay re-executes the read
     expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
   });
+  it('recipes:search is readonly and keeps the request body untouched', () => {
+    const body = Buffer.from(
+      '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recipes:search","arguments":{"query":"find a recovery recipe","semantic":false,"limit":5}}}',
+    );
+    const r = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+    });
+    expect(r.klass).toBe("readonly");
+    expect(r.body).toBe(body);
+    expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
+  });
   it('coord:read is a pure single-message lookup → "readonly", body untouched', () => {
     const body = Buffer.from(
       '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"coord:read","arguments":{"msg_id":"msg-123"}}}',
@@ -3125,6 +3137,35 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       ),
     ).toBe(false);
     expect(isReservedControlPlaneCall(Buffer.from("{bad json"))).toBe(false);
+  });
+
+  it("reserves only the bounded lexical-only recipes:search recovery form", () => {
+    const direct = (args: Record<string, unknown>) =>
+      Buffer.from(
+        JSON.stringify({
+          method: "tools/call",
+          params: { name: "recipes:search", arguments: args },
+        }),
+      );
+    const bounded = { query: "find a recovery recipe", semantic: false, limit: 5 };
+    expect(isReservedControlPlaneCall(direct(bounded))).toBe(true);
+    expect(isReservedControlPlaneCall(direct({ query: bounded.query, limit: 5 }))).toBe(false);
+    expect(isReservedControlPlaneCall(direct({ ...bounded, semantic: true }))).toBe(false);
+    expect(isReservedControlPlaneCall(direct({ ...bounded, context: { fleet: "live-fleet" } }))).toBe(false);
+
+    const deferred = Buffer.from(
+      JSON.stringify({
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "mcp__papercusp_su__recipes_search",
+            args: bounded,
+          },
+        },
+      }),
+    );
+    expect(isReservedControlPlaneCall(deferred)).toBe(true);
   });
 
   it("classifies only an all-handshake JSON-RPC batch for the reconnect bulkhead", () => {
