@@ -769,6 +769,83 @@ function takeShortest(pending) {
 }
 
 /**
+ * Project elapsed wall time for a planned run using the scheduler's actual lane policy.
+ *
+ * Historical durations are useful for a prognosis, but they are not a proof about the next
+ * run: a task can be faster or slower than its history, and an unknown task contributes no
+ * duration at all. Keep those facts explicit in the result. In particular, do not sum task
+ * durations and call that a wall-time lower bound — the parallel lanes make that sum serial-
+ * equivalent work, not elapsed time.
+ *
+ * The simulation mirrors `runBudgetedTasksWithoutSharedAdmission`: the primary lane takes the
+ * longest known pending task, the reserved lane takes the shortest known pending task, and the
+ * next task on each lane starts when that lane becomes free. Shards are summed because
+ * `runBudgetedTaskShards` runs them sequentially.
+ */
+export function estimateBudgetedTaskWallMs(plan, options) {
+  if (!plan?.shards?.length) {
+    return {
+      projectedWallMs: 0,
+      knownWorkMs: 0,
+      knownTasks: 0,
+      unknownTasks: 0,
+      mode: "serial",
+      maxConcurrentTasks: 0,
+    };
+  }
+
+  const budget = resolveTaskBudget(options);
+  const estimateFor =
+    typeof options?.estimateMs === "function" ? options.estimateMs : () => null;
+  let projectedWallMs = 0;
+  let knownWorkMs = 0;
+  let knownTasks = 0;
+  let unknownTasks = 0;
+
+  for (const shard of plan.shards) {
+    const pending = shard.tasks.map((task, index) => {
+      const estimateMs = finiteEstimate(estimateFor(task, index));
+      if (estimateMs == null) unknownTasks += 1;
+      else {
+        knownTasks += 1;
+        knownWorkMs += estimateMs;
+      }
+      return { task, index, estimateMs };
+    });
+
+    if (pending.length === 0) continue;
+    if (budget.mode !== "parallel" || pending.length <= 1) {
+      projectedWallMs += pending.reduce(
+        (total, entry) => total + (entry.estimateMs ?? 0),
+        0,
+      );
+      continue;
+    }
+
+    const lanes = [
+      { readyAt: 0, take: takeLongest },
+      { readyAt: 0, take: takeShortest },
+    ];
+    while (pending.length > 0) {
+      // Keep ties on the primary lane: it is started first by Promise.all in the real runner.
+      const lane = lanes[1].readyAt < lanes[0].readyAt ? lanes[1] : lanes[0];
+      const entry = lane.take(pending);
+      lane.readyAt += entry.estimateMs ?? 0;
+    }
+    projectedWallMs += Math.max(...lanes.map(({ readyAt }) => readyAt));
+  }
+
+  return {
+    projectedWallMs,
+    knownWorkMs,
+    knownTasks,
+    unknownTasks,
+    mode: budget.mode,
+    maxConcurrentTasks: budget.maxConcurrentTasks,
+  };
+}
+
+/**
  * Run tasks under one global worker+memory envelope.
  *
  * In parallel mode the primary lane consumes all but the reserved worker tokens and
@@ -1008,26 +1085,24 @@ export function formatAdmissionHolder(ownerText, now = Date.now()) {
  * WI-2142172: tell the WAITER whether it can plausibly be admitted before its own budget
  * runs out — the one thing the queued notice never said.
  *
- * The measured failure: a 4-path run queued behind a 36-task holder whose declared
- * `etaMinSec` (2654s) already exceeded the waiter's entire 2700s budget. Every input needed
- * to see that was ALREADY on the notice — the holder's ETA, the waiter's elapsed, the
- * waiter's budget — but nobody did the arithmetic, so the line read as ordinary
- * serialization for ~40 minutes and the run ended `refused` with 28/28 undetermined and
- * zero tasks measured. Nothing was broken; the reader simply had no prognosis.
+ * The measured failure: a 4-path run queued behind a 36-task holder whose declared projected
+ * wait nearly filled the waiter's 2700s budget. Every input needed to see that was ALREADY on
+ * the notice — the holder's projection, the waiter's elapsed, the waiter's budget — but nobody
+ * did the arithmetic, so the line read as ordinary serialization for ~40 minutes and the run
+ * ended `refused` with 28/28 undetermined and zero tasks measured. Nothing was broken; the
+ * reader simply had no prognosis.
  *
- * ONE-DIRECTIONAL BY CONSTRUCTION, and this is the whole design. `etaMinSec` is a declared
- * LOWER BOUND (tasks with no duration history contribute zero — see `admissionIntent`), so
- * it can PROVE starvation and can never rule it out. Hence two graded warning bands and no
- * third: PROJECTED TO STARVE once even the optimistic figure does not fit, ADMISSION AT
- * RISK once most of the remaining budget is already committed to waiting, and silence
- * below that. It deliberately never emits an it-looks-fine line — a reassuring message
- * derived from a lower bound is exactly the confidently-wrong number this repo keeps
- * getting bitten by, and manufacturing false comfort is the failure being fixed here, not
- * a nicety to add symmetry with.
+ * The projection is deliberately NOT a proof: historical durations can be wrong and the
+ * scheduler overlaps tasks. `etaProjectedSec` is a concurrency-aware estimate over the tasks
+ * with history; `etaWorkSec` retains the serial-equivalent sum for diagnosis, not wall time.
+ * Hence the warning text says projection and never claims starvation is proven. Two graded
+ * warning bands remain useful: PROJECTED TO STARVE once the projection does not fit, ADMISSION
+ * AT RISK once most of the remaining budget is committed to waiting, and silence below that.
  *
  * `etaFromTasks=0/n` is reported as an explicit unknown rather than silently skipped, for
  * the same reason `intent=undeclared` is: "the holder could not estimate" and "the holder
- * is nearly done" must never read alike.
+ * is nearly done" must never read alike. Legacy holders that only publish `etaMinSec` are
+ * also treated as unknown because their serial sum cannot be converted to wall time here.
  *
  * Fails open to "". It is a diagnostic printed while something is already blocked; it must
  * never be the thing that throws.
@@ -1036,21 +1111,36 @@ export function formatAdmissionProspect(ownerText, waiter, now = Date.now()) {
   try {
     const elapsedMs = Number(waiter?.elapsedMs);
     const budgetMs = Number(waiter?.budgetMs);
-    if (!Number.isFinite(elapsedMs) || !Number.isFinite(budgetMs) || budgetMs <= 0) return "";
+    if (
+      !Number.isFinite(elapsedMs) ||
+      !Number.isFinite(budgetMs) ||
+      budgetMs <= 0
+    )
+      return "";
 
     const parsed = JSON.parse(String(ownerText ?? "").trim());
     const intent =
-      parsed?.intent && typeof parsed.intent === "object" && !Array.isArray(parsed.intent)
+      parsed?.intent &&
+      typeof parsed.intent === "object" &&
+      !Array.isArray(parsed.intent)
         ? parsed.intent
         : null;
     if (!intent) return "";
 
-    const etaMinSec = Number(intent.etaMinSec);
-    if (!Number.isFinite(etaMinSec) || etaMinSec <= 0) return "";
+    const etaProjectedSec = Number(intent.etaProjectedSec);
+    if (!Number.isFinite(etaProjectedSec) || etaProjectedSec <= 0) {
+      const legacyEtaSec = Number(intent.etaMinSec);
+      return Number.isFinite(legacyEtaSec) && legacyEtaSec > 0
+        ? ` — PROSPECT UNKNOWN: the holder reports legacy etaMinSec=${legacyEtaSec} ` +
+            `as serial-equivalent work, not a concurrency-aware wall-time projection.`
+        : "";
+    }
 
-    // A ratio whose numerator is 0 means the sum saw no duration history at all, so the
-    // "lower bound" is really zero information wearing a number's clothes. Say so.
-    const covered = /^(\d+)\s*\/\s*(\d+)$/.exec(String(intent.etaFromTasks ?? ""));
+    // A ratio whose numerator is 0 means the projection saw no duration history at all, so the
+    // displayed estimate is really zero information wearing a number's clothes. Say so.
+    const covered = /^(\d+)\s*\/\s*(\d+)$/.exec(
+      String(intent.etaFromTasks ?? ""),
+    );
     if (covered && Number(covered[1]) === 0) {
       return (
         ` — PROSPECT UNKNOWN: the holder's etaMinSec covers ${intent.etaFromTasks} of its ` +
@@ -1058,43 +1148,43 @@ export function formatAdmissionProspect(ownerText, waiter, now = Date.now()) {
       );
     }
 
-    const acquiredAtMs = parsed.acquiredAt ? Date.parse(parsed.acquiredAt) : NaN;
-    const heldSec = Number.isFinite(acquiredAtMs) ? Math.max(0, (now - acquiredAtMs) / 1000) : 0;
-    const holderRemainingSec = Math.max(0, etaMinSec - heldSec);
+    const acquiredAtMs = parsed.acquiredAt
+      ? Date.parse(parsed.acquiredAt)
+      : NaN;
+    const heldSec = Number.isFinite(acquiredAtMs)
+      ? Math.max(0, (now - acquiredAtMs) / 1000)
+      : 0;
+    const holderRemainingSec = Math.max(0, etaProjectedSec - heldSec);
     const budgetRemainingSec = Math.max(0, (budgetMs - elapsedMs) / 1000);
     if (budgetRemainingSec <= 0) return "";
 
-    // THE BAND MATTERS, and a strict exceeds-the-budget test is NOT enough. In the incident
-    // this fixes, the holder declared etaMinSec=2654 against a 2700s budget — so a
-    // "lower bound exceeds remaining budget" rule would have stayed SILENT on the very run
-    // it exists to warn about, and then the run starved anyway because a lower bound is by
-    // construction an underestimate. Warning only on proof would reproduce the original
-    // failure while looking like a fix.
-    //
-    // So warn in two graded bands, both honest about direction: at >=1.0 starvation is
-    // PROVEN (even the optimistic figure does not fit); at >=0.5 it is AT RISK (most of the
-    // budget is already committed to waiting, and the true wait is longer than the number
-    // shown). Below that, stay silent — a lower bound still cannot certify safety, so there
-    // is nothing sound to say and the notice keeps its existing wording.
+    // THE BAND MATTERS. Warn in two graded bands, both honest about uncertainty: at >=1.0 the
+    // history-based projection exceeds the remaining budget; at >=0.5 most of the remaining
+    // budget is committed to waiting. Below that, stay silent rather than manufacturing
+    // reassurance from an estimate.
     const ratio = holderRemainingSec / budgetRemainingSec;
     if (ratio < 0.5) return "";
 
+    const unknownTasks = Number(intent.etaUnknownTasks);
     const shared =
-      `at least ${Math.round(holderRemainingSec)}s of work remains for the holder ` +
-      `(etaMinSec=${etaMinSec}` +
+      `about ${Math.round(holderRemainingSec)}s of projected wall time remains for the holder ` +
+      `(etaProjectedSec=${etaProjectedSec}` +
+      `${intent.etaWorkSec != null ? `, etaWorkSec=${intent.etaWorkSec}` : ""}` +
+      `${intent.etaMode ? `, mode=${intent.etaMode}` : ""}` +
+      `${intent.etaConcurrency != null ? `, concurrency=${intent.etaConcurrency}` : ""}` +
       `${intent.etaFromTasks ? ` over ${intent.etaFromTasks} tasks` : ""}, held=` +
-      `${Math.round(heldSec)}s) and only ${Math.round(budgetRemainingSec)}s of your budget ` +
-      `remains. etaMinSec is a LOWER BOUND, so the real wait is longer than that.`;
+      `${Math.round(heldSec)}s); only ${Math.round(budgetRemainingSec)}s of your budget ` +
+      `remains. This is a history-based projection, not a guarantee.` +
+      (Number.isFinite(unknownTasks) && unknownTasks > 0
+        ? ` ${Math.round(unknownTasks)} task(s) have no duration history.`
+        : "");
 
     return ratio >= 1
-      ? ` — ⚠ PROJECTED TO STARVE: ${shared} You will almost certainly measure NOTHING — ` +
-          `fall back to narrower verification NOW rather than discovering this at the ` +
-          `budget wall. (A lower bound can prove starvation but never rule it out, so the ` +
-          `absence of this warning is not reassurance.)`
+      ? ` — ⚠ PROJECTED TO STARVE: ${shared} The projection exceeds your remaining budget; ` +
+          `fall back to narrower verification NOW rather than discovering this at the budget wall.`
       : ` — ⚠ ADMISSION AT RISK: ${shared} Roughly ${Math.round(ratio * 100)}% of your ` +
           `remaining budget is already committed to waiting; consider falling back to ` +
-          `narrower verification now. (A lower bound can prove starvation but never rule ` +
-          `it out, so the absence of this warning is not reassurance.)`;
+          `narrower verification now.`;
   } catch {
     return "";
   }

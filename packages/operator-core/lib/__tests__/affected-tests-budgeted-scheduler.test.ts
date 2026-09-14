@@ -10,6 +10,7 @@ import {
   classifyAffectedBlastRadius,
   durationEstimate,
   emptyDurationHistory,
+  estimateBudgetedTaskWallMs,
   formatAdmissionHolder,
   formatAdmissionProspect,
   formatAffectedTaskShardMarker,
@@ -406,6 +407,49 @@ describe('near-tree-wide deterministic sharding (P-011)', () => {
     expect(run.shardStats).toHaveLength(3);
     expect(peak).toBeLessThanOrEqual(config.maxConcurrentTasks);
     expect(run.stats.observedMaxWorkers).toBeLessThanOrEqual(config.workerBudget);
+  });
+
+  it('projects wall time from the concurrent lane policy instead of summing serial work', () => {
+    const tasks = [{ id: 'long' }, { id: 'short' }, { id: 'middle' }];
+    const plan = planAffectedTaskShards(tasks, {
+      blastRadius: { kind: 'scoped', reason: 'path-closure', triggerPaths: [] },
+      taskKey: (task) => task.id,
+    });
+    const projection = estimateBudgetedTaskWallMs(plan, {
+      ...config,
+      estimateMs: (task: { id: string }) => ({ long: 10_000, short: 1_000, middle: 4_000 })[task.id],
+    });
+
+    // The primary lane starts the 10s task, the reserved lane starts the 1s task and then the
+    // 4s task. The serial-equivalent sum is 15s, but the actual two-lane wall projection is 10s.
+    expect(projection).toMatchObject({
+      projectedWallMs: 10_000,
+      knownWorkMs: 15_000,
+      knownTasks: 3,
+      unknownTasks: 0,
+      mode: 'parallel',
+      maxConcurrentTasks: 2,
+    });
+  });
+
+  it('falls back to serial-equivalent wall time when concurrency is disabled', () => {
+    const tasks = [{ id: 'a' }, { id: 'b' }];
+    const plan = planAffectedTaskShards(tasks, {
+      blastRadius: { kind: 'scoped', reason: 'path-closure', triggerPaths: [] },
+      taskKey: (task) => task.id,
+    });
+    const projection = estimateBudgetedTaskWallMs(plan, {
+      ...config,
+      maxConcurrentTasks: 1,
+      estimateMs: (task: { id: string }) => ({ a: 10_000, b: 1_000 })[task.id],
+    });
+
+    expect(projection).toMatchObject({
+      projectedWallMs: 11_000,
+      knownWorkMs: 11_000,
+      mode: 'serial',
+      maxConcurrentTasks: 1,
+    });
   });
 });
 
@@ -1488,7 +1532,14 @@ describe('formatAdmissionHolder', () => {
         host: 'somehost',
         name: 'papercusp-test-process-admission',
         acquiredAt: '2026-08-31T12:00:00.000Z',
-        intent: { scope: 'git-status', tasks: 90, etaMinSec: 1560, etaFromTasks: '61/90' },
+        intent: {
+          scope: 'git-status',
+          tasks: 90,
+          etaProjectedSec: 1560,
+          etaWorkSec: 3120,
+          etaMode: 'parallel',
+          etaFromTasks: '61/90',
+        },
       }),
       Date.parse('2026-08-31T12:02:00.000Z'),
     );
@@ -1496,9 +1547,9 @@ describe('formatAdmissionHolder', () => {
     expect(line).toContain('pid=4242');
     expect(line).toContain('held=120s');
     expect(line).toContain('scope=git-status');
-    expect(line).toContain('etaMinSec=1560');
-    // The ratio must travel WITH the ETA: a lower bound read as an estimate is the
-    // confidently-wrong number this whole record exists to stop producing.
+    expect(line).toContain('etaProjectedSec=1560');
+    expect(line).toContain('etaWorkSec=3120');
+    // Coverage and projection method travel WITH the ETA: serial work is not wall time.
     expect(line).toContain('etaFromTasks=61/90');
     expect(line).not.toContain('\n');
   });
@@ -1533,6 +1584,8 @@ describe('formatAdmissionHolder', () => {
     // boundary, so these are known by then and cannot drift from what the run really does.
     expect(AFFECTED_TESTS_SRC).toMatch(/admissionIntent,/);
     expect(AFFECTED_TESTS_SRC).toContain('scope: derivationSource');
+    expect(AFFECTED_TESTS_SRC).toContain('estimateBudgetedTaskWallMs(TASK_CONTEXT_SHARD_PLAN');
+    expect(AFFECTED_TESTS_SRC).toContain('etaProjectedSec');
     expect(AFFECTED_TESTS_SRC).toContain('etaFromTasks');
   });
 });
@@ -1550,42 +1603,44 @@ describe('formatAdmissionProspect', () => {
     });
 
   it('warns on the REPORTED numbers — the case a strict exceeds-budget rule would miss', () => {
-    // The measured incident: holder declared etaMinSec=2654 against the waiter's 2700s
-    // budget. The optimistic figure very nearly FITS, so a "lower bound exceeds remaining
-    // budget" rule stays silent — and the run starved anyway, because a lower bound
-    // underestimates by construction. This test exists to pin that the fix covers the
-    // filed case and not merely the provable one.
+    // The measured incident: the holder's projected wall time nearly fills the waiter's
+    // 2700s budget. This pins the warning to a projection rather than a serial-sum proof.
     const line = formatAdmissionProspect(
-      owner({ scope: 'explicit', workspaces: 13, tasks: 36, etaMinSec: 2654, etaFromTasks: '30/36' }),
+      owner({
+        scope: 'explicit',
+        workspaces: 13,
+        tasks: 36,
+        etaProjectedSec: 2654,
+        etaWorkSec: 5308,
+        etaFromTasks: '30/36',
+      }),
       { elapsedMs: 120_000, budgetMs: 2_700_000 },
       NOW,
     );
 
     expect(line).toContain('ADMISSION AT RISK');
-    expect(line).toContain('etaMinSec=2654');
-    // The direction of the error is the actionable part: the number shown is a floor.
-    expect(line).toContain('LOWER BOUND');
+    expect(line).toContain('etaProjectedSec=2654');
+    expect(line).toContain('history-based projection');
+    expect(line).not.toContain('LOWER BOUND');
     expect(line).toMatch(/fall(ing)? back/i);
   });
 
   it('escalates to PROJECTED TO STARVE once even the optimistic figure does not fit', () => {
     const line = formatAdmissionProspect(
-      owner({ tasks: 36, etaMinSec: 3600, etaFromTasks: '30/36' }),
+      owner({ tasks: 36, etaProjectedSec: 3600, etaFromTasks: '30/36' }),
       { elapsedMs: 600_000, budgetMs: 2_700_000 },
       NOW,
     );
 
     expect(line).toContain('PROJECTED TO STARVE');
-    expect(line).toContain('measure NOTHING');
+    expect(line).toContain('projection exceeds');
   });
 
-  it('stays SILENT rather than emitting reassurance a lower bound cannot support', () => {
-    // The asymmetry is the design: etaMinSec can prove starvation and can never rule it
-    // out, so there is no it-looks-fine band. A cheap holder must produce NO clause at all
-    // — an "on track" line derived from a floor is the confidently-wrong number this whole
-    // change exists to remove.
+  it('stays SILENT rather than emitting reassurance a projection cannot support', () => {
+    // A cheap holder must produce NO clause at all — an "on track" line derived from a
+    // history-based projection would be false reassurance.
     const line = formatAdmissionProspect(
-      owner({ tasks: 2, etaMinSec: 30, etaFromTasks: '2/2' }),
+      owner({ tasks: 2, etaProjectedSec: 30, etaFromTasks: '2/2' }),
       { elapsedMs: 60_000, budgetMs: 2_700_000 },
       NOW,
     );
@@ -1594,7 +1649,7 @@ describe('formatAdmissionProspect', () => {
   });
 
   it('subtracts time already held, so a nearly-finished holder stops raising alarm', () => {
-    const intent = { tasks: 36, etaMinSec: 2000, etaFromTasks: '30/36' };
+    const intent = { tasks: 36, etaProjectedSec: 2000, etaFromTasks: '30/36' };
     // Same declaration, same budget — only elapsed hold time differs.
     const fresh = formatAdmissionProspect(owner(intent, 0), { elapsedMs: 0, budgetMs: 2_400_000 }, NOW);
     const nearlyDone = formatAdmissionProspect(owner(intent, 1900), { elapsedMs: 0, budgetMs: 2_400_000 }, NOW);
@@ -1605,10 +1660,10 @@ describe('formatAdmissionProspect', () => {
 
   it('reports an unusable ETA as an explicit unknown instead of silently skipping it', () => {
     // Same reason `intent=undeclared` is emitted rather than omitted: "could not estimate"
-    // and "nearly done" must never read alike. A 0-numerator ratio means the sum saw no
-    // duration history at all, so the number carries no information.
+    // and "nearly done" must never read alike. A 0-numerator ratio means the projection saw
+    // no duration history at all, so the number carries no information.
     const line = formatAdmissionProspect(
-      owner({ tasks: 9, etaMinSec: 5000, etaFromTasks: '0/9' }),
+      owner({ tasks: 9, etaProjectedSec: 5000, etaFromTasks: '0/9' }),
       { elapsedMs: 60_000, budgetMs: 2_700_000 },
       NOW,
     );
@@ -1626,9 +1681,16 @@ describe('formatAdmissionProspect', () => {
     // An owner record with no declared intent, and a declaration with no usable ETA.
     expect(formatAdmissionProspect(owner(null), waiter, NOW)).toBe('');
     expect(formatAdmissionProspect(owner({ tasks: 4 }), waiter, NOW)).toBe('');
+    expect(formatAdmissionProspect(owner({ tasks: 4, etaMinSec: 9999 }), waiter, NOW)).toContain(
+      'legacy etaMinSec=9999',
+    );
     // A caller that cannot describe its own budget gets no projection, not a NaN one.
     expect(
-      formatAdmissionProspect(owner({ etaMinSec: 9999, etaFromTasks: '4/4' }), { elapsedMs: 0, budgetMs: 0 }, NOW),
+      formatAdmissionProspect(
+        owner({ etaProjectedSec: 9999, etaFromTasks: '4/4' }),
+        { elapsedMs: 0, budgetMs: 0 },
+        NOW,
+      ),
     ).toBe('');
   });
 

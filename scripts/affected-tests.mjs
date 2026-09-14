@@ -157,6 +157,7 @@ import { formatSerialPhaseSummary } from "./lib/serial-phase.mjs";
 import {
   classifyAffectedBlastRadius,
   durationEstimate,
+  estimateBudgetedTaskWallMs,
   formatAffectedTaskShardMarker,
   formatTaskBudgetMarker,
   formatTaskBudgetObservedMarker,
@@ -6530,29 +6531,32 @@ function foldSettledTaskCoverage(scheduled) {
 // `publishPreemptReadyMarker()`), so the scope and the task list are settled facts by now.
 // A declared-and-forgotten field would rot; a derived one cannot.
 //
-// `etaMinSec` is deliberately named a MINIMUM and shipped beside the ratio it was computed
-// over. A task with no duration history contributes zero, so the sum is a LOWER BOUND, and
-// a lower bound presented as an estimate is exactly the confidently-wrong number this repo
-// keeps getting bitten by. `etaFromTasks=3/9` tells a reader how much of the run the number
-// actually saw; if it reads 0/9 the ETA means nothing and says so.
+// The admission projection is deliberately separate from serial-equivalent work. Tasks run
+// through two concurrent scheduler lanes, so summing their histories is useful accounting but
+// not elapsed wall time and not a lower bound. The scheduler helper simulates those lanes and
+// returns a history-based wall-time projection with explicit coverage and uncertainty fields.
+// `etaFromTasks=3/9` tells a reader how much of the run the projection actually saw; if it reads
+// 0/9 the ETA means nothing and says so.
 const admissionIntent = (() => {
   try {
-    let known = 0;
-    let etaMs = 0;
-    for (const t of tasks) {
-      const estimate = durationEstimate(durationHistory, taskKey(t));
-      if (Number.isFinite(estimate) && estimate > 0) {
-        known += 1;
-        etaMs += estimate;
-      }
-    }
+    const projection = estimateBudgetedTaskWallMs(TASK_CONTEXT_SHARD_PLAN, {
+      ...SCHEDULER_CONFIG,
+      estimateMs: (context) =>
+        durationEstimate(durationHistory, taskKey(context.t)),
+    });
     const intent = {
       scope: derivationSource,
-      paths: changedPathsOverride ? changedPathsOverride.length : (changedPathTotal ?? 0),
+      paths: changedPathsOverride
+        ? changedPathsOverride.length
+        : (changedPathTotal ?? 0),
       workspaces: affected.length,
       tasks: tasks.length,
-      etaMinSec: Math.round(etaMs / 1000),
-      etaFromTasks: `${known}/${tasks.length}`,
+      etaProjectedSec: Math.round(projection.projectedWallMs / 1000),
+      etaWorkSec: Math.round(projection.knownWorkMs / 1000),
+      etaFromTasks: `${projection.knownTasks}/${tasks.length}`,
+      etaUnknownTasks: projection.unknownTasks,
+      etaMode: projection.mode,
+      etaConcurrency: projection.maxConcurrentTasks,
     };
     // The holder's own declaration that its output is expendable — "kill me rather than
     // queue behind me". Opt-in and OMITTED when unset, never defaulted to false: absence
