@@ -1403,6 +1403,8 @@ export interface RunGitSyncOpts {
   /** EI-20428405431869483: pre-superproject-commit generated routing drift check.
    *  Defaults to the conditional, bounded, fail-soft checker above. */
   toolRoutingChecker?: ToolRoutingChecker;
+  /** Fail-closed check for newly armed migration files before git-sync stages or commits them. */
+  migrationReservationChecker?: MigrationReservationChecker;
 }
 
 /** Default content-guard file reader — the working-tree bytes that `add -A` would
@@ -3224,6 +3226,13 @@ export async function dirtyFiles(runGit: RunGit, repoPath: string): Promise<stri
   return out;
 }
 
+/** Enumerate the paths currently in Git's index, losslessly for legal filenames. */
+async function stagedFiles(runGit: RunGit, repoPath: string): Promise<string[]> {
+  const r = await runGit(['diff', '--cached', '--name-only', '--no-renames', '-z'], repoPath);
+  if (r.code !== 0) return [];
+  return r.stdout.split('\0').filter(Boolean);
+}
+
 /**
  * EI-22494259338317391: a negative pathspec only prevents `git add` from
  * changing the matching index entries; it does not remove an entry that was
@@ -3521,6 +3530,29 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
   }
   const dirty = await dirtyFiles(runGit, repoPath);
   const dirtyPathCount = dirty.length;
+  const migrationCandidates = migrationPaths(dirty);
+  const preStageMigrationError = await checkMigrationReservations(o, migrationCandidates);
+  if (preStageMigrationError) {
+    // A migration may have been staged by an earlier process before this tick's
+    // reservation check. Remove only the refused migration paths; leave every
+    // unrelated index entry and every working-tree byte recoverable for the next
+    // tick.
+    const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, migrationCandidates, o.log);
+    const unstageError = unstage.ok ? '' : `; could not unstage refused migration paths: ${unstage.error}`;
+    o.log(
+      `[git-sync] ${o.scope}: migration reservation preflight refused ${migrationCandidates.join(', ')}: ` +
+        `${preStageMigrationError}${unstageError}`,
+    );
+    return {
+      committedLocal: false,
+      dirtyPathCount,
+      committedCount,
+      error: `migration reservation preflight failed: ${preStageMigrationError}${unstageError}`,
+      oversized,
+      contentErrors,
+      skippedPaths,
+    };
+  }
   if (await isDirty(runGit, repoPath)) {
     const attachment = await ensureBranchAttachedForCommit(runGit, repoPath, o.remote, o.defaultBranch, o.log);
     if ('error' in attachment) {
@@ -3766,7 +3798,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         runGit,
         repoPath,
         o.attribution,
-        [...stagingExcludePaths, ...(o.forceCatchAllPaths ?? [])],
+        [...stagingExcludePaths, ...migrationCandidates, ...(o.forceCatchAllPaths ?? [])],
         message,
         { diffSubjects: o.diffSubjects },
       );
@@ -3863,6 +3895,31 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
           dirtyPathCount,
           committedCount,
           error: `git add -A failed — the tree would strand uncommitted: ${(addRes.stderr || addRes.stdout).trim().slice(0, 300)}`,
+          oversized,
+          contentErrors,
+          skippedPaths,
+        };
+      }
+    }
+    // Keep migration files out of any commit whose reservation changed or became
+    // unreadable after the pre-stage check. Only the migration paths are unstaged;
+    // unrelated work remains staged and can be committed on the next tick.
+    if (o.migrationReservationChecker) {
+      const stagedMigrationPaths = await stagedFiles(runGit, repoPath);
+      const postStageMigrationError = await checkMigrationReservations(o, stagedMigrationPaths);
+      if (postStageMigrationError) {
+        const refused = migrationPaths(stagedMigrationPaths);
+        const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, refused, o.log);
+        const unstageError = unstage.ok ? '' : `; could not unstage refused migration paths: ${unstage.error}`;
+        o.log(
+          `[git-sync] ${o.scope}: post-stage migration reservation check refused ${refused.join(', ')}: ` +
+            `${postStageMigrationError}${unstageError}`,
+        );
+        return {
+          committedLocal: committedAny,
+          dirtyPathCount,
+          committedCount,
+          error: `migration reservation check after staging failed: ${postStageMigrationError}${unstageError}`,
           oversized,
           contentErrors,
           skippedPaths,
@@ -4439,6 +4496,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     staleTempPackMs: opts.staleTempPackMs ?? STALE_TEMP_PACK_MS,
     isTempPackOpen: opts.isTempPackOpen,
     diffSubjects: opts.diffSubjects ?? true,
+    migrationReservationChecker: opts.migrationReservationChecker,
     excludePaths: protectedPaths,
   };
 
