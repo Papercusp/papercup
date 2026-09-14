@@ -40,17 +40,22 @@ function errorBody(result: unknown) {
 }
 
 function makeTx() {
-  const tx = Object.assign(vi.fn<(...args: unknown[]) => Promise<unknown[]>>(async () => []), {
-    unsafe: vi.fn((value: string) => value),
-    array: vi.fn((value: unknown[]) => value),
-  });
+  const tx = Object.assign(
+    vi.fn<(...args: unknown[]) => Promise<unknown[]>>(async () => []),
+    {
+      unsafe: vi.fn((value: string) => value),
+      array: vi.fn((value: unknown[]) => value),
+    },
+  );
   return tx;
 }
 
 function run(owner: string, tx = makeTx()) {
-  return (tool as unknown as {
-    handler: (args: unknown, ctx: unknown) => Promise<unknown>;
-  }).handler(
+  return (
+    tool as unknown as {
+      handler: (args: unknown, ctx: unknown) => Promise<unknown>;
+    }
+  ).handler(
     { owner, since: '2026-08-23T12:00:00Z', until: '2026-08-23T14:00:00Z' },
     { workspaceId: 'ws-test', tx },
   );
@@ -68,10 +73,13 @@ describe('sessions:timeline owner resolution', () => {
 
     await run('su-12345678-1234-4234-8234-123456789abc', tx);
 
-    const timelineQuery = tx.mock.calls.find((call) =>
-      Array.isArray(call[0]) && call[0].some((part: unknown) =>
-        typeof part === 'string' && part.includes("FROM harness_shared.session_turns"),
-      ),
+    const timelineQuery = tx.mock.calls.find(
+      (call) =>
+        Array.isArray(call[0]) &&
+        call[0].some(
+          (part: unknown) =>
+            typeof part === 'string' && part.includes('FROM harness_shared.session_turns'),
+        ),
     );
     expect(timelineQuery?.slice(1)).toContain(SESSION_TURN_REF_PREFIX);
     const prefixParam = timelineQuery?.slice(1).indexOf(SESSION_TURN_REF_PREFIX) ?? -1;
@@ -120,7 +128,12 @@ describe('sessions:timeline owner resolution', () => {
     const result = await run(short);
 
     expect((result as HandlerResult).isError).toBe(true);
-    expect(errorBody(result)).toMatchObject({ ok: false, error: 'owner_ambiguous', owner: short, matches });
+    expect(errorBody(result)).toMatchObject({
+      ok: false,
+      error: 'owner_ambiguous',
+      owner: short,
+      matches,
+    });
   });
 
   it('refuses an unknown short owner handle instead of querying an empty history', async () => {
@@ -146,5 +159,53 @@ describe('sessions:timeline owner resolution', () => {
       owner: short,
     });
     expect((result as HandlerResult).isError).toBe(true);
+  });
+
+  it('returns a structured retryable result for raw PostgreSQL contention', async () => {
+    const tx = makeTx();
+    tx.mockImplementation(async (...args: unknown[]) => {
+      const template = args[0];
+      if (
+        Array.isArray(template) &&
+        template.some(
+          (part) => typeof part === 'string' && part.includes('FROM harness_shared.session_turns'),
+        )
+      ) {
+        throw Object.assign(new Error('canceling statement due to lock timeout'), {
+          code: '55P03',
+        });
+      }
+      return [];
+    });
+
+    const result = await run('su-12345678-1234-4234-8234-123456789abc', tx);
+
+    expect(errorBody(result)).toMatchObject({
+      ok: false,
+      error: 'timeout',
+      retryable: true,
+      pgCode: '55P03',
+    });
+    expect(errorBody(result).message).toMatch(/transient database contention/);
+  });
+
+  it('still rethrows non-contention query failures', async () => {
+    const tx = makeTx();
+    tx.mockImplementation(async (...args: unknown[]) => {
+      const template = args[0];
+      if (
+        Array.isArray(template) &&
+        template.some(
+          (part) => typeof part === 'string' && part.includes('FROM harness_shared.session_turns'),
+        )
+      ) {
+        throw new Error('relation disappeared');
+      }
+      return [];
+    });
+
+    await expect(run('su-12345678-1234-4234-8234-123456789abc', tx)).rejects.toThrow(
+      'relation disappeared',
+    );
   });
 });

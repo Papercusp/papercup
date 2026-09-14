@@ -71,7 +71,7 @@ import { recordLockEvent } from '../../authority/lock-event-stream';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC, MAX_LOCK_WAIT_SEC as MAX_WAIT_SEC } from './lock-config';
 import { hardText, LIMITS } from '../limits';
-import { externalPathToLockKey, isExternalLockKey } from './external-path';
+import { isExternalLockKey, resolveExternalPathLockIdentity } from './external-path';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { isTransientPgConnectionError } from '../../host-benign-errors';
 import { validateExplicitRepoPaths } from '../work_items/_derive-paths';
@@ -189,7 +189,7 @@ export default defineTool({
       .array(z.string().min(1))
       .max(50)
       .optional()
-      .describe('absolute configuration-file paths below the current user home or XDG_RUNTIME_DIR; mapped to @external/home/* or @external/runtime/* lock keys shared with automatic edit hooks'),
+      .describe('absolute files below the current user home or XDG_RUNTIME_DIR; managed Papercusp repository files use their repository-domain identity, while ordinary files map to @external/home/* or @external/runtime/* keys shared with automatic edit hooks'),
     intent: hardText(LIMITS.SHORT_TITLE),
     ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
     wait: z
@@ -241,6 +241,7 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const { ownerId, ownerLabel, coordinationDomain: defaultCoordinationDomain } = readFileLockIdentity(ctx);
+    const explicitCoordinationDomain = args.coordination_domain !== undefined;
     let coordinationDomain: string;
     try {
       coordinationDomain = resolveExplicitFileLockDomain(args.coordination_domain, defaultCoordinationDomain);
@@ -250,9 +251,49 @@ export default defineTool({
 
     let paths: string[];
     try {
+      const externalIdentities = (args.external_paths ?? []).map((path) =>
+        resolveExternalPathLockIdentity(path),
+      );
+      const managedDomains = [
+        ...new Set(
+          externalIdentities
+            .map((identity) => identity.coordinationDomain)
+            .filter((domain): domain is string => domain !== undefined),
+        ),
+      ];
+
+      // A single acquire returns one lock id and therefore one coordination
+      // domain. Managed suite-app files must use their physical repository
+      // domain + repo-relative path, exactly like the native edit hooks; mixing
+      // that identity with an ordinary HOME/runtime file would otherwise put
+      // one of the two files in the wrong namespace.
+      if (managedDomains.length > 1) {
+        return errorResult(
+          `external_paths span multiple managed repositories (${managedDomains.join(', ')}). ` +
+            'Acquire each repository domain separately so one lock id cannot mix physical namespaces.',
+        );
+      }
+      if (managedDomains.length === 1) {
+        const managedDomain = managedDomains[0]!;
+        if (explicitCoordinationDomain && coordinationDomain !== managedDomain) {
+          return errorResult(
+            `external path resolves inside managed repository ${JSON.stringify(managedDomain)}, ` +
+              `but coordination_domain resolves to ${JSON.stringify(coordinationDomain)}. ` +
+              'Use the managed repository root as coordination_domain or omit it.',
+          );
+        }
+        if (!explicitCoordinationDomain) coordinationDomain = managedDomain;
+        if (externalIdentities.some((identity) => identity.coordinationDomain === undefined)) {
+          return errorResult(
+            'external_paths mix a managed repository file with an ordinary HOME/runtime file. ' +
+              'Acquire those namespaces in separate calls so each lock uses its canonical domain.',
+          );
+        }
+      }
+
       paths = normalizePaths([
         ...(args.paths ?? []),
-        ...(args.external_paths ?? []).map((path) => externalPathToLockKey(path)),
+        ...externalIdentities.map((identity) => identity.path),
       ]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
