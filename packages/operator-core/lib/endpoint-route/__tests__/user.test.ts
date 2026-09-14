@@ -33,7 +33,43 @@ vi.mock('../../memory/feedback', () => ({
 vi.mock('../../memory/learning', () => ({
   buildLearningInstructions: vi.fn(async () => null),
 }));
-vi.mock('../../memory/reembed', () => ({ reembedMemories: vi.fn(async () => ({ from: 'a', to: 'b', count: 0 })) }));
+vi.mock('../../voice-prefs', async (orig) => {
+  const actual = await orig<typeof import('../../voice-prefs')>();
+  return {
+    ...actual,
+    loadVoicePrefs: vi.fn(async () => ({
+      ...actual.DEFAULT_VOICE_PREFS,
+      memoryEmbedderMode: 'harrier',
+    })),
+  };
+});
+vi.mock('../../memory/reembed', () => ({
+  reembedMemories: vi.fn(async () => ({
+    fromCollection: 'harness_shared.memory_vec_openai',
+    toCollection: 'harness_shared.memory_vec_local',
+    fromProfileId: 'openai-text-embedding-3-small-768@v1',
+    toProfileId: 'local-bge-small-en-v1.5@v1',
+    totalSource: 0,
+    reembedded: 0,
+    skipped: 0,
+    errors: 0,
+    coverage: { eligible: 0, source: 0, target: 0, missing: 0 },
+    durationMs: 1,
+  })),
+}));
+vi.mock('../../memory/profile-cutover', async (orig) => ({
+  ...(await orig<typeof import('../../memory/profile-cutover')>()),
+  cutoverMemoryProfile: vi.fn(async (input: {
+    userId: string; fromMode: string; toMode: string; fromProfileId: string; toProfileId: string;
+  }) => ({
+    coverage: { eligible: 2, source: 2, target: 2, missing: 0 },
+    servingMode: input.toMode,
+    servingProfileId: input.toProfileId,
+    previousMode: input.fromMode,
+    previousProfileId: input.fromProfileId,
+    selectionLayer: 'user',
+  })),
+}));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
 vi.mock('../../harness-registry', async (orig) => ({
   ...(await orig<typeof import('../../harness-registry')>()), loadHarnessRegistry: vi.fn(async () => ({ projects: [] })) }));
@@ -148,7 +184,7 @@ describe('user family ports — default-user fallback when no session', () => {
     expect((await res.json()).learning_instructions).toBeNull();
   });
   it('POST /user/memory/reembed reaches validation without a session', async () => {
-    const res = await appWith(userMemoryReembed as AnyRoute).request('/user/memory/reembed', post({}));
+    const res = await appWith(userMemoryReembed as unknown as AnyRoute[]).request('/user/memory/reembed', post({}));
     expect(res.status).toBe(400); // invalid_mode — auth no longer blocks
   });
   it('POST /user/memory/audit reaches the full-flag path without a session', async () => {
@@ -193,13 +229,72 @@ describe('user family ports — happy path / validation', () => {
   });
   it('POST /user/memory/reembed rejects invalid mode with 400', async () => {
     vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' } as never);
-    const res = await appWith(userMemoryReembed as AnyRoute).request('/user/memory/reembed', post({ from: 'x', to: 'y' }));
+    const res = await appWith(userMemoryReembed as unknown as AnyRoute[]).request('/user/memory/reembed', post({ from: 'x', to: 'y' }));
     expect(res.status).toBe(400);
+  });
+  it('GET /user/memory/reembed returns exact current and target profile identities', async () => {
+    const res = await appWith(userMemoryReembed as unknown as AnyRoute[]).request('/user/memory/reembed');
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.current).toEqual({
+      mode: 'harrier',
+      profileId: 'harrier-oss-v1-0.6b-1024@v1',
+    });
+    expect(json.profiles.local).toEqual({ profileId: 'local-bge-small-en-v1.5@v1' });
   });
   it('POST /user/memory/reembed rejects same-mode noop with 400', async () => {
     vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' } as never);
-    const res = await appWith(userMemoryReembed as AnyRoute).request('/user/memory/reembed', post({ from: 'openai', to: 'openai' }));
+    const res = await appWith(userMemoryReembed as unknown as AnyRoute[]).request('/user/memory/reembed', post({ from: 'openai', to: 'openai' }));
     expect(res.status).toBe(400);
+  });
+  it('PATCH /user/preferences refuses a direct serving-profile change', async () => {
+    const res = await appWith(userPreferences as AnyRoute[]).request(
+      '/user/preferences',
+      { method: 'PATCH', body: JSON.stringify({ memoryEmbedderMode: 'local' }), headers: { 'content-type': 'application/json' } },
+    );
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe('memory_profile_cutover_required');
+    const { saveUserPreferences } = await import('../../user-preferences');
+    expect(vi.mocked(saveUserPreferences)).not.toHaveBeenCalled();
+  });
+  it('POST /user/memory/reembed requires exact identities for a cutover', async () => {
+    const res = await appWith(userMemoryReembed as unknown as AnyRoute[]).request(
+      '/user/memory/reembed',
+      post({ from: 'openai', to: 'local', cutover: true }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('profile_ids_required_for_cutover');
+  });
+  it('POST /user/memory/reembed builds with exact profiles then applies one coverage-gated cutover', async () => {
+    const body = {
+      from: 'openai',
+      to: 'local',
+      fromProfileId: 'openai-text-embedding-3-small-768@v1',
+      toProfileId: 'local-bge-small-en-v1.5@v1',
+      cutover: true,
+    } as const;
+    const res = await appWith(userMemoryReembed as unknown as AnyRoute[]).request('/user/memory/reembed', post(body));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.cutover).toMatchObject({
+      requested: true,
+      applied: true,
+      servingMode: 'local',
+      previousMode: 'openai',
+    });
+    const { reembedMemories } = await import('../../memory/reembed');
+    const { cutoverMemoryProfile } = await import('../../memory/profile-cutover');
+    expect(vi.mocked(reembedMemories)).toHaveBeenCalledWith('openai', 'local', {
+      fromProfileId: body.fromProfileId,
+      toProfileId: body.toProfileId,
+    });
+    expect(vi.mocked(cutoverMemoryProfile)).toHaveBeenCalledWith({
+      userId: 'default-user',
+      fromMode: 'openai',
+      toMode: 'local',
+      fromProfileId: body.fromProfileId,
+      toProfileId: body.toProfileId,
+    });
   });
 });
 
