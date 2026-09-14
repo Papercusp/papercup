@@ -555,6 +555,59 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
   });
 
+  it('settles validateOnly with the same authority as the identical real close', async () => {
+    const closeItem = {
+      ...item,
+      id: 'WI-validate-settlement',
+      kind: 'change',
+      family: 'issue',
+      state: 'open',
+      title: 'Bind the test result to a real run and require that run to be a PASS before closing this change.',
+      summary:
+        'The close must account for deferred work against the originating requirement, preserve the exact requested behavior, and record a durable follow-up for anything still outstanding.',
+    };
+    const completion = {
+      summary: 'implemented the change',
+      verifiedHow: 'unit',
+      testResult: 'focused test passed',
+      filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'],
+      deferred: ['live deployment remains pending'],
+    };
+    getWorkItem.mockResolvedValue(closeItem);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...closeItem, state: 'resolved' }));
+
+    const validation = await oneRaw({
+      id: closeItem.id,
+      state: 'resolved',
+      assumptions: 'none',
+      validateOnly: true,
+      completion,
+    });
+
+    expect(validation).toMatchObject({
+      ok: true,
+      validationOnly: true,
+      completionAuthority: 'proposed',
+      countsTowardBurnDown: false,
+      completionEvidenceFindings: {
+        requirementDispositionShortfall: { kind: 'absent' },
+      },
+    });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+
+    const realClose = await oneRaw({
+      id: closeItem.id,
+      state: 'resolved',
+      assumptions: 'none',
+      completion,
+    });
+
+    expect(realClose.completionAuthority).toBe(validation.completionAuthority);
+    expect(realClose.countsTowardBurnDown).toBe(validation.countsTowardBurnDown);
+    expect(realClose.authorityWarning).toMatch(/authority:'proposed'/);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps discard/wontfix bug closes drainable without inventing a causal record', async () => {
     setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...bug, state: 'dropped' }));
     const r = await oneRaw({
