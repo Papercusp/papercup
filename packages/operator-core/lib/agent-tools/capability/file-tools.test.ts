@@ -15,6 +15,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { toJsonSchema } from '@papercusp/tooldef';
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 import readTool, { capabilityReadSeeAlso } from './read';
 import writeTool, { emptyWriteWouldDestroy, looksLikeDisplayFormattedRead } from './write';
 import editTool from './edit';
@@ -606,6 +607,7 @@ describe('capability:read', () => {
   // wrong key.
   describe('code-mode structuredContent (EI-22044192752243601)', () => {
     const codeCtx = { ...baseCtx, codeMode: true } as never;
+    const mcpStructuredCtx = { ...baseCtx, transport: 'mcp', requestedStructured: true } as never;
 
     it('attaches an undecorated body for the default (line-numbered) view', async () => {
       const f = join(DIR, 'r-codemode-default.txt');
@@ -687,6 +689,58 @@ describe('capability:read', () => {
       expect(direct.structuredContent).toBeUndefined();
       expect(directRaw.structuredContent).toBeUndefined();
       expect(directRawEmpty.structuredContent).toBeUndefined();
+    });
+
+    it('honors requestedStructured for a direct MCP caller on all three affected return sites', async () => {
+      const f = join(DIR, 'r-mcp-structured-direct.txt');
+      writeFileSync(f, 'x\ny\n');
+
+      const direct = (await readTool.handler!({ file_path: f }, mcpStructuredCtx)) as {
+        structuredContent?: Record<string, unknown>;
+      };
+      const directRaw = (await readTool.handler!({ file_path: f, raw: true }, mcpStructuredCtx)) as {
+        structuredContent?: Record<string, unknown>;
+      };
+      const directRawEmpty = (await readTool.handler!(
+        { file_path: f, raw: true, offset: 99 },
+        mcpStructuredCtx,
+      )) as { structuredContent?: Record<string, unknown> };
+
+      expect(direct.structuredContent).toMatchObject({ body: 'x\ny', total_lines: 2 });
+      expect(directRaw.structuredContent).toEqual({ ok: true, file_path: f, body: 'x\ny\n' });
+      expect(directRawEmpty.structuredContent).toEqual({ ok: true, file_path: f, body: '' });
+    });
+
+    it('preserves requestedStructured through the projected MCP transport', async () => {
+      const f = join(DIR, 'r-mcp-structured-transport.txt');
+      writeFileSync(f, 'transport body\n');
+      const projected = lookupByMcpName('capability:read');
+      expect(projected).toBeDefined();
+
+      const dispatched = await dispatchProjectedTool(
+        projected!,
+        'capability:read',
+        { file_path: f },
+        {
+          ...baseCtx,
+          workspaceId: 'file-tools-test',
+          runId: 'capability-read-requested-structured-test',
+          role: 'operator',
+          gateBypass: { role: true, capability: true, quota: true },
+          transport: 'mcp',
+          requestedFormat: 'json',
+          requestedStructured: true,
+        } as never,
+        {},
+      );
+
+      expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+      expect(dispatched.result?.structuredContent).toMatchObject({
+        ok: true,
+        file_path: f,
+        body: 'transport body',
+        total_lines: 1,
+      });
     });
   });
 });
