@@ -32,6 +32,8 @@ import {
   isBoundedLocksReleaseArgs,
   isBoundedSessionsSearchArgs,
   isBoundedWorkItemsSearchArgs,
+  isBoundedPlansSearchArgs,
+  isBoundedWorkItemsCompleteArgs,
   isBoundedWorkItemsSetStateArgs,
 } from './mcp-admission';
 
@@ -311,6 +313,109 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
       { id: 'EI-1', threadLimit: 1 },
     ]) {
       expect(classifyMcpBody(toolsCall(12, 'work_items:get', args))).toEqual({ sheddable: true, id: 12 });
+    }
+  });
+
+  it.each([
+    ['canonical', 'work_items:complete'],
+    ['underscore', 'work_items_complete'],
+    ['mcp-advertised hyphen', 'mcp__papercusp-su__work_items_complete'],
+    ['mcp-advertised underscore', 'mcp__papercusp_su__work_items_complete'],
+  ])('does NOT shed a bounded single work_items:complete under critical pressure: %s', (_label, name) => {
+    const args = {
+      id: 'EI-23096430176801261',
+      state: 'resolved',
+      assumptions: 'none',
+      completion: {
+        workItem: 'EI-23096430176801261',
+        summary: 'bounded completion evidence',
+        tests: 'focused admission tests',
+      },
+    };
+    expect(isBoundedWorkItemsCompleteArgs(args)).toBe(true);
+    const body = toolsCall(26, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('admits record-only and validateOnly work_items:complete forms, but not a bulk envelope', () => {
+    const recordOnly = {
+      id: 'EI-23096430176801261',
+      completion: { workItem: 'EI-23096430176801261', summary: 'record progress only' },
+    };
+    const validateOnly = {
+      id: 'EI-23096430176801261',
+      validateOnly: true,
+      state: 'resolved',
+      assumptions: 'none',
+      completion: { workItem: 'EI-23096430176801261', summary: 'validate the close contract' },
+    };
+    expect(isBoundedWorkItemsCompleteArgs(recordOnly)).toBe(true);
+    expect(classifyMcpBody(toolsCall(27, 'work_items:complete', recordOnly))).toEqual({
+      sheddable: false,
+      id: null,
+    });
+    expect(isBoundedWorkItemsCompleteArgs(validateOnly)).toBe(true);
+    expect(classifyMcpBody(toolsCall(28, 'work_items:complete', validateOnly))).toEqual({
+      sheddable: false,
+      id: null,
+    });
+    const bulk = {
+      items: [{ id: 'EI-23096430176801261', completion: { summary: 'bulk completion' } }],
+      validateOnly: true,
+    };
+    expect(isBoundedWorkItemsCompleteArgs(bulk)).toBe(false);
+    expect(classifyMcpBody(toolsCall(29, 'work_items:complete', bulk))).toEqual({ sheddable: true, id: 29 });
+    expect(classifyMcpRequest(toolsCall(29, 'work_items:complete', bulk))).toBe('ordinary');
+  });
+
+  it('recognizes a bounded work_items:complete through deferred tools:invoke', () => {
+    const args = {
+      id: 'EI-23096430176801261',
+      validateOnly: true,
+      completion: { workItem: 'EI-23096430176801261', summary: 'validate through deferred dispatch' },
+    };
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 30,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__work_items_complete',
+          args,
+        },
+      },
+    });
+    expect(isBoundedWorkItemsCompleteArgs(args)).toBe(true);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps malformed, oversized, and enriched work_items:complete shapes sheddable under critical pressure', () => {
+    for (const args of [
+      {},
+      { id: 'EI-23096430176801261' },
+      { id: 'EI-23096430176801261', completion: 'not an object' },
+      { id: 'EI-23096430176801261', validateOnly: 'true', completion: { summary: 'bad flag' } },
+      { id: 'EI-23096430176801261', completion: { summary: 'missing wrapper is okay only with a flat field' }, items: [] },
+      { id: 'EI-23096430176801261', completion: { summary: 'bad assumptions' }, assumptions: [] },
+      { id: 'EI-23096430176801261', completion: { summary: 'unknown top-level' }, extra: true },
+      { id: 'EI-23096430176801261', completion: { summary: 'x'.repeat(8_001) } },
+      {
+        id: 'EI-23096430176801261',
+        completion: { summary: 'too many evidence entries', filesChanged: Array.from({ length: 101 }, () => 'x.ts') },
+      },
+      {
+        id: 'EI-23096430176801261',
+        completion: { summary: 'expanded output' },
+        outputPayload: 'x'.repeat(64_001),
+      },
+    ]) {
+      expect(isBoundedWorkItemsCompleteArgs(args)).toBe(false);
+      const body = toolsCall(31, 'work_items:complete', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 31 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
     }
   });
 
@@ -2047,6 +2152,60 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
       retryable: true,
       reason: 'loop_pressure_critical',
     });
+  });
+  it.each([
+    ['canonical', 'plans:search'],
+    ['underscore alias', 'plans_search'],
+    ['mcp-advertised alias', 'mcp__papercusp_su__plans_search'],
+  ])('admits a bounded lexical-only plans:search under critical pressure: %s', async (_label, name) => {
+    const args = {
+      query: 'orient-recall-quality-2026-07-12',
+      scope: ['slug', 'title'],
+      limit: 5,
+      semantic: false,
+    };
+    expect(isBoundedPlansSearchArgs(args)).toBe(true);
+    const req = post(toolsCall(49, name, args));
+    expect(classifyMcpRequest(await req.clone().text())).toBe('diagnostic');
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe(name);
+  });
+  it('admits a bounded lexical-only plans:search through tools:invoke under critical pressure', async () => {
+    const req = post(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 50,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: {
+            name: 'mcp__papercusp_su__plans_search',
+            args: { q: 'orient-recall-quality-2026-07-12', scope: 'slug', limit: 5, semantic: false },
+          },
+        },
+      }),
+    );
+    expect(isBoundedPlansSearchArgs({ q: 'orient-recall-quality-2026-07-12', scope: 'slug', limit: 5, semantic: false })).toBe(true);
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('still sheds semantic, broad, malformed, and oversized plans:search forms under critical pressure', async () => {
+    for (const args of [
+      { query: 'orient-recall-quality', limit: 5 },
+      { query: 'orient-recall-quality', limit: 5, semantic: true },
+      { query: 'orient-recall-quality', limit: 21, semantic: false },
+      { query: 'orient-recall-quality', scope: ['unknown'], semantic: false },
+      { query: 'x'.repeat(401), semantic: false },
+      { query: 'orient-recall-quality', semantic: false, extra: true },
+    ]) {
+      expect(isBoundedPlansSearchArgs(args)).toBe(false);
+      const shed = await evaluateAdmission(post(toolsCall(51, 'plans:search', args)), 'critical', true);
+      expect(shed).not.toBeNull();
+      expect((await shed!.json()).error.data).toMatchObject({
+        retryable: true,
+        reason: 'loop_pressure_critical',
+      });
+    }
   });
   it('admits a bounded read-only git-sync:run preview under critical pressure', async () => {
     const req = post(
