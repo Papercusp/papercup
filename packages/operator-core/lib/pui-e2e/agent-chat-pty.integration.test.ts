@@ -93,6 +93,13 @@ const scriptedEngine = vi.hoisted(() => ({
 // Observe real maintenance scheduling so the fixture can dispose its own
 // timers before dropping their database. Production passes still run normally.
 const maintenance = vi.hoisted(() => ({ jobs: [] as Array<{ stop(): Promise<void> }> }));
+const nativeTerminalLaunch = vi.hoisted(() => vi.fn(() => {
+  throw new Error('PUI attached sessions must never open a native agent terminal');
+}));
+vi.mock('../terminal-spawn', async (original) => ({
+  ...await original<typeof import('../terminal-spawn')>(),
+  spawnInTerminal: nativeTerminalLaunch,
+}));
 vi.mock('../session-end-lease-release-hook', async (original) => {
   const actual = await original<typeof import('../session-end-lease-release-hook')>();
   return { ...actual, scheduleSessionEndLeaseRelease(...args: Parameters<typeof actual.scheduleSessionEndLeaseRelease>) {
@@ -795,6 +802,8 @@ let operatorServer: ServerType;
 let operatorPort: number;
 let previousEnv: Record<string, string | undefined>;
 let sessionTraffic: Array<Record<string, unknown>> = [];
+let launchRequests: unknown[] = [];
+let attachedCapability: 'current' | 'missing' | 'disabled' = 'current';
 type TransportFault = 'none' | 'startup-disconnect' | 'refuse' | 'lost-ack' | 'wrong-command-ack' | 'wrong-session-ack';
 let transportFault: TransportFault = 'none';
 let commandPosts: SuSessionCommand[] = [];
@@ -1284,6 +1293,7 @@ beforeAll(async () => {
       }
       const isLaunch = pathname === '/api/adv/sessions/launch-su';
       const launchInput = isLaunch ? await request.clone().json() : null;
+      if (isLaunch) launchRequests.push(launchInput);
       const isCommand = request.method === 'POST' && pathname.endsWith('/su-session/commands');
       if (isCommand) commandPosts.push(await request.clone().json() as SuSessionCommand);
       if (isLaunch && transportFault === 'startup-disconnect') {
@@ -1299,6 +1309,12 @@ beforeAll(async () => {
         console.info('PUI_REQUEST_FAILURE', JSON.stringify({ path: pathname,
           message: error instanceof Error ? error.message : String(error) }));
         throw error;
+      }
+      if (pathname === '/api/tui/identity' && attachedCapability !== 'current') {
+        const identity = await response.json();
+        if (attachedCapability === 'missing') delete identity.capabilities;
+        else identity.capabilities = { ...identity.capabilities, attachedSuSession: false };
+        response = Response.json(identity, { status: response.status });
       }
       if (pathname.endsWith('/card-response')) cardReplies.push({ path: pathname, status: response.status });
       traceTiming('request-end', { ...traceFields, elapsedMs: performance.now() - requestStarted, status: response.status });
@@ -1426,6 +1442,9 @@ beforeEach(async () => {
   namedQueryReplies.length = 0;
   pipelineCellRequests.length = 0;
   sessionTraffic = [];
+  launchRequests = [];
+  attachedCapability = 'current';
+  nativeTerminalLaunch.mockClear();
   commandPosts = [];
   commandReplies = [];
   cardReplies = [];
@@ -1665,6 +1684,36 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     } finally { await reopened.stop(); }
   });
 
+  test.each(['missing', 'disabled'] as const)(
+    'operator with %s attached capability retains the draft and refuses before any launch',
+    async (capability) => {
+      attachedCapability = capability;
+      const prompt = 'PUI compatibility guard exact draft λ';
+      const pane = new PuiPane(bin, operatorPort, home);
+      try {
+        await openComposer(pane);
+        pane.write(prompt);
+        pane.enter();
+        await pane.waitFor('does not advertise attached', { timeoutMs: 30_000 });
+        expect(pane.screen()).toContain(prompt);
+        expect(launchRequests).toEqual([]);
+        expect(commandPosts).toEqual([]);
+        expect(scriptedEngine.requests).toEqual([]);
+        expect(nativeTerminalLaunch).not.toHaveBeenCalled();
+        // Retrying the retained draft must not fall back to the legacy route.
+        pane.enter();
+        await pane.waitFor('does not advertise attached');
+        expect(launchRequests).toEqual([]);
+        expect(nativeTerminalLaunch).not.toHaveBeenCalled();
+        console.info('PUI_COMPATIBILITY_REFUSAL_ACCEPTANCE', JSON.stringify({
+          binary: bin, binarySha256, capability, launchRequests: launchRequests.length,
+          nativeTerminalLaunches: nativeTerminalLaunch.mock.calls.length,
+          screen: pane.screen(),
+        }));
+      } finally { await pane.stop(); }
+    },
+  );
+
   test('first exact draft reaches the structured SU engine, streams tools/reply, and reopens', async () => {
     const prompt = '  PUI exact Unicode draft λ 雪  ';
     const pane = new PuiPane(bin, operatorPort, home);
@@ -1691,6 +1740,8 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       // The test peer never opens a native terminal. PUI requested only the
       // attached-engine path and the protocol peer received the exact draft.
       expect(sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su')).toHaveLength(1);
+      expect(launchRequests).toEqual([expect.objectContaining({ attached_engine: true })]);
+      expect(nativeTerminalLaunch).not.toHaveBeenCalled();
       expect(pane.screen()).not.toContain(`> ${prompt}`);
       await pane.stop();
       await putViewState('Plans');
