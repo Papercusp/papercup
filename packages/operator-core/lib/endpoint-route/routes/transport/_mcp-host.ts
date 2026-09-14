@@ -77,7 +77,13 @@ import {
 import type { AgentRole } from '@papercusp/plugin-sdk';
 // Generic MCP↔dispatcher bridge primitives (plan P-031). The auth/spawn-context
 // assembly below stays host-side; only the reusable, host-agnostic glue moved.
-import { bearerFromExtra, urlFromExtra, headersFromExtra, dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
+import {
+  bearerFromExtra,
+  urlFromExtra,
+  headersFromExtra,
+  dispatchProjectedToolToMcp,
+  isDispatchValidationFailure,
+} from '@papercusp/tooldef-mcp';
 import { mcpDataPlaneDegradedAtFromExtra, mcpTraceIdFromExtra } from '../../../mcp-request-trace';
 import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoor, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
@@ -4472,15 +4478,21 @@ export function registerMcpHost(server: McpServer): void {
         // every subsequent retry replay the timeout forever.
         if (idempotencyKey && !skipReplayForReadOnly && raced.toolOutcome) {
           const persist = raced.toolOutcome
-            .then((result) =>
-              storeMcpResult({
+            .then((result) => {
+              // A projected-dispatch validation refusal means the handler never
+              // ran. Do not burn the caller's key on that transient payload
+              // mistake: a corrected request with the same key must validate and
+              // execute. Handler-returned `isError` results remain ordinary
+              // outcomes and are intentionally replayable.
+              if (isDispatchValidationFailure(result)) return;
+              return storeMcpResult({
                 ownerKey: replayOwnerKey,
                 idempotencyKey,
                 toolName,
                 workspaceId: dispatchSpawnCtx.workspaceId,
                 result: result as StoredMcpResult,
-              }),
-            )
+              });
+            })
             .catch((err: unknown) => {
               // Best-effort by contract: a store outage (or a tool that rejected, in
               // which case there is no outcome worth replaying) degrades to normal
