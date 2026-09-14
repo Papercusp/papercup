@@ -38,6 +38,95 @@ function completed(output: unknown[], delivery: OutputDelivery): Response {
 }
 
 describe('SuTarget Codex Responses tool loop', () => {
+  it.each(['codex', 'anthropic'] as const)('%s reaches a final response after more than six tool rounds', async (transport) => {
+    const previousApiKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'test-only-anthropic-key';
+    let requests = 0;
+    const toolOutput = (index: number) => ({
+      type: 'function_call', id: `fc_${index}`, call_id: `call_${index}`,
+      name: 'docs__get', arguments: JSON.stringify({ slugs: [`step-${index}`] }),
+    });
+    const fetchImpl = vi.fn(async () => {
+      requests++;
+      return completed(requests <= 7 ? [toolOutput(requests)] : [{
+        type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Finished seven evidence reads.' }],
+      }], 'snapshot');
+    });
+    anthropicMock.responses = [
+      ...Array.from({ length: 7 }, (_, index) => ({
+        content: [{ type: 'tool_use', id: `toolu_${index}`, name: 'docs__get', input: { slugs: [`step-${index}`] } }],
+        stop_reason: 'tool_use', usage: { input_tokens: 10, output_tokens: 4 },
+      })),
+      { content: [{ type: 'text', text: 'Finished seven evidence reads.' }], stop_reason: 'end_turn' },
+    ];
+    try {
+      const target = new SuTarget({
+        catalog: buildCatalog([{ name: 'docs:get', description: 'Read evidence.', input: { type: 'object' } }]),
+        loadSystemPrompt: () => 'Read the required evidence, then report.',
+        codexFetch: fetchImpl as unknown as typeof fetch,
+      });
+      const session = await target.open({
+        runId: `seven-round-${transport}`,
+        sutModel: transport === 'codex' ? LEARNING_MODEL_SPEC : 'claude-sonnet-4-6',
+        workspaceMode: 'isolated', transport: 'in-process',
+        dispatchOverride: { override: async () => ({ content: [{ text: '{"ok":true}' }] }) },
+      });
+      const result = await session.send({ trigger: 'user_message', messages: [{ role: 'user', content: 'Read the seven pieces of evidence and report.' }] });
+      expect(result.toolCalls).toHaveLength(7);
+      expect(result.toolResults).toHaveLength(7);
+      expect(result.assistantText).toBe('Finished seven evidence reads.');
+      expect(result.finishReason).toBe('done');
+      await session.close();
+    } finally {
+      if (previousApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previousApiKey;
+      anthropicMock.responses = [];
+    }
+  });
+
+  it.each(['codex', 'anthropic'] as const)('%s deadline remains an error rather than a successful empty final response', async (transport) => {
+    const previousApiKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'test-only-anthropic-key';
+    let elapsed = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    const fetchImpl = vi.fn(async () => {
+      elapsed = 240_001;
+      return completed([{
+        type: 'function_call', id: 'fc_deadline', call_id: 'call_deadline',
+        name: 'docs__get', arguments: '{}',
+      }], 'snapshot');
+    });
+    anthropicMock.responses = [{
+      content: [{ type: 'tool_use', id: 'toolu_deadline', name: 'docs__get', input: {} }],
+      stop_reason: 'tool_use',
+    }];
+    try {
+      const session = await new SuTarget({
+        catalog: buildCatalog([{ name: 'docs:get', description: 'Read.', input: { type: 'object' } }]),
+        loadSystemPrompt: () => 'Read then report.',
+        codexFetch: fetchImpl as unknown as typeof fetch,
+      }).open({
+        runId: `deadline-after-tool-${transport}`, sutModel: transport === 'codex' ? LEARNING_MODEL_SPEC : 'claude-sonnet-4-6',
+        workspaceMode: 'isolated', transport: 'in-process',
+        dispatchOverride: { override: async () => {
+          elapsed = 240_001;
+          return { content: [{ text: '{"ok":true}' }] };
+        } },
+      });
+      const result = await session.send({ trigger: 'user_message', messages: [{ role: 'user', content: 'Read.' }] });
+      expect(fetchImpl).toHaveBeenCalledTimes(transport === 'codex' ? 1 : 0);
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.finishReason).toBe('error');
+      expect(result.error).toMatch(/deadline|timed out/i);
+      await session.close();
+    } finally {
+      clock.mockRestore();
+      if (previousApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previousApiKey;
+      anthropicMock.responses = [];
+    }
+  });
+
   it.each<OutputDelivery>(['snapshot', 'streamed-only', 'both'])('replays reasoning, functions, and text exactly once with %s output', async (delivery) => {
     const bodies: Array<Record<string, unknown>> = [];
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
