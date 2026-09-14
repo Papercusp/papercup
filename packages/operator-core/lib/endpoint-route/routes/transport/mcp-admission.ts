@@ -338,11 +338,15 @@ const TESTING_RUNS_NAME = normalizeMcpName('testing:runs');
 const CRITICAL_LOGS_READ_MAX_UNITS = 3;
 const CRITICAL_LOGS_READ_MAX_LIMIT = 50;
 const CRITICAL_LOGS_READ_MAX_GREP_CHARS = 200;
+const CRITICAL_LOG_LEVELS = new Set(['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug']);
+const CRITICAL_LOG_SCOPES = new Set(['user', 'system', 'all']);
 const CRITICAL_NOTIFICATIONS_RECENT_MAX_LIMIT = 50;
 const CRITICAL_TESTING_RUNS_MAX_IDS = 25;
 const CRITICAL_TESTING_RUNS_MAX_STATUS = 6;
 const CRITICAL_TESTING_RUNS_MAX_SINCE_HOURS = 24;
 const CRITICAL_TESTING_RUNS_MAX_LIMIT = 25;
+const CRITICAL_TESTING_RUN_STATUSES = new Set(['pass', 'fail', 'skip', 'cancelled', 'error', 'running']);
+const CRITICAL_TESTING_RUN_SOURCES = new Set(['ci', 'local', 'admin-ui', 'mutation-probe']);
 const TESTING_RUN_STATUS_NAME = normalizeMcpName('testing:run-status');
 const CRITICAL_TESTING_RUN_STATUS_MAX_RUN_ID_CHARS = 120;
 const ACTIVITY_TOOL_LOG_NAME = normalizeMcpName('activity:tool-log');
@@ -1186,6 +1190,163 @@ export function isBoundedSessionRequestCompactionArgs(args: unknown): boolean {
     if (args[field] !== undefined && typeof args[field] !== 'boolean') return false;
   }
   return args.resumeMode === undefined || args.resumeMode === 'same';
+}
+
+/**
+ * `logs:read` can walk a large journal when it is unscoped, and its normal row
+ * ceiling is 1,000. Keep the critical-pressure reserve to one small page with
+ * a unit/identifier or explicit time-window selector. The selector is required
+ * so an omitted/default call cannot turn the reserve into a host-wide journal
+ * scan; all accepted fields are checked here because this gate runs before Zod.
+ */
+export function isBoundedLogsReadArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['unit', 'identifier', 'since', 'until', 'grep', 'level', 'limit', 'scope']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+
+  if (args.unit !== undefined) {
+    const units = Array.isArray(args.unit) ? args.unit : [args.unit];
+    if (
+      units.length < 1 ||
+      units.length > CRITICAL_LOGS_READ_MAX_UNITS ||
+      !units.every((unit) => isBoundedCriticalText(unit, 200, true))
+    ) {
+      return false;
+    }
+  }
+  for (const [field, max] of [
+    ['identifier', 200],
+    ['since', 100],
+    ['until', 100],
+  ] as const) {
+    if (args[field] !== undefined && !isBoundedCriticalText(args[field], max, true)) return false;
+  }
+  if (args.grep !== undefined && !isBoundedCriticalText(args.grep, CRITICAL_LOGS_READ_MAX_GREP_CHARS, true)) {
+    return false;
+  }
+  if (args.level !== undefined && (typeof args.level !== 'string' || !CRITICAL_LOG_LEVELS.has(args.level))) {
+    return false;
+  }
+  if (args.scope !== undefined && (typeof args.scope !== 'string' || !CRITICAL_LOG_SCOPES.has(args.scope))) {
+    return false;
+  }
+  if (!isBoundedPositiveInt(args.limit, CRITICAL_LOGS_READ_MAX_LIMIT)) return false;
+
+  // Without a unit/identifier, the handler requires `since` to avoid walking
+  // every unit. Preserve that same safety boundary in the pressure reserve.
+  return args.unit !== undefined || args.identifier !== undefined || args.since !== undefined;
+}
+
+/**
+ * `notifications:recent` already defaults to a 50-row query, so an omitted
+ * argument object is bounded. Reject larger explicit pages, unknown fields,
+ * and invalid levels before reserving the critical diagnostic lane.
+ */
+export function isBoundedNotificationsRecentArgs(args: unknown): boolean {
+  if (args === undefined) return true;
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['level', 'limit']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (
+    args.level !== undefined &&
+    (typeof args.level !== 'string' ||
+      !new Set(['default', 'info', 'success', 'warning', 'error', 'loading', 'all']).has(args.level))
+  ) {
+    return false;
+  }
+  if (args.limit !== undefined && !isBoundedPositiveInt(args.limit, CRITICAL_NOTIFICATIONS_RECENT_MAX_LIMIT)) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * `testing:runs` performs a ledger read plus a total/latest-per-file query, so
+ * a small `limit` alone is not enough to bound the work. Require one selective
+ * identity/time selector, cap rows and exact-id lookups, and keep the published
+ * enums/compatibility aliases explicit. A testRunIds-only read may omit limit
+ * because the handler derives it from the bounded id list.
+ */
+export function isBoundedTestingRunsArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set([
+    'testRunIds',
+    'filePath',
+    'commitSha',
+    'runGroup',
+    'runGroupId',
+    'status',
+    'source',
+    'since',
+    'sinceHours',
+    'workspace',
+    'harness',
+    'rollup',
+    'latestPerFile',
+    'limit',
+  ]);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+
+  if (args.testRunIds !== undefined) {
+    if (
+      !Array.isArray(args.testRunIds) ||
+      args.testRunIds.length < 1 ||
+      args.testRunIds.length > CRITICAL_TESTING_RUNS_MAX_IDS ||
+      !args.testRunIds.every((id) => Number.isSafeInteger(id) && id > 0)
+    ) {
+      return false;
+    }
+  }
+  for (const [field, max] of [
+    ['filePath', 400],
+    ['commitSha', 80],
+    ['runGroup', 200],
+    ['runGroupId', 200],
+    ['since', 64],
+    ['workspace', 120],
+    ['harness', 120],
+  ] as const) {
+    if (args[field] !== undefined && !isBoundedCriticalText(args[field], max, true)) return false;
+  }
+  if (
+    args.status !== undefined &&
+    (!Array.isArray(args.status) ||
+      args.status.length < 1 ||
+      args.status.length > CRITICAL_TESTING_RUNS_MAX_STATUS ||
+      !args.status.every((status) => typeof status === 'string' && CRITICAL_TESTING_RUN_STATUSES.has(status)))
+  ) {
+    return false;
+  }
+  if (args.source !== undefined && (typeof args.source !== 'string' || !CRITICAL_TESTING_RUN_SOURCES.has(args.source))) {
+    return false;
+  }
+  if (
+    args.sinceHours !== undefined &&
+    (typeof args.sinceHours !== 'number' ||
+      !Number.isFinite(args.sinceHours) ||
+      args.sinceHours <= 0 ||
+      args.sinceHours > CRITICAL_TESTING_RUNS_MAX_SINCE_HOURS)
+  ) {
+    return false;
+  }
+  if (args.rollup !== undefined && args.rollup !== 'commit' && args.rollup !== 'runGroup') return false;
+  if (args.latestPerFile !== undefined && typeof args.latestPerFile !== 'boolean') return false;
+  if (args.limit !== undefined && !isBoundedPositiveInt(args.limit, CRITICAL_TESTING_RUNS_MAX_LIMIT)) return false;
+
+  const hasSelectiveSelector = [
+    'testRunIds',
+    'filePath',
+    'commitSha',
+    'runGroup',
+    'runGroupId',
+    'since',
+    'sinceHours',
+  ].some((field) => args[field] !== undefined);
+  if (!hasSelectiveSelector) return false;
+
+  // The handler defaults to 30 rows. Exact IDs derive a smaller effective
+  // limit from their own bounded list; every other form must state its cap.
+  return args.limit !== undefined || args.testRunIds !== undefined;
 }
 
 /**
@@ -2658,6 +2819,9 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === WORK_ITEMS_SEARCH_NAME) return isBoundedWorkItemsSearchArgs(args);
   if (normalized === GIT_SYNC_RUN_NAME) return isBoundedGitSyncRunArgs(args);
   if (normalized === SESSION_REQUEST_COMPACTION_NAME) return isBoundedSessionRequestCompactionArgs(args);
+  if (normalized === LOGS_READ_NAME) return isBoundedLogsReadArgs(args);
+  if (normalized === NOTIFICATIONS_RECENT_NAME) return isBoundedNotificationsRecentArgs(args);
+  if (normalized === TESTING_RUNS_NAME) return isBoundedTestingRunsArgs(args);
   if (normalized === TESTING_RUN_STATUS_NAME) return isBoundedTestingRunStatusArgs(args);
   if (normalized === SESSIONS_SEARCH_NAME) return isBoundedSessionsSearchArgs(args);
   if (normalized === SESSIONS_TIMELINE_NAME) return isBoundedSessionsTimelineArgs(args);
