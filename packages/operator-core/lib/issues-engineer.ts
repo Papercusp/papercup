@@ -2589,9 +2589,9 @@ export async function getIssue(id: string, opts: WorkItemReadOptions = {}): Prom
  * brand-new id about to be inserted) — never throws, so an ordinary correctly-
  * ambient-scoped call is byte-identical to the old behavior.
  */
-export async function resolveIssueWorkspace(id: string, fallback?: string): Promise<string> {
+export async function resolveIssueWorkspace(id: string, fallback?: string, client?: OrgSql): Promise<string> {
   const ambient = fallback ?? issuesScopeWorkspace();
-  const { sql } = getOrgPg();
+  const sql = client ?? getOrgPg().sql;
   const rows = await sql<{ workspace_id: string }[]>`
     SELECT workspace_id FROM harness_shared.engineer_issues
      WHERE issue_id = ${id}
@@ -3096,13 +3096,12 @@ export async function recordWorkItemReleaseCooldown(opts: {
   harnessSlug: string;
   featureId: string;
   agentId: string;
-}): Promise<void> {
+}, client?: OrgSql): Promise<void> {
   const agentId = opts.agentId.trim();
   const harnessSlug = opts.harnessSlug.trim();
   if (!agentId || !harnessSlug) return;
   try {
-    const { sql } = getOrgPg();
-    await sql`
+    const write = (sql: OrgSql) => sql`
       INSERT INTO harness_shared.work_item_release_cooldowns
         (workspace_id, harness_slug, feature_id, agent_id, released_at)
       SELECT workspace_id, harness_slug, feature_id, ${agentId}, now()
@@ -3112,6 +3111,8 @@ export async function recordWorkItemReleaseCooldown(opts: {
          AND feature_id = ${opts.featureId}
       ON CONFLICT (workspace_id, harness_slug, feature_id, agent_id) DO UPDATE
         SET released_at = EXCLUDED.released_at`;
+    if (client) await write(client);
+    else await boundedOrgTxn((tx) => write(tx));
   } catch {
     // Migration 1055 may not yet be applied on an older runtime. The legacy
     // columns were written by the same release, so the reader still has a safe
@@ -3123,54 +3124,68 @@ export async function releaseIssue(
   id: string,
   opts: { expectedAssignee?: string } = {},
 ): Promise<EngineerIssue | null> {
-  const { sql } = getOrgPg();
-  const ws = await resolveIssueWorkspace(id);
-  // EI-6480: capture the prior assignee BEFORE clearing it, so we can clean up that owner's
-  // stale per-Hive claim lease below — else the just-freed issue stays lease-poisoned (reads
-  // unclaimed yet fails lease arbitration for every new claimer) until the lease TTL lapses.
-  const prev = await sql<{ taken_by: string | null; harness_slug: string | null }[]>`
-    SELECT taken_by, harness_slug
-      FROM harness_shared.work_items
-     WHERE workspace_id = ${ws}
-       AND feature_id = ${id}
-       AND item_kind IN ('bug', 'change', 'task')`;
-  const formerAssignee = prev[0]?.taken_by ?? null;
-  const formerHarnessSlug = prev[0]?.harness_slug ?? null;
-  // EI-7588: when `expectedAssignee` is given (the work_items:release TOOL's holder guard),
-  // the UPDATE itself only touches the row when it is unclaimed OR already held by the
-  // expected caller — atomic compare-and-release, no fetch-then-write race. A row held by
-  // someone ELSE matches 0 rows and this returns null, same as "not found"; the caller
-  // (release.ts) re-reads to tell the two apart and report an honest `not_holder` + holder.
-  // P-003 / D-002: mirror the feature-family release contract. A released issue that was
-  // mid-flight must return to the single issue claimable token (open), while parked and
-  // terminal states retain their meaning. Without this normalization, an unassigned `wip`
-  // issue is outside coord:dispatch's claimable frontier and remains stranded indefinitely.
-  const releasePreservedStates = ['open', 'blocked', 'needs-human', ...ISSUE_TERMINAL_STATUSES];
-  const rows = await sql<IssueRowDb[]>`
-    UPDATE harness_shared.engineer_issues SET
-       assignee = NULL,
-       assigned_at = NULL,
-       -- Preserve parked/terminal lifecycle states; normalize every other release state
-       -- (wip, legacy in-progress spellings, and unknown drift) to the claimable "open".
-       state = CASE
-         WHEN COALESCE(state, '') <> ALL(${releasePreservedStates}::text[]) THEN 'open'
-         ELSE state
-       END,
-       origin = 'local',
-       updated_at = now()
-     WHERE workspace_id = ${ws} AND issue_id = ${id}
-       AND (${opts.expectedAssignee ?? null}::text IS NULL OR assignee IS NULL OR assignee = ${opts.expectedAssignee ?? null})
-     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
-  if (!rows[0]) return null;
-  const issue = toIssue(rows[0]);
-  if (formerAssignee && formerHarnessSlug) {
-    await recordWorkItemReleaseCooldown({
-      workspaceId: ws,
-      harnessSlug: formerHarnessSlug,
-      featureId: id,
-      agentId: formerAssignee,
-    });
-  }
+  // EI-23215738429986679: resolve the issue workspace, capture its prior holder, perform the
+  // compare-and-release UPDATE, and persist release cooldown in ONE bounded admin transaction.
+  // The old path used raw getOrgPg() queries before/after the UPDATE; a pool or row-lock stall
+  // could therefore outlive the MCP transport and leave the caller with an unknown release
+  // outcome even though the mutation eventually landed. Passing the transaction client into
+  // the existing workspace/cooldown helpers keeps this change on the canonical surfaces while
+  // making the whole issue-family release atomic and fail-fast.
+  const released = await boundedOrgTxn(async (tx) => {
+    const ws = await resolveIssueWorkspace(id, undefined, tx);
+    // EI-6480: capture the prior assignee BEFORE clearing it, so we can clean up that owner's
+    // stale per-Hive claim lease below — else the just-freed issue stays lease-poisoned (reads
+    // unclaimed yet fails lease arbitration for every new claimer) until the lease TTL lapses.
+    const prev = await tx<{ taken_by: string | null; harness_slug: string | null }[]>`
+      SELECT taken_by, harness_slug
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${ws}
+         AND feature_id = ${id}
+         AND item_kind IN ('bug', 'change', 'task')`;
+    const formerAssignee = prev[0]?.taken_by ?? null;
+    const formerHarnessSlug = prev[0]?.harness_slug ?? null;
+    // EI-7588: when `expectedAssignee` is given (the work_items:release TOOL's holder guard),
+    // the UPDATE itself only touches the row when it is unclaimed OR already held by the
+    // expected caller — atomic compare-and-release, no fetch-then-write race. A row held by
+    // someone ELSE matches 0 rows and this returns null; the caller (release.ts) re-reads to
+    // tell the two apart and report an honest `not_holder` + holder.
+    // P-003 / D-002: mirror the feature-family release contract. A released issue that was
+    // mid-flight must return to the single issue claimable token (open), while parked and
+    // terminal states retain their meaning. Without this normalization, an unassigned `wip`
+    // issue is outside coord:dispatch's claimable frontier and remains stranded indefinitely.
+    const releasePreservedStates = ['open', 'blocked', 'needs-human', ...ISSUE_TERMINAL_STATUSES];
+    const rows = await tx<IssueRowDb[]>`
+      UPDATE harness_shared.engineer_issues SET
+         assignee = NULL,
+         assigned_at = NULL,
+         -- Preserve parked/terminal lifecycle states; normalize every other release state
+         -- (wip, legacy in-progress spellings, and unknown drift) to the claimable "open".
+         state = CASE
+           WHEN COALESCE(state, '') <> ALL(${releasePreservedStates}::text[]) THEN 'open'
+           ELSE state
+         END,
+         origin = 'local',
+         updated_at = now()
+       WHERE workspace_id = ${ws} AND issue_id = ${id}
+         AND (${opts.expectedAssignee ?? null}::text IS NULL OR assignee IS NULL OR assignee = ${opts.expectedAssignee ?? null})
+       RETURNING ${tx.unsafe(ISSUE_COLS)}`;
+    if (!rows[0]) return null;
+    const issue = toIssue(rows[0]);
+    if (formerAssignee && formerHarnessSlug) {
+      await recordWorkItemReleaseCooldown(
+        {
+          workspaceId: ws,
+          harnessSlug: formerHarnessSlug,
+          featureId: id,
+          agentId: formerAssignee,
+        },
+        tx,
+      );
+    }
+    return { issue, formerAssignee };
+  });
+  if (!released) return null;
+  const { issue, formerAssignee } = released;
   // Direct issue release callers (outside work_items:release) must retire the
   // same cached goal as the unified release path. Compare before clearing so a
   // delayed release cannot erase a newer goal claimed by this owner.
