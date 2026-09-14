@@ -103,6 +103,10 @@ const GUARDED_MODULES = [
   '@papercusp/operator-core/lib/operator-converse-tags',
   '@papercusp/operator-core/lib/voice-node/operator-voice-bus',
   '@papercusp/operator-core/lib/voice-node/el-convai-protocol',
+  // EI-23094620132530174: the MCP route exports pure warning helpers, so
+  // importing it under the host's real tsx runtime must not construct the
+  // mcp-handler adapter or eagerly arm the full operator tool graph.
+  '@papercusp/operator-core/lib/endpoint-route/routes/transport/_mcp-handler',
   // EI-8: the plan-item CLAIM write path routes through the swarm claim
   // authority → lock-authority → device-identity chain. It used to EAGERLY pull
   // in a holepunch/Hypercore CJS dep, throwing `require is not defined` under

@@ -3,26 +3,46 @@ import { createMcpHandler } from 'mcp-handler';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { loopPressure } from '../../../event-loop-lag-monitor';
 import { withMcpAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
-import { registerMcpHost, mcpHostServerOptions } from './_mcp-host';
+import { ensureOperatorToolsLoaded, registerMcpHost, mcpHostServerOptions } from './_mcp-host';
 
 // Preserve the existing import surface while non-HTTP transports use the host directly.
 export * from './_mcp-host';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const handler = createMcpHandler(registerMcpHost, mcpHostServerOptions(), {
-  basePath: '/api',
-  maxDuration: 60,
-  verboseLogs: process.env.NODE_ENV !== 'production',
-  // mcp-handler defaults to enabling its SSE transport, which requires
-  // Redis (REDIS_URL or KV_URL env) for cross-process pub/sub. We don't
-  // run a Redis here in dev, so leaving SSE on means every SSE-bound
-  // client triggers `Error: redisUrl is required` — which surfaces as
-  // an unhandledRejection and (under recent Node defaults) eventually
-  // takes the whole operator process down with rc=0 silently.
-  // Streamable-HTTP transport doesn't need Redis; turn SSE off.
-  disableSse: true,
-});
+type McpRouteHandler = ReturnType<typeof createMcpHandler>;
+let handlerLoad: Promise<McpRouteHandler> | null = null;
+
+/**
+ * Build the third-party HTTP adapter on first request, after the operator
+ * catalog is loaded. createMcpHandler installs a process-wide cleanup
+ * interval at construction time; doing that at module scope made importing a
+ * pure exported helper keep direct tsx probes alive forever.
+ */
+function getMcpRouteHandler(): Promise<McpRouteHandler> {
+  if (!handlerLoad) {
+    handlerLoad = (async () => {
+      await ensureOperatorToolsLoaded();
+      return createMcpHandler(registerMcpHost, mcpHostServerOptions(), {
+        basePath: '/api',
+        maxDuration: 60,
+        verboseLogs: process.env.NODE_ENV !== 'production',
+        // mcp-handler defaults to enabling its SSE transport, which requires
+        // Redis (REDIS_URL or KV_URL env) for cross-process pub/sub. We don't
+        // run a Redis here in dev, so leaving SSE on means every SSE-bound
+        // client triggers `Error: redisUrl is required` — which surfaces as
+        // an unhandledRejection and (under recent Node defaults) eventually
+        // takes the whole operator process down with rc=0 silently.
+        // Streamable-HTTP transport doesn't need Redis; turn SSE off.
+        disableSse: true,
+      });
+    })().catch((error) => {
+      handlerLoad = null;
+      throw error;
+    });
+  }
+  return handlerLoad;
+}
 
 /**
  * SSE header-flush priming: a streamable-HTTP tools/call that BLOCKS inside
@@ -149,6 +169,7 @@ export function primeSseResponse(res: Response, keepaliveMs: number = DEFAULT_KE
 // rationale live in ./mcp-admission (kept out of this heavy side-effect module so it's
 // unit-testable). Fail-open when no lag monitor is running (loopPressure() → 'ok').
 const mcpHandler = async (req: Request): Promise<Response> => {
+  const handler = await getMcpRouteHandler();
   return withMcpAdmission(req, loopPressure(), ADMISSION_CONTROL_ENABLED, async () =>
     primeSseResponse(await handler(req)),
   );

@@ -124,6 +124,32 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect((await status(x.lock_id)).status).toBe('held');
   });
 
+  it.skipIf(!live)('EI-23229103052811419: an incumbent shared holder can renew while an exclusive drain is pending', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+
+    const a = await acq(ws, 'A', 'dev-server', 'shared', 60);
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+
+    const x = await acq(ws, 'X', 'dev-server', 'exclusive', 60);
+    expect(x.ok).toBe(true);
+    if (!x.ok) return;
+    expect(x.status).toBe('draining');
+
+    // The git-sync action refreshes shared leases through tryAcquireResource,
+    // not tryHeartbeatResource. Renewal must not be mistaken for a new entrant
+    // while the restart's exclusive is still waiting for A to finish.
+    const refreshed = await acq(ws, 'A', 'dev-server', 'shared', 120);
+    expect(refreshed.ok).toBe(true);
+    if (!refreshed.ok) return;
+    expect(refreshed.lock_id).toBe(a.lock_id);
+
+    await rel(ws, 'A', a.lock_id);
+    expect((await status(x.lock_id)).status).toBe('held');
+    await rel(ws, 'X', x.lock_id);
+  });
+
   it.skipIf(!live)('unscoped queue identifies each simultaneous holder by named resource', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
