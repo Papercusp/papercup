@@ -462,6 +462,8 @@ function SearchResultRow({
   glyph,
   color,
   meta,
+  lastTurnAt,
+  nowMs,
   result,
   query,
   liveness,
@@ -472,6 +474,10 @@ function SearchResultRow({
   glyph: string;
   color?: string | null;
   meta: string;
+  /** Genuine activity for a live result. Never substitute the process
+   *  heartbeat: a keepalive is not an agent turn. */
+  lastTurnAt?: string | null;
+  nowMs: number;
   result: SearchSessionResult;
   query: string;
   /** The liveness dot for this matched session — activity-derived for an ACTIVE
@@ -514,6 +520,10 @@ function SearchResultRow({
   const openable = top
     ? searchHitStreamUrl(result, top, query) !== null
     : Boolean(result.idMatch) && idMatchStreamUrl(result) !== null;
+  const lastTurnAge = fmtCompactAge(lastTurnAt, nowMs);
+  const lastTurnLabel = lastTurnAge && lastTurnAt
+    ? `Last active turn ${new Date(lastTurnAt).toLocaleString()} · ${lastTurnAge} ago`
+    : undefined;
   return (
     <div className="pc-agents-sessions__result" data-testid={`session-hit-${result.sourceKind}-${result.sessionId}`}>
       <div
@@ -534,6 +544,16 @@ function SearchResultRow({
       >
         <span className="pc-agents-roster__live">
           <LivenessDot liveness={liveness} size={7} title={livenessTitle} />
+          {lastTurnLabel ? (
+            <time
+              className="pc-agents-roster__age"
+              dateTime={lastTurnAt ?? undefined}
+              title={lastTurnLabel}
+              aria-label={lastTurnLabel}
+            >
+              {lastTurnAge}
+            </time>
+          ) : null}
           <span className="pc-agents-sessions__kind" aria-hidden>{result.sourceKind}</span>
         </span>
         <span className="pc-agents-roster__glyph" style={color ? { color } : undefined} aria-hidden>{glyph}</span>
@@ -935,6 +955,8 @@ export function SessionSearchResults({
                     glyph={agentGlyph(a)}
                     color={g.color}
                     meta={a.intent || a.currentPlanSlug || '—'}
+                    lastTurnAt={a.lastActiveAt}
+                    nowMs={nowMs}
                     result={res}
                     query={query}
                     liveness={activityLiveness(a, nowMs)}
@@ -965,6 +987,7 @@ export function SessionSearchResults({
                   title={title}
                   glyph={agentGlyph({ agentPaneKind: null, role: row?.role ?? null })}
                   meta={meta}
+                  nowMs={nowMs}
                   result={s}
                   query={query}
                   liveness="stale"

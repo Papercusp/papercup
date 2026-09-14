@@ -899,6 +899,43 @@ describe('SessionSearchResults — id matches (WI-37204)', () => {
     expect(screen.getByTestId('id-match-chip').textContent).toBe('matched su id');
   });
 
+  it('shows the active result’s genuine last-turn age with an exact local timestamp', async () => {
+    respondWith([]);
+    const lastActiveAt = '2026-08-08T11:57:59Z';
+    render(
+      <SessionSearchResults
+        query="su-bc38a419"
+        nowMs={NOW}
+        instantIdMatches={[instant({ active: agent({ lastActiveAt }) })]}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+
+    const age = screen
+      .getByTestId('session-hit-claude-073c5a1e-d280-4c37-866c-fedcaf096c9e')
+      .querySelector('.pc-agents-roster__age');
+    const exact = new Date(lastActiveAt).toLocaleString();
+    expect(age?.tagName).toBe('TIME');
+    expect(age?.textContent).toBe('2m');
+    expect(age?.getAttribute('datetime')).toBe(lastActiveAt);
+    expect(age?.getAttribute('aria-label')).toBe(`Last active turn ${exact} · 2m ago`);
+    expect(age?.getAttribute('title')).toBe(`Last active turn ${exact} · 2m ago`);
+  });
+
+  it('does not turn a keepalive heartbeat into a last-active-turn timestamp', async () => {
+    respondWith([]);
+    render(
+      <SessionSearchResults
+        query="su-bc38a419"
+        nowMs={NOW}
+        instantIdMatches={[instant({ active: agent({ lastActiveAt: null, heartbeatAt: '2026-08-08T11:59:59Z' }) })]}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    const result = screen.getByTestId('session-hit-claude-073c5a1e-d280-4c37-866c-fedcaf096c9e');
+    expect(result.querySelector('.pc-agents-roster__age')).toBeNull();
+  });
+
   it('makes a hit-less id match OPENABLE — the whole point of searching an id', async () => {
     respondWith([]);
     render(<SessionSearchResults query="su-bc38a419" nowMs={NOW} instantIdMatches={[instant()]} />);
