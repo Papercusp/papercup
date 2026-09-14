@@ -9,12 +9,12 @@ how the state must come back, not by habit.
 
 ## The four layers
 
-| Layer                | Verb                                           | Delivery                                                                              | Use for                                                                                        |
-| -------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Work-item checkpoint | `work_items:checkpoint { id, checkpoint }`     | Re-injected when the item is next picked up — by you or any successor                 | In-flight progress on one item: what's done, what's left, the next step                        |
-| Loop checkpoint      | `loop:checkpoint { did, left, insight, next }` | Re-injected on the armed loop's next wake; a cold wake reconstructs from it           | An engine loop's iteration state                                                               |
-| Standing fact        | `facts:assert { scope, scopeRef?, key, body }` | Folded **verbatim** into every relevant orient/brief until retracted (TTL default 7d) | Scoped conclusions future turns must see deterministically ("X is owner-residue — exclude it") |
-| Shared memory        | `memory:remember`                              | Semantic recall (orient's mem0 hit list, `memory:search`)                             | Fuzzy background worth recalling, not guaranteed delivery                                      |
+| Layer                | Verb                                           | Delivery                                                                                                                                                                                                                                  | Use for                                                                                        |
+| -------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Work-item checkpoint | `work_items:checkpoint { id, checkpoint }`     | Re-injected when the item is next picked up — by you or any successor                                                                                                                                                                     | In-flight progress on one item: what's done, what's left, the next step                        |
+| Loop checkpoint      | `loop:checkpoint { did, left, insight, next }` | Re-injected on the armed loop's next wake; a cold wake reconstructs from it                                                                                                                                                               | An engine loop's iteration state                                                               |
+| Standing fact        | `facts:assert { scope, scopeRef?, key, body }` | Folded **verbatim** into every relevant orient/brief until retracted or its declared lifetime ends; ordinary facts must declare `ttlSec` or `permanent:true` (with the documented typed-slot, convention, and confidence-tier exceptions) | Scoped conclusions future turns must see deterministically ("X is owner-residue — exclude it") |
+| Shared memory        | `memory:remember`                              | Semantic recall (orient's mem0 hit list, `memory:search`)                                                                                                                                                                                 | Fuzzy background worth recalling, not guaranteed delivery                                      |
 
 Rules of thumb: a checkpoint is *per unit of work*, a fact is *per conclusion*,
 memory is *per thing worth knowing*. Live ephemera (intents, handoffs,
@@ -36,9 +36,14 @@ Work-item, loop, and pot checkpoints are rows in
 ## Facts discipline
 
 `facts:list { scope }` before asserting (upsert is by key — don't fork a
-second key for the same conclusion). `facts:retract` the moment a fact stops
-being true: a stale fact delivered verbatim into every future brief is worse
-than none. Bodies store at ≤500 chars — write tight conclusions, not essays.
+second key for the same conclusion). Every ordinary fact must declare its
+lifetime: pass `ttlSec` for a bounded current-code/state claim or
+`permanent:true` only for a cap-exempt standing rule; `kind:'convention'`,
+typed safety slots, and `confidence:'provisional'|'suspected'` carry their
+documented lifetime semantics. `facts:assert` refuses an ordinary write that
+declares none. Use `facts:retract` the moment a fact stops being true: a stale
+fact delivered verbatim into every future brief is worse than none. Bodies
+store at ≤1200 chars — write tight conclusions, not essays.
 
 ## Why this exists
 

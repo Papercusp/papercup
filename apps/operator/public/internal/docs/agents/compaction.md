@@ -23,12 +23,20 @@ answer is a discipline plus purpose-built carry surfaces.
 The core rule: **externalize state to re-injected surfaces, then let the
 summary carry pointers, not copies.** The surfaces:
 
-| State                        | Surface                                        | Re-injected when                                     |
-| ---------------------------- | ---------------------------------------------- | ---------------------------------------------------- |
-| In-flight work-item progress | `work_items:checkpoint { id, checkpoint }`     | The item's next invocation (yours or a successor's)  |
-| An armed loop's progress     | `loop:checkpoint { did, left, insight, next }` | The next loop wake                                   |
-| Scoped standing conclusions  | `facts:assert { scope, key, body }`            | Every future orient/brief, verbatim, until retracted |
-| Fuzzy background knowledge   | `memory:remember`                              | Semantic recall (`coord:orient` / `memory:search`)   |
+| State                        | Surface                                                | Re-injected when                                                                                                                                                                                                 |
+| ---------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| In-flight work-item progress | `work_items:checkpoint { id, checkpoint }`             | The item's next invocation (yours or a successor's)                                                                                                                                                              |
+| An armed loop's progress     | `loop:checkpoint { did, left, insight, next }`         | The next loop wake                                                                                                                                                                                               |
+| Scoped standing conclusions  | `facts:assert { scope, scopeRef?, key, body, ttlSec }` | Every future orient/brief, verbatim, until retracted or its declared lifetime ends; ordinary facts must declare `ttlSec` or `permanent:true` (documented typed-slot, convention, and confidence-tier exceptions) |
+
+Standing facts have no silent ordinary lifetime. For a bounded claim about current code
+or state, pass `ttlSec`; use `permanent:true` only for cap-exempt standing rules.
+`kind:'convention'`, typed safety slots (`slot:'wall'|'dead-end'|'guard-rail'`), and
+`confidence:'provisional'|'suspected'` provide their documented lifetime semantics.
+The writer refuses an ordinary fact that declares none. Retract a fact as soon as its
+conclusion stops being true; a stale fact is worse than no fact because it is delivered
+verbatim.
+\| Fuzzy background knowledge | `memory:remember` | Semantic recall (`coord:orient` / `memory:search`) |
 
 Checkpoints and facts live in Postgres (`harness_shared.carry_notes` — see
 [checkpoints and facts](/internal/docs/coordination/checkpoints-and-facts)), so
