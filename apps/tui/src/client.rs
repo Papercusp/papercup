@@ -219,6 +219,16 @@ pub struct AgentChatIdentity {
     pub route: String,
 }
 
+/// Optional operator capabilities added without changing the rendezvous schema
+/// version.  An older operator decodes as all-false, which is intentionally
+/// fail-closed for launch paths that otherwise open native terminal windows.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperatorCapabilities {
+    #[serde(default)]
+    pub attached_su_session: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ServerIdentity {
@@ -227,6 +237,8 @@ struct ServerIdentity {
     store: StoreIdentity,
     build: BuildIdentity,
     agent_chat: AgentChatIdentity,
+    #[serde(default)]
+    capabilities: OperatorCapabilities,
 }
 
 fn su_segment(value: &str) -> String {
@@ -255,6 +267,7 @@ pub struct BackendIdentity {
     pub store: StoreIdentity,
     pub build: BuildIdentity,
     pub agent_chat: AgentChatIdentity,
+    pub capabilities: OperatorCapabilities,
 }
 
 impl BackendIdentity {
@@ -805,6 +818,7 @@ impl OperatorClient {
             store: server.store,
             build: server.build,
             agent_chat: server.agent_chat,
+            capabilities: server.capabilities,
         })
     }
 
@@ -1101,6 +1115,16 @@ impl OperatorClient {
         &self,
         request: &SuSessionOpenRequest,
     ) -> Result<SuSessionBinding> {
+        let identity = self
+            .backend_identity()
+            .await
+            .context("verify selected operator supports attached SU sessions")?;
+        if !identity.capabilities.attached_su_session {
+            anyhow::bail!(
+                "selected operator {} does not advertise attached, windowless SU sessions; PUI refused before launch so it cannot open a native agent terminal. Select a current operator with PUI_OPERATOR=staging or update the selected operator",
+                identity.endpoint
+            );
+        }
         let body = match request {
             SuSessionOpenRequest::Create(request) => serde_json::to_value(request),
             SuSessionOpenRequest::Attach(request) => serde_json::to_value(request),
@@ -3611,6 +3635,30 @@ mod tests {
             .contains("before its result"));
     }
 
+    #[test]
+    fn old_operator_identity_fails_closed_for_attached_su_sessions() {
+        let old: ServerIdentity = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "workspaceId": "ws-pui",
+            "store": { "id": "pg-test", "target": "postgresql://test", "source": "test" },
+            "build": { "version": "old", "sha": "abc123" },
+            "agentChat": { "scope": "workspace:ws-pui", "route": "/api/agent-chats" }
+        }))
+        .unwrap();
+        assert!(!old.capabilities.attached_su_session);
+
+        let current: ServerIdentity = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "workspaceId": "ws-pui",
+            "store": { "id": "pg-test", "target": "postgresql://test", "source": "test" },
+            "build": { "version": "current", "sha": "def456" },
+            "agentChat": { "scope": "workspace:ws-pui", "route": "/api/agent-chats" },
+            "capabilities": { "attachedSuSession": true }
+        }))
+        .unwrap();
+        assert!(current.capabilities.attached_su_session);
+    }
+
     fn inbox_action(id: &str) -> crate::models::AttentionAction {
         crate::models::AttentionAction {
             id: id.into(),
@@ -4389,6 +4437,9 @@ mod tests {
             agent_chat: AgentChatIdentity {
                 scope: format!("workspace:{workspace}"),
                 route: "/api/agent-chats".into(),
+            },
+            capabilities: OperatorCapabilities {
+                attached_su_session: true,
             },
         }
     }
