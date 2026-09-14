@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P523 affected native packaging preparation checks",
+  "framework": "node",
+  "command": [
+    "scripts/pc-heavy.sh",
+    "node",
+    "--test",
+    "--test-reporter=tap",
+    "--test-reporter-destination=/tmp/p523-refresh-5c8f-1FhTEE/tests.tap",
+    "--test-concurrency=1",
+    "papercusp-desktop/test/build-desktop-sidecar-workspace-install.test.js",
+    "papercusp-desktop/test/innoextract-compat-preflight.test.js",
+    "papercusp-desktop/test/install-and-relaunch-verify.test.js",
+    "papercusp-desktop/test/provenance-sidecar-record.test.js",
+    "papercusp-desktop/test/release-local-sidecar-source.test.js",
+    "papercusp-desktop/test/build-desktop-sidecar-dependency-closure.test.js",
+    "papercusp-desktop/test/build-windows-identity.test.js",
+    "papercusp-desktop/test/release-local-precheck-exit.test.js"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-14T02:04:46.685Z",
+  "finishedAt": "2026-09-14T02:06:02.710Z",
+  "summary": "Affected P523 preparation suites passed: 128 tests, 128 pass, 0 fail, 0 skipped, 0 cancelled. These are existing native Node tests using source inspection, temporary fixture repositories/artifacts, local fixture servers and mocked installation transports. This is not a full installer build, native public signing, real machine installation, P521 physical acceptance, independent release GO, canary, or shipment.",
+  "assertions": [
+    {
+      "id": "complete-native-run",
+      "passed": true,
+      "evidence": "The retained native execution session 71958 completed with P523_EXIT=0. TAP ended with 1..128, tests 128, pass 128, fail 0, cancelled 0, skipped 0 and todo 0."
+    },
+    {
+      "id": "input-cohort-stable",
+      "passed": true,
+      "evidence": "SHA-256 of all 45 source/test paths in the pre-run input manifest was compared after the run; changedDuringRun was empty. This does not assert an immutable release commit or enumerate dependencies outside that declared cohort."
+    },
+    {
+      "id": "inno-corruption-refusal",
+      "passed": true,
+      "evidence": "TAP ok 50: compatibility requires extraction, intact bytes, and corruption refusal."
+    },
+    {
+      "id": "installer-provenance",
+      "passed": true,
+      "evidence": "TAP ok 56: a passing installed update writes a tag-scoped receipt bound to provenance bytes. TAP ok 58: Windows refuses a provenance-listed Server span when any disk is absent. These cases exercise fixture transports, not the real release rig."
+    },
+    {
+      "id": "mac-install-refusal-and-recovery-protection",
+      "passed": true,
+      "evidence": "TAP ok 67-71 reject missing/invalid console and supervisor conditions. TAP ok 73 rejects low-space staging before copy and preserves installed and rollback apps. TAP ok 75 rejects a GUI-only transition without its matching Server DMG."
+    },
+    {
+      "id": "provenance-fail-closed",
+      "passed": true,
+      "evidence": "TAP ok 91-95 reject malformed gitDirty, release identity, artifact rows, escaping artifact names and HTTP errors that carry the expected health SHA. TAP ok 96-97 verify release-path/signature and platform/artifact-family binding."
+    },
+    {
+      "id": "precheck-before-mutation",
+      "passed": true,
+      "evidence": "TAP ok 102 puts the precheck exit above the first version write. TAP ok 103 checks prepare-tag exit before build writes. TAP ok 105 rejects missing runtime owner identity before seed or manifest writes."
+    },
+    {
+      "id": "immutable-source-negative-controls",
+      "passed": true,
+      "evidence": "TAP ok 116-119 check pinned superproject/gitlink policy reads. TAP ok 120-124 reject invalid overrides, unavailable gitlink commits, uninitialized submodules, missing pinned blobs and symlinks. TAP ok 126 and 128 retain Linux/Mac real-superproject-drift refusal."
+    }
+  ],
+  "scope": {
+    "workItemId": "WI-2147009",
+    "planSlug": "p2p-public-release-endgame-2026-09-01",
+    "planItemId": "P-523",
+    "preparationOnly": true,
+    "repositoryRoot": ".",
+    "repositoryRootResolution": "Resolve from the canonical papercusp harness checkout containing this evidence file. The original absolute execution root remains in the access-controlled run transcript and original input manifest; it is intentionally not copied into distributable source.",
+    "preRunSuperprojectHead": "bc5f83262e4bb3a22bb80b67a2625cca3b08a0d6",
+    "preRunDesktopHead": "882ce0d3c2a5a1228b22082eeebf64f6fb3b55da",
+    "commitAcceptanceClaimed": false,
+    "timestampSemantics": "startedAt is the recorded input snapshot immediately before queued launch; finishedAt is the TAP file completion timestamp. The envelope includes heavy-slot admission wait. Node reported 63308.993925ms test duration.",
+    "manifestBasis": "scratchpad/p523-59b85-v7-manifest.json",
+    "manifestFileCount": 45,
+    "changedDuringRun": []
+  },
+  "rawEvidence": {
+    "tapPath": "/tmp/p523-refresh-5c8f-1FhTEE/tests.tap",
+    "tapSha256": "5a26a0b9d1522b3f28755bb5e058b027ba9fba07824b7fb34222b3f5c5ca6b05",
+    "inputManifestPath": "/tmp/p523-refresh-5c8f-1FhTEE/input-fingerprints.json",
+    "inputManifestSha256": "62b50fd444bb2b793e2c0aac1a9f125d887fbdf2156c69e75769167f50bdac85",
+    "retention": "Temporary originals are supplementary. This committed artifact preserves the command, observed outcome, assertion excerpts, source identity and original digests for canonical recording; it does not promise indefinite retention of /tmp."
+  }
+}

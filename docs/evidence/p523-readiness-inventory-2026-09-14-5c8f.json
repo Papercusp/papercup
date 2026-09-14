@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "kind": "release-preparation-inventory",
+  "workItemId": "WI-2147009",
+  "planSlug": "p2p-public-release-endgame-2026-09-01",
+  "planItemId": "P-523",
+  "observedDate": "2026-09-14",
+  "scope": "Preparatory source, fixture-test and procedure review only. Public release acceptance remains unproven.",
+  "sourceRoute": {
+    "orchestrator": "papercusp-desktop/bin/release-local.sh",
+    "macProducer": "papercusp-desktop/bin/build-mac-cross.sh",
+    "windowsProducer": "papercusp-desktop/bin/build-windows-cross.sh",
+    "sidecarProducer": "papercusp-desktop/bin/build-desktop-sidecar.sh",
+    "rolePreflight": "apps/operator/lib/release/preflight-build-set.ts",
+    "guiResourceConfig": "papercusp-desktop/src-tauri/tauri.conf.json",
+    "notes": [
+      "The required role set is GUI plus Server. A deliberate incomplete-role override is not full-release acceptance.",
+      "The current Mac release leg cross-builds on Linux; the native Mac build is an alternate route, not an interchangeable credential contract.",
+      "GUI resource configuration includes sidecar/spa, while the Server carries runtime, dependency, source, seed and migration payloads.",
+      "Optional resources and pack exclusions still require inspection of the final assembled bytes; source/fixture checks do not establish actual offline-install completeness.",
+      "Use the existing producer and verifier chain. This review did not cut another candidate, publish artifacts, change a rig, restart runtime, or operate a live release gate."
+    ]
+  },
+  "localChecks": {
+    "nativeEvidenceFile": "docs/evidence/p523-native-preparation-2026-09-14-5c8f.json",
+    "nativeTotals": {
+      "files": 8,
+      "passed": 128,
+      "failed": 0,
+      "skipped": 0
+    },
+    "operatorRunGroup": "4d0ec1f9-afda-44a5-ad78-76ca88a96e9b",
+    "operatorTestRunIds": [18011718, 18011719, 18011720, 18011721, 18011722, 18011723],
+    "operatorTotals": {
+      "files": 6,
+      "passed": 77,
+      "failed": 0,
+      "skipped": 0
+    },
+    "operatorScope": {
+      "workspaceId": "papercusp-workspace",
+      "harnessSlug": "papercusp",
+      "worktreeDirty": true,
+      "interpretation": "Real current-tree preparation tests, not an immutable release-candidate test."
+    },
+    "historicalReview": {
+      "workItemId": "WI-10000387",
+      "parentCommentId": 199896,
+      "scope": "Independent frozen-v7 parent census. Retained as historical coverage guidance, not a current independent review of this refreshed cohort."
+    }
+  },
+  "signingInputs": [
+    {
+      "platform": "all-updaters",
+      "inputs": ["TAURI_SIGNING_PRIVATE_KEY_PATH", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD"],
+      "observation": "The default key at $HOME/.papercusp/signing/papercusp.key exists for the checking process. This process has no explicit path/password override. No private value was read and no signature was produced or verified.",
+      "remaining": "Verify the configured updater public/private-key pairing and signatures against the exact final artifacts and manifest."
+    },
+    {
+      "platform": "windows",
+      "inputs": ["WINDOWS_CERT_BASE64", "WINDOWS_CERT_PASSWORD", "WINDOWS_SIGN_DIGEST", "WINDOWS_SIGN_TIMESTAMP_URL"],
+      "observation": "WINDOWS_CERT_BASE64/PASSWORD are absent in this agent process. The producer decodes supplied PKCS#12 material and signs PE outputs through osslsigncode; absent certificate material selects its explicit unsigned path. This process-only observation does not establish absence in another builder or credential store.",
+      "remaining": "Resolve an authorized certificate/private-key source outside the repository, certificate-chain validity, timestamp policy, exact installer and bundled-executable Authenticode verification, and a real quarantined/downloaded signed-install journey. No SmartScreen trust or reputation is claimed."
+    },
+    {
+      "platform": "macos",
+      "inputs": ["MAC_SIGN_P12_BASE64", "MAC_SIGN_P12_PASSWORD"],
+      "observation": "Both inputs are absent in this agent process. The maintained producer supplies them to rcodesign when present and otherwise signs ad hoc. Its observed per-role call sequence is sign_app, make_updater, make_dmg. The source contains no notarization submission or stapling step.",
+      "remaining": "Resolve an authorized Developer ID identity/private key and a maintained exact-candidate notarization/finalization workflow with its own credential contract. Prove nested-code signing, intended identity/team, hardened runtime/entitlements/timestamp as required by that workflow, accepted notary result, stapled ticket and native Gatekeeper acceptance. Rebuild downstream archives, updater signatures, hashes and provenance if finalization changes bytes."
+    }
+  ],
+  "finalCandidateRequirements": [
+    "One explicitly frozen candidate carrying the accepted prerequisite inputs; a new candidate requires the separate custody/input decision.",
+    "Exact GUI and matching Server artifacts for each declared platform, including every Windows provenance-listed Inno companion.",
+    "Actual artifact hashes, updater signatures, build-provenance.json and manifest URLs/platform keys bound to the same final bytes.",
+    "Final assembled dependency/seed/migration/optional-resource audit and the real offline-install/launch journey.",
+    "Native Windows signing verification and native Mac signature, ticket and Gatekeeper verification without removing quarantine or bypassing protection.",
+    "P521 physical acceptance, independent release GO, an actual 72-hour post-GO canary, owner-freeze/refusal/recovery, the separate defaults decision, portfolio closeout and final shipment ceremonies."
+  ],
+  "finalCandidateCommands": [
+    {
+      "purpose": "Artifact provenance and updater trust",
+      "command": ["bash", "papercusp-desktop/bin/verify-provenance.sh", "<exact-artifact-directory>", "--health-sha", "<observed-running-candidate-sha>", "--require-signed", "--json"],
+      "executed": false,
+      "boundary": "Run only against the authorized exact final artifact set. This does not replace native platform-signing checks."
+    },
+    {
+      "purpose": "Per-platform split-product installed update and sticky-port verification",
+      "command": ["bash", "papercusp-desktop/bin/install-and-relaunch-verify.sh", "--platform", "<windows|mac|linux>", "--artifact", "<exact-gui-installer>", "--server-artifact", "<matching-server-installer>", "--expected-sha", "<candidate-sha>", "--expected-version", "<version>", "--smoke-receipt-tag", "<candidate-tag>", "--json"],
+      "executed": false,
+      "boundary": "This mutates the authorized test machine. Obtain the sole-custodian clean rig point first; retain Windows spans and do not manually kill the old operator to make the replacement proof pass."
+    },
+    {
+      "purpose": "Final seed integrity, degradation and build-identity verification",
+      "command": ["npx", "tsx", "apps/operator/lib/release/verify-seed-payload-cli.ts", "--seed", "<exact-final-seed-directory>", "--origin", "<fresh|reuse>"],
+      "executed": false,
+      "boundary": "Exit 0 passes; exit 1 is broken; exit 2 is undetermined, not success."
+    },
+    {
+      "purpose": "Final artifact content scan",
+      "command": ["python3", "papercusp-desktop/bin/audit-release-bundle.py", "--scan-artifact", "<exact-final-artifact>"],
+      "executed": false,
+      "boundary": "Use the same verified Windows extractor selected by the producer; preserve the full artifact-set and provenance checks separately."
+    },
+    {
+      "purpose": "Native Mac finalization validation for every app role",
+      "commands": [
+        ["codesign", "--verify", "--deep", "--strict", "--verbose=2", "<finalized-app>"],
+        ["codesign", "-dvv", "<finalized-app>"],
+        ["spctl", "--assess", "--type", "execute", "--verbose", "<finalized-app>"],
+        ["xcrun", "stapler", "validate", "<finalized-app>"]
+      ],
+      "executed": false,
+      "boundary": "Also validate the actually distributed container and real download/install/launch path. An ad-hoc signature or updater .sig is not public native trust evidence."
+    }
+  ],
+  "releaseVerdict": "NOT_ESTABLISHED",
+  "preparationReview": "Current source/test and unmet-input inventory; awaiting current evidence binding and independent audit. No full-installer acceptance or release authorization is asserted."
+}
