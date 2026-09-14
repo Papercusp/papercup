@@ -3366,6 +3366,32 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === `${MIGRATION_SQL_DIR}/986-resource-governor-work-item-queue-identity.sql`,
   },
   {
+    // EI-23210600888560844 — sessions:read's private-Postgres regression suite was
+    // present and green, but the ordinary operator-core task intentionally excludes
+    // `*.integration.test.ts`, while the broad `test:integration` task is opt-in and
+    // is not part of the main promotion command. Without this focused route, changes
+    // to the SQL reader could pass the local gate while the only regression proof slept.
+    //
+    // Keep the trigger set to the reader's implementation/test seam plus the fixture,
+    // integration config, package script, and runner that can silently detach it.
+    // The sessions:search and filter modules are included because read.integration.test.ts
+    // imports them through the public search→read composition; unrelated sessions tools
+    // must not pay the private-Postgres test cost.
+    workspace: "@papercusp/operator-core",
+    script: "test:integration:sessions-read",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/package.json" ||
+      f === "packages/operator-core/vitest.integration.config.ts" ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "packages/operator-core/lib/agent-tools/sessions/read.ts" ||
+      f === "packages/operator-core/lib/agent-tools/sessions/read.integration.test.ts" ||
+      f === "packages/operator-core/lib/agent-tools/sessions/_shared.ts" ||
+      f === "packages/operator-core/lib/agent-tools/sessions/search.ts" ||
+      f === "packages/operator-core/lib/agent-tools/search/filters.ts" ||
+      f === "packages/operator-core/test/_pg-helpers.ts",
+  },
+  {
     // WI-4311 — the D-034 shape again, with the most delayed discovery of the set.
     // The canonical fix (WITH (FORCE) in makeDrop(), libs/test-config/src/pg-migrate.ts)
     // landed 2026-07-12, but four hand-rolled teardown sites kept the old

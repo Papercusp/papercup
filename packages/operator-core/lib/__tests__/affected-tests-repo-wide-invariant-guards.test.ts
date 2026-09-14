@@ -948,6 +948,60 @@ describe('affected-tests: resource-governor queue integration guard (WI-2141163)
 });
 
 /**
+ * EI-23210600888560844 — the private-Postgres sessions:read regression suite must
+ * be selected by the ordinary affected-tests path. The operator-core unit task
+ * excludes `*.integration.test.ts`, and the broad integration task is opt-in, so
+ * this focused route is the only local promotion signal for the real SQL contract.
+ */
+describe('affected-tests: sessions/read private-PG integration guard (EI-23210600888560844)', () => {
+  const SCRIPT = 'test:integration:sessions-read';
+  const TASK = `${HOST_WORKSPACE} :: ${SCRIPT}`;
+  const TRIGGER_PATHS = [
+    'package.json',
+    'packages/operator-core/package.json',
+    'packages/operator-core/vitest.integration.config.ts',
+    'scripts/affected-tests.mjs',
+    'packages/operator-core/lib/agent-tools/sessions/read.ts',
+    'packages/operator-core/lib/agent-tools/sessions/read.integration.test.ts',
+    'packages/operator-core/lib/agent-tools/sessions/_shared.ts',
+    'packages/operator-core/lib/agent-tools/sessions/search.ts',
+    'packages/operator-core/lib/agent-tools/search/filters.ts',
+    'packages/operator-core/test/_pg-helpers.ts',
+  ];
+  const UNRELATED_SESSION_TOOL_PATH = 'packages/operator-core/lib/agent-tools/sessions/list.ts';
+
+  it.each(TRIGGER_PATHS)('attaches the focused sessions/read task for a contract input: %s', (changedPath) => {
+    const out = dryTasks(changedPath);
+    expect(out, 'the operator-core unit task should still be selected for the changed contract input').toContain(
+      `${HOST_WORKSPACE} :: test`,
+    );
+    expect(
+      out,
+      `${changedPath} can change the sessions:read SQL contract or its private-PG test venue; ` +
+        'the focused integration task must run without requiring the broad --integration sweep',
+    ).toContain(TASK);
+  });
+
+  it('does NOT attach for an unrelated sessions tool', () => {
+    expect(
+      dryTasks(UNRELATED_SESSION_TOOL_PATH),
+      'the focused sessions/read venue must not become an all-sessions private-Postgres tax',
+    ).not.toContain(TASK);
+  });
+
+  it('keeps the focused script declared with the integration config and exact reader test', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    const command = pkg.scripts?.[SCRIPT];
+    expect(command, `missing ${HOST_WORKSPACE} script ${SCRIPT}`).toBeTruthy();
+    expect(command).toContain('vitest.integration.config.ts');
+    expect(command).toContain('lib/agent-tools/sessions/read.integration.test.ts');
+    expect(command).not.toContain('--passWithNoTests');
+  });
+});
+
+/**
  * WI-38351 — the SAME class as the forward-compat guard above, on the SAME corpus, found
  * the same way: `lint:migrations` was a gate-only lint, so the author of a bad migration
  * saw a green `npm run test:affected` and the fleet learned about it hours later as a red
