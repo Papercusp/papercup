@@ -30,6 +30,7 @@ const {
   orgSqlMock,
   resourceSqlMock,
   searchSimilarRecipesMock,
+  buildQueryEmbedderResolvedMock,
   resolvePresenceFleetMock,
   NO_RUNTIME_OBSERVATIONS,
 } = vi.hoisted(() => {
@@ -74,6 +75,7 @@ const {
     orgSqlMock: vi.fn(),
     resourceSqlMock: vi.fn(),
     searchSimilarRecipesMock: vi.fn(async () => []),
+    buildQueryEmbedderResolvedMock: vi.fn(async () => null),
     resolvePresenceFleetMock: vi.fn(async () => ({ fleetSlug: 'live-fleet', fleetRole: 'member' })),
     NO_RUNTIME_OBSERVATIONS,
   };
@@ -97,7 +99,7 @@ vi.mock('../../code-recipes-search', async (importOriginal) => ({
   searchSimilarRecipes: searchSimilarRecipesMock,
 }));
 vi.mock('../search/embedder', () => ({
-  buildQueryEmbedderResolved: vi.fn(async () => null),
+  buildQueryEmbedderResolved: buildQueryEmbedderResolvedMock,
   interactiveEmbedAcquireBudgetMs: vi.fn(() => 0),
 }));
 vi.mock('../coordination/presence-fleet', async (importOriginal) => ({
@@ -181,6 +183,11 @@ describe('recipes:* registration (P-005, P-013)', () => {
     expect(limit.safeParse(51).success).toBe(false);
   });
 
+  it('recipes:search accepts an explicit semantic:false lexical-only recovery request', () => {
+    expect(recipeSearchTool.args.safeParse({ query: 'find a recovery recipe', semantic: false, limit: 5 }).success).toBe(true);
+    expect(recipeSearchTool.args.safeParse({ query: 'find a recovery recipe', semantic: true, limit: 5 }).success).toBe(true);
+  });
+
   it('recipes:get advertises its global scope and rejects harness scoping', () => {
     const tool = findTool('recipes:get');
     expect(tool.description).toContain('global/fleet-wide');
@@ -215,6 +222,8 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     resourceSqlMock.mockReset();
     searchSimilarRecipesMock.mockReset();
     searchSimilarRecipesMock.mockResolvedValue([]);
+    buildQueryEmbedderResolvedMock.mockReset();
+    buildQueryEmbedderResolvedMock.mockResolvedValue(null);
     resolvePresenceFleetMock.mockReset();
     resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: 'live-fleet', fleetRole: 'member' });
     orgSqlMock.mockImplementation(async (parts: TemplateStringsArray) => {
@@ -299,6 +308,18 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       fleet: 'live-fleet',
       harness: 'alpha',
     });
+  });
+
+  it('skips embedder acquisition for explicit lexical-only recipe search', async () => {
+    await findTool('recipes:search').fn(
+      { query: 'recover the current lane', semantic: false, limit: 5 },
+      mkCtx('worker'),
+    );
+
+    expect(buildQueryEmbedderResolvedMock).not.toHaveBeenCalled();
+    expect(searchSimilarRecipesMock).toHaveBeenCalledTimes(1);
+    const deps = (searchSimilarRecipesMock.mock.calls[0] as unknown as [unknown, unknown, { embedder?: unknown }])?.[2];
+    expect(deps.embedder).toBeNull();
   });
 
   const emptyManifest = (requirements: string[] = []) => ({
