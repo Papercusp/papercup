@@ -785,7 +785,7 @@ async function seedAgentChat(input: SeedAgentChat): Promise<void> {
        created_at, updated_at, su_runtime_class)
     VALUES
       (${WORKSPACE}, ${input.harness ?? HARNESS}, ${input.id}, ${input.role ?? 'operator'},
-       ${input.featureId ?? null}, ${input.title}, ${JSON.stringify(input.transcript)}::jsonb,
+       ${input.featureId ?? null}, ${input.title}, ${JSON.stringify(input.transcript)}::text::jsonb,
        ${input.inputTokens ?? 0}, ${input.outputTokens ?? 0}, ${input.costCents ?? 0},
        ${input.createdAt ?? now}, ${now}, ${input.runtimeClass ?? null})`;
 }
@@ -1060,7 +1060,7 @@ beforeAll(async () => {
   if (routedAccount) {
     await db.adminSql`
       INSERT INTO harness_shared.operator_account_pool (workspace_id, payload, updated_at)
-      VALUES (${WORKSPACE}, ${JSON.stringify({ accounts: accountMetadata })}::jsonb, ${Date.now()})
+      VALUES (${WORKSPACE}, ${JSON.stringify({ accounts: accountMetadata })}::text::jsonb, ${Date.now()})
       ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`;
     console.info('PUI_ACCOUNT_CATALOG_DIAGNOSTIC', JSON.stringify({
       source: catalogPath, sha256: createHash('sha256').update(catalogBytes!).digest('hex'),
@@ -3169,7 +3169,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       const { focused, peer } = await raiseTwoApprovals(pane, 'PUI approval allow clause probe');
       expect(scriptedEngine.sdkPermissions).toEqual([{ mode: 'default', bypass: undefined }]);
       expect(launchRequests[0]).toMatchObject({ account: 'default' });
-      expect(launchRequests[0].mode ?? null).toBeNull();
+      expect((launchRequests[0] as { mode?: unknown }).mode ?? null).toBeNull();
       const peerCard = pendingNativeCards().find((card) => card.prompt.includes(String(peer.input.command)));
       expect(peerCard, pane.screen()).toBeDefined();
 
@@ -3248,7 +3248,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       const { focused, peer } = await raiseTwoApprovals(pane, 'PUI approval deny clause probe');
       expect(scriptedEngine.sdkPermissions).toEqual([{ mode: 'default', bypass: undefined }]);
       expect(launchRequests[0]).toMatchObject({ account: 'default' });
-      expect(launchRequests[0].mode ?? null).toBeNull();
+      expect((launchRequests[0] as { mode?: unknown }).mode ?? null).toBeNull();
       const peerCard = pendingNativeCards().find((card) => card.prompt.includes(String(peer.input.command)));
       expect(peerCard, pane.screen()).toBeDefined();
 
