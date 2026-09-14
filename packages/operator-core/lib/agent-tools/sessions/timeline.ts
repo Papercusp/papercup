@@ -344,6 +344,8 @@ const timelineErrorResultSchema = z
   .object({
     ok: z.literal(false),
     error: z.string(),
+    retryable: z.boolean().optional(),
+    pgCode: z.string().optional(),
     message: z.string().optional(),
     note: z.string().optional(),
     owner: z.string().optional(),
