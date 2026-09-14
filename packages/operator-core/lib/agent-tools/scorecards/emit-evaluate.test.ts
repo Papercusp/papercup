@@ -15,6 +15,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/scorecards/emit-evaluate.test.ts
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { z } from 'zod';
 import {
   dispatchProjectedTool,
   lookupByMcpName,
@@ -300,6 +301,34 @@ describe('emitScorecard', () => {
       createdBy: 'su-1',
       payloadExtra: { observation: { rubricRef: 'test-rubric' } },
     });
+  });
+
+  it('publishes the vetting channel XOR and accepts exactly one, either, or neither channel', () => {
+    const schema = z.toJSONSchema(scorecardEmitArgs) as {
+      oneOf?: Array<{ required?: string[] }>;
+    };
+
+    expect(schema.oneOf).toHaveLength(3);
+    expect(schema.oneOf?.some((branch) => branch.required?.includes('vettingConsult'))).toBe(true);
+    expect(schema.oneOf?.some((branch) => branch.required?.includes('vettingWorkItem'))).toBe(true);
+    expect(
+      schema.oneOf?.some(
+        (branch) =>
+          !branch.required?.includes('vettingConsult') && !branch.required?.includes('vettingWorkItem'),
+      ),
+    ).toBe(true);
+
+    const common = { rubricRef: 'test-rubric', ratings: RATINGS };
+    expect(scorecardEmitArgs.safeParse({ ...common, vettingConsult: 'conv-vet-1' }).success).toBe(true);
+    expect(scorecardEmitArgs.safeParse({ ...common, vettingWorkItem: 'EI-review-1' }).success).toBe(true);
+    expect(scorecardEmitArgs.safeParse(common).success).toBe(true);
+    expect(
+      scorecardEmitArgs.safeParse({
+        ...common,
+        vettingConsult: 'conv-vet-1',
+        vettingWorkItem: 'EI-review-1',
+      }).success,
+    ).toBe(false);
   });
 
   it('does not confuse the separate Scout host with evaluator freshness, and preserves its telemetry', async () => {
@@ -2060,8 +2089,12 @@ describe('scorecards:evaluate input ownership is explicit', () => {
 
   it('documents source-vs-target hive ownership for cross-hive grading', () => {
     const evaluateSourceHive = scorecardEvaluateArgs.shape.sourceHive.description ?? '';
-    const emitSourceHive = scorecardEmitArgs.shape.sourceHive.description ?? '';
-    const emitTargetHive = scorecardEmitArgs.shape.targetHive.description ?? '';
+    const emitSchema = z.toJSONSchema(scorecardEmitArgs) as {
+      oneOf?: Array<{ properties?: Record<string, { description?: string }> }>;
+    };
+    const emitShape = emitSchema.oneOf?.find((branch) => branch.properties?.sourceHive)?.properties ?? {};
+    const emitSourceHive = emitShape.sourceHive?.description ?? '';
+    const emitTargetHive = emitShape.targetHive?.description ?? '';
 
     expect(evaluateSourceHive).toContain('hive that produced/filed the scorecard');
     expect(evaluateSourceHive).toContain('not the harness that owns the rubric subject plan');
