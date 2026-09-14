@@ -1431,6 +1431,12 @@ export const PTOOL_PLANS_NEW_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 // (EI-21281814895308307).
 export const PTOOL_WORK_ITEMS_GET_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 
+// EI-23211866726609651: scorecards:get can return an oversized-card index and
+// perform a compound evidence read. Its direct and tools:invoke-wrapped paths
+// must outlive ptool's ordinary 30s client cutoff so a valid read is not
+// surfaced as an ambiguous timeout while the server is still settling.
+export const PTOOL_SCORECARDS_GET_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+
 // `locks:heartbeat_resource` may heartbeat multiple lock ids sequentially and
 // probe the caller plus special coordination domains for each id. Under a
 // serialized package build, each transaction can consume the configured
@@ -1454,6 +1460,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // 30s client cutoff, so keep direct and tools:invoke-wrapped calls outside
   // the MCP transport floor instead of reporting an outcome-unknown timeout.
   ['dev:service_health', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['scorecards:get', PTOOL_SCORECARDS_GET_TIMEOUT_MS],
   // EI-22707343179859326: pipeline-position aggregates commit, gate, deploy, and
   // activation reads; keep its direct and deferred calls beyond the flat 30s
   // client deadline so the structured position result remains observable.

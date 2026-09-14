@@ -164,6 +164,17 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('new RegExp("...")');
   });
 
+  it('documents nested shell quoting for regexes containing apostrophes', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('apostrophe regexes break single-quoted arguments');
+    expect(scriptDescription).toContain('use rg -F');
+    expect(scriptDescription).toContain('-e per pattern');
+    expect(scriptDescription).toContain('quoted stdin/file');
+  });
+
   it('documents runtime concatenation for JSON data in nested shell commands', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =

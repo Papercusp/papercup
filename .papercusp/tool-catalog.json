@@ -20459,7 +20459,7 @@
           "POST"
         ]
       },
-      "description": "Record a plan audit. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs, records the current revision, and previews readiness. Post-epoch BAR seeding requires `## Requirements` entries in `**R-N — Title.** outcome` form or one fenced `requirement` JSON block plus the Design map; changed BAR source returns `barSeedPendingAmendment`; invalid pinned rubrics return `barSeedPendingRepair`.",
+      "description": "Record a plan audit. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs, records the current revision, and previews readiness. Post-epoch BAR seeding requires `## Requirements` entries in `**R-N — Title.** outcome` form or one fenced `requirement` JSON block plus Design map; changed BAR source returns `barSeedPendingAmendment`; invalid pinned rubrics return `barSeedPendingRepair`.",
       "capabilities": [
         "plans:write"
       ],

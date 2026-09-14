@@ -46,6 +46,7 @@ import {
   PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS,
   PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_GET_TIMEOUT_MS,
+  PTOOL_SCORECARDS_GET_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS,
   PTOOL_FLEET_WIND_DOWN_TIMEOUT_MS,
@@ -468,6 +469,14 @@ describe('ptool call deadlines', () => {
     expect(PTOOL_PLANS_NEW_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('plans:set-plan-status')).toBe(60_000);
     expect(timeoutForTool('work_items:get')).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
+    // EI-23211866726609651: scorecards:get can exceed the ordinary 30s client
+    // cutoff while reading an oversized evidence index; the same budget must
+    // apply when reached through tools:invoke.
+    expect(timeoutForTool('scorecards:get')).toBe(PTOOL_SCORECARDS_GET_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'scorecards:get',
+      args: { issueId: 'EI-23210280113714696' },
+    })).toBe(PTOOL_SCORECARDS_GET_TIMEOUT_MS);
     expect(timeoutForTool('activity:recent')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('events:status')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('work_items:complete')).toBe(PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS);
