@@ -132,6 +132,14 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     expect((await call(world, 'work_items:complete', { ...close, completion: { ...completion, summary: 'Plan is accepted.' } })).ok).toBe(false);
     const recorded = await call(world, 'work_items:complete', { id: 'WI-93301', completion });
     expect(recorded).toMatchObject({ ok: true, taskCompletion: { id: 'WI-93301', state: 'record-only' }, acceptance: { status: 'ungraded' } });
+    // Real v9 calls named the exact executed test inside a command string.
+    // A task-only summary need not repeat "pending" to avoid claiming acceptance.
+    expect((await call(world, 'work_items:complete', {
+      ...close, completion: {
+        summary: 'Verified the already-completed current implementation using the required focused test.',
+        verification: { ...completion.verification, testsRun: 'testing:run files:["fixture/current-task.test.ts"]' },
+      },
+    })).ok).toBe(true);
     expect((await call(world, 'work_items:complete', close)).taskCompletion.state).toBe('done');
     expect((await call(world, 'work_items:get')).results[0].workItem.state).toBe('done');
     expect((await call(world, 'plans:get')).results[0].acceptance.status).toBe('ungraded');
