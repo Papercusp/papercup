@@ -29,6 +29,9 @@ import {
   isBoundedBashOutputArgs,
   isBoundedGitSyncRunArgs,
   isBoundedSessionRequestCompactionArgs,
+  isBoundedLogsReadArgs,
+  isBoundedNotificationsRecentArgs,
+  isBoundedTestingRunsArgs,
   isBoundedLoopArmArgs,
   isBoundedLoopCheckpointArgs,
   isBoundedActivityToolLogArgs,
@@ -1030,6 +1033,126 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     });
     expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
     expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    'logs:read',
+    'logs_read',
+    'mcp__papercusp-su__logs_read',
+    'mcp__papercusp_su__logs_read',
+  ])('does NOT shed a bounded logs:read recovery read under critical pressure: %s', (name) => {
+    const args = {
+      unit: ['papercup-api', 'papercup-bg-host'],
+      grep: 'error|failed',
+      level: 'err',
+      limit: 50,
+      scope: 'user',
+    };
+    expect(isBoundedLogsReadArgs(args)).toBe(true);
+    const body = toolsCall(16, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps unbounded or malformed logs:read calls sheddable under critical pressure', () => {
+    for (const args of [
+      { unit: 'papercup-api' },
+      { limit: 50 },
+      { unit: ['a', 'b', 'c', 'd'], limit: 50 },
+      { unit: 'papercup-api', limit: 51 },
+      { unit: 'papercup-api', grep: 'x'.repeat(201), limit: 50 },
+      { unit: 'papercup-api', level: 'fatal', limit: 50 },
+      { unit: 'papercup-api', limit: 50, extra: true },
+    ]) {
+      expect(isBoundedLogsReadArgs(args)).toBe(false);
+      const body = toolsCall(17, 'logs:read', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 17 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it.each([
+    'notifications:recent',
+    'notifications_recent',
+    'mcp__papercusp-su__notifications_recent',
+    'mcp__papercusp_su__notifications_recent',
+  ])('does NOT shed a bounded notifications:recent read under critical pressure: %s', (name) => {
+    const args = { level: 'error', limit: 50 };
+    expect(isBoundedNotificationsRecentArgs(args)).toBe(true);
+    const body = toolsCall(18, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('admits notifications:recent defaults but keeps expanded forms sheddable under critical pressure', () => {
+    expect(isBoundedNotificationsRecentArgs(undefined)).toBe(true);
+    expect(isBoundedNotificationsRecentArgs({})).toBe(true);
+    for (const args of [
+      { limit: 51 },
+      { level: 'fatal' },
+      { limit: 50, extra: true },
+      null,
+    ]) {
+      expect(isBoundedNotificationsRecentArgs(args)).toBe(false);
+      const body = toolsCall(19, 'notifications:recent', args as Record<string, unknown>);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 19 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it.each([
+    'testing:runs',
+    'testing_runs',
+    'mcp__papercusp-su__testing_runs',
+    'mcp__papercusp_su__testing_runs',
+  ])('does NOT shed a bounded testing:runs ledger read under critical pressure: %s', (name) => {
+    const args = {
+      commitSha: 'abc1234',
+      status: ['fail', 'error'],
+      source: 'ci',
+      limit: 25,
+    };
+    expect(isBoundedTestingRunsArgs(args)).toBe(true);
+    const body = toolsCall(20, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('admits bounded exact test-run IDs but keeps broad or expanded testing:runs reads sheddable', () => {
+    expect(isBoundedTestingRunsArgs({ testRunIds: [1, 2] })).toBe(true);
+    for (const args of [
+      { limit: 25 },
+      { commitSha: 'abc1234' },
+      { commitSha: 'abc1234', limit: 26 },
+      { commitSha: 'abc1234', status: ['failed'], limit: 25 },
+      { testRunIds: Array.from({ length: 26 }, (_, index) => index + 1) },
+      { commitSha: 'abc1234', limit: 25, extra: true },
+    ]) {
+      expect(isBoundedTestingRunsArgs(args)).toBe(false);
+      const body = toolsCall(21, 'testing:runs', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 21 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes all three bounded readers through deferred tools:invoke aliases', () => {
+    for (const [name, args] of [
+      ['mcp__papercusp_su__logs_read', { unit: 'papercup-api', limit: 50 }],
+      ['mcp__papercusp_su__notifications_recent', { limit: 50 }],
+      ['mcp__papercusp_su__testing_runs', { testRunIds: [42] }],
+    ] as const) {
+      const body = JSON.stringify({
+        jsonrpc: '2.0',
+        id: 22,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: { name, args },
+        },
+      });
+      expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+      expect(classifyMcpRequest(body)).toBe('diagnostic');
+    }
   });
 
   it.each([
