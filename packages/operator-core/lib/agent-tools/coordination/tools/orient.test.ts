@@ -7,6 +7,7 @@ import {
   orientRoleFolds,
   assembleOrientOutput,
   ORIENT_AGGREGATE_TIMEOUT_MS,
+  ORIENT_PREFLIGHT_LEG_TIMEOUT_MS,
   withOrientAggregateTimeout,
   createOrientAggregateFallback,
   snapshotOrientAggregate,
@@ -467,6 +468,111 @@ describe('coord:orient args', () => {
     }
   });
 
+  it('bounds an early preflight stall before core composition and preserves assignments in the aggregate fallback', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ownerId = 'su-orient-preflight-timeout-test';
+
+    inProcessCallMock.mockReturnValue(async (name: string) => {
+      if (name === 'fleet:assignments') {
+        return {
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        };
+      }
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      throw new Error(`unexpected sub-call: ${name}`);
+    });
+    getModesMock.mockResolvedValue(null);
+    // Before this regression fix, this unbounded preflight read prevented
+    // composeOrient from ever reaching its first progress snapshot.
+    readOwnerPresenceMock.mockImplementation(() => new Promise(() => {}));
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    const recovery = {
+      selfRecall: "sessions:search { session: 'self' }",
+      control: { generation: 5 },
+      coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
+    };
+    buildCompactionRecoveryMock.mockResolvedValue(recovery);
+    readGovernorStateSnapshotMock.mockResolvedValue(null);
+
+    let disclosuresStartedResolve!: () => void;
+    const disclosuresStarted = new Promise<void>((resolve) => {
+      disclosuresStartedResolve = resolve;
+    });
+    recordOrientDisclosuresMock.mockImplementation(() => {
+      disclosuresStartedResolve();
+      return new Promise(() => {});
+    });
+
+    const resultPromise = orientTool.handler(
+      {
+        afterCompaction: true,
+        claimableLimit: 0,
+        inboxLimit: 0,
+        includePlanEvents: false,
+        includeFleetCatchUp: false,
+        includeFleetHealth: false,
+        includeRecipes: false,
+        includePeersKnow: false,
+      } as never,
+      {
+        uiClientId: ownerId,
+        isSuperuser: true,
+        workspaceId: 'ws-test',
+        role: 'su',
+        metadata: vi.fn(),
+        log: vi.fn(),
+        progress: vi.fn(),
+        activateTools: vi.fn(() => false),
+      } as never,
+    );
+
+    try {
+      await vi.advanceTimersByTimeAsync(ORIENT_PREFLIGHT_LEG_TIMEOUT_MS);
+      await disclosuresStarted;
+      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
+      const result = (await resultPromise) as { data: Record<string, unknown> };
+
+      expect(result.data).toMatchObject({
+        ok: true,
+        status: 'unknown',
+        degraded: true,
+        degradedReason: 'aggregate_timeout',
+        partial: true,
+        recovery,
+        me: {
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        },
+        claimable: [],
+      });
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
+    } finally {
+      recordOrientDisclosuresMock.mockReset();
+      recordOrientDisclosuresMock.mockResolvedValue('unchanged');
+      inProcessCallMock.mockReset();
+      getModesMock.mockReset();
+      getModesMock.mockResolvedValue(null);
+      readOwnerPresenceMock.mockReset();
+      readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+      getFlagMock.mockReset();
+      getFlagMock.mockResolvedValue(false);
+      resolvePresenceFleetMock.mockReset();
+      resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+      fetchOrientPipelineMock.mockReset();
+      fetchOrientPipelineMock.mockResolvedValue(null);
+      readGovernorStateSnapshotMock.mockReset();
+      readGovernorStateSnapshotMock.mockResolvedValue(null);
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('acknowledges the recovered control generation after a successful afterCompaction assembly', async () => {
     const ownerId = 'su-orient-handler-success-test';
     const recovery = {
@@ -658,14 +764,20 @@ describe('coord:orient args', () => {
       progress,
     );
 
-    expect(progress).toHaveBeenCalledTimes(2);
+    expect(progress).toHaveBeenCalledTimes(3);
     expect(progress.mock.calls[0]?.[0]).toMatchObject({
+      ok: true,
+      me: result.me,
+      claimable: [],
+      inbox: {},
+    });
+    expect(progress.mock.calls[1]?.[0]).toMatchObject({
       ok: true,
       me: result.me,
       claimable: result.claimable,
       inbox: result.inbox,
     });
-    expect(progress.mock.calls[1]?.[0]).toBe(result);
+    expect(progress.mock.calls[2]?.[0]).toBe(result);
   });
 
   it('keeps the aggregate fallback before the MCP transport cap with serialization headroom', () => {

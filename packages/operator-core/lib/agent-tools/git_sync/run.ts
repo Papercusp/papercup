@@ -25,6 +25,7 @@ import {
 } from '../../harness/git-sync/git-sync-events';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { clampText, LIMITS, softText } from '../limits';
+import { requestOnlyHost } from '../../background-workers';
 
 const execFileP = promisify(execFile);
 
@@ -83,11 +84,11 @@ interface GitSyncPreview {
 async function previewGitSync(repoDir: string): Promise<GitSyncPreview> {
   const head = await headSha(repoDir);
   try {
-    const { stdout } = await execFileP(
-      'git',
-      ['status', '--porcelain=v1', '-z', '-uall'],
-      { cwd: repoDir, timeout: HEAD_SHA_TIMEOUT_MS, maxBuffer: GIT_STATUS_MAX_BUFFER },
-    );
+    const { stdout } = await execFileP('git', ['status', '--porcelain=v1', '-z', '-uall'], {
+      cwd: repoDir,
+      timeout: HEAD_SHA_TIMEOUT_MS,
+      maxBuffer: GIT_STATUS_MAX_BUFFER,
+    });
     const entries = stdout.split('\0').filter(Boolean);
     const dirtyPaths = entries.map((entry) => (entry.length >= 3 ? entry.slice(3) : entry));
     return {
@@ -114,12 +115,14 @@ export default defineTool({
   name: 'git-sync:run',
   profile: 'engineer',
   description:
-    "FIRE git-sync NOW — run the git-sync routine action once on demand instead of waiting for the ≤3-min cron tick. Pass dryRun:true for a read-only preview of the selected checkout; it never commits or pushes. The response distinguishes a LOCAL commit from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists). Same action a cron tick runs (lock, content-guard, attribution). release:deploy fires this first, then follows the normal publication/gate path.",
+    "FIRE git-sync NOW — run the git-sync routine action once on demand instead of waiting for the ≤3-min cron tick. Mutating fires must execute on the background-worker host; a request-only operator refuses before entering git-sync, while dryRun:true remains a read-only preview everywhere. The response distinguishes a LOCAL commit from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists). Same action a cron tick runs (lock, content-guard, attribution). release:deploy fires this first, then follows the normal publication/gate path.",
   capability: 'operator:write',
   guidance: {
     when: 'You need the latest work COMMITTED right now — before a (force-)deploy or gate run, or to recover when git-sync is lagging/wedged. (git-sync also auto-runs every ~3 min; this just fires it on demand.) Use dryRun:true first when you only need to inspect the selected checkout.',
-    notWhen: 'To retune the cadence or pause git-sync, use routines:set. To deploy, release:deploy (which already fires git-sync first).',
-    chaining: 'git-sync:run { dryRun:true } → review preview → git-sync:run → release:deploy { op:status } → op:trigger / op:force (now shipping current staging).',
+    notWhen:
+      'Do not fire it through a request-only operator (:3070/:3170 on the canonical dev box); route the mutation to the background-worker MCP host. To retune the cadence or pause git-sync, use routines:set. To deploy, release:deploy (which already fires git-sync first).',
+    chaining:
+      'git-sync:run { dryRun:true } → review preview → git-sync:run → release:deploy { op:status } → op:trigger / op:force (now shipping current staging).',
   },
   requirePrincipal: false,
   // The COMMIT lever of the three-part release pipeline (COMMIT → git-sync:run,
@@ -155,7 +158,7 @@ export default defineTool({
     reason: softText(LIMITS.SHORT_TITLE)
       .optional()
       .describe(
-        'OPTIONAL: why you are firing git-sync by hand. Recorded to this call\'s tool_invocations metadata as an audit trail; it does not change the synchronization decision. Never rejected for length or terseness; clamped if very long.',
+        "OPTIONAL: why you are firing git-sync by hand. Recorded to this call's tool_invocations metadata as an audit trail; it does not change the synchronization decision. Never rejected for length or terseness; clamped if very long.",
       ),
   }),
   async handler(args, ctx) {
@@ -205,13 +208,54 @@ export default defineTool({
       };
     }
 
+    // EI-23216061848335411 / WI-10000734: a manual call used to execute inside
+    // whichever request-serving process received it. On the split dev topology,
+    // :3070 intentionally runs the older green release while :3271 runs current
+    // staging background code. A :3070 call therefore escaped its 45s response
+    // budget and later emitted a legacy v2 staging-advance without the owning
+    // hive's countersignature, after the current host had already emitted v3.
+    // The bridge correctly rejected it, freezing origin/staging. Reuse the same
+    // request-only topology predicate that keeps background machinery off these
+    // hosts: previews are harmless above, but a mutation must run where the
+    // scheduled routine and current authority code live.
+    if (requestOnlyHost()) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              fired: false,
+              slug,
+              status: 'refused',
+              success: false,
+              committed: false,
+              reason: 'request-only-host',
+              retry: {
+                tool: 'git-sync:run',
+                host_role: 'background-workers',
+                dev_box_url: 'http://127.0.0.1:3271',
+              },
+              note:
+                'This operator declares PAPERCUSP_BACKGROUND_WORKERS=0 and cannot execute a mutating git-sync fire. ' +
+                'Route the same call to the current background-worker MCP host (on the canonical dev box, ptool ' +
+                '--url=http://127.0.0.1:3271) or let the scheduled routine run. dryRun:true remains available here.',
+            }),
+          },
+        ],
+      };
+    }
+
     const before = repoDir ? await headSha(repoDir) : null;
 
-    const fired = await withBoundedTimeout<GitSyncFireOutcome | undefined>(() => fireGitSyncNow(slug, workspaceId, repoDir), {
-      fallback: undefined,
-      timeoutMs: GIT_SYNC_RUN_BUDGET_MS,
-      label: 'git-sync:run fireGitSyncNow',
-    });
+    const fired = await withBoundedTimeout<GitSyncFireOutcome | undefined>(
+      () => fireGitSyncNow(slug, workspaceId, repoDir),
+      {
+        fallback: undefined,
+        timeoutMs: GIT_SYNC_RUN_BUDGET_MS,
+        label: 'git-sync:run fireGitSyncNow',
+      },
+    );
 
     // A degraded fire has already reached the caller's response budget. Do not
     // spend another bounded git probe before returning the explicit in-progress
@@ -234,85 +278,99 @@ export default defineTool({
         : 'in_progress'
       : committedWithoutConfirmedEgress
         ? 'committed'
-        : outcome?.status ?? 'unknown';
+        : (outcome?.status ?? 'unknown');
     const committed = Boolean(before && after && before !== after) || outcome?.status === 'synced';
     const success = outcome?.status === 'synced' || outcome?.status === 'nothing';
-    const remoteEgress = outcome?.status === 'synced'
-      ? superprojectPushConfirmed
-        ? {
-            status: 'confirmed',
-            confirmed: true,
-            pushed_scopes: pushedScopes,
-            evidence: 'outcome.pushed includes superproject',
-          }
-        : {
-            status: 'unverified',
-            confirmed: false,
-            pushed_scopes: pushedScopes,
-            evidence: 'outcome.pushed does not include superproject',
-            completion_event: { key: `git-sync:egressed:${outcome.headSha}`, payload_field: 'sha' },
-            await_tool: 'events:await',
-          }
-      : undefined;
+    const remoteEgress =
+      outcome?.status === 'synced'
+        ? superprojectPushConfirmed
+          ? {
+              status: 'confirmed',
+              confirmed: true,
+              pushed_scopes: pushedScopes,
+              evidence: 'outcome.pushed includes superproject',
+            }
+          : {
+              status: 'unverified',
+              confirmed: false,
+              pushed_scopes: pushedScopes,
+              evidence: 'outcome.pushed does not include superproject',
+              completion_event: { key: `git-sync:egressed:${outcome.headSha}`, payload_field: 'sha' },
+              await_tool: 'events:await',
+            }
+        : undefined;
     // A timeout means the fire was accepted but its promise is still running in the
     // background. Keep that state explicitly non-terminal and hand the caller the
     // existing commit event + durable routine fields that settle/prove it, rather than
     // making `ok:true, committed:false` look like a completed no-op.
-    const continuation = fired.degraded && fired.reason === 'timeout'
-      ? {
-          completion_event: { key: GIT_SYNC_COMMITTED_EVENT, payload_field: 'sha' },
-          await_tool: 'git-sync:await',
-          progress_ref: {
-            surface: 'routine.metadata',
-            workspace_id: workspaceId,
-            install_slug: slug,
-            target_role: 'system:git-sync',
-            // `last_status` is written before the GitHub bridge/P2P post-legs;
-            // the activity marker is the writer-backed terminality check.
-            fields: ['fire_started_at', 'last_status', 'last_synced_at', 'head_sha', 'git_sync_activity'],
-          },
-        }
-      : outcome?.status === 'skipped'
+    const continuation =
+      fired.degraded && fired.reason === 'timeout'
         ? {
-            // A lock skip is terminal for THIS fire, but not for the requested
-            // synchronization. Whether a TARGETED retry signal is coming depends on
-            // the refusal CLASS, so only advertise an await that will actually fire.
-            //
-            ...(outcome.reason === 'held_exclusive'
-              ? {
-                  completion_event: {
-                    key: resourceReleasedEventKey(outcome.blockedOn ?? ''),
-                    payload_fields: ['resource', 'workspaceId', 'releasedAtMs'],
-                  },
-                  await_tool: 'events:await',
-                }
-              : {
-                  completion_event: {
-                    key: GIT_SYNC_LOCK_RETRY_EVENT,
-                    payload_fields: ['installSlug', 'workspaceId', 'resource', 'reason', 'holders'],
-                  },
-                  await_tool: 'events:await',
-                }),
-            // `agent_resource_locks` is an implementation table in the separate
-            // papercusp_su substrate, so it is not a describable `dev:pg_query`
-            // relation. Point the continuation at the registered workspace-global
-            // diagnostic instead, including an executable selector for the blocked
-            // resource. The direct tool reference prevents the caller from having
-            // to reverse-engineer the backing table or database before retrying.
+            completion_event: { key: GIT_SYNC_COMMITTED_EVENT, payload_field: 'sha' },
+            await_tool: 'git-sync:await',
             progress_ref: {
-              surface: 'locks:list',
-              tool: 'locks:list',
-              args: outcome.blockedOn ? { resource: outcome.blockedOn } : {},
+              // `routines:list` is the callable reader for this routine row. Keep the
+              // selector executable and name the projected `health` paths so a caller
+              // can follow the continuation without guessing at the backing table.
+              surface: 'routines:list',
+              tool: 'routines:list',
+              args: { installSlug: slug, name: 'git-sync' },
               workspace_id: workspaceId,
               install_slug: slug,
-              resource: outcome.blockedOn ?? null,
-              fields: ['resources[].holders', 'resources[].held', 'holders', 'draining'],
+              target_role: 'system:git-sync',
+              // `last_status` is written before the GitHub bridge/P2P post-legs;
+              // the activity marker is the writer-backed terminality check.
+              fields: [
+                'health.fire_started_at',
+                'health.last_status',
+                'health.last_synced_at',
+                'health.head_sha',
+                'health.git_sync_activity',
+              ],
             },
           }
-        : undefined;
-    const blockedByInFlightGitSync = outcome?.status === 'skipped'
-      && outcome.reason === 'held_exclusive'
-      && outcome.holders?.some((holder) => isSystemGitSyncHolder(holder, slug));
+        : outcome?.status === 'skipped'
+          ? {
+              // A lock skip is terminal for THIS fire, but not for the requested
+              // synchronization. Whether a TARGETED retry signal is coming depends on
+              // the refusal CLASS, so only advertise an await that will actually fire.
+              //
+              ...(outcome.reason === 'held_exclusive'
+                ? {
+                    completion_event: {
+                      key: resourceReleasedEventKey(outcome.blockedOn ?? ''),
+                      payload_fields: ['resource', 'workspaceId', 'releasedAtMs'],
+                    },
+                    await_tool: 'events:await',
+                  }
+                : {
+                    completion_event: {
+                      key: GIT_SYNC_LOCK_RETRY_EVENT,
+                      payload_fields: ['installSlug', 'workspaceId', 'resource', 'reason', 'holders'],
+                    },
+                    await_tool: 'events:await',
+                  }),
+              // `agent_resource_locks` is an implementation table in the separate
+              // papercusp_su substrate, so it is not a describable `dev:pg_query`
+              // relation. Point the continuation at the registered workspace-global
+              // diagnostic instead, including an executable selector for the blocked
+              // resource. The direct tool reference prevents the caller from having
+              // to reverse-engineer the backing table or database before retrying.
+              progress_ref: {
+                surface: 'locks:list',
+                tool: 'locks:list',
+                args: outcome.blockedOn ? { resource: outcome.blockedOn } : {},
+                workspace_id: workspaceId,
+                install_slug: slug,
+                resource: outcome.blockedOn ?? null,
+                fields: ['resources[].holders', 'resources[].held', 'holders', 'draining'],
+              },
+            }
+          : undefined;
+    const blockedByInFlightGitSync =
+      outcome?.status === 'skipped' &&
+      outcome.reason === 'held_exclusive' &&
+      outcome.holders?.some((holder) => isSystemGitSyncHolder(holder, slug));
     const note = fired.degraded
       ? fired.reason === 'error'
         ? `git-sync fire failed before it returned an outcome: ${fired.errorMessage ?? 'unknown error'}.`

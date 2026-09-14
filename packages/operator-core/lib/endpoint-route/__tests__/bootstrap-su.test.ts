@@ -471,6 +471,35 @@ beforeEach(() => {
 });
 
 describe('bootstrap-su', () => {
+  it('stampPresenceAtBoot accepts a role override while preserving the SU default', async () => {
+    const { stampPresenceAtBoot } = await import('../routes/agent-mcp/bootstrap-su');
+
+    await expect(stampPresenceAtBoot({
+      workspaceId: 'default',
+      ownerId: 'role-judge',
+      ownerLabel: 'judge',
+      harnessSlug: 'papercup',
+      agentRole: 'judge',
+    })).resolves.toBeNull();
+    expect(writePresenceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'role-judge', ownerLabel: 'judge' }),
+      { agentRole: 'judge' },
+      'papercup',
+    );
+
+    writePresenceMock.mockClear();
+    await expect(stampPresenceAtBoot({
+      workspaceId: 'default',
+      ownerId: 'su-default',
+      harnessSlug: 'papercup',
+    })).resolves.toBeNull();
+    expect(writePresenceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'su-default' }),
+      { agentRole: 'su' },
+      'papercup',
+    );
+  });
+
   it('claude: builds the su spec, writes the playbook prompt file, mints PAPERCUSP_SID', async () => {
     const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' });
     expect(res.status).toBe(200);

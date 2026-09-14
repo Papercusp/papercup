@@ -15803,13 +15803,13 @@
           "POST"
         ]
       },
-      "description": "When to use: User asks \"what triggered this?\", \"show me the lineage of agent X\", or you need the parent-child spawn graph for an Intel-panel-style view.\n\nWhen NOT to use: For LIVE running spawns only, use `processes:list` (ledger-backed, with provenance) or `dev:processes` (the six tracked agent process kinds). spawn_tree is historical + structural; those are the now-snapshot.",
+      "description": "When to use: User asks \"what triggered this?\", \"show me the lineage of agent X\", or you need the parent-child spawn graph for an Intel-panel-style view. Pass `spawnId` for one exact spawn lookup.\n\nWhen NOT to use: For LIVE running spawns only, use `processes:list` (ledger-backed, with provenance) or `dev:processes` (the six tracked agent process kinds). spawn_tree is historical + structural; those are the now-snapshot.",
       "capabilities": [
         "intel:read"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "User asks \"what triggered this?\", \"show me the lineage of agent X\", or you need the parent-child spawn graph for an Intel-panel-style view.",
+        "when": "User asks \"what triggered this?\", \"show me the lineage of agent X\", or you need the parent-child spawn graph for an Intel-panel-style view. Pass `spawnId` for one exact spawn lookup.",
         "notWhen": "For LIVE running spawns only, use `processes:list` (ledger-backed, with provenance) or `dev:processes` (the six tracked agent process kinds). spawn_tree is historical + structural; those are the now-snapshot."
       }
     },

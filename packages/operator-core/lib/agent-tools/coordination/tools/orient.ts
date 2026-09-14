@@ -162,6 +162,13 @@ const ORIENT_FLEET_LEG_TIMEOUT_MS = 8_000;
  *  request_timeout), instead of the bounded degrade-to-fallback every other core leg
  *  already gets (WI-3818). Same contract, same budget as the fleet leg above. */
 const ORIENT_CORE_LEG_TIMEOUT_MS = 8_000;
+/**
+ * Preflight reads run before composeOrient can report its first useful core
+ * snapshot. Keep them shorter than the core-leg budget and run them together so
+ * one stalled metadata read cannot consume the aggregate deadline before the
+ * assignments/backlog snapshot begins.
+ */
+export const ORIENT_PREFLIGHT_LEG_TIMEOUT_MS = 5_000;
 /** WI-4533: the pipeline leg is a DECORATION on the wake read — cached, and started by the handler
  *  before the legs above, so by the time it is awaited it is almost always already resolved. Bound
  *  it tightly anyway: an agent must never wait on "is the gate green" to find out what it's
@@ -1159,6 +1166,17 @@ export async function composeOrient(
   );
   let me = overlaySelfFleetMembership(meResult.value, ownerId, effectiveFleetMembership);
   me = annotateDegradedFleetAssignments(me, meResult);
+  // EI-21589715378243224: assignments are the first useful reconciliation
+  // result. Publish them immediately so a later backlog/inbox/fold timeout
+  // returns a meaningful partial orientation instead of the bare aggregate
+  // marker.
+  reportProgress({
+    ok: true,
+    me,
+    claimable: [],
+    inbox: {},
+    host: getHostSnapshot(),
+  });
   // EI-19452326548245557: this fold must BE the claim oracle, not a cheaper
   // lookalike. It used to be `work_items:list({ admissibleOnly: true })` — which by
   // that flag's OWN contract is "a cheap STRUCTURAL pre-filter ... NOT the full
@@ -3202,48 +3220,122 @@ export default defineTool({
     const orientWorkspaceId = resolveConcreteWorkspaceId(
       (ctx as { workspaceId?: string | null }).workspaceId,
     );
+    // EI-21589715378243224: seed the aggregate fallback before any handler-owned
+    // preflight read. A slow preflight must not erase the identity/host anchors
+    // that are already available synchronously.
+    snapshotOrientAggregate(aggregateFallback, {
+      self: resolveSelfRef(ctx),
+      host: getHostSnapshot(),
+    } as Partial<OrientResult>);
+    // Start post-compaction recovery before the other preflight reads. The
+    // recovery has its own 15s bound and its result is copied into the aggregate
+    // fallback as soon as it settles, so a later preflight stall cannot hide the
+    // safety-critical recovery block.
+    const compactionRecoveryPromise =
+      args.afterCompaction && ownerId
+        ? (async () => {
+            try {
+              const { buildCompactionRecovery } = await import('../compaction-recovery');
+              const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+              const sessionHarness =
+                args.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug ?? null;
+              const recoveryResult = await withBoundedTimeout(buildCompactionRecovery(ownerId, ws, { sessionHarness }), {
+                fallback: undefined,
+                timeoutMs: ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS,
+                label: 'orient:buildCompactionRecovery',
+              });
+              return recoveryResult.value;
+            } catch {
+              return undefined;
+            }
+          })()
+        : undefined;
+    if (compactionRecoveryPromise) {
+      void compactionRecoveryPromise
+        .then((recovery) => {
+          if (recovery) snapshotOrientAggregate(aggregateFallback, { recovery });
+        })
+        .catch(() => {
+          /* the main await remains fail-soft; the fallback must stay honest */
+        });
+    }
+    const recoveredFleetScopePromise = compactionRecoveryPromise
+      ? compactionRecoveryPromise.then((recovery) => extractRecoveredFleetScope(recovery?.control)).catch(() => null)
+      : undefined;
+    // P-002 / D-001 and P-004: these handler-owned reads used to run serially and
+    // without a leg deadline, so a single stalled preflight prevented composeOrient
+    // from ever reaching its own bounded core reads. Start all independent reads
+    // together and keep their fallbacks explicit.
     const runtimeModesPromise = ownerId
-      ? getModes(orientWorkspaceId, ownerId).catch(() => null)
+      ? withBoundedTimeout(
+          Promise.resolve()
+            .then(() => getModes(orientWorkspaceId, ownerId))
+            .catch(() => null),
+          { fallback: null, timeoutMs: ORIENT_PREFLIGHT_LEG_TIMEOUT_MS, label: 'orient:modes' },
+        ).then((r) => r.value)
       : Promise.resolve(null);
-    // P-002 / D-001: resolve the caller's drive mode so an OWNER-DIRECTED
-    // (responsive: su/sentinel/planner) caller doesn't get queen-loop steering
-    // pushed as binding facts/recall. Best-effort + fail-open (an su-… id resolves
-    // responsive with NO presence read; any error ⇒ undefined ⇒ nothing withheld).
-    let driveMode: string | undefined;
-    if (ownerId) {
-      try {
-        driveMode = (await classifyOwnerDriveMode(ownerId)).driveMode;
-      } catch {
-        driveMode = undefined;
-      }
-    }
-    // P-004: resolve the MECHANICAL owner-present bit (a fresh, non-revoked human power-user
-    // session for this workspace) so presence-adaptive cadence keys off it, not message
-    // provenance. Best-effort — a read failure passes null (leg present-but-null), never breaks
-    // orientation. Cheap single aggregate read; runs once per orient.
-    let ownerPresent: OrientResult['ownerPresent'] = null;
-    try {
-      const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? activeWorkspaceId();
-      const op = await readOwnerPresence(ws);
-      ownerPresent = { present: op.present, lastSeenAgoMs: op.lastSeenAgoMs, activeSessions: op.activeSessions };
-    } catch {
-      ownerPresent = null;
-    }
+    const driveModePromise = ownerId
+      ? withBoundedTimeout(
+          Promise.resolve().then(() => classifyOwnerDriveMode(ownerId)),
+          { fallback: null, timeoutMs: ORIENT_PREFLIGHT_LEG_TIMEOUT_MS, label: 'orient:driveMode' },
+        ).then((r) => r.value?.driveMode)
+      : Promise.resolve<string | undefined>(undefined);
+    const ownerPresentPromise = withBoundedTimeout(
+      Promise.resolve().then(async () => {
+        const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? activeWorkspaceId();
+        const op = await readOwnerPresence(ws);
+        return { present: op.present, lastSeenAgoMs: op.lastSeenAgoMs, activeSessions: op.activeSessions };
+      }),
+      { fallback: null, timeoutMs: ORIENT_PREFLIGHT_LEG_TIMEOUT_MS, label: 'orient:ownerPresence' },
+    ).then((r) => r.value as OrientResult['ownerPresent']);
+    const launchFleetMembership = deriveFleetMembership();
+    const fleetMembershipPromise = withBoundedTimeout(
+      Promise.resolve().then(() => resolvePresenceFleet(ownerId, launchFleetMembership)),
+      {
+        fallback: launchFleetMembership,
+        timeoutMs: ORIENT_PREFLIGHT_LEG_TIMEOUT_MS,
+        label: 'orient:fleetMembership',
+      },
+    ).then((r) => r.value);
+    const monitorDeltaFlagPromise =
+      args.mode === 'monitor' && ownerId
+        ? withBoundedTimeout(
+            Promise.resolve()
+              .then(() => getFlag(FLAGS.ORIENT_MONITOR_DELTA, 'system'))
+              .catch(() => true),
+            { fallback: true, timeoutMs: ORIENT_PREFLIGHT_LEG_TIMEOUT_MS, label: 'orient:monitorDeltaFlag' },
+          ).then((r) => r.value)
+        : Promise.resolve(false);
+    const fullDeltaFlagPromise =
+      args.mode !== 'monitor' && ownerId
+        ? withBoundedTimeout(
+            Promise.resolve()
+              .then(() => getFlag(FLAGS.ORIENT_FULL_DELTA, 'system'))
+              .catch(() => true),
+            { fallback: true, timeoutMs: ORIENT_PREFLIGHT_LEG_TIMEOUT_MS, label: 'orient:fullDeltaFlag' },
+          ).then((r) => r.value)
+        : Promise.resolve(false);
+    const [driveMode, ownerPresent, fleetMembership, monitorDeltaOn, fullDeltaOn, runtimeModeRows] =
+      await Promise.all([
+        driveModePromise,
+        ownerPresentPromise,
+        fleetMembershipPromise,
+        monitorDeltaFlagPromise,
+        fullDeltaFlagPromise,
+        runtimeModesPromise,
+      ]);
     // P-004 (fleet-deltas-leader-primitives): resolve the monitor fleet-delta seam —
     // an attributable caller in monitor mode, with the flag ON, gets the
     // (owner,'fleet:monitor') server-side cursor closure. Fail-open: a flag-read
     // failure defaults ON (it's a read-path economizer); composeOrient itself
     // fail-opens to the full roster on any cursor error.
     let fleetCursor: ((next: CursorState) => Promise<AckResult>) | undefined;
-    if (args.mode === 'monitor' && ownerId) {
-      const deltaOn = await getFlag(FLAGS.ORIENT_MONITOR_DELTA, 'system').catch(() => true);
-      if (deltaOn) {
+    if (args.mode === 'monitor' && ownerId && monitorDeltaOn) {
         const oid = ownerId;
         fleetCursor = async (next) => {
           const { ackAndAdvance } = await import('../read-cursors');
           return ackAndAdvance(oid, 'fleet:monitor', next);
         };
-      }
     }
     // fleet-deltas-leader-primitives P-005: the FULL-mode sibling of the monitor
     // delta above — same ONE 'fleet:monitor' surface (D-002: one roster truth
@@ -3253,9 +3345,7 @@ export default defineTool({
     // separately-shipped, separately-tested monitor path above.
     let planEventsCursor: ((next: CursorState) => Promise<AckResult>) | undefined;
     let fleetCatchUpCursor: ((next: CursorState) => Promise<AckResult>) | undefined;
-    if (args.mode !== 'monitor' && ownerId) {
-      const fullDeltaOn = await getFlag(FLAGS.ORIENT_FULL_DELTA, 'system').catch(() => true);
-      if (fullDeltaOn) {
+    if (args.mode !== 'monitor' && ownerId && fullDeltaOn) {
         const oid = ownerId;
         fleetCursor = async (next) => {
           const { ackAndAdvance } = await import('../read-cursors');
@@ -3269,14 +3359,12 @@ export default defineTool({
           const { ackAndAdvance } = await import('../read-cursors');
           return ackAndAdvance(oid, 'orient:fleetCatchUp', next);
         };
-      }
     }
     // P-015: leadership is mutable at runtime (fleet:take-leadership / join / leave),
     // but PAPERCUSP_FLEET_* is immutable launch context. Resolve the live presence
     // row first so a newly-installed leader gets the WHOLE fleet brief and a caller
     // that left a fleet does not resurrect stale membership. Only a failed presence
     // read may fall back to launch context.
-    const fleetMembership = await resolvePresenceFleet(ownerId, deriveFleetMembership());
     // EI-20201050911711528: presence membership is still the live fleet-slug
     // projection, but the registry is authoritative for WHO LEADS that fleet.
     // A failed fleet:take-leadership projection (or a stale append-only role fact)
@@ -3396,7 +3484,6 @@ export default defineTool({
     // the portfolio. Derivation reuses the board/session canonical predicate;
     // ordinary AUTO/fleet/plan agents therefore pay no portfolio projection.
     // Start before composeOrient so the DB work overlaps its sequential folds.
-    const runtimeModeRows = await runtimeModesPromise;
     const goalSubject = goalIdFromModes(runtimeModeRows);
     const goalPortfolioReadPromise = goalSubject
       ? (async () => {
@@ -3484,64 +3571,6 @@ export default defineTool({
             }
           })()
         : undefined;
-    // compaction-context-loss-2026-07-05 P-002: start the post-compaction
-    // recovery fold BEFORE the sequential composeOrient legs. The recovery is
-    // best-effort and independently bounded, so starting it here overlaps its
-    // self-tail / control / held-item reads with work the orient call already
-    // has to do instead of adding another 15s serial budget to the transport.
-    const compactionRecoveryPromise =
-      args.afterCompaction && ownerId
-        ? (async () => {
-            try {
-              const { buildCompactionRecovery } = await import('../compaction-recovery');
-              // EI-9013: an unscoped su session's ctx.workspaceId is the literal '*' —
-              // passing it (or 'default') straight into the recovery build made the
-              // held-items query + checkpoint reads look under a workspace that holds
-              // no rows. Resolve to the concrete active workspace.
-              const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-              // EI-18162666491500151: bounded — a slow leg inside buildCompactionRecovery
-              // (self-transcript ingest, held-items read, staleness scan) used to hang the
-              // WHOLE orient call for the full 300s MCP tool-idle timeout; now degrades to
-              // `undefined` (recovery omitted, same as the pre-existing catch contract)
-              // within ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS — the WI-3818 bounded-leg
-              // contract every other orient fold already gets.
-              // EI-20451119672468393: hand the recovery build the SESSION harness so
-              // each held-item row can flag a canonical-harness mismatch — the fold
-              // spans harnesses, and a cold successor scoped to one pot must not
-              // conclude another pot's carried item is gone.
-              const sessionHarness =
-                args.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug ?? null;
-              const recoveryResult = await withBoundedTimeout(buildCompactionRecovery(ownerId, ws, { sessionHarness }), {
-                fallback: undefined,
-                timeoutMs: ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS,
-                label: 'orient:buildCompactionRecovery',
-              });
-              return recoveryResult.value;
-            } catch {
-              return undefined;
-            }
-          })()
-        : undefined;
-    // Recovery is safety-critical context, not an optional late decoration. Copy it
-    // into the stable aggregate fallback as soon as its independently bounded promise
-    // settles, so a slower assignments/leader fold cannot return an unknown partial
-    // envelope that falsely omits the recovery block.
-    if (compactionRecoveryPromise) {
-      void compactionRecoveryPromise
-        .then((recovery) => {
-          if (recovery) snapshotOrientAggregate(aggregateFallback, { recovery });
-        })
-        .catch(() => {
-          /* the main await remains fail-soft; the fallback must stay honest */
-        });
-    }
-    // EI-21239843876346650: composeOrient must consume the recovered fleet route
-    // before its first assignments read, while the full recovery payload remains
-    // folded after composition as before. Reuse the already-bounded promise so this
-    // adds no second recovery build or independent timeout.
-    const recoveredFleetScopePromise = compactionRecoveryPromise
-      ? compactionRecoveryPromise.then((recovery) => extractRecoveredFleetScope(recovery?.control)).catch(() => null)
-      : undefined;
     const orientInnerCall = inProcessCall(ctx, { telemetrySurface: 'orient', ignoreSessionPayloadTier: true });
     const fleetSummariesFold = readLedFleets
       ? async (homeFleetSlug: string, homeBrief: unknown | null | undefined) => {
