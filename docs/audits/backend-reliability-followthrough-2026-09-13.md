@@ -2,7 +2,7 @@
 
 Plan: `backend-audit-diagnosis-before-repair-2026-09-13`.
 Driver: `WI-10001261`, session `su-6eeda0f9-9087-43b2-b27d-e3856a7cf256`.
-Updated: September 14, 2026, approximately 04:49 UTC (September 14 EDT).
+Updated: September 14, 2026, approximately 05:11 UTC (September 14 EDT).
 
 This is an execution ledger, not a second completed audit or a repair certificate.
 The original report and measurement window remain in
@@ -39,7 +39,7 @@ present in every running build.
 | --- | --- | --- | --- |
 | F01 session-history SQL | Cause reproduced by the maintained private-PG regression, which passed 7/7 with zero skips. Its source covers the uncast control, cast repair, predecessor/successor, named scope, search-to-readMore and exact continuation windows. Default-endpoint reads still failed after this carry; staging self-read succeeded. A demonstrated main-selection gap is recorded below. | P-002 / P-014; gate repair P-013/P-023. Recurrence `EI-23195479465396624`; new gate gap `EI-23210600888560844`. | Complete actual producer/transport and affected-runtime coverage; adopt the saved SQL proof rather than rerunning only to reconstruct it. Main selection must be repaired after the all-diagnosis barrier. |
 | F02 busy-boundary deferral | Open. Own host recorded only 144 ms maximum quiet against 1,500 ms, despite native task completion. Deferral counts are not lost-message counts. | P-003 / P-016. Carry-specific boundary repair belongs to the separate carry plan; general wake residue stays here. | Adopt exact carry fixture and native-boundary evidence; test idle repaint versus active reasoning and unsent human input without driving an attended terminal. |
-| F03 folded wake completion | Open. Original actual-factory counterexample leaves folded B completed after parent A defers; current source inspected still marked folded IDs completed at admission. | P-003 / P-015. General delivery/coalescing scope here; coordinate any shared PTY file. | Reproduce through the maintained isolated host/executor fixture, including defer, retry, cancellation and exactly one eventual native turn. |
+| F03 folded wake completion | Real isolated PTY/control-socket reproduction now confirms B retry suppression after A defers, while fresh C reaches the same ready child. Current source marks B completed at fold admission. This is stronger than the original factory counterexample, not a claim about a particular lost live message. | P-003 / P-015; `EI-23212384525517772`. General delivery/coalescing scope here; coordinate any shared PTY file. | Preserve the reproduction below in maintained host/executor regressions; complete cancellation/crash/replacement scenarios before repair acceptance. |
 | F04 missing carry prompt | Open. Original host repeatedly lacked `session-22472/AGENTS.md`; initiating removal was not established. | P-004 / P-016. Adopt carry-plan prerequisite diagnosis and repair evidence. | Trace launch/archive/cleanup ownership and reproduce a missing prerequisite in a disposable fixture; establish safe recovery or explicit blocking while preserving predecessor. |
 | F05 reconnect macro | Open. Original episode repeatedly failed at dialog-open or connected-marker checks; exact UI/config/transport cause unresolved. | P-004 / P-016. Reconnect residue belongs here unless explicitly covered by the carry plan. | Inspect retained effective configuration, version and dialog evidence; distinguish missing entry, UI mismatch and transport/auth failure in isolated fixtures. |
 | F06 host version lifecycle | Open. A child-only restart does not reload a long-lived parent host. A different host hash alone does not prove a missing fix. | P-004 / P-017. Carry-plan adoption evidence is an external dependency. | Match required behavior to the actual loaded host generation; verify safe attended/headless upgrade and failed-upgrade behavior without blanket restart. |
@@ -216,6 +216,80 @@ promotion selection, rollout and independent acceptance. This initial
 inventory is not all diagnosis complete.
 
 ## Retained verification and runtime observations
+
+### Activation update after independent review
+
+The corrected card `EI-23210288564537863` was independently passed by
+`EI-23211304171317937`; reviewer `WI-10001306` is complete. D-006 records
+that ruling without waiving diagnosis-first. The earlier pending-review
+paragraphs above are historical snapshots, superseded by this result.
+
+Activation then exposed a separate revision-pinning issue:
+`plans:start` reported `bar_snapshot_rubric_revision_mismatch`. The six BARs
+were individually clean, but subject plan revision 10 (after D-006) differed
+from rubric revision 2's `barContract.subjectPlanRevision:9`.
+`EI-23211441531145933` records the cause and recovery.
+
+Canonical staging activation audit sequence 3 synchronized the rubric to
+revision 3 / subject revision 10 while retaining exactly the same BAR-set
+hash. Sequence 4 extended source-conversation coverage through turns 32–51
+and added M-009 for the repeated owner continuation requests. It preserved
+the previous eight mappings, resolved 19 canonical refs, reported zero
+unsupplied turns and did not change the rubric again.
+
+This provenance refresh advanced 42 source BAR pins and matching acceptance
+references from rubric 2 to 3. Comparing each current clause to its preceding
+revision found no change to behavior, behavior class, required evidence,
+test layers, mutation requirement, lifecycle or falsifier. Nevertheless the
+exact spec-set hash changed, so the old independent pass is not substituted
+for a new exact-subject verdict.
+
+New hash:
+`04039db9c69d0c1d88e7f48d9169faed9e8e491bdb8a43c884903ca5afde70a0`.
+New terminal spec-quality card: `EI-23211811916557156`.
+Independent review: `WI-10001308`, accepted by the same independent reviewer
+and still pending at this inspection. Do not add a new plan decision merely
+to log the pin refresh through the older writer and recreate the mismatch.
+The current plan is not yet started.
+
+### F03 real PTY diagnostic: false completed delivery
+
+This diagnostic used the actual `hostThroughPty` implementation with a
+disposable Node echo child, fake bridged human IO, unique owner
+`diag-f03-bd41689a-0f44-4147-a3b9-9665451bc35b`, and that owner's version-1
+UNIX control-socket envelope. No live agent was injected or interrupted.
+The child emitted busy output for 2,500 ms; the fixture busy cap was 500 ms.
+
+Observed sequence:
+
+| Step | Host response / observed child outcome |
+| --- | --- |
+| A arrives during busy output | `accepted` |
+| B, same routine with a distinct delivery ID, arrives behind A | `coalesced-into-pending-turn` |
+| A exceeds busy cap | Host records deferred/refused; no `ECHO:F03_DIAG` |
+| Child becomes idle; retry exact B | `duplicate-delivery-id`; still no `ECHO:F03_DIAG` |
+| Fresh C on the same now-idle child | `accepted`, followed by `ECHO:F03_CONTROL` |
+
+The positive control distinguishes retry suppression from a dead child,
+unusable socket or universally closed busy gate. The child exited naturally;
+both its socket and metadata file were removed. Production host-source
+SHA-256 was identical before and after:
+`7de9982e468d58d33b1d6e2fb6889c992177d585e0d889d5084b2ef2ba401027`.
+
+Root cause correspondence: the host's fold branch immediately calls
+`deliveryDedup.markCompleted(B)` and returns. Parent A's deferred cleanup
+clears only A's pending entry; it has no relation through which to clear B.
+The executor explicitly parks `accepted` and `pending-delivery-id`, not
+`coalesced-into-pending-turn`. The existing successful-coalescing integration
+case omits delivery IDs, and separate dedup factory tests do not exercise
+this composition.
+
+This is diagnostic evidence, not a shipped regression or a repair. The
+maintained regression must cover deferred/crashed/cancelled parent outcomes,
+retry B, exactly one eventual native turn, and host replacement within the
+retry window. Earlier attempts failed at fixture source encoding or omitted
+the protocol version; they are **not** product-failure evidence. In
+particular, the first ENOENT did not establish a product socket-race defect.
 
 - Maintained test:
   `packages/operator-core/lib/agent-tools/sessions/read.integration.test.ts`.
