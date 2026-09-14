@@ -7,9 +7,10 @@
  * (`agent-capability-confinement-2026-06-13`).
  */
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, createReadStream, existsSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCapabilityBaseDir, resolveCapabilityIntegrationRoot } from './base-dir';
@@ -18,6 +19,7 @@ import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import { SCRATCH_SCHEME, safeScratchFilesystemPath } from '../../scratch-uri';
 import { redactSensitiveText } from '../../sensitive-text';
 import {
+  SCRATCH_REFERENCE_MAGIC,
   authorizeScratchReference,
   parseScratchReference,
   ScratchReferenceError,
@@ -36,7 +38,7 @@ import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/i
  */
 export const DEFAULT_LIMIT = 2000;
 const MAX_LINE_CHARS = 2000;
-const MAX_FILE_BYTES = 50 * 1024 * 1024; // refuse absurd reads outright
+export const MAX_FILE_BYTES = 50 * 1024 * 1024; // refuse unbounded reads outright
 export const MAX_BYTE_PAGE = 4_096;
 
 const LINE_WINDOW_EXCLUSIVITY =
@@ -312,6 +314,231 @@ const capabilityReadResultSchema = z
   })
   .passthrough();
 
+type LineReadArgs = {
+  offset?: number;
+  limit?: number;
+  tail?: number;
+  raw?: boolean;
+};
+
+type ByteReadArgs = LineReadArgs & {
+  byte_offset?: number;
+  byte_limit?: number;
+};
+
+type ReadContext = {
+  codeMode?: boolean;
+  transport?: string;
+  requestedStructured?: boolean;
+};
+
+type SelectedLine = { line: string; index: number };
+
+type LargeLineWindow = {
+  slice: SelectedLine[];
+  start: number;
+  totalLines: number;
+  endedWithNewline: boolean;
+};
+
+/**
+ * Large logs must not be loaded into one Buffer just to answer a bounded read.
+ * Keep only the requested line window while counting the source lines needed by
+ * the existing numbered/header/footer response contract.
+ */
+async function readLargeLineWindow(
+  abs: string,
+  args: LineReadArgs,
+  credentialBearingConfig: boolean,
+): Promise<LargeLineWindow> {
+  const limit = args.limit ?? DEFAULT_LIMIT;
+  const tailLimit = args.tail === undefined ? undefined : Math.min(args.tail, limit);
+  const offset = args.offset && args.offset > 0 ? args.offset - 1 : 0;
+  const selected: SelectedLine[] = [];
+  let pending = '';
+  let totalLines = 0;
+  let sawBytes = false;
+
+  const consumeLine = (sourceLine: string) => {
+    const line = credentialBearingConfig ? redactSensitiveText(sourceLine) : sourceLine;
+    const index = totalLines;
+    totalLines += 1;
+    if (tailLimit !== undefined) {
+      selected.push({ line, index });
+      if (selected.length > tailLimit) selected.shift();
+      return;
+    }
+    if (index >= offset && index < offset + limit) selected.push({ line, index });
+  };
+
+  const decoder = new StringDecoder('utf8');
+  const stream = createReadStream(abs);
+  try {
+    for await (const chunk of stream) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      sawBytes = sawBytes || buffer.length > 0;
+      const parts = (pending + decoder.write(buffer)).split('\n');
+      pending = parts.pop() ?? '';
+      for (const line of parts) consumeLine(line);
+    }
+    pending += decoder.end();
+  } finally {
+    stream.destroy();
+  }
+
+  if (pending.length > 0) consumeLine(pending);
+
+  const start = tailLimit === undefined
+    ? offset
+    : Math.max(0, totalLines - tailLimit);
+  return {
+    slice: selected,
+    start,
+    totalLines,
+    endedWithNewline: sawBytes && pending.length === 0,
+  };
+}
+
+/** Read one exact byte page without materializing the rest of a large file. */
+function readBytePage(abs: string, offset: number, limit: number): Buffer {
+  const fd = openSync(abs, 'r');
+  try {
+    const page = Buffer.alloc(limit);
+    let bytesRead = 0;
+    while (bytesRead < limit) {
+      const count = readSync(fd, page, bytesRead, limit - bytesRead, offset + bytesRead);
+      if (count === 0) break;
+      bytesRead += count;
+    }
+    return page.subarray(0, bytesRead);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * A large scratch reference cannot be authorized by loading its whole payload.
+ * Detect its magic prefix and fail closed before a streaming line read could
+ * expose an owner/workspace-scoped payload as ordinary text.
+ */
+function startsWithScratchReference(abs: string): boolean {
+  const magic = Buffer.from(SCRATCH_REFERENCE_MAGIC, 'utf8');
+  let fd: number | undefined;
+  try {
+    fd = openSync(abs, 'r');
+    const prefix = Buffer.alloc(magic.length);
+    const count = readSync(fd, prefix, 0, magic.length, 0);
+    return count === magic.length && prefix.equals(magic);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function renderByteWindow(
+  abs: string,
+  args: ByteReadArgs,
+  totalBytes: number,
+  readPage: (offset: number, limit: number) => Buffer,
+  reference?: ScratchReferenceManifest,
+) {
+  const effectiveLimit = doorSafePageBytes(abs, args.byte_limit!, reference);
+  // A caller asking for a deliberately small page (for example, 256 bytes
+  // from a result-door cursor) has already accepted the extra hops. Do not
+  // reject it merely because the absolute scratch path leaves less than the
+  // normal efficiency floor. Keep refusing a normal-sized request whose fitted
+  // page would be sub-floor, and always refuse when no byte fits.
+  const noPositivePageFits = effectiveLimit <= 0;
+  const normalRequestWouldBeSubFloor = args.byte_limit! >= MIN_PAGE_BYTES && effectiveLimit < MIN_PAGE_BYTES;
+  if (noPositivePageFits || normalRequestWouldBeSubFloor) {
+    return err(
+      'path_too_long_for_byte_window',
+      `${abs} is too long a path to page by bytes: its envelope leaves room for only ` +
+      `${Math.max(0, effectiveLimit)} bytes per response. Read it by lines (offset/limit/tail), ` +
+      `or reach it via a shorter path.`,
+    );
+  }
+  const start = Math.min(args.byte_offset!, totalBytes);
+  const page = readPage(start, effectiveLimit);
+  const nextOffset = start + page.length;
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        ok: true,
+        file_path: abs,
+        encoding: 'base64',
+        byte_offset: start,
+        byte_length: page.length,
+        total_bytes: totalBytes,
+        ...(reference ? { reference } : {}),
+        eof: nextOffset >= totalBytes,
+        data: page.toString('base64'),
+        next_cursor: nextOffset < totalBytes
+          ? { tool: 'capability:read', args: { file_path: abs, byte_offset: nextOffset, byte_limit: effectiveLimit } }
+          : null,
+      }),
+    }],
+  };
+}
+
+function renderLargeLineWindow(
+  abs: string,
+  args: LineReadArgs,
+  ctx: ReadContext,
+  window: LargeLineWindow,
+) {
+  const { slice, start, totalLines } = window;
+  if (args.raw) {
+    if (slice.length === 0) {
+      return {
+        content: [{ type: 'text' as const, text: '' }],
+        ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
+          ? { structuredContent: { ok: true, file_path: abs, body: '' } }
+          : {}),
+      };
+    }
+    const end = start + slice.length;
+    const rawBody = slice.map(({ line }) => line).join('\n') +
+      (end < totalLines || (end === totalLines && window.endedWithNewline) ? '\n' : '');
+    return {
+      content: [{ type: 'text' as const, text: rawBody }],
+      ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
+        ? { structuredContent: { ok: true, file_path: abs, body: rawBody } }
+        : {}),
+    };
+  }
+
+  const numbered = slice
+    .map(({ line, index }) => {
+      const truncated = line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)}… [line truncated]` : line;
+      return `${String(index + 1).padStart(6)}\t${truncated}`;
+    })
+    .join('\n');
+  const more = start + slice.length < totalLines;
+  const footer = more
+    ? `\n\n… [${totalLines - (start + slice.length)} more lines — re-read with offset=${start + slice.length + 1}]`
+    : '';
+  const head = `${abs} (${totalLines} lines${start > 0 || more ? `, showing ${start + 1}–${start + slice.length}` : ''})\n`;
+  return {
+    content: [{ type: 'text' as const, text: slice.length === 0 ? `${head}(empty)` : head + numbered + footer }],
+    ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
+      ? {
+          structuredContent: {
+            ok: true,
+            file_path: abs,
+            body: slice.map(({ line }) => line).join('\n'),
+            total_lines: totalLines,
+            start_line: slice.length === 0 ? null : start + 1,
+            end_line: slice.length === 0 ? null : start + slice.length,
+            has_more: more,
+          },
+        }
+      : {}),
+  };
+}
+
 export default defineTool({
   name: 'capability:read',
   description:
@@ -344,12 +571,10 @@ export default defineTool({
       return err('invalid_path', msg);
     }
 
-    let bytes: Buffer;
+    let stat: ReturnType<typeof statSync>;
     try {
-      const st = statSync(abs);
-      if (st.isDirectory()) return err('is_a_directory', `${abs} is a directory. List it with capability:list.`);
-      if (st.size > MAX_FILE_BYTES) return err('too_large', `${abs} is ${st.size} bytes (> ${MAX_FILE_BYTES}). Read a slice with capability:bash (sed/head).`);
-      bytes = readFileSync(abs);
+      stat = statSync(abs);
+      if (stat.isDirectory()) return err('is_a_directory', `${abs} is a directory. List it with capability:list.`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return err('read_failed', msg);
@@ -367,6 +592,56 @@ export default defineTool({
         'sensitive_file',
         'exact, raw, byte, and structured reads are refused for credential-bearing config files; use an ordinary line read, which redacts secret values.',
       );
+    }
+
+    const byteMode = args.byte_offset !== undefined || args.byte_limit !== undefined;
+    const boundedLineRead = args.offset !== undefined || args.limit !== undefined || args.tail !== undefined;
+    if (stat.size > MAX_FILE_BYTES) {
+      if (startsWithScratchReference(abs)) {
+        return err(
+          'too_large',
+          `${abs} is a large scratch reference; use its emitted reference cursor instead of reading the container as a plain file.`,
+        );
+      }
+      try {
+        if (byteMode) {
+          if (args.byte_offset === undefined || args.byte_limit === undefined) {
+            return err('invalid_byte_window', 'byte_offset and byte_limit must be supplied together.');
+          }
+          if (args.offset !== undefined || args.limit !== undefined || args.tail !== undefined) {
+            return err('mixed_window_modes', 'byte_offset/byte_limit cannot be combined with offset/limit/tail.');
+          }
+          if (args.raw) {
+            return err('mixed_window_modes', 'raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes.');
+          }
+          return renderByteWindow(
+            abs,
+            args as ByteReadArgs,
+            stat.size,
+            (offset, limit) => readBytePage(abs, offset, limit),
+          );
+        }
+        if (boundedLineRead) {
+          return renderLargeLineWindow(
+            abs,
+            args as LineReadArgs,
+            ctx as ReadContext,
+            await readLargeLineWindow(abs, args as LineReadArgs, credentialBearingConfig),
+          );
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return err('read_failed', msg);
+      }
+      return err('too_large', `${abs} is ${stat.size} bytes (> ${MAX_FILE_BYTES}). Read a bounded slice with capability:read (offset/limit/tail) or capability:bash.`);
+    }
+
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(abs);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return err('read_failed', msg);
     }
 
     let reference: ScratchReferenceManifest | undefined;
@@ -460,7 +735,6 @@ export default defineTool({
       };
     }
 
-    const byteMode = args.byte_offset !== undefined || args.byte_limit !== undefined;
     if (byteMode) {
       if (args.byte_offset === undefined || args.byte_limit === undefined) {
         return err('invalid_byte_window', 'byte_offset and byte_limit must be supplied together.');
@@ -471,55 +745,13 @@ export default defineTool({
       if (args.raw) {
         return err('mixed_window_modes', 'raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes.');
       }
-      const start = Math.min(args.byte_offset, bytes.length);
-      // WI-39670: clamp to what survives the resultEach door. Requesting the
-      // schema's max would otherwise return base64 the door truncates mid-string.
-      // A scratch reference contributes its manifest to every byte-page
-      // response. Include the parsed manifest in the ceiling calculation;
-      // otherwise the page fits for a legacy file but the outer tools:invoke
-      // result door projects `data` mid-base64 after adding `reference`.
-      const effectiveLimit = doorSafePageBytes(abs, args.byte_limit, reference);
-      // A caller asking for a deliberately small page (for example, 256 bytes
-      // from a result-door cursor) has already accepted the extra hops. Do not
-      // reject it merely because the absolute scratch path leaves less than the
-      // normal efficiency floor. Keep refusing a normal-sized request whose
-      // fitted page would be sub-floor, and always refuse when no byte fits.
-      const noPositivePageFits = effectiveLimit <= 0;
-      const normalRequestWouldBeSubFloor =
-        args.byte_limit >= MIN_PAGE_BYTES && effectiveLimit < MIN_PAGE_BYTES;
-      if (noPositivePageFits || normalRequestWouldBeSubFloor) {
-        return err(
-          'path_too_long_for_byte_window',
-          `${abs} is too long a path to page by bytes: its envelope leaves room for only ` +
-          `${Math.max(0, effectiveLimit)} bytes per response. Read it by lines (offset/limit/tail), ` +
-          `or reach it via a shorter path.`,
-        );
-      }
-      const page = bytes.subarray(start, Math.min(bytes.length, start + effectiveLimit));
-      const nextOffset = start + page.length;
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            file_path: abs,
-            encoding: 'base64',
-            byte_offset: start,
-            byte_length: page.length,
-            total_bytes: bytes.length,
-            ...(reference ? { reference } : {}),
-            eof: nextOffset >= bytes.length,
-            data: page.toString('base64'),
-            // Echo the EFFECTIVE limit, not the caller's: a cursor that keeps
-            // asking for a size this tool will not honour reads as though the
-            // page were the caller's to choose, and invites the same over-large
-            // request every hop.
-            next_cursor: nextOffset < bytes.length
-              ? { tool: 'capability:read', args: { file_path: abs, byte_offset: nextOffset, byte_limit: effectiveLimit } }
-              : null,
-          }),
-        }],
-      };
+      return renderByteWindow(
+        abs,
+        args as ByteReadArgs,
+        bytes.length,
+        (offset, limit) => bytes.subarray(offset, Math.min(bytes.length, offset + limit)),
+        reference,
+      );
     }
 
     const sourceText = bytes.toString('utf8');
