@@ -52,6 +52,7 @@ import {
   precheckPopulation,
   resolveCanonicalIntegrationRoot,
   type FixPrecheckPopulation,
+  type FixPrecheckProgress,
   type FixPrecheckVerdict,
 } from '../../release/admission-fix-precheck';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
@@ -1168,6 +1169,12 @@ export default defineTool({
             startedAtMs,
             updatedAtMs: startedAtMs,
             expiresAtMs: admissionPrecheckDeadline(startedAtMs, population.files),
+            // Seed the durable marker with the first file before setup begins. The runner's
+            // callback refreshes this snapshot before each subsequent test process starts.
+            currentFile: population.files[0] as string,
+            completedCount: 0,
+            totalCount: population.files.length,
+            heartbeatAtMs: startedAtMs,
           };
           const pendingQueue: FrozenCandidateRepairQueue = {
             ...queue,
@@ -1202,11 +1209,34 @@ export default defineTool({
             integrationRoot: precheckRoot,
             checkpointRoot: checkpointRootMirror(precheckRoot),
           });
+          const persistPrecheckProgress = async (progress: FixPrecheckProgress): Promise<void> => {
+            await applyFrozenCandidateRepairQueueTransition(inspected.target, (fresh) => {
+              const current = fresh.admissionPrecheck;
+              if (!current || current.operationId !== operationId || current.status !== 'running') return fresh;
+              const updatedAtMs = Math.max(fresh.updatedAtMs + 1, progress.heartbeatAtMs);
+              return {
+                ...fresh,
+                updatedAtMs,
+                admissionPrecheck: {
+                  ...current,
+                  currentFile: progress.currentFile,
+                  completedCount: progress.completedCount,
+                  totalCount: progress.totalCount,
+                  heartbeatAtMs: progress.heartbeatAtMs,
+                  updatedAtMs,
+                },
+              };
+            });
+          };
           void trackDetached(
             (async () => {
               let run: Awaited<ReturnType<typeof runner>>;
               try {
-                run = await runner({ commit: builtCommit, files: population.files });
+                run = await runner({
+                  commit: builtCommit,
+                  files: population.files,
+                  onProgress: persistPrecheckProgress,
+                });
               } catch (err) {
                 run = { ran: false, reason: 'runner-failed', detail: (err as Error).message };
               }
