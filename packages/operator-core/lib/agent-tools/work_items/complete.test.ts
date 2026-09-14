@@ -164,11 +164,11 @@ describe('work_items:complete — prompt budget (EI-20189722405308981)', () => {
     expect(complete.description).toContain('terminal closes use `passed`/`deprecated` (feature/chunk)');
     expect(complete.description).toContain('`done`/`dropped` aliases are accepted');
     expect(complete.description).toContain('`closed`/`deprecated` discard work');
-    expect(complete.guidance?.when).toContain('Use `dropped`/`closed`/`deprecated` only for discard/wontfix');
-    expect(complete.guidance?.when).toContain('exactly once in checked/notChecked/notApplicable');
-    expect(complete.guidance?.when).toContain('residue is a separate explicit array');
-    expect(complete.guidance?.when).toContain('residue is a separate');
-    expect(complete.guidance?.when).toContain('terminal closes cannot omit');
+    expect(complete.guidance?.when).toContain('Use discard states only for discard/wontfix');
+    expect(complete.guidance?.when).toContain('each entry exactly once across checked/notChecked/notApplicable');
+    expect(complete.guidance?.when).toContain('residue is separate (`[]` or `["none"]` means zero)');
+    expect(complete.guidance?.when).toContain('required `assumptions`');
+    expect(complete.guidance?.when).not.toContain('testFingerprint?');
   });
 });
 
@@ -2421,6 +2421,12 @@ describe('work_items:complete (keyed-array)', () => {
         specAdequacy: { applicable: true, retryable: true, checked: [] },
       });
       expect(r.error).toContain('freshness, execution-integrity');
+      expect(r.error).toContain('specAdequacy.current');
+      expect(r.error).toContain('testFingerprint?');
+      expect(r.error).toContain('fixtureFingerprint?');
+      expect(r.error).toContain('every selected bound evidence ref');
+      expect(r.error).toContain('specAdequacy.evidenceRefs');
+      expect(r.error).toContain('omitted values remain unknown and cannot pass');
       expect(r.error).toContain('No completion record or state transition was written');
       expect(r.completion).toBeUndefined();
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
@@ -2973,6 +2979,99 @@ describe('work_items:complete (keyed-array)', () => {
       getWorkItem.mockResolvedValue({ ...item, assignee: null });
       const r = await one({ id: 'F-12', completion: { summary: 'noting it' } });
       expect(r.assigneeMismatchWarning).toBeUndefined();
+    });
+  });
+
+  describe('claim-subject baseline — stale coalesced close protection (EI-23167326985120403)', () => {
+    const baseline = {
+      kind: 'bug',
+      title: 'original watchdog subject',
+      summary: 'original watchdog observation',
+      body: 'original watchdog observation',
+      watchdogKey: 'repeated-tool-error:original',
+    };
+
+    it('refuses a terminal close when coalescing changed the claimed issue subject', async () => {
+      getWorkItem.mockResolvedValue({
+        id: 'EI-claim-baseline',
+        kind: 'bug',
+        family: 'issue',
+        state: 'open',
+        harness: 'papercup',
+        assignee: 'su-tester',
+        title: 'new coalesced subject',
+        summary: 'new coalesced observation',
+        payload: {
+          watchdogKey: 'repeated-tool-error:new',
+          _claimSubjectBaseline: baseline,
+        },
+      });
+
+      const r = await one({
+        id: 'EI-claim-baseline',
+        state: 'resolved',
+        completion: { summary: 'stale proof for the original subject', tests: 'original test passed' },
+      });
+
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/claimed subject changed after claim/);
+      expect(r.error).toContain('title');
+      expect(r.error).toContain('watchdogKey');
+      expect(r.error).toContain('No completion record or state transition was written');
+      expect(r.claimSubjectMismatch.fields).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'title', claimed: baseline.title, current: 'new coalesced subject' }),
+          expect.objectContaining({ field: 'watchdogKey', claimed: baseline.watchdogKey, current: 'repeated-tool-error:new' }),
+        ]),
+      );
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+    });
+
+    it('keeps record-only progress notes compatible when the subject changed', async () => {
+      getWorkItem.mockResolvedValue({
+        id: 'EI-claim-baseline-record',
+        kind: 'bug',
+        family: 'issue',
+        state: 'open',
+        harness: 'papercup',
+        assignee: 'su-tester',
+        title: 'new coalesced subject',
+        summary: 'new coalesced observation',
+        payload: { watchdogKey: 'repeated-tool-error:new', _claimSubjectBaseline: baseline },
+      });
+
+      const r = await one({ id: 'EI-claim-baseline-record', completion: { summary: 'progress note' } });
+
+      expect(r.ok).toBe(true);
+      expect(r.claimSubjectMismatch).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('allows a close when the current issue still matches the claim baseline', async () => {
+      const issue = {
+        id: 'EI-claim-baseline-match',
+        kind: 'bug',
+        family: 'issue',
+        state: 'open',
+        harness: 'papercup',
+        assignee: 'su-tester',
+        title: baseline.title,
+        summary: baseline.summary,
+        payload: { watchdogKey: baseline.watchdogKey, _claimSubjectBaseline: baseline },
+      };
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
+
+      const r = await one({
+        id: issue.id,
+        state: 'resolved',
+        completion: { summary: 'verified original subject', tests: 'original test passed' },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.claimSubjectMismatch).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
     });
   });
 

@@ -240,6 +240,7 @@ import { evaluateFeatureDesignGate } from '../../design-compare/feature-gate';
 import { designCompareDepsFor } from '../../design-compare/host-install';
 import { typeEvidenceGapInCompletion } from '../type-evidence-gap';
 export { typeEvidenceGapInCompletion } from '../type-evidence-gap';
+import { claimSubjectBaselineMismatches } from '../../claim-subject-baseline';
 
 // EI-7031: coerce structured LLM mis-shapes (scalar↔array swaps, missing summary)
 // to the CompletionRecord contract BEFORE validation. A bare string is intentionally
@@ -308,6 +309,9 @@ const completionSpec = z
       `Object example: ${COMPLETION_OBJECT_EXAMPLE}.`,
   );
 
+const SPEC_ADEQUACY_CURRENTNESS_GUIDANCE =
+  '`specAdequacy.current` entries use `{ planSlug?, specId?, specRevision?, specFingerprint?, evidenceKind, evidenceRef, sourceFingerprint, testFingerprint?, fixtureFingerprint?, rubricFingerprint?, environmentFingerprint? }`; provide one entry for every selected bound evidence ref (`specAdequacy.evidenceRefs` narrows the selection; when omitted, use all bound refs) and every stored fingerprint dimension. `planSlug`, `specId`, `specRevision`, and `specFingerprint` are an all-or-none clause identity; omitted values remain unknown and cannot pass.';
+
 const specAdequacyCompletionSpec = z
   .object({
     classRef: z
@@ -331,7 +335,7 @@ const specAdequacyCompletionSpec = z
       .max(500)
       .optional()
       .describe(
-        'Current fingerprints for the exact bound evidence refs; omitted dimensions remain unknown, never pass.',
+        `Current fingerprints for the exact bound evidence refs. ${SPEC_ADEQUACY_CURRENTNESS_GUIDANCE}`,
       ),
   })
   .strict()
@@ -1525,6 +1529,18 @@ function completionFilesChanged(completion: unknown): string[] {
   return [...strings(rec.filesChanged), ...strings(nested.filesChanged)];
 }
 
+function completionFilesDeleted(completion: unknown): string[] {
+  if (!completion || typeof completion !== 'object' || Array.isArray(completion)) return [];
+  const rec = completion as Record<string, unknown>;
+  const nested =
+    rec.verification && typeof rec.verification === 'object' && !Array.isArray(rec.verification)
+      ? (rec.verification as Record<string, unknown>)
+      : {};
+  const strings = (value: unknown): string[] =>
+    Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+  return [...strings(rec.filesDeleted), ...strings(nested.filesDeleted)];
+}
+
 function completionHasFilesChanged(completion: unknown): boolean {
   if (!completion || typeof completion !== 'object' || Array.isArray(completion)) return false;
   const rec = completion as Record<string, unknown>;
@@ -1771,13 +1787,22 @@ function completionStructuredEvidenceTexts(completion: unknown): {
   };
 }
 
-function prescribedItemPaths(item: { payload?: unknown }): string[] {
-  if (!item.payload || typeof item.payload !== 'object' || Array.isArray(item.payload)) return [];
-  const payload = item.payload as Record<string, unknown>;
+const ITEM_REPO_PATH_RE = /\b(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+\b/g;
+
+function prescribedItemPaths(item: { title?: unknown; summary?: unknown; payload?: unknown }): string[] {
+  const payload =
+    item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+      ? (item.payload as Record<string, unknown>)
+      : {};
   const pathValues = ['paths', 'testPaths', 'guardPaths'].flatMap((key) =>
     Array.isArray(payload[key]) ? payload[key] : [],
   );
-  return Array.from(new Set(pathValues.map(repoRelativePath).filter((path): path is string => Boolean(path))));
+  const prosePaths = [...prescribedItemText(item).matchAll(ITEM_REPO_PATH_RE)].map((match) => match[0]);
+  return Array.from(
+    new Set(
+      [...pathValues, ...prosePaths].map(repoRelativePath).filter((path): path is string => Boolean(path)),
+    ),
+  );
 }
 
 function pathMentionedInEvidence(text: string, declaredPath: string): boolean {
@@ -1797,6 +1822,27 @@ function pathMentionedInEvidence(text: string, declaredPath: string): boolean {
 }
 
 const TEST_PATH_RE = /(?:^|[/\\])(?:test|tests|__tests__)(?:[/\\]|$)|\.(?:test|spec)\.[^.]+$/i;
+const TEST_EVIDENCE_PATH_RE =
+  /\b(?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:test|spec)\.[A-Za-z0-9_.-]+\b/gi;
+
+function completionTestPathReferences(parts: readonly string[], filesChanged: readonly string[]): string[] {
+  const prosePaths = parts.flatMap((part) => [...part.matchAll(TEST_EVIDENCE_PATH_RE)].map((match) => match[0]));
+  return Array.from(
+    new Set(
+      [...filesChanged, ...prosePaths]
+        .map(repoRelativePath)
+        .filter((path): path is string => Boolean(path) && TEST_PATH_RE.test(path)),
+    ),
+  );
+}
+
+function passingTestResult(text: string): boolean {
+  if (!/\b(?:pass(?:ed|es|ing)?|green|success(?:ful)?)\b/i.test(text)) return false;
+  return !(
+    /\b[1-9]\d*\s+(?:tests?\s+)?(?:fail(?:ed|ure|ures|ing)?|error(?:s)?)\b/i.test(text) ||
+    /\b(?:fail(?:ed|ure|ures|ing)?|error(?:s)?)\s*[:=]\s*[1-9]\d*\b/i.test(text)
+  );
+}
 
 function repoRelativePath(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -2041,14 +2087,36 @@ export function prescribedRecurrenceGuardCoverageGap(
   const pointsToDeclaredTest =
     declaredTestPath.some((path) => structuredEvidenceParts.some((part) => pathMentionedInEvidence(part, path))) &&
     !structuredEvidenceParts.some(partNegative);
+  const filesDeleted = completionFilesDeleted(record)
+    .map(repoRelativePath)
+    .filter((path): path is string => Boolean(path));
+  const deletedPrescribedTestPath = declaredTestPath.some((path) =>
+    filesDeleted.some((deletedPath) => sameRepoPath(deletedPath, path)),
+  );
   // A disclaimer anywhere still withholds credit from the bare addedTests+path pair (that
   // pair carries no prose of its own to disclaim); it is now evaluated per part, so only a
   // real disclaimer counts, not one manufactured at a field boundary.
   const negativeSomewhere = parts.some(partNegative);
   const pointsToGuard = parts.some((part) => COMPLETION_GUARD_RE.test(part) && !partNegative(part));
   const pointsToAddedTest = completionAddedTests(record) && testPath && !negativeSomewhere;
+  // An obsolete prescribed test may be intentionally removed while its replacement test and
+  // recurrence guard remain covered. Require all three pieces of evidence before crediting
+  // that disposition: the deleted path must be one the item explicitly names, a distinct test
+  // path must be changed or cited, and the structured test result must report a pass. A deleted
+  // path by itself, a passing unrelated suite, or a disclaimer still leaves the warning visible.
+  const replacementTestPaths = completionTestPathReferences(structuredEvidenceParts, filesChanged);
+  const pointsToDeletedReplacement =
+    deletedPrescribedTestPath &&
+    replacementTestPaths.some(
+      (replacementPath) => !filesDeleted.some((deletedPath) => sameRepoPath(deletedPath, replacementPath)),
+    ) &&
+    structuredEvidence.testResult.some(passingTestResult) &&
+    !negativeSomewhere &&
+    !structuredEvidenceParts.some(partNegative);
   const explicitWaiver = parts.some((part) => EXPLICIT_GUARD_WAIVER_RE.test(part));
-  if (pointsToGuard || pointsToAddedTest || pointsToDeclaredTest || explicitWaiver) return undefined;
+  if (pointsToGuard || pointsToAddedTest || pointsToDeclaredTest || pointsToDeletedReplacement || explicitWaiver) {
+    return undefined;
+  }
   return { prescriptions };
 }
 
@@ -2875,6 +2943,37 @@ async function completeOne(
   // intent can be inferred from completion.status after the schema has parsed.
   const closeIntentRequested =
     Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
+  // EI-23167326985120403: issue coalescing may refresh an open row's title/body
+  // and watchdog identity after a worker claimed it. The claim path stamps the
+  // subject baseline atomically and preserves it across same-holder reclaims;
+  // compare it before any completion/state write so stale proof cannot close the
+  // newly coalesced subject. Rows without the private stamp are legacy claims and
+  // remain compatible, while a mismatch is a hard close refusal with no partial
+  // completion record.
+  const claimSubjectMismatches =
+    closeIntentRequested && existing.family === 'issue'
+      ? claimSubjectBaselineMismatches(existing)
+      : [];
+  if (claimSubjectMismatches.length > 0) {
+    const changedFields = claimSubjectMismatches.map((mismatch) => mismatch.field).join(', ');
+    return {
+      ok: false,
+      id: it.id,
+      error:
+        `refusing terminal completion for '${it.id}': claimed subject changed after claim ` +
+        `(mismatched ${changedFields}). The current issue no longer matches the private ` +
+        `claim-subject baseline, so stale completion evidence cannot be applied. Re-claim ` +
+        `the current subject and re-run verification before closing. No completion record ` +
+        `or state transition was written.`,
+      claimSubjectMismatch: {
+        fields: claimSubjectMismatches.map((mismatch) => ({
+          field: mismatch.field,
+          claimed: mismatch.claimed,
+          current: mismatch.current,
+        })),
+      },
+    };
+  }
   const successfulClose =
     Boolean(effectiveState) &&
     ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.some((state) => state === String(effectiveState).trim().toLowerCase());
@@ -3106,7 +3205,7 @@ async function completeOne(
                 : 'Retry after binding current proof and emitting terminal scorecards when required.';
         refuseGate(
           `refusing terminal completion for '${it.id}': spec-test-adequacy gate is not current: ${gate.reason}. ` +
-            `${gradingAuditRetryGuidance} No completion record or state transition was written.`,
+            `${gradingAuditRetryGuidance} ${SPEC_ADEQUACY_CURRENTNESS_GUIDANCE} No completion record or state transition was written.`,
           {
             specAdequacy: {
               applicable: true,
@@ -4773,7 +4872,7 @@ export default defineTool({
   description:
     'Complete work-items with evidence; broadcast the result. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. Pass terminal `state` plus `assumptions` (`"none"` or fact keys); omitting `state` records only. Check `finish.complete`/`stateWarning`.',
   guidance: {
-    when: 'After verification, pass `completion`, a family terminal state (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and required `assumptions` (`\"none\"` or fact keys) — terminal closes cannot omit it. Use `dropped`/`closed`/`deprecated` only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (nested placement is auto-hoisted). Universal-verification claims require a population partition in `completion.verification.coverage`: each entry exactly once in checked/notChecked/notApplicable; residue is a separate explicit array (`[]` or `["none"]` means zero). Keep `deferred`/`coordNotes` outside verification; put test/typecheck/diff details in top-level aliases; use `filesDeleted` (top-level or nested under `verification`) for intentional removals, not `filesChanged`; use `completion.duplicateOf` for duplicates.',
+    when: 'After verification, pass `completion`, terminal `state` (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and required `assumptions` (`\"none\"` or fact keys). Use discard states only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (nested placement is auto-hoisted). Universal claims require `completion.verification.coverage` to partition each entry exactly once across checked/notChecked/notApplicable; residue is separate (`[]` or `["none"]` means zero). Keep `deferred`/`coordNotes` outside verification; put test/typecheck/diff details in top-level aliases; use `filesDeleted` for removals, not `filesChanged`; use `completion.duplicateOf` for duplicates.',
     notWhen: 'Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.',
     chaining:
       'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',
