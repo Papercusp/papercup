@@ -1,6 +1,6 @@
 # Dream study evidence — interim
 
-Measured 2026-09-14T05:26:47.538Z. **Inconclusive; final acceptance remains open.**
+Measured 2026-09-14T12:58:44.810Z. **Inconclusive; final acceptance remains open.**
 
 19 governed study attempts; $1.614729 accounted, including conservative reservations. This is not invoice cost.
 
@@ -47,14 +47,21 @@ The duplicate source-packing cases count as one unverified representative family
 
 This is exploratory AI review with disclosed incidental aggregate exposure, not pristine blindness, human validation or held-out confirmation. It used approximately 17 reviewer-minutes. No original study outcome, source pin, cost or unknown reservation is rewritten by this report.
 
+## Unblinded novelty and downstream eligibility
+
+The separate unblinded AI/domain review is preserved in [its structured record](calibration-unblinded-review-2026-09-14.json) and WI-40148 posts 204403, 204404, 204405, 204406. It evaluated the three representatives selected before key access: 1176a396ed37847cf61c, 36908b44cc10514ba38e, 5908803065283e72f93d.
+
+Novel bounded local Dream experiments qualified: **0/3**. The first two representatives are exact-family duplicates; the third is a refinement/consolidation of already-articulated prior compositions. All three are engineering-feasible in principle only after their missing product seams and contracts are established.
+
+Downstream-eligible candidates: **0**; downstream trials executed: **0**. The downstream branch is **not applicable under the frozen evidence**, not silently deferred: no candidate passed the prerequisite novelty qualification. A later independent human review may challenge that conclusion, but tests or technical plausibility cannot promote a candidate by themselves.
+
+This remains AI review, not human validation or held-out confirmation. “Not novel” does not mean technically impossible or useless; it means these proposals cannot count as new Dream discoveries on the evidence reviewed.
+
 ## Remaining acceptance work
 
 - Independent human validation; AI source-domain review is recorded with incidental aggregate exposure
-- Separate unblinded novelty/integration review of three representative families
-- Flat versus faceted offline outcome ablation
-- Qualified family and feasibility adjudication
-- Bounded downstream trials where qualified candidates exist
-- Independent final acceptance and owner disposition
+- Flat versus faceted offline outcome ablation by a reviewer not exposed to the faceted judgments
+- Independent final acceptance and owner keep/simplify/expand/stop or explicitly inconclusive disposition
 
 ## Reproduction and evidence
 

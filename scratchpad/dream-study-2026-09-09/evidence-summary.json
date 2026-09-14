@@ -1,5 +1,5 @@
 {
-  "measuredAt": "2026-09-14T05:26:47.538Z",
+  "measuredAt": "2026-09-14T12:58:44.810Z",
   "disposition": "interim/inconclusive",
   "attempts": 19,
   "accountedUsd": 1.6147294,
@@ -19,7 +19,7 @@
         "capability:plans.spec-revisions",
         "mechanism:memory.hive-scope"
       ],
-      "qualifiedFamilyAssessment": "not completed; do not substitute accepted-row counts",
+      "qualifiedFamilyAssessment": "0/3 reviewed representative families qualify as novel bounded local experiments; review is calibration-wide, not arm-specific",
       "sourceSnapshots": [
         "8fca95108e236676bf250f0d955ba76b79d8b0d2dd2e42a1ac79a3d2cf63d346"
       ]
@@ -33,7 +33,7 @@
         "no-review/no-pair": 1
       },
       "sourceUnitIds": [],
-      "qualifiedFamilyAssessment": "not completed; do not substitute accepted-row counts",
+      "qualifiedFamilyAssessment": "0/3 reviewed representative families qualify as novel bounded local experiments; review is calibration-wide, not arm-specific",
       "sourceSnapshots": [
         "8fca95108e236676bf250f0d955ba76b79d8b0d2dd2e42a1ac79a3d2cf63d346"
       ]
@@ -50,7 +50,7 @@
         "capability:code.secret-scanned-pack",
         "mechanism:memory.hive-scope"
       ],
-      "qualifiedFamilyAssessment": "not completed; do not substitute accepted-row counts",
+      "qualifiedFamilyAssessment": "0/3 reviewed representative families qualify as novel bounded local experiments; review is calibration-wide, not arm-specific",
       "sourceSnapshots": [
         "8fca95108e236676bf250f0d955ba76b79d8b0d2dd2e42a1ac79a3d2cf63d346"
       ]
@@ -70,7 +70,7 @@
         "mechanism:dream.cost-admission",
         "mechanism:memory.hive-scope"
       ],
-      "qualifiedFamilyAssessment": "not completed; do not substitute accepted-row counts",
+      "qualifiedFamilyAssessment": "0/3 reviewed representative families qualify as novel bounded local experiments; review is calibration-wide, not arm-specific",
       "sourceSnapshots": [
         "8fca95108e236676bf250f0d955ba76b79d8b0d2dd2e42a1ac79a3d2cf63d346"
       ]
@@ -90,7 +90,7 @@
         "mechanism:dream.cost-admission",
         "mechanism:memory.hive-scope"
       ],
-      "qualifiedFamilyAssessment": "not completed; do not substitute accepted-row counts",
+      "qualifiedFamilyAssessment": "0/3 reviewed representative families qualify as novel bounded local experiments; review is calibration-wide, not arm-specific",
       "sourceSnapshots": [
         "8fca95108e236676bf250f0d955ba76b79d8b0d2dd2e42a1ac79a3d2cf63d346"
       ]
@@ -109,7 +109,7 @@
         "capability:plans.spec-revisions",
         "mechanism:memory.hive-scope"
       ],
-      "qualifiedFamilyAssessment": "not completed; do not substitute accepted-row counts",
+      "qualifiedFamilyAssessment": "0/3 reviewed representative families qualify as novel bounded local experiments; review is calibration-wide, not arm-specific",
       "sourceSnapshots": [
         "8fca95108e236676bf250f0d955ba76b79d8b0d2dd2e42a1ac79a3d2cf63d346"
       ]
@@ -121,7 +121,7 @@
       "cost": 0.056344599999999995,
       "scientific": {},
       "sourceUnitIds": [],
-      "qualifiedFamilyAssessment": "not completed; do not substitute accepted-row counts",
+      "qualifiedFamilyAssessment": "0/3 reviewed representative families qualify as novel bounded local experiments; review is calibration-wide, not arm-specific",
       "sourceSnapshots": []
     }
   ],
@@ -1723,13 +1723,69 @@
     "qualifiedFamilies": null,
     "admissibility": "Exploratory AI source-contribution/feasibility evidence with disclosed incidental aggregate exposure; not pristine blindness, human validation, held-out confirmation or executed outcomes."
   },
+  "unblindedNoveltyReview": {
+    "source": "calibration-unblinded-review-2026-09-14.json",
+    "sourceWorkItem": "WI-40148",
+    "reviewer": {
+      "id": "su-4a57e338-b9eb-4fc6-84fb-d7804168bb72",
+      "kind": "independent-ai-domain-reviewer"
+    },
+    "postIds": [
+      204403,
+      204404,
+      204405,
+      204406
+    ],
+    "representatives": [
+      {
+        "caseId": "1176a396ed37847cf61c",
+        "family": "hive-filtered secure source packing",
+        "classification": "exact-family-duplicate",
+        "novelBoundedLocalExperiment": false,
+        "engineeringFeasibleInPrinciple": true,
+        "qualification": "Consolidate under the earlier family only if an observed product leak or registered requirement establishes a real beneficiary and authoritative harness-to-path semantics."
+      },
+      {
+        "caseId": "36908b44cc10514ba38e",
+        "family": "hive-confined revision-aware clause retrieval",
+        "classification": "exact-family-duplicate",
+        "novelBoundedLocalExperiment": false,
+        "engineeringFeasibleInPrinciple": true,
+        "qualification": "Revisit under the earlier family only from an observed multi-harness spec-history journey or registered capability requirement."
+      },
+      {
+        "caseId": "5908803065283e72f93d",
+        "family": "hive-bounded CAS spec revision with scoped evidence pack",
+        "classification": "prior-family-refinement",
+        "novelBoundedLocalExperiment": false,
+        "engineeringFeasibleInPrinciple": true,
+        "qualification": "A future engineering prototype would require stable revision-to-artifact identity, transaction or compensation semantics, failure injection, an actual caller, and no atomicity claim before durable joint identity is proven."
+      }
+    ],
+    "closure": {
+      "reviewedRepresentatives": 3,
+      "qualifiedNovelExperiments": 0,
+      "engineeringFeasibleInPrinciple": 3,
+      "downstreamEligibleCandidates": 0,
+      "downstreamTrialsExecuted": 0,
+      "downstreamDisposition": "not-applicable-no-qualified-candidates"
+    },
+    "limitations": [
+      "This is independent AI/domain review, not human validation or held-out confirmation.",
+      "Conclusions are scoped to intact prior-match prefixes and current-source inspection; some historical priorMatches text ends at 12000 characters without a full-text reference (EI-23213592026804608).",
+      "Not novel does not mean technically impossible or valueless; it means the proposed behavior cannot count as a new Dream discovery without a distinct observed product gap."
+    ]
+  },
   "scientific": {
     "dreamAttempts": 17,
     "acceptedDreamRows": 0,
     "unverifiedDreamReviews": 14,
     "noDreamReview": 3,
     "blenderIdeas": 5,
-    "blenderRouted": 0
+    "blenderRouted": 0,
+    "qualifiedNovelFamilies": 0,
+    "downstreamEligibleCandidates": 0,
+    "downstreamTrialsExecuted": 0
   },
   "historicalDiagnosticWarnings": [
     "Historical timeout notes claiming never-admitted/local-governor starvation were retracted in EI-22769219749818913: the Codex adapter did not emit onAdmitted. These raw persisted strings do not establish the cause or prove no generation occurred.",
@@ -1741,11 +1797,8 @@
   ],
   "outstanding": [
     "Independent human validation; AI source-domain review is recorded with incidental aggregate exposure",
-    "Separate unblinded novelty/integration review of three representative families",
-    "Flat versus faceted offline outcome ablation",
-    "Qualified family and feasibility adjudication",
-    "Bounded downstream trials where qualified candidates exist",
-    "Independent final acceptance and owner disposition"
+    "Flat versus faceted offline outcome ablation by a reviewer not exposed to the faceted judgments",
+    "Independent final acceptance and owner keep/simplify/expand/stop or explicitly inconclusive disposition"
   ],
   "limitations": [
     "Four source units and one source snapshot; no domain-general inference",

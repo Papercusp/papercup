@@ -13,6 +13,7 @@ const blocks = await Promise.all(Object.values(STUDY_BLOCKS).map(async b => JSON
 validateStudyBlocks(blocks);
 const pins = blocks.map(b => b.pin);
 const independentReview = JSON.parse(await readFile(resolve(here, 'calibration-review-2026-09-14.json'), 'utf8'));
+const unblindedReview = JSON.parse(await readFile(resolve(here, 'calibration-unblinded-review-2026-09-14.json'), 'utf8'));
 const blind = JSON.parse(await readFile(resolve(here, 'calibration-blind-v2.json'), 'utf8'));
 if (independentReview.blindHash !== capabilityHash(JSON.stringify(blind)))
   throw new Error('Independent review is not bound to the frozen blind packet');
@@ -23,6 +24,19 @@ if (independentReview.posts.length !== 7 ||
     !independentReview.posts[6].body.includes('END FROZEN REVIEW.') ||
     independentReview.qualifiedFamilies !== null)
   throw new Error('Independent calibration freeze is incomplete or conflates review with qualification');
+const unblindedRepresentativeIds = ['1176a396ed37847cf61c', '36908b44cc10514ba38e', '5908803065283e72f93d'];
+if (unblindedReview.version !== 'dream-unblinded-novelty-review-v1' ||
+    unblindedReview.sourceWorkItem !== 'WI-40148' ||
+    JSON.stringify(unblindedReview.postIds) !== JSON.stringify([204403, 204404, 204405, 204406]) ||
+    JSON.stringify(unblindedReview.representatives.map((r: { caseId: string }) => r.caseId)) !==
+      JSON.stringify(unblindedRepresentativeIds) ||
+    unblindedReview.representatives.some((r: { novelBoundedLocalExperiment: boolean }) => r.novelBoundedLocalExperiment) ||
+    unblindedReview.closure.reviewedRepresentatives !== 3 ||
+    unblindedReview.closure.qualifiedNovelExperiments !== 0 ||
+    unblindedReview.closure.downstreamEligibleCandidates !== 0 ||
+    unblindedReview.closure.downstreamTrialsExecuted !== 0 ||
+    unblindedReview.closure.downstreamDisposition !== 'not-applicable-no-qualified-candidates')
+  throw new Error('Unblinded novelty review is incomplete or admits an unsupported downstream branch');
 const { sql } = getOrgPg();
 try {
   const rows = await sql<any[]>`
@@ -82,7 +96,7 @@ try {
       scientific[key] = (scientific[key] ?? 0) + 1;
     }
     return { ...total, scientific, sourceUnitIds: [...new Set(selected.flatMap(r => r.units))].sort(),
-      qualifiedFamilyAssessment: 'not completed; do not substitute accepted-row counts',
+      qualifiedFamilyAssessment: '0/3 reviewed representative families qualify as novel bounded local experiments; review is calibration-wide, not arm-specific',
       sourceSnapshots: [...new Set(selected.map(r => r.sourceSnapshot).filter(Boolean))] };
   });
   const paired = new Map<string, typeof dreams>();
@@ -119,11 +133,23 @@ try {
       qualifiedFamilies: independentReview.qualifiedFamilies,
       admissibility: independentReview.admissibility,
     },
+    unblindedNoveltyReview: {
+      source: 'calibration-unblinded-review-2026-09-14.json',
+      sourceWorkItem: unblindedReview.sourceWorkItem,
+      reviewer: unblindedReview.reviewer,
+      postIds: unblindedReview.postIds,
+      representatives: unblindedReview.representatives,
+      closure: unblindedReview.closure,
+      limitations: unblindedReview.limitations,
+    },
     scientific: { dreamAttempts: dreams.length, acceptedDreamRows: dreams.filter(d=>d.verdict==='accept').length,
       unverifiedDreamReviews: dreams.filter(d=>d.verdict==='unverified').length,
       noDreamReview: dreams.filter(d=>d.verdict===null).length,
       blenderIdeas: blender.reduce((n,b)=>n+b.ideasGenerated,0),
-      blenderRouted: blender.reduce((n,b)=>n+b.routed,0) },
+      blenderRouted: blender.reduce((n,b)=>n+b.routed,0),
+      qualifiedNovelFamilies: unblindedReview.closure.qualifiedNovelExperiments,
+      downstreamEligibleCandidates: unblindedReview.closure.downstreamEligibleCandidates,
+      downstreamTrialsExecuted: unblindedReview.closure.downstreamTrialsExecuted },
     historicalDiagnosticWarnings: [
       'Historical timeout notes claiming never-admitted/local-governor starvation were retracted in EI-22769219749818913: the Codex adapter did not emit onAdmitted. These raw persisted strings do not establish the cause or prove no generation occurred.',
       'For the original Haiku cycle 36930ec0-0135-4c3d-8261-b9b8f8028545, the recovered driver log records four HTTP 429 rate_limit_error retries before the deadline. This contradicts its persisted never-admitted explanation. The responding hop, pool account, later retry progress and billed usage remain unestablished; retain the USD 0.039173 unknown-call reservation. Evidence is preserved in EI-22756328656642291 comment 203056; source /tmp/dream-study-pair-after-readiness-20260909.log, SHA-256 ea874cd3a74f97ec879eb9d490a8d1e257684a52f54dc487ccf716e080fe5e3c. This historical evidence does not prove current Haiku recovery.',
@@ -133,8 +159,8 @@ try {
       'EI-22769219749818913 is closed: the deadline diagnostics now separate admission and generation budgets, with 49 focused tests passing at the recorded base and the relevant source unchanged at closure. The historical d536051b delay remains un-attributable, and no paid identity was retried.',
     ],
     outstanding: ['Independent human validation; AI source-domain review is recorded with incidental aggregate exposure',
-      'Separate unblinded novelty/integration review of three representative families', 'Flat versus faceted offline outcome ablation',
-      'Qualified family and feasibility adjudication', 'Bounded downstream trials where qualified candidates exist', 'Independent final acceptance and owner disposition'],
+      'Flat versus faceted offline outcome ablation by a reviewer not exposed to the faceted judgments',
+      'Independent final acceptance and owner keep/simplify/expand/stop or explicitly inconclusive disposition'],
     limitations: ['Four source units and one source snapshot; no domain-general inference',
       'Model blocks and pre/post infrastructure or prompt-contract windows must remain distinct',
       'Ordinary Blender uses its production corpus and one ideator, not the Dream source population',
@@ -157,6 +183,11 @@ try {
     `The six-case AI/domain review is frozen in [the verbatim review artifact](${output.independentCalibration.source}) with its exposure disclosure and source-quotation clarification. Original case labels: ${independentReview.reviewerHistogram.reject} rejected, ${independentReview.reviewerHistogram.unverified} unverified, ${independentReview.reviewerHistogram.accept} accepted. These are calibration judgments, not executed outcomes.`, '',
     'The duplicate source-packing cases count as one unverified representative family. Across five families, two are intrinsically rejected and three remain unverified. Qualified families remain unknown pending separate novelty/integration assessment; zero accepted cases does not mean zero viable families.', '',
     'This is exploratory AI review with disclosed incidental aggregate exposure, not pristine blindness, human validation or held-out confirmation. It used approximately 17 reviewer-minutes. No original study outcome, source pin, cost or unknown reservation is rewritten by this report.', '',
+    '## Unblinded novelty and downstream eligibility', '',
+    `The separate unblinded AI/domain review is preserved in [its structured record](${output.unblindedNoveltyReview.source}) and WI-40148 posts ${unblindedReview.postIds.join(', ')}. It evaluated the three representatives selected before key access: ${unblindedRepresentativeIds.join(', ')}.`, '',
+    `Novel bounded local Dream experiments qualified: **${output.scientific.qualifiedNovelFamilies}/3**. The first two representatives are exact-family duplicates; the third is a refinement/consolidation of already-articulated prior compositions. All three are engineering-feasible in principle only after their missing product seams and contracts are established.`, '',
+    `Downstream-eligible candidates: **${output.scientific.downstreamEligibleCandidates}**; downstream trials executed: **${output.scientific.downstreamTrialsExecuted}**. The downstream branch is **not applicable under the frozen evidence**, not silently deferred: no candidate passed the prerequisite novelty qualification. A later independent human review may challenge that conclusion, but tests or technical plausibility cannot promote a candidate by themselves.`, '',
+    'This remains AI review, not human validation or held-out confirmation. “Not novel” does not mean technically impossible or useless; it means these proposals cannot count as new Dream discoveries on the evidence reviewed.', '',
     '## Remaining acceptance work', '',
     ...output.outstanding.map(s => '- '+s), '',
     '## Reproduction and evidence', '',

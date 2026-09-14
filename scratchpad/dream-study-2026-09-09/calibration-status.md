@@ -1,4 +1,4 @@
-# Dream study: independent AI calibration received; qualification remains open
+# Dream study: AI calibration and unblinded novelty review received; human validation remains open
 
 Prepared September 9, 2026, under WI-40148 / P-008.
 
@@ -10,7 +10,15 @@ The AI/domain reviewer reported four rejected cases, two unverified cases and no
 
 Before reading arm/outcome mappings, choose the lexicographically smallest frozen ID (`1176a396ed37847cf61c`) as the duplicate family's sole representative for further novelty/integration review. This does not accept that family or change its original case labels.
 
-The reviewer disclosed incidental exposure, after forming judgments but before posting, to aggregate/unmapped checkpoint information. No case-to-run/model/outcome mapping or key was reported seen. Retain this as exploratory AI review with that limitation; it is not pristine blindness or human validation. Independent human validation, separate unblinded novelty review, outcome ablations and qualified-family/downstream assessment remain open. No key was read or paid sampling resumed to record this review.
+The reviewer disclosed incidental exposure, after forming judgments but before posting, to aggregate/unmapped checkpoint information. No case-to-run/model/outcome mapping or key was reported seen. Retain this as exploratory AI review with that limitation; it is not pristine blindness or human validation. Independent human validation and a flat-versus-faceted outcome ablation by a reviewer not exposed to the faceted judgments remain open. No key was read or paid sampling resumed to record this review.
+
+## Separate unblinded novelty and integration review
+
+After the complete blind freeze and representative selection, an independent AI/domain reviewer read the selected records' original prior matches plus current integration seams. The exact four-part review is recorded in WI-40148 posts 204403–204406 and summarized without altering the blind record in [calibration-unblinded-review-2026-09-14.json](calibration-unblinded-review-2026-09-14.json).
+
+The three reviewed representatives were `1176a396ed37847cf61c`, `36908b44cc10514ba38e`, and `5908803065283e72f93d`. The first two are exact-family duplicates of valid prior Dream candidates. The third is a refinement/consolidation of already-articulated hive-scope, revision, and evidence-pack compositions. Result: **0/3 qualifies as a novel bounded local Dream experiment**. All three could be engineering-feasible in principle after their missing product seams, identity contracts, failure policy, and actual beneficiaries are established; that technical possibility is not novelty evidence.
+
+Therefore the frozen downstream prerequisite admits **0 candidates**, and **0 downstream trials were executed**. The downstream branch is not applicable under the current evidence rather than merely deferred. A later independent human review may challenge this AI conclusion, but tests, source ingredients, or technical plausibility cannot promote a candidate on their own.
 
 **Correction at 11:06Z:** v1 is withdrawn for blinded use. Its verbatim narrative priors leaked outcome/model metadata and cross-links to selected cases. The earlier claim of withholding those values was too broad. The original `calibration-blind.json` and `calibration-key.json` are preserved as withdrawn evidence; do not use them for independent labels. EI-22781497607685404 tracks the repair.
 
@@ -53,9 +61,9 @@ Freeze these judgments before unblinding. These six cases are calibration-only: 
 
 ## What is not established
 
-- Independent AI/domain judgments have been received as described above. Human validation and complete qualification remain open; qualified families are **unknown**, not zero.
+- Independent AI/domain judgments and the separate unblinded novelty review have been received as described above. Human validation remains open. The current AI novelty result is **0/3 qualified novel experiments**; that does not claim zero technically feasible ideas or substitute for a human judgment.
 - Flat/faceted artifacts preserve every claim and source excerpt. Only representation parity is tested; the **outcome ablation has not run**. This is lossless facet removal, not a newly generated flat summary.
-- No candidate has been independently qualified for a downstream trial; none was executed.
+- No candidate passed the frozen novelty prerequisite for a downstream trial; none was executed. Under the current review, downstream execution is not applicable.
 - The historical failed final review for run `88bb6009-f0dd-4bb9-af5c-cb92e0db1774` discarded its response. The diagnostics repair prevents future loss; it does not recover those bytes or establish whether that candidate was good.
 - Historical timeout attribution and Haiku recovery remain unresolved. The later deadline-diagnostic and Scout workspace-propagation fixes are recorded in `evidence-summary.md`; they do not reclassify old outcomes. The study still does not establish a winning arm.
 
@@ -72,4 +80,4 @@ PAPERCUSP_WORKSPACE_ID=papercusp-workspace node --import tsx scratchpad/dream-st
 
 The preparer reads only the frozen study rows. It creates v2 output files exclusively and refuses to overwrite changed frozen content. The freeze used **zero provider calls and zero ledger writes**. Test and freeze receipts: `/tmp/dream-study-calibration-v2-tests-20260909.log` and `/tmp/dream-study-calibration-v2-freeze-20260909.log`.
 
-P-008 and final acceptance remain open. Paid sampling remains paused while novelty, integration evidence and calibration adequacy are assessed.
+P-008 and final acceptance remain open. Paid sampling remains paused: no candidate passed novelty qualification, and human validation plus the flat/faceted outcome ablation remain outstanding.
