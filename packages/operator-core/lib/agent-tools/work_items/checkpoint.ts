@@ -155,6 +155,7 @@ import { markFeatureProgress, markIssueProgress, isClaimHoldParked, isSelfOwnerR
 import { lookupWorkItem } from './_lookup';
 import { deriveRepoPathsFromText } from './_derive-paths';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
+import { unresolvedPlanDecisionRefs } from '../coordination/decision-ref-advisory';
 import { carryRowTextSchema, CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
 import { detectPauseDeclaration, pauseNotEnforcedWarning } from '../../carry-note-pause-declaration';
 import { runBulk, bulkContent } from '../_bulk';
@@ -334,6 +335,34 @@ type AppendChecksOverflowRow = {
   contested?: string;
   sinceMs?: number;
 };
+
+type AppendBodyOverflowDiagnostics = {
+  carriedProseChars: number;
+  carriedCheckRowChars: number;
+  submittedAppendChars: number;
+  remainingCapacityChars: number;
+};
+
+/**
+ * Keep the append-body refusal honest about WHICH bytes consume the cap.
+ * `priorLength` is the whole stored carry note; it is not the check-row
+ * section's length. The checks-section delta includes its heading/legend and
+ * canonical separators, matching the bytes the renderer must preserve.
+ */
+function appendBodyOverflowDiagnostics(
+  priorNote: string | null,
+  priorLength: number,
+  submittedAppend: string,
+): AppendBodyOverflowDiagnostics {
+  const carriedProse = splitCarryNoteChecks(priorNote).body;
+  const carriedCheckRowChars = Math.max(0, priorLength - carriedProse.length);
+  return {
+    carriedProseChars: carriedProse.length,
+    carriedCheckRowChars,
+    submittedAppendChars: submittedAppend.trim().length,
+    remainingCapacityChars: Math.max(0, CHECKPOINT_CAP - priorLength),
+  };
+}
 
 /**
  * Merge an additive checks write without evicting carried rows.
@@ -2118,35 +2147,33 @@ export default defineTool({
                   ? splitCarryNoteWalls(splitCarryNoteChecks(candidate).body).body.trim()
                   : '';
                 const submitted = joinAddendumStored.trim();
-                return candidateBody.endsWith(submitted)
-                  ? null
-                  : // EI-22072152340717849: the original wording ("retire stale legacy checks
-                    // or shorten the carried note ... or pass { confirmShrink: true } only if
-                    // that loss is intentional") reused the same "that loss" phrasing this
-                    // file uses elsewhere for CHECK-row eviction, so a caller who needed to
-                    // preserve every carried row read confirmShrink as risking the evidence
-                    // itself and stalled — both remedies were already correct, the message
-                    // just did not say what each one actually costs. Spell it out: this guard
-                    // never evicts a check row either way, retiring rows is a SAFE separate
-                    // write, and confirmShrink's real cost here is the NEW note, not the
-                    // carried checks.
-                    // EI-22624970955266330: `priorLen` is the CARRIED NOTE's length, not
-                    // check-row bytes. Naming it "carried check rows" sent callers to
-                    // retire rows on items that had ZERO rows (measured: an item reporting
-                    // checkpointChecks {count: 0} was told 9,747 characters of rows were in
-                    // the way). Report the measurement this actually is; carried rows are
-                    // one contributor to it, and remain the first thing worth trimming.
-                    `append_body_overflow — the carried note occupies ${priorLen} of the ` +
-                      `${CHECKPOINT_CAP}-character checkpoint cap, leaving no room to preserve the submitted append ` +
-                      'body. Refusing the write rather than reporting success with the new progress note silently ' +
-                      'dropped. No carried check row is evicted by this refusal, or would be by proceeding past ' +
-                      'it — this guard concerns the append body only. Two ways forward, with different costs: ' +
-                      '(1) SAFE — first retire specific stale rows in a separate, non-append write ' +
-                      '({ rowsMode: "replace", retireIds: [...] } naming exactly what to drop, or ' +
-                      '`confirmRetire: true`), which frees cap room without touching this note, then retry this ' +
-                      'append; or (2) pass { confirmShrink: true } to THIS append — it keeps every carried check ' +
-                      'row intact but silently trims or entirely drops the append body you are submitting now, so ' +
-                      'use it only when losing this new note (never the checks) is acceptable.';
+                if (candidateBody.endsWith(submitted)) return null;
+
+                // EI-22624970955266330: `priorLen` is the CARRIED NOTE's length, not
+                // check-row bytes. Naming it "carried check rows" sent callers to
+                // retire rows on items that had ZERO rows (measured: an item reporting
+                // checkpointChecks {count: 0} was told 9,747 characters of rows were in
+                // the way). Report each cap contributor separately so callers can
+                // choose a recovery from measurements rather than a mislabeled total.
+                appendBodyOverflowDetails = appendBodyOverflowDiagnostics(priorNote, priorLen, submitted);
+                return (
+                  `append_body_overflow — carried prose occupies ${appendBodyOverflowDetails.carriedProseChars} ` +
+                  `chars; carried check rows occupy ${appendBodyOverflowDetails.carriedCheckRowChars} chars; ` +
+                  `the submitted append occupies ${appendBodyOverflowDetails.submittedAppendChars} chars; ` +
+                  `remaining capacity before this append is ${appendBodyOverflowDetails.remainingCapacityChars} ` +
+                  `of the ${CHECKPOINT_CAP}-character checkpoint cap. ` +
+                  // EI-22072152340717849: keep the remedy explicit about which content
+                  // each choice sacrifices. This guard never evicts a carried check row.
+                  'Refusing the write rather than reporting success with the new progress note silently dropped. ' +
+                  'No carried check row is evicted by this refusal, or would be by proceeding past it — this guard ' +
+                  'concerns the append body only. Two ways forward, with different costs: ' +
+                  '(1) SAFE — first retire specific stale rows in a separate, non-append write ' +
+                  '({ rowsMode: "replace", retireIds: [...] } naming exactly what to drop, or ' +
+                  '`confirmRetire: true`), which frees cap room without touching this note, then retry this append; ' +
+                  '(2) pass { confirmShrink: true } to THIS append — it keeps every carried check row intact but ' +
+                  'silently trims or entirely drops the append body you are submitting now, so use it only when ' +
+                  'losing this new note (never the checks) is acceptable.'
+                );
               }
             : null;
         /**
@@ -2157,6 +2184,7 @@ export default defineTool({
          * retry from evicting the rows the first attempt refused to lose.
          */
         let appendChecksOverflowDiagnostics: AppendChecksOverflowRow[] = [];
+        let appendBodyOverflowDetails: AppendBodyOverflowDiagnostics | undefined;
         /** Set by the overflow guard when it absorbs a legacy over-cap prior instead of
          *  refusing (EI-21534719386975911), so the reply can name the real cause of the
          *  eviction rather than reporting it as an ordinary caller-caused cap cut.
@@ -2425,6 +2453,9 @@ export default defineTool({
                   checksDroppedRows: appendChecksOverflowDiagnostics,
                 }
               : {}),
+            ...(errorCode === 'append_body_overflow' && appendBodyOverflowDetails
+              ? { appendBodyOverflowDiagnostics: appendBodyOverflowDetails }
+              : {}),
           };
         }
         // agent-activity-liveness-truth P-001 (D-001/D-004): a non-clear checkpoint write
@@ -2562,6 +2593,17 @@ export default defineTool({
         // exist" would block a legitimate federated ref.
         const unresolvedRefs = stored !== null ? await unresolvedRefsInBody(stored, { known: [it.id] }) : undefined;
         const unresolvedRefsWarningText = unresolvedRefs ? unresolvedRefsWarning(it.id, unresolvedRefs.missing) : undefined;
+        // EI-22995965169175295: inspect the FINAL stored carry-note so qualified
+        // decision refs retained from earlier compaction hops are covered too.
+        // Bare D-NNN stays unknown because decision ids are plan-local. The
+        // advisory is strictly fail-open and never changes checkpoint success.
+        const decisionRefAdvisory =
+          stored !== null
+            ? await unresolvedPlanDecisionRefs(stored, {
+                workspaceId,
+                harnessSlug: harness,
+              }).catch(() => undefined)
+            : undefined;
         return {
           ok: true as const,
           id: it.id,
@@ -2586,6 +2628,7 @@ export default defineTool({
             : {}),
           ...(captureAdvisory?.note ? { captureAdvisory: captureAdvisory.note } : {}),
           ...(unresolvedRefsWarningText ? { unresolvedRefsWarning: unresolvedRefsWarningText } : {}),
+          ...(decisionRefAdvisory ? { decisionRefAdvisory } : {}),
           ...(prosePathLint ? { prosePathLint } : {}),
           /** P-003: verified = the stored text READ BACK byte-identically via the reader
            *  path (null on a clear — nothing to verify). */

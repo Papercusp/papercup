@@ -17,7 +17,13 @@ import { defineTool } from '@papercusp/agent-mcp';
 // EI-20004424625703051: bind the cap-eviction guard to the REAL constant, so raising
 // the cap re-tunes the test instead of breaking it — the guard is about the note being
 // truthful at the boundary, not about the boundary sitting at any particular number.
-import { CARRY_NOTE_MAX_CHECKS, splitCarryNoteChecks, withCarryNoteChecks, withCarryNoteWalls } from '../../carry-note';
+import {
+  CARRY_NOTE_MAX_CHECKS,
+  CHECKPOINT_BODY_CAP_CHARS,
+  splitCarryNoteChecks,
+  withCarryNoteChecks,
+  withCarryNoteWalls,
+} from '../../carry-note';
 
 const setWorkItemCheckpoint = vi.fn();
 const setWorkItemCheckpointWithPrior = vi.fn();
@@ -28,6 +34,7 @@ const readSuccessfulActionInvocations = vi.hoisted(() => vi.fn());
 const resolveCurrentTokens = vi.hoisted(() => vi.fn());
 const readFrozenRepairMarker = vi.hoisted(() => vi.fn());
 const postLearnedAtLevel = vi.hoisted(() => vi.fn());
+const unresolvedPlanDecisionRefs = vi.hoisted(() => vi.fn());
 vi.mock('../../work-item-checkpoint', () => ({
   setWorkItemCheckpoint: (...a: unknown[]) => setWorkItemCheckpoint(...a),
   setWorkItemCheckpointWithPrior: (...a: unknown[]) => setWorkItemCheckpointWithPrior(...a),
@@ -62,6 +69,9 @@ vi.mock('../../turn-provenance/turn-ref', async (importOriginal) => ({
 vi.mock('../../effort-thread', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../effort-thread')>()),
   postLearnedAtLevel,
+}));
+vi.mock('../coordination/decision-ref-advisory', () => ({
+  unresolvedPlanDecisionRefs: (...a: unknown[]) => unresolvedPlanDecisionRefs(...a),
 }));
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
@@ -169,6 +179,7 @@ beforeEach(() => {
   resolveCurrentTokens.mockReset();
   readFrozenRepairMarker.mockReset();
   postLearnedAtLevel.mockReset();
+  unresolvedPlanDecisionRefs.mockReset();
   verifyTurnRefs.mockReset();
   readFrozenRepairMarker.mockReturnValue(null);
   readSuccessfulActionInvocations.mockResolvedValue([]);
@@ -183,6 +194,7 @@ beforeEach(() => {
     ref: 'WI-7',
     fellBack: false,
   });
+  unresolvedPlanDecisionRefs.mockResolvedValue(undefined);
   // EI-9325: checkpoint.ts routes every PLAIN replace-on-write (non-append,
   // non-clear) through setWorkItemCheckpointWithPrior instead of setWorkItemCheckpoint
   // now, to get the prior length for free. Default it to delegate straight through to
@@ -1840,6 +1852,47 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       ];
       expect(call[2].guard).toBeTypeOf('function');
       expect(call[2].guard!('P'.repeat(20000), 20000)).toBeNull();
+    });
+
+    it('EI-22801779900317365: append_body_overflow reports prose, check-row, submitted, and remaining-capacity chars separately', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-228017-DIAGNOSTIC', harness: 'papercup' });
+      const prior = withCarryNoteChecks('carried prose', [
+        { claim: 'the carried check remains', recheck: 'read the carried evidence', verified: 'measured' },
+      ]);
+      getWorkItemCheckpoint.mockResolvedValue(prior);
+      setWorkItemCheckpointWithPrior.mockImplementation(
+        async (
+          _ref: unknown,
+          _text: string,
+          opts?: { guard?: (n: string | null, l: number) => string | null },
+        ) => {
+          const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+          return { stored: prior, priorLength: prior.length, blockedReason };
+        },
+      );
+      const submitted = 'N'.repeat(CHECKPOINT_BODY_CAP_CHARS);
+
+      const result = await one({
+        id: 'WI-228017-DIAGNOSTIC',
+        checkpoint: submitted,
+        append: true,
+      });
+      const carriedProseChars = splitCarryNoteChecks(prior).body.length;
+
+      expect(result).toMatchObject({
+        ok: false,
+        errorCode: 'append_body_overflow',
+        appendBodyOverflowDiagnostics: {
+          carriedProseChars,
+          carriedCheckRowChars: prior.length - carriedProseChars,
+          submittedAppendChars: submitted.length,
+          remainingCapacityChars: CHECKPOINT_BODY_CAP_CHARS - prior.length,
+        },
+      });
+      expect(result.error).toContain(`carried prose occupies ${carriedProseChars} chars`);
+      expect(result.error).toContain(`carried check rows occupy ${prior.length - carriedProseChars} chars`);
+      expect(result.error).toContain(`the submitted append occupies ${submitted.length} chars`);
+      expect(result.error).toContain(`remaining capacity before this append is ${CHECKPOINT_BODY_CAP_CHARS - prior.length}`);
     });
 
     describe('WI-7190: append silently clobbered a substantial checkpoint when its pre-read disagreed with the authoritative prior', () => {
@@ -4448,6 +4501,49 @@ describe('work_items:checkpoint — prose path continuity lint (EI-2238651493968
 
     expect(result.ok).toBe(true);
     expect(result.prosePathLint).toBeUndefined();
+  });
+});
+
+describe('EI-22995965169175295: qualified plan-decision refs in work-item checkpoint responses', () => {
+  it('advises on unresolved qualified refs from the final stored note, without blocking the write', async () => {
+    const stored = 'Resume from governed-plan#D-015 before the next holder; bare D-015 is not resolvable here.';
+    const advisory = {
+      flagged: true,
+      refs: [
+        {
+          ref: 'governed-plan#D-015',
+          slug: 'governed-plan',
+          decisionId: 'D-015',
+          reason: 'missing-plan',
+        },
+      ],
+      note: 'decision_ref_lint: advisory only',
+    };
+    getWorkItem.mockResolvedValue({ id: 'WI-DECISION-REF', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+    unresolvedPlanDecisionRefs.mockResolvedValueOnce(advisory);
+
+    const result = await one({ id: 'WI-DECISION-REF', checkpoint: stored });
+
+    expect(unresolvedPlanDecisionRefs).toHaveBeenCalledWith(stored, {
+      workspaceId: 'default',
+      harnessSlug: 'papercup',
+    });
+    expect(result).toMatchObject({ ok: true, decisionRefAdvisory: advisory });
+  });
+
+  it('fails open when the advisory resolver rejects', async () => {
+    const stored = 'Resume from governed-plan#D-015.';
+    getWorkItem.mockResolvedValue({ id: 'WI-DECISION-REF-FAIL', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+    unresolvedPlanDecisionRefs.mockRejectedValueOnce(new Error('resolver unavailable'));
+
+    const result = await one({ id: 'WI-DECISION-REF-FAIL', checkpoint: stored });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(result).not.toHaveProperty('decisionRefAdvisory');
   });
 });
 
