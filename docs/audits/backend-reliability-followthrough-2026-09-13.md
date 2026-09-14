@@ -431,3 +431,166 @@ diagnostic records contain their distinguishing evidence. In particular,
 real-PG cancellation, actual projected hook compatibility, backup restore and
 causal pressure attribution are still open; inventory completion cannot
 substitute for them.
+
+## F12 real PostgreSQL diagnosis — September 14, 06:03 UTC
+
+The historical SQL-fragment fix works through the actual `boundedOrgTxn`
+implementation against `createFreshTestDb`'s disposable PostgreSQL. The same
+probe revealed a separate current cancellation defect,
+`EI-23215250155547960`, which remains assigned to this driver for P-014 after
+the diagnosis barrier.
+
+Source fingerprint: `packages/operator-core/lib/pg-bounded-txn.ts`
+SHA-256 `f88f255f5fefc8ed72efdcadc8dd0da1951bd37571f1a2d6804f7b653c502858`.
+The probe imported that file directly from canonical staging. The capture
+tool's automatic old-serving-build warning is not this probe's runtime:
+these observations concern current source running in a disposable Node child.
+
+### Distinguishing procedures and observations
+
+| Procedure | Observation | Interpretation |
+| --- | --- | --- |
+| Explicitly await a standalone `id = 1` fragment as the historical negative control. | PostgreSQL rejects it with 42601. | The control reaches the parser; this is not an unavailable database. |
+| Construct nested tagged fragments through the wrapper with a live signal, allow a turn of the event loop, then await only the outer query. | Expected rows `[1,2]`; no independent fragment execution. | The existing no-assimilation repair works on real PostgreSQL. |
+| Call `boundedOrgTxn` with a signal already aborted, observing its returned rejection with `assert.rejects`. | Default Node child exits 1 with the abort reason. | Caller error handling does not consume every rejection the wrapper creates. |
+| Repeat with a diagnostic-only `unhandledRejection` listener. | Callback never runs; caller receives its expected rejection; the listener separately receives exactly `Error: f12-before`. | Distinguishes an unobserved sibling promise from an uncaught caller assertion or database failure. |
+| Reserve the only connection, queue the bounded transaction, abort, then release the connection. | Callback never runs; caller receives the expected reason; listener separately receives `Error: f12-queued`. | The same defect occurs when the signal becomes aborted during acquisition. |
+| Insert a row in a bounded transaction and start `pg_sleep(10)`; verify that exact sleep is active from another connection before aborting. | Abort propagates; subsequent query sees zero inserted rows. This sample reached rollback verification 9 ms after abort. | Active-query cancellation and atomic rollback work; this timing is one sample, not a service objective. |
+| Compare parameterized `unsafe` fragments embedded in a tagged outer query with raw `postgres.begin` and with the wrapper. | Both reject with 08P01; both accept the corresponding unparameterized raw fragment and return `[2]`. | Refutes wrapper-specific causation for that additional diagnostic error. Use supported fragment composition in the maintained guard. |
+
+The initiating defect is in `cancellableTransaction`: an already-aborted
+signal synchronously rejects its new `abort` promise. The surrounding
+transaction callback then calls `assertNotAborted` and throws before reaching
+the `Promise.race` that would observe that promise. Its `finally` cleans the
+listener/set but does not observe the rejected sibling. The outer transaction
+rejection can therefore be handled while Node still receives an unhandled
+rejection. The alternative hypothesis—caller failed to observe the returned
+transaction—is contradicted by the simultaneous handled result and separate
+unhandled event in both before-start/acquisition cases.
+
+Smallest proposed repair: establish observation of the abort promise before
+any early throw, preserving its eventual race behavior and cancellation
+reason. Do not suppress unrelated errors or remove cancellation. Required
+maintained regression: a subprocess using default unhandled-rejection policy
+must exit successfully after handling a pre-aborted transaction; also cover
+queued-acquisition abort, no callback side effects, active-query rollback,
+nested tagged fragments and supported raw fragments. The current mock unit
+tests did not exercise an already-aborted signal and did not catch this class.
+
+### Reproducible evidence and cleanup
+
+- Initial crash: task `0mu0twuqz1lptl3v3gi`,
+  `.papercusp/scratch/bash-10f571f9-157.log`.
+- Observer/control run: task `0mu0u0ghlw37h9rmcdn`,
+  `.papercusp/scratch/bash-4975dca6-5cf.log`, exit zero.
+- Queued-abort/raw-wrapper comparison: task `0mu0u5fwc99ec4p1iia`,
+  `.papercusp/scratch/bash-b7f32be9-2f3.log`, exit zero.
+- Task `0mu0tz4r91fb8nepntr` was a JavaScript payload syntax error and is
+  **not product evidence**. Task `0mu0u40o03d87h1tn1f` reached the unsupported
+  parameterized-raw-fragment case; its ambiguity is resolved by the paired
+  raw/wrapped control above, recorded on `EI-23215570897517168`.
+
+The observer run removed the initial crash's exact test database,
+`backend-f12-diag_ed5e06f505b9`, and its own
+`backend-f12-diag_59c9a5819f06`. Later probes printed
+`DISPOSABLE_DATABASE_DROPPED` from their `finally` cleanup. No production
+database, agent terminal or service was modified. The diagnostic observer is
+confined to the child; it is not a product mitigation or repair.
+
+P-001's inventory terminal attempt was refused for missing current
+spec-test-adequacy evidence on its three AUTO-BAR clauses. No terminal state
+was written. The document validation remains valid, but P-001 is still held
+and the full F01–F18 diagnosis/repair mission is unfinished.
+
+## F13 producer compatibility and remaining proof
+
+Task `0mu0u6xo1amdoub15bt`, log
+`.papercusp/scratch/bash-320d2960-6d8.log`, executed the actual Python
+producer body from `pretooluse-activity-report.sh`. Only its input/token/HTTP
+dependencies were stubbed, so no installed hook, credential or live activity
+row was touched. Claude and Codex payloads were each exercised with and
+without the optional launch role. All four passed the current receiver's
+Standard Schema validator. A role-omitted old-schema control accepted the
+two older payloads and rejected the two role-bearing payloads. The current
+projected schema advertises `role`.
+
+This establishes the actual producer's compatibility difference. It does
+not yet establish projected dispatch, persistence, OMP's producer, or a
+deployed receiver's behavior. The next maintained experiment must connect
+these seams in the existing activity integration fixture. Do not report the
+entire F13 combination matrix or downstream liveness impact as verified.
+
+Source fingerprints: producer
+`0147fc36af45beddd6348af4969dbc9e5828806baabe67cee09f529367e621d5`;
+receiver `da70dad393979f26da1df5d8a6aeab6b9a4c1caffa85905a47fc8556390650e4`.
+
+## Carry evidence adoption: exact peer record and exclusions
+
+The carry owner's response is recorded on `WI-10001256`, comment **204430**
+(September 14, 06:04 UTC). It names these reusable artifacts:
+
+- F02: `managed-carry-lifecycle-enforcement-2026-09-13#D-004`,
+  `WI-10001278` / commit `bb83dab4bbc856c0baa2ed839e0e7f6572909be2`.
+  Output-silence deferral and native Codex compaction are distinct boundary
+  mechanisms. Historical per-expiration causes remain heterogeneous.
+- F04: `WI-10001290` verifies truthful carry outcomes and native-first-turn
+  proof. It **does not implement prompt regeneration**. The actor that removed
+  `session-22472/AGENTS.md` remains unknown; this finding cannot close by
+  adopting truthful failure reporting alone.
+- F06: `WI-10001279` / commit
+  `e15837ff5f07d0df41081411163b6f8c6da6e19b` protects against competing live
+  hosts stealing a socket. It **does not safely re-exec an attended host**.
+  Required behavior must still be checked on each affected running host.
+
+These are peer-supplied evidence references with explicit limits, not this
+driver's independent re-execution or a blanket carry certification. Read the
+named completions before adopting their proof into final diagnoses. The
+peer's implementation ownership is unchanged.
+
+## F18 current artifact preflight and restore next step
+
+The current writer `apps/operator/scripts/systemd/papercusp-db-backup.sh`
+uses `/mnt/backup/db-dumps` and authoritative `papercusp-state` plus
+`papercusp-transcript` tiers. The state tier contains schema and operational
+data; the transcript tier supplies the separately excluded archive tables.
+The transcript tier's local-only policy is an explicit existing ruling, not
+a defect inferred from missing Kopia enrollment.
+
+At the September 14 approximately 06:06 UTC preflight, `STATUS.json` reported
+`ok:true`, no failed entries, and `lastRunIso:2026-09-14T01:29:18-04:00`.
+The writer sets this timestamp/last-success epoch after completing its cycle;
+it is not the snapshot time of every individual tier. Both tiers were listed
+as dumped. The actual archive checks returned:
+
+| Archive | Directory mtime UTC | Apparent bytes | pg_restore list |
+| --- | --- | ---: | --- |
+| papercusp-state | 2026-09-14T05:04:36.645577Z | 44,497,928,010 | readable; 15,331 TOC entries |
+| papercusp-transcript | 2026-09-14T05:16:32.144567Z | 84,763,500,430 | readable; 86 TOC entries |
+
+Directory mtime and successful TOC listing establish neither transactional
+capture time nor restored contents. The current independent backup path
+therefore contradicts a claim of universally stale backups, while the
+original application-ledger observation remains a different instrument.
+
+Available space was measured on all relevant volumes (approximately 125 GB
+root, 214 GB `/mnt/data`, 242 GB `/mnt/backup`); these are transient preflight
+values, not permission to start an unbounded restore. Read the maintained
+runbook `agent-insights/pg-backup-restore-drill-runbook` and
+`packages/backup/scripts/restore-pg-dump.sh`. The latter supports the actual
+directory archive and checks readability as the restoring OS user. Its
+default target is native PostgreSQL; supply an explicitly disposable target
+for this plan's experiment. Its prose's older dump path is historical.
+
+No restore has run in this continuation. Next: preserve an immutable tier
+snapshot or verify the writer cannot replace it mid-read; create the isolated
+target with adequate space and the required extension/role environment; run
+the maintained restore path; verify schema plus content-sensitive checks and
+startup, accounting for live data that changed since capture; then clean up.
+Do not equate `pg_restore -l`, row counts, or the restore script's exit code
+with complete restoration.
+
+At the last loop-status read, this session's 60-second loop remained active
+with `fireCount:0`, `lastFiredAt:null`, and `stalled:false`. Manual work and a
+peer inbox wake do not prove recurring continuation. The scheduler/control
+defect and its missing zero-fire detector remain open under F10/F16; the loop
+was not rearmed to hide its age.
