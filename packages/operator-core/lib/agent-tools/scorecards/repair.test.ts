@@ -6,7 +6,7 @@ const reconcilePendingGradingAudits = vi.hoisted(() => vi.fn());
 
 vi.mock('../../grading-integrity', () => ({ reconcilePendingGradingAudits }));
 
-import repairTool from './repair';
+import repairTool, { SCORECARD_REPAIR_TIMEOUT_SEC } from './repair';
 
 const makeContext = (): UnifiedToolContext => ({
   log: vi.fn(),
@@ -61,5 +61,11 @@ describe('scorecards:repair', () => {
     await repairTool.handler({} as never, ctx);
 
     expect(reconcilePendingGradingAudits).toHaveBeenCalledWith({ ctx });
+  });
+
+  it('declares a long-running transport budget for multi-target sweeps', () => {
+    expect(repairTool.timeoutSec).toBe(SCORECARD_REPAIR_TIMEOUT_SEC);
+    expect(SCORECARD_REPAIR_TIMEOUT_SEC).toBeGreaterThan(55);
+    expect(repairTool.skipWorkspaceTx).toBe(true);
   });
 });

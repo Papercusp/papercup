@@ -76,6 +76,7 @@ export function nativeOmpExtensionArgs(backend, env = process.env, platform = pr
   return ["-e", fileURLToPath(nativeMcpExtension)];
 }
 import {
+  fireSessionCompactedEvent,
   hostThroughPty,
   fleetOscFromEnv,
   findLiveHostFor,
@@ -9394,10 +9395,10 @@ export async function reportSessionRespawned(
     timeoutMs = 2_000,
   } = {},
 ) {
-  if (!sessionId || (!advSessionId && !coordOwnerId)) return;
+  if (!sessionId || (!advSessionId && !coordOwnerId)) return false;
   try {
     const tok = token ?? readToken();
-    await fetchImpl(
+    const response = await fetchImpl(
       operatorUrl + "/api/agent-mcp/console/bootstrap-su/session-respawned",
       {
         method: "POST",
@@ -9413,9 +9414,43 @@ export async function reportSessionRespawned(
         }),
       },
     );
+    return response?.ok === true;
   } catch {
-    /* best-effort — never surface */
+    /* best-effort — never surface; callers must not announce an unconfirmed cut */
+    return false;
   }
+}
+
+/**
+ * Complete a stale-host carry adoption's lifecycle report before announcing
+ * `session:compacted`. The detached event wakes members that may immediately
+ * claim work, so it is only safe after the operator has re-anchored the
+ * successor and cleared the predecessor's context estimate. Exported for a
+ * deterministic ordering regression test; both operations remain fail-soft.
+ */
+export async function announceAdoptedCarryRespawn(
+  ownerId,
+  advSessionId,
+  nativeId,
+  {
+    reportImpl = reportSessionRespawned,
+    emitImpl = fireSessionCompactedEvent,
+  } = {},
+) {
+  if (!ownerId || !nativeId) return false;
+  let reported = false;
+  try {
+    reported = await reportImpl(advSessionId, nativeId, { coordOwnerId: ownerId });
+  } catch {
+    return false;
+  }
+  if (!reported) return false;
+  try {
+    emitImpl(ownerId, "carry-respawn", { nativeId });
+  } catch {
+    /* a wake announcement must never surface into the successor */
+  }
+  return true;
 }
 
 /**
@@ -10305,13 +10340,21 @@ export function runWrapper(options) {
       recordSessionOwner(hostHandoff.nativeId, ownerId, {
         advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
       });
-      void reportSessionRespawned(
-        env.PAPERCUSP_ADV_SESSION_ID || null,
-        hostHandoff.nativeId,
-        {
-          coordOwnerId: ownerId,
-        },
-      );
+      if (hostHandoff.mode === "carry-respawn") {
+        void announceAdoptedCarryRespawn(
+          ownerId,
+          env.PAPERCUSP_ADV_SESSION_ID || null,
+          hostHandoff.nativeId,
+        );
+      } else {
+        void reportSessionRespawned(
+          env.PAPERCUSP_ADV_SESSION_ID || null,
+          hostHandoff.nativeId,
+          {
+            coordOwnerId: ownerId,
+          },
+        );
+      }
     }
     process.stderr.write(
       `psu: adopted updated host code for ${ownerId} (predecessor pid ${hostHandoff.fromPid ?? "?"}, ` +

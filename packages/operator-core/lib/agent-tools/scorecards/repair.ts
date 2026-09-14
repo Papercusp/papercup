@@ -8,6 +8,14 @@ import {
   type DispatchPendingGradingAuditsInput,
 } from '../../grading-integrity';
 
+/**
+ * A repair sweep can dispatch up to fifty independent auditors. Its bounded
+ * worker pool keeps the fan-out safe, but the complete sweep can still exceed
+ * the flat MCP transport deadline; give the dispatcher a durable-tool budget
+ * like scorecards:emit instead of returning an unknown mutation outcome.
+ */
+export const SCORECARD_REPAIR_TIMEOUT_SEC = 15 * 60;
+
 export const scorecardRepairArgs = z
   .object({
     targetIds: z
@@ -42,6 +50,11 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES, 'judge'],
+  // The handler launches independent auditors and never uses the ambient
+  // workspace transaction. Do not hold that transaction across the sweep, and
+  // keep the tool deadline above the ~55s MCP transport cap.
+  skipWorkspaceTx: true,
+  timeoutSec: SCORECARD_REPAIR_TIMEOUT_SEC,
   args: scorecardRepairArgs,
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);

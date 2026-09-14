@@ -7793,17 +7793,11 @@ export function hostThroughPty(o) {
               handoffPath,
               nativeId: nativeId ?? null,
             });
-            // P-022: a carry-respawn IS this member's context cut, whichever path
-            // performs it. Peers wait on `session:compacted:<owner>`, and the
-            // in-process path fires it AFTER respawning — a point this path never
-            // reaches — so fire it here or every adopting cut goes unannounced.
-            if (respawnMode === 'carry-respawn') {
-              try {
-                fireSessionCompactedEvent(ownerId, 'carry-respawn', { nativeId });
-              } catch {
-                /* announcing the cut must not be able to prevent it */
-              }
-            }
+            // The launcher successor owns the adoption report and the
+            // session-compacted event. Do not announce from this predecessor:
+            // the successor must first re-anchor its native id and clear the
+            // predecessor's context gauge, or a woken member can immediately
+            // re-pull into the stale critical bucket (EI-21567375926533125).
             // `cleanup` IS the release sequence — reap the child, un-bridge the
             // tty, drop the timers, then release the discovery key and socket.
             // Reused rather than re-implemented so the adopting path cannot drift

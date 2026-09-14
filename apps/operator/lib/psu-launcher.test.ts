@@ -159,6 +159,7 @@ import {
   reportSessionResumeFinalized,
   reportSessionResumeReleased,
   describeResumeClaimRefusal,
+  announceAdoptedCarryRespawn,
   reportSessionRespawned,
   reportSessionPortDelivery,
   tryRematerializeFromArchive,
@@ -11578,7 +11579,50 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
         operatorUrl: "http://op:1",
         token: "t",
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
+  });
+});
+
+describe("announceAdoptedCarryRespawn (EI-21567375926533125 — report before wake)", () => {
+  const freshId = "1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f";
+
+  it("waits for a successful successor re-anchor before emitting session:compacted", async () => {
+    const order: string[] = [];
+    let resolveReport!: (accepted: boolean) => void;
+    const reportImpl = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveReport = (accepted) => {
+            order.push("report");
+            resolve(accepted);
+          };
+        }),
+    );
+    const emitImpl = vi.fn(() => order.push("emit"));
+    const announced = announceAdoptedCarryRespawn("su-owner", "42", freshId, {
+      reportImpl,
+      emitImpl,
+    });
+
+    await Promise.resolve();
+    expect(reportImpl).toHaveBeenCalledWith("42", freshId, { coordOwnerId: "su-owner" });
+    expect(emitImpl).not.toHaveBeenCalled();
+
+    resolveReport(true);
+    await expect(announced).resolves.toBe(true);
+    expect(order).toEqual(["report", "emit"]);
+    expect(emitImpl).toHaveBeenCalledWith("su-owner", "carry-respawn", { nativeId: freshId });
+  });
+
+  it("does not emit a wake when the operator did not accept the re-anchor", async () => {
+    const emitImpl = vi.fn();
+    await expect(
+      announceAdoptedCarryRespawn("su-owner", "42", freshId, {
+        reportImpl: vi.fn(async () => false),
+        emitImpl,
+      }),
+    ).resolves.toBe(false);
+    expect(emitImpl).not.toHaveBeenCalled();
   });
 });
 

@@ -63,6 +63,24 @@ vi.mock('../../sync/pot-git/signed-context-store', () => ({
     store_generation: 'sg2-1-' + 'a'.repeat(40),
   }),
 }));
+// Production now awaits the existing lazy-boot recovery when no serving handle
+// is discoverable. Keep this orchestration suite hermetic: legacy cases that
+// are not about serving recovery should receive the same fast unavailable
+// state they asserted before WI-10000734, never boot a real local substrate.
+// The focused recovery cases below inject their own successful/failed seams.
+vi.mock('../../sync/hyperbee/boot-all', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../sync/hyperbee/boot-all')>()),
+  getBootedHarness: () => null,
+  bootSingleHarness: async () => ({ state: 'failed', error: 'test fixture has no serving handle' }),
+}));
+vi.mock('../../sync/hyperbee/substrate-booted-handles-pg', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../sync/hyperbee/substrate-booted-handles-pg')>()),
+  getPgGitServingCapability: async () => ({
+    status: 'absent',
+    retryable: true,
+    reason: 'test fixture has no serving advertisement',
+  }),
+}));
 const tryAcquireResourceMock = vi.fn(
   async (
     _tx: unknown,

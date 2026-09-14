@@ -95,6 +95,41 @@ export function resolvePtoolOperatorBase(env = process.env) {
   return resolveOperatorBase({}, env, { preferSelfPort: true });
 }
 
+/**
+ * Resolve the implicit operator candidates for ptool. An operator-host shell
+ * can retain a dead PAPERCUSP_HONO_PORT after its per-session host exits; the
+ * canonical green operator is still a safe recovery target in that case.
+ * Keep this fallback limited to the implicit self-port route so an explicit
+ * --url or a bare PAPERCUSP_OPERATOR_URL without a self-port remains an
+ * authoritative pin.
+ *
+ * @param {EnvironmentMap} [env]
+ * @param {string | null} [explicitUrl]
+ * @returns {string[]}
+ */
+export function resolvePtoolOperatorCandidates(env = process.env, explicitUrl = null) {
+  const explicit = typeof explicitUrl === 'string' ? explicitUrl.trim() : '';
+  if (explicit) return [explicit];
+
+  const primary = resolvePtoolOperatorBase(env);
+  const selfPort = typeof env.PAPERCUSP_HONO_PORT === 'string'
+    ? env.PAPERCUSP_HONO_PORT.trim()
+    : '';
+  if (!/^\d+$/.test(selfPort) || Number(selfPort) < 1 || Number(selfPort) > 65535) return [primary];
+  try {
+    const parsed = new URL(primary);
+    const localHost = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '::1';
+    const parsedPort = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+    if (localHost && selfPort !== '3070' && parsedPort === selfPort) {
+      return [primary, `${parsed.protocol}//127.0.0.1:3070`];
+    }
+  } catch {
+    // connectWithLocalRetry will report malformed primary URLs; do not mask
+    // that diagnostic while resolving an optional fallback.
+  }
+  return [primary];
+}
+
 const OPERATOR_URL = resolvePtoolOperatorBase(process.env);
 
 // psu-launcher exports the resolved URL into every child so the MCP config can
@@ -2326,6 +2361,73 @@ export async function connectWithLocalRetry(
   throw appendConnectAttemptHistory(lastError, attemptKinds, Date.now() - startedAt);
 }
 
+/**
+ * Connect to the first reachable operator candidate. Later candidates are
+ * used only for pre-dispatch transport failures, so authentication and HTTP
+ * failures do not silently route a caller to another operator.
+ *
+ * @template T
+ * @param {(url: string, scope: object, options?: {timeoutMs: number}) => Promise<T>} connectOnce
+ * @param {string[]} operatorUrls
+ * @param {object} scope
+ * @param {Record<string, any> & {primaryAttemptOptions?: object, onFallback?: ((url: string, error: unknown) => void) | null}} [options]
+ * @returns {Promise<{client: T, operatorUrl: string}>}
+ */
+export async function connectWithOperatorCandidates(
+  connectOnce,
+  operatorUrls,
+  scope,
+  {
+    primaryAttemptOptions = {},
+    onFallback = null,
+    ...retryOptions
+  } = {},
+) {
+  const candidates = [...new Set(
+    (Array.isArray(operatorUrls) ? operatorUrls : [])
+      .filter((url) => typeof url === 'string' && url.trim()),
+  )];
+  if (candidates.length === 0) throw new Error('ptool: no operator URL candidates were resolved');
+
+  let lastError;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const operatorUrl = candidates[index];
+    let liveOperatorUrl = operatorUrl;
+    const onRebase = retryOptions.onRebase;
+    try {
+      const client = await connectWithLocalRetry(connectOnce, operatorUrl, scope, {
+        ...retryOptions,
+        ...(index < candidates.length - 1 ? primaryAttemptOptions : {}),
+        onRebase: (freshBase) => {
+          liveOperatorUrl = freshBase;
+          try {
+            onRebase?.(freshBase);
+          } catch {
+            /* a discovery notice must never break connection recovery */
+          }
+        },
+      });
+      if (index > 0) {
+        try {
+          onFallback?.(liveOperatorUrl, lastError);
+        } catch {
+          /* fallback diagnostics must never break a successful connection */
+        }
+      }
+      return { client, operatorUrl: liveOperatorUrl };
+    } catch (error) {
+      lastError = error;
+      const explicitHttpFailure = isExplicitHttpConnectFailure(error)
+        && !isRetryableLocalHttpConnectFailure(error);
+      const timedOutLocalAttempt = /^local operator connection attempt timed out/.test(errorDetail(error));
+      if (index === candidates.length - 1 || explicitHttpFailure || (!isTransportFailure(error) && !timedOutLocalAttempt)) {
+        throw error;
+      }
+    }
+  }
+  throw lastError;
+}
+
 /** First HTTP status (400–599) found walking the error's cause chain. */
 function connectHttpStatusOf(error) {
   const seen = new Set();
@@ -2916,6 +3018,9 @@ async function main() {
   }
 
   let operatorUrl = args.url || OPERATOR_URL;
+  let operatorCandidates = args.url
+    ? [args.url]
+    : resolvePtoolOperatorCandidates(process.env);
   const workspace = resolveWorkspaceScope({ workspace: args.workspace, allWorkspaces: args.allWorkspaces });
   const harness = resolveHarnessScope({
     harness: args.harness,
@@ -2925,13 +3030,30 @@ async function main() {
   const scope = { workspace, harness, tokenFile: args.tokenFile, transport: args.transport };
   const retryOptions = ptoolConnectionRetryOptions(args, process.env);
   const rediscover = Object.keys(retryOptions).length === 0 ? discoverOperatorUrl : null;
-  const connectOperator = () => connectWithLocalRetry(connect, operatorUrl, scope, {
-    ...retryOptions,
-    rediscover,
-    onRebase: (freshBase) => {
-      operatorUrl = freshBase;
-    },
-  });
+  const connectOperator = async () => {
+    const connected = await connectWithOperatorCandidates(connect, operatorCandidates, scope, {
+      ...retryOptions,
+      rediscover,
+      primaryAttemptOptions: operatorCandidates.length > 1 ? { maxAttempts: 1 } : {},
+      onRebase: (freshBase) => {
+        operatorUrl = freshBase;
+        operatorCandidates[0] = freshBase;
+      },
+      onFallback: (fallbackBase) => {
+        console.error(
+          `ptool: primary operator at ${operatorUrl} was unreachable; using fallback ${fallbackBase}`,
+        );
+      },
+    });
+    operatorUrl = connected.operatorUrl;
+    // A reconnect should prefer the last known-good route instead of spending
+    // another direct attempt on the same stale self-port.
+    operatorCandidates = [
+      connected.operatorUrl,
+      ...operatorCandidates.filter((candidate) => candidate !== connected.operatorUrl),
+    ];
+    return connected.client;
+  };
   let client = await connectOperator();
   try {
     let projection;

@@ -7,6 +7,7 @@ import {
   canDispatchWithoutCatalog,
   buildMcpUrl,
   connectWithLocalRetry,
+  connectWithOperatorCandidates,
   codeRunRequestHash,
   listToolsWithLocalRetry,
   escapeJsonStringControls,
@@ -19,6 +20,7 @@ import {
   resolveHarnessScope,
   resolveWorkspaceScope,
   resolvePtoolOperatorBase,
+  resolvePtoolOperatorCandidates,
   shouldRediscoverOperatorUrl,
   resolveTokenPath,
   resolveTokenPaths,
@@ -287,6 +289,27 @@ describe('ptool operator routing', () => {
       PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071',
       PAPERCUSP_MCP_PROXY_TARGET_PORT: '3070',
     })).toBe('http://127.0.0.1:9071');
+  });
+
+  it('falls back from a stale self port to the canonical operator', () => {
+    expect(resolvePtoolOperatorCandidates({
+      PAPERCUSP_HONO_PORT: '3271',
+      PAPERCUSP_OPERATOR_URL: 'http://localhost:3271',
+    })).toEqual([
+      'http://127.0.0.1:3271',
+      'http://127.0.0.1:3070',
+    ]);
+  });
+
+  it('does not add a fallback for an explicit URL or the proxy-backed canonical host', () => {
+    expect(resolvePtoolOperatorCandidates({ PAPERCUSP_HONO_PORT: '3271' }, 'http://127.0.0.1:32951'))
+      .toEqual(['http://127.0.0.1:32951']);
+    expect(resolvePtoolOperatorCandidates({
+      PAPERCUSP_HONO_PORT: '3070',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070/api/mcp',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3070',
+    })).toEqual(['http://127.0.0.1:9071']);
   });
 
   it('rediscovers a launcher-managed inherited URL after a wake-respawn', () => {
@@ -1508,6 +1531,46 @@ describe('ptool JSON input', () => {
 describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
   const shedErr = () =>
     Object.assign(new Error('{"error":"mcp_proxy_handshake_overloaded","retryAfterSec":2}'), { code: 429 });
+
+  it('uses a canonical fallback after a stale self-port refusal', async () => {
+    const client = { close: vi.fn() };
+    const primaryError = Object.assign(new Error('fetch failed'), {
+      cause: { code: 'ECONNREFUSED' },
+    });
+    const connectOnce = vi.fn()
+      .mockRejectedValueOnce(primaryError)
+      .mockResolvedValueOnce(client);
+    const onFallback = vi.fn();
+
+    await expect(connectWithOperatorCandidates(
+      connectOnce,
+      ['http://127.0.0.1:3271', 'http://127.0.0.1:3070'],
+      {},
+      {
+        primaryAttemptOptions: { maxAttempts: 1 },
+        onFallback,
+        sleep: async () => {},
+      },
+    )).resolves.toEqual({ client, operatorUrl: 'http://127.0.0.1:3070' });
+    expect(connectOnce.mock.calls.map((call) => call[0])).toEqual([
+      'http://127.0.0.1:3271',
+      'http://127.0.0.1:3070',
+    ]);
+    expect(onFallback).toHaveBeenCalledWith('http://127.0.0.1:3070', primaryError);
+  });
+
+  it('does not route an HTTP connect failure to a fallback candidate', async () => {
+    const authError = Object.assign(new Error('unauthorized'), { code: 401 });
+    const connectOnce = vi.fn().mockRejectedValue(authError);
+
+    await expect(connectWithOperatorCandidates(
+      connectOnce,
+      ['http://127.0.0.1:3271', 'http://127.0.0.1:3070'],
+      {},
+      { primaryAttemptOptions: { maxAttempts: 1 }, sleep: async () => {} },
+    )).rejects.toBe(authError);
+    expect(connectOnce).toHaveBeenCalledTimes(1);
+  });
 
   it('EI-22697016277102033 caps direct local attempts but preserves the resilient proxy window', async () => {
     expect(PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS).toBe(15_000);

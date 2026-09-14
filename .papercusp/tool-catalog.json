@@ -5498,7 +5498,7 @@
           "POST"
         ]
       },
-      "description": "Ask \"who knows more than me about THIS?\" — discovers a qualified peer from cross-agent history, opens a bounded consult thread, and wakes the selected responder. ARCHIVE-FIRST: closed-consult matches are served instantly. Below the relevance floor, returns an honest no_qualified_responder instead of inventing expertise.",
+      "description": "Open a new feedback consult for a question — this is a request/creation verb, not a reader for an existing conversation. It discovers a qualified peer from cross-agent history, opens a bounded consult thread, and wakes the selected responder. To read a known conversation or consult thread, use conversations:get { id }. ARCHIVE-FIRST: closed-consult matches are served instantly. Below the relevance floor, returns an honest no_qualified_responder instead of inventing expertise.",
       "capabilities": [
         "coord:write"
       ],
@@ -5522,9 +5522,9 @@
         "content-fixer"
       ],
       "guidance": {
-        "when": "A peer may already know the answer from their transcripts, code, or prior debugging, and you do not know who. Use this before re-deriving it.",
-        "notWhen": "Live state (query locks:queue / fleet:assignments / work_items:get); owner decisions (coord:ask-owner); a known agent (coord:send / coord:message-agent); or assigning work (consults advise, never hand off).",
-        "chaining": "get_feedback → served_from_archive? use `archive` or re-call with archive_floor: 2 → latency_contract:'hard-blocked' parks on park_key until reply → conversations:get { id } reads the thread → declines/expiries advance the cascade; re-call with exclude:[…] only after terminal 'declined'/'expired'. A queued wake proves delivery, not pickup; verify pickup when it matters."
+        "when": "You need a new answer and a peer may already know it from their transcripts, code, or prior debugging, but you do not know who. Use this before re-deriving it.",
+        "notWhen": "Reading an existing conversation or consult thread (use conversations:get { id }); live state (query locks:queue / fleet:assignments / work_items:get); owner decisions (coord:ask-owner); a known agent (coord:send / coord:message-agent); or assigning work (consults advise, never hand off).",
+        "chaining": "get_feedback opens a new consult; it does not read an existing conversation. For a known id, use conversations:get { id } first. Then, for a new request: served_from_archive? use `archive` or re-call with archive_floor: 2 → latency_contract:'hard-blocked' parks on park_key until reply → conversations:get { id } reads the thread → declines/expiries advance the cascade; re-call with exclude:[…] only after terminal 'declined'/'expired'. A queued wake proves delivery, not pickup; verify pickup when it matters."
       }
     },
     {
@@ -32320,7 +32320,7 @@
           "POST"
         ]
       },
-      "description": "Link one OR many work-items to targets — single inline { id, rel, target_id } or items:[{ id, rel, target_id | target_kind+target_ref, remove? }] (a source can fan out to many targets in one call). DIRECTION — the source `id` is always the subject: src BLOCKS dst (dst is the one held up), src FIXES dst, src DUPLICATES dst (dst stays canonical), src INVESTIGATES dst, src is ABOUT dst, src was CAUSED-BY dst, src REVISES dst; `relates` is symmetric. Targets are polymorphic: another work-item (target_id) or any coord ObjectRef (target_kind+target_ref — a plan_item, event key, topic). `satisfaction` is valid only for `blocks` edges whose target is a work-item (`target_id` or target_kind `issue`/`feature`); plan_item/event/topic targets cannot carry it. Blocking works across kinds and is default-on validated against the complete typed candidate graph; cycles, endpoint defects, and newly stranded work are rejected atomically with exact evidence. Pass remove:true to unlink. Returns { ok, results:[{ ok, id, rel, dst? | error }], counts }.",
+      "description": "Link one OR many work-items to targets — single inline { id, rel, target_id } or items:[{ id, rel, target_id | target_kind+target_ref, remove? }] (a source can fan out to many targets in one call). DIRECTION — the source `id` is always the subject: src BLOCKS dst (dst is the one held up), src FIXES dst, src DUPLICATES dst (dst stays canonical), src INVESTIGATES dst, src is ABOUT dst, src was CAUSED-BY dst, src REVISES dst; `relates` is symmetric. Targets are polymorphic: another work-item (target_id) or any coord ObjectRef (target_kind+target_ref — a plan_item, event key, topic). `satisfaction` is valid only for `blocks` edges whose target is a work-item (`target_id` or target_kind `issue`/`feature`); plan_item/event/topic targets cannot carry satisfaction. Blocking works across kinds and is default-on validated against the complete typed candidate graph; cycles, endpoint defects, and newly stranded work are rejected atomically with exact evidence. Pass remove:true to unlink. Returns { ok, results:[{ ok, id, rel, dst? | error }], counts }.",
       "capabilities": [
         "work_items:write"
       ],
