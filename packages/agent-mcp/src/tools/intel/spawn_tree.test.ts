@@ -6,6 +6,7 @@
  * crafted rows. The pure logic under test:
  *   - the `status` enum arg: a bad value is rejected by zod (invalid_args)
  *   - `sinceMs` default = now − 24 hours (bound as the 2nd query value)
+ *   - optional exact `spawnId` is bound after the limit
  *   - the full snake→camel field remap, including the `depth` and
  *     `root_spawn_id` (→ rootSpawnId) passthrough columns from the view
  *   - empty-rows → empty array envelope
@@ -110,7 +111,7 @@ describe('intel:spawn_tree — status enum arg', () => {
     async (status) => {
       await call({ harness: 'sheets', status });
       // query values (WI-1671, tool_invocations_spawn_tree_filtered call):
-      // [harness, sinceMs, status, limit] — status is now a single named
+      // [harness, sinceMs, status, limit, spawnId] — status is now a single named
       // function arg (p_status), not duplicated across an `IS NULL OR =` pair.
       expect(lastValues[2]).toBe(status);
     },
@@ -137,10 +138,18 @@ describe('intel:spawn_tree — sinceMs default', () => {
     expect(lastValues[1]).toBe(1_700_000_000_000);
   });
 
-  it('binds the harness slug as the first value and the limit (default 200) last', async () => {
+  it('binds the harness slug first, limit fourth, and omitted spawnId last', async () => {
     await call({ harness: 'my-harness' });
     expect(lastValues[0]).toBe('my-harness');
-    expect(lastValues[lastValues.length - 1]).toBe(200);
+    expect(lastValues[3]).toBe(200);
+    expect(lastValues[4]).toBeNull();
+  });
+
+  it('accepts an exact spawnId and binds it after the limit', async () => {
+    await call({ harness: 'sheets', spawnId: 's-1788197074659-c70affab' });
+    expect(lastValues[0]).toBe('sheets');
+    expect(lastValues[3]).toBe(200);
+    expect(lastValues[4]).toBe('s-1788197074659-c70affab');
   });
 });
 
@@ -193,5 +202,14 @@ describe('intel:spawn_tree — input validation', () => {
     const r = await dispatchProjectedTool(tool, 'intel:spawn_tree', {}, MAKE_CTX(), {});
     expect(r.ok).toBe(false);
     expect(r.error?.message ?? '').toMatch(/invalid_args|harness|required/i);
+  });
+
+  it('rejects a blank or oversized spawnId', async () => {
+    const tool = lookupByMcpName('intel:spawn_tree')!;
+    for (const spawnId of ['', ' '.repeat(2), 'x'.repeat(257)]) {
+      const r = await dispatchProjectedTool(tool, 'intel:spawn_tree', { harness: 'sheets', spawnId }, MAKE_CTX(), {});
+      expect(r.ok).toBe(false);
+      expect(r.error?.message ?? '').toMatch(/invalid_args|spawnId|spawn/i);
+    }
   });
 });

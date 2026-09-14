@@ -12,7 +12,10 @@
  * selects the filtered candidates first (indexed), then walks UP (bounded 16
  * hops) to compute depth/root_spawn_id.
  *
- * Today every row is depth=0 (Phase 9 spawn-of-spawn not yet shipped).
+ * `spawnId` optionally narrows the candidate set to one exact spawn before the
+ * limit is applied, so a spawn-specific lookup cannot miss an older row behind
+ * newer unrelated invocations. Today every row is depth=0 (Phase 9
+ * spawn-of-spawn not yet shipped).
  * The shape is forward-compatible: when Phase 9 lands, depth>0 rows
  * appear without code change here.
  */
@@ -25,13 +28,21 @@ export default defineTool({
   needsWorkspaceTx: true,
   profile: 'engineer',
   guidance: {
-    when: 'User asks "what triggered this?", "show me the lineage of agent X", or you need the parent-child spawn graph for an Intel-panel-style view.',
+    when: 'User asks "what triggered this?", "show me the lineage of agent X", or you need the parent-child spawn graph for an Intel-panel-style view. Pass `spawnId` for one exact spawn lookup.',
     notWhen: 'For LIVE running spawns only, use `processes:list` (ledger-backed, with provenance) or `dev:processes` (the six tracked agent process kinds). spawn_tree is historical + structural; those are the now-snapshot.',
   },
   capability: 'intel:read',
   args: z.object({
     /** Restrict to a specific harness slug. Required — Intel is per-harness. */
     harness: z.string().min(1),
+    /** Optional exact spawn id. Applied before the result limit. */
+    spawnId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(256)
+      .optional()
+      .describe('Exact spawn id to inspect; the filter is applied before limit.'),
     /** Optional cutoff (epoch ms). Default: last 24 hours. */
     sinceMs: z.number().int().optional(),
     /** Optional cap. Default 200; max 2000. */
@@ -82,10 +93,11 @@ export default defineTool({
              output_ref, output_size, error_message,
              depth, root_spawn_id
         FROM harness_shared.tool_invocations_spawn_tree_filtered(
-               p_harness_slug => ${args.harness},
-               p_since => to_timestamp(${sinceMs}::double precision / 1000.0),
-               p_status => ${args.status ?? null},
-               p_limit => ${args.limit}
+             p_harness_slug => ${args.harness},
+             p_since => to_timestamp(${sinceMs}::double precision / 1000.0),
+             p_status => ${args.status ?? null},
+             p_limit => ${args.limit},
+             p_spawn_id => ${args.spawnId ?? null}
              )
     `;
     return {
