@@ -81,6 +81,7 @@ import { getPlanRow } from './source';
 import { setSpecClause } from './spec-clauses-store';
 import { previewPlanStartConsult } from './get-activation-readiness';
 import { resolveSessionTurnRefs } from '../sessions/_shared';
+import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { recoverHarnessFromSlugs } from './slug-scope';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
 import tool from './audit';
@@ -97,6 +98,7 @@ const mockGetPlanRow = vi.mocked(getPlanRow);
 const mockSetSpecClause = vi.mocked(setSpecClause);
 const mockRecoverHarness = vi.mocked(recoverHarnessFromSlugs);
 const mockPreviewPlanStartConsult = vi.mocked(previewPlanStartConsult);
+const mockEmitPlanEvent = vi.mocked(emitPlanEventForCaller);
 
 const ctx = {
   log: vi.fn(),
@@ -303,6 +305,23 @@ describe('plans:audit D-008 writer contract', () => {
         ],
       }),
     );
+  });
+
+  it('previews a completion audit without recording an audit or plan event', async () => {
+    const result = await body([
+      { itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] },
+    ], { dryRun: true });
+
+    expect(result).toMatchObject({
+      ok: true,
+      phase: 'completion',
+      dryRun: true,
+      preview: true,
+      coverage: { auditedItems: 1, verifiedItems: 1, verifiedRatio: 1, unverifiedItemIds: [] },
+      itemsAuditedThisPass: 1,
+    });
+    expect(mockRecord).not.toHaveBeenCalled();
+    expect(mockEmitPlanEvent).not.toHaveBeenCalled();
   });
 
   it('refuses a citation whose current bytes do not exist at the explicit auditedSha', async () => {
@@ -743,6 +762,26 @@ describe('plans:audit phase:activation', () => {
     expect(mockRecordActivation.mock.invocationCallOrder[0]!).toBeLessThan(
       mockPreviewPlanStartConsult.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it('previews activation validation without recording audit, repair, clause, consult, or event writes', async () => {
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: true,
+      phase: 'activation',
+      dryRun: true,
+      preview: true,
+      sourceRanges: 1,
+      mappings: 1,
+      sourceRefsResolved: 1,
+    });
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+    expect(mockRepairFiling).not.toHaveBeenCalled();
+    expect(mockItems).not.toHaveBeenCalled();
+    expect(mockSetSpecClause).not.toHaveBeenCalled();
+    expect(mockPreviewPlanStartConsult).not.toHaveBeenCalled();
+    expect(mockEmitPlanEvent).not.toHaveBeenCalled();
   });
 
   it('records the activation audit even when plan items are unreadable, and reports the derivation', async () => {

@@ -95,9 +95,27 @@ describe('capability:bash per-call effect classifier (EI-22647418629976526)', ()
     });
   });
 
+  it('classifies a bounded lsof/awk/sort/head diagnostic as read-only and normalizes producer SIGPIPE', () => {
+    const command = "lsof -nP | awk '{print $1}' | sort -u | head -n 1";
+
+    expect(classifyCapabilityBashEffect({ command })).toBe('read');
+    expect(normalizeExpectedSigpipeResult(command, 'failed', 141)).toEqual({
+      status: 'completed',
+      exitCode: 0,
+    });
+  });
+
   it('classifies an rg-to-wc no-match count probe as read-only', () => {
     const command = 'rg -l -F absent fixture.txt | wc -l';
     expect(classifyCapabilityBashEffect({ command })).toBe('read');
+  });
+
+  it('classifies only numeric-parent ps --ppid field probes as read-only', () => {
+    expect(classifyCapabilityBashEffect({ command: "ps --ppid 12345 -o pid=,cmd= | awk '{print $1}'" })).toBe('read');
+    expect(classifyCapabilityBashEffect({ command: 'ps --ppid 12345 -o pid=' })).toBe('read');
+    expect(classifyCapabilityBashEffect({ command: "ps --ppid '$PPID' -o pid= | awk '{print $1}'" })).toBe('write');
+    expect(classifyCapabilityBashEffect({ command: "ps --ppid 12345 -o pid= | awk '{system(\"touch x\")}'" })).toBe('write');
+    expect(classifyCapabilityBashEffect({ command: "ps --ppid 12345 -o pid= | awk '{print $1}' && echo done" })).toBe('write');
   });
 
   it('completes a real bounded find/sort/head listing', async () => {

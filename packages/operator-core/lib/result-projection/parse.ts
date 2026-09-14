@@ -99,7 +99,7 @@ function parseStage(raw: unknown, i: number): { ok: true; stage: ProjectionStage
             ok: false,
             error: `${at}.pattern is not a valid JavaScript RegExp: ${
               err instanceof Error ? err.message : String(err)
-            }. Pass fixed:true to match it as a literal substring.`,
+            }. Use ignoreCase:true for case-insensitive matching, or fixed:true to match it as a literal substring.`,
           };
         }
       }

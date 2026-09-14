@@ -45,6 +45,7 @@ import {
   repoCitationContextForHarness,
   resolveCitation,
   summarizeCoverage,
+  validateActivationAuditPlanTargets,
   type AuditCitation,
   type AuditItemEntry,
   type ActivationAuditPayload,
@@ -156,6 +157,9 @@ const argsSchema = z.object({
   harness: harnessArg,
   phase: z.enum(['completion', 'activation']).default('completion').describe(
     '`completion` (default) audits implemented code. `activation` audits the source conversation before ready/active and records the exact current plan revision.',
+  ),
+  dryRun: z.boolean().default(false).describe(
+    'Validate and preview the audit without recording an audit row, repair filing, derived spec clause, or plan event.',
   ),
   classRef: z.enum(PLAN_CLASS_RUBRIC_REFS).optional().describe(
     'Activation phase only: the exact PlanClassRubricRef used by plans:evaluate-spec-quality. Required; never infer it from plan prose.',
@@ -295,6 +299,8 @@ export default defineTool({
     .object({
       ok: z.boolean().optional(),
       phase: z.enum(['activation', 'completion']).optional(),
+      dryRun: z.boolean().optional(),
+      preview: z.boolean().optional(),
       auditSeq: z.number().int().nonnegative().optional(),
       auditedPlanRevision: z.unknown().optional(),
       mappings: z.unknown().optional(),
@@ -342,6 +348,7 @@ export default defineTool({
       sctx = harnessScopedCtx(args.harness, ctx);
     }
     const harnessSlug = resolveCtxHarnessSlug(sctx);
+    const dryRun = args.dryRun === true;
 
     if (args.phase === 'activation') {
       const workspaceId = sctx.workspaceId ?? activeWorkspaceId();
@@ -383,16 +390,19 @@ export default defineTool({
         submittedActivation.unresolvedBlockers.length > 0 ||
         submittedActivation.mappings.some((mapping) => mapping.disposition === 'open')
       ) {
-        const repairFiling = await ensureActivationAuditRepairFiling({
-          workspaceId,
-          harnessSlug: harnessSlug ?? '',
-          planSlug: args.slug,
-          activation: submittedActivation,
-        });
+        const repairFiling = dryRun
+          ? null
+          : await ensureActivationAuditRepairFiling({
+              workspaceId,
+              harnessSlug: harnessSlug ?? '',
+              planSlug: args.slug,
+              activation: submittedActivation,
+            });
         return { data: {
           ok: false as const,
           slug: args.slug,
           phase: 'activation' as const,
+          ...(dryRun ? { dryRun: true as const, preview: true as const } : {}),
           error: 'activation_blocked',
           message:
             'Activation audit has unresolved blockers or open mappings. Any nonempty unresolvedBlockers list blocks and records nothing; repair/map them before ready/active. Put resolved conditional limitations in covered mappings/summary.',
@@ -400,8 +410,7 @@ export default defineTool({
           openMappingIds: submittedActivation.mappings
             .filter((mapping) => mapping.disposition === 'open')
             .map((mapping) => mapping.id),
-          repairWorkItem: repairFiling.id,
-          repairFiling,
+          ...(repairFiling ? { repairWorkItem: repairFiling.id, repairFiling } : {}),
         } };
       }
 
@@ -453,6 +462,17 @@ export default defineTool({
         workspaceId,
         harnessSlug: harnessSlug ?? '',
       });
+      if (dryRun && !currentPlan) {
+        return { data: {
+          ok: false as const,
+          slug: args.slug,
+          phase: 'activation' as const,
+          dryRun: true as const,
+          preview: true as const,
+          error: 'plan_not_found',
+          message: `Plan '${args.slug}' could not be read for a side-effect-free activation preview.`,
+        } };
+      }
       if (currentPlan) {
         const stagingProblems = stagingFirstActivationProblems(
           parsePlan(currentPlan.content, { filePath: `${args.slug}.md` }),
@@ -535,6 +555,40 @@ export default defineTool({
           })),
           message:
             `${unresolved.length} source ref(s) are not directly readable. Refresh/repair the transcript source; no audit was recorded.`,
+        } };
+      }
+
+      if (dryRun) {
+        const targetProblems = validateActivationAuditPlanTargets(activation, currentPlan!.content);
+        if (targetProblems.length > 0) {
+          return { data: {
+            ok: false as const,
+            slug: args.slug,
+            phase: 'activation' as const,
+            dryRun: true as const,
+            preview: true as const,
+            error: 'plan_targets_invalid' as const,
+            problems: targetProblems,
+            message: `${targetProblems.length} mapping target(s) do not exist in the current plan revision; no writes were performed.`,
+          } };
+        }
+        return { data: {
+          ok: true as const,
+          slug: args.slug,
+          phase: 'activation' as const,
+          dryRun: true as const,
+          preview: true as const,
+          sourceRanges: sourceRanges.length,
+          mappings: mappings.length,
+          carriedMappings: merged.carriedMappingIds.length,
+          carriedMappingIds: merged.carriedMappingIds,
+          coverageBaseAuditSeq: previousAudit?.auditSeq ?? null,
+          sourceRefsResolved: resolutions.length,
+          planSnapshot: {
+            version: currentPlan!.version,
+            contentHash: currentPlan!.contentHash,
+          },
+          message: 'Activation audit validation passed; no audit, repair, clause, or event writes were performed.',
         } };
       }
 
@@ -1067,6 +1121,56 @@ export default defineTool({
       } };
     }
 
+    const coverage = summarizeCoverage(effectiveEntries);
+    const audited = new Set(effectiveEntries.map((e) => e.itemId));
+    // Items with no current OR historical audit entry. Unlisted prior entries were
+    // carried by the verb with their original provenance, so callers never have to
+    // copy them forward and accidentally re-stamp them at this pass's sha (D-006).
+    const uncoveredItems = planItems
+      .filter((i) => !audited.has(i.itemId) && i.status !== 'dropped')
+      .map((i) => i.itemId);
+
+    const rejectedItemIds = [...new Set(problems.flatMap((problem) => (problem.itemId ? [problem.itemId] : [])))];
+    const partialNote = problems.length > 0
+      ? `${dryRun ? 'Would record' : 'Recorded'} ${entries.length} valid item(s); ${rejectedItemIds.length} item(s) were not recorded. ` +
+        `Retry only the rejected item ids after fixing their listed problems.`
+      : null;
+    const uncoveredNote = uncoveredItems.length > 0
+      ? `${uncoveredItems.length} non-dropped item(s) have no audit entry. Audit ONLY those listed ` +
+        `items (or drop them with a reason); every other unlisted item already carried forward with ` +
+        `its original provenance.`
+      : null;
+    const resultNote = [partialNote, uncoveredNote].filter((note): note is string => Boolean(note)).join(' ');
+
+    if (dryRun) {
+      return { data: {
+        ok: true as const,
+        slug: args.slug,
+        phase: 'completion' as const,
+        dryRun: true as const,
+        preview: true as const,
+        auditedSha,
+        auditedAt,
+        citationRepoRoot: citationContext.repoRoot,
+        citationRootSource: citationContext.rootSource,
+        citationsChecked,
+        itemsAuditedThisPass: entries.length,
+        itemsCarriedForward: carriedItemIds.length,
+        carriedItemIds,
+        coverage,
+        uncoveredItems,
+        ...(problems.length > 0
+          ? {
+              partial: true as const,
+              problems,
+              rejectedItemIds,
+            }
+          : {}),
+        ...(resultNote ? { note: resultNote } : {}),
+        message: 'Completion audit validation passed; no audit or plan-event writes were performed.',
+      } };
+    }
+
     const audit = await recordPlanAudit({
       planSlug: args.slug,
       harnessSlug: harnessSlug ?? '',
@@ -1081,15 +1185,6 @@ export default defineTool({
       summary: args.summary ?? null,
     });
 
-    const coverage = summarizeCoverage(effectiveEntries);
-    const audited = new Set(effectiveEntries.map((e) => e.itemId));
-    // Items with no current OR historical audit entry. Unlisted prior entries were
-    // carried by the verb with their original provenance, so callers never have to
-    // copy them forward and accidentally re-stamp them at this pass's sha (D-006).
-    const uncoveredItems = planItems
-      .filter((i) => !audited.has(i.itemId) && i.status !== 'dropped')
-      .map((i) => i.itemId);
-
     await emitPlanEventForCaller(ctx as Parameters<typeof emitPlanEventForCaller>[0], {
       planSlug: args.slug,
       event: 'plan_audited',
@@ -1097,17 +1192,6 @@ export default defineTool({
       after: `${coverage.auditedItems} item(s), ${citationsChecked} citation(s) resolved`,
     });
 
-    const rejectedItemIds = [...new Set(problems.flatMap((problem) => (problem.itemId ? [problem.itemId] : [])))];
-    const partialNote = problems.length > 0
-      ? `Recorded ${entries.length} valid item(s); ${rejectedItemIds.length} item(s) were not recorded. ` +
-        `Retry only the rejected item ids after fixing their listed problems.`
-      : null;
-    const uncoveredNote = uncoveredItems.length > 0
-      ? `${uncoveredItems.length} non-dropped item(s) have no audit entry. Audit ONLY those listed ` +
-        `items (or drop them with a reason); every other unlisted item already carried forward with ` +
-        `its original provenance.`
-      : null;
-    const resultNote = [partialNote, uncoveredNote].filter((note): note is string => Boolean(note)).join(' ');
     return { data: {
       ok: true as const,
       slug: args.slug,

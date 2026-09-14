@@ -97,6 +97,14 @@ describe('parseProjection', () => {
       expect(r.error).toContain('fixed:true');
     });
 
+    it('explains ignoreCase:true when inline PCRE flags are rejected', () => {
+      const r = parseProjection({ pipe: [{ op: 'grep', pattern: '(?i)error' }] });
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error('unreachable');
+      expect(r.error).toContain('JavaScript RegExp');
+      expect(r.error).toContain('ignoreCase:true');
+    });
+
     it('grep -C expands to both sides, but an explicit -A/-B wins', () => {
       const both = parseProjection({ pipe: [{ op: 'grep', pattern: 'x', context: 3 }] });
       expect(both).toMatchObject({ ok: true, spec: { pipe: [{ before: 3, after: 3 }] } });

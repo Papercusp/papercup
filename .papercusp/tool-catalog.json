@@ -5912,7 +5912,7 @@
           "POST"
         ]
       },
-      "description": "Resolve one OR many questions: accept an answer (by text or by accepted_post_id) and close it. The accepted answer is preserved for semantic recall (mem0 by default). Notifies subscribers. Single: { id, accepted_answer | accepted_post_id, capture? }. Many heterogeneous: items:[{ id, accepted_answer | accepted_post_id, capture? }] (each carries its own answer). Returns { ok, results:[{ ok, id, state? | error }], counts } — correlate by id; one item that lacks an answer or is not found never fails the rest.",
+      "description": "Consult conversations are excluded; use consult:close with a structured outcome so consult_state remains coherent. Resolve one OR many questions: accept an answer (by text or by accepted_post_id) and close it. The accepted answer is preserved for semantic recall (mem0 by default). Notifies subscribers. Single: { id, accepted_answer | accepted_post_id, capture? }. Many heterogeneous: items:[{ id, accepted_answer | accepted_post_id, capture? }] (each carries its own answer). Returns { ok, results:[{ ok, id, state? | error }], counts } — correlate by id; one item that lacks an answer or is not found never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
