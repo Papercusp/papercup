@@ -143,20 +143,71 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
 
   it('materializes the commit with setup-release-checkout then runs each file through scripts/test-files.mjs in the checkpoint tree', async () => {
     const calls: Array<{ argv: readonly string[]; cwd: string }> = [];
+    const events: string[] = [];
+    const progress: Array<{
+      currentFile: string;
+      completedCount: number;
+      totalCount: number;
+      heartbeatAtMs: number;
+    }> = [];
     const exec = vi.fn(async (argv: readonly string[], opts: { cwd: string }) => {
       calls.push({ argv, cwd: opts.cwd });
-      if (argv[0] === 'bash') return { exitCode: 0, signal: null, timedOut: false, output: 'ok', durationMs: 5 } as ExecResult;
+      if (argv[0] === 'bash') {
+        events.push('setup');
+        return { exitCode: 0, signal: null, timedOut: false, output: 'ok', durationMs: 5 } as ExecResult;
+      }
       const file = argv[2];
+      events.push(`test:${file}`);
       return { exitCode: file === 'lib/red.test.ts' ? 0 : 1, signal: null, timedOut: false, output: '', durationMs: 3 } as ExecResult;
     });
     const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: () => ({ held: false, elapsedSec: null }) });
-    const out = await runner({ commit: C, files: ['lib/red.test.ts', 'lib/new.test.ts'] });
+    const out = await runner({
+      commit: C,
+      files: ['lib/red.test.ts', 'lib/new.test.ts'],
+      onProgress: (snapshot) => {
+        progress.push(snapshot);
+        events.push(`progress:${snapshot.currentFile}`);
+      },
+    });
     expect(out).toMatchObject({ ran: true, commit: C, results: [{ path: 'lib/red.test.ts', status: 'pass' }, { path: 'lib/new.test.ts', status: 'fail' }] });
+    expect(progress).toEqual([
+      { currentFile: 'lib/red.test.ts', completedCount: 0, totalCount: 2, heartbeatAtMs: expect.any(Number) },
+      { currentFile: 'lib/new.test.ts', completedCount: 1, totalCount: 2, heartbeatAtMs: expect.any(Number) },
+    ]);
+    expect(events).toEqual([
+      'setup',
+      'progress:lib/red.test.ts',
+      'test:lib/red.test.ts',
+      'progress:lib/new.test.ts',
+      'test:lib/new.test.ts',
+    ]);
     expect(calls[0].argv.slice(0, 2)).toEqual(['bash', '/repo/apps/operator/bin/release/setup-release-checkout.sh']);
     expect(calls[0].argv).toEqual(expect.arrayContaining(['--ref', C, '--integration', '/repo', '--release', '/ckpt']));
     expect(calls[0].cwd).toBe('/repo');
     expect(calls[1]).toEqual({ argv: ['node', 'scripts/test-files.mjs', 'lib/red.test.ts'], cwd: '/ckpt' });
     expect(calls[2].argv[2]).toBe('lib/new.test.ts');
+  });
+
+  it('isolates progress persistence failures from the measured file verdict', async () => {
+    const logs: string[] = [];
+    const exec = vi.fn(async (argv: readonly string[]) =>
+      ({ exitCode: 0, signal: null, timedOut: false, output: argv[0] === 'bash' ? 'ok' : '', durationMs: 5 }) as ExecResult,
+    );
+    const runner = createCheckpointTreeFixPrecheckRunner({
+      ...base,
+      exec,
+      log: (line) => logs.push(line),
+      runLockHeld: () => ({ held: false, elapsedSec: null }),
+    });
+    const out = await runner({
+      commit: C,
+      files: ['lib/red.test.ts'],
+      onProgress: () => {
+        throw new Error('queue unavailable');
+      },
+    });
+    expect(out).toMatchObject({ ran: true, results: [{ path: 'lib/red.test.ts', status: 'pass' }] });
+    expect(logs).toContain('[admission-precheck] progress callback failed for lib/red.test.ts: queue unavailable');
   });
 
   it('a failed setup is runner-failed (never a verdict on the files)', async () => {
