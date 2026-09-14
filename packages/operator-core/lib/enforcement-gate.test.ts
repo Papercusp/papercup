@@ -455,6 +455,16 @@ describe('renderFlushRefusal', () => {
     expect(text).toContain('mechanical fallback');
   });
 
+  it('offers an atomic append refresh when stale-checkpoint attestation is exhausted', () => {
+    const text = renderFlushRefusal('compaction', [
+      { kind: 'stale-checkpoint', subject: 'WI-2', detail: 'x', ageMinutes: 179 },
+    ]);
+    expect(text).toContain('attestation_exhausted');
+    expect(text).toContain('work_items:checkpoint { id, checkpoint: "brief current-state update", append: true }');
+    expect(text).toContain('preserves the existing checkpoint');
+    expect(text).toContain('resets its attestation budget');
+  });
+
   it('includes the cold-successor-no-progress detail verbatim', () => {
     const text = renderFlushRefusal('compaction', [
       {

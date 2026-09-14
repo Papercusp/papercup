@@ -388,7 +388,10 @@ export function renderFlushRefusal(boundary: GateBoundary, tripwires: ReadonlyAr
       `refresh the stale checkpoint(s) for ${staleIds.join(', ')} — work_items:checkpoint { id, checkpoint } ` +
         'if the state moved, or, if it genuinely has NOT, attest it instead of rewriting it: ' +
         'work_items:checkpoint { id, unchanged: true, contentHash } (the hash comes from work_items:get { id }; ' +
-        'the attestation is bounded and refuses once the item itself has moved)',
+        'the attestation is bounded and refuses once the item itself has moved). ' +
+        'If that attestation returns `attestation_exhausted`, use the atomic additive refresh instead: ' +
+        'work_items:checkpoint { id, checkpoint: "brief current-state update", append: true }; ' +
+        '`append:true` preserves the existing checkpoint and resets its attestation budget.',
     );
   }
   if (armedLoop) {
