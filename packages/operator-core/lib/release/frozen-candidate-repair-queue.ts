@@ -426,6 +426,14 @@ export interface FrozenRepairAdmissionPrecheck {
   startedAtMs: number;
   updatedAtMs: number;
   expiresAtMs: number;
+  /** File currently being measured; absent only on legacy rows written before R6 progress. */
+  currentFile?: string | null;
+  /** Number of files whose test process has completed. */
+  completedCount?: number;
+  /** Total files in the pre-check population, retained so readers need no reconstruction. */
+  totalCount?: number;
+  /** Last time the detached runner reported progress. */
+  heartbeatAtMs?: number;
   verdict?: FixPrecheckVerdict;
 }
 
@@ -1388,6 +1396,7 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
   const row = value as Record<string, unknown>;
   if (row.schemaVersion !== 1) return undefined;
   if (row.status !== 'running' && row.status !== 'passed' && row.status !== 'failed') return undefined;
+  const files = Array.isArray(row.files) ? row.files : null;
   if (
     !nonBlank(row.operationId) ||
     !nonBlank(row.candidate) ||
@@ -1395,14 +1404,36 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
     !nonBlank(row.builtCommit) ||
     (row.builtTree !== undefined && !nonBlank(row.builtTree)) ||
     !nonBlank(row.actor) ||
-    !Array.isArray(row.files) ||
-    !row.files.every(nonBlank) ||
+    !files ||
+    !files.every(nonBlank) ||
     !validTimestamp(row.startedAtMs) ||
     !validTimestamp(row.updatedAtMs) ||
     !validTimestamp(row.expiresAtMs) ||
     (row.updatedAtMs as number) < (row.startedAtMs as number) ||
     (row.expiresAtMs as number) < (row.startedAtMs as number)
   ) return undefined;
+  const hasProgress = 'currentFile' in row || 'completedCount' in row || 'totalCount' in row || 'heartbeatAtMs' in row;
+  let progress: Pick<FrozenRepairAdmissionPrecheck, 'currentFile' | 'completedCount' | 'totalCount' | 'heartbeatAtMs'> | undefined;
+  if (hasProgress) {
+    const currentFile = row.currentFile === null ? null : row.currentFile;
+    if (
+      (currentFile !== null && !nonBlank(currentFile)) ||
+      (typeof currentFile === 'string' && !files.includes(currentFile)) ||
+      !Number.isInteger(row.completedCount) ||
+      (row.completedCount as number) < 0 ||
+      (row.completedCount as number) > files.length ||
+      !Number.isInteger(row.totalCount) ||
+      row.totalCount !== files.length ||
+      !validTimestamp(row.heartbeatAtMs) ||
+      (row.heartbeatAtMs as number) > (row.updatedAtMs as number)
+    ) return undefined;
+    progress = {
+      currentFile: currentFile as string | null,
+      completedCount: row.completedCount as number,
+      totalCount: row.totalCount as number,
+      heartbeatAtMs: row.heartbeatAtMs as number,
+    };
+  }
   const verdict = row.verdict;
   if (row.status === 'running' && verdict !== undefined) return undefined;
   if (
@@ -1423,6 +1454,7 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
     startedAtMs: row.startedAtMs as number,
     updatedAtMs: row.updatedAtMs as number,
     expiresAtMs: row.expiresAtMs as number,
+    ...(progress ?? {}),
     ...(verdict ? { verdict: verdict as FixPrecheckVerdict } : {}),
   };
 }
