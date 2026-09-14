@@ -1622,6 +1622,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // typed result wins the race instead of leaving the caller to guess whether
   // its declared intent / claimed lane actually landed.
   ['coord:declare-intent', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-23173103907673402: tools:find can spend more than ptool's ordinary
+  // 30s client cutoff in the live catalog/schema search path. Keep direct
+  // discovery calls outside the MCP transport floor so the returned schema
+  // (or the server's typed bounded failure) remains observable.
+  ['tools:find', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // `coord:orient` is the wake-bootstrap compound read. Its individual legs
   // are bounded, but the full reconciliation can legitimately outlive the
   // ordinary 30s ptool liveness deadline when several legs degrade together.

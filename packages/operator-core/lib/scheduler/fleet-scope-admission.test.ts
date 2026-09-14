@@ -549,10 +549,10 @@ describe('fleet scope assignment admission (P-016)', () => {
       updatedAt: 'now',
     });
     admissionMocks.listFleetAssignments.mockResolvedValue([
-      { source: 'work_item_claim', workItemId: 'WI-out-1' },
-      { source: 'work_item_claim', workItemId: 'WI-in' },
-      { source: 'work_item_claim', workItemId: 'WI-out-2' },
-      { source: 'work_item_claim', workItemId: 'WI-out-1' }, // de-duped, not dripped into a later wake
+      { source: 'work_item_claim', agentId: 'su-member', workItemId: 'WI-out-1' },
+      { source: 'work_item_claim', agentId: 'su-member', workItemId: 'WI-in' },
+      { source: 'work_item_claim', agentId: 'su-member', workItemId: 'WI-out-2' },
+      { source: 'work_item_claim', agentId: 'su-member', workItemId: 'WI-out-1' }, // de-duped, not dripped into a later wake
     ]);
     admissionMocks.getWorkItem.mockImplementation(async (id: string) => ({
       id,
@@ -2770,8 +2770,8 @@ describe('self-filed fallout admission (EI-18732199386440540)', () => {
     admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
     admissionMocks.getClaimSpecRecord.mockResolvedValue(scope.record);
     admissionMocks.listFleetAssignments.mockResolvedValue([
-      { source: 'work_item_claim', workItemId: 'EI-18731717643670832' },
-      { source: 'work_item_claim', workItemId: 'EI-filed-by-someone-else' },
+      { source: 'work_item_claim', agentId: 'su-member', workItemId: 'EI-18731717643670832' },
+      { source: 'work_item_claim', agentId: 'su-member', workItemId: 'EI-filed-by-someone-else' },
     ]);
     admissionMocks.getWorkItem.mockImplementation(async (id: string) =>
       id === 'EI-18731717643670832' ? falloutBug : aWorkItem({ id, createdBy: 'su-other-member' }),
@@ -2800,8 +2800,8 @@ describe('self-filed fallout admission (EI-18732199386440540)', () => {
       leaderOwnerId: 'su-leader',
     });
     admissionMocks.listFleetAssignments.mockResolvedValue([
-      { source: 'work_item_claim', workItemId: leaderDispatchedTask.id },
-      { source: 'work_item_claim', workItemId: 'EI-not-dispatched' },
+      { source: 'work_item_claim', agentId: 'su-member', workItemId: leaderDispatchedTask.id },
+      { source: 'work_item_claim', agentId: 'su-member', workItemId: 'EI-not-dispatched' },
     ]);
     admissionMocks.getWorkItem.mockImplementation(async (id: string) =>
       id === leaderDispatchedTask.id ? leaderDispatchedTask : aWorkItem({ id, createdBy: 'su-other-member' }),

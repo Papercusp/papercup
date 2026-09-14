@@ -125,6 +125,17 @@ export interface AffectedTaskShardPlan<Task> {
   shards: Array<AffectedTaskShard<Task>>;
 }
 
+export interface BudgetedTaskWallProjection {
+  /** History-based elapsed-wall projection; unknown task durations contribute zero. */
+  projectedWallMs: number;
+  /** Serial-equivalent sum retained for diagnosis; it is not elapsed wall time. */
+  knownWorkMs: number;
+  knownTasks: number;
+  unknownTasks: number;
+  mode: "parallel" | "serial";
+  maxConcurrentTasks: number;
+}
+
 export interface DurationHistoryEntry {
   durationMs: number;
   samples: number;
@@ -216,6 +227,18 @@ export function planAffectedTaskShards<Task>(
   },
 ): AffectedTaskShardPlan<Task>;
 
+/**
+ * Project elapsed wall time using the scheduler's actual longest/shortest concurrent lanes.
+ * This is a history-based estimate, not a lower-bound proof; `knownWorkMs` is the separate
+ * serial-equivalent sum and `unknownTasks` makes uncovered work explicit.
+ */
+export function estimateBudgetedTaskWallMs<Task>(
+  plan: AffectedTaskShardPlan<Task>,
+  options: TaskBudgetInput & {
+    estimateMs?: (task: Task, index: number) => number | null | undefined;
+  },
+): BudgetedTaskWallProjection;
+
 export function formatAffectedTaskShardMarker(
   plan: AffectedTaskShardPlan<unknown>,
   taskCgroupMemoryMaxMb?: number | null,
@@ -280,13 +303,13 @@ export function formatAdmissionHolder(ownerText: unknown, now?: number): string;
  * WI-2142172 — render the WAITER's own prognosis as a clause appended to the queued notice:
  * can this caller plausibly be admitted before its budget runs out?
  *
- * Returns "" when there is nothing sound to say. One-directional by construction: the
- * holder's `etaMinSec` is a declared LOWER BOUND, so it can warn (`PROJECTED TO STARVE` at
- * >=1.0 of the remaining budget, `ADMISSION AT RISK` at >=0.5) but never certify safety —
- * there is deliberately no it-looks-fine band, and the absence of a clause is not
- * reassurance. An ETA covering 0 tasks is reported as `PROSPECT UNKNOWN` rather than
- * skipped. Falls open to "" on any parse failure; it prints while a caller is already
- * blocked and must never be the thing that throws.
+ * Returns "" when there is nothing sound to say. The holder's `etaProjectedSec` is a
+ * concurrency-aware history projection, not a proof, so warning text keeps the uncertainty
+ * explicit (`PROJECTED TO STARVE` at >=1.0 of the remaining budget, `ADMISSION AT RISK` at
+ * >=0.5) and never certifies safety. An ETA covering 0 tasks is reported as `PROSPECT UNKNOWN`
+ * rather than skipped. Legacy holders that only publish `etaMinSec` are also unknown because
+ * their serial-equivalent sum cannot establish wall time. Falls open to "" on any parse
+ * failure; it prints while a caller is already blocked and must never be the thing that throws.
  */
 export function formatAdmissionProspect(
   ownerText: unknown,

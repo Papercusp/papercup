@@ -78,6 +78,17 @@ describe('diagnoseFleetScopeLeaderLiveness — registered multi-fleet leaders', 
     });
   });
 
+  it('uses a supplied fleet_assignment snapshot without issuing another roster query', async () => {
+    const snapshot = [presence()];
+
+    await expect(
+      diagnoseFleetScopeLeaderLiveness({ scope: scope as never, fleetAssignmentRows: snapshot }),
+    ).resolves.toBe(true);
+
+    expect(getFleetM).toHaveBeenCalledWith('papercusp-workspace', 'ios-fleet');
+    expect(listFleetAssignmentsM).not.toHaveBeenCalled();
+  });
+
   it('returns false when the registered leader is not live', async () => {
     listFleetAssignmentsM.mockResolvedValue([presence({ holderAlive: false })]);
 

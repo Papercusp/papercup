@@ -361,6 +361,13 @@ describe('ptool call deadlines', () => {
       name: 'coord:declare-intent',
       args: { intent: 'timeout mapping regression' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-23173103907673402: live tools:find schema searches can cross the
+    // ordinary 30s client cutoff; cover direct and deferred discovery routes.
+    expect(timeoutForTool('tools:find')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'tools:find',
+      args: { query: 'coord:send' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-22810897251728336: publish has three bounded network stages whose
     // combined latency can legitimately cross the flat 30s client deadline.
     // Cover both transports so ptool observes the server's typed result.

@@ -9,6 +9,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import type { FleetAssignmentRow } from '../fleet/assignments';
 import {
   ISSUE_FAMILY_KINDS,
   type HeldDependencyEscapeContext,
@@ -1041,6 +1042,8 @@ export async function diagnoseFleetScopePlanTerminality(args: {
  */
 export async function diagnoseFleetScopeLeaderLiveness(args: {
   scope: FleetScopeContext;
+  /** Reuse the workspace roster snapshot already read during member reconciliation. */
+  fleetAssignmentRows?: FleetAssignmentRow[];
 }): Promise<boolean | null> {
   try {
     const ws = resolveClaimSpecWorkspace(args.scope.workspaceId);
@@ -1050,7 +1053,9 @@ export async function diagnoseFleetScopeLeaderLiveness(args: {
     const leaderOwnerId = fleet?.leaderOwnerId ?? null;
     if (!leaderOwnerId) return false;
     const { listFleetAssignments, groupByAgent } = await import('../fleet/assignments');
-    const rows = await listFleetAssignments({ workspaceId: ws, agent: leaderOwnerId });
+    const rows =
+      args.fleetAssignmentRows ??
+      (await listFleetAssignments({ workspaceId: ws, agent: leaderOwnerId }));
     const leader = groupByAgent(rows).find((agent) => agent.agentId === leaderOwnerId);
     return Boolean(leader?.present && leader.alive);
   } catch {
@@ -1362,6 +1367,8 @@ export async function notifyFleetScopeRefusal(
 export interface FleetScopeReconciliation {
   scope: FleetScopeContext | null;
   quarantinedIds: string[];
+  /** The single workspace roster read used by reconciliation and downstream diagnostics. */
+  fleetAssignmentRows: FleetAssignmentRow[];
 }
 
 /** Release every incompatible claim in one bounded sweep; never drip one per wake. */
@@ -1371,15 +1378,22 @@ export async function reconcileFleetScopeClaims(args: {
   identity?: AgentIdentity;
 }): Promise<FleetScopeReconciliation> {
   const scope = await resolveFleetScopeContext(args.ownerId, args.workspaceId);
-  if (!scope) return { scope: null, quarantinedIds: [] };
+  if (!scope) return { scope: null, quarantinedIds: [], fleetAssignmentRows: [] };
   const { listFleetAssignments } = await import('../fleet/assignments');
   const { getWorkItem, releaseWorkItem } = await import('../work-items');
   const rows = await listFleetAssignments({
     workspaceId: resolveClaimSpecWorkspace(args.workspaceId),
-    agent: scope.ownerId,
     activeOnly: true,
   });
-  const ids = [...new Set(rows.filter((r) => r.source === 'work_item_claim' && r.workItemId).map((r) => r.workItemId as string))];
+  // The workspace snapshot serves two consumers: this member's claim cleanup and
+  // leader-liveness diagnosis. Filter the member's rows in memory so the latter
+  // does not issue a second fleet_assignment query during scheduler preflight.
+  const memberRows = rows.filter((r) => r.agentId === scope.ownerId || r.agentName === scope.ownerId);
+  const ids = [
+    ...new Set(
+      memberRows.filter((r) => r.source === 'work_item_claim' && r.workItemId).map((r) => r.workItemId as string),
+    ),
+  ];
   const quarantinedIds: string[] = [];
   for (const id of ids) {
     const item = await getWorkItem(id);
@@ -1409,7 +1423,7 @@ export async function reconcileFleetScopeClaims(args: {
       category: 'fleet-scope-admission',
     }).catch(() => undefined);
   }
-  return { scope, quarantinedIds };
+  return { scope, quarantinedIds, fleetAssignmentRows: rows };
 }
 
 /**
