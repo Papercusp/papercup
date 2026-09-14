@@ -9,6 +9,7 @@ vi.mock('node:os', async original => ({
   ...await original<typeof import('node:os')>(), homedir: () => h.home,
 }));
 vi.mock('../routes/transport/_mcp-host', () => ({
+  ensureOperatorToolsLoaded: async () => {},
   registerMcpHost: () => {},
   mcpHostServerOptions: () => ({ capabilities: {} }),
   tryBuildSpawnContext: async () => ({ kind: 'failed', reason: 'test denies all' }),
