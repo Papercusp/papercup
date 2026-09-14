@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SpecPoolEffect, CollapseGuardVerdict } from '../../../scheduler/spec-pool-preview';
+import { admissionPendingExplanation } from '../../../work-items-admission';
 
 const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn() }));
 
@@ -3239,6 +3240,61 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
     const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+  });
+
+  it('opens an immediate headless plan fleet while duplicate screening is pending, without calling spawn-only evidence "work"', async () => {
+    // This is the combined workflow that regressed: the owner asked for an
+    // immediate headless EXISTING-PLAN fleet while its work item was still at
+    // the duplicate-screening claim floor. Screening is a claim predicate, not
+    // a process-launch prerequisite; the launcher must still open the member.
+    const screeningNotice = admissionPendingExplanation();
+    expect(screeningNotice).toContain('duplicate screening is pending for this WORK-ITEM CLAIM');
+    expect(screeningNotice).toContain('does not block opening an agent or fleet process');
+    expect(tool.guidance?.when).toContain('not a reason to delay opening the fleet');
+
+    promotePlanItemsMock.mockResolvedValueOnce({ promoted: 0, skipped: 1 });
+    launchTransaction.verify.mockResolvedValue({
+      agentStarted: null,
+      workerReady: false,
+      waitedMs: 30_000,
+      sessions: [],
+      note: 'first turn not yet observed',
+    });
+
+    const res = await invokeLaunchHandler(
+      {
+        name: 'Immediate Pending Screening Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        headless: true,
+      } as never,
+      {} as never,
+    );
+    const payload = parseHandlerPayload(res);
+
+    // `ok` is the verified-readiness axis, not the process-open axis. With no
+    // observed turn it must remain false even though opened[] proves the process
+    // launch succeeded — asserting true here would recreate the reporting bug.
+    expect(payload.ok).toBe(false);
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(payload.opened).toHaveLength(1);
+    expect(payload.failed).toEqual([]);
+    expect(payload.unverifiedMembers).toHaveLength(1);
+    expect(payload.launchTransaction.state).toBe('partial');
+    expect(payload.promotionFailsafe).toMatchObject({ ran: true, promoted: 0, skipped: 1 });
+    expect(payload.launchEvidence).toEqual({
+      version: 1,
+      processOpened: 1,
+      sessionRegistered: null,
+      firstTurn: null,
+      taskDisposition: { claimed: 0, noClaim: 0, unknown: 1 },
+    });
+    expect(payload.message).toContain('Process open alone is not proof that an agent is working.');
+    expect(payload.message).not.toContain('starts working immediately');
+    expect(payload.message).not.toContain('agents are working');
   });
 
   it('stamps the durable transaction identity into dispatch metadata', async () => {
