@@ -43,6 +43,7 @@ import {
   isBackgroundTestCommand,
   killJob,
   normalizeExpectedRgNoMatchResult,
+  normalizeExpectedPsPpidEmptyResult,
   normalizeExpectedSigpipeResult,
   readJobOutput,
   runForeground,
@@ -201,6 +202,15 @@ describe('runForeground', () => {
     expect(r.output.trim()).toBe('0');
   });
 
+  it('treats an empty numeric-parent ps probe as a successful empty enumeration', async () => {
+    const command = "ps --ppid 2147483647 -o pid= | awk '{print $1}'";
+    const r = await runForeground({ command, cwd: STATE, stateDir: STATE }, never, 10_000);
+
+    expect(r.status).toBe('completed');
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toBe('');
+  });
+
   it('keeps a bare rg no-match as a failed search', async () => {
     const fixture = mkdtempSync(join(tmpdir(), 'cap-bash-rg-no-match-'));
     const file = join(fixture, 'fixture.txt');
@@ -224,6 +234,26 @@ describe('runForeground', () => {
     expect(normalizeExpectedRgNoMatchResult('rg -l -F missing fixture.txt | wc -l && echo done', 'failed', 1)).toEqual({
       status: 'failed',
       exitCode: 1,
+    });
+  });
+
+  it('normalizes only an empty numeric-parent ps probe', () => {
+    const command = "ps --ppid 12345 -o pid= | awk '{print $1}'";
+    expect(normalizeExpectedPsPpidEmptyResult(command, 'failed', 1, '')).toEqual({
+      status: 'completed',
+      exitCode: 0,
+    });
+    expect(normalizeExpectedPsPpidEmptyResult(command, 'failed', 1, 'ps: invalid option')).toEqual({
+      status: 'failed',
+      exitCode: 1,
+    });
+    expect(normalizeExpectedPsPpidEmptyResult("ps --ppid '$PPID' -o pid= | awk '{print $1}'", 'failed', 1, '')).toEqual({
+      status: 'failed',
+      exitCode: 1,
+    });
+    expect(normalizeExpectedPsPpidEmptyResult(command, 'completed', 0, '')).toEqual({
+      status: 'completed',
+      exitCode: 0,
     });
   });
 
