@@ -1303,7 +1303,7 @@ export default defineTool({
                           targetSha: targetRuntimeSha,
                           targetVersion: runtimeProvenance?.observedTargetRuntime.version,
                           reporterSession: id.ownerId,
-                          toolSchemaVersion: normalizedToolFailure?.report?.schemaRevision ?? null,
+                          toolSchemaVersion: args.toolFailure?.schemaRevision ?? null,
                         }),
                       }
                     : {}),

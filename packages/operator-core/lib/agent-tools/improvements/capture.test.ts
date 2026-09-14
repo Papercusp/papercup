@@ -24,7 +24,9 @@ const drainAdmission = vi.hoisted(() => ({
 
 const stalenessHints = vi.hoisted(() => ({
   toolFailure: vi.fn(async () => null as string | null),
-  paths: vi.fn(async () => null as string | null),
+  paths: vi.fn(
+    async (_paths: readonly string[], _overrides?: { deployedSha?: () => string | null }) => null as string | null,
+  ),
 }));
 
 const trustedRuntime = vi.hoisted(() => ({
@@ -52,7 +54,8 @@ vi.mock('../../tool-schema-staleness', async () => {
     pathsStalenessHint: stalenessHints.paths,
   };
 });
-vi.mock('../../testing-run-store', () => ({
+vi.mock('../../testing-run-store', async (original) => ({
+  ...(await original<typeof import('../../testing-run-store')>()),
   readTrustedHarnessTestRunProvenance: trustedRuntime.read,
 }));
 vi.mock('../../harness/improvements/agent-review', () => ({
@@ -434,7 +437,9 @@ describe('improvements:capture tool envelope', () => {
       ['packages/operator-core/lib/agent-tools/improvements/capture.ts'],
       expect.objectContaining({ deployedSha: expect.any(Function) }),
     );
-    const stalenessOverride = stalenessHints.paths.mock.calls[0]?.[1] as { deployedSha?: () => string };
+    const stalenessOverride = stalenessHints.paths.mock.calls[0]?.[1] as unknown as {
+      deployedSha?: () => string | null;
+    };
     expect(stalenessOverride.deployedSha?.()).toBe('target-sha-3170');
     expect(passed.payloadExtra?.runtimeProvenance?.observedTargetRuntime).toMatchObject({
       sha: 'target-sha-3170',
@@ -494,7 +499,9 @@ describe('improvements:capture tool envelope', () => {
       provenance: 'trusted-test-run',
     });
     expect(passed.payloadExtra?.freshnessEnvelope?.observedSourceSha).toBe('trusted-target-sha');
-    const stalenessOverride = stalenessHints.paths.mock.calls[0]?.[1] as { deployedSha?: () => string };
+    const stalenessOverride = stalenessHints.paths.mock.calls[0]?.[1] as unknown as {
+      deployedSha?: () => string | null;
+    };
     expect(stalenessOverride.deployedSha?.()).toBe('trusted-target-sha');
   });
 
