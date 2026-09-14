@@ -178,6 +178,14 @@ const NOT_EXERCISED_RUBRIC_GUIDANCE =
   'CONDITIONAL: when observation.notExercised is non-empty, provide observation.rubricRef or the top-level rubricRef compatibility alias; omit it for a free-text observation.';
 
 /**
+ * The title/body shorthand is a cross-field contract that JSON Schema cannot
+ * derive from the individual optional properties. Keep the condition beside
+ * the validator so discovery can publish the same rule the refinement enforces.
+ */
+const CAPTURE_TEXT_CALL_CONSTRAINT =
+  'at least one of title, body, or toolFailure is required; title is required when both body and toolFailure are omitted (body-only captures derive title from the first non-empty body line)';
+
+/**
  * EI-19325151590626958 — the DEFAULT conditionKey for a rubric-graded scorecard observation.
  *
  * THE FLOOD: a rubric-graded observation is auto-titled from its rubricRef, so every emission
@@ -940,7 +948,8 @@ export default defineTool({
               'title is required unless body or toolFailure is supplied (body-only captures derive the title from the first non-empty body line)',
           });
         }
-      }),
+      })
+      .meta({ 'x-papercusp-call-constraint': CAPTURE_TEXT_CALL_CONSTRAINT }),
   ),
   result: z
     .object({

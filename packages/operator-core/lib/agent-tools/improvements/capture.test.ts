@@ -573,6 +573,29 @@ describe('improvements:capture tool envelope', () => {
     ).toBe(false);
   });
 
+  it('publishes the conditional title/body/toolFailure prerequisite (EI-22685673523193526)', () => {
+    const json = z.toJSONSchema(captureTool.args as never) as {
+      'x-papercusp-call-constraint'?: string;
+    };
+
+    expect(json['x-papercusp-call-constraint']).toContain('at least one of title, body, or toolFailure');
+    expect(json['x-papercusp-call-constraint']).toContain(
+      'title is required when both body and toolFailure are omitted',
+    );
+
+    const argsSchema = captureTool.args as {
+      safeParse: (value: unknown) => { success: boolean };
+    };
+    expect(argsSchema.safeParse({ lane: 'observation', checkDuplicatesOnly: true }).success).toBe(false);
+    expect(argsSchema.safeParse({ lane: 'observation', body: 'body-only capture' }).success).toBe(true);
+    expect(
+      argsSchema.safeParse({
+        lane: 'observation',
+        toolFailure: { toolName: 'facts:assert', message: 'invalid args' },
+      }).success,
+    ).toBe(true);
+  });
+
   it('routes a one-off tool failure to correlated non-claimable probation', async () => {
     mockIdentity.mockReturnValue(identity('static-client', 'su-reporter'));
     await callTool({
