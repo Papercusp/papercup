@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { sanitizeToolName, buildCatalog, SU_CATALOG } from '../targets/su-catalog';
+import { FOR_YOU_BECAUSE_RELATIONS, messageBodyArg } from '../../agent-tools/coordination/message-fields';
 
 const ANTHROPIC_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -138,6 +139,26 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     });
     expect(input.required).toEqual(['slug', 'title', 'body']);
     expect(entry.description).toMatch(/PG-canonical/i);
+  });
+
+  it('coord:send teaches the current structured-body and directed-request contract', () => {
+    const entry = SU_CATALOG.find((candidate) => candidate.name === 'coord:send')!;
+    const input = entry.input as { required: string[]; properties: Record<string, any> };
+    expect(input.required).toEqual(['to', 'summary', 'expects']);
+    expect(input.properties.expects.enum).toEqual(['ack', 'answer', 'action', 'none']);
+    const body = input.properties.body;
+    expect(body).toMatchObject({ type: 'array', minItems: 1, maxItems: 20 });
+    expect(body.items.required).toContain('text');
+    expect(body.items.additionalProperties).toBe(false);
+    expect(body.items.properties.forYouBecause.properties.relation.enum).toEqual([...FOR_YOU_BECAUSE_RELATIONS]);
+    expect(body.items.properties).not.toHaveProperty('expects');
+    expect(input.properties).not.toHaveProperty('basedOn');
+    expect(entry.description).toContain('forYouBecause');
+    expect(entry.description).toContain('600 characters');
+    // Canonical pure schema, not a permissive mock: do not boot the live dispatcher.
+    expect(messageBodyArg.safeParse('Please review.').success).toBe(false);
+    expect(messageBodyArg.safeParse([{ text: 'Please review.', forYouBecause: { relation: 'other', note: 'Independent reviewer.' } }]).success).toBe(true);
+    expect(messageBodyArg.safeParse([{ text: 'Please review.', expects: 'action' }]).success).toBe(false);
   });
 
   it('advertises improvements:capture ideation.cheapExperiment as a structured ScoutExperiment', () => {

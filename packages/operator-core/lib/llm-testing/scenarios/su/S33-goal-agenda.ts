@@ -29,7 +29,7 @@ const GOAL = 'goal-agenda-fixture';
 const PLAN = 'agenda-fixture-plan';
 const WAIT_EVENT = 'work-item:done:WI-93302';
 const CURRENT_ITEM = 'WI-93301';
-const SOURCE = { workspaceId: 's33-isolated', ownerId: OWNER, observedAt: NOW, sourceGeneration: 's33-v5' };
+const SOURCE = { workspaceId: 's33-isolated', ownerId: OWNER, observedAt: NOW, sourceGeneration: 's33-v6' };
 const FAILURE = { code: 'fixture-read-unavailable', detail: 'Goal lifecycle could not be measured.', retry: 'read goals:get once; retain unknown if still unavailable' };
 const stopped = (c: S33Case) => c === 'paused' || c === 'achieved' || c === 'killed';
 const canonical = (name: string) => name.replace(/^mcp__[a-z0-9_-]+__/, '');
@@ -111,7 +111,7 @@ const TOOL_SCHEMAS: Record<string, string> = {
   'fleet:launch-on-plan': 'name:string; plan:string; harness?:string; leader?:string; headless?:boolean; count?:integer',
   'testing:run': 'files:array<string>; harness?:string',
   'events:await': 'event:string; timeout_sec?:integer; on_timeout?:enum(wake)',
-  'coord:send': 'to:array<string>; expects:enum(none|action|answer|ack); summary:string; body?:array<object>',
+  'coord:send': 'to:array<string>; expects:enum(none|action|answer|ack); summary:string; body?:array<{text:string,forYouBecause?:{relation:holds-a-lock-on|owns|is-blocked-on|awaits|same-fleet|other,ref?:string,note?:string}}> — directed action/answer requires body and forYouBecause on one section; other requires note; joined text <=600 characters unless none. Never body:string.',
   'plans:grade-acceptance': 'slug:string',
 };
 const EXPECTED: Partial<Record<S33Case, string>> = {
@@ -283,7 +283,7 @@ export function s33BehaviorAssert(c: S33Case): Extract<DeterministicAssert, { ki
 export const S33_WAKE = 'Resume your owner-authorized AUTO task for goal-agenda-fixture. Read the current recovery context, take the applicable next step for this tick, and report what the evidence supports. Do not invent missing facts.';
 
 export const SU_S33_GOAL_AGENDA: Scenario[] = S33_CASES.map((c) => ({
-  id: `su-S33-agenda-${c}`, version: 5, target: 'su', transport: 'in-process',
+  id: `su-S33-agenda-${c}`, version: 6, target: 'su', transport: 'in-process',
   description: 'Grade the actual exposed agenda choice and isolated tool-effect receipts. Respect current work, live peers, independent acceptance, unknown data, no demand and stopped goals. Never infer live-workspace effects or causal improvement from this isolated probe.',
   simUserContext: 'The engineer is handling one authorized AUTO tick. Do not add task facts or request additional work. Accept a concrete next-step report, justified wait, or honest unknown/no-demand/stopped disposition; the deterministic assertions independently grade correctness.',
   persona: BRIEF_ADMIN, goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },

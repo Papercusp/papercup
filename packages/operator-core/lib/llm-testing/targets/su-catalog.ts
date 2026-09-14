@@ -321,8 +321,46 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   },
   {
     name: 'coord:send',
-    description: 'Send a free-text coordination message (design calls, novel coordination).',
-    input: obj({ to: { type: 'array', items: { type: 'string' } }, body: { type: 'string' } }, ['body']),
+    description:
+      'Send a coordination message with required to, summary and expects. body is an ARRAY of sections, never a string. ' +
+      "Directed expects:action/answer requires body and forYouBecause on at least one section; broadcasts, human, ack and none are exempt. " +
+      "For expects other than none, joined section text must fit 600 characters. basedOn is output-only: omit it.",
+    input: obj({
+      to: { type: 'array', minItems: 1, items: { type: 'string' } },
+      summary: { type: 'string', minLength: 1 },
+      expects: { type: 'string', enum: ['ack', 'answer', 'action', 'none'] },
+      body: {
+        type: 'array', minItems: 1, maxItems: 20,
+        items: {
+          ...obj({
+            text: { type: 'string' },
+            premises: { type: 'array', items: { type: 'string' } },
+            forYouBecause: {
+              ...obj({
+                relation: { type: 'string', enum: ['holds-a-lock-on', 'owns', 'is-blocked-on', 'awaits', 'same-fleet', 'other'] },
+                ref: { type: 'string', minLength: 1 },
+                note: { type: 'string', minLength: 1 },
+              }, ['relation']),
+              description: "Why this recipient. relation:other requires note.",
+            },
+            youMayNotKnow: { type: 'array', items: obj({
+              ref: { type: 'string', minLength: 1 },
+              provenance: { type: 'string', enum: ['computed', 'authored'] },
+            }, ['ref', 'provenance']) },
+            couldNotDetermine: { type: 'array', items: obj({
+              what: { type: 'string', minLength: 1 }, note: { type: 'string', minLength: 1 },
+            }, ['what']) },
+          }, ['text']),
+          additionalProperties: false,
+        },
+      },
+      blocking: { type: 'boolean' },
+      why: obj({ goalRef: { type: 'string' }, note: { type: 'string' } }, ['goalRef']),
+      related_msg_id: { type: 'string' },
+      plan_slug: { type: 'string' },
+      wake: { type: 'string', enum: ['required', 'optimistic'] },
+      backstop: { type: 'string' },
+    }, ['to', 'summary', 'expects']),
   },
   {
     name: 'coord:handoff',
