@@ -14,6 +14,7 @@ import { defineTool } from "@papercusp/agent-mcp";
 import { COORD_ROLES } from "../coordination/roles";
 import {
   getWorkItem,
+  getWorkItemsByIds,
   getWorkItemDetail,
   getWorkItemThreadWindow,
   SETTLED_WORK_ITEM_STATES,
@@ -736,6 +737,28 @@ export default defineTool({
     const sourceReadOptions = checksOnly
       ? { includeBody: false, payloadProjection: 'none' as const }
       : args.resume ? undefined : workItemsGetSourceReadOptions((ctx as SourceProjectionContext).sourceProjection, readDetail);
+    const canBatchProjectedBaseRead =
+      ids.length > 1 &&
+      sourceSelection !== null &&
+      !args.resume &&
+      !checksOnly &&
+      !readDetail &&
+      !boundedThread &&
+      !needsPriorWork &&
+      !needsCitedFacts &&
+      !needsCheckpoint &&
+      !needsPlanItemBlocked &&
+      !needsClaimCollision &&
+      !needsPlanItemTextDrift &&
+      !needsHolder &&
+      !needsThreadWindow &&
+      !needsCompletionFreshness &&
+      !needsDeploymentPosition &&
+      !needsLifecycle &&
+      !needsPriorAttempts &&
+      !needsPriorAttemptResolution &&
+      !needsWorkItemDetail &&
+      sourceReadOptions !== undefined;
     const stageSamples: Array<{ baseReadMs: number | null; enrichmentMs: number | null }> = [];
     // P-030: resolved ONCE for the whole bulk read. The reader is an argument to
     // the holder lens, never a cache-key dimension — the per-id `cachedRead`
@@ -746,12 +769,49 @@ export default defineTool({
     // caller LEGITIMATE here, so an unguarded identity resolve would let the
     // enrichment fail the read it decorates.
     const reader = holderContextReader(ctx as Parameters<typeof holderContextReader>[0]);
+    let projectedBatch: Awaited<ReturnType<typeof getWorkItemsByIds>> | typeof WORK_ITEMS_GET_TIMEOUT | null = null;
+    let projectedBatchError: string | null = null;
+    let projectedBatchElapsedMs: number | null = null;
+    if (canBatchProjectedBaseRead) {
+      const batchStartedAt = Date.now();
+      const remainingBudgetMs = Math.max(1, WORK_ITEMS_GET_BUDGET_MS - (batchStartedAt - bulkStartedAt));
+      const bounded = await withWorkItemsGetBudget(
+        getWorkItemsByIds(ids, args.harness, sourceReadOptions),
+        { timeoutMs: remainingBudgetMs, signal: ctx.signal, label: 'work_items:get:projected-batch' },
+      );
+      projectedBatchElapsedMs = Date.now() - batchStartedAt;
+      if (bounded.reason === 'error') {
+        projectedBatchError = bounded.error instanceof Error ? bounded.error.message : String(bounded.error);
+        projectedBatch = WORK_ITEMS_GET_TIMEOUT;
+      } else {
+        projectedBatch = bounded.reason === null ? bounded.value : WORK_ITEMS_GET_TIMEOUT;
+      }
+    }
+    const projectedById = projectedBatch && projectedBatch !== WORK_ITEMS_GET_TIMEOUT
+      ? new Map(projectedBatch.map((item) => [item.id, item]))
+      : null;
     const env = await runBulk(
       ids,
       async (id, index) => {
         const remainingBudgetMs = Math.max(1, WORK_ITEMS_GET_BUDGET_MS - (Date.now() - bulkStartedAt));
         const stage = { baseReadMs: null as number | null, enrichmentMs: null as number | null };
         stageSamples[index] = stage;
+        if (canBatchProjectedBaseRead) {
+          stage.baseReadMs = projectedBatchElapsedMs;
+          stage.enrichmentMs = 0;
+          if (projectedBatch === WORK_ITEMS_GET_TIMEOUT) {
+            if (projectedBatchError) {
+              return { ok: false as const, id, error: projectedBatchError, retryable: true as const, phase: 'read' as const };
+            }
+            return workItemsGetUnavailableResult(id, remainingBudgetMs, 'timeout');
+          }
+          const workItem = projectedById?.get(id);
+          if (!workItem) return { ok: false as const, id, availability: 'absent' as const, error: `work_item '${id}' not found` };
+          const completion = workItem.terminalCompletionEvidence ?? null;
+          const hasCompletionEvidence =
+            completion !== null && typeof completion === 'object' && !Array.isArray(completion) && Object.keys(completion).length > 0;
+          return { ok: true as const, id, availability: 'available' as const, workItem, completion, hasCompletionEvidence };
+        }
         const operation = (async () => {
         // Cache the per-id read (cache-expensive-tool-reads P-005). Tagged with the
         // base TABLE `work_items` (the trigger producer — bumped on EVERY work-item

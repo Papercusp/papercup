@@ -8,6 +8,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
 const getWorkItem = vi.fn();
+const getWorkItemsByIds = vi.fn();
 const getWorkItemDetail = vi.fn();
 const getWorkItemThreadWindow = vi.fn();
 const getWorkItemCheckpointWithMeta = vi.fn();
@@ -15,6 +16,7 @@ const getWorkItemCheckpointFreshness = vi.fn();
 
 vi.mock('../../work-items', () => ({
   getWorkItem: (...args: unknown[]) => getWorkItem(...args),
+  getWorkItemsByIds: (...args: unknown[]) => getWorkItemsByIds(...args),
   getWorkItemDetail: (...args: unknown[]) => getWorkItemDetail(...args),
   getWorkItemThreadWindow: (...args: unknown[]) => getWorkItemThreadWindow(...args),
   SETTLED_WORK_ITEM_STATES: ['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped'],
@@ -75,7 +77,7 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     expect(out.data.results[0]).toMatchObject({ availability: 'absent' });
   });
 
-  it('runs a projected 10-item summary in a bounded concurrent pool and skips historical enrichments', async () => {
+  it('runs a payload-dependent 10-item summary in a bounded concurrent pool and skips historical enrichments', async () => {
     const ids = Array.from({ length: 10 }, (_, index) => `WI-${index + 1}`);
     let active = 0;
     let peak = 0;
@@ -94,7 +96,14 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
         signal: new AbortController().signal,
         metadata,
         sourceProjection: {
-          pick: ['results[].id', 'results[].workItem.state', 'results[].workItem.title', 'counts', 'read'],
+          pick: [
+            'results[].id',
+            'results[].workItem.state',
+            'results[].workItem.title',
+            'results[].workItem.payload.futureField',
+            'counts',
+            'read',
+          ],
         },
       } as never,
     ) as Promise<Out & { data: { read: Record<string, unknown> } }>;
@@ -119,6 +128,49 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     });
     expect(Number(out.data.read.elapsedMs)).toBeLessThan(4_000);
     expect(metadata).toHaveBeenCalledWith(expect.objectContaining({ workItemsGet: out.data.read }));
+  });
+
+  it('uses one set-based read for projected multi-id completion evidence', async () => {
+    const ids = ['WI-batch-1', 'WI-batch-2', 'WI-batch-3', 'WI-batch-4', 'WI-batch-5', 'WI-batch-6'];
+    getWorkItemsByIds.mockResolvedValue(
+      ids.map((id) => ({
+        id,
+        kind: 'bug',
+        family: 'issue',
+        harness: 'papercusp',
+        state: 'done',
+        title: id,
+        terminalCompletionEvidence: { summary: `${id} complete` },
+      })),
+    );
+
+    const out = (await get.handler(
+      { ids, detail: true, threadLimit: 0 } as never,
+      {
+        ...ctx,
+        sourceProjection: {
+          pick: [
+            'results[].id',
+            'results[].workItem.state',
+            'results[].completion.filesChanged',
+            'results[].completion.testsRun',
+            'results[].completion.testResult',
+            'read',
+          ],
+        },
+      } as never,
+    )) as Out & { data: { read: Record<string, unknown> } };
+
+    expect(getWorkItemsByIds).toHaveBeenCalledOnce();
+    expect(getWorkItemsByIds).toHaveBeenCalledWith(
+      ids,
+      undefined,
+      { includeBody: false, payloadProjection: 'completionEvidence' },
+    );
+    expect(getWorkItem).not.toHaveBeenCalled();
+    expect(out.data.results).toHaveLength(ids.length);
+    expect(out.data.results.every((row) => row.availability === 'available')).toBe(true);
+    expect(out.data.read).toMatchObject({ requested: ids.length, available: ids.length, unavailable: 0 });
   });
 
   it('runs detail=true with threadLimit in the bounded pool instead of serializing the batch', async () => {
