@@ -85,6 +85,7 @@ const scriptedEngine = vi.hoisted(() => ({
   // decides "the answer was lost".
   questionVerdicts: [] as Array<{ behavior: string; updatedInput?: Record<string, unknown>; message?: string }>,
   requests: [] as string[],
+  sdkPermissions: [] as Array<{ mode: string | undefined; bypass: boolean | undefined }>,
   engines: [] as (ClaudeSuEngine | SuRpcEngine)[],
   events: [] as SuSessionEvent[],
   initialization: Promise.resolve(),
@@ -125,8 +126,7 @@ vi.mock('../su-session-claude-engine', async (original) => {
       if (scriptedEngine.real) {
         // Observe the production host; never supply a query, attach an adapter,
         // or send an owner turn from the fixture in the live-provider journey.
-        const engine = actual.startClaudeSuEngine(args[0], args[1], args[2],
-          process.env.PUI_REAL_APPROVAL === '1' ? { ...args[3], toolApproval: 'prompt' } : args[3]);
+        const engine = actual.startClaudeSuEngine(args[0], args[1], args[2], args[3]);
         scriptedEngine.engines.push(engine);
         void (async () => {
           for await (const { event } of engine.adapter.host.subscribe()) {
@@ -136,6 +136,8 @@ vi.mock('../su-session-claude-engine', async (original) => {
         return engine;
       }
       const query: NonNullable<ClaudeEngineOptions['query']> = ({ prompt, options: sdkOptions }) => {
+        scriptedEngine.sdkPermissions.push({ mode: sdkOptions.permissionMode,
+          bypass: sdkOptions.allowDangerouslySkipPermissions });
         const output = new PassThrough({ objectMode: true });
         let nativeId = '';
         const result = () => output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
@@ -344,9 +346,7 @@ const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
 vi.mock('../su-session-rpc-engine', async (original) => {
   const actual = await original<typeof import('../su-session-rpc-engine')>();
   return { ...actual, startSuRpcEngine(...args: Parameters<typeof actual.startSuRpcEngine>) {
-    const engine = actual.startSuRpcEngine(args[0], args[1],
-      scriptedEngine.real && process.env.PUI_REAL_APPROVAL === '1'
-        ? { ...args[2], toolApproval: 'prompt' } : args[2]);
+    const engine = actual.startSuRpcEngine(args[0], args[1], args[2]);
     scriptedEngine.engines.push(engine);
     void (async () => {
       for await (const { event } of engine.adapter.host.subscribe()) scriptedEngine.events.push(event);
@@ -821,7 +821,7 @@ let operatorPort: number;
 let previousEnv: Record<string, string | undefined>;
 let sessionTraffic: Array<Record<string, unknown>> = [];
 let launchRequests: unknown[] = [];
-let attachedCapability: 'current' | 'missing' | 'disabled' = 'current';
+let attachedCapability: 'current' | 'missing' | 'disabled' | 'unsafe' = 'current';
 type TransportFault = 'none' | 'startup-disconnect' | 'refuse' | 'lost-ack' | 'wrong-command-ack' | 'wrong-session-ack';
 let transportFault: TransportFault = 'none';
 let commandPosts: SuSessionCommand[] = [];
@@ -1346,6 +1346,7 @@ beforeAll(async () => {
       if (pathname === '/api/tui/identity' && attachedCapability !== 'current') {
         const identity = await response.json();
         if (attachedCapability === 'missing') delete identity.capabilities;
+        else if (attachedCapability === 'unsafe') delete identity.capabilities.attachedSuSessionApprovals;
         else identity.capabilities = { ...identity.capabilities, attachedSuSession: false };
         response = Response.json(identity, { status: response.status });
       }
@@ -1500,6 +1501,7 @@ beforeEach(async () => {
   scriptedEngine.questionPrompt = 'Keep or change the draft title?';
   scriptedEngine.questionOptions = ['Keep', 'Change'];
   scriptedEngine.requests = [];
+  scriptedEngine.sdkPermissions = [];
   scriptedEngine.events = [];
   scriptedEngine.initialization = Promise.resolve();
   initializeWarnings = [];
@@ -1749,7 +1751,21 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     },
   );
 
-  test('new-session setup reviews every effective choice and launches only from Review', async () => {
+  test('new-session setup refuses an operator without the safe native approval capability', async () => {
+    attachedCapability = 'unsafe';
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await openComposer(pane, false);
+      pane.write('retain this draft');
+      pane.enter();
+      await pane.waitFor('safe native approvals');
+      expect(launchRequests).toEqual([]);
+      pane.escape();
+      await pane.waitFor('retain this draft');
+    } finally { await pane.stop(); }
+  });
+
+  test('AUTO-BAR-R-04-P-010: new-session setup reviews every effective choice and launches only from Review', async () => {
     const prompt = '  setup exact λ draft  ';
     const pane = new PuiPane(bin, operatorPort, home);
     try {
@@ -1784,6 +1800,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         attached_engine: true, agent: 'claude', harness_slug: HARNESS, account: 'default',
       })]);
       expect(scriptedEngine.requests).toEqual([prompt]);
+      expect(scriptedEngine.sdkPermissions).toEqual([{ mode: 'default', bypass: undefined }]);
       expect(nativeTerminalLaunch).not.toHaveBeenCalled();
       expect((await waitForSavedTurn(prompt)).transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
       console.info('PUI_SETUP_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, traffic: sessionTraffic }));
@@ -1850,7 +1867,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     } finally { await pane.stop(); await close(proxy); }
   });
 
-  test('new-session setup is reachable from a clean workbench with no running operator', async () => {
+  test('AUTO-BAR-R-08-P-010: new-session setup is reachable from a clean workbench with no running operator', async () => {
     const unused = createServer();
     const closedPort = await listen(unused);
     await close(unused);
@@ -1873,6 +1890,59 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(scriptedEngine.requests).toEqual([]);
       expect(nativeTerminalLaunch).not.toHaveBeenCalled();
     } finally { await pane.stop(); rmSync(cleanHome, { recursive: true, force: true }); }
+  });
+
+  test('AUTO-BAR-R-08-P-010: new-session setup registers a project from an empty registry and clean profile', async () => {
+    const { loadHarnessRegistry, saveHarnessRegistry } = await import('../harness-registry');
+    const savedRegistry = await loadHarnessRegistry(WORKSPACE);
+    const projectSlug = `onboarding-${randomUUID().slice(0, 8)}`;
+    const projectPath = mkdtempSync(path.join(home, 'new-owner-project-'));
+    const cleanHome = mkdtempSync(path.join(home, 'new-owner-profile-'));
+    writeFileSync(path.join(projectPath, 'README.md'), '# Newly registered project\n');
+    await saveHarnessRegistry({ projects: [] }, WORKSPACE, { allowEmpty: true });
+    const pane = new PuiPane(bin, operatorPort, cleanHome, { args: ['hud'] });
+    try {
+      await pane.waitFor('Welcome to pui');
+      pane.escape();
+      await pane.waitFor('New SU session — 1 Context');
+      await pane.waitFor('Connection: Connected');
+      await pane.waitFor('No matching projects');
+      expect(launchRequests).toEqual([]);
+      pane.write('c');
+      await pane.waitFor('Register project');
+      pane.write(projectSlug);
+      pane.enter();
+      pane.write(projectPath);
+      pane.enter();
+      await pane.waitFor('REGISTER PROJECT');
+      expect((await loadHarnessRegistry(WORKSPACE)).projects).toEqual([]);
+      expect(launchRequests).toEqual([]);
+      pane.enter();
+      await pane.waitFor('Project registered', { timeoutMs: 60_000 });
+      expect((await loadHarnessRegistry(WORKSPACE)).projects).toEqual([
+        expect.objectContaining({ slug: projectSlug, path: projectPath }),
+      ]);
+      expect(launchRequests).toEqual([]);
+      pane.enter();
+      await pane.waitFor('Runtime: Ready', { timeoutMs: 45_000 });
+      pane.enter();
+      await pane.waitFor('New SU session — 3 Review');
+      expect(pane.screen()).toContain(projectSlug);
+      expect(pane.screen()).toContain('Permissions: native approval prompts');
+      pane.enter();
+      await pane.waitFor('Message — Enter send', { timeoutMs: 60_000 });
+      expect(launchRequests).toEqual([expect.objectContaining({ harness_slug: projectSlug, account: 'default' })]);
+      expect(scriptedEngine.requests).toEqual([]);
+      expect(nativeTerminalLaunch).not.toHaveBeenCalled();
+      console.info('PUI_EMPTY_REGISTRY_ONBOARDING_ACCEPTANCE', JSON.stringify({ binarySha256,
+        projectSlug, registryInitiallyEmpty: true, nativeTerminalLaunches: 0 }));
+    } finally {
+      await pane.stop();
+      await stopEngines();
+      await saveHarnessRegistry(savedRegistry, WORKSPACE);
+      rmSync(projectPath, { recursive: true, force: true });
+      rmSync(cleanHome, { recursive: true, force: true });
+    }
   });
 
   test('first exact draft reaches the structured SU engine, streams tools/reply, and reopens', async () => {
@@ -3091,12 +3161,15 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
   // Falsifier: "allow executes a broader action or hits an unrelated session."
   // Probe (the clause's own): two isolated requests, approve one, check exact
   // execution + peer still pending.
-  test('PUI-APPROVAL-ALLOW: approving one request executes exactly it and leaves its peer pending', async () => {
+  test('PUI-APPROVAL-ALLOW / AUTO-BAR-R-09-P-010: approving one request executes exactly it and leaves its peer pending', async () => {
     scriptedEngine.successText = 'PUI approval clause replied';
     scriptedEngine.mode = 'approval';
     const pane = new PuiPane(bin, operatorPort, home);
     try {
       const { focused, peer } = await raiseTwoApprovals(pane, 'PUI approval allow clause probe');
+      expect(scriptedEngine.sdkPermissions).toEqual([{ mode: 'default', bypass: undefined }]);
+      expect(launchRequests[0]).toMatchObject({ account: 'default' });
+      expect(launchRequests[0].mode ?? null).toBeNull();
       const peerCard = pendingNativeCards().find((card) => card.prompt.includes(String(peer.input.command)));
       expect(peerCard, pane.screen()).toBeDefined();
 
@@ -3167,12 +3240,15 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
 
   // PUI-APPROVAL-DENY — declining a request stops exactly that action.
   // Falsifier: "denied action executes or affects a different request."
-  test('PUI-APPROVAL-DENY: declining one request executes nothing and leaves its peer pending', async () => {
+  test('PUI-APPROVAL-DENY / AUTO-BAR-R-09-P-010: declining one request executes nothing and leaves its peer pending', async () => {
     scriptedEngine.successText = 'PUI approval deny clause replied';
     scriptedEngine.mode = 'approval';
     const pane = new PuiPane(bin, operatorPort, home);
     try {
       const { focused, peer } = await raiseTwoApprovals(pane, 'PUI approval deny clause probe');
+      expect(scriptedEngine.sdkPermissions).toEqual([{ mode: 'default', bypass: undefined }]);
+      expect(launchRequests[0]).toMatchObject({ account: 'default' });
+      expect(launchRequests[0].mode ?? null).toBeNull();
       const peerCard = pendingNativeCards().find((card) => card.prompt.includes(String(peer.input.command)));
       expect(peerCard, pane.screen()).toBeDefined();
 

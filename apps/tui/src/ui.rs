@@ -4574,10 +4574,10 @@ fn draw_tutorial(f: &mut Frame, step: usize) {
             "Welcome to pui — the Papercusp workbench",
             "pui is your terminal HUD over the operator. Everything here is live —\n\
              it reads + reacts to the same backend the desktop app uses.\n\n\
-             Tabs (press 1‑0 / m, or  <  /  >  to cycle):\n\
-             \x20 Operator · Inbox · Plans · Fleet · Pots · Docs · Testing · Config · Plugins · Settings · Memory\n\
-             \x20 Fleet shows every live agent + plan progress at a glance (and launches new ones).\n\n\
-             Pick the pot you're working in with  [  /  ] .",
+             Destinations (1–8 / h s m c a n, or < / > to cycle):\n\
+             \x20 Overview · Agent Chat · Inbox · Plans · Fleet · Sessions · Pots\n\
+             \x20 Docs · Testing · Config · Memory · Cupboard · Voice · Network\n\n\
+             Sessions > New chooses your project and runtime before launch.",
         ),
         (
             "Start your first PUI session",

@@ -1299,6 +1299,14 @@ pub struct CreateProjectResponse {
     pub project: Option<HarnessRef>,
     #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
+    pub provisioning: Option<ProjectProvisioning>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProjectProvisioning {
+    pub ok: bool,
+    pub error: Option<String>,
 }
 
 // NOTE: `BindingResolveResponse` was removed with the retired per-harness

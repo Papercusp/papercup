@@ -6759,7 +6759,13 @@ impl App {
         let projects = self.setup_projects();
         let setup = self.session_setup.as_mut().expect("setup key requires setup");
         if let Some(field) = setup.project_entry {
-            if setup.project_pending { return Action::Render; }
+            if setup.project_pending {
+                if code == KeyCode::Esc {
+                    setup.project_entry = None;
+                    setup.note = Some("Registration is still being checked. Its result will appear here; refresh projects before retrying.".into());
+                }
+                return Action::Render;
+            }
             match code {
                 KeyCode::Esc => { setup.project_entry = None; setup.note = None; }
                 KeyCode::BackTab | KeyCode::Tab => {

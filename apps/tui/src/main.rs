@@ -1964,8 +1964,7 @@ async fn run<B: Backend>(
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
                 Action::CheckSessionSetup => {
-                    tokio::spawn(backend_identity_fetch(tx.clone()));
-                    let _ = sync_refetch.send(RefetchSignal::SkipPlanReads);
+                    tokio::spawn(session_setup_fetch(tx.clone()));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
                 Action::ReconnectSessionSetup(reconnect) => {
@@ -1978,6 +1977,10 @@ async fn run<B: Backend>(
                         terminal.clear()?;
                         terminal.draw(|f| ui::draw(f, &app))?;
                     }
+                }
+                Action::RegisterSetupProject { slug, path } => {
+                    tokio::spawn(register_setup_project(slug, path, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
                 Action::OpenSuSession {
                     harness,
@@ -2518,6 +2521,64 @@ async fn backend_identity_fetch(tx: UnboundedSender<Event>) {
         .map(|(_, identity)| identity)
         .map_err(|error| operator_failure_status_line(&client::selected_endpoint_label(), &error));
     let _ = tx.send(Event::BackendIdentity(result));
+}
+
+async fn session_setup_fetch(tx: UnboundedSender<Event>) {
+    let client = match selected_backend_identity().await {
+        Ok((client, identity)) => {
+            let _ = tx.send(Event::BackendIdentity(Ok(identity)));
+            client
+        }
+        Err(error) => {
+            let _ = tx.send(Event::BackendIdentity(Err(operator_failure_status_line(
+                &client::selected_endpoint_label(), &error))));
+            return;
+        }
+    };
+    // Setup reads do not queue behind unrelated pane/plan/status reads.
+    tokio::join!(
+        async {
+            match client.harnesses().await {
+                Ok(projects) => { let _ = tx.send(Event::Harnesses(projects)); }
+                Err(error) => { let _ = tx.send(Event::Error(format!("Setup projects: {error}"))); }
+            }
+        },
+        async {
+            match client.operator_config().await {
+                Ok(config) => { let _ = tx.send(Event::OperatorConfig(config)); }
+                Err(error) => { let _ = tx.send(Event::Error(format!("Setup runtime: {error}"))); }
+            }
+        },
+        async {
+            match client.accounts_status().await {
+                Ok(status) => {
+                    let _ = tx.send(Event::AccountRows(status.accounts));
+                    let _ = tx.send(Event::AccountPoolVerdicts(status.pool_verdict));
+                }
+                Err(error) => { let _ = tx.send(Event::Error(format!("Setup accounts: {error}"))); }
+            }
+        },
+    );
+}
+
+async fn register_setup_project(slug: String, path: String, tx: UnboundedSender<Event>) {
+    let result = tokio::time::timeout(Duration::from_secs(45), async {
+        let client = OperatorClient::from_discovery().await?;
+        let response = client.create_harness(&slug, &path).await?;
+        if let Some(error) = response.error { anyhow::bail!("{error}"); }
+        if !response.ok { anyhow::bail!("Operator did not confirm registration. Refresh projects before retrying."); }
+        if let Some(provisioning) = response.provisioning {
+            if !provisioning.ok {
+                anyhow::bail!("Project was registered but its data store is not ready: {}. Repair it on the operator, then refresh projects.",
+                    provisioning.error.as_deref().unwrap_or("provisioning failed"));
+            }
+        } else {
+            anyhow::bail!("Project was registered, but this operator did not report data-store readiness. Refresh projects and check its status before starting.");
+        }
+        client.harnesses().await
+    }).await.map_err(|_| "Registration has not been confirmed. Esc returns to Context; r refreshes projects before retrying.".to_string())
+        .and_then(|result| result.map_err(|error| format!("Project registration: {error}")));
+    let _ = tx.send(Event::SetupProjectCreated { slug, result });
 }
 
 fn setup_reconnect_command(
