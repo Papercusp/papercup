@@ -485,6 +485,15 @@ export default defineTool({
       query: args.query,
       mode,
       window: { until: snapshotUntil },
+      ...(args.include_coord && filters?.sessionId
+        ? {
+            coord_search: {
+              requested: true,
+              applied: false,
+              reason: 'coord messages have no transcript session identity; explicit session searches remain transcript-scoped',
+            },
+          }
+        : {}),
       ...(resolvedSelfSession
         ? { self_session: { source_kind: resolvedSelfSession.sourceKind, session_id: resolvedSelfSession.sessionId } }
         : {}),

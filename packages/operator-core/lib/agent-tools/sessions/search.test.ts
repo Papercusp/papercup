@@ -75,6 +75,7 @@ interface ParsedResult {
   hint?: string;
   zeroHitCaveat?: string;
   resultsTruncated?: { requested: number; returned: number; reason: string };
+  coord_search?: { requested: boolean; applied: boolean; reason: string };
   results: unknown[];
 }
 
@@ -146,10 +147,34 @@ describe('sessions:search explicit session + include_coord scope (EI-23130749427
       limit: 20,
       context: 0,
     }, makeTx([]));
-    expect(JSON.parse(res.content[0].text)).toMatchObject({ ok: true, total_hits: 0 });
+    expect(JSON.parse(res.content[0].text)).toMatchObject({
+      ok: true,
+      total_hits: 0,
+      coord_search: { requested: true, applied: false },
+    });
 
     const sources = runHybridSearch.mock.calls[0]?.[0] as Array<{ name: string }>;
     expect(sources.map((source) => source.name)).toEqual(['session_turn']);
+  });
+
+  it('keeps coord recall for session:self because it is owner-scoped, not session-scoped', async () => {
+    runHybridSearch.mockClear();
+    runHybridSearch.mockResolvedValueOnce({ results: [], totalHits: 0, embedderAvailable: true });
+
+    const res = await callTool({
+      query: 'activity',
+      mode: 'hybrid',
+      session: 'self',
+      include_coord: true,
+      limit: 20,
+      context: 0,
+    }, makeTx([]));
+    expect(JSON.parse(res.content[0].text)).toMatchObject({ ok: true, total_hits: 0 });
+
+    const sources = runHybridSearch.mock.calls[0]?.[0] as Array<{ name: string }>;
+    expect(sources.map((source) => source.name)).toEqual(['session_turn', 'coord_message']);
+    const searchParams = runHybridSearch.mock.calls[0]?.[1] as { filters?: { owners?: string[] } };
+    expect(searchParams.filters?.owners).toEqual(['su-self']);
   });
 });
 
