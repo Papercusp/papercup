@@ -4,17 +4,30 @@
  * and the payload shape. projectDirForSlug returns null, so the HEAD-delta path (execFile)
  * is not exercised — committed:false.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promisify } from 'node:util';
 
 const MAKE_CTX = (role = 'operator', overrides: Record<string, unknown> = {}) =>
-  ({ log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role, ...overrides } as never);
+  ({ log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role, ...overrides }) as never;
 
 function parse(result: { content: Array<{ text: string }> }): Record<string, unknown> {
   return JSON.parse(result.content[0].text);
 }
 
-beforeEach(() => vi.resetModules());
+// The operator test process can itself be launched from a request-only host
+// (PAPERCUSP_BACKGROUND_WORKERS=0). Most cases below exercise the mutating
+// background-host path, so pin that topology explicitly instead of inheriting
+// the runner's ambient deployment role. The one refusal case flips to `0` and
+// restores this suite baseline in its finally block.
+const savedBackgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS;
+beforeEach(() => {
+  process.env.PAPERCUSP_BACKGROUND_WORKERS = '1';
+  vi.resetModules();
+});
+afterAll(() => {
+  if (savedBackgroundWorkers === undefined) delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
+  else process.env.PAPERCUSP_BACKGROUND_WORKERS = savedBackgroundWorkers;
+});
 afterEach(() => {
   vi.doUnmock('../../harness/operator-home-harness');
   vi.doUnmock('../../workspace-registry');
@@ -174,6 +187,48 @@ describe('git-sync:run', () => {
     });
     expect(execFileMock).not.toHaveBeenCalled();
     expect(fireSpy).not.toHaveBeenCalled();
+  });
+
+  it('refuses a mutating fire on a request-only host while preserving dry-run preview', async () => {
+    const priorBackgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS;
+    process.env.PAPERCUSP_BACKGROUND_WORKERS = '0';
+    try {
+      const fireSpy = vi.fn(async () => undefined);
+      vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+      vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+      vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+      vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+
+      const { default: tool } = await import('./run');
+      const refused = parse((await tool.handler({ harness: 'papercusp' }, MAKE_CTX())) as never);
+      const preview = parse((await tool.handler({ harness: 'papercusp', dryRun: true }, MAKE_CTX())) as never);
+
+      expect(refused).toMatchObject({
+        ok: false,
+        fired: false,
+        slug: 'papercusp',
+        status: 'refused',
+        success: false,
+        committed: false,
+        reason: 'request-only-host',
+        retry: {
+          tool: 'git-sync:run',
+          host_role: 'background-workers',
+          dev_box_url: 'http://127.0.0.1:3271',
+        },
+      });
+      expect(refused.note).toMatch(/PAPERCUSP_BACKGROUND_WORKERS=0/);
+      expect(preview).toMatchObject({
+        ok: true,
+        fired: false,
+        dry_run: true,
+        status: 'preview',
+      });
+      expect(fireSpy).not.toHaveBeenCalled();
+    } finally {
+      if (priorBackgroundWorkers === undefined) delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
+      else process.env.PAPERCUSP_BACKGROUND_WORKERS = priorBackgroundWorkers;
+    }
   });
 
   it('surfaces repository inspection failures as unknown dirtiness instead of claiming clean', async () => {
@@ -348,11 +403,19 @@ describe('git-sync:run', () => {
         completion_event: { key: 'git-sync:committed', payload_field: 'sha' },
         await_tool: 'git-sync:await',
         progress_ref: {
-          surface: 'routine.metadata',
+          surface: 'routines:list',
+          tool: 'routines:list',
+          args: { installSlug: 'papercusp', name: 'git-sync' },
           workspace_id: 'default',
           install_slug: 'papercusp',
           target_role: 'system:git-sync',
-          fields: ['fire_started_at', 'last_status', 'last_synced_at', 'head_sha', 'git_sync_activity'],
+          fields: [
+            'health.fire_started_at',
+            'health.last_status',
+            'health.last_synced_at',
+            'health.head_sha',
+            'health.git_sync_activity',
+          ],
         },
       },
     });
@@ -474,17 +537,19 @@ describe('git-sync:run', () => {
       status: 'skipped' as const,
       reason: 'held_exclusive',
       blockedOn: 'git-sync:papercusp',
-      holders: [{
-        owner: 'system:git-sync:3063386:026aff27-f42d-4d44-94b8-045f102f989a',
-        owner_label: 'git-sync:papercusp',
-        mode: 'exclusive',
-        status: 'held',
-        lock_id: 'lock-system-git-sync',
-        reason: 'auto-commit papercusp',
-        acquired_ts: '2026-09-05T13:42:29.066Z',
-        expires_ts: '2026-09-05T13:52:29.066Z',
-        fence_seq: 42,
-      }],
+      holders: [
+        {
+          owner: 'system:git-sync:3063386:026aff27-f42d-4d44-94b8-045f102f989a',
+          owner_label: 'git-sync:papercusp',
+          mode: 'exclusive',
+          status: 'held',
+          lock_id: 'lock-system-git-sync',
+          reason: 'auto-commit papercusp',
+          acquired_ts: '2026-09-05T13:42:29.066Z',
+          expires_ts: '2026-09-05T13:52:29.066Z',
+          fence_seq: 42,
+        },
+      ],
     };
     const result = await mockSkippedFire(outcome);
 
@@ -541,14 +606,16 @@ describe('git-sync:run', () => {
   // fireGitSyncNow resolves — the exact spot the reporter's 120s hang landed in, AFTER
   // the commit had already succeeded) must be bounded, not a bare unbounded execFile.
   it('bounds the HEAD-delta execFile call with a timeout so a hung git process cannot hang the whole tool call', async () => {
-    const execFileMock = vi.fn((_file: string, _args: string[], opts: Record<string, unknown>, cb: (...a: unknown[]) => void) => {
-      // Simulate node's own timeout-kill behavior: execFile with `timeout` set rejects
-      // with a killed error instead of ever resolving — assert the fix actually wires
-      // a bounded `timeout` through, and that the handler still resolves cleanly.
-      expect(opts).toMatchObject({ timeout: expect.any(Number) });
-      expect((opts.timeout as number) > 0).toBe(true);
-      cb(Object.assign(new Error('killed'), { killed: true }));
-    });
+    const execFileMock = vi.fn(
+      (_file: string, _args: string[], opts: Record<string, unknown>, cb: (...a: unknown[]) => void) => {
+        // Simulate node's own timeout-kill behavior: execFile with `timeout` set rejects
+        // with a killed error instead of ever resolving — assert the fix actually wires
+        // a bounded `timeout` through, and that the handler still resolves cleanly.
+        expect(opts).toMatchObject({ timeout: expect.any(Number) });
+        expect((opts.timeout as number) > 0).toBe(true);
+        cb(Object.assign(new Error('killed'), { killed: true }));
+      },
+    );
     vi.doMock('node:child_process', () => ({ execFile: execFileMock }));
     vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
     vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
@@ -566,7 +633,8 @@ describe('git-sync:run', () => {
     const canonical = '/hives/sidestage';
     const sibling = '/workspace/sidestage';
     const projectDirForSlug = vi.fn(async (_slug: string, workspaceId?: string) =>
-      workspaceId === 'papercusp-workspace' ? canonical : sibling);
+      workspaceId === 'papercusp-workspace' ? canonical : sibling,
+    );
     const execFileMock = vi.fn(
       (_file: string, _args: string[], opts: Record<string, unknown>, cb: (...a: unknown[]) => void) =>
         cb(null, 'abc123\n', ''),
@@ -629,7 +697,16 @@ describe('git-sync:run', () => {
 
     const { default: tool } = await import('./run');
     const roles = (tool as { agentRoles?: readonly string[] }).agentRoles ?? [];
-    for (const r of ['worker', 'scoper', 'validator', 'reviewer', 'debugger', 'cup', 'release-fixer', 'release-manager']) {
+    for (const r of [
+      'worker',
+      'scoper',
+      'validator',
+      'reviewer',
+      'debugger',
+      'cup',
+      'release-fixer',
+      'release-manager',
+    ]) {
       expect(roles).toContain(r);
     }
   });

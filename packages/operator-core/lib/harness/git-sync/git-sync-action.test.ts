@@ -197,7 +197,17 @@ const repoDir = join(tmpRoot, 'repo');
 const noGitDir = join(tmpRoot, 'norepo');
 mkdirSync(join(repoDir, '.git'), { recursive: true });
 mkdirSync(noGitDir, { recursive: true });
-afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
+// These orchestration tests model the background-worker owner by default. Do
+// not inherit PAPERCUSP_BACKGROUND_WORKERS=0 from a request-only test runner:
+// that would make every fire stop at the new production guard before reaching
+// the behavior each test is intended to cover. The dedicated refusal test
+// below flips to `0` and restores this baseline in its finally block.
+const savedBackgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS;
+afterAll(() => {
+  if (savedBackgroundWorkers === undefined) delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
+  else process.env.PAPERCUSP_BACKGROUND_WORKERS = savedBackgroundWorkers;
+  rmSync(tmpRoot, { recursive: true, force: true });
+});
 
 const runGitSyncMock = vi.fn(
   async (_slug: string, _opts: Record<string, unknown>): Promise<GitSyncOutcome> => ({
@@ -641,6 +651,7 @@ function definitelyDeadPid(): Promise<number> {
 }
 
 beforeEach(() => {
+  process.env.PAPERCUSP_BACKGROUND_WORKERS = '1';
   tryAcquireResourceMock.mockReset();
   tryReleaseResourceMock.mockReset();
   releaseAllResourcesForOwnerMock.mockReset();
