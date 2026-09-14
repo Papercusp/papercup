@@ -88,6 +88,17 @@ export interface McpToolCallResult {
   structuredContent?: unknown;
 }
 
+// Transport replay must not reserve a caller's idempotency key for a refusal
+// that happened before the handler ran. Keep this decision off the MCP wire:
+// the symbol is enumerable so result-shaping object spreads retain it, while
+// JSON serialization (including `_meta`) cannot expose it to callers.
+const DISPATCH_VALIDATION_FAILURE = Symbol('papercusp.mcp.dispatch-validation-failure');
+
+/** True only for an MCP error produced by the projected dispatcher itself. */
+export function isDispatchValidationFailure(result: McpToolCallResult): boolean {
+  return (result as McpToolCallResult & { [DISPATCH_VALIDATION_FAILURE]?: true })[DISPATCH_VALIDATION_FAILURE] === true;
+}
+
 /**
  * Dispatch a projected tool through the engine and map the outcome to an MCP
  * `tools/call` result: success → `{ content, _meta?, structuredContent? }`;
@@ -107,6 +118,12 @@ export async function dispatchProjectedToolToMcp(
       isError: true,
       content: [{ type: 'text', text: `${r.error?.code}: ${r.error?.message}` }],
     };
+    if (r.error?.code === 'invalid_input') {
+      Object.defineProperty(failure, DISPATCH_VALIDATION_FAILURE, {
+        value: true,
+        enumerable: true,
+      });
+    }
     // EI-21903050648079438: a dispatch-level failure (a gate/schema rejection —
     // the target handler never ran) previously carried NO `structuredContent`,
     // so a code:run script's `unwrapToolResult` fell through to the plain-text
