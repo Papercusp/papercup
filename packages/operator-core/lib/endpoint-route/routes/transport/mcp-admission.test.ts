@@ -2773,6 +2773,18 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
       reason: 'loop_pressure_critical',
     });
   });
+  it('still sheds the expensive storage:usage read under critical pressure', async () => {
+    // storage:usage combines PG catalog/age queries with on-disk walking under
+    // a 30-second aggregate budget, so it is intentionally not a bounded
+    // pressure diagnostic and must remain behind the critical-pressure gate.
+    const shed = await evaluateAdmission(post(toolsCall(52, 'storage:usage')), 'critical', true);
+    expect(shed).not.toBeNull();
+    expect(shed!.status).toBe(429);
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
   it('admits (null) when the kill-switch disables admission control', async () => {
     expect(await evaluateAdmission(post(toolsCall()), 'critical', false)).toBeNull();
   });
