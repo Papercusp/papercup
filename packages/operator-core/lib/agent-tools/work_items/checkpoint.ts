@@ -2348,15 +2348,15 @@ export default defineTool({
         // ambiguous "commit status unknown". Surface it as a clean, retryable result —
         // the same shape scorecards:list already uses for the identical error class —
         // rather than letting it escape as a raw thrown error from inside runBulk.
-        const timeoutResponse = (error: OrgTxnTimeoutError) => ({
+        const timeoutResponse = (error: OrgTxnTimeoutError | DbCallDeadlineError) => ({
           ok: false as const,
           id: it.id,
           error: 'timeout',
           errorCode: 'timeout',
           retryable: true,
-          pgCode: error.pgCode,
+          ...(error instanceof OrgTxnTimeoutError ? { pgCode: error.pgCode } : {}),
           message:
-            `work_items:checkpoint write hit transient database contention: ${error.message}. ` +
+            `work_items:checkpoint write could not acquire or complete its bounded transaction: ${error.message}. ` +
             'Your checkpoint text was NOT saved — nothing committed, no ambiguity. Retry shortly.',
         });
         let res;
@@ -2379,7 +2379,7 @@ export default defineTool({
           if (error instanceof FrozenCarryCheckpointError) return { ...error.payload, id: it.id };
           if (error instanceof RetireIdsMismatchError) return retireIdsMismatchResponse(error);
           if (error instanceof ReplaceWouldDropError) return replaceWouldDropResponse(error);
-          if (error instanceof OrgTxnTimeoutError) return timeoutResponse(error);
+          if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) return timeoutResponse(error);
           throw error;
         }
         // EI-20232176364474286: retain the existing guard's no-loss behavior, but do
@@ -2421,7 +2421,7 @@ export default defineTool({
             if (error instanceof FrozenCarryCheckpointError) return { ...error.payload, id: it.id };
             if (error instanceof RetireIdsMismatchError) return retireIdsMismatchResponse(error);
           if (error instanceof ReplaceWouldDropError) return replaceWouldDropResponse(error);
-            if (error instanceof OrgTxnTimeoutError) return timeoutResponse(error);
+            if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) return timeoutResponse(error);
             throw error;
           }
         }

@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, expectTypeOf, vi, beforeEach, afterAll } from 'vitest';
 import { z } from 'zod';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 // EI-20004424625703051: bind the cap-eviction guard to the REAL constant, so raising
 // the cap re-tunes the test instead of breaking it — the guard is about the note being
@@ -1050,6 +1051,41 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         message: expect.stringContaining('NOT saved'),
       }),
     ]);
+    expect(out.counts).toEqual({ ok: 0, failed: 2 });
+  });
+
+  it('maps a bounded transaction acquisition deadline per item so a batch avoids an unknown transport outcome', async () => {
+    setWorkItemCheckpointWithPrior.mockRejectedValue(
+      new DbCallDeadlineError('boundedOrgTxn:acquire(admin)', 8_000, 8_000, 'org-admin'),
+    );
+
+    const out = await env({
+      items: [
+        { id: 'WI-acquire-A', checkpoint: 'append A', append: true },
+        { id: 'WI-acquire-B', checkpoint: 'append B', append: true },
+      ],
+    });
+
+    expect(out.results).toEqual([
+      expect.objectContaining({
+        ok: false,
+        id: 'WI-acquire-A',
+        error: 'timeout',
+        errorCode: 'timeout',
+        retryable: true,
+        message: expect.stringContaining('NOT saved'),
+      }),
+      expect.objectContaining({
+        ok: false,
+        id: 'WI-acquire-B',
+        error: 'timeout',
+        errorCode: 'timeout',
+        retryable: true,
+        message: expect.stringContaining('NOT saved'),
+      }),
+    ]);
+    expect(out.results[0]).not.toHaveProperty('pgCode');
+    expect(out.results[1]).not.toHaveProperty('pgCode');
     expect(out.counts).toEqual({ ok: 0, failed: 2 });
   });
 
