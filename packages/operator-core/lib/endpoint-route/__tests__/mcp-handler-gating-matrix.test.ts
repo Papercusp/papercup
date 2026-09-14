@@ -3416,6 +3416,21 @@ describe('scoped-superuser hive clamp', () => {
     expect(textOf(res)).not.toContain('hive_forbidden');
   });
 
+  it.each([
+    ['ownerId', { ownerId: 'su-known-peer' }],
+    ['owners', { owners: ['su-known-peer'] }],
+    ['ownerIds', { ownerIds: ['su-known-peer'] }],
+  ])('flag ON: allows targeted coord:presence scope:\'workspace\' through the %s alias', async (_alias, selector) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'coord:presence',
+      { scope: 'workspace', workspace: 'ws-1', ...selector },
+      hiveScoped(),
+    );
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).not.toContain('hive_forbidden');
+  });
+
   it('flag ON: rejects coord:presence scope:\'all\' (every-workspace roster)', async () => {
     h.scopedClampFlag.value = true;
     const res = await callTool('coord:presence', { scope: 'all' }, hiveScoped());

@@ -91,6 +91,19 @@ export default defineTool({
   guidance: {
     when: 'Almost never call this by hand — the per-CLI hooks (posttooluse-activity-report.sh / the OMP coord-hook port) call it automatically to mirror each worker\'s native tool stream into the fleet view. Call directly only to inject a synthetic activity marker (e.g. a custom lifecycle note).',
     notWhen: 'To READ the activity stream use `activity:recent` (or the /api/activity/stream SSE). To coordinate with peers use `coord:send`. To drive a pui use `tui:dispatch`.',
+    // EI-22571277074273886: recovery callers reasonably carry the ownerId/limit
+    // vocabulary used by adjacent owner-scoped and bounded-read tools. Keep the
+    // correction on the failure path: activity:report records one event, while
+    // activity:recent is the bounded read surface.
+    argRedirects: {
+      ownerId:
+        'owner — activity:report names the reporting worker with `owner`; rename the key rather than dropping the identity value.',
+      limit: {
+        tool: 'activity:recent',
+        args: { limit: 50 },
+        note: 'activity:report records exactly one activity event and has no `limit` argument; use activity:recent { limit } to read a bounded activity stream.',
+      },
+    },
     seeAlso: [
       'activity:recent (READ the activity stream)',
       'coord:send (coordinate with peers)',

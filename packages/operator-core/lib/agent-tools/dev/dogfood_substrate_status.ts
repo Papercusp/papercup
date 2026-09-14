@@ -62,6 +62,12 @@ type TargetHarness = z.infer<typeof targetHarnessSchema>;
  * shaping. Aggregate fields (`bootedCount`, `summary`) intentionally remain
  * workspace-wide; the filter exists so a caller that needs one exact row does
  * not lose it when a large booted set crosses the result door.
+ *
+ * A targeted read with no matching row is different from an un-targeted idle
+ * workspace. The latter is a measured empty state and may be healthy; the
+ * former is an absent required target and must not inherit that healthy
+ * verdict. Preserve the source population counts, but downgrade a healthy
+ * aggregate to `degraded` as an explicit unknown/absent-target sentinel.
  */
 function filterToTargetHarness(
   status: ReturnType<typeof getInProcessSubstrateStatus>,
@@ -70,9 +76,15 @@ function filterToTargetHarness(
   if (!target) return status;
   const matches = (row: { workspaceId: string; harnessSlug: string }): boolean =>
     row.workspaceId === target.workspaceId && row.harnessSlug === target.harnessSlug;
+  const harnesses = status.harnesses.filter(matches);
+  const summary =
+    harnesses.length === 0 && status.summary.worstVerdict === 'healthy'
+      ? { ...status.summary, worstVerdict: 'degraded' as const }
+      : status.summary;
   return {
     ...status,
-    harnesses: status.harnesses.filter(matches),
+    summary,
+    harnesses,
     logStats: status.logStats.filter(matches),
     replicationLiveness: status.replicationLiveness.filter(matches),
     contentConnectivity: status.contentConnectivity.filter(matches),

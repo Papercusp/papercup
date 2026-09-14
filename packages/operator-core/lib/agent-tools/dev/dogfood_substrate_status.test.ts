@@ -103,6 +103,36 @@ describe('dev:dogfood_substrate_status handler', () => {
     ]);
   });
 
+  it('does not report a targeted zero-handle population as healthy', async () => {
+    statusM.mockReturnValue({
+      bootedCount: 0,
+      harnesses: [],
+      logStats: [],
+      replicationLiveness: [],
+      contentConnectivity: [],
+      summary: {
+        enabled: true,
+        totalHarnesses: 0,
+        healthy: 0,
+        booting: 0,
+        degraded: 0,
+        unhealthy: 0,
+        disabled: 0,
+        worstVerdict: 'healthy',
+      },
+      reachedSubstrateOwner: true,
+    } as never);
+
+    const out = body(await run({
+      targetHarness: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    }));
+
+    // The aggregate counts remain workspace-wide source facts; only the
+    // targeted empty verdict changes so absence cannot read as idle success.
+    expect(out.summary).toMatchObject({ totalHarnesses: 0, worstVerdict: 'degraded' });
+    expect(out.harnesses).toEqual([]);
+  });
+
   it('tolerates a claim-stat load failure (falls back to zeroed stats)', async () => {
     statusM.mockImplementation((opts: { resolveClaimStats: (w: string, s: string) => unknown }) => ({
       harnesses: [{ workspaceId: 'ws', harnessSlug: 'web' }],
