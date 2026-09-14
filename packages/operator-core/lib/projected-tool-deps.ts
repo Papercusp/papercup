@@ -271,7 +271,9 @@ export async function readControlAnchorKernelState(
       // callers can carry the power-user marker without this optional table.
       powerUserRevoked = rows.length > 0 && rows[0].revoked_at != null;
     } catch {
-      powerUserRevoked = false;
+      // Failed credential-authority reads are not successful "not revoked"
+      // reads. Preserve the same fail-closed posture as the control anchor.
+      controlReadFailed = true;
     }
   }
 
@@ -385,7 +387,14 @@ function evaluateOperatorKernelRequest(
 
 /** Live control-anchor resolver installed by the operator bootstrap. */
 export const controlAnchorKernelResolver: KernelEnforcementPort = async (request) => {
-  const state = await readControlAnchorKernelState(request);
+  let state: OperatorKernelState | null;
+  try {
+    state = await readControlAnchorKernelState(request);
+  } catch {
+    // Client initialization itself can fail before the SELECT's try/catch.
+    // Never let that escape into the generic optional-port fail-soft handler.
+    return operatorKernelDenial('policy-unavailable', 'session authority reader unavailable; no effect authorized');
+  }
   const verdict = evaluateOperatorKernelRequest(request, state ?? undefined);
   if (verdict.decision === 'deny') return verdict;
   // Applied-state receipts and current policy are host-resolved. This common

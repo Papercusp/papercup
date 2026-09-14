@@ -274,6 +274,23 @@ describe('installBlueprintFromCupboardCore', () => {
     expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
   });
 
+  it('checks grants inherited by an abstract identity before placing its bytes', async () => {
+    const parent = join(root, 'parent');
+    await writeBlueprint(parent, 'id: grant-parent\nversion: 1.0.0\ngrants: { requires: [crm.email@1.0.0] }');
+    await writeBlueprint(fixtureRepo, 'id: neat-bp\nversion: 1.0.0\nextends: grant-parent\nslots: [{ slot: domain }]');
+    await expect(installBlueprintFromCupboardCore({
+      githubUrl: 'https://github.com/acme/neat-bp',
+      capabilityContext: { workspaceId: 'workspace-1', potSlug: 'sales-ops', mode: 'agent' },
+    }, makeDeps({
+      resolveExtends: (id) => id === 'grant-parent' ? join(parent, 'blueprint.yaml') : null,
+      capabilityGrantDeps: { getPotBinding: async () => null, listCandidates: async () => [] },
+    }))).rejects.toMatchObject({
+      code: 'required_capability_provider_absent',
+      data: { missingRequired: ['crm.email@1.0.0'] },
+    });
+    expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
+  });
+
   it('installs with a visible optional capability gap', async () => {
     await writeBlueprint(
       fixtureRepo,

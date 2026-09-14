@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { pinPackageInput } from '@papercusp/orchestrator/blueprint';
 import {
   BlueprintLifecycleError,
+  buildBlueprintReleaseArchive,
   commitBlueprintRelease,
+  diffBlueprintReleases,
   prepareBlueprintPublicRelease,
   readBlueprintLifecycle,
   rollbackBlueprintRelease,
@@ -76,7 +78,11 @@ describe('immutable blueprint release lifecycle', () => {
     expect(update.diff.promptText[0]).toMatchObject({ path: 'identity/prompts/persona.md' });
     expect(update.diff.promptText[0]!.patch).toContain('-sell potatoes');
     expect(update.diff.promptText[0]!.patch).toContain('+sell excellent potatoes');
-    expect(update.diff.burnKnobs).toEqual([{ path: 'maxCostUsd', before: 2, after: 5 }]);
+    expect(update.diff.burnKnobs).toEqual([
+      { path: 'maxCostUsd', before: 2, after: 5 },
+      { path: 'promptBytes', before: Buffer.byteLength('sell potatoes\n'), after: Buffer.byteLength('sell excellent potatoes\n') },
+    ]);
+    expect(update.diff.grants).toEqual([]);
     expect(await fs.readFile(join(installedDir, 'identity/prompts/persona.md'), 'utf8')).toContain('excellent');
 
     const rollback = await rollbackBlueprintRelease({ installedDir, id: 'identity', target: '1.0.0' });
@@ -173,5 +179,38 @@ describe('immutable blueprint release lifecycle', () => {
     expect(prepared.manifest.release.signature).toMatch(/^c2lnbmVkOj/);
     expect((prepared.release as { bytes?: Buffer }).bytes?.equals(prepared.source.archive.bytes)).toBe(true);
     expect(await prepareReleaseForPublish(prepared.release)).toMatchObject({ ok: true });
+  });
+});
+
+describe('P-005 complete-closure update disclosures', () => {
+  function archive(version: string, required: string[], optional: string[], effort: string) {
+    const parent = pinPackageInput({
+      packageKind: 'blueprint', ref: 'parent', revision: version, files: [],
+      value: { id: 'parent', version, grants: { requires: required, optional }, roles: { worker: { effort } },
+        knobs: { loop: { intervalSec: version === '1.0.0' ? 60 : 30 } } },
+    });
+    const rootPin = pinPackageInput({
+      packageKind: 'blueprint', ref: 'child', revision: version, files: [],
+      value: { id: 'child', version, extends: 'parent' },
+      dependencies: [{ packageKind: 'blueprint', ref: 'parent', revision: version, contentHash: parent.contentHash }],
+    });
+    return buildBlueprintReleaseArchive([parent, rootPin], 'child');
+  }
+
+  it('reports inherited grant widening and optional-to-required changes without claiming authority', () => {
+    const before = archive('1.0.0', ['crm.read@1.0.0'], ['crm.send@1.0.0'], 'low');
+    const after = archive('2.0.0', ['crm.read@1.0.0', 'crm.send@1.0.0'], ['crm.delete@1.0.0'], 'high');
+    const diff = diffBlueprintReleases(before, after);
+    expect(diff.grants).toEqual([
+      { layer: 'parent', kind: 'requires', added: ['crm.send@1.0.0'], removed: [] },
+      { layer: 'parent', kind: 'optional', added: ['crm.delete@1.0.0'], removed: ['crm.send@1.0.0'] },
+    ]);
+    expect(diff.burnKnobs).toEqual([
+      { path: 'parent:loop.intervalSec', before: 60, after: 30 },
+      { path: 'parent:roles.worker.effort', before: 'low', after: 'high' },
+    ]);
+    const reverse = diffBlueprintReleases(after, before);
+    expect(reverse.grants[0]).toEqual({ layer: 'parent', kind: 'requires', added: [], removed: ['crm.send@1.0.0'] });
+    expect(diffBlueprintReleases(after, after)).toMatchObject({ grants: [], burnKnobs: [], promptText: [] });
   });
 });

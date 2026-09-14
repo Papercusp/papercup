@@ -1,16 +1,32 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
+import type { IdentityGrantPolicy } from './capability-envelope/identity-grants-port';
 
 const db = vi.hoisted(() => {
   const rows: unknown[][] = [];
   const sql = vi.fn(async (..._args: unknown[]) => rows.shift() ?? []);
-  return { rows, sql };
+  return { rows, sql, failClient: false };
+});
+const grants = vi.hoisted(() => ({ read: vi.fn() }));
+// Keep artifact validation and policy evaluation real; inject only policy I/O.
+vi.mock('./capability-envelope/identity-grants-port', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./capability-envelope/identity-grants-port')>();
+  return {
+    ...actual,
+    checkIdentityGrantKernel: (request: KernelEnforcementRequest, state: never, record: unknown) =>
+      actual.checkIdentityGrantKernel(request, state, record, grants.read),
+  };
 });
 
 // Keep the real db-org exports available to the import graph; only the lazy
 // query seam is replaced so these tests exercise the actual resolver logic.
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: db.sql as never }),
+  getOrgPg: () => {
+    if (db.failClient) throw new Error('client unavailable');
+    return { sql: db.sql as never };
+  },
 }));
 
 import {
@@ -19,11 +35,16 @@ import {
   operatorKernelEnforcement,
   readControlAnchorKernelState,
   setKernelEnforcementResolver,
+  wrapOperatorKernelSpawn,
 } from './projected-tool-deps';
 import type { KernelEnforcementRequest, UnifiedToolContext } from '@papercusp/agent-mcp';
 
+const PLAIN_ARTIFACT = compileAgentSpecification({
+  source: { id: 'kernel-plain', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
+  prompt: { role: 'worker', text: 'Plain.' },
+});
 const REVISION_A = {
-  specificationRevision: 'a'.repeat(64),
+  specificationRevision: PLAIN_ARTIFACT.specificationRevision,
   stateRevision: 'state-a',
 };
 const REVISION_B = {
@@ -57,6 +78,10 @@ function anchorRow(control_state: unknown, over: Record<string, unknown> = {}) {
     control_state,
     control_generation: 9,
     workspace_id: 'ws-a',
+    launch_spec: {
+      workspaceId: 'ws-a', harnessSlug: 'sales', ...REVISION_A,
+      specificationArtifact: PLAIN_ARTIFACT,
+    },
     ...over,
   };
 }
@@ -75,6 +100,8 @@ function appliedActivation(revision = REVISION_A) {
 beforeEach(() => {
   db.rows.splice(0, db.rows.length);
   db.sql.mockClear();
+  db.failClient = false;
+  grants.read.mockReset();
   setKernelEnforcementResolver(null);
 });
 
@@ -177,12 +204,14 @@ describe('control-anchor kernel resolver (D-030)', () => {
     });
   });
 
-  it('fails soft when the control-anchor read is unavailable', async () => {
+  it('fails closed when the authority read fails, distinguishing failure from an absent legacy row', async () => {
     db.sql.mockRejectedValueOnce(new Error('migration not applied'));
     await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
-      decision: 'allow',
-      availability: 'unavailable',
+      decision: 'deny',
+      code: 'policy-unavailable',
     });
+    db.rows.push([]);
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow', availability: 'unavailable' });
   });
 
   it('installs the live resolver through the shared operator port', async () => {
@@ -192,5 +221,117 @@ describe('control-anchor kernel resolver (D-030)', () => {
       decision: 'deny',
       code: 'revoked',
     });
+  });
+
+  it('denies client initialization and power-user revocation read failures', async () => {
+    db.failClient = true;
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+    });
+    db.failClient = false;
+    db.sql.mockResolvedValueOnce([anchorRow({ activation: appliedActivation() })])
+      .mockRejectedValueOnce(new Error('credential authority unavailable'));
+    await expect(controlAnchorKernelResolver(request({
+      ctx: ctx({ isSuperuser: false, isPowerUser: true, uiClientId: 'pus-a' }),
+    }))).resolves.toMatchObject({ decision: 'deny', code: 'policy-unavailable' });
+  });
+});
+
+describe('P-005 grants reach actual execution boundaries', () => {
+  function grantedRow() {
+    const classRef = 'crm.email@1.0.0';
+    const pin = {
+      kind: 'capability-provider' as const, ref: classRef, providerPackage: 'mail-provider',
+      providerVersion: '1.0.0', conformanceRunId: 'run-a', registryRevision: 'registry-a',
+      verbBindings: { send: 'mail:send' },
+    };
+    const artifact = compileAgentSpecification({
+      source: {
+        id: 'kernel-grants', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } },
+        grants: { requires: [classRef] },
+      },
+      prompt: { role: 'worker', text: 'Use mail.' }, inputClosure: [pin],
+    });
+    const revision = { specificationRevision: artifact.specificationRevision, stateRevision: 'granted' };
+    const row = anchorRow({ activation: appliedActivation(revision) }, {
+      launch_spec: { workspaceId: 'ws-a', harnessSlug: 'sales', ...revision, specificationArtifact: artifact },
+    });
+    const policy: IdentityGrantPolicy = {
+      policyRevision: 'policy-a', potSlug: 'sales', ceilings: [{ allowCapabilities: ['mail:send'] }],
+      protectedAdditions: [], tools: new Map([['mail:send', ['mail:send']]]),
+      bindings: [{
+        classRef, providerPackage: pin.providerPackage, providerVersion: pin.providerVersion,
+        conformanceRunId: pin.conformanceRunId, registryRevision: pin.registryRevision, verbBindings: pin.verbBindings,
+        status: 'active', conformanceStatus: 'passed', behavioralStatus: 'not-required', behavioralRunRef: null,
+        potSlug: 'sales', boundBy: 'admin', boundAt: '2026-09-13', updatedAt: '2026-09-13',
+      }],
+    };
+    return { row, policy, revision };
+  }
+
+  function tool(fn: ProjectedTool['fn']): ProjectedTool {
+    return {
+      pluginName: 'fixture', description: 'fixture', inputSchema: { type: 'object' },
+      capabilities: [], expose: { mcp: { name: 'mail:send' } }, fn,
+    };
+  }
+
+  it.each(['dispatch', 'indirect-dispatch', 'reaction'] as const)(
+    'refuses an unauthorized %s before its handler',
+    async (kernelBoundary) => {
+      const f = grantedRow();
+      grants.read.mockResolvedValue(f.policy);
+      db.rows.push([f.row]);
+      const handler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }));
+      const result = await dispatchProjectedTool(tool(handler), 'other:send', {}, ctx({ kernelBoundary }), {
+        kernelEnforcement: controlAnchorKernelResolver,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error?.message).toContain('outside-ceiling');
+      expect(handler).not.toHaveBeenCalled();
+    },
+  );
+
+  it('allows the exact provider, then refuses a reduction after preflight before invoking', async () => {
+    const f = grantedRow();
+    const handler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }));
+    grants.read.mockResolvedValue(f.policy);
+    db.rows.push([f.row], [f.row]);
+    const allowed = await dispatchProjectedTool(tool(handler), 'mail:send', {}, ctx(), {
+      kernelEnforcement: controlAnchorKernelResolver,
+    });
+    expect(allowed.ok).toBe(true);
+    expect(handler).toHaveBeenCalledOnce();
+    handler.mockClear();
+    grants.read.mockReset().mockResolvedValueOnce(f.policy)
+      .mockResolvedValueOnce({ ...f.policy, policyRevision: 'policy-revoked', bindings: [] });
+    db.rows.push([f.row], [f.row]);
+    const refused = await dispatchProjectedTool(tool(handler), 'mail:send', {}, ctx(), {
+      kernelEnforcement: controlAnchorKernelResolver,
+    });
+    expect(refused.ok).toBe(false);
+    expect(refused.error?.message).toContain('provider-unbound');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('refuses native shell execution even when the caller supplies a granted capability label', async () => {
+    const f = grantedRow();
+    installControlAnchorKernelResolver();
+    grants.read.mockResolvedValue(f.policy);
+    db.rows.push([f.row]);
+    const spawn = vi.fn(async () => ({ stdout: '', stderr: '', code: 0, killed: false }));
+    const wrapped = wrapOperatorKernelSpawn(spawn, ctx(), ['mail:send']);
+    await expect(wrapped('sh', ['-c', 'true'])).rejects.toThrow('outside-ceiling');
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a grant-bearing launch without its control receipt as a legacy session', async () => {
+    const f = grantedRow();
+    db.rows.push([{ ...f.row, control_state: null, control_generation: null }]);
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+      decision: 'deny', code: 'capability_unsatisfied',
+      obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
+    });
+    expect(grants.read).not.toHaveBeenCalled();
   });
 });

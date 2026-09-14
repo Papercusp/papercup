@@ -7,6 +7,8 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import {
   loadBlueprintFromFile,
+  layerSourceDocument,
+  BlueprintSourceDocumentSchema,
   replayAgentSpecification,
   type ResolvedAgentSpecification,
 } from '@papercusp/orchestrator/blueprint';
@@ -30,6 +32,7 @@ import type { CapabilityEnvelopeOverrides } from '../capability-envelope-overrid
 import type { HarnessRegistry } from '../harness-registry';
 import { readOperatorState } from '../operator-state-pg';
 import { systemDistinctId } from '../flag-distinct-id';
+import { operatorResolveExtends } from '../blueprint/installed-blueprints';
 import { potSlugsForHarnesses } from '../memory/hive-scope';
 import { resolveIdentityGrantEnvelope, type IdentityGrantFailure } from './blueprint-envelopes';
 import { ROLE_ENVELOPES, type RoleEnvelope } from './policy';
@@ -83,14 +86,21 @@ export const readIdentityGrantPolicy: PolicyReader = async (input) => {
   if (!pot) throw new Error('identity pot is not registered');
   // This is the current administrator-selected POT, not the installed identity.
   // Bypass blueprintRoleEnvelopes' best-effort mtime cache on this authority read.
-  const blueprint = loadBlueprintFromFile(join(pot.path, '.papercusp', 'blueprint.yaml')).blueprint;
-  const potRole = blueprint.fleet?.workerRoles?.find((entry) => entry.id === input.role);
+  const loaded = loadBlueprintFromFile(join(pot.path, '.papercusp', 'blueprint.yaml'),
+    operatorResolveExtends({ localDirs: [join(pot.path, '.papercusp', 'blueprints')] }));
+  const ownLayer = loaded.layers.at(-1);
+  if (!ownLayer) throw new Error('administrator pot source is unavailable');
+  // A remote identity can contribute worker-role configuration too. Its
+  // inherited value cannot count as independent administrator authorization.
+  const ownSource = BlueprintSourceDocumentSchema.parse(layerSourceDocument(ownLayer));
+  const potRole = ownSource.fleet?.workerRoles?.find((entry) => entry.id === input.role);
+  if (potRole?.capabilities === undefined) throw new Error('administrator pot has no explicit role capability ceiling');
   const overridesEnabled = await getFlag(FLAGS.CAPABILITY_ENVELOPE_OVERRIDES, systemDistinctId());
   const overrides = overridesEnabled
     ? await readOperatorState<CapabilityEnvelopeOverrides>('operator_capability_envelopes', input.workspaceId, { fresh: true }) ?? {}
     : {};
   const ceilings: RoleEnvelope[] = [overrides.roleEnvelopes?.[input.role] ?? ROLE_ENVELOPES[input.role] ?? {}];
-  if (potRole?.capabilities !== undefined) ceilings.push({ allowCapabilities: potRole.capabilities });
+  ceilings.push({ allowCapabilities: potRole.capabilities });
   const bindings: PotCapabilityProviderBindingRow[] = [];
   for (const classRef of input.classRefs) {
     const parsed = parseCapabilityClassRef(classRef);

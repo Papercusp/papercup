@@ -273,12 +273,6 @@ export async function installBlueprintFromCupboardCore(
         plugins: d?.plugins ?? [],
         blueprints: d?.blueprints ?? [],
       };
-      const grants = res.blueprint!.grants;
-      declaredCapabilityGrants = {
-        requires: grants?.requires ?? [],
-        optional: grants?.optional ?? [],
-        suggestedProviders: grants?.suggestedProviders ?? {},
-      };
     }
 
     // Source fragments use the same layer walk without inventing runnable fields.
@@ -289,6 +283,13 @@ export async function installBlueprintFromCupboardCore(
       const source = resolveBlueprintSource(raw, { resolve: deps.resolveExtends, sourcePath: join(bpDir, 'blueprint.yaml') });
       if (!source.validation.ok) throw new Error(source.validation.errors.map((error) => error.message).join('; '));
       const resolved = BlueprintSourceDocumentSchema.parse(source.merged);
+      // Identities are frequently abstract source fragments. Authority
+      // declarations belong to the resolved source, not only runnable spines.
+      declaredCapabilityGrants = {
+        requires: resolved.grants?.requires ?? [],
+        optional: resolved.grants?.optional ?? [],
+        suggestedProviders: resolved.grants?.suggestedProviders ?? {},
+      };
       const bundles = resolved.bundles ?? [];
       const requests: Array<{ kind: string; ref: string; version?: string }> = [...bundles];
       const knowledge = resolveSeedPackKey(resolved).packId;

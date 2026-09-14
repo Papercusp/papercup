@@ -85,6 +85,8 @@ export interface BlueprintReleaseDiff {
   toContentHash: string | null;
   promptText: Array<{ path: string; beforeHash: string | null; afterHash: string | null; patch: string }>;
   burnKnobs: Array<{ path: string; before: unknown; after: unknown }>;
+  /** Publisher declarations are evidence, never administrator authorization. */
+  grants: Array<{ layer: string; kind: 'requires' | 'optional'; added: string[]; removed: string[] }>;
 }
 
 export interface CommitBlueprintReleaseInput {
@@ -481,6 +483,42 @@ function promptPatch(path: string, before: string, after: string): string {
   return [`--- a/${path}`, `+++ b/${path}`, '@@ prompt text @@', removed, added].filter(Boolean).join('\n');
 }
 
+function releaseBurnKnobs(archive: BlueprintReleaseArchive | null): Map<string, unknown> {
+  const out = new Map<string, unknown>();
+  for (const pin of archive?.pins ?? []) {
+    if (pin.packageKind !== 'blueprint') continue;
+    const value = pin.value as { knobs?: unknown; roles?: unknown; triggers?: unknown };
+    // Retain existing root knob paths; qualify inherited-package changes.
+    const prefix = pin.ref === archive?.root.ref ? '' : `${pin.ref}:`;
+    for (const [path, entry] of flatten(value.knobs ?? {})) out.set(prefix + path, entry);
+    // These declarations can change default model/effort or recurring spend
+    // without changing the root knobs. Report the source, not a cost estimate.
+    for (const section of ['roles', 'triggers'] as const) {
+      for (const [path, entry] of flatten(value[section] ?? {}, section)) {
+        if (/effort|model|cadence|intervalSec|cron|loop/i.test(path) || Array.isArray(entry)) {
+          out.set(prefix + path, entry);
+        }
+      }
+    }
+  }
+  // Exact UTF-8 file bytes, deliberately not tokens or a predicted bill.
+  out.set('promptBytes', [...promptMap(archive).values()].reduce((n, prompt) => n + Buffer.byteLength(prompt.text, 'utf8'), 0));
+  return out;
+}
+
+function releaseGrantMap(archive: BlueprintReleaseArchive | null) {
+  const out = new Map<string, { requires: string[]; optional: string[] }>();
+  for (const pin of archive?.pins ?? []) {
+    if (pin.packageKind !== 'blueprint') continue;
+    const grants = (pin.value as { grants?: { requires?: string[]; optional?: string[] } }).grants;
+    out.set(pin.ref, {
+      requires: [...new Set(grants?.requires ?? [])].sort(),
+      optional: [...new Set(grants?.optional ?? [])].sort(),
+    });
+  }
+  return out;
+}
+
 export function diffBlueprintReleases(
   before: BlueprintReleaseArchive | null,
   after: BlueprintReleaseArchive | null,
@@ -500,8 +538,8 @@ export function diffBlueprintReleases(
       },
     ];
   });
-  const oldKnobs = flatten((before?.root.value as { knobs?: unknown } | undefined)?.knobs ?? {});
-  const newKnobs = flatten((after?.root.value as { knobs?: unknown } | undefined)?.knobs ?? {});
+  const oldKnobs = releaseBurnKnobs(before);
+  const newKnobs = releaseBurnKnobs(after);
   const burnKnobs = [...new Set([...oldKnobs.keys(), ...newKnobs.keys()])].sort().flatMap((path) => {
     const beforeValue = oldKnobs.get(path);
     const afterValue = newKnobs.get(path);
@@ -509,11 +547,24 @@ export function diffBlueprintReleases(
       ? []
       : [{ path, before: beforeValue ?? null, after: afterValue ?? null }];
   });
+  const oldGrants = releaseGrantMap(before);
+  const newGrants = releaseGrantMap(after);
+  const grants: BlueprintReleaseDiff['grants'] = [];
+  for (const layer of [...new Set([...oldGrants.keys(), ...newGrants.keys()])].sort()) {
+    for (const kind of ['requires', 'optional'] as const) {
+      const previous = oldGrants.get(layer)?.[kind] ?? [];
+      const next = newGrants.get(layer)?.[kind] ?? [];
+      const added = next.filter((ref) => !previous.includes(ref));
+      const removed = previous.filter((ref) => !next.includes(ref));
+      if (added.length || removed.length) grants.push({ layer, kind, added, removed });
+    }
+  }
   return {
     fromContentHash: before?.root.contentHash ?? null,
     toContentHash: after?.root.contentHash ?? null,
     promptText,
     burnKnobs,
+    grants,
   };
 }
 
