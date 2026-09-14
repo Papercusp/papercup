@@ -1,6 +1,6 @@
 # Dream study evidence — interim
 
-Measured 2026-09-14T12:58:44.810Z. **Inconclusive; final acceptance remains open.**
+Measured 2026-09-14T13:47:41.650Z. **Inconclusive; final acceptance remains open.**
 
 19 governed study attempts; $1.614729 accounted, including conservative reservations. This is not invoice cost.
 
@@ -30,6 +30,7 @@ Blender: 2 governed cycles, 5 generated ideas, 0 routed ideas. Routing was expli
 - Unequal spend so far; no matched-spend superiority claim
 - All phase cost figures exclude unmeasured engineer/reviewer time and local compute dollar valuation
 - No substantive rejection should be inferred from an unverified verdict or a missing judgment
+- The flat/faceted comparison used different reviewers and cannot isolate representation effects from reviewer effects
 
 - Historical timeout notes claiming never-admitted/local-governor starvation were retracted in EI-22769219749818913: the Codex adapter did not emit onAdmitted. These raw persisted strings do not establish the cause or prove no generation occurred.
 - For the original Haiku cycle 36930ec0-0135-4c3d-8261-b9b8f8028545, the recovered driver log records four HTTP 429 rate_limit_error retries before the deadline. This contradicts its persisted never-admitted explanation. The responding hop, pool account, later retry progress and billed usage remain unestablished; retain the USD 0.039173 unknown-call reservation. Evidence is preserved in EI-22756328656642291 comment 203056; source /tmp/dream-study-pair-after-readiness-20260909.log, SHA-256 ea874cd3a74f97ec879eb9d490a8d1e257684a52f54dc487ccf716e080fe5e3c. This historical evidence does not prove current Haiku recovery.
@@ -47,6 +48,14 @@ The duplicate source-packing cases count as one unverified representative family
 
 This is exploratory AI review with disclosed incidental aggregate exposure, not pristine blindness, human validation or held-out confirmation. It used approximately 17 reviewer-minutes. No original study outcome, source pin, cost or unknown reservation is rewritten by this report.
 
+## Flat versus faceted representation ablation
+
+The separately pre-registered flat-only AI review is frozen at WI-10001412 post 204651 and preserved in [the comparison result](calibration-flat-faceted-ablation-result-2026-09-14.json). Exact per-case disposition agreement was **2/6 (33.3%)**; four cases changed disposition. Faceted histogram: 0 accept, 4 reject, 2 unverified. Flat histogram: 2 accept, 3 reject, 1 unverified.
+
+Mismatches: 1176a396ed37847cf61c (reject-to-accept); 36908b44cc10514ba38e (unverified-to-accept); 5908803065283e72f93d (unverified-to-reject); 838da71efc0a5d2f4a2d (reject-to-unverified). Both reviewers recognized 1176a396ed37847cf61c and 82152aef5690ace62e79 as one duplicate family. All six flat judgments covered the required decision domains and included decisive source citations.
+
+This is a large descriptive representation/reviewer sensitivity signal, not a causal effect estimate: different AI reviewers judged the two forms, and the faceted reviewer disclosed incidental aggregate exposure after forming judgments. Six calibration cases are not powered evidence, flat `accept` is bounded-experiment qualification rather than global novelty or benefit, and this ablation is not human validation.
+
 ## Unblinded novelty and downstream eligibility
 
 The separate unblinded AI/domain review is preserved in [its structured record](calibration-unblinded-review-2026-09-14.json) and WI-40148 posts 204403, 204404, 204405, 204406. It evaluated the three representatives selected before key access: 1176a396ed37847cf61c, 36908b44cc10514ba38e, 5908803065283e72f93d.
@@ -55,12 +64,11 @@ Novel bounded local Dream experiments qualified: **0/3**. The first two represen
 
 Downstream-eligible candidates: **0**; downstream trials executed: **0**. The downstream branch is **not applicable under the frozen evidence**, not silently deferred: no candidate passed the prerequisite novelty qualification. A later independent human review may challenge that conclusion, but tests or technical plausibility cannot promote a candidate by themselves.
 
-This remains AI review, not human validation or held-out confirmation. “Not novel” does not mean technically impossible or useless; it means these proposals cannot count as new Dream discoveries on the evidence reviewed.
+The discordant flat source-stage judgments do not rewrite this later unblinded novelty result or revive downstream execution: they establish sensitivity and strengthen the need for independent human review. This remains AI review, not human validation or held-out confirmation. “Not novel” does not mean technically impossible or useless; it means these proposals cannot count as new Dream discoveries on the current unblinded evidence.
 
 ## Remaining acceptance work
 
-- Independent human validation; AI source-domain review is recorded with incidental aggregate exposure
-- Flat versus faceted offline outcome ablation by a reviewer not exposed to the faceted judgments
+- Independent human validation; the two AI source-stage reviews disagree on four of six exact dispositions
 - Independent final acceptance and owner keep/simplify/expand/stop or explicitly inconclusive disposition
 
 ## Reproduction and evidence

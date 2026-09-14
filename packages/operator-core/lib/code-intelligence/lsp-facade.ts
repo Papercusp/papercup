@@ -159,7 +159,19 @@ function refusal(
  * of 400 references is the exact shape of a partial answer that reads as
  * complete — and for a rename or an impact question, acting on it is wrong.
  */
-function applyBudget(answer: CodeIntelAnswer, limit: number): CodeIntelAnswer {
+function applyBudget(input: CodeIntelAnswer, limit: number): CodeIntelAnswer {
+  const answer: CodeIntelAnswer = {
+    ...input,
+    coverage: {
+      basis: 'compiler-project',
+      sourceCompleteness: 'unverified',
+      limitations: [
+        input.freshness.health === 'healthy'
+          ? 'Compiler results cover the loaded project; external projects and dynamic/framework consumers require independent source checks.'
+          : 'Compiler readiness is degraded or unmeasured; returned references may omit real consumers. Corroborate current source and graph topology.',
+      ],
+    },
+  };
   if (answer.sites.length <= limit) return answer;
   const kept: readonly SymbolSite[] = answer.sites.slice(0, limit);
   return {

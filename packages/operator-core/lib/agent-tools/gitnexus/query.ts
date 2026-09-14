@@ -49,11 +49,11 @@ const OP_VALUES = [
 export default defineTool({
   name: 'graph:query',
   description:
-    'Curated call-graph intelligence over the GitNexus index. `op`: symbol | callers | callees | impact | health, or a refused intent such as references/text-search to receive a typed redirect. Returns `{sites, truncation, freshness, latencyMs, error}`; `line1` is one-indexed. Refusals and backend faults come back as `error`, never as an empty result — so empty `sites` proves absence only when `error===null` and `freshness.health==="healthy"`.',
+    'Curated GitNexus topology: symbol | callers | callees | impact | health; refused intents return redirects. Returns `{sites, truncation, freshness, coverage, latencyMs, error}`; `line1` is one-indexed. Fresh or untruncated results do not prove source completeness. Missing/ambiguous symbols and backend failures carry errors; corroborate consumers in current source.',
   guidance: {
     when: 'You need call-graph topology: who calls a symbol, what it calls, or the blast radius of changing it.',
     notWhen:
-      'Use lsp:query for compiler truth (definitions, references, types) and text search for text. Prefer this over the raw gitnexus.* plugin tools, which return unranked results with no freshness or truncation contract (D-021).',
+      'Use lsp:query for compiler semantics and scoped rg for literals/current source; runtime diagnosis needs state/log tools. Use gitnexus.context or trace for known-symbol intents outside this operation set, with source corroboration.',
     chaining:
     'op:"symbol" to locate the symbol → op:"callers"/"callees" for its edges → op:"impact" for the change radius. If results look stale, op:"health" reports structured list_repos freshness. If you need references, diagnostics, text search, or another refused intent, pass that intent as `op` to receive its concrete useInstead redirect.',
   },

@@ -1,5 +1,5 @@
 {
-  "measuredAt": "2026-09-14T12:58:44.810Z",
+  "measuredAt": "2026-09-14T13:47:41.650Z",
   "disposition": "interim/inconclusive",
   "attempts": 19,
   "accountedUsd": 1.6147294,
@@ -1776,6 +1776,135 @@
       "Not novel does not mean technically impossible or valueless; it means the proposed behavior cannot count as a new Dream discovery without a distinct observed product gap."
     ]
   },
+  "flatFacetedAblation": {
+    "source": "calibration-flat-faceted-ablation-result-2026-09-14.json",
+    "protocol": "calibration-flat-faceted-ablation-protocol.json",
+    "sourceWorkItem": "WI-10001412",
+    "sourcePostId": 204651,
+    "sourcePostBodySha256": "3d59be4b70d683c22df4a9936cf6af9abfa182fcede315638a389d3204940b80",
+    "reviewer": "su-f106637d-b145-4cd4-a05e-fff90c116e5a",
+    "reviewerKind": "AI/domain",
+    "reviewerMinutesApproximate": 13,
+    "exposure": {
+      "attestation": "Before assignment, the reviewer had not read WI-40148 posts 204381–204406, Dream calibration review/key artifacts, or prior faceted judgments/results.",
+      "duringReview": "The reviewer read only calibration-flat-blind-v2.json; no sibling Dream artifact, key, status, review thread, outcome, candidate command, provider call, agent launch, setting change, or study mutation.",
+      "limitation": "The reviewer reported the file SHA from the assigned pin rather than recomputing it because commands were prohibited; the embedded sourceBlindHash was directly observed. The study owner independently verified the file SHA before assignment."
+    },
+    "caseComparisons": [
+      {
+        "caseId": "1176a396ed37847cf61c",
+        "facetedDisposition": "reject",
+        "flatDisposition": "accept",
+        "agreement": false,
+        "direction": "reject-to-accept",
+        "facetedFamily": "hive-filtered secure source packing",
+        "flatFamily": "hive-confined secure source-evidence packing"
+      },
+      {
+        "caseId": "32f8b3a1af51c14a4739",
+        "facetedDisposition": "reject",
+        "flatDisposition": "reject",
+        "agreement": true,
+        "direction": "reject-to-reject",
+        "facetedFamily": "CAS-versioned pack-operation audit",
+        "flatFamily": "operational pack-call audit logging through the behavioral-spec revision store"
+      },
+      {
+        "caseId": "36908b44cc10514ba38e",
+        "facetedDisposition": "unverified",
+        "flatDisposition": "accept",
+        "agreement": false,
+        "direction": "unverified-to-accept",
+        "facetedFamily": "hive-confined revision-aware clause retrieval",
+        "flatFamily": "hive-confined, revision-aware behavioral-clause retrieval"
+      },
+      {
+        "caseId": "5908803065283e72f93d",
+        "facetedDisposition": "unverified",
+        "flatDisposition": "reject",
+        "agreement": false,
+        "direction": "unverified-to-reject",
+        "facetedFamily": "hive-bounded CAS spec revision with scoped evidence pack",
+        "flatFamily": "three-way hive-confined spec revision plus secure evidence packing"
+      },
+      {
+        "caseId": "82152aef5690ace62e79",
+        "facetedDisposition": "reject",
+        "flatDisposition": "reject",
+        "agreement": true,
+        "direction": "reject-to-reject",
+        "facetedFamily": "hive-filtered secure source packing",
+        "flatFamily": "hive-confined secure source-evidence packing"
+      },
+      {
+        "caseId": "838da71efc0a5d2f4a2d",
+        "facetedDisposition": "reject",
+        "flatDisposition": "unverified",
+        "agreement": false,
+        "direction": "reject-to-unverified",
+        "facetedFamily": "Dream-admission-gated spec revision",
+        "flatFamily": "Dream-budget-gated behavioral-spec persistence"
+      }
+    ],
+    "primaryEndpoint": {
+      "name": "exact per-case disposition agreement",
+      "population": 6,
+      "agreements": 2,
+      "mismatches": 4,
+      "agreementFraction": 0.3333333333333333,
+      "mismatchCaseIds": [
+        "1176a396ed37847cf61c",
+        "36908b44cc10514ba38e",
+        "5908803065283e72f93d",
+        "838da71efc0a5d2f4a2d"
+      ],
+      "facetedHistogram": {
+        "accept": 0,
+        "reject": 4,
+        "unverified": 2
+      },
+      "flatHistogram": {
+        "accept": 2,
+        "reject": 3,
+        "unverified": 1
+      }
+    },
+    "secondaryEndpoints": {
+      "duplicateFamilyRecognition": {
+        "caseIds": [
+          "1176a396ed37847cf61c",
+          "82152aef5690ace62e79"
+        ],
+        "facetedRecognized": true,
+        "flatRecognized": true,
+        "agreement": true
+      },
+      "requiredDomainCoverage": {
+        "population": 6,
+        "complete": 6,
+        "domains": [
+          "scoped novelty",
+          "necessity of both primary contributions",
+          "concrete usefulness",
+          "falsifier feasibility",
+          "maintenance/coupling risk",
+          "could-not-determine gaps"
+        ]
+      },
+      "citationCompleteness": {
+        "population": 6,
+        "complete": 6,
+        "rule": "Each flat judgment includes decisive source references and literal supporting quotes."
+      }
+    },
+    "interpretation": {
+      "result": "The flat and faceted AI reviews agree on only 2 of 6 exact dispositions. Four directional mismatches are a large descriptive sensitivity signal in this calibration sample.",
+      "causalLimit": "Different reviewers judged the two representations, and the faceted reviewer disclosed incidental aggregate exposure after forming judgments. The design cannot isolate representation effects from reviewer effects.",
+      "powerLimit": "Six calibration cases are not a powered effectiveness sample and do not establish population-level equivalence or a winning Dream arm.",
+      "qualificationLimit": "Flat ACCEPT means qualified as a bounded experiment on the flat source-stage evidence, not global novelty, implementation success, or beneficial outcome. The separate unblinded novelty review remains 0 of 3 qualified representatives and controls current downstream eligibility.",
+      "acceptanceLimit": "This result is AI/offline calibration, not independent human validation, held-out confirmation, downstream experiment evidence, product acceptance, or shipment approval."
+    }
+  },
   "scientific": {
     "dreamAttempts": 17,
     "acceptedDreamRows": 0,
@@ -1796,8 +1925,7 @@
     "EI-22769219749818913 is closed: the deadline diagnostics now separate admission and generation budgets, with 49 focused tests passing at the recorded base and the relevant source unchanged at closure. The historical d536051b delay remains un-attributable, and no paid identity was retried."
   ],
   "outstanding": [
-    "Independent human validation; AI source-domain review is recorded with incidental aggregate exposure",
-    "Flat versus faceted offline outcome ablation by a reviewer not exposed to the faceted judgments",
+    "Independent human validation; the two AI source-stage reviews disagree on four of six exact dispositions",
     "Independent final acceptance and owner keep/simplify/expand/stop or explicitly inconclusive disposition"
   ],
   "limitations": [
@@ -1806,6 +1934,7 @@
     "Ordinary Blender uses its production corpus and one ideator, not the Dream source population",
     "Unequal spend so far; no matched-spend superiority claim",
     "All phase cost figures exclude unmeasured engineer/reviewer time and local compute dollar valuation",
-    "No substantive rejection should be inferred from an unverified verdict or a missing judgment"
+    "No substantive rejection should be inferred from an unverified verdict or a missing judgment",
+    "The flat/faceted comparison used different reviewers and cannot isolate representation effects from reviewer effects"
   ]
 }

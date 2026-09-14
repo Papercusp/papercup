@@ -284,6 +284,11 @@ function answer(
       staleVsDisk: parts.staleVsDisk ?? null,
       indexedCommit: parts.indexedCommit ?? null,
     },
+    coverage: {
+      basis: 'indexed-code',
+      sourceCompleteness: 'unverified',
+      limitations: ['Index freshness and output limits do not establish source completeness; corroborate relevant consumers in current source or official LSP.'],
+    },
     latencyMs: Date.now() - startedAt,
     error: parts.error ?? null,
   };
@@ -825,15 +830,26 @@ export async function gitnexusFacade(
     const status = typeof json.status === 'string' ? json.status : null;
 
     if (status !== 'found') {
-      // Not found is a real answer, but only from a backend that is itself
-      // healthy AND current. If the index is behind HEAD, a symbol written
-      // since is reported exactly like one that never existed, so this
-      // degrades rather than asserting absence.
+      // Exact-index omissions exist: even a fresh, untruncated miss cannot
+      // establish source absence. Preserve ambiguity and failures separately.
+      const candidates = Array.isArray(json.candidates) ? json.candidates.slice(0, 5) : [];
+      const ambiguity = candidates.map((candidate: GnxSymbol) =>
+        [candidate.uid, candidate.filePath, candidate.name].filter(Boolean).join(' '),
+      ).filter(Boolean).join('; ');
+      const missing = status === 'not_found' || status === 'not-found';
+      const ambiguous = status === 'ambiguous';
+      const reason = ambiguous
+        ? `gitnexus symbol is ambiguous${ambiguity ? `: ${ambiguity}` : ''}. Resolve the production symbol with gitnexus.context { uid or file_path } and corroborate current source.`
+        : missing
+          ? 'gitnexus did not find this symbol in its index; source existence is unverified. Check scoped rg or official LSP, including source at indexedCommit, before concluding absence.'
+          : `gitnexus context failed or returned an unrecognized status (${status ?? 'missing'}): ${typeof json.error === 'string' ? json.error : 'no valid found/not_found/ambiguous status'}. Use scoped rg or official LSP.`;
       return answer(op, query, startedAt, {
         ...indexHealth.freshness,
+        ...(!missing && !ambiguous ? { health: 'unhealthy' as const } : {}),
         sites: [],
         error: joinErrors(
           indexHealth.error,
+          reason,
           indexHealth.freshness.staleVsDisk === true
             ? 'gitnexus index is behind HEAD; a symbol written since the last ' +
                 'analyze is reported identically to one that does not exist. ' +
@@ -850,6 +866,7 @@ export async function gitnexusFacade(
     if (op === 'symbol') {
       const s = siteOf(sym);
       if (s) sites = [s];
+      else edgeNotice = 'gitnexus reported found without a usable symbol location; verify in current source.';
     } else if (op === 'callers') {
       const incoming = (json.incoming as { calls?: GnxSymbol[] } | undefined)?.calls ?? [];
       const resolved = await sitesFromEdges(incoming, activeDispatch, repo);
@@ -857,7 +874,9 @@ export async function gitnexusFacade(
       edgeNotice = fileEdgeNotice(op, resolved.callSiteCount, resolved.fileEdgeCount);
     } else if (op === 'callees') {
       const outgoing = json.outgoing as Record<string, GnxSymbol[]> | undefined;
-      const flat = outgoing ? Object.values(outgoing).flat() : [];
+      // Only CALLS are callees. Field accesses/type uses are different graph
+      // relations and cannot be presented as resolved function calls.
+      const flat = outgoing?.calls ?? [];
       const resolved = await sitesFromEdges(flat, activeDispatch, repo);
       sites = resolved.sites;
       edgeNotice = fileEdgeNotice(op, resolved.callSiteCount, resolved.fileEdgeCount);

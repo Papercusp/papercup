@@ -110,7 +110,7 @@ export interface SymbolSite {
   readonly detail?: string | null;
 }
 
-/** Whether a result set is complete or was cut off, stated EXPLICITLY. */
+/** Whether returned matches were cut off. This says nothing about index coverage. */
 export interface Truncation {
   /** True when the backend cut the result set. Never infer this from length. */
   readonly truncated: boolean;
@@ -154,6 +154,15 @@ export interface CodeIntelAnswer {
   readonly sites: readonly SymbolSite[];
   readonly truncation: Truncation;
   readonly freshness: Freshness;
+  /**
+   * Scope of the evidence, independently of health, freshness and output limits.
+   * Omission on a legacy producer means unmeasured, never source completeness.
+   */
+  readonly coverage?: {
+    readonly basis: 'indexed-code' | 'compiler-project';
+    readonly sourceCompleteness: 'unverified';
+    readonly limitations: readonly string[];
+  };
   /** Wall-clock milliseconds for this single call. */
   readonly latencyMs: number;
   /**
@@ -184,9 +193,9 @@ export type CodeIntelIntent =
   | 'pack';
 
 /**
- * An answer is ACCEPTABLE only if a false-empty is impossible to confuse with
- * a true-empty. This is the predicate the corpus runner applies before it
- * scores correctness at all.
+ * Legacy honesty predicate for the corpus runner. `true` includes explicit
+ * failures and means the answer reports its state; it NEVER proves absence or
+ * exhaustive references. Check coverage, scope and independent source evidence.
  */
 export function isTrustworthyEmpty(answer: CodeIntelAnswer): boolean {
   if (answer.sites.length > 0) return true;

@@ -263,16 +263,45 @@ describe('failure shaping — an empty answer is never silently confident', () =
     expect(a.freshness.health).not.toBe('healthy');
   });
 
-  it('CONTROL: a not-found from a CURRENT index is a trustworthy empty', async () => {
-    // The mirror of the case above. Without this, a bug that marked every
-    // answer degraded would pass the stale test and look like rigour.
+  it('a CURRENT index miss preserves health but never proves source absence', async () => {
     configureGitnexusDispatch(
       withIndexHealth(async () => envelope({ status: 'not_found' })),
     );
     const a = await gitnexusFacade('symbol', { name: 'genuinelyAbsent' });
     expect(a.freshness.health).toBe('healthy');
-    expect(a.error).toBeNull();
+    expect(a.error).toMatch(/source existence is unverified/);
+    expect(a.coverage).toMatchObject({ basis: 'indexed-code', sourceCompleteness: 'unverified' });
     expect(isTrustworthyEmpty(a)).toBe(true);
+  });
+
+  it('preserves ambiguity and an actionable production-symbol anchor', async () => {
+    configureGitnexusDispatch(withIndexHealth(async () => envelope({
+      status: 'ambiguous',
+      candidates: [{ uid: 'Function:src/prod.ts:helper', name: 'helper', filePath: 'src/prod.ts' }],
+    })));
+    const a = await gitnexusFacade('symbol', { name: 'helper' });
+    expect(a.sites).toEqual([]);
+    expect(a.error).toContain('ambiguous');
+    expect(a.error).toContain('Function:src/prod.ts:helper');
+    expect(a.error).toContain('file_path');
+  });
+
+  it('keeps malformed or failed context distinct from a symbol miss', async () => {
+    configureGitnexusDispatch(withIndexHealth(async () => envelope({ error: 'database unavailable' })));
+    const a = await gitnexusFacade('symbol', { name: 'helper' });
+    expect(a.freshness.health).toBe('unhealthy');
+    expect(a.error).toContain('database unavailable');
+  });
+
+  it('does not turn field-access relations into function callees', async () => {
+    configureGitnexusDispatch(withIndexHealth(async () => envelope({
+      status: 'found',
+      symbol: { name: 'helper', filePath: 'src/prod.ts', startLine: 0 },
+      outgoing: { accesses: [{ name: 'field', filePath: 'src/data.ts', startLine: 3 }] },
+    })));
+    const a = await gitnexusFacade('callees', { name: 'helper' });
+    expect(a.sites).toEqual([]);
+    expect(a.coverage?.sourceCompleteness).toBe('unverified');
   });
 
   it('impact reports an unknown target as an explicit error, not an empty set', async () => {
