@@ -40,6 +40,12 @@ beforeEach(() => {
 });
 
 describe('coord:mark-terminal', () => {
+  it('routes real focus requests to coord:focus-window before this title-only fallback', () => {
+    expect(tool.description).toMatch(/does NOT focus or raise/i);
+    expect(tool.description).toMatch(/coord:focus-window/);
+    expect(tool.guidance?.when).toMatch(/activation through coord:focus-window failed/i);
+  });
+
   it('no presence row for the ownerId -> landed:false with a loud reason', async () => {
     getPresence.mockResolvedValue(null);
     recolorViaPty.mockResolvedValue(false);

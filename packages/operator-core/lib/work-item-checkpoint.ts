@@ -553,6 +553,7 @@ export async function attestWorkItemCheckpointUnchanged(
       nowMs: opts.nowMs,
       maxChain: opts.maxChain,
       maxBodyAgeMs: opts.maxBodyAgeMs,
+      bounded: true,
       sql,
     },
   );

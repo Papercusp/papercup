@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { sanitizeToolName, buildCatalog, SU_CATALOG } from '../targets/su-catalog';
 import { FOR_YOU_BECAUSE_RELATIONS, messageBodyArg } from '../../agent-tools/coordination/message-fields';
+import { CompletionRecordSchema } from '../../coord-lifecycle/records';
 
 const ANTHROPIC_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -126,6 +127,25 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     expect(input.properties).toHaveProperty('item');
     expect(input.properties).not.toHaveProperty('itemId');
     expect(input.required).toEqual(['slug', 'item', 'status']);
+  });
+
+  it('work_items:complete advertises structured evidence rather than the obsolete flat summary', () => {
+    const entry = SU_CATALOG.find((candidate) => candidate.name === 'work_items:complete')!;
+    const input = entry.input as { properties: Record<string, any>; required: string[] };
+    expect(input.required).toEqual(['id', 'completion']);
+    expect(input.properties).not.toHaveProperty('summary');
+    expect(input.properties.completion.required).toContain('summary');
+    expect(input.properties.completion.properties.verification.properties).toHaveProperty('testsRun');
+    expect(input.properties).toHaveProperty('state');
+    expect(input.properties).toHaveProperty('assumptions');
+    expect(entry.description).toMatch(/record.only|record only/i);
+    expect(entry.description).toMatch(/independent/i);
+    // Anchor the documented completion record to its canonical schema without
+    // importing the live tool registry or executing its mutating handler.
+    expect(CompletionRecordSchema.safeParse({
+      workItem: 'WI-93301', summary: 'Held verification task tested; independent acceptance remains pending.',
+      verification: { testsRun: 'fixture/current-task.test.ts', testResult: 'pass', verifiedHow: 'unit', filesChanged: [] },
+    }).success).toBe(true);
   });
 
   it('exposes the PG-canonical docs:author write required by SU-S12', () => {

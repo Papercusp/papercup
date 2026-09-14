@@ -16,12 +16,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import type { SearchFilters, RecencyRank, MatchProvenance } from '@papercusp/search';
 import { createQueryEmbedderWarmup } from '../../../search/query-embedder-warmup';
 import { fitsProseColumns } from '../../../search/prose-vector-dims';
-import {
-  closeWindowId,
-  focusWindowId,
-  resolveWindowIdForPid,
-  resolveWindowIdForTitleFragment,
-} from '../../../adv-session-windows';
+import { closeWindowId } from '../../../adv-session-windows';
+import { focusSessionWindow, resolveSessionWindowId } from '../../../adv-session-focus';
 import {
   advSessionRowCaveats,
   fallbackCodexLaunchSpecFromAdvSession,
@@ -35,7 +31,6 @@ import {
   advSessionsByIdToken,
   markAdvSessionLaunched,
   setAdvSessionOmpThreadId,
-  setAdvSessionWindowId,
   updateAdvSessionPortStatus,
 } from '../../../adv-sessions';
 import { withFieldReliability } from '../../../field-reliability';
@@ -479,46 +474,6 @@ const list = defineTool({
   },
 });
 
-/**
- * Resolve an X11 window id for a session-control action (focus / kill), trying
- * the cheapest → most-general source in order:
- *   1. an explicit windowId in the request body,
- *   2. the adv_sessions row's recorded window_id,
- *   3. the recorded pid → its window,
- *   4. the "[adv:<id>]" launch-title tag — set ONLY by the operator's own
- *      console-spawn (terminals it launched),
- *   5. the coord-owner SHORT id in the window title — psu / fleet-launched
- *      INTERACTIVE sessions carry NO window_id/pid and are NOT tagged
- *      "[adv:<id>]"; they title themselves "… · su-78d15 · …", so match that
- *      (owner-hit 2026-07-11: focus + kill both failed for such a session).
- * Any title-resolved id is written back to the row so the next action is a
- * direct hit. Returns null when nothing resolves (headless agent, wmctrl
- * missing, or no DISPLAY) — the caller turns that into a 404.
- */
-async function resolveSessionWindowId(
-  body: { id?: number; pid?: number; windowId?: string | null },
-  latestRow: Awaited<ReturnType<typeof getAdvSession>>,
-): Promise<string | null> {
-  let wid = body.windowId ?? null;
-  if (!wid && latestRow?.windowId) wid = latestRow.windowId;
-  if (!wid && typeof body.pid === 'number') wid = await resolveWindowIdForPid(body.pid);
-  if (!wid && latestRow?.id) {
-    wid = await resolveWindowIdForTitleFragment(`[adv:${latestRow.id}]`);
-    if (wid) await setAdvSessionWindowId(latestRow.id, wid);
-  }
-  if (!wid && latestRow?.coordOwnerId) {
-    // psu short id = the first 8 chars of the coord owner id ("su-78d15") — the
-    // exact handle a psu/fleet terminal puts in its window title. Guard against
-    // a too-short fragment matching unrelated windows.
-    const shortId = latestRow.coordOwnerId.slice(0, 8);
-    if (shortId.length >= 6) {
-      wid = await resolveWindowIdForTitleFragment(shortId);
-      if (wid && latestRow.id) await setAdvSessionWindowId(latestRow.id, wid);
-    }
-  }
-  return wid;
-}
-
 /** A JSON object body, or {} for an empty/invalid/non-object one. */
 async function parseJsonBody(req: Request): Promise<Record<string, unknown>> {
   try {
@@ -548,20 +503,21 @@ const focus = defineTool({
     const body = await parseControlBody(req);
     const latestRow =
       typeof body.id === 'number' && body.id > 0 ? await getAdvSession(body.id) : null;
-    const wid = await resolveSessionWindowId(body, latestRow);
-    if (!wid) {
+    const result = await focusSessionWindow(body, latestRow);
+    if (!result.focused) {
       return new Response(
         JSON.stringify({
           status: 'error',
-          error: 'could not resolve a window id (wmctrl missing, no DISPLAY, or pid has no window)',
+          code: result.code,
+          error: result.reason,
+          windowId: result.windowId,
         }),
-        { status: 404, headers: JSON_HEADERS },
+        { status: result.code === 'no_window' ? 404 : 500, headers: JSON_HEADERS },
       );
     }
-    const ok = await focusWindowId(wid);
     return new Response(
-      JSON.stringify({ status: ok ? 'ok' : 'error', windowId: wid }),
-      { status: ok ? 200 : 500, headers: JSON_HEADERS },
+      JSON.stringify({ status: 'ok', windowId: result.windowId }),
+      { status: 200, headers: JSON_HEADERS },
     );
   },
 });

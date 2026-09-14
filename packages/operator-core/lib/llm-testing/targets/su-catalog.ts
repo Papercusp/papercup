@@ -211,8 +211,24 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   },
   {
     name: 'work_items:complete',
-    description: 'Record a work item completion (summary, what-landed, migrations, tests, deferred).',
-    input: obj({ id: { type: 'string' }, summary: { type: 'string' } }, ['id']),
+    description: 'Record structured completion evidence. Omit state for record-only; a terminal close requires state and assumptions. Finishing a held task does not establish independent plan acceptance; preserve pending gates. Bug closes additionally require rootCauseVerification; discover that full schema before using it.',
+    input: obj({
+      id: { type: 'string' },
+      harness: { type: 'string' },
+      state: { type: 'string', description: 'Explicit terminal intent; done/resolved means successful close, dropped/closed means discard. Omit for record-only.' },
+      assumptions: { anyOf: [{ const: 'none' }, { type: 'array', items: { type: 'string' } }] },
+      completion: obj({
+        summary: { type: 'string' },
+        verification: obj({
+          testsRun: { type: 'string' },
+          testResult: { type: 'string' },
+          verifiedHow: { type: 'string' },
+          filesChanged: { type: 'array', items: { type: 'string' } },
+          addedTests: { type: 'boolean' },
+        }),
+        deferred: { type: 'array', items: { type: 'string' } },
+      }, ['summary']),
+    }, ['id', 'completion']),
   },
   {
     // KEYED lifecycle write: the real schema has conditional terminal evidence

@@ -335,7 +335,7 @@ describe('SessionChatModal', () => {
     expect(captured).toBeNull(); // never opened a stream with no session id
   });
 
-  it('streams a live Codex card through its canonical rollout handle', async () => {
+  it('streams a live Codex card and exposes the one-click Focus window action', async () => {
     H.results['advRoster.list'] = {
       data: [
         {
@@ -376,10 +376,49 @@ describe('SessionChatModal', () => {
       '/api/adv/session/thinking?codexRolloutId=019f-rollout-1&historyOwner=su-live-1',
     );
     expect(screen.getByPlaceholderText(/Reply|Type to wake/i)).toBeTruthy();
+
+    const focus = screen.getByRole('button', { name: 'Focus window' });
+    mockFetchOnce(200, { status: 'ok', windowId: '0xabc' });
+    fireEvent.click(focus);
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/adv/sessions/focus',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ id: 9444 }),
+        }),
+      ),
+    );
+    expect(await screen.findByText('✓ Focus window applied')).toBeTruthy();
     expect(fetchMock).not.toHaveBeenCalledWith(
       '/api/admin/coordination/sessions/list',
       expect.anything(),
     );
+  });
+
+  it('does not advertise Focus window when the live Codex row has no focus handle', async () => {
+    H.results['advRoster.list'] = {
+      data: [{
+        active: [{
+          ownerId: 'su-live-1', agent: 'codex', sessionState: 'live', liveness: 'live',
+          modes: [], claims: [], currentFiles: [], openAwait: null,
+          nativeSession: {
+            backend: 'codex', source: 'adv_sessions', ownerId: 'su-live-1',
+            codexHome: '/tmp/codex-home', rolloutId: '019f-rollout-1',
+            exactResumeSupported: true, missingReason: null,
+          },
+        }],
+        pending: [],
+      }],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+
+    render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+    await waitFor(() => expect(captured).not.toBeNull());
+    expect(screen.queryByRole('button', { name: 'Focus window' })).toBeNull();
   });
 
   it('streams a live OMP card through its native thread handle', async () => {

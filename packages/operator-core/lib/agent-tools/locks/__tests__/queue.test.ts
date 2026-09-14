@@ -6,8 +6,9 @@
  * strings inside the MCP text-content envelope.
  */
 
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const H = vi.hoisted(() => {
@@ -126,6 +127,39 @@ describe('locks:queue handler', () => {
     } finally {
       if (previousRuntimeDir === undefined) delete process.env.XDG_RUNTIME_DIR;
       else process.env.XDG_RUNTIME_DIR = previousRuntimeDir;
+    }
+  });
+
+  it('maps a managed suite-app absolute path to the same repository domain and relative key as the edit hook', async () => {
+    const workspaces = mkdtempSync(join(tmpdir(), 'locks-queue-suite-app-'));
+    const portal = join(workspaces, 'papercusp-workspace', '.papercusp', 'apps', 'portal');
+    const target = join(portal, 'packages', 'contracts', 'src', 'index.ts');
+    const previousWorkspaceRoot = process.env.PAPERCUSP_WORKSPACE_ROOT;
+    const previousWorkspacesRoot = process.env.PAPERCUSP_WORKSPACES_ROOT;
+    const previousCanonicalTree = process.env.PAPERCUSP_CANONICAL_TREE;
+    process.env.PAPERCUSP_WORKSPACE_ROOT = workspaces;
+    process.env.PAPERCUSP_WORKSPACES_ROOT = workspaces;
+    process.env.PAPERCUSP_CANONICAL_TREE = join(workspaces, 'missing-canonical-tree');
+    mkdirSync(join(portal, '.git'), { recursive: true });
+    writeFileSync(join(portal, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, 'export {};\n');
+    try {
+      await tool.handler({ external_paths: [target] }, ctx);
+      expect(H.readQueue).toHaveBeenCalledWith(expect.anything(), {
+        coordinationDomain: realpathSync(portal),
+        paths: ['packages/contracts/src/index.ts'],
+        owner: undefined,
+        includeCompleted: undefined,
+      });
+    } finally {
+      if (previousWorkspaceRoot === undefined) delete process.env.PAPERCUSP_WORKSPACE_ROOT;
+      else process.env.PAPERCUSP_WORKSPACE_ROOT = previousWorkspaceRoot;
+      if (previousWorkspacesRoot === undefined) delete process.env.PAPERCUSP_WORKSPACES_ROOT;
+      else process.env.PAPERCUSP_WORKSPACES_ROOT = previousWorkspacesRoot;
+      if (previousCanonicalTree === undefined) delete process.env.PAPERCUSP_CANONICAL_TREE;
+      else process.env.PAPERCUSP_CANONICAL_TREE = previousCanonicalTree;
+      rmSync(workspaces, { recursive: true, force: true });
     }
   });
 

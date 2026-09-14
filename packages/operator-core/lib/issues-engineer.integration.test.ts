@@ -419,6 +419,13 @@ describe('engineer issues surface (real PG)', () => {
     const sameHolder = await issues.claimIssue(original.id, 'agB');
     expect((sameHolder?.payload as Record<string, unknown>)?._claimSubjectBaseline).toEqual(firstBaseline);
 
+    // The baseline is private server-owned identity; payload bookkeeping cannot forge or
+    // remove it, even when a caller explicitly supplies the reserved key.
+    const afterForgedPatch = await issues.mergeIssuePayload(original.id, {
+      _claimSubjectBaseline: { title: 'forged replacement' },
+    });
+    expect((afterForgedPatch?.payload as Record<string, unknown>)?._claimSubjectBaseline).toEqual(firstBaseline);
+
     // A truncated-assignee self-heal is also the same holder, not a new claim.
     await db.sql`UPDATE harness_shared.work_items SET taken_by = 'ag' WHERE feature_id = ${original.id}`;
     const truncatedReclaim = await issues.claimIssue(original.id, 'agB');

@@ -20,6 +20,7 @@ import {
   isAdvSessionLocalLivenessEvidence,
   advSessionLivenessEvidenceCoversAgent,
   ADV_SESSION_LIVENESS_EVIDENCE_AGENT,
+  getLatestActiveAdvSessionByOwner,
   readAdvSessionLaunchRecordByOwner,
   listResumableSessions,
   markAdvSessionShutdownAcceptedByOwner,
@@ -37,6 +38,50 @@ beforeEach(() => {
   advSessionRowsMock.mockResolvedValue([]);
   advSessionBeginMock.mockReset();
   advSessionBeginMock.mockImplementation(async (fn: (tx: typeof advSessionRowsMock) => unknown) => fn(advSessionRowsMock));
+});
+
+describe('getLatestActiveAdvSessionByOwner', () => {
+  it('maps the newest active row and binds the exact owner/workspace predicates', async () => {
+    // boundedOrgTxn applies lock_timeout + statement_timeout before the read.
+    advSessionRowsMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+      id: 28143,
+      workspace_id: 'papercusp-workspace',
+      plan_slug: 'retrieval-soft-budget-hard-deadline-2026-09-13',
+      agent: 'codex',
+      role: null,
+      feature: null,
+      mode: 'console',
+      terminal_bin: null,
+      pid: null,
+      window_id: '0x01e70b14',
+      omp_thread_id: null,
+      label: null,
+      cwd: '/repo',
+      coord_owner_id: 'su-8ee55568',
+      session_id: '01a09697-7bd2-78f1-9e1b-f8592b50a23c',
+      started_at: '2026-09-12T23:18:15.000Z',
+      ended_at: null,
+      exit_code: null,
+      ended_by: null,
+      ended_signal: null,
+      }]);
+
+    const result = await getLatestActiveAdvSessionByOwner(' su-8ee55568 ');
+    expect(result).toMatchObject({ id: 28143, coordOwnerId: 'su-8ee55568', windowId: '0x01e70b14' });
+    const sql = ((advSessionRowsMock.mock.calls as unknown[][]).at(-1)?.[0] as readonly string[]).join(' ');
+    expect(sql).toContain('coord_owner_id =');
+    expect(sql).toContain('ended_at IS NULL');
+    expect(sql).toContain('ORDER BY started_at DESC');
+    expect(sql).toContain('LIMIT 1');
+  });
+
+  it('does not query for a blank owner id', async () => {
+    await expect(getLatestActiveAdvSessionByOwner('   ')).resolves.toBeNull();
+    expect(advSessionRowsMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('readAdvSessionLaunchRecordByOwner', () => {

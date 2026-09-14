@@ -24,9 +24,15 @@ vi.mock('./workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
 
+// The production work-item attestation uses the bounded path. Keep this
+// contention regression short while leaving the production default untouched.
+const PRIOR_ATTEST_LOCK_TIMEOUT = process.env.PAPERCUSP_COORD_WRITE_LOCK_TIMEOUT_MS;
+process.env.PAPERCUSP_COORD_WRITE_LOCK_TIMEOUT_MS = '100';
 const { setWorkItemCheckpoint, setWorkItemCheckpointWithPrior, getWorkItemCheckpoint, getWorkItemCheckpointWithMeta, attestWorkItemCheckpointUnchanged } = await import(
   './work-item-checkpoint'
 );
+if (PRIOR_ATTEST_LOCK_TIMEOUT === undefined) delete process.env.PAPERCUSP_COORD_WRITE_LOCK_TIMEOUT_MS;
+else process.env.PAPERCUSP_COORD_WRITE_LOCK_TIMEOUT_MS = PRIOR_ATTEST_LOCK_TIMEOUT;
 const {
   workItemScope,
   shortCarryHash,
@@ -709,6 +715,51 @@ describe('P-007/R-06 G2 — an attestation cannot conceal a work-item that moved
     );
     expect(mismatch.refusedReason).toBe('attestation_hash_mismatch');
     expect(mismatch.currentHash).toBe(shortCarryHash(BODY));
+  });
+
+  it('returns a bounded typed timeout when the checkpoint row is locked, without changing the body', async () => {
+    const item = 'WI-ATTEST-CONTENTION';
+    const body = 'checkpoint body remains intact during transient lock contention';
+    const bodyTs = await seedCheckpoint(item, body);
+    const scope = workItemScope(HARNESS, item);
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let lockedResolve!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      lockedResolve = resolve;
+    });
+    const blocker = db.sql.begin(async (tx) => {
+      await tx`
+        SELECT note
+          FROM harness_shared.carry_notes
+         WHERE workspace_id = 'default' AND scope = ${scope}
+         FOR UPDATE`;
+      lockedResolve();
+      await held;
+    });
+
+    await locked;
+    const startedAt = Date.now();
+    let error: unknown;
+    try {
+      await attestWorkItemCheckpointUnchanged(
+        { harness: HARNESS, workItemId: item },
+        { contentHash: shortCarryHash(body) },
+      );
+    } catch (caught) {
+      error = caught;
+    } finally {
+      release();
+      await blocker;
+    }
+
+    expect(error).toMatchObject({ name: 'OrgTxnTimeoutError', pgCode: '55P03' });
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: item })).toBe(body);
+    expect(bodyTs).toBeGreaterThan(0);
   });
 
   it('a failing G2 read fails OPEN — a guard that cannot run must not become a new way to block', async () => {

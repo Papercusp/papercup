@@ -92,12 +92,12 @@ export default defineTool({
   // asks "where is agent X's window". A tier here would assert enforcement of a behaviour that
   // deliberately has no adoption target.
   description:
-    "Visually mark a peer agent's owned terminal window — retitles it with a loud, unmistakable marker — so a human can find/focus it. Answers 'where is agent X's window' on desktops (GNOME Wayland) where window-manager tools (wmctrl/xdotool) can't locate or focus by title/pid. Best-effort over two paths (a live psu-pty host, else a direct write to the session's recorded terminal device); reports which path (if either) actually landed.",
+    "Visually mark a peer agent's owned terminal window by retitling it with a loud marker. This does NOT focus or raise the window: use coord:focus-window first for an actual focus/foreground request, then use this fallback only when activation fails and a human must find the window manually. Best-effort over a live psu-pty host or the session's recorded terminal device.",
   guidance: {
     when:
-      "A human asks 'where is / bring up / focus agent X's terminal' and window-manager-level focus is unavailable (e.g. GNOME Wayland). Also useful to visually distinguish one agent's window among many open panes.",
+      "Actual activation through coord:focus-window failed, and the human wants a loud title marker to locate the already-known terminal manually. Also useful to visually distinguish one agent's window among many open panes.",
     notWhen:
-      'Not a substitute for coord:presence/fleet:assignments to find WHICH agent is doing what — this only marks a terminal that is ALREADY known to be the right one. A headless session (no owned terminal) cannot be marked; the result says so.',
+      "Do not use this as success for 'focus/raise/bring forward' — call coord:focus-window. Not a substitute for coord:presence/fleet:assignments to find WHICH agent is doing what. A headless session cannot be marked; the result says so.",
     returns:
       "{ ok: boolean, ownerId, landed: boolean, via: 'psu-pty' | 'tty' | null, title, reason? }. landed:false with reason describes why (no presence row, no tty on record, claim mismatch, write failed).",
   },

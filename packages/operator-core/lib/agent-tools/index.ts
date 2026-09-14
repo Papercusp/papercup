@@ -810,8 +810,12 @@ import './coordination/tools/inbox';
 // Live open/resolved severe-condition state (WI-1444 lifecycle reader, EI-6138)
 import './coordination/tools/conditions';
 import './coordination/tools/ack';
-// Visually mark a peer's owned terminal window so a human can find/focus it —
-// the answer to GNOME-Wayland's wmctrl/xdotool blindness (EI-19948333346987654).
+// Bring an existing live agent's terminal window to the foreground through the
+// same observed-activation service as the HUD's Focus window button. This is
+// the primary answer to an owner focus request; it never resumes/forks a host.
+import './coordination/tools/focus-window';
+// Visually mark a peer's owned terminal when real activation fails and the
+// human needs a loud title for manual discovery (EI-19948333346987654).
 import './coordination/tools/mark-terminal';
 // DECLARED coupling (unified-agent-state-plane P-031 / D-061): coupling was
 // derived-only, so an agent that already knew it was working alongside a peer had

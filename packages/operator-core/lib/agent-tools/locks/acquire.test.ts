@@ -15,9 +15,9 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/locks/acquire.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
 // WI-38252: file-lock surfaces resolve their default domain via
@@ -306,6 +306,49 @@ describe('locks:acquire — outcome branches', () => {
     } finally {
       if (previousRuntimeDir === undefined) delete process.env.XDG_RUNTIME_DIR;
       else process.env.XDG_RUNTIME_DIR = previousRuntimeDir;
+    }
+  });
+
+  it('maps a managed suite-app absolute path to its repository domain and relative key', async () => {
+    const workspaces = mkdtempSync(join(tmpdir(), 'locks-acquire-suite-app-'));
+    const portal = join(workspaces, 'papercusp-workspace', '.papercusp', 'apps', 'portal');
+    const target = join(portal, 'packages', 'contracts', 'src', 'index.ts');
+    const previousWorkspaceRoot = process.env.PAPERCUSP_WORKSPACE_ROOT;
+    const previousWorkspacesRoot = process.env.PAPERCUSP_WORKSPACES_ROOT;
+    const previousCanonicalTree = process.env.PAPERCUSP_CANONICAL_TREE;
+    process.env.PAPERCUSP_WORKSPACE_ROOT = workspaces;
+    process.env.PAPERCUSP_WORKSPACES_ROOT = workspaces;
+    process.env.PAPERCUSP_CANONICAL_TREE = join(workspaces, 'missing-canonical-tree');
+    mkdirSync(join(portal, '.git'), { recursive: true });
+    writeFileSync(join(portal, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, 'export {};\n');
+    routeM.mockResolvedValue({
+      value: {
+        ok: true,
+        lock_id: 'L-suite-app',
+        expires_ts: new Date('2026-02-01T00:00:00Z'),
+        held: ['packages/contracts/src/index.ts'],
+      },
+      via: 'local-authority',
+    });
+    try {
+      const out = await tool.handler({
+        external_paths: [target],
+        intent: 'edit portal contract',
+      } as never, {} as never) as Out;
+      expect(resolveDomainM).toHaveBeenCalledWith(undefined, 'dom');
+      expect(routeM.mock.calls.at(-1)?.[0]).toBe(realpathSync(portal));
+      expect(normM).toHaveBeenCalledWith(['packages/contracts/src/index.ts']);
+      expect(body(out)).toMatchObject({ ok: true, lock_id: 'L-suite-app' });
+    } finally {
+      if (previousWorkspaceRoot === undefined) delete process.env.PAPERCUSP_WORKSPACE_ROOT;
+      else process.env.PAPERCUSP_WORKSPACE_ROOT = previousWorkspaceRoot;
+      if (previousWorkspacesRoot === undefined) delete process.env.PAPERCUSP_WORKSPACES_ROOT;
+      else process.env.PAPERCUSP_WORKSPACES_ROOT = previousWorkspacesRoot;
+      if (previousCanonicalTree === undefined) delete process.env.PAPERCUSP_CANONICAL_TREE;
+      else process.env.PAPERCUSP_CANONICAL_TREE = previousCanonicalTree;
+      rmSync(workspaces, { recursive: true, force: true });
     }
   });
 
