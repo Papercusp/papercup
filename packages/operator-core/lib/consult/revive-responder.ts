@@ -42,6 +42,7 @@ import { buildConsoleEnvelope } from '../console-launcher';
 import { spawnHeadless, type SpawnChildExit } from '../console-spawn';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { papercuspPathForWorkspace } from '../papercusp-root';
+import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 
 /** How long the reviver waits for the resumed identity's pty host to register
  * before reporting verified:null (booting). Deliberately shorter than the
@@ -309,7 +310,18 @@ export async function reviveConsultResponder(
     });
     // The brief rides the ENV, never a --kickoff= value: free-form text inside
     // the console greeting one-liner breaks the shell (launch-agent P-001).
-    const env = { ...base.env, PAPERCUSP_KICKOFF_PROMPT: opts.brief };
+    // Codex stores the rollout in a per-adv-session home. The transcript
+    // preflight above reads that exact root; carry it through the detached
+    // psu boundary too, or psu/codex can resume against a different home and
+    // report the source rollout as missing (code -32600).
+    const codexHome = target.agent === 'codex'
+      ? codexHomeForSessionKey(target.advSessionId)
+      : null;
+    const env = {
+      ...base.env,
+      ...(codexHome ? { CODEX_HOME: codexHome } : {}),
+      PAPERCUSP_KICKOFF_PROMPT: opts.brief,
+    };
     const spawn = await d.spawnHeadless({
       envelope: { ...base, env, greetingCmd: cmd, cwd: target.cwd ?? base.cwd },
       label: `consult-revival · ${opts.ownerId.slice(0, 16)}`,

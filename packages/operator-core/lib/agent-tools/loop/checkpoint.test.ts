@@ -74,6 +74,7 @@ const withBoundedTimeout = vi.fn(
 );
 const listVerifiedWaitTakeoversForSubscribers = vi.fn(async (..._a: unknown[]): Promise<unknown[]> => []);
 const readFrozenRepairMarker = vi.hoisted(() => vi.fn());
+const unresolvedPlanDecisionRefs = vi.hoisted(() => vi.fn());
 // Mock the STORE fns; a sentinel renderCarryNote keeps the routing tests about ROUTING
 // (structured → render, raw → passthrough), not renderCarryNote's exact output. The pure
 // walls machinery (splitCarryNoteWalls / withCarryNoteWalls / normalizeWallEntries) stays
@@ -187,6 +188,9 @@ vi.mock('../coordination/tools/continuation-gate', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   readFleetWindDownLoopEndAuthorization: (...a: unknown[]) => readFleetWindDownLoopEndAuthorization(...a),
 }));
+vi.mock('../coordination/decision-ref-advisory', () => ({
+  unresolvedPlanDecisionRefs: (...a: unknown[]) => unresolvedPlanDecisionRefs(...a),
+}));
 // EI-7734 fallout: checkpoint.ts now routes EVERY no-armed-routine fallback through this
 // mock (previously a raw ctx.harnessSlug check short-circuited before ever calling it), so
 // a static `() => 'home-hive'` that ignores its args broke every test asserting an explicit
@@ -263,6 +267,7 @@ beforeEach(() => {
   readFleetWindDownLoopEndAuthorization.mockResolvedValue(null);
   withBoundedTimeout.mockResolvedValue({ value: undefined, degraded: false, elapsedMs: 0 });
   listVerifiedWaitTakeoversForSubscribers.mockResolvedValue([]);
+  unresolvedPlanDecisionRefs.mockResolvedValue(undefined);
   readFrozenRepairMarker.mockReset();
   readFrozenRepairMarker.mockReturnValue(null);
 });
@@ -1777,6 +1782,43 @@ describe('WI-7124: verify-read — the write must read back via the SAME path a 
       currentHash: shortCarryHash('newer note'),
     });
     expect(getLoopCarryNoteWithMeta).not.toHaveBeenCalled();
+  });
+});
+
+describe('EI-22995965169175295: qualified plan-decision refs in loop carry responses', () => {
+  it('advises on unresolved qualified refs from the final stored note, without blocking the write', async () => {
+    const stored = 'Resume from governed-plan#D-015 before the next cold wake; bare D-015 is not resolvable here.';
+    const advisory = {
+      flagged: true,
+      refs: [
+        {
+          ref: 'governed-plan#D-015',
+          slug: 'governed-plan',
+          decisionId: 'D-015',
+          reason: 'missing-plan',
+        },
+      ],
+      note: 'decision_ref_lint: advisory only',
+    };
+    setLoopCarryNote.mockResolvedValueOnce(stored);
+    unresolvedPlanDecisionRefs.mockResolvedValueOnce(advisory);
+
+    const result = body(await call({ note: stored }));
+
+    expect(unresolvedPlanDecisionRefs).toHaveBeenCalledWith(stored, {
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+    });
+    expect(result).toMatchObject({ ok: true, decisionRefAdvisory: advisory });
+  });
+
+  it('fails open when the advisory resolver rejects', async () => {
+    unresolvedPlanDecisionRefs.mockRejectedValueOnce(new Error('resolver unavailable'));
+
+    const result = body(await call({ note: 'Resume from governed-plan#D-015.' }));
+
+    expect(result).toMatchObject({ ok: true });
+    expect(result).not.toHaveProperty('decisionRefAdvisory');
   });
 });
 

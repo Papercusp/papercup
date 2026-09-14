@@ -16,6 +16,7 @@ import {
   type ConsultReviveContext,
   type ConsultReviveDeps,
 } from './revive-responder';
+import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 
 const CTX: ConsultReviveContext = {
   workspaceId: 'ws-revive',
@@ -142,6 +143,7 @@ describe('reviveConsultResponder', () => {
       model: 'gpt-5.6-sol:xhigh',
       modelSource: 'inherited',
     });
+    expect(calls.spawn[0]?.envelope.env.CODEX_HOME).toBe(codexHomeForSessionKey(22662));
   });
 
   it('supplies the canonical configured Codex default when a legacy target has no recorded model', async () => {
