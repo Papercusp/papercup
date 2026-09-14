@@ -14,6 +14,18 @@
  */
 export function resolvePtoolOperatorBase(env?: NodeJS.ProcessEnv): string;
 /**
+ * Resolve the implicit operator candidates for ptool. An operator-host shell
+ * can retain a dead PAPERCUSP_HONO_PORT after its per-session host exits; the
+ * canonical green operator is still a safe recovery target in that case.
+ * Keep this fallback limited to the self-port route so an explicit --url or a
+ * bare PAPERCUSP_OPERATOR_URL remains an authoritative pin.
+ *
+ * @param {EnvironmentMap} [env]
+ * @param {string | null} [explicitUrl]
+ * @returns {string[]}
+ */
+export function resolvePtoolOperatorCandidates(env?: EnvironmentMap, explicitUrl?: string | null): string[];
+/**
  * Whether the operator URL came from implicit local discovery and may follow a
  * packaged operator that restarts onto a different port. Explicit CLI/env
  * URLs are pins: changing them behind the caller's back would violate the
@@ -539,6 +551,27 @@ export function connectWithLocalRetry<T>(connectOnce: (url: string, scope: objec
     rediscover?: (() => string | null) | null;
     onRebase?: ((url: string) => void) | null;
 }): Promise<any>;
+/**
+ * Connect to the first reachable operator candidate. Later candidates are
+ * used only for pre-dispatch transport failures, so authentication and HTTP
+ * failures do not silently route a caller to another operator.
+ *
+ * @template T
+ * @param {(url: string, scope: object, options?: {timeoutMs: number}) => Promise<T>} connectOnce
+ * @param {string[]} operatorUrls
+ * @param {object} scope
+ * @param {{primaryAttemptOptions?: object, onFallback?: ((url: string, error: unknown) => void) | null, ...object}} [options]
+ * @returns {Promise<{client: T, operatorUrl: string}>}
+ */
+export function connectWithOperatorCandidates<T>(connectOnce: (url: string, scope: object, options?: {
+    timeoutMs: number;
+}) => Promise<T>, operatorUrls: string[], scope: object, { primaryAttemptOptions, onFallback, ...retryOptions }?: {
+    primaryAttemptOptions?: object;
+    onFallback?: ((url: string, error: unknown) => void) | null;
+}): Promise<{
+    client: T;
+    operatorUrl: string;
+}>;
 /**
  * One short token per failed connect attempt, for the attempt-history suffix.
  * Proxy-generated refusals classify BEFORE generic HTTP so a retried 429/502
