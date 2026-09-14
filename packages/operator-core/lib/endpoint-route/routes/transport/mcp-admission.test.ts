@@ -23,6 +23,7 @@ import {
   isBoundedCoordInboxArgs,
   isBoundedCoordDeclareIntentArgs,
   isBoundedDocsGetArgs,
+  isBoundedDocsSearchArgs,
   isBoundedEventsStatusArgs,
   isBoundedBashOutputArgs,
   isBoundedGitSyncRunArgs,
@@ -543,6 +544,59 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
         arguments: {
           name: 'mcp__papercusp_su__docs_get',
           args: { slugs: ['agent-insights/coordination/checkpoints-and-facts'], harness: 'all' },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    ['canonical', 'docs:search'],
+    ['underscore', 'docs_search'],
+    ['mcp-advertised', 'mcp__papercusp-su__docs_search'],
+    ['mcp-advertised-underscore', 'mcp__papercusp_su__docs_search'],
+  ])('does NOT shed a bounded lexical-only docs:search under critical pressure: %s', (_label, name) => {
+    const args = {
+      query: 'find the recovery runbook for this lane',
+      limit: 5,
+      harness: 'engineering',
+      semantic: false,
+    };
+    expect(isBoundedDocsSearchArgs(args)).toBe(true);
+    const body = toolsCall(15, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('accepts the bounded docs:search default page while keeping unsafe forms sheddable', () => {
+    expect(isBoundedDocsSearchArgs({ query: 'find the recovery runbook', semantic: false })).toBe(true);
+    for (const args of [
+      { query: 'recover this', limit: 5 },
+      { query: 'recover this', semantic: true, limit: 5 },
+      { query: 'recover this', semantic: false, limit: 21 },
+      { query: 'recover this', semantic: false, limit: 0 },
+      { query: 'recover this', semantic: false, harness: 'x'.repeat(121), limit: 5 },
+      { query: 'x'.repeat(201), semantic: false, limit: 5 },
+      { query: 'recover this', semantic: false, extra: 'unbounded', limit: 5 },
+    ]) {
+      expect(isBoundedDocsSearchArgs(args)).toBe(false);
+      const body = toolsCall(16, 'docs:search', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 16 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a bounded lexical-only docs:search through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 17,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__docs_search',
+          args: { query: 'find a recovery runbook', semantic: false, limit: 5 },
         },
       },
     });

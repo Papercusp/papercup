@@ -189,6 +189,7 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'plans:get',
     'plans:search',
     'docs:get',
+    'docs:search',
     'work_items:get',
     'work_items:list',
     'work_items:complete',
@@ -283,6 +284,10 @@ const DOCS_GET_NAME = normalizeMcpName('docs:get');
 const CRITICAL_DOCS_GET_MAX_SLUG_CHARS = 512;
 const CRITICAL_DOCS_GET_MAX_HEADING_CHARS = 256;
 const CRITICAL_DOCS_GET_MAX_HARNESS_CHARS = 120;
+const DOCS_SEARCH_NAME = normalizeMcpName('docs:search');
+const CRITICAL_DOCS_SEARCH_MAX_QUERY_CHARS = 200;
+const CRITICAL_DOCS_SEARCH_MAX_HARNESS_CHARS = 120;
+const CRITICAL_DOCS_SEARCH_MAX_LIMIT = 20;
 const WORK_ITEMS_SEARCH_NAME = normalizeMcpName('work_items:search');
 const CRITICAL_WORK_ITEMS_SEARCH_MAX_QUERY_CHARS = 400;
 const CRITICAL_WORK_ITEMS_SEARCH_MAX_HARNESS_CHARS = 80;
@@ -878,6 +883,35 @@ export function isBoundedDocsGetArgs(args: unknown): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * `docs:search` is the keyword lookup used when a recovery runbook's slug is
+ * unknown, but its default semantic leg and filesystem-backed corpus scan can
+ * add substantial work under critical pressure. Admit only the lexical-only
+ * form with the tool schema's bounded query/page limits and an optional
+ * bounded harness selector; semantic and enriched forms remain retryable.
+ */
+export function isBoundedDocsSearchArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['query', 'limit', 'harness', 'semantic']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (!isBoundedCriticalText(args.query, CRITICAL_DOCS_SEARCH_MAX_QUERY_CHARS, true)) return false;
+  if (
+    args.limit !== undefined &&
+    (!Number.isInteger(args.limit) ||
+      (args.limit as number) < 1 ||
+      (args.limit as number) > CRITICAL_DOCS_SEARCH_MAX_LIMIT)
+  ) {
+    return false;
+  }
+  if (
+    args.harness !== undefined &&
+    !isBoundedCriticalText(args.harness, CRITICAL_DOCS_SEARCH_MAX_HARNESS_CHARS, true)
+  ) {
+    return false;
+  }
+  return args.semantic === false;
 }
 
 /**
@@ -2448,6 +2482,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === PLANS_GET_NAME) return isBoundedPlansGetArgs(args);
   if (normalized === DOCS_GET_NAME) return isBoundedDocsGetArgs(args);
   if (normalized === PLANS_SEARCH_NAME) return isBoundedPlansSearchArgs(args);
+  if (normalized === DOCS_SEARCH_NAME) return isBoundedDocsSearchArgs(args);
   if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
   if (normalized === SCORECARDS_EVALUATE_NAME) {
     return isBoundedScorecardsEvaluateArgs(args) || isBoundedJudgeScorecardsEvaluateArgs(args, requestUrl);
