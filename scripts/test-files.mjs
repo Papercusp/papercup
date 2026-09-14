@@ -1993,6 +1993,12 @@ function run(command, args, options) {
 export const DEFAULT_TEST_FILE_RUN_TIMEOUT_MS = 600_000;
 export const TEST_FILE_RUN_TIMEOUT_PER_FILE_MS = 20_000;
 export const MAX_TEST_FILE_RUN_TIMEOUT_MS = 120 * 60_000;
+// `vitest list` is a reversible collection preflight, but it still imports the
+// requested files and can wedge before emitting any file row. Keep a separate,
+// shorter absolute ceiling: unlike `vitest run`, a list has no test execution
+// progress that justifies extending its deadline.
+export const DEFAULT_TEST_FILE_LIST_TIMEOUT_MS = 120_000;
+export const MAX_TEST_FILE_LIST_TIMEOUT_MS = 10 * 60_000;
 
 /** Default whole-run budget for a positional list of `fileCount` files: the flat five-minute
  * floor, widened by a per-file allowance, capped at the router maximum. A count that is not a
@@ -2020,6 +2026,22 @@ export function testFileRunTimeoutMs(env = process.env, fileCount = 1) {
   if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > MAX_TEST_FILE_RUN_TIMEOUT_MS) {
     throw new Error(
       `PAPERCUSP_TEST_FILE_TIMEOUT_MS must be between 1 and ${MAX_TEST_FILE_RUN_TIMEOUT_MS} milliseconds`,
+    );
+  }
+  return parsed;
+}
+
+/** Resolve the absolute collection-preflight deadline. */
+export function testFileListTimeoutMs(env = process.env) {
+  const raw = env.PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS;
+  if (raw == null || raw.trim() === '') return DEFAULT_TEST_FILE_LIST_TIMEOUT_MS;
+  if (!/^\d+$/.test(raw.trim())) {
+    throw new Error('PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS must be a positive integer number of milliseconds');
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > MAX_TEST_FILE_LIST_TIMEOUT_MS) {
+    throw new Error(
+      `PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS must be between 1 and ${MAX_TEST_FILE_LIST_TIMEOUT_MS} milliseconds`,
     );
   }
   return parsed;
@@ -2160,6 +2182,10 @@ export function runCapturedTestProcess(command, args, options = {}) {
     progressIntervalMs = TEST_FILE_PROGRESS_INTERVAL_MS,
     watchdogStallWindowMs = TEST_FILE_WATCHDOG_STALL_WINDOW_MS,
     watchdogExtensionMs = TEST_FILE_WATCHDOG_EXTENSION_MS,
+    // Preflight `vitest list` must have an absolute ceiling: it produces no
+    // per-file completion rows, so output alone cannot prove that collection
+    // is advancing. Ordinary `vitest run` keeps the larger gate-wide ceiling.
+    watchdogMaxMs = MAX_TEST_FILE_RUN_TIMEOUT_MS,
     killGraceMs = TEST_FILE_KILL_GRACE_MS,
     maxBuffer = TEST_FILE_MAX_CAPTURE_BYTES,
     systemdRunPath = SYSTEMD_RUN_PATH,
@@ -2343,7 +2369,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
 
     progressWatchdog = createProgressAwareWatchdog({
       timeoutMs,
-      maxMs: MAX_TEST_FILE_RUN_TIMEOUT_MS,
+      maxMs: watchdogMaxMs,
       stallWindowMs: watchdogStallWindowMs,
       extensionMs: watchdogExtensionMs,
       onExtend: () => emitProgress('watchdog-extended'),
@@ -2431,6 +2457,65 @@ export function runCapturedTestProcess(command, args, options = {}) {
   }));
 }
 
+/**
+ * Run Vitest's collection preflight without blocking the router event loop.
+ *
+ * `main()` must list requested files before executing them so a partial/zero
+ * match cannot read as green. That preflight used `spawnSync`, which meant a
+ * synchronous transform/import wedge could also prevent the parent watchdog's
+ * timers from running. Reuse the async process-group runner, but keep this
+ * reversible read ungoverned (the historical list path was not a test-process
+ * admission) and give it an absolute deadline: a noisy collection process
+ * cannot extend a preflight forever just by writing logs.
+ *
+ * @param {string} command
+ * @param {string[]} args
+ * @param {{ cwd?: string, env?: object, cwdLabel?: string, timeoutMs?: number,
+ *   spawnImpl?: Function, killProcessImpl?: Function, onProgress?: Function }} [options]
+ * @returns {Promise<object>}
+ */
+export function runVitestList(command, args, options = {}) {
+  const {
+    cwd,
+    env = process.env,
+    cwdLabel = cwd ?? '.',
+    timeoutMs = DEFAULT_TEST_FILE_LIST_TIMEOUT_MS,
+    progressIntervalMs = TEST_FILE_PROGRESS_INTERVAL_MS,
+    watchdogStallWindowMs = TEST_FILE_WATCHDOG_STALL_WINDOW_MS,
+    watchdogExtensionMs = TEST_FILE_WATCHDOG_EXTENSION_MS,
+    killGraceMs = TEST_FILE_KILL_GRACE_MS,
+    systemdRunPath = SYSTEMD_RUN_PATH,
+    setsidPath = SETSID_PATH,
+    spawnImpl,
+    killProcessImpl,
+    onProgress,
+  } = options;
+  return runCapturedTestProcess(command, args, {
+    cwd,
+    env,
+    cwdLabel,
+    // No file-completion rows are expected from `vitest list`; pass an empty
+    // file set so its output cannot accidentally satisfy the run accounting.
+    files: [],
+    timeoutMs,
+    progressIntervalMs,
+    watchdogStallWindowMs,
+    watchdogExtensionMs,
+    killGraceMs,
+    systemdRunPath,
+    setsidPath,
+    watchdogMaxMs: timeoutMs,
+    ...(spawnImpl ? { spawnImpl } : {}),
+    ...(killProcessImpl ? { killProcessImpl } : {}),
+    ...(onProgress
+      ? { onProgress }
+      : { onProgress: (line) => console.error(line.replace(/^TEST_FILE_PROGRESS\b/, 'TEST_FILE_LIST_PROGRESS')) }),
+    // Collection is a reversible preflight and must not consume a second
+    // resource-governor lease before the real test process starts.
+    governedProcessImpl: (_governedOptions, run) => run(undefined, env, { inherited: true }),
+  });
+}
+
 // `testing:run` is the supported routed surface for focused tests. Keep every
 // CLI refusal actionable: a bare TEST_FILE_ROUTE_ERROR leaves agents guessing
 // whether to retry the same command, hand-pick a Vitest config, or use the tool
@@ -2447,7 +2532,10 @@ export function formatRouteError(detail) {
  */
 export async function main(
   argv = process.argv.slice(2),
-  { runCapturedTestProcessImpl = runCapturedTestProcess } = {},
+  {
+    runCapturedTestProcessImpl = runCapturedTestProcess,
+    runVitestListImpl = runVitestList,
+  } = {},
 ) {
   let cleanupPreemptReadyMarker = null;
   let cleanupPreemptFinalizationMarker = null;
@@ -2549,6 +2637,13 @@ export async function main(
 
   const groups = groupRoutes(routes);
   const nameFilter = nameFilterFrom(vitestArgs);
+  let listTimeoutMs;
+  try {
+    listTimeoutMs = testFileListTimeoutMs(process.env);
+  } catch (error) {
+    console.error(formatRouteError(error instanceof Error ? error.message : String(error)));
+    return TEST_FILE_EXIT_NOT_MEASURED;
+  }
   console.log(`TEST_FILE_ROUTE requested=${routes.length} groups=${groups.length}`);
   // EI-18681435059177620: stamp WHAT IS ABOUT TO BE MEASURED before measuring it. Printed up front
   // as well as at the end because a run that is killed, hung, or timed out by its caller still has
@@ -2663,11 +2758,34 @@ export async function main(
     warnIfInstallInFlight(`\`vitest list\` (group cwd=${cwdLabel})`);
     // Vitest 4's default tree output omits files whose collected tests are all skipped.
     // File-level output keeps the route guard about requested FILES, not runnable tests.
-    const listed = run('npx', ['vitest', 'list', '--filesOnly', ...configArgs, ...requested], {
-      cwd: group.cwd,
-      env: process.env,
-    });
+    const listed = await runVitestListImpl(
+      'npx',
+      ['vitest', 'list', '--filesOnly', ...configArgs, ...requested],
+      {
+        cwd: group.cwd,
+        env: process.env,
+        cwdLabel,
+        timeoutMs: listTimeoutMs,
+      },
+    );
     const listedOutput = `${listed.stdout ?? ''}\n${listed.stderr ?? ''}${listed.error ? listed.error.message : ''}`;
+    if (listed.timedOut) {
+      console.error(
+        `TEST_FILE_LIST_WATCHDOG cwd=${cwdLabel} files=${JSON.stringify(requested)} ` +
+          `timeoutMs=${listTimeoutMs} status=timed-out — owned collection child tree reaped; ` +
+          'NOT MEASURED — Vitest did not produce a complete collection listing. ' +
+          'Widen with PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS=<milliseconds> and rerun the same command.',
+      );
+      groupResults.push({
+        requested: group.routes.length,
+        matched: 0,
+        executed: 0,
+        unmatchedCount: group.routes.length,
+        failed: false,
+        launchError: true,
+      });
+      continue;
+    }
     if (listed.error) {
       console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Vitest: ${listed.error.message}`));
       if (looksLikeMidInstallCorruption(listedOutput)) {
@@ -2718,15 +2836,25 @@ export async function main(
         // crash (e.g. a vi.mock factory throw) doesn't misattribute every OTHER healthy file in
         // the batch as broken. Deliberately only for multi-file groups: a single-file group's
         // error already IS about the one file the caller named — no ambiguity to resolve.
-        const perFile = group.routes.map((route) => {
-          const singleListed = run('npx', ['vitest', 'list', '--filesOnly', ...configArgs, route.requested], {
-            cwd: group.cwd,
-            env: process.env,
-          });
+        const perFile = [];
+        for (const route of group.routes) {
+          const singleListed = await runVitestListImpl(
+            'npx',
+            ['vitest', 'list', '--filesOnly', ...configArgs, route.requested],
+            {
+              cwd: group.cwd,
+              env: process.env,
+              cwdLabel,
+              timeoutMs: listTimeoutMs,
+            },
+          );
           const singleOutput = `${singleListed.stdout ?? ''}\n${singleListed.stderr ?? ''}`;
           const singleMatched = listedFiles(singleOutput, group.cwd, true);
-          return { requested: route.requested, ok: singleListed.status === 0 && singleMatched.includes(route.absolute) };
-        });
+          perFile.push({
+            requested: route.requested,
+            ok: !singleListed.timedOut && singleListed.status === 0 && singleMatched.includes(route.absolute),
+          });
+        }
         const attributionMarker = collectionAttributionMarker({
           perFile,
           cwd: group.cwd,

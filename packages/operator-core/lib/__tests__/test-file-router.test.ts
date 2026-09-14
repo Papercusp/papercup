@@ -29,10 +29,12 @@ import {
   transformFailureMarker,
   perGroupVitestArgs,
   runCapturedTestProcess,
+  runVitestList,
   suppressInjectedJsonReportNotice,
   defaultTestFileRunTimeoutMs,
   resolveTestChildLauncher,
   testFileRunTimeoutMs,
+  testFileListTimeoutMs,
   userBusReachable,
   vitestRunFailed,
   warnIfInstallInFlight,
@@ -42,6 +44,8 @@ import {
   TEST_FILE_WATCHDOG_EXTENSION_MS,
   TEST_FILE_WATCHDOG_STALL_WINDOW_MS,
   TEST_FILE_RUN_TIMEOUT_PER_FILE_MS,
+  DEFAULT_TEST_FILE_LIST_TIMEOUT_MS,
+  MAX_TEST_FILE_LIST_TIMEOUT_MS,
   REPO_ROOT,
   // The .mjs CLI has no declaration file; the diagnostic lands on the `from`
   // line of this multi-line import, so the suppression directive itself must
@@ -63,6 +67,16 @@ describe('test-files router', () => {
     expect(() => testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: 'not-a-number' })).toThrow(/positive integer/);
     expect(() =>
       testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(MAX_TEST_FILE_RUN_TIMEOUT_MS + 1) }),
+    ).toThrow(/between 1 and/);
+  });
+
+  it('supports a bounded collection-preflight timeout override', () => {
+    expect(testFileListTimeoutMs({})).toBe(DEFAULT_TEST_FILE_LIST_TIMEOUT_MS);
+    expect(testFileListTimeoutMs({ PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS: '180000' })).toBe(180_000);
+    expect(() => testFileListTimeoutMs({ PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS: '0' })).toThrow(/between 1 and/);
+    expect(() => testFileListTimeoutMs({ PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS: 'not-a-number' })).toThrow(/positive integer/);
+    expect(() =>
+      testFileListTimeoutMs({ PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS: String(MAX_TEST_FILE_LIST_TIMEOUT_MS + 1) }),
     ).toThrow(/between 1 and/);
   });
 
@@ -652,6 +666,65 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     }
   });
 
+  it('bounds a silent Vitest collection preflight and reaps its owned process group', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = new EventEmitter() as EventEmitter & {
+        pid: number;
+        stdout: PassThrough;
+        stderr: PassThrough;
+        kill: ReturnType<typeof vi.fn>;
+      };
+      child.pid = 4240;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn();
+      const spawnImpl = vi.fn((..._args: unknown[]) => child);
+      const killProcessImpl = vi.fn(() => 'group');
+      const progress = vi.fn();
+
+      const resultPromise = runVitestList(
+        'npx',
+        ['vitest', 'list', '--filesOnly', 'a.test.ts'],
+        {
+          cwd: '/repo',
+          cwdLabel: 'packages/operator-core',
+          env: { PATH: '/usr/bin' },
+          timeoutMs: 100,
+          progressIntervalMs: 10,
+          watchdogStallWindowMs: 50,
+          watchdogExtensionMs: 50,
+          killGraceMs: 20,
+          systemdRunPath: null,
+          setsidPath: '/usr/bin/setsid',
+          spawnImpl,
+          killProcessImpl,
+          onProgress: progress,
+        },
+      );
+
+      expect(spawnImpl).toHaveBeenCalledWith(
+        '/usr/bin/setsid',
+        ['--wait', 'npx', 'vitest', 'list', '--filesOnly', 'a.test.ts'],
+        expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
+      );
+      await vi.advanceTimersByTimeAsync(100);
+      expect(killProcessImpl).toHaveBeenCalledWith(child, 'SIGTERM', true);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(killProcessImpl).toHaveBeenCalledWith(child, 'SIGKILL', true);
+      child.emit('close', null, 'SIGKILL');
+
+      await expect(resultPromise).resolves.toMatchObject({
+        status: null,
+        signal: 'SIGKILL',
+        timedOut: true,
+      });
+      expect(progress.mock.calls.map(([line]) => String(line)).join('\n')).toContain('state=timeout');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('resolves the launcher against the env the child actually gets', () => {
     const base = { command: 'npx', args: ['vitest', 'run', 'a.test.ts'] };
     // systemd-run --user needs a user bus: XDG_RUNTIME_DIR or DBUS_SESSION_BUS_ADDRESS.
@@ -817,6 +890,48 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     expect(runStart).toBeGreaterThan(0);
     expect(runEnd).toBeGreaterThan(runStart);
     expect(source.slice(runStart, runEnd)).not.toContain('spawnSync');
+  });
+
+  it('wires the collection preflight through the bounded async list seam', () => {
+    const source = readFileSync(new URL('../../../../scripts/test-files.mjs', import.meta.url), 'utf8');
+    const listStart = source.search(/const listed = await runVitestListImpl\(\s*["']npx["']/);
+    const listEnd = source.indexOf('const listedOutput =', listStart);
+    expect(listStart).toBeGreaterThan(0);
+    expect(listEnd).toBeGreaterThan(listStart);
+    expect(source.slice(listStart, listEnd)).not.toContain('spawnSync');
+    expect(source).toContain('TEST_FILE_LIST_WATCHDOG');
+  });
+
+  it('refuses a timed-out collection preflight without starting Vitest tests', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const runVitestListMock = vi.fn(async () => ({
+      status: null,
+      signal: 'SIGKILL',
+      stdout: '',
+      stderr: '',
+      error: null,
+      timedOut: true,
+    }));
+    const runCapturedTestProcessMock = vi.fn();
+    try {
+      const code = await main(
+        ['packages/operator-core/lib/__tests__/test-file-router.test.ts'],
+        {
+          runVitestListImpl: runVitestListMock,
+          runCapturedTestProcessImpl: runCapturedTestProcessMock,
+        },
+      );
+      expect(code).toBe(2);
+      expect(runVitestListMock).toHaveBeenCalledTimes(1);
+      expect(runCapturedTestProcessMock).not.toHaveBeenCalled();
+      expect(errorSpy.mock.calls.map(([line]) => String(line)).join('\n')).toContain(
+        'TEST_FILE_LIST_WATCHDOG',
+      );
+    } finally {
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
   });
 
   it('remains importable by CommonJS-transformed consumers while settling its async exit code', () => {
