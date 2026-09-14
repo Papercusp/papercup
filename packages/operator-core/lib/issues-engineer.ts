@@ -80,6 +80,7 @@ import { randomInt } from 'node:crypto';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { trackDetached } from './detached-imports';
 import { projectWorkItemColumns, type WorkItemReadOptions } from './work-item-read-projection';
+import { CLAIM_SUBJECT_BASELINE_KEY } from './claim-subject-baseline';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import { agentReviewNormalExclusionSql } from './harness/improvements/agent-review-policy';
 import {
@@ -2888,14 +2889,47 @@ export async function claimIssue(
        AND feature_id = ${id}
        AND item_kind IN ('bug', 'change', 'task')`;
   const priorAssignee = priorRows[0]?.taken_by ?? null;
+  // A holder's subject must be captured in the SAME atomic UPDATE as the claim.
+  // The watchdog coalescer intentionally refreshes an open issue's visible
+  // title/body and watchdogKey; a follow-up completion must not silently treat
+  // that refreshed row as the subject the holder originally accepted.
+  //
+  // Exact same-holder reclaims and truncated-assignee self-heals are not new
+  // claims. Preserve their original baseline so a coalescer mutation remains
+  // detectable across idempotent retries. Blank/"unassigned" sentinels and a
+  // genuinely different holder are new-holder claims and receive a fresh stamp.
+  const sameHolderPredicate = sql`(
+    target.assignee = ${assignee}
+    OR (target.assignee IS NOT NULL AND btrim(target.assignee) <> '' AND position(target.assignee in ${assignee}) = 1)
+  )`;
+  const baselinePayload = sql`CASE
+    WHEN jsonb_typeof(target.payload) = 'object' THEN target.payload
+    ELSE '{}'::jsonb
+  END`;
+  const claimSubjectBaseline = sql`
+    jsonb_build_object(
+      'kind', COALESCE(target.kind, 'bug'),
+      'title', COALESCE(target.title, ''),
+      'summary', COALESCE(target.body, ''),
+      'body', COALESCE(target.body, ''),
+      'watchdogKey', CASE
+        WHEN jsonb_typeof(target.payload -> 'watchdogKey') = 'string'
+          THEN target.payload ->> 'watchdogKey'
+        ELSE NULL
+      END
+    )`;
   const rows = await withPgContentionRetry(() => sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues AS target SET
       payload = CASE
-        WHEN target.assignee = ${assignee}
-          OR (target.assignee IS NOT NULL AND btrim(target.assignee) <> '' AND position(target.assignee in ${assignee}) = 1)
+        WHEN ${sameHolderPredicate}
         THEN target.payload
         ELSE jsonb_set(
-          COALESCE(target.payload, '{}'::jsonb),
+          jsonb_set(
+            ${baselinePayload},
+            ARRAY[${CLAIM_SUBJECT_BASELINE_KEY}]::text[],
+            ${claimSubjectBaseline},
+            true
+          ),
           '{claim_history_post_id}',
           to_jsonb(COALESCE((
             SELECT max(post.id)
@@ -3623,9 +3657,16 @@ export async function mergeIssuePayload(
 ): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const ws = await resolveIssueWorkspace(id);
-  const unset = [...new Set(opts.unset ?? [])];
+  // The claim-subject baseline is server-owned identity, not caller payload.
+  // Coalescing and other bookkeeping legitimately merge arbitrary top-level
+  // keys, but must never forge, replace, or remove the baseline that protects
+  // a holder from stale completion evidence. Strip it before both the shallow
+  // merge and the unset list; a claim write is the only producer of this key.
+  const payloadPatch = { ...patch };
+  delete payloadPatch[CLAIM_SUBJECT_BASELINE_KEY];
+  const unset = [...new Set((opts.unset ?? []).filter((key) => key !== CLAIM_SUBJECT_BASELINE_KEY))];
   const clearingPlanItem = unset.includes('plan_item');
-  const settingPlanItem = clearingPlanItem ? null : planItemSourceFromPayloadPatch(patch);
+  const settingPlanItem = clearingPlanItem ? null : planItemSourceFromPayloadPatch(payloadPatch);
   // EI-21215793636294109: write the CANONICAL base table, never the engineer_issues
   // COMPATIBILITY VIEW — a key removal is not expressible through that view. Its
   // INSTEAD OF trigger re-merges the incoming payload into the stored one
@@ -3642,7 +3683,7 @@ export async function mergeIssuePayload(
   // the view's scalar projection, whereas the stored `_ei` is preserved untouched here.
   const updatePayload = (db: OrgSql) => db<{ ok: number }[]>`
     UPDATE harness_shared.work_items
-       SET payload = (COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb) - ${unset}::text[],
+       SET payload = (COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(payloadPatch)}::text::jsonb) - ${unset}::text[],
            -- A promoted issue has TWO row-level admission identities:
            -- payload.plan_item and the normalized source-plan columns. Keep them
            -- in the SAME write on both SET and CLEAR. Before EI-21551365156148780,
