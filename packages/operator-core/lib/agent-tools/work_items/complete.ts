@@ -2991,6 +2991,13 @@ async function completeOne(
     typeof it.completion.duplicateOf === 'string' &&
     it.completion.duplicateOf.trim().length > 0 &&
     it.completion.duplicateOf.trim() !== it.id;
+  // Duplicate and discard closes are administrative settlements, not claims that
+  // remediation evidence made the item authoritative. They still leave the item
+  // settled in the queue, so the caller-facing burn-down result must use the shared
+  // abandoned/drop exception even when completion authority remains `proposed`.
+  const isAbandonedClose =
+    duplicateCloseCoverageException ||
+    ['closed', 'deprecated', 'dropped'].includes(String(effectiveState ?? '').trim().toLowerCase());
   const completionHasChangedOrDeletedPaths =
     (completionEvidenceForGate?.filesChanged?.length ?? 0) > 0 ||
     (completionEvidenceForGate?.filesDeleted?.length ?? 0) > 0;
@@ -4839,7 +4846,10 @@ async function completeOne(
     // Reported unconditionally on a real close (including `committed`) so the caller can
     // see the judgement rather than infer it from the absence of a warning.
     ...(stampedAuthority
-      ? { completionAuthority: stampedAuthority, countsTowardBurnDown: countsTowardBurnDown(stampedAuthority, true) }
+      ? {
+          completionAuthority: stampedAuthority,
+          countsTowardBurnDown: countsTowardBurnDown(stampedAuthority, true, isAbandonedClose),
+        }
       : {}),
     ...(completionFleetSlug ? { fleetSlug: completionFleetSlug } : {}),
     ...(duplicateOfWarning ? { duplicateOfWarning } : {}),
