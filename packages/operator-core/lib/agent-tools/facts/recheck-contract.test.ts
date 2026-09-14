@@ -54,7 +54,13 @@ function payloadOf(result: Awaited<ReturnType<typeof assertTool.handler>>): Reco
   return JSON.parse((result as { content: { text: string }[] }).content[0].text);
 }
 
-const base = { scope: 'owner', scopeRef: 'su-test', key: 'k', body: 'a durable conclusion' };
+const base = {
+  scope: 'owner',
+  scopeRef: 'su-test',
+  key: 'k',
+  body: 'a durable conclusion',
+  ttlSec: 60,
+};
 const recheck = {
   probe: 'Run release:deploy { op:"status" }.',
   falsifier: 'The deployed pin is not the green checkpoint pin.',

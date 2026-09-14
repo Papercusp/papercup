@@ -33,6 +33,7 @@ import {
   WALL_KEY_PREFIX,
   GUARD_RAIL_KEY_PREFIX,
   FACT_VOLATILE_MAX_TTL_SEC,
+  validateFactLifetime,
   type AgentFact,
   type FactDependency,
   type FactSourceProvenance,
@@ -818,6 +819,10 @@ export default defineTool({
           body?: unknown;
           slot?: unknown;
           acceptTruncation?: unknown;
+          kind?: 'conclusion' | 'assumption' | 'convention' | 'undecidable';
+          confidence?: (typeof FACT_CONFIDENCE_LEVELS)[number];
+          ttlSec?: number;
+          permanent?: boolean;
           subjectVolatile?: unknown;
           measuredAt?: unknown;
           measurement?: { measuredAt?: unknown } | null;
@@ -836,21 +841,52 @@ export default defineTool({
             ctx.addIssue({ code: 'custom', path: ['body'], message: refusal });
           }
         }
-        if (candidate.subjectVolatile !== true) return;
         const flat = typeof candidate.measuredAt === 'string' ? candidate.measuredAt.trim() : '';
         const aliased =
           candidate.measurement && typeof candidate.measurement.measuredAt === 'string'
             ? candidate.measurement.measuredAt.trim()
             : '';
-        if (flat || aliased) return;
-        ctx.addIssue({
-          code: 'custom',
-          path: ['measuredAt'],
-          message:
-            'facts:assert — subjectVolatile:true requires measuredAt (the ISO timestamp of the sample). ' +
-            'It is NOT defaulted to now(): that would stamp a sample of unknown age as fresh, which is ' +
-            'the exact misreading measuredAt exists to prevent.',
+        const hasMeasuredAt = Boolean(flat || aliased);
+        if (candidate.subjectVolatile === true && !hasMeasuredAt) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['measuredAt'],
+            message:
+              'facts:assert — subjectVolatile:true requires measuredAt (the ISO timestamp of the sample). ' +
+              'It is NOT defaulted to now(): that would stamp a sample of unknown age as fresh, which is ' +
+              'the exact misreading measuredAt exists to prevent.',
+          });
+          // Match the store's ordering: the missing timestamp is the actionable
+          // refusal, so do not add a second lifetime complaint for the same call.
+          return;
+        }
+
+        // Keep schema preflight and the store's write boundary on the same lifetime
+        // contract. The store infers a volatile subject from either measuredAt spelling,
+        // and slot:'…' normalizes the key before validation; mirror both here so safeParse
+        // and dryRun cannot report a false green for a write that assertFact will refuse.
+        const normalizedKey =
+          typeof candidate.key === 'string' && typeof candidate.body === 'string'
+            ? normalizeFactInput(
+                candidate.key,
+                candidate.body,
+                candidate.slot === 'dead-end' || candidate.slot === 'wall' || candidate.slot === 'guard-rail'
+                  ? candidate.slot
+                  : undefined,
+              ).key
+            : '';
+        const lifetimeError = validateFactLifetime({
+          key: normalizedKey,
+          kind: candidate.kind,
+          ttlSec: candidate.ttlSec,
+          permanent: candidate.permanent,
+          confidence: candidate.confidence,
+          subjectVolatile: candidate.subjectVolatile === true || hasMeasuredAt,
         });
+        if (lifetimeError) {
+          const path = lifetimeError.includes('permanent:true') ? ['permanent'] : ['ttlSec'];
+          ctx.addIssue({ code: 'custom', path, message: lifetimeError });
+        }
       });
   })(),
   async handler(args, ctx) {

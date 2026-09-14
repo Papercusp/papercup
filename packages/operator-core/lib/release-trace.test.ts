@@ -328,6 +328,52 @@ describe('buildReleaseTrace', () => {
     expect(out.nextVerb).toBeNull();
   });
 
+  it('awaits the exact frozen repair head before origin/staging publication', () => {
+    const repairHead = 'c'.repeat(40);
+    const frozenCandidate = 'd'.repeat(40);
+    const repairQueue = {
+      phase: 'ready-to-verify',
+      candidate: frozenCandidate,
+      frozenCandidate,
+      repairHead,
+    } as NonNullable<PipelinePosition['gate']['repairQueue']>;
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          input: { path: null, sha: repairHead },
+          targetSha: repairHead,
+          targetShortSha: repairHead.slice(0, 9),
+          positions: { committedLocal: false, onStaging: false, inMain: false, deployed: false },
+          gate: { ...position().gate, repairQueue },
+        }),
+      }),
+    );
+
+    expect(out.nextVerb).toEqual({
+      name: 'checkpoint:await',
+      args: { pipeline: 'papercusp', candidateSha: repairHead },
+      reason: expect.stringContaining('ready to verify'),
+    });
+  });
+
+  it('does not use a frozen repair route for an unrelated target', () => {
+    const repairQueue = {
+      phase: 'ready-to-verify',
+      candidate: 'd'.repeat(40),
+      repairHead: 'c'.repeat(40),
+    } as NonNullable<PipelinePosition['gate']['repairQueue']>;
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: false, onStaging: false, inMain: false, deployed: false },
+          gate: { ...position().gate, repairQueue },
+        }),
+      }),
+    );
+
+    expect(out.nextVerb).toMatchObject({ name: 'git-sync:await', args: { sha } });
+  });
+
   describe('exact fix-commit containment in the recorded gate candidate', () => {
     const observedCandidate = 'c'.repeat(40);
 

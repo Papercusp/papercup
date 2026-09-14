@@ -132,6 +132,7 @@ describe('facts:assert — body-cap prose matches enforcement (EI-20352525205864
         key: 'k-prose-premise-accepted',
         body: 'x'.repeat(FACT_BODY_MAX_CHARS + 40),
         acceptTruncation: true,
+        ttlSec: 60,
         dryRun: true,
       }).success,
     ).toBe(true);

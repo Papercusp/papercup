@@ -414,6 +414,19 @@ function gateIsActivelyJudgingTarget(input: Pick<ReleaseTraceInput, 'position' |
   return checkpointRun?.active === true && sameSha(input.position.targetSha, checkpointRun.candidate);
 }
 
+/**
+ * A frozen repair head in `ready-to-verify` is already the gate's next candidate, even though
+ * it intentionally lives on `refs/papercusp/frozen/<candidate>` rather than origin/staging.
+ * Return the exact head so the caller can bind its await to that SHA; a queue for another target
+ * or another phase must not bypass the normal publication route.
+ */
+function frozenRepairHeadReadyToVerify(input: Pick<ReleaseTraceInput, 'position'>): string | null {
+  const queue = input.position.gate.repairQueue;
+  return queue?.phase === 'ready-to-verify' && sameSha(input.position.targetSha, queue.repairHead)
+    ? queue.repairHead
+    : null;
+}
+
 function classifyFixCommitContainment(
   input: Pick<ReleaseTraceInput, 'position' | 'gate'>,
 ): ReleaseTraceFixCommitContainment {
@@ -634,6 +647,7 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
   const cancelledNoProducer = checkpointRunCancelledNoProducer(input);
   const consumedAuthority = checkpointAuthorityConsumed(input);
   const candidateVerdict = classifyCandidateVerdict(input);
+  const frozenRepairHead = frozenRepairHeadReadyToVerify(input);
 
   if (!position.targetSha) add('target-unresolved', true, 'The requested path/SHA did not resolve to a commit.');
   if (terminalInconclusive) {
@@ -899,6 +913,7 @@ function unguardedNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | nul
   const cancelledNoProducer = checkpointRunCancelledNoProducer(input);
   const consumedAuthority = checkpointAuthorityConsumed(input);
   const candidateVerdict = classifyCandidateVerdict(input);
+  const frozenRepairHead = frozenRepairHeadReadyToVerify(input);
   if (!targetSha) {
     return {
       name: 'dev:pipeline_position',
@@ -960,6 +975,15 @@ function unguardedNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | nul
         (candidateVerdict.reason === 'repair-in-progress' || candidateVerdict.reason === 'repair-staging-mismatch'
           ? 'The frozen repair queue owns progress; await its next checkpoint outcome instead of opening a new gate-failure diagnosis.'
           : 'Await the next checkpoint outcome instead of treating the prior gate state as a verdict for this candidate.'),
+    };
+  }
+  if (frozenRepairHead) {
+    return {
+      name: 'checkpoint:await',
+      args: { pipeline, candidateSha: frozenRepairHead },
+      reason:
+        `The frozen repair queue is ready to verify repairHead ${frozenRepairHead}; ` +
+        'await its candidate-bound checkpoint verdict before the verified lineage is promoted to staging.',
     };
   }
   if (!position.positions.onStaging && !targetWasGateTested) {

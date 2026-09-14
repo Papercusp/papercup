@@ -9,6 +9,10 @@ const base = {
   scope: 'owner',
   key: 'schema-probe',
   body: 'schema probe',
+  // Every ordinary fixture declares a bounded lifetime. The no-lifetime path
+  // is covered explicitly below so unrelated schema-contract tests stay about
+  // the field they are exercising.
+  ttlSec: 60,
 };
 
 describe('facts:assert settledBy modality contract', () => {
@@ -298,6 +302,46 @@ describe('facts:assert TTL spelling contract', () => {
     // contradicted validateFactLifetime's refusal of an undeclared lifetime.
     expect(confidence).not.toMatch(/renders unbadged, ordinary TTL/i);
   });
+
+  it('REFUSES an ordinary verified fact without a declared lifetime at schema parse', () => {
+    const parsed = assertTool.args.safeParse({
+      scope: 'owner',
+      key: 'undeclared-lifetime',
+      body: 'a verified conclusion with no expiry choice',
+      confidence: 'verified',
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(formatIssues(parsed.error.issues)).toMatch(/there is no default any more/i);
+    expect(formatIssues(parsed.error.issues)).toMatch(/ttlSec/);
+  });
+
+  it('mirrors the store lifetime exceptions and slot normalization', () => {
+    expect(
+      assertTool.args.safeParse({
+        scope: 'owner',
+        key: 'convention-without-ttl',
+        body: 'a standing convention',
+        kind: 'convention',
+      }).success,
+    ).toBe(true);
+    expect(
+      assertTool.args.safeParse({
+        scope: 'owner',
+        key: 'dead-end-without-ttl',
+        body: 'a failed approach',
+        slot: 'dead-end',
+      }).success,
+    ).toBe(true);
+    expect(
+      assertTool.args.safeParse({
+        scope: 'owner',
+        key: 'provisional-without-ttl',
+        body: 'a single observation',
+        confidence: 'provisional',
+      }).success,
+    ).toBe(true);
+  });
 });
 
 /**
@@ -346,6 +390,7 @@ describe('facts:assert union branch selection on a private undecidable fact (EI-
         scopeRef: 'EI-22057520151022793',
         key: 'schema-probe-shareable-undecidable',
         body: 'schema probe',
+        ttlSec: 60,
         kind: 'undecidable',
         shareable: true,
         settledBy: 'a concrete validation probe',
@@ -421,6 +466,7 @@ describe('facts:assert reports a stray key instead of another branch (EI-2205025
         scope: 'workspace',
         key: 'p018-freeze',
         body: 'the P-018 freeze conclusion',
+        ttlSec: 60,
         sourceRef: 'wi:EI-22063684320590166',
       }).success,
     ).toBe(true);
