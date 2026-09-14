@@ -127,6 +127,30 @@ describe('file dependency resolution', () => {
     expect(tokens.get(preferredDep)).toMatch(/^sha256:[0-9a-f]{16}$/);
     expect(tokens.get(canonicalDep)).toBeNull();
   });
+
+  it('resolves existing directories only for callers that explicitly allow them', async () => {
+    tempRoot = await mkdtemp(join(tmpdir(), 'freshness-directory-root-'));
+    await mkdir(join(tempRoot, 'apps', 'tui'), { recursive: true });
+
+    const dep = 'file:apps/tui';
+    const defaultTokens = await resolveCurrentTokens([dep], {
+      workspaceId: 'papercusp-workspace',
+      harness: 'papercusp',
+      repoRoot: tempRoot,
+    });
+    const directoryTokens = await resolveCurrentTokens(
+      [dep],
+      {
+        workspaceId: 'papercusp-workspace',
+        harness: 'papercusp',
+        repoRoot: tempRoot,
+      },
+      { allowDirectories: true },
+    );
+
+    expect(defaultTokens.get(dep)).toBeNull();
+    expect(directoryTokens.get(dep)).toBe('present:directory');
+  });
 });
 
 describe('sibling-checkout hint for an unresolvable file: dep (EI-22169368425533789)', () => {

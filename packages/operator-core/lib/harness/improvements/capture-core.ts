@@ -720,6 +720,7 @@ function harnessFromScope(scope: string | undefined): string | null {
 }
 
 const WATCHDOG_IDENTITY_INDEX = 'work_items_watchdog_identity_uq';
+const KEYLESS_TITLE_IDENTITY_INDEX = 'work_items_keyless_title_identity_uq';
 
 /** The lane component of the durable watchdog identity. */
 function effectiveWatchdogLane(input: Pick<CaptureImprovementInput, 'lane'>): string {
@@ -748,6 +749,29 @@ function issueScopeMatchesCapture(issue: EngineerIssue, inputScope: string | und
     return actual === `harness:${slug}`;
   }
   return actual === 'operator' || actual === `harness:${PLATFORM_POT_SLUG}`;
+}
+
+/** Exact keyless title identity check used after the database arbiter wins a race. */
+function sameKeylessTitleIdentity(
+  issue: EngineerIssue,
+  input: Pick<CaptureImprovementInput, 'watchdogKey' | 'lane' | 'scope'>,
+  identity: AdmissionIdentity,
+): boolean {
+  const payload = (issue.payload as Record<string, unknown> | null) ?? {};
+  const stored = payload.admissionIdentity;
+  const keylessWatchdog =
+    payload.watchdogKey == null || (typeof payload.watchdogKey === 'string' && payload.watchdogKey.trim() === '');
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return false;
+  const storedIdentity = stored as { schemaVersion?: unknown; titleKey?: unknown };
+  return (
+    !input.watchdogKey &&
+    keylessWatchdog &&
+    storedIdentity.schemaVersion === identity.schemaVersion &&
+    storedIdentity.titleKey === identity.titleKey &&
+    isWatchdogNonTerminal(issue) &&
+    issueWatchdogLane(issue) === effectiveWatchdogLane(input) &&
+    issueScopeMatchesCapture(issue, input.scope)
+  );
 }
 
 /** Exact watchdog identity check used after the database arbiter wins a race. */
@@ -797,6 +821,17 @@ function isWatchdogIdentityConflict(error: unknown): boolean {
     .filter((value): value is string => typeof value === 'string')
     .join(' ');
   return evidence.includes(WATCHDOG_IDENTITY_INDEX);
+}
+
+/** Only the keyless title arbiter is recoverable; never swallow another 23505. */
+function isKeylessTitleIdentityConflict(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as Record<string, unknown>;
+  if (String(candidate.code ?? '') !== '23505') return false;
+  const evidence = [candidate.constraint, candidate.constraint_name, candidate.message, candidate.detail]
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ');
+  return evidence.includes(KEYLESS_TITLE_IDENTITY_INDEX);
 }
 
 function captureOccurrenceEvidence(
@@ -1445,7 +1480,7 @@ async function coalesceWatchdogWinner(args: {
 
   const repeatCount = (typeof priorPayload.repeatCount === 'number' ? priorPayload.repeatCount : 1) + 1;
   const mergePatch: Record<string, unknown> = {
-    watchdogKey: input.watchdogKey,
+    ...(input.watchdogKey ? { watchdogKey: input.watchdogKey } : {}),
     repeatCount,
     lastSeenAt: new Date().toISOString(),
   };
@@ -2654,7 +2689,12 @@ export async function captureImprovement(
     // Idea lifecycle starts at capture (self-learning P-031): open → triaged → applied
     // → verified/recurred. triage-core / resolve-core / the decay sweep advance it.
     payload.ideaLifecycle = initializeIdeaLifecycle();
-    payload.admissionIdentity = identity;
+    // Migration 1157's title arbiter intentionally ignores forced keyless rows:
+    // `force:true` is the caller's assertion that this filing is distinct, so
+    // persisting the normalized title identity here would make that assertion
+    // collide with the shared keyless title singleton. Keyed force captures still
+    // persist their stronger condition identity.
+    if (!(input.force && !input.watchdogKey)) payload.admissionIdentity = identity;
     // EI-20275452450016416: persist the coverage the dedup ACTUALLY achieved. The
     // semantic leg fails OPEN, so a row filed while the embedder was load-shedding was
     // admitted without a differently-worded-duplicate check — and that was previously
@@ -2777,28 +2817,54 @@ export async function captureImprovement(
     // then re-read and require the complete identity before coalescing.  A
     // different 23505 (or a winner from another lane/Pot/origin) must remain a
     // visible failure rather than being silently turned into a duplicate merge.
-    if (!input.watchdogKey || !isWatchdogIdentityConflict(error)) throw error;
-    const raced = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey]).catch(() => {
-      throw error;
-    });
-    const winner = raced.find(
-      (candidate) =>
-        isWatchdogNonTerminal(candidate) &&
-        sameWatchdogIdentity(candidate, input, origin) &&
-        compatibleToolFailureClassIdentity(candidate, incomingProbation),
-    );
-    if (!winner) throw error;
-    return coalesceWatchdogWinner({
-      prior: winner,
-      input,
-      deps,
-      identity,
-      possibleDuplicates,
-      dedupCoverage,
-      topics,
-      alreadyDecided,
-      queueAdmission,
-    });
+    if (input.watchdogKey && isWatchdogIdentityConflict(error)) {
+      const raced = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey]).catch(() => {
+        throw error;
+      });
+      const winner = raced.find(
+        (candidate) =>
+          isWatchdogNonTerminal(candidate) &&
+          sameWatchdogIdentity(candidate, input, origin) &&
+          compatibleToolFailureClassIdentity(candidate, incomingProbation),
+      );
+      if (!winner) throw error;
+      return coalesceWatchdogWinner({
+        prior: winner,
+        input,
+        deps,
+        identity,
+        possibleDuplicates,
+        dedupCoverage,
+        topics,
+        alreadyDecided,
+        queueAdmission,
+      });
+    }
+    // Migration 1157 is the authority for keyless non-observation captures. The
+    // SELECT-before-INSERT title fold remains advisory, so a concurrent retry can
+    // lose the INSERT to the partial title-key index even when both reads missed.
+    // Re-read through the existing dedup search and coalesce only an exact persisted
+    // titleKey/scope/lane/non-terminal winner; every other 23505 stays visible.
+    if (!input.force && !input.watchdogKey && isKeylessTitleIdentityConflict(error)) {
+      const raced = await deps.searchIssues(input.title, 20).catch(() => {
+        throw error;
+      });
+      const winner = raced.find((candidate) => sameKeylessTitleIdentity(candidate, input, identity));
+      if (!winner) throw error;
+      return coalesceWatchdogWinner({
+        prior: winner,
+        input,
+        deps,
+        identity,
+        possibleDuplicates,
+        dedupCoverage,
+        topics,
+        alreadyDecided,
+        queueAdmission,
+        identityRoute: 'title-key',
+      });
+    }
+    throw error;
   }
   let reviewState: 'blocked' | undefined;
   let agentReviewFailure: AgentReviewFailure | undefined;
@@ -2985,7 +3051,7 @@ export async function captureImprovement(
     topics,
     possibleDuplicates,
     dedupCoverage,
-    admissionIdentity: identity,
+    ...(input.force && !input.watchdogKey ? {} : { admissionIdentity: identity }),
     ...(reviewRequired ? { reviewRequired: true } : {}),
     ...(reviewState ? { reviewState } : {}),
     ...(agentReviewFailure ? { agentReviewFailure } : {}),

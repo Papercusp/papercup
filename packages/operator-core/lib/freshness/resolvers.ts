@@ -111,9 +111,9 @@ function fileRefsResolveAtRoot(refs: readonly string[], root: string, allowDirec
   return refs.every((ref) => {
     const full = containedFilePath(root, ref);
     if (!full || !existsSync(full)) return false;
-    if (allowDirectories) return true;
     try {
-      return statSync(full).isFile();
+      const stat = statSync(full);
+      return stat.isFile() || (allowDirectories && stat.isDirectory());
     } catch {
       return false;
     }
@@ -194,7 +194,8 @@ const resolveFiles = async (refs: readonly string[], ctx: FreshnessResolverCtx, 
         return;
       }
       try {
-        if (allowDirectories && statSync(full).isDirectory()) {
+        const stat = allowDirectories ? statSync(full) : null;
+        if (stat?.isDirectory()) {
           out.set(ref, 'present:directory');
           return;
         }
