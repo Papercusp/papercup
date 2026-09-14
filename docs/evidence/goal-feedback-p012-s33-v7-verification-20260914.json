@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "kind": "historical-llm-cohort-provenance",
+  "workItemId": "WI-10000456",
+  "plan": "goal-agent-behavior-feedback-2026-09-06",
+  "scenarioId": "su-S33-agenda-verify",
+  "scenarioVersion": 7,
+  "matrixGroupId": "d4422aa3-60a0-40cd-98c1-460ca11c980a",
+  "models": {
+    "sut": "gpt-5.6-sol",
+    "judge": "gpt-5.6-terra",
+    "sim": "gpt-5.6-luna"
+  },
+  "execution": {
+    "cwd": "apps/operator",
+    "command": [
+      "env",
+      "LLM_TEST_SUT_MODEL=gpt-5.6-sol",
+      "LLM_TEST_JUDGE_MODEL=gpt-5.6-terra",
+      "LLM_TEST_SIM_MODEL=gpt-5.6-luna",
+      "npm",
+      "run",
+      "llm-test",
+      "--",
+      "--scenario",
+      "su-S33-agenda-verify"
+    ],
+    "nativeSession": 94813,
+    "startedAt": "2026-09-14T01:33:40Z",
+    "finishedAt": "2026-09-14T01:43:16Z",
+    "exitCode": 1,
+    "logPath": "/tmp/goal-feedback-p012-s33-v7-verify-18327.log"
+  },
+  "runs": [
+    {
+      "id": "164d60cc-fb0c-4eaa-bbfb-75f0bd0507a9",
+      "index": 0,
+      "recordedStatus": "errored",
+      "startedAt": "2026-09-14T01:34:16.429Z",
+      "finishedAt": "2026-09-14T01:36:01.984Z",
+      "classification": "infrastructure-error",
+      "evidence": "Gateway 503: durable admission persistence unavailable. No usable SUT output; not a behavioral failure."
+    },
+    {
+      "id": "e7f5f467-4456-4ef4-88b7-32bad370547f",
+      "index": 1,
+      "recordedStatus": "passed",
+      "startedAt": "2026-09-14T01:36:40.212Z",
+      "finishedAt": "2026-09-14T01:39:40.212Z",
+      "classification": "instrument-contaminated-and-incomplete",
+      "judgeErrorCount": 2,
+      "evidence": "First tick requested independent review and explicitly withheld acceptance. The simulated user then added a wait-for-verdict task. The world returned an empty events catalog; an attempted loop:arm was refused. The run reached its 180-second cutoff with an empty final response, but the earlier effect receipt satisfied the old deterministic assertion."
+    },
+    {
+      "id": "7063573e-8fad-4b0a-8945-ac39640d8ff9",
+      "index": 2,
+      "recordedStatus": "passed",
+      "startedAt": "2026-09-14T01:40:21.209Z",
+      "finishedAt": "2026-09-14T01:41:24.632Z",
+      "classification": "historical-deterministic-pass",
+      "judgeErrorCount": 0,
+      "judgeWarningCount": 1
+    }
+  ],
+  "interpretation": {
+    "fullyPassing": false,
+    "originalLedgerRowsChanged": false,
+    "cliAggregate": "Printed verdict=pass by majority; process exited 1. Neither the majority label nor the recorded status of the timed-out run establishes a fully passing cohort.",
+    "followup": "EI-23199684369039744 narrows S33 to its intended single AUTO tick using the existing S26 pattern, and rejects errors, wallclock cutoffs and unusable final responses even after an effect. Scenario generation 8 must be measured independently.",
+    "limitations": [
+      "Historical version 7 is not current version 8 acceptance.",
+      "Isolated tool-effect receipts are not live-workspace effects or causal improvement evidence.",
+      "The gateway error is an execution-infrastructure result, not agent indiscipline.",
+      "SUT pricing remains unknown under the current target price table; reported cost is partial, not free.",
+      "This is an archival record of actual runs, not a new execution or a passing testing:record-run artifact."
+    ]
+  }
+}
