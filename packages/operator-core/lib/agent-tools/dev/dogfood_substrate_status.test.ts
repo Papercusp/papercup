@@ -51,6 +51,27 @@ beforeEach(() => {
 });
 
 describe('dev:dogfood_substrate_status handler', () => {
+  it('publishes the harnesses[] root in the registered output contract', () => {
+    const definition = tool as unknown as {
+      guidance?: { returns?: string };
+      result: { safeParse: (value: unknown) => { success: boolean } };
+    };
+    expect(definition.guidance?.returns).toContain('harnesses[]');
+    expect(
+      definition.result.safeParse({
+        substrateActive: true,
+        bootedCount: 1,
+        summary: { totalHarnesses: 1, worstVerdict: 'healthy' },
+        harnesses: [],
+        logStats: [],
+        replicationLiveness: [],
+        contentConnectivity: [],
+        reachedSubstrateOwner: true,
+        healthInputsObserved: true,
+      }).success,
+    ).toBe(true);
+  });
+
   it('short-circuits when no harness booted (no PG claim-stat load)', async () => {
     statusM.mockReturnValue({ harnesses: [], summary: { ok: true } } as never);
     const b = body(await run());

@@ -58,6 +58,26 @@ type OwnLogProbe = z.infer<typeof ownLogProbeSchema>;
 type TargetHarness = z.infer<typeof targetHarnessSchema>;
 
 /**
+ * Registered machine-readable shape for the substrate diagnostic. The nested
+ * per-harness diagnostics evolve with the substrate probes, so their stable
+ * collection roots are declared here while the row contracts remain open.
+ */
+export const substrateStatusResultSchema = z
+  .object({
+    substrateActive: z.boolean().optional(),
+    bootedCount: z.number().int().nonnegative().optional(),
+    summary: z.unknown().optional(),
+    harnesses: z.array(z.unknown()).optional(),
+    logStats: z.array(z.unknown()).optional(),
+    replicationLiveness: z.array(z.unknown()).optional(),
+    contentConnectivity: z.array(z.unknown()).optional(),
+    reachedSubstrateOwner: z.boolean().optional(),
+    healthInputsObserved: z.boolean().optional(),
+    ownLogProbe: z.unknown().optional(),
+  })
+  .passthrough();
+
+/**
  * Narrow every per-harness diagnostic array before dispatch-level result
  * shaping. Aggregate fields (`bootedCount`, `summary`) intentionally remain
  * workspace-wide; the filter exists so a caller that needs one exact row does
@@ -163,6 +183,9 @@ export default defineTool({
     when: `Investigating substrate boot state, claim error rates, or workspace-level dogfood health. The substrate always boots, so run this any time after the operator has started.`,
     notWhen: `For per-harness Insights or feature-level data, use the harness:* tools. This is the dogfood substrate layer specifically.`,
     chaining: `Pair with reading the agent-insights/substrate-flag-flip-runbook page for what to do if verdicts come back degraded/unhealthy. Any \`replicationLiveness[].logs[]\` row with \`stale:true\` (verdict 'sampling_stale') has every live-looking field (mergedPosition, knownLength, msSince* etc.) nulled out — the merge loop hasn't fed its registry entry recently, so those numbers are frozen and comparing two stale reads proves nothing (EI-19328421457282435). For actual merge progress on a stale row, query \`harness_shared.substrate_merge_cursor\` (position + updated_at) directly — it's the ground truth this diagnostic's sampler can silently fall behind.`,
+    returns:
+      '{ substrateActive, bootedCount, summary, harnesses[], logStats[], replicationLiveness[], contentConnectivity[], reachedSubstrateOwner, healthInputsObserved, ownLogProbe? }. ' +
+      '`harnesses[]` is the per-harness verdict collection; aggregate counts remain in `summary` and `bootedCount`. Pass `targetHarness` to narrow per-harness arrays to one exact workspace/harness pair.',
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
@@ -170,6 +193,7 @@ export default defineTool({
     ownLogProbe: ownLogProbeSchema.optional(),
     targetHarness: targetHarnessSchema.optional(),
   }),
+  result: substrateStatusResultSchema,
   async handler(args) {
     const { sql } = getOrgPg();
     const runQuery = async <T,>(
