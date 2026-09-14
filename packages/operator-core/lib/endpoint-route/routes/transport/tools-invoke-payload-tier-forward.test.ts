@@ -14,7 +14,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { forwardToolsInvokePayloadTier } from './_mcp-handler';
+import { forwardToolsInvokePayloadTier } from './_mcp-host';
 
 describe('forwardToolsInvokePayloadTier', () => {
   it('forwards an outer payloadTier into the target args', () => {

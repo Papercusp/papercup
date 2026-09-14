@@ -18,9 +18,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   __buildMcpToolContext_forTests,
-  MCP_SERVER_CAPABILITIES,
   type BuiltSpawnContext,
-} from '../routes/transport/_mcp-handler';
+} from '../routes/transport/_mcp-host';
+import { MCP_SERVER_CAPABILITIES } from '../routes/transport/mcp-contract';
 import {
   getSessionSurface,
   __resetSessionSurfaces,

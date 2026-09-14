@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { crossHiveLaunchHint } from './_mcp-handler';
+import { crossHiveLaunchHint } from './_mcp-host';
 
 /**
  * EI-22068944239934723: a hive-confined session asked fleet:launch-on-plan to act on

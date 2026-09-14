@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { crossHiveSelfSweepHint } from './_mcp-handler';
+import { crossHiveSelfSweepHint } from './_mcp-host';
 
 /**
  * EI-22387683489943406: a session confined to `sb-devboard-hive` fired `git-sync:run`

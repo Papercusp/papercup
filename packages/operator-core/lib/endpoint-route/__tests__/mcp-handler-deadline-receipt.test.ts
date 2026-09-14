@@ -37,7 +37,7 @@
 import { createRequire } from 'node:module';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
-import type { McpCallResult } from '../routes/transport/_mcp-handler';
+import type { McpCallResult } from '../routes/transport/mcp-diagnostic-warnings';
 
 const h = vi.hoisted(() => {
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
@@ -94,9 +94,7 @@ vi.mock('mcp-handler', () => ({
         },
       },
     });
-    return () => {
-      throw new Error('HTTP fetch handler is not exercised by this test');
-    };
+    return async () => new Response(null);
   },
 }));
 
@@ -192,7 +190,12 @@ delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
 const TEST_DEADLINE_MS = 25;
 process.env.PAPERCUSP_MCP_DEADLINE_MS = String(TEST_DEADLINE_MS);
 
-await import('../routes/transport/_mcp-handler');
+const { mcpHandler } = await import('../routes/transport/_mcp-handler');
+// `_mcp-handler` defers the host and mcp-handler construction until the first
+// request so importing pure helpers remains one-shot and side-effect-free.
+// Warm the production path once before reading the handlers captured by the
+// mocked adapter below.
+await mcpHandler(new Request('http://127.0.0.1/api/mcp'));
 const { registerProjectedTool, unregisterProjectedToolsForPlugin } = await import('@papercusp/agent-mcp');
 
 /* ─── One synthetic probe: sleeps well past the deadline, then returns a

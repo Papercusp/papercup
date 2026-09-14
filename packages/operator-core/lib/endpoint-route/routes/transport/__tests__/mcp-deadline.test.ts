@@ -8,7 +8,7 @@
  * post-timeout rejection of the orphaned run never surfaces as unhandled.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { raceDeadline, effectiveMcpDeadlineMs, dispatchLegacyWithDeadline } from '../_mcp-handler';
+import { raceDeadline, effectiveMcpDeadlineMs, dispatchLegacyWithDeadline } from '../_mcp-host';
 
 const dispatchMock = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => {

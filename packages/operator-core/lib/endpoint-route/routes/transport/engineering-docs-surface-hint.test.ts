@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { engineeringDocsSurfaceHint } from './_mcp-handler';
+import { engineeringDocsSurfaceHint } from './_mcp-host';
 
 /**
  * EI-20206112532711097: a workspace-scoped su session called `docs:get { harness: 'all' }`
