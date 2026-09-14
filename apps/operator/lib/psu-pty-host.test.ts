@@ -88,6 +88,7 @@ import {
   PSU_PTY_DIR,
   pidLooksLikePsuHost,
   findLiveHostFor,
+  duplicateHostAdmission,
   hostIdleMs,
   eventLogPathForOwner,
   appendHostEvent,
@@ -3282,6 +3283,37 @@ describe('WI-3455 — findLiveHostFor (the launcher resume-of-live guard read)',
       fs.unlinkSync(socketPathFor(ownerId));
       expect(findLiveHostFor(ownerId, { verifyIdentity: () => true })).toBeNull(); // sock gone
     } finally { cleanup(ownerId); }
+  });
+});
+
+describe('managed carry P-003 — duplicate PTY-host startup admission', () => {
+  const ownerId = 'su-duplicate-owner';
+  const live = { ownerId, pid: 4567 };
+
+  it('refuses another live identity-verified host for the same logical owner', () => {
+    expect(
+      duplicateHostAdmission(ownerId, live, {
+        currentPid: 1234,
+        isAlive: () => true,
+        verifyIdentity: () => true,
+      }),
+    ).toEqual({ admitted: false, reason: 'live-duplicate-host', ownerId, pid: 4567 });
+  });
+
+  it.each([
+    ['missing record', null, true, true, 1234],
+    ['owner mismatch', { ownerId: 'su-other', pid: 4567 }, true, true, 1234],
+    ['same host process', live, true, true, 4567],
+    ['dead process', live, false, true, 1234],
+    ['PID reused by non-host', live, true, false, 1234],
+  ])('admits %s', (_label, meta, alive, identity, currentPid) => {
+    expect(
+      duplicateHostAdmission(ownerId, meta, {
+        currentPid,
+        isAlive: () => alive,
+        verifyIdentity: () => identity,
+      }).admitted,
+    ).toBe(true);
   });
 });
 
