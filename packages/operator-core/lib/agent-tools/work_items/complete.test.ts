@@ -5877,6 +5877,29 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(stateOpts().completionAuthority).toBe('committed');
     });
 
+    it.each([
+      { label: 'a valid duplicate close', state: 'resolved', duplicateOf: 'EI-survivor' },
+      { label: 'a discard/drop close', state: 'dropped', duplicateOf: undefined },
+    ])('counts $label toward burn-down even when authority stays proposed', async ({ state, duplicateOf }) => {
+      const duplicateItem = { ...item, id: 'WI-1', kind: 'change', family: 'issue', state: 'open' };
+      getWorkItem.mockResolvedValue(duplicateItem);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...duplicateItem, state }));
+      if (duplicateOf) resolveWorkItemRef.mockResolvedValue({ kind: 'bug', ref: `papercup#${duplicateOf}` });
+
+      const r = await one({
+        id: 'WI-1',
+        state,
+        completion: {
+          summary: duplicateOf ? 'duplicate of the canonical work-item' : 'intentionally dropped',
+          ...(duplicateOf ? { duplicateOf } : {}),
+        },
+      });
+
+      expect(r.completionAuthority).toBe('proposed');
+      expect(stateOpts().completionAuthority).toBe('proposed');
+      expect(r.countsTowardBurnDown).toBe(true);
+    });
+
     // P-002 measured this exact shape on the live store: 4.2% of evidence-bearing rows
     // carry a `_completionEvidence` object with NO `verifiedHow`. An "is the object
     // present?" check passes every one of them, which is why the partial case is rejected
