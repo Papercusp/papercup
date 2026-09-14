@@ -1057,6 +1057,7 @@ async function reconcileToolFailurePromotionCollision(
   input: CaptureImprovementInput,
   deps: CaptureDeps,
   candidates?: readonly EngineerIssue[],
+  preserveCanonicalWatchdogKey = false,
 ): Promise<EngineerIssue | null> {
   const priorPayload = (prior.payload as Record<string, unknown> | null) ?? {};
   const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {}) ?? {};
@@ -1099,10 +1100,13 @@ async function reconcileToolFailurePromotionCollision(
   ];
   const kind = incomingProbation.intendedKind ?? priorProbation.intendedKind ?? storageKindOf(input.kind);
   const reconciledAt = new Date().toISOString();
-  const canonicalKey =
-    (typeof canonicalPayload.watchdogKey === 'string' && canonicalPayload.watchdogKey) ||
-    input.watchdogKey ||
-    (typeof priorPayload.watchdogKey === 'string' ? priorPayload.watchdogKey : undefined);
+  const canonicalKey = preserveCanonicalWatchdogKey
+    ? typeof canonicalPayload.watchdogKey === 'string' && canonicalPayload.watchdogKey
+      ? canonicalPayload.watchdogKey
+      : undefined
+    : (typeof canonicalPayload.watchdogKey === 'string' && canonicalPayload.watchdogKey) ||
+      input.watchdogKey ||
+      (typeof priorPayload.watchdogKey === 'string' ? priorPayload.watchdogKey : undefined);
   const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(canonical.id, {
     ...(canonicalKey ? { watchdogKey: canonicalKey } : {}),
     ...(input.paths?.length ? { paths: input.paths } : {}),
@@ -1154,6 +1158,7 @@ async function promoteToolFailureProbation(
   input: CaptureImprovementInput,
   deps: CaptureDeps,
   promotionCandidates?: readonly EngineerIssue[],
+  preserveCanonicalWatchdogKey = false,
 ): Promise<EngineerIssue | null> {
   const priorPayload = (prior.payload as Record<string, unknown> | null) ?? {};
   const priorProbation = toolFailureProbationOf(priorPayload) ?? {};
@@ -1189,10 +1194,13 @@ async function promoteToolFailureProbation(
     prior.id,
     {
       // The probation row may have been keyed by its first report while the
-      // direct-evidence promotion carries a newer message fingerprint. Keep the
-      // canonical top-level identity in sync with the promoted payload so the
-      // next exact-key lookup finds this row instead of minting a sibling.
-      ...(typeof incomingProbation.watchdogKey === 'string' && incomingProbation.watchdogKey
+      // direct-evidence promotion carries a newer message fingerprint. Exact
+      // and title-key routes update the top-level identity so the next lookup
+      // follows the promoted report; class-key routes preserve their existing
+      // indexed identity and keep the newer evidence in the nested payload.
+      ...(!preserveCanonicalWatchdogKey &&
+      typeof incomingProbation.watchdogKey === 'string' &&
+      incomingProbation.watchdogKey
         ? { watchdogKey: incomingProbation.watchdogKey }
         : {}),
       ...(input.paths?.length ? { paths: input.paths } : {}),
@@ -1214,7 +1222,13 @@ async function promoteToolFailureProbation(
     return null;
   });
   if (!merged && isWatchdogIdentityConflict(promotionMergeError)) {
-    const reconciled = await reconcileToolFailurePromotionCollision(prior, input, deps, promotionCandidates);
+    const reconciled = await reconcileToolFailurePromotionCollision(
+      prior,
+      input,
+      deps,
+      promotionCandidates,
+      preserveCanonicalWatchdogKey,
+    );
     if (reconciled) return reconciled;
   }
   if (!merged) return null;
@@ -1432,6 +1446,7 @@ async function coalesceWatchdogWinner(args: {
   const priorPayload = (prior.payload as Record<string, unknown>) ?? {};
   const priorProbation = toolFailureProbationOf(priorPayload);
   const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {});
+  const preserveCanonicalWatchdogKey = args.identityRoute === 'class-key';
   const priorReporters = Array.isArray(priorProbation?.reporters) ? priorProbation.reporters : [];
   const incomingReporters = Array.isArray(incomingProbation?.reporters) ? incomingProbation.reporters : [];
   const reporters = [
@@ -1449,7 +1464,7 @@ async function coalesceWatchdogWinner(args: {
     priorReporters.length > 0 &&
     independentReporter
   ) {
-    const promoted = await promoteToolFailureProbation(prior, input, deps);
+    const promoted = await promoteToolFailureProbation(prior, input, deps, undefined, preserveCanonicalWatchdogKey);
     if (promoted) {
       await appendCaptureOccurrence(
         deps,
@@ -1480,7 +1495,7 @@ async function coalesceWatchdogWinner(args: {
 
   const repeatCount = (typeof priorPayload.repeatCount === 'number' ? priorPayload.repeatCount : 1) + 1;
   const mergePatch: Record<string, unknown> = {
-    ...(input.watchdogKey ? { watchdogKey: input.watchdogKey } : {}),
+    ...(!preserveCanonicalWatchdogKey && input.watchdogKey ? { watchdogKey: input.watchdogKey } : {}),
     repeatCount,
     lastSeenAt: new Date().toISOString(),
   };
@@ -1493,6 +1508,9 @@ async function coalesceWatchdogWinner(args: {
       reporters,
       lastSeenAt: new Date().toISOString(),
     };
+  }
+  if (preserveCanonicalWatchdogKey && typeof priorPayload.watchdogKey === 'string' && priorPayload.watchdogKey) {
+    mergePatch.watchdogKey = priorPayload.watchdogKey;
   }
   if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
   if ((input.sourceRole ?? 'human') !== 'human') mergePatch.sourceRole = input.sourceRole;
@@ -1713,7 +1731,7 @@ export async function captureImprovement(
       const priorPayload = (classPrior.payload as Record<string, unknown> | null) ?? {};
       const priorProbation = toolFailureProbationOf(priorPayload);
       if (issueWatchdogLane(classPrior) === 'observation' && priorProbation?.state === 'probation') {
-        const promoted = await promoteToolFailureProbation(classPrior, input, deps, classKeyIssues);
+        const promoted = await promoteToolFailureProbation(classPrior, input, deps, classKeyIssues, true);
         if (promoted) {
           await appendCaptureOccurrence(
             deps,

@@ -875,6 +875,147 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     ]);
   });
 
+  it('preserves the canonical top-level key when class-key coalescing sees a report-key collision', async () => {
+    const classKey = 'repeated-tool-error-class:coord:send:caller:schema-7~field-body:runtime-9';
+    const canonicalKey = 'repeated-tool-error:coord:send:caller:first-report';
+    const incomingKey = 'repeated-tool-error:coord:send:caller:colliding-report';
+    const canonical = existing({
+      id: 'EI-CLASS-CANONICAL',
+      title: 'coord:send rejected a valid body',
+      kind: 'change',
+      scope: 'harness:papercusp',
+      payload: {
+        watchdogKey: canonicalKey,
+        toolFailureProbation: {
+          ...probation('su-existing'),
+          classKey,
+          watchdogKey: canonicalKey,
+          state: 'probation',
+        },
+      },
+    });
+    const mergePatches: Record<string, unknown>[] = [];
+    const d: CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] } = {
+      ...deps(),
+      findIssuesByToolFailureClassKeys: async () => [canonical],
+      mergeIssuePayload: async (_id, patch) => {
+        mergePatches.push(patch);
+        if (patch.watchdogKey === incomingKey) {
+          throw {
+            code: '23505',
+            constraint_name: 'work_items_watchdog_identity_uq',
+            message: 'duplicate key value violates unique constraint "work_items_watchdog_identity_uq"',
+          };
+        }
+        canonical.payload = { ...(canonical.payload as Record<string, unknown>), ...patch };
+        return canonical;
+      },
+      updateIssuePatch: async (_id, patch) => existing({ ...canonical, ...patch }),
+    };
+
+    const result = await captureImprovement(
+      {
+        title: canonical.title,
+        kind: 'change',
+        scope: 'harness:papercusp',
+        watchdogKey: incomingKey,
+        createdBy: 'su-b',
+        payloadExtra: {
+          toolFailureProbation: {
+            ...probation('su-b'),
+            classKey,
+            watchdogKey: incomingKey,
+            state: 'probation',
+          },
+        },
+      },
+      d,
+    );
+
+    expect(result).toMatchObject({ created: false, reason: 'coalesced', issue: { id: canonical.id } });
+    expect(d.created).toHaveLength(0);
+    expect(mergePatches[0]).toMatchObject({ watchdogKey: canonicalKey });
+    expect(canonical.payload).toMatchObject({
+      watchdogKey: canonicalKey,
+      toolFailureProbation: { classKey, watchdogKey: incomingKey, reporters: ['su-existing', 'su-b'] },
+    });
+    expect(d.occurrences).toEqual([
+      expect.objectContaining({ canonicalId: canonical.id, reporter: 'su-b', reportKind: 'coalesced' }),
+    ]);
+  });
+
+  it('preserves the canonical top-level key when class-key promotion carries newer evidence', async () => {
+    const classKey = 'repeated-tool-error-class:work_items:get:structural:schema-8~field-body:runtime-10';
+    const canonicalKey = 'repeated-tool-error:work_items:get:structural:first-report';
+    const incomingKey = 'repeated-tool-error:work_items:get:structural:second-report';
+    const canonical = existing({
+      id: 'EI-CLASS-PROBATION',
+      title: 'work_items:get rejected a valid body',
+      kind: 'change',
+      scope: 'harness:papercusp',
+      payload: {
+        lane: 'observation',
+        watchdogKey: canonicalKey,
+        toolFailureProbation: {
+          ...probation('su-a'),
+          classKey,
+          watchdogKey: canonicalKey,
+          state: 'probation',
+        },
+      },
+    });
+    const mergePatches: Record<string, unknown>[] = [];
+    const d: CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] } = {
+      ...deps(),
+      findIssuesByToolFailureClassKeys: async () => [canonical],
+      updateIssuePatch: async (_id, patch) => existing({ ...canonical, ...patch }),
+      mergeIssuePayload: async (_id, patch, opts) => {
+        mergePatches.push(patch);
+        canonical.payload = { ...(canonical.payload as Record<string, unknown>), ...patch };
+        for (const key of opts?.unset ?? []) delete (canonical.payload as Record<string, unknown>)[key];
+        return canonical;
+      },
+      tagIssue: async () => {},
+      untagIssue: async () => {},
+    };
+
+    const result = await captureImprovement(
+      {
+        title: canonical.title,
+        kind: 'change',
+        scope: 'harness:papercusp',
+        watchdogKey: incomingKey,
+        createdBy: 'su-b',
+        payloadExtra: {
+          toolFailureProbation: {
+            ...probation('su-b'),
+            classKey,
+            watchdogKey: incomingKey,
+            state: 'promoted',
+            directEvidence: true,
+          },
+        },
+      },
+      d,
+    );
+
+    expect(result).toMatchObject({ created: false, reason: 'promoted', issue: { id: canonical.id } });
+    expect(d.created).toHaveLength(0);
+    expect(mergePatches[0]).not.toHaveProperty('watchdogKey');
+    expect(canonical.payload).toMatchObject({
+      watchdogKey: canonicalKey,
+      toolFailureProbation: {
+        classKey,
+        watchdogKey: incomingKey,
+        state: 'promoted',
+        reporters: ['su-a', 'su-b'],
+      },
+    });
+    expect(d.occurrences).toEqual([
+      expect.objectContaining({ canonicalId: canonical.id, reporter: 'su-b', reportKind: 'promoted' }),
+    ]);
+  });
+
   it('lets the invocation-ledger watchdog promote an exact-key probation row without minting a duplicate', async () => {
     const prior = existing({
       id: 'EI-PROBATION',
