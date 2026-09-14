@@ -370,9 +370,9 @@ function splitSavedProfileExtraArgs(extraArgs: readonly string[] | undefined): {
 export default defineTool({
   name: 'capability:launch-agent',
   description:
-    "Launch agents: start one ad-hoc on a free-form `brief`, RESUME a dead agent mid-thread (`resume: { agentId }`, with a required next-turn `brief`), or FORK a live one — visible on the desktop or headless, in a fleet or not, one or many. The flexible superset of fleet:launch-on-plan (which stays the ergonomic one-call door for N members on a plan). The brief becomes the agent's FIRST TURN, so it starts working immediately instead of parking idle.",
+    "Start agents for a fixed ad-hoc `brief`, or resume/fork a prior session — visible/headless, fleet/unfleeted. For N members on an existing plan use fleet:launch-on-plan. A successful spawn proves only that a process opened; read verification before claiming registration, a first turn, or a task claim.",
   guidance: {
-    when: 'GENERAL AGENT-LAUNCH DOOR: launch, resume, or fork one or many agents — visible or headless, fleet or unfleeted. Use fleet:launch-on-plan instead only for the ergonomic “N agents on this plan” workflow.',
+    when: 'AD-HOC/RECOVERY AGENT-LAUNCH DOOR: fixed brief, resume, or fork; visible or headless, fleet or unfleeted. Existing-plan N-member work uses fleet:launch-on-plan. Duplicate screening never delays process launch; it governs work-item claims.',
     notWhen:
       'To run a COMMAND (dev server, build, REPL): capability:terminal / capability:bash. For N members on a plan: fleet:launch-on-plan. Doors: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
     chaining:
@@ -425,7 +425,7 @@ export default defineTool({
         .max(8000)
         .optional()
         .describe(
-          "The agent's FIRST TURN — a free-form task/brief it starts working immediately (no plan required). Required with `resume`/`fork`, where it becomes the resumed session's next turn (\"here's what changed, carry on\"). Omit only for a FRESH launch bound to a `plan`.",
+          "The agent's requested FIRST TURN (no plan required). Required with `resume`/`fork`, where it becomes the resumed session's next-turn request (\"here's what changed, carry on\"). Delivery is not evidence the turn began or claimed work; read the launch verification. Omit only for a FRESH launch bound to a `plan`.",
         ),
       plan: z
         .string()
