@@ -583,10 +583,18 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
         onExit: () => {},
       });
       try {
-        expect(await waitForOutput(captured, 'READY')).toBe(true);
+        // EI-23245736218610710: this full-file suite can run beside other PTY
+        // integrations. Discovery is not child readiness (EI-7662 above), so use
+        // the same bounded READY-marker budget as the other loaded-host cases in
+        // this file instead of turning a scheduler pause into a lifecycle red.
+        expect(await waitForOutput(captured, 'READY', 10_000)).toBe(true);
         expect(await injectIntoHost(sock, { mode: 'turn', data: `warm-${state}`, ownerId })).toBe(true);
         if (state === 'settled') {
-          expect(await waitForOutput(captured, 'SUBMITTED:warm-settled', 1_000)).toBe(true);
+          // injectIntoHost acknowledges admission before the detached gate/write
+          // pipeline settles. Poll its observable submit marker with the file's
+          // established bounded shared-host budget; never replace this with a
+          // flat sleep or treat the admission ACK as delivery proof.
+          expect(await waitForOutput(captured, 'SUBMITTED:warm-settled', 5_000)).toBe(true);
           const events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
           expect(events).not.toContain('"kind":"busy-gate-expired"');
         } else {
