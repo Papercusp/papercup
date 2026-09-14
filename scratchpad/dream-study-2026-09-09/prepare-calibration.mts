@@ -1,10 +1,11 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getOrgPg } from "@papercusp/db-org";
 import { mapDreamRun } from "../../packages/operator-core/lib/dream/dream-run-store.ts";
 import { STUDY_BLOCKS, validateStudyBlocks } from "./accounting.mts";
 import { buildCalibrationBundle } from "./calibration.mts";
+import { freezeImmutableArtifacts } from "./freeze-artifacts.mts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const workspaceId = "papercusp-workspace";
@@ -25,21 +26,18 @@ try {
       AND outcome->'capabilityRun'->'evaluation'->>'protocolPin' = ANY(${pins}::text[])
     ORDER BY started_at, run_id`;
   const { blind, key } = buildCalibrationBundle(rows.map(mapDreamRun));
-  // Immutable evidence: re-running may verify, never silently replace a frozen batch.
-  for (const [file, value] of [
-    ["calibration-blind-v2.json", blind],
-    ["calibration-key-v2.json", key],
-  ] as const) {
-    const bytes = JSON.stringify(value, null, 2) + "\n";
-    const target = resolve(here, file);
-    try {
-      await writeFile(target, bytes, { flag: "wx" });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if ((await readFile(target, "utf8")) !== bytes)
-        throw new Error("Frozen calibration batch changed: " + file);
-    }
-  }
+  // Validate the whole set before creating anything; re-running may verify,
+  // never silently replace or partially extend a frozen batch.
+  await freezeImmutableArtifacts(
+    [
+      ["calibration-blind-v2.json", blind],
+      ["calibration-key-v2.json", key],
+    ].map(([file, value]) => ({
+      path: resolve(here, file as string),
+      bytes: JSON.stringify(value, null, 2) + "\n",
+      label: file as string,
+    })),
+  );
   console.log(
     JSON.stringify({
       blindHash: key.blindHash,
