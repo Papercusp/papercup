@@ -2902,6 +2902,32 @@ impl OperatorClient {
 
     // ─── Memory tab (D-006 Step 2) ───
 
+    /// Desktop reads use the existing, gated human-facing tool bridge. A
+    /// native PUI process is not an agent principal, so the projected agent
+    /// route rejects its otherwise valid memory request. Remote operators
+    /// retain the bearer-authenticated route; never send them to a
+    /// loopback-only endpoint or weaken either authorization boundary.
+    async fn memory_tool(&self, verb: &str, args: serde_json::Value) -> Result<models::MemoriesPayload> {
+        let local = matches!(&self.transport, Transport::Ipc(_))
+            || reqwest::Url::parse(&self.endpoint)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .is_some_and(|host| {
+                    host == "localhost"
+                        || host.trim_matches(['[', ']'])
+                            .parse::<std::net::IpAddr>()
+                            .is_ok_and(|ip| ip.is_loopback())
+                });
+        let envelope = if local {
+            self.run_tool(&format!("memory:{verb}"), args).await?
+        } else {
+            let result = self.post_json(&format!("/api/agent-tools/memory/{verb}"), args).await?;
+            serde_json::json!({ "ok": true, "result": result })
+        };
+        serde_json::from_value(run_tool_inner_json(&envelope)?)
+            .context("decode memory payload")
+    }
+
     /// All memories for the current user (+ the active harness's pool) via the
     /// `memory:list` agent tool. `ok:false` (backend unavailable) is a VALID
     /// payload — the Memory tab renders its empty state from it, not an error.
@@ -2910,14 +2936,7 @@ impl OperatorClient {
         if let Some(h) = harness {
             body["harness_slug"] = serde_json::Value::String(h.to_string());
         }
-        let env = self.post_json("/api/agent-tools/memory/list", body).await?;
-        let text = env
-            .get("content")
-            .and_then(|c| c.get(0))
-            .and_then(|c| c.get("text"))
-            .and_then(|t| t.as_str())
-            .context("memory:list: missing content[0].text")?;
-        serde_json::from_str::<models::MemoriesPayload>(text).context("parse memory list payload")
+        self.memory_tool("list", body).await
     }
 
     /// Load the Memory tab while preserving the distinction between a valid
@@ -2958,16 +2977,7 @@ impl OperatorClient {
         if let Some(h) = harness {
             body["harness_slug"] = serde_json::Value::String(h.to_string());
         }
-        let env = self
-            .post_json("/api/agent-tools/memory/search", body)
-            .await?;
-        let text = env
-            .get("content")
-            .and_then(|c| c.get(0))
-            .and_then(|c| c.get("text"))
-            .and_then(|t| t.as_str())
-            .context("memory:search: missing content[0].text")?;
-        serde_json::from_str::<models::MemoriesPayload>(text).context("parse memory search payload")
+        self.memory_tool("search", body).await
     }
 
     /// Human-facing coord inbox (P-002) — messages/escalations/handoffs with
@@ -3990,6 +4000,101 @@ mod tests {
             transport,
             MemoryLoadState::TransportFailure { .. }
         ));
+    }
+
+    async fn memory_http_fixture(
+        payload: serde_json::Value,
+        status: u16,
+        remote: bool,
+    ) -> (OperatorClient, tokio::task::JoinHandle<(String, serde_json::Value)>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let client = OperatorClient {
+            transport: Transport::Http(HttpClient::new(base.clone(), Some("fixture-token".into()))),
+            // The transport remains loopback for isolation; only the routing
+            // classification is remote in the authenticated-path control.
+            endpoint: if remote { "https://operator.example".into() } else { base },
+            selection_source: "test".into(),
+        };
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let (headers, body) = loop {
+                let mut chunk = [0; 4096];
+                let n = socket.read(&mut chunk).await.unwrap();
+                assert!(n > 0, "request ended before its body");
+                bytes.extend_from_slice(&chunk[..n]);
+                if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8(bytes[..end].to_vec()).unwrap();
+                    let len = headers.lines().find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    }).unwrap();
+                    if bytes.len() >= end + 4 + len {
+                        break (headers, serde_json::from_slice(&bytes[end + 4..end + 4 + len]).unwrap());
+                    }
+                }
+            };
+            let response_body = payload.to_string();
+            socket.write_all(format!(
+                "HTTP/1.1 {status} Result\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                response_body.len()
+            ).as_bytes()).await.unwrap();
+            (headers, body)
+        });
+        (client, task)
+    }
+
+    #[tokio::test]
+    async fn memory_desktop_list_and_search_use_the_human_bridge() {
+        for verb in ["list", "search"] {
+            let inner = serde_json::json!({
+                "ok": true, "results": [{"id":"memory-1", "memory":"A remembered fact", "metadata":{}}]
+            });
+            let (client, request) = memory_http_fixture(serde_json::json!({
+                "ok":true, "result":{"content":[{"type":"text","text":inner.to_string()}]}
+            }), 200, false).await;
+            let result = if verb == "list" {
+                client.memory_list(Some("project-a")).await
+            } else {
+                client.memory_search("exact query λ", Some("project-a"), 7).await
+            }.unwrap();
+            assert!(result.ok);
+            assert_eq!(result.results[0].memory, "A remembered fact");
+            let (headers, body) = request.await.unwrap();
+            assert!(headers.starts_with("POST /api/agent-mcp/run-tool "));
+            assert_eq!(body["name"], format!("memory:{verb}"));
+            assert_eq!(body["args"]["harness_slug"], "project-a");
+            assert_eq!(body["confirmed"], false);
+            if verb == "search" {
+                assert_eq!(body["args"]["query"], "exact query λ");
+                assert_eq!(body["args"]["limit"], 7);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_remote_keeps_authenticated_agent_route_and_backend_unavailability() {
+        let (client, request) = memory_http_fixture(serde_json::json!({
+            "content":[{"type":"text","text":r#"{"ok":false,"reason":"memory_timeout","results":[]}"#}]
+        }), 200, true).await;
+        assert!(matches!(client.memory_list_state(None).await,
+            MemoryLoadState::BackendUnavailable { reason: Some(reason) } if reason == "memory_timeout"));
+        let (headers, body) = request.await.unwrap();
+        assert!(headers.starts_with("POST /api/agent-tools/memory/list "));
+        assert!(headers.to_lowercase().contains("authorization: bearer fixture-token"));
+        assert_eq!(body, serde_json::json!({}));
+    }
+
+    #[tokio::test]
+    async fn memory_bridge_refusal_stays_an_auth_failure() {
+        let (client, request) = memory_http_fixture(
+            serde_json::json!({"ok":false,"error":"forbidden"}), 403, false
+        ).await;
+        assert!(matches!(client.memory_list_state(None).await, MemoryLoadState::AuthFailure { .. }));
+        request.await.unwrap();
     }
 
     #[test]
