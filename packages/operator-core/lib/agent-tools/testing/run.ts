@@ -97,6 +97,7 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { harnessArg, resolveConcreteHarnessSlug } from '../_harness-scope';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
+import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 import {
   FOREGROUND_TERMINATION_GRACE_MS,
   FOREGROUND_TIMEOUT_CEILING_MS,
@@ -1332,6 +1333,44 @@ export function emptyDistilledRunRefusal(opts: {
  */
 export function shouldResolveHarnessTestRunIds(result: Pick<TestFilesCoreResult, 'ok' | 'error'>): boolean {
   return !(result.ok === false && result.error === 'timeout');
+}
+
+/**
+ * Resolve optional harness test-run IDs without letting a slow ledger query erase the
+ * already-computed test verdict. The ID lookup is useful for evidence binding, but it is
+ * not the test result itself; a database/pool stall must therefore become an explicit
+ * unknown readback rather than an MCP request timeout or a confident empty ID list.
+ */
+export const TEST_RUN_ID_READBACK_TIMEOUT_MS = 5_000;
+
+export interface TestRunIdReadback {
+  ids: number[] | null;
+  degraded: boolean;
+  reason?: BoundedTimeoutResult<number[]>['reason'];
+  elapsedMs: number;
+}
+
+export async function readHarnessTestRunIdsBounded(
+  query: Parameters<typeof findHarnessTestRunIds>[0],
+  opts: {
+    findIds?: typeof findHarnessTestRunIds;
+    timeoutMs?: number;
+  } = {},
+): Promise<TestRunIdReadback> {
+  const bounded = await withBoundedTimeout(
+    () => (opts.findIds ?? findHarnessTestRunIds)(query),
+    {
+      fallback: null,
+      timeoutMs: opts.timeoutMs ?? TEST_RUN_ID_READBACK_TIMEOUT_MS,
+      label: 'testing:run harness test-run ID readback',
+    },
+  );
+  return {
+    ids: bounded.value,
+    degraded: bounded.degraded,
+    ...(bounded.reason === undefined ? {} : { reason: bounded.reason }),
+    elapsedMs: bounded.elapsedMs,
+  };
 }
 
 /**
@@ -3054,9 +3093,9 @@ export default defineTool({
       ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
       ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
     });
-    const testRunIds =
+    const testRunIdsReadback =
       shouldResolveHarnessTestRunIds(result) && ctx.workspaceId && ctx.workspaceId !== '*' && harnessSlug
-        ? await findHarnessTestRunIds({
+        ? await readHarnessTestRunIdsBounded({
             workspaceId: ctx.workspaceId,
             harnessSlug,
             runGroupId: result.runId,
@@ -3072,7 +3111,21 @@ export default defineTool({
         : result;
     const surfacedResult = {
       ...result,
-      ...(testRunIds === null ? {} : { testRunIds }),
+      ...(testRunIdsReadback?.ids === null ? {} : { testRunIds: testRunIdsReadback?.ids }),
+      ...(testRunIdsReadback?.degraded
+        ? {
+            testRunIdsReadback: {
+              status: 'unknown' as const,
+              retryable: true,
+              reason: testRunIdsReadback.reason ?? 'error',
+              timeoutMs: TEST_RUN_ID_READBACK_TIMEOUT_MS,
+              elapsedMs: testRunIdsReadback.elapsedMs,
+              message:
+                'The test verdict completed, but its optional harness test-run ID readback did not complete; ' +
+                'testRunIds are omitted rather than reported as an empty list. Re-read testing:runs by runGroup if binding is required.',
+            },
+          }
+        : {}),
       rootSource: rootSelection.source,
       ...(prepared
         ? {

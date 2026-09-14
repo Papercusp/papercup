@@ -258,6 +258,24 @@ describe('the P-012 wake-less autonomy guard', () => {
     expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
   });
 
+  it('recognizes a deliberate bounded coord:inbox-wake await from the parked-await read', async () => {
+    getModesMock.mockResolvedValue([mode('auto')]);
+    listParkedAwaitsMock.mockResolvedValue([
+      {
+        subscriberId: 'su-caller-own-id',
+        eventKey: 'coord:inbox-wake:su-caller-own-id',
+        expiresTs: '2026-09-14T03:30:00.000Z',
+        note: 'explicit bounded inbox-wake park',
+      },
+    ]);
+
+    const got = await run({ reason: 'parked on explicit inbox wake timeout' });
+
+    expect(got.isError).toBe(false);
+    expect(got.ended).toBe(true);
+    expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
+  });
+
   it('allows a claimless typed fleet wind-down cue to authorize ending without a parked await', async () => {
     getModesMock.mockResolvedValue([mode('drain')]);
     readFleetWindDownLoopEndAuthorizationMock.mockResolvedValue(true);

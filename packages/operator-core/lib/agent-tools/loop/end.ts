@@ -323,7 +323,9 @@ export default defineTool({
     //   - listParkedAwaitsForSubscribers is the deliberate-park read. It excludes
     //     inbox liveness plumbing, platform-armed claim/fleet interests,
     //     announcements, and expired rows, none of which means the agent chose an
-    //     event as its next wake source.
+    //     event as its next wake source. Its inbox-prefix exception includes only
+    //     bounded wake-on-timeout awaits; the unbounded expiring keepalive remains
+    //     liveness plumbing.
     //
     // Positive-finding-only: if either registry read fails, preserve loop:end's
     // always-stoppable contract. A confirmed unsafe state refuses BEFORE

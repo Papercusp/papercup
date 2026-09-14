@@ -36,6 +36,7 @@ import {
   syncEnrolmentScopePath,
 } from './task-manager/enroll-sync';
 import { isTerminalState, type TaskSpec, type TaskState } from './task-manager/types';
+import { boundedPgReadTxn } from './pg-read-query';
 
 export { captureWorktreeSnapshot, computeWorktreeDirty };
 export type { WorktreeGitSnapshot };
@@ -123,6 +124,9 @@ const OUTPUT_CAP_BYTES = 16 * 1024;
 const EVICTION_MS = 60 * 60 * 1000;
 const SNAPSHOT_PERSIST_TIMEOUT_MS = 1_000;
 const TEST_RUN_PERSIST_TIMEOUT_MS = 1_000;
+/** Keep the optional post-run ID lookup from holding a pool/backend indefinitely. */
+export const TEST_RUN_ID_READBACK_TIMEOUT_MS = 3_000;
+const TEST_RUN_ID_READBACK_ACQUIRE_TIMEOUT_MS = 1_000;
 /**
  * Keep timeout recovery's optional initial snapshot write well inside the
  * foreground transport margin. The detached child is launched first, so a
@@ -1907,7 +1911,7 @@ export async function findHarnessTestRunIds(params: HarnessTestRunIdQuery): Prom
       const { getOrgPg } = await import('@papercusp/db-org');
       sql = getOrgPg().sql as unknown as SqlLike;
     }
-    const rows = await sql`
+    const readIds = (client: SqlLike) => client`
       SELECT id
         FROM harness_shared.test_runs
        WHERE workspace_id = ${params.workspaceId}
@@ -1915,6 +1919,12 @@ export async function findHarnessTestRunIds(params: HarnessTestRunIdQuery): Prom
          AND run_group_id = ${params.runGroupId}
          AND (${params.filePath ?? null}::text IS NULL OR file_path = ${params.filePath ?? null})
        ORDER BY id`;
+    const rows = params.sql
+      ? await readIds(sql)
+      : await boundedPgReadTxn<unknown[]>(_tx => readIds(_tx as unknown as SqlLike), {
+          timeoutMs: TEST_RUN_ID_READBACK_TIMEOUT_MS,
+          acquireTimeoutMs: TEST_RUN_ID_READBACK_ACQUIRE_TIMEOUT_MS,
+        });
     if (!Array.isArray(rows)) return [];
     return rows
       .map((row) => positiveSafeInteger((row as { id?: unknown })?.id))

@@ -310,9 +310,13 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
   let logSpy: ReturnType<typeof vi.spyOn>;
   let errSpy: ReturnType<typeof vi.spyOn>;
   const runCapturedTestProcessMock = vi.fn();
+  const runVitestListMock = vi.fn();
 
   const runMain = (argv: string[]) =>
-    main(argv, { runCapturedTestProcessImpl: runCapturedTestProcessMock });
+    main(argv, {
+      runCapturedTestProcessImpl: runCapturedTestProcessMock,
+      runVitestListImpl: runVitestListMock,
+    });
 
   const linesFrom = (spy: ReturnType<typeof vi.spyOn>) =>
     spy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
@@ -351,6 +355,23 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
       }
       return { status: runStatus, stdout: runStdout, stderr: '' } as never;
     }) as never);
+    runVitestListMock.mockImplementation(async (_command: string, args: string[]) => {
+      const result = spawnSyncMock('npx', args, { encoding: 'utf8' }) as {
+        status?: number | null;
+        signal?: string | null;
+        stdout?: string;
+        stderr?: string;
+        error?: Error | null;
+      };
+      return {
+        status: result.status ?? 0,
+        signal: result.signal ?? null,
+        stdout: result.stdout ?? '',
+        stderr: result.stderr ?? '',
+        error: result.error ?? null,
+        timedOut: false,
+      };
+    });
   };
 
   /** The `vitest run` invocation, located by shape rather than by index for the same reason. */
@@ -379,6 +400,7 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     errSpy.mockRestore();
     spawnSyncMock.mockReset();
     runCapturedTestProcessMock.mockReset();
+    runVitestListMock.mockReset();
   });
 
   it('exits non-zero when the name filter executed no tests', async () => {

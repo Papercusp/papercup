@@ -47,6 +47,7 @@ import runTool, {
   parseRouterTestResult,
   preserveConfinedTestOnHostShutdown,
   readManagedTestProcessResourceSnapshot,
+  readHarnessTestRunIdsBounded,
   readTestProcessResourceSnapshot,
   runTestFilesCore,
   settleConfinedTestOnHostShutdown,
@@ -55,6 +56,7 @@ import runTool, {
   selectTestFileRoot,
   shouldResolveHarnessTestRunIds,
   shouldIngestVitestLedgerInProcess,
+  TEST_RUN_ID_READBACK_TIMEOUT_MS,
 } from '../run';
 import { cancelRun, getRun } from '../../../testing-run-store';
 
@@ -1120,6 +1122,30 @@ describe('testing:run (integration)', () => {
     expect(shouldResolveHarnessTestRunIds({ ok: false, error: 'timeout' })).toBe(false);
     expect(shouldResolveHarnessTestRunIds({ ok: false, error: 'route_error' })).toBe(true);
     expect(shouldResolveHarnessTestRunIds({ ok: true })).toBe(true);
+  });
+
+  it('bounds optional harness test-run ID readback and keeps a slow ledger distinct from no IDs', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const fast = await readHarnessTestRunIdsBounded(
+        { workspaceId: 'ws', harnessSlug: 'harness', runGroupId: 'run-fast' },
+        { timeoutMs: 20, findIds: async () => [77] },
+      );
+      expect(fast).toMatchObject({ ids: [77], degraded: false });
+
+      const startedAt = Date.now();
+      const slow = await readHarnessTestRunIdsBounded(
+        { workspaceId: 'ws', harnessSlug: 'harness', runGroupId: 'run-slow' },
+        { timeoutMs: 20, findIds: async () => new Promise<number[]>(() => {}) },
+      );
+      expect(slow).toMatchObject({ ids: null, degraded: true, reason: 'timeout' });
+      expect(slow.elapsedMs).toBeLessThan(500);
+      expect(Date.now() - startedAt).toBeLessThan(500);
+      expect(TEST_RUN_ID_READBACK_TIMEOUT_MS).toBeGreaterThan(0);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('harness test-run ID readback'));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('builds a fresh store-backed router request with the admin ledger reporter but without the foreground report path', () => {
