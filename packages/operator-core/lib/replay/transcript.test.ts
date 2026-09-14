@@ -102,6 +102,109 @@ describe('parseTranscriptJsonl — codex + run_meta', () => {
     expect(t.model).toBe('gpt-5.5');
     expect(t.turns.map((x) => x.role)).toEqual(['assistant', 'tool_use']);
   });
+
+  it('parses current response_item messages, custom tool calls, and block-array tool results', () => {
+    const body = [
+      JSON.stringify({
+        timestamp: '2026-09-14T05:00:00.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '⟦carry-drill:drill-codex⟧\nContinue the carried work.' }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-09-14T05:00:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Restoring the claimed lane.' }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-09-14T05:00:02.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'custom_tool_call',
+          name: 'mcp__papercusp-su__work_items_get',
+          input: '{"id":"WI-4852"}',
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-09-14T05:00:03.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'custom_tool_call_output',
+          output: [
+            { type: 'input_text', text: '{"state":"wip"}' },
+            { type: 'input_text', text: 'checkpoint restored' },
+          ],
+        },
+      }),
+    ].join('\n');
+
+    const t = parseTranscriptJsonl(body, 'cx-current');
+    expect(t.backend).toBe('codex');
+    expect(t.turns).toEqual([
+      {
+        index: 0,
+        role: 'user',
+        text: '⟦carry-drill:drill-codex⟧\nContinue the carried work.',
+        ts: Date.parse('2026-09-14T05:00:00.000Z'),
+      },
+      {
+        index: 1,
+        role: 'assistant',
+        text: 'Restoring the claimed lane.',
+        ts: Date.parse('2026-09-14T05:00:01.000Z'),
+      },
+      {
+        index: 2,
+        role: 'tool_use',
+        toolName: 'mcp__papercusp-su__work_items_get',
+        text: '{"id":"WI-4852"}',
+        ts: Date.parse('2026-09-14T05:00:02.000Z'),
+      },
+      {
+        index: 3,
+        role: 'tool_result',
+        text: '{"state":"wip"}\ncheckpoint restored',
+        ts: Date.parse('2026-09-14T05:00:03.000Z'),
+      },
+    ]);
+  });
+
+  it('unwraps only provable nested Papercusp calls from the Codex exec orchestration wrapper', () => {
+    const directSource = [
+      'const result = await tools.mcp__papercusp_su__tools_invoke({',
+      '  name: "work_items:get",',
+      '  args: { id: "WI-4852" }',
+      '});',
+      'text(result);',
+    ].join('\n');
+    const fallbackSource = [
+      'const r = await tools.exec_command({',
+      '  cmd: "ptool tools:invoke --json - <<\'JSON\'\\n{\\\"name\\\":\\\"session:carry-drill\\\",\\\"args\\\":{\\\"op\\\":\\\"grade\\\"}}\\nJSON"',
+      '});',
+      'text(r);',
+    ].join('\n');
+    const body = [directSource, fallbackSource].map((input) => JSON.stringify({
+      type: 'response_item',
+      payload: { type: 'custom_tool_call', name: 'exec', input },
+    })).join('\n');
+
+    const t = parseTranscriptJsonl(body, 'cx-exec');
+    expect(t.turns.map((turn) => [turn.role, turn.toolName])).toEqual([
+      ['tool_use', 'exec'],
+      ['tool_use', 'work_items:get'],
+      ['tool_use', 'exec'],
+      ['tool_use', 'session:carry_drill'],
+    ]);
+    expect(t.turns[1].text).toContain('WI-4852');
+    expect(t.turns[3].text).toContain('session:carry-drill');
+  });
 });
 
 describe('cutTranscript', () => {

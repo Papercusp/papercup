@@ -4,7 +4,7 @@
  * This deliberately REUSES the P-018 carry-respawn host instead of introducing
  * another lifecycle mechanism. `startColdBootDrill` builds the same deterministic
  * carry, crosses the same flush/open-owner gates, and queues the same clean-boundary
- * `carry-respawn`; drill metadata merely lets the host record which fresh Claude
+ * `carry-respawn`; drill metadata merely lets the host record which fresh native
  * transcript belongs to the sample. `gradeColdBootDrill` then parses that native
  * transcript through the replay parser and extracts only explicit state-recovery
  * tool calls. No LLM judges its own carry.
@@ -27,7 +27,7 @@ import {
   type DrillSample,
   type RecoveryLookup,
 } from './cold-boot-drill';
-import { resolveSessionRef, resolveModelSpecForOwner } from './compaction-usage';
+import { resolveModelSpecForOwner } from './compaction-usage';
 import { runFlushGate, type FlushGateOutcome } from './enforcement-gate-io';
 import {
   PSU_PTY_DIR,
@@ -39,10 +39,14 @@ import {
   type PsuPtyHost,
 } from './events/await/psu-pty-discovery';
 import { modelWindowForSpec } from './agent-config-constants';
-import { findSessionTranscript, newestTranscriptUnderOwner } from './claude-sessions';
 import { parseTranscriptJsonl } from './replay/transcript';
 import type { ReplayTranscript } from './replay/types';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from './agent-tools/coordination/compaction-recovery';
+import {
+  resolveOwnerIsolatedSessionByPrefix,
+  resolveSelfSession,
+  type SelfSession,
+} from './search/self-session';
 
 export const DEFAULT_COLD_BOOT_DRILL_INTERVAL_MS = 30 * 60_000;
 export const DEFAULT_COLD_BOOT_DRILL_WINDOW_TOKENS = 200_000;
@@ -213,13 +217,19 @@ function latestActiveDrill(
   return null;
 }
 
-async function defaultTranscriptPath(ownerId: string): Promise<string | null> {
-  const ref = await resolveSessionRef(ownerId);
-  if (!ref || (ref.agent != null && ref.agent !== 'claude')) return null;
-  return (
-    (ref.sessionId ? await findSessionTranscript(ref.sessionId, { owner: ownerId }) : null) ??
-    newestTranscriptUnderOwner(ownerId)
-  );
+async function defaultTranscript(ownerId: string): Promise<SelfSession | null> {
+  return resolveSelfSession(ownerId);
+}
+
+/**
+ * Keep the existing global cold-by-default classifier Claude-only: changing its
+ * vocabulary would alter live wake policy. Drills for another backend instead
+ * get a backend-qualified local class so their evidence cannot accidentally
+ * satisfy a Claude rollout gate.
+ */
+function sessionClassForDrill(host: PsuPtyHost, sourceKind: SelfSession['sourceKind']): string {
+  if (sourceKind === 'claude') return sessionClassForHost(host);
+  return `${sourceKind}-${host.bridgeTty === false ? 'headless' : 'interactive'}`;
 }
 
 async function defaultEffectiveWindow(ownerId: string): Promise<number> {
@@ -244,7 +254,7 @@ export interface StartColdBootDrillDeps {
   now: () => number;
   newId: () => string;
   findHost: (ownerId: string) => PsuPtyHost | null;
-  resolveTranscriptPath: (ownerId: string) => Promise<string | null>;
+  resolveTranscript: (ownerId: string) => Promise<SelfSession | null>;
   resolveEffectiveWindow: (ownerId: string) => Promise<number>;
   buildBrief: (ownerId: string, workspaceId?: string) => Promise<CarryBrief | null>;
   flushGate: (input: Parameters<typeof runFlushGate>[0]) => Promise<FlushGateOutcome>;
@@ -262,7 +272,7 @@ function startDeps(overrides: Partial<StartColdBootDrillDeps>): StartColdBootDri
     now: Date.now,
     newId: randomUUID,
     findHost: findLiveHost,
-    resolveTranscriptPath: defaultTranscriptPath,
+    resolveTranscript: defaultTranscript,
     resolveEffectiveWindow: defaultEffectiveWindow,
     buildBrief: async (ownerId, workspaceId) => {
       try { return await buildCarryBrief(ownerId, { workspaceId }); } catch { return null; }
@@ -295,16 +305,9 @@ export async function startColdBootDrill(
     return {
       ok: false,
       error: host ? 'host_missing_carry_respawn_capability' : 'no_live_pty_host',
-      note: 'P-020 drills require a live Claude psu host advertising carry-respawn; no process was cut.',
+      note: 'P-020 drills require a live managed psu host advertising carry-respawn; no process was cut.',
     };
   }
-  // P-021: default the drill's class from the CANONICAL classifier (the same
-  // sessionClassForHost the cold-by-default fork and compact-reprime consult), so
-  // drill verdicts and live actuation share ONE vocabulary. An explicit caller
-  // class still wins (scoped campaigns), but omitting it can no longer fork the
-  // ledger's class names from the classifier's.
-  const sessionClass = input.sessionClass?.trim() || sessionClassForHost(host);
-
   const active = latestActiveDrill(await deps.readLedger(), ownerId);
   const activeAt = active ? Date.parse(active.ts) : NaN;
   if (active && Number.isFinite(activeAt) && now - activeAt < interval) {
@@ -317,10 +320,15 @@ export async function startColdBootDrill(
     };
   }
 
-  const transcriptPath = await deps.resolveTranscriptPath(ownerId);
-  if (!transcriptPath) {
-    return { ok: false, error: 'transcript_unavailable', note: 'The current Claude transcript could not be resolved; no process was cut.' };
+  const transcript = await deps.resolveTranscript(ownerId);
+  if (!transcript) {
+    return { ok: false, error: 'transcript_unavailable', note: 'The current managed session transcript could not be resolved; no process was cut.' };
   }
+  // P-021: Claude keeps the exact canonical classifier vocabulary shared with
+  // cold-by-default. Other backends are deliberately qualified locally; their
+  // drill samples must never count as evidence for a Claude actuation class.
+  // An explicit caller class still wins for scoped campaigns.
+  const sessionClass = input.sessionClass?.trim() || sessionClassForDrill(host, transcript.sourceKind);
 
   const workspaceId = input.workspaceId ?? '*';
   const brief = await deps.buildBrief(ownerId, input.workspaceId ?? undefined);
@@ -351,8 +359,8 @@ export async function startColdBootDrill(
     buildOpts: {
       workspaceId: input.workspaceId ?? undefined,
       ownerLabel: input.ownerLabel,
-      transcriptPath,
-      transcriptSourceKind: 'claude',
+      transcriptPath: transcript.filePath,
+      transcriptSourceKind: transcript.sourceKind,
       boundaryDeliberate: true,
     },
   });
@@ -560,11 +568,15 @@ function gradeDeps(overrides: Partial<GradeColdBootDrillDeps>): GradeColdBootDri
     readHostEvents: readOwnerHostEvents,
     readCarry: safeReadCarry,
     loadTranscript: async (ownerId, nativeId) => {
-      const path =
-        (nativeId ? await findSessionTranscript(nativeId, { owner: ownerId }) : null) ??
-        newestTranscriptUnderOwner(ownerId);
-      if (!path) return null;
-      try { return parseTranscriptJsonl(await fs.readFile(path, 'utf8'), path); } catch { return null; }
+      const resolved =
+        (nativeId ? await resolveOwnerIsolatedSessionByPrefix(ownerId, nativeId) : null) ??
+        await resolveSelfSession(ownerId);
+      if (!resolved) return null;
+      try {
+        return parseTranscriptJsonl(await fs.readFile(resolved.filePath, 'utf8'), resolved.filePath);
+      } catch {
+        return null;
+      }
     },
     now: Date.now,
     ...overrides,

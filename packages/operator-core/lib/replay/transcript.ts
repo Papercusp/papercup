@@ -9,8 +9,8 @@
  *   omp     — session files `{"type":"message","message":{role,content}}` (+
  *             top-level `function_call`), stream files `message_end` /
  *             terminal `agent_end.messages` (fallback when nothing else parsed);
- *   codex   — `{"type":"item.completed","item":{...}}` + terminal
- *             `turn.completed` (best-effort).
+ *   codex   — current `response_item` messages/tool calls/results, plus legacy
+ *             `item.completed` and terminal `turn.completed` (best-effort).
  *
  * Tolerant by design: unparseable lines and unknown event types are SKIPPED,
  * never fatal — a replay over a partially-recognized transcript is still
@@ -22,6 +22,8 @@
  */
 import { readFile } from 'node:fs/promises';
 import type { ReplayTranscript, ReplayTurn, ReplayTurnRole, TranscriptSource } from './types';
+import { blockPayloadText, codexToolCallArgsRaw } from '../transcript-wire';
+import { canonicalToolName } from '../behaviour-suite/transcript';
 
 const TOOL_INPUT_CAP = 2000;
 
@@ -67,6 +69,51 @@ interface PendingTurn {
   ts?: number;
 }
 
+interface NestedToolCall {
+  at: number;
+  name: string;
+  text: string;
+}
+
+function nestedInvokeName(source: string): string | null {
+  const quoted = source.match(/\\?["']name\\?["']\s*:\s*\\?["']([A-Za-z][A-Za-z0-9:_-]*)\\?["']/);
+  const js = source.match(/\bname\s*:\s*["']([A-Za-z][A-Za-z0-9:_-]*)["']/);
+  const name = quoted?.[1] ?? js?.[1];
+  return name && name.includes(':') ? canonicalToolName(name) : null;
+}
+
+/**
+ * Codex exposes client orchestration as one outer `exec` tool call. Catalog
+ * calls made inside that isolate would otherwise disappear from a replay even
+ * though their identity is explicit in the recorded source. Recover only
+ * provable Papercusp calls: direct `tools.mcp__papercusp_*` calls and the
+ * documented `ptool tools:invoke` fallback with a literal `name` field.
+ */
+function nestedPapercuspToolCalls(source: string): NestedToolCall[] {
+  const out: NestedToolCall[] = [];
+  const direct = [...source.matchAll(/tools\.(mcp__papercusp[_-]su__?[A-Za-z0-9_-]+)\s*\(/g)];
+  for (let i = 0; i < direct.length; i += 1) {
+    const match = direct[i];
+    const at = match.index ?? 0;
+    const end = direct[i + 1]?.index ?? Math.min(source.length, at + TOOL_INPUT_CAP);
+    const text = source.slice(at, end);
+    const outerName = canonicalToolName(match[1]);
+    const name = outerName === 'tools:invoke' ? nestedInvokeName(text) : outerName;
+    if (name) out.push({ at, name, text });
+  }
+
+  for (const match of source.matchAll(/\bptool\s+tools:invoke\b/g)) {
+    const at = match.index ?? 0;
+    const text = source.slice(at, Math.min(source.length, at + TOOL_INPUT_CAP));
+    const name = nestedInvokeName(text);
+    if (name) out.push({ at, name, text });
+  }
+
+  return out
+    .sort((a, b) => a.at - b.at)
+    .filter((call, index, all) => index === 0 || call.at !== all[index - 1].at || call.name !== all[index - 1].name);
+}
+
 /** One message envelope (claude assistant/user wrapper, omp message) → turns. */
 function messageTurns(message: Json, ts: number | undefined): PendingTurn[] {
   const role = str(message.role);
@@ -90,7 +137,7 @@ function messageTurns(message: Json, ts: number | undefined): PendingTurn[] {
     const b = asObj(block);
     if (!b) continue;
     const type = str(b.type) ?? '';
-    if (type === 'text' || type === 'output_text' || type === 'summary_text') {
+    if (type === 'text' || type === 'input_text' || type === 'output_text' || type === 'summary_text') {
       const t = str(b.text);
       if (t) textAcc.push(t);
     } else if (type === 'tool_use' || type === 'function_call') {
@@ -162,6 +209,40 @@ export function parseTranscriptJsonl(body: string, ref: string): ReplayTranscrip
     } else if (type === 'agent_end' && Array.isArray(obj.messages)) {
       sawOmp = true;
       agentEndMessages = obj.messages;
+    } else if (type === 'response_item' && asObj(obj.payload)) {
+      sawCodex = true;
+      const payload = asObj(obj.payload)!;
+      const payloadType = str(payload.type) ?? '';
+      if (payloadType === 'message') {
+        pending.push(...messageTurns(payload, ts));
+      } else if (
+        payloadType === 'function_call' ||
+        payloadType === 'custom_tool_call' ||
+        payloadType === 'tool_search_call'
+      ) {
+        const input = codexToolCallArgsRaw(payload);
+        const rendered = typeof input === 'string' ? input : input === undefined ? '' : JSON.stringify(input);
+        const namespace = str(payload.namespace);
+        const name = str(payload.name) ?? payloadType;
+        pending.push({
+          role: 'tool_use',
+          text: rendered.slice(0, TOOL_INPUT_CAP),
+          toolName: namespace ? `${namespace}.${name}` : name,
+          ts,
+        });
+        if (name === 'exec' && typeof input === 'string') {
+          for (const nested of nestedPapercuspToolCalls(input)) {
+            pending.push({
+              role: 'tool_use',
+              text: nested.text.slice(0, TOOL_INPUT_CAP),
+              toolName: nested.name,
+              ts,
+            });
+          }
+        }
+      } else if (payloadType === 'function_call_output' || payloadType === 'custom_tool_call_output') {
+        pending.push({ role: 'tool_result', text: blockPayloadText(payload.output), ts });
+      }
     } else if (type === 'item.completed' && asObj(obj.item)) {
       sawCodex = true;
       const item = asObj(obj.item)!;

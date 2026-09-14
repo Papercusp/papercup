@@ -9,9 +9,11 @@ import {
   verifyColdBootDrill,
   type ColdBootDrillHostEvent,
   type ColdBootDrillLedgerEvent,
+  type StartColdBootDrillDeps,
 } from './cold-boot-drill-live';
 import type { RespawnLaunchSpec } from './carry-respawn';
 import type { ReplayTranscript, ReplayTurn } from './replay/types';
+import { parseTranscriptJsonl } from './replay/transcript';
 
 const NOW = Date.parse('2026-07-15T06:00:00.000Z');
 const HOST = {
@@ -34,18 +36,30 @@ const SPEC: RespawnLaunchSpec = {
 function startHarness(seed: ColdBootDrillLedgerEvent[] = []) {
   const ledger = [...seed];
   const injected: Array<{ sock: string; msg: Record<string, unknown> }> = [];
+  const built: Array<{
+    ownerId: string;
+    input: Parameters<StartColdBootDrillDeps['buildSpec']>[1];
+  }> = [];
   return {
     ledger,
     injected,
+    built,
     deps: {
       now: () => NOW,
       newId: () => 'drill-1',
       findHost: () => HOST,
-      resolveTranscriptPath: async () => '/tmp/current.jsonl',
+      resolveTranscript: async () => ({
+        sourceKind: 'claude' as const,
+        sessionId: 'current-native-id',
+        filePath: '/tmp/current.jsonl',
+      }),
       resolveEffectiveWindow: async () => 200_000,
       buildBrief: async () => null,
       flushGate: async () => ({ verdict: 'clear' as const, tripwires: [] }),
-      buildSpec: async () => SPEC,
+      buildSpec: async (ownerId: string, input: Parameters<StartColdBootDrillDeps['buildSpec']>[1]) => {
+        built.push({ ownerId, input });
+        return SPEC;
+      },
       inject: async (sock: string, msg: Record<string, unknown>) => {
         injected.push({ sock, msg });
         return true;
@@ -128,6 +142,55 @@ describe('startColdBootDrill — explicit/default-off live cut', () => {
       { ...h3.deps, findHost: () => ({ ...HOST, bridgeTty: false }) },
     );
     expect(explicit).toMatchObject({ ok: true, sessionClass: 'gateway-claude-headless' });
+  });
+
+  it('resolves a managed Codex transcript, preserves its source kind in the carry, and isolates its drill class from Claude evidence', async () => {
+    const h = startHarness();
+    const result = await startColdBootDrill(
+      { ownerId: 'su-1', ownerLabel: 'su · 1' },
+      {
+        ...h.deps,
+        findHost: () => ({ ...HOST, command: 'codex' }),
+        resolveTranscript: async () => ({
+          sourceKind: 'codex',
+          sessionId: 'codex-native-id',
+          filePath: '/tmp/codex-rollout.jsonl',
+        }),
+      },
+    );
+
+    expect(result).toMatchObject({ ok: true, sessionClass: 'codex-interactive' });
+    expect(h.ledger[0]).toMatchObject({
+      kind: 'carry-drill-requested',
+      sessionClass: 'codex-interactive',
+    });
+    expect(h.built).toHaveLength(1);
+    expect(h.built[0]).toMatchObject({
+      ownerId: 'su-1',
+      input: {
+        buildOpts: {
+          transcriptPath: '/tmp/codex-rollout.jsonl',
+          transcriptSourceKind: 'codex',
+        },
+      },
+    });
+  });
+
+  it('fails closed before the flush/build/inject path when the managed transcript cannot be resolved', async () => {
+    const h = startHarness();
+    const result = await startColdBootDrill(
+      { ownerId: 'su-1', ownerLabel: 'su · 1' },
+      { ...h.deps, resolveTranscript: async () => null },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'transcript_unavailable',
+      note: 'The current managed session transcript could not be resolved; no process was cut.',
+    });
+    expect(h.built).toEqual([]);
+    expect(h.injected).toEqual([]);
+    expect(h.ledger).toEqual([]);
   });
 
   it('rate-limits a second destructive cut from the persisted ledger', async () => {
@@ -222,6 +285,79 @@ describe('gradeColdBootDrill — host event + successor transcript', () => {
       report: { perClass: [{ sessionClass: 'claude-su', drills: 1, gaps: 0, surfacingGaps: 1, sufficient: false }] },
     });
     expect(ledger.at(-1)?.kind).toBe('carry-drill-graded');
+  });
+
+  it('grades a current Codex response_item successor through the shared replay parser', async () => {
+    const ledger: ColdBootDrillLedgerEvent[] = [
+      { ...requested, sessionClass: 'codex-interactive' },
+    ];
+    const codexBody = [
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '⟦carry-drill:drill-1⟧\nContinue the carried work.' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'custom_tool_call',
+          name: 'exec',
+          input: [
+            'const result = await tools.mcp__papercusp_su__tools_invoke({',
+            '  name: "work_items:get",',
+            '  args: { id: "WI-4852" }',
+            '});',
+            'text(result);',
+          ].join('\n'),
+        },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'custom_tool_call',
+          name: 'exec',
+          input: [
+            'const result = await tools.mcp__papercusp_su__tools_invoke({',
+            '  name: "session:carry-drill",',
+            '  args: { op: "grade", drillId: "drill-1" }',
+            '});',
+            'text(result);',
+          ].join('\n'),
+        },
+      }),
+    ].join('\n');
+    const codexTranscript = parseTranscriptJsonl(codexBody, '/tmp/codex-successor.jsonl');
+
+    const result = await gradeColdBootDrill('su-1', 'drill-1', {
+      readLedger: async () => ledger,
+      appendLedger: async (event) => { ledger.push(event); return true; },
+      readHostEvents: async () => [{
+        kind: 'carry-drill-respawned',
+        drillId: 'drill-1',
+        nativeId: 'codex-native-2',
+        launchContextPath: '/safe/carry.md',
+      }],
+      readCarry: async () => SPEC.systemPromptAddendum,
+      loadTranscript: async () => codexTranscript,
+      now: () => NOW + 1000,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      transcriptPath: '/tmp/codex-successor.jsonl',
+      sample: {
+        sessionClass: 'codex-interactive',
+        lookups: [{ kind: 'reread-state', targetClass: 'held-wi', recoveredInCarry: true }],
+      },
+    });
+    expect(ledger.at(-1)).toMatchObject({
+      kind: 'carry-drill-graded',
+      sessionClass: 'codex-interactive',
+      transcriptPath: '/tmp/codex-successor.jsonl',
+    });
   });
 
   it('is idempotent once a sample is graded', async () => {
