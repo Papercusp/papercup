@@ -91,6 +91,7 @@ import {
 } from '../../carry-surface-provenance-stamp';
 import { uncoveredAbsencePremises } from '../../premises-claim-port';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
+import { unresolvedPlanDecisionRefs } from '../coordination/decision-ref-advisory';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { listVerifiedWaitTakeoversForSubscribers } from '../../events/await/store';
@@ -410,26 +411,15 @@ export default defineTool({
   name: 'loop:checkpoint',
   profile: 'engineer',
   description:
-    'Read, write, or clear the COLD su loop carry-note. Read with { read:true, ownerId?, harness? }; write compressed ' +
-    '{ did,left,insight,next } (goal,keyInsight,nextAction alias them), { note }, or { checkpoint }; blank/null clears. ' +
-    'Optional workItem is metadata. The default merge mode preserves rows; rowsMode:\'merge\' is preserving, while ' +
-    "rowsMode:'replace' retires rows; empty list with replace clears. Probe rows use kind:'tool' or kind:'state-cell' " +
-    'with args and schemaRevision. Returns note metadata plus walls/checks.',
+    'Read/write/clear COLD su loop carry-note. Read { read:true, ownerId?, harness? }; write { did,left,insight,next }, { note }, or { checkpoint }; blank/null clears. ' +
+    "Default rowsMode:'merge' preserves rows; rowsMode:'replace' retires rows (empty list with replace clears). Probe rows use kind:'tool' or kind:'state-cell', args, schemaRevision. Returns note metadata, walls, checks.",
   guidance: {
     when:
-      "At a COLD loop turn's end, save compressed facts, not a transcript. Pair with work_items:checkpoint; use " +
-      'Add a same-line [turn:<session>@<iso-ts>] ref for owner directives/completed coordination; never invent a ref. Mark other sources ' +
-      '[self-imposed], [peer:<sid>], or [inferred]. Default merge mode preserves them; use rowsMode:\'replace\' only ' +
-      "when retiring rows. Probe kind:'tool' or kind:'state-cell' with args and schemaRevision. If `next` names an " +
-      'immediately runnable action, execute that action (or another bounded progress read) before calling ' +
-      '`session:request-compaction`; writing this checkpoint alone is not post-note progress and the ' +
-      '`cold-successor-no-progress` flush tripwire will refuse the compaction. An explicit next scheduled loop ' +
-      'fire or compaction action is the narrow boundary exception; do not use it to skip runnable work.',
+      "At COLD loop end, save compressed facts, not transcript; pair with work_items:checkpoint. Add same-line [turn:<session>@<iso-ts>] refs for owner directives/completed coordination; never invent a ref. Mark sources [self-imposed], [peer:<sid>], or [inferred]. Default merge mode preserves them; rowsMode:'replace' retires rows. Probe kind:'tool' or kind:'state-cell' with args and schemaRevision. If `next` names an immediately runnable action, execute it (or another bounded progress read) before `session:request-compaction`; writing this checkpoint alone is not post-note progress: `cold-successor-no-progress` flush tripwire refuses compaction. Explicit next scheduled loop fire or compaction action is the narrow boundary exception; don't skip runnable work.",
     notWhen: "WARM loops (carry:'warm', default) carry the live transcript; use work_items:checkpoint for work-item state.",
     chaining:
-      'Write last before a cold turn ends; refresh work_items:checkpoint and facts:assert. To retune an active loop, ' +
-      "read loop:status, then loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; intervalSec " +
-      'and goal are required even when only carry changes.',
+      'Write last before cold turn ends; refresh work_items:checkpoint and facts:assert. To retune, read loop:status, ' +
+      "then loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; intervalSec and goal are required even when only carry changes.",
     seeAlso: [
       "loop:arm (arm the loop; carry:'cold' opts into the cold lifecycle)",
       'loop:status (inspect the loop, incl. carry mode)',
@@ -1728,6 +1718,20 @@ export default defineTool({
       };
     }
 
+    // EI-22995965169175295: a cold successor treats the FINAL stored note as its
+    // continuity authority, including retained history from earlier compaction
+    // hops. Advise on qualified plan-decision refs there, rather than only on the
+    // submitted fragment; bare D-NNN remains intentionally unknown because ids are
+    // allocated per plan. This is decoration on a successful checkpoint and is
+    // fail-open even if the advisory's resolver itself regresses.
+    const decisionRefAdvisory =
+      stored !== null
+        ? await unresolvedPlanDecisionRefs(stored, {
+            workspaceId,
+            harnessSlug: harness,
+          }).catch(() => undefined)
+        : undefined;
+
     // Unreachable today (this tool passes no `guard`, and only a blocked guard skips
     // the transform) — but a missing capture must never silently read as "no rows".
     const { walls, checks, narrativeBody, droppedWalls, droppedChecks, overflowWalls, overflowChecks } =
@@ -2352,6 +2356,7 @@ export default defineTool({
                   },
                 }
               : {}),
+            ...(decisionRefAdvisory ? { decisionRefAdvisory } : {}),
             ...(continuation ? { continuation } : {}),
             ...provenanceFields,
           }),
