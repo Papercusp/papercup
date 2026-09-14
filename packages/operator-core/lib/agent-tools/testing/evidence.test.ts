@@ -180,7 +180,7 @@ describe('test-time evidence continuity', () => {
   const measured = { schemaVersion: 1, root: scope.root, filePath: binding.testPath,
     workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: detached,
     testNamePattern: null, passed: 2, failed: 0, skipped: 0, collectionFailed: false,
-    mutationPhase: null };
+    mutationPhase: null, commitSha: null, worktreeDirty: false };
   async function pendingRecovery(detail: unknown, status = 'pass', sourceChanged = false) {
     const d = deps();
     const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
