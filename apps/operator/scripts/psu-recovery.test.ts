@@ -1,13 +1,11 @@
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  MAX_RECOVERY_RUNTIME_MS,
-  MAX_RECOVERY_TTL_MS,
   RECOVERY_CAPABILITY_DIAGNOSTIC,
-  type RecoveryExecutionSpec,
+  RECOVERY_DISABLED_REASON,
   executeExactRecoveryCommand,
   hasRecoveryCliFlag,
   issueRecoveryGrant,
@@ -15,7 +13,6 @@ import {
   reconcileRecoveryAudit,
   recoveryAuthorizationEligibility,
   recoveryPaths,
-  renderRecoveryBanner,
   runRecoveryGrant,
   sanitizeRecoveryEnvironment,
   validateRecoveryCliArgv,
@@ -48,8 +45,6 @@ function grantInput() {
   };
 }
 
-const identity = { uid: 1000, username: 'avi', hostname: 'workstation' };
-
 describe('psu bounded local recovery grant', () => {
   it('keeps recovery a closed pre-passthrough CLI namespace', () => {
     expect(hasRecoveryCliFlag(['--recovery-authorize', '--', 'true'])).toBe(true);
@@ -62,163 +57,55 @@ describe('psu bounded local recovery grant', () => {
     ])).not.toThrow();
   });
 
-  it('requires a real terminal and refuses inherited agent identity before authorization', () => {
-    expect(recoveryAuthorizationEligibility({
-      env: {}, stdinIsTTY: true, stdoutIsTTY: true, ancestorCmdlines: ['/usr/bin/bash'],
-    })).toEqual({ ok: true });
-
-    expect(recoveryAuthorizationEligibility({
-      env: { PAPERCUSP_AGENT_SESSION: '1' }, stdinIsTTY: true, stdoutIsTTY: true,
-      ancestorCmdlines: ['/usr/bin/bash'],
-    })).toMatchObject({ ok: false, reason: 'inherited-agent-identity' });
-
-    expect(recoveryAuthorizationEligibility({
-      env: {}, stdinIsTTY: true, stdoutIsTTY: true,
-      ancestorCmdlines: ['/usr/bin/node /repo/apps/operator/scripts/psu-pty-host.mjs'],
-    })).toMatchObject({ ok: false, reason: 'agent-process-ancestor' });
-
-    expect(recoveryAuthorizationEligibility({
-      env: {}, stdinIsTTY: false, stdoutIsTTY: true, ancestorCmdlines: ['/usr/bin/bash'],
-    })).toMatchObject({ ok: false, reason: 'interactive-terminal-required' });
-
-    expect(recoveryAuthorizationEligibility({
-      env: {}, stdinIsTTY: true, stdoutIsTTY: true, ancestorCmdlines: null,
-    })).toMatchObject({ ok: false, reason: 'ancestor-scan-unavailable' });
+  it('hard-disables authorization for every caller shape, including a scrubbed systemd pseudo-TTY', () => {
+    for (const candidate of [
+      { env: {}, stdinIsTTY: true, stdoutIsTTY: true, ancestorCmdlines: ['/usr/bin/bash'] },
+      {
+        env: {}, stdinIsTTY: true, stdoutIsTTY: true,
+        ancestorCmdlines: ['/usr/lib/systemd/systemd --user'],
+      },
+      {
+        env: { PAPERCUSP_AGENT_SESSION: '1' }, stdinIsTTY: true, stdoutIsTTY: true,
+        ancestorCmdlines: ['/usr/bin/bash'],
+      },
+    ]) {
+      expect(recoveryAuthorizationEligibility(candidate)).toEqual({
+        ok: false,
+        reason: RECOVERY_DISABLED_REASON,
+      });
+    }
   });
 
-  it('issues an owner-only signed grant with absolute executable, exact argv and hard bounds', async () => {
+  it('refuses issuance before resolving an executable or creating local recovery state', async () => {
     const h = await home();
-    const grant = issueRecoveryGrant(grantInput(), {
+    const resolveExecutable = vi.fn(() => '/usr/bin/printf');
+
+    expect(() => issueRecoveryGrant(grantInput(), {
       home: h,
       token: TOKEN,
       nowMs: NOW,
       terminalId: TTY,
-      identity,
-      clientVersion: '1.2.3',
-      resolveExecutable: () => '/usr/bin/printf',
-    });
+      resolveExecutable,
+    })).toThrow(RECOVERY_DISABLED_REASON);
 
-    expect(grant).toMatchObject({
-      version: 1,
-      capability: RECOVERY_CAPABILITY_DIAGNOSTIC,
-      argv: ['/usr/bin/printf', '%s', 'operator-offline-ok'],
-      cwd: '/tmp',
-      issuedAtMs: NOW,
-      expiresAtMs: NOW + 60_000,
-      maxRuntimeMs: 5_000,
-      maxUses: 1,
-      terminalId: TTY,
-      identity,
-      client: { name: 'psu', version: '1.2.3' },
-    });
-    expect(grant.signature).toMatch(/^[A-Za-z0-9_-]{40,}$/);
-
-    const paths = recoveryPaths(h);
-    expect((await stat(paths.root)).mode & 0o777).toBe(0o700);
-    expect((await stat(join(paths.grants, `${grant.grantId}.json`))).mode & 0o777).toBe(0o600);
-    expect((await stat(paths.audit)).mode & 0o777).toBe(0o600);
-    const audit = await readRecoveryAudit({ home: h });
-    expect(audit[0]).toMatchObject({
-      event: 'authorized', grantId: grant.grantId, capability: RECOVERY_CAPABILITY_DIAGNOSTIC,
-      identity, client: { name: 'psu', version: '1.2.3' }, reason: grant.reason,
-    });
+    expect(resolveExecutable).not.toHaveBeenCalled();
+    await expect(stat(recoveryPaths(h).root)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('consumes once, preserves argv boundaries, sets a visible marker and records start/finish', async () => {
+  it('refuses redemption before reading a grant, consuming it, or executing a command', async () => {
     const h = await home();
-    const grant = issueRecoveryGrant(grantInput(), {
-      home: h, token: TOKEN, nowMs: NOW, terminalId: TTY, identity,
-      resolveExecutable: () => '/usr/bin/printf',
-    });
-    const execute = vi.fn(async (_spec: RecoveryExecutionSpec) => ({
-      exitCode: 0, signal: null, timedOut: false,
-    }));
-    const banners: string[] = [];
+    const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false }));
 
-    const result = await runRecoveryGrant(grant.grantId, {
+    await expect(runRecoveryGrant('11111111-1111-4111-8111-111111111111', {
       home: h,
       token: TOKEN,
-      nowMs: NOW + 1,
+      nowMs: NOW,
       terminalId: TTY,
-      baseEnv: { PATH: '/usr/bin', PAPERCUSP_SID: 'must-not-leak', OPENAI_API_KEY: 'secret' },
       execute,
-      writeBanner: (line) => banners.push(line),
-    });
+    })).resolves.toEqual({ ok: false, reason: RECOVERY_DISABLED_REASON });
 
-    expect(result).toMatchObject({ ok: true, exitCode: 0, timedOut: false });
-    expect(execute).toHaveBeenCalledTimes(1);
-    const execution = execute.mock.calls[0]![0];
-    expect(execution).toMatchObject({
-      file: '/usr/bin/printf',
-      args: ['%s', 'operator-offline-ok'],
-      cwd: '/tmp',
-      timeoutMs: 5_000,
-      env: {
-        PATH: '/usr/bin',
-        PAPERCUSP_RECOVERY_MODE: '1',
-        PAPERCUSP_RECOVERY_GRANT_ID: grant.grantId,
-        PAPERCUSP_RECOVERY_CAPABILITY: RECOVERY_CAPABILITY_DIAGNOSTIC,
-      },
-    });
-    expect(execution.env).not.toHaveProperty('PAPERCUSP_SID');
-    expect(execution.env).not.toHaveProperty('OPENAI_API_KEY');
-    expect(banners.join('\n')).toContain('NATIVE RECOVERY MODE');
-    expect(banners.join('\n')).toContain(grant.grantId);
-    expect(renderRecoveryBanner(grant)).toContain('CONTROL PLANE BYPASSED');
-
-    const replay = await runRecoveryGrant(grant.grantId, {
-      home: h, token: TOKEN, nowMs: NOW + 2, terminalId: TTY, execute,
-    });
-    expect(replay).toMatchObject({ ok: false, reason: 'already-consumed' });
-    expect(execute).toHaveBeenCalledTimes(1);
-
-    const events = (await readRecoveryAudit({ home: h })).map((row) => row.event);
-    expect(events).toEqual(['authorized', 'execution-started', 'execution-finished', 'execution-refused']);
-  });
-
-  it('fails closed on tamper, terminal substitution and expiry before execution', async () => {
-    for (const scenario of ['tamper', 'terminal', 'expiry'] as const) {
-      const h = await home();
-      const grant = issueRecoveryGrant(grantInput(), {
-        home: h, token: TOKEN, nowMs: NOW, terminalId: TTY, identity,
-        resolveExecutable: () => '/usr/bin/printf',
-      });
-      if (scenario === 'tamper') {
-        const path = join(recoveryPaths(h).grants, `${grant.grantId}.json`);
-        const raw = JSON.parse(await readFile(path, 'utf8'));
-        raw.reason = 'substituted';
-        await writeFile(path, `${JSON.stringify(raw)}\n`, { mode: 0o600 });
-      }
-      const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false }));
-      const result = await runRecoveryGrant(grant.grantId, {
-        home: h,
-        token: TOKEN,
-        nowMs: scenario === 'expiry' ? grant.expiresAtMs : NOW + 1,
-        terminalId: scenario === 'terminal' ? '/dev/pts/88' : TTY,
-        execute,
-      });
-      expect(result).toMatchObject({
-        ok: false,
-        reason: scenario === 'tamper' ? 'bad-signature' : scenario === 'terminal' ? 'terminal-mismatch' : 'expired',
-      });
-      expect(execute).not.toHaveBeenCalled();
-    }
-  });
-
-  it('rejects unbounded authorization inputs instead of silently clamping them', async () => {
-    const h = await home();
-    for (const patch of [
-      { ttlMs: MAX_RECOVERY_TTL_MS + 1 },
-      { maxRuntimeMs: MAX_RECOVERY_RUNTIME_MS + 1 },
-      { ttlMs: 1_000, maxRuntimeMs: 2_000 },
-      { argv: [] },
-      { reason: ' ' },
-    ]) {
-      expect(() => issueRecoveryGrant({ ...grantInput(), ...patch }, {
-        home: h, token: TOKEN, nowMs: NOW, terminalId: TTY, identity,
-        resolveExecutable: () => '/usr/bin/printf',
-      })).toThrow();
-    }
+    expect(execute).not.toHaveBeenCalled();
+    await expect(stat(recoveryPaths(h).root)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('turns a synchronous exact-spawn failure into a bounded result', async () => {
@@ -252,59 +139,33 @@ describe('psu bounded local recovery grant', () => {
     await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('allows only one concurrent claimant to execute a one-use grant', async () => {
-    const h = await home();
-    const grant = issueRecoveryGrant(grantInput(), {
-      home: h, token: TOKEN, nowMs: NOW, terminalId: TTY, identity,
-      resolveExecutable: () => '/usr/bin/printf',
-    });
-    const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false }));
-    const results = await Promise.all([
-      runRecoveryGrant(grant.grantId, {
-        home: h, token: TOKEN, nowMs: NOW + 1, terminalId: TTY, execute, writeBanner: () => {},
-      }),
-      runRecoveryGrant(grant.grantId, {
-        home: h, token: TOKEN, nowMs: NOW + 1, terminalId: TTY, execute, writeBanner: () => {},
-      }),
-    ]);
-    expect(results.filter((result) => result.ok)).toHaveLength(1);
-    expect(results.filter((result) => !result.ok)).toEqual([
-      expect.objectContaining({ reason: 'already-consumed' }),
-    ]);
-    expect(execute).toHaveBeenCalledTimes(1);
-  });
-
-  it('refuses a symlinked audit target and leaves no executable grant behind', async () => {
+  it('reconciles only unreconciled append-only rows and checkpoints successful ids', async () => {
     const h = await home();
     const paths = recoveryPaths(h);
     await mkdir(paths.grants, { recursive: true, mode: 0o700 });
     await mkdir(paths.consumed, { recursive: true, mode: 0o700 });
-    const target = join(h, 'audit-target');
-    await writeFile(target, 'do-not-touch\n');
-    await symlink(target, paths.audit);
-    expect(() => issueRecoveryGrant(grantInput(), {
-      home: h, token: TOKEN, nowMs: NOW, terminalId: TTY, identity,
-      grantId: '44444444-4444-4444-8444-444444444444',
-      resolveExecutable: () => '/usr/bin/printf',
-    })).toThrow();
-    await expect(readFile(join(paths.grants, '44444444-4444-4444-8444-444444444444.json')))
-      .rejects.toMatchObject({ code: 'ENOENT' });
-    expect(await readFile(target, 'utf8')).toBe('do-not-touch\n');
-  });
-
-  it('reconciles only unreconciled append-only rows and checkpoints successful ids', async () => {
-    const h = await home();
-    const grant = issueRecoveryGrant(grantInput(), {
-      home: h, token: TOKEN, nowMs: NOW, terminalId: TTY, identity,
-      resolveExecutable: () => '/usr/bin/printf',
-    });
+    const event = {
+      version: 1,
+      eventId: '22222222-2222-4222-8222-222222222222',
+      event: 'execution-refused',
+      at: new Date(NOW).toISOString(),
+      atMs: NOW,
+      grantId: '33333333-3333-4333-8333-333333333333',
+      capability: RECOVERY_CAPABILITY_DIAGNOSTIC,
+      reason: RECOVERY_DISABLED_REASON,
+    };
+    await writeFile(paths.audit, `${JSON.stringify(event)}\n`, { mode: 0o600 });
     const send = vi.fn(async (rows) => ({ reconciledEventIds: rows.map((row: { eventId: string }) => row.eventId) }));
 
     expect(await reconcileRecoveryAudit({ home: h, send })).toMatchObject({ ok: true, reconciled: 1, pending: 0 });
     expect(await reconcileRecoveryAudit({ home: h, send })).toMatchObject({ ok: true, reconciled: 0, pending: 0 });
     expect(send).toHaveBeenCalledTimes(1);
     const rows = await readRecoveryAudit({ home: h });
-    expect(rows.at(-1)).toMatchObject({ event: 'reconciliation-checkpoint', grantId: grant.grantId });
+    expect(rows.at(-1)).toMatchObject({
+      event: 'reconciliation-checkpoint',
+      grantId: event.grantId,
+      reconciledEventIds: [event.eventId],
+    });
   });
 
   it('strips every recovery and managed-agent identity marker from ordinary environments', () => {
