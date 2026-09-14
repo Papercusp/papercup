@@ -51,8 +51,30 @@ const JS_TO_TS: Readonly<Record<string, readonly string[]>> = {
 /** A specifier ending in one of these names exactly one file; no probe. */
 const EXPLICIT_EXTENSIONS: ReadonlySet<string> = new Set([
   ...SCANNED_EXTENSIONS,
-  '.json', '.css', '.scss', '.sass', '.less', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico',
-  '.wasm', '.md', '.mdx', '.txt', '.html', '.yaml', '.yml', '.sql', '.node', '.woff', '.woff2', '.ttf',
+  '.json',
+  '.css',
+  '.scss',
+  '.sass',
+  '.less',
+  '.svg',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.ico',
+  '.wasm',
+  '.md',
+  '.mdx',
+  '.txt',
+  '.html',
+  '.yaml',
+  '.yml',
+  '.sql',
+  '.node',
+  '.woff',
+  '.woff2',
+  '.ttf',
 ]);
 
 const IMPORT_POSITION_RE = /(?:^|[^.\w$])(?:from|import)\s*$|(?:^|[^.\w$])(?:import|require)\s*\(\s*$/;
@@ -208,14 +230,21 @@ export interface ImportCompletenessInput {
 
 export interface ImportCompletenessSkip {
   path: string;
-  reason: 'not-scanned-extension' | 'not-a-blob' | 'escapes-repo' | 'inside-submodule';
-  /** escapes-repo / inside-submodule: the specifier this refers to. */
+  reason: 'not-scanned-extension' | 'not-a-blob' | 'escapes-repo' | 'inside-submodule' | 'generated-by-tracked-builder';
+  /** Import-specific skips: the specifier this refers to. */
   specifier?: string;
 }
 
 export type ImportCompletenessOutcome =
   | { ok: true; checked: string[]; imports: number; skipped: ImportCompletenessSkip[] }
-  | { ok: false; code: 'admission-incomplete'; missing: AdmissionMissingImport[]; checked: string[]; imports: number; skipped: ImportCompletenessSkip[] }
+  | {
+      ok: false;
+      code: 'admission-incomplete';
+      missing: AdmissionMissingImport[];
+      checked: string[];
+      imports: number;
+      skipped: ImportCompletenessSkip[];
+    }
   | { ok: false; code: 'git-failed'; step: string; detail: string };
 
 type ObjectKind = 'blob' | 'tree' | 'commit' | 'tag' | 'missing';
@@ -231,7 +260,11 @@ function batchKinds(
   const unique = [...new Set(questions)];
   const r = git(['cat-file', '--batch-check=%(objecttype)'], { cwd: root, input: unique.join('\n') + '\n' });
   if (r.status !== 0) {
-    return { ok: false, step: 'cat-file --batch-check', detail: `exited ${r.status}: ${(r.stderr || r.stdout).trim().slice(0, 400)}` };
+    return {
+      ok: false,
+      step: 'cat-file --batch-check',
+      detail: `exited ${r.status}: ${(r.stderr || r.stdout).trim().slice(0, 400)}`,
+    };
   }
   const lines = r.stdout.split('\n');
   if (lines[lines.length - 1] === '') lines.pop();
@@ -259,6 +292,33 @@ function ancestors(path: string): string[] {
 }
 
 /**
+ * A package-local `dist/*.js` file may intentionally be absent from git when a tracked builder
+ * emits it before execution. Accept that source closure only when the proved commit contains a
+ * conventionally named builder whose own source names the exact output path. Merely living under
+ * `dist/`, being gitignored on the shared checkout, or having an unrelated builder is not enough.
+ */
+function trackedGeneratedPackageBuilder(
+  ask: { candidates: string[] },
+  input: ImportCompletenessInput,
+  git: AdmissionGitRunner,
+): string | null {
+  const output = ask.candidates.find((candidate) => /^packages\/[^/]+\/dist\/[^/]+\.(?:cjs|mjs|js)$/.test(candidate));
+  if (!output) return null;
+  const parts = output.split('/');
+  const packageRoot = parts.slice(0, 2).join('/');
+  const outputBase = posix.basename(output);
+  const topic = outputBase.replace(/\.(?:cjs|mjs|js)$/, '').split('-')[0];
+  const builders = [...new Set([`${packageRoot}/build-${topic}.mjs`, `${packageRoot}/build.mjs`])];
+  for (const builder of builders) {
+    const blob = git(['cat-file', 'blob', `${input.commit}:${builder}`], { cwd: input.root });
+    if (blob.status === 0 && (blob.stdout.includes(output) || blob.stdout.includes(`dist/${outputBase}`))) {
+      return builder;
+    }
+  }
+  return null;
+}
+
+/**
  * ONE `git ls-tree -d` over the named directories at `commit`: which of them are GITLINKS
  * (mode 160000, a submodule pin). `-d` lists each named entry itself rather than its children,
  * and `--full-tree` keeps every path repo-relative regardless of cwd. Reading the tree entry is
@@ -274,7 +334,11 @@ function batchGitlinks(
   if (dirs.length === 0) return { ok: true, dirs: found };
   const r = git(['ls-tree', '-d', '-z', '--full-tree', commit, '--', ...dirs], { cwd: root });
   if (r.status !== 0) {
-    return { ok: false, step: 'ls-tree -d', detail: `exited ${r.status}: ${(r.stderr || r.stdout).trim().slice(0, 400)}` };
+    return {
+      ok: false,
+      step: 'ls-tree -d',
+      detail: `exited ${r.status}: ${(r.stderr || r.stdout).trim().slice(0, 400)}`,
+    };
   }
   for (const entry of r.stdout.split('\0')) {
     // `<mode> <type> <oid>\t<path>` per entry; a gitlink is `160000 commit <sha>`.
@@ -323,7 +387,11 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
   }
 
   const at = (rev: string, p: string) => `${rev}:${p}`;
-  const first = batchKinds(git, input.root, asks.flatMap((a) => a.candidates.map((c) => at(input.commit, c))));
+  const first = batchKinds(
+    git,
+    input.root,
+    asks.flatMap((a) => a.candidates.map((c) => at(input.commit, c))),
+  );
   if (!first.ok) return { ok: false, code: 'git-failed', step: first.step, detail: first.detail };
 
   const unresolved: Ask[] = [];
@@ -351,13 +419,19 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
   for (const ask of unresolved) {
     const underGitlink = ancestors(ask.candidates[0]!).some((d) => gitlinks.dirs.has(d));
     if (underGitlink) skipped.push({ path: ask.from, reason: 'inside-submodule', specifier: ask.specifier });
-    else reallyMissing.push(ask);
+    else if (trackedGeneratedPackageBuilder(ask, input, git)) {
+      skipped.push({ path: ask.from, reason: 'generated-by-tracked-builder', specifier: ask.specifier });
+    } else reallyMissing.push(ask);
   }
   if (reallyMissing.length === 0) return { ok: true, checked, imports: asks.length, skipped };
 
   let probe: Map<string, ObjectKind> | null = null;
   if (input.probeRef) {
-    const third = batchKinds(git, input.root, reallyMissing.flatMap((a) => a.candidates.map((c) => at(input.probeRef!, c))));
+    const third = batchKinds(
+      git,
+      input.root,
+      reallyMissing.flatMap((a) => a.candidates.map((c) => at(input.probeRef!, c))),
+    );
     if (third.ok) probe = third.kinds;
   }
   const missing: AdmissionMissingImport[] = reallyMissing.map((ask) => {
@@ -378,9 +452,11 @@ export function renderMissingImports(missing: readonly AdmissionMissingImport[])
   return missing
     .map((m) => {
       const where =
-        m.atProbeRef === 'present' ? 'exists on the shared tip — admit it too'
-        : m.atProbeRef === 'absent' ? 'does not exist on the shared tip either — write it, let git-sync commit it, then admit it'
-        : 'admit it too';
+        m.atProbeRef === 'present'
+          ? 'exists on the shared tip — admit it too'
+          : m.atProbeRef === 'absent'
+            ? 'does not exist on the shared tip either — write it, let git-sync commit it, then admit it'
+            : 'admit it too';
       return `${m.from} imports ${JSON.stringify(m.specifier)} → ${m.wanted} (${where})`;
     })
     .join('; ');
@@ -405,7 +481,8 @@ export function importCompletenessPreflight(opts: {
       git: opts.git,
     });
     if (r.ok) return null;
-    if (r.code === 'git-failed') return { code: 'git-failed', step: `completeness preflight: ${r.step}`, detail: r.detail };
+    if (r.code === 'git-failed')
+      return { code: 'git-failed', step: `completeness preflight: ${r.step}`, detail: r.detail };
     return {
       code: 'admission-incomplete',
       missing: r.missing,

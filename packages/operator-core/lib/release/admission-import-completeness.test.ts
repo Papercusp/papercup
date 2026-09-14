@@ -131,9 +131,9 @@ describe('extractRelativeImportSpecifiers — relative specifiers in import posi
       "import x from '@/alias';",
       "// import y from './commented-line';",
       "/* import z from './commented-block'; */",
-      "const quoted = \"import q from './quoted-double';\";",
-      "const quoted2 = 'import q from \"./quoted-single\";';",
-      'const tpl = `import t from \'./templated\'; ${"import u from \'./nested\'"}`;',
+      'const quoted = "import q from \'./quoted-double\';";',
+      'const quoted2 = \'import q from "./quoted-single";\';',
+      "const tpl = `import t from './templated'; ${\"import u from './nested'\"}`;",
       "const url = 'https://example.test/x'; import real from './after-url';",
       "expect(fn('./argument')).toBe(1); foo.from('./method'); require.resolve('./resolved');",
       'const attr = <a from="./jsx-attr" />;',
@@ -143,7 +143,9 @@ describe('extractRelativeImportSpecifiers — relative specifiers in import posi
 
   it('dedupes and tolerates an unterminated string without throwing or swallowing the next line', () => {
     expect(
-      extractRelativeImportSpecifiers("import a from './a';\nimport b from './a';\nconst s = 'oops\nimport c from './c';"),
+      extractRelativeImportSpecifiers(
+        "import a from './a';\nimport b from './a';\nconst s = 'oops\nimport c from './c';",
+      ),
     ).toEqual(['./a', './c']);
   });
 });
@@ -197,7 +199,9 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     const both = admit(root, candidate, ['lib/a.ts', 'lib/b.ts'], { dryRun: true });
     expect(both.ok).toBe(true);
     if (!both.ok) return;
-    expect(checkAdmissionImportCompleteness({ root, commit: both.commit, paths: both.diff, probeRef: 'staging' })).toMatchObject({
+    expect(
+      checkAdmissionImportCompleteness({ root, commit: both.commit, paths: both.diff, probeRef: 'staging' }),
+    ).toMatchObject({
       ok: true,
       checked: ['lib/a.ts', 'lib/b.ts'],
       imports: 1,
@@ -234,11 +238,17 @@ describe('checkAdmissionImportCompleteness — real git', () => {
 
   it('reports atProbeRef absent when the tip lacks the file too, unknown without a probe ref, and skips an import that escapes the repo', () => {
     const { root, candidate } = repo();
-    sweep(root, { 'lib/a.ts': "import { n } from './nowhere';\nimport o from '../../outside';\nexport const a = n + o;\n" }, 'fix');
+    sweep(
+      root,
+      { 'lib/a.ts': "import { n } from './nowhere';\nimport o from '../../outside';\nexport const a = n + o;\n" },
+      'fix',
+    );
     const out = admit(root, candidate, ['lib/a.ts'], { dryRun: true });
     expect(out.ok).toBe(true);
     if (!out.ok) return;
-    expect(checkAdmissionImportCompleteness({ root, commit: out.commit, paths: out.diff, probeRef: 'staging' })).toMatchObject({
+    expect(
+      checkAdmissionImportCompleteness({ root, commit: out.commit, paths: out.diff, probeRef: 'staging' }),
+    ).toMatchObject({
       ok: false,
       code: 'admission-incomplete',
       missing: [{ from: 'lib/a.ts', specifier: './nowhere', wanted: 'lib/nowhere.ts', atProbeRef: 'absent' }],
@@ -250,9 +260,53 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     });
   });
 
+  it('accepts a generated package dist import only when a tracked builder names that exact output', () => {
+    const { root } = repo();
+    const generated = sweep(
+      root,
+      {
+        'apps/operator/tool.ts':
+          "import native from '../../packages/demo/dist/native-client.cjs';\nexport { native };\n",
+        'packages/demo/build-native.mjs':
+          "const outfile = root + 'packages/demo/dist/native-client.cjs';\nexport { outfile };\n",
+      },
+      'tracked generated output',
+    );
+    expect(
+      checkAdmissionImportCompleteness({ root, commit: generated, paths: ['apps/operator/tool.ts'] }),
+    ).toMatchObject({
+      ok: true,
+      imports: 1,
+      skipped: [
+        {
+          path: 'apps/operator/tool.ts',
+          reason: 'generated-by-tracked-builder',
+          specifier: '../../packages/demo/dist/native-client.cjs',
+        },
+      ],
+    });
+
+    const wrongOutput = sweep(
+      root,
+      { 'packages/demo/build-native.mjs': "const outfile = 'packages/demo/dist/other.cjs';\nexport { outfile };\n" },
+      'builder no longer emits requested output',
+    );
+    expect(
+      checkAdmissionImportCompleteness({ root, commit: wrongOutput, paths: ['apps/operator/tool.ts'] }),
+    ).toMatchObject({
+      ok: false,
+      code: 'admission-incomplete',
+      missing: [expect.objectContaining({ wanted: 'packages/demo/dist/native-client.cts' })],
+    });
+  });
+
   it('wired as the primitive preflight (the admit door): refuses BEFORE publish naming the path, the lineage ref never moves, and both paths then publish', () => {
     const { root, candidate } = repo();
-    sweep(root, { 'lib/a.ts': "import { b } from './b';\nexport const a = b;\n", 'lib/b.ts': 'export const b = 2;\n' }, 'fix');
+    sweep(
+      root,
+      { 'lib/a.ts': "import { b } from './b';\nexport const a = b;\n", 'lib/b.ts': 'export const b = 2;\n' },
+      'fix',
+    );
     const preflight = importCompletenessPreflight({ root, probeRef: 'staging' });
     const refused = admit(root, candidate, ['lib/a.ts'], { preflight });
     expect(refused.ok).toBe(false);
@@ -305,10 +359,17 @@ describe('injected runner — the branches a plain repo cannot produce cheaply',
     // the two apart, and that is the probe the checker must ask.
     const git = fake({
       blob: "import { s } from './sub/x';\n",
-      batch: (input) => input.trim().split('\n').map((q) => `${q} missing`).join('\n') + '\n',
+      batch: (input) =>
+        input
+          .trim()
+          .split('\n')
+          .map((q) => `${q} missing`)
+          .join('\n') + '\n',
       lsTree: (dirs) => dirs.map((d) => (d === 'lib/sub' ? gitlinkEntry(d) : d === 'lib' ? treeEntry(d) : '')).join(''),
     });
-    expect(checkAdmissionImportCompleteness({ root: '/repo', commit: 'c'.repeat(40), paths: ['lib/a.ts'], git })).toMatchObject({
+    expect(
+      checkAdmissionImportCompleteness({ root: '/repo', commit: 'c'.repeat(40), paths: ['lib/a.ts'], git }),
+    ).toMatchObject({
       ok: true,
       checked: ['lib/a.ts'],
       imports: 1,
@@ -321,10 +382,17 @@ describe('injected runner — the branches a plain repo cannot produce cheaply',
     // ancestors are ordinary trees — so this IS a missing sibling and must be refused.
     const git = fake({
       blob: "import { s } from './sub/x';\n",
-      batch: (input) => input.trim().split('\n').map((q) => `${q} missing`).join('\n') + '\n',
+      batch: (input) =>
+        input
+          .trim()
+          .split('\n')
+          .map((q) => `${q} missing`)
+          .join('\n') + '\n',
       lsTree: (dirs) => dirs.map((d) => (d === 'lib/sub' || d === 'lib' ? treeEntry(d) : '')).join(''),
     });
-    expect(checkAdmissionImportCompleteness({ root: '/repo', commit: 'c'.repeat(40), paths: ['lib/a.ts'], git })).toMatchObject({
+    expect(
+      checkAdmissionImportCompleteness({ root: '/repo', commit: 'c'.repeat(40), paths: ['lib/a.ts'], git }),
+    ).toMatchObject({
       ok: false,
       code: 'admission-incomplete',
       missing: [expect.objectContaining({ from: 'lib/a.ts', specifier: './sub/x', wanted: 'lib/sub/x.ts' })],
@@ -333,7 +401,9 @@ describe('injected runner — the branches a plain repo cannot produce cheaply',
 
   it('an instrument failure is git-failed, and the wired preflight fails CLOSED with it', () => {
     const git = fake({ blob: "import './b';\n", batch: () => null });
-    expect(checkAdmissionImportCompleteness({ root: '/repo', commit: 'c'.repeat(40), paths: ['lib/a.ts'], git })).toMatchObject({
+    expect(
+      checkAdmissionImportCompleteness({ root: '/repo', commit: 'c'.repeat(40), paths: ['lib/a.ts'], git }),
+    ).toMatchObject({
       ok: false,
       code: 'git-failed',
       step: 'cat-file --batch-check',
