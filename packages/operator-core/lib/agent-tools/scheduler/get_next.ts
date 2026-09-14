@@ -1426,7 +1426,12 @@ export default defineTool({
           // atomic claim instead of allowing members to continue into a lane whose
           // terminal acceptance and wind-down have no live driver. A null reading is
           // deliberately fail-open; only a successful negative blocks new work.
-          const leaderLiveness = await diagnoseFleetScopeLeaderLiveness({ scope: reconciliation.scope });
+          const leaderLiveness = await diagnoseFleetScopeLeaderLiveness({
+            scope: reconciliation.scope,
+            ...(reconciliation.fleetAssignmentRows
+              ? { fleetAssignmentRows: reconciliation.fleetAssignmentRows }
+              : {}),
+          });
           if (leaderLiveness === false) return { kind: 'leader-unavailable', reconciliation };
         }
         // SCHEDULER_SPEC_CLAIM kill-switch (default ON; fail-open): OFF ⇒ ignore the bee's stored
@@ -1968,7 +1973,12 @@ export default defineTool({
             workspaceId: ident.workspaceId,
           }),
           diagnoseFleetScopePlanTerminality({ scope: reconciliation.scope }),
-          diagnoseFleetScopeLeaderLiveness({ scope: reconciliation.scope }),
+          diagnoseFleetScopeLeaderLiveness({
+            scope: reconciliation.scope,
+            ...(reconciliation.fleetAssignmentRows
+              ? { fleetAssignmentRows: reconciliation.fleetAssignmentRows }
+              : {}),
+          }),
         ]);
         if (featureFamilyMatched && featureFamilyMatched > 0) {
           // A genuine tier-1 candidate exists even though the claim (which just queried
