@@ -581,6 +581,13 @@ const deltaRequested: Array<string | undefined> = [];
 // rather than maintaining a second copy of the host's dependency mocks.
 const parityCalls: Array<{ args: unknown; ctx: UnifiedToolContext }> = [];
 const PARITY_ROWS = [{ id: 'WI-1', state: 'todo' }, { id: 'WI-2', state: 'done' }];
+const LARGE_PARITY_PAYLOAD = {
+  rows: Array.from({ length: 100 }, (_, i) => ({
+    id: `WI-${i}`,
+    state: i % 2 === 0 ? 'todo' : 'done',
+    detail: 'structured-content regression '.repeat(8),
+  })),
+};
 defineTool({
   name: 'gatingtest:parity_rows',
   requirePrincipal: false,
@@ -605,6 +612,20 @@ defineTool({
   handler: async (_args, ctx) => {
     parityCalls.push({ args: {}, ctx });
     return { data: { rows: PARITY_ROWS } };
+  },
+});
+defineTool({
+  name: 'gatingtest:parity_structured_large',
+  requirePrincipal: false,
+  capability: 'agent_tools:read',
+  args: z.object({}),
+  result: z.object({
+    rows: z.array(z.object({ id: z.string(), state: z.string(), detail: z.string() })),
+  }),
+  agentRoles: ['scoper'],
+  handler: async (_args, ctx) => {
+    parityCalls.push({ args: {}, ctx });
+    return { data: LARGE_PARITY_PAYLOAD };
   },
 });
 defineTool({
@@ -1527,6 +1548,41 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
     assertSameResult(arms[1]!, arms[0]!);
     expect(() => assertSameResult({ ...arms[1]!, structuredContent: { rows: [] } }, arms[0]!)).toThrow();
   });
+
+  it.each(['http', 'listener'] as const)(
+    '%s keeps structuredContent output-schema-valid after trimmed payload shaping',
+    async connection => {
+      await withSdkHost(
+        extraFor(signedUrl({
+          tools: 'gatingtest:parity_structured_large',
+          ctx_tier: 'trimmed',
+        })),
+        async client => {
+          const catalog = await client.listTools();
+          expect(catalog.tools.find(tool => tool.name === 'gatingtest:parity_structured_large')?.outputSchema)
+            .toMatchObject({ type: 'object', required: ['rows'] });
+
+          // The direct tools/call path is the schema validator's enforcement
+          // point. Before the fix, generic trimmed-tier projection wrapped this
+          // large payload and the SDK rejected it for missing/extra fields.
+          const result = await client.callTool({
+            name: 'gatingtest:parity_structured_large',
+            arguments: {},
+            _meta: { format: 'json', structured: true },
+          }) as CallResult;
+          expect(result.structuredContent).toEqual(LARGE_PARITY_PAYLOAD);
+          // The model-facing text may be a result-door reference envelope when
+          // the raw structured payload is larger than the inline budget; the
+          // schema-bearing field above remains the authoritative full value.
+          expect(result.content[0]?.text).toBeDefined();
+          expect(parityCalls.at(-1)?.ctx).toMatchObject({
+            contextTier: 'trimmed', requestedStructured: true,
+          });
+        },
+        connection,
+      );
+    },
+  );
 });
 
 beforeEach(() => {

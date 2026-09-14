@@ -108,12 +108,12 @@ SUMMARY: <1–3 sentences the human reads before accepting. What will the plan c
 
 ## Phase 1 — <Phase name>
 
-- [ ] P-001 <Concrete work item — imperative, testable, one sentence>
-- [ ] P-002 <Next item>
+- **P-001** \`todo\` <Concrete work item — imperative, testable, one sentence>
+- **P-002** \`todo\` <Next item>
 
 ## Phase 2 — <Phase name>
 
-- [ ] P-003 <…>
+- **P-003** \`todo\` <…>
 
 ## Decisions
 
@@ -124,6 +124,7 @@ SUMMARY: <1–3 sentences the human reads before accepting. What will the plan c
 Rules for \`promote:plan\`:
 - The body (after \`---\`) must be valid plan markdown — it is written verbatim. The \`## Now\` block is mandatory; at least one phase with at least one item is required.
 - Item IDs (P-NNN) are placeholders in the proposal; the server re-allocates real sequential IDs on Accept.
+- Plan items must use the parser grammar \`- **P-NNN** \`todo\` <text>\`; do not use Markdown checkbox syntax.
 - Decision IDs (D-NNN) are similarly re-allocated; keep them for cross-referencing within the block.
 - \`STATUS: draft\` is the only valid value at creation time.
 - Prefer 3–8 items per phase; keep phases focused. Do not invent items to pad.

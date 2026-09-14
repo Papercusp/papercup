@@ -72,7 +72,10 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     expect(facade).not.toMatch(/bash\([^)]*\): Promise<unknown>;/);
     expect(facade).toContain('ok: boolean');
     expect(facade).toContain('output?: string');
-    expect(facade).toContain('exit_code?: number | null');
+    // Numeric schema bounds are intentionally rendered as a comment beside the
+    // TypeScript primitive, so the contract remains `number | null` while the
+    // generated signature also teaches the model the validator's integer range.
+    expect(facade).toMatch(/exit_code\?: number(?: \/\* integer\([^*]+\) \*\/)? \| null/);
   });
 
   it('rejects sub-second public timeouts with explicit millisecond guidance', () => {

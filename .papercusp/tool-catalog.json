@@ -2551,7 +2551,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Run builds/tests/checks/scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; single-quote the argument — an unmatched backtick fails before either tool runs. Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`); else POSIX `grep`/`grep -E`. In `rg`, use lowercase `-e`/`--regexp`; uppercase `-E` means `--encoding`. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap matching lines with ripgrep itself (e.g., `rg --max-count 60 --max-columns 256 --max-columns-preview ...`); avoid piping to early-exit consumers such as `head` under `pipefail`, which can SIGPIPE `rg` (exit 141). Do not run an unbounded search from the repository root. Bound git history scans (`git log --all`, `-S`, `-G`) with `-n` + a focused path; unbounded refused. do not shell-background child without `wait`.",
+        "when": "Fixed-string searches: prefer `rg -F`, else `grep -F`; single-quote — unmatched backtick fails before either tool runs. Apostrophe regexes break single-quoted arguments; use `rg -F`, `-e` per pattern, or quoted stdin/file. Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`); else POSIX `grep`/`grep -E`. In `rg`, use lowercase `-e`/`--regexp`; uppercase `-E` means `--encoding`. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap matching lines with ripgrep itself (e.g., `rg --max-count 60 --max-columns 256 --max-columns-preview ...`); avoid piping to early-exit consumers such as `head` under `pipefail`, which can SIGPIPE `rg` (exit 141). Do not run an unbounded search from the repository root. Bound git history scans with `-n`; unbounded refused. do not shell-background child without `wait`.",
         "notWhen": "Use capability:read/write/edit for one-file ops and capability:git for git. Shell execution strips DB credential env vars, so use dev:pg_query for read-only operator DB queries.",
         "chaining": "run_in_background:true returns bash_id + durable task_id → capability:bash_output { task_id }; stop with processes:kill { taskId }. Never push."
       }
@@ -20459,7 +20459,7 @@
           "POST"
         ]
       },
-      "description": "Record a plan audit. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs, records the current plan revision, and previews readiness. Post-epoch activation seeds BARs from `## Requirements` entries written as `**R-N — Title.** outcome` or a fenced `requirement` JSON block plus the Design map; changed BAR source returns `barSeedPendingAmendment` for `rubrics:amend`; invalid pinned rubrics return `barSeedPendingRepair` after recording the audit.",
+      "description": "Record a plan audit. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs, records the current revision, and previews readiness. Post-epoch BAR seeding requires `## Requirements` entries in `**R-N — Title.** outcome` form or one fenced `requirement` JSON block plus the Design map; changed BAR source returns `barSeedPendingAmendment`; invalid pinned rubrics return `barSeedPendingRepair`.",
       "capabilities": [
         "plans:write"
       ],
@@ -20520,9 +20520,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Before ready/active, read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions. Author `## Requirements` as exact `**R-N — Title.** outcome` records (or fenced `requirement` JSON blocks), map each R-N in Design's Bar-to-work table (`tree|deployed|live`), and note that ordinary bullet lists do not satisfy the BAR parser. Use `activation`; before shipped use `completion` against ACTUAL CODE.",
-        "notWhen": "Not mid-implementation. Grade a rubric with scorecards:emit; record a decision with plans:add-decision; repair unresolved/open activation mappings before auditing.",
-        "chaining": "sessions:search/read → repair omissions → activation audit → ready. Later edits preserve the audit and return audited/current revision id/seq/contentHash; re-audit after changes to requirements, scope, constraints, decisions, dependencies, sequencing, acceptance criteria, open questions, promised follow-ups; spelling, formatting, cosmetic-only wording need no re-audit. Completion: plans:audit → rubric/scorecard → shipped."
+        "when": "Before ready/active, read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions. Author `## Requirements` with exact `**R-N — Title.** outcome` records (or a fenced `requirement` JSON block), map each R-N in Design's Bar-to-work table (`tree|deployed|live`); ordinary bullet lists do not satisfy the BAR parser. Use `activation`; before shipped use `completion` against ACTUAL CODE.",
+        "notWhen": "Not mid-implementation; grade rubrics with scorecards:emit, decisions with plans:add-decision, and repair open activation mappings first.",
+        "chaining": "Activation: sessions:search/read → repair omissions → audit → ready. Later edits preserve audit and return audited/current revision id/seq/contentHash. Re-audit after requirements, scope, constraints, decisions, dependencies, sequencing, acceptance criteria, open questions, promised follow-ups; spelling, formatting, cosmetic-only wording need no re-audit. Completion: audit → rubric/scorecard → shipped."
       }
     },
     {
