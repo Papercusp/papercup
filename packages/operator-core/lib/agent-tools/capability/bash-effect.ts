@@ -296,6 +296,67 @@ function classifiesFindRead(tokens: readonly string[]): boolean {
   });
 }
 
+function hasNumericPpidSelector(tokens: readonly string[]): boolean {
+  let selectorCount = 0;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === '--ppid') {
+      selectorCount += 1;
+      if (!/^\d+$/.test(tokens[index + 1] ?? '')) return false;
+      index += 1;
+      continue;
+    }
+    if (/^--ppid=\d+$/.test(token)) selectorCount += 1;
+  }
+  return selectorCount === 1;
+}
+
+function classifiesReadOnlyAwk(tokens: readonly string[]): boolean {
+  if (commandBase(tokens[0] ?? '') !== 'awk' || tokens.length !== 2) return false;
+  const program = tokens[1]!;
+  // Only permit field-selection/printing programs. In particular, do not widen
+  // the general shell classifier to arbitrary awk, whose system/getline/output
+  // features can execute commands or mutate files.
+  const field = String.raw`(?:\$\d+|[A-Za-z_][A-Za-z0-9_]*)`;
+  const print = new RegExp(String.raw`^\{\s*print(?:\s+${field}(?:\s*,\s*${field})*)?\s*\}$`);
+  const conditionalPrint = new RegExp(
+    String.raw`^${field}\s*\{\s*print(?:\s+${field}(?:\s*,\s*${field})*)?\s*\}$`,
+  );
+  return print.test(program) || conditionalPrint.test(program);
+}
+
+function isReadOnlyPsPpidPipelineSegments(segments: readonly (readonly string[])[]): boolean {
+  if (segments.length < 1 || segments.length > 2) return false;
+  const ps = segments[0]!;
+  if (commandBase(ps[0] ?? '') !== 'ps' || !hasNumericPpidSelector(ps)) return false;
+  return segments.length === 1 || classifiesReadOnlyAwk(segments[1]!);
+}
+
+function classifiesPsRead(tokens: readonly string[]): boolean {
+  const hasPpid = tokens.some((token) => token === '--ppid' || token.startsWith('--ppid='));
+  return !hasPpid || hasNumericPpidSelector(tokens);
+}
+
+function isReadOnlyHeadPipelineSegments(segments: readonly (readonly string[])[]): boolean {
+  if (segments.length < 2 || commandBase(segments.at(-1)?.[0] ?? '') !== 'head') return false;
+  return segments.every((segment) => {
+    return classifiesSimpleRead(segment) || classifiesReadOnlyAwk(segment);
+  });
+}
+
+/**
+ * A numeric-parent `ps --ppid` probe is an observation even when no children
+ * exist. `ps` reports that empty enumeration with exit 1; an optional simple
+ * field-printing `awk` consumer keeps the result observational. Keep this
+ * separate from the broad `ps` allow-list so variable parents, shell operators,
+ * redirects, and arbitrary awk programs remain write-classified.
+ */
+export function isReadOnlyPsPpidPipeline(command: string): boolean {
+  if (/[;&<>\n\r]/.test(command) || command.includes('||')) return false;
+  const segments = splitClassifiableShell(command);
+  return segments !== null && isReadOnlyPsPpidPipelineSegments(segments);
+}
+
 function classifiesSimpleRead(tokens: readonly string[], depth = 0): boolean {
   if (depth > 2 || tokens.length === 0) return false;
   const base = commandBase(tokens[0]!);
@@ -316,6 +377,7 @@ function classifiesSimpleRead(tokens: readonly string[], depth = 0): boolean {
   if (base === 'git') return classifiesGitRead(tokens);
   if (base === 'strace') return classifiesStraceRead(tokens);
   if (base === 'find') return classifiesFindRead(tokens);
+  if (base === 'ps' && !classifiesPsRead(tokens)) return false;
   if (base === 'command') return tokens.length === 3 && (tokens[1] === '-v' || tokens[1] === '-V');
   if (base === 'docker') {
     return new Set(['info', 'inspect', 'ps', 'stats', 'version']).has(firstNonOption(tokens)?.toLowerCase() ?? '');
@@ -346,7 +408,11 @@ export function classifyCapabilityBashEffect(args: unknown): BashEffect {
   const command = typeof record.command === 'string' ? record.command : record.cmd;
   if (typeof command !== 'string') return 'write';
   const segments = splitClassifiableShell(command);
-  return segments && segments.every((segment) => classifiesSimpleRead(segment)) ? 'read' : 'write';
+  if (!segments) return 'write';
+  const allReadOnly = segments.every((segment) => classifiesSimpleRead(segment));
+  return allReadOnly || isReadOnlyHeadPipelineSegments(segments) || isReadOnlyPsPpidPipelineSegments(segments)
+    ? 'read'
+    : 'write';
 }
 
 /**
@@ -361,8 +427,7 @@ export function isReadOnlyHeadPipeline(command: string): boolean {
   if (/[;&<>\n\r]/.test(command)) return false;
   const segments = splitClassifiableShell(command);
   if (!segments || segments.length < 2) return false;
-  if (commandBase(segments.at(-1)?.[0] ?? '') !== 'head') return false;
-  return classifyCapabilityBashEffect({ command }) === 'read';
+  return isReadOnlyHeadPipelineSegments(segments);
 }
 
 /**

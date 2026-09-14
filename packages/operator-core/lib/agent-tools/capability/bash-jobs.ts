@@ -49,7 +49,11 @@ import {
   finishSyncEnrolment,
   syncEnrolmentScopePath,
 } from '../../task-manager/enroll-sync';
-import { isReadOnlyHeadPipeline, isReadOnlyRgCountPipeline } from './bash-effect';
+import {
+  isReadOnlyHeadPipeline,
+  isReadOnlyPsPpidPipeline,
+  isReadOnlyRgCountPipeline,
+} from './bash-effect';
 import { onTaskKillRequested } from '../../task-manager/kill-notify';
 import { warmScopeProbe } from '../../task-manager/managed-spawn';
 import type { CgroupCpuSample } from './cgroup-cpu';
@@ -2077,6 +2081,24 @@ export function normalizeExpectedRgNoMatchResult(
   return { status, exitCode };
 }
 
+/**
+ * `ps --ppid <numeric-pid>` reports exit 1 when the parent currently has no
+ * children. In the narrow read-only probe shape, an empty output is the valid
+ * observation rather than a failed capability call. Require the empty output
+ * so malformed ps invocations and real diagnostics retain their failure.
+ */
+export function normalizeExpectedPsPpidEmptyResult(
+  command: string,
+  status: BashStatus,
+  exitCode: number | null,
+  output: string,
+): { status: BashStatus; exitCode: number | null } {
+  if (status === 'failed' && exitCode === 1 && output.trim() === '' && isReadOnlyPsPpidPipeline(command)) {
+    return { status: 'completed', exitCode: 0 };
+  }
+  return { status, exitCode };
+}
+
 function createMissingCommandMarkerDetector(token: string): { push: (chunk: string) => void; seen: () => boolean } {
   const marker = `${MISSING_COMMAND_SENTINEL_PREFIX} token=${token} `;
   let tail = '';
@@ -2422,10 +2444,16 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     child.on('close', (code) => {
       const status: BashStatus = timedOut ? 'timed_out' : aborted ? 'killed' : code === 0 ? 'completed' : 'failed';
       const sigpipeNormalized = normalizeExpectedSigpipeResult(opts.command, status, code);
-      const normalized = normalizeExpectedRgNoMatchResult(
+      const ppidNormalized = normalizeExpectedPsPpidEmptyResult(
         opts.command,
         sigpipeNormalized.status,
         sigpipeNormalized.exitCode,
+        buffer,
+      );
+      const normalized = normalizeExpectedRgNoMatchResult(
+        opts.command,
+        ppidNormalized.status,
+        ppidNormalized.exitCode,
       );
       finish(normalized.status, normalized.exitCode);
     });
@@ -2756,10 +2784,16 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   child.on('close', (code) => {
     if (job.status === 'running') {
       const sigpipeNormalized = normalizeExpectedSigpipeResult(opts.command, code === 0 ? 'completed' : 'failed', code);
-      const normalized = normalizeExpectedRgNoMatchResult(
+      const ppidNormalized = normalizeExpectedPsPpidEmptyResult(
         opts.command,
         sigpipeNormalized.status,
         sigpipeNormalized.exitCode,
+        job.buffer,
+      );
+      const normalized = normalizeExpectedRgNoMatchResult(
+        opts.command,
+        ppidNormalized.status,
+        ppidNormalized.exitCode,
       );
       job.status = normalized.status;
       job.exitCode = normalized.exitCode;
