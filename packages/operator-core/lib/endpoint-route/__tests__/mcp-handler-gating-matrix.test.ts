@@ -17,8 +17,8 @@
  *     and effectiveDispatchWorkspace as a unit (here: its dispatch wiring).
  *
  * Harness: `createMcpHandler` is mocked to capture the JSON-RPC request
- * handlers; the registry is the REAL one (agent-tools/index side-effect
- * import) plus two synthetic probe tools under the 'gating-matrix-test'
+ * handlers; the registry is the REAL one (explicitly warmed through the
+ * transport's lazy loader) plus two synthetic probe tools under the 'gating-matrix-test'
  * plugin. PG seams (db-org, spawn-signing, power-user-token, superuser
  * bearer, harness paths) are stubbed; everything between the request handler
  * and the tool fn — tryBuildSpawnContext, the profile gate, the power-user
@@ -204,9 +204,7 @@ vi.mock('mcp-handler', () => ({
         },
       },
     });
-    return () => {
-      throw new Error('HTTP fetch handler is not exercised by this test');
-    };
+    return async () => new Response(null);
   },
 }));
 
@@ -433,13 +431,19 @@ vi.mock('../../plugin-host-runtime', async (importOriginal) => {
 process.env.AGENT_MCP_TOOL_MANIFEST = '/nonexistent/gating-matrix-no-manifest.json';
 delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
 
-const { __buildMcpToolContext_forTests, resolveMcpTargetAfterPluginHostWarm } =
+const { __buildMcpToolContext_forTests, mcpHandler, resolveMcpTargetAfterPluginHostWarm } =
   await import('../routes/transport/_mcp-handler');
 const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, getCatalog, defineTool, subscribeWorkspace, resolveCardResponse } =
   await import('@papercusp/agent-mcp');
 const { currentRequestWorkspaceId } = await import('../../workspace-als');
 const { registerMcpHost, mcpHostServerOptions, MCP_SERVER_CAPABILITIES, tryBuildSpawnContext, pinVerifiedMcpRequest } =
   await import('../routes/transport/_mcp-host');
+
+// `_mcp-handler` now defers both the operator tool graph and mcp-handler's
+// process-wide cleanup interval until the first real HTTP request. Warm that
+// production path once so this fixture can capture the same request handlers
+// while keeping direct helper imports one-shot and side-effect-free.
+await mcpHandler(new Request('http://127.0.0.1/api/mcp'));
 
 /* ─── Synthetic probe tools ──────────────────────────────────────────── */
 
