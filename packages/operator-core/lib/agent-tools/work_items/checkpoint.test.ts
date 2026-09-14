@@ -2988,6 +2988,29 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(r.checksDropped).toEqual(['gate is green', 'main is at abc123']);
         });
 
+        it('explains that same-id replacements are updates, not retirements', async () => {
+          const prior = await seedKeyed();
+          withPrior(prior);
+          const r = await one({
+            id: 'WI-7',
+            checkpoint: 'new body',
+            checks: [
+              { id: 'gate-green', claim: 'gate is green at current HEAD' },
+              { id: 'main-sha', claim: 'main is at current HEAD' },
+            ],
+            rowsMode: 'replace',
+            retireIds: ['gate-green', 'main-sha'],
+          });
+
+          expect(r).toMatchObject({
+            ok: false,
+            errorCode: 'checkpoint_retire_ids_mismatch',
+            retireIdsActual: [],
+          });
+          expect(r.message).toContain('same id as a replacement');
+          expect(r.message).toContain('Omit `retireIds` for an in-place update');
+        });
+
         it('still accepts the bare stored id — the pre-fix form keeps working', async () => {
           const prior = await seedKeyed();
           withPrior(await prior);

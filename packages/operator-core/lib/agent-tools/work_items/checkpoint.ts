@@ -2318,21 +2318,29 @@ export default defineTool({
         // EI-21923095696933477: the retireIds sibling of replaceWouldDropResponse —
         // reports what was requested vs what would actually drop so the caller can
         // resend a corrected set without a second blind guess.
-        const retireIdsMismatchResponse = (error: RetireIdsMismatchError) => ({
-          ok: false as const,
-          id: it.id,
-          error: 'checkpoint_retire_ids_mismatch',
-          errorCode: 'checkpoint_retire_ids_mismatch',
-          retryable: true,
-          retireIdsRequested: error.requested,
-          retireIdsActual: error.actual,
-          message:
-            'retireIds did not exactly match the rows this replace would actually drop — NOTHING was written. ' +
-            `Requested: ${error.requested.length ? error.requested.join(', ') : '(none)'}. ` +
-            `Would actually drop: ${error.actual.length ? error.actual.join(', ') : '(none)'}. ` +
-            'Re-send retireIds naming exactly the rows in "Would actually drop", or omit retireIds and use ' +
-            'confirmRetire:true instead.',
-        });
+        const retireIdsMismatchResponse = (error: RetireIdsMismatchError) => {
+          const sameIdUpdateHint =
+            error.actual.length === 0 && error.requested.length > 0
+              ? ' No rows would be retired; a carried row with the same id as a replacement is kept in place. ' +
+                'Omit `retireIds` for an in-place update.'
+              : '';
+          return {
+            ok: false as const,
+            id: it.id,
+            error: 'checkpoint_retire_ids_mismatch',
+            errorCode: 'checkpoint_retire_ids_mismatch',
+            retryable: true,
+            retireIdsRequested: error.requested,
+            retireIdsActual: error.actual,
+            message:
+              'retireIds did not exactly match the rows this replace would actually drop — NOTHING was written. ' +
+              `Requested: ${error.requested.length ? error.requested.join(', ') : '(none)'}. ` +
+              `Would actually drop: ${error.actual.length ? error.actual.join(', ') : '(none)'}. ` +
+              sameIdUpdateHint +
+              'Re-send retireIds naming exactly the rows in "Would actually drop", or omit retireIds and use ' +
+              'confirmRetire:true instead.',
+          };
+        };
         // EI-21864672058763701 / EI-21864782390076614: setWorkItemCheckpointWithPrior
         // now runs its write under boundedOrgTxn (acquireTimeoutMs 8_000), so a stall
         // under admin-pool/row-lock contention throws a typed OrgTxnTimeoutError FAST
