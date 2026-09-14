@@ -286,9 +286,25 @@ describe('persistent coverage-attribution venue', () => {
     registerRoute(app, restQueryRoute);
 
     const queryArgs = encodeURIComponent(JSON.stringify({ limit: 1 }));
-    const response = await app.request(
-      `http://localhost/zero-harness/rest-query?name=learning.observations&args=${queryArgs}`,
-    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let response: Response | undefined;
+    try {
+      response = await app.request(
+        `http://localhost/zero-harness/rest-query?name=learning.observations&args=${queryArgs}`,
+      );
+    } finally {
+      // A real shared-PG read may legitimately cross the sync-slow threshold under
+      // fleet load. Keep fail-on-console strict for every other warning while
+      // explicitly accepting only this route's own measured latency diagnostic.
+      expect(
+        warn.mock.calls.filter(
+          ([message]) => !String(message).startsWith('[sync-slow] name=learning.observations'),
+        ),
+      ).toEqual([]);
+      warn.mockRestore();
+    }
+    expect(response).toBeDefined();
+    if (!response) throw new Error('learning.observations did not return a response');
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       rows?: unknown[];
