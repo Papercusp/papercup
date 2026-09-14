@@ -461,10 +461,11 @@ function correlationSegment(value: string | null | undefined, fallback: string):
  * The stable identity for one tool-failure defect class.
  *
  * `watchdogKey` remains the invocation/report identity and intentionally includes
- * the message fingerprint. This key does not: differently-worded reports for the
- * same tool/class/contract/revision must share one lifecycle item, while a schema
- * or deployed revision change must start a new class. Unknown dimensions remain
- * explicit so missing metadata cannot collapse unrelated reports together.
+ * the message fingerprint. This key does not include the message shape: differently-
+ * worded reports for the same tool/error-code/class/contract/revision must share one
+ * lifecycle item, while a different error code, schema, or deployed revision must
+ * start a new class. Unknown dimensions remain explicit so missing metadata cannot
+ * collapse unrelated reports together.
  */
 export interface ToolFailureClassIdentity {
   classKey: string;
@@ -473,17 +474,18 @@ export interface ToolFailureClassIdentity {
 }
 
 export function toolFailureClassIdentity(
-  input: Pick<SuspectedToolFailure, 'toolName' | 'schemaRevision' | 'fieldPath' | 'runtimeVersion'>,
+  input: Pick<SuspectedToolFailure, 'toolName' | 'errorCode' | 'schemaRevision' | 'fieldPath' | 'runtimeVersion'>,
   failureFamily: ToolErrorClass,
 ): ToolFailureClassIdentity {
   const tool = correlationSegment(input.toolName, 'unknown-tool');
+  const errorCode = correlationSegment(input.errorCode, 'error-code-unknown');
   const contractFingerprint = [
     correlationSegment(input.schemaRevision, 'schema-unknown'),
     correlationSegment(input.fieldPath, 'field-unknown'),
   ].join('~');
   const deployedRevision = correlationSegment(input.runtimeVersion, 'runtime-unknown');
   return {
-    classKey: `repeated-tool-error-class:${tool}:${failureFamily}:${contractFingerprint}:${deployedRevision}`,
+    classKey: `repeated-tool-error-class:${tool}:${failureFamily}:${errorCode}:${contractFingerprint}:${deployedRevision}`,
     contractFingerprint,
     deployedRevision,
   };
@@ -491,7 +493,7 @@ export function toolFailureClassIdentity(
 
 /** Convenience key builder used by callers that already know the failure family. */
 export function toolFailureClassKey(
-  input: Pick<SuspectedToolFailure, 'toolName' | 'schemaRevision' | 'fieldPath' | 'runtimeVersion'>,
+  input: Pick<SuspectedToolFailure, 'toolName' | 'errorCode' | 'schemaRevision' | 'fieldPath' | 'runtimeVersion'>,
   failureFamily: ToolErrorClass,
 ): string {
   return toolFailureClassIdentity(input, failureFamily).classKey;
