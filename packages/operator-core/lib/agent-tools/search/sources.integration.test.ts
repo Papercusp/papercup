@@ -273,6 +273,28 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
         ON DELETE CASCADE
     );
   `);
+
+  // ── coord_event_log (501 coord_message search leg) ───────────────────────
+  // The coord-message source has no transcript session key. Keep a real
+  // matching row in this fixture so its explicit-session fail-closed guard is
+  // non-vacuous: an unfiltered query can find the row, while a session-scoped
+  // query must not broaden into this corpus.
+  await s.unsafe(`
+    CREATE TABLE harness_shared.coord_event_log (
+      id BIGSERIAL PRIMARY KEY,
+      workspace_id TEXT NOT NULL DEFAULT 'default',
+      surface TEXT NOT NULL,
+      writer_key TEXT,
+      msg_id TEXT NOT NULL,
+      body JSONB NOT NULL,
+      ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+      harness_slug TEXT
+    );
+    CREATE INDEX coord_event_log_msg_tsv_idx
+      ON harness_shared.coord_event_log
+      USING gin (to_tsvector('english', left(coalesce(body->>'summary','') || ' ' || coalesce(body->>'body',''), 20000)))
+      WHERE surface = 'messages';
+  `);
 }
 
 /**
@@ -314,6 +336,19 @@ async function seed(s: postgres.Sql): Promise<{ convA: string; convB: string }> 
   // THE DECOY: a B-workspace turn with the SAME matchable token. Must never leak.
   await s`INSERT INTO harness_shared.operator_turns (conversation_id, seq, role, text, text_embedding)
           VALUES (${convB}, 0, 'user', 'kubernetes secret discussion in another workspace', ${vecLit(0.04)}::vector)`;
+
+  // coord_message — matching A row plus a B decoy for the source-level scope
+  // and explicit-session tests below.
+  await s`INSERT INTO harness_shared.coord_event_log
+            (workspace_id, surface, msg_id, body, ts, harness_slug)
+          VALUES (${WS_A}, 'messages', 'coord-A',
+                  ${JSON.stringify({ from: 'agent-a', kind: 'message', summary: 'kubernetes coordination note', body: 'shared coordination context' })}::jsonb,
+                  '2026-01-01T00:04:00Z', 'sheets')`;
+  await s`INSERT INTO harness_shared.coord_event_log
+            (workspace_id, surface, msg_id, body, ts, harness_slug)
+          VALUES (${WS_B}, 'messages', 'coord-B',
+                  ${JSON.stringify({ from: 'agent-b', kind: 'message', summary: 'kubernetes coordination decoy', body: 'another workspace' })}::jsonb,
+                  '2026-01-01T00:04:00Z', 'decoy')`;
 
   // engineer_issues (EI-6984's work_item source): A (two harness scopes) + B decoy.
   //
@@ -605,6 +640,19 @@ describe('GAP 10 — per-source bm25 SQL: scope isolation + row mapping', () => 
     }
     // The decoy's distinctive phrase must be absent from every excerpt.
     expect(out.some((r) => r.row.excerpt.includes('another workspace'))).toBe(false);
+  });
+
+  it('coord_message.lexical: unfiltered search returns the workspace-A row', async () => {
+    const out = await byName('coord_message').lexical(params({ query: 'kubernetes coordination' }));
+    expect(out.map((r) => r.row.source_id)).toEqual(['coord-A']);
+    expect(out[0]?.row.source).toBe('coord_message');
+  });
+
+  it('coord_message.lexical: explicit transcript session fails closed instead of scanning the coord corpus (EI-23130749427955806)', async () => {
+    const out = await byName('coord_message').lexical(
+      params({ query: 'kubernetes coordination', filters: { sessionId: P17_SESSION } }),
+    );
+    expect(out).toEqual([]);
   });
 
   // EI-6984: the work_item source. Its embedding leg (P-005) has its own describe

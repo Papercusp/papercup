@@ -507,20 +507,28 @@ describe('published launch args schema', () => {
     ).toBe(true);
   });
 
-  it('documents members.role as a dynamic harness persona id, not a lane label', () => {
+  it('documents role fields as discoverable harness persona ids, not lane labels', () => {
     // The published args use one object schema with conditional source-launch
     // validation, so the shared member schema is directly on the object shape.
     const argsOut = (launchAgent.args as unknown as {
       shape: {
+        role: { description?: string };
         members: { unwrap: () => { element: { shape: Record<string, { description?: string }> } } };
       };
     });
+    const topRole = argsOut.shape.role;
+    expect(topRole.description).toMatch(/roles:list/);
+    expect(topRole.description).toMatch(/roles\[\]\.id/);
+    expect(topRole.description).toMatch(/harnessSlug/);
+
     const members = argsOut.shape.members.unwrap();
     const role = members.element.shape.role;
 
     expect(role.description).toMatch(/registered persona id/i);
     expect(role.description).toMatch(/target harness/i);
     expect(role.description).toMatch(/not a lane\/job label/i);
+    expect(role.description).toMatch(/roles:list/);
+    expect(role.description).toMatch(/roles\[\]\.id/);
     // The valid persona set is resolved against the selected harness at launch
     // time, so the shared wire schema must remain string-shaped rather than
     // freezing one harness's registry into a static enum.

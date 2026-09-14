@@ -745,7 +745,7 @@ export const memberSpecSchema = z
       .string()
       .optional()
       .describe(
-        "psu --role: a registered persona id resolved against the target harness (the valid ids are harness-specific). This is not a lane/job label; put lane direction in this member's `brief` or the shared `label`.",
+        "psu --role: a registered persona id resolved against the target harness (the valid ids are harness-specific). Discover exact ids first with roles:list { harnessSlug: \"<target>\" } and read roles[].id; roles:known lists built-in ids. This is not a lane/job label; put lane direction in this member's `brief` or the shared `label`.",
       ),
     stack: z
       .array(z.string().min(1))

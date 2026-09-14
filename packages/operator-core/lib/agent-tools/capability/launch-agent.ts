@@ -382,6 +382,8 @@ export default defineTool({
       'capability:terminal (run a COMMAND in a visible terminal, not an agent)',
       "coord:presence (a launched/forked agent's identity + liveness)",
       'processes:list / processes:kill (returned tasks[].taskId handles; not tasks:get)',
+      'roles:list (discover the target harness persona ids before setting role)',
+      'roles:known (static built-in role universe)',
     ],
     // EI-22084251948568820 cluster (+ EI-22078751749824171, EI-21575773427457407,
     // EI-21723773357897744): four independent reports of a top-level `carry` being
@@ -498,7 +500,7 @@ export default defineTool({
         .max(120)
         .optional()
         .describe(
-          'psu --role: a registered persona id resolved against the target harness (the valid ids are harness-specific). This is not a lane/job label; put lane direction in the brief or label.',
+          'psu --role: a registered persona id resolved against the target harness (the valid ids are harness-specific). Discover exact ids first with roles:list { harnessSlug: "<target>" } and read roles[].id; roles:known lists built-in ids. This is not a lane/job label; put lane direction in the brief or label.',
         ),
       stack: z
         .array(z.string().min(1))
@@ -536,7 +538,7 @@ export default defineTool({
         .array(memberSpecSchema)
         .optional()
         .describe(
-          'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/carry/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. `members[i].role` is a REGISTERED PERSONA ID resolved against the target harness (valid ids are harness-specific), never a lane/job label — put lane direction in `members[i].brief` or the shared `label`; invalid personas fail atomically before any terminal opens. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `claimKinds` needs a self-pulling fleet — use fleet:launch-on-plan for that claim-lane behavior.',
+          'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/carry/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. `members[i].role` is a REGISTERED PERSONA ID resolved against the target harness (valid ids are harness-specific); discover exact ids first with roles:list { harnessSlug: "<target>" } and read roles[].id. It is never a lane/job label — put lane direction in `members[i].brief` or the shared `label`; invalid personas fail atomically before any terminal opens. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `claimKinds` needs a self-pulling fleet — use fleet:launch-on-plan for that claim-lane behavior.',
         ),
       cwd: z
         .string()

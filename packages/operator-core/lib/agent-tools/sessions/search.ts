@@ -219,7 +219,14 @@ export default defineTool({
         });
       }
     } else {
-      const scopeNames = args.include_coord ? ['session_turn', 'coord_message'] : ['session_turn'];
+      // coord_event_log has no transcript session identity. When the caller
+      // names one explicit session, including coord_message would ignore that
+      // narrowing and scan the whole coordination corpus. Keep coord recall for
+      // unscoped and session:'self' (owner-scoped) searches, but make an
+      // explicit transcript session remain a bounded transcript-only search.
+      const scopeNames = args.include_coord
+        ? ['session_turn', ...(filters?.sessionId ? [] : ['coord_message'])]
+        : ['session_turn'];
       const sources = SEARCH_SOURCES.filter((s) => scopeNames.includes(s.name));
       const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
       // WI-3929 (same class as EI-9312): bound the ACTUAL per-query embed

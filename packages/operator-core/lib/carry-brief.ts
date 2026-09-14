@@ -728,47 +728,70 @@ export async function readDeferredWorkItems(
         commented_this_session: boolean;
       }>
     >`
-      WITH touched AS (
+      WITH candidates AS (
         SELECT wi.feature_id AS id,
                wi.title,
                wi.summary AS body,
                wi.harness_slug,
                wi.item_kind AS kind,
-               (
-                 wi.item_kind IN ('bug', 'change', 'task')
-                 AND NULLIF(wi.payload #>> '{_ei,created_by}', '') = ${ownerId}
-                 AND wi.created_ts >= ${Math.floor(sessionStartedAtMs)}
-               ) AS created_this_session,
-               EXISTS (
-                 SELECT 1
-                   FROM harness_shared.coord_thread_posts AS post
-                   JOIN harness_shared.coord_threads AS thread
-                     ON thread.workspace_id = post.workspace_id
-                    AND thread.thread_id = post.thread_id
-                  WHERE post.workspace_id = wi.workspace_id
-                    AND post.author_id = ${ownerId}
-                    AND post.created_at >= to_timestamp(${sessionStartedAtMs}::double precision / 1000.0)
-                    AND (
-                      (
-                        wi.item_kind IN ('bug', 'change', 'task')
-                        AND thread.parent_kind = 'issue'
-                        AND thread.parent_ref = wi.feature_id
-                      )
-                      OR (
-                        wi.item_kind IN ('feature', 'chunk')
-                        AND thread.parent_kind = 'feature'
-                        AND thread.parent_ref = wi.harness_slug || '#' || wi.feature_id
-                      )
-                    )
-               ) AS commented_this_session
+               true AS created_this_session,
+               false AS commented_this_session
           FROM harness_shared.work_items AS wi
          WHERE wi.workspace_id = ${ws}
+           AND wi.item_kind IN ('bug', 'change', 'task')
+           AND NULLIF(wi.payload #>> '{_ei,created_by}', '') = ${ownerId}
+           AND wi.created_ts >= ${Math.floor(sessionStartedAtMs)}
            AND (
              wi.taken_by IS NULL
              OR btrim(wi.taken_by) = ''
              OR lower(btrim(wi.taken_by)) = 'unassigned'
            )
            AND (wi.status IS NULL OR wi.status <> ALL(${terminalStates}::text[]))
+        UNION ALL
+        SELECT wi.feature_id AS id,
+               wi.title,
+               wi.summary AS body,
+               wi.harness_slug,
+               wi.item_kind AS kind,
+               false AS created_this_session,
+               true AS commented_this_session
+          FROM harness_shared.coord_thread_posts AS post
+          JOIN harness_shared.coord_threads AS thread
+            ON thread.workspace_id = post.workspace_id
+           AND thread.thread_id = post.thread_id
+          JOIN harness_shared.work_items AS wi
+            ON wi.workspace_id = thread.workspace_id
+           AND (
+             (
+               thread.parent_kind = 'issue'
+               AND wi.item_kind IN ('bug', 'change', 'task')
+               AND thread.parent_ref = wi.feature_id
+             )
+             OR (
+               thread.parent_kind = 'feature'
+               AND wi.item_kind IN ('feature', 'chunk')
+               AND thread.parent_ref = wi.harness_slug || '#' || wi.feature_id
+             )
+           )
+         WHERE post.workspace_id = ${ws}
+           AND post.author_id = ${ownerId}
+           AND post.created_at >= to_timestamp(${sessionStartedAtMs}::double precision / 1000.0)
+           AND (
+             wi.taken_by IS NULL
+             OR btrim(wi.taken_by) = ''
+             OR lower(btrim(wi.taken_by)) = 'unassigned'
+           )
+           AND (wi.status IS NULL OR wi.status <> ALL(${terminalStates}::text[]))
+      ), touched AS (
+        SELECT id,
+               title,
+               body,
+               harness_slug,
+               kind,
+               bool_or(created_this_session) AS created_this_session,
+               bool_or(commented_this_session) AS commented_this_session
+          FROM candidates
+         GROUP BY id, title, body, harness_slug, kind
       )
       SELECT id,
              title,
@@ -778,7 +801,6 @@ export async function readDeferredWorkItems(
              created_this_session,
              commented_this_session
         FROM touched
-       WHERE created_this_session OR commented_this_session
        ORDER BY id DESC
        LIMIT ${limit}
     `;
@@ -1226,15 +1248,22 @@ function isInfraAwait(eventKey: string): boolean {
   return eventKey.startsWith('coord:inbox-wake:');
 }
 
+async function bestEffort<T>(read: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await read();
+  } catch {
+    return fallback;
+  }
+}
+
+type CarryLoopRead = Pick<CarryBrief, 'loop' | 'walls'> & Partial<Pick<CarryBrief, 'checks'>>;
+
 /**
  * Assemble the caller's carry brief. Every leg is independently best-effort: a
  * throwing reader yields that section empty, never a failed brief — this runs at
  * the worst possible moments (context exhausted, session about to reset).
  */
-export async function buildCarryBrief(
-  ownerId: string,
-  opts: BuildCarryBriefOpts = {},
-): Promise<CarryBrief> {
+export async function buildCarryBrief(ownerId: string, opts: BuildCarryBriefOpts = {}): Promise<CarryBrief> {
   const workspaceId = opts.workspaceId ?? activeWorkspaceId() ?? 'default';
   let concreteWorkspaceId: string | null = null;
   try {
@@ -1256,186 +1285,220 @@ export async function buildCarryBrief(
     fleet: null,
   };
 
-  try {
-    // EI-11484: open owner directives — the highest-priority carry class. The
-    // read is workspace-scoped (NOT loop/session-scoped) on purpose: a
-    // directive must survive the recording session's death.
-    const listDirectives =
-      opts.listOpenDirectivesFn ??
-      (async (ws: string) => {
-        const { listOpenOwnerDirectives, countOpenOwnerDirectives, OWNER_DIRECTIVES_RENDER_MAX_ROWS } =
-          await import('./owner-directives');
-        const rows = await listOpenOwnerDirectives(ws, OWNER_DIRECTIVES_RENDER_MAX_ROWS, opts.sql);
-        const totalOpen =
-          rows.length >= OWNER_DIRECTIVES_RENDER_MAX_ROWS
-            ? await countOpenOwnerDirectives(ws, opts.sql).catch(() => rows.length)
-            : rows.length;
-        return { rows, totalOpen };
-      });
-    const d = await listDirectives(workspaceId);
-    brief.directives = d.rows;
-    brief.directivesTotalOpen = d.totalOpen;
-  } catch {
-    /* section stays empty */
-  }
+  // These seven roots have no data dependency on one another. Start all of
+  // them before awaiting any result; the old serial fold made carry latency the
+  // sum of every store read and put a multi-second query directly on HUD Orders.
+  const directivesPromise = bestEffort(
+    async () => {
+      // EI-11484: open owner directives — the highest-priority carry class. The
+      // read is workspace-scoped (NOT loop/session-scoped) on purpose: a
+      // directive must survive the recording session's death.
+      const listDirectives =
+        opts.listOpenDirectivesFn ??
+        (async (ws: string) => {
+          const { listOpenOwnerDirectives, countOpenOwnerDirectives, OWNER_DIRECTIVES_RENDER_MAX_ROWS } =
+            await import('./owner-directives');
+          const rows = await listOpenOwnerDirectives(ws, OWNER_DIRECTIVES_RENDER_MAX_ROWS, opts.sql);
+          const totalOpen =
+            rows.length >= OWNER_DIRECTIVES_RENDER_MAX_ROWS
+              ? await countOpenOwnerDirectives(ws, opts.sql).catch(() => rows.length)
+              : rows.length;
+          return { rows, totalOpen };
+        });
+      return listDirectives(workspaceId);
+    },
+    { rows: [] as OwnerDirectiveRow[], totalOpen: 0 },
+  );
 
-  try {
-    const getStatus =
-      opts.getLoopStatusFn ??
-      (async (id: string) => {
-        const { getLoopStatus } = await import('./harness/routines/loop');
-        return getLoopStatus(id, { sql: opts.sql });
-      });
-    const loop = await getStatus(ownerId);
-    if (loop) {
+  const loopPromise = bestEffort(
+    async (): Promise<CarryLoopRead> => {
+      const getStatus =
+        opts.getLoopStatusFn ??
+        (async (id: string) => {
+          const { getLoopStatus } = await import('./harness/routines/loop');
+          return getLoopStatus(id, { sql: opts.sql });
+        });
+      const loop = await getStatus(ownerId);
+      if (!loop) return { loop: null, walls: [] };
       const getNote = opts.getLoopCarryNoteWithMetaFn ?? getLoopCarryNoteWithMeta;
       const meta = await getNote({ harness: loop.harnessSlug, ownerId }).catch(
         (): LoopCarryNoteWithMeta => ({ note: null, updatedAtMs: null, readFailed: true }),
       );
       const carryNoteReadFailed = meta.readFailed === true;
       const carryNote = carryNoteReadFailed ? null : meta.note;
-      brief.loop = {
-        harness: loop.harnessSlug,
-        active: Boolean(loop.active),
-        intervalSec: loop.intervalSec ?? null,
-        carry: loop.carry,
-        goal: loop.goal ?? null,
-        carryNote,
-        carryNoteUpdatedAtMs: carryNoteReadFailed ? null : meta.updatedAtMs,
-        carryNoteReadFailed,
+      return {
+        loop: {
+          harness: loop.harnessSlug,
+          active: Boolean(loop.active),
+          intervalSec: loop.intervalSec ?? null,
+          carry: loop.carry,
+          goal: loop.goal ?? null,
+          carryNote,
+          carryNoteUpdatedAtMs: carryNoteReadFailed ? null : meta.updatedAtMs,
+          carryNoteReadFailed,
+        },
+        // P-006/P-001 delivery parity: walls and checks share the same structured
+        // extraction as before; only their scheduling changed.
+        walls: splitCarryNoteWalls(carryNote).walls,
+        checks: splitCarryNoteChecks(carryNote).checks,
       };
-      // P-006: walls ride the note's `## Walls` section — surface them structured.
-      brief.walls = splitCarryNoteWalls(carryNote).walls;
-      // P-001 delivery parity (review fold): checks get the SAME structured
-      // extraction as walls — a note that later stale-collapses or truncates
-      // must not silently dissolve its carried claims/probes.
-      brief.checks = splitCarryNoteChecks(carryNote).checks;
-      // P-003: what landed AFTER the note was written — the note predates it.
-      if (carryNote && meta.updatedAtMs != null && Number.isFinite(meta.updatedAtMs)) {
-        const readDelta = opts.readPostNoteInboxFn ?? defaultReadPostNoteInbox;
-        brief.postNoteInbox = await readDelta(ownerId, new Date(meta.updatedAtMs).toISOString()).catch(
-          () => null,
-        );
-      }
-    }
-  } catch {
-    /* section stays null */
-  }
+    },
+    { loop: null, walls: [] },
+  );
 
-  try {
+  const heldItemsPromise = bestEffort(async () => {
     const readHeld = opts.readHeldWorkItemsFn ?? readHeldWorkItems;
-    brief.heldItems = await readHeld(ownerId, workspaceId, { sql: opts.sql });
-  } catch {
-    /* section stays empty */
-  }
+    return readHeld(ownerId, workspaceId, { sql: opts.sql });
+  }, [] as CarryBriefHeldItem[]);
 
-  try {
-    const readReleases = opts.readByocReleaseCarriesFn ??
-      ((id: string, ws: string, heldIds: readonly string[]) =>
-        readLinkedByocReleaseCarries(
-          { ownerId: id, workspaceId: ws, heldWorkItemIds: heldIds },
-          opts.sql ?? getOrgPg().sql,
-        ));
-    const releases = await readReleases(ownerId, workspaceId, brief.heldItems.map((item) => item.id));
-    if (releases.length > 0) brief.byocReleases = releases;
-  } catch {
-    /* optional BYOC adapter stays absent; other carry sections remain usable */
-  }
-
-  try {
+  const deferredItemsPromise = bestEffort(async () => {
     const readDeferred = opts.readDeferredWorkItemsFn ?? readDeferredWorkItems;
-    const deferredItems = await readDeferred(ownerId, workspaceId, { sql: opts.sql });
-    if (deferredItems.length > 0) brief.deferredItems = deferredItems;
-  } catch {
-    /* section stays empty */
-  }
+    return readDeferred(ownerId, workspaceId, { sql: opts.sql });
+  }, [] as CarryBriefDeferredItem[]);
 
-  // EI-18807865001148074: hydrate AFTER held items so a bare P-NNN can be
-  // qualified by the claimed work-item's canonical source-plan binding. This
-  // remains an independent best-effort leg; a failed lookup never blanks carry.
-  if (brief.loop?.carryNote) {
-    const hydrate = opts.hydrateNoteRefsFn ?? defaultHydrateNoteRefs;
-    brief.citedRefs = await hydrate(brief.loop.carryNote, brief.heldItems).catch(() => [] as string[]);
-  }
+  const factsPromise = bestEffort(
+    async () => {
+      const listOwnerFacts =
+        opts.listOwnerFactsFn ??
+        (async (id: string, ws: string | undefined) => {
+          const { foldFacts } = await import('./agent-facts/store');
+          const facts = await foldFacts(
+            [{ scope: 'owner', scopeRef: id }],
+            { workspaceId: ws, limitPerSelector: CARRY_BRIEF_MAX_FACTS },
+            opts.sql,
+          );
+          // P-011: fold the CONTESTED mark HERE — on the full `AgentFact` rows,
+          // BEFORE the narrowing below throws away `scope`/`scopeRef`/`createdBy`.
+          const { markContestedFacts } = await import('./agent-tools/facts/contested-fold');
+          const marked = await markContestedFacts(facts);
+          return marked.map((f) => ({
+            key: f.key,
+            body: f.body,
+            sourceRef: f.sourceRef,
+            sourceProvenance: f.sourceProvenance,
+            ...(f.contested ? { contested: f.contested } : {}),
+          }));
+        });
+      return (await listOwnerFacts(ownerId, workspaceId)).slice(0, CARRY_BRIEF_MAX_FACTS);
+    },
+    [] as CarryBrief['facts'],
+  );
 
-  try {
-    const listOwnerFacts =
-      opts.listOwnerFactsFn ??
-      (async (id: string, ws: string | undefined) => {
-        const { foldFacts } = await import('./agent-facts/store');
-        const facts = await foldFacts(
-          [{ scope: 'owner', scopeRef: id }],
-          { workspaceId: ws, limitPerSelector: CARRY_BRIEF_MAX_FACTS },
-          opts.sql,
-        );
-        // P-011: fold the CONTESTED mark HERE — on the full `AgentFact` rows,
-        // BEFORE the narrowing below throws away `scope`/`scopeRef`/`createdBy`,
-        // which are exactly the fields `markContestedFacts` groups and attributes
-        // by. Doing it downstream would mean re-reading the store to recover them.
-        // It is one batched query for the whole set, self-limiting (it returns the
-        // input untouched when there are no facts and when no superseded rows come
-        // back), and internally try/caught — a fold failure degrades to unmarked
-        // facts, never to a carry brief with no facts in it.
-        const { markContestedFacts } = await import('./agent-tools/facts/contested-fold');
-        const marked = await markContestedFacts(facts);
-        return marked.map((f) => ({
-          key: f.key,
-          body: f.body,
-          sourceRef: f.sourceRef,
-          sourceProvenance: f.sourceProvenance,
-          ...(f.contested ? { contested: f.contested } : {}),
-        }));
-      });
-    brief.facts = (await listOwnerFacts(ownerId, workspaceId)).slice(0, CARRY_BRIEF_MAX_FACTS);
-  } catch {
-    /* section stays empty */
-  }
+  const awaitsPromise = bestEffort(
+    async () => {
+      const listAwaits =
+        opts.listActiveAwaitsFn ??
+        (async (id: string) => {
+          const { listActiveAwaits } = await import('./events/await/store');
+          const rows = await listActiveAwaits(id);
+          return rows.map((r) => ({ eventKey: r.eventKey, note: r.note }));
+        });
+      return (await listAwaits(ownerId)).filter((a) => !isInfraAwait(a.eventKey)).slice(0, CARRY_BRIEF_MAX_AWAITS);
+    },
+    [] as CarryBrief['awaits'],
+  );
 
-  try {
-    // P-026 leg (b) (WI-5141): embedding staleness-check of the facts JUST
-    // folded above — deliberately runs AFTER the facts leg (not merged into
-    // it) so a staleness failure can never blank out the facts themselves,
-    // matching every other leg's independent-best-effort contract. Skips
-    // entirely (stays []) when there are no facts to check.
-    const checkStaleness = opts.checkFactsStalenessFn ?? checkCarriedFactsStaleness;
-    brief.factsStaleness = await checkStaleness(brief.facts);
-  } catch {
-    /* section stays empty */
-  }
-
-  try {
-    const listAwaits =
-      opts.listActiveAwaitsFn ??
-      (async (id: string) => {
-        const { listActiveAwaits } = await import('./events/await/store');
-        const rows = await listActiveAwaits(id);
-        return rows.map((r) => ({ eventKey: r.eventKey, note: r.note }));
-      });
-    brief.awaits = (await listAwaits(ownerId))
-      .filter((a) => !isInfraAwait(a.eventKey))
-      .slice(0, CARRY_BRIEF_MAX_AWAITS);
-  } catch {
-    /* section stays empty */
-  }
-
-  try {
-    const getFleet =
-      opts.getFleetFn ??
-      (async (id: string) => {
-        const sql = opts.sql ?? getOrgPg().sql;
-        const rows = await sql<Array<{ fleet_slug: string | null; fleet_role: string | null }>>`
+  const fleetPromise = bestEffort(
+    async () => {
+      const getFleet =
+        opts.getFleetFn ??
+        (async (id: string) => {
+          const sql = opts.sql ?? getOrgPg().sql;
+          const rows = await sql<Array<{ fleet_slug: string | null; fleet_role: string | null }>>`
           SELECT fleet_slug, fleet_role FROM harness_shared.coord_presence
            WHERE owner_id = ${id}
            ORDER BY heartbeat_at DESC
            LIMIT 1
         `;
-        const r = rows[0];
-        return r?.fleet_slug ? { slug: r.fleet_slug, role: r.fleet_role ?? null } : null;
-      });
-    brief.fleet = await getFleet(ownerId);
-  } catch {
-    /* section stays null */
-  }
+          const r = rows[0];
+          return r?.fleet_slug ? { slug: r.fleet_slug, role: r.fleet_role ?? null } : null;
+        });
+      return getFleet(ownerId);
+    },
+    null as CarryBrief['fleet'],
+  );
+
+  // Dependency-chained reads begin as soon as their own prerequisite resolves;
+  // they do not wait for an unrelated slow root.
+  const byocReleasesPromise = heldItemsPromise.then((heldItems) =>
+    bestEffort(async () => {
+      const readReleases =
+        opts.readByocReleaseCarriesFn ??
+        ((id: string, ws: string, heldIds: readonly string[]) =>
+          readLinkedByocReleaseCarries(
+            { ownerId: id, workspaceId: ws, heldWorkItemIds: heldIds },
+            opts.sql ?? getOrgPg().sql,
+          ));
+      return readReleases(
+        ownerId,
+        workspaceId,
+        heldItems.map((item) => item.id),
+      );
+    }, [] as ByocReleaseCarrySnapshot[]),
+  );
+
+  const citedRefsPromise = Promise.all([loopPromise, heldItemsPromise]).then(([loopRead, heldItems]) => {
+    if (!loopRead.loop?.carryNote) return undefined;
+    const hydrate = opts.hydrateNoteRefsFn ?? defaultHydrateNoteRefs;
+    return bestEffort(() => hydrate(loopRead.loop!.carryNote!, heldItems), [] as string[]);
+  });
+
+  const postNoteInboxPromise = loopPromise.then((loopRead) => {
+    const loop = loopRead.loop;
+    if (!loop?.carryNote || loop.carryNoteUpdatedAtMs == null || !Number.isFinite(loop.carryNoteUpdatedAtMs)) {
+      return undefined;
+    }
+    const readDelta = opts.readPostNoteInboxFn ?? defaultReadPostNoteInbox;
+    return bestEffort(() => readDelta(ownerId, new Date(loop.carryNoteUpdatedAtMs!).toISOString()), null);
+  });
+
+  const factsStalenessPromise = factsPromise.then((facts) => {
+    // P-026 leg (b): deliberately follows the fact fold so a failed staleness
+    // check can never blank the facts themselves.
+    const checkStaleness = opts.checkFactsStalenessFn ?? checkCarriedFactsStaleness;
+    return bestEffort(() => checkStaleness(facts), [] as FactStalenessResult[]);
+  });
+
+  const [
+    directives,
+    loopRead,
+    heldItems,
+    deferredItems,
+    facts,
+    awaits,
+    fleet,
+    byocReleases,
+    citedRefs,
+    postNoteInbox,
+    factsStaleness,
+  ] = await Promise.all([
+    directivesPromise,
+    loopPromise,
+    heldItemsPromise,
+    deferredItemsPromise,
+    factsPromise,
+    awaitsPromise,
+    fleetPromise,
+    byocReleasesPromise,
+    citedRefsPromise,
+    postNoteInboxPromise,
+    factsStalenessPromise,
+  ]);
+
+  brief.directives = directives.rows;
+  brief.directivesTotalOpen = directives.totalOpen;
+  brief.loop = loopRead.loop;
+  brief.walls = loopRead.walls;
+  if (loopRead.checks !== undefined) brief.checks = loopRead.checks;
+  brief.heldItems = heldItems;
+  if (byocReleases.length > 0) brief.byocReleases = byocReleases;
+  if (deferredItems.length > 0) brief.deferredItems = deferredItems;
+  if (citedRefs !== undefined) brief.citedRefs = citedRefs;
+  if (postNoteInbox !== undefined) brief.postNoteInbox = postNoteInbox;
+  brief.facts = facts;
+  brief.factsStaleness = factsStaleness;
+  brief.awaits = awaits;
+  brief.fleet = fleet;
 
   return brief;
 }

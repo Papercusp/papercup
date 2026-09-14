@@ -79,15 +79,14 @@ function fullOpts(overrides: Partial<BuildCarryBriefOpts> = {}): BuildCarryBrief
         holderProof: { ownerId: 'su-abc', workspaceId: 'ws-test' },
       },
     ],
-    listOwnerFactsFn: async () => [
-      { key: 'zombie-pids-wall', body: '3 zombie PIDs await owner OK to kill' },
-    ],
+    listOwnerFactsFn: async () => [{ key: 'zombie-pids-wall', body: '3 zombie PIDs await owner OK to kill' }],
     listActiveAwaitsFn: async () => [
       { eventKey: 'coord:inbox-wake:su-abc', note: 'always-armed inbox-wake' },
       { eventKey: 'deploy:done:release-77', note: 'waiting on the green deploy' },
     ],
     getFleetFn: async () => ({ slug: 'bug-drain', role: 'leader' }),
     listOpenDirectivesFn: async () => ({ rows: [], totalOpen: 0 }),
+    readByocReleaseCarriesFn: async () => [],
     // P-002/P-003 seams (cold-carry-system-hardening-2026-07-19): hermetic defaults so
     // unit tests never reach the real coordination/inbox readers.
     hydrateNoteRefsFn: async () => [],
@@ -162,6 +161,12 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
         readHeldWorkItemsFn: async () => {
           throw new Error('pg down');
         },
+        readByocReleaseCarriesFn: async () => {
+          throw new Error('pg down');
+        },
+        readDeferredWorkItemsFn: async () => {
+          throw new Error('pg down');
+        },
         listOwnerFactsFn: async () => {
           throw new Error('pg down');
         },
@@ -173,6 +178,9 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
         },
         listOpenDirectivesFn: async () => {
           throw new Error('pg down');
+        },
+        checkFactsStalenessFn: async () => {
+          throw new Error('embedder down');
         },
       }),
     );
@@ -190,6 +198,89 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
       factsStaleness: [],
       awaits: [],
       fleet: null,
+    });
+  });
+
+  it('starts independent roots together and chains dependent reads only to their prerequisites', async () => {
+    let releaseRoots!: () => void;
+    const rootGate = new Promise<void>((resolve) => {
+      releaseRoots = resolve;
+    });
+    const started: string[] = [];
+    const root = async <T>(name: string, value: T): Promise<T> => {
+      started.push(name);
+      await rootGate;
+      return value;
+    };
+    const dependencyInputs: Record<string, unknown> = {};
+    const noteUpdatedAtMs = Date.parse('2026-09-13T20:00:00.000Z');
+    const held: CarryBriefHeldItem[] = [
+      {
+        id: 'WI-42',
+        title: 'parallel carry',
+        body: null,
+        harness: 'papercusp',
+        checkpoint: null,
+      },
+    ];
+    const building = buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        listOpenDirectivesFn: () => root('directives', { rows: [], totalOpen: 0 }),
+        getLoopStatusFn: () =>
+          root('loop', { harnessSlug: 'papercusp', active: true, intervalSec: 120, carry: 'warm' as const }),
+        readHeldWorkItemsFn: () => root('held', held),
+        readDeferredWorkItemsFn: () => root('deferred', []),
+        listOwnerFactsFn: () => root('facts', [{ key: 'k', body: 'b' }]),
+        listActiveAwaitsFn: () => root('awaits', [{ eventKey: 'deploy:done', note: null }]),
+        getFleetFn: () => root('fleet', { slug: 'f', role: 'member' }),
+        getLoopCarryNoteWithMetaFn: async () => {
+          started.push('note');
+          return { note: '## Next action\nfinish WI-42', updatedAtMs: noteUpdatedAtMs };
+        },
+        readByocReleaseCarriesFn: async (_ownerId, _workspaceId, heldIds) => {
+          started.push('releases');
+          dependencyInputs.releases = heldIds;
+          return [];
+        },
+        hydrateNoteRefsFn: async (note, heldItems) => {
+          started.push('hydrate');
+          dependencyInputs.hydrate = { note, heldIds: heldItems?.map((item) => item.id) };
+          return ['WI-42 [feature/open]'];
+        },
+        readPostNoteInboxFn: async (_ownerId, sinceIso) => {
+          started.push('inbox');
+          dependencyInputs.inbox = sinceIso;
+          return { count: 1, lines: ['- peer: correction'] };
+        },
+        checkFactsStalenessFn: async (facts) => {
+          started.push('staleness');
+          dependencyInputs.staleness = facts;
+          return [];
+        },
+      }),
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(new Set(started)).toEqual(new Set(['directives', 'loop', 'held', 'deferred', 'facts', 'awaits', 'fleet']));
+
+    releaseRoots();
+    const brief = await building;
+    expect(started).toEqual(expect.arrayContaining(['note', 'releases', 'hydrate', 'inbox', 'staleness']));
+    expect(dependencyInputs).toEqual({
+      releases: ['WI-42'],
+      hydrate: { note: '## Next action\nfinish WI-42', heldIds: ['WI-42'] },
+      inbox: '2026-09-13T20:00:00.000Z',
+      staleness: [{ key: 'k', body: 'b' }],
+    });
+    expect(brief).toMatchObject({
+      heldItems: held,
+      citedRefs: ['WI-42 [feature/open]'],
+      postNoteInbox: { count: 1 },
+      facts: [{ key: 'k', body: 'b' }],
+      awaits: [{ eventKey: 'deploy:done', note: null }],
+      fleet: { slug: 'f', role: 'member' },
     });
   });
 
@@ -2087,6 +2178,11 @@ describe('readDeferredWorkItems — session-authored/commented unheld work', () 
     expect(calls[0]!.text).toContain('harness_shared.work_items');
     expect(calls[0]!.text).toContain('harness_shared.coord_thread_posts');
     expect(calls[0]!.text).toContain('harness_shared.coord_threads');
+    expect(calls[0]!.text).toContain('WITH candidates AS');
+    expect(calls[0]!.text).toContain('UNION ALL');
+    expect(calls[0]!.text).toContain('bool_or(created_this_session)');
+    expect(calls[0]!.text).toContain('bool_or(commented_this_session)');
+    expect(calls[0]!.text).not.toContain('EXISTS (');
     expect(calls[0]!.text).toContain("item_kind IN ('bug', 'change', 'task')");
     expect(calls[0]!.text).toContain("item_kind IN ('feature', 'chunk')");
     expect(calls[0]!.text).toContain('wi.taken_by IS NULL');

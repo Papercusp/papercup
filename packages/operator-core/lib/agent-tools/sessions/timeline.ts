@@ -138,6 +138,41 @@ function timelineOwnerResolutionError(failure: TimelineOwnerResolutionFailure) {
 }
 
 /**
+ * A timeline is a read-only forensic view, so transient PostgreSQL contention
+ * is a retryable read outcome rather than an opaque handler failure. The
+ * admin pool can raise either a raw SQLSTATE or a bounded transaction error;
+ * keep this mapping in one place so every query leg shares the same contract.
+ */
+export function timelineContentionResult(error: unknown): {
+  content: Array<{ type: 'text'; text: string }>;
+} | null {
+  if (!isWorkspaceContended(error)) return null;
+  const pgCode =
+    error && typeof error === 'object' && typeof (error as { pgCode?: unknown }).pgCode === 'string'
+      ? (error as { pgCode: string }).pgCode
+      : error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+        ? (error as { code: string }).code
+        : undefined;
+  const detail = error instanceof Error ? error.message : String(error);
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          ok: false,
+          error: 'timeout',
+          retryable: true,
+          ...(pgCode ? { pgCode } : {}),
+          message:
+            `sessions:timeline read hit transient database contention: ${detail}. ` +
+            'No timeline entries were returned; retry shortly.',
+        }),
+      },
+    ],
+  };
+}
+
+/**
  * Keep the model-facing JSON body below the result door. The timeline can
  * still be read losslessly by paging with `nextCursor`; this cap only limits
  * the text block that has to fit in one agent turn.
@@ -156,6 +191,7 @@ import {
   agentToolInvocationPredicate,
   automaticToolInvocationPredicate,
 } from './automatic-tool-names';
+import { isWorkspaceContended } from '../locks/contention-retry';
 
 /** One resolved watermark → how many live assumptions it covers (P-024 (c)).
  *  `watermark` is typed `string | number` because postgres-js returns BIGINT as
@@ -176,9 +212,10 @@ export function buildAutomaticCallAuditSummary(row: AutomaticCallAuditRow) {
     total_tool_calls: row.total_tool_calls,
     automatic_calls: row.automatic_calls,
     agent_calls: row.agent_calls,
-    automatic_share: row.total_tool_calls > 0
-      ? Number((row.automatic_calls / row.total_tool_calls).toFixed(4))
-      : 0,
+    automatic_share:
+      row.total_tool_calls > 0
+        ? Number((row.automatic_calls / row.total_tool_calls).toFixed(4))
+        : 0,
     classification: {
       automatic_tools: [...AUTOMATIC_TOOL_NAMES],
       automatic_origins: [...AUTOMATIC_CALL_ORIGINS],
@@ -249,7 +286,11 @@ const timelineSuccessResultSchema = z.object({
     assumption_sets_resolved: z.number().int().nonnegative(),
     assumptions_observed: z.number().int().nonnegative(),
     assumption_coverage: z.enum([
-      'not-goal-scoped', 'no-stamp', 'producer-unbuilt', 'none-for-owner', 'observed',
+      'not-goal-scoped',
+      'no-stamp',
+      'producer-unbuilt',
+      'none-for-owner',
+      'observed',
     ]),
     assumption_zero_reason: z.string().optional(),
     zero_reason: z.string().optional(),
@@ -258,13 +299,15 @@ const timelineSuccessResultSchema = z.object({
   count: z.number().int().nonnegative(),
   hasMore: z.boolean(),
   nextCursor: z.string().optional(),
-  entriesTruncated: z.object({
-    requested: z.number().int().nonnegative(),
-    returned: z.number().int().nonnegative(),
-    raw_requested: z.number().int().nonnegative(),
-    raw_returned: z.number().int().nonnegative(),
-    reason: z.literal('response_budget'),
-  }).optional(),
+  entriesTruncated: z
+    .object({
+      requested: z.number().int().nonnegative(),
+      returned: z.number().int().nonnegative(),
+      raw_requested: z.number().int().nonnegative(),
+      raw_returned: z.number().int().nonnegative(),
+      reason: z.literal('response_budget'),
+    })
+    .optional(),
   audit_summary: z.object({
     total_tool_calls: z.number().int().nonnegative(),
     automatic_calls: z.number().int().nonnegative(),
@@ -277,32 +320,36 @@ const timelineSuccessResultSchema = z.object({
       rule: z.string(),
     }),
   }),
-  entries: z.array(z.object({
-    kind: z.enum(['turn', 'tool', 'coord']),
-    ts: z.string(),
-    ref: z.string(),
-    text: z.string(),
-    tool_name: z.string().nullable().optional(),
-    status: z.string().nullable().optional(),
-    auto: z.boolean().optional(),
-    call_origin: z.string().nullable().optional(),
-    call_origin_source: z.string().nullable().optional(),
-    repeat_count: z.number().int().positive().optional(),
-    oldest_ts: z.string().optional(),
-    goal_ref: z.string().nullable().optional(),
-    assumption_set_id: z.union([z.number(), z.string()]).nullable().optional(),
-    assumption_count: z.number().int().nonnegative().optional(),
-  })),
+  entries: z.array(
+    z.object({
+      kind: z.enum(['turn', 'tool', 'coord']),
+      ts: z.string(),
+      ref: z.string(),
+      text: z.string(),
+      tool_name: z.string().nullable().optional(),
+      status: z.string().nullable().optional(),
+      auto: z.boolean().optional(),
+      call_origin: z.string().nullable().optional(),
+      call_origin_source: z.string().nullable().optional(),
+      repeat_count: z.number().int().positive().optional(),
+      oldest_ts: z.string().optional(),
+      goal_ref: z.string().nullable().optional(),
+      assumption_set_id: z.union([z.number(), z.string()]).nullable().optional(),
+      assumption_count: z.number().int().nonnegative().optional(),
+    }),
+  ),
 });
 
-const timelineErrorResultSchema = z.object({
-  ok: z.literal(false),
-  error: z.string(),
-  message: z.string().optional(),
-  note: z.string().optional(),
-  owner: z.string().optional(),
-  matches: z.array(z.string()).optional(),
-}).passthrough();
+const timelineErrorResultSchema = z
+  .object({
+    ok: z.literal(false),
+    error: z.string(),
+    message: z.string().optional(),
+    note: z.string().optional(),
+    owner: z.string().optional(),
+    matches: z.array(z.string()).optional(),
+  })
+  .passthrough();
 
 /**
  * MCP outputSchema must describe every handler result, not only successful
@@ -401,17 +448,18 @@ export function judgeAssumptionCoverage(c: AssumptionCoverage): AssumptionCovera
 }
 
 /** Why a goal-scoped read's assumption counts are what they are, in the reader's words. */
-export const ASSUMPTION_COVERAGE_REASONS: Readonly<Record<AssumptionCoverageVerdict, string | null>> =
-  Object.freeze({
-    'not-goal-scoped': null,
-    'no-stamp':
-      'no tool call on this page carried an assumption watermark — the P-009 stamp did not run for these calls, so their assumption state is UNKNOWN, not empty',
-    'producer-unbuilt':
-      'every watermark resolved to ZERO assumptions, and no assumption fact exists anywhere — kind=\'assumption\' currently has no producer (WI-6465). This count is UNINTERPRETABLE: it is NOT evidence that this agent assumed nothing, because no agent could have registered one',
-    'none-for-owner':
-      'every watermark resolved to ZERO assumptions for this owner, while assumptions DO exist elsewhere — so this is a genuine finding about this agent, not an unbuilt producer',
-    observed: null,
-  });
+export const ASSUMPTION_COVERAGE_REASONS: Readonly<
+  Record<AssumptionCoverageVerdict, string | null>
+> = Object.freeze({
+  'not-goal-scoped': null,
+  'no-stamp':
+    'no tool call on this page carried an assumption watermark — the P-009 stamp did not run for these calls, so their assumption state is UNKNOWN, not empty',
+  'producer-unbuilt':
+    "every watermark resolved to ZERO assumptions, and no assumption fact exists anywhere — kind='assumption' currently has no producer (WI-6465). This count is UNINTERPRETABLE: it is NOT evidence that this agent assumed nothing, because no agent could have registered one",
+  'none-for-owner':
+    'every watermark resolved to ZERO assumptions for this owner, while assumptions DO exist elsewhere — so this is a genuine finding about this agent, not an unbuilt producer',
+  observed: null,
+});
 
 /**
  * Attach `assumption_count` to each row from a watermark→count map.
@@ -525,15 +573,16 @@ export function buildBoundedTimelineResponse(
   // total fallback for future schema growth rather than returning invalid JSON.
   const hasMore = pageRows.length > 0 || sourceHasMore;
   const nextCursor = hasMore ? cursorForOffset(offset) : undefined;
-  const entriesTruncated = pageRows.length > 0
-    ? {
-        requested: fullEntries.length,
-        returned: 0,
-        raw_requested: pageRows.length,
-        raw_returned: 0,
-        reason: 'response_budget' as const,
-      }
-    : undefined;
+  const entriesTruncated =
+    pageRows.length > 0
+      ? {
+          requested: fullEntries.length,
+          returned: 0,
+          raw_requested: pageRows.length,
+          raw_returned: 0,
+          reason: 'response_budget' as const,
+        }
+      : undefined;
   const fallbackPayload = {
     ...base,
     raw_count: 0,
@@ -562,11 +611,11 @@ export default defineTool({
   description:
     "Merged activity timeline for ONE agent: transcript turns + tool calls + coord messages, newest-first. owner:'self' = the caller. Audit filters can select kind/tool/status/goalRef, hide automatic hook traffic (default), group repeats, continue with nextCursor, and report automatic-versus-agent tool-call counts. Tool rows carry the goal and assumptions that were live when each call was made.",
   guidance: {
-    when:
-      '"What did agent X actually do yesterday" — a postmortem / handoff-archaeology read joining speech + tool calls + coord traffic by owner and time. Also "what did they do while holding goal X, and under which assumptions": pass goalRef.',
+    when: '"What did agent X actually do yesterday" — a postmortem / handoff-archaeology read joining speech + tool calls + coord traffic by owner and time. Also "what did they do while holding goal X, and under which assumptions": pass goalRef.',
     notWhen:
       'Searching for specific content — sessions:search. Live state — coord:presence / fleet:assignments (this is HISTORY). In particular do NOT read goal_ref/assumption_set_id to learn what an agent is assuming NOW — that is a per-call retrospective stamp; live state is the goal cell.',
-    chaining: 'Filter failures with kinds:["tool"], status:"invalid-input" (or another exact status); turn refs carry session id + turn idx → sessions:read. goalRef:"WI-6393" scopes to one goal and resolves each row\'s assumption_count; stamp_coverage says whether anything was actually resolved, so an empty result names its own cause.',
+    chaining:
+      'Filter failures with kinds:["tool"], status:"invalid-input" (or another exact status); turn refs carry session id + turn idx → sessions:read. goalRef:"WI-6393" scopes to one goal and resolves each row\'s assumption_count; stamp_coverage says whether anything was actually resolved, so an empty result names its own cause.',
     seeAlso: ['sessions:search', 'dev:session_detail (one spawn drilldown)'],
   },
   requirePrincipal: false,
@@ -593,10 +642,25 @@ export default defineTool({
       .describe("Agent ownerId, short handle, or 'self'."),
     since: z.string().max(40).optional().describe('ISO lower bound (default: 24h ago).'),
     until: z.string().max(40).optional().describe('ISO upper bound (default: now).'),
-    limit: z.number().int().min(1).max(300).optional().describe('Max merged entries, 1..300 (default 100).'),
-    kinds: z.array(z.enum(['turn', 'tool', 'coord'])).max(3).optional().describe('Only these entry kinds.'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(300)
+      .optional()
+      .describe('Max merged entries, 1..300 (default 100).'),
+    kinds: z
+      .array(z.enum(['turn', 'tool', 'coord']))
+      .max(3)
+      .optional()
+      .describe('Only these entry kinds.'),
     tool: z.string().min(1).max(160).optional().describe('Exact tool name; implies tool entries.'),
-    status: z.string().min(1).max(80).optional().describe('Exact tool-invocation status, e.g. invalid-input, error, timeout, ok.'),
+    status: z
+      .string()
+      .min(1)
+      .max(80)
+      .optional()
+      .describe('Exact tool-invocation status, e.g. invalid-input, error, timeout, ok.'),
     goalRef: z
       .string()
       .min(1)
@@ -605,9 +669,26 @@ export default defineTool({
       .describe(
         'Only calls made while the agent held THIS goal (e.g. "WI-6393") — answers "what did they do under goal X" in one call. Implies tool entries, and resolves each row\'s assumption count.',
       ),
-    include_auto: z.boolean().optional().describe('Include automatic hook/status traffic such as activity:report, coord:glance, coord:inbox, and auto:true coord messages. Default false.'),
-    group_repeated: z.boolean().optional().describe('Collapse identical entries in the returned window and add repeat_count/oldest_ts. Default false.'),
-    cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:timeline call. It is a POSITION only — re-send the same `owner` and filters with it; `{ cursor }` alone is refused, and different filters page a different result set.'),
+    include_auto: z
+      .boolean()
+      .optional()
+      .describe(
+        'Include automatic hook/status traffic such as activity:report, coord:glance, coord:inbox, and auto:true coord messages. Default false.',
+      ),
+    group_repeated: z
+      .boolean()
+      .optional()
+      .describe(
+        'Collapse identical entries in the returned window and add repeat_count/oldest_ts. Default false.',
+      ),
+    cursor: z
+      .string()
+      .min(1)
+      .max(512)
+      .optional()
+      .describe(
+        'Opaque nextCursor from a prior sessions:timeline call. It is a POSITION only — re-send the same `owner` and filters with it; `{ cursor }` alone is refused, and different filters page a different result set.',
+      ),
   }),
   result: timelineResultSchema,
   async handler(args, ctx: PapercuspUnifiedToolContext) {
@@ -616,9 +697,10 @@ export default defineTool({
     const workspaceId = ctx.workspaceId ?? '';
     const identity = resolveAgentIdentity(ctx);
     const requestedOwner = args.owner === 'self' ? (identity.ownerId ?? '') : args.owner;
-    const ownerResolution = args.owner === 'self'
-      ? { ok: true as const, ownerId: requestedOwner }
-      : await resolveTimelineOwner(requestedOwner, workspaceId);
+    const ownerResolution =
+      args.owner === 'self'
+        ? { ok: true as const, ownerId: requestedOwner }
+        : await resolveTimelineOwner(requestedOwner, workspaceId);
     if (!ownerResolution.ok) return timelineOwnerResolutionError(ownerResolution);
     const owner = ownerResolution.ownerId;
     const limit = args.limit ?? 100;
@@ -630,32 +712,40 @@ export default defineTool({
     );
     const cursor = decodeSessionCursor(args.cursor, 'sessions:timeline', fingerprint);
     if (!cursor.ok) {
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ ...cursor, ok: false }) }] };
-    }
-    if (args.cursor && !sessionCursorBoundsMatch(
-      { since: args.since, until: args.until },
-      cursor.bounds,
-    )) {
       return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: false,
-            error: 'invalid_cursor',
-            message: 'Cursor bounds do not match the requested timeline bounds.',
-          }),
-        }],
+        content: [{ type: 'text' as const, text: JSON.stringify({ ...cursor, ok: false }) }],
+      };
+    }
+    if (
+      args.cursor &&
+      !sessionCursorBoundsMatch({ since: args.since, until: args.until }, cursor.bounds)
+    ) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'invalid_cursor',
+              message: 'Cursor bounds do not match the requested timeline bounds.',
+            }),
+          },
+        ],
       };
     }
     const until = args.until ?? cursor.bounds.until ?? new Date().toISOString();
-    const since = args.since ?? cursor.bounds.since ?? new Date(Date.parse(until) - 24 * 3600 * 1000).toISOString();
+    const since =
+      args.since ??
+      cursor.bounds.since ??
+      new Date(Date.parse(until) - 24 * 3600 * 1000).toISOString();
     const offset = cursor.offset;
     const fetchLimit = offset + limit + 1;
-    await refreshLiveSessionsBeforeRead(tx, [owner]);
-    const automaticToolPredicate = automaticToolInvocationPredicate(tx);
-    const agentToolPredicate = agentToolInvocationPredicate(tx);
+    try {
+      await refreshLiveSessionsBeforeRead(tx, [owner]);
+      const automaticToolPredicate = automaticToolInvocationPredicate(tx);
+      const agentToolPredicate = agentToolInvocationPredicate(tx);
 
-    const rows = await tx<TimelineEntry[]>`
+      const rows = await tx<TimelineEntry[]>`
       (
         SELECT 'turn' AS kind, COALESCE(ts, ingested_at)::text AS ts,
                CONCAT(${SESSION_TURN_REF_PREFIX}::text, source_kind, ':', session_id, ':', turn_idx) AS ref,
@@ -717,27 +807,27 @@ export default defineTool({
       LIMIT ${fetchLimit}
     `;
 
-    const hasMore = rows.length > offset + limit;
-    let pageRows = rows.slice(offset, offset + limit);
+      const hasMore = rows.length > offset + limit;
+      let pageRows = rows.slice(offset, offset + limit);
 
-    // P-024 (c): resolve the assumption SET only on a goal-scoped read, and only
-    // for the DISTINCT watermarks this page actually carries — ONE query, never
-    // one per row. An unfiltered postmortem page skips this entirely, which is
-    // the whole point: eager resolution would turn the ordinary "what did agent
-    // X do yesterday" read into an N+1 over agent_facts.
-    //
-    // The watermark→set expansion mirrors isAssumptionFact (D-087 R2): `kind`
-    // when declared WINS, else the pre-migration-690 legacy form
-    // confidence='suspected'. A kind-only count here would silently read 0 for
-    // every legacy assumption while passing every fixture that sets the new field
-    // — the exact defect the facts:assert guard caught one item ago.
-    let assumptionSetsResolved = 0;
-    let assumptionsObserved = 0;
-    let anyAssumptionExists: boolean | null = null;
-    if (args.goalRef) {
-      const wanted = assumptionSetIdsToResolve(pageRows);
-      if (wanted.length > 0) {
-        const countRows = await tx<AssumptionCountRow[]>`
+      // P-024 (c): resolve the assumption SET only on a goal-scoped read, and only
+      // for the DISTINCT watermarks this page actually carries — ONE query, never
+      // one per row. An unfiltered postmortem page skips this entirely, which is
+      // the whole point: eager resolution would turn the ordinary "what did agent
+      // X do yesterday" read into an N+1 over agent_facts.
+      //
+      // The watermark→set expansion mirrors isAssumptionFact (D-087 R2): `kind`
+      // when declared WINS, else the pre-migration-690 legacy form
+      // confidence='suspected'. A kind-only count here would silently read 0 for
+      // every legacy assumption while passing every fixture that sets the new field
+      // — the exact defect the facts:assert guard caught one item ago.
+      let assumptionSetsResolved = 0;
+      let assumptionsObserved = 0;
+      let anyAssumptionExists: boolean | null = null;
+      if (args.goalRef) {
+        const wanted = assumptionSetIdsToResolve(pageRows);
+        if (wanted.length > 0) {
+          const countRows = await tx<AssumptionCountRow[]>`
           SELECT w.watermark::bigint AS watermark,
                  count(f.id)::int AS n
             FROM unnest(${wanted}::bigint[]) AS w(watermark)
@@ -750,23 +840,23 @@ export default defineTool({
                        ELSE f.confidence = 'suspected' END)
            GROUP BY w.watermark
         `;
-        const counts = new Map<number, number>(
-          countRows.map((r: AssumptionCountRow): [number, number] => [
-            Number(r.watermark),
-            Number(r.n),
-          ]),
-        );
-        pageRows = attachAssumptionCounts(pageRows, counts);
-        assumptionSetsResolved = counts.size;
-        for (const n of counts.values()) assumptionsObserved += n;
-      }
-      // P-015: only when every resolved watermark came back ZERO is the reading
-      // ambiguous, and only then is the global probe worth a query. It asks a
-      // fleet-wide question on purpose — a per-owner count cannot separate "no
-      // producer exists" from "this agent never asserted one", and the whole
-      // failure being prevented is an empty set that reads as the latter.
-      if (assumptionSetsResolved > 0 && assumptionsObserved === 0) {
-        const [existsRow] = await tx<{ any_exists: boolean }[]>`
+          const counts = new Map<number, number>(
+            countRows.map((r: AssumptionCountRow): [number, number] => [
+              Number(r.watermark),
+              Number(r.n),
+            ]),
+          );
+          pageRows = attachAssumptionCounts(pageRows, counts);
+          assumptionSetsResolved = counts.size;
+          for (const n of counts.values()) assumptionsObserved += n;
+        }
+        // P-015: only when every resolved watermark came back ZERO is the reading
+        // ambiguous, and only then is the global probe worth a query. It asks a
+        // fleet-wide question on purpose — a per-owner count cannot separate "no
+        // producer exists" from "this agent never asserted one", and the whole
+        // failure being prevented is an empty set that reads as the latter.
+        if (assumptionSetsResolved > 0 && assumptionsObserved === 0) {
+          const [existsRow] = await tx<{ any_exists: boolean }[]>`
           SELECT EXISTS (
             SELECT 1 FROM harness_shared.agent_facts f
              WHERE f.retracted_at IS NULL
@@ -776,17 +866,19 @@ export default defineTool({
              LIMIT 1
           ) AS any_exists
         `;
-        anyAssumptionExists = Boolean(existsRow?.any_exists);
+          anyAssumptionExists = Boolean(existsRow?.any_exists);
+        }
       }
-    }
-    const assumptionVerdict = judgeAssumptionCoverage({
-      goalScoped: Boolean(args.goalRef),
-      setsResolved: assumptionSetsResolved,
-      assumptionsObserved,
-      anyAssumptionExists,
-    });
+      const assumptionVerdict = judgeAssumptionCoverage({
+        goalScoped: Boolean(args.goalRef),
+        setsResolved: assumptionSetsResolved,
+        assumptionsObserved,
+        anyAssumptionExists,
+      });
 
-    const [auditRow = { total_tool_calls: 0, automatic_calls: 0, agent_calls: 0 }] = await tx<AutomaticCallAuditRow[]>`
+      const [auditRow = { total_tool_calls: 0, automatic_calls: 0, agent_calls: 0 }] = await tx<
+        AutomaticCallAuditRow[]
+      >`
       SELECT count(*)::int AS total_tool_calls,
              count(*) FILTER (WHERE ${automaticToolPredicate})::int AS automatic_calls,
              count(*) FILTER (WHERE ${agentToolPredicate})::int AS agent_calls
@@ -796,61 +888,62 @@ export default defineTool({
          AND (${args.tool ?? null}::text IS NULL OR tool_name = ${args.tool ?? null})
          AND (${args.status ?? null}::text IS NULL OR COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) = ${args.status ?? null})
     `;
-    // P-024 ACCEPTANCE / D-046 FLOOR: adoption of this read is measured on
-    // the goalRef filter, and if it is never passed it is P-009's STAMP
-    // that gets cut, not this projection. Reporting the resolution here
-    // makes an empty goal-scoped read self-describing: goal_scoped tells
-    // you the filter ran, assumption_sets_resolved tells you whether any
-    // watermark was actually expanded — so `count: 0` can never be read as
-    // "this agent did nothing under that goal" when it really means "no
-    // call ever carried that goal_ref".
-    const baseResponse = {
-      ok: true,
-      owner,
-      since,
-      until,
-      filters: {
-        ...(kinds ? { kinds } : {}),
-        ...(args.tool ? { tool: args.tool } : {}),
-        ...(args.status ? { status: args.status } : {}),
-        ...(args.goalRef ? { goalRef: args.goalRef } : {}),
-        include_auto: includeAuto,
-        group_repeated: args.group_repeated ?? false,
-      },
-      stamp_coverage: {
-        goal_scoped: Boolean(args.goalRef),
-        assumption_sets_resolved: assumptionSetsResolved,
-        // P-015: the counts alone cannot say what a zero MEANS, so the
-        // verdict ships with them. Without this, a page of cleanly-resolved
-        // zeros reads as "this agent assumed nothing" when the truth is that
-        // nothing can assume anything yet (WI-6465).
-        assumptions_observed: assumptionsObserved,
-        assumption_coverage: assumptionVerdict,
-        ...(ASSUMPTION_COVERAGE_REASONS[assumptionVerdict]
-          ? { assumption_zero_reason: ASSUMPTION_COVERAGE_REASONS[assumptionVerdict] }
-          : {}),
-        ...(args.goalRef && pageRows.length === 0
-          ? {
-              zero_reason:
-                'no tool call in this window carried that goal_ref — either the agent never held it, or the calls predate the P-009 stamp',
-            }
-          : {}),
-      },
-      audit_summary: buildAutomaticCallAuditSummary(auditRow),
-    };
-    const bounded = buildBoundedTimelineResponse(
-      baseResponse,
-      pageRows,
-      args.group_repeated ?? false,
-      hasMore,
-      offset,
-      (nextOffset) => encodeSessionCursor(
-        'sessions:timeline',
-        nextOffset,
-        fingerprint,
-        { since, until },
-      ),
-    );
-    return { content: [{ type: 'text' as const, text: bounded.text }] };
+      // P-024 ACCEPTANCE / D-046 FLOOR: adoption of this read is measured on
+      // the goalRef filter, and if it is never passed it is P-009's STAMP
+      // that gets cut, not this projection. Reporting the resolution here
+      // makes an empty goal-scoped read self-describing: goal_scoped tells
+      // you the filter ran, assumption_sets_resolved tells you whether any
+      // watermark was actually expanded — so `count: 0` can never be read as
+      // "this agent did nothing under that goal" when it really means "no
+      // call ever carried that goal_ref".
+      const baseResponse = {
+        ok: true,
+        owner,
+        since,
+        until,
+        filters: {
+          ...(kinds ? { kinds } : {}),
+          ...(args.tool ? { tool: args.tool } : {}),
+          ...(args.status ? { status: args.status } : {}),
+          ...(args.goalRef ? { goalRef: args.goalRef } : {}),
+          include_auto: includeAuto,
+          group_repeated: args.group_repeated ?? false,
+        },
+        stamp_coverage: {
+          goal_scoped: Boolean(args.goalRef),
+          assumption_sets_resolved: assumptionSetsResolved,
+          // P-015: the counts alone cannot say what a zero MEANS, so the
+          // verdict ships with them. Without this, a page of cleanly-resolved
+          // zeros reads as "this agent assumed nothing" when the truth is that
+          // nothing can assume anything yet (WI-6465).
+          assumptions_observed: assumptionsObserved,
+          assumption_coverage: assumptionVerdict,
+          ...(ASSUMPTION_COVERAGE_REASONS[assumptionVerdict]
+            ? { assumption_zero_reason: ASSUMPTION_COVERAGE_REASONS[assumptionVerdict] }
+            : {}),
+          ...(args.goalRef && pageRows.length === 0
+            ? {
+                zero_reason:
+                  'no tool call in this window carried that goal_ref — either the agent never held it, or the calls predate the P-009 stamp',
+              }
+            : {}),
+        },
+        audit_summary: buildAutomaticCallAuditSummary(auditRow),
+      };
+      const bounded = buildBoundedTimelineResponse(
+        baseResponse,
+        pageRows,
+        args.group_repeated ?? false,
+        hasMore,
+        offset,
+        (nextOffset) =>
+          encodeSessionCursor('sessions:timeline', nextOffset, fingerprint, { since, until }),
+      );
+      return { content: [{ type: 'text' as const, text: bounded.text }] };
+    } catch (error) {
+      const contention = timelineContentionResult(error);
+      if (contention) return contention;
+      throw error;
+    }
   },
 });

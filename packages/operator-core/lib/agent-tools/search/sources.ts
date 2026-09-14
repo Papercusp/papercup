@@ -1013,6 +1013,13 @@ const coordMessage: SearchSource = {
   name: 'coord_message',
   async lexical(p: SearchSourceParams): Promise<Listing> {
     const f = sessionTurnFilterSql(p);
+    // coord_event_log messages have no transcript session identity. An explicit
+    // session filter therefore cannot be applied to this source: running the
+    // query anyway silently widens a targeted sessions:search into the entire
+    // coordination corpus (492k rows measured 2026-09-14) and can spend >30s
+    // computing headlines for unrelated messages. session:'self' deliberately
+    // remains eligible because it resolves to owner filters, not sessionId.
+    if (f.sessionId) return [];
     const rows = (await p.sql`
       SELECT msg_id, ts, harness_slug,
              body->>'from' AS from_owner,

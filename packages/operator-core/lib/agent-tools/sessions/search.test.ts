@@ -133,6 +133,26 @@ describe('sessions:search explicit session refresh scope (EI-21720673196644332)'
   });
 });
 
+describe('sessions:search explicit session + include_coord scope (EI-23130749427955806)', () => {
+  it('does not add the unscoped coord source to a targeted transcript search', async () => {
+    runHybridSearch.mockClear();
+    runHybridSearch.mockResolvedValueOnce({ results: [], totalHits: 0, embedderAvailable: true });
+
+    const res = await callTool({
+      query: 'activity',
+      mode: 'hybrid',
+      session: '01a09999-7af0-7882-8f3a-9fa7eef612ea',
+      include_coord: true,
+      limit: 20,
+      context: 0,
+    }, makeTx([]));
+    expect(JSON.parse(res.content[0].text)).toMatchObject({ ok: true, total_hits: 0 });
+
+    const sources = runHybridSearch.mock.calls[0]?.[0] as Array<{ name: string }>;
+    expect(sources.map((source) => source.name)).toEqual(['session_turn']);
+  });
+});
+
 describe('sessions:search self cursor authority (EI-22528353817146321)', () => {
   it('replays a page cursor after the resolved native self session changes', async () => {
     let currentSelfSession = {

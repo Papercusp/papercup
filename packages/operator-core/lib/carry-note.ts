@@ -2867,6 +2867,8 @@ export async function attestCarryNoteUnchanged(
     maxChain?: number;
     maxBodyAgeMs?: number;
     sql?: Sql;
+    /** Use the bounded admin-pool transaction so lock/statement contention is typed and retryable. */
+    bounded?: boolean;
   },
 ): Promise<CarryNoteAttestationResult> {
   const { ws, scope } = resolveRef(ref);
@@ -2887,7 +2889,7 @@ export async function attestCarryNoteUnchanged(
     ...over,
   });
 
-  return (await sql.begin(async (tx) => {
+  const attest = async (tx: Sql | TransactionSql): Promise<CarryNoteAttestationResult> => {
     // FOR UPDATE: the read and the increment must be one atomic step, or two
     // concurrent attestations both observe the same count and the chain ceiling —
     // the guard that makes the bound real — silently admits one extra each time.
@@ -2935,7 +2937,15 @@ export async function attestCarryNoteUnchanged(
       bodyAgeMs,
       remainingAttestations: Math.max(0, maxChain - nextCount),
     };
-  })) as CarryNoteAttestationResult;
+  };
+  // Work-item attestations run at an interactive compaction boundary: a row lock
+  // must become a typed retryable result before the MCP transport gives up. Keep
+  // the historical unbounded default for the shared substrate's existing callers;
+  // callers that need the interactive guarantee opt in explicitly.
+  const result = opts.bounded
+    ? await boundedOrgTxn(attest, { client: sql, acquireTimeoutMs: 8_000 })
+    : await sql.begin(attest);
+  return result as CarryNoteAttestationResult;
 }
 
 /** Read the current carry-note (the full `note` column), or null when none/cleared. */
