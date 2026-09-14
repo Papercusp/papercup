@@ -1,6 +1,16 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { AdvSessionRow } from './adv-sessions';
 import { focusSessionWindow, resolveSessionWindowId } from './adv-session-focus';
+
+const GUI_FOCUS_ROUTE_SOURCE = readFileSync(
+  new URL('./endpoint-route/routes/adv/sessions.ts', import.meta.url),
+  'utf8',
+);
+const AGENT_FOCUS_TOOL_SOURCE = readFileSync(
+  new URL('./agent-tools/coordination/tools/focus-window.ts', import.meta.url),
+  'utf8',
+);
 
 function row(overrides: Partial<AdvSessionRow> = {}): AdvSessionRow {
   return {
@@ -32,6 +42,22 @@ function row(overrides: Partial<AdvSessionRow> = {}): AdvSessionRow {
 }
 
 describe('shared adv-session focus service', () => {
+  it('keeps both GUI and agent entry points on this one focus implementation', () => {
+    expect(GUI_FOCUS_ROUTE_SOURCE).toMatch(
+      /import\s*\{[^}]*\bfocusSessionWindow\b[^}]*\}\s*from\s*['"]\.\.\/\.\.\/\.\.\/adv-session-focus['"]/,
+    );
+    expect(GUI_FOCUS_ROUTE_SOURCE).toMatch(/await focusSessionWindow\(body,\s*latestRow\)/);
+    expect(GUI_FOCUS_ROUTE_SOURCE.match(/\bfocusSessionWindow\b/g)).toHaveLength(2);
+
+    expect(AGENT_FOCUS_TOOL_SOURCE).toMatch(
+      /import\s*\{[^}]*\bfocusSessionWindow\b[^}]*\}\s*from\s*['"]\.\.\/\.\.\/\.\.\/adv-session-focus['"]/,
+    );
+    expect(AGENT_FOCUS_TOOL_SOURCE).toMatch(
+      /await focusSessionWindow\(\{\s*id:\s*row\.id\s*\},\s*row\)/,
+    );
+    expect(AGENT_FOCUS_TOOL_SOURCE.match(/\bfocusSessionWindow\b/g)).toHaveLength(2);
+  });
+
   it('uses the explicit window id and reports observed focus success', async () => {
     const focus = vi.fn(async () => true);
     await expect(focusSessionWindow({ windowId: '0xabc' }, null, { focus })).resolves.toEqual({

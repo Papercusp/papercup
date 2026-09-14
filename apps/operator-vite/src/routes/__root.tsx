@@ -98,8 +98,9 @@ import '@/app/find-in-page.css';
 import '@/app/harness/harness.css';
 
 /**
- * Root route — the app shell. Translated from `apps/operator/app/layout.tsx`
- * (Phase A3 of the operator-vite migration).
+ * Root route — the app shell for the Vite SPA at
+ * `apps/operator-vite/src/routes/__root.tsx`. It supersedes the retired Next
+ * layout (Phase A3 of the operator-vite migration).
  *
  * INVARIANT (host-architecture Phase 1): the IPC polyfill that installs
  * `window.EventSource = IpcEventSource` / `window.fetch = ipcFetch` runs
@@ -122,7 +123,7 @@ import '@/app/harness/harness.css';
  *     Until ported, flag-gated UI falls back to its default branch.
  *
  * PORTED to `apps/operator-vite/index.html` (the pre-paint `<head>`/body-start
- * bootstraps that Next ran from layout.tsx; each is client-rendered-SPA-safe
+ * bootstraps that the legacy Next layout provided; each is client-rendered-SPA-safe
  * and reads the same wsLocalKey-scoped keys the React libs use):
  *   - Color theme — `data-theme` + cached custom-theme CSS.
  *   - Visual-effects mode — `data-visual-effects` / `data-visual-effects-mode`.
@@ -359,8 +360,8 @@ function RootComponent() {
               <ToasterSelectionFix />
               <ToastHistoryRecorder />
               {/* Desktop-native attention pushes (planning-attention-importance
-                  P-020/D-007). Mounted here, not only in the Next layout.tsx —
-                  the desktop renders THIS operator-vite SPA, so without it the
+                  P-020/D-007). Mounted in this Vite root because the desktop
+                  renders THIS operator-vite SPA, so without it the
                   attention.notify SSE event reaches the webview but nothing
                   turns it into a sonner toast + native OS notification. */}
               <DesktopAttentionNotifier />

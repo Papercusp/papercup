@@ -80,7 +80,12 @@ const SENSITIVE_ERROR_FIELDS = [
  */
 const DEFAULT_BASE = 'https://cupboard.papercusp.com';
 
-function parseArgs(argv, env = process.env) {
+export const USAGE = `Usage:
+  npm run release:publish-workspace-host-artifacts -- \\
+    --dir <publication-dir> [--base <url>] [--token <bearer>] [--plan-only]
+`;
+
+export function parseArgs(argv, env = process.env) {
   const out = { base: DEFAULT_BASE, planOnly: false, concurrency: 4 };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -91,8 +96,10 @@ function parseArgs(argv, env = process.env) {
     else if (a === '--operation-id') out.operationId = argv[++i];
     else if (a === '--plan-only') out.planOnly = true;
     else if (a === '--concurrency') out.concurrency = Number(argv[++i]);
+    else if (a === '--help' || a === '-h') out.help = true;
     else throw new Error(`unknown argument: ${a}`);
   }
+  if (out.help) return out;
   if (!out.dir) throw new Error('--dir <publication dir> is required');
   if (!Number.isSafeInteger(out.concurrency) || out.concurrency < 1 || out.concurrency > 32) {
     throw new Error('--concurrency must be an integer between 1 and 32');
@@ -1038,7 +1045,12 @@ export async function publishWorkspaceHostArtifacts(args, injected = {}) {
 }
 
 async function main() {
-  return publishWorkspaceHostArtifacts(parseArgs(process.argv.slice(2)));
+  const args = parseArgs(process.argv.slice(2));
+  if (args.help) {
+    console.log(USAGE);
+    return undefined;
+  }
+  return publishWorkspaceHostArtifacts(args);
 }
 
 if (isCliEntry(import.meta.url)) {

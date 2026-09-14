@@ -98,7 +98,9 @@
     <!--
       Color theme (pre-paint).
 
-      Mirrors apps/operator/app/layout.tsx's themeBootstrapScript. This SPA is
+      The Vite root (`apps/operator-vite/src/routes/__root.tsx`) owns the shell;
+      this pre-paint bootstrap supersedes the retired Next layout's
+      themeBootstrapScript. This SPA is
       client-rendered, so without this the page would paint frost then flip to
       the saved theme once React mounts the selector. Sets data-theme on <html>
       synchronously from the wsLocalKey-scoped value (pc:ws:<id>:papercusp.theme),
@@ -184,7 +186,9 @@
     <!--
       Visual-effects mode (pre-paint).
 
-      Mirrors apps/operator/app/layout.tsx's visualEffectsBootstrapScript.
+      The Vite root (`apps/operator-vite/src/routes/__root.tsx`) owns the shell;
+      this pre-paint bootstrap supersedes the retired Next layout's
+      visualEffectsBootstrapScript.
       Sets data-visual-effects + data-visual-effects-mode on <html> before
       React mounts, so intro/ambient animations don't flash on at full
       strength when the saved mode is 'minimal' (or 'system' under

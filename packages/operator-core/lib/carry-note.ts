@@ -2299,6 +2299,24 @@ const SINGLETON_MUTATING_TARGETS = [
   'git checkout',
 ] as const;
 
+/** Locate a complete mutator token, not a prefix of a lifecycle event key. */
+function findSingletonTargetAt(line: string, target: string): number {
+  const lowerLine = line.toLowerCase();
+  const lowerTarget = target.toLowerCase();
+  const isTargetWordChar = (value: string | undefined): boolean =>
+    value !== undefined && /[a-z0-9_.:/-]/i.test(value);
+  let from = 0;
+  while (from < lowerLine.length) {
+    const at = lowerLine.indexOf(lowerTarget, from);
+    if (at < 0) return -1;
+    const before = lowerLine[at - 1];
+    const after = lowerLine[at + lowerTarget.length];
+    if (!isTargetWordChar(before) && !isTargetWordChar(after)) return at;
+    from = at + 1;
+  }
+  return -1;
+}
+
 const SINGLETON_ACTION_VERBS =
   /\b(fire|run|execute|invoke|start|restart|stop|trigger|launch|deploy|migrate|arm|push|reset|clean|checkout)\b/gi;
 const NEGATED_SINGLETON_ACTION_RE =
@@ -2348,7 +2366,7 @@ export function lintUncheckedImperativeActions(
     const line = rawLine.trim();
     if (!line || NEGATED_SINGLETON_ACTION_RE.test(line)) continue;
     for (const target of SINGLETON_MUTATING_TARGETS) {
-      const targetAt = line.toLowerCase().indexOf(target.toLowerCase());
+      const targetAt = findSingletonTargetAt(line, target);
       if (targetAt < 0) continue;
 
       SINGLETON_ACTION_VERBS.lastIndex = 0;

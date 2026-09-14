@@ -1423,6 +1423,15 @@ describe('lintUncheckedImperativeActions — singleton mutators need a runnable 
       'deliberately left for the queue, not mine to hold.';
     expect(lintUncheckedImperativeActions(descriptive, [])).toEqual([]);
   });
+
+  it('does not treat lifecycle event-key prefixes as singleton mutator invocations', () => {
+    const eventKeys =
+      'Await the release:deployed event, then run the release:deploy-failed recovery check.';
+    expect(lintUncheckedImperativeActions(eventKeys, [])).toEqual([]);
+    expect(lintUncheckedImperativeActions('run release:deploy after the green pin is ready', [])).toMatchObject([
+      { target: 'release:deploy' },
+    ]);
+  });
 });
 
 describe('appendCarryJournal — the bounded trajectory ring', () => {

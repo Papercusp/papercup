@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { test } from 'vitest';
 
@@ -20,12 +22,32 @@ const {
   releaseStageRequestIdentity,
   request,
   runJournaledMutation,
+  parseArgs,
 } = publisher;
+
+const execFileAsync = promisify(execFile);
+const PUBLISHER_SCRIPT = new URL('./publish-workspace-host-artifacts.mjs', import.meta.url);
 
 const SOURCE_SHA = 'a'.repeat(40);
 const VERSION = '0.0.19-20260908.0450';
 const OPERATION_ID = 'release-operation-20260908';
 const TASK_ID = 'releasetask01';
+
+test('the CLI help path is side-effect-free and does not require --dir or credentials', async () => {
+  assert.deepEqual(parseArgs(['--help'], {}), {
+    base: 'https://cupboard.papercusp.com',
+    planOnly: false,
+    concurrency: 4,
+    help: true,
+  });
+
+  const result = await execFileAsync(process.execPath, [PUBLISHER_SCRIPT.pathname, '--help'], {
+    encoding: 'utf8',
+  });
+  assert.match(result.stdout, /Usage:.*publish-workspace-host-artifacts/s);
+  assert.doesNotMatch(result.stdout, /PUBLISH_VERDICT=/);
+  assert.doesNotMatch(result.stderr, /gh auth token|credential/i);
+});
 
 function sha256(value: string | Buffer) {
   return createHash('sha256').update(value).digest('hex');
