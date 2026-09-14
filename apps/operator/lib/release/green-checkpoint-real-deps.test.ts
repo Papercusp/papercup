@@ -748,6 +748,54 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
     expect(samples).toHaveLength(0);
   });
 
+  it("invokes Snapd's manager-owned cache action and records an ensure-cadence no-op", async () => {
+    const gib = 1024 ** 3;
+    const snapshots = [
+      {
+        path: "/tmp",
+        totalBytes: 1_000 * gib,
+        freeBytes: 1 * gib,
+        freePct: 0.001,
+        totalInodes: 1_000_000,
+        freeInodes: 500_000,
+        freeInodesPct: 0.5,
+      },
+    ];
+    let snapGcCount = 0;
+    const { exec } = makeExec([]);
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "disk-headroom-snap-noop-run",
+      undefined,
+      undefined,
+      async () => snapshots,
+      undefined,
+      undefined,
+      async () => gcResult(0),
+      async () => null,
+      async () => {
+        snapGcCount++;
+        return {
+          path: "/var/lib/snapd/cache",
+          maxBytes: 1 * gib,
+          beforeBytes: 9 * gib,
+          afterBytes: 9 * gib,
+          reclaimedBytes: 0,
+          status: "cleanup-noop",
+          note: "Snapd accepted ensure-state-soon but cache size did not change; cadence coalesced the request",
+        };
+      },
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(false);
+    expect(result?.summary).toContain("Snapd downloads-cache cleanup-noop");
+    expect(result?.summary).toContain("cadence coalesced the request");
+    expect(snapGcCount).toBe(1);
+  });
+
   it("never runs cleanup when statfs is unreadable, and fails closed without deleting on an unknown target", async () => {
     let gcCount = 0;
     const { exec } = makeExec([]);

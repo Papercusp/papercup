@@ -1334,6 +1334,12 @@ export const PTOOL_GIT_SYNC_RUN_TIMEOUT_MS = 60_000;
 // ambiguous transport timeout (EI-20477679208771292).
 export const PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS = 60_000;
 
+// `backup:restore` returns a structured continuation after racing the
+// potentially long Kopia clone against its 45s handler deadline. Keep the
+// ptool client outside the MCP transport floor so callers receive that
+// continuation instead of an ambiguous 30s transport timeout.
+export const PTOOL_BACKUP_RESTORE_TIMEOUT_MS = 60_000;
+
 // `templates:new-app` composes a full pot:create before overlaying the
 // template. Under real operator pressure the inner create alone has taken
 // 111s. A 30s client deadline is unsafe here: the old reconnect path replayed
@@ -1521,6 +1527,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['blueprint:publish', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['git-sync:run', PTOOL_GIT_SYNC_RUN_TIMEOUT_MS],
   ['backup:snapshot_create', PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS],
+  ['backup:restore', PTOOL_BACKUP_RESTORE_TIMEOUT_MS],
   ['templates:new-app', PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS],
   ['scorecards:emit', PTOOL_SCORECARD_EMIT_TIMEOUT_MS],
   ['release:checkpoint-run', PTOOL_CHECKPOINT_RUN_TIMEOUT_MS],
