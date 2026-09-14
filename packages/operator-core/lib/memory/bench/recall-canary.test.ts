@@ -169,7 +169,10 @@ describe('measureCanaryPairs', () => {
     ];
 
     it('DEGRADED regime: the floor eats a full retrieval ⇒ CONSUMER zero-hit, though retrieval was not empty', async () => {
-      const m = await measureCanaryPairs(fullRetrieval, pairsOf(4), { degraded: true });
+      const m = await measureCanaryPairs(fullRetrieval, pairsOf(4), {
+        degraded: true,
+        scoreScale: 'cosine',
+      });
       // What an agent actually got: nothing, on every probe.
       expect(m.zeroHits).toBe(4);
       expect(m.hits).toBe(0);
@@ -180,7 +183,10 @@ describe('measureCanaryPairs', () => {
     });
 
     it('the OLD definition would have called that exact run PERFECTLY HEALTHY', async () => {
-      const m = await measureCanaryPairs(fullRetrieval, pairsOf(4), { degraded: true });
+      const m = await measureCanaryPairs(fullRetrieval, pairsOf(4), {
+        degraded: true,
+        scoreScale: 'cosine',
+      });
       // The old code was `if (top.length === 0) zeroHits += 1` and `top.some(...)` for hits —
       // i.e. today's retrieval-level counters. Pin the discrimination: on this run the old
       // numbers are a flawless 0% zero-hit / 100% recall, and the new ones are a total blackout.
@@ -198,6 +204,19 @@ describe('measureCanaryPairs', () => {
       expect(m.hits).toBe(4);
       expect(m.zeroHits).toBe(m.retrievalZeroHits); // consumer == retrieval when nothing gates
     });
+
+    it.each(['rrf', 'lexical', 'unknown', undefined] as const)(
+      'DEGRADED %s scores are not compared to the cosine floor',
+      async (scoreScale) => {
+        const m = await measureCanaryPairs(fullRetrieval, pairsOf(4), {
+          degraded: true,
+          scoreScale,
+        });
+        expect(m.zeroHits).toBe(0);
+        expect(m.hits).toBe(4);
+        expect(m.retrievalHits).toBe(4);
+      },
+    );
 
     it('an empty retrieval is still a zero-hit at BOTH layers (the store-dark case)', async () => {
       const m = await measureCanaryPairs(async () => [], pairsOf(3), { degraded: false });
@@ -291,6 +310,7 @@ describe('runRecallCanary', () => {
       degradedRegime: () => true,
       backend: {
         name: 'hybrid',
+        scoreScale: 'cosine',
         search: async (q: string) => [
           { id: `mem-${q.split(' ')[1]}`, text: 'x', scope: 'pool-a', score: 0.0164 },
         ],
@@ -310,6 +330,29 @@ describe('runRecallCanary', () => {
       // the reader to the database costs the same hours the canary was built to save.
       expect(out.metrics.notes).toContain('DOWNSTREAM');
       expect(out.metrics.notes).not.toContain('swallowed-store-error');
+    }
+  });
+
+  it('does not floor a degraded low-band RRF response in the canary', async () => {
+    const pairs = pairsOf(10);
+    const { deps, notified } = stubDeps({
+      loadSet: async () => frozenSet(pairs, 0.9),
+      degradedRegime: () => true,
+      backend: {
+        name: 'hybrid',
+        scoreScale: 'rrf',
+        search: async (q: string) => [
+          { id: `mem-${q.split(' ')[1]}`, text: 'x', scope: 'pool-a', score: 0.0164 },
+        ],
+      },
+    });
+    const out = await runRecallCanary(INPUT, deps);
+
+    expect(out.ran && out.status).toBe('ok');
+    expect(notified).toEqual([]);
+    if (out.ran) {
+      expect(out.metrics.zeroHitRate).toBe(0);
+      expect(out.metrics.rAt10).toBe(1);
     }
   });
 

@@ -39,19 +39,32 @@ describe('admitRecallHits', () => {
     });
 
     it('the SAME scores on a DEGRADED response are floored as noise', () => {
-      const r = admitRecallHits(healthyRrf, { degraded: true });
+      const r = admitRecallHits(healthyRrf, { degraded: true, scoreScale: 'cosine' });
       expect(r.admitted).toHaveLength(0);
       expect(r.filteredLowScore).toBe(3);
     });
 
+    it.each(['rrf', 'lexical', 'unknown', undefined] as const)(
+      'a degraded response on %s scores fails open instead of applying the cosine floor',
+      (scoreScale) => {
+        const r = admitRecallHits(healthyRrf, { degraded: true, scoreScale });
+        expect(r.admitted).toHaveLength(3);
+        expect(r.filteredLowScore).toBe(0);
+        expect(r.decisions.some((d) => d.gate === 'orient.recall.relevance-floor')).toBe(false);
+      },
+    );
+
     it('a hit with NO numeric score passes even when degraded (fail-open)', () => {
-      const r = admitRecallHits([hit('a', undefined)], { degraded: true });
+      const r = admitRecallHits([hit('a', undefined)], { degraded: true, scoreScale: 'cosine' });
       expect(r.admitted).toHaveLength(1);
       expect(r.filteredLowScore).toBe(0);
     });
 
     it('a strong hit survives the floor when degraded', () => {
-      const r = admitRecallHits([hit('a', MEMORY_SCORE_FLOOR), hit('b', 0.01)], { degraded: true });
+      const r = admitRecallHits([hit('a', MEMORY_SCORE_FLOOR), hit('b', 0.01)], {
+        degraded: true,
+        scoreScale: 'cosine',
+      });
       expect(r.admitted.map((h) => h.id)).toEqual(['a']);
       expect(r.filteredLowScore).toBe(1);
     });
@@ -86,6 +99,7 @@ describe('admitRecallHits', () => {
   it('every discard is COUNTED — a gate that drops a hit silently is how a blackout hides', () => {
     const r = admitRecallHits([hit('lo', 0.01), hit('w', 0.9, 100), hit('big', 0.8, 5000)], {
       degraded: true,
+      scoreScale: 'cosine',
       budgetChars: 200,
       withhold: (hs) => ({ kept: hs.filter((h) => h.id !== 'w'), withheld: [hit('w', 0.9)] }),
     });

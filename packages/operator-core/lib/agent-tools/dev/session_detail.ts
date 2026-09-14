@@ -25,11 +25,19 @@ export default defineTool({
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
-  args: z.object({
-    spawnId: z.string().min(1).describe('spawn_id from dev:sessions, or a native session_id/omp_thread_id from the session roster.'),
-  }),
+  args: z
+    .object({
+      spawnId: z.string().min(1).optional().describe('spawn_id from dev:sessions.'),
+      sessionId: z.string().min(1).optional().describe('Native session_id or omp_thread_id from the session roster or sessions:*.'),
+    })
+    .refine(({ spawnId, sessionId }) => Boolean(spawnId || sessionId), {
+      message: 'pass exactly one of spawnId or sessionId',
+    })
+    .refine(({ spawnId, sessionId }) => !(spawnId && sessionId), {
+      message: 'pass exactly one of spawnId or sessionId',
+    }),
   async handler(args) {
-    const result = await getSessionDetail(args.spawnId);
+    const result = await getSessionDetail(args.sessionId ?? args.spawnId!);
     if (!result) {
       return { content: [{ type: 'text', text: JSON.stringify({ error: 'spawn not found' }) }] };
     }

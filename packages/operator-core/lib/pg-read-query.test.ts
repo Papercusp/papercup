@@ -1090,6 +1090,17 @@ describe('buildTenantScopeAdvisory — test_runs gate-triage trap (EI-1932463348
     expect(advisory).toContain('silently EXCLUDES every CI/gate row');
   });
 
+  it('does not treat source or commit_sha selected for output as identity predicates', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT id, file_path, status, source, commit_sha FROM harness_shared.test_runs " +
+        "WHERE workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('silently EXCLUDES every CI/gate row');
+    expect(advisory).toContain('source/commit_sha');
+  });
+
   it('is silent once `source` is mentioned', async () => {
     const { sql } = stubClient([]);
     expect(

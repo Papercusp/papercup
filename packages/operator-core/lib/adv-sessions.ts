@@ -2153,6 +2153,48 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
   }
 }
 
+/**
+ * Resolve the newest still-active launch row for one coordination owner.
+ *
+ * This is deliberately keyed by `coord_owner_id`, not a native transcript id:
+ * focus/mark/wake requests start from the stable handle exposed by
+ * `coord:presence`, while the native id differs by backend and may be absent.
+ * No recency cutoff is applied — a genuinely live interactive terminal can
+ * remain open for days. The owner id is globally unique, but the active
+ * workspace predicate keeps this low-level control read inside the caller's
+ * workspace just like {@link getAdvSession}.
+ */
+export async function getLatestActiveAdvSessionByOwner(coordOwnerId: string): Promise<AdvSessionRow | null> {
+  const ownerId = coordOwnerId.trim();
+  if (!ownerId) return null;
+  try {
+    const rows = await boundedOrgTxn(
+      (tx) => tx<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
+        SELECT id, workspace_id,
+               to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
+               plan_slug, agent, role, feature, mode, terminal_bin, pid,
+               window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
+               started_at, ended_at, exit_code, ended_by, ended_signal,
+               to_jsonb(a)->'launch_argv' AS launch_argv,
+               to_jsonb(a)->>'port_id' AS port_id,
+               to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
+               to_jsonb(a)->>'port_status' AS port_status,
+               to_jsonb(a)->'port_metadata' AS port_metadata
+          FROM harness_shared.adv_sessions a
+         WHERE workspace_id = ${activeWorkspaceId()}
+           AND coord_owner_id = ${ownerId}
+           AND ended_at IS NULL
+         ORDER BY started_at DESC
+         LIMIT 1
+      `,
+    );
+    return rows[0] ? mapAdvSessionRow(rows[0]) : null;
+  } catch (e) {
+    warnUnlessMissingTable(e, 'getLatestActiveAdvSessionByOwner');
+    return null;
+  }
+}
+
 /** Explicit workspace lookup for a server-side port request. getAdvSession()
  * remains active-workspace scoped for legacy UI callers. */
 export async function getAdvSessionInWorkspace(id: number, workspaceId: string): Promise<AdvSessionRow | null> {

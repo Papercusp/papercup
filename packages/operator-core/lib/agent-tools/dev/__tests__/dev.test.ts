@@ -415,6 +415,16 @@ describe('dev:session_detail', () => {
     expect(parsePayload((await tool.handler({ spawnId: 's' }, MAKE_CTX())) as never)).toEqual(detail);
   });
 
+  it('passes the native sessionId alias to the same detail resolver', async () => {
+    const detail = { spawn_id: 'spawn', agent: null, invocations: [], children: [], related_chats: [] };
+    const getSessionDetail = vi.fn(async () => detail);
+    vi.doMock('../../../dev-data', () => ({ getSessionDetail }));
+    const { default: tool } = await import('../session_detail');
+
+    expect(parsePayload((await tool.handler({ sessionId: 'native-session' }, MAKE_CTX())) as never)).toEqual(detail);
+    expect(getSessionDetail).toHaveBeenCalledWith('native-session');
+  });
+
   it('returns error envelope when spawn not found', async () => {
     vi.doMock('../../../dev-data', () => ({ getSessionDetail: vi.fn(async () => null) }));
     const { default: tool } = await import('../session_detail');

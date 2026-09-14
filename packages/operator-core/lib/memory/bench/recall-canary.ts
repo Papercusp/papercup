@@ -26,7 +26,7 @@ import type { Sql } from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 
-import type { MemoryBackend, MemoryEntry } from '../backend';
+import type { MemoryBackend, MemoryEntry, ScoreScale } from '../backend';
 import { admitRecallHits, MEMORY_TEXT_CAP } from '../recall-admission';
 import {
   loadLatestRecallCanarySet,
@@ -188,7 +188,7 @@ type SearchFn = (query: string, opts: { scope: string; limit: number }) => Promi
 export async function measureCanaryPairs(
   search: SearchFn,
   pairs: readonly RecallCanaryPair[],
-  opts: { degraded?: boolean } = {},
+  opts: { degraded?: boolean; scoreScale?: ScoreScale | null } = {},
 ): Promise<PairMeasurement> {
   let hits = 0;
   let zeroHits = 0;
@@ -209,7 +209,7 @@ export async function measureCanaryPairs(
       // Truncate exactly as the fold does: the char budget is charged against the capped text.
       const { admitted } = admitRecallHits(
         top.map((e) => ({ id: e.id, memory: e.text?.slice(0, MEMORY_TEXT_CAP), score: e.score })),
-        { degraded: opts.degraded },
+        { degraded: opts.degraded, scoreScale: opts.scoreScale },
       );
       if (admitted.length === 0) zeroHits += 1;
       if (admitted.some((e) => e.id === p.memoryId)) hits += 1;
@@ -230,7 +230,7 @@ export interface RecallCanaryDeps {
   // 'searchLexical' is OPTIONAL on MemoryBackend and stays optional here — the
   // P-010 lexical-leg probe feature-tests it (`backend.searchLexical?.`), so a
   // backend without a lexical leg is still a valid canary backend.
-  backend?: Pick<MemoryBackend, 'name' | 'search' | 'searchLexical'>;
+  backend?: Pick<MemoryBackend, 'name' | 'search' | 'searchLexical' | 'scoreScale' | 'lexicalScoreScale'>;
   sample?: (sql: Sql) => Promise<CanaryCandidate[]>;
   /** Override the still-exists check (returns the ids that remain active). */
   verifyTargets?: (sql: Sql, ids: string[]) => Promise<Set<string>>;
@@ -317,7 +317,7 @@ function fmt(v: number | null): string {
  */
 export async function seedRecallCanarySet(
   sql: Sql,
-  backend: Pick<MemoryBackend, 'name' | 'search' | 'searchLexical'>,
+  backend: Pick<MemoryBackend, 'name' | 'search' | 'searchLexical' | 'scoreScale' | 'lexicalScoreScale'>,
   workspaceId: string,
   deps: Pick<RecallCanaryDeps, 'sample' | 'saveSet'> = {},
   degraded = false,
@@ -325,7 +325,10 @@ export async function seedRecallCanarySet(
   const candidates = await (deps.sample ?? sampleCanaryCandidates)(sql);
   const pairs = buildCanaryPairs(candidates);
   if (pairs.length === 0) throw new Error('recall canary: no eligible live memories to sample');
-  const measured = await measureCanaryPairs((q, o) => backend.search(q, o), pairs, { degraded });
+  const measured = await measureCanaryPairs((q, o) => backend.search(q, o), pairs, {
+    degraded,
+    scoreScale: backend.scoreScale,
+  });
   const baselineRAt10 = measured.scored > 0 ? measured.hits / measured.scored : 0;
   const saved = await (deps.saveSet ?? saveRecallCanarySet)(sql, workspaceId, {
     backend: backend.name,
@@ -457,6 +460,7 @@ export async function runRecallCanary(
     const prev = await (deps.prevStatus ?? defaultPrevStatus)(sql, input.workspaceId);
     const measured = await measureCanaryPairs((q, o) => backend.search(q, o), living, {
       degraded: degradedRegime,
+      scoreScale: backend.scoreScale,
     });
     // EI-10666: r@10 and zeroHitRate are measured AT THE CONSUMER (post-admission) — what an
     // agent actually receives. The retrieval-level pair is kept as the DIAGNOSTIC that says
@@ -481,6 +485,7 @@ export async function runRecallCanary(
       try {
         lexMeasured = await measureCanaryPairs((q, o) => lexSearch(q, o), living, {
           degraded: degradedRegime,
+          scoreScale: backend.lexicalScoreScale,
         });
       } catch {
         lexMeasured = null;

@@ -867,6 +867,7 @@ function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Rec
         withheldBudget?: unknown;
         note?: unknown;
         bodiesTruncated?: unknown;
+        scoreScale?: unknown;
       }
     | null
     | undefined;
@@ -930,6 +931,12 @@ function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Rec
       // (fleet members are exactly who acts on them).
       ...(typeof memory.withheldBudget === 'number' ? { withheldBudget: memory.withheldBudget } : {}),
       ...(typeof memory.note === 'string' ? { note: memory.note } : {}),
+      ...(memory.scoreScale === 'cosine' ||
+      memory.scoreScale === 'rrf' ||
+      memory.scoreScale === 'lexical' ||
+      memory.scoreScale === 'unknown'
+        ? { scoreScale: memory.scoreScale }
+        : {}),
     };
   }
 

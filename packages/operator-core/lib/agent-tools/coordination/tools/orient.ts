@@ -54,6 +54,7 @@ import type { OrientPipeline } from '../pipeline-health';
 import { classifyOwnerDriveMode } from '../agent-drive-mode';
 import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-loop-facts';
 import { admitRecallHits, MEMORY_TEXT_CAP } from '../../../memory/recall-admission';
+import type { ScoreScale } from '../../../memory/backend';
 import { annotateSupersededMemory } from '../../../memory/temporal-render';
 import { readOwnerPresence } from '../../../power-user-sessions';
 import { countActiveAwaitsByPrefixes, listActiveAnnouncements } from '../../../events/await/store';
@@ -342,6 +343,14 @@ export interface OrientMemoryHit {
   fullChars?: number;
 }
 
+/** Normalize the wire label from memory:search before it reaches admission. Invalid or absent
+ * labels remain unknown (undefined here), which makes the scale-sensitive floor fail open. */
+function normalizeScoreScale(value: unknown): ScoreScale | undefined {
+  return value === 'cosine' || value === 'rrf' || value === 'lexical' || value === 'unknown'
+    ? value
+    : undefined;
+}
+
 /** Disclosure for a claimable list that was cut. EI-20113865649946366.
  *
  *  `total` and `truncatedByLimit` are deliberately NOT interchangeable, and a reader
@@ -428,6 +437,8 @@ export interface OrientResult {
     bodiesTruncated?: { hits: number; cap: number; more: string };
     degraded?: boolean;
     degradedReason?: string;
+    /** The score scale declared by memory:search; absent/unknown keeps admission fail-open. */
+    scoreScale?: ScoreScale;
   } | null;
   /** STANDING FACTS (queen-memory-hybrid L1c) — deterministic scoped conclusions
    *  (workspace + owner + harness scopes), delivered VERBATIM every orient (unlike
@@ -1606,6 +1617,7 @@ export async function composeOrient(
             degraded?: boolean;
             reason?: string;
             degraded_reason?: string;
+            score_scale?: unknown;
           }
         | undefined;
       // EI-20113865649946366: a body cut at MEMORY_TEXT_CAP (200) used to end
@@ -1629,6 +1641,7 @@ export async function composeOrient(
       // EI-9031 markers first — the floor below is REGIME-SCOPED on them.
       const memDegraded = mem?.degraded === true;
       const memDegradedReason = mem?.degraded_reason ?? mem?.reason;
+      const memScoreScale = normalizeScoreScale(mem?.score_scale);
       // EI-10666: the consumer-admission gates (relevance floor → queen-loop withhold →
       // aggregate char budget) live in ONE shared module, because the memory recall canary
       // must probe THE PATH A CONSUMER ACTUALLY TAKES. A canary that re-implemented these
@@ -1638,6 +1651,7 @@ export async function composeOrient(
       // recall hit (it self-drained fleet leaders). Auto callers keep all.
       const { admitted, filteredLowScore, withheld, withheldBudget, decisions } = admitRecallHits(rawHits, {
         degraded: memDegraded,
+        scoreScale: memScoreScale,
         withhold: (hs) => withholdQueenLoopControl(hs, driveMode, (h) => ({ body: h.memory })),
       });
       // EI-10619 — SHIP THE DECISIONS. `tool_invocations` records that orient returned ok; it
@@ -1680,6 +1694,7 @@ export async function composeOrient(
         // noise on the empty path).
         ...(admitted.length > 0 ? { note: ORIENT_MEMORY_NOTE } : {}),
         ...(memDegraded ? { degraded: true, ...(memDegradedReason ? { degradedReason: memDegradedReason } : {}) } : {}),
+        ...(memScoreScale !== undefined ? { scoreScale: memScoreScale } : {}),
       };
       // P-002 (memory-delivery-unification-2026-07-12 D-006): stamp the
       // orient-DELIVERED hits on the session-epoch surfaced-ledger, keyed by

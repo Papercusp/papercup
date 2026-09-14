@@ -50,6 +50,7 @@ import runTool, {
   readTestProcessResourceSnapshot,
   runTestFilesCore,
   settleConfinedTestOnHostShutdown,
+  testingRunTimeoutClampDisclosure,
   runWithTestProcessDeadline,
   resolveAdminTestRunsReporterPath,
   selectTestFileRoot,
@@ -1114,6 +1115,17 @@ describe('testing:run (integration)', () => {
     expect(hint).toContain('owning Vitest config');
     expect(hint).not.toContain('capability:inspect');
     expect(detachedTestTimeoutHint(['packages/operator-core/lib/example.test.ts'])).toContain('capability:inspect');
+  });
+
+  it('discloses when an explicit timeout is clamped to the foreground transport ceiling', () => {
+    const hint = testingRunTimeoutClampDisclosure(900_000, 45_000);
+
+    expect(hint).toContain('you requested 900s');
+    expect(hint).toContain('effective budget was 45s');
+    expect(hint).toMatch(/never in force/i);
+    expect(hint).toMatch(/will NOT buy more time/i);
+    // The default is not caller-authored, so it must not be mislabeled as requested.
+    expect(testingRunTimeoutClampDisclosure(undefined, 45_000)).toBe('');
   });
 
   it('returns timeout recovery before optional execution-ledger readback', () => {

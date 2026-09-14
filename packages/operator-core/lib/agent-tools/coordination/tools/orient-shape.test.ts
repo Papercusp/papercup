@@ -473,6 +473,27 @@ describe('shapeOrient — compaction folds (compaction-fold-audit-2026-07-06)', 
     expect('degraded' in healthy.memory).toBe(false);
   });
 
+  it.each(['cosine', 'rrf', 'lexical', 'unknown'] as const)(
+    'retains the memory scoreScale marker through %s tier shaping',
+    (scoreScale) => {
+      for (const tier of ['trimmed', 'standard'] as const) {
+        const out = shapeOrient(
+          { ...fixture(), memory: { query: 'q', hits: [], scoreScale } },
+          tier,
+        ) as { memory: { scoreScale?: string } };
+        expect(out.memory.scoreScale).toBe(scoreScale);
+      }
+    },
+  );
+
+  it('does not propagate an invalid scoreScale marker', () => {
+    const out = shapeOrient(
+      { ...fixture(), memory: { query: 'q', hits: [], scoreScale: 'not-a-scale' } },
+      'trimmed',
+    ) as { memory: { scoreScale?: string } };
+    expect(out.memory.scoreScale).toBeUndefined();
+  });
+
   it('D-002: passes the versioned fleetHealth availability/ref through unchanged', () => {
     const fleetHealth = {
       schemaVersion: 'orient-fleet-health-v1',

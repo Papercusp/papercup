@@ -574,15 +574,21 @@ function extractTestRunsReferences(strippedSql: string): TestRunsReference[] {
  * expressed as a {@link TENANT_SCOPE_OVERRIDES} entry (those suppress on "any required column
  * mentioned"; here workspace_id/harness_slug mentioned is not enough for a broad CI read).
  * Fires whenever `test_runs` is referenced with a WHERE clause and neither `source` nor
- * `commit_sha` is mentioned, unless the query has an exact run_group_id, bounded row-id, or
+ * `commit_sha` is used as a predicate, unless the query has an exact run_group_id, bounded row-id, or
  * bounded exact file_path predicate alongside both workspace_id and harness_slug predicates.
  * The latter are explicit per-run/local-evidence tenant fences and are safe to execute without
  * allowUnscoped; broad/partial tenant filters retain the CI warning.
  */
 function buildTestRunsAdvisory(stripped: string, tables: string[]): string | null {
   if (!tables.some((t) => bareTableName(t) === TEST_RUNS_TABLE)) return null;
-  const mentions = (col: string): boolean => new RegExp(`\\b${col}\\b`, 'i').test(stripped);
-  if (mentions('source') || mentions('commit_sha')) return null;
+  // A SELECT-list mention is not an identity fence. The old `mentions` check
+  // treated `SELECT source` / `SELECT commit_sha` as if the query filtered on
+  // those columns, so adding either column to the projection silently disabled
+  // the CI-row warning (EI-22692714335725268). Reuse the predicate matcher,
+  // which requires a comparison/membership/null operator rather than mere
+  // column presence, for the same distinction used by tenant predicates.
+  const hasIdentityPredicate = (column: string): boolean => hasTenantPredicate(stripped, column);
+  if (hasIdentityPredicate('source') || hasIdentityPredicate('commit_sha')) return null;
   const explicitTenantFence =
     hasTenantPredicate(stripped, 'workspace_id') &&
     hasTenantPredicate(stripped, 'harness_slug');

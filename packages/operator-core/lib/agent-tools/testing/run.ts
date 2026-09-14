@@ -101,6 +101,7 @@ import {
   FOREGROUND_TERMINATION_GRACE_MS,
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
+  foregroundClampDisclosure,
 } from '../capability/foreground-transport-cap';
 import { ensurePapercuspTmpdir } from '@papercusp/test-config/tmpdir-guard';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
@@ -215,6 +216,18 @@ export function detachedRecoveryHint(opts: { runId?: string | undefined; durable
 export function detachedTestTimeoutHint(files: string[]): string {
   const hasIntegrationFile = files.some((file) => /\.integration\.test\.[cm]?[jt]sx?$/i.test(file));
   return hasIntegrationFile ? DETACHED_ROUTER_TEST_HINT : DETACHED_INSPECT_TEST_HINT;
+}
+
+/**
+ * Disclose the effective foreground clamp only when the caller supplied a budget.
+ * The default budget is an implementation choice, not a caller-authored deadline,
+ * so reporting it as "requested" would be misleading.
+ */
+export function testingRunTimeoutClampDisclosure(
+  requestedTimeoutMs: number | undefined,
+  effectiveTimeoutMs: number,
+): string {
+  return requestedTimeoutMs === undefined ? '' : foregroundClampDisclosure(requestedTimeoutMs, effectiveTimeoutMs);
 }
 
 /**
@@ -3003,7 +3016,8 @@ export default defineTool({
     // return, surfacing as an opaque `CONNECTION_CLOSED`. Clamping makes this handler win the
     // race and hand back an actionable next step. The clamp is a TRANSPORT concern, so it lives
     // here and not in runTestFilesCore (whose other callers budget for themselves).
-    const timeoutMs = clampForegroundTimeoutMs(args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const requestedTimeoutMs = args.timeoutMs;
+    const timeoutMs = clampForegroundTimeoutMs(requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS);
     // Operator/superuser sessions commonly carry the '*' harness sentinel. Let
     // the caller name the concrete harness on this call so the child reporter
     // receives the same scope that plans:bind-spec-evidence validates.
@@ -3094,6 +3108,7 @@ export default defineTool({
           ...surfacedResult,
           hint:
             `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
+            testingRunTimeoutClampDisclosure(requestedTimeoutMs, timeoutMs) +
             detachedRecoveryHint({
               runId: result.detachedRunId,
               durable: result.detachedDurable === true,

@@ -10,7 +10,7 @@
  * Storage rides the neutral `MemoryBackend` seam; per-scope fan-out and
  * merge live behind it. RESPONSE CONTRACT (byte-stable — the TUI Memory
  * tab consumes it): { ok, reason?, results: [{ id, memory, metadata,
- * score }] }. Additive degraded stamps (EI-9031 / WI-4214): any failed or
+ * score }], score_scale? }. Additive degraded stamps (EI-9031 / WI-4214): any failed or
  * reduced-fidelity recall carries `degraded: true` (+ `degraded_reason`,
  * and `fallback: 'lexical'` when the hits came from the embed-free
  * token-match fallback) so an empty/thin result is never mistaken for an
@@ -26,7 +26,13 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getMemoryBackend, MemoryUnavailableError, type MemoryEntry, type SearchLegStats } from '../../memory/backend';
+import {
+  getMemoryBackend,
+  MemoryUnavailableError,
+  type MemoryEntry,
+  type ScoreScale,
+  type SearchLegStats,
+} from '../../memory/backend';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from '../../memory/workspace-scope-recall';
 import {
   MemoryTimeoutError,
@@ -361,6 +367,13 @@ export default defineTool({
     // miss corrupts that inference for every agent for the whole outage.
     const embeddingDegraded = isOpenAiEmbedInCooldown();
 
+    // The scale travels with the response so compound consumers can apply
+    // scale-sensitive admission. A lexical fallback has a different scale
+    // from the backend's normal search path; never infer it from magnitudes.
+    const scoreScale: ScoreScale | undefined = usedLexicalFallback
+      ? backend.lexicalScoreScale
+      : backend.scoreScale;
+
     const wireRows = hits.slice(0, limit).map(toWireRow);
     // Session-tier hit shaping (P-024) — see MEMORY_SEARCH_TIER_CAPS above.
     // No-tier callers (the TUI Memory tab, hooks) take the full branch.
@@ -440,6 +453,7 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             results,
+            ...(scoreScale !== undefined ? { score_scale: scoreScale } : {}),
             // Loud degraded markers. WI-4214 (most specific first): the semantic
             // leg failed outright and these hits came from the embed-free lexical
             // fallback — token matches only, paraphrase recall is out, so a thin/

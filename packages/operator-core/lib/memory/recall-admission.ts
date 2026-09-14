@@ -24,6 +24,7 @@
  * a caller-policy filter, not a property of recall.
  */
 import type { GateDecision } from '../gates/decision';
+import type { ScoreScale } from './backend';
 
 /**
  * The minimum shape a hit needs to run the gates. Callers keep their own richer types (the
@@ -121,16 +122,16 @@ export interface AdmissibleHit {
 export const MEMORY_TEXT_CAP = 200;
 
 /**
- * P-004 (fleet-member-dx, EI-9017): drop near-zero-relevance hits — a degraded embedder (quota
- * outage → lexical fallback) returns hits scored 0.01–0.03 that are pure noise yet still cost
- * fold tokens on EVERY orient. A hit with NO numeric score passes (fail-open).
+ * P-004 (fleet-member-dx, EI-9017): drop near-zero-relevance hits from a degraded COSINE
+ * response — an embedder outage can return low-similarity local-vector hits that are pure noise
+ * yet still cost fold tokens on EVERY orient. A hit with NO numeric score passes (fail-open).
  *
- * ⚠ DEGRADED-REGIME ONLY (orient-recall-quality-2026-07-12). A HEALTHY hybrid response returns
- * RRF rank-fusion scores on the SAME 0.01–0.03 band (rank-1 both-legs ≈ 2/61 ≈ 0.0328 — a STRONG
- * hit), so this floor applies ONLY when the response carries the EI-9031 `degraded` marker. A
- * blanket value floor silently emptied orient's entire fold on hybrid configs. Anything that
- * applies this floor unconditionally — including a canary modelling the consumer — re-creates
- * EI-10372 wherever it runs.
+ * ⚠ DEGRADED-REGIME AND SCALE ONLY (orient-recall-quality-2026-07-12). A HEALTHY hybrid response
+ * returns RRF rank-fusion scores on the SAME 0.01–0.03 band (rank-1 both-legs ≈ 2/61 ≈ 0.0328 —
+ * a STRONG hit), and the embed-free fallback returns backend-native lexical scores. Therefore
+ * this floor applies ONLY when the response carries the EI-9031 `degraded` marker AND its scores
+ * are explicitly labelled `cosine`. A blanket value floor silently emptied orient's entire fold
+ * on hybrid configs; applying it to lexical/RRF/unknown scores recreates the same scale bug.
  */
 export const MEMORY_SCORE_FLOOR = 0.05;
 
@@ -243,6 +244,12 @@ export function collapseNearDuplicates<T>(
 export interface AdmitRecallOpts<H> {
   /** The EI-9031 `degraded` marker from the recall response — REGIME-SCOPES the floor. */
   degraded?: boolean;
+  /**
+   * Scale of the scores in this recall response. The floor is meaningful only for labelled
+   * cosine scores; RRF, lexical, unknown, and missing scales fail open because their numeric
+   * values are not comparable to MEMORY_SCORE_FLOOR.
+   */
+  scoreScale?: ScoreScale | null;
   /** Aggregate char budget; defaults to {@link orientMemoryBudgetChars}. */
   budgetChars?: number;
   /**
@@ -292,14 +299,15 @@ export function admitRecallHits<H extends AdmissibleHit>(
   const decisions: GateDecision[] = [];
   const subjectOf = (h: H): string | null => (typeof h.id === 'string' ? h.id : null);
 
-  // Gate 1 — relevance floor, degraded regime ONLY (see MEMORY_SCORE_FLOOR).
+  // Gate 1 — relevance floor, degraded COSINE regime ONLY (see MEMORY_SCORE_FLOOR).
   //
-  // The floor only RUNS in the degraded regime, so it only DECIDES there. Emitting a healthy-regime
-  // "pass" for a gate that was never consulted would be a lie in the decision log — and would mask
-  // exactly the state the log exists to reveal (a floor that admits nothing when it does run).
+  // The floor only RUNS when both regime and scale are known, so it only DECIDES there. Emitting a
+  // pass for an incompatible scale would be a lie in the decision log and applying the numeric
+  // threshold to RRF/lexical values would repeat the scale-confusion defect this gate detects.
   const floored: H[] = [];
+  const floorApplies = opts.degraded === true && opts.scoreScale === 'cosine';
   for (const h of rawHits) {
-    if (!opts.degraded) {
+    if (!floorApplies) {
       floored.push(h);
       continue;
     }
