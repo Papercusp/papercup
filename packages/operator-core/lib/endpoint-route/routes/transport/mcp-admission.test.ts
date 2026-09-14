@@ -24,6 +24,7 @@ import {
   isBoundedCoordDeclareIntentArgs,
   isBoundedDocsGetArgs,
   isBoundedDocsSearchArgs,
+  isBoundedSearchFulltextArgs,
   isBoundedEventsStatusArgs,
   isBoundedBashOutputArgs,
   isBoundedGitSyncRunArgs,
@@ -597,6 +598,61 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
         arguments: {
           name: 'mcp__papercusp_su__docs_search',
           args: { query: 'find a recovery runbook', semantic: false, limit: 5 },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    ['canonical', 'search:fulltext'],
+    ['underscore', 'search_fulltext'],
+    ['mcp-advertised', 'mcp__papercusp-su__search_fulltext'],
+    ['mcp-advertised-underscore', 'mcp__papercusp_su__search_fulltext'],
+  ])('does NOT shed a bounded single-source search:fulltext under critical pressure: %s', (_label, name) => {
+    const args = {
+      query: 'find the prior admission-shed incident',
+      scope: ['work_item'],
+      harness_slug: 'papercusp',
+      limit: 5,
+    };
+    expect(isBoundedSearchFulltextArgs(args)).toBe(true);
+    const body = toolsCall(18, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('requires an explicit single source and keeps fulltext filters/enrichment sheddable', () => {
+    expect(isBoundedSearchFulltextArgs({ query: 'find the incident', scope: ['work_item'] })).toBe(true);
+    for (const args of [
+      { query: 'find the incident', limit: 5 },
+      { query: 'find the incident', scope: [] },
+      { query: 'find the incident', scope: ['work_item', 'coord_message'], limit: 5 },
+      { query: 'find the incident', scope: ['all'], limit: 5 },
+      { query: 'find the incident', scope: ['work_item'], limit: 6 },
+      { query: 'find the incident', scope: ['work_item'], harness_slug: 'x'.repeat(121) },
+      { query: 'x'.repeat(401), scope: ['work_item'], limit: 5 },
+      { query: 'find the incident', scope: ['work_item'], owner: 'self', limit: 5 },
+      { query: 'find the incident', scope: ['work_item'], semantic: false, limit: 5 },
+    ]) {
+      expect(isBoundedSearchFulltextArgs(args)).toBe(false);
+      const body = toolsCall(19, 'search:fulltext', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 19 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes bounded single-source search:fulltext through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 20,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__search_fulltext',
+          args: { query: 'find a recovery incident', scope: ['work_item'], limit: 5 },
         },
       },
     });
@@ -2507,6 +2563,90 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
   it('still sheds a batched docs:get under critical pressure', async () => {
     const shed = await evaluateAdmission(
       post(toolsCall(11, 'docs:get', { slugs: ['one', 'two'], harness: 'engineering' })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
+  it('admits a bounded lexical-only docs:search under critical pressure', async () => {
+    const req = post(
+      toolsCall(12, 'docs:search', {
+        query: 'find the recovery runbook for this lane',
+        harness: 'engineering',
+        limit: 5,
+        semantic: false,
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('docs:search');
+  });
+  it('admits a bounded lexical-only docs:search through tools:invoke under critical pressure', async () => {
+    const req = post(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 13,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: {
+            name: 'mcp__papercusp_su__docs_search',
+            args: { query: 'find a recovery runbook', limit: 5, semantic: false },
+          },
+        },
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('still sheds semantic docs:search under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(14, 'docs:search', { query: 'find a recovery runbook', limit: 5 })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
+  });
+  it('admits a bounded single-source search:fulltext under critical pressure', async () => {
+    const req = post(
+      toolsCall(52, 'search:fulltext', {
+        query: 'find the prior admission-shed incident',
+        scope: ['work_item'],
+        harness_slug: 'papercusp',
+        limit: 5,
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('search:fulltext');
+  });
+  it('admits bounded single-source search:fulltext through tools:invoke under critical pressure', async () => {
+    const req = post(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 53,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: {
+            name: 'mcp__papercusp_su__search_fulltext',
+            args: { query: 'find a recovery incident', scope: ['work_item'], limit: 5 },
+          },
+        },
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('still sheds an unscoped search:fulltext under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(54, 'search:fulltext', { query: 'find a recovery incident', limit: 5 })),
       'critical',
       true,
     );

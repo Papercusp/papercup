@@ -190,6 +190,7 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'plans:search',
     'docs:get',
     'docs:search',
+    'search:fulltext',
     'work_items:get',
     'work_items:list',
     'work_items:complete',
@@ -288,6 +289,19 @@ const DOCS_SEARCH_NAME = normalizeMcpName('docs:search');
 const CRITICAL_DOCS_SEARCH_MAX_QUERY_CHARS = 200;
 const CRITICAL_DOCS_SEARCH_MAX_HARNESS_CHARS = 120;
 const CRITICAL_DOCS_SEARCH_MAX_LIMIT = 20;
+const SEARCH_FULLTEXT_NAME = normalizeMcpName('search:fulltext');
+const CRITICAL_SEARCH_FULLTEXT_MAX_QUERY_CHARS = 400;
+const CRITICAL_SEARCH_FULLTEXT_MAX_HARNESS_CHARS = 120;
+const CRITICAL_SEARCH_FULLTEXT_MAX_LIMIT = 5;
+const CRITICAL_SEARCH_FULLTEXT_SCOPES = new Set([
+  'escalations',
+  'brainstorm',
+  'turns',
+  'decisions',
+  'work_item',
+  'session_turn',
+  'coord_message',
+]);
 const WORK_ITEMS_SEARCH_NAME = normalizeMcpName('work_items:search');
 const CRITICAL_WORK_ITEMS_SEARCH_MAX_QUERY_CHARS = 400;
 const CRITICAL_WORK_ITEMS_SEARCH_MAX_HARNESS_CHARS = 80;
@@ -912,6 +926,44 @@ export function isBoundedDocsSearchArgs(args: unknown): boolean {
     return false;
   }
   return args.semantic === false;
+}
+
+/**
+ * `search:fulltext` is the lexical recovery door for prose and issue triage,
+ * but its normal no-scope form fans out across every corpus and its filter bag
+ * can trigger identity/fleet/session resolution. Keep the critical-pressure
+ * exception to one explicit source, a short query, a five-row page, and an
+ * optional bounded harness selector. Filter/enrichment fields and the `all`
+ * scope stay on the retryable path.
+ */
+export function isBoundedSearchFulltextArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['query', 'scope', 'harness_slug', 'limit']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (!isBoundedCriticalText(args.query, CRITICAL_SEARCH_FULLTEXT_MAX_QUERY_CHARS, true)) return false;
+  if (
+    !Array.isArray(args.scope) ||
+    args.scope.length !== 1 ||
+    !isBoundedCriticalText(args.scope[0], 40, true) ||
+    !CRITICAL_SEARCH_FULLTEXT_SCOPES.has(args.scope[0])
+  ) {
+    return false;
+  }
+  if (
+    args.harness_slug !== undefined &&
+    !isBoundedCriticalText(args.harness_slug, CRITICAL_SEARCH_FULLTEXT_MAX_HARNESS_CHARS, true)
+  ) {
+    return false;
+  }
+  if (
+    args.limit !== undefined &&
+    (!Number.isInteger(args.limit) ||
+      (args.limit as number) < 1 ||
+      (args.limit as number) > CRITICAL_SEARCH_FULLTEXT_MAX_LIMIT)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -2483,6 +2535,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === DOCS_GET_NAME) return isBoundedDocsGetArgs(args);
   if (normalized === PLANS_SEARCH_NAME) return isBoundedPlansSearchArgs(args);
   if (normalized === DOCS_SEARCH_NAME) return isBoundedDocsSearchArgs(args);
+  if (normalized === SEARCH_FULLTEXT_NAME) return isBoundedSearchFulltextArgs(args);
   if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
   if (normalized === SCORECARDS_EVALUATE_NAME) {
     return isBoundedScorecardsEvaluateArgs(args) || isBoundedJudgeScorecardsEvaluateArgs(args, requestUrl);
