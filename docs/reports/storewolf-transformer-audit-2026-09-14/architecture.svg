@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1070" viewBox="0 0 1200 1070" role="img" aria-labelledby="title desc">
+<title id="title">Storewolf Transformer — compiled compatibility, live fulfillment choices</title>
+<desc id="desc">Build: specs and rules become property comparisons, category compilation, FBE indexes and SQLite weights. Runtime: order and listing callers enter Transformer; its master partitions work into category child processes. Children query compiled indexes with stock and association data, then write LMDB result maps. Findings are options, not reservations.</desc>
+<defs>
+  <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#47677a"/></marker>
+  <style>
+    text{font-family:Arial,Helvetica,sans-serif;fill:#173042}
+    .h{font-size:19px;font-weight:bold}.b{font-size:15px}.small{font-size:13px}
+    .label{font-size:13px;font-weight:bold;letter-spacing:1.5px}
+    .edge{fill:none;stroke:#47677a;stroke-width:2;marker-end:url(#arrow)}
+    .card{fill:white;stroke:#a6bdc7;stroke-width:1.5;rx:12}
+  </style>
+</defs>
+<rect width="1200" height="1070" fill="#f6f8fa"/>
+<rect width="1200" height="98" fill="#173042"/>
+<text x="36" y="40" style="fill:white;font-size:28px;font-weight:bold">Storewolf Transformer</text>
+<text x="36" y="72" style="fill:#c9e2e7;font-size:17px">Compile compatibility once. Combine it with stock and cost at query time.</text>
+<rect x="20" y="118" width="1160" height="300" rx="18" fill="#e6f2ef"/>
+<text class="label" x="40" y="149">01  MODEL BUILD / RELOAD</text>
+<rect class="card" x="40" y="177" width="230" height="132"/>
+<text class="h" x="58" y="207">Specs + named rules</text>
+<text class="b" x="58" y="236">Rank / upgrade / grouping</text>
+<text class="b" x="58" y="259">Handling / modeled costs</text>
+<text class="small" x="58" y="290">Objects or spreadsheet imports</text>
+<rect class="card" x="332" y="177" width="234" height="132"/>
+<text class="h" x="350" y="207">SpecObjComparator</text>
+<text class="b" x="350" y="236">Partial-order comparisons</text>
+<text class="b" x="350" y="259">Directed upgrade edges</text>
+<text class="small" x="350" y="290">Physical changes ≠ substitutions</text>
+<rect class="card" x="628" y="177" width="234" height="132"/>
+<text class="h" x="646" y="207">Category compilation</text>
+<text class="b" x="646" y="236">Master → child processes</text>
+<text class="b" x="646" y="259">Pair evaluation + expansion</text>
+<text class="small" x="646" y="290">Goodness and cost Rankifiers</text>
+<rect class="card" x="924" y="177" width="234" height="132"/>
+<text class="h" x="942" y="207">Compiled model</text>
+<text class="b" x="942" y="236">FBE forward/reverse indexes</text>
+<text class="b" x="942" y="259">SQLite transformation weights</text>
+<text class="small" x="942" y="290">JSON category → child map</text>
+<path class="edge" d="M270 242H329"/><path class="edge" d="M566 242H625"/><path class="edge" d="M862 242H921"/>
+<text class="b" x="40" y="352">Index strategy: configuration IDs → integer indexes → grouped BitSet / Roaring relations.</text>
+<text class="b" x="40" y="380">Trade-off: rules, compiled indexes and weights must describe the same model version.</text>
+<rect x="20" y="440" width="1160" height="494" rx="18" fill="#eaf0f8"/>
+<text class="label" x="40" y="471">02  ONLINE QUERY</text>
+<rect class="card" x="40" y="510" width="230" height="136"/>
+<text class="h" x="58" y="540">Business callers</text>
+<text class="b" x="58" y="570">OrderProcessor: source options</text>
+<text class="b" x="58" y="595">Synchronizer: expand listings</text>
+<text class="small" x="58" y="623">Downstream workflows act on them</text>
+<rect class="card" x="332" y="510" width="234" height="136"/>
+<text class="h" x="350" y="540">Transformer API</text>
+<text class="b" x="350" y="570">queryWithInstockInventory</text>
+<text class="b" x="350" y="595">enlargeListings / query</text>
+<text class="small" x="350" y="623">Named model + request constraints</text>
+<rect class="card" x="628" y="510" width="234" height="136"/>
+<text class="h" x="646" y="540">SKUTransformerMaster</text>
+<text class="b" x="646" y="570">Normalize IDs and filters</text>
+<text class="b" x="646" y="595">Partition stock-map views</text>
+<text class="small" x="646" y="623">Dispatch by category over IPC</text>
+<rect class="card" x="924" y="510" width="234" height="184"/>
+<text class="h" x="942" y="540">Category child</text>
+<text class="b" x="942" y="570">Goodness + bitmap candidates</text>
+<text class="b" x="942" y="595">Fetch SQLite pair weights</text>
+<text class="b" x="942" y="620">Stock / location / handling</text>
+<text class="b" x="942" y="645">Select or sort within groups</text>
+<text class="small" x="942" y="676">SKUTransformer + Rankifier</text>
+<path class="edge" d="M270 578H329"/><path class="edge" d="M566 578H625"/><path class="edge" d="M862 578H921"/>
+<path class="edge" d="M1041 309V507"/><text class="small" x="1054" y="429">load / lookup</text>
+<rect class="card" x="332" y="743" width="234" height="105"/>
+<text class="h" x="350" y="773">Query-time data</text>
+<text class="b" x="350" y="802">DataStore: ASIN / UPC links</text>
+<text class="b" x="350" y="827">Synchronizer: qty / cost maps</text>
+<path class="edge" d="M449 743V649"/>
+<path class="edge" d="M566 766H603V666H690V649"/>
+<rect class="card" x="628" y="743" width="234" height="105"/>
+<text class="h" x="646" y="773">SharedMap results</text>
+<text class="b" x="646" y="802">LMDB: FROM / TO + stats</text>
+<text class="b" x="646" y="827">Optional change explanations</text>
+<path class="edge" d="M1041 694V791H865"/><text class="small" x="968" y="774">write</text>
+<path class="edge" d="M745 743V649"/>
+<path class="edge" d="M628 822H602V888H155V649"/>
+<text class="small" x="178" y="911">Response returns through the master and API — grouped alternatives, not reservations.</text>
+<rect x="20" y="955" width="1160" height="90" rx="12" fill="#fff0d5"/>
+<text class="h" x="40" y="985">CHEAPEST = source cost + modeled transformation weight</text>
+<text class="b" x="40" y="1014">Not a global stock allocator or a neural model. Source audit: September 14, 2026 · WI-10001436.</text>
+</svg>
