@@ -2,7 +2,7 @@
 
 Plan: `backend-audit-diagnosis-before-repair-2026-09-13`.
 Driver: `WI-10001261`, session `su-6eeda0f9-9087-43b2-b27d-e3856a7cf256`.
-Updated: September 14, 2026, approximately 03:55 UTC (September 13 EDT).
+Updated: September 14, 2026, approximately 04:38 UTC (September 14 EDT).
 
 This is an execution ledger, not a second completed audit or a repair certificate.
 The original report and measurement window remain in
@@ -37,7 +37,7 @@ present in every running build.
 
 | Finding | Current evidence / status | Plan coverage and ownership | Next discriminating evidence |
 | --- | --- | --- | --- |
-| F01 session-history SQL | Open. Release reads reproduced `invalid escape string`; staging reads succeeded. Current source casts substring bounds to integers and has a private-PG negative control. | P-002 / P-014. Reuse existing `read.integration.test.ts`; related incident `EI-23127048402087622` is terminal, not proof of runtime resolution. | Run the maintained real-PG test; compare exact self/named/readMore/tenant cases and affected serving build; prove promotion selects the test. |
+| F01 session-history SQL | Open for gate selection and affected-runtime verification. The maintained private-PG regression passed 7/7 with zero skips; it includes the uncast negative control and cast repair. Default-endpoint reads still reproduced `invalid escape string` after this carry; an explicit staging `self` read succeeded. | P-002 / P-014. Reuse existing `read.integration.test.ts`; related incident `EI-23127048402087622` is terminal, not proof of runtime resolution. Recurrence coalesced onto `EI-23195479465396624`. | Adopt the saved test proof below; verify predecessor/readMore coverage and actual promotion selection without treating the staging read as release resolution. |
 | F02 busy-boundary deferral | Open. Own host recorded only 144 ms maximum quiet against 1,500 ms, despite native task completion. Deferral counts are not lost-message counts. | P-003 / P-016. Carry-specific boundary repair belongs to the separate carry plan; general wake residue stays here. | Adopt exact carry fixture and native-boundary evidence; test idle repaint versus active reasoning and unsent human input without driving an attended terminal. |
 | F03 folded wake completion | Open. Original actual-factory counterexample leaves folded B completed after parent A defers; current source inspected still marked folded IDs completed at admission. | P-003 / P-015. General delivery/coalescing scope here; coordinate any shared PTY file. | Reproduce through the maintained isolated host/executor fixture, including defer, retry, cancellation and exactly one eventual native turn. |
 | F04 missing carry prompt | Open. Original host repeatedly lacked `session-22472/AGENTS.md`; initiating removal was not established. | P-004 / P-016. Adopt carry-plan prerequisite diagnosis and repair evidence. | Trace launch/archive/cleanup ownership and reproduce a missing prerequisite in a disposable fixture; establish safe recovery or explicit blocking while preserving predecessor. |
@@ -158,20 +158,68 @@ product implementation or shipment.
 
 ## Activation and next work
 
-Plan revision 8 records the owner route, carry partition, all recommendations
-and the explicit missed-loop obligation. The source-conversation activation
-audit at revision 7 must be refreshed for D-004 and the later owner directive.
+### Superseded first grading attempt
 
-Twenty-five `RELIABILITY-P-NNN` clauses/exemptions were added without deleting
-the forty-two seeded AUTO-BAR drafts. The evaluator returned pass for
-spec-set hash
-`33071e61e09bee7785422be5b735b7024c53d0718025c5e41273f74d13ff21c9`.
-Card `EI-23207223300694459` awaits non-author grading-integrity review;
-`WI-10001295` is assigned to `su-c77f160e-1bd4-4436-9090-bb0360873809`,
-who acknowledged pickup. This is activation evidence, not acceptance of fixes.
+Plan revision 9 / D-005 records that independent card
+`EI-23207802912043197` **failed** the earlier spec-quality card
+`EI-23207223300694459`. The earlier evaluator's pass was not accepted:
+its acceptance-provenance statement incorrectly included 42 unaccepted drafts,
+and some active clauses bundled independently testable outcomes. The review
+work-item `WI-10001295` is terminal; that does not mean the plan passed.
+The prior paragraph describing that review as merely pending is superseded.
 
-Continue read-only P-001 preparation while that review runs. After activation,
-complete the per-finding diagnostic records, all-diagnosis review, maintained
-behavioral regressions and actual promotion selection, then verify rollout and
-independent acceptance. Do not silently treat this initial inventory as all
-diagnosis complete.
+The source-conversation activation audit was refreshed at sequence 2 for plan
+revision 9. No product implementation is certified by that audit.
+
+### Corrected contract set
+
+On September 14, the active clauses for session windows versus SQL-fragment
+execution, native-turn safety versus human-input safety, and completed retrieval
+results versus truthful unknown stage status were split into separate outcomes.
+
+The 42 seeded AUTO-BAR clauses were then deliberately revised from draft to
+active using current revision CAS through the staging tool endpoint. Each now
+has one observable contract, a concrete falsifier and a rerunnable inspection
+procedure. **The complete original BAR text is preserved verbatim in required
+evidence; the shorter behavior does not replace or weaken it.** The source BAR
+hash, bar-set hash, rubric revision, evidence plane and acceptance reference
+were preserved. Readback verified all 42 revisions, their acceptance actor and
+their retained pins; no seeded draft remains.
+
+The resulting set has 70 clauses: 55 active and 15 explicit non-behavioral
+exemptions. These are contract states, not completed findings or passing tests.
+The staging evaluator returned pass with no structural blockers for exact hash
+`4ee4155a9b178e0d7b8a280556ef0286c78aacc131f0ae92c60af66b539dcc3b`.
+New terminal spec-quality card `EI-23210288564537863` has **independent
+grading-integrity review pending**. Its exact subject is
+`spec-set:plan-class-bugfix:4ee4155a9b178e0d7b8a280556ef0286c78aacc131f0ae92c60af66b539dcc3b:806b7bd34648328c`.
+The card reader records a router dispatch reservation; that is not proof a
+reviewer has started or completed the audit. Do not reuse the failed card,
+self-audit the new one, or activate before the independent pass.
+
+Continue read-only diagnostic preparation while review is pending. After
+activation, complete the per-finding diagnostic records and the all-diagnosis
+review before repairs, then maintained behavioral regressions and actual
+promotion selection, rollout and independent acceptance. This initial
+inventory is not all diagnosis complete.
+
+## Retained verification and runtime observations
+
+- Maintained test:
+  `packages/operator-core/lib/agent-tools/sessions/read.integration.test.ts`.
+  Saved run `task0mu0pzmkop8yvzh1raw`, bash handle `eec645d8-549`, log
+  `.papercusp/scratch/bash-eec645d8-549.log`: 7/7 passed, zero skips, one
+  requested/executed file. The earlier checkpoint records tested HEAD
+  `03d0fc4691` and no uncommitted changes to the tested file before/after.
+  Adopt this proof rather than rerunning only to reconstruct it.
+- Post-carry default `sessions:read {session:"self",tail:5}` again failed with
+  `invalid escape string`; that occurrence coalesced onto
+  `EI-23195479465396624`.
+- Explicit `ptool --url=http://127.0.0.1:3170 --transport=http` successfully
+  read the current self-session. The staging scorecard emitter identifies
+  loaded build `e0070449ea9fbb10f00d6d9d812bf31ed0dcc3b8`, started
+  `2026-09-14T04:10:37.000Z`. These observations establish a usable staging
+  tool path, not release deployment or background-host readiness.
+- The carry's last successful operation and flight record identify the
+  pre-boundary compaction request and its activity report. There is no new
+  product edit in that recorded blind window.
