@@ -265,18 +265,20 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     await finishTestEvidence(prepared, origin, detached, scope,
       { ok: false, runId: origin, root: h.repoRoot, error: 'timeout' }, deps);
     const recovery = { workItemId: 'WI-101', planSlug: 'reconnect-plan', originRunId: origin, runId: detached };
+    const commitSha = 'fixture-commit';
     const details = { schemaVersion: 1, root: h.repoRoot, filePath: testPath,
       workspaceId: WORKSPACE, harnessSlug: HARNESS, runGroupId: detached, testNamePattern: null,
-      passed: 3, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null };
+      passed: 3, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+      commitSha, worktreeDirty: false };
     // A same-run, same-file row from another tenant must not settle this proof.
     await db.sql`INSERT INTO harness_shared.test_runs
-      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,execution_details)
-      VALUES (${OTHER_WORKSPACE},${HARNESS},${testPath},'pass',now(),${detached},${JSON.stringify(details)}::text::jsonb)`;
+      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,commit_sha,worktree_dirty,execution_details)
+      VALUES (${OTHER_WORKSPACE},${HARNESS},${testPath},'pass',now(),${detached},${commitSha},false,${JSON.stringify(details)}::text::jsonb)`;
     expect((await recoverTestEvidence(recovery, scope, deps)).rows[0])
       .toMatchObject({ phase: 'pending', outcome: 'unknown' });
     const [row] = await db.sql<{ id: number }[]>`INSERT INTO harness_shared.test_runs
-      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,execution_details)
-      VALUES (${WORKSPACE},${HARNESS},${testPath},'pass',now(),${detached},${JSON.stringify(details)}::text::jsonb)
+      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,commit_sha,worktree_dirty,execution_details)
+      VALUES (${WORKSPACE},${HARNESS},${testPath},'pass',now(),${detached},${commitSha},false,${JSON.stringify(details)}::text::jsonb)
       RETURNING id`;
     const exact = await deps.ledger({ workspaceId: WORKSPACE, harnessSlug: HARNESS, runGroupId: detached });
     expect(exact).toHaveLength(1);
@@ -286,8 +288,8 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     expect(recovered.verificationFingerprint).toBeTruthy();
     // Two matching receipts are ambiguous, even when both say pass.
     await db.sql`INSERT INTO harness_shared.test_runs
-      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,execution_details)
-      VALUES (${WORKSPACE},${HARNESS},${testPath},'pass',now(),${detached},${JSON.stringify(details)}::text::jsonb)`;
+      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,commit_sha,worktree_dirty,execution_details)
+      VALUES (${WORKSPACE},${HARNESS},${testPath},'pass',now(),${detached},${commitSha},false,${JSON.stringify(details)}::text::jsonb)`;
     expect((await recoverTestEvidence(recovery, scope, deps)).rows[0])
       .toMatchObject({ phase: 'pending', outcome: 'unknown', testRunId: null });
   });
