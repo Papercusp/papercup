@@ -190,6 +190,18 @@ beforeAll(async () => {
   });
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await db.sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.harness_design_artifacts (
+      harness_slug text NOT NULL,
+      id text NOT NULL,
+      feature_id text NOT NULL,
+      kind text NOT NULL,
+      payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+      metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_ts bigint NOT NULL,
+      PRIMARY KEY (harness_slug, id)
+    )
+  `);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   // The real issue-family claim path consults watchdog recovery continuity before it
   // serves a row. This fresh-DB fixture must therefore carry the same canonical table
@@ -228,7 +240,8 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.coord_event_log, harness_shared.contributors, harness_shared.work_item_deps, harness_shared.agent_fleets RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.harness_design_artifacts, harness_shared.work_items, harness_shared.coord_links, harness_shared.coord_event_log, harness_shared.contributors, harness_shared.work_item_deps, harness_shared.agent_fleets RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.plan_items`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   h.flagOn = true;
   h.specQuality = {
@@ -386,6 +399,77 @@ created: 2026-08-21
     expect(refs.has(planItemRef(PLAN, 'P-001'))).toBe(true);
     expect(refs.has(planItemRef(PLAN, 'P-002'))).toBe(true);
     expect(refs.has(planItemRef(PLAN, 'P-003'))).toBe(false);
+  });
+
+  it('preserves accepted design_spec_id provenance from an accepted blocked prerequisite', async () => {
+    const specId = 'spec-design-provenance-001';
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'done', text: 'Design the identity surface' },
+        { id: 'P-002', status: 'todo', text: 'Implement the identity surface', blockedBy: ['P-001'] },
+      ],
+    });
+    await db.sql`
+      INSERT INTO harness_shared.plan_items
+        (workspace_id, harness_slug, plan_slug, item_id, seq, item_text, status, blocked_by)
+      VALUES
+        (${WS}, ${HARNESS}, ${PLAN}, 'P-001', 0, 'Design the identity surface', 'done', '{}'),
+        (${WS}, ${HARNESS}, ${PLAN}, 'P-002', 1, 'Implement the identity surface', 'todo', ARRAY['P-001']::text[])
+    `;
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, title, summary,
+         source_plan_slug, source_plan_item_ids, needs_design, design_status, design_spec_id,
+         created_ts, updated_ts)
+      VALUES
+        (${WS}, ${HARNESS}, 'WI-DESIGN-SOURCE', 'feature', 'done', 'Design source', 'Design source',
+         ${PLAN}, ARRAY['P-001']::text[], TRUE, 'accepted', ${specId}, 1, 1)
+    `;
+    await db.sql`
+      INSERT INTO harness_shared.harness_design_artifacts
+        (harness_slug, id, feature_id, kind, payload, metadata, created_ts)
+      VALUES (${HARNESS}, ${specId}, 'WI-DESIGN-SOURCE', 'spec', '{}'::jsonb, '{}'::jsonb, 1)
+    `;
+
+    const result = await run.promotePlanItems(base);
+    expect(result).toMatchObject({ promoted: 1, skipped: 0 });
+    const [row] = await db.sql<{
+      feature_id: string;
+      needs_design: boolean;
+      design_status: string | null;
+      design_spec_id: string | null;
+    }[]>`
+      SELECT feature_id, needs_design, design_status, design_spec_id
+        FROM harness_shared.harness_features_consolidated
+       WHERE source_plan_slug = ${PLAN}
+         AND source_plan_item_ids = ARRAY['P-002']::text[]
+    `;
+    expect(row).toMatchObject({
+      needs_design: true,
+      design_status: 'accepted',
+      design_spec_id: specId,
+    });
+    const promoted = await wi.getWorkItem(row!.feature_id, HARNESS);
+    expect(promoted).toMatchObject({
+      needsDesign: true,
+      designStatus: 'accepted',
+      designSpecId: specId,
+      discardedDesignWork: false,
+    });
+
+    // The exact join used by design-phase.get_accepted_spec must resolve the new
+    // promoted feature id, not merely retain the pointer in an opaque payload.
+    const [resolved] = await db.sql<{ id: string; feature_id: string }[]>`
+      SELECT artifact.id, artifact.feature_id
+        FROM harness_shared.harness_features_consolidated feature
+        JOIN harness_shared.harness_design_artifacts artifact
+          ON artifact.harness_slug = feature.harness_slug
+         AND artifact.id = feature.design_spec_id
+       WHERE feature.harness_slug = ${HARNESS}
+         AND feature.feature_id = ${row!.feature_id}
+         AND artifact.kind = 'spec'
+    `;
+    expect(resolved).toEqual({ id: specId, feature_id: 'WI-DESIGN-SOURCE' });
   });
 
   it('canonicalizes a plan run onto the same promotion path and returns only its actionable frontier', async () => {

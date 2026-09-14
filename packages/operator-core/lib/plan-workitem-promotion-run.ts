@@ -31,6 +31,7 @@
  */
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { getOrgPg } from '@papercusp/db-org';
 import { resolveEffectiveStatusForItems, type ItemStatus, type PlanItem } from '@papercusp/plan-parser';
 import { systemDistinctId } from './flag-distinct-id';
 import { readPlanBySlug, type PlanRow } from './agent-tools/plans/source';
@@ -39,6 +40,7 @@ import {
   linkWorkItem,
   rebindOrphanedPlanFleetReservation,
   type ActiveFeatureFamilyKind,
+  type WorkItemDesignStatus,
 } from './work-items';
 import { upsertConditionWorkItem } from './coord/condition-upsert';
 import { PLAN_ITEM_KIND, planItemRef } from './issue-blocks-merge';
@@ -253,6 +255,74 @@ interface RawPlanItem {
   text: string;
   blockedBy: string[];
   phase: string | null;
+}
+
+interface AcceptedPlanItemDesignProvenance {
+  needsDesign: boolean;
+  designStatus: WorkItemDesignStatus;
+  designSpecId: string;
+  discardedDesignWork: boolean;
+}
+
+/**
+ * Resolve the accepted design artifact that makes a plan item executable.
+ *
+ * The design workflow stores the canonical pointer on the promoted feature row,
+ * not in plan prose or completion/checkpoint payloads. A dependent plan item
+ * inherits that pointer from an accepted promoted blocker: `plan_items.blocked_by`
+ * identifies the prerequisite, `source_plan_*` identifies its promoted row, and
+ * `(harness_slug, design_spec_id, kind='spec')` validates the artifact join used
+ * by `design-phase.get_accepted_spec`. This is deliberately tenant-scoped and
+ * read-only; a missing/temporarily unavailable enrichment must not block minting.
+ */
+async function readAcceptedPlanItemDesignProvenance(args: {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  itemId: string;
+}): Promise<Partial<AcceptedPlanItemDesignProvenance>> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{
+      needs_design: boolean | null;
+      design_status: string | null;
+      design_spec_id: string | null;
+      discarded_design_work: boolean | null;
+    }[]>`
+      SELECT source.needs_design,
+             source.design_status,
+             source.design_spec_id,
+             source.discarded_design_work
+        FROM harness_shared.plan_items target
+        JOIN harness_shared.harness_features_consolidated source
+          ON source.workspace_id = target.workspace_id
+         AND source.harness_slug = target.harness_slug
+         AND source.source_plan_slug = target.plan_slug
+         AND source.source_plan_item_ids && target.blocked_by
+        JOIN harness_shared.harness_design_artifacts artifact
+          ON artifact.harness_slug = source.harness_slug
+         AND artifact.id = source.design_spec_id
+         AND artifact.kind = 'spec'
+       WHERE target.workspace_id = ${args.workspaceId}
+         AND target.harness_slug = ${args.harnessSlug}
+         AND target.plan_slug = ${args.planSlug}
+         AND target.item_id = ${args.itemId}
+         AND source.design_status = 'accepted'
+         AND source.design_spec_id IS NOT NULL
+       ORDER BY source.updated_ts DESC NULLS LAST, source.feature_id
+       LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row?.design_spec_id || row.design_status !== 'accepted') return {};
+    return {
+      needsDesign: row.needs_design ?? true,
+      designStatus: 'accepted',
+      designSpecId: row.design_spec_id,
+      discardedDesignWork: row.discarded_design_work ?? false,
+    };
+  } catch {
+    return {};
+  }
 }
 
 type PlanRead = NonNullable<Awaited<ReturnType<typeof readPlanBySlug>>>;
@@ -607,6 +677,12 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     // `.text` from the PG-canonical row or the parsed item, never the raw line), which is
     // why a status flip or a blocked-by edit still does not read as drift.
     const stamp = stampForPlanItem(itemId);
+    const designProvenance = await readAcceptedPlanItemDesignProvenance({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      planSlug: opts.planSlug,
+      itemId,
+    });
     // D-046 (byoc-cloud-workspaces-gcp-aws-azure-2026-08-22 / WI-40754): ONE canonical
     // promoted work-item per (workspace, harness, plan, item), serialized IN POSTGRES —
     // not by the coverage read above. That read stays as a cheap idempotency
@@ -628,6 +704,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
         workspaceId: opts.workspaceId,
         sourcePlanSlug: opts.planRun?.templateSlug ?? spec.sourcePlanSlug,
         sourcePlanItemIds: [itemId],
+        ...designProvenance,
         topics: planTopics,
         payload: {
           plan_item: stamp,
@@ -723,6 +800,12 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     // missing implements edge on the canonical winner.
     const spec = allRunSpecsByPlanItem.get(item.id);
     if (!spec) continue;
+    const designProvenance = await readAcceptedPlanItemDesignProvenance({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      planSlug: opts.planSlug,
+      itemId: item.id,
+    });
     const adopted = await upsertConditionWorkItem(
       planPromotionConditionKey(opts.workspaceId, opts.harnessSlug, opts.planSlug, item.id),
       {
@@ -733,6 +816,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
         workspaceId: opts.workspaceId,
         sourcePlanSlug: opts.planRun.templateSlug,
         sourcePlanItemIds: [item.id],
+        ...designProvenance,
         topics: planTopics,
         payload: {
           plan_item: stampForPlanItem(item.id),

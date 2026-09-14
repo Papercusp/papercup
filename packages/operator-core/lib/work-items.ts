@@ -230,6 +230,12 @@ export { markIssueProgress };
 export type FeatureFamilyKind = 'feature' | 'chunk';
 export type WorkItemKind = FeatureFamilyKind | IssueStoreKind;
 export type WorkItemFamily = 'feature' | 'issue';
+/** Design lifecycle values stored on feature-family work-item rows. */
+export type WorkItemDesignStatus = 'pending' | 'accepted' | 'ignored';
+
+export function isWorkItemDesignStatus(value: unknown): value is WorkItemDesignStatus {
+  return value === 'pending' || value === 'accepted' || value === 'ignored';
+}
 
 export const FEATURE_FAMILY_KINDS: readonly FeatureFamilyKind[] = ['feature', 'chunk'];
 /** Forward-active feature kind; `chunk` remains in the read union for history. */
@@ -277,6 +283,12 @@ export interface WorkItem {
   harness: string | null;
   title: string;
   summary: string;
+  /** Design-phase lifecycle carried by feature-family rows. */
+  needsDesign?: boolean;
+  designStatus?: WorkItemDesignStatus | null;
+  /** Canonical `harness_design_artifacts.id` pointer for an accepted spec. */
+  designSpecId?: string | null;
+  discardedDesignWork?: boolean;
   /** Kind-specific lifecycle state (feature: status; issue: open|resolved|closed). */
   state: string;
   /** Claimable (D-003): feature → taken_by; issue → assignee. */
@@ -651,6 +663,10 @@ export interface FeatureRowDb {
   title: string | null;
   summary: string | null;
   status: string | null;
+  needs_design?: boolean | null;
+  design_status?: string | null;
+  design_spec_id?: string | null;
+  discarded_design_work?: boolean | null;
   taken_by: string | null;
   taken_at: unknown;
   last_progress_at: unknown;
@@ -695,6 +711,10 @@ export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     harness: r.harness_slug,
     title: r.title ?? '',
     summary: r.summary ?? '',
+    needsDesign: r.needs_design ?? false,
+    designStatus: isWorkItemDesignStatus(r.design_status) ? r.design_status : null,
+    designSpecId: r.design_spec_id ?? null,
+    discardedDesignWork: r.discarded_design_work ?? false,
     // work-item-status-full-unify P-007: the unified claimable token is 'open'
     // (feature `todo`→`open`). A null status defaults to the unified claimable
     // token, not the legacy 'todo' spelling (no row should sit at 'todo' post-backfill).
@@ -776,7 +796,8 @@ function coerceFiniteNumber(raw: number | string | null | undefined): number | n
 // the JS evaluator. Guarded by claim-spec-evaluator-parity.integration.test.ts.
 export const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary, status, taken_by,
   taken_at, last_progress_at,
-  parent_id, payload, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts,
+  parent_id, payload, needs_design, design_status, design_spec_id, discarded_design_work,
+  assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts,
   origin, audit_verdict, verified_author_github_user_id, terminal_owner, terminal_completion_ref,
   authority, closed_ts, goal_id,
   tags, source_plan_slug, source_plan_item_ids, redundancy, expected_cost_cents`;
@@ -2366,6 +2387,12 @@ export interface CreateWorkItemInput {
   sourcePlanSlug?: string | null;
   /** Plan-item ids covered by this work-item; paired with sourcePlanSlug for both families. */
   sourcePlanItemIds?: string[] | null;
+  /** Feature-family design lifecycle copied from accepted-spec provenance. */
+  needsDesign?: boolean;
+  designStatus?: WorkItemDesignStatus | null;
+  /** Canonical `harness_design_artifacts.id` pointer used by get_accepted_spec. */
+  designSpecId?: string | null;
+  discardedDesignWork?: boolean;
   /**
    * ADMISSION GATE (plan work-queue-admission-and-bulk-dedup-2026-08-24, P-002) — the
    * state this item is BORN with. 'pending' = born-pending, invisible to claim/place
@@ -2585,7 +2612,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   // taken_at (B-LOOP-4 atomic claim) and workspace_id (EI-728) — are appended in a
   // fixed order with each param index computed off `params.length`, so they never
   // collide on a positional slot regardless of which (or both) is present.
-  const params: (string | number | string[] | null)[] = [
+  const params: (string | number | string[] | boolean | null)[] = [
     featureHarness,
     id,
     input.title,
@@ -2609,7 +2636,6 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     'item_kind',
     'payload',
     'parent_id',
-    'needs_design',
     'needs_human_review',
     'ts',
     'created_ts',
@@ -2653,13 +2679,20 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     '$6::text::jsonb',
     '$7',
     'FALSE',
-    'FALSE',
     '$8',
     '$9',
     '$10',
     '$11::text',
     '$12::text[]',
   ];
+  params.push(input.needsDesign ?? false, input.designStatus ?? null, input.designSpecId ?? null, input.discardedDesignWork ?? false);
+  cols.push('needs_design', 'design_status', 'design_spec_id', 'discarded_design_work');
+  vals.push(
+    `$${params.length - 3}::boolean`,
+    `$${params.length - 2}::text`,
+    `$${params.length - 1}::text`,
+    `$${params.length}::boolean`,
+  );
   if (assignTo) {
     // Atomic create+claim: stamp the owner + lease time in the SAME INSERT (mirrors
     // claimWorkItem's `taken_by = …, taken_at = now()`), so the row is never
@@ -2740,6 +2773,10 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     harness: featureHarness,
     title: input.title,
     summary: input.summary ?? '',
+    needsDesign: input.needsDesign ?? false,
+    designStatus: input.designStatus ?? null,
+    designSpecId: input.designSpecId ?? null,
+    discardedDesignWork: input.discardedDesignWork ?? false,
     // work-item-status-full-unify P-004/P-005: mirrors the INSERT above — a fresh
     // feature-family row is at the unified claimable token 'open' (was 'todo').
     state: 'open',
