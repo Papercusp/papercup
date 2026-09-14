@@ -879,8 +879,11 @@ export function passingTaskVerdictSharedInputProvenance({ root, trackedScan }) {
  * Kept here, beside the hash it feeds, so the production cache and its repair-chain
  * recurrence tests exercise one policy. Integration tasks remain deliberately
  * non-reusable; repo-wide guards bind every tracked path; ordinary tasks bind their
- * workspace plus its transitive local dependency closure semantically, while the shared
- * runner/config inputs are exposed separately as execution provenance. The legacy aggregate
+ * workspace plus its transitive local dependency closure AND shared semantic inputs.
+ * Setup, membership, dependency resolution and result interpretation are not transport:
+ * changing them invalidates an earlier pass. Only the admission wrapper is execution-only;
+ * per-invocation scheduler/transport values are separately normalized by the identity helpers.
+ * Shared inputs are also exposed as execution provenance. The legacy aggregate
  * fields remain as compatibility aliases for callers that have not migrated yet.
  */
 export function passingTaskVerdictDependencyProvenance({
@@ -939,11 +942,6 @@ export function passingTaskVerdictDependencyProvenance({
         (dir) => pathInsideDir(dir, submodule) || pathInsideDir(submodule, dir),
       ),
   );
-  const semanticFiles = wholeTree
-    ? trackedScan.files
-    : trackedScan.files.filter((file) =>
-        sortedClosureDirs.some((dir) => pathInsideDir(file, dir)),
-      );
   if (!wholeTree && sharedInputProvenance && !sharedInputProvenance.ok) {
     return sharedInputProvenance;
   }
@@ -963,6 +961,18 @@ export function passingTaskVerdictDependencyProvenance({
             : !file.includes("/") ||
               file.startsWith("scripts/") ||
               file.startsWith("libs/test-config/"),
+      );
+  // R-3: absence from the workspace closure is NOT evidence that a shared input
+  // cannot change the test's meaning. Reuse the derived graph, rather than a
+  // second setup/config allowlist that could silently omit a new imported oracle.
+  const sharedSemanticFiles = new Set(
+    executionFiles.filter((file) => file !== "scripts/pc-heavy.sh"),
+  );
+  const semanticFiles = wholeTree
+    ? trackedScan.files
+    : trackedScan.files.filter((file) =>
+        sharedSemanticFiles.has(file) ||
+        sortedClosureDirs.some((dir) => pathInsideDir(file, dir)),
       );
   const semantic = hashDependencyFileSet({
     root,

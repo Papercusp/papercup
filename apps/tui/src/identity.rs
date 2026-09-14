@@ -275,7 +275,7 @@ fn bind_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::{AgentChatIdentity, BuildIdentity, StoreIdentity};
+    use crate::client::{AgentChatIdentity, BuildIdentity, OperatorCapabilities, StoreIdentity};
 
     fn ident(endpoint: &str, workspace: &str, store: &str) -> BackendIdentity {
         BackendIdentity {
@@ -296,6 +296,9 @@ mod tests {
             agent_chat: AgentChatIdentity {
                 scope: format!("workspace:{workspace}"),
                 route: "/api/agent-chats".into(),
+            },
+            capabilities: OperatorCapabilities {
+                attached_su_session: true,
             },
         }
     }

@@ -7027,7 +7027,9 @@ mod tests {
 
     #[test]
     fn canonical_backend_identity_and_identity_failures_are_visible() {
-        use crate::client::{AgentChatIdentity, BackendIdentity, BuildIdentity, StoreIdentity};
+        use crate::client::{
+            AgentChatIdentity, BackendIdentity, BuildIdentity, OperatorCapabilities, StoreIdentity,
+        };
         let mut app = App::new();
         app.backend_identity = Some(BackendIdentity {
             schema_version: 1,
@@ -7047,6 +7049,9 @@ mod tests {
             agent_chat: AgentChatIdentity {
                 scope: "workspace:papercusp-workspace".into(),
                 route: "/api/agent-chats".into(),
+            },
+            capabilities: OperatorCapabilities {
+                attached_su_session: true,
             },
         });
         let text = render(&app, 260, 12);

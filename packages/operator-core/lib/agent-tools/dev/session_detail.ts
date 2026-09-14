@@ -1,5 +1,5 @@
 /**
- * dev:session_detail — full drilldown for one spawn_id.
+ * dev:session_detail — full drilldown for one spawn_id or native session id.
  *
  * Returns: the spawned_agents row, the tool_invocations timeline,
  * direct-child spawns, and related agent_chats (same harness+feature).
@@ -13,10 +13,10 @@ import { getSessionDetail } from '../../dev-data';
 export default defineTool({
   name: 'dev:session_detail',
   profile: 'engineer',
-  description: 'Drilldown for one spawn_id: agent metadata, tool invocations timeline, child spawns, related chats.',
+  description: 'Drilldown for one spawn_id or native session_id: agent metadata, tool invocations timeline, child spawns, related chats.',
   capability: 'intel:read',
   guidance: {
-    when: `Read full detail of one /dev session — request history, env, traces.`,
+    when: `Read full detail of one /dev session — request history, env, traces. Accepts the spawn_id from dev:sessions or a native session_id/omp_thread_id from sessions:* or the session roster.`,
     notWhen: `For the SESSION LIST, use \`dev:sessions\` first.`,
     seeAlso: [
       'dev:sessions (the session list)',
@@ -26,7 +26,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z.object({
-    spawnId: z.string().min(1),
+    spawnId: z.string().min(1).describe('spawn_id from dev:sessions, or a native session_id/omp_thread_id from the session roster.'),
   }),
   async handler(args) {
     const result = await getSessionDetail(args.spawnId);

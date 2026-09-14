@@ -1326,6 +1326,7 @@ export async function buildStatus(): Promise<BuildStatus> {
 
 export interface SessionAgent {
   spawn_id: string;
+  session_id?: string | null;
   workspace_id: string;
   harness_slug: string | null;
   parent_spawn_id: string | null;
@@ -1366,6 +1367,12 @@ export interface SessionChildSpawn {
 
 export interface SessionDetail {
   spawn_id: string;
+  /** Native CLI session id when the lookup was by session_id or the spawn row records it. */
+  session_id: string | null;
+  /** OMP thread id when the lookup was by omp_thread_id. */
+  omp_thread_id: string | null;
+  /** Coordination owner for an interactive adv_sessions lookup. */
+  coord_owner_id: string | null;
   agent: SessionAgent | null;
   invocations: SessionInvocation[];
   children: SessionChildSpawn[];
@@ -1378,6 +1385,7 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
   // 1. spawned_agents row.
   type AgentRow = {
     spawn_id: string;
+    session_id: string | null;
     workspace_id: string;
     harness_slug: string | null;
     parent_spawn_id: string | null;
@@ -1397,10 +1405,34 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
   };
   const agentRows = (await sql`
     SELECT * FROM harness_shared.spawned_agents
-    WHERE spawn_id = ${spawnId}
+    WHERE spawn_id = ${spawnId} OR session_id = ${spawnId}
     LIMIT 1
   `) as AgentRow[];
   const agent = agentRows[0] ?? null;
+
+  // Interactive SU sessions do not have a spawned_agents row. Their native
+  // session id is linked to the coordination owner by adv_sessions, while
+  // tool_invocations are attributed by that owner (not by spawn_id). Resolve
+  // this second id space so a session id copied from sessions:* is accepted by
+  // the same detail surface as a spawn id.
+  type AdvSessionRow = {
+    session_id: string | null;
+    omp_thread_id: string | null;
+    coord_owner_id: string | null;
+    started_at: string | null;
+    ended_at: string | null;
+  };
+  const advSessionRows = agent
+    ? []
+    : ((await sql`
+        SELECT session_id, omp_thread_id, coord_owner_id, started_at, ended_at
+        FROM harness_shared.adv_sessions
+        WHERE session_id = ${spawnId} OR omp_thread_id = ${spawnId}
+        ORDER BY started_at DESC NULLS LAST
+        LIMIT 1
+      `) as AdvSessionRow[]);
+  const advSession = advSessionRows[0] ?? null;
+  const resolvedSpawnId = agent?.spawn_id ?? spawnId;
 
   // 2. tool_invocations for this spawn (timeline).
   type InvocRow = {
@@ -1412,13 +1444,23 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
     error_message: string | null;
     args_json: unknown;
   };
-  const invocations = (await sql`
-    SELECT id::text, tool_name, invoked_at, duration_ms, status, error_message, args_json
-    FROM harness_shared.tool_invocations
-    WHERE spawn_id = ${spawnId}
-    ORDER BY invoked_at ASC
-    LIMIT 500
-  `) as InvocRow[];
+  const invocations = (await (advSession
+    ? sql`
+        SELECT id::text, tool_name, invoked_at, duration_ms, status, error_message, args_json
+        FROM harness_shared.tool_invocations
+        WHERE coord_owner_id = ${advSession.coord_owner_id}
+          AND invoked_at >= ${advSession.started_at}
+          AND (${advSession.ended_at} IS NULL OR invoked_at <= ${advSession.ended_at})
+        ORDER BY invoked_at ASC
+        LIMIT 500
+      `
+    : sql`
+        SELECT id::text, tool_name, invoked_at, duration_ms, status, error_message, args_json
+        FROM harness_shared.tool_invocations
+        WHERE spawn_id = ${resolvedSpawnId}
+        ORDER BY invoked_at ASC
+        LIMIT 500
+      `)) as InvocRow[];
 
   // 3. Children: spawns whose parent_spawn_id = this spawn.
   type ChildRow = {
@@ -1430,27 +1472,29 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
     tool_count: number;
     error_count: number;
   };
-  const children = (await sql`
-    SELECT
-      sa.spawn_id,
-      sa.child_role,
-      sa.status,
-      sa.started_at,
-      sa.finished_at,
-      COALESCE(ti.cnt, 0)::int AS tool_count,
-      COALESCE(ti.err, 0)::int AS error_count
-    FROM harness_shared.spawned_agents sa
-    LEFT JOIN (
-      SELECT spawn_id,
-             count(*)::int AS cnt,
-             count(*) FILTER (WHERE status != 'ok')::int AS err
-      FROM harness_shared.tool_invocations
-      GROUP BY spawn_id
-    ) ti ON ti.spawn_id = sa.spawn_id
-    WHERE sa.parent_spawn_id = ${spawnId}
-    ORDER BY sa.started_at ASC NULLS LAST
-    LIMIT 100
-  `) as ChildRow[];
+  const children = advSession
+    ? []
+    : ((await sql`
+        SELECT
+          sa.spawn_id,
+          sa.child_role,
+          sa.status,
+          sa.started_at,
+          sa.finished_at,
+          COALESCE(ti.cnt, 0)::int AS tool_count,
+          COALESCE(ti.err, 0)::int AS error_count
+        FROM harness_shared.spawned_agents sa
+        LEFT JOIN (
+          SELECT spawn_id,
+                 count(*)::int AS cnt,
+                 count(*) FILTER (WHERE status != 'ok')::int AS err
+          FROM harness_shared.tool_invocations
+          GROUP BY spawn_id
+        ) ti ON ti.spawn_id = sa.spawn_id
+        WHERE sa.parent_spawn_id = ${resolvedSpawnId}
+        ORDER BY sa.started_at ASC NULLS LAST
+        LIMIT 100
+      `) as ChildRow[]);
 
   // 4. Related agent_chats — same harness + feature_id, if we have both.
   let relatedChats: Array<{ id: string; role: string; title: string | null; updated_at: string }> = [];
@@ -1483,12 +1527,15 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
     }
   }
 
-  if (!agent && invocations.length === 0 && children.length === 0) {
+  if (!agent && !advSession && invocations.length === 0 && children.length === 0) {
     return null;
   }
 
   return {
-    spawn_id: spawnId,
+    spawn_id: resolvedSpawnId,
+    session_id: agent?.session_id ?? advSession?.session_id ?? null,
+    omp_thread_id: advSession?.omp_thread_id ?? null,
+    coord_owner_id: advSession?.coord_owner_id ?? null,
     agent,
     invocations,
     children,

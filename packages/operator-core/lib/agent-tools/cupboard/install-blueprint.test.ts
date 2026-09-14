@@ -45,7 +45,7 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
         operation: 'rollback',
         record: releaseRecord('1.0.0'),
         installedTo: '/blueprints/identity',
-        diff: { fromContentHash: null, toContentHash: 'a'.repeat(64), promptText: [], burnKnobs: [] },
+        diff: { fromContentHash: null, toContentHash: 'a'.repeat(64), promptText: [], burnKnobs: [], grants: [] },
         activationRequired: true,
       },
     });
@@ -80,7 +80,7 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
           releaseRecord('1.0.0'),
           releaseRecord('2.0.0'),
         ],
-        diff: { fromContentHash: 'a'.repeat(64), toContentHash: null, promptText: [], burnKnobs: [] },
+        diff: { fromContentHash: 'a'.repeat(64), toContentHash: null, promptText: [], burnKnobs: [], grants: [] },
         activationRequired: true,
       },
     });
@@ -114,6 +114,7 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
           toContentHash: 'a'.repeat(64),
           promptText: [{ path: 'identity/prompts/p.md', beforeHash: null, afterHash: 'a'.repeat(64), patch: '-old\n+new' }],
           burnKnobs: [],
+          grants: [],
         },
         activationPreflight: { ok: true, candidate: { id: 'identity', slots: ['domain'] }, conflicts: [] },
         capabilityGrants: {

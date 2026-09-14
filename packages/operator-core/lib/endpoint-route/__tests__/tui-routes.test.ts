@@ -168,6 +168,7 @@ describe('GET /tui/identity', () => {
       },
       build: { version: '1.2.3', sha: 'abc123' },
       agentChat: { scope: 'workspace:ws-pui', route: '/api/agent-chats' },
+      capabilities: { attachedSuSession: true },
     });
     expect((body.store as { id: string }).id).toMatch(/^pg-[0-9a-f]{12}$/);
     expect(JSON.stringify(body)).not.toContain('secret');

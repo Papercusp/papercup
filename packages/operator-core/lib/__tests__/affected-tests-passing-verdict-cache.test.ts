@@ -1469,9 +1469,10 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
       const guardBefore = repoWide();
       if (!before.ok || !guardBefore.ok) throw new Error('expected hashable fixture provenance');
       expect(before.semantic.files).toEqual([
+        ...sharedBefore.files.filter((file) => file !== 'scripts/pc-heavy.sh'),
         'pkg/dependency/src/index.ts',
         'pkg/target/src/index.ts',
-      ]);
+      ].sort());
       expect(before.execution?.files).toEqual(sharedBefore.files);
 
       const semanticIdentity = (dependencyHash: string) =>
@@ -1509,12 +1510,12 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
       writeFileSync(join(root, 'libs/test-config/src/setup.ts'), 'export const setup = false;\n');
       const afterConfig = ordinary();
       if (!afterConfig.ok) throw new Error(afterConfig.reason);
-      expect(afterConfig.semantic.hash).toBe(before.semantic.hash);
+      expect(afterConfig.semantic.hash).not.toBe(before.semantic.hash);
       expect(afterConfig.execution?.hash).not.toBe(before.execution?.hash);
       expect(afterConfig.hash).not.toBe(before.hash);
       expect(decideSemantic(afterConfig.semantic.hash)).toEqual({
-        hit: true,
-        reason: 'identity-match',
+        hit: false,
+        reason: 'dependency-closure-changed',
       });
 
       writeFileSync(
@@ -1552,12 +1553,35 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
       writeFileSync(join(root, 'scripts/lib/runtime.mjs'), 'export const runtime = 2;\n');
       const afterRunner = ordinary();
       if (!afterRunner.ok) throw new Error(afterRunner.reason);
-      expect(afterRunner.semantic.hash).toBe(before.semantic.hash);
+      expect(afterRunner.semantic.hash).not.toBe(before.semantic.hash);
       expect(afterRunner.execution?.hash).not.toBe(before.execution?.hash);
       expect(afterRunner.hash).not.toBe(before.hash);
       expect(decideSemantic(afterRunner.semantic.hash)).toEqual({
-        hit: true,
-        reason: 'identity-match',
+        hit: false,
+        reason: 'dependency-closure-changed',
+      });
+      writeFileSync(join(root, 'scripts/lib/runtime.mjs'), initial.get('scripts/lib/runtime.mjs')!);
+
+      // Dependency resolution, membership and imported result interpretation are
+      // semantic even though the workspace's own bytes did not change.
+      for (const file of ['package-lock.json', 'package.json', 'libs/test-config/src/lane-split.ts']) {
+        writeFileSync(join(root, file), `${initial.get(file)}\nsemantic-change\n`);
+        const changed = ordinary();
+        if (!changed.ok) throw new Error(changed.reason);
+        expect(decideSemantic(changed.semantic.hash), file).toEqual({
+          hit: false, reason: 'dependency-closure-changed',
+        });
+        writeFileSync(join(root, file), initial.get(file)!);
+      }
+
+      // The proven admission wrapper is different: scheduling churn must not
+      // discard valid test-semantic proof.
+      writeFileSync(join(root, 'scripts/pc-heavy.sh'), '#!/bin/sh\n# new admission policy\n');
+      const afterScheduling = ordinary();
+      if (!afterScheduling.ok) throw new Error(afterScheduling.reason);
+      expect(afterScheduling.execution?.hash).not.toBe(before.execution?.hash);
+      expect(decideSemantic(afterScheduling.semantic.hash)).toEqual({
+        hit: true, reason: 'identity-match',
       });
     } finally {
       rmSync(root, { recursive: true, force: true });

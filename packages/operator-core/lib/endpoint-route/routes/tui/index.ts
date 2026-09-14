@@ -96,6 +96,12 @@ const identityGet = defineTool({
         scope: `workspace:${workspaceId}`,
         route: '/api/agent-chats',
       },
+      capabilities: {
+        // PUI probes this before calling launch-su.  Older operators omit the
+        // field, so a current client fails closed instead of falling through
+        // to the legacy visible-terminal launcher.
+        attachedSuSession: true,
+      },
     });
   },
 });

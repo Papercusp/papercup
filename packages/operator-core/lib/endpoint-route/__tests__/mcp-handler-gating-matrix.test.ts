@@ -454,6 +454,8 @@ const seen: SeenCall[] = [];
 const LATE_PLUGIN_NAME = 'gating-matrix-late-plugin';
 const LATE_PLUGIN_TOOL = 'gating-late.arrives';
 const latePluginSeen: unknown[] = [];
+const replayValidationSeen: unknown[] = [];
+const replayBusinessErrorSeen: unknown[] = [];
 
 function probeFn(name: string) {
   return async (input: unknown, ctx: UnifiedToolContext) => {
@@ -663,6 +665,35 @@ defineTool({
   handler: async (input) => {
     invokeProbeSeen.push(input);
     return { data: { lines: ['alpha', 'beta', 'gamma'] } };
+  },
+});
+
+defineTool({
+  name: 'gatingtest:replay_validation',
+  requirePrincipal: false,
+  capability: 'agent_tools:read',
+  effect: 'write',
+  args: z.object({ accepted: z.string() }),
+  agentRoles: ['scoper'],
+  handler: async (input) => {
+    replayValidationSeen.push(input);
+    return { data: { ok: true, accepted: input.accepted } };
+  },
+});
+
+defineTool({
+  name: 'gatingtest:replay_business_error',
+  requirePrincipal: false,
+  capability: 'agent_tools:read',
+  effect: 'write',
+  args: z.object({ value: z.string().optional() }),
+  agentRoles: ['scoper'],
+  handler: async (input) => {
+    replayBusinessErrorSeen.push(input);
+    return {
+      content: [{ type: 'text' as const, text: 'business failure' }],
+      isError: true,
+    };
   },
 });
 
@@ -1518,6 +1549,8 @@ beforeEach(() => {
   h.afterReplayStore = null;
   h.storedReplay = null;
   h.invocations.length = 0;
+  replayValidationSeen.length = 0;
+  replayBusinessErrorSeen.length = 0;
   resetResultDoorAggregatesForTests();
   h.scopedClampFlag.value = false;
   h.verifyExplicitPlanHarness.mockResolvedValue(false);
@@ -2174,6 +2207,59 @@ describe('replay receipt is persisted only AFTER the tool transaction commits', 
     expect(res.isError).not.toBe(true);
     expect(h.replayStores).toEqual([]);
     expect(h.txEvents).toEqual(['commit']);
+  });
+});
+
+describe('validation refusals do not reserve MCP replay keys', () => {
+  const replayExtra = extraFor(signedUrl({ client: 'validation-replay-caller' }));
+
+  it('revalidates a corrected payload while preserving replay for handler isError results', async () => {
+    h.replayLookupFromStores = true;
+    const validationKey = 'idem-validation-refusal-1';
+    const invalid = await callTool(
+      'gatingtest:replay_validation',
+      { rejected: true },
+      replayExtra,
+      { idempotencyKey: validationKey },
+    );
+    expect(invalid.isError).toBe(true);
+    expect(textOf(invalid)).toContain('invalid_input');
+    expect(replayValidationSeen).toEqual([]);
+    expect(h.replayStores).toEqual([]);
+
+    const corrected = await callTool(
+      'gatingtest:replay_validation',
+      { accepted: 'ok' },
+      replayExtra,
+      { idempotencyKey: validationKey },
+    );
+    expect(corrected.isError).toBeUndefined();
+    expect(JSON.parse(textOf(corrected))).toEqual({ ok: true, accepted: 'ok' });
+    expect(replayValidationSeen).toHaveLength(1);
+    expect(h.replayStores.map((row) => row.idempotencyKey)).toEqual([validationKey]);
+
+    const businessKey = 'idem-business-error-1';
+    const firstBusinessError = await callTool(
+      'gatingtest:replay_business_error',
+      { value: 'first' },
+      replayExtra,
+      { idempotencyKey: businessKey },
+    );
+    expect(firstBusinessError.isError).toBe(true);
+    expect(textOf(firstBusinessError)).toBe('business failure');
+    expect(replayBusinessErrorSeen).toHaveLength(1);
+    expect(h.replayStores.map((row) => row.idempotencyKey)).toEqual([validationKey, businessKey]);
+
+    const replayedBusinessError = await callTool(
+      'gatingtest:replay_business_error',
+      { value: 'corrected-but-not-rerun' },
+      replayExtra,
+      { idempotencyKey: businessKey },
+    );
+    expect(replayedBusinessError.isError).toBe(true);
+    expect(textOf(replayedBusinessError)).toBe('business failure');
+    expect(replayedBusinessError._meta?.replayed).toBe(true);
+    expect(replayBusinessErrorSeen).toHaveLength(1);
   });
 });
 

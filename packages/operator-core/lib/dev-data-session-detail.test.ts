@@ -26,6 +26,7 @@ import { getSessionDetail } from './dev-data';
 // spawned_agents (1), tool_invocations (2), spawned_agents children (3).
 const AGENT_ROW = {
   spawn_id: 'spawn-1',
+  session_id: null,
   workspace_id: 'ws-1',
   harness_slug: 'papercusp',
   parent_spawn_id: null,
@@ -115,5 +116,62 @@ describe('getSessionDetail related_chats', () => {
 
     expect(dbMocks.harnessQuery).not.toHaveBeenCalled();
     expect(detail?.related_chats).toEqual([]);
+  });
+
+  it('resolves an interactive native session id through adv_sessions and owner activity', async () => {
+    dbMocks.orgSql.mockReset();
+    dbMocks.orgSql
+      .mockResolvedValueOnce([]) // no spawned_agents row for an interactive session
+      .mockResolvedValueOnce([
+        {
+          session_id: 'codex-session-1',
+          omp_thread_id: null,
+          coord_owner_id: 'su-owner-1',
+          started_at: '2026-09-13T00:00:00.000Z',
+          ended_at: '2026-09-13T01:00:00.000Z',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: '42',
+          tool_name: 'coord:orient',
+          invoked_at: '2026-09-13T00:10:00.000Z',
+          duration_ms: 10,
+          status: 'ok',
+          error_message: null,
+          args_json: {},
+        },
+      ]);
+
+    const detail = await getSessionDetail('codex-session-1');
+
+    expect(detail).toMatchObject({
+      spawn_id: 'codex-session-1',
+      session_id: 'codex-session-1',
+      omp_thread_id: null,
+      coord_owner_id: 'su-owner-1',
+      agent: null,
+      children: [],
+    });
+    expect(detail?.invocations).toHaveLength(1);
+    expect(detail?.invocations[0]?.tool_name).toBe('coord:orient');
+    expect(dbMocks.orgSql.mock.calls[2]?.slice(1)).toContain('su-owner-1');
+  });
+
+  it('resolves a headless native session id to its canonical spawn id', async () => {
+    dbMocks.orgSql.mockReset();
+    dbMocks.orgSql
+      .mockResolvedValueOnce([{ ...AGENT_ROW, spawn_id: 'spawn-2', session_id: 'claude-session-2' }])
+      .mockResolvedValueOnce([]) // tool_invocations
+      .mockResolvedValueOnce([]); // children
+
+    const detail = await getSessionDetail('claude-session-2');
+
+    expect(detail).toMatchObject({
+      spawn_id: 'spawn-2',
+      session_id: 'claude-session-2',
+      coord_owner_id: null,
+    });
+    expect(dbMocks.orgSql.mock.calls[0]?.slice(1)).toContain('claude-session-2');
   });
 });
