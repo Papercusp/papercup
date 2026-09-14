@@ -34,6 +34,8 @@
  * cap: if the join would exceed it, the superseded tail of the prior content is
  * trimmed (with a visible `[older checkpoint content truncated]` marker) so the
  * oldest baseline and newest addendum stay visible whenever they fit. `append: true`
+ * unions supplied check rows by default; an explicit `rowsMode:'replace'` still
+ * replaces the check-row set while append controls only the body.
  * with a blank/omitted checkpoint text is rejected
  * (append + clear is a contradiction) unless `checks` is supplied as an additive,
  * body-preserving patch.
@@ -140,6 +142,7 @@
  */
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { WORK_ITEM_LIFECYCLE_ROLES } from '../coordination/roles';
@@ -1049,9 +1052,10 @@ const itemSpec = z.object({
     .optional()
     .describe('per-item harness (else the batch `harness` default / ctx / item lookup)'),
   append: looseBoolean().describe(
-    'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with a `---` separator) instead ' +
-      'of replacing it. Makes the WHOLE write additive: supplied `checks` are UNIONED onto the carried set ' +
-      'rather than replacing it (EI-19944669306930709). Reads the current checkpoint first via the same path a ' +
+      'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with a `---` separator) instead ' +
+      'of replacing it. By default supplied `checks` are UNIONED onto the carried set rather than replacing it ' +
+      '(EI-19944669306930709); explicit `rowsMode:\'replace\'` still replaces the check rows while append controls ' +
+      'only the body. Reads the current checkpoint first via the same path a ' +
       'future pickup uses. A missing `checkpoint` is allowed with `checks` as an additive, body-preserving patch. ' +
       'Otherwise append requires a non-blank `checkpoint` (append + clear is contradictory — rejected, not silently ' +
       'treated as a clear). Bounded to the 32000-char cap: the superseded tail of the prior content is trimmed first if the join would ' +
@@ -1572,10 +1576,34 @@ export default defineTool({
               errorCode: 'attestation_hash_required',
             };
           }
-          const att = await attestWorkItemCheckpointUnchanged(
-            { harness, workItemId: it.id, workspaceId },
-            { contentHash },
-          );
+          let att;
+          try {
+            att = await attestWorkItemCheckpointUnchanged(
+              { harness, workItemId: it.id, workspaceId },
+              { contentHash },
+            );
+          } catch (error) {
+            // The work-item adapter uses a bounded transaction for the atomic
+            // attestation. Convert both PostgreSQL contention and acquisition
+            // deadline failures into the same per-item retryable result as a
+            // normal checkpoint write, so a lock wait cannot escape runBulk and
+            // become an opaque MCP transport timeout.
+            if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) {
+              const pgCode = error instanceof OrgTxnTimeoutError ? error.pgCode : undefined;
+              return {
+                ok: false as const,
+                id: it.id,
+                error: 'timeout',
+                errorCode: 'timeout',
+                retryable: true,
+                ...(pgCode ? { pgCode } : {}),
+                message:
+                  `work_items:checkpoint attestation hit transient database contention: ${error.message}. ` +
+                  'Checkpoint body was NOT changed; retry shortly.',
+              };
+            }
+            throw error;
+          }
           if (att.ok) {
             return {
               ok: true as const,
@@ -1837,7 +1865,12 @@ export default defineTool({
         // patch shape. An explicit clear remains a true clear, preserving the
         // work_items:complete cleanup contract.
         const additiveRowsMode = rowsMode === 'merge' && (isChecksOnlyPatch || !isClear);
-        const additiveChecks = wantsAppend || additiveRowsMode;
+        // `append` governs the BODY. An explicit rowsMode:'replace' remains authoritative
+        // for CHECK ROWS, so callers can append a narrative update while retiring the
+        // exact carried rows named by retireIds. Previously `wantsAppend` unconditionally
+        // made this true, neutralizing rowsMode:'replace' and reporting that no rows would
+        // drop (EI-23151788119236015).
+        const additiveChecks = rowsMode === 'replace' ? false : wantsAppend || additiveRowsMode;
         // A CLEAR wipes the checks too, UNLESS the caller supplied some in the same
         // call. This is a DELIBERATE divergence from loop:checkpoint, where checks
         // survive a note clear: work_items:complete clears the checkpoint as terminal

@@ -520,7 +520,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(itemBodyRef).toBe(shorthandBodyRef);
     expect(shorthandChecksRef).toBe('#/$defs/work-items-checks-v1');
     expect(itemChecksRef).toBe(shorthandChecksRef);
-    expect(JSON.stringify(json)).toHaveLength(23268);
+    expect(JSON.stringify(json)).toHaveLength(23344);
   });
 
   it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {
@@ -2890,6 +2890,29 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         expect(r.checksDropped).toEqual(['gate is green', 'main is at abc123', 'deploy landed']);
       });
 
+      it('keeps explicit rowsMode replace independent from append body joining', async () => {
+        const prior = await seedThree();
+        withPrior(await prior);
+        const r = await one({
+          id: 'WI-7',
+          checkpoint: 'new body appended after the prior note',
+          append: true,
+          rowsMode: 'replace',
+          checks: [{ claim: 'replacement check' }],
+          retireIds: ['gate is green', 'main is at abc123', 'deploy landed'],
+        });
+
+        expect(r.ok).toBe(true);
+        expect(r.checksDropped).toEqual(['gate is green', 'main is at abc123', 'deploy landed']);
+        const stored = await lastStored();
+        expect(stored).toContain('prior body');
+        expect(stored).toContain('new body appended after the prior note');
+        expect(stored).not.toContain('gate is green');
+        expect(stored).not.toContain('main is at abc123');
+        expect(stored).not.toContain('deploy landed');
+        expect(stored).toContain('replacement check');
+      });
+
       it('EI-21923095696933477: refuses (even with confirmRetire:true) when retireIds MISSES a row that would actually drop', async () => {
         const prior = await seedThree();
         withPrior(await prior);
@@ -4792,6 +4815,25 @@ describe('work_items:checkpoint — unchanged attestation surface (P-007/R-06)',
     // The budget is stated in the response rather than left for the agent to track:
     // an agent that cannot see the remaining allowance cannot plan the real write.
     expect(result.note).toContain('2 attestation(s)');
+    expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+  });
+
+  it('maps an attestation transaction timeout to a structured retryable result', async () => {
+    attestWorkItemCheckpointUnchanged.mockRejectedValueOnce(
+      new OrgTxnTimeoutError('55P03', new Error('lock timeout'), 'likely blocked by pid 42'),
+    );
+
+    const result = await one({ id: 'WI-ATT', unchanged: true, contentHash: HASH });
+
+    expect(result).toMatchObject({
+      ok: false,
+      id: 'WI-ATT',
+      error: 'timeout',
+      errorCode: 'timeout',
+      retryable: true,
+      pgCode: '55P03',
+      message: expect.stringContaining('Checkpoint body was NOT changed'),
+    });
     expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
   });
 
