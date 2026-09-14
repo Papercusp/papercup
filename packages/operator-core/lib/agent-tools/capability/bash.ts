@@ -484,7 +484,7 @@ export default defineTool({
     // consumable export), which is why it lost to the rg/backtick and background-job
     // guidance. If it needs to be agent-facing again, put it in a doc and point at it.
     when:
-      'Fixed-string searches: prefer `rg -F`, else `grep -F`; single-quote — unmatched backtick fails before either tool runs. ' +
+      'fixed-string searches: prefer `rg -F`, else `grep -F`; single-quote — unmatched backtick fails before either tool runs. ' +
       'Apostrophe regexes break single-quoted arguments; use `rg -F`, `-e` per pattern, or quoted stdin/file. ' +
       `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. Bound git history scans with \`-n\`; unbounded refused. do not shell-background child without \`wait\`.`,
     notWhen:
