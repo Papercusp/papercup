@@ -243,7 +243,24 @@
             "sourceHash": "f2819769abd836349c9611e56c3bc233679006bde9e1a392fd08ec9489fffc90",
             "contentHash": "814c1936f521b99f63f18a3c88a78657f946b7eb1bc982363665fcb37ca5d27e",
             "evidenceHash": "9d418334e0e22baa1fd1c8758ec3fb958e9f6942f017c78e470c517ba5b84c66",
-            "candidateHash": "29ca6a627b91431c0782c5db4c2ae43db5d7b577dd7c9943fcba10898bf4801d"
+            "candidateHash": "29ca6a627b91431c0782c5db4c2ae43db5d7b577dd7c9943fcba10898bf4801d",
+            "capture": {
+              "format": "json",
+              "parseStatus": "truncated",
+              "truncated": true,
+              "storedChars": 12000,
+              "maxStoredChars": 12000,
+              "contentHash": "814c1936f521b99f63f18a3c88a78657f946b7eb1bc982363665fcb37ca5d27e",
+              "sourceHash": "f2819769abd836349c9611e56c3bc233679006bde9e1a392fd08ec9489fffc90",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "dream:dream-cycle:papercusp-workspace:papercusp:33dfdb19-ec6f-46bc-a33e-354ebb70d0d2:dream:1",
+                "locator": {
+                  "kind": "dream",
+                  "id": "dream-cycle:papercusp-workspace:papercusp:33dfdb19-ec6f-46bc-a33e-354ebb70d0d2:dream:1"
+                }
+              }
+            }
           },
           {
             "ref": "dream:dream-cycle:papercusp-workspace:papercusp:969eb602-f44a-4e70-a4c4-966d5ac3fba0:dream:1",
@@ -261,7 +278,24 @@
             "sourceHash": "9cc7e1b9f81f4ef2b5079d2770812b17df676c42f878391d22244f276db700ef",
             "contentHash": "41aaea511fbcc8b0d4d0f194f927459ffd9e7236953d0b353505f2854dca3aab",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "truncated",
+              "truncated": true,
+              "storedChars": 11988,
+              "maxStoredChars": 12000,
+              "contentHash": "41aaea511fbcc8b0d4d0f194f927459ffd9e7236953d0b353505f2854dca3aab",
+              "sourceHash": "9cc7e1b9f81f4ef2b5079d2770812b17df676c42f878391d22244f276db700ef",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "dream:dream-cycle:papercusp-workspace:papercusp:969eb602-f44a-4e70-a4c4-966d5ac3fba0:dream:1",
+                "locator": {
+                  "kind": "dream",
+                  "id": "dream-cycle:papercusp-workspace:papercusp:969eb602-f44a-4e70-a4c4-966d5ac3fba0:dream:1"
+                }
+              }
+            }
           },
           {
             "ref": "dream:dream-cycle:papercusp-workspace:papercusp:81e76cc4-4480-4d3e-80b3-6b1ff58aa6ad:dream:1",
@@ -279,7 +313,24 @@
             "sourceHash": "6a9791cc54f6a5027a740bcb3d1c4cd26c6fc9f4f8d3e83f67f2ccb61d18c4a0",
             "contentHash": "7964b293471e1abac4b30d80cbff9541dc03c70b72c849c10f1df01174aa0561",
             "evidenceHash": "2bcda0023c5b7c63cc7c3f20238724a0911c41ae4c50dfb7e47d181f792ae011",
-            "candidateHash": "c5142cbe14a5f6165a16d3d7bac48169b26738b7c7a27b00279047fdf9bbd4a5"
+            "candidateHash": "c5142cbe14a5f6165a16d3d7bac48169b26738b7c7a27b00279047fdf9bbd4a5",
+            "capture": {
+              "format": "json",
+              "parseStatus": "truncated",
+              "truncated": true,
+              "storedChars": 12000,
+              "maxStoredChars": 12000,
+              "contentHash": "7964b293471e1abac4b30d80cbff9541dc03c70b72c849c10f1df01174aa0561",
+              "sourceHash": "6a9791cc54f6a5027a740bcb3d1c4cd26c6fc9f4f8d3e83f67f2ccb61d18c4a0",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "dream:dream-cycle:papercusp-workspace:papercusp:81e76cc4-4480-4d3e-80b3-6b1ff58aa6ad:dream:1",
+                "locator": {
+                  "kind": "dream",
+                  "id": "dream-cycle:papercusp-workspace:papercusp:81e76cc4-4480-4d3e-80b3-6b1ff58aa6ad:dream:1"
+                }
+              }
+            }
           },
           {
             "ref": "code:mechanism:memory.hive-scope:implementation",
@@ -297,7 +348,24 @@
             "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
             "contentHash": "4b4824e37b64f43c2da4f3cc9a3f20e4b90733d79e9c8908cda543955418bc9e",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 2951,
+              "maxStoredChars": 12000,
+              "contentHash": "4b4824e37b64f43c2da4f3cc9a3f20e4b90733d79e9c8908cda543955418bc9e",
+              "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:mechanism:memory.hive-scope:implementation",
+                "locator": {
+                  "kind": "code",
+                  "id": "mechanism:memory.hive-scope"
+                }
+              }
+            }
           },
           {
             "ref": "code:mechanism:memory.hive-scope:test",
@@ -315,7 +383,24 @@
             "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
             "contentHash": "e0f7a370b5d4c9499ce2dd25d819bcfc89ede6b78dfacb0ae26836492fc37273",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 2760,
+              "maxStoredChars": 12000,
+              "contentHash": "e0f7a370b5d4c9499ce2dd25d819bcfc89ede6b78dfacb0ae26836492fc37273",
+              "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:mechanism:memory.hive-scope:test",
+                "locator": {
+                  "kind": "code",
+                  "id": "mechanism:memory.hive-scope"
+                }
+              }
+            }
           },
           {
             "ref": "code:capability:code.secret-scanned-pack:test",
@@ -333,7 +418,24 @@
             "sourceHash": "5d8caa6748a5d08b22537d1e77edb0185da68a42c29ae5b9b013a74eb4da8929",
             "contentHash": "1f9362c4a3f9d90c5f4b90a19910e681d68bf81e732c174d840af58d5488edd8",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 4117,
+              "maxStoredChars": 12000,
+              "contentHash": "1f9362c4a3f9d90c5f4b90a19910e681d68bf81e732c174d840af58d5488edd8",
+              "sourceHash": "5d8caa6748a5d08b22537d1e77edb0185da68a42c29ae5b9b013a74eb4da8929",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:capability:code.secret-scanned-pack:test",
+                "locator": {
+                  "kind": "code",
+                  "id": "capability:code.secret-scanned-pack"
+                }
+              }
+            }
           },
           {
             "ref": "code:capability:code.secret-scanned-pack:implementation",
@@ -351,7 +453,24 @@
             "sourceHash": "5d8caa6748a5d08b22537d1e77edb0185da68a42c29ae5b9b013a74eb4da8929",
             "contentHash": "f7eff5a91ed46e72c2785f760112131b294597095ab27f312359d13f28b274c1",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 5623,
+              "maxStoredChars": 12000,
+              "contentHash": "f7eff5a91ed46e72c2785f760112131b294597095ab27f312359d13f28b274c1",
+              "sourceHash": "5d8caa6748a5d08b22537d1e77edb0185da68a42c29ae5b9b013a74eb4da8929",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:capability:code.secret-scanned-pack:implementation",
+                "locator": {
+                  "kind": "code",
+                  "id": "capability:code.secret-scanned-pack"
+                }
+              }
+            }
           },
           {
             "ref": "plan:acceptance-agent-session-scope-reaper-2026-08-25",
@@ -369,7 +488,24 @@
             "sourceHash": "b1d38f0ae70c820d9e8a2a59d2cd350c111d6f9caf5e55bfa29e74b600d64835",
             "contentHash": "b1d38f0ae70c820d9e8a2a59d2cd350c111d6f9caf5e55bfa29e74b600d64835",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "text",
+              "parseStatus": "not-json",
+              "truncated": false,
+              "storedChars": 2292,
+              "maxStoredChars": 12000,
+              "contentHash": "b1d38f0ae70c820d9e8a2a59d2cd350c111d6f9caf5e55bfa29e74b600d64835",
+              "sourceHash": "b1d38f0ae70c820d9e8a2a59d2cd350c111d6f9caf5e55bfa29e74b600d64835",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "plan:acceptance-agent-session-scope-reaper-2026-08-25",
+                "locator": {
+                  "kind": "plan",
+                  "id": "acceptance-agent-session-scope-reaper-2026-08-25"
+                }
+              }
+            }
           }
         ],
         "candidateHash": "2f7edd47c9a8faa01847125a68fcc74d2acb06aa54205be83fd56a46e6afce49",
@@ -579,7 +715,24 @@
             "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
             "contentHash": "45d359b42da1ce4e410bc29da74b2b991063f9bd105015a2a57026fda6e8fb3e",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 3908,
+              "maxStoredChars": 12000,
+              "contentHash": "45d359b42da1ce4e410bc29da74b2b991063f9bd105015a2a57026fda6e8fb3e",
+              "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:capability:plans.spec-revisions:implementation",
+                "locator": {
+                  "kind": "code",
+                  "id": "capability:plans.spec-revisions"
+                }
+              }
+            }
           },
           {
             "ref": "code:capability:plans.spec-revisions:test",
@@ -597,7 +750,24 @@
             "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
             "contentHash": "6fb55181232f69121849f3e7174407db5a040b8b67debfaecbb957a8b913c4a5",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 4184,
+              "maxStoredChars": 12000,
+              "contentHash": "6fb55181232f69121849f3e7174407db5a040b8b67debfaecbb957a8b913c4a5",
+              "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:capability:plans.spec-revisions:test",
+                "locator": {
+                  "kind": "code",
+                  "id": "capability:plans.spec-revisions"
+                }
+              }
+            }
           },
           {
             "ref": "plan:acceptance-activation-receipts-2026-08-13",
@@ -615,7 +785,24 @@
             "sourceHash": "0b052a854451ef5e24578dfe98d136c8c689481e60c59559dd8f954f43b4e86f",
             "contentHash": "0b052a854451ef5e24578dfe98d136c8c689481e60c59559dd8f954f43b4e86f",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "text",
+              "parseStatus": "not-json",
+              "truncated": false,
+              "storedChars": 1842,
+              "maxStoredChars": 12000,
+              "contentHash": "0b052a854451ef5e24578dfe98d136c8c689481e60c59559dd8f954f43b4e86f",
+              "sourceHash": "0b052a854451ef5e24578dfe98d136c8c689481e60c59559dd8f954f43b4e86f",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "plan:acceptance-activation-receipts-2026-08-13",
+                "locator": {
+                  "kind": "plan",
+                  "id": "acceptance-activation-receipts-2026-08-13"
+                }
+              }
+            }
           },
           {
             "ref": "idea:EI-21622236844203274:wi:EI-21622236844203274",
@@ -634,7 +821,25 @@
             "sourceHash": "d042846a7d08cd4bee1579debb5a5c5b62e1b1b34ab8fa14f7c876371abb621f",
             "contentHash": "d042846a7d08cd4bee1579debb5a5c5b62e1b1b34ab8fa14f7c876371abb621f",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 1042,
+              "maxStoredChars": 12000,
+              "contentHash": "d042846a7d08cd4bee1579debb5a5c5b62e1b1b34ab8fa14f7c876371abb621f",
+              "sourceHash": "d042846a7d08cd4bee1579debb5a5c5b62e1b1b34ab8fa14f7c876371abb621f",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "idea:EI-21622236844203274:wi:EI-21622236844203274",
+                "locator": {
+                  "kind": "idea",
+                  "id": "EI-21622236844203274",
+                  "subref": "wi:EI-21622236844203274"
+                }
+              }
+            }
           },
           {
             "ref": "code:capability:code.secret-scanned-pack:test",
@@ -652,7 +857,24 @@
             "sourceHash": "5d8caa6748a5d08b22537d1e77edb0185da68a42c29ae5b9b013a74eb4da8929",
             "contentHash": "1f9362c4a3f9d90c5f4b90a19910e681d68bf81e732c174d840af58d5488edd8",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 4117,
+              "maxStoredChars": 12000,
+              "contentHash": "1f9362c4a3f9d90c5f4b90a19910e681d68bf81e732c174d840af58d5488edd8",
+              "sourceHash": "5d8caa6748a5d08b22537d1e77edb0185da68a42c29ae5b9b013a74eb4da8929",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:capability:code.secret-scanned-pack:test",
+                "locator": {
+                  "kind": "code",
+                  "id": "capability:code.secret-scanned-pack"
+                }
+              }
+            }
           },
           {
             "ref": "code:capability:code.secret-scanned-pack:implementation",
@@ -670,7 +892,24 @@
             "sourceHash": "5d8caa6748a5d08b22537d1e77edb0185da68a42c29ae5b9b013a74eb4da8929",
             "contentHash": "f7eff5a91ed46e72c2785f760112131b294597095ab27f312359d13f28b274c1",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 5623,
+              "maxStoredChars": 12000,
+              "contentHash": "f7eff5a91ed46e72c2785f760112131b294597095ab27f312359d13f28b274c1",
+              "sourceHash": "5d8caa6748a5d08b22537d1e77edb0185da68a42c29ae5b9b013a74eb4da8929",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:capability:code.secret-scanned-pack:implementation",
+                "locator": {
+                  "kind": "code",
+                  "id": "capability:code.secret-scanned-pack"
+                }
+              }
+            }
           },
           {
             "ref": "idea:EI-20485303524088136:plan:typed-external-prerequisite-attestations-for-release-gates-2026-08-15",
@@ -689,7 +928,25 @@
             "sourceHash": "8424c078dd84594f037b162696dd0661cfd8412befb877c5438091d2312f0f28",
             "contentHash": "8424c078dd84594f037b162696dd0661cfd8412befb877c5438091d2312f0f28",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 1184,
+              "maxStoredChars": 12000,
+              "contentHash": "8424c078dd84594f037b162696dd0661cfd8412befb877c5438091d2312f0f28",
+              "sourceHash": "8424c078dd84594f037b162696dd0661cfd8412befb877c5438091d2312f0f28",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "idea:EI-20485303524088136:plan:typed-external-prerequisite-attestations-for-release-gates-2026-08-15",
+                "locator": {
+                  "kind": "idea",
+                  "id": "EI-20485303524088136",
+                  "subref": "plan:typed-external-prerequisite-attestations-for-release-gates-2026-08-15"
+                }
+              }
+            }
           },
           {
             "ref": "plan:acceptance-agentic-plan-template-direct-dispatch-2026-08-25",
@@ -707,7 +964,24 @@
             "sourceHash": "bcb61c4d4d4774d3ce3635e623abdfbc80212c9f141b1dfe74bace95443d71a9",
             "contentHash": "bcb61c4d4d4774d3ce3635e623abdfbc80212c9f141b1dfe74bace95443d71a9",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "text",
+              "parseStatus": "not-json",
+              "truncated": false,
+              "storedChars": 2009,
+              "maxStoredChars": 12000,
+              "contentHash": "bcb61c4d4d4774d3ce3635e623abdfbc80212c9f141b1dfe74bace95443d71a9",
+              "sourceHash": "bcb61c4d4d4774d3ce3635e623abdfbc80212c9f141b1dfe74bace95443d71a9",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "plan:acceptance-agentic-plan-template-direct-dispatch-2026-08-25",
+                "locator": {
+                  "kind": "plan",
+                  "id": "acceptance-agentic-plan-template-direct-dispatch-2026-08-25"
+                }
+              }
+            }
           }
         ],
         "candidateHash": "72a00fae61c896db12eb3ae87856d062ac1147e4f4c6a2212043e5f4a2b44018",
@@ -955,7 +1229,24 @@
             "sourceHash": "0e7abe88feeb75b0142ab252dc8733d691b90948dbc37fc2c8607e7d47a2a291",
             "contentHash": "0055ea5b565f708f4599ca3e70e747c964576da6eebefbbec4c5240836d97ade",
             "evidenceHash": "ed6a67c0d86efbb72e9a7afe139d00358c76c988fa94bdbf8b15c57fa6e6b037",
-            "candidateHash": "8d6ce3a7fcf28509446ee4a070cc4705c0762d27f7b6a5a2060876126a6605a1"
+            "candidateHash": "8d6ce3a7fcf28509446ee4a070cc4705c0762d27f7b6a5a2060876126a6605a1",
+            "capture": {
+              "format": "json",
+              "parseStatus": "truncated",
+              "truncated": true,
+              "storedChars": 12000,
+              "maxStoredChars": 12000,
+              "contentHash": "0055ea5b565f708f4599ca3e70e747c964576da6eebefbbec4c5240836d97ade",
+              "sourceHash": "0e7abe88feeb75b0142ab252dc8733d691b90948dbc37fc2c8607e7d47a2a291",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "dream:dream-cycle:papercusp-workspace:papercusp:cc713651-7d82-4a4e-a69d-c66336363cc6:dream:1",
+                "locator": {
+                  "kind": "dream",
+                  "id": "dream-cycle:papercusp-workspace:papercusp:cc713651-7d82-4a4e-a69d-c66336363cc6:dream:1"
+                }
+              }
+            }
           },
           {
             "ref": "code:mechanism:memory.hive-scope:test",
@@ -973,7 +1264,24 @@
             "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
             "contentHash": "e0f7a370b5d4c9499ce2dd25d819bcfc89ede6b78dfacb0ae26836492fc37273",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 2760,
+              "maxStoredChars": 12000,
+              "contentHash": "e0f7a370b5d4c9499ce2dd25d819bcfc89ede6b78dfacb0ae26836492fc37273",
+              "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:mechanism:memory.hive-scope:test",
+                "locator": {
+                  "kind": "code",
+                  "id": "mechanism:memory.hive-scope"
+                }
+              }
+            }
           },
           {
             "ref": "code:mechanism:memory.hive-scope:implementation",
@@ -991,7 +1299,24 @@
             "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
             "contentHash": "4b4824e37b64f43c2da4f3cc9a3f20e4b90733d79e9c8908cda543955418bc9e",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 2951,
+              "maxStoredChars": 12000,
+              "contentHash": "4b4824e37b64f43c2da4f3cc9a3f20e4b90733d79e9c8908cda543955418bc9e",
+              "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:mechanism:memory.hive-scope:implementation",
+                "locator": {
+                  "kind": "code",
+                  "id": "mechanism:memory.hive-scope"
+                }
+              }
+            }
           },
           {
             "ref": "code:capability:plans.spec-revisions:implementation",
@@ -1009,7 +1334,24 @@
             "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
             "contentHash": "45d359b42da1ce4e410bc29da74b2b991063f9bd105015a2a57026fda6e8fb3e",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 3908,
+              "maxStoredChars": 12000,
+              "contentHash": "45d359b42da1ce4e410bc29da74b2b991063f9bd105015a2a57026fda6e8fb3e",
+              "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:capability:plans.spec-revisions:implementation",
+                "locator": {
+                  "kind": "code",
+                  "id": "capability:plans.spec-revisions"
+                }
+              }
+            }
           },
           {
             "ref": "code:capability:plans.spec-revisions:test",
@@ -1027,7 +1369,24 @@
             "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
             "contentHash": "6fb55181232f69121849f3e7174407db5a040b8b67debfaecbb957a8b913c4a5",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 4184,
+              "maxStoredChars": 12000,
+              "contentHash": "6fb55181232f69121849f3e7174407db5a040b8b67debfaecbb957a8b913c4a5",
+              "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:capability:plans.spec-revisions:test",
+                "locator": {
+                  "kind": "code",
+                  "id": "capability:plans.spec-revisions"
+                }
+              }
+            }
           },
           {
             "ref": "dream:dream-cycle:papercusp-workspace:papercusp:33dfdb19-ec6f-46bc-a33e-354ebb70d0d2:dream:1",
@@ -1045,7 +1404,24 @@
             "sourceHash": "f2819769abd836349c9611e56c3bc233679006bde9e1a392fd08ec9489fffc90",
             "contentHash": "814c1936f521b99f63f18a3c88a78657f946b7eb1bc982363665fcb37ca5d27e",
             "evidenceHash": "9d418334e0e22baa1fd1c8758ec3fb958e9f6942f017c78e470c517ba5b84c66",
-            "candidateHash": "29ca6a627b91431c0782c5db4c2ae43db5d7b577dd7c9943fcba10898bf4801d"
+            "candidateHash": "29ca6a627b91431c0782c5db4c2ae43db5d7b577dd7c9943fcba10898bf4801d",
+            "capture": {
+              "format": "json",
+              "parseStatus": "truncated",
+              "truncated": true,
+              "storedChars": 12000,
+              "maxStoredChars": 12000,
+              "contentHash": "814c1936f521b99f63f18a3c88a78657f946b7eb1bc982363665fcb37ca5d27e",
+              "sourceHash": "f2819769abd836349c9611e56c3bc233679006bde9e1a392fd08ec9489fffc90",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "dream:dream-cycle:papercusp-workspace:papercusp:33dfdb19-ec6f-46bc-a33e-354ebb70d0d2:dream:1",
+                "locator": {
+                  "kind": "dream",
+                  "id": "dream-cycle:papercusp-workspace:papercusp:33dfdb19-ec6f-46bc-a33e-354ebb70d0d2:dream:1"
+                }
+              }
+            }
           },
           {
             "ref": "dream:dream-cycle:papercusp-workspace:papercusp:36930ec0-0135-4c3d-8261-b9b8f8028545:dream:1",
@@ -1063,7 +1439,24 @@
             "sourceHash": "8bbadcc8545d93f486f23627f10e5d6eb54ddd55dfa2fbd9693eda1c50faddbf",
             "contentHash": "d2acfc08007a4798786c4f66a2e10607cd40b7cadb2c815acc77a8f34bfd6195",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "truncated",
+              "truncated": true,
+              "storedChars": 11988,
+              "maxStoredChars": 12000,
+              "contentHash": "d2acfc08007a4798786c4f66a2e10607cd40b7cadb2c815acc77a8f34bfd6195",
+              "sourceHash": "8bbadcc8545d93f486f23627f10e5d6eb54ddd55dfa2fbd9693eda1c50faddbf",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "dream:dream-cycle:papercusp-workspace:papercusp:36930ec0-0135-4c3d-8261-b9b8f8028545:dream:1",
+                "locator": {
+                  "kind": "dream",
+                  "id": "dream-cycle:papercusp-workspace:papercusp:36930ec0-0135-4c3d-8261-b9b8f8028545:dream:1"
+                }
+              }
+            }
           },
           {
             "ref": "plan:acceptance-agent-session-scope-reaper-2026-08-25",
@@ -1081,7 +1474,24 @@
             "sourceHash": "b1d38f0ae70c820d9e8a2a59d2cd350c111d6f9caf5e55bfa29e74b600d64835",
             "contentHash": "b1d38f0ae70c820d9e8a2a59d2cd350c111d6f9caf5e55bfa29e74b600d64835",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "text",
+              "parseStatus": "not-json",
+              "truncated": false,
+              "storedChars": 2292,
+              "maxStoredChars": 12000,
+              "contentHash": "b1d38f0ae70c820d9e8a2a59d2cd350c111d6f9caf5e55bfa29e74b600d64835",
+              "sourceHash": "b1d38f0ae70c820d9e8a2a59d2cd350c111d6f9caf5e55bfa29e74b600d64835",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "plan:acceptance-agent-session-scope-reaper-2026-08-25",
+                "locator": {
+                  "kind": "plan",
+                  "id": "acceptance-agent-session-scope-reaper-2026-08-25"
+                }
+              }
+            }
           }
         ],
         "candidateHash": "b1b265815ca6af4ef9eb0814831299fbd87818dc40c0dd8a12bb09c347196b13",
@@ -1329,7 +1739,24 @@
             "sourceHash": "d02b23c495b95b72c2890110f711da19c7b9d08a67620a74e734eef8115e4dd4",
             "contentHash": "8d7629570da12c7c3d9f8f109b296d663b7b36a9eac3cd0f0895bcecadac6b39",
             "evidenceHash": "ed6a67c0d86efbb72e9a7afe139d00358c76c988fa94bdbf8b15c57fa6e6b037",
-            "candidateHash": "b1b265815ca6af4ef9eb0814831299fbd87818dc40c0dd8a12bb09c347196b13"
+            "candidateHash": "b1b265815ca6af4ef9eb0814831299fbd87818dc40c0dd8a12bb09c347196b13",
+            "capture": {
+              "format": "json",
+              "parseStatus": "truncated",
+              "truncated": true,
+              "storedChars": 12000,
+              "maxStoredChars": 12000,
+              "contentHash": "8d7629570da12c7c3d9f8f109b296d663b7b36a9eac3cd0f0895bcecadac6b39",
+              "sourceHash": "d02b23c495b95b72c2890110f711da19c7b9d08a67620a74e734eef8115e4dd4",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "dream:dream-cycle:papercusp-workspace:papercusp:5e8c8ef8-3271-44c5-95a0-866b5fb0a177:dream:1",
+                "locator": {
+                  "kind": "dream",
+                  "id": "dream-cycle:papercusp-workspace:papercusp:5e8c8ef8-3271-44c5-95a0-866b5fb0a177:dream:1"
+                }
+              }
+            }
           },
           {
             "ref": "code:capability:plans.spec-revisions:implementation",
@@ -1347,7 +1774,24 @@
             "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
             "contentHash": "45d359b42da1ce4e410bc29da74b2b991063f9bd105015a2a57026fda6e8fb3e",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 3908,
+              "maxStoredChars": 12000,
+              "contentHash": "45d359b42da1ce4e410bc29da74b2b991063f9bd105015a2a57026fda6e8fb3e",
+              "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:capability:plans.spec-revisions:implementation",
+                "locator": {
+                  "kind": "code",
+                  "id": "capability:plans.spec-revisions"
+                }
+              }
+            }
           },
           {
             "ref": "code:capability:plans.spec-revisions:test",
@@ -1365,7 +1809,24 @@
             "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
             "contentHash": "6fb55181232f69121849f3e7174407db5a040b8b67debfaecbb957a8b913c4a5",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 4184,
+              "maxStoredChars": 12000,
+              "contentHash": "6fb55181232f69121849f3e7174407db5a040b8b67debfaecbb957a8b913c4a5",
+              "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:capability:plans.spec-revisions:test",
+                "locator": {
+                  "kind": "code",
+                  "id": "capability:plans.spec-revisions"
+                }
+              }
+            }
           },
           {
             "ref": "dream:dream-cycle:papercusp-workspace:papercusp:cc713651-7d82-4a4e-a69d-c66336363cc6:dream:1",
@@ -1383,7 +1844,24 @@
             "sourceHash": "0e7abe88feeb75b0142ab252dc8733d691b90948dbc37fc2c8607e7d47a2a291",
             "contentHash": "0055ea5b565f708f4599ca3e70e747c964576da6eebefbbec4c5240836d97ade",
             "evidenceHash": "ed6a67c0d86efbb72e9a7afe139d00358c76c988fa94bdbf8b15c57fa6e6b037",
-            "candidateHash": "8d6ce3a7fcf28509446ee4a070cc4705c0762d27f7b6a5a2060876126a6605a1"
+            "candidateHash": "8d6ce3a7fcf28509446ee4a070cc4705c0762d27f7b6a5a2060876126a6605a1",
+            "capture": {
+              "format": "json",
+              "parseStatus": "truncated",
+              "truncated": true,
+              "storedChars": 12000,
+              "maxStoredChars": 12000,
+              "contentHash": "0055ea5b565f708f4599ca3e70e747c964576da6eebefbbec4c5240836d97ade",
+              "sourceHash": "0e7abe88feeb75b0142ab252dc8733d691b90948dbc37fc2c8607e7d47a2a291",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "dream:dream-cycle:papercusp-workspace:papercusp:cc713651-7d82-4a4e-a69d-c66336363cc6:dream:1",
+                "locator": {
+                  "kind": "dream",
+                  "id": "dream-cycle:papercusp-workspace:papercusp:cc713651-7d82-4a4e-a69d-c66336363cc6:dream:1"
+                }
+              }
+            }
           },
           {
             "ref": "code:mechanism:memory.hive-scope:implementation",
@@ -1401,7 +1879,24 @@
             "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
             "contentHash": "4b4824e37b64f43c2da4f3cc9a3f20e4b90733d79e9c8908cda543955418bc9e",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 2951,
+              "maxStoredChars": 12000,
+              "contentHash": "4b4824e37b64f43c2da4f3cc9a3f20e4b90733d79e9c8908cda543955418bc9e",
+              "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:mechanism:memory.hive-scope:implementation",
+                "locator": {
+                  "kind": "code",
+                  "id": "mechanism:memory.hive-scope"
+                }
+              }
+            }
           },
           {
             "ref": "code:mechanism:memory.hive-scope:test",
@@ -1419,7 +1914,24 @@
             "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
             "contentHash": "e0f7a370b5d4c9499ce2dd25d819bcfc89ede6b78dfacb0ae26836492fc37273",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 2760,
+              "maxStoredChars": 12000,
+              "contentHash": "e0f7a370b5d4c9499ce2dd25d819bcfc89ede6b78dfacb0ae26836492fc37273",
+              "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:mechanism:memory.hive-scope:test",
+                "locator": {
+                  "kind": "code",
+                  "id": "mechanism:memory.hive-scope"
+                }
+              }
+            }
           },
           {
             "ref": "dream:dream-cycle:papercusp-workspace:papercusp:33dfdb19-ec6f-46bc-a33e-354ebb70d0d2:dream:1",
@@ -1437,7 +1949,24 @@
             "sourceHash": "f2819769abd836349c9611e56c3bc233679006bde9e1a392fd08ec9489fffc90",
             "contentHash": "814c1936f521b99f63f18a3c88a78657f946b7eb1bc982363665fcb37ca5d27e",
             "evidenceHash": "9d418334e0e22baa1fd1c8758ec3fb958e9f6942f017c78e470c517ba5b84c66",
-            "candidateHash": "29ca6a627b91431c0782c5db4c2ae43db5d7b577dd7c9943fcba10898bf4801d"
+            "candidateHash": "29ca6a627b91431c0782c5db4c2ae43db5d7b577dd7c9943fcba10898bf4801d",
+            "capture": {
+              "format": "json",
+              "parseStatus": "truncated",
+              "truncated": true,
+              "storedChars": 12000,
+              "maxStoredChars": 12000,
+              "contentHash": "814c1936f521b99f63f18a3c88a78657f946b7eb1bc982363665fcb37ca5d27e",
+              "sourceHash": "f2819769abd836349c9611e56c3bc233679006bde9e1a392fd08ec9489fffc90",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "dream:dream-cycle:papercusp-workspace:papercusp:33dfdb19-ec6f-46bc-a33e-354ebb70d0d2:dream:1",
+                "locator": {
+                  "kind": "dream",
+                  "id": "dream-cycle:papercusp-workspace:papercusp:33dfdb19-ec6f-46bc-a33e-354ebb70d0d2:dream:1"
+                }
+              }
+            }
           },
           {
             "ref": "dream:dream-cycle:papercusp-workspace:papercusp:36930ec0-0135-4c3d-8261-b9b8f8028545:dream:1",
@@ -1455,7 +1984,24 @@
             "sourceHash": "8bbadcc8545d93f486f23627f10e5d6eb54ddd55dfa2fbd9693eda1c50faddbf",
             "contentHash": "d2acfc08007a4798786c4f66a2e10607cd40b7cadb2c815acc77a8f34bfd6195",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "truncated",
+              "truncated": true,
+              "storedChars": 11988,
+              "maxStoredChars": 12000,
+              "contentHash": "d2acfc08007a4798786c4f66a2e10607cd40b7cadb2c815acc77a8f34bfd6195",
+              "sourceHash": "8bbadcc8545d93f486f23627f10e5d6eb54ddd55dfa2fbd9693eda1c50faddbf",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "dream:dream-cycle:papercusp-workspace:papercusp:36930ec0-0135-4c3d-8261-b9b8f8028545:dream:1",
+                "locator": {
+                  "kind": "dream",
+                  "id": "dream-cycle:papercusp-workspace:papercusp:36930ec0-0135-4c3d-8261-b9b8f8028545:dream:1"
+                }
+              }
+            }
           }
         ],
         "candidateHash": "7e6a31ed97b9f40024a479a7c78fd49cc153261d344487d906fd83b5dba14add",
@@ -1665,7 +2211,24 @@
             "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
             "contentHash": "4b4824e37b64f43c2da4f3cc9a3f20e4b90733d79e9c8908cda543955418bc9e",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 2951,
+              "maxStoredChars": 12000,
+              "contentHash": "4b4824e37b64f43c2da4f3cc9a3f20e4b90733d79e9c8908cda543955418bc9e",
+              "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:mechanism:memory.hive-scope:implementation",
+                "locator": {
+                  "kind": "code",
+                  "id": "mechanism:memory.hive-scope"
+                }
+              }
+            }
           },
           {
             "ref": "code:capability:code.secret-scanned-pack:test",
@@ -1683,7 +2246,24 @@
             "sourceHash": "5d8caa6748a5d08b22537d1e77edb0185da68a42c29ae5b9b013a74eb4da8929",
             "contentHash": "1f9362c4a3f9d90c5f4b90a19910e681d68bf81e732c174d840af58d5488edd8",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 4117,
+              "maxStoredChars": 12000,
+              "contentHash": "1f9362c4a3f9d90c5f4b90a19910e681d68bf81e732c174d840af58d5488edd8",
+              "sourceHash": "5d8caa6748a5d08b22537d1e77edb0185da68a42c29ae5b9b013a74eb4da8929",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:capability:code.secret-scanned-pack:test",
+                "locator": {
+                  "kind": "code",
+                  "id": "capability:code.secret-scanned-pack"
+                }
+              }
+            }
           },
           {
             "ref": "plan:acceptance-abrupt-codex-session-termination-incident-2026-08-12",
@@ -1701,7 +2281,24 @@
             "sourceHash": "230f44ecba1793bc1e1869cfa3607ba7856c67c9bc7fce83a24f144bfec1e2ad",
             "contentHash": "230f44ecba1793bc1e1869cfa3607ba7856c67c9bc7fce83a24f144bfec1e2ad",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "text",
+              "parseStatus": "not-json",
+              "truncated": false,
+              "storedChars": 1790,
+              "maxStoredChars": 12000,
+              "contentHash": "230f44ecba1793bc1e1869cfa3607ba7856c67c9bc7fce83a24f144bfec1e2ad",
+              "sourceHash": "230f44ecba1793bc1e1869cfa3607ba7856c67c9bc7fce83a24f144bfec1e2ad",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "plan:acceptance-abrupt-codex-session-termination-incident-2026-08-12",
+                "locator": {
+                  "kind": "plan",
+                  "id": "acceptance-abrupt-codex-session-termination-incident-2026-08-12"
+                }
+              }
+            }
           },
           {
             "ref": "dream:dream-cycle:papercusp-workspace:papercusp:969eb602-f44a-4e70-a4c4-966d5ac3fba0:dream:1",
@@ -1719,7 +2316,24 @@
             "sourceHash": "9cc7e1b9f81f4ef2b5079d2770812b17df676c42f878391d22244f276db700ef",
             "contentHash": "41aaea511fbcc8b0d4d0f194f927459ffd9e7236953d0b353505f2854dca3aab",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "truncated",
+              "truncated": true,
+              "storedChars": 11988,
+              "maxStoredChars": 12000,
+              "contentHash": "41aaea511fbcc8b0d4d0f194f927459ffd9e7236953d0b353505f2854dca3aab",
+              "sourceHash": "9cc7e1b9f81f4ef2b5079d2770812b17df676c42f878391d22244f276db700ef",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "dream:dream-cycle:papercusp-workspace:papercusp:969eb602-f44a-4e70-a4c4-966d5ac3fba0:dream:1",
+                "locator": {
+                  "kind": "dream",
+                  "id": "dream-cycle:papercusp-workspace:papercusp:969eb602-f44a-4e70-a4c4-966d5ac3fba0:dream:1"
+                }
+              }
+            }
           },
           {
             "ref": "dream:dream-cycle:papercusp-workspace:papercusp:26897403-5406-4112-b75b-45518fe42798:dream:1",
@@ -1737,7 +2351,24 @@
             "sourceHash": "bb5477dfae2a79bc43d43d2de9000b67cf28dcdea3c687cfe9b0504f86fbf468",
             "contentHash": "2ab556e96fdabda03d523611c0bc86cda8c61b79ab207161c6709c577234b10b",
             "evidenceHash": "ba1efc1d02a7b06e4a3a73169bbfff193b0e99be91409c1e3af8d63f633d2f71",
-            "candidateHash": "10b98ace2564fd1b455db6093d24baecb717aa5698a8cd43fa69be64dda9c172"
+            "candidateHash": "10b98ace2564fd1b455db6093d24baecb717aa5698a8cd43fa69be64dda9c172",
+            "capture": {
+              "format": "json",
+              "parseStatus": "truncated",
+              "truncated": true,
+              "storedChars": 12000,
+              "maxStoredChars": 12000,
+              "contentHash": "2ab556e96fdabda03d523611c0bc86cda8c61b79ab207161c6709c577234b10b",
+              "sourceHash": "bb5477dfae2a79bc43d43d2de9000b67cf28dcdea3c687cfe9b0504f86fbf468",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "dream:dream-cycle:papercusp-workspace:papercusp:26897403-5406-4112-b75b-45518fe42798:dream:1",
+                "locator": {
+                  "kind": "dream",
+                  "id": "dream-cycle:papercusp-workspace:papercusp:26897403-5406-4112-b75b-45518fe42798:dream:1"
+                }
+              }
+            }
           },
           {
             "ref": "code:mechanism:memory.hive-scope:test",
@@ -1755,7 +2386,24 @@
             "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
             "contentHash": "e0f7a370b5d4c9499ce2dd25d819bcfc89ede6b78dfacb0ae26836492fc37273",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 2760,
+              "maxStoredChars": 12000,
+              "contentHash": "e0f7a370b5d4c9499ce2dd25d819bcfc89ede6b78dfacb0ae26836492fc37273",
+              "sourceHash": "7235bf3348837a2621ff6d062ddfce7e1cc9a6b55f1e3541211c03393a7b9840",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:mechanism:memory.hive-scope:test",
+                "locator": {
+                  "kind": "code",
+                  "id": "mechanism:memory.hive-scope"
+                }
+              }
+            }
           },
           {
             "ref": "code:capability:code.secret-scanned-pack:implementation",
@@ -1773,7 +2421,24 @@
             "sourceHash": "5d8caa6748a5d08b22537d1e77edb0185da68a42c29ae5b9b013a74eb4da8929",
             "contentHash": "f7eff5a91ed46e72c2785f760112131b294597095ab27f312359d13f28b274c1",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 5623,
+              "maxStoredChars": 12000,
+              "contentHash": "f7eff5a91ed46e72c2785f760112131b294597095ab27f312359d13f28b274c1",
+              "sourceHash": "5d8caa6748a5d08b22537d1e77edb0185da68a42c29ae5b9b013a74eb4da8929",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:capability:code.secret-scanned-pack:implementation",
+                "locator": {
+                  "kind": "code",
+                  "id": "capability:code.secret-scanned-pack"
+                }
+              }
+            }
           },
           {
             "ref": "idea:EI-21605510614702802:wi:EI-21605510614702802",
@@ -1792,7 +2457,25 @@
             "sourceHash": "37ea636fd62d88408c0202e2442cc8c61a363ebe45e8f08f859614dc9ab9df61",
             "contentHash": "37ea636fd62d88408c0202e2442cc8c61a363ebe45e8f08f859614dc9ab9df61",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 742,
+              "maxStoredChars": 12000,
+              "contentHash": "37ea636fd62d88408c0202e2442cc8c61a363ebe45e8f08f859614dc9ab9df61",
+              "sourceHash": "37ea636fd62d88408c0202e2442cc8c61a363ebe45e8f08f859614dc9ab9df61",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "idea:EI-21605510614702802:wi:EI-21605510614702802",
+                "locator": {
+                  "kind": "idea",
+                  "id": "EI-21605510614702802",
+                  "subref": "wi:EI-21605510614702802"
+                }
+              }
+            }
           }
         ],
         "candidateHash": "c5142cbe14a5f6165a16d3d7bac48169b26738b7c7a27b00279047fdf9bbd4a5",
@@ -2002,7 +2685,24 @@
             "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
             "contentHash": "45d359b42da1ce4e410bc29da74b2b991063f9bd105015a2a57026fda6e8fb3e",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 3908,
+              "maxStoredChars": 12000,
+              "contentHash": "45d359b42da1ce4e410bc29da74b2b991063f9bd105015a2a57026fda6e8fb3e",
+              "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:capability:plans.spec-revisions:implementation",
+                "locator": {
+                  "kind": "code",
+                  "id": "capability:plans.spec-revisions"
+                }
+              }
+            }
           },
           {
             "ref": "code:mechanism:dream.cost-admission:test",
@@ -2020,7 +2720,24 @@
             "sourceHash": "25b29fc539609496b81a12af92b6123d501b38fe0bc1a2608f787dfe0513471d",
             "contentHash": "e76505c1ccb302e0a302c30006d8018f389cb0059050da941a1ba5297bf20dcd",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 3026,
+              "maxStoredChars": 12000,
+              "contentHash": "e76505c1ccb302e0a302c30006d8018f389cb0059050da941a1ba5297bf20dcd",
+              "sourceHash": "25b29fc539609496b81a12af92b6123d501b38fe0bc1a2608f787dfe0513471d",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:mechanism:dream.cost-admission:test",
+                "locator": {
+                  "kind": "code",
+                  "id": "mechanism:dream.cost-admission"
+                }
+              }
+            }
           },
           {
             "ref": "plan:acceptance-blender-goal-amendment-and-creation-rail",
@@ -2038,7 +2755,24 @@
             "sourceHash": "983364499f941f9006537884b16cc17fa50c0af0ca991d0722408057d39464e0",
             "contentHash": "983364499f941f9006537884b16cc17fa50c0af0ca991d0722408057d39464e0",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "text",
+              "parseStatus": "not-json",
+              "truncated": false,
+              "storedChars": 1814,
+              "maxStoredChars": 12000,
+              "contentHash": "983364499f941f9006537884b16cc17fa50c0af0ca991d0722408057d39464e0",
+              "sourceHash": "983364499f941f9006537884b16cc17fa50c0af0ca991d0722408057d39464e0",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "plan:acceptance-blender-goal-amendment-and-creation-rail",
+                "locator": {
+                  "kind": "plan",
+                  "id": "acceptance-blender-goal-amendment-and-creation-rail"
+                }
+              }
+            }
           },
           {
             "ref": "idea:EI-20354167325088504:plan:executable-continuity-checks-schema-validated-probes-that-su-2026-08-13",
@@ -2057,7 +2791,25 @@
             "sourceHash": "f3b897e0b125c2c05c2a3e07196a50022f9e49365f1cae4bcfbbc1b09db7c8ab",
             "contentHash": "f3b897e0b125c2c05c2a3e07196a50022f9e49365f1cae4bcfbbc1b09db7c8ab",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 1002,
+              "maxStoredChars": 12000,
+              "contentHash": "f3b897e0b125c2c05c2a3e07196a50022f9e49365f1cae4bcfbbc1b09db7c8ab",
+              "sourceHash": "f3b897e0b125c2c05c2a3e07196a50022f9e49365f1cae4bcfbbc1b09db7c8ab",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "idea:EI-20354167325088504:plan:executable-continuity-checks-schema-validated-probes-that-su-2026-08-13",
+                "locator": {
+                  "kind": "idea",
+                  "id": "EI-20354167325088504",
+                  "subref": "plan:executable-continuity-checks-schema-validated-probes-that-su-2026-08-13"
+                }
+              }
+            }
           },
           {
             "ref": "dream:dream-cycle:papercusp-workspace:papercusp:cc713651-7d82-4a4e-a69d-c66336363cc6:dream:1",
@@ -2075,7 +2827,24 @@
             "sourceHash": "0e7abe88feeb75b0142ab252dc8733d691b90948dbc37fc2c8607e7d47a2a291",
             "contentHash": "0055ea5b565f708f4599ca3e70e747c964576da6eebefbbec4c5240836d97ade",
             "evidenceHash": "ed6a67c0d86efbb72e9a7afe139d00358c76c988fa94bdbf8b15c57fa6e6b037",
-            "candidateHash": "8d6ce3a7fcf28509446ee4a070cc4705c0762d27f7b6a5a2060876126a6605a1"
+            "candidateHash": "8d6ce3a7fcf28509446ee4a070cc4705c0762d27f7b6a5a2060876126a6605a1",
+            "capture": {
+              "format": "json",
+              "parseStatus": "truncated",
+              "truncated": true,
+              "storedChars": 12000,
+              "maxStoredChars": 12000,
+              "contentHash": "0055ea5b565f708f4599ca3e70e747c964576da6eebefbbec4c5240836d97ade",
+              "sourceHash": "0e7abe88feeb75b0142ab252dc8733d691b90948dbc37fc2c8607e7d47a2a291",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "dream:dream-cycle:papercusp-workspace:papercusp:cc713651-7d82-4a4e-a69d-c66336363cc6:dream:1",
+                "locator": {
+                  "kind": "dream",
+                  "id": "dream-cycle:papercusp-workspace:papercusp:cc713651-7d82-4a4e-a69d-c66336363cc6:dream:1"
+                }
+              }
+            }
           },
           {
             "ref": "code:capability:plans.spec-revisions:test",
@@ -2093,7 +2862,24 @@
             "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
             "contentHash": "6fb55181232f69121849f3e7174407db5a040b8b67debfaecbb957a8b913c4a5",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 4184,
+              "maxStoredChars": 12000,
+              "contentHash": "6fb55181232f69121849f3e7174407db5a040b8b67debfaecbb957a8b913c4a5",
+              "sourceHash": "d2ac928b408e2aa46e99767e01e54603fe83b07270a9ab66228411be28ee7e36",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:capability:plans.spec-revisions:test",
+                "locator": {
+                  "kind": "code",
+                  "id": "capability:plans.spec-revisions"
+                }
+              }
+            }
           },
           {
             "ref": "code:mechanism:dream.cost-admission:implementation",
@@ -2111,7 +2897,24 @@
             "sourceHash": "25b29fc539609496b81a12af92b6123d501b38fe0bc1a2608f787dfe0513471d",
             "contentHash": "95cdbaa0db64e9e59b54cb17b4d8e4836b778aa0fee7bb69ba444ede74959342",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 3168,
+              "maxStoredChars": 12000,
+              "contentHash": "95cdbaa0db64e9e59b54cb17b4d8e4836b778aa0fee7bb69ba444ede74959342",
+              "sourceHash": "25b29fc539609496b81a12af92b6123d501b38fe0bc1a2608f787dfe0513471d",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "code:mechanism:dream.cost-admission:implementation",
+                "locator": {
+                  "kind": "code",
+                  "id": "mechanism:dream.cost-admission"
+                }
+              }
+            }
           },
           {
             "ref": "idea:EI-20424512845533003:plan:active-checkpoint-truth-capsule-on-release-trace-2026-08-14",
@@ -2130,7 +2933,25 @@
             "sourceHash": "b43a84adbe08ae2e3df1e73bdca1d109d251d725e5e66cc3dcf59b371fe856f0",
             "contentHash": "b43a84adbe08ae2e3df1e73bdca1d109d251d725e5e66cc3dcf59b371fe856f0",
             "evidenceHash": null,
-            "candidateHash": null
+            "candidateHash": null,
+            "capture": {
+              "format": "json",
+              "parseStatus": "parseable",
+              "truncated": false,
+              "storedChars": 1113,
+              "maxStoredChars": 12000,
+              "contentHash": "b43a84adbe08ae2e3df1e73bdca1d109d251d725e5e66cc3dcf59b371fe856f0",
+              "sourceHash": "b43a84adbe08ae2e3df1e73bdca1d109d251d725e5e66cc3dcf59b371fe856f0",
+              "fullTextRef": {
+                "resolver": "capability-review-sources.readCurrent",
+                "ref": "idea:EI-20424512845533003:plan:active-checkpoint-truth-capsule-on-release-trace-2026-08-14",
+                "locator": {
+                  "kind": "idea",
+                  "id": "EI-20424512845533003",
+                  "subref": "plan:active-checkpoint-truth-capsule-on-release-trace-2026-08-14"
+                }
+              }
+            }
           }
         ],
         "candidateHash": "7f4be45fec2ce7198fe2ec2ba440cc1068937ddf21d25d9a222e7ee96af632bd",
