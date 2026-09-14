@@ -561,7 +561,9 @@ export default defineTool({
           // envelope-shaped guess THROW a loud structured_result_shape error
           // instead of returning undefined; reusing either name here would let
           // that exact guess silently "succeed" against the wrong field again.
-          ...(ctx.codeMode ? { structuredContent: { ok: true, file_path: abs, body: '' } } : {}),
+          ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
+            ? { structuredContent: { ok: true, file_path: abs, body: '' } }
+            : {}),
         };
       }
 
@@ -581,7 +583,9 @@ export default defineTool({
           text: rawBody,
         }],
         // EI-22044192752243601 — see the empty-slice branch above for why.
-        ...(ctx.codeMode ? { structuredContent: { ok: true, file_path: abs, body: rawBody } } : {}),
+        ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
+          ? { structuredContent: { ok: true, file_path: abs, body: rawBody } }
+          : {}),
       };
     }
 
@@ -608,7 +612,7 @@ export default defineTool({
       // no header/footer) since that is what a script processing file content
       // wants, not the display formatting. Field names avoid `content`/`text`
       // (run-script.ts ROOT_ENVELOPE_FIELDS) for the same reason as the raw branch.
-      ...(ctx.codeMode
+      ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
         ? {
             structuredContent: {
               ok: true,
