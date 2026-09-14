@@ -423,8 +423,25 @@ export async function applyPendingMigrationsNow(
   const cooldownMs = resolveMigrationFailureCooldownMs();
   const cooldownState = await readMigrationCooldownState(cooldownPath);
   const cooldownNow = Date.now();
+  // A host may deliberately pin a different immutable migration tree via
+  // PAPERCUSP_PG_SQL_DIR (for example a current-code request host using the
+  // deployed release SQL baseline). The cooldown file is shared per workspace,
+  // so failures recorded by a staging tree must not be re-injected as pending
+  // migrations into a selected tree that does not contain those files. When the
+  // directory cannot be read, preserve the old fail-closed behavior and let the
+  // migration runner surface the underlying filesystem failure.
+  let selectedMigrationFilenames: ReadonlySet<string> | null = null;
+  try {
+    selectedMigrationFilenames = new Set(
+      (await readdir(sqlDir)).filter((file) => file.endsWith('.sql')),
+    );
+  } catch {
+    selectedMigrationFilenames = null;
+  }
   const coolingDownEntries = Object.entries(cooldownState).filter(
-    ([, entry]) => cooldownNow - entry.lastFailedAt < cooldownMs,
+    ([filename, entry]) =>
+      (selectedMigrationFilenames === null || selectedMigrationFilenames.has(filename)) &&
+      cooldownNow - entry.lastFailedAt < cooldownMs,
   );
   const coolingDown = new Map(coolingDownEntries);
   // When a backup owns the migration rendezvous but this exact immutable code
