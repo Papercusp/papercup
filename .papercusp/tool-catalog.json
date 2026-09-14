@@ -3113,7 +3113,7 @@
           "POST"
         ]
       },
-      "description": "Launch agents: start one ad-hoc on a free-form `brief`, RESUME a dead agent mid-thread (`resume: { agentId }`, with a required next-turn `brief`), or FORK a live one — visible on the desktop or headless, in a fleet or not, one or many. The flexible superset of fleet:launch-on-plan (which stays the ergonomic one-call door for N members on a plan). The brief becomes the agent's FIRST TURN, so it starts working immediately instead of parking idle.",
+      "description": "Start agents for a fixed ad-hoc `brief`, or resume/fork a prior session — visible/headless, fleet/unfleeted. For N members on an existing plan use fleet:launch-on-plan. A successful spawn proves only that a process opened; read verification before claiming registration, a first turn, or a task claim.",
       "capabilities": [
         "capability:terminal"
       ],
@@ -3130,7 +3130,7 @@
         "curator"
       ],
       "guidance": {
-        "when": "GENERAL AGENT-LAUNCH DOOR: launch, resume, or fork one or many agents — visible or headless, fleet or unfleeted. Use fleet:launch-on-plan instead only for the ergonomic “N agents on this plan” workflow.",
+        "when": "AD-HOC/RECOVERY AGENT-LAUNCH DOOR: fixed brief, resume, or fork; visible/headless, fleet/unfleeted. Existing-plan N-member work uses fleet:launch-on-plan. Duplicate screening never delays process launch; it governs work-item claims.",
         "notWhen": "To run a COMMAND (dev server, build, REPL): capability:terminal / capability:bash. For N members on a plan: fleet:launch-on-plan. Doors: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.",
         "chaining": "A fresh/fork/headless launch returns once spawned; a visible in-place resume uses a three-state verifier: matching host = verified, observed UUID mismatch = isError, deadline with no host = RESUME UNCONFIRMED (not an invented failure). `resume: { agentId }` resolves that agent's latest session; a LIVE source is auto-FORKED (two CLIs on one transcript collide), minting a NEW identity — find it in coord:presence. Pass `idempotencyKey` if a retry might re-fire the call (a replay reports deduped:true instead of opening a second set of windows). EI-9748: a `:3170` restart reaps HEADLESS children."
       }
@@ -12135,7 +12135,7 @@
           "POST"
         ]
       },
-      "description": "Launch su member sessions on a plan in one call — visible desktop terminals, or headless background sessions with `headless:true` (same leader-led su fleet either way). Ensures the named fleet exists, opens N members, and each scripted psu launch auto-starts work on the plan. `carry` picks warm/cold auto-mode; `perMemberLaunchContext` gives distinct per-member briefs. `placement:'remote'` places members on the machines that delegated seats.",
+      "description": "Launch N su members on an existing plan — visible or headless. Ensures fleet, leadership, plan binding and first-turn request; do not assemble them with capability:launch-agent/terminal. Process open is not proof of registration, a verified first turn, or a claimed task; read `launchTransaction`. `carry` picks warm/cold; `placement:'remote'` uses delegated-seat machines.",
       "capabilities": [
         "capability:terminal"
       ],
@@ -12153,7 +12153,7 @@
         "cup"
       ],
       "guidance": {
-        "when": "ERGONOMIC N-AGENTS-ON-A-PLAN DOOR: launch a leader-led su fleet whose members auto-join and auto-start the plan. Prefer this over hand-building agent commands with capability:terminal.",
+        "when": "ERGONOMIC N-AGENTS-ON-AN-EXISTING-PLAN DOOR: members auto-join and receive the plan as their first-turn request. Prefer over capability:launch-agent/terminal. Queue duplicate screening governs work-item claims; it is not a reason to delay opening the fleet.",
         "notWhen": "Not for: an AD-HOC brief with no plan, RESUMING a dead agent mid-thread, or FORKING a live one — that is capability:launch-agent (the flexible superset; `fleet` optional there, so a non-leader can launch too). Not for the retired background cup/nursery tier, plain command windows (capability:terminal), or fleet registration only (fleet:create). Decision table: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.",
         "chaining": "plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED — items become claimable only through it; skipped, the fleet launches onto an empty backlog; backstopped idempotently here) → fleet:launch-on-plan { name, plan, count }. As leader, loop:arm a lean monitor; avoid polling full rosters every wake."
       }

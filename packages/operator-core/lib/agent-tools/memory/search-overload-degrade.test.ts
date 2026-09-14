@@ -67,6 +67,8 @@ const LEX_HIT = {
  *  search() never resolves (every embed is stuck in the queue). */
 const saturatedBackend = (withLexical: boolean) => ({
   name: 'saturated',
+  scoreScale: 'rrf' as const,
+  lexicalScoreScale: 'lexical' as const,
   available: vi.fn(async () => ({ ok: true })),
   search: vi.fn(() => NEVER<unknown[]>()),
   ...(withLexical ? { searchLexical: vi.fn(async () => [LEX_HIT]) } : {}),
@@ -90,6 +92,7 @@ const parse = (
   degraded?: boolean;
   degraded_reason?: string;
   fallback?: string;
+  score_scale?: string;
   results?: Array<{ id: string; memory: string }>;
 } => {
   const r = res as { data?: never; content?: Array<{ text: string }> };
@@ -117,6 +120,7 @@ describe('memory:search overload degrade (WI-4214)', () => {
     expect(out.degraded).toBe(true);
     expect(out.degraded_reason).toBe('memory_timeout');
     expect(out.fallback).toBe('lexical');
+    expect(out.score_scale).toBe('lexical');
     expect(out.results?.map((r) => r.id)).toEqual(['lex-1']);
     // The wire row keeps the byte-stable shape (text lands as `memory`).
     expect(out.results?.[0].memory).toBe(LEX_HIT.text);
@@ -197,6 +201,7 @@ describe('memory:search overload degrade (WI-4214)', () => {
     expect(out.ok).toBe(true);
     expect('degraded' in out).toBe(false);
     expect('fallback' in out).toBe(false);
+    expect(out.score_scale).toBe('rrf');
     expect(backend.searchLexical).not.toHaveBeenCalled();
   });
 });

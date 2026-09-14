@@ -325,11 +325,15 @@ beforeEach(() => {
 });
 
 describe('launch-tool routing guidance', () => {
-  it('identifies capability:launch-agent as the general agent-launch door', () => {
-    expect(launchAgent.guidance?.when).toContain('GENERAL AGENT-LAUNCH DOOR');
+  it('identifies capability:launch-agent as the ad-hoc/recovery door, not the existing-plan fleet door', () => {
+    expect(launchAgent.guidance?.when).toContain('AD-HOC/RECOVERY AGENT-LAUNCH DOOR');
     expect(launchAgent.guidance?.when).toContain('visible or headless');
     expect(launchAgent.guidance?.when).toContain('fleet or unfleeted');
     expect(launchAgent.guidance?.when).toContain('fleet:launch-on-plan');
+    expect(launchAgent.guidance?.when).toContain('Duplicate screening never delays process launch');
+    expect(launchAgent.description).toContain('successful spawn proves only that a process opened');
+    expect(launchAgent.description).toContain('before claiming registration, a first turn, or a task claim');
+    expect(launchAgent.description).not.toContain('starts working immediately');
     expect(launchAgent.guidance?.notWhen).toContain('capability:terminal');
   });
 

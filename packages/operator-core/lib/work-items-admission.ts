@@ -239,7 +239,9 @@ export type AdmissionBypassReason = (typeof ADMISSION_CREATE_BYPASSES)[number]['
  */
 export function admissionPendingExplanation(tickMinutes = DEFAULT_PROMOTER_TICK_MINUTES): string {
   return (
-    'duplicate screening is pending — the durable promoter owns admission. This floor CLEARS ON ITS ' +
+    'duplicate screening is pending for this WORK-ITEM CLAIM. It does not block opening an agent or ' +
+    'fleet process; launch and queue admission are separate capabilities. A launched agent still needs ' +
+    'claimable or validly pre-assigned work. The durable promoter owns admission, and this floor CLEARS ON ITS ' +
     `OWN: the promoter runs on a ${tickMinutes}-minute tick, and an independent fail-open runner ` +
     `admits anything still pending after ${ADMISSION_FAIL_OPEN_TICKS} ticks ` +
     `(${ADMISSION_FAIL_OPEN_TICKS * tickMinutes} min) as 'unreviewed'. It is a WAIT, not a permanent ` +
@@ -254,11 +256,16 @@ export function admissionPendingExplanation(tickMinutes = DEFAULT_PROMOTER_TICK_
  */
 export function admissionPendingCreateRemedy(): string {
   return (
-    'An item created FOR a named agent should not be born pending. Any one of these makes it born ' +
-    'admitted and claimable in the same write: ' +
+    'Choose the work route before creating a replacement. Existing-plan fleet work should use ' +
+    'plans:start then fleet:launch-on-plan; its promoted items use the plan-item bypass. Fixed ad-hoc ' +
+    'work should be created atomically with assign_to naming the intended owner, then launched with ' +
+    'capability:launch-agent. Any one of these makes a NEW item born admitted: ' +
     ADMISSION_CREATE_BYPASSES.map((b) => b.condition).join('; ') +
-    '. For an item that already exists, the choice is wait for the tick or have its creator re-file ' +
-    'it with one of those — the item cannot be promoted on request.'
+    '. These are create-time admission bypasses, not blanket authority: assign_to is still checked ' +
+    "against the target's live fleet scope, dependencies, locks, security, credentials and resource " +
+    'admission; a scope mismatch files the item unassigned and explains why. Launching does not change ' +
+    'an ALREADY-pending item. Wait for its promoter/backstop instead of duplicating or re-filing it; ' +
+    'only the existing server-derived dispatch/force paths may grant their narrower exceptions.'
   );
 }
 

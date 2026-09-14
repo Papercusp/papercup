@@ -94,6 +94,14 @@ describe('EI-22166155287498355: the retry bound is promoter-health-aware, and al
 });
 
 describe('admission-pending names the create-time remedy that already existed', () => {
+  it('scopes duplicate screening to the work-item claim instead of inventing an agent-launch delay', () => {
+    const explanation = admissionPendingExplanation();
+    expect(explanation).toContain('WORK-ITEM CLAIM');
+    expect(explanation).toContain('does not block opening an agent or fleet process');
+    expect(explanation).toContain('launch and queue admission are separate capabilities');
+    expect(explanation).toContain('still needs claimable or validly pre-assigned work');
+  });
+
   it('the remedy is rendered from the bypass record, so a new bypass cannot be left out', () => {
     const remedy = admissionPendingCreateRemedy();
     for (const bypass of ADMISSION_CREATE_BYPASSES) {
@@ -113,6 +121,17 @@ describe('admission-pending names the create-time remedy that already existed', 
     const reasons = ADMISSION_CREATE_BYPASSES.map((b) => b.reason);
     expect(reasons).toContain('bypass:explicit-assignment');
     expect(admissionPendingCreateRemedy()).toContain('assign_to');
+  });
+
+  it('routes plan fleets and fixed ad-hoc work without overstating assign_to authority', () => {
+    const remedy = admissionPendingCreateRemedy();
+    expect(remedy).toContain('plans:start then fleet:launch-on-plan');
+    expect(remedy).toContain('capability:launch-agent');
+    expect(remedy).toContain('create-time admission bypasses, not blanket authority');
+    expect(remedy).toContain('live fleet scope');
+    expect(remedy).toContain('files the item unassigned');
+    expect(remedy).toContain('ALREADY-pending item');
+    expect(remedy).not.toContain('re-file it');
   });
 
   it('every recorded reason is still minted by the create path', () => {

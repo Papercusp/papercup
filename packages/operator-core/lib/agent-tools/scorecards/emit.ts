@@ -177,7 +177,7 @@ export async function _closeScorecardEmitMutexForTests(): Promise<void> {
   }
 }
 
-function scorecardEmitMutexKey(input: {
+export function scorecardEmitMutexKey(input: {
   workspaceId: string;
   rubricRef: string;
   sourceHive?: string;
@@ -202,6 +202,16 @@ async function acquireScorecardEmitMutex(key: string): Promise<() => Promise<voi
   const reserved: ScorecardEmitMutexReservation = await scorecardEmitMutexSql().reserve();
   let acquired = false;
   try {
+    // The harness_admin role carries a finite lock_timeout (currently 15s), and
+    // may also acquire a statement_timeout in a future policy revision. This
+    // rendezvous is deliberately allowed to wait for an in-flight emitter: the
+    // tool itself has a 15-minute budget, while either inherited setting would
+    // abort a valid second emit long before that budget. Clear both session
+    // limits before the blocking lock, matching the backup/boot rendezvous
+    // contract. The client is dedicated to this mutex and never runs ordinary
+    // application queries.
+    await reserved`SET lock_timeout = 0`;
+    await reserved`SET statement_timeout = 0`;
     await reserved`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`;
     acquired = true;
     return async () => {

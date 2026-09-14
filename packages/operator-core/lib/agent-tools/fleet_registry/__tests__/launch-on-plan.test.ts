@@ -943,8 +943,14 @@ describe('fleet:launch-on-plan GOAL provider placement boundary (P-006 / A-04)',
 
 describe('launch-tool routing guidance', () => {
   it('identifies fleet:launch-on-plan as the ergonomic N-agents-on-a-plan door', () => {
-    expect(tool.guidance?.when).toContain('ERGONOMIC N-AGENTS-ON-A-PLAN DOOR');
+    expect(tool.guidance?.when).toContain('ERGONOMIC N-AGENTS-ON-AN-EXISTING-PLAN DOOR');
+    expect(tool.guidance?.when).toContain('capability:launch-agent');
     expect(tool.guidance?.when).toContain('capability:terminal');
+    expect(tool.guidance?.when).toContain('not a reason to delay opening the fleet');
+    expect(tool.description).toContain('Process open is not proof of registration');
+    expect(tool.description).toContain('verified first turn');
+    expect(tool.description).toContain('claimed task');
+    expect(tool.description).not.toContain('auto-starts work');
     expect(tool.guidance?.notWhen).toContain('capability:launch-agent');
     expect(tool.guidance?.notWhen).toContain('launching-agents-which-tool-for-which-door');
   });

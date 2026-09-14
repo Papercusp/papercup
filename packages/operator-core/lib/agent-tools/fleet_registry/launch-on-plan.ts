@@ -12,8 +12,10 @@
  *      launch on the plan.
  *
  * The members AUTO-START: a scripted `psu --no-picker --plan=…` launch now seeds
- * the agent's first user turn (EI-5503), so each member begins working the plan on
- * boot — no leader kickoff wake needed (the gap this pairs with).
+ * the agent's first user-turn REQUEST (EI-5503), so no separate leader kickoff is
+ * needed. Process open, session registration, first-turn verification and task
+ * disposition remain separate observations; the public result must not collapse
+ * the request into proof that every member is already working.
  *
  * Plan AUTHORING + START stay their own well-factored tools (plans:apply-plan-block
  * / plans:new + plans:add-item, then plans:start) — chain them before this. plans:start
@@ -1823,9 +1825,9 @@ export function resolveSuperviseGrant(args: {
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
-    "Launch su member sessions on a plan in one call — visible desktop terminals, or headless background sessions with `headless:true` (same leader-led su fleet either way). Ensures the named fleet exists, opens N members, and each scripted psu launch auto-starts work on the plan. `carry` picks warm/cold auto-mode; `perMemberLaunchContext` gives distinct per-member briefs. `placement:'remote'` places members on the machines that delegated seats.",
+    "Launch N su members on an existing plan — visible or headless. Ensures fleet, leadership, plan binding and first-turn request; do not assemble them with capability:launch-agent/terminal. Process open is not proof of registration, a verified first turn, or a claimed task; read `launchTransaction`. `carry` picks warm/cold; `placement:'remote'` uses delegated-seat machines.",
   guidance: {
-    when: 'ERGONOMIC N-AGENTS-ON-A-PLAN DOOR: launch a leader-led su fleet whose members auto-join and auto-start the plan. Prefer this over hand-building agent commands with capability:terminal.',
+    when: 'ERGONOMIC N-AGENTS-ON-AN-EXISTING-PLAN DOOR: members auto-join and receive the plan as their first-turn request. Prefer over capability:launch-agent or capability:terminal. Queue duplicate screening governs work-item claims; it is not a reason to delay opening the fleet.',
     notWhen:
       'Not for: an AD-HOC brief with no plan, RESUMING a dead agent mid-thread, or FORKING a live one — that is capability:launch-agent (the flexible superset; `fleet` optional there, so a non-leader can launch too). Not for the retired background cup/nursery tier, plain command windows (capability:terminal), or fleet registration only (fleet:create). Decision table: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
     chaining:

@@ -244,7 +244,7 @@ async function unresolvedProsePathsInCheckpoint(
     if (paths.length === 0) return undefined;
 
     const deps = paths.map((path) => `file:${path}`);
-    const tokens = await resolveCurrentTokens(deps, ctx);
+    const tokens = await resolveCurrentTokens(deps, ctx, { allowDirectories: true });
     const missing = paths.filter((path) => tokens.get(`file:${path}`) === null);
     if (missing.length === 0) return undefined;
 

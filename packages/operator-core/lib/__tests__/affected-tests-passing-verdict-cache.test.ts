@@ -1453,6 +1453,29 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
           sharedInputProvenance: shared(),
           digestCache: new Map(),
         });
+      // Calibrate an executable copy, then remove only the repaired semantic
+      // inclusion. The negative control must reproduce the stale setup pass.
+      const source = readFileSync(resolve(REPO_ROOT, 'scripts/lib/passing-task-verdict-cache.mjs'), 'utf8');
+      const start = source.indexOf('export function passingTaskVerdictDependencyProvenance(');
+      const end = source.indexOf('/** A clean first pass', start);
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      const functionSource = source.slice(start, end).replace('export function', 'function');
+      const omission = 'sharedSemanticFiles.has(file) ||';
+      expect(functionSource.split(omission)).toHaveLength(2);
+      const evaluateCopy = (text: string) => runInNewContext(
+        `${text}\npassingTaskVerdictDependencyProvenance(input)`,
+        {
+          input: {
+            root, taskKey: '@target :: test', script: 'test', workspaceName: '@target',
+            workspaces, trackedScan, repoWideTaskKeys: new Set<string>(),
+            sharedInputProvenance: shared(), digestCache: new Map(),
+          },
+          hashDependencyFileSet,
+          pathInsideDir: (file: string, dir: string) => file === dir || file.startsWith(`${dir}/`),
+        },
+        { timeout: 1000 },
+      );
       const repoWide = () =>
         passingTaskVerdictDependencyProvenance({
           root,
@@ -1468,6 +1491,8 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
       const before = ordinary();
       const guardBefore = repoWide();
       if (!before.ok || !guardBefore.ok) throw new Error('expected hashable fixture provenance');
+      expect(evaluateCopy(functionSource).semantic.hash).toBe(before.semantic.hash);
+      const mutantBefore = evaluateCopy(functionSource.replace(omission, ''));
       expect(before.semantic.files).toEqual([
         ...sharedBefore.files.filter((file) => file !== 'scripts/pc-heavy.sh'),
         'pkg/dependency/src/index.ts',
@@ -1517,6 +1542,9 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
         hit: false,
         reason: 'dependency-closure-changed',
       });
+      const mutantAfter = evaluateCopy(functionSource.replace(omission, ''));
+      expect(mutantAfter.semantic.hash).toBe(mutantBefore.semantic.hash);
+      expect(mutantAfter.execution.hash).not.toBe(mutantBefore.execution.hash);
 
       writeFileSync(
         join(root, 'libs/test-config/src/setup.ts'),

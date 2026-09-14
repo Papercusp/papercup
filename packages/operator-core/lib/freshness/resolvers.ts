@@ -107,10 +107,11 @@ function containedFilePath(root: string, ref: string): string | null {
   return full;
 }
 
-function fileRefsResolveAtRoot(refs: readonly string[], root: string): boolean {
+function fileRefsResolveAtRoot(refs: readonly string[], root: string, allowDirectories = false): boolean {
   return refs.every((ref) => {
     const full = containedFilePath(root, ref);
     if (!full || !existsSync(full)) return false;
+    if (allowDirectories) return true;
     try {
       return statSync(full).isFile();
     } catch {
@@ -132,9 +133,11 @@ export function selectFreshnessFileRoot(
   refs: readonly string[],
   harnessRoot: string | null,
   canonicalRepoRoot: string | null,
+  options: { allowDirectories?: boolean } = {},
 ): string | null {
+  const allowDirectories = options.allowDirectories ?? false;
   if (!harnessRoot) {
-    return canonicalRepoRoot && fileRefsResolveAtRoot(refs, canonicalRepoRoot)
+    return canonicalRepoRoot && fileRefsResolveAtRoot(refs, canonicalRepoRoot, allowDirectories)
       ? canonicalRepoRoot
       : null;
   }
@@ -144,7 +147,7 @@ export function selectFreshnessFileRoot(
     ...(canonicalRepoRoot
       ? { fallback: { root: canonicalRepoRoot, source: 'canonical-repo' as const } }
       : {}),
-    resolvesEvery: (root) => fileRefsResolveAtRoot(refs, root),
+    resolvesEvery: (root) => fileRefsResolveAtRoot(refs, root, allowDirectories),
   });
   return selected?.root ?? preferred.root;
 }
@@ -178,10 +181,10 @@ async function resolveHarnessRepoRoots(
   return { preferred: canonical, canonical: null };
 }
 
-const resolveFiles: DepResolver = async (refs, ctx) => {
+const resolveFiles = async (refs: readonly string[], ctx: FreshnessResolverCtx, allowDirectories = false) => {
   const out = new Map<string, string | null>();
   const roots = await resolveHarnessRepoRoots(ctx);
-  const root = selectFreshnessFileRoot(refs, roots.preferred, roots.canonical);
+  const root = selectFreshnessFileRoot(refs, roots.preferred, roots.canonical, { allowDirectories });
   if (!root) return allNull(refs);
   await Promise.all(
     refs.map(async (ref) => {
@@ -191,6 +194,10 @@ const resolveFiles: DepResolver = async (refs, ctx) => {
         return;
       }
       try {
+        if (allowDirectories && statSync(full).isDirectory()) {
+          out.set(ref, 'present:directory');
+          return;
+        }
         const buf = await readFile(full);
         out.set(ref, `sha256:${createHash('sha256').update(buf).digest('hex').slice(0, 16)}`);
       } catch {
@@ -367,6 +374,7 @@ export function validateDep(dep: string): string | null {
 export async function resolveCurrentTokens(
   deps: readonly string[],
   ctx: FreshnessResolverCtx,
+  options: { allowDirectories?: boolean } = {},
 ): Promise<Map<string, string | null>> {
   const byKind = new Map<string, string[]>();
   const out = new Map<string, string | null>();
@@ -386,7 +394,10 @@ export async function resolveCurrentTokens(
     [...byKind.entries()].map(async ([kind, refs]) => {
       let resolved: Map<string, string | null>;
       try {
-        resolved = await DEP_RESOLVERS[kind]!(refs, ctx);
+        resolved =
+          kind === 'file'
+            ? await resolveFiles(refs, ctx, options.allowDirectories ?? false)
+            : await DEP_RESOLVERS[kind]!(refs, ctx);
       } catch {
         resolved = allNull(refs);
       }
