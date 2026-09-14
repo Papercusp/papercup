@@ -2742,7 +2742,7 @@ export async function readWorkItemAdmissionSnapshot(opts: {
     census_after: number | string;
   };
 
-  const runs = await sql<RunRow[]>`
+  const runsPromise = sql<RunRow[]>`
     SELECT ar.id,
            ar.harness_slug,
            ar.run_kind,
@@ -2778,20 +2778,18 @@ export async function readWorkItemAdmissionSnapshot(opts: {
      ORDER BY ar.started_at DESC, ar.id DESC
      LIMIT ${limit}`;
 
-  const [queueHealth, readiness] = await Promise.all([
-    readWorkItemAdmissionQueueHealth({
-      workspaceId: opts.workspaceId,
-      ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
-      sql,
-    }),
-    readWorkItemReadinessProjection({
-      workspaceId: opts.workspaceId,
-      ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
-      sql,
-    }),
-  ]);
+  const queueHealthPromise = readWorkItemAdmissionQueueHealth({
+    workspaceId: opts.workspaceId,
+    ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+    sql,
+  });
+  const readinessPromise = readWorkItemReadinessProjection({
+    workspaceId: opts.workspaceId,
+    ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+    sql,
+  });
 
-  const censusRows = await sql<CensusRow[]>`
+  const censusRowsPromise = sql<CensusRow[]>`
     SELECT ar.id,
            ar.harness_slug,
            ar.run_kind,
@@ -2805,6 +2803,13 @@ export async function readWorkItemAdmissionSnapshot(opts: {
        AND ar.census_after IS NOT NULL
      ORDER BY ar.started_at DESC, ar.id DESC
      LIMIT 48`;
+
+  const [runs, queueHealth, readiness, censusRows] = await Promise.all([
+    runsPromise,
+    queueHealthPromise,
+    readinessPromise,
+    censusRowsPromise,
+  ]);
 
   const numberOrNull = (value: bigint | number | string | null): number | null =>
     value == null ? null : Number(value);

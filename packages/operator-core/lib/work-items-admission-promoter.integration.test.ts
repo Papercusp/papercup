@@ -1998,6 +1998,62 @@ describe('work-item admission promoter (real Postgres)', () => {
     });
   });
 
+  it('starts every independent owner-snapshot read before any of them resolves', async () => {
+    const started: string[] = [];
+    const resolved: string[] = [];
+    let releaseReads!: () => void;
+    const readsHeld = new Promise<void>((resolve) => {
+      releaseReads = resolve;
+    });
+    const controlledSql = new Proxy(db.sql, {
+      apply(target, thisArg, args) {
+        const query = Array.isArray(args[0]) ? (args[0] as string[]).join(' ') : '';
+        const label = query.includes("ar.detail->>'status' AS recorded_state")
+          ? 'runs'
+          : query.includes('percentile_cont(0.50)')
+            ? 'queue-health'
+            : query.includes('WITH active_dependency_refs AS MATERIALIZED')
+              ? 'readiness-stock-flow'
+              : query.includes('FROM harness_shared.work_item_occurrences')
+                ? 'readiness-recurrence'
+                : query.includes('ar.census_before IS NOT NULL')
+                  ? 'census'
+                  : null;
+        if (label == null) return Reflect.apply(target, thisArg, args);
+        started.push(label);
+        return readsHeld.then(async () => {
+          const result = await Reflect.apply(target, thisArg, args);
+          resolved.push(label);
+          return result;
+        });
+      },
+    }) as typeof db.sql;
+
+    const snapshotPromise = readWorkItemAdmissionSnapshot({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      sql: controlledSql,
+    });
+    let startAssertionError: unknown;
+    try {
+      expect([...started].sort()).toEqual(
+        ['census', 'queue-health', 'readiness-recurrence', 'readiness-stock-flow', 'runs'].sort(),
+      );
+      expect(resolved).toEqual([]);
+    } catch (error) {
+      startAssertionError = error;
+    } finally {
+      releaseReads();
+    }
+
+    await expect(snapshotPromise).resolves.toMatchObject({
+      runs: [],
+      censusTrend: [],
+    });
+    if (startAssertionError) throw startAssertionError;
+    expect([...resolved].sort()).toEqual([...started].sort());
+  });
+
   it('partitions readiness by precedence while keeping overlapping reasons and stock/flow evidence separate', async () => {
     const readiness = (status: 'ready' | 'unknown' | 'not-ready', updatedAt: string) => ({
       schemaVersion: 'implementation-readiness-v1',
