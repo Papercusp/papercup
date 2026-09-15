@@ -117,7 +117,13 @@ describe('EI-13120: periodic path re-verify bounds a cross-process-stale anchor'
     expect(await currentContextTokensForOwner('owner-blip')).toBe(100_000);
   });
 
-  it('the sync path returns the bounded-stale reading past TTL but kicks a background reseed that self-corrects the NEXT call', async () => {
+  // WI-10001513 RETARGETED this test. It previously asserted that the past-TTL sync
+  // call returns the "bounded-stale" reading (350_000) — which encoded the DEFECT as
+  // intended behaviour: 350_000 is the dead predecessor's CRITICAL-band number, and
+  // handing it to a fresh successor is what made agents consider re-compacting with no
+  // work done. An unproven anchor now renders NOTHING. The reseed-and-self-correct half
+  // of the original contract is unchanged and still asserted below.
+  it('the sync path DECLINES past TTL (unproven ⇒ no number) but kicks a background reseed that self-corrects the NEXT call', async () => {
     fs.writeFileSync(predecessorFile, line(1_400_000)); // 350k tokens
     seedContextAnchorForTests('owner-sync', predecessorFile);
     expect(currentContextTokensSyncForOwner('owner-sync')).toBe(350_000);
@@ -127,8 +133,9 @@ describe('EI-13120: periodic path re-verify bounds a cross-process-stale anchor'
     findSessionTranscriptMock.mockResolvedValue(successorFile);
 
     vi.advanceTimersByTime(PATH_REVERIFY_MS + 1_000);
-    // This call still reads the (bounded-stale) anchor synchronously...
-    expect(currentContextTokensSyncForOwner('owner-sync')).toBe(350_000);
+    // Past the TTL this process can no longer prove the anchor names the owner's live
+    // transcript, so it renders nothing rather than a possibly-stale number...
+    expect(currentContextTokensSyncForOwner('owner-sync')).toBeNull();
     // ...but kicked a background async reseed. Flush the microtask queue (fake
     // timers don't otherwise interleave with the mocked Promise chain) so it
     // settles, then the anchor is corrected for every subsequent caller (sync or

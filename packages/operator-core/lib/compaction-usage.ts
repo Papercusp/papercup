@@ -947,6 +947,35 @@ function anchorTokens(a: TranscriptAnchor): number {
   return Math.max(0, Math.floor((a.sizeSeen - a.countStart - a.imageExcess - a.tureExcess) / 4));
 }
 
+/** Claude native session ids are v4 UUIDs. Deliberately a LOCAL copy of
+ *  adv-sessions.ts's `NATIVE_SESSION_ID_RE` rather than an import: that module
+ *  statically pulls `@papercusp/db-org`, and this one is the gauge's SYNC hot
+ *  path (it reaches db-org only through `await import`). The two are pinned
+ *  identical by compaction-usage.session-identity.test.ts, so the validation
+ *  still cannot drift between call sites. */
+const ANCHOR_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The native session id an anchor's transcript belongs to, DERIVED from the path
+ * itself rather than carried alongside it (derived-truth ladder rung 1 — a second
+ * copy of a truth the path already owns would drift). A claude transcript is
+ * `<session-id>.jsonl`; a codex rollout embeds the id (see codexRolloutSessionId).
+ * The same basename→sessionId convention claude-sessions.ts already uses.
+ *
+ * Null means "this path does not prove a session identity" — an unrecognized
+ * shape, or a test seam's arbitrary temp filename. Callers MUST treat null as
+ * CANNOT-PROVE and never as "matches"; that asymmetry is what keeps the gauge
+ * degrading to no-number instead of to a wrong number.
+ */
+export function anchorSessionIdFromPath(pathStr: string): string | null {
+  const base = pathStr.slice(pathStr.lastIndexOf('/') + 1);
+  if (!base.endsWith('.jsonl')) return null;
+  const codex = codexRolloutSessionId(pathStr);
+  if (codex) return codex;
+  const id = base.slice(0, -'.jsonl'.length);
+  return ANCHOR_SESSION_ID_RE.test(id) ? id : null;
+}
+
 /** Sum the image discount (WI-3176) over a settled latin1 slice. */
 function imageExcessIn(visible: string): number {
   let excess = 0;
@@ -1158,23 +1187,38 @@ export async function currentContextTokensForOwner(
  * anchor. (An owner never read in this process before seeds in the background
  * the same way.)
  *
- * EI-13120: a sync call can't itself await the path re-verify `currentContextTokensForOwner`
- * does, but it must not let THIS process's anchor go unverified forever either — so past
- * {@link PATH_REVERIFY_MS} since the last confirmation it still returns the (bounded-stale)
- * anchor reading for THIS call, but also kicks the same background reseed used for a cold
- * owner; that call's internal re-verify self-corrects the shared anchor for every subsequent
- * call (sync or async) on this process.
+ * EI-13120 / WI-10001513: a sync call cannot await the path re-verify that
+ * `currentContextTokensForOwner` does, so past {@link PATH_REVERIFY_MS} since the last
+ * confirmation the anchor is UNPROVEN — this process has no evidence it still names the
+ * owner's live transcript. It therefore kicks the background reseed and returns null:
+ * the caller renders nothing, and the next call reads the corrected anchor.
+ *
+ * It previously returned the "bounded-stale" reading here instead. That was the defect
+ * behind this file's cross-process staleness: a dead predecessor's transcript stops
+ * growing, so the anchor stays byte-identical and cheerfully readable while describing a
+ * process that no longer exists — and the number it yields is the pre-respawn one, which
+ * is exactly the near-limit reading that makes a fresh successor consider re-compacting
+ * with zero work done. Declining costs one missing gauge line; serving it costs a whole
+ * session. It also settles a contradiction between this function's old contract and
+ * context-gauge-annotator.ts's ("never a possibly-stale number") — agent-visible
+ * behaviour followed the worse of the two.
+ *
+ * In practice the decline is rare, because {@link noteLiveNativeSession} re-proves the
+ * anchor for free on every tool call this worker serves.
  */
 export function currentContextTokensSyncForOwner(ownerId: string): number | null {
   const a = anchors.get(ownerId);
   if (a) {
     try {
       if (advanceAnchor(a, { syncCap: SYNC_DELTA_CAP }) === 'ok') {
-        if (Date.now() - a.verifiedAt > PATH_REVERIFY_MS && !seedInFlight.has(ownerId)) {
-          seedInFlight.add(ownerId);
-          void currentContextTokensForOwner(ownerId)
-            .catch(() => null)
-            .finally(() => seedInFlight.delete(ownerId));
+        if (Date.now() - a.verifiedAt > PATH_REVERIFY_MS) {
+          if (!seedInFlight.has(ownerId)) {
+            seedInFlight.add(ownerId);
+            void currentContextTokensForOwner(ownerId)
+              .catch(() => null)
+              .finally(() => seedInFlight.delete(ownerId));
+          }
+          return null; // unproven — degrade to "no gauge", never to "wrong gauge"
         }
         return anchorTokens(a);
       }
@@ -1213,6 +1257,56 @@ export function clearContextAnchor(ownerId: string): void {
   anchors.delete(ownerId);
   seedInFlight.delete(ownerId);
   observedPromptFloors.delete(ownerId);
+}
+
+/**
+ * WI-10001513: identity-keyed respawn invalidation — the authority that makes the
+ * gauge correct on a CLUSTERED operator without any broadcast.
+ *
+ * {@link clearContextAnchor} fires from ONE HTTP POST, so on a 16-worker cluster it
+ * reaches exactly one process; the other 15 keep a dead predecessor's anchor, and
+ * because a dead transcript STOPS GROWING, `advanceAnchor` reads "size unchanged ⇒
+ * ok" and replays its frozen pre-respawn token count. The gauge is therefore not
+ * merely lagging — it is a per-call lottery across workers, which is why agents
+ * observe non-monotonic readings between consecutive calls.
+ *
+ * The fix needs no delivery and no timer: the caller's NATIVE session id already
+ * rides on every tool call (the PostToolUse hook reads it off its own stdin event
+ * and `activity:report` persists it). Authority that travels WITH the request
+ * cannot be lost the way a broadcast can, and it reaches whichever worker is
+ * actually serving — so each worker self-heals on the FIRST call it serves, never
+ * sooner and never later. That is also why the eager cluster-broadcast alternative
+ * was rejected: with identity keying it would reseed 16 workers (each a tail scan
+ * up to BOUNDARY_SCAN_CAP) to pre-empt the handful of lazy reseeds that already
+ * land at exactly the right moment.
+ *
+ * Three outcomes, and the asymmetry between them is the whole safety property:
+ *  - id MATCHES the anchor's path-derived id → a free re-proof (no DB, no fs): the
+ *    anchor is confirmed live, so refresh `verifiedAt`. On a busy worker this keeps
+ *    the anchor continuously proven, so the sync read below rarely has to decline.
+ *  - id DIFFERS → the anchor tracks a dead predecessor. Drop it; the next read
+ *    reseeds from the successor's real transcript.
+ *  - identity UNPROVABLE (no id supplied, or a path whose shape yields none) →
+ *    change NOTHING. Dropping here would thrash (drop → reseed → drop) for any
+ *    non-UUID path such as a test seam's temp file. The anchor simply stops being
+ *    re-proven, so it ages out of the staleness gate and the sync read declines —
+ *    which degrades to "no gauge", never to "wrong gauge".
+ *
+ * Cheap and total by design: a Map get plus a string compare, safe to call on
+ * every report.
+ */
+export function noteLiveNativeSession(ownerId: string, sessionId: string | null | undefined): void {
+  const sid = sessionId?.trim();
+  if (!sid) return; // no identity evidence this call — never a reason to change state
+  const a = anchors.get(ownerId);
+  if (!a) return;
+  const anchorSid = anchorSessionIdFromPath(a.path);
+  if (anchorSid == null) return; // cannot prove EITHER way — let the staleness gate govern
+  if (anchorSid === sid) {
+    a.verifiedAt = Date.now(); // proven live, for free
+    return;
+  }
+  clearContextAnchor(ownerId); // proven DEAD — this is the carry-respawn case
 }
 
 /** Test seams: reset anchor state / seed an anchor for a known file directly

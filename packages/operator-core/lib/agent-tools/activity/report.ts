@@ -48,6 +48,7 @@ import { buildActivityHookBundle } from './hook-bundle';
 import { SESSION_START_MARKER, SESSION_END_MARKER } from './lifecycle-markers';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
+import { noteLiveNativeSession } from '../../compaction-usage';
 
 /** Map a lifecycle-report summary to a session phase. The shared cc/ lifecycle
  *  hook sends exactly SESSION_START_MARKER (SessionStart) or SESSION_END_MARKER
@@ -185,6 +186,19 @@ export default defineTool({
     if (!owner) {
       return { isError: true, content: [{ type: 'text', text: 'owner_required: pass the worker owner id (PAPERCUSP_SID).' }] };
     }
+
+    // WI-10001513: this request is the ONLY thing that crosses the process boundary
+    // carrying the caller's live NATIVE session id, and on a 16-worker cluster it is
+    // the only way THIS worker can learn that a carry-respawn killed the transcript
+    // its context anchor still points at (the respawn's own invalidation POST lands
+    // on exactly one worker; the other 15 keep serving the dead predecessor's frozen
+    // token count forever, because a dead transcript stops growing and so reads as
+    // "unchanged ⇒ current"). Done FIRST, before any await: the context-gauge
+    // annotator renders this very response on the way out, so healing here is what
+    // makes the number it prints describe the LIVE session rather than the dead one.
+    // Sync, in-process, and total (a Map get + a string compare) — never throws, and
+    // a report without a session id is simply a no-op.
+    noteLiveNativeSession(owner, args.session_id);
 
     // Native hooks may omit harness_slug because the dispatch context already
     // carries the concrete harness. Persist that context fallback so an exact

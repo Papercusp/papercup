@@ -375,9 +375,7 @@ function defaultContinueNote(focus: string, role?: string | null): string {
     (judgeSafe
       ? ' Use only the evidence and tools explicitly permitted to the judge role. '
       : ' Anything ' +
-        "the carry dropped is still searchable: sessions:search { session:'self', mode:'verbatim' }. " +
-        'DISTRUST a near-limit context gauge on your first turns — it can lag the respawn by up to ' +
-        'a watchdog pass (~2 min) and describe your DEAD predecessor; never re-compact on it alone. ') +
+        "the carry dropped is still searchable: sessions:search { session:'self', mode:'verbatim' }. ") +
     `Then resume: ${focus}`
   );
 }
