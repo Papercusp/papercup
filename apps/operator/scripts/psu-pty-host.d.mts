@@ -214,18 +214,6 @@ export function observeKickoffModelTurnStart({ lastOutputAt, wait, pollMs, polls
  * the post-respawn mtime floor is the strongest available native proof. Unknown
  * backends stay fail-closed. */
 export function carryTurnProofRequiresNativeId(agent: any): boolean;
-/** Durable production carry-rearm state.
- *
- * The rearm controller intentionally lives with the managed host, but the host
- * itself can be re-exec'd while a production carry is waiting for a quiet
- * window. Keeping the payload only in a Set/Map loses the accepted recovery
- * request at exactly that boundary. One owner-scoped atomic file makes the
- * request restart-survivable without introducing a second coordination store.
- */
-export function carryRearmPathForOwner(ownerId: any, dir?: string): string;
-export function persistCarryRearm(ownerId: any, msg: any, dir?: string): boolean;
-export function readPersistedCarryRearm(ownerId: any, dir?: string): any;
-export function clearPersistedCarryRearm(ownerId: any, msg: any, dir?: string): boolean;
 /** Filename-safe key for an ownerId (SIDs are already `[a-z0-9-]`-ish, but a
  *  defensive sanitize keeps a stray char from escaping the dir). Pure. */
 export function sanitizeKey(ownerId: any): string;
