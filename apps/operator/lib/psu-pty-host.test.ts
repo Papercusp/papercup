@@ -54,6 +54,7 @@ import {
   observeKickoffModelTurnStart,
   carryTurnProofRequiresNativeId,
   signalNameFromCode,
+  resolveTeardownSignal,
   reapDetachedPtyScopeResidue,
   shouldReapDetachedPtyScopeResidue,
   turnCoalesceKey,
@@ -4320,6 +4321,42 @@ describe('decodeControl mode:shutdown (WI-6638)', () => {
     // A truthy-but-not-true value must not enable it either.
     const sneaky = decodeControl(JSON.stringify({ v: 1, mode: 'shutdown', data: '', force: 'yes' }));
     expect(sneaky).toMatchObject({ force: false });
+  });
+});
+
+describe('resolveTeardownSignal — the signal that ACTUALLY arrived (WI-10001504)', () => {
+  // SIGINT/SIGTERM/SIGHUP all land in ONE handler in the host, so hardcoding 'SIGHUP'
+  // there discarded the most diagnostic fact about a session death. MEASURED 2026-09-15:
+  // two psu sessions (su-9ab60223 @19:55:03.322Z, su-66826cba @20:07:13.129Z) died to an
+  // external SIGTERM and BOTH were recorded as SIGHUP, leaving the sender hunt with no
+  // durable signal to start from and burning hours across several agents.
+
+  it('preserves the signal that arrived instead of collapsing it to SIGHUP', () => {
+    expect(resolveTeardownSignal('SIGTERM')).toBe('SIGTERM');
+    expect(resolveTeardownSignal('SIGINT')).toBe('SIGINT');
+    expect(resolveTeardownSignal('SIGHUP')).toBe('SIGHUP');
+  });
+
+  it('falls back to SIGHUP only when no signal name was supplied', () => {
+    // The fallback must stay a LAST resort and must never be null: an unnamed teardown
+    // is still a KILL, and null would restore the "clean voluntary exit" misreading.
+    expect(resolveTeardownSignal(undefined)).toBe('SIGHUP');
+    expect(resolveTeardownSignal(null)).toBe('SIGHUP');
+    expect(resolveTeardownSignal('')).toBe('SIGHUP');
+    // A number is node-pty's exit shape, not a received-signal name.
+    expect(resolveTeardownSignal(15)).toBe('SIGHUP');
+  });
+
+  it('CONTROL: the pre-fix hardcoded implementation fails the assertions above', () => {
+    // Falsifiability control, kept permanently in-file (a guard that has never failed is
+    // a guard that has not been tested). `hardcoded` is verbatim what the host did before
+    // WI-10001504. It must NOT satisfy the preserve-the-signal assertion — otherwise that
+    // assertion would pass against the very defect it exists to catch.
+    const hardcoded = (_receivedSignal: unknown) => 'SIGHUP';
+    expect(hardcoded('SIGTERM')).not.toBe(resolveTeardownSignal('SIGTERM'));
+    // ...while still AGREEING on the fallback, which proves these tests discriminate the
+    // specific discarded-signal defect rather than merely detecting "something changed".
+    expect(hardcoded(undefined)).toBe(resolveTeardownSignal(undefined));
   });
 });
 
