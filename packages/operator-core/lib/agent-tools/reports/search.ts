@@ -69,10 +69,12 @@ export default defineTool({
       limit: args.limit,
     });
     return {
-      ok: true as const,
-      query: args.query,
-      count: hits.length,
-      hits: hits.map((hit) => ({ rank: hit.rank, ...toReportSummary(hit.report) })),
+      data: {
+        ok: true as const,
+        query: args.query,
+        count: hits.length,
+        hits: hits.map((hit) => ({ rank: hit.rank, ...toReportSummary(hit.report) })),
+      },
     };
   },
 });

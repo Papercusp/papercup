@@ -157,7 +157,7 @@ describe('reports:publish — validation (R-1)', () => {
   it('SPEC-P-003-body-cap-refusal-carries-overage: an over-cap body is refused WITH its overage', async () => {
     const bytes = REPORT_BODY_MAX_BYTES + 1234;
     publishReportM.mockRejectedValue(new ReportBodyTooLargeError(bytes));
-    const out: any = await publishTool.handler({ title: 'A', body_md: 'x' } as never, CTX as never);
+    const out: any = body(await publishTool.handler({ title: 'A', body_md: 'x' } as never, CTX as never) as Out);
     expect(out).toMatchObject({
       ok: false,
       error: 'body_too_large',
@@ -176,7 +176,7 @@ describe('reports:publish — validation (R-1)', () => {
     ];
     for (const [message, error] of cases) {
       publishReportM.mockRejectedValue(new Error(message));
-      const out: any = await publishTool.handler({ title: 'A' } as never, CTX as never);
+      const out: any = body(await publishTool.handler({ title: 'A' } as never, CTX as never) as Out);
       expect(out).toMatchObject({ ok: false, error });
     }
   });
@@ -190,7 +190,7 @@ describe('reports:publish — validation (R-1)', () => {
   });
 
   it('returns a stable id AND its UI path (R-1)', async () => {
-    const out: any = await publishTool.handler({ title: 'A' } as never, CTX as never);
+    const out: any = body(await publishTool.handler({ title: 'A' } as never, CTX as never) as Out);
     expect(out).toMatchObject({ ok: true, report_id: 'rpt_1', path: '/reports/rpt_1', lineage_id: 'rpt_1' });
   });
 });
@@ -209,7 +209,7 @@ describe('reports:publish — side effects are reported, never fatal', () => {
     // The row is already committed: failing the call here would tell the caller the
     // publish failed when it did not, and the retry would duplicate the report.
     emitAwaitedEventM.mockRejectedValue(new Error('bus down'));
-    const out: any = await publishTool.handler({ title: 'A' } as never, CTX as never);
+    const out: any = body(await publishTool.handler({ title: 'A' } as never, CTX as never) as Out);
     expect(out.ok).toBe(true);
     expect(out.report_id).toBe('rpt_1');
     expect(out.event_emitted).toBe(false);
@@ -306,7 +306,7 @@ describe('reports:retire — write authority is narrower than the read matrix', 
 // ── List / search projections ────────────────────────────────────────────────
 describe('reports:list / reports:search — projections', () => {
   it('omits the body from list rows but reports its size', async () => {
-    const out: any = await listTool.handler({} as never, CTX as never);
+    const out: any = body(await listTool.handler({} as never, CTX as never) as Out);
     expect(out.reports[0]).not.toHaveProperty('bodyMd');
     expect(out.reports[0]).not.toHaveProperty('body_md');
     expect(out.reports[0]).toMatchObject({ report_id: 'rpt_1', path: '/reports/rpt_1', body_bytes: 4 });
@@ -315,8 +315,8 @@ describe('reports:list / reports:search — projections', () => {
   it('every verb names the id identically — publish and list cannot disagree', async () => {
     // The defect this pins: spreading the camelCase domain record into a response
     // made publish answer `report_id` and list answer `reportId` for one field.
-    const published: any = await publishTool.handler({ title: 'A' } as never, CTX as never);
-    const listed: any = await listTool.handler({} as never, CTX as never);
+    const published: any = body(await publishTool.handler({ title: 'A' } as never, CTX as never) as Out);
+    const listed: any = body(await listTool.handler({} as never, CTX as never) as Out);
     const got = body(await getTool.handler({ id: 'rpt_1' } as never, CTX as never) as Out);
     for (const row of [published, listed.reports[0], got.results[0].report]) {
       expect(row.report_id).toBe('rpt_1');
@@ -325,7 +325,7 @@ describe('reports:list / reports:search — projections', () => {
   });
 
   it('search returns the rank so a strong match is distinguishable from a passing mention', async () => {
-    const out: any = await searchTool.handler({ query: 'gate' } as never, CTX as never);
+    const out: any = body(await searchTool.handler({ query: 'gate' } as never, CTX as never) as Out);
     expect(out).toMatchObject({ ok: true, count: 1, query: 'gate' });
     expect(out.hits[0]).toMatchObject({ rank: 0.42, report_id: 'rpt_1' });
     expect(out.hits[0]).not.toHaveProperty('bodyMd');

@@ -80,6 +80,6 @@ export default defineTool({
       collapseLineage: args.collapse_lineage,
       limit: args.limit,
     });
-    return { ok: true as const, count: reports.length, reports: reports.map(toReportSummary) };
+    return { data: { ok: true as const, count: reports.length, reports: reports.map(toReportSummary) } };
   },
 });

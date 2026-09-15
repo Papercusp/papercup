@@ -12,6 +12,7 @@
  */
 import { z } from 'zod';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveAgentIdentity } from '../coordination/identity';
 import { trackDetached } from '../../detached-imports';
 import {
   REPORT_KINDS,
@@ -65,6 +66,34 @@ export function resolveWorkspaceId(ctx: ReportsCtx): string {
 }
 
 /**
+ * The calling agent's ownerId — the value BOTH axis-1 provenance and the R-7 read
+ * gate key on, so it has exactly one resolver.
+ *
+ * `ctx.ownerId` is NOT a field of the host's `UnifiedToolContext`: some dispatch
+ * paths attach one, most do not. Reading it directly therefore compiles only where
+ * the context type happens to declare it, and — worse — yields `undefined` at
+ * runtime everywhere else, which would stamp every published report with a NULL
+ * author while still succeeding. `resolveAgentIdentity` is the canonical resolver
+ * (superuser session id, power-user auth session, bearer principal), so it is the
+ * fallback whenever the context did not carry an explicit ownerId.
+ *
+ * Fail-soft: `resolveAgentIdentity` throws on a malformed power-user context, and
+ * an unattributed report is a better outcome than a failed publish — the author is
+ * one field of the record, not its reason for existing.
+ */
+export function resolveOwnerId(ctx: ReportsCtx): string | null {
+  if (ctx.ownerId) return ctx.ownerId;
+  try {
+    // One documented cast at one seam: ReportsCtx is deliberately a narrower
+    // structural subset than ResolveIdentityCtx, and this is the only call that
+    // needs the wider shape.
+    return resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Stamp axis 1 (ORIGIN) from the calling session — the server-side half of R-2.
  *
  * This function is the ONLY producer of a `ReportOrigin` on the tool path, and it
@@ -77,7 +106,7 @@ export function resolveWorkspaceId(ctx: ReportsCtx): string {
 export function stampOrigin(ctx: ReportsCtx): ReportOrigin {
   return {
     harnessSlug: ctx.harnessSlug ?? null,
-    authorOwnerId: ctx.ownerId ?? null,
+    authorOwnerId: resolveOwnerId(ctx),
     authorSessionRef: ctx.runId ?? ctx.uiClientId ?? null,
   };
 }
@@ -95,7 +124,7 @@ export function stampOrigin(ctx: ReportsCtx): ReportOrigin {
 export function resolveViewer(ctx: ReportsCtx): ReportViewer {
   return {
     isOwner: false,
-    ownerId: ctx.ownerId ?? null,
+    ownerId: resolveOwnerId(ctx),
     potSlug: ctx.harnessSlug ?? null,
   };
 }
