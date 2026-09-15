@@ -1856,3 +1856,109 @@ describe('psu-pty-host turn SUBMITS because the CR is a SEPARATE keystroke (past
     20_000,
   );
 });
+
+/**
+ * WI-10001508 — owner keystrokes during submit verification must DEFER the
+ * carry, never destroy it.
+ *
+ * The submit verifier aborts with `human-input` when `lastInputAt` advances
+ * mid-verify (psu-pty-host.mjs, makeSubmitVerifier). That abort used to become
+ * a terminal `respawn-carry-dropped {reason:'submit-verification-aborted-
+ * human-input'}`: the successor booted with its carry document but never
+ * received the turn telling it to act, so it sat at an idle prompt until a
+ * human resumed it by hand.
+ *
+ * Measured 2026-09-15 across all 14,586 per-owner ledgers: that reason is only
+ * 0.6% of fleet-wide carry drops but was 100% of the drops on the session the
+ * OWNER was typing into — the interactive case, where the owner's own keystroke
+ * is what destroyed the delivery. Asserted as the observable contract (retry
+ * recorded + carry delivered), not as the shape of the loop.
+ *
+ * Claude-path ON PURPOSE: under `PAPERCUSP_AGENT=codex` the earlier
+ * `freshChildWasInterrupted()` guard drops with `fresh-child-owner-input`
+ * BEFORE verification is ever reached, so a codex fixture would pass while
+ * proving nothing about this path.
+ */
+describe('owner keystrokes during submit verification (WI-10001508)', () => {
+  it(
+    'retries the carry once the keyboard settles instead of dropping it',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'psu-human-input-retry-'));
+      const ownerId = uniqueOwner('HUMAN-INPUT-RETRY');
+      const { captured, io, type } = bridgedIo();
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', "process.stdout.write('OLD-READY\\n');setTimeout(()=>process.exit(0),12000);"],
+        cwd: root,
+        env: hermeticEnv({
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_IDLE_MS: '20',
+          PAPERCUSP_PSU_PTY_IDLE_CAP_MS: '300',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '60',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '250',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '8000',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+        }),
+        ownerId,
+        io,
+        bridgeTty: true,
+        mintCarryRespawnArgs: () => ({ args: ['-e', echoChildCode(12000)], nativeId: null }),
+        onExit: () => {},
+      });
+      // The verify poll window is only tens of milliseconds, so a single
+      // keystroke would race it and fail in the direction that LOOKS like a
+      // pass. Type CONTINUOUSLY across the whole respawn so the overlap is
+      // guaranteed, then stop — the retry can only land after quiet.
+      let typing: ReturnType<typeof setInterval> | undefined;
+      try {
+        const booted = await waitForOutput(captured, 'OLD-READY', 6000);
+        expect(booted, `captured=${JSON.stringify(captured().slice(0, 600))}`).toBe(true);
+        typing = setInterval(() => type('x'), 10);
+        await injectIntoHost(socketPathFor(ownerId), {
+          mode: 'carry-respawn',
+          data: 'CARRIED',
+          systemPromptAddendum: 'saved task',
+          ownerId,
+        });
+        await sleep(700);
+        clearInterval(typing);
+        typing = undefined;
+
+        let rows: Record<string, unknown>[] = [];
+        let terminal: Record<string, unknown> | undefined;
+        const deadline = Date.now() + 9000;
+        while (!terminal && Date.now() < deadline) {
+          if (existsSync(eventLogPathForOwner(ownerId))) {
+            rows = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+              .trim()
+              .split('\n')
+              .filter(Boolean)
+              .map((line) => JSON.parse(line));
+            terminal = rows.find((row) =>
+              ['respawn-carry-delivered', 'respawn-carry-dropped'].includes(row.kind as string),
+            );
+          }
+          if (!terminal) await sleep(25);
+        }
+        expect(rows.some((row) => row.kind === 'submit-verify-human-input-retry')).toBe(true);
+        expect(terminal).toBeDefined();
+        expect(terminal?.reason).not.toBe('submit-verification-aborted-human-input');
+        expect(terminal?.kind).toBe('respawn-carry-delivered');
+      } finally {
+        if (typing) clearInterval(typing);
+        await injectIntoHost(socketPathFor(ownerId), {
+          mode: 'raw',
+          data: '\x04',
+          ownerId,
+        }).catch(() => false);
+        await done;
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+});
