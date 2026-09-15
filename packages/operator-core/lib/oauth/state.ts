@@ -21,6 +21,9 @@
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org/connection';
 
 const STATE_VERSION = 1 as const;
@@ -49,18 +52,123 @@ interface SignedState extends StateClaims {
   nonce: string;
 }
 
+const SECRET_ENV_VAR = 'PAPERCUSP_OAUTH_STATE_SECRET';
+const KEY_FILE_ENV_VAR = 'PAPERCUSP_OAUTH_STATE_KEY_FILE';
+const MIN_SECRET_CHARS = 32;
+const GENERATED_KEY_BYTES = 32;
+
+/**
+ * Where the per-INSTALL signing key lives. `homedir()` is called lazily, never
+ * at module scope: this module is reachable from bundles where `node:os` is an
+ * empty browser stub and `homedir` is not a function, and a top-level call
+ * would throw on chunk load. Mirrors `db-encryption.ts`.
+ *
+ * `PAPERCUSP_OAUTH_STATE_KEY_FILE` relocates the file — for a mounted secret,
+ * a separate volume, or a throwaway path under test.
+ */
+export function oauthStateKeyFilePath(): string {
+  const override = process.env[KEY_FILE_ENV_VAR];
+  if (override && override.trim()) return override.trim();
+  return join(homedir(), '.papercusp', 'oauth-state-key');
+}
+
+/**
+ * Repair a key file readable beyond its owner, on LOAD rather than only on
+ * creation, so an install whose key was written by an older/interrupted writer
+ * is fixed by the next boot instead of staying exposed forever.
+ */
+function tightenKeyFilePermissions(path: string): void {
+  if (process.platform === 'win32') return;
+  try {
+    if ((statSync(path).mode & 0o077) === 0) return;
+    chmodSync(path, 0o600);
+  } catch {
+    // Best-effort: an unreadable mode, or a filesystem without POSIX
+    // permissions, must not stop a working key from being used.
+  }
+}
+
+/**
+ * Create the key file if absent and return the key it holds either way.
+ *
+ * Creation is a single `O_CREAT|O_EXCL` open at mode 0600 — never
+ * write-then-chmod, which would leave the key world-readable in the gap and
+ * permanently so if the process died there. On EEXIST we adopt the key already
+ * on disk: this box forks SO_REUSEPORT workers that all race this path on first
+ * boot, and keeping our own would mean signing under a key no sibling holds —
+ * precisely the split-key bug this function exists to end.
+ */
+export function ensureOAuthStateKeyFile(path: string): string {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const generated = randomBytes(GENERATED_KEY_BYTES).toString('base64');
+
+  let fd: number;
+  try {
+    fd = openSync(path, 'wx', 0o600);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err;
+    const raw = readFileSync(path, 'utf8').trim();
+    if (raw) {
+      tightenKeyFilePermissions(path);
+      return raw;
+    }
+    // Empty/whitespace-only carries no key material, so there is nothing a
+    // refusal could preserve. Unlink and re-create exclusively.
+    rmSync(path, { force: true });
+    return ensureOAuthStateKeyFile(path);
+  }
+
+  try {
+    writeSync(fd, `${generated}\n`, null, 'utf8');
+  } finally {
+    closeSync(fd);
+  }
+  return generated;
+}
+
 let secretKey: Buffer | null = null;
 
+/**
+ * The HMAC key for state tokens. Resolution order:
+ *
+ *   1. `PAPERCUSP_OAUTH_STATE_SECRET` — the server-deployment override.
+ *   2. A per-install key file, generated on first use (see above).
+ *
+ * There is deliberately NO random in-memory fallback. The previous one
+ * (`randomBytes(32)` cached module-scope) gave every PROCESS its own key, which
+ * cannot work here at all: `hono-host.ts` sets `reusePort: true` and
+ * `cluster-fork.ts` forks N request workers, so the kernel load-balances the
+ * authorize-start and the OAuth callback onto DIFFERENT workers. The callback
+ * then verified a signature made under a key it did not have and every Google
+ * login failed `bad-signature` — nonce rows written by the start leg, never
+ * consumed, because verification bails before the nonce claim.
+ *
+ * A file also makes the key per-INSTALL, which is what a DISTRIBUTED build
+ * needs: a single secret baked into a shipped binary could be extracted by
+ * anyone and used to forge state tokens for every user.
+ */
 function getSecret(): Buffer {
   if (secretKey) return secretKey;
-  const env = process.env.PAPERCUSP_OAUTH_STATE_SECRET;
-  if (env && env.length >= 32) {
-    secretKey = Buffer.from(env, 'utf8');
-  } else {
-    // Dev fallback: process-lifetime random key. Restarting the process
-    // invalidates in-flight states; that is acceptable for dev.
-    secretKey = randomBytes(32);
+
+  const env = process.env[SECRET_ENV_VAR];
+  if (env && env.trim()) {
+    const trimmed = env.trim();
+    // Fail LOUD on a too-short override. The old code silently fell back to a
+    // random key here, so a misconfigured secret broke every login while
+    // looking configured — the failure reported itself as `bad-signature`,
+    // which points at the token rather than at the setting that caused it.
+    if (trimmed.length < MIN_SECRET_CHARS) {
+      throw new Error(
+        `${SECRET_ENV_VAR} is ${trimmed.length} characters, under the ${MIN_SECRET_CHARS}-character floor. ` +
+          'Refusing to sign OAuth state under a weak key. Set a longer value, or unset it entirely to use the ' +
+          `per-install key file at ${oauthStateKeyFilePath()} (generated automatically).`,
+      );
+    }
+    secretKey = Buffer.from(trimmed, 'utf8');
+    return secretKey;
   }
+
+  secretKey = Buffer.from(ensureOAuthStateKeyFile(oauthStateKeyFilePath()), 'utf8');
   return secretKey;
 }
 
@@ -206,6 +314,18 @@ export async function verifyAndConsumeState(token: string): Promise<VerifyStateR
  * in oauth_nonces. The DELETE is destructive across the whole table,
  * so don't use this in any non-test path.
  */
+/**
+ * Test-only: drop ONLY the in-process key cache, leaving the nonce rows intact.
+ *
+ * This is the cross-worker simulation: a sibling reusePort worker shares the
+ * key FILE and the PG nonce table, but has none of this process's memory. The
+ * full `__resetForTest` below also DELETEs the nonces, which would turn that
+ * scenario into `unknown-nonce` and hide the signature property under test.
+ */
+export function __resetSecretCacheForTest(): void {
+  secretKey = null;
+}
+
 export async function __resetForTest(): Promise<void> {
   secretKey = null;
   const { sql } = getOrgPg();
