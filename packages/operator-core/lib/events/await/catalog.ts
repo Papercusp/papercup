@@ -1082,6 +1082,15 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     emitter: 'gym rate-pause-events',
     exists: true,
   },
+  {
+    family: 'report-published',
+    keyTemplate: 'report:published:<reportId>',
+    params: [{ name: 'reportId', required: true, describe: 'the published report id' }],
+    describe:
+      'A report was published — a new report row committed, or a new version superseding an earlier one in its lineage. The payload carries lineage_id, supersedes_report_id, kind, visibility, subject, origin and the report UI path.',
+    emitter: 'reports:publish (packages/operator-core/lib/agent-tools/reports/publish.ts)',
+    exists: true,
+  },
 ] as const;
 
 /** Lookup one family by id. */
