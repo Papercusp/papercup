@@ -45,7 +45,20 @@ vi.mock('@papercusp/db-org/connection', async (orig) => {
   return { ...((await orig()) as object), getOrgPg: () => ({ sql, db: {} }) };
 });
 
-import { __resetForTest, signState, verifyAndConsumeState } from './state';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// Point the per-install key file at a throwaway path BEFORE the first sign, so
+// the suite never creates or adopts the real ~/.papercusp/oauth-state-key.
+// The module reads this lazily inside getSecret(), so top-level is early enough.
+process.env.PAPERCUSP_OAUTH_STATE_KEY_FILE = join(
+  mkdtempSync(join(tmpdir(), 'papercusp-oauth-state-')),
+  'oauth-state-key',
+);
+delete process.env.PAPERCUSP_OAUTH_STATE_SECRET;
+
+import { __resetForTest, __resetSecretCacheForTest, signState, verifyAndConsumeState } from './state';
 
 const baseClaims = {
   plugin: 'github-repo',
@@ -60,6 +73,42 @@ afterEach(() => __resetForTest());
 // signState / verifyAndConsumeState are async (nonce consume is durable now);
 // every call must be awaited.
 describe('OAuth state token', () => {
+  // Regression, WI-10001496. getSecret() used to fall back to randomBytes(32)
+  // cached module-scope, giving every PROCESS its own HMAC key. hono-host sets
+  // reusePort:true and cluster-fork forks N request workers, so the kernel
+  // routes authorize-start and the OAuth callback to DIFFERENT workers and the
+  // callback verified under a key it did not have — every Google login failed
+  // bad-signature, with nonce rows written by the start leg and never consumed.
+  //
+  // __resetForTest() drops the in-process key cache, which is exactly what a
+  // sibling worker looks like: same key FILE, no shared memory. Under the old
+  // per-process-random code this fails; it only passes if the key is durable.
+  it('verifies a token signed before the in-process key cache was dropped (cross-worker)', async () => {
+    const token = await signState(baseClaims);
+
+    // Simulate the callback arriving at a DIFFERENT reusePort worker: same key
+    // file and same nonce table, none of this process's memory.
+    __resetSecretCacheForTest();
+
+    const verified = await verifyAndConsumeState(token);
+    expect(verified.error).toBeUndefined();
+    expect(verified.ok).toBe(true);
+    expect(verified.claims).toMatchObject(baseClaims);
+  });
+
+  it('refuses a configured secret shorter than the 32-character floor', async () => {
+    process.env.PAPERCUSP_OAUTH_STATE_SECRET = 'too-short';
+    __resetSecretCacheForTest();
+    try {
+      // Must THROW, not silently fall back to a random key — the old fallback
+      // meant a misconfigured secret broke every login while looking configured.
+      await expect(signState(baseClaims)).rejects.toThrow(/under the 32-character floor/);
+    } finally {
+      delete process.env.PAPERCUSP_OAUTH_STATE_SECRET;
+      __resetSecretCacheForTest();
+    }
+  });
+
   it('round-trips a valid state token', async () => {
     const token = await signState(baseClaims);
     const result = await verifyAndConsumeState(token);
