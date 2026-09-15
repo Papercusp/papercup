@@ -46,6 +46,7 @@ import {
   claudeSeedToolNames,
   CLAUDE_SEED_EXTRA_TOOL_NAMES,
   CLAUDE_MINIMAL_SEED_TOOL_NAMES,
+  CLAUDE_MINIMAL_SEED_MAX_NAMES,
   isWeakOmpModel,
   bareOmpModelId,
   probeOmpBackendContextWindow,
