@@ -21,7 +21,17 @@
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
+import {
+  chmodSync,
+  closeSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org/connection';
@@ -57,6 +67,13 @@ const KEY_FILE_ENV_VAR = 'PAPERCUSP_OAUTH_STATE_KEY_FILE';
 const MIN_SECRET_CHARS = 32;
 const GENERATED_KEY_BYTES = 32;
 
+/** Bounded publish/adopt passes. Each loses at most one link() race, so this is
+ *  a cap on contention, not a timeout — 8 is far beyond the worker count. */
+const KEY_PUBLISH_ATTEMPTS = 8;
+/** Grace given to a possible in-flight writer before an EMPTY key file is
+ *  judged stale. Only reachable for a file this module did not publish. */
+const EMPTY_KEY_GRACE_MS = 50;
+
 /**
  * Where the per-INSTALL signing key lives. `homedir()` is called lazily, never
  * at module scope: this module is reachable from bundles where `node:os` is an
@@ -91,39 +108,88 @@ function tightenKeyFilePermissions(path: string): void {
 /**
  * Create the key file if absent and return the key it holds either way.
  *
- * Creation is a single `O_CREAT|O_EXCL` open at mode 0600 — never
- * write-then-chmod, which would leave the key world-readable in the gap and
- * permanently so if the process died there. On EEXIST we adopt the key already
- * on disk: this box forks SO_REUSEPORT workers that all race this path on first
- * boot, and keeping our own would mean signing under a key no sibling holds —
- * precisely the split-key bug this function exists to end.
+ * The key is PUBLISHED ATOMICALLY: written in full to a private temp file at
+ * mode 0600, then `link()`ed into place. `link()` either succeeds or fails
+ * EEXIST — it never clobbers — so `path` is only ever observable as ABSENT or
+ * COMPLETE, and a losing racer can never destroy the winner's file. Mode 0600
+ * comes from the original `open`, never a write-then-chmod, which would leave
+ * the key world-readable in the gap and permanently so if the process died.
+ *
+ * WI-10001496. The previous implementation created `path` itself with
+ * O_CREAT|O_EXCL and wrote into it AFTERWARDS, leaving a window where the file
+ * existed but was EMPTY. A sibling arriving in that window read empty, unlinked
+ * the file and created its own; the first worker's `write()` then landed on an
+ * orphaned inode, so it returned a key present on no disk and signed under a key
+ * no sibling held — reintroducing the exact split-key bug this function exists
+ * to end, at the one moment it matters: a cold boot where all N SO_REUSEPORT
+ * workers race this path from nothing.
+ *
+ * An empty `path` is therefore never something WE publish. It can only be a
+ * leftover from that older writer, a crash mid-write, or external truncation, so
+ * a possible in-flight writer is given a brief grace period before the file is
+ * judged stale. We never unlink a file that has content.
  */
 export function ensureOAuthStateKeyFile(path: string): string {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const generated = randomBytes(GENERATED_KEY_BYTES).toString('base64');
 
-  let fd: number;
-  try {
-    fd = openSync(path, 'wx', 0o600);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err;
-    const raw = readFileSync(path, 'utf8').trim();
-    if (raw) {
-      tightenKeyFilePermissions(path);
-      return raw;
+  for (let attempt = 0; attempt < KEY_PUBLISH_ATTEMPTS; attempt++) {
+    const onDisk = readKeyFileContents(path);
+    if (onDisk !== null) {
+      if (onDisk !== '') {
+        tightenKeyFilePermissions(path);
+        return onDisk;
+      }
+      sleepSync(EMPTY_KEY_GRACE_MS);
+      if (readKeyFileContents(path) === '') rmSync(path, { force: true });
+      continue;
     }
-    // Empty/whitespace-only carries no key material, so there is nothing a
-    // refusal could preserve. Unlink and re-create exclusively.
-    rmSync(path, { force: true });
-    return ensureOAuthStateKeyFile(path);
+
+    const generated = randomBytes(GENERATED_KEY_BYTES).toString('base64');
+    const tmp = `${path}.tmp.${process.pid}.${randomBytes(6).toString('hex')}`;
+    try {
+      const fd = openSync(tmp, 'wx', 0o600);
+      try {
+        writeSync(fd, `${generated}\n`, null, 'utf8');
+      } finally {
+        closeSync(fd);
+      }
+      try {
+        linkSync(tmp, path);
+        return generated;
+      } catch (err) {
+        // EEXIST: a sibling published first. Loop and adopt theirs — keeping our
+        // own is the split-key bug. `tmp` and `path` share a directory, so EXDEV
+        // is unreachable; anything else is a real fault and must surface.
+        if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err;
+      }
+    } finally {
+      rmSync(tmp, { force: true });
+    }
   }
 
+  // Every pass lost the race yet never found a readable key. Failing loud is the
+  // point: falling back to a process-local key IS the split-key bug.
+  throw new Error(
+    `Could not establish an OAuth state key at ${path} after ${KEY_PUBLISH_ATTEMPTS} attempts.`,
+  );
+}
+
+/** `null` = absent · `''` = present but carrying no key material · else the key. */
+function readKeyFileContents(path: string): string | null {
   try {
-    writeSync(fd, `${generated}\n`, null, 'utf8');
-  } finally {
-    closeSync(fd);
+    return readFileSync(path, 'utf8').trim();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return null;
+    throw err;
   }
-  return generated;
+}
+
+/**
+ * Block this thread. `ensureOAuthStateKeyFile` is synchronous (it is called from
+ * `getSecret()`, itself sync), so a timer-based wait is not available.
+ */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 let secretKey: Buffer | null = null;
