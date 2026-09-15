@@ -1632,6 +1632,42 @@ export const NATIVE_DEADWEIGHT_DENY_FLAG =
   "--disallowedTools=Artifact,DesignSync,SendFeedback,RemoteTrigger,EnterWorktree,ExitWorktree";
 
 /**
+ * Claude-in-Chrome lockout for AGENT sessions (owner directive 2026-09-15).
+ *
+ * WHAT IT BUYS: the claude-in-chrome MCP block is 22 tools / 28,499 B of the prompt —
+ * measured by decomposing a real captured /v1/messages body from a clean psu launch
+ * (113 tools: papercusp-su 397,655 B, natives 59,280 B, chrome 28,499 B). With
+ * ToolSearch denied there is no schema deferral, so that rides in EVERY turn.
+ *
+ * ⚠ WHY NOT `--disallowedTools=mcp__claude-in-chrome__*` — the obvious move, and it
+ * buys ZERO bytes. MEASURED, not inferred: in that same capture
+ * `mcp__claude-in-chrome__navigate` was denied by exactly that token and its schema
+ * stayed in the body verbatim. A deny blocks the CALL; only dropping the SERVER drops
+ * the schema. (Denying a NATIVE tool does strip it — see NATIVE_DEADWEIGHT_DENY_FLAG.)
+ *
+ * ⚠ WHY NOT `--strict-mcp-config` — the first plan, and it does not address this.
+ * claude-in-chrome is NOT a configured MCP server: `claude mcp list` shows only
+ * papercusp-su, because the CLI attaches Chrome from the paired extension
+ * (`claudeInChromeDefaultEnabled` / `cachedChromeExtensionInstalled` in ~/.claude.json).
+ * Strict mode filters CONFIGURED servers, so it would not have removed chrome — and it
+ * would have stopped loading the user-level papercusp-su, which psu depends on (no
+ * --mcp-config is passed precisely because that server is user-level; see suLaunchArgs).
+ * It was the riskier lever AND the ineffective one.
+ *
+ * ⚠ WHY NOT the user-level toggle — flipping `claudeInChromeDefaultEnabled` in
+ * ~/.claude.json works, but that is the OWNER'S personal client config: it would also
+ * kill Chrome automation in their own interactive sessions. This flag is per-launch, so
+ * agents lose Chrome and the owner keeps it. That split is the whole point.
+ *
+ * A standalone flag (not a --disallowedTools token): it is claude's own first-class
+ * "Disable Claude in Chrome integration" switch (verified in `claude --help`, 2.1.268).
+ * Agents that genuinely need a browser use the `verdict` skill, or drive the Tauri
+ * webview via tauri-agent-tools per the repo guide — neither goes through Chrome.
+ * Exported for tests.
+ */
+export const NO_CHROME_FLAG = "--no-chrome";
+
+/**
  * EI-3294 known-risk warning: an opted-in subagent (Task/Agent tool) session
  * running on the DEFAULT (no-gateway, direct local OAuth) account route died
  * with 401 "Please run /login" after 12-39 tool calls, while the PARENT
@@ -1790,6 +1826,10 @@ export function roleLaunchArgs(
         // Dead-weight native tools (2026-09-15) — a role/bee has even less use
         // for claude.ai publishing surfaces than an su session. See its comment.
         NATIVE_DEADWEIGHT_DENY_FLAG,
+        // Claude-in-Chrome lockout (owner directive 2026-09-15) — 22 tools /
+        // 28,499 B off every turn. See NO_CHROME_FLAG for why a deny token and
+        // --strict-mcp-config both fail to remove it.
+        NO_CHROME_FLAG,
         // Subagent-launch (Task/Agent) is DENIED BY DEFAULT (owner mandate
         // 2026-07-02) — a role/bee never fans out via its own subagent tool
         // unless the launch explicitly opts in (`--allow-subagents`). See
@@ -1933,6 +1973,10 @@ export function suLaunchArgs(
         // ToolSearch denied their full schemas ride in EVERY prompt; measured
         // ~75,000 B of an su session's 547,041 B tool block. See its comment.
         NATIVE_DEADWEIGHT_DENY_FLAG,
+        // Claude-in-Chrome lockout (owner directive 2026-09-15) — 22 tools /
+        // 28,499 B off every turn. See NO_CHROME_FLAG for why a deny token and
+        // --strict-mcp-config both fail to remove it.
+        NO_CHROME_FLAG,
       ],
     };
   }
@@ -2304,6 +2348,10 @@ export function resumeArgsFor(
         // two flags above: a spawn-time deny does NOT survive into a resume, so
         // a resumed session would silently regain ~75,000 B of schemas.
         NATIVE_DEADWEIGHT_DENY_FLAG,
+        // Claude-in-Chrome lockout (owner directive 2026-09-15) — 22 tools /
+        // 28,499 B off every turn. See NO_CHROME_FLAG for why a deny token and
+        // --strict-mcp-config both fail to remove it.
+        NO_CHROME_FLAG,
         ...forkFlag,
         ...addDirArgs("claude", addDir),
         ...modelArgsFor("claude", model),

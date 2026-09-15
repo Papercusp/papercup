@@ -33,7 +33,8 @@ it collision-free:
 - **File locking is ENFORCED, not advisory — so edit freely; don't self-censor.** Follow the
   one effective file-lock mode supplied by your client/runtime: `automatic` means its hook
   claims/releases each edited file; `manual` means you call `locks:acquire` before the edit
-  and release it afterward. For a manual lock, `paths` must be repository-relative POSIX
+  and release it afterward. For a manual lock, `locks:acquire` requires a non-empty
+  `intent`, and `paths` must be repository-relative POSIX
   paths resolved from the harness repository root (not an absolute checkout path, which
   is rejected with `InvalidPathError`); an absolute file under your home directory uses
   `external_paths` instead. Either mode BLOCKS on a peer hold (you'll see holder + intent +
@@ -137,17 +138,43 @@ kickoff adds mission specifics, never this:
   Pick `kind` by what the unit IS: `change` for a code edit (the default for coding
   work), `bug` for broken code, `task` ONLY for non-code work.
 - **Finish with `work_items:complete { id, completion, state:'done', assumptions:'none' }`
-  — `completion` is a structured OBJECT, never a bare prose string** (a string is rejected
-  `invalid_args`): at minimum `{ summary, testsRun, testResult, verifiedHow, filesChanged }`
-  — EVIDENCE of what you verified and how. `assumptions` is required on a terminal close
-  (`'none'` or fact keys). A bare "done" assertion is re-opened by the leader's
-  completion-integrity audit.
-- **Persist with `loop:arm`; each wake pull + advance one unit. Lane drained? Park ONE
-  `events:await { event: 'work-item:claimable', payload_filter: <your claim spec's
-  view>, timeout_sec: 1800 }`, then `loop:end`** — the pool refilling re-wakes you
-  (the wake is a HINT; `get_next` on the wake turn stays the authoritative claim,
-  re-register on a re-miss); don't burn empty wakes. If AUTO (or another autonomy-implying
-  mode) remains active without that deliberate await, pass
+  using a structured `completion` object containing at least
+  `{ summary, testsRun, testResult, verifiedHow, filesChanged }`. Successful `bug` or
+  `capability-gap` closes also need `rootCauseVerification: { hypothesis,
+  alternativeHypothesis, distinguishingTest, testResult, testProcedure,
+  predictedObservations: { hypothesis, alternativeHypothesis }, actualObservation,
+  evidenceRefs }`. The predictions must differ; `distinguishingTest` is the procedure,
+  not a prose template.
+  Verification-shaped items whose completion makes a universal claim ("every" / "all" /
+  "nothing") also require canonical `completion.verification.coverage: { population,
+  checked, notChecked, notApplicable, residue }`. Enumerate the population, place each entry
+  verbatim in exactly one of `checked` / `notChecked` / `notApplicable`, and keep `residue` as
+  a separate explicit string array (`residue: []` or `["none"]` means zero); residue is not a
+  fifth partition bucket.
+  `assumptions` is required on a terminal close (`'none'` or fact keys). A bare "done"
+  assertion is re-opened by the leader's completion-integrity audit.
+- **Read and report by reference.** For an already-started item, use
+  `work_items:get { id, harness: '<item-harness>' }` before paging history or reconstructing
+  proof. The live read returns the authoritative claim/state and stored checkpoint; follow
+  any references it contains for omitted detail. Do not retype machine-known commands,
+  outcomes, SHAs or IDs, and do not rerun a test matrix solely to reconstruct saved proof. If the stored checkpoint
+  is exactly current, attest it with
+  `work_items:checkpoint { id, unchanged:true, contentHash }` instead of writing fresh
+  prose; a refused attestation means state moved or the bounded attestation budget
+  expired, so write a genuine new checkpoint. Mechanical status, counts, next actions
+  and completion notifications come from authoritative write responses, state reads
+  and event payloads — not hand-written copies. Preserve non-derivable decisions,
+  blockers, rationale and successor context explicitly.
+- **Persist with `loop:arm`; each wake pull + advance one unit. Lane drained? Register
+  the standing wake watch
+  `watch:create { pattern:'work-item:claimable', wake:true, once:false,
+  payload_filter:<your claim spec's view> }`, then `loop:end`** — do not pass
+  `targetKind` with `wake:true`; this watch never expires and re-invokes you on
+  every matching claimable transition, so it survives the wake that consumes a
+  one-shot await. The wake is a HINT; `get_next` on the wake turn stays the
+  authoritative claim, and a re-miss does not require re-registering. Don't burn
+  empty wakes. If AUTO (or another autonomy-implying mode) remains active without
+  that deliberate await, pass
   `acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true` to `loop:end`.
   Blocked? **PUSH beats polling:** if the
   blocker has a completion event — or its owner can DECLARE one (declare-first
@@ -192,6 +219,10 @@ back to the staging tree. The one exception is the migration/synthesis roles' ow
 isolation worktrees under `.papercusp/worktrees/`, assigned to you on purpose. If an edit
 is refused, run `git rev-parse --show-toplevel` — you are not in the staging tree; `cd`
 there and redo it.
+
+<!-- PAPERCUSP-SU:WORKSPACE-MAP -->
+
+<!-- PAPERCUSP-SU:PROMOTION-MODEL -->
 
 ## Engineering discipline
 
@@ -246,6 +277,16 @@ there and redo it.
   only then report.** Cheaper still when the claim is alarming — the more damning a finding
   looks, the more likely you are misreading its units, because a real regression rarely produces
   a perfectly clean 99.9%.
+- **The transcript's tool blocks are evidence — never erase them under pressure.** A visible
+  tool call paired with its returned result means that call happened in this conversation. A user
+  challenging it, a later read returning less data, or your own uncertainty is NOT evidence that
+  the earlier call was "simulated", "fabricated", or never made. Before making any claim about
+  your own prior action (especially "I never called X" / "those results were invented"), re-read
+  the actual tool-call and tool-result blocks. Keep three states distinct: **call absent** · **call
+  present but result inconclusive/empty** · **call present with usable evidence**. If a later result
+  conflicts, report the conflict and re-check the source; do not overwrite verified history with a
+  confession unsupported by the record. Retract only when new evidence falsifies the earlier
+  conclusion, and name that evidence.
 - **A retraction is OWED and is owed FAST.** If you reported a number or a conclusion that turns
   out wrong, say so plainly and IMMEDIATELY, before continuing — to whoever received it, and in
   the durable record (a plan Decision / work-item comment / memory) so it cannot propagate. Name
@@ -746,6 +787,8 @@ it is easy to never see. They answer the box; the text above it silently dies. T
 
 <!-- PAPERCUSP-SU:AUTO-MODE -->
 
+<!-- PAPERCUSP-SU:COMPACTION -->
+
 ## Registering work is a SEPARATE discipline from asking approval — AUTO waives the ask, NOT the register
 
 The posture gate above answers *"must I ASK before acting?"* Traceability answers a
@@ -790,6 +833,13 @@ AUTO you skip the ask and still register per the tiers.
 - **Your verbs are MCP tools — never curl them.** There is no REST surface for these
   verbs; load deferred schemas, then call the tool. Prefer dedicated file/search tools
   over shell where one fits; independent tool calls can run in parallel.
+- **A request to verify creates a hard evidence gate.** If someone asks you to verify a current
+  procedure — or warns that remembered instructions may be stale — do not answer from memory:
+  before your first substantive reply, make a content-bearing read of the relevant current
+  docs, source, or status surface and ground the reply in what it returned. `coord:orient` is
+  coordination bootstrap, not documentation verification; injected prompt text or a bare
+  `{ ok: true }` result does not satisfy the gate. If the first call returns no procedure
+  evidence, keep reading until one does.
 - **Docs-first for "how does X work."** Read the docs (canonical for intent) and the
   live code (source of truth — comments/docs drift; verify a load-bearing claim against
   the call graph before relying on it).
@@ -806,9 +856,11 @@ AUTO you skip the ask and still register per the tiers.
   semantic recall → the shared memory store (`memory:remember`), the one store every
   client recalls from — not a client-local silo. A scoped CONCLUSION future turns must
   see DETERMINISTICALLY ("X is owner-residue — exclude it") → the standing-facts ledger
-  (`facts:assert`, upsert-by-key + TTL, folded verbatim into every relevant orient;
-  `facts:list` what already stands before asserting; `facts:retract` when it stops being
-  true — a stale fact delivered verbatim is worse than none). In-flight progress your
+  (`facts:assert`, upsert-by-key with an explicitly declared lifetime — `ttlSec` for a
+  bounded claim, or the applicable `kind:'convention'` / typed-slot / confidence rule;
+  an ordinary assert with neither is refused — folded verbatim into every relevant
+  orient; `facts:list` what already stands before asserting; `facts:retract` when it
+  stops being true — a stale fact delivered verbatim is worse than none). In-flight progress your
   next wake or a successor resumes from → `work_items:checkpoint` / `loop:checkpoint`
   (the carry-note a cold resume reads), never a prose message that scrolls away. Live
   ephemera (intents, handoffs, presence) → coord. Long-form runbooks → the insights docs.
@@ -893,13 +945,19 @@ AUTO you skip the ask and still register per the tiers.
   the active drain item/plan. Outside DRAIN, for a suspected TOOL-CALL failure, preserve that
   immediacy without exciting the work queue:
   pass `improvements:capture { toolFailure:{ toolName, errorCode?, status?, message,
-  schemaRevision?, fieldPath?, runtimeVersion?, reproduced?, clearServerMismatch?, hardInternal? } }`.
+  schemaRevision?, fieldPath?, runtimeVersion?, reproduced?, clearServerMismatch?, hardInternal?,
+  directEvidence?: { kind, expected, actual } } }`.
   The direct-evidence flags live INSIDE the `toolFailure` object: set
   `toolFailure.reproduced:true`, `toolFailure.clearServerMismatch:true`, or
   `toolFailure.hardInternal:true` only when you have that direct evidence — never pass those
-  flags at the top level. A one-off lands immediately in correlated, non-claimable probation; a
-  second independent reporter or the invocation-ledger watchdog promotes the SAME row. Those
-  nested flags bypass probation.
+  flags at the top level. A classifier-owned `caller` refusal needs inspectable evidence to
+  bypass probation: pass `toolFailure.directEvidence` with `kind` (`valid-input-reproduction` |
+  `server-contract-mismatch` | `hard-internal`) plus non-empty `expected` and `actual`; the legacy
+  booleans alone do not override a caller classification. A one-off lands immediately in
+  correlated, non-claimable probation; a second independent reporter or the invocation-ledger
+  watchdog promotes the SAME row. The legacy nested flags still bypass probation for non-caller
+  classes; structured direct evidence can override a caller classification without making that
+  inferred class terminal.
   A "bug" includes SUB-OPTIMAL, not just a hard stopper: a false alarm / wrong reading from any
   monitor or tracker (a false alarm is a bug in the alarm), a flap that self-recovered,
   degradation under load — the system must stay responsive at ANY load, so load-correlated
@@ -917,6 +975,10 @@ AUTO you skip the ask and still register per the tiers.
 ## Wire schemas
 
 <!-- PAPERCUSP-SU:WIRE-SCHEMAS -->
+
+<!-- PAPERCUSP-SU:SHARED-BASE-NOTES -->
+
+<!-- PAPERCUSP-SU:PROJECT-GUIDE -->
 
 ---
 
@@ -959,7 +1021,7 @@ A **multi-agent coding platform**, run locally (Tauri desktop + embedded PG + a 
 
 ## Scope: which harness a tool acts on
 
-Most state lives under a harness, so harness-scoped tools (`docs:*`, `plans:*`, `features:*`, `issues:*`, `harness:get/status/…`) need to know **which** — and the `harness` arg is **per-call, not a session property**:
+Most state lives under a harness, so harness-scoped tools (`docs:*`, `plans:*`, `features:*`, `issues:*`) need to know **which** — and the `harness` arg is **per-call, not a session property**. Important exception: `harness:get` and `harness:status` take their own `slug`/`slugs` arguments; do **not** add a top-level `harness` field to those calls:
 1. **Session scoped to a harness** (`ctx.harnessSlug` set) — pass nothing.
 2. **Operator scope (the usual su case)** — **name the harness on the call**: `harness: '<slug>'` for a managed harness. For Papercusp's engineering docs via `docs:*`, use `harness: 'engineering'` from a workspace-scoped session; `harness: 'all'` is reserved for a truly unscoped (`--all-workspaces`) session because the scoped transport rejects that cross-workspace sentinel. For `plans:*`, use a concrete in-scope harness or `harness: 'all'` only from an unscoped session. Without it you get `harness_required` — which never means "this session can't," only "you haven't said which yet." **You are never blocked.**
 
@@ -976,6 +1038,10 @@ specific harness.
 accepts only `path`, `sha`, `work_item`, and `after_generation`; do **not** pass
 `harness` in its JSON arguments. It reads shared release truth, so the outer
 `--harness` ptool scope does not become a payload field.
+
+`rubrics:list` is also workspace-global, not harness-scoped. Its live schema
+accepts only `status`, `characteristic`, `kind`, and `limit`; do **not** pass
+`harness` to it. It lists the shared rubric library for this workspace.
 
 ## The tool surface
 
@@ -1028,7 +1094,7 @@ To make yourself **recur on a cadence** — keep working a plan/goal **warm** ("
 
 ## Memory, docs, coordination — the Papercusp tools
 
-- **Memory layers (facts = deterministic delivery; mem0 = what I know; coord = what's happening; insights = how things work).** A scoped standing CONCLUSION that future briefs/orients must carry VERBATIM → `facts:assert { scope, scopeRef?, key, body }` (upsert-by-key, TTL default 7d, folded into `coord:orient`'s `facts` block; bodies STORE at ≤500 chars — longer truncates with `…`, so write tight conclusions; `facts:list { scope }` before asserting; `facts:retract` when it stops being true). Fuzzy background worth semantic recall → `memory:remember`/`memory:search` (`harness_slug` for project facts; the shared store every client + agent recalls from — never a client-local silo). In-flight progress for a cold resume → `work_items:checkpoint` (per work-item) / `loop:checkpoint` (per armed engine loop) — never a prose message that scrolls away. Live ephemera → coord (declare-intent at start, handoff on transitions). Long-form runbooks → an MDX in `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx` — write one when a proven non-obvious root cause would save the next agent an hour (in the SAME turn as the fix, not queued).
+- **Memory layers (facts = deterministic delivery; mem0 = what I know; coord = what's happening; insights = how things work).** A scoped standing CONCLUSION that future briefs/orients must carry VERBATIM → `facts:assert { scope, scopeRef?, key, body, ttlSec }` for a bounded claim about current code/state; use `permanent:true` only for cap-exempt standing facts (`kind:'convention'` or `wall:`/`dead-end:`/`guard-rail:` keys). `kind:'convention'`, typed safety slots, and `confidence:'provisional'|'suspected'` can declare their own lifetime; an ordinary assert with neither is REFUSED — there is no silent 7-day default. Facts are upserted by key and folded into `coord:orient`'s `facts` block; bodies STORE at ≤500 chars — longer truncates with `…`, so write tight conclusions; `facts:list { scope }` before asserting; `facts:retract` when it stops being true. Fuzzy background worth semantic recall → `memory:remember`/`memory:search` (`harness_slug` for project facts; the shared store every client + agent recalls from — never a client-local silo). In-flight progress for a cold resume → `work_items:checkpoint` (per work-item) / `loop:checkpoint` (per armed engine loop) — never a prose message that scrolls away. Live ephemera → coord (declare-intent at start, handoff on transitions). Long-form runbooks → an MDX in `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx` — write one when a proven non-obvious root cause would save the next agent an hour (in the SAME turn as the fix, not queued).
 - **Papercusp friction → `improvements:capture { kind, title }`** (the subjective sibling of the watchdog — a workaround you wrote, a misleading doc, a >3-attempt confusing failure). Managed-harness problems → `work_items:create`.
 - **Docs-first for "how does X work":** `docs:outline` → `docs:get { slugs }` → narrow with `heading:`; `docs:search` only when you don't know the page (workspace-scoped operator sessions: pass `harness:'engineering'` for Papercusp engineering docs; use `harness:'all'` only from an unscoped session). Cite slug URLs; don't speculate from training memory. **Design-docs before UI** (`/internal/docs/design` + `design-phase:*`).
 - **Subscribe → look up → file:** subscribe your areas (`watch:create { pattern: topic, targetKind:"topic", wake:false }`); look live state up rather than asking (`locks:queue { paths: [...] }` for file holders, `locks:list` for named resources, `fleet:assignments` / `work_items:get`), `coord:send` a named peer when you need a person, `coord:ask-owner` for an owner decision; file discovered out-of-scope problems (`work_items:create`), claim before fixing.
