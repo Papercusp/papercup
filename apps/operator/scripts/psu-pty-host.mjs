@@ -5790,9 +5790,58 @@ export function hostThroughPty(o) {
           if (child !== injectChild) {
             return { delivered: false, reason: 'superseded', attempts };
           }
-          const submitVerification = await verifySubmitted(label, {
+          let submitVerification = await verifySubmitted(label, {
             terminateOnExhaustion: terminateOnSubmitVerifyExhaustion,
           });
+          if (child !== injectChild) {
+            return { delivered: false, reason: 'superseded', attempts };
+          }
+          // WI-10001508: a 'human-input' abort is TRANSIENT — every other
+          // verifier verdict describes the CHILD (exhausted, quota-blocked) and
+          // is terminal, but this one describes the OWNER touching the keyboard
+          // during the verify window. Dropping on it discarded a MUST-DELIVER
+          // carry outright, which is the opposite of what the busy-gate path
+          // does for the identical situation: makeCarryRearmController re-polls
+          // a production carry-respawn across successive windows precisely
+          // because dropping "strands the session at its context ceiling".
+          //
+          // Measured 2026-09-15: `submit-verification-aborted-human-input` is
+          // 0.6% of fleet drops but 100% of THIS (interactive) session's — the
+          // owner types, the carry is dropped, the successor sits at an idle
+          // prompt with orders it never received, and a human has to resume it
+          // by hand. The owner's own keystroke is what destroys the delivery.
+          //
+          // So: wait for the keystrokes to settle, then RE-VERIFY. Deliberately
+          // re-run the verifier rather than re-writing `text` — a re-write would
+          // submit the carry TWICE, whereas the verifier only re-polls and (if
+          // still quiet) sends a bare CR, submitting whatever is already staged.
+          // Bounded by the same delivery deadline, so a session whose owner is
+          // genuinely composing for the whole budget still drops exactly as
+          // before, with the same reason.
+          //
+          // RESIDUAL (known, deliberate): if the owner has typed a partial line
+          // into the composer and then gone quiet, the verifier's bare CR can
+          // submit THEIR line. That is judged better than the current guaranteed
+          // strand, but it is the reason this retries rather than force-submits.
+          while (
+            submitVerification.aborted === 'human-input' &&
+            Date.now() < deadline &&
+            child === injectChild
+          ) {
+            appendHostEvent(ownerId, 'submit-verify-human-input-retry', {
+              label,
+              polls: submitVerification.polls,
+              resubmits: submitVerification.resubmits,
+              msRemaining: Math.max(0, deadline - Date.now()),
+            });
+            await idleGate.waitIdle();
+            if (child !== injectChild) {
+              return { delivered: false, reason: 'superseded', attempts };
+            }
+            submitVerification = await verifySubmitted(label, {
+              terminateOnExhaustion: terminateOnSubmitVerifyExhaustion,
+            });
+          }
           if (child !== injectChild) {
             return { delivered: false, reason: 'superseded', attempts };
           }
