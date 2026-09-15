@@ -1025,8 +1025,14 @@ export function runBootstrap(): void {
           import('@papercusp/tooldef'),
           import('@papercusp/operator-core/lib/endpoint-ipc-discovery'),
         ]);
-        // The host handler's endpoint-route graph imports `agent-tools/index`
-        // before runBootstrap() runs, so the registry is already populated.
+        // ⚠ [WI-10000287] This block used to claim the host handler's endpoint-route
+        // graph imports `agent-tools/index` before runBootstrap() runs, "so the
+        // registry is already populated". That was never true: nothing imports
+        // `_mcp-host.ts` statically, so that graph is only pulled on the first MCP
+        // request/registration. On a requestless primary the registry may therefore
+        // still be empty at this point and discovery can publish a partial allowlist.
+        // Deliberately NOT fixed here (separate concern from the kernel-resolver
+        // install above, which does not populate the tool registry).
         // Do not import it again through the package alias here: in isolated
         // tsx sidecars the route-relative and package-alias specifiers can
         // evaluate the same tool module twice. `rubrics:propose` then throws
@@ -1607,6 +1613,32 @@ export function runBootstrap(): void {
       } catch (e) {
         console.warn(
           '[boot-migrate] failed to flip the request-serving migrations gate (non-fatal — request server proceeds on its own timeout):',
+          e instanceof Error ? e.message : e,
+        );
+      }
+
+      // [WI-10000287] Install the control-anchor kernel resolver BEFORE any background
+      // machinery starts. This used to arrive as a side effect of the host handler's
+      // import graph (_mcp-host.ts -> agent-tools/index -> events/index.ts), but that
+      // edge was never eager: `_mcp-handler` reaches `_mcp-host` only through
+      // `await import()`, and no production module imports `_mcp-host` statically, so
+      // the install actually landed on the first MCP request. A requestless primary —
+      // one that only runs routines — therefore started them with no live resolver.
+      // Install it here, on the path that actually starts routines.
+      // Do NOT "fix" this by re-adding the eager `agent-tools/index` import to
+      // _mcp-host.ts: it would install nothing earlier (that module is still only
+      // reached lazily) and would reintroduce the one-shot-process hang removed in
+      // e78276c435e3. installControlAnchorKernelResolver() is a pure resolver
+      // assignment — no listeners, no timers — and is idempotent with events/index.ts,
+      // which keeps installing it for the lazy request/registration path.
+      try {
+        const { installControlAnchorKernelResolver } = await import(
+          '@papercusp/operator-core/lib/projected-tool-deps'
+        );
+        installControlAnchorKernelResolver();
+      } catch (e) {
+        console.warn(
+          '[kernel-resolver] FAILED to install the control-anchor kernel resolver before routines started — capability-envelope enforcement falls back to the default resolver until this host restarts:',
           e instanceof Error ? e.message : e,
         );
       }

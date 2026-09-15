@@ -163,10 +163,52 @@ describe('background admission recovery loads the live kernel resolver before ro
   const coreRoot = join(__dirname, '../../../packages/operator-core/lib');
   const coreSource = (path: string) => readFileSync(join(coreRoot, path), 'utf8');
 
-  it('keeps the resolver install on the eager host-handler import graph, not the first MCP request', () => {
-    // Do not import these modules: that would boot shared background work.
-    // Pin each eager edge instead of merely finding the resolver name in a
-    // test that installs it by hand. This also covers requestless primaries.
+  it('installs the kernel resolver on the boot path that starts routines, not the first MCP request', () => {
+    // WI-10000287: this used to pin a 7-link "eager" chain ending
+    //   _mcp-host.ts -> agent-tools/index -> events/index.
+    // That chain was never eager. `transport/index.ts` statically imports
+    // `_mcp-handler`, but `_mcp-handler` reaches `_mcp-host` ONLY through
+    // `await import()`, and no production module imports `_mcp-host` statically
+    // at all — so the install landed on the first MCP request, which is exactly
+    // what this guard's name forbids. Because this test only regex-matches
+    // source TEXT (it must not import these modules: that would boot shared
+    // background work), it was able to assert a chain that did not exist at
+    // runtime. Pin the ordering on the path that really starts routines
+    // instead, which is also what covers a requestless primary.
+    const install = bootSrc.indexOf('installControlAnchorKernelResolver()');
+    const principals = bootSrc.indexOf('provisionSystemPrincipals', install);
+    const dbos = bootSrc.indexOf('const { startDbos } = await import(', install);
+
+    expect(install).toBeGreaterThan(-1);
+    expect(principals).toBeGreaterThan(install);
+    expect(dbos).toBeGreaterThan(install);
+
+    // The resolver must still exist and still be installed by events/index.ts
+    // for the lazy tool-load path (request/registration), which stays valid.
+    expect(coreSource('events/index.ts')).toMatch(/^installControlAnchorKernelResolver\(\);$/m);
+    expect(coreSource('projected-tool-deps.ts')).toMatch(
+      /export function installControlAnchorKernelResolver\(\): void \{\s*setKernelEnforcementResolver\(controlAnchorKernelResolver\);/,
+    );
+  });
+
+  it('does not regain the eager agent-tools import in _mcp-host.ts (e78276c435e3)', () => {
+    // The tempting "repair" for the test above is to re-add
+    // `import '../../../agent-tools/index';` to _mcp-host.ts. That would install
+    // the resolver NO earlier (nothing imports _mcp-host eagerly) and WOULD
+    // reintroduce the one-shot-process hang e78276c435e3 fixed: helper probes and
+    // tsx boot guards import this transport module, and eagerly loading the full
+    // tool graph there arms host listeners/timers before a request exists.
+    const mcpHost = coreSource('endpoint-route/routes/transport/_mcp-host.ts');
+    expect(mcpHost).not.toMatch(/^import '\.\.\/\.\.\/\.\.\/agent-tools\/index';$/m);
+    expect(mcpHost).toMatch(/import\('\.\.\/\.\.\/\.\.\/agent-tools\/index'\)/);
+    // ...and when the tools DO load lazily, events (and so the installer) rides in.
+    expect(coreSource('agent-tools/index.ts')).toMatch(/^import '\.\.\/events';$/m);
+  });
+
+  it('keeps the eager handler chain intact up to the transport entrypoint', () => {
+    // These edges ARE static, and they are what guarantees the handler module
+    // graph is evaluated at host boot. The chain deliberately STOPS at
+    // `_mcp-handler` — the next hop to `_mcp-host` is lazy by design (above).
     const eagerEdges: Array<[string, RegExp]> = [
       [readFileSync(join(__dirname, 'host-handler.ts'), 'utf8'), /^import \{ app \} from '\.\/host-app';$/m],
       [readFileSync(join(__dirname, 'host-app.ts'), 'utf8'),
@@ -174,14 +216,8 @@ describe('background admission recovery loads the live kernel resolver before ro
       [coreSource('endpoint-route/register.ts'), /^import \{ ALL_ROUTES \} from '\.\/routes';$/m],
       [coreSource('endpoint-route/routes/index.ts'), /^import transport from '\.\/transport\/index';$/m],
       [coreSource('endpoint-route/routes/transport/index.ts'), /^import \{ mcpHandler \} from '\.\/_mcp-handler';$/m],
-      [coreSource('endpoint-route/routes/transport/_mcp-host.ts'), /^import '\.\.\/\.\.\/\.\.\/agent-tools\/index';$/m],
-      [coreSource('agent-tools/index.ts'), /^import '\.\.\/events';$/m],
     ];
     for (const [source, edge] of eagerEdges) expect(source).toMatch(edge);
-    expect(coreSource('events/index.ts')).toMatch(/^installControlAnchorKernelResolver\(\);$/m);
-    expect(coreSource('projected-tool-deps.ts')).toMatch(
-      /export function installControlAnchorKernelResolver\(\): void \{\s*setKernelEnforcementResolver\(controlAnchorKernelResolver\);/,
-    );
   });
 
   it('evaluates the handler before bootstrap in both Hono and packaged background hosts', () => {
