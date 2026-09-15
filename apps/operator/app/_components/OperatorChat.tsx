@@ -40,7 +40,7 @@ import type { WorkRefKind } from "./chat/parse-work-refs";
 import {
   CHAT_PLAN_POPUP_PARAM,
   CHAT_WORK_ITEM_POPUP_PARAM,
-  encodeScopedRef,
+  workRefPopupTarget,
 } from "./chat/chat-ref-popup-params";
 import { CardAnswerError } from "./OperatorConversationProvider";
 import { PendingCardsBar } from "./chat/PendingCardsBar";
@@ -315,24 +315,24 @@ export function OperatorChat({
 
   const handleWorkRefActivate = useCallback(
     (ref: { id: string; kind: WorkRefKind; planSlug?: string | null }) => {
-      if (ref.kind === "plan-item") {
-        // A P- ref opens the EXISTING PlanPopupModal (D-001) — do not build a
-        // second plan popup. No message plan_slug context ⇒ nothing safe to
-        // open (P-006's "no plan context" stance, one layer over).
-        //
-        // Carry THIS conversation's harness in the value: `plans:get` is
-        // harness-scoped, and the single root-level renderer can only fall
-        // back to the surface's `?slug` — which is the wrong harness whenever
-        // a session chat for harness X is open over a board scoped to Y.
-        if (ref.planSlug)
-          void setOpenChatPlan(encodeScopedRef(harnessSlug, ref.planSlug));
-        return;
-      }
-      // A WI-/EI-/F- ref needs a harness to scope workItems.detail — with
-      // none, there is nothing safe to ENCODE (mirrors HydratedWorkRefPill's
-      // own hydration gate one layer down).
-      if (!harnessSlug) return;
-      void setOpenWorkItem(encodeScopedRef(harnessSlug, ref.id));
+      // The DECISION is shared with every other host that writes these params
+      // (`workRefPopupTarget`); only the setters are ours. Two hosts disagreeing
+      // about it is exactly WI-10001509, where the portal rendered a dead pill
+      // because it never wired this seam at all.
+      //
+      // A null target means OPEN NOTHING, and both cases are deliberate: a P-
+      // ref with no message plan_slug context has no plan to open (P-006's "no
+      // plan context" stance), and a WI-/EI-/F- ref with no harness has nothing
+      // safe to ENCODE, since workItems.detail is harness-scoped.
+      //
+      // Carrying THIS conversation's harness in the value is what makes the
+      // single root-level renderer correct: it can otherwise only fall back to
+      // the surface's `?slug`, which is the wrong harness whenever a session
+      // chat for harness X is open over a board scoped to Y.
+      const target = workRefPopupTarget(ref, harnessSlug);
+      if (!target) return;
+      if (target.param === CHAT_PLAN_POPUP_PARAM) void setOpenChatPlan(target.value);
+      else void setOpenWorkItem(target.value);
     },
     [harnessSlug, setOpenChatPlan, setOpenWorkItem],
   );

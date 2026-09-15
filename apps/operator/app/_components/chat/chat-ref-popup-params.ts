@@ -11,4 +11,7 @@ export {
   CHAT_PLAN_POPUP_PARAM,
   encodeScopedRef,
   decodeScopedRef,
+  workRefPopupTarget,
+  type ChatWorkRef,
+  type ChatRefPopupTarget,
 } from '@papercusp/operator-ui/papercup-chat/chat-ref-popup-params';

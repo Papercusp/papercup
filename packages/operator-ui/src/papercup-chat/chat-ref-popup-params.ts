@@ -32,6 +32,8 @@
  * `<ref's own> ?? <surface's>` precedence HudView already applies to `hudwi`).
  */
 
+import type { WorkRefKind } from './parse-work-refs';
+
 /** The open work-item popup (`WI-`/`EI-`/`F-`). */
 export const CHAT_WORK_ITEM_POPUP_PARAM = 'wpop';
 /** The open plan popup. Distinct from PlansPane's own `pplan` so a plan opened
@@ -60,4 +62,47 @@ export function decodeScopedRef(
     harness: raw.slice(0, sep) || null,
     id: raw.slice(sep + SEP.length) || null,
   };
+}
+
+/** A ref activation, in the shape `PapercupChat`'s `onWorkRefActivate` seam emits. */
+export interface ChatWorkRef {
+  id: string;
+  kind: WorkRefKind;
+  planSlug?: string | null;
+}
+
+/** Which popup param a ref activation writes, and with what value. */
+export interface ChatRefPopupTarget {
+  param: typeof CHAT_WORK_ITEM_POPUP_PARAM | typeof CHAT_PLAN_POPUP_PARAM;
+  value: string;
+}
+
+/**
+ * The ref-activation DECISION, shared by every host that writes these params.
+ *
+ * WHY THIS IS SHARED and not re-written per host: the seam is deliberately
+ * host-injected, so each host supplies its own `onWorkRefActivate`. That is
+ * exactly how the two hosts drifted into WI-10001509 — one wired the seam and
+ * the other rendered a dead pill. The GRAMMAR being shared (above) stops a
+ * writer and the reader disagreeing; this stops two WRITERS disagreeing, which
+ * is the same failure one layer up. A host keeps its own setters; only the
+ * decision is common.
+ *
+ * `null` means OPEN NOTHING, and both such cases are deliberate:
+ *   - a plan-item ref with no plan context — there is no plan to open, so a
+ *     guess would open the wrong one (P-006's "no plan context" stance);
+ *   - a work-item ref with no harness — `workItems.detail` is harness-scoped,
+ *     so there is nothing safe to ENCODE (mirrors HydratedWorkRefPill's own
+ *     hydration gate one layer down).
+ */
+export function workRefPopupTarget(
+  ref: ChatWorkRef,
+  harnessSlug: string | null | undefined,
+): ChatRefPopupTarget | null {
+  if (ref.kind === 'plan-item') {
+    if (!ref.planSlug) return null;
+    return { param: CHAT_PLAN_POPUP_PARAM, value: encodeScopedRef(harnessSlug, ref.planSlug) };
+  }
+  if (!harnessSlug) return null;
+  return { param: CHAT_WORK_ITEM_POPUP_PARAM, value: encodeScopedRef(harnessSlug, ref.id) };
 }

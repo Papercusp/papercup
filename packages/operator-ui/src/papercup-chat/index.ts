@@ -65,4 +65,7 @@ export {
   CHAT_PLAN_POPUP_PARAM,
   encodeScopedRef,
   decodeScopedRef,
+  workRefPopupTarget,
+  type ChatWorkRef,
+  type ChatRefPopupTarget,
 } from './chat-ref-popup-params';
