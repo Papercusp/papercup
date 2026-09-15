@@ -53,6 +53,16 @@ export const ALLOWLIST_DIRS = [
   'packages/operator-core/lib/sync/hyperbee/perf/', // perf-test measurement processes
   'apps/operator/scripts/', // standalone .mjs processes (psu-launcher/pty-host, bghost-watchdog) — separate procs
   'libs/testing-shell/', // test-shell RUNNER processes (stagehand-runner) — own process per run, no host registry
+  // Standalone test-infrastructure SUBMODULE (github.com/Papercusp/test-config). Its only
+  // timer is the embedded-PG template-builder heartbeat in src/pg-migrate.ts, armed in the
+  // TEST-RUNNER process rather than the operator host — so a registry entry would land in a
+  // separate per-process inventory that `schedule:inventory` never serves, the same
+  // structural unreachability already recorded for scripts/lib/governed-test-process.mjs
+  // and libs/testing-shell/. It also cannot import @papercusp/scheduled-registry without
+  // taking a NEW cross-repo dependency on operator-core (its package.json declares none) —
+  // the same layering constraint the libs/generic/* entries above record. The timer is
+  // unref()'d and cleared by the stopper startTemplateBuilderHeartbeat returns.
+  'libs/test-config/',
 ];
 
 /**

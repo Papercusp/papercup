@@ -34,7 +34,6 @@ import {
   lspFacade,
   type LspFacadeOp,
 } from '../../code-intelligence/lsp-facade.ts';
-import { RIPGREP_SCOPE_GUIDANCE } from '../../code-intelligence/contracts.ts';
 
 // Zod needs a non-empty tuple; derived from the facade so the two cannot drift.
 const OP_VALUES = [...LSP_FACADE_OPS] as [LspFacadeOp, ...LspFacadeOp[]];
@@ -45,7 +44,14 @@ export default defineTool({
     'READ-ONLY TypeScript/Rust compiler intelligence from pinned servers. `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Returns `{sites, truncation, freshness, coverage, latencyMs, error}`; `line1` is one-indexed. Health describes readiness, not exhaustive references. Empty or degraded results require source/scope checks; unavailable servers return an error.',
   guidance: {
     when: 'You need compiler truth rather than text: declarations across boundaries/re-exports, references, implementations, file diagnostics, or rename sites.',
-    notWhen: `Use text/regex search (${RIPGREP_SCOPE_GUIDANCE}) for text and gitnexus.context for call graphs. Unsupported files refuse and name the alternative.`,
+    // P-011 prompt weight: this field used to INTERPOLATE the ~647-char shared
+    // RIPGREP_SCOPE_GUIDANCE, which alone put this tool at 1507 of the 1500-char
+    // budget and red-pinned the fleet gate. The full ripgrep operating manual
+    // belongs on capability:bash — the tool that actually RUNS rg, and whose
+    // bash-search-scope-guidance.test.ts pins it there verbatim. Here a pointer
+    // is enough ("prefer a docs pointer over prose-in-place", CLAUDE.md).
+    notWhen:
+      'Use text/regex search (`rg`/`grep`, scoped to source roots — see capability:bash guidance) for text, and gitnexus.context for call graphs. Unsupported files refuse and name the alternative.',
     chaining:
       'op:"workspace_symbols" { name } → op:"symbol"/"references" { file, line1, character }. On degradation, op:"health" reports servers and the processes:kill taskId.',
   },
