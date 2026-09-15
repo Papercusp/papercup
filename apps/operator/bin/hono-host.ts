@@ -101,6 +101,7 @@ import { isBenignHostError } from './host-benign-errors';
 import { applyServerTimeouts } from './host-request-deadline';
 import { pinSubstrateSocketForCluster } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-socket-path';
 import { pinSpawnerSocketForCluster } from '@papercusp/operator-core/lib/fleet/spawner-socket-path';
+import { pinSetupTokenForCluster } from '@papercusp/operator-core/lib/auth-setup-token';
 import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
 import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
 import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
@@ -723,6 +724,15 @@ const substrateSocketWorkerEnv = sidecarMode ? {} : pinSubstrateSocketForCluster
 // 9.5GB, 0.004 cores each. Pinning makes every worker resolve the PRIMARY's path, so
 // the adoption probe in spawnSpawnerSidecar finds the sibling's sidecar and reuses it.
 const spawnerSocketWorkerEnv = sidecarMode ? {} : pinSpawnerSocketForCluster(clusterWorkers);
+// WI-10001497: mint + PRINT the first-time setup code once, here in the primary,
+// BEFORE forking — then hand the same value to every worker via workerEnv. Two
+// defects, one root: the token was module state (per-PROCESS), so each reusePort
+// worker minted its own and a copied code verified only on the ~1/N chance the
+// POST landed on the worker that printed it; and nothing called getSetupToken()
+// at boot at all, so the code was minted by the FAILING request that needed it.
+// Mirrors the two socket pins above; cluster-fork replays workerEnv on respawn,
+// so a recycled worker keeps the same code. Cf. WI-38448's split MOBILE_JWT_SECRET.
+const setupTokenWorkerEnv = sidecarMode ? {} : pinSetupTokenForCluster(clusterWorkers);
 // EI-8810: in sidecar mode the divert above already started the sidecar server
 // (which keeps the process alive) — the host boot below must not run at all.
 const clusterHandle = sidecarMode ? null : startCluster({
@@ -732,6 +742,7 @@ const clusterHandle = sidecarMode ? null : startCluster({
     PAPERCUSP_EXPECTED_OPERATOR_PROCS: String(expectedOperatorProcs),
     ...substrateSocketWorkerEnv,
     ...spawnerSocketWorkerEnv,
+    ...setupTokenWorkerEnv,
   },
   onPrimary: () => {
     // WI-6793: the clustered PRIMARY runs the background machinery (DBOS,
