@@ -327,6 +327,38 @@ export const CODEX_WIRE_FIXTURES: readonly WireFixture[] = [
     },
   },
   {
+    // A third real shape: tool output handed back as an IMAGE block (a
+    // screenshot). Its array elements carry `image_url`/`detail` and NO `text`,
+    // so neither sibling could match — the block-array fixture requires
+    // `payload.output[].text` and the string fixture requires a bare string —
+    // and a live record therefore fit NO fixture at all. Same discriminator, so
+    // it stays in the one variant group the guard evaluates with `some()`.
+    name: 'function_call_output — IMAGE BLOCK ARRAY (`image_url`, no `text`)',
+    discriminator: [
+      { path: 'type', value: 'response_item' },
+      { path: 'payload.type', value: 'function_call_output' },
+    ],
+    readFields: ['payload.type', 'payload.call_id', 'payload.output[].image_url'],
+    record: {
+      timestamp: '2026-09-15T13:52:04.118Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call_output',
+        id: 'fc_3a71c5',
+        call_id: 'call_7QpZmK2xVn4RsdTb1eLyWc9A',
+        output: [
+          {
+            type: 'input_image',
+            detail: 'auto',
+            image_url:
+              'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          },
+        ],
+        internal_chat_message_metadata_passthrough: null,
+      },
+    },
+  },
+  {
     name: 'response_item/message assistant — text in `output_text` blocks',
     discriminator: [
       { path: 'type', value: 'response_item' },

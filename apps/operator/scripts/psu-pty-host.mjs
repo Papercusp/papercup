@@ -3762,6 +3762,22 @@ export function signalNameFromCode(signal) {
   return `SIG${signal}`;
 }
 
+/**
+ * The teardown signal to RECORD: the one that actually arrived, falling back to SIGHUP
+ * only when the handler was invoked without a name.
+ *
+ * WI-10001504. SIGINT/SIGTERM/SIGHUP all land in ONE handler, so recording a constant
+ * discarded the single fact that identifies HOW a session died — and because `cleanup`
+ * resolves `signal ?? teardownSignal`, a literal at its call site erased it a SECOND
+ * time even once the variable was set correctly. The fallback is deliberately 'SIGHUP'
+ * and never null: an unnamed teardown is still a kill, and null would restore exactly
+ * the "looks like a clean voluntary exit" misreading `signalNameFromCode` above exists
+ * to prevent.
+ */
+export function resolveTeardownSignal(receivedSignal) {
+  return typeof receivedSignal === 'string' && receivedSignal ? receivedSignal : 'SIGHUP';
+}
+
 export function killPtyProcessTree(child, signal = 'SIGKILL', kill = process.kill) {
   const pid = Number(child?.pid);
   let killed = false;
@@ -8256,19 +8272,35 @@ export function hostThroughPty(o) {
     // process SIGINT (outer terminal/executor interrupt) is teardown, just like
     // SIGHUP/SIGTERM: kill the whole forkpty group so no backend descendant can
     // survive and serialize the managed-port failure receipt immediately.
-    killChild = () => {
+    killChild = (receivedSignal) => {
       // WI-38054: record the teardown BEFORE sending it. This host is being torn down
       // (its own SIGINT/SIGTERM/SIGHUP), so whatever happens next, the session did not
       // choose to end — without this, a teardown that reaches cleanup through the
       // child-exit path can report a bare 0 indistinguishable from a clean exit.
-      teardownSignal = 'SIGHUP';
+      // WI-10001504: record the signal that ACTUALLY arrived, never a constant.
+      // SIGINT/SIGTERM/SIGHUP all land in this one handler, so the previous hardcoded
+      // 'SIGHUP' discarded the single most diagnostic fact about a session death. The
+      // erasure was DOUBLE: cleanup() resolves `signal ?? teardownSignal`, so the
+      // literal passed at its call site below overrode this variable a second time even
+      // once it was set correctly. Measured 2026-09-15: two deaths (su-9ab60223
+      // @19:55:03.322Z, su-66826cba @20:07:13.129Z) arrived as SIGTERM and BOTH were
+      // recorded as SIGHUP — which is precisely why the sender hunt had no durable
+      // signal to start from and burned hours across several agents.
+      const actualSignal = typeof receivedSignal === 'string' ? receivedSignal : null;
+      teardownSignal = resolveTeardownSignal(receivedSignal);
+      appendHostEvent(ownerId, 'host-teardown', {
+        via: 'signal',
+        signal: actualSignal,
+      });
       // External fleet:kill can SIGKILL this host before node-pty delivers the
       // child's exit event. Run cleanup now so detached VTE-scope descendants are
       // reaped even when the child is slow to report its exit. cleanup() performs
       // the forceful process-tree kill as its first step, preserving the existing
       // SIGHUP -> SIGKILL ordering without waiting on child.onExit.
+      // The signal we SEND the child stays SIGHUP — it is what lets a claude TUI flush
+      // its transcript before the SIGKILL escalation. Only what we RECORD changes here.
       killPtyProcessTree(child, 'SIGHUP');
-      cleanup(0, 'SIGHUP');
+      cleanup(0, teardownSignal);
     };
     signalSource.on?.('SIGINT', killChild);
     signalSource.on?.('SIGTERM', killChild);
@@ -8289,6 +8321,15 @@ export function hostThroughPty(o) {
     if (bridgeTty) {
       const teardownOrphan = (why) => {
         if (cleaned) return;
+        // `why` is the ONLY value separating the five orphan triggers from each other
+        // AND from a real received signal — every one of them ends as SIGHUP/exit-0 in
+        // adv_sessions. Until this row existed it was written solely to the terminal
+        // that just vanished, so a session death could be observed but never explained
+        // (measured 2026-09-15: two deaths, neither near a context limit, cause
+        // unrecoverable from any durable surface). appendHostEvent is fail-soft by
+        // contract, so this can never cost a teardown; it must precede the stderr write
+        // below, which is aimed at the very terminal whose loss we are recording.
+        appendHostEvent(ownerId, 'orphan-teardown', { why });
         try {
           process.stderr.write(
             `psu-pty-host: session orphaned (${why}) for ${ownerId} — killing child + exiting\n`,

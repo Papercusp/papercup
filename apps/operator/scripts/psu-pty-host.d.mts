@@ -1427,6 +1427,19 @@ export function startupOutputReady(agent: any, output: any): boolean;
  * across platforms (the numbers differ) instead of confidently naming the wrong signal.
  */
 export function signalNameFromCode(signal: any): string | null;
+/**
+ * The teardown signal to RECORD: the one that actually arrived, falling back to SIGHUP
+ * only when the handler was invoked without a name.
+ *
+ * WI-10001504. SIGINT/SIGTERM/SIGHUP all land in ONE handler, so recording a constant
+ * discarded the single fact that identifies HOW a session died — and because `cleanup`
+ * resolves `signal ?? teardownSignal`, a literal at its call site erased it a SECOND
+ * time even once the variable was set correctly. The fallback is deliberately 'SIGHUP'
+ * and never null: an unnamed teardown is still a kill, and null would restore exactly
+ * the "looks like a clean voluntary exit" misreading `signalNameFromCode` above exists
+ * to prevent.
+ */
+export function resolveTeardownSignal(receivedSignal: any): string;
 export function killPtyProcessTree(child: any, signal?: string, kill?: (pid: number, signal?: string | number) => true): boolean;
 /**
  * Kill residual members of THIS host's exact dedicated session scope while

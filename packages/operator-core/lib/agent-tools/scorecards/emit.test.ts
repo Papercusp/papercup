@@ -31,11 +31,33 @@ describe('dedicated acceptance judge lifecycle', () => {
     // `acceptance_not_recorded`. The old wording ("ratings field remains
     // schema-required") is gone; the property it protected is not, so this
     // guard follows the property instead of being deleted with the wording.
-    const args = scorecardEmitTool.args as {
-      shape?: { acceptance?: { description?: string }; acceptanceOf?: { description?: string } };
+    // `args` is a ZodXor (the mutually-exclusive arg variants), NOT a bare
+    // ZodObject: it exposes `_def.options`, never a top-level `.shape`. Reading
+    // `.shape` here resolved to undefined and the `?? ''` degraded the guard to
+    // matching an empty string — which reads as "the wording was deleted" when
+    // every description is intact. Resolve the shape from either form, and fail
+    // loudly if neither yields one, so a future args refactor cannot quietly
+    // turn this back into a guard that asserts nothing.
+    type DescribedField = { description?: string } | undefined;
+    type FieldShape = Record<string, DescribedField>;
+    const resolveShape = (node: unknown): FieldShape | undefined => {
+      const n = node as {
+        shape?: FieldShape | (() => FieldShape);
+        _def?: { shape?: FieldShape | (() => FieldShape); options?: unknown[] };
+      };
+      const direct = n?.shape ?? n?._def?.shape;
+      const shape = typeof direct === 'function' ? direct() : direct;
+      if (shape && 'acceptance' in shape) return shape;
+      for (const option of n?._def?.options ?? []) {
+        const nested = resolveShape(option);
+        if (nested) return nested;
+      }
+      return undefined;
     };
-    expect(args.shape?.acceptance?.description ?? '').toMatch(/always carries complete ratings/i);
-    expect(args.shape?.acceptanceOf?.description ?? '').toMatch(/adopts its ratings verbatim/i);
+    const shape = resolveShape(scorecardEmitTool.args);
+    expect(shape, 'scorecards:emit args no longer expose an `acceptance` field shape').toBeDefined();
+    expect(shape?.acceptance?.description ?? '').toMatch(/always carries complete ratings/i);
+    expect(shape?.acceptanceOf?.description ?? '').toMatch(/adopts its ratings verbatim/i);
     expect(String(scorecardEmitTool.description)).toMatch(/Every emit persists complete ratings/i);
     expect(JSON.stringify(scorecardEmitTool.guidance)).toMatch(/acceptance adopts ratings via acceptanceOf/i);
   });
