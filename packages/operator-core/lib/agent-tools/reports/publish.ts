@@ -21,6 +21,7 @@ import { emitAwaitedEvent } from '../../events/await/engine';
 import {
   invalidateReportsSync,
   reportUiPath,
+  resolveOwnerId,
   resolveWorkspaceId,
   stampOrigin,
   toRefusal,
@@ -111,7 +112,10 @@ export default defineTool({
         stampOrigin(ctx),
       );
     } catch (err) {
-      return toRefusal(err);
+      // A refusal rides the same `{ data }` envelope as a success: the handler
+      // contract is `ToolResult | ToolResponse`, and a bare object would not be
+      // assignable on either branch.
+      return { data: toRefusal(err) };
     }
 
     // The row is committed from here on. Both side effects are therefore
@@ -132,7 +136,7 @@ export default defineTool({
           path: reportUiPath(report.reportId),
         },
         summary: `report published: ${report.title}`,
-        source: ctx.ownerId ?? 'reports:publish',
+        source: resolveOwnerId(ctx) ?? 'reports:publish',
         workspaceId,
       });
     } catch (e) {
@@ -142,6 +146,6 @@ export default defineTool({
     invalidateReportsSync((m) => ctx.log(m));
 
     // One shared wire projection, so publish and list name every field identically.
-    return { ok: true as const, ...toReportWire(report), event_emitted: eventEmitted };
+    return { data: { ok: true as const, ...toReportWire(report), event_emitted: eventEmitted } };
   },
 });
