@@ -8,7 +8,7 @@
  * so it is the case that has to be exercised with real concurrency.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,8 +28,35 @@ import { ensureOAuthStateKeyFile } from './state';
 // HISTORICAL snapshot of state.ts and prove this arm is actually falsifiable,
 // without ever mutating the tracked file (CLAUDE.md tier 2). Defaults to the
 // real module, so an ordinary run is unchanged.
-const STATE_MODULE =
-  process.env.PAPERCUSP_OAUTH_STATE_MODULE ?? fileURLToPath(new URL('./state.ts', import.meta.url));
+function resolveStateModule(): string {
+  const raw = process.env.PAPERCUSP_OAUTH_STATE_MODULE;
+  if (!raw) return fileURLToPath(new URL('./state.ts', import.meta.url));
+  if (/\.m?ts$/.test(raw)) return raw;
+
+  // mutation-probe.sh writes its frozen snapshots WITHOUT a file extension
+  // (/tmp/mutation-probe.XXXX/snapshot-run-1). tsx decides whether to strip
+  // types by extension, so an extensionless file is handed to Node's plain-JS
+  // loader and dies at `const STATE_VERSION = 1 as const` with
+  // "SyntaxError: Unexpected identifier 'as'" — on BOTH the current and the
+  // historical leg, which the probe can only report as verdict=harness-error.
+  // That is an UNDETERMINED result, and it reads deceptively like a real red.
+  //
+  // Re-home the snapshot with a .mts extension:
+  //   - under the repo (not /tmp) so state.ts's `@papercusp/db-org/connection`
+  //     import still resolves by the normal node_modules walk-up;
+  //   - inside .papercusp/scratch/, which .gitignore:187 covers, so git-sync
+  //     cannot sweep the copy into a commit (CLAUDE.md tier 2: never mutate,
+  //     and never leave a sweepable artifact in the tracked tree);
+  //   - .mts, not .ts, because that dir has no package.json declaring
+  //     "type":"module", so a bare .ts would be compiled as CJS.
+  const scratch = fileURLToPath(new URL('../../../../.papercusp/scratch/', import.meta.url));
+  mkdirSync(scratch, { recursive: true });
+  const dest = join(scratch, `oauth-state-probe-${process.pid}-${Date.now()}.mts`);
+  writeFileSync(dest, readFileSync(raw, 'utf8'));
+  return dest;
+}
+
+const STATE_MODULE = resolveStateModule();
 const TSX = fileURLToPath(new URL('../../../../node_modules/.bin/tsx', import.meta.url));
 
 function freshDir(): string {
