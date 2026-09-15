@@ -5,7 +5,7 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "A near-limit context gauge on a fresh carry-respawn successor was your DEAD predecessor's reading — fixed 2026-09-15; the gauge now goes SILENT instead"
-description: "Not a ~2-minute lag: :3070 runs a 16-worker cluster, each worker held a private transcript anchor, and respawn invalidation reached only one — so 15 kept serving the dead predecessor's frozen count. A per-call lottery, which is why readings were non-monotonic. Fixed 2026-09-15 by deriving anchor identity from the anchor's own path and declining to render an unproven one. Post-respawn you now get up to 16 scattered SILENT gauge lines, one per worker — that is the fix working, not a bug."
+description: "Not a ~2-minute lag: :3070 runs a multi-worker cluster, each worker held a private transcript anchor, and respawn invalidation reached only one — so the rest kept serving the dead predecessor's frozen count. A per-call lottery, which is why readings were non-monotonic. Fixed 2026-09-15 by deriving anchor identity from the anchor's own path and declining to render an unproven one. Post-respawn you now get a few scattered SILENT gauge lines, one per worker — that is the fix working, not a bug."
 type: Insight
 discovered: 2026-09-15
 status: active
@@ -14,6 +14,7 @@ documents:
   - "packages/operator-core/lib/agent-tools/activity/report.ts"
   - "packages/operator-core/lib/agent-tools/session/request-compaction.ts"
   - "packages/operator-core/lib/agent-tools/context-gauge-annotator.ts"
+  - "packages/operator-core/lib/cluster-fork.ts"
 generated:
   by: agent
   at: 2026-07-18
@@ -38,12 +39,35 @@ session id differs, drops the dead anchor, and returns `null` for *that call
 only* while kicking a background reseed. The **next** call that worker serves
 reads the reseeded anchor and re-proves it for free, and the gauge is back.
 
-`:3070` runs 16 workers, so across a session you may see **up to 16 silent gauge
-lines, scattered rather than consecutive**, as you first touch each worker. A
-silent line at call 3 and another at call 12 is not a relapse — it is the 2nd
-and 5th worker healing on schedule. **Do not file bounded, intermittent early
-silence.** Filing it is the same error this page used to cause in the other
-direction.
+So across a session you may see **up to one silent gauge line per worker,
+scattered rather than consecutive**, as you first touch each one. A silent line
+at call 3 and another at call 12 is not a relapse — it is the 2nd and 4th worker
+healing on schedule. **Do not file bounded, intermittent early silence.** Filing
+it is the same error this page used to cause in the other direction.
+
+## How many workers — read it, do not trust a number on this page
+
+The ceiling on silent lines is the live worker count, which is set by
+`resolveClusterWorkers()` in `packages/operator-core/lib/cluster-fork.ts` as
+`PAPERCUSP_CLUSTER_WORKERS ?? PAPERCUSP_CLUSTER`. It is environment-dependent, so
+read it rather than quoting this page:
+
+```
+dev:listening_ports { port: 3070 }     # `listeners` = the live worker count
+```
+
+```bash
+tr '\0' '\n' < /proc/<master-pid>/environ | grep -E '^PAPERCUSP_CLUSTER(_WORKERS)?='
+```
+
+⚠ **`PAPERCUSP_CLUSTER_WORKERS` SHADOWS `PAPERCUSP_CLUSTER`, and both are set on
+this box.** Measured 2026-09-15: `PAPERCUSP_CLUSTER=16` *and*
+`PAPERCUSP_CLUSTER_WORKERS=6` — with **6** the effective count (6 listeners, 6
+children of the master, all forked together at boot). The variable whose name you
+are more likely to grep for is **not** the one that wins. An earlier revision of
+this page asserted "16 workers" for exactly that reason; `cluster-fork.ts`
+documents the same shadowing trap costing ~30min of forensics on 2026-07-09.
+Nothing about the mechanism below depends on the number — only the ceiling does.
 
 ## The symptom (historical — what this bug looked like)
 
@@ -58,25 +82,32 @@ monotonic**. Agents observed 31% → 86% → 31% across consecutive calls, or
 114k → 307k across two ~2k-token tool results. A time-based lag cannot produce
 that. A lottery can.
 
-## The real mechanism — a 16-worker lottery, not a 2-minute lag
+Why that inference is sound: a single-anchor lag model can produce at most one
+stale → true transition, and cannot then go true → stale → true. An
+**up-and-back excursion** (true, then high, then true again) is only producible
+by a per-call lottery over independent per-worker anchors. One such excursion is
+enough to falsify the lag story.
+
+## The real mechanism — a per-worker lottery, not a 2-minute lag
 
 This is the correction. The previous version of this page described a
 time-bounded cache lag that healed itself within one watchdog pass. That story
 was wrong, and being wrong in the *reassuring* direction is what made it costly.
 
-1. `:3070` runs a **16-worker `node:cluster`** (`agent-chat-lock.ts`). Each
-   worker process holds its **own** in-process `anchors` Map
+1. `:3070` runs a multi-worker `node:cluster` (see "How many workers" above).
+   Each worker process holds its **own** in-process `anchors` Map
    (`packages/operator-core/lib/compaction-usage.ts`).
 2. Respawn invalidation (`clearContextAnchor` + `clearContextUsage` +
    `clearContextEstimate`) fires from ONE HTTP POST to
    `/api/agent-mcp/console/bootstrap-su/session-respawned`. That POST lands on
-   **exactly one of the 16 workers**. The other 15 never learn the predecessor
-   died. The 2026-07-18 fix was not logically wrong — it called the right
-   clears. It was **single-worker in a 16-worker cluster**, and nothing about
-   its success reported that it had reached 1/16 of the state it needed to.
+   **exactly one worker**. The others never learn the predecessor died. The
+   2026-07-18 fix was not logically wrong — it called the right clears. It was
+   **single-worker in a multi-worker cluster**, and nothing about its success
+   reported that it had reached one worker's worth of the state it needed to.
 3. A dead predecessor's transcript **stops growing**, so `advanceAnchor` reads
-   `size === a.sizeSeen` as `'ok'` — "anchor is current". Those 15 workers had
-   no way to notice, and kept serving the frozen pre-respawn count indefinitely.
+   `size === a.sizeSeen` as `'ok'` — "anchor is current". The untouched workers
+   had no way to notice, and kept serving the frozen pre-respawn count
+   indefinitely.
 4. The only backstop was time-based (`PATH_REVERIFY_MS = 30_000`), and the SYNC
    path the gauge actually uses (`currentContextTokensSyncForOwner`) **returned
    the stale reading anyway** when re-verify was overdue — it merely kicked a
@@ -140,8 +171,8 @@ no broadcast, no timer, no delivery dependence.
    bounded-stale number, aligning the code with the annotator's documented
    contract.
 
-Each of the 16 workers self-heals on the first call it serves — on first use,
-never sooner, never later.
+Each worker self-heals on the first call it serves — on first use, never sooner,
+never later.
 
 **Coverage was measured, not assumed:** the native session id reaches the server
 on **both** native and MCP tool calls — 100% on `harness_shared.agent_activity`
@@ -150,7 +181,7 @@ implemented anyway and is load-bearing for the cross-worker case.
 
 **Explicitly REJECTED (owner-informed):** cluster-broadcasting the existing
 clear. With identity keying, the heal happens on first use, so a broadcast would
-eagerly reseed 16 workers (each a tail scan up to `BOUNDARY_SCAN_CAP`) to
+eagerly reseed every worker (each a tail scan up to `BOUNDARY_SCAN_CAP`) to
 pre-empt the handful of lazy reseeds that already land at exactly the right
 moment — a pessimization that also re-adds delivery-dependence and a second
 invalidation authority. Revisit **only** on measurement showing the silent
@@ -170,12 +201,12 @@ of a genuine observation.
   that matches your predecessor's pre-cut reading, or that moves
   non-monotonically across consecutive calls. That is this bug recurring;
   the fix's whole claim is that an unproven anchor renders nothing.
-- **Silence that exceeds the bound** — substantially more than ~16 silent gauge
-  lines in one session, or a gauge that never returns at all. Silence is
-  bounded at one line per worker; unbounded silence means the reseed path is not
-  firing. Note the silent lines are **scattered, not consecutive**, so "it went
-  silent again at call 12" is expected and is *not* the same as "it never came
-  back" — do not file the first as if it were the second.
+- **Silence that exceeds the bound** — substantially more silent gauge lines in
+  one session than there are workers, or a gauge that never returns at all.
+  Silence is bounded at one line per worker; unbounded silence means the reseed
+  path is not firing. Note the silent lines are **scattered, not consecutive**,
+  so "it went silent again at call 12" is expected and is *not* the same as "it
+  never came back" — do not file the first as if it were the second.
 - **Any reading that disagrees with `coord:presence`'s `contextTokens`** for the
   same session.
 
@@ -185,12 +216,12 @@ diagnostic signature; a single high reading is not.
 
 ## Which build has this
 
-The fix landed in the shared staging tree on 2026-09-15. `:3170`/current-build
-serves the working tree and therefore already has it; `:3070` serves the release
-checkout and gets it through the normal green-checkpoint → deploy pipeline, so
-until that lands `:3070` still exhibits the old behaviour. A stale-gauge
-observation against the pre-deploy `:3070` is expected and is already covered by
-the EIs above. Check with
+The fix landed in the shared staging tree on 2026-09-15 (commit `7d8c0d06a6`).
+`:3170`/current-build serves the working tree and therefore already has it;
+`:3070` serves the release checkout and gets it through the normal
+green-checkpoint → deploy pipeline, so until that lands `:3070` still exhibits
+the old behaviour. A stale-gauge observation against the pre-deploy `:3070` is
+expected and is already covered by the EIs above. Check with
 `dev:pipeline_position { path: 'packages/operator-core/lib/compaction-usage.ts' }`
 rather than assuming either way.
 
@@ -202,5 +233,5 @@ rather than assuming either way.
   [carry-respawn must re-anchor the native session id](/internal/docs/agent-insights/carry-respawn-must-reanchor-native-session-id).
 - The **2026-07-18 change** (rides with P-022) added `clearContextUsage(owner)`
   on the `session-respawned` route plus the DISTRUST prose. Correct in logic,
-  under-delivered in topology (1 of 16 workers), and the prose has now been
+  under-delivered in topology (one worker of several), and the prose has now been
   removed in favour of the actual fix.

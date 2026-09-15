@@ -7713,13 +7713,43 @@ export function hostThroughPty(o) {
       // decide the session's continuation and the mismatch actually changes outcomes.
       // Detection only: adoption is a separate, riskier change (a launcher re-exec),
       // and a silent-but-detectable staleness is strictly better than an undetected one.
+      // WI-10001514: record WHY a stale host will not adopt, not merely THAT it is
+      // stale. The adoption gate below is
+      // `!quotaRecovery && shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty })`,
+      // and when any condition fails the code falls through to the in-process
+      // respawn recording nothing — which makes two very different outcomes
+      // indistinguishable after the fact. `bridgeTty` true is a CORRECT refusal (a
+      // re-exec would tear down a live human TUI); a missing onReexec/reexecCode is
+      // a HEADLESS host that could safely have adopted but had no launcher shim,
+      // i.e. a real gap wearing the same shape. Measured 2026-09-15: 7,021 of 9,087
+      // stale detections never adopted and not one is attributable to either cause,
+      // so "did adoption regress?" is unanswerable from the corpus. These are the
+      // gate's OWN inputs read where it already evaluates them — still detection
+      // only, no behaviour and no restart-timing change.
       try {
         const hostCode = hostCodeStalenessFn();
         if (hostCode.stale) {
+          const adoptable = shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty });
           appendHostEvent(ownerId, 'host-code-stale', {
             mode: respawnMode,
             loaded: hostCode.loaded,
             onDisk: hostCode.onDisk,
+            // ADDITIVE — absent on rows written by older hosts, so a reader must
+            // treat `undefined` as "not recorded", never as false.
+            adoptable,
+            willAdopt: adoptable && !quotaRecovery,
+            notAdoptingReason: adoptable
+              ? quotaRecovery
+                ? 'quota-recovery'
+                : null
+              : bridgeTty
+                ? 'interactive-tty'
+                : !onReexec
+                  ? 'no-reexec-callback'
+                  : 'no-reexec-code',
+            bridgeTty,
+            hasReexecCallback: Boolean(onReexec),
+            reexecCode: reexecCode ?? null,
           });
         }
       } catch {
