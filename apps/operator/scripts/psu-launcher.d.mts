@@ -1093,6 +1093,12 @@ export function parkRoleScopedMcpJson(cwd: any): string | null;
  *  unconstrained status/state on the release host). An excluded tool stays CALLABLE via
  *  tools:invoke; only its up-front advertisement is dropped. Exported for tests. */
 export function ompCoreToolNames(env?: NodeJS.ProcessEnv): string[];
+/** Claude's advertised seed. DEFAULT = the minimal list above (the ~-116K-tokens/turn cut).
+ *  Set PAPERCUSP_CLAUDE_FULL_SEED=1 to restore the historical spine+extras seed byte-for-byte
+ *  — the escape hatch for a session that genuinely needs the wide surface up front, and the
+ *  instant revert if the minimal seed ever proves too thin. Both paths honor
+ *  PAPERCUSP_OMP_TOOLS_EXCLUDE (a tool the target operator currently serves BROKEN should not
+ *  be advertised on either). Exported for tests. */
 export function claudeSeedToolNames(env?: NodeJS.ProcessEnv): string[];
 /** The context-trimming env trio (context-trimming-tiers D-004 / D-010 / P-031) — the keys
  *  that keep a launched session's prompt at the ~143k trimmed baseline instead of the ~756k
@@ -3782,6 +3788,76 @@ export const OMP_CORE_MCP_TOOL_NAMES: string[];
  *  unreachable, so agents fall back to native backgrounding — whose completion
  *  notification root CLAUDE.md separately calls untrustworthy). */
 export const CLAUDE_SEED_EXTRA_TOOL_NAMES: string[];
+/** EI-23319364088969722 — CLAUDE'S OWN MINIMAL SEED. Read this before adding a name.
+ *
+ *  WHY THIS LIST EXISTS AT ALL. Until 2026-09-15 the Claude seed was DERIVED from the
+ *  weak-model spine: `ompCoreToolNames()` (48) + `CLAUDE_SEED_EXTRA_TOOL_NAMES` (16) = 64.
+ *  That is backwards, and measurably expensive. The spine is large BECAUSE a weak/local
+ *  OMP model cannot reliably drive `tools:invoke` and so needs its verbs up-front; Claude
+ *  is the model BEST able to drive it, and was receiving the LARGEST seed.
+ *
+ *  THE COST IT WAS PAYING. Claude's native schema DEFERRAL is conditional on ToolSearch
+ *  EXISTING (verified both ways on a raw `claude -p` path varying only that flag — see
+ *  NATIVE_TOOL_SEARCH_DENY_FLAG: ToolSearch ALLOWED -> 0 papercusp tools inline, DENIED ->
+ *  63 inline). psu denies ToolSearch by owner directive (one call measured +67,045 tokens
+ *  bypassing applyResultDoor), so deferral is structurally unavailable and EVERY advertised
+ *  tool ships its FULL argSchema on EVERY turn. Measured 2026-09-15: the tool block was
+ *  461,966 B of an 807,630 B first turn (57.2%) — i.e. essentially the whole 151K -> 317K
+ *  baseline regression. ADVERTISE-LESS IS THEREFORE THE ONLY REMAINING LEVER.
+ *
+ *  MEASURED (live `tools/list`, ctx_tier=trimmed, this build): old 64-name seed = 432,714 B;
+ *  this 31-name seed = 113,588 B. -319,126 B (-73.7%), ~-116K tokens off every turn.
+ *  The cut is dominated by seven heavies the routing table never promotes:
+ *  work_items:complete 44,060 · coord:send 39,254 · work_items:checkpoint 24,597 ·
+ *  fleet:launch-on-plan 22,561 · loop:checkpoint 21,033 · improvements:capture 20,977 ·
+ *  facts:assert 15,359 = 187,841 B for SEVEN names.
+ *
+ *  WHY DROPPING THEM IS SAFE — the thing that makes this different from the EI-9011 /
+ *  WI-37534 cuts that hurt. Those failed because native ToolSearch indexes ONLY the
+ *  advertised subset, so an unseeded name answered "no matching deferred tools found",
+ *  which reads as "this tool does not exist". With ToolSearch DENIED that mechanism is not
+ *  in play at all: papercusp's OWN `tools:find` searches the FULL ~900-tool catalog and
+ *  ACTIVATES matches into the live list, and `tools:invoke` dispatches any catalog tool by
+ *  name, gated identically to a direct call. Root CLAUDE.md states this explicitly for
+ *  agents. So the seed is a LATENCY budget (one round-trip to reach a tail tool), not a
+ *  capability boundary — and `tools:find` + `tools:invoke` cost 2,873 B combined, which is
+ *  why they are the one non-negotiable entry below.
+ *
+ *  ADMISSION RULE — every name here traces to one of four evidence tiers, and a new one
+ *  needs its tier plus its measured bytes. Blanket-seeding is what this list exists to stop.
+ *    (1) REACHABILITY FLOOR — without these the whole cut strands the catalog.
+ *    (2) ROUTING-TABLE MANDATE — promoted by the generated bash->tool table, so
+ *        `seed-mandate-coverage` FAILS if it is neither seeded nor evidence-exempt.
+ *    (3) SILENT-HALT LIFECYCLE — absence does not degrade, it HALTS or strands state
+ *        (EI-6770: a session without session:request-compaction self-halts at its limit
+ *        rather than compacting; an undeclared lane is invisible, so work gets double-placed).
+ *    (4) PROSE MANDATE — required by documentation the agent must follow but NOT covered by
+ *        the machine-readable guard (that guard's own SCOPE note lists these), so nothing
+ *        would catch their removal. Seeded by hand under P-002/P-003 and kept here.
+ *  Deliberately OUT, reachable via tools:find/tools:invoke: every heavy above, plus the
+ *  plans:* / events:* / work_items:create|update|set_state|complete families. */
+export const CLAUDE_MINIMAL_SEED_TOOL_NAMES: string[];
+/** RATCHET on the minimal seed — the thing that makes this a fix rather than a one-off trim.
+ *
+ *  HOW THE SEED GOT TO 64 IN THE FIRST PLACE: every single addition was individually
+ *  justified with real demand evidence (reaches/callers, reach-per-KB) and individually
+ *  correct. Nothing ever checked the AGGREGATE, so the list grew one defensible append at a
+ *  time until it was 432,714 B — the "grew 11x past its documented ~9K expectation" finding
+ *  in EI-23319364088969722. A trim with no ceiling regrows exactly the same way, which is
+ *  why this constant exists and why the guard is a `<=`, not a docstring.
+ *
+ *  RAISING IT IS A BUDGET DECISION, NOT A CHORE — same discipline as DARK_FLAGS_HIGH_WATERMARK
+ *  in libs/flags/src/types.ts. Before you raise it:
+ *    1. MEASURE. Cost is the tools/list WIRE payload and is dominated by argSchema, NOT by the
+ *       description/guidance that `npm run tool-weight` and promptWeight() govern — so the
+ *       repo's usual weight instrument does not answer this question. Ask a live server:
+ *       POST tools/list to /api/mcp?...&tools=<names>&ctx_tier=trimmed and sum
+ *       Buffer.byteLength(JSON.stringify(tool)) per entry.
+ *    2. STATE THE TIER. Every name traces to one of the four admission tiers documented above.
+ *    3. PREFER tools:find/tools:invoke. A tool reachable in one round-trip costs 0 B/turn; a
+ *       seeded one costs its full schema on EVERY turn of EVERY session, forever.
+ *  Measured 2026-09-15 at 31 names = 113,588 B (vs 432,714 B for the historical 64). */
+export const CLAUDE_MINIMAL_SEED_MAX_NAMES: 31;
 export function readModelsYmlContextWindow(ymlText: any, bareId: any): number | null;
 export function rewriteModelsYmlContextWindow(ymlText: any, bareId: any, newWindow: any): any;
 export function rewriteModelsJsonContextWindow(jsonText: any, bareId: any, newWindow: any): any;

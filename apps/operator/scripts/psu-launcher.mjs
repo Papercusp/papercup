@@ -3966,10 +3966,134 @@ export const CLAUDE_SEED_EXTRA_TOOL_NAMES = [
   // Do not re-add any of the three here: "every Claude-only extra stays OUT of the
   // weak-model OMP spine" (psu-launcher.test.ts) fails on a name that is in both lists.
 ];
+/** EI-23319364088969722 — CLAUDE'S OWN MINIMAL SEED. Read this before adding a name.
+ *
+ *  WHY THIS LIST EXISTS AT ALL. Until 2026-09-15 the Claude seed was DERIVED from the
+ *  weak-model spine: `ompCoreToolNames()` (48) + `CLAUDE_SEED_EXTRA_TOOL_NAMES` (16) = 64.
+ *  That is backwards, and measurably expensive. The spine is large BECAUSE a weak/local
+ *  OMP model cannot reliably drive `tools:invoke` and so needs its verbs up-front; Claude
+ *  is the model BEST able to drive it, and was receiving the LARGEST seed.
+ *
+ *  THE COST IT WAS PAYING. Claude's native schema DEFERRAL is conditional on ToolSearch
+ *  EXISTING (verified both ways on a raw `claude -p` path varying only that flag — see
+ *  NATIVE_TOOL_SEARCH_DENY_FLAG: ToolSearch ALLOWED -> 0 papercusp tools inline, DENIED ->
+ *  63 inline). psu denies ToolSearch by owner directive (one call measured +67,045 tokens
+ *  bypassing applyResultDoor), so deferral is structurally unavailable and EVERY advertised
+ *  tool ships its FULL argSchema on EVERY turn. Measured 2026-09-15: the tool block was
+ *  461,966 B of an 807,630 B first turn (57.2%) — i.e. essentially the whole 151K -> 317K
+ *  baseline regression. ADVERTISE-LESS IS THEREFORE THE ONLY REMAINING LEVER.
+ *
+ *  MEASURED (live `tools/list`, ctx_tier=trimmed, this build): old 64-name seed = 432,714 B;
+ *  this 31-name seed = 113,588 B. -319,126 B (-73.7%), ~-116K tokens off every turn.
+ *  The cut is dominated by seven heavies the routing table never promotes:
+ *  work_items:complete 44,060 · coord:send 39,254 · work_items:checkpoint 24,597 ·
+ *  fleet:launch-on-plan 22,561 · loop:checkpoint 21,033 · improvements:capture 20,977 ·
+ *  facts:assert 15,359 = 187,841 B for SEVEN names.
+ *
+ *  WHY DROPPING THEM IS SAFE — the thing that makes this different from the EI-9011 /
+ *  WI-37534 cuts that hurt. Those failed because native ToolSearch indexes ONLY the
+ *  advertised subset, so an unseeded name answered "no matching deferred tools found",
+ *  which reads as "this tool does not exist". With ToolSearch DENIED that mechanism is not
+ *  in play at all: papercusp's OWN `tools:find` searches the FULL ~900-tool catalog and
+ *  ACTIVATES matches into the live list, and `tools:invoke` dispatches any catalog tool by
+ *  name, gated identically to a direct call. Root CLAUDE.md states this explicitly for
+ *  agents. So the seed is a LATENCY budget (one round-trip to reach a tail tool), not a
+ *  capability boundary — and `tools:find` + `tools:invoke` cost 2,873 B combined, which is
+ *  why they are the one non-negotiable entry below.
+ *
+ *  ADMISSION RULE — every name here traces to one of four evidence tiers, and a new one
+ *  needs its tier plus its measured bytes. Blanket-seeding is what this list exists to stop.
+ *    (1) REACHABILITY FLOOR — without these the whole cut strands the catalog.
+ *    (2) ROUTING-TABLE MANDATE — promoted by the generated bash->tool table, so
+ *        `seed-mandate-coverage` FAILS if it is neither seeded nor evidence-exempt.
+ *    (3) SILENT-HALT LIFECYCLE — absence does not degrade, it HALTS or strands state
+ *        (EI-6770: a session without session:request-compaction self-halts at its limit
+ *        rather than compacting; an undeclared lane is invisible, so work gets double-placed).
+ *    (4) PROSE MANDATE — required by documentation the agent must follow but NOT covered by
+ *        the machine-readable guard (that guard's own SCOPE note lists these), so nothing
+ *        would catch their removal. Seeded by hand under P-002/P-003 and kept here.
+ *  Deliberately OUT, reachable via tools:find/tools:invoke: every heavy above, plus the
+ *  plans:* / events:* / work_items:create|update|set_state|complete families. */
+export const CLAUDE_MINIMAL_SEED_TOOL_NAMES = [
+  // (1) REACHABILITY FLOOR — 2,873 B buys the other ~870 tools. Never remove.
+  "tools:find", // 1,936 B
+  "tools:invoke", // 937 B
+  // (2) ROUTING-TABLE MANDATES (54,396 B) — the promoted set, minus the five entries that
+  // carry a measured exemption in MANDATE_SEED_EXEMPT. Removing one turns the guard red.
+  "build:typecheck",
+  "coord:orient",
+  "db:migrations",
+  "dev:pg_query",
+  "issues:list",
+  "routines:list",
+  "testing:run",
+  "testing:runs",
+  "work_items:get",
+  "work_items:list",
+  // (3) SILENT-HALT LIFECYCLE (18,072 B) — bootstrap, lane, wake, and the clean exit.
+  "session:request-compaction", // EI-6770: without it a session self-halts at its limit.
+  "loop:status", // the su rule: VERIFY a wake is armed before ending a turn.
+  "coord:declare-intent",
+  "coord:inbox",
+  "work_items:claim",
+  "scheduler:get_next", // a drain member hits this every iteration.
+  // (4) PROSE MANDATES (31,532 B) — documented duties the machine-readable guard cannot see.
+  "state:read", // root CLAUDE.md: RE-READ a volatile value, never transcribe it. 1,467 B.
+  "sessions:search", // the compaction strategy's self-recall path.
+  "mode:set", // the su persona mandates the call on every AUTO/DRAIN/IDEATE flip.
+  "work_items:claimable", // the storage-policy table's "what is claimable" answer.
+  "dev:restart", // two-port model: the ONLY sanctioned way to restart :3170.
+  "dev:pipeline_position", // root CLAUDE.md: "is my change live" is ONE call.
+  "capability:bash", // the long-jobs rule. INSEPARABLE from its reader below —
+  "capability:bash_output", // seeding the launcher alone strands every background job.
+  "locks:acquire", // the CC PreToolUse lock-block hook names this verb in its refusal
+  "locks:release", // (EI-9011), and release is what keeps a grant from stranding.
+  "memory:search", // user CLAUDE.md: durable facts go to memory:remember FIRST.
+  "memory:remember",
+  "docs:search", // "Before you design or test — read the docs first."
+];
+
+/** RATCHET on the minimal seed — the thing that makes this a fix rather than a one-off trim.
+ *
+ *  HOW THE SEED GOT TO 64 IN THE FIRST PLACE: every single addition was individually
+ *  justified with real demand evidence (reaches/callers, reach-per-KB) and individually
+ *  correct. Nothing ever checked the AGGREGATE, so the list grew one defensible append at a
+ *  time until it was 432,714 B — the "grew 11x past its documented ~9K expectation" finding
+ *  in EI-23319364088969722. A trim with no ceiling regrows exactly the same way, which is
+ *  why this constant exists and why the guard is a `<=`, not a docstring.
+ *
+ *  RAISING IT IS A BUDGET DECISION, NOT A CHORE — same discipline as DARK_FLAGS_HIGH_WATERMARK
+ *  in libs/flags/src/types.ts. Before you raise it:
+ *    1. MEASURE. Cost is the tools/list WIRE payload and is dominated by argSchema, NOT by the
+ *       description/guidance that `npm run tool-weight` and promptWeight() govern — so the
+ *       repo's usual weight instrument does not answer this question. Ask a live server:
+ *       POST tools/list to /api/mcp?...&tools=<names>&ctx_tier=trimmed and sum
+ *       Buffer.byteLength(JSON.stringify(tool)) per entry.
+ *    2. STATE THE TIER. Every name traces to one of the four admission tiers documented above.
+ *    3. PREFER tools:find/tools:invoke. A tool reachable in one round-trip costs 0 B/turn; a
+ *       seeded one costs its full schema on EVERY turn of EVERY session, forever.
+ *  Measured 2026-09-15 at 31 names = 113,588 B (vs 432,714 B for the historical 64). */
+export const CLAUDE_MINIMAL_SEED_MAX_NAMES = 31;
+
+/** Claude's advertised seed. DEFAULT = the minimal list above (the ~-116K-tokens/turn cut).
+ *  Set PAPERCUSP_CLAUDE_FULL_SEED=1 to restore the historical spine+extras seed byte-for-byte
+ *  — the escape hatch for a session that genuinely needs the wide surface up front, and the
+ *  instant revert if the minimal seed ever proves too thin. Both paths honor
+ *  PAPERCUSP_OMP_TOOLS_EXCLUDE (a tool the target operator currently serves BROKEN should not
+ *  be advertised on either). Exported for tests. */
 export function claudeSeedToolNames(env = process.env) {
+  const full = String(env.PAPERCUSP_CLAUDE_FULL_SEED || "").trim();
+  const wantsFull = full !== "" && full !== "0" && full.toLowerCase() !== "false";
+  const excluded = String(env.PAPERCUSP_OMP_TOOLS_EXCLUDE || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const base = wantsFull
+    ? [...ompCoreToolNames(env), ...CLAUDE_SEED_EXTRA_TOOL_NAMES]
+    : CLAUDE_MINIMAL_SEED_TOOL_NAMES;
   const seen = new Set();
-  return [...ompCoreToolNames(env), ...CLAUDE_SEED_EXTRA_TOOL_NAMES].filter(
-    (n) => !seen.has(n) && (seen.add(n), true),
+  return base.filter(
+    (n) => !excluded.includes(n) && !seen.has(n) && (seen.add(n), true),
   );
 }
 
