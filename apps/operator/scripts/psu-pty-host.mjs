@@ -2111,14 +2111,11 @@ export function makeAgentBusyGate({
 // under this sentinel instead of colliding with the old `!drillId` early-return.
 const NON_DRILL_REARM_KEY = '__non-drill__';
 
-// WI-5623: anti-spin backstop for the production carry-respawn re-poll loop. A
-// production respawn re-polls the busy-gate across successive windows until the
-// agent idles (deliver) or the carry goes stale (CARRY_RESPAWN_MAX_AGE_MS is the
-// REAL bound — reached first in the live host, where each waitAtPrompt costs a
-// full busy cap). This cap only guards a degenerate test/clock where waitAtPrompt
-// returns instantly, so it can never spin. Drills are always one-shot.
-const PRODUCTION_REARM_MAX_ATTEMPTS = 64;
-
+// WI-5623: optional anti-spin backstop for the production carry-respawn
+// re-poll loop. Production compaction carries are MUST-DELIVER and therefore
+// have no age-based expiry; the default is unbounded because the real gate
+// sleeps between attempts. Tests may inject a finite value to exercise the
+// terminal drill/backstop behavior without creating an infinite promise loop.
 export function makeCarryRearmController({
   acquireInject, // () => Promise<release()>  — the host's gated-inject mutex
   waitIdle = null, // optional human-keystroke gate (bridged tty only)
@@ -2126,6 +2123,7 @@ export function makeCarryRearmController({
   recycle, // (data, { systemPromptAddendum, drillId, sessionClass }) => Promise<void>
   emitEvent, // (kind, extra) => void — writes BOTH the per-owner host log + shared ledger
   capMs = TURN_INJECT_BUSY_CAP_MS * 2,
+  maxProductionAttempts = Number.POSITIVE_INFINITY,
   // EI-18109211232286833: (msg) => boolean — re-checked right before this
   // retry finally recycles, since the whole point of the retry is that a LOT
   // of wall-clock time (the first busy-gate wait + this re-arm's) may have
@@ -2228,10 +2226,14 @@ export function makeCarryRearmController({
         // window, so a single retry meant 0% delivery (every production respawn
         // dropped 'busy-gate-expired'). Instead it RE-POLLS across successive
         // windows — RELEASING the inject mutex between attempts so coord/loop
-        // wakes to this session are never wedged — until the agent idles
-        // (deliver), the carry goes stale (CARRY_RESPAWN_MAX_AGE_MS — the real
-        // bound, reached first in the live host), or the anti-spin cap is hit.
-        const maxAttempts = isDrill ? 1 : PRODUCTION_REARM_MAX_ATTEMPTS;
+        // wakes to this session are never wedged — until the agent idles and
+        // the carry is delivered. Production has no age-based drop; drills
+        // remain bounded by their one-shot contract.
+        // Production compaction is a MUST-DELIVER continuation. A live session
+        // may spend longer than the historical 30-minute stale/attempt budget
+        // in one continuously-rendering turn; dropping the carry then strands
+        // the session at its context ceiling. Drills remain bounded experiments.
+        const maxAttempts = isDrill ? 1 : maxProductionAttempts;
         // EI-19480099650947832: carried onto every terminal row so a drop says
         // WHY it could never fire — see waitAtPrompt's maxQuietForMs comment.
         let observedMaxQuietMs = 0;
@@ -2263,7 +2265,7 @@ export function makeCarryRearmController({
                 // EI-18109211232286833: re-check staleness right before the cut —
                 // a lot of wall-clock may have passed across these waits, so a
                 // message fresh at schedule() time can cross the threshold.
-                if (isStale(deliver)) {
+                if (isDrill && isStale(deliver)) {
                   emitEvent(droppedKind, {
                     ...extra,
                     rearmed: true,
@@ -2286,14 +2288,14 @@ export function makeCarryRearmController({
               // whole (potentially many-window) wait.
               release();
             }
-            // Deferred: the agent stayed mid-turn past the cap. A now-stale carry
-            // is not worth delivering; otherwise a production respawn loops to the
-            // next window, a drill falls out after its one shot.
+            // Deferred: the agent stayed mid-turn past the cap. Production
+            // carries continue to the next window; drills fall out after their
+            // one shot.
             // EI-19480099650947832: re-read AGAIN here — a supersede that landed
             // DURING this attempt must not be killed off by the staleness of the
             // message this attempt happened to start with. That is the whole
             // point of superseding: the fresher carry resets the clock.
-            if (isStale(latest.get(key) ?? current)) {
+            if (isDrill && isStale(latest.get(key) ?? current)) {
               emitEvent(droppedKind, {
                 ...extra,
                 rearmed: true,
@@ -2306,7 +2308,9 @@ export function makeCarryRearmController({
           }
           // A drill's single shot deferred, or a production respawn exhausted the
           // anti-spin cap without ever idling — terminal, loud.
-          emitEvent(droppedKind, { ...extra, rearmed: true, observedMaxQuietMs, attempts: attemptsMade });
+          if (isDrill) {
+            emitEvent(droppedKind, { ...extra, rearmed: true, observedMaxQuietMs, attempts: attemptsMade });
+          }
         } catch (error) {
           emitEvent(droppedKind, {
             ...extra,
@@ -6716,6 +6720,7 @@ export function hostThroughPty(o) {
         const stale =
           !superseded &&
           msg.mode === 'carry-respawn' &&
+          Boolean(msg.drillId) &&
           isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs });
         if (superseded || stale) {
           const ageMs = msg.receivedAtMs != null ? Date.now() - msg.receivedAtMs : null;
