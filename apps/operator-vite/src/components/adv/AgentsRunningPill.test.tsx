@@ -287,10 +287,23 @@ describe('<AgentsRunningPill>', () => {
     });
   });
 
-  it('renders nothing when no authoritatively-live agents are present', () => {
+  // [owner 2026-09-15] "if there are no agents running the pill disappears
+  // entirely it should instead say 0 agents running" — the pill used to
+  // `return null` at zero, which read as a missing feature during the post-boot
+  // hydration window (WI-37363).
+  it('stays mounted at zero and reads "0 agents running", without the is-running state class', () => {
     H.active = [agent({ liveness: 'live', sessionState: 'parked' })];
-    const { container } = render(<Pill />);
-    expect(container.innerHTML).toBe('');
+    render(<Pill />);
+    const pill = screen.getByTestId('agents-running-pill');
+    expect(pill.textContent).toContain('0 agents running');
+    expect(pill.classList.contains('is-running')).toBe(false);
+  });
+
+  it('at zero, the popover shows an honest empty note instead of a blank roster', () => {
+    H.active = [agent({ liveness: 'live', sessionState: 'parked' })];
+    nuqs.open = true;
+    render(<Pill />);
+    expect(screen.getByTestId('agents-running-empty').textContent).toContain('No agents running');
   });
 
   it('shows a "thinking" count in the pill when agents are actively thinking', () => {

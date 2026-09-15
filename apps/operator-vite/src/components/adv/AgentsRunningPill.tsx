@@ -282,8 +282,11 @@ export default function AgentsRunningPill() {
     return out;
   }, [data, q]);
 
-  if (running.length === 0) return null;
-
+  // Always mounted, even at zero ([owner 2026-09-15] "it should instead say
+  // 0 agents running"): an absent pill read as "the feature is missing" during
+  // the post-boot hydration window (WI-37363), and an honest "0 agents running"
+  // is a reading where an empty header is not. `is-running` stays a STATE class.
+  const isRunning = running.length > 0;
   const groups = groupByFleet(running);
   const fleetDots = groups.filter((g) => g.slug !== null && g.color).slice(0, 6);
   const thinkingCount = running.filter(isTranscriptFresh).length;
@@ -303,7 +306,7 @@ export default function AgentsRunningPill() {
         trigger={(
           <button
             type="button"
-            className="pc-advshell__action pc-advshell__action--agents is-running"
+            className={`pc-advshell__action pc-advshell__action--agents${isRunning ? ' is-running' : ''}`}
             data-testid="agents-running-pill"
             aria-expanded={open}
             aria-controls="pc-advshell-agents-pop"
@@ -346,13 +349,19 @@ export default function AgentsRunningPill() {
             <SessionSearchResults query={q} nowMs={nowMs} instantIdMatches={instantIdMatches} />
           ) : (
             <>
-              <AgentsRoster
-                agents={running}
-                nowMs={nowMs}
-                focusOwner={focusOwner}
-                inspectOwner={inspectOwner}
-                onInspectOwnerConsumed={() => void setInspectOwner(null)}
-              />
+              {isRunning ? (
+                <AgentsRoster
+                  agents={running}
+                  nowMs={nowMs}
+                  focusOwner={focusOwner}
+                  inspectOwner={inspectOwner}
+                  onInspectOwnerConsumed={() => void setInspectOwner(null)}
+                />
+              ) : (
+                <p className="pc-advshell__idle" data-testid="agents-running-empty">
+                  No agents running right now.
+                </p>
+              )}
               <InactiveSessionsSection activeOwnerIds={activeOwnerIds} nowMs={nowMs} focusOwnerId={focusOwner} />
             </>
           )}
