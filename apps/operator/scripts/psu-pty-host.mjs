@@ -1997,6 +1997,20 @@ export function shutdownRefusalReason({
  *                    message stands for the next natural turn).
  *
  * Pure (injectable clock + getter); exported for tests.
+ *
+ * The `@param` tags below are LOAD-BEARING, not decoration: gen:declarations
+ * infers this signature into psu-pty-host.d.mts, and with prose-only JSDoc it
+ * derived the options type from DEFAULTS ALONE — silently dropping
+ * `lastOutputAt` (the one option with no default) from the emitted type while
+ * leaving it in the binding pattern. Every typed caller passing it then failed
+ * TS2353 against a parameter the implementation has always accepted.
+ *
+ * @param {object} [opts]
+ * @param {() => number} [opts.lastOutputAt] ms epoch of the agent's most recent
+ *   pty output; 0 / absent ⇒ never seen ⇒ treated as quiet (at its prompt).
+ * @param {number} [opts.quietMs]
+ * @param {number} [opts.capMs]
+ * @param {() => number} [opts.now]
  */
 export function makeAgentBusyGate({
   lastOutputAt,
@@ -2015,7 +2029,14 @@ export function makeAgentBusyGate({
      *  defer after capMs (agent still mid-turn — drop the live inject).
      *  WI-1872 (1): `overrideCapMs` lets a caller use a DIFFERENT completion
      *  budget than this gate's own construction-time `capMs` without needing a
-     *  second gate instance over the same activity tracker. */
+     *  second gate instance over the same activity tracker.
+     *
+     *  @param {number | null} [overrideCapMs]
+     *  @param {(() => boolean) | null} [verifiedBoundary] predicate proving the
+     *    agent's native turn genuinely completed (see the `verifiedBoundary?.()`
+     *    call below). The bare `= null` default alone made gen:declarations infer
+     *    the LITERAL type `null`, which rejected every real caller — including
+     *    this file's own at the codex carry and verified-boundary sites. */
     async waitAtPrompt(overrideCapMs, verifiedBoundary = null) {
       const effectiveCapMs = overrideCapMs ?? capMs;
       const deadline = now() + effectiveCapMs;
