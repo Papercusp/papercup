@@ -827,7 +827,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       frozenCandidate: frozen,
       repairHead: frozen,
       verdictProvenance: {
-        currentStatus: "no-suite",
         frozenCandidateVerdict: "full-gate-red",
         repairHeadVerdict: "same-as-frozen-full-gate-red",
       },
@@ -866,7 +865,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       frozenCandidate: frozen,
       repairHead: movingTip,
       verdictProvenance: {
-        currentStatus: "no-suite",
         frozenCandidateVerdict: "full-gate-red",
         repairHeadVerdict: "full-gate-red",
       },
@@ -2208,7 +2206,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       candidate: frozen,
       frozenCandidate: frozen,
       repairHead: repaired,
-      verdictProvenance: { currentStatus: "no-suite" },
+      verdictProvenance: { repairHeadVerdict: "full-gate-red" },
       repairQueue: {
         phase: "awaiting-fixer",
         repairHead: repaired,
