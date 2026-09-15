@@ -427,6 +427,72 @@ export async function listReportLineage(
   return rows.map(mapRow);
 }
 
+export interface SearchReportsOptions {
+  workspaceId: string;
+  /** Free text, parsed by `websearch_to_tsquery` (quoted phrases, OR, -negation). */
+  query: string;
+  /** Gate the read. Omit ONLY on server-internal paths that must see everything. */
+  viewer?: ReportViewer;
+  kind?: ReportKind;
+  includeRetired?: boolean;
+  /** Show only the newest row per lineage (default true). */
+  collapseLineage?: boolean;
+  limit?: number;
+}
+
+export interface ReportSearchHit {
+  report: ReportRecord;
+  /** `ts_rank` against the weighted `search_tsv`; higher is a better match. */
+  rank: number;
+}
+
+/**
+ * Full-text search over the library, gated by {@link visibleTo}.
+ *
+ * Ranking rides the STORED generated `search_tsv` column (migration 1166), which
+ * weights title > summary/subject_label > body. Searching the generated column
+ * rather than re-deriving a tsvector here keeps one definition of "what a report's
+ * searchable text is": a second `to_tsvector(...)` expression in this file would
+ * silently diverge from the index and quietly stop using it.
+ *
+ * With `collapseLineage` (the default) the newest row per lineage is selected FIRST
+ * and ranked second, so the library never offers a superseded body as a hit — the
+ * same "latest per lineage" contract {@link listReports} presents (R-3).
+ */
+export async function searchReports(
+  sql: postgres.Sql,
+  opts: SearchReportsOptions,
+): Promise<ReportSearchHit[]> {
+  const gate = opts.viewer ? visibleTo(sql, opts.viewer) : sql`TRUE`;
+  const tsq = sql`websearch_to_tsquery('english', ${opts.query})`;
+  const filters = sql`
+    ${opts.includeRetired ? sql`` : sql`AND retired_at IS NULL`}
+    ${opts.kind ? sql`AND kind = ${opts.kind}` : sql``}`;
+
+  type RankedRow = DbRow & { rank: number | string };
+  const rows =
+    opts.collapseLineage === false
+      ? await sql<RankedRow[]>`
+          SELECT ${sql.unsafe(SELECT_COLS)}, ts_rank(search_tsv, ${tsq}) AS rank
+            FROM harness_shared.report_library
+           WHERE workspace_id = ${opts.workspaceId} AND ${gate}
+             AND search_tsv @@ ${tsq} ${filters}
+           ORDER BY rank DESC, published_at DESC, report_id DESC
+           LIMIT ${clampLimit(opts.limit)}`
+      : await sql<RankedRow[]>`
+          SELECT * FROM (
+            SELECT DISTINCT ON (lineage_id) ${sql.unsafe(SELECT_COLS)},
+                   ts_rank(search_tsv, ${tsq}) AS rank
+              FROM harness_shared.report_library
+             WHERE workspace_id = ${opts.workspaceId} AND ${gate}
+               AND search_tsv @@ ${tsq} ${filters}
+             ORDER BY lineage_id, published_at DESC, report_id DESC
+          ) latest
+           ORDER BY rank DESC, published_at DESC, report_id DESC
+           LIMIT ${clampLimit(opts.limit)}`;
+  return rows.map((row) => ({ report: mapRow(row), rank: Number(row.rank) }));
+}
+
 /**
  * Soft-retire a report: it leaves the default list but stays resolvable by id and
  * keeps its body. Idempotent — re-retiring preserves the original `retired_at` so

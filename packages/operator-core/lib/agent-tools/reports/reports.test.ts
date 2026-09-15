@@ -1,0 +1,352 @@
+/**
+ * reports.test.ts — the `reports:*` verbs (plan reports-library-2026-09-15, P-003).
+ *
+ * These are the TOOL-LAYER unit tests: validation and the visibility wiring. The
+ * store's own behaviour (real lineage, a real 512KB refusal, the actual SQL matrix)
+ * is covered against a migration-applied Postgres in
+ * `report-library.integration.test.ts` — so the store is mocked here and these
+ * tests pin the decisions the TOOL layer makes, not the store's.
+ *
+ * Two of these are security invariants rather than behaviour checks:
+ *
+ *   1. ORIGIN IS UNFORGEABLE (R-2). `publishReport`'s 3rd argument must come from
+ *      ctx and nothing else. A caller that could set its own author id could forge
+ *      the one axis a reader uses to decide how much to trust a report.
+ *   2. EVERY READ PATH PASSES A VIEWER (R-7). The store's `visibleTo` gate is
+ *      OPT-IN: `getReport`/`listReports`/`searchReports` all fall back to `TRUE`
+ *      when `viewer` is undefined. So a verb that simply FORGETS to pass one does
+ *      not fail — it silently returns every report in the workspace. That failure
+ *      is invisible in a mocked-store test unless asserted directly, and invisible
+ *      in an integration test whose fixture happens to use a viewer who can see
+ *      everything anyway. Hence an explicit per-verb assertion.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ReportBodyTooLargeError, REPORT_BODY_MAX_BYTES } from '../../report-library';
+
+// ── Mocks ────────────────────────────────────────────────────────────────────
+const {
+  publishReportM,
+  getReportM,
+  listReportsM,
+  searchReportsM,
+  retireReportM,
+  listReportLineageM,
+  emitAwaitedEventM,
+  notifySyncInvalidateM,
+} = vi.hoisted(() => ({
+  publishReportM: vi.fn(),
+  getReportM: vi.fn(),
+  listReportsM: vi.fn(),
+  searchReportsM: vi.fn(),
+  retireReportM: vi.fn(),
+  listReportLineageM: vi.fn(),
+  emitAwaitedEventM: vi.fn(),
+  notifySyncInvalidateM: vi.fn(),
+}));
+
+// Partial mock: the real enums + the real error CLASS are kept, because the tool
+// layer DERIVES its zod schemas from those constants and maps that error by
+// instanceof — stubbing them would make the tests pass against a fiction.
+vi.mock('../../report-library', async (importActual) => {
+  const actual = await importActual<typeof import('../../report-library')>();
+  return {
+    ...actual,
+    publishReport: publishReportM,
+    getReport: getReportM,
+    listReports: listReportsM,
+    searchReports: searchReportsM,
+    retireReport: retireReportM,
+    listReportLineage: listReportLineageM,
+  };
+});
+// PARTIAL: other modules in this import graph pull further exports (e.g. `generated`)
+// off db-org, so replacing the whole module breaks collection rather than the test.
+vi.mock('@papercusp/db-org', async (importActual) => ({
+  ...(await importActual<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: {} }),
+}));
+vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: emitAwaitedEventM }));
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: notifySyncInvalidateM }));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-fallback' }));
+vi.mock('../../detached-imports', () => ({ trackDetached: (p: unknown) => p }));
+
+const publishTool = (await import('./publish')).default;
+const getTool = (await import('./get')).default;
+const listTool = (await import('./list')).default;
+const searchTool = (await import('./search')).default;
+const retireTool = (await import('./retire')).default;
+
+type Out = { data?: any; content?: Array<{ text: string }> };
+const body = (o: Out) => (o.data ?? JSON.parse(o.content![0].text));
+
+const CTX = {
+  workspaceId: 'ws1',
+  harnessSlug: 'papercusp',
+  ownerId: 'su-author',
+  runId: 'run-abc',
+  log: vi.fn(),
+};
+
+const record = (over: Record<string, unknown> = {}) => ({
+  workspaceId: 'ws1',
+  reportId: 'rpt_1',
+  title: 'Audit',
+  summary: '',
+  bodyMd: 'body',
+  kind: 'audit',
+  subject: { kind: 'none', ref: null, label: null },
+  origin: { harnessSlug: 'papercusp', authorOwnerId: 'su-author', authorSessionRef: 'run-abc' },
+  visibility: 'owner',
+  supersedesReportId: null,
+  lineageId: 'rpt_1',
+  source: 'agent',
+  tags: [],
+  publishedAt: '2026-09-15T00:00:00.000Z',
+  updatedAt: '2026-09-15T00:00:00.000Z',
+  retiredAt: null,
+  ...over,
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  publishReportM.mockResolvedValue(record());
+  getReportM.mockResolvedValue(record());
+  listReportsM.mockResolvedValue([record()]);
+  searchReportsM.mockResolvedValue([{ report: record(), rank: 0.42 }]);
+  retireReportM.mockResolvedValue(record({ retiredAt: '2026-09-15T01:00:00.000Z' }));
+  listReportLineageM.mockResolvedValue([record()]);
+  emitAwaitedEventM.mockResolvedValue(undefined);
+});
+
+// ── R-2: origin is stamped, never accepted ───────────────────────────────────
+describe('reports:publish — origin is server-stamped (R-2)', () => {
+  it('SPEC-P-003-origin-ctx-stamped: origin comes from ctx, as publishReport\'s separate 3rd argument', async () => {
+    await publishTool.handler({ title: 'A' } as never, CTX as never);
+    const [, input, origin] = publishReportM.mock.calls[0];
+    expect(origin).toEqual({
+      harnessSlug: 'papercusp',
+      authorOwnerId: 'su-author',
+      authorSessionRef: 'run-abc',
+    });
+    // The payload the caller controls carries no author axis at all.
+    expect(input).not.toHaveProperty('origin');
+    expect(input).not.toHaveProperty('authorOwnerId');
+  });
+
+  it('the args schema REFUSES caller-supplied provenance rather than silently dropping it', () => {
+    const schema = publishTool.args as { safeParse: (v: unknown) => { success: boolean } };
+    expect(schema.safeParse({ title: 'A' }).success).toBe(true);
+    for (const forged of ['origin', 'author_owner_id', 'authorOwnerId', 'origin_harness_slug']) {
+      expect(schema.safeParse({ title: 'A', [forged]: 'su-someone-else' }).success).toBe(false);
+    }
+  });
+
+  it('a caller cannot reach origin even by naming the store\'s own field spelling', async () => {
+    await publishTool.handler(
+      { title: 'A', authorOwnerId: 'su-forged', harnessSlug: 'other-pot' } as never,
+      CTX as never,
+    );
+    const [, , origin] = publishReportM.mock.calls[0];
+    expect(origin.authorOwnerId).toBe('su-author');
+    expect(origin.harnessSlug).toBe('papercusp');
+  });
+});
+
+// ── R-1: validation + the body cap ───────────────────────────────────────────
+describe('reports:publish — validation (R-1)', () => {
+  it('SPEC-P-003-body-cap-refusal-carries-overage: an over-cap body is refused WITH its overage', async () => {
+    const bytes = REPORT_BODY_MAX_BYTES + 1234;
+    publishReportM.mockRejectedValue(new ReportBodyTooLargeError(bytes));
+    const out: any = await publishTool.handler({ title: 'A', body_md: 'x' } as never, CTX as never);
+    expect(out).toMatchObject({
+      ok: false,
+      error: 'body_too_large',
+      bytes,
+      limitBytes: REPORT_BODY_MAX_BYTES,
+      overageBytes: 1234,
+    });
+  });
+
+  it('maps the store\'s named errors to distinct, actionable refusal codes', async () => {
+    const cases: Array<[string, string]> = [
+      ['cannot supersede "rpt_x": no such report in workspace ws1', 'supersedes_not_found'],
+      ['report subject.ref is required when subject.kind is "plan"', 'subject_ref_required'],
+      ['invalid report kind "bogus"; expected one of audit', 'invalid_field'],
+      ['report title is required', 'invalid_field'],
+    ];
+    for (const [message, error] of cases) {
+      publishReportM.mockRejectedValue(new Error(message));
+      const out: any = await publishTool.handler({ title: 'A' } as never, CTX as never);
+      expect(out).toMatchObject({ ok: false, error });
+    }
+  });
+
+  it('rejects an out-of-vocabulary kind / visibility / subject.kind at the schema', () => {
+    const schema = publishTool.args as { safeParse: (v: unknown) => { success: boolean } };
+    expect(schema.safeParse({ title: 'A', kind: 'bogus' }).success).toBe(false);
+    expect(schema.safeParse({ title: 'A', visibility: 'everyone' }).success).toBe(false);
+    expect(schema.safeParse({ title: 'A', subject: { kind: 'nonsense' } }).success).toBe(false);
+    expect(schema.safeParse({ title: 'A', kind: 'postmortem', visibility: 'pot' }).success).toBe(true);
+  });
+
+  it('returns a stable id AND its UI path (R-1)', async () => {
+    const out: any = await publishTool.handler({ title: 'A' } as never, CTX as never);
+    expect(out).toMatchObject({ ok: true, report_id: 'rpt_1', path: '/reports/rpt_1', lineage_id: 'rpt_1' });
+  });
+});
+
+// ── The published row must survive a failing side effect ─────────────────────
+describe('reports:publish — side effects are reported, never fatal', () => {
+  it('emits report:published:<id> carrying the id, lineage and path', async () => {
+    await publishTool.handler({ title: 'A' } as never, CTX as never);
+    expect(emitAwaitedEventM).toHaveBeenCalledTimes(1);
+    const [opts] = emitAwaitedEventM.mock.calls[0];
+    expect(opts.key).toBe('report:published:rpt_1');
+    expect(opts.payload).toMatchObject({ report_id: 'rpt_1', lineage_id: 'rpt_1', path: '/reports/rpt_1' });
+  });
+
+  it('a failing emit still reports the publish as ok, flagged event_emitted:false', async () => {
+    // The row is already committed: failing the call here would tell the caller the
+    // publish failed when it did not, and the retry would duplicate the report.
+    emitAwaitedEventM.mockRejectedValue(new Error('bus down'));
+    const out: any = await publishTool.handler({ title: 'A' } as never, CTX as never);
+    expect(out.ok).toBe(true);
+    expect(out.report_id).toBe('rpt_1');
+    expect(out.event_emitted).toBe(false);
+  });
+
+  it('invalidates the Reports sync query after a successful publish', async () => {
+    await publishTool.handler({ title: 'A' } as never, CTX as never);
+    // The invalidation is detached behind a dynamic import, so it settles over
+    // several microtask ticks — a single `await Promise.resolve()` lands before it
+    // and would read as "never invalidated".
+    await vi.waitFor(() => expect(notifySyncInvalidateM).toHaveBeenCalledWith('reports.library', {}));
+  });
+
+  it('does NOT emit or invalidate when the publish was refused', async () => {
+    publishReportM.mockRejectedValue(new ReportBodyTooLargeError(REPORT_BODY_MAX_BYTES + 1));
+    await publishTool.handler({ title: 'A' } as never, CTX as never);
+    expect(emitAwaitedEventM).not.toHaveBeenCalled();
+    expect(notifySyncInvalidateM).not.toHaveBeenCalled();
+  });
+});
+
+// ── R-7: the visibility gate is wired on EVERY read path ─────────────────────
+describe('visibility matrix (R-7) — every read passes a viewer', () => {
+  const expectedViewer = { isOwner: false, ownerId: 'su-author', potSlug: 'papercusp' };
+
+  it('SPEC-P-003-read-visibility-enforced: get / list / search all hand the store a viewer', async () => {
+    await getTool.handler({ id: 'rpt_1' } as never, CTX as never);
+    expect(getReportM.mock.calls[0][3]).toEqual(expectedViewer);
+
+    await listTool.handler({} as never, CTX as never);
+    expect(listReportsM.mock.calls[0][1].viewer).toEqual(expectedViewer);
+
+    await searchTool.handler({ query: 'gate' } as never, CTX as never);
+    expect(searchReportsM.mock.calls[0][1].viewer).toEqual(expectedViewer);
+  });
+
+  it('never claims owner authority for an agent session — `owner` visibility would mean nothing', async () => {
+    await listTool.handler({} as never, { ...CTX, isSuperuser: true, isPowerUser: true } as never);
+    expect(listReportsM.mock.calls[0][1].viewer.isOwner).toBe(false);
+  });
+
+  it('a viewer with no identity still gets a viewer object, not an omitted gate', async () => {
+    // The store treats an ABSENT viewer as `TRUE` (see everything). An anonymous
+    // caller must therefore still produce a viewer — one that sees `workspace` only.
+    await listTool.handler({} as never, { workspaceId: 'ws1', log: vi.fn() } as never);
+    const passed = listReportsM.mock.calls[0][1].viewer;
+    expect(passed).toBeDefined();
+    expect(passed).toEqual({ isOwner: false, ownerId: null, potSlug: null });
+  });
+
+  it('the lineage read is gated too — history cannot be a way around the matrix', async () => {
+    await getTool.handler({ id: 'rpt_1', lineage: true } as never, CTX as never);
+    expect(listReportLineageM.mock.calls[0][3]).toEqual(expectedViewer);
+  });
+
+  it('an invisible report reads as not_found, never as forbidden', async () => {
+    getReportM.mockResolvedValue(null);
+    const out = body(await getTool.handler({ id: 'rpt_secret' } as never, CTX as never) as Out);
+    expect(out.results[0]).toMatchObject({ ok: false, id: 'rpt_secret', error: 'not_found' });
+  });
+});
+
+// ── Retire: soft, author-only, existence-preserving ──────────────────────────
+describe('reports:retire — write authority is narrower than the read matrix', () => {
+  it('retires a report the caller authored', async () => {
+    const out = body(await retireTool.handler({ id: 'rpt_1' } as never, CTX as never) as Out);
+    expect(out.results[0]).toMatchObject({ ok: true, id: 'rpt_1' });
+    expect(retireReportM).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses not_author for a VISIBLE report the caller did not write — and does not retire it', async () => {
+    getReportM.mockResolvedValue(record({ origin: { harnessSlug: 'papercusp', authorOwnerId: 'su-someone-else', authorSessionRef: null } }));
+    const out = body(await retireTool.handler({ id: 'rpt_1' } as never, CTX as never) as Out);
+    expect(out.results[0]).toMatchObject({ ok: false, id: 'rpt_1', error: 'not_author' });
+    expect(retireReportM).not.toHaveBeenCalled();
+  });
+
+  it('an invisible report is not_found — retire cannot be used to probe which ids exist', async () => {
+    getReportM.mockResolvedValue(null);
+    const out = body(await retireTool.handler({ id: 'rpt_hidden' } as never, CTX as never) as Out);
+    expect(out.results[0]).toMatchObject({ ok: false, error: 'not_found' });
+    expect(retireReportM).not.toHaveBeenCalled();
+  });
+
+  it('one refusal never fails the rest of the batch', async () => {
+    getReportM
+      .mockResolvedValueOnce(record({ reportId: 'rpt_1' }))
+      .mockResolvedValueOnce(null);
+    const out = body(await retireTool.handler({ ids: ['rpt_1', 'rpt_gone'] } as never, CTX as never) as Out);
+    expect(out.counts).toMatchObject({ ok: 1, failed: 1 });
+  });
+});
+
+// ── List / search projections ────────────────────────────────────────────────
+describe('reports:list / reports:search — projections', () => {
+  it('omits the body from list rows but reports its size', async () => {
+    const out: any = await listTool.handler({} as never, CTX as never);
+    expect(out.reports[0]).not.toHaveProperty('bodyMd');
+    expect(out.reports[0]).not.toHaveProperty('body_md');
+    expect(out.reports[0]).toMatchObject({ report_id: 'rpt_1', path: '/reports/rpt_1', body_bytes: 4 });
+  });
+
+  it('every verb names the id identically — publish and list cannot disagree', async () => {
+    // The defect this pins: spreading the camelCase domain record into a response
+    // made publish answer `report_id` and list answer `reportId` for one field.
+    const published: any = await publishTool.handler({ title: 'A' } as never, CTX as never);
+    const listed: any = await listTool.handler({} as never, CTX as never);
+    const got = body(await getTool.handler({ id: 'rpt_1' } as never, CTX as never) as Out);
+    for (const row of [published, listed.reports[0], got.results[0].report]) {
+      expect(row.report_id).toBe('rpt_1');
+      expect(row).not.toHaveProperty('reportId');
+    }
+  });
+
+  it('search returns the rank so a strong match is distinguishable from a passing mention', async () => {
+    const out: any = await searchTool.handler({ query: 'gate' } as never, CTX as never);
+    expect(out).toMatchObject({ ok: true, count: 1, query: 'gate' });
+    expect(out.hits[0]).toMatchObject({ rank: 0.42, report_id: 'rpt_1' });
+    expect(out.hits[0]).not.toHaveProperty('bodyMd');
+  });
+
+  it('passes the three independent axes through as independent filters (R-2)', async () => {
+    await listTool.handler(
+      { kind: 'postmortem', subject: { kind: 'plan', ref: 'p1' }, origin_harness_slug: 'other', tags: ['t'] } as never,
+      CTX as never,
+    );
+    expect(listReportsM.mock.calls[0][1]).toMatchObject({
+      kind: 'postmortem',
+      subject: { kind: 'plan', ref: 'p1' },
+      originHarnessSlug: 'other',
+      tags: ['t'],
+    });
+  });
+
+  it('rejects a search query too short to be meaningful', () => {
+    const schema = searchTool.args as { safeParse: (v: unknown) => { success: boolean } };
+    expect(schema.safeParse({ query: 'a' }).success).toBe(false);
+    expect(schema.safeParse({ query: 'green gate' }).success).toBe(true);
+  });
+});

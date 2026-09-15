@@ -1695,6 +1695,16 @@ import './lexicon/active_pack';
 import './storage/usage';
 import './storage/prune';
 
+// reports-library-2026-09-15 (P-003) — the owner-facing Reports library verbs:
+// publish / get / list / search / retire. Origin is stamped from ctx inside
+// publish (never caller-supplied) and every read composes the store's single
+// `visibleTo` gate; see agent-tools/reports/_shared.ts.
+import './reports/publish';
+import './reports/get';
+import './reports/list';
+import './reports/search';
+import './reports/retire';
+
 // autoloop-pot-operator-rebuild-2026-06-05 P0 — re-project the Pot's persisted
 // event-wake subscriptions (harness_shared.pot_wake) into live reaction rules.
 // The registry is in-memory, so this runs on every host boot. Loaded after
