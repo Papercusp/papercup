@@ -963,7 +963,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(notesRoutes as AnyRoute[]),
   ...flatten(userMemory as AnyRoute[]),
   ...flatten(userMemoryFeedback as AnyRoute),
-  ...flatten(userMemoryReembed as AnyRoute),
+  ...flatten(userMemoryReembed as AnyRoute[]),
   ...flatten(userKnowledgePackSettings as AnyRoute[]),
   ...flatten(userMemoryRelinkEntities as AnyRoute),
   ...flatten(userMemoryAudit as AnyRoute),

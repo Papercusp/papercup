@@ -2,6 +2,11 @@
 
 exports[`contrast lint > tracks every pair the lint could NOT statically verify — a new skip is a reviewed diff, not a silent gap 1`] = `
 [
+  "operator-vite/src/components/adv/adv-header-pills.css :: .pc-advshell__action--agents.is-running :: color:--good on background:--good-bg
+    black:background:unsupported-function(rgba(52, 211, 153, 0.1))
+    default:background:unsupported-function(rgba(52, 211, 153, 0.1))
+    frost:background:unsupported-function(rgba(52, 211, 153, 0.1))
+    honeycomb:background:unsupported-function(rgba(104, 211, 145, 0.11))",
   "operator-vite/src/components/adv/adv-header-pills.css :: .pc-advshell__action--start :: color:--good on background:--good-bg
     black:background:unsupported-function(rgba(52, 211, 153, 0.1))
     default:background:unsupported-function(rgba(52, 211, 153, 0.1))
