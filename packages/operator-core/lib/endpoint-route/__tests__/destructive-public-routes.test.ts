@@ -30,6 +30,11 @@ const promoteRestore = vi.fn();
 const rollbackPromote = vi.fn();
 vi.mock('../../backup', () => ({
   workspaceBackupFor: vi.fn(() => ({
+    // `restoreCloneWithDeadline` — the seam /backups/restore routes through since
+    // 18ee38757a8 — derives the clone target from the backend's `workspaceRoot`
+    // BEFORE it calls `restoreToClone`. A fake without it made `cloneSlug(undefined)`
+    // throw a TypeError into the handler's catch → 500 on the valid-input case.
+    workspaceRoot: '/ws',
     restoreToClone,
     restoreInPlace,
     promoteRestore,
@@ -102,7 +107,10 @@ const post = (b: unknown) => ({
 });
 
 beforeEach(() => {
-  restoreToClone.mockResolvedValue({ clonePath: '/clone' });
+  // Shape tracks the real collaborator (RestoreCloneBackend.restoreToClone →
+  // { targetPath }), which restoreCloneWithDeadline returns verbatim. `vi.fn()` is
+  // untyped, so a drifted fixture here is invisible to lint:tsc.
+  restoreToClone.mockResolvedValue({ targetPath: '/clone' });
   restoreInPlace.mockResolvedValue({ ok: true });
   promoteRestore.mockResolvedValue({ ok: true });
   rollbackPromote.mockResolvedValue({ ok: true });
