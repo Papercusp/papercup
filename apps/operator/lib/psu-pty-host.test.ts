@@ -3685,7 +3685,12 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
     sessionClass: 'gateway-claude-headless',
   };
 
-  function makeHarness({ promptResults = [{ deferred: false }], recycleError = null, waitIdle } = {}) {
+  function makeHarness({
+    promptResults = [{ deferred: false }],
+    recycleError = null,
+    waitIdle,
+    maxProductionAttempts,
+  } = {}) {
     const events = [];
     const recycles = [];
     const order = [];
@@ -3717,6 +3722,7 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
       },
       emitEvent: (kind, extra) => events.push({ kind, ...extra }),
       capMs: 1234,
+      ...(maxProductionAttempts === undefined ? {} : { maxProductionAttempts }),
     });
     const settle = async () => {
       // The scheduled retry is fire-and-forget; drain the microtask/timer queue.
@@ -4006,26 +4012,37 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
   // busy and rarely present the 1.5s idle window inside a single window, so the
   // respawn dropped before the session's next idle/recycle boundary and the
   // session ran to the hard context wall.)
-  it('WI-5623: a permanently-busy non-drill respawn RE-POLLS (never gives up after one) and drops only after exhausting the anti-spin cap', async () => {
-    // Always-deferred gate + isStale default-false ⇒ runs to the attempt cap.
-    const h = makeHarness({ promptResults: [{ deferred: true }] });
-    expect(h.controller.schedule(NON_DRILL_MSG)).toBe('queued');
-    await h.settle();
-    expect(h.recycles).toEqual([]);
-    // The fix: re-polled MANY windows, not once.
-    const promptCalls = h.order.filter((o) => o === 'prompt').length;
-    expect(promptCalls).toBeGreaterThan(1);
-    // Inject mutex RELEASED between every attempt (never held across the re-poll,
-    // or this session's coord/loop wakes would wedge for the whole wait).
-    expect(h.releaseCount()).toBe(promptCalls);
-    // Only after exhausting the cap does it drop, loud.
-    expect(h.events.at(-1)).toMatchObject({
-      kind: 'respawn-carry-dropped',
-      mode: 'carry-respawn',
-      reason: 'busy-gate-expired',
-      rearmed: true,
+  it('WI-5623: a permanently-busy non-drill respawn keeps re-polling without a production stale-drop', async () => {
+    // A gate that remains in-flight models a genuinely busy session without
+    // spinning the test event loop. The production controller must keep this
+    // request pending rather than applying an age/attempt terminal drop.
+    const events: RearmEvent[] = [];
+    const controller = makeCarryRearmController({
+      acquireInject: async () => () => {},
+      waitAtPrompt: () => new Promise(() => {}),
+      recycle: async () => {},
+      emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
     });
-    expect(h.controller.pendingCount()).toBe(0);
+    expect(controller.schedule(NON_DRILL_MSG)).toBe('queued');
+    await new Promise((r) => setImmediate(r));
+    expect(controller.pendingCount()).toBe(1);
+    expect(events.filter((e) => e.kind === 'respawn-carry-dropped')).toEqual([]);
+  });
+
+  it('production stale checks are ignored while drill stale checks remain terminal', async () => {
+    const h = makeHarness({ promptResults: [{ deferred: false }] });
+    const controller = makeCarryRearmController({
+      acquireInject: async () => () => {},
+      waitAtPrompt: async () => ({ deferred: false }),
+      recycle: async (data, opts) => h.recycles.push({ data, opts }),
+      emitEvent: (kind, extra) => h.events.push({ kind, ...extra }),
+      capMs: 1234,
+      isStale: () => true,
+    });
+    expect(controller.schedule(NON_DRILL_MSG)).toBe('queued');
+    await h.settle();
+    expect(h.recycles).toHaveLength(1);
+    expect(h.events.filter((e) => e.kind === 'respawn-carry-dropped')).toEqual([]);
   });
 
   it('WI-5623: a non-drill respawn deferred a few windows then IDLE delivers (re-poll catches the idle boundary); a drill in the same scenario stays one-shot and drops', async () => {
@@ -4085,7 +4102,7 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
   // re-arm's own wait — isStale is re-checked right before recycle(), not
   // only at schedule() time.
   describe('isStale re-check (EI-18109211232286833)', () => {
-    it('a retry found stale right before recycling drops terminally with reason carry-stale and never recycles', async () => {
+    it('a drill retry found stale right before recycling drops terminally with reason carry-stale and never recycles', async () => {
       const events = [];
       const recycles = [];
       const controller = makeCarryRearmController({
@@ -4096,12 +4113,12 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
         capMs: 1234,
         isStale: () => true,
       });
-      expect(controller.schedule(NON_DRILL_MSG)).toBe('queued');
+      expect(controller.schedule(DRILL_MSG)).toBe('queued');
       for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
       expect(recycles).toEqual([]);
       expect(events.at(-1)).toMatchObject({
-        kind: 'respawn-carry-dropped',
-        mode: 'carry-respawn',
+        kind: 'carry-drill-carry-dropped',
+        drillId: 'd-77',
         reason: 'carry-stale',
         rearmed: true,
       });
