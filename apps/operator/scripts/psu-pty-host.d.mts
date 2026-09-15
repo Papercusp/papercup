@@ -738,13 +738,14 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, }?: {
         started: boolean;
     }>;
 };
-export function makeCarryRearmController({ acquireInject, waitIdle, waitAtPrompt, recycle, emitEvent, capMs, isStale, }: {
+export function makeCarryRearmController({ acquireInject, waitIdle, waitAtPrompt, recycle, emitEvent, capMs, maxProductionAttempts, isStale, }: {
     acquireInject: any;
     waitIdle?: null | undefined;
     waitAtPrompt: any;
     recycle: any;
     emitEvent: any;
     capMs?: number | undefined;
+    maxProductionAttempts?: number | undefined;
     isStale?: (() => boolean) | undefined;
 }): {
     /** Live count of carry-respawns either awaiting their first delivery
