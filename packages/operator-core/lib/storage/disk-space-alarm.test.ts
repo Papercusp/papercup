@@ -75,6 +75,11 @@ describe('detectLowSpace', () => {
       freeInodesPctMin: 0,
       criticalFreePctMin: 0,
       criticalFreeBytesMin: 0,
+      // Not under test here: this case isolates freePctMin. Inherit the default cap
+      // rather than restating 64 GiB — and never omit it, since an absent cap falls
+      // back to POSITIVE_INFINITY, i.e. the unbounded proportional reserve this
+      // field exists to bound.
+      criticalFreeBytesCap: DEFAULT_DISK_POLICY.criticalFreeBytesCap,
     };
     expect(detectLowSpace([snap()], strict)[0].kinds).toEqual(['low-bytes']); // 50% < 60%
   });
@@ -143,6 +148,59 @@ describe('criticalWriteHeadroomBytes', () => {
   it('falls back to the absolute reserve when total bytes are not measurable', () => {
     expect(criticalWriteHeadroomBytes(Number.NaN)).toBe(DEFAULT_DISK_POLICY.criticalFreeBytesMin);
     expect(criticalWriteHeadroomBytes(0)).toBe(DEFAULT_DISK_POLICY.criticalFreeBytesMin);
+  });
+});
+
+// EI-23337577023503501 — the percentage-floor mis-specification that froze this
+// repo's green checkpoint at 32 consecutive reds.
+//
+// /tmp here is 7.45 TiB (an archive volume the checkpoint merely writes scratch
+// to). The uncapped rule was `freeBytes < 2 GiB || freePct < 2%`, so the
+// percentage leg demanded 149 GiB of a filesystem where 47.9 GiB sat free — 24x
+// the absolute floor, and far past any measured demand (826 paired runs: p50
+// 0.1 GiB, p90 3.6 GiB, max 57.7 GiB, against a -74.5 GiB minimum proving that
+// tail is shared-box noise). "Free /tmp" cannot fix a floor that scales with the
+// volume, so the floor is what had to change.
+const TIB = 1024 ** 4;
+const BIG_VOLUME = 7.45 * TIB;
+
+describe('write-headroom reserve is bounded on a large volume (EI-23337577023503501)', () => {
+  it('caps the percentage-derived reserve instead of scaling it with the volume', () => {
+    // Uncapped this would be 2% of 7.45 TiB ≈ 152.6 GiB.
+    expect(criticalWriteHeadroomBytes(BIG_VOLUME)).toBe(DEFAULT_DISK_POLICY.criticalFreeBytesCap);
+    expect(BIG_VOLUME * DEFAULT_DISK_POLICY.criticalFreePctMin).toBeGreaterThan(
+      DEFAULT_DISK_POLICY.criticalFreeBytesCap,
+    );
+  });
+
+  it('admits a large volume holding far more than any run has ever written', () => {
+    // 100 GiB free of 7.45 TiB is 1.3% — under the 2% floor, so the OLD rule
+    // refused it. It is ~28x the p90 run consumption.
+    expect(
+      detectCriticalWriteHeadroom([
+        snap({ totalBytes: BIG_VOLUME, freeBytes: 100 * GIB, freePct: (100 * GIB) / BIG_VOLUME }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('STILL refuses a large volume below the bounded reserve — the guard is capped, not removed', () => {
+    const breaches = detectCriticalWriteHeadroom([
+      snap({ totalBytes: BIG_VOLUME, freeBytes: 8 * GIB, freePct: (8 * GIB) / BIG_VOLUME }),
+    ]);
+    expect(breaches).toHaveLength(1);
+    expect(breaches[0].kinds).toContain('low-bytes');
+    expect(breaches[0].severity).toBe('critical');
+  });
+
+  it('leaves the ALARM tiers proportional — a nearly-full archive volume still nudges a human', () => {
+    // The alarm asks "is this filesystem nearly full?" (yes: 1.3%), which is the
+    // right question for a cleanup nudge and the wrong one for a writer. Only the
+    // write-headroom projection is bounded.
+    const b = detectLowSpace([
+      snap({ totalBytes: BIG_VOLUME, freeBytes: 100 * GIB, freePct: (100 * GIB) / BIG_VOLUME }),
+    ]);
+    expect(b).toHaveLength(1);
+    expect(b[0].kinds).toContain('low-bytes');
   });
 });
 
