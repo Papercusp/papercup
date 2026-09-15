@@ -171,11 +171,14 @@ export const OPERATOR_SURFACES: Record<
   // pane lays out list-beside-detail exactly as /plans does.
   plans: lazy(async () => {
     const mod = await import('../../../../apps/operator/app/_components/plans/PlansPane');
-    // The operator router mounts this globally; external surface hosts do not.
-    // Keep the URL-driven plan/work-item drill-ins with the pane that opens them.
-    const { default: PopupHost } = await import('../../../../apps/operator/app/_components/chat/ChatRefPopupHost');
+    // NO ChatRefPopupHost here (WI-10001509). It is a SINGLETON keyed on the
+    // global `wpop`/`wppop` params, and every host now mounts it once at its
+    // own root — the operator at its router root, the portal inside its
+    // OperatorHostProvider. Mounting it per-surface as well would render one
+    // param TWICE (a duplicate stacked popup), which is the exact failure
+    // WI-6601's singleton was introduced to prevent.
     const Pane = mod.default;
-    return { default: () => <><Pane layout="split" /><PopupHost /></> };
+    return { default: () => <Pane layout="split" /> };
   }),
   // /inbox — same split contract as /plans.
   inbox: lazy(async () => {

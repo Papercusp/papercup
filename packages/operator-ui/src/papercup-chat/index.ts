@@ -60,3 +60,9 @@ export { HydratedWorkRefPill, type HydratedWorkRefPillProps } from './HydratedWo
 export { WorkRefPill, type WorkRefPillProps, type WorkRefState } from './WorkRefPill';
 export { remarkWorkRefs, type WorkRefPillNode } from './remark-work-refs';
 export { parseWorkRefs, type WorkRefKind, type WorkRefMatch } from './parse-work-refs';
+export {
+  CHAT_WORK_ITEM_POPUP_PARAM,
+  CHAT_PLAN_POPUP_PARAM,
+  encodeScopedRef,
+  decodeScopedRef,
+} from './chat-ref-popup-params';

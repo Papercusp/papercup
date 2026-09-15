@@ -77,6 +77,16 @@
       "types": "./src/papercup-chat/message-timestamp.tsx",
       "import": "./src/papercup-chat/message-timestamp.tsx",
       "default": "./src/papercup-chat/message-timestamp.tsx"
+    },
+    "./papercup-chat/chat-ref-popup-params": {
+      "types": "./src/papercup-chat/chat-ref-popup-params.ts",
+      "import": "./src/papercup-chat/chat-ref-popup-params.ts",
+      "default": "./src/papercup-chat/chat-ref-popup-params.ts"
+    },
+    "./chat-ref-popup-host": {
+      "types": "./src/chat-ref-popup-host.tsx",
+      "import": "./src/chat-ref-popup-host.tsx",
+      "default": "./src/chat-ref-popup-host.tsx"
     }
   },
   "scripts": {

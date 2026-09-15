@@ -122,7 +122,17 @@ function PopupSkeleton({ width, height }: { width: string; height: string }) {
   );
 }
 
-export default function ChatRefPopupHost() {
+export default function ChatRefPopupHost({
+  fallbackHarnessSlug,
+}: {
+  /**
+   * The MOUNTING HOST's own harness, for a host that knows it out of band
+   * (WI-10001509 — the portal is served one harness by its server and has no
+   * `?slug` to resolve). Used only when a ref did not carry a harness of its
+   * own; see the precedence note below.
+   */
+  fallbackHarnessSlug?: string | null;
+} = {}) {
   const [openWorkItem, setOpenWorkItem] = useQueryState(
     CHAT_WORK_ITEM_POPUP_PARAM,
     parseAsString,
@@ -133,13 +143,23 @@ export default function ChatRefPopupHost() {
   // its own harness is the stricter source and wins — it is right even on a
   // cross-harness mount, where `?slug` is absent entirely. Same precedence
   // HudView applies to its own `hudwi`/`hudplanpop`.
+  //
+  // UNCONDITIONAL on purpose even when the host passed `fallbackHarnessSlug`:
+  // it is a hook, so gating the call on a prop would break the rules of hooks.
+  // It reads nuqs + localStorage only, which is why it is safe on a non-operator
+  // host (the portal already runs it today through the /plans surface).
   const resolvedHarness = useResolvedHarnessSlug();
+  // Precedence: the ref's own harness ?? the mounting host's ?? whatever this
+  // surface resolves. The host's value outranks the resolved one because a host
+  // that was TOLD its harness knows better than a URL/storage guess; the ref
+  // still outranks both.
+  const hostHarness = fallbackHarnessSlug ?? resolvedHarness;
 
   const workItem = useMemo(() => decodeScopedRef(openWorkItem), [openWorkItem]);
   const plan = useMemo(() => decodeScopedRef(openPlan), [openPlan]);
 
-  const workItemHarness = workItem.harness ?? resolvedHarness;
-  const planHarness = plan.harness ?? resolvedHarness;
+  const workItemHarness = workItem.harness ?? hostHarness;
+  const planHarness = plan.harness ?? hostHarness;
 
   return (
     <>
