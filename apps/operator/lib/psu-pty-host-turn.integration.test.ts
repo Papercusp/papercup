@@ -538,6 +538,25 @@ function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number
   );
 }
 
+/** A RAW-mode child that announces 'READY', then emits 'SUBMIT:<buffer>' on each
+ *  CR. Raw mode is the load-bearing part for a keystroke test: the pty's
+ *  canonical line discipline would otherwise ECHO every typed byte back onto
+ *  stdout, which reads as agent output and makes the host's busy gate defer the
+ *  inject forever (observed as `busy-gate-expired`) — so the submit-verify
+ *  window under test is never even reached. Self-exits after ttlMs; '\x04' quits. */
+function rawSubmitChildCode(ttlMs: number): string {
+  return (
+    "try{process.stdin.setRawMode&&process.stdin.setRawMode(true);}catch(e){}" +
+    "process.stdin.setEncoding('utf8');process.stdin.resume();let b='';" +
+    "process.stdout.write('READY\\n');" +
+    "process.stdin.on('data',s=>{for(const c of s){" +
+    "if(c==='\\u0004'){process.exit(0);}" +
+    "else if(c==='\\r'||c==='\\n'){if(b){process.stdout.write('SUBMIT:'+b+'\\n');b='';}}" +
+    "else b+=c;}});" +
+    `setTimeout(()=>process.exit(0),${ttlMs});`
+  );
+}
+
 describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)', () => {
   it.each(['settled', 'active'] as const)(
     'Codex idle repaint with a %s native turn uses only a verified completion boundary',
@@ -1872,7 +1891,19 @@ describe('psu-pty-host turn SUBMITS because the CR is a SEPARATE keystroke (past
  * 0.6% of fleet-wide carry drops but was 100% of the drops on the session the
  * OWNER was typing into — the interactive case, where the owner's own keystroke
  * is what destroyed the delivery. Asserted as the observable contract (retry
- * recorded + carry delivered), not as the shape of the loop.
+ * recorded + the prompt still submitted), not as the shape of the loop.
+ *
+ * Exercised through the LAUNCH KICKOFF seam rather than carry-respawn ON
+ * PURPOSE. Both call the same `injectTurnAtPrompt` — the function this fix
+ * lives in — but a production carry-respawn additionally demands a native
+ * transcript proof afterwards (`verifyNativeTurnStartWithRetry` needs a leading
+ * turn-origin marker AND, for claude, a nativeId per
+ * `carryTurnProofRequiresNativeId`). A hermetic fixture cannot satisfy that
+ * against the real homedir, so it drops with `turn-start-unverified` BEFORE
+ * this path's contract is observable — measured here, not assumed. The drill
+ * seam skips that proof, but mirrors every row into the BOX-WIDE
+ * ~/.papercusp/psu-pty/carry-drills.events.jsonl (PSU_PTY_DIR is a module
+ * constant, not env-overridable), which a test must never write into.
  *
  * Claude-path ON PURPOSE: under `PAPERCUSP_AGENT=codex` the earlier
  * `freshChildWasInterrupted()` guard drops with `fresh-child-owner-input`
@@ -1881,73 +1912,68 @@ describe('psu-pty-host turn SUBMITS because the CR is a SEPARATE keystroke (past
  */
 describe('owner keystrokes during submit verification (WI-10001508)', () => {
   it(
-    'retries the carry once the keyboard settles instead of dropping it',
+    'retries the prompt once the keyboard settles instead of dropping it',
     async () => {
       const root = mkdtempSync(join(tmpdir(), 'psu-human-input-retry-'));
       const ownerId = uniqueOwner('HUMAN-INPUT-RETRY');
       const { captured, io, type } = bridgedIo();
       const done = hostThroughPty({
         command: execPath,
-        args: ['-e', "process.stdout.write('OLD-READY\\n');setTimeout(()=>process.exit(0),12000);"],
+        args: ['-e', rawSubmitChildCode(12_000)],
+        kickoff: 'KICKOFF-CARRY',
         cwd: root,
         env: hermeticEnv({
           PAPERCUSP_AGENT: 'claude',
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_IDLE_MS: '20',
-          PAPERCUSP_PSU_PTY_IDLE_CAP_MS: '300',
+          PAPERCUSP_PSU_PTY_IDLE_CAP_MS: '200',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '60',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '250',
-          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '8000',
-          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '10',
-          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
-          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '150',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '30',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '150',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '4',
         }),
         ownerId,
         io,
         bridgeTty: true,
-        mintCarryRespawnArgs: () => ({ args: ['-e', echoChildCode(12000)], nativeId: null }),
         onExit: () => {},
       });
-      // The verify poll window is only tens of milliseconds, so a single
-      // keystroke would race it and fail in the direction that LOOKS like a
-      // pass. Type CONTINUOUSLY across the whole respawn so the overlap is
-      // guaranteed, then stop — the retry can only land after quiet.
+      // The verify window is bounded (POLL_MS x POLLS), so a single keystroke
+      // would race it and fail in the direction that LOOKS like a pass. Type
+      // CONTINUOUSLY across the whole window so the overlap is guaranteed, then
+      // stop — the retry can only land once the keyboard is quiet again.
       let typing: ReturnType<typeof setInterval> | undefined;
       try {
-        const booted = await waitForOutput(captured, 'OLD-READY', 6000);
+        const booted = await waitForOutput(captured, 'READY', 6000);
         expect(booted, `captured=${JSON.stringify(captured().slice(0, 600))}`).toBe(true);
         typing = setInterval(() => type('x'), 10);
-        await injectIntoHost(socketPathFor(ownerId), {
-          mode: 'carry-respawn',
-          data: 'CARRIED',
-          systemPromptAddendum: 'saved task',
-          ownerId,
-        });
-        await sleep(700);
+        await sleep(900);
         clearInterval(typing);
         typing = undefined;
 
         let rows: Record<string, unknown>[] = [];
-        let terminal: Record<string, unknown> | undefined;
+        let retried = false;
         const deadline = Date.now() + 9000;
-        while (!terminal && Date.now() < deadline) {
+        while (!retried && Date.now() < deadline) {
           if (existsSync(eventLogPathForOwner(ownerId))) {
             rows = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
               .trim()
               .split('\n')
               .filter(Boolean)
               .map((line) => JSON.parse(line));
-            terminal = rows.find((row) =>
-              ['respawn-carry-delivered', 'respawn-carry-dropped'].includes(row.kind as string),
-            );
+            retried = rows.some((row) => row.kind === 'submit-verify-human-input-retry');
           }
-          if (!terminal) await sleep(25);
+          if (!retried) await sleep(25);
         }
-        expect(rows.some((row) => row.kind === 'submit-verify-human-input-retry')).toBe(true);
-        expect(terminal).toBeDefined();
-        expect(terminal?.reason).not.toBe('submit-verification-aborted-human-input');
-        expect(terminal?.kind).toBe('respawn-carry-delivered');
+        // The fix's own observable: the abort was treated as TRANSIENT.
+        expect(retried, `kinds=${JSON.stringify(rows.map((row) => row.kind))}`).toBe(true);
+        // ...and the prompt still landed — a retry that never delivers is the
+        // same strand wearing a different reason.
+        const submitted = await waitForOutput(captured, 'SUBMIT:', 6000);
+        expect(submitted, `captured=${JSON.stringify(captured().slice(-600))}`).toBe(true);
+        expect(captured()).toContain('KICKOFF-CARRY');
       } finally {
         if (typing) clearInterval(typing);
         await injectIntoHost(socketPathFor(ownerId), {
