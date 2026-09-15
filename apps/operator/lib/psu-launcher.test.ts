@@ -188,6 +188,7 @@ import {
   puiWorkbenchCommand,
   launchPuiWorkbench,
   NO_PLAN,
+  NATIVE_DEADWEIGHT_DENY_FLAG,
   NATIVE_SCHEDULER_DENY_FLAG,
   NATIVE_TOOL_SEARCH_DENY_FLAG,
   NO_SUBAGENTS_DENY_FLAG,
@@ -3317,6 +3318,7 @@ describe("psu-launcher arg parsing", () => {
         NO_SUBAGENTS_DENY_FLAG,
         NATIVE_TOOL_SEARCH_DENY_FLAG,
         OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+        NATIVE_DEADWEIGHT_DENY_FLAG,
       ],
     });
     // omp: thread target (or -c) + yolo; -e only when a coordExtPath is supplied.
@@ -3451,6 +3453,7 @@ describe("psu-launcher arg parsing", () => {
       NO_SUBAGENTS_DENY_FLAG,
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      NATIVE_DEADWEIGHT_DENY_FLAG,
     ]);
     expect(resumeArgsFor(
       { agent: "codex", sessionId: "uuid-2" },
@@ -3486,6 +3489,7 @@ describe("psu-launcher arg parsing", () => {
       NO_SUBAGENTS_DENY_FLAG,
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      NATIVE_DEADWEIGHT_DENY_FLAG,
       "--fork-session",
     ]);
     // Fork also composes with the most-recent (--continue) resume.
@@ -3497,6 +3501,7 @@ describe("psu-launcher arg parsing", () => {
       NO_SUBAGENTS_DENY_FLAG,
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      NATIVE_DEADWEIGHT_DENY_FLAG,
       "--fork-session",
     ]);
   });
@@ -3568,6 +3573,7 @@ describe("psu-launcher arg parsing", () => {
       NO_SUBAGENTS_DENY_FLAG,
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      NATIVE_DEADWEIGHT_DENY_FLAG,
       "--fork-session",
       "--session-id",
       "forked",
@@ -3587,6 +3593,7 @@ describe("psu-launcher arg parsing", () => {
       NO_SUBAGENTS_DENY_FLAG,
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      NATIVE_DEADWEIGHT_DENY_FLAG,
     ]);
   });
 
@@ -3615,6 +3622,7 @@ describe("psu-launcher arg parsing", () => {
       NO_SUBAGENTS_DENY_FLAG,
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      NATIVE_DEADWEIGHT_DENY_FLAG,
       "--add-dir=/d",
     ]);
     // claude fork: --add-dir comes after the fork flags.
@@ -3632,6 +3640,7 @@ describe("psu-launcher arg parsing", () => {
       NO_SUBAGENTS_DENY_FLAG,
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      NATIVE_DEADWEIGHT_DENY_FLAG,
       "--fork-session",
       "--session-id",
       "f",
@@ -5716,6 +5725,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
       NATIVE_SCHEDULER_DENY_FLAG,
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      NATIVE_DEADWEIGHT_DENY_FLAG,
       NO_SUBAGENTS_DENY_FLAG,
     ]);
   });
@@ -5731,6 +5741,33 @@ describe("roleLaunchArgs (interactive role session)", () => {
       true,
     );
     expect(/\s/.test(NATIVE_SCHEDULER_DENY_FLAG)).toBe(false);
+  });
+
+  it("the dead-weight lockout is one `=` token of BARE NATIVE names (context-baseline repair 2026-09-15)", () => {
+    // Same greed-guard as the flags above: the variadic space form eats following argv.
+    expect(NATIVE_DEADWEIGHT_DENY_FLAG.startsWith("--disallowedTools=")).toBe(
+      true,
+    );
+    expect(/\s/.test(NATIVE_DEADWEIGHT_DENY_FLAG)).toBe(false);
+    const names = NATIVE_DEADWEIGHT_DENY_FLAG.slice(
+      "--disallowedTools=".length,
+    ).split(",");
+    expect(names.length).toBeGreaterThan(0);
+    // MEASURED 2026-09-15 on a captured /v1/messages body, both directions:
+    // denying a NATIVE name strips its schema from the wire (Artifact 871,924 ->
+    // 822,141 B, zero occurrences left), while an `mcp__*` name in the SAME token
+    // left mcp__claude-in-chrome__navigate's schema in the body verbatim. So an
+    // mcp__ entry here buys nothing — drop the SERVER instead. Guard the rule.
+    for (const n of names) {
+      expect(n.startsWith("mcp__")).toBe(false);
+      // Bare names only: a parenthesized specifier belongs in its own token.
+      expect(n).not.toContain("(");
+    }
+    // D-003 keeps claude's schedulers for the human `psu su` session — they are
+    // the owner's own `/schedule` surface and must never be swept in here.
+    for (const reserved of ["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"]) {
+      expect(names).not.toContain(reserved);
+    }
   });
 
   it("the owner-desktop notify-send lockout stays in LOCKSTEP with the canonical TS module (owner directive 2026-07-14)", () => {
@@ -5997,6 +6034,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
       NATIVE_SCHEDULER_DENY_FLAG,
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      NATIVE_DEADWEIGHT_DENY_FLAG,
       NO_SUBAGENTS_DENY_FLAG,
     ]);
     expect(args).not.toContain("--append-system-prompt-file");
@@ -6152,6 +6190,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       NO_SUBAGENTS_DENY_FLAG,
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      NATIVE_DEADWEIGHT_DENY_FLAG,
     ]);
   });
 
@@ -6191,6 +6230,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       NO_SUBAGENTS_DENY_FLAG,
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      NATIVE_DEADWEIGHT_DENY_FLAG,
     ]);
     expect(args).not.toContain("--append-system-prompt-file");
   });
@@ -6234,6 +6274,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       NO_SUBAGENTS_DENY_FLAG,
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      NATIVE_DEADWEIGHT_DENY_FLAG,
     ]);
   });
 });
@@ -9702,6 +9743,7 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
       NO_SUBAGENTS_DENY_FLAG,
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      NATIVE_DEADWEIGHT_DENY_FLAG,
       "--model",
       "fable",
       "--effort",

@@ -3685,6 +3685,47 @@ export const NO_SUBAGENTS_DENY_FLAG: "--disallowedTools=Task,Agent,Workflow";
  */
 export const NATIVE_TOOL_SEARCH_DENY_FLAG: "--disallowedTools=ToolSearch";
 /**
+ * Dead-weight NATIVE-tool lockout (context-baseline repair 2026-09-15).
+ *
+ * With ToolSearch denied there is no schema deferral, so every advertised tool
+ * ships its FULL schema in the prompt on every turn. MEASURED on a captured
+ * /v1/messages body from a clean `psu` launch: 119 tools, 547,041 B — 62.7% of
+ * an 871,924 B first turn. PAPERCUSP_TOOLS (contextTrimmingEnv) trims only the
+ * papercusp-su MCP server, so claude's OWN natives are outside its reach
+ * entirely — and `Artifact` alone is 50,101 B, the single largest item in the
+ * whole prompt (25,248 B of that is its description).
+ *
+ * Every name here is a native surface this repo never uses or outright forbids:
+ *   Artifact, DesignSync   claude.ai publishing / design-system sync; this repo
+ *                          designs via design-phase:* and ships a Tauri app.
+ *   SendFeedback           papercusp files through improvements:capture.
+ *   RemoteTrigger          claude.ai cloud routines; papercusp has routines:*.
+ *   EnterWorktree,         the repo guide bans them outright ("work on `staging`
+ *   ExitWorktree           directly — no `git worktree`, no feature branches").
+ * Measured saving ~75,000 B (~20k tokens) off EVERY turn of every psu session.
+ *
+ * VERIFIED that a deny strips the schema from the WIRE, not merely blocks the
+ * call: denying `Artifact` moved a captured body 871,924 -> 822,141 B (-49,783)
+ * with zero `"name":"Artifact"` occurrences remaining.
+ *
+ * ⚠ NATIVE-ONLY — same caveat as NATIVE_TOOL_SEARCH_DENY_FLAG, but here it is
+ * MEASURED rather than inferred: in that same capture
+ * `mcp__claude-in-chrome__navigate` was denied by the identical token and its
+ * schema stayed in the body verbatim. An `mcp__*` entry buys NOTHING here; to
+ * drop an MCP server's schemas you must stop LOADING the server.
+ *
+ * ⚠ Deliberately NOT in this list: the Cron tools and `ScheduleWakeup` (D-003 keeps claude's
+ * schedulers for the human `psu su` session — `/schedule` there is the owner's
+ * own surface, which is also why NATIVE_SCHEDULER_DENY_FLAG is absent from the
+ * su branch below), `EndConversation` (a safety affordance, not dead weight),
+ * and `Monitor` (genuinely used for log/event watching).
+ *
+ * MUST stay one `=` token — same greed-guard reason as the flags above; the
+ * flag is variadic and the space form eats every following argv element.
+ * Exported for tests.
+ */
+export const NATIVE_DEADWEIGHT_DENY_FLAG: "--disallowedTools=Artifact,DesignSync,SendFeedback,RemoteTrigger,EnterWorktree,ExitWorktree";
+/**
  * Owner-desktop-notification lockout (owner directive 2026-07-14): agents were
  * hand-firing `notify-send` popups at the owner's desktop. Deny the easy Bash
  * paths (bare name + the absolute paths that would trivially bypass the
