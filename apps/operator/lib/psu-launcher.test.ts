@@ -191,6 +191,7 @@ import {
   launchPuiWorkbench,
   NO_PLAN,
   NATIVE_DEADWEIGHT_DENY_FLAG,
+  NO_CHROME_FLAG,
   NATIVE_SCHEDULER_DENY_FLAG,
   NATIVE_TOOL_SEARCH_DENY_FLAG,
   NO_SUBAGENTS_DENY_FLAG,
@@ -3409,6 +3410,7 @@ describe("psu-launcher arg parsing", () => {
         NATIVE_TOOL_SEARCH_DENY_FLAG,
         OWNER_DESKTOP_NOTIFY_DENY_FLAG,
         NATIVE_DEADWEIGHT_DENY_FLAG,
+        NO_CHROME_FLAG,
       ],
     });
     // omp: thread target (or -c) + yolo; -e only when a coordExtPath is supplied.
@@ -3544,6 +3546,7 @@ describe("psu-launcher arg parsing", () => {
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NATIVE_DEADWEIGHT_DENY_FLAG,
+      NO_CHROME_FLAG,
     ]);
     expect(resumeArgsFor(
       { agent: "codex", sessionId: "uuid-2" },
@@ -3580,6 +3583,7 @@ describe("psu-launcher arg parsing", () => {
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NATIVE_DEADWEIGHT_DENY_FLAG,
+      NO_CHROME_FLAG,
       "--fork-session",
     ]);
     // Fork also composes with the most-recent (--continue) resume.
@@ -3592,6 +3596,7 @@ describe("psu-launcher arg parsing", () => {
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NATIVE_DEADWEIGHT_DENY_FLAG,
+      NO_CHROME_FLAG,
       "--fork-session",
     ]);
   });
@@ -3664,6 +3669,7 @@ describe("psu-launcher arg parsing", () => {
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NATIVE_DEADWEIGHT_DENY_FLAG,
+      NO_CHROME_FLAG,
       "--fork-session",
       "--session-id",
       "forked",
@@ -3684,6 +3690,7 @@ describe("psu-launcher arg parsing", () => {
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NATIVE_DEADWEIGHT_DENY_FLAG,
+      NO_CHROME_FLAG,
     ]);
   });
 
@@ -3713,6 +3720,7 @@ describe("psu-launcher arg parsing", () => {
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NATIVE_DEADWEIGHT_DENY_FLAG,
+      NO_CHROME_FLAG,
       "--add-dir=/d",
     ]);
     // claude fork: --add-dir comes after the fork flags.
@@ -3731,6 +3739,7 @@ describe("psu-launcher arg parsing", () => {
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NATIVE_DEADWEIGHT_DENY_FLAG,
+      NO_CHROME_FLAG,
       "--fork-session",
       "--session-id",
       "f",
@@ -5816,6 +5825,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NATIVE_DEADWEIGHT_DENY_FLAG,
+      NO_CHROME_FLAG,
       NO_SUBAGENTS_DENY_FLAG,
     ]);
   });
@@ -6125,6 +6135,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NATIVE_DEADWEIGHT_DENY_FLAG,
+      NO_CHROME_FLAG,
       NO_SUBAGENTS_DENY_FLAG,
     ]);
     expect(args).not.toContain("--append-system-prompt-file");
@@ -6202,6 +6213,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       // Dead-weight native tools (2026-09-15): ~75,000 B of schemas that ride
       // EVERY prompt while ToolSearch deferral is off. See its doc comment.
       NATIVE_DEADWEIGHT_DENY_FLAG,
+      NO_CHROME_FLAG,
     ]);
     // su relies on the user-level papercusp-su MCP (no per-launch --mcp-config),
     // so the user's full toolkit loads (D-005) and the server isn't doubled.
@@ -6284,6 +6296,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NATIVE_DEADWEIGHT_DENY_FLAG,
+      NO_CHROME_FLAG,
     ]);
   });
 
@@ -6324,6 +6337,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NATIVE_DEADWEIGHT_DENY_FLAG,
+      NO_CHROME_FLAG,
     ]);
     expect(args).not.toContain("--append-system-prompt-file");
   });
@@ -6368,6 +6382,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NATIVE_DEADWEIGHT_DENY_FLAG,
+      NO_CHROME_FLAG,
     ]);
   });
 });
@@ -9837,6 +9852,7 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NATIVE_DEADWEIGHT_DENY_FLAG,
+      NO_CHROME_FLAG,
       "--model",
       "fable",
       "--effort",
