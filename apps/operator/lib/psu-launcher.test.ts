@@ -6109,6 +6109,9 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       // notify-send lockout is unconditional — su sessions included (2026-07-14).
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      // Dead-weight native tools (2026-09-15): ~75,000 B of schemas that ride
+      // EVERY prompt while ToolSearch deferral is off. See its doc comment.
+      NATIVE_DEADWEIGHT_DENY_FLAG,
     ]);
     // su relies on the user-level papercusp-su MCP (no per-launch --mcp-config),
     // so the user's full toolkit loads (D-005) and the server isn't doubled.
