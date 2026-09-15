@@ -3107,7 +3107,6 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
         frozenCandidate: 'a'.repeat(12),
         repairHead: 'c'.repeat(12),
         phase: 'awaiting-fixer',
-        currentStatus: 'no-suite',
         frozenCandidateVerdict: 'full-gate-red',
         repairHeadVerdict: 'not-judged',
       },

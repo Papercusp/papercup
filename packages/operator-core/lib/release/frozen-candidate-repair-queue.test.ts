@@ -837,7 +837,6 @@ describe('frozen-candidate repair queue', () => {
         frozenCandidate: C,
         repairHead: C1,
         phase: 'ready-to-verify',
-        currentStatus: 'no-suite',
         frozenCandidateVerdict: 'full-gate-red',
         repairHeadVerdict: 'not-judged',
       },
@@ -851,7 +850,6 @@ describe('frozen-candidate repair queue', () => {
       frozenCandidate: C,
       repairHead: C,
       phase: 'awaiting-fixer',
-      currentStatus: 'no-suite',
       frozenCandidateVerdict: 'full-gate-red',
       repairHeadVerdict: 'same-as-frozen-full-gate-red',
     });
@@ -873,7 +871,6 @@ describe('frozen-candidate repair queue', () => {
       frozenCandidate: C,
       repairHead: C1,
       phase: 'awaiting-fixer',
-      currentStatus: 'no-suite',
       frozenCandidateVerdict: 'full-gate-red',
       repairHeadVerdict: 'full-gate-red',
     });

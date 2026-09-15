@@ -1435,7 +1435,6 @@ export interface CheckpointResult {
     frozenCandidate: string;
     repairHead: string;
     phase: FrozenCandidateRepairQueue["phase"];
-    currentStatus: "no-suite" | "isolated-suite-result";
     frozenCandidateVerdict: "not-judged" | "full-gate-red";
     repairHeadVerdict:
       | "not-judged"

@@ -1549,7 +1549,10 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
       frozenCandidate: identity.verdictProvenance.frozenCandidate.slice(0, 12),
       repairHead: identity.verdictProvenance.repairHead.slice(0, 12),
     };
-    if (identity.verdictProvenance.currentStatus === 'no-suite') {
+    // WI-10000287: was `currentStatus === 'no-suite'`, a field that has been removed because it
+    // restated this exact predicate in process-liveness language. "Has this queue reached an
+    // isolated repair green?" is what actually decides whether `candidate` pins the frozen sha.
+    if (identity.verdictProvenance.repairHeadVerdict !== 'isolated-repair-green') {
       detail.candidate = identity.frozenCandidate.slice(0, 12);
     }
   }

@@ -148,7 +148,6 @@ const OWNER_BRIEF = composeGateOwnerBrief({
       frozenCandidate: 'candidate',
       repairHead: 'repair',
       phase: 'awaiting-fixer',
-      currentStatus: 'isolated-suite-result',
       frozenCandidateVerdict: 'full-gate-red',
       repairHeadVerdict: 'isolated-repair-green',
     },

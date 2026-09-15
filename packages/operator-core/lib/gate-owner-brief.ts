@@ -258,7 +258,6 @@ export interface GateOwnerBrief {
       frozenCandidate: string;
       repairHead: string;
       phase: string;
-      currentStatus: 'no-suite' | 'isolated-suite-result';
       frozenCandidateVerdict: 'not-judged' | 'full-gate-red';
       repairHeadVerdict:
         | 'not-judged'

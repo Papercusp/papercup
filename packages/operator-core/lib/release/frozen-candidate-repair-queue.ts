@@ -1169,7 +1169,6 @@ export interface FrozenRepairQueueDiagnostic {
     frozenCandidate: string;
     repairHead: string;
     phase: FrozenCandidateRepairPhase;
-    currentStatus: 'no-suite' | 'isolated-suite-result';
     frozenCandidateVerdict: 'not-judged' | 'full-gate-red';
     repairHeadVerdict:
       | 'not-judged'
@@ -1217,7 +1216,15 @@ export function buildFrozenRepairStatusIdentity(queue: FrozenCandidateRepairQueu
       frozenCandidate: queue.candidate,
       repairHead: queue.repairHead,
       phase: queue.phase,
-      currentStatus: queue.phase === 'ready-to-promote' ? 'isolated-suite-result' : 'no-suite',
+      // WI-10000287: there is deliberately NO `currentStatus` field here. It used to carry
+      // `'no-suite' | 'isolated-suite-result'`, computed as `phase === 'ready-to-promote'` —
+      // the SAME predicate as `repairHeadVerdict === 'isolated-repair-green'` three lines below,
+      // so it never carried information that field does not. What it DID carry was a false
+      // implicature: `currentStatus: 'no-suite'` reads as "no suite is running right now", and
+      // during a live verifying run (phase `ready-to-verify`) that was exactly the value emitted
+      // while a suite WAS running on this repairHead. Nothing in this read model observes process
+      // liveness — it is a DB projection — so no field here may be named as though it does.
+      // Liveness is answered by `node scripts/proc-guard.mjs check green-checkpoint`.
       frozenCandidateVerdict: queue.phase === 'ready-to-test' ? 'not-judged' : 'full-gate-red',
       repairHeadVerdict:
         queue.phase === 'ready-to-promote'

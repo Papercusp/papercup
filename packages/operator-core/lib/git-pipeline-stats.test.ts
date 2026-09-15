@@ -175,7 +175,6 @@ describe('currentGateInconclusive', () => {
       repairHead: queue.repairHead,
       phase: queue.phase,
       verdictProvenance: {
-        currentStatus: 'no-suite',
         frozenCandidateVerdict: 'full-gate-red',
         repairHeadVerdict: 'not-judged',
       },

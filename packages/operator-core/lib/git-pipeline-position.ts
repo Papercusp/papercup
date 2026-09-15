@@ -3821,7 +3821,22 @@ export function computeStages(
         ).slice(0, 12)} is ${g.repairQueue.phase} with mutable repairHead ${g.repairQueue.repairHead.slice(0, 12)} ` +
         `(age ${Math.round(g.repairQueue.ageMs / 60_000)}m, fixer ${g.repairQueue.fixerSpawnId ?? 'none'} ` +
         `${g.repairQueue.fixerAlive === null ? 'liveness unknown' : g.repairQueue.fixerAlive ? 'live' : 'not live'}, decision ${g.repairQueue.decision}; ` +
-        `${g.repairQueue.verdictProvenance?.currentStatus === 'no-suite' ? 'no suite ran on repairHead' : 'isolated repair suite result is recorded'}).`
+        // WI-10000287: this sentence used to read `'no suite ran on repairHead'`, selected by a
+        // `currentStatus === 'no-suite'` field that has since been removed. Two defects, both
+        // fixed here. (1) TENSE/SCOPE: it was emitted while a suite WAS running on the repairHead
+        // — nothing in this read model observes process liveness, so the honest claim is about a
+        // COMPLETED result, and it must say so loudly enough that a reader does not act on it as
+        // a liveness verdict. (2) FAIL-OPEN: the old optional chain compared `undefined` against
+        // `'no-suite'`, so a queue with NO verdictProvenance fell to the else-branch and rendered
+        // "isolated repair suite result is recorded" — asserting a green that was never measured.
+        // Absent provenance is now its own branch and reads as UNKNOWN.
+        `${
+          !g.repairQueue.verdictProvenance
+            ? 'no verdict provenance recorded — this queue\'s suite result is UNKNOWN, not green'
+            : g.repairQueue.verdictProvenance.repairHeadVerdict === 'isolated-repair-green'
+              ? 'an isolated repair suite result is recorded'
+              : 'no COMPLETED suite result for this repairHead yet — a suite may be running RIGHT NOW; this field never observes liveness, so check `node scripts/proc-guard.mjs check green-checkpoint` before concluding the gate is idle'
+        }).`
       : null;
     const gateDetail = g.pause
       ? pauseDetail
