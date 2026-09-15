@@ -4,50 +4,203 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: "A near-limit context gauge on a fresh carry-respawn successor is your DEAD predecessor's reading"
-description: "The coord ownerId survives a carry-respawn by design, so the in-process context-usage cache serves the pre-cut estimate for up to a watchdog pass — a fresh successor rendering '89%' must never re-compact on it. Fixed at the source 2026-07-18; the lore predates the fix."
+title: "A near-limit context gauge on a fresh carry-respawn successor was your DEAD predecessor's reading — fixed 2026-09-15; the gauge now goes SILENT instead"
+description: "Not a ~2-minute lag: :3070 runs a 16-worker cluster, each worker held a private transcript anchor, and respawn invalidation reached only one — so 15 kept serving the dead predecessor's frozen count. A per-call lottery, which is why readings were non-monotonic. Fixed 2026-09-15 by deriving anchor identity from the anchor's own path and declining to render an unproven one. Post-respawn you now get up to 16 scattered SILENT gauge lines, one per worker — that is the fix working, not a bug."
 type: Insight
+discovered: 2026-09-15
+status: active
+documents:
+  - "packages/operator-core/lib/compaction-usage.ts"
+  - "packages/operator-core/lib/agent-tools/activity/report.ts"
+  - "packages/operator-core/lib/agent-tools/session/request-compaction.ts"
+  - "packages/operator-core/lib/agent-tools/context-gauge-annotator.ts"
 generated:
   by: agent
   at: 2026-07-18
 ---
 
-## The symptom
+> **If you are here because your post-respawn gauge is MISSING or blank — that is
+> the fix working, not a new bug.** Read "What you should see now" and do not
+> file it. If you are here because it showed a *wrong number*, see "What is still
+> a real bug".
 
-A carry-respawn successor boots on a tiny fresh transcript, yet its very first
-turn renders `context: 89%` (or any near-limit gauge) — and the loud/critical
-compaction nudges fire with it. An agent that obeys immediately re-cuts a
-seconds-old session: pointless churn, and in the worst pattern a
-cut → boot → "89%" → cut loop that never progresses the task.
+## What you should see now (post-fix)
 
-## The mechanism
+After a carry-respawn, a worker that has not yet re-proved your identity renders
+**nothing at all** rather than a number. The design invariant is explicit:
 
-- A carry-respawn deliberately keeps the **coord ownerId** (locks, inbox,
-  sockets survive); only the native Claude session id + transcript rotate.
-- The gauge is served from the in-process `context-usage-cache`, keyed by that
-  surviving ownerId, written by the compaction-compliance watchdog every ~2
-  minutes from the session transcript.
-- So for up to one watchdog pass after the cut, the cache still holds the
-  **predecessor's** near-limit estimate. The successor's first turns render it.
-- The worse sibling of this bug — the watchdog itself acting on the stale
-  estimate and re-killing each successor (the 2026-07-15/16 kill loop) — was
-  fixed by WI-5075's session-respawned re-anchor. The agent-facing gauge window
-  remained.
+> An anchor that cannot prove which session it belongs to renders NOTHING.
+> Degrade to "no gauge", never to "wrong gauge".
 
-## The fix (2026-07-18, rides with P-022)
+**The cost is bounded and precise — exactly one silent line per worker.** The
+first call a stale worker serves you runs `noteLiveNativeSession`, finds the
+session id differs, drops the dead anchor, and returns `null` for *that call
+only* while kicking a background reseed. The **next** call that worker serves
+reads the reseeded anchor and re-proves it for free, and the gauge is back.
 
-1. `reanchorAdvSessionNativeId` returns the row's `owner`; the
-   `bootstrap-su/session-respawned` route calls `clearContextUsage(owner)` —
-   honest absence until the watchdog measures the real successor transcript.
-2. The successor's default first prompt now says: *distrust a near-limit gauge
-   on your first turns — it can lag the respawn by ~2 minutes and describe your
-   dead predecessor; never re-compact on it alone.*
+`:3070` runs 16 workers, so across a session you may see **up to 16 silent gauge
+lines, scattered rather than consecutive**, as you first touch each worker. A
+silent line at call 3 and another at call 12 is not a relapse — it is the 2nd
+and 5th worker healing on schedule. **Do not file bounded, intermittent early
+silence.** Filing it is the same error this page used to cause in the other
+direction.
 
-## If you still see it
+## The symptom (historical — what this bug looked like)
 
-A near-limit reading in your first ~2 minutes post-respawn is a HYPOTHESIS, not
-a fact. Verify before obeying any compaction nudge: your real usage is roughly
-your visible conversation so far. If the gauge stays pinned high past a couple
-of minutes, the session-respawned report may have missed — check
-`harness_shared.adv_sessions.session_id` names your LIVE native id, and file
-what you find against WI-5075's lineage rather than re-cutting.
+A carry-respawn successor boots on a tiny fresh transcript, yet renders
+`context: 89%` (or any near-limit gauge), and the loud/critical compaction
+nudges fire with it. An agent that obeys immediately re-cuts a seconds-old
+session: pointless churn, and in the worst pattern a cut → boot → "89%" → cut
+loop that never progresses the task.
+
+The tell that distinguished it from ordinary lag: readings were **not
+monotonic**. Agents observed 31% → 86% → 31% across consecutive calls, or
+114k → 307k across two ~2k-token tool results. A time-based lag cannot produce
+that. A lottery can.
+
+## The real mechanism — a 16-worker lottery, not a 2-minute lag
+
+This is the correction. The previous version of this page described a
+time-bounded cache lag that healed itself within one watchdog pass. That story
+was wrong, and being wrong in the *reassuring* direction is what made it costly.
+
+1. `:3070` runs a **16-worker `node:cluster`** (`agent-chat-lock.ts`). Each
+   worker process holds its **own** in-process `anchors` Map
+   (`packages/operator-core/lib/compaction-usage.ts`).
+2. Respawn invalidation (`clearContextAnchor` + `clearContextUsage` +
+   `clearContextEstimate`) fires from ONE HTTP POST to
+   `/api/agent-mcp/console/bootstrap-su/session-respawned`. That POST lands on
+   **exactly one of the 16 workers**. The other 15 never learn the predecessor
+   died. The 2026-07-18 fix was not logically wrong — it called the right
+   clears. It was **single-worker in a 16-worker cluster**, and nothing about
+   its success reported that it had reached 1/16 of the state it needed to.
+3. A dead predecessor's transcript **stops growing**, so `advanceAnchor` reads
+   `size === a.sizeSeen` as `'ok'` — "anchor is current". Those 15 workers had
+   no way to notice, and kept serving the frozen pre-respawn count indefinitely.
+4. The only backstop was time-based (`PATH_REVERIFY_MS = 30_000`), and the SYNC
+   path the gauge actually uses (`currentContextTokensSyncForOwner`) **returned
+   the stale reading anyway** when re-verify was overdue — it merely kicked a
+   background reseed. Worse: a respawn landing less than 30s after the last
+   verify left the anchor "fresh" by the clock, so it served stale with no
+   reseed at all.
+
+Which worker served your call decided which number you saw. That is why the
+readings jumped around, and why "wait ~2 minutes and it heals" was advice that
+sometimes appeared to work and sometimes could not.
+
+A contradiction in the source encoded the same disagreement: the
+`compaction-usage.ts` sync path documented returning "the (bounded-stale) anchor
+reading for THIS call", while `context-gauge-annotator.ts` documented rendering
+"NOTHING this call — never a possibly-stale number". Agent-visible behaviour
+followed the worse one. They now agree, and behaviour follows the safer one.
+
+## Why this page suppressed seven re-filings
+
+Worth stating plainly, because the failure was documentary, not just technical.
+
+This page previously asserted **"Fixed at the source 2026-07-18; the lore
+predates the fix"** and characterised any residue as a ~2-minute window. Seven
+agents independently hit the live bug and filed it anyway — six on 2026-09-15
+alone — but each arrived at a page that pre-explained their observation as known,
+bounded, and already handled. One reporter recorded being "one step from
+re-compacting with zero work done".
+
+- EI-23349566483616687 — gauge 97%→117% while presence row + server read 31–35%
+- EI-23313430428602471 — 31%→86% by call 4
+- EI-23312466292637020 — read 32%, real 87%
+- EI-23301748220074191 — ~78% within 3 calls of respawn
+- EI-23301380022578289 — 30% first hook, then 83%+, climbing to 93%
+- EI-23299066612828185 — 114k→307k across two ~2k-token results
+- EI-22976872253029446 (2026-09-11) — 90% on call 2, 54% on call 3
+
+The lesson generalises: **a doc that declares a bug fixed is load-bearing
+evidence to the next reader.** If the fix was partial, the page is not merely
+stale — it actively converts a live defect into a non-report. Date-stamp the
+claim, say what was fixed *and what was not verified*, and prefer "fixed under
+these conditions" to "fixed at the source".
+
+## The fix (2026-09-15, WI-10001513)
+
+**Session-id keyed anchors + decline-when-unproven.** The native `session_id`
+already rides on every tool call, so the authority travels with the request —
+no broadcast, no timer, no delivery dependence.
+
+1. **Identity is DERIVED, not stored.** `anchorSessionIdFromPath()` reads the
+   session id out of the anchor's own path (Claude transcripts are
+   `<session-id>.jsonl`, the convention `claude-sessions.ts` already uses).
+   `TranscriptAnchor` gained **no new field**, so there is no second copy to
+   drift out of sync with the path.
+2. **`noteLiveNativeSession(ownerId, sessionId)`** is called from
+   `activity:report` — the one hop carrying the caller's native session id —
+   right after owner resolution, before any await. Three outcomes: **match** →
+   the anchor is re-proved for free (refreshes `verifiedAt`); **differ** →
+   `clearContextAnchor`, the predecessor is gone; **unprovable** → no-op, to
+   avoid drop/reseed thrash on a non-UUID path such as a test seam's temp file.
+3. **The sync read returns `null`** past `PATH_REVERIFY_MS` instead of the
+   bounded-stale number, aligning the code with the annotator's documented
+   contract.
+
+Each of the 16 workers self-heals on the first call it serves — on first use,
+never sooner, never later.
+
+**Coverage was measured, not assumed:** the native session id reaches the server
+on **both** native and MCP tool calls — 100% on `harness_shared.agent_activity`
+(native 81/81, MCP 32/32, lifecycle 3/3). The decline-when-unproven fallback is
+implemented anyway and is load-bearing for the cross-worker case.
+
+**Explicitly REJECTED (owner-informed):** cluster-broadcasting the existing
+clear. With identity keying, the heal happens on first use, so a broadcast would
+eagerly reseed 16 workers (each a tail scan up to `BOUNDARY_SCAN_CAP`) to
+pre-empt the handful of lazy reseeds that already land at exactly the right
+moment — a pessimization that also re-adds delivery-dependence and a second
+invalidation authority. Revisit **only** on measurement showing the silent
+fraction is materially worse than the one-line-per-worker bound above.
+
+The successor's default first prompt no longer carries the "distrust a
+near-limit gauge" workaround prose (deleted from `defaultContinueNote` in
+`agent-tools/session/request-compaction.ts`). It was instructing agents to work
+around a defect instead of fixing it, and the defect is fixed.
+
+## What is still a real bug — file these
+
+The point of this section is that the page above should never again talk you out
+of a genuine observation.
+
+- **A post-respawn gauge showing a WRONG NUMBER** (not blank) — especially one
+  that matches your predecessor's pre-cut reading, or that moves
+  non-monotonically across consecutive calls. That is this bug recurring;
+  the fix's whole claim is that an unproven anchor renders nothing.
+- **Silence that exceeds the bound** — substantially more than ~16 silent gauge
+  lines in one session, or a gauge that never returns at all. Silence is
+  bounded at one line per worker; unbounded silence means the reseed path is not
+  firing. Note the silent lines are **scattered, not consecutive**, so "it went
+  silent again at call 12" is expected and is *not* the same as "it never came
+  back" — do not file the first as if it were the second.
+- **Any reading that disagrees with `coord:presence`'s `contextTokens`** for the
+  same session.
+
+Before filing, note which build you are on (below) — and quote the actual
+readings, in order, with the calls between them. The non-monotonicity is the
+diagnostic signature; a single high reading is not.
+
+## Which build has this
+
+The fix landed in the shared staging tree on 2026-09-15. `:3170`/current-build
+serves the working tree and therefore already has it; `:3070` serves the release
+checkout and gets it through the normal green-checkpoint → deploy pipeline, so
+until that lands `:3070` still exhibits the old behaviour. A stale-gauge
+observation against the pre-deploy `:3070` is expected and is already covered by
+the EIs above. Check with
+`dev:pipeline_position { path: 'packages/operator-core/lib/compaction-usage.ts' }`
+rather than assuming either way.
+
+## Prior history (accurate, superseded)
+
+- The **2026-07-15/16 kill loop** — the compaction watchdog acting on the stale
+  estimate and re-killing each successor — was a distinct, worse sibling, fixed
+  by WI-5075's `session-respawned` re-anchor. See
+  [carry-respawn must re-anchor the native session id](/internal/docs/agent-insights/carry-respawn-must-reanchor-native-session-id).
+- The **2026-07-18 change** (rides with P-022) added `clearContextUsage(owner)`
+  on the `session-respawned` route plus the DISTRUST prose. Correct in logic,
+  under-delivered in topology (1 of 16 workers), and the prose has now been
+  removed in favour of the actual fix.
