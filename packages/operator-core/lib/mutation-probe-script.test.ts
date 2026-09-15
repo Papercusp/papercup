@@ -100,6 +100,28 @@ function makeHistoricalRepo(): { repo: string; file: string; oldSha: string } {
   return { repo, file, oldSha };
 }
 
+/**
+ * Like makeHistoricalRepo, but the subject is a TYPESCRIPT file — the shape
+ * EI-23362664002917898 broke. The bodies carry `as const` so the content only
+ * parses once types are stripped, which is decided purely by file EXTENSION.
+ */
+function makeHistoricalTsRepo(): { repo: string; file: string; oldSha: string } {
+  const repo = join(dir, 'historical-ts-repo');
+  mkdirSync(repo);
+  const file = join(repo, 'subject.ts');
+  git(repo, ['init', '-q']);
+  git(repo, ['config', 'user.email', 'mutation-probe-test@example.invalid']);
+  git(repo, ['config', 'user.name', 'mutation-probe-test']);
+  writeFileSync(file, '// stable-control\nexport const V = 1 as const;\n');
+  git(repo, ['add', 'subject.ts']);
+  git(repo, ['commit', '-qm', 'historical ts source']);
+  const oldSha = git(repo, ['rev-parse', 'HEAD']);
+  writeFileSync(file, '// stable-control\nexport const V = 1 as const;\nexport const NEW_GUARD = 2 as const;\n');
+  git(repo, ['add', 'subject.ts']);
+  git(repo, ['commit', '-qm', 'fix ts source']);
+  return { repo, file, oldSha };
+}
+
 describe('mutation-probe.sh — copy-out mode (the default)', () => {
   it('leaves the subject file byte-identical while still exercising the guard', () => {
     const code = runProbe(['--file', subject, '--mutate', 's/beta/BETA/', '--test', 'grep -q "^beta$" {}']);
@@ -598,6 +620,46 @@ describe('mutation-probe.sh — historical source mode', () => {
     expect(out).toMatch(/absence_control=NEW_GUARD/);
     expect(out).toMatch(/positive_controls=1/);
     expect(out).toMatch(new RegExp(`against_commit=${history.oldSha}`));
+  });
+
+  /**
+   * EI-23362664002917898 — historical mode relocated every snapshot to an
+   * EXTENSIONLESS path (`$SCRATCH/snapshot-run-N`). tsx and node decide whether
+   * to STRIP TYPES by extension, so a TypeScript subject was handed to the
+   * plain-JS loader and died at PARSE on BOTH legs; historical mode can only
+   * score that as verdict=harness-error, so the probe could never reach a
+   * verdict for ANY TypeScript subject. Copy-out mode was always sound (it
+   * relocates to the repo-relative path, or the basename when the subject is
+   * not in a worktree — both carry the extension), so this guard is specific to
+   * historical mode's run_snapshot_command.
+   */
+  it('preserves the subject file extension on every relocated historical snapshot path', () => {
+    const history = makeHistoricalTsRepo();
+    const seen = join(dir, 'relocated-paths.txt');
+    const record = `printf '%s\\n' {} >> ${JSON.stringify(seen)}; `;
+    const { code, out } = runProbeIO([
+      '--file',
+      history.file,
+      '--against-last-without',
+      'NEW_GUARD',
+      '--positive-control',
+      'stable-control',
+      '--calibration',
+      `${record}grep -q 'stable-control' {}`,
+      '--test',
+      `${record}grep -q 'NEW_GUARD' {}`,
+    ]);
+    expect(code).toBe(0);
+    expect(out).toMatch(/mode=historical/);
+    expect(out).toMatch(/HISTORICAL SOURCE CAUGHT/);
+
+    // Both legs of calibration + both legs of the guard each get their own
+    // relocated copy, so the probe must have handed out at least four paths.
+    const paths = readFileSync(seen, 'utf8').trim().split('\n').filter(Boolean);
+    expect(paths.length).toBeGreaterThanOrEqual(4);
+    // The discriminator: pre-fix every one of these was a bare
+    // `snapshot-run-N` with no extension at all.
+    expect(paths.filter((p) => p.endsWith('.ts'))).toEqual(paths);
   });
 
   /**

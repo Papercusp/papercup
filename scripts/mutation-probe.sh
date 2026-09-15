@@ -474,6 +474,22 @@ tr -d '[:space:]' < "$BASE" > "$BASE_NON_WHITESPACE" || die "could not normalize
 ORIG_SUM="$(git hash-object "$FILE")"
 readonly BASE BASE_NON_WHITESPACE ORIG_SUM
 
+# The subject's own extension, preserved onto every RELOCATED snapshot path.
+# tsx/node decide whether to STRIP TYPES by EXTENSION, so a snapshot path that
+# drops it is handed to Node's plain-JS loader and a TypeScript subject dies at
+# PARSE (`const X = 1 as const;` -> SyntaxError: Unexpected identifier 'as').
+# That kills the current AND historical legs for a reason that has nothing to do
+# with the guard, so historical mode could only ever report verdict=harness-error
+# -- i.e. it could not reach a verdict for ANY TypeScript subject, in a repo that
+# is overwhelmingly TypeScript. Copy-out mode never had this defect: it relocates
+# to the subject's own repo-relative path (or its basename), both of which carry
+# the extension already. EI-23362664002917898.
+case "$(basename "$FILE")" in
+  ?*.*) SNAPSHOT_EXT=".${FILE##*.}" ;;
+  *)    SNAPSHOT_EXT="" ;;
+esac
+readonly SNAPSHOT_EXT
+
 # ---------------------------------------------------------------------------
 # Restore + integrity verification. In copy-out mode this only has to PROVE
 # the tracked file was never touched; in --in-tree mode it is also what puts
@@ -831,7 +847,7 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
   run_snapshot_command() {
     local phase="$1" label="$2" snapshot="$3" template="$4" output="$5" target cmd rc
     SNAPSHOT_RUN=$((SNAPSHOT_RUN + 1))
-    target="$SCRATCH/snapshot-run-$SNAPSHOT_RUN"
+    target="$SCRATCH/snapshot-run-$SNAPSHOT_RUN$SNAPSHOT_EXT"
     cp -p "$snapshot" "$target" || die "could not stage $phase snapshot copy"
     cmd="${template//\{\}/$target}"
     run_guard "$phase" "$label" "$cmd" "$output"
