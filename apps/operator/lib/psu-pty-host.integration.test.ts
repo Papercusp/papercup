@@ -1756,7 +1756,27 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
       expect([...captured().matchAll(/BOOT:/g)].length).toBe(2);
       expect(reexecs).toEqual([]);
       // The staleness is still REPORTED, so the condition stays visible.
-      expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8')).toContain('"kind":"host-code-stale"');
+      const eventLog = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
+      expect(eventLog).toContain('"kind":"host-code-stale"');
+      // WI-10001514: and the row now says WHY it did not adopt. Without that, this
+      // no-shim headless host — which COULD have adopted safely and is a real gap —
+      // is byte-identical to an interactive host refusing correctly, which is why
+      // 7,021 of 9,087 measured stale detections were unattributable to either
+      // cause. This case is the sharp one: onReexec IS wired and only the shim
+      // advertisement is missing, so the reason must name the CODE, not the
+      // callback. Asserting the exact discriminator keeps the two from collapsing
+      // back into one label.
+      const staleRow = eventLog
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .find((e) => e.kind === 'host-code-stale');
+      expect(staleRow).toBeDefined();
+      expect(staleRow.adoptable).toBe(false);
+      expect(staleRow.willAdopt).toBe(false);
+      expect(staleRow.notAdoptingReason).toBe('no-reexec-code');
+      expect(staleRow.bridgeTty).toBe(false);
+      expect(staleRow.hasReexecCallback).toBe(true);
       expect(existsSync(handoffPathFor(ownerId))).toBe(false);
 
       await rawInject(sock, 'QUIT\n');
