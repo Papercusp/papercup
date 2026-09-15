@@ -45,6 +45,7 @@ import {
   ompCoreToolNames,
   claudeSeedToolNames,
   CLAUDE_SEED_EXTRA_TOOL_NAMES,
+  CLAUDE_MINIMAL_SEED_TOOL_NAMES,
   isWeakOmpModel,
   bareOmpModelId,
   probeOmpBackendContextWindow,
@@ -2492,12 +2493,100 @@ describe("ompCoreToolNames (PAPERCUSP_OMP_TOOLS_EXCLUDE — spine trim escape ha
   });
 });
 
-describe("claudeSeedToolNames (EI-9011 — CC lock-hook verbs advertised to Claude only)", () => {
-  it("is the spine plus the manual lock verbs, deduped", () => {
+describe("claudeSeedToolNames (EI-23319364088969722 — Claude's own minimal seed)", () => {
+  it("defaults to the minimal Claude seed, NOT the weak-model spine", () => {
+    // The defect this fixes: Claude DERIVED its seed from the weak-model spine
+    // (ompCoreToolNames() + the extras = 64 names, 432,714 B measured on the wire), so
+    // the model BEST able to drive tools:invoke received the LARGEST up-front surface.
+    // With ToolSearch denied there is no schema deferral, so every advertised tool ships
+    // its full argSchema every turn — the seed IS the context bill.
     const seed = claudeSeedToolNames(processEnv({}));
+    expect(seed).toEqual([...CLAUDE_MINIMAL_SEED_TOOL_NAMES]);
+    expect(new Set(seed).size).toBe(seed.length);
+    // A genuine trim, not a reshuffle.
+    expect(seed.length).toBeLessThan(
+      OMP_CORE_MCP_TOOL_NAMES.length + CLAUDE_SEED_EXTRA_TOOL_NAMES.length,
+    );
+  });
+
+  it("always seeds the reachability pair — the trim's load-bearing assumption", () => {
+    // Everything NOT seeded stays usable ONLY because tools:find searches the full
+    // catalog (and activates matches) and tools:invoke dispatches any tool by name.
+    // Drop either and the trim stops being a latency budget and becomes a capability
+    // boundary — which is exactly the EI-9011 failure this cut is designed to avoid.
+    const seed = claudeSeedToolNames(processEnv({}));
+    expect(seed).toContain("tools:find");
+    expect(seed).toContain("tools:invoke");
+  });
+
+  it("keeps the heavy, non-mandated verbs OUT (this is where the saving lives)", () => {
+    // Regression guard on the actual number: these seven cost 187,841 B of the old
+    // 432,714 B seed — 43% of it for SEVEN names — and not one is promoted by the
+    // generated routing table. Re-seeding any of them silently hands back a large
+    // slice of the ~-116K tokens/turn this change bought.
+    const seed = claudeSeedToolNames(processEnv({}));
+    for (const n of [
+      "work_items:complete",
+      "coord:send",
+      "work_items:checkpoint",
+      "fleet:launch-on-plan",
+      "loop:checkpoint",
+      "improvements:capture",
+      "facts:assert",
+    ]) {
+      expect(seed).not.toContain(n);
+    }
+  });
+
+  it("PAPERCUSP_CLAUDE_FULL_SEED restores the historical spine+extras seed exactly", () => {
+    // The instant revert if the minimal seed ever proves too thin.
+    const seed = claudeSeedToolNames(
+      processEnv({ PAPERCUSP_CLAUDE_FULL_SEED: "1" }),
+    );
     for (const n of OMP_CORE_MCP_TOOL_NAMES) expect(seed).toContain(n);
     for (const n of CLAUDE_SEED_EXTRA_TOOL_NAMES) expect(seed).toContain(n);
     expect(new Set(seed).size).toBe(seed.length);
+    expect(seed.length).toBe(
+      OMP_CORE_MCP_TOOL_NAMES.length + CLAUDE_SEED_EXTRA_TOOL_NAMES.length,
+    );
+  });
+
+  it("treats unset / '0' / 'false' as minimal (a hatch that opens on \"0\" is worse than none)", () => {
+    for (const v of ["", "0", "false", "False"]) {
+      expect(
+        claudeSeedToolNames(processEnv({ PAPERCUSP_CLAUDE_FULL_SEED: v })).length,
+      ).toBe(CLAUDE_MINIMAL_SEED_TOOL_NAMES.length);
+    }
+  });
+
+  it("RATCHET: the minimal seed cannot regrow past its measured budget", () => {
+    // This is the guard that makes the trim durable. The seed reached 64 names because
+    // every append was individually justified and nothing ever checked the aggregate;
+    // a trim without a ceiling regrows the same way. Raising the ratchet is a deliberate,
+    // documented budget decision (see the constant's docblock) — not a quiet append.
+    expect(CLAUDE_MINIMAL_SEED_TOOL_NAMES.length).toBeLessThanOrEqual(
+      CLAUDE_MINIMAL_SEED_MAX_NAMES,
+    );
+    // Non-vacuity: a ratchet over an empty/degraded list would pass while measuring nothing.
+    expect(CLAUDE_MINIMAL_SEED_TOOL_NAMES.length).toBeGreaterThan(12);
+    expect(new Set(CLAUDE_MINIMAL_SEED_TOOL_NAMES).size).toBe(
+      CLAUDE_MINIMAL_SEED_TOOL_NAMES.length,
+    );
+    // Every entry must be a real colon-form MCP catalog name — a typo would otherwise be
+    // advertised as a tool that does not exist, and `?tools=` would silently drop it.
+    for (const n of CLAUDE_MINIMAL_SEED_TOOL_NAMES)
+      expect(n, `${n} is not a server:verb MCP name`).toMatch(
+        /^[a-z][a-z0-9_]*:[a-z][a-z0-9_-]*$/,
+      );
+  });
+
+  it("CONTROL: the ratchet actually fires when the seed regrows", () => {
+    // A budget guard nobody has seen fail is a budget guard nobody has tested. Proves the
+    // assertion above can go red, without mutating the shared tree (the repo's own
+    // falsifiability guidance: a probe that edits a tracked file can be committed by the
+    // git-sync sweep mid-run).
+    const regrown = [...CLAUDE_MINIMAL_SEED_TOOL_NAMES, "coord:send", "facts:assert"];
+    expect(regrown.length).toBeGreaterThan(CLAUDE_MINIMAL_SEED_MAX_NAMES);
   });
 
   it("every Claude-only extra stays OUT of the weak-model OMP spine", () => {

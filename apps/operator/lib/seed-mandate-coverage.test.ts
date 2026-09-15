@@ -28,7 +28,17 @@ describe('seed ↔ prompt-mandate coverage (P-004)', () => {
     // `listAllProjectedTools()` report "0 violations" from a standalone probe
     // (EI-19377066316560032). Floors first, so a broken import is loud.
     expect(ALL_PAIRS.length).toBeGreaterThan(10);
-    expect(seed.length).toBeGreaterThan(30);
+    // EI-23319364088969722: this floor is a BROKEN-IMPORT TRIPWIRE, not a seed budget.
+    // It was 30 when the seed was 64 names; the seed is now a deliberate 31-name minimal
+    // list (measured 432,714 B -> 113,588 B on the wire), so a floor just under it would
+    // fail on an intentional trim instead of on the defect it exists to catch — and the
+    // defect is always the SAME shape: a failed import yields 0. Keep it comfortably below
+    // the intended size and well above 0.
+    expect(seed.length).toBeGreaterThan(12);
+    // The sharper non-vacuity check for a minimal seed: a seed that degraded to junk would
+    // not carry the two verbs the whole trim depends on for catalog reachability.
+    expect(seed).toContain('tools:invoke');
+    expect(seed).toContain('tools:find');
     expect(promotedMandateToolNames(ALL_PAIRS).length).toBeGreaterThan(5);
   });
 
