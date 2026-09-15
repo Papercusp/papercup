@@ -574,9 +574,16 @@ describe('injectIntoHost — deterministic carry-respawn envelope (P-018)', () =
       mode: 'carry-respawn', gated: true, sourceTranscriptPath,
       ownerId: 'su-codex-boundary',
     });
+    // `sourceTranscriptPath` is optional on the decoded union BY CONSTRUCTION:
+    // the carry-respawn branch spreads it only when the sender supplied one, so
+    // it is absent from the other decode shapes. Narrow it here rather than
+    // asserting it onto every member of that union.
+    const decodedTranscriptPath =
+      (decoded as { sourceTranscriptPath?: string } | null)?.sourceTranscriptPath;
+    expect(decodedTranscriptPath).toBe(sourceTranscriptPath);
     const probe = () => codexCarryTurnCompleted({
       agent: 'codex', env: { CODEX_HOME: dir },
-      transcriptPath: decoded.sourceTranscriptPath, receivedAtMs,
+      transcriptPath: decodedTranscriptPath, receivedAtMs,
     });
     expect(probe()).toBe(false);
     writeFileSync(sourceTranscriptPath, event('task_started') + event('task_complete'));
