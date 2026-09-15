@@ -6,6 +6,8 @@
  * isolates the pill's count/guards + the pure grouping helpers. The shared
  * <Popover> needs a TooltipProvider ancestor (same as PotsRunningPill.test).
  */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Provider as TooltipProvider } from '@radix-ui/react-tooltip';
@@ -304,6 +306,24 @@ describe('<AgentsRunningPill>', () => {
     nuqs.open = true;
     render(<Pill />);
     expect(screen.getByTestId('agents-running-empty').textContent).toContain('No agents running');
+  });
+
+  // EI-23336692339406030 [owner 2026-09-15]: now that the pill stays mounted at
+  // zero, the `is-running` class must actually LOOK different, and its styles must
+  // live in the SHARED sheet (quick-panel-status-pills D-001) so the Quick Panel
+  // popup — which never mounts AdvShell — renders the same state. Pin the rule
+  // set, and pin the ring's survival of AdvShell's body `box-shadow: none`
+  // reset (the pots pill lost its ring to exactly that flattening).
+  it('carries a shared-sheet running-state style for the is-running class', () => {
+    const css = readFileSync(
+      resolve(__dirname, 'adv-header-pills.css'),
+      'utf8',
+    );
+    expect(css).toMatch(/\.pc-advshell__action--agents\s*{[^}]*color:\s*var\(--fg-mute\)/s);
+    expect(css).toMatch(/\.pc-advshell__action--agents\.is-running\s*{[^}]*color:\s*var\(--good\)/s);
+    expect(css).toMatch(
+      /\.pc-advshell__action--agents\.is-running:not\(:focus-visible\)\s*{[^}]*box-shadow:[^}]*!important/s,
+    );
   });
 
   it('shows a "thinking" count in the pill when agents are actively thinking', () => {
