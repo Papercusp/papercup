@@ -17773,7 +17773,7 @@
       ],
       "guidance": {
         "when": "You need compiler truth rather than text: declarations across boundaries/re-exports, references, implementations, file diagnostics, or rename sites.",
-        "notWhen": "Use text/regex search (Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`); else POSIX `grep`/`grep -E`. In `rg`, use lowercase `-e`/`--regexp`; uppercase `-E` means `--encoding`. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap matching lines with ripgrep itself (e.g., `rg --max-count 60 --max-columns 256 --max-columns-preview ...`); avoid piping to early-exit consumers such as `head` under `pipefail`, which can SIGPIPE `rg` (exit 141).) for text and gitnexus.context for call graphs. Unsupported files refuse and name the alternative.",
+        "notWhen": "Use text/regex search (`rg`/`grep`, scoped to source roots — see capability:bash guidance) for text, and gitnexus.context for call graphs. Unsupported files refuse and name the alternative.",
         "chaining": "op:\"workspace_symbols\" { name } → op:\"symbol\"/\"references\" { file, line1, character }. On degradation, op:\"health\" reports servers and the processes:kill taskId."
       }
     },
