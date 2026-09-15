@@ -51,6 +51,25 @@ export interface DiskAlarmPolicy {
   criticalFreePctMin: number;
   /** …or below this absolute byte floor. Must be TIGHTER than freeBytesMin. */
   criticalFreeBytesMin: number;
+  /**
+   * Ceiling on the PERCENTAGE-derived write-headroom reserve (EI-23337577023503501).
+   *
+   * Only {@link detectCriticalWriteHeadroom} / {@link criticalWriteHeadroomBytes}
+   * honour this — the alarm tiers deliberately do not (see below). A percentage
+   * floor is a proxy for "this filesystem is nearly full", which is the right
+   * question for a HUMAN CLEANUP NUDGE and the wrong one for a WRITER: a writer's
+   * transient demand is ABSOLUTE and does not scale with volume size, so the same
+   * 2% that means 400 MiB on a 20 GiB disk means 149 GiB on a 7.45 TiB archive
+   * volume — a reserve no run has ever needed, which froze this repo's green
+   * checkpoint for 32 consecutive reds while 47.9 GiB sat free (24x the absolute
+   * floor). Measured over 826 paired checkpoint runs, a run's net consumption was
+   * p50 0.1 GiB, p90 3.6 GiB, p99 34 GiB, max 57.7 GiB — and the same series has a
+   * MINIMUM of -74.5 GiB (peers freeing space mid-run), so that upper tail is
+   * shared-box noise in both directions rather than gate demand. 64 GiB therefore
+   * covers the largest delta ever observed, with margin, and still refuses a
+   * genuinely doomed write.
+   */
+  criticalFreeBytesCap: number;
 }
 
 export const DEFAULT_DISK_POLICY: DiskAlarmPolicy = {
@@ -59,6 +78,7 @@ export const DEFAULT_DISK_POLICY: DiskAlarmPolicy = {
   freeInodesPctMin: 0.05, // 5%
   criticalFreePctMin: 0.02, // 2%
   criticalFreeBytesMin: 2 * GIB,
+  criticalFreeBytesCap: 64 * GIB,
 };
 
 export function diskPolicyFromEnv(): DiskAlarmPolicy {
@@ -70,6 +90,8 @@ export function diskPolicyFromEnv(): DiskAlarmPolicy {
       envNum('PAPERCUSP_DISK_ALARM_CRITICAL_PCT', DEFAULT_DISK_POLICY.criticalFreePctMin * 100) / 100,
     criticalFreeBytesMin:
       envNum('PAPERCUSP_DISK_ALARM_CRITICAL_GB', DEFAULT_DISK_POLICY.criticalFreeBytesMin / GIB) * GIB,
+    criticalFreeBytesCap:
+      envNum('PAPERCUSP_DISK_ALARM_CRITICAL_CAP_GB', DEFAULT_DISK_POLICY.criticalFreeBytesCap / GIB) * GIB,
   };
 }
 
@@ -159,15 +181,36 @@ export function detectLowSpace(snapshots: DiskSnapshot[], policy: DiskAlarmPolic
  * at the alarm's ordinary floor because it produces ENOSPC just as surely as byte
  * exhaustion. Keeping this as a policy projection over {@link detectLowSpace}
  * prevents the gate and the alarm from inventing two definitions of a full disk.
+ *
+ * EI-23337577023503501: the projection is BOUNDED rather than a straight reuse.
+ * The alarm's byte rule is an OR — absolute floor OR percentage floor — and the
+ * percentage leg answers "is this filesystem nearly full?", which is the correct
+ * question for the alarm (a human should go prune) and the WRONG one here. A
+ * writer's transient demand is absolute, so an uncapped percentage scales the
+ * reserve with the size of the volume and eventually demands headroom no run has
+ * ever used. The reserve is therefore the bounded scalar from
+ * {@link criticalWriteHeadroomBytes}, applied as a pure byte floor: the
+ * percentage leg is retired here (it only ever RAISES the reserve, since on a
+ * small volume the absolute floor already dominates) and lives on unchanged in
+ * the alarm tiers. The guard is preserved, not weakened — a filesystem with less
+ * than the reserve still refuses, and the inode leg is untouched.
  */
 export function detectCriticalWriteHeadroom(
   snapshots: DiskSnapshot[],
   policy: DiskAlarmPolicy = DEFAULT_DISK_POLICY,
 ): DiskBreach[] {
-  return detectLowSpace(snapshots, {
-    ...policy,
-    freePctMin: policy.criticalFreePctMin,
-    freeBytesMin: policy.criticalFreeBytesMin,
+  return snapshots.flatMap((snapshot) => {
+    // Per-snapshot: the reserve depends on that filesystem's own total size.
+    const reserve = criticalWriteHeadroomBytes(snapshot.totalBytes, policy);
+    return detectLowSpace([snapshot], {
+      ...policy,
+      // Byte breach iff freeBytes < reserve. Zeroing the percentage legs is what
+      // bounds the reserve; `reserve` already carries the percentage's intent.
+      freePctMin: 0,
+      freeBytesMin: reserve,
+      criticalFreePctMin: 0,
+      criticalFreeBytesMin: reserve,
+    });
   });
 }
 
@@ -179,6 +222,17 @@ export function detectCriticalWriteHeadroom(
  * The alarm's byte rule is an OR (absolute floor OR percentage floor), so the
  * equivalent reserve is the larger threshold. Invalid totals retain the
  * absolute floor instead of manufacturing percentage headroom from bad input.
+ *
+ * EI-23337577023503501: that larger-of pair is then CAPPED at
+ * {@link DiskAlarmPolicy.criticalFreeBytesCap}. A writer's demand is absolute and
+ * does not grow with the volume it writes to, so past the cap more proportional
+ * headroom buys the writer nothing and only manufactures an unreachable floor —
+ * on a 7.45 TiB volume the uncapped rule demanded 149 GiB, which froze this
+ * repo's green checkpoint at 32 consecutive reds with 47.9 GiB free and every
+ * measured run needing single-digit GiB. The cap binds ONLY above the observed
+ * demand envelope: it is above every reserve this function's own tests pin
+ * (2 GiB @ 20 GiB, 10 GiB @ 500 GiB, 37.5 GiB @ 1875.7 GiB all pass through
+ * unchanged), so it loosens nothing that was ever load-bearing.
  */
 export function criticalWriteHeadroomBytes(
   totalBytes: number,
@@ -195,7 +249,15 @@ export function criticalWriteHeadroomBytes(
     policy.criticalFreePctMin > 0
       ? totalBytes * policy.criticalFreePctMin
       : 0;
-  return Math.max(absolute, proportional);
+  const cap =
+    Number.isFinite(policy.criticalFreeBytesCap) && policy.criticalFreeBytesCap > 0
+      ? policy.criticalFreeBytesCap
+      : Number.POSITIVE_INFINITY;
+  // Order matters: the cap bounds only the PROPORTIONAL term. The absolute floor
+  // stays a hard minimum, so a misconfigured (tiny) cap can never lower the
+  // reserve below what the alarm itself calls critical — it can only stop the
+  // percentage from inflating it past what a writer can actually use.
+  return Math.max(absolute, Math.min(proportional, cap));
 }
 
 function fmtGb(bytes: number): string {
