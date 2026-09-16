@@ -72,6 +72,7 @@ import tool, {
   appendDecisionToBody,
   allocateNextDecisionId,
   decisionMeasurementAdvisory,
+  decisionCitedRuleAdvisory,
 } from './add-decision';
 import { parsePlan } from './parser';
 
@@ -161,6 +162,56 @@ describe('plans:add-decision — measure before you rule', () => {
     expect(tool.args.shape.body.description).toContain('Measured:');
     expect(tool.guidance?.when).toContain('open the tree');
     expect(tool.description).toContain('measurementAdvisory');
+  });
+
+  // P-004 of `acceptance-machinery-seam-fixes-2026-09-16`. The sibling advisory
+  // for the case the path-keyed one structurally cannot see: a ruling that rests
+  // on another DECISION as authority and never touches the tree.
+  it('documents citedRuleAdvisory on the tool', () => {
+    expect(tool.description).toContain('citedRuleAdvisory');
+    expect(tool.guidance?.returns).toContain('citedRuleAdvisory');
+  });
+
+  it('flags a ruling that rests on a qualified decision ref with no measurement', () => {
+    expect(decisionCitedRuleAdvisory(
+      'The gate already refuses this case per ship-main-greening-program-2026-09-15#D-004, so no new guard is needed.',
+    )).toMatchObject({
+      code: 'cited_rule_without_measurement',
+      citations: ['ship-main-greening-program-2026-09-15#D-004'],
+    });
+  });
+
+  it('flags a bare decision id leaned on with an authority word', () => {
+    expect(decisionCitedRuleAdvisory('Per D-012 the frozen candidate never moves.')).toMatchObject({
+      code: 'cited_rule_without_measurement',
+      citations: ['Per D-012'],
+    });
+    expect(decisionCitedRuleAdvisory('This lane is governed by D-007 and needs no further gate.')).toMatchObject({
+      code: 'cited_rule_without_measurement',
+    });
+  });
+
+  it('is silent once the decision carries a concrete Measured line', () => {
+    // The exemption that keeps the advisory trustworthy: warning an author who
+    // DID measure teaches "this warning is noise", and then it protects nothing.
+    expect(decisionCitedRuleAdvisory(
+      'Per D-012 the frozen candidate never moves.\nMeasured: rg -n "queue.candidate" release-actions.ts returned line 88.',
+    )).toBeNull();
+  });
+
+  it('does not fire on a mere mention, or on a citation that OVERRULES the cited decision', () => {
+    // A decision that names another one without leaning on it is not resting its
+    // ruling on it; a decision that retires one is overruling it, not citing it
+    // as evidence. Both would be false alarms.
+    expect(decisionCitedRuleAdvisory('D-007 covers the sibling lane; this ruling covers ours.')).toBeNull();
+    expect(decisionCitedRuleAdvisory('This supersedes D-003 and re-opens the question.')).toBeNull();
+    expect(decisionCitedRuleAdvisory(
+      'This supersedes ship-main-greening-program-2026-09-15#D-003 and re-opens the question.',
+    )).toBeNull();
+  });
+
+  it('does not fire on design prose that cites nothing', () => {
+    expect(decisionCitedRuleAdvisory('Choose the shared provenance surface over a third one.')).toBeNull();
   });
 
   it('flags source-like paths when no measurement accompanies the tree claim', () => {
