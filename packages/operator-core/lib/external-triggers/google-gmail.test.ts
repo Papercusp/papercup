@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   createGoogleGmailDraft,
+  DEFAULT_BACKFILL_MESSAGES_PER_SYNC,
   decodeGoogleGmailNotification,
   ensureGoogleGmailWatch,
+  googleGmailBackfillBudget,
+  googleGmailBackfillParked,
+  MIN_BACKFILL_MESSAGES_PER_SYNC,
   normalizeGoogleGmailMessage,
   syncGoogleGmailSource,
   type GoogleGmailMessage,
@@ -368,6 +372,73 @@ describe('Google Gmail adapter', () => {
     expect(second.backfill).toMatchObject({ status: 'complete', pageToken: null, pages: 2, messages: 3 });
     expect(listCalls.map((p) => p.get('pageToken'))).toEqual([null, 'page-2']);
     expect(d.ingested.map((input) => input.externalId)).toEqual(['m1', 'm2', 'm3']);
+  });
+
+  it('halves the backfill budget per consecutive quota throttle and restores the ceiling on a clean chunk (WI-10001549)', async () => {
+    // A 158-message chunk tripped the live per-user per-minute quota, so the
+    // 200 default was above what the project allows; 100 is the new ceiling.
+    expect(DEFAULT_BACKFILL_MESSAGES_PER_SYNC).toBe(100);
+    expect(MIN_BACKFILL_MESSAGES_PER_SYNC).toBe(25);
+    expect([0, 1, 2, 3, 9].map((count) => googleGmailBackfillBudget(100, count))).toEqual([100, 50, 25, 25, 25]);
+    expect(googleGmailBackfillBudget(10, 1)).toBe(10); // a ceiling below the floor is never raised
+    expect(googleGmailBackfillBudget(200, 1)).toBe(100);
+
+    const listCalls: URLSearchParams[] = [];
+    const fetchImpl = vi.fn(async (request: string | URL | Request) => {
+      const url = new URL(request instanceof Request ? request.url : request.toString());
+      if (url.pathname.endsWith('/history')) return json({ historyId: 'h-1' });
+      if (url.pathname.endsWith('/messages')) {
+        listCalls.push(url.searchParams);
+        const size = Number(url.searchParams.get('maxResults'));
+        const page = url.searchParams.get('pageToken') ?? 'p0';
+        return json({
+          messages: Array.from({ length: size }, (_, i) => ({ id: `m-${page}-${i}` })),
+          nextPageToken: `${page}n`,
+        });
+      }
+      const id = url.pathname.split('/').pop() ?? '';
+      if (id.startsWith('m-')) return json(message(id));
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+    const d = syncDeps(fetchImpl);
+    // Ceiling 50 halves to exactly one 25-message page; a ceiling under the
+    // floor (as in the earlier resume test's budget of 2) is never halved.
+    const deps = { ...d.value, backfillMessagesPerSync: 50 };
+    const afterThrottle = {
+      status: 'throttled',
+      pageToken: 'p0',
+      pages: 0,
+      messages: 0,
+      startedAt: NOW.toISOString(),
+      completedAt: null,
+      throttledUntil: new Date(NOW.getTime() - 1_000).toISOString(), // cool-down just lifted
+      throttleCount: 1,
+    };
+    expect(googleGmailBackfillParked(source({ backfill: afterThrottle }), NOW)).toBe(false);
+    expect(
+      googleGmailBackfillParked(
+        source({ backfill: { ...afterThrottle, throttledUntil: new Date(NOW.getTime() + 1_000).toISOString() } }),
+        NOW,
+      ),
+    ).toBe(true);
+
+    // One throttle behind us: this chunk walks HALF the ceiling (50 → 25), one page...
+    const shrunk = await syncGoogleGmailSource({} as never, source({ historyId: 'h-1', backfill: afterThrottle }), 'access-token', deps);
+    expect(shrunk.messages).toBe(25);
+    expect(listCalls.map((p) => p.get('maxResults'))).toEqual(['25']);
+    expect(shrunk.backfill).toMatchObject({ status: 'pending', pageToken: 'p0n', throttleCount: 0 });
+
+    // ...and a clean chunk resets throttleCount, so the next one is back at the
+    // ceiling — walked as two 25-message pages so a mid-chunk trip re-walks ≤24 gets.
+    const restored = await syncGoogleGmailSource(
+      {} as never,
+      source(d.updates.at(-1)?.cursor as Record<string, unknown>),
+      'access-token',
+      deps,
+    );
+    expect(restored.messages).toBe(50);
+    expect(listCalls.map((p) => p.get('maxResults'))).toEqual(['25', '25', '25']);
+    expect(listCalls.map((p) => p.get('pageToken'))).toEqual(['p0', 'p0n', 'p0nn']);
   });
 
   it('parks the backfill with a cool-down on a per-user quota 403 and keeps the source connected', async () => {
