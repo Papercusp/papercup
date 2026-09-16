@@ -10,6 +10,7 @@ import {
   MIN_BACKFILL_MESSAGES_PER_SYNC,
   normalizeGoogleGmailMessage,
   syncGoogleGmailSource,
+  updateGoogleGmailDraft,
   type GoogleGmailMessage,
 } from './google-gmail';
 import type { ExternalTriggerSourceRow } from './source-store';
@@ -161,6 +162,110 @@ describe('Google Gmail adapter', () => {
       threadId: 'thread-m-1',
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('revises an existing draft in place via PUT, preserving its draft id', async () => {
+    const fetchImpl = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(request instanceof Request ? request.url : request.toString());
+      // The id belongs in the PATH — a POST to the collection would create a
+      // SECOND draft and leave the original untouched.
+      expect(url.pathname).toBe('/gmail/v1/users/me/drafts/draft-1');
+      expect(init?.method).toBe('PUT');
+      const put = JSON.parse(String(init?.body)) as { id: string; message: { raw: string } };
+      expect(put.id).toBe('draft-1');
+      const raw = Buffer.from(put.message.raw, 'base64url').toString('utf8');
+      expect(raw).toContain('Subject: Revised subject\r\n');
+      expect(raw).toContain('\r\n\r\nRevised body');
+      return json({ id: 'draft-1', message: { id: 'draft-message-1', threadId: 'thread-m-1' } });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      updateGoogleGmailDraft(
+        'access-token',
+        'draft-1',
+        {
+          to: 'Ada <ada@example.com>',
+          subject: 'Revised subject',
+          text: 'Revised body',
+          threadId: 'thread-m-1',
+        },
+        { fetch: fetchImpl, apiOrigin: 'https://gmail.test' },
+      ),
+    ).resolves.toEqual({
+      draftId: 'draft-1',
+      messageId: 'draft-message-1',
+      threadId: 'thread-m-1',
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries an attachment onto an updated draft through the shared multipart encoder', async () => {
+    // The reason this seam exists: 20 real drafts were written by the
+    // text/plain-only encoder and are missing their resume. Revising one must
+    // gain the attachment without a separate attachment code path.
+    const fetchImpl = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
+      const put = JSON.parse(String(init?.body)) as { message: { raw: string } };
+      const raw = Buffer.from(put.message.raw, 'base64url').toString('utf8');
+      expect(raw).toContain('Content-Type: multipart/mixed; boundary=');
+      expect(raw).toContain('name="resume.pdf"');
+      expect(raw).toContain('Content-Transfer-Encoding: base64');
+      // The PDF bytes must survive the round trip intact.
+      expect(raw).toContain(Buffer.from('%PDF-1.7 fixture').toString('base64'));
+      return json({ id: 'draft-9', message: { id: 'msg-9', threadId: 'thread-9' } });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      updateGoogleGmailDraft(
+        'access-token',
+        'draft-9',
+        {
+          to: 'hiring@example.com',
+          subject: 'Application',
+          text: 'Body',
+          attachments: [
+            {
+              filename: 'resume.pdf',
+              contentType: 'application/pdf',
+              content: Buffer.from('%PDF-1.7 fixture'),
+            },
+          ],
+        },
+        { fetch: fetchImpl, apiOrigin: 'https://gmail.test' },
+      ),
+    ).resolves.toMatchObject({ draftId: 'draft-9' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws rather than returning a plausible result when the API names a different draft', async () => {
+    // A response naming another draft means a new one was created and the
+    // original is still sitting in the mailbox unedited. Returning it would
+    // report a successful in-place edit that never happened.
+    const fetchImpl = vi.fn(async () =>
+      json({ id: 'some-other-draft', message: { id: 'msg-x', threadId: 'thread-x' } }),
+    ) as unknown as typeof fetch;
+
+    await expect(
+      updateGoogleGmailDraft(
+        'access-token',
+        'draft-1',
+        { to: 'ada@example.com', subject: 'S', text: 'T' },
+        { fetch: fetchImpl, apiOrigin: 'https://gmail.test' },
+      ),
+    ).rejects.toThrow('google_gmail_draft_id_mismatch');
+  });
+
+  it('refuses a blank draft id without issuing a request', async () => {
+    const fetchImpl = vi.fn(async () => json({})) as unknown as typeof fetch;
+
+    await expect(
+      updateGoogleGmailDraft(
+        'access-token',
+        '   ',
+        { to: 'ada@example.com', subject: 'S', text: 'T' },
+        { fetch: fetchImpl, apiOrigin: 'https://gmail.test' },
+      ),
+    ).rejects.toThrow('google_gmail_draft_id_required');
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('renews users.watch while preserving an existing history cursor', async () => {
