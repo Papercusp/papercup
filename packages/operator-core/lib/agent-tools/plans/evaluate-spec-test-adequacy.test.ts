@@ -303,7 +303,10 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(recipe.current.fingerprints[0].sourceFingerprint).toBe('sha256:latest-recipe');
   });
 
-  it('keeps an unfiltered plan with no eligible clauses as a valid empty read', async () => {
+  // Renamed from 'no eligible clauses' (EI-23420771213407749): this mocks ZERO clauses, which
+  // is a true statement about an empty set. The clauses-exist-but-none-eligible case it was
+  // read as covering is the very false green the next test pins, so keep the pair adjacent.
+  it('keeps an unfiltered plan with NO CLAUSES AT ALL as a valid empty read', async () => {
     listEvidence.mockResolvedValue([]);
     listClauses.mockResolvedValue([]);
 
@@ -314,6 +317,31 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     });
 
     expect(result).toMatchObject({ ok: true, rows: [], count: 0 });
+  });
+
+  it('refuses an UNSELECTED read whose clauses all exist but are filtered out (EI-23420771213407749)', async () => {
+    listEvidence.mockResolvedValue([]);
+    listClauses.mockResolvedValue([clause('draft')]);
+
+    // No specIds/workItemIds/evidenceRefs/planItemIds and no includeDraft — the exact call the
+    // ship gate's remedy text tells an agent to make first. Before the fix this returned
+    // { ok:true, rows:[], count:0, wouldBlock:[] }: a zero-work false green whose empty output
+    // is indistinguishable from a clean verdict, landing where it is most trusted.
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'selection_empty',
+      matchedClauseCount: 1,
+      eligibleClauseCount: 0,
+      excludedClauses: [{ specId: 'SPEC-001', revision: 1, lifecycleStatus: 'draft' }],
+    });
+    expect(result.remedy).toContain('includeDraft:true');
+    expect(result.remedy).toContain('NOT a clean adequacy result');
   });
 
   it('refuses a work-item selection with no exact evidence edge', async () => {

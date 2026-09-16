@@ -84,7 +84,7 @@ export const argsSchema = z.object({
 export default defineTool({
   name: 'plans:evaluate-spec-test-adequacy',
   description:
-    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. Explicit selections never succeed vacuously: when specIds/workItemIds/evidenceRefs/planItemIds are supplied but no eligible clause matches, the reply is { ok:false, error:"selection_empty", ... } rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is { ok:false, error, count, limit, remedy } with NO rows field at all; otherwise it is { ok:true, rows, count, verdicts, wouldBlock }. Always check ok and rows.length before indexing rows[0] — do not assume rows[0].scorecardDraft exists.',
+    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is { ok:false, error:"selection_empty", ... } rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is { ok:false, error, count, limit, remedy } with NO rows field at all; otherwise it is { ok:true, rows, count, verdicts, wouldBlock }. Always check ok and rows.length before indexing rows[0] — do not assume rows[0].scorecardDraft exists.',
   guidance: {
     when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
     notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
@@ -192,7 +192,15 @@ export default defineTool({
     const eligible = pinnedClauses.filter(
       (clause) => args.includeDraft === true || clause.lifecycleStatus === 'active' || clause.lifecycleStatus === 'accepted',
     );
-    if (explicitSelection && eligible.length === 0) {
+    // EI-23420771213407749: this vacuous-success guard must fire on an UNSELECTED call too.
+    // Keyed on `explicitSelection` alone, a no-selector call whose clauses all get filtered
+    // out (draft, or pinned away by specFingerprint) fell through to ok:true/rows:[]/count:0 —
+    // a zero-work false green returned by the very tool the ship gate's own remedy text tells
+    // an agent to run FIRST, so the false clean lands exactly where it is most trusted.
+    // `clauses.length > 0` is the honest discriminator: clauses EXISTED and none survived
+    // filtering, so nothing was measured. A plan with genuinely no clauses still returns
+    // ok:true with zero rows — that is a true statement about an empty set, not a false green.
+    if (eligible.length === 0 && (explicitSelection || clauses.length > 0)) {
       return {
         data: {
           ok: false,
@@ -219,8 +227,8 @@ export default defineTool({
           })),
           remedy:
             clauses.length > 0 && args.includeDraft !== true
-              ? 'The selection matched only draft clauses; pass includeDraft:true to evaluate draft clauses or select active/accepted clauses.'
-              : 'Verify the exact slug and specIds/workItemIds/evidenceRefs/planItemIds selection; no eligible clause matched.',
+              ? `${explicitSelection ? 'The selection matched' : 'This plan has'} ${clauses.length} clause(s), but none is eligible — pass includeDraft:true to evaluate draft clauses, or select active/accepted clauses. Nothing was graded, so this is NOT a clean adequacy result.`
+              : 'Verify the exact slug and specIds/workItemIds/evidenceRefs/planItemIds selection; no eligible clause matched. Nothing was graded, so this is NOT a clean adequacy result.',
         },
       };
     }
