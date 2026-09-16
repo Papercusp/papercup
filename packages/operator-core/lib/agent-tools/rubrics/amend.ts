@@ -36,7 +36,7 @@ export const rubricsAmendArgs = z
       .boolean()
       .optional()
       .describe(
-        'preview a BAR meaning amendment without writing; returns exact approval JSON. Because coord:send expects:action caps each body at 600 characters, first persist preview.approval on the approval work-item with work_items:update { id: "<work-item-id>", payload: { acceptanceBarApproval: preview.approval } }, then send the reviewer a short coord:send pointer; the reviewer fetches work_items:get { id: "<work-item-id>", payloadTier: "full" } and posts that exact object as the entire work_items:comment body',
+        'preview a BAR meaning amendment without writing; returns exact approval JSON. Post preview.approval VERBATIM as its own work_items:comment and point the reviewer at THAT thread post (coord:send caps a body at 600 characters). A thread post is readable on every surface, so the reviewer can copy the JSON back; an item payload is not.',
       ),
     criteria: z
       .array(amendmentCriterionSchema)
@@ -183,8 +183,6 @@ export default defineTool({
     seeAlso: [
       'rubrics:propose (whole-document revision)',
       'rubrics:get (read before amending)',
-      'work_items:update (persist an uncapped approval payload)',
-      'work_items:get (read the exact payload with payloadTier:"full")',
       'work_items:comment (post the exact approval JSON as a Threadable body)',
       'coord:send (send only the short reviewer pointer)',
     ],
