@@ -303,6 +303,7 @@ import './slack/respond-in-thread';
 import './mail/draft';
 import './mail/reply';
 import './mail/send';
+import './mail/send-draft';
 import './calendar/propose';
 import './calendar/update';
 import './chat/reply';

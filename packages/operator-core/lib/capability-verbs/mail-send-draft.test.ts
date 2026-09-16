@@ -49,7 +49,15 @@ function deps(overrides: Record<string, unknown> = {}) {
       cc: [] as string[],
       subject: 'Senior Engineer',
     })),
-    sendDraft: vi.fn(async () => ({ messageId: 'message-1', threadId: 'thread-1' })),
+    // Declared parameters, not `async () => …`: the no-arg form infers a
+    // zero-length tuple for mock.calls, so asserting on the seam argument is a
+    // type error even though the call carries one.
+    sendDraft: vi.fn(
+      async (_token: string, _draftId: string, _seam?: { fetch?: typeof fetch; apiOrigin?: string }) => ({
+        messageId: 'message-1',
+        threadId: 'thread-1',
+      }),
+    ),
     ...overrides,
   };
 }
@@ -58,7 +66,7 @@ const BASE = {
   workspaceId: WORKSPACE,
   userId: USER,
   draftId: 'draft-1',
-  provenance: 'owner-directed' as const,
+  provenance: { from: 'owner-instruction' } as const,
 };
 
 describe('sendMailDraft', () => {
