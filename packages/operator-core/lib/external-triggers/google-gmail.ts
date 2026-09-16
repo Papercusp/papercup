@@ -203,7 +203,7 @@ export interface GoogleGmailDeps {
 export class GoogleGmailApiError extends Error {
   constructor(
     readonly status: number,
-    operation: string,
+    readonly operation: string,
     detail?: string,
   ) {
     super(`google_gmail_${operation}_${status}${detail ? `:${detail}` : ''}`);
@@ -290,6 +290,16 @@ export function googleGmailBackfillParked(source: ExternalTriggerSourceRow, now:
   if (!state || state.status !== 'throttled' || !state.throttledUntil) return false;
   const parkedUntil = Date.parse(state.throttledUntil);
   return Number.isFinite(parkedUntil) && parkedUntil > now.getTime();
+}
+
+/** history.list rejecting the stored startHistoryId — the ONLY legitimate full-resync trigger. */
+export function isGoogleGmailHistoryExpiredError(cause: unknown): boolean {
+  return cause instanceof GoogleGmailApiError && cause.status === 404 && cause.operation === 'history_list';
+}
+
+/** messages.get 404: the message was deleted between being listed and being fetched. */
+export function isGoogleGmailMessageGoneError(cause: unknown): boolean {
+  return cause instanceof GoogleGmailApiError && cause.status === 404 && cause.operation === 'message_get';
 }
 
 /** Quota exhaustion is a pause signal for the backfill, never a source failure. */
@@ -721,6 +731,25 @@ export function decodeGoogleGmailNotification(
   }
 }
 
+/**
+ * A listed message can be deleted (a discarded draft, purged spam) before it
+ * is fetched. That is a fact about ONE message, never about the mailbox
+ * cursor: skip it — dedupe keys make a later re-list harmless.
+ */
+async function getMessageIfPresent(
+  fetchImpl: typeof fetch,
+  apiOrigin: string,
+  accessToken: string,
+  messageId: string,
+): Promise<GoogleGmailMessage | null> {
+  try {
+    return await getMessage(fetchImpl, apiOrigin, accessToken, messageId);
+  } catch (cause) {
+    if (isGoogleGmailMessageGoneError(cause)) return null;
+    throw cause;
+  }
+}
+
 async function getMessage(
   fetchImpl: typeof fetch,
   apiOrigin: string,
@@ -796,7 +825,9 @@ async function incrementalSync(
       for (const added of history.messagesAdded ?? []) {
         const id = nonEmpty(added.message?.id);
         if (!id || delivered.has(id)) continue;
-        await deliver(sql, deps.ingest, sinks, source, await getMessage(deps.fetch, deps.apiOrigin, accessToken, id));
+        const fetched = await getMessageIfPresent(deps.fetch, deps.apiOrigin, accessToken, id);
+        if (!fetched) continue;
+        await deliver(sql, deps.ingest, sinks, source, fetched);
         delivered.add(id);
       }
     }
@@ -869,7 +900,9 @@ async function backfillChunk(
       for (const listed of body.messages ?? []) {
         const id = nonEmpty(listed.id);
         if (!id) continue;
-        await deliver(sql, deps.ingest, sinks, source, await getMessage(deps.fetch, deps.apiOrigin, accessToken, id));
+        const fetched = await getMessageIfPresent(deps.fetch, deps.apiOrigin, accessToken, id);
+        if (!fetched) continue;
+        await deliver(sql, deps.ingest, sinks, source, fetched);
         delivered += 1;
       }
       nextPageToken = nonEmpty(body.nextPageToken);
@@ -951,7 +984,12 @@ export async function syncGoogleGmailSource(
       historyPages = synced.pages;
       historyId = synced.historyId;
     } catch (cause) {
-      if (!(cause instanceof GoogleGmailApiError) || cause.status !== 404) throw cause;
+      // ONLY history.list itself saying the cursor is too old justifies the
+      // full re-bootstrap below (which discards the resumable backfill). A 404
+      // from any other call — messages.get for a message deleted between the
+      // history page and its fetch — used to land here too and restarted the
+      // backfill from zero every few minutes (EI-23429618437235533).
+      if (!isGoogleGmailHistoryExpiredError(cause)) throw cause;
       const clearedCursor = cursorWithoutHistory(source.cursor);
       workingSource = await updateSource(sql, source.workspaceId, source.id, {
         status: 'connecting',

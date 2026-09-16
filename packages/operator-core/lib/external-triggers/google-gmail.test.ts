@@ -263,6 +263,38 @@ describe('Google Gmail adapter', () => {
     ]);
   });
 
+  it('skips a message deleted between history.list and messages.get instead of full-resyncing (EI-23429618437235533)', async () => {
+    const fetchImpl = vi.fn(async (request: string | URL | Request) => {
+      const url = new URL(request instanceof Request ? request.url : request.toString());
+      if (url.pathname.endsWith('/history')) {
+        return json({
+          history: [{ messagesAdded: [{ message: { id: 'm-gone' } }, { message: { id: 'm-2' } }] }],
+          historyId: 'history-new',
+        });
+      }
+      // A discarded draft: listed in history, gone by the time it is fetched.
+      if (url.pathname.endsWith('/messages/m-gone')) return json({ error: { message: 'Requested entity was not found.' } }, 404);
+      if (url.pathname.endsWith('/messages/m-2')) return json(message('m-2'));
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+    const d = syncDeps(fetchImpl);
+    const backfill = { status: 'pending', pageToken: 'page-4', pages: 3, messages: 666, startedAt: '2026-09-16T02:02:51.000Z', throttledUntil: NOW.toISOString(), throttleCount: 1 };
+
+    const result = await syncGoogleGmailSource(
+      {} as never,
+      source({ historyId: 'history-old', emailAddress: 'owner@example.com', backfill: { ...backfill, throttledUntil: new Date(NOW.getTime() + 60_000).toISOString(), status: 'throttled' } }),
+      'access-token',
+      d.value,
+    );
+
+    // The old code caught ANY 404 as "history too old", cleared the cursor and
+    // restarted the resumable backfill from zero every few minutes.
+    expect(result).toMatchObject({ mode: 'incremental', messages: 1, historyId: 'history-new' });
+    expect(d.ingested.map((input) => input.dedupeKey)).toEqual(['gmail:m-2:message.received']);
+    expect(d.updates).toHaveLength(1);
+    expect((d.updates[0]!.cursor as Record<string, unknown>).backfill).toMatchObject({ status: 'throttled', pages: 3, messages: 666, startedAt: '2026-09-16T02:02:51.000Z' });
+  });
+
   it('clears an expired history cursor on 404, full-resyncs, then stores profile historyId', async () => {
     const fetchImpl = vi.fn(async (request: string | URL | Request) => {
       const url = new URL(request instanceof Request ? request.url : request.toString());

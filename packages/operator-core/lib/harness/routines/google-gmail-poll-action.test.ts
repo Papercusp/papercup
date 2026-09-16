@@ -120,6 +120,7 @@ describe('google-gmail-poll system action', () => {
       renewed: 1,
       watchDeferred: 0,
       watchThrottled: 0,
+      quotaThrottled: 0,
       pulled: 0,
       acknowledged: 0,
       messages: 7,
@@ -235,6 +236,55 @@ describe('google-gmail-poll system action', () => {
       expect.objectContaining({ status: 'degraded' }),
     );
     expect(result).toMatchObject({ succeeded: 1, failed: 0, renewed: 0, watchDeferred: 0, watchThrottled: 1, failures: [] });
+  });
+
+  it('treats a per-user quota 403 on history.list as a pause: no degrade, no failure, cursor untouched (EI-23429618437235533)', async () => {
+    // The chunk in the previous poll spent the per-user minute; this poll's
+    // history.list is the first call to hit the exhausted quota.
+    const pending: ExternalTriggerSourceRow = {
+      ...source('source-quota', 'quota@example.com'),
+      cursor: {
+        emailAddress: 'quota@example.com',
+        historyId: 'history-pinned',
+        backfill: { status: 'pending', pageToken: 'page-4', pages: 3, messages: 666, startedAt: '2026-09-16T02:02:51.000Z' },
+      },
+    };
+    const syncSource = vi.fn(async () => {
+      throw new GoogleGmailApiError(
+        403,
+        'history_list',
+        "Quota exceeded for quota metric 'Total Query Cost' and limit 'Units per minute per user'",
+      );
+    });
+    const updateSource = vi.fn(async () => pending);
+    const result = await runGoogleGmailPoll(CTX, {
+      sql: {} as never,
+      listSources: vi.fn(async () => [pending]),
+      getSource: vi.fn(async () => pending),
+      resolveAccessToken: vi.fn(async () => 'token-quota'),
+      provision: vi.fn(async () => ({
+        projectId: 'project',
+        subscriptionId: 'subscription',
+        topicName: 'projects/project/topics/shared',
+        subscriptionName: 'projects/project/subscriptions/subscription',
+        topic: 'existing' as const,
+        subscription: 'existing' as const,
+        publisherGrant: 'existing' as const,
+      })),
+      syncSource,
+      ensureWatch: vi.fn(),
+      ensureFlagshipBinding: vi.fn(),
+      pull: vi.fn(async () => []),
+      acknowledge: vi.fn(async () => 0),
+      updateSource,
+    });
+
+    expect(syncSource).toHaveBeenCalledTimes(1);
+    // Previously this was recorded as status='degraded' + lastError; nothing
+    // about the mailbox is wrong, so the row is not written at all.
+    expect(updateSource).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ failed: 0, quotaThrottled: 1, fullResyncs: 0, failures: [] });
+    expect(formatGoogleGmailPollLog(result)).toContain('quota_throttled=1');
   });
 
   it('re-syncs a cursored mailbox whose resumable backfill is still pending (EI-23378389605835281)', async () => {
@@ -367,6 +417,7 @@ describe('google-gmail-poll system action', () => {
       renewed: 1,
       watchDeferred: 0,
       watchThrottled: 0,
+      quotaThrottled: 0,
       pulled: 3,
       acknowledged: 3,
       messages: 5,
@@ -694,6 +745,7 @@ describe('google-gmail-poll system action', () => {
       renewed: 0,
       watchDeferred: 0,
       watchThrottled: 0,
+      quotaThrottled: 0,
       pulled: 0,
       acknowledged: 0,
       messages: 0,

@@ -53,6 +53,8 @@ export interface GoogleGmailPollResult {
   watchDeferred: number;
   /** Watch renewals that hit the per-user quota (403/429) and were treated as a pause, not a failure. */
   watchThrottled: number;
+  /** Per-source syncs that hit the per-user quota (403/429) anywhere and were skipped this poll, not degraded. */
+  quotaThrottled: number;
   pulled: number;
   acknowledged: number;
   messages: number;
@@ -124,7 +126,7 @@ export function formatGoogleGmailPollLog(result: GoogleGmailPollResult): string 
   return (
     `[google-gmail-poll] sources=${result.sources} succeeded=${result.succeeded} ` +
     `failed=${result.failed} renewed=${result.renewed} watch_deferred=${result.watchDeferred} ` +
-    `watch_throttled=${result.watchThrottled} pulled=${result.pulled} ` +
+    `watch_throttled=${result.watchThrottled} quota_throttled=${result.quotaThrottled} pulled=${result.pulled} ` +
     `acknowledged=${result.acknowledged} messages=${result.messages} ` +
     `full_resyncs=${result.fullResyncs}${failures}`
   );
@@ -187,6 +189,7 @@ export async function runGoogleGmailPoll(
     renewed: 0,
     watchDeferred: 0,
     watchThrottled: 0,
+    quotaThrottled: 0,
     pulled: 0,
     acknowledged: 0,
     messages: 0,
@@ -296,6 +299,14 @@ export async function runGoogleGmailPoll(
       result.fullResyncs += prepared.fullResyncs;
       if (prepared.renewed) result.renewed += 1;
     } catch (cause) {
+      // The per-user quota is shared by every call for that mailbox, so a 403
+      // here (history.list right after a backfill chunk spent the minute) is the
+      // same pause signal the chunk and the watch renewal already honour — the
+      // next poll retries; nothing is 'degraded' (EI-23429618437235533).
+      if (isGoogleGmailQuotaError(cause)) {
+        result.quotaThrottled += 1;
+        continue;
+      }
       await recordFailure(source, cause);
     }
   }
@@ -364,6 +375,10 @@ export async function runGoogleGmailPoll(
       result.messages += synced.messages;
       if (synced.mode === 'full') result.fullResyncs += 1;
     } catch (cause) {
+      if (isGoogleGmailQuotaError(cause)) {
+        result.quotaThrottled += 1;
+        continue;
+      }
       await recordFailure(source, cause);
     }
   }
