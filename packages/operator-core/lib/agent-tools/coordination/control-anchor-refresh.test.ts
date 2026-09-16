@@ -111,7 +111,11 @@ describe('refreshControlAnchorAfterMutation', () => {
   // P-009 (EI-23431478594488191). This binds the SEAM, not the predicate: a
   // correct carry helper that nothing calls leaves the denial exactly in place.
   describe('control-source identity receipt', () => {
-    const APPLIED = { specificationRevision: 'spec-a', stateRevision: 'state-1' };
+    // `assertRevision` requires a lowercase sha256 specificationRevision, so a
+    // readable placeholder here is rejected before the seam is ever reached.
+    const SPEC = 'a'.repeat(64);
+    const OTHER_SPEC = 'b'.repeat(64);
+    const APPLIED = { specificationRevision: SPEC, stateRevision: 'state-1' };
 
     function launchRecord(overrides: Record<string, unknown> = {}) {
       return {
@@ -131,7 +135,7 @@ describe('refreshControlAnchorAfterMutation', () => {
         fleet: null,
         stack: ['autonomy:su.mode-auto'],
         ...APPLIED,
-        specificationArtifact: { specificationRevision: 'spec-a' },
+        specificationArtifact: { specificationRevision: SPEC },
         ...overrides,
       };
     }
@@ -189,9 +193,9 @@ describe('refreshControlAnchorAfterMutation', () => {
       const written = JSON.parse(update?.values.find((v) => typeof v === 'string'
         && v.includes('identityHistory')) as string);
       expect(written.identityHistory[0]).toMatchObject({
-        specificationRevision: 'spec-a',
+        specificationRevision: SPEC,
         stateRevision: 'state-2',
-        specificationArtifact: { specificationRevision: 'spec-a' },
+        specificationArtifact: { specificationRevision: SPEC },
       });
       // The launch pointer is a receipt too; carrying one must not overwrite it.
       expect(written).toMatchObject(APPLIED);
@@ -210,7 +214,7 @@ describe('refreshControlAnchorAfterMutation', () => {
     it('refuses to carry an artifact the activation specification does not match', async () => {
       const statements = await refresh({
         source: 'mode:set',
-        launchSpec: launchRecord({ specificationRevision: 'spec-OTHER' }),
+        launchSpec: launchRecord({ specificationRevision: OTHER_SPEC }),
       });
       expect(launchSpecUpdate(statements)).toBeUndefined();
     });
