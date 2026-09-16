@@ -563,6 +563,85 @@ export async function listLoopStanddownOwners(
 }
 
 /**
+ * Is a WORKSPACE-WIDE `loop:standdown-all` currently in force? The gate for
+ * automation that does not act ON an existing agent but CREATES new ones —
+ * principally the fleet headcount governor.
+ *
+ * WHY THIS IS NOT `listLoopStanddownOwners(...).size > 0` (EI-23259368987233359):
+ * two independent reasons, and each alone is sufficient.
+ *
+ *   1. WRONG QUESTION. That helper answers "which EXISTING owners are held", so
+ *      it is keyed on owners that already exist. Repopulation opens members that
+ *      do not exist yet and therefore appear in no held set, however complete
+ *      that set is. The question here is workspace-level, not per-owner: "may
+ *      anything be opened at all right now?"
+ *   2. WRONG FAIL DIRECTION — the load-bearing half. `listLoopStanddownOwners`
+ *      fails OPEN by design because it SUPPRESSES delivery: a scan failure there
+ *      must never strand escalations that nothing is pausing. This guard is its
+ *      mirror image — it AUTHORIZES SPAWNING — so failing open on a scan error
+ *      silently re-creates the exact incident it exists to prevent (an
+ *      owner-directed stand-down verified at zero sessions, after which the
+ *      governor repopulated five members, four loops and four claims). It
+ *      therefore fails CLOSED: on a read error the stand-down is ASSUMED ACTIVE
+ *      and top-up is blocked. A blocked top-up is self-healing — the governor
+ *      re-evaluates every tick and carries its own backoff — whereas an
+ *      unwanted repopulation mid-stand-down is not self-healing at all.
+ *
+ * Two guards over the SAME marker with OPPOSITE fail directions is correct, not
+ * an inconsistency to tidy away: the direction follows from whether the guard
+ * SUPPRESSES an action or AUTHORIZES one. Do not refactor this into a delegation
+ * to `listLoopStanddownOwners` — that would silently adopt its fail-open
+ * behaviour and re-arm the trap while looking like pure deduplication.
+ *
+ * A FLEET-SCOPED stand-down deliberately does NOT satisfy this predicate: it is
+ * a statement about one fleet's members, not an instruction to freeze every
+ * controller in the workspace. Scoping that case belongs to the fleet's own
+ * control_state, not here.
+ *
+ * Expiry reuses `classifyFinitePauseExpiry`, exactly as the owner-set read does,
+ * so the hold releases at the same moment the loops themselves resume — one
+ * expiry notion, not two that can disagree during the window between lapse and
+ * sweep.
+ */
+export async function isWorkspaceWideLoopStanddownActive(
+  sql: Sql,
+  opts: { workspaceId?: string | null; nowMs?: number; limit?: number } = {},
+): Promise<boolean> {
+  const nowMs = opts.nowMs ?? Date.now();
+  const limit = opts.limit ?? SWEEP_ROW_CAP;
+  const workspaceId = opts.workspaceId ?? null;
+
+  type HoldRow = Pick<LoopStanddownRow, 'pause'>;
+  let rows: HoldRow[];
+  try {
+    rows = await sql<HoldRow[]>`
+      SELECT metadata->'pause' AS pause
+        FROM harness_shared.routines
+       WHERE reschedule_interval_sec IS NOT NULL
+         AND active = false
+         AND metadata->'pause'->>${LOOP_STANDDOWN_MARKER} = 'true'
+         AND (${workspaceId}::text IS NULL OR workspace_id = ${workspaceId})
+       LIMIT ${limit}`;
+  } catch (e) {
+    // FAIL CLOSED — see the second numbered reason above. Loud, because a
+    // persistently unreadable routines table would otherwise hold the governor
+    // down silently and read exactly like a quiet workspace.
+    console.warn(
+      `[loop-standdown] workspace-wide hold scan failed (FAILING CLOSED, top-up blocked): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+    return true;
+  }
+
+  return rows.some(
+    (row) =>
+      isWorkspaceWideLoopStanddownPause(row.pause)
+      && !classifyFinitePauseExpiry(readRoutinePause(row.pause), nowMs).expired,
+  );
+}
+
+/**
  * One bounded sweep pass: auto-resume every loop-su-% routine whose
  * loop:standdown-all pause has outlived its TTL, and record a notice for each.
  * Sibling of `sweepExpiredReleasePauses` — same row-scan/re-arm shape, scoped to

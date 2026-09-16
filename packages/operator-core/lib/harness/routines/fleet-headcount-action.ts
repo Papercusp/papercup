@@ -30,6 +30,7 @@ import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { executingOwnersSince } from '../../fleet/assignments';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
+import { isWorkspaceWideLoopStanddownActive } from './release-pause-ttl';
 import {
   composeModelSpec,
   composeMemberLaunchContext,
@@ -952,6 +953,24 @@ function governorLaunchTransaction(args: {
 }
 
 async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<void> {
+  // EI-23259368987233359, half 2 of 2 — THE BARRIER A MEMBER IS ACTUALLY OPENED
+  // BEHIND. This repeats the check `runFleetHeadcountGovernor` already made, on
+  // purpose and for the same reason `claimFleetHeadcountAttempt` repeats the
+  // winding-down predicate that `listFleetHeadcountTargets` already applied:
+  // either half alone leaves the trap re-armable, because this function is
+  // reachable without going through the enumerating sweep.
+  //
+  // Checked BEFORE claiming the attempt: `claimFleetHeadcountAttempt` advances
+  // `headcount_next_attempt_at` by a lease, so claiming first would burn a
+  // backoff window on a top-up that is about to be refused anyway and delay the
+  // legitimate refill once the stand-down lifts.
+  if (await isWorkspaceWideLoopStanddownActive(getOrgPg().sql, { workspaceId })) {
+    console.warn(
+      `[${FLEET_HEADCOUNT_EVENT_PREFIX}] top-up blocked for ${fleetSlug}: a workspace-wide `
+      + 'loop:standdown-all is in force; members would repopulate behind the stand-down',
+    );
+    return;
+  }
   const attempt = await claimFleetHeadcountAttempt({ workspaceId, fleetSlug });
   if (!attempt) return;
   const fleet = await getFleet(workspaceId, fleetSlug);
@@ -1636,6 +1655,26 @@ export function grantingHeadcountTargets(
 
 export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<void> {
   if (!(await getFlag(FLEET_HEADCOUNT_FLAG, 'system').catch(() => false))) return;
+  // EI-23259368987233359, half 1 of 2 — a workspace-wide `loop:standdown-all`
+  // freezes the CONTROLLER, not just the members' loops. Without this, a
+  // stand-down verified at zero live sessions silently repopulated a fleet
+  // (five members, four loops, four claims): pausing every loop-su-% row does
+  // nothing to the governor, and each member it opens arms a fresh loop of its
+  // own, so the stand-down manufactured exactly the wakes it existed to stop.
+  //
+  // Placed here rather than expressed as `control_state = 'winding-down'`,
+  // which is the tempting one-line fix and is DESTRUCTIVE: `setFleetControlState`
+  // NULLs `headcount_target` on wind-down, so a reversible 4h-TTL stand-down
+  // would permanently erase the restoration target of every fleet it touched.
+  // Stand-down is reversible by design; wind-down is terminal. Guard, do not
+  // wind down.
+  if (await isWorkspaceWideLoopStanddownActive(getOrgPg().sql, { workspaceId: ctx.workspaceId })) {
+    console.warn(
+      `[${FLEET_HEADCOUNT_EVENT_PREFIX}] governor wave skipped: a workspace-wide `
+      + 'loop:standdown-all is in force (auto-resumes on its TTL, which lifts this hold too)',
+    );
+    return;
+  }
   // R5: the flag above is the MASTER gate; the per-fleet grant scopes it. The
   // filter runs BEFORE the wave cap so ungranted rows neither consume the
   // per-tick budget nor receive any action (top-up OR the terminal-plan
