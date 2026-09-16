@@ -871,6 +871,149 @@ export async function updateGoogleGmailDraft(
 }
 
 /**
+ * Send an EXISTING draft, by id (WI-10001668).
+ *
+ * The distinction from `sendGoogleGmailMessage` is the whole point, not a
+ * convenience: that one COMPOSES a fresh message from a `GoogleGmailOutboundInput`
+ * and re-encodes the MIME. This one hands Gmail a draft id and sends the bytes
+ * already sitting in the mailbox. So when a human has REVIEWED and approved a
+ * draft, this is the only path that sends the artifact they actually approved —
+ * re-composing it means the reviewed text and the sent text are two different
+ * objects that merely ought to agree, and any encoder change between review and
+ * send silently sends something else. It also consumes the draft rather than
+ * leaving an orphan sitting beside a near-identical sent message.
+ *
+ * Deliberately takes no `GoogleGmailOutboundInput`: there is nothing to encode,
+ * and accepting one would invite exactly the re-composition this exists to avoid.
+ */
+export async function sendGoogleGmailDraft(
+  accessToken: string,
+  draftId: string,
+  provided: Pick<GoogleGmailDeps, 'fetch' | 'apiOrigin'> = {},
+): Promise<GoogleGmailSendResult> {
+  const token = accessToken.trim();
+  if (!token) throw new Error('google_gmail_access_token_required');
+  const targetDraftId = draftId.trim();
+  if (!targetDraftId) throw new Error('google_gmail_draft_id_required');
+  const body = await gmailRequest<{ id?: string; threadId?: string }>(
+    provided.fetch ?? fetch,
+    (provided.apiOrigin ?? GMAIL_API_ORIGIN).replace(/\/$/, ''),
+    token,
+    '/gmail/v1/users/me/drafts/send',
+    'draft_send',
+    { method: 'POST', body: { id: targetDraftId } },
+  );
+  const messageId = nonEmpty(body.id);
+  const threadId = nonEmpty(body.threadId);
+  // A 2xx carrying no message id is the shape that would let a caller record a
+  // send that may not have happened. Refuse it rather than return a half-result.
+  if (!messageId || !threadId) throw new Error('google_gmail_draft_send_response_invalid');
+  return { messageId, threadId };
+}
+
+/** The addressees a stored draft ACTUALLY carries, normalized and lowercased. */
+export interface GoogleGmailDraftRecipients {
+  to: string[];
+  cc: string[];
+  subject: string | null;
+}
+
+/**
+ * Split an RFC-5322 address list on the commas that SEPARATE addresses, not on
+ * the ones inside a quoted display name or an angle-addr.
+ *
+ * `"Weiss, Avi" <avi@example.com>` is one recipient. A naive `.split(',')` reads
+ * it as two, and both halves then fail to parse as addresses — so a caller
+ * comparing against its expected set sees a mismatch that is purely an artifact
+ * of the parser, on precisely the personal-name format most likely to appear in
+ * a real mailbox.
+ */
+function splitAddressList(value: string): string[] {
+  const out: string[] = [];
+  let buf = '';
+  let inQuotes = false;
+  let inAngle = false;
+  for (const ch of value) {
+    if (ch === '"' && !inAngle) inQuotes = !inQuotes;
+    else if (ch === '<' && !inQuotes) inAngle = true;
+    else if (ch === '>' && !inQuotes) inAngle = false;
+    else if (ch === ',' && !inQuotes && !inAngle) {
+      out.push(buf);
+      buf = '';
+      continue;
+    }
+    buf += ch;
+  }
+  out.push(buf);
+  return out.map((entry) => entry.trim()).filter(Boolean);
+}
+
+/** `Name <a@b.com>` / `a@b.com` → `a@b.com`; anything without an `@` → null. */
+function extractAddress(entry: string): string | null {
+  const angle = /<([^>]*)>/.exec(entry);
+  const raw = (angle ? angle[1] : entry).trim().toLowerCase();
+  return raw.includes('@') ? raw : null;
+}
+
+function headerValue(headers: readonly GoogleGmailHeader[], name: string): string {
+  const lower = name.toLowerCase();
+  return headers.find((header) => (header.name ?? '').toLowerCase() === lower)?.value ?? '';
+}
+
+/**
+ * Read the addressees a draft currently holds, straight from Gmail.
+ *
+ * This exists because `drafts/send` sends WHAT GMAIL HOLDS, not what the caller
+ * believes it holds. Between a draft being created (rails run, recipients
+ * cleared) and being sent, the draft is editable — by the owner in their own
+ * client, by any other process with the token. So an addressee check run only
+ * at draft time proves nothing about the send: it judged bytes that may no
+ * longer exist. The only way to judge what will actually leave the mailbox is
+ * to read it back immediately before sending, which is what this returns.
+ *
+ * `format=metadata` keeps the response to headers — the body is not needed to
+ * decide who a message is addressed to, and not fetching it means a large
+ * attachment does not have to cross the wire to answer that question.
+ */
+export async function readGoogleGmailDraftRecipients(
+  accessToken: string,
+  draftId: string,
+  provided: Pick<GoogleGmailDeps, 'fetch' | 'apiOrigin'> = {},
+): Promise<GoogleGmailDraftRecipients> {
+  const token = accessToken.trim();
+  if (!token) throw new Error('google_gmail_access_token_required');
+  const targetDraftId = draftId.trim();
+  if (!targetDraftId) throw new Error('google_gmail_draft_id_required');
+  const params = new URLSearchParams({ format: 'metadata' });
+  for (const header of ['To', 'Cc', 'Subject']) params.append('metadataHeaders', header);
+  const body = await gmailRequest<{ id?: string; message?: GoogleGmailMessage }>(
+    provided.fetch ?? fetch,
+    (provided.apiOrigin ?? GMAIL_API_ORIGIN).replace(/\/$/, ''),
+    token,
+    `/gmail/v1/users/me/drafts/${encodeURIComponent(targetDraftId)}`,
+    'draft_get',
+    { params },
+  );
+  const headers = body.message?.payload?.headers ?? [];
+  // A draft that came back carrying NO headers at all is an unreadable answer,
+  // not a draft addressed to nobody. Returning empty would read to a caller as
+  // "this draft has no recipients", and the safest-looking reaction to that —
+  // treating an empty set as nothing to check — is exactly wrong.
+  if (!Array.isArray(headers) || headers.length === 0) {
+    throw new Error('google_gmail_draft_headers_unreadable');
+  }
+  const parse = (name: string): string[] => {
+    const value = headerValue(headers, name);
+    if (!value.trim()) return [];
+    return splitAddressList(value)
+      .map(extractAddress)
+      .filter((address): address is string => Boolean(address));
+  };
+  const subject = headerValue(headers, 'Subject').trim();
+  return { to: parse('To'), cc: parse('Cc'), subject: subject || null };
+}
+
+/**
  * Send one message. Reply-shaped when `threadId`/`inReplyTo` are present,
  * create-shaped when they are not.
  *
