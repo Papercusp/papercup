@@ -145,6 +145,30 @@ function legacyCriterionFromTemplateData(templateData: unknown): LegacyCriterion
   };
 }
 
+/**
+ * EI-23379913422335853 — which bar key the legacy-backfill clause match may filter on.
+ *
+ * Extracted as a pure function so BOTH arms are guarded by the UNIT lane. That matters
+ * specifically here: this decision is only otherwise exercised through SQL, and an
+ * `*.integration.test.ts` is excluded by the unit layer's exclude-glob
+ * (libs/test-config/src/vitest-config.ts:161-163), so it never runs under the
+ * `npm run test:affected` the green-checkpoint gate executes. A drill that cannot run
+ * reports the same green as a passing one.
+ *
+ * `planHasBarKeyAttribution` = does ANY clause revision on this plan carry a non-NULL
+ * `source_bar_key`? Returning null makes the caller's predicate
+ * `(${key}::text IS NULL OR r.source_bar_key = ${key})` short-circuit to a barKey-AGNOSTIC
+ * match. The attribution guard is what keeps that from being a correctness regression:
+ * a plan that DOES attribute keeps the strict match, so a clause can never be
+ * mis-attributed to the wrong bar.
+ */
+export function effectiveLegacyBarKey(
+  criterionBarKey: string | null | undefined,
+  planHasBarKeyAttribution: boolean,
+): string | null {
+  return planHasBarKeyAttribution ? criterionBarKey ?? null : null;
+}
+
 function appendLegacyCriterionSource(content: string, source: LegacyCriterionSource): string {
   const barKey = source.criterion.barKey ?? 'R-1';
   const title = barKey;
@@ -244,7 +268,10 @@ export async function runAcceptanceBarMigrationInDatabase(
                    AND r.plan_slug = ${row.plan_slug}
                    AND r.source_bar_key IS NOT NULL
               ) AS has_attribution`;
-            const effectiveBarKey = attributionRows[0]?.has_attribution ? criterion.barKey ?? null : null;
+            const effectiveBarKey = effectiveLegacyBarKey(
+              criterion.barKey,
+              attributionRows[0]?.has_attribution ?? false,
+            );
             const mapRows = await tx<Array<{ plan_item_id: string }>>`
               SELECT DISTINCT r.plan_item_id
                 FROM harness_shared.plan_spec_clauses c
