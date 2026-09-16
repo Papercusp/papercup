@@ -443,7 +443,12 @@ describe('describeWriteHeadroomBreach (EI-23424266636870803)', () => {
   });
 
   it('an inode breach reports the inode floor, not a byte deficit', () => {
-    const s = snap({ path: '/fs', totalInodes: 1_000_000, freeInodes: 10_000 });
+    const s = snap({
+      path: '/fs',
+      totalInodes: 1_000_000,
+      freeInodes: 10_000,
+      freeInodesPct: 0.01,
+    });
     const breach = onlyBreach(s);
     expect(breach.kinds).toContain('low-inodes');
     const msg = describeWriteHeadroomBreach(breach);
@@ -454,5 +459,32 @@ describe('describeWriteHeadroomBreach (EI-23424266636870803)', () => {
 
   it('no breaches renders nothing — an empty string, never a headline with no content', () => {
     expect(describeWriteHeadroomBreaches([])).toBe('');
+  });
+
+  it('CONTROL: the drift guard REJECTS the pre-fix wording', () => {
+    // A guard that has never failed is a guard you have not tested, and this one reads a
+    // number back out of prose — the kind that passes by accident. So run the assertion
+    // above against a deliberately-wrong formatter kept here permanently: the shipped
+    // pre-fix string, which quoted policy.criticalFreeBytesMin as "the floor". If the
+    // property below ever stops failing for it, the guard has gone vacuous.
+    const preFix = (breach: typeof brokenBreach) =>
+      `${breach.path} ${breach.kinds.join('+')} breaches the standing critical write ` +
+      `headroom floor; floor is ${(DEFAULT_DISK_POLICY.criticalFreeBytesMin / GIB).toFixed(1)} GiB`;
+    const brokenBreach = onlyBreach(REAL_BOX);
+
+    // The pre-fix string names 2.0 GiB where the applied reserve was 64.0 GiB.
+    const named = preFix(brokenBreach).match(/([\d.]+) GiB/)?.[1];
+    expect(Number(named)).toBe(2);
+    expect(Number(named)).not.toBeCloseTo(
+      criticalWriteHeadroomBytes(REAL_BOX.totalBytes) / GIB,
+      1,
+    );
+
+    // CALIBRATION: the same parse against the REAL subject must agree, or the control
+    // above is passing because the regex is broken rather than because the wording was.
+    const real = describeWriteHeadroomBreach(brokenBreach).match(
+      /([\d.]+) GiB write-headroom reserve/,
+    )?.[1];
+    expect(Number(real)).toBeCloseTo(criticalWriteHeadroomBytes(REAL_BOX.totalBytes) / GIB, 1);
   });
 });
