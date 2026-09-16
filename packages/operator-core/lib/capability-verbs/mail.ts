@@ -18,6 +18,8 @@ import {
   createGoogleGmailDraft,
   updateGoogleGmailDraft,
   sendGoogleGmailMessage,
+  sendGoogleGmailDraft,
+  readGoogleGmailDraftRecipients,
   replySubjectFor,
   type GoogleGmailAttachment,
   type GoogleGmailOutboundInput,
@@ -61,11 +63,29 @@ export interface MailDraftResult {
   draftId: string;
 }
 
+export interface MailSendDraftResult {
+  mode: 'send';
+  /** Rail decisions for the addresses the draft ACTUALLY carried at send time. */
+  recipients: AddresseeDecision[];
+  draftId: string;
+  threadId: string;
+  messageId: string;
+  /**
+   * What Gmail held and therefore what SHIPPED — echoed so the caller records
+   * the addresses the message went to, never the ones it hoped it would.
+   */
+  sentTo: string[];
+  sentCc: string[];
+  subject: string | null;
+}
+
 export type MailDeps = {
   resolveAccessToken?: typeof resolveGoogleWorkspaceAccessToken;
   createDraft?: typeof createGoogleGmailDraft;
   updateDraft?: typeof updateGoogleGmailDraft;
   sendMessage?: typeof sendGoogleGmailMessage;
+  sendDraft?: typeof sendGoogleGmailDraft;
+  readDraftRecipients?: typeof readGoogleGmailDraftRecipients;
   fetch?: typeof fetch;
   apiOrigin?: string;
   /** Injected so attachment handling is testable without touching the disk. */
@@ -300,6 +320,131 @@ export async function sendNewMail(
     apiOrigin: deps.apiOrigin,
   });
   return { mode: 'send', recipients, subject, threadId: sent.threadId, messageId: sent.messageId };
+}
+
+/** Set-compare two address lists, order- and duplicate-insensitive. */
+function sameAddressSet(left: readonly string[], right: readonly string[]): boolean {
+  const norm = (list: readonly string[]) =>
+    new Set(list.map((value) => value.trim().toLowerCase()).filter(Boolean));
+  const a = norm(left);
+  const b = norm(right);
+  if (a.size !== b.size) return false;
+  for (const value of a) if (!b.has(value)) return false;
+  return true;
+}
+
+/**
+ * `mail:send-draft` — send a draft that ALREADY EXISTS, by id, without
+ * re-encoding it.
+ *
+ * This is the verb for outbound a human has already read. The draft was
+ * composed, reviewed in the owner's own client, and approved; sending it via
+ * `drafts/send` ships the exact bytes that were reviewed, where re-composing
+ * the same content through `mail:send` would ship a NEW message that merely
+ * resembles what was approved. For a reviewed send, "resembles" is not the
+ * contract.
+ *
+ * ── Why this verb re-runs the addressee rail even though `mail:draft` ran it ──
+ *
+ * `drafts/send` sends WHAT GMAIL HOLDS. A draft is mutable for its whole life:
+ * the owner edits it in Gmail, another process with the token can rewrite it,
+ * and a draft created hours ago has had all that time to change. So the D-020
+ * clearance performed at DRAFT time judged bytes that may no longer exist —
+ * it is evidence about the past, and the send is a fact about the present.
+ *
+ * Hence two distinct checks, on the LIVE recipients, at send time:
+ *
+ *  1. THE RAIL (safety) — `assertTrustedAddressees` against the addresses the
+ *     draft actually carries now. Catches a draft re-addressed to a recipient
+ *     carrying the injection signature.
+ *  2. THE MATCH (intent) — the live recipients must equal the ones the caller
+ *     declared it is sending to. Catches the case the rail cannot: a draft
+ *     re-addressed to a perfectly trustworthy address that simply is not the
+ *     one the caller approved. A trusted recipient is not automatically the
+ *     INTENDED recipient, and a send is irreversible.
+ *
+ * The rail runs first so that when a draft has been re-addressed to a hostile
+ * recipient the caller is told THAT, rather than the blander mismatch that is
+ * also true.
+ */
+export async function sendMailDraft(
+  sql: postgres.Sql,
+  params: {
+    workspaceId: string;
+    userId: string;
+    /** The Gmail draft to send. Its bytes are shipped as-is, never re-encoded. */
+    draftId: string;
+    /**
+     * Who the caller believes this draft is addressed to. NOT used to address
+     * the message — the draft already carries its own recipients — but checked
+     * against them, so a draft that changed under the caller refuses instead of
+     * sending somewhere unapproved.
+     */
+    expectedTo: readonly string[];
+    expectedCc?: readonly string[];
+    provenance: AddresseeProvenance;
+    /** Which connected account holds the draft; required once more than one is. */
+    from?: string | null;
+  },
+  deps: MailDeps = {},
+): Promise<MailSendDraftResult> {
+  const draftId = params.draftId?.trim();
+  if (!draftId) throw new Error('mail_send_draft_id_required');
+  if (!params.expectedTo?.length) throw new Error('mail_send_draft_expected_to_required');
+
+  const ctx = await resolveOutboundContext(sql, {
+    workspaceId: params.workspaceId,
+    userId: params.userId,
+    vaultSource: 'gmail',
+    providerAccountId: params.from,
+  });
+  const token = await (deps.resolveAccessToken ?? resolveGoogleWorkspaceAccessToken)(ctx.source, ctx.installSlug);
+
+  const live = await (deps.readDraftRecipients ?? readGoogleGmailDraftRecipients)(token, draftId, {
+    fetch: deps.fetch,
+    apiOrigin: deps.apiOrigin,
+  });
+  // A draft addressed to nobody cannot be sent to the right person by accident,
+  // but it can be sent — Gmail decides. Refuse here so the failure names the
+  // cause instead of arriving as a provider error after the attempt.
+  if (!live.to.length) throw new Error('mail_send_draft_no_recipients');
+
+  const recipients = await assertTrustedAddressees(sql, {
+    workspaceId: params.workspaceId,
+    userId: params.userId,
+    addresses: [...live.to, ...live.cc],
+    provenance: params.provenance,
+  });
+
+  if (
+    !sameAddressSet(live.to, params.expectedTo) ||
+    !sameAddressSet(live.cc, params.expectedCc ?? [])
+  ) {
+    // Name both sides: the caller's next move is deciding whether the draft was
+    // legitimately edited or tampered with, and it cannot decide that from the
+    // fact of a mismatch alone.
+    throw new Error(
+      `mail_send_draft_recipients_changed:expected=${[...params.expectedTo, ...(params.expectedCc ?? [])]
+        .map((value) => value.trim().toLowerCase())
+        .sort()
+        .join('|')}:actual=${[...live.to, ...live.cc].sort().join('|')}`,
+    );
+  }
+
+  const sent = await (deps.sendDraft ?? sendGoogleGmailDraft)(token, draftId, {
+    fetch: deps.fetch,
+    apiOrigin: deps.apiOrigin,
+  });
+  return {
+    mode: 'send',
+    recipients,
+    draftId,
+    threadId: sent.threadId,
+    messageId: sent.messageId,
+    sentTo: live.to,
+    sentCc: live.cc,
+    subject: live.subject,
+  };
 }
 
 /**
