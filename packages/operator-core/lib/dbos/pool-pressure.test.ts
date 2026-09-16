@@ -29,7 +29,12 @@ import {
   hasPoolShedInWindow,
   __resetPoolPressureForTest,
   CRITICAL_PROBE_MS,
+  attributableLoopDelayMs,
+  poolLatencyNetOfLoopDelayMs,
+  lastPoolProbeRawMs,
+  lastPoolProbeLoopDelayMs,
 } from './pool-pressure';
+import type { LoopLagSample } from '../event-loop-lag-monitor';
 
 afterEach(() => __resetPoolPressureForTest());
 
@@ -187,5 +192,151 @@ describe('hasPoolShedInWindow (EI-13108 ask 2: staleness-consumer query helper)'
     expect(result).toBe(false);
     expect(warnSpy).toHaveBeenCalledOnce();
     warnSpy.mockRestore();
+  });
+});
+
+/**
+ * WI-10001531 — LOOP-DELAY CONTAMINATION.
+ *
+ * The probe times `acquire + SELECT 1` as `now() - start` ACROSS AN `await`. On a
+ * CPU-bound main thread that wall-clock delta is dominated by event-loop scheduling
+ * delay, not pool acquisition — so main-thread saturation was classified as pool
+ * starvation and shed twice (once correctly as loop pressure, once wrongly here).
+ * Measured proof: the probe reported 8191ms against its own 3000ms `Promise.race`
+ * budget — arithmetically impossible from I/O; the timer itself fired 5.2s late.
+ *
+ * The repair discounts the concurrent loop delay (p99) from the raw reading and
+ * classifies the NET value. These cases pin that boundary with no real timers and no
+ * real pool. The case that FAILS on pre-fix code is marked ⛔ below — it is the whole
+ * point of this block, so if a future refactor makes it pass vacuously the guard is
+ * gone.
+ */
+const lagWith = (p99Ms: number, over: Partial<LoopLagSample> = {}): LoopLagSample => ({
+  p50Ms: 22,
+  p95Ms: 1568,
+  p99Ms,
+  maxMs: Math.max(p99Ms, 1),
+  sampleCount: 500,
+  windowMs: 10_000,
+  windowMature: true,
+  ...over,
+});
+
+describe('attributableLoopDelayMs (pure — the delay a single probe may be charged)', () => {
+  it('is p99 — NOT max (one outlier would zero the pool signal for the whole window)', () => {
+    expect(attributableLoopDelayMs(lagWith(2336, { maxMs: 9999 }))).toBe(2336);
+  });
+  it('is 0 with no monitor, so absence of a loop signal leaves the raw probe untouched', () => {
+    expect(attributableLoopDelayMs(null)).toBe(0);
+  });
+  it('is 0 for an unusable p99 (NaN/∞/negative/zero) — never invents a discount', () => {
+    expect(attributableLoopDelayMs(lagWith(NaN))).toBe(0);
+    expect(attributableLoopDelayMs(lagWith(Infinity))).toBe(0);
+    expect(attributableLoopDelayMs(lagWith(-5))).toBe(0);
+    expect(attributableLoopDelayMs(lagWith(0))).toBe(0);
+  });
+});
+
+describe('poolLatencyNetOfLoopDelayMs (pure — raw net of scheduler delay)', () => {
+  it('subtracts the attributable delay', () => {
+    expect(poolLatencyNetOfLoopDelayMs(2500, lagWith(2336))).toBe(164);
+  });
+  it('clamps at 0 — a negative "pool latency" is meaningless', () => {
+    expect(poolLatencyNetOfLoopDelayMs(100, lagWith(2336))).toBe(0);
+  });
+  it('passes a non-finite raw through UNCHANGED, preserving the NaN/∞ ⇒ ok rule', () => {
+    expect(poolLatencyNetOfLoopDelayMs(NaN, lagWith(2336))).toBeNaN();
+    expect(classifyPoolPressure(poolLatencyNetOfLoopDelayMs(NaN, lagWith(2336)))).toBe('ok');
+  });
+});
+
+describe('probePoolLatencyMs — loop delay is discounted, pool starvation is not', () => {
+  const clockOf = (values: number[]) => {
+    let i = 0;
+    return () => values[Math.min(i++, values.length - 1)];
+  };
+  const fastProbe = async () => 1;
+
+  it('⛔ FAILS PRE-FIX: a BLOCKED LOOP with a FAST pool classifies ok, not critical', async () => {
+    // The live HELD reading: raw 2500ms wall-clock while the pool itself was idle, with
+    // the loop monitor reporting p99 2336ms in the same window. Pre-fix this classified
+    // on 2500 ⇒ 'critical' ⇒ the dispatch window collapsed to 1 and routinesTick withheld
+    // every remaining due routine WITHOUT advancing next_fire_at. Net is 164 ⇒ 'ok'.
+    const ms = await probePoolLatencyMs(
+      fastProbe,
+      clockOf([0, 2500, 2500]),
+      3000,
+      () => lagWith(2336),
+    );
+    expect(ms).toBe(164);
+    expect(classifyPoolPressure(ms)).toBe('ok');
+  });
+
+  it('retains raw + discounted delay so a corrected ok stays ATTRIBUTABLE', async () => {
+    // Without these a corrected 'ok' is indistinguishable from a genuinely idle pool.
+    await probePoolLatencyMs(fastProbe, clockOf([0, 2500, 2500]), 3000, () => lagWith(2336));
+    expect(lastPoolProbeMs()).toBe(164); // what consumers classify on
+    expect(lastPoolProbeRawMs()).toBe(2500); // the contaminated reading
+    expect(lastPoolProbeLoopDelayMs()).toBe(2336); // why they differ
+  });
+
+  it('does NOT relax the guard: a HEALTHY loop with a genuinely slow pool stays critical', async () => {
+    const ms = await probePoolLatencyMs(fastProbe, clockOf([0, 2500, 2500]), 3000, () =>
+      lagWith(5),
+    );
+    expect(ms).toBe(2495);
+    expect(classifyPoolPressure(ms)).toBe('critical');
+  });
+
+  it('no monitor (null) ⇒ byte-identical to pre-fix behaviour', async () => {
+    const ms = await probePoolLatencyMs(fastProbe, clockOf([0, 2500, 2500]), 3000, () => null);
+    expect(ms).toBe(2500);
+    expect(classifyPoolPressure(ms)).toBe('critical');
+    expect(lastPoolProbeLoopDelayMs()).toBe(0);
+  });
+
+  it('fail-soft: a THROWING loop-lag read degrades to the raw reading, never throws', async () => {
+    const ms = await probePoolLatencyMs(fastProbe, clockOf([0, 2500, 2500]), 3000, () => {
+      throw new Error('monitor exploded');
+    });
+    expect(ms).toBe(2500);
+    expect(classifyPoolPressure(ms)).toBe('critical');
+  });
+
+  it('reads the monitor ONCE — two reads of a live window could disagree', async () => {
+    // A second read would leave the recorded delay unable to explain the reported value.
+    let reads = 0;
+    await probePoolLatencyMs(fastProbe, clockOf([0, 2500, 2500]), 3000, () => {
+      reads += 1;
+      return lagWith(2336);
+    });
+    expect(reads).toBe(1);
+  });
+});
+
+describe('probePoolLatencyMs — TIMEOUT attribution (pool starvation vs scheduler artifact)', () => {
+  const clockOf = (values: number[]) => {
+    let i = 0;
+    return () => values[Math.min(i++, values.length - 1)];
+  };
+  const neverSettles = () => new Promise(() => {});
+
+  it('a timeout NOT explained by loop delay still FORCES critical (pre-existing contract)', async () => {
+    // Deliberately preserved: the pool could not service a trivial query in the budget.
+    const ms = await probePoolLatencyMs(neverSettles, clockOf([0, 100, 100]), 20, () => null);
+    expect(ms).toBeGreaterThanOrEqual(CRITICAL_PROBE_MS);
+    expect(classifyPoolPressure(ms)).toBe('critical');
+  });
+
+  it('a timeout the loop delay ACCOUNTS FOR is a scheduler artifact ⇒ not forced', async () => {
+    // raw 100ms, of which 95ms is scheduler delay ⇒ the pool itself owed 5ms. The timer
+    // fired because the loop was blocked, not because the pool was starved; forcing
+    // critical here is the double-shed this repair removes (dimension (a) keeps its own
+    // guard, so the loop pressure is still shed — once).
+    const ms = await probePoolLatencyMs(neverSettles, clockOf([0, 100, 100]), 20, () =>
+      lagWith(95),
+    );
+    expect(ms).toBe(5);
+    expect(classifyPoolPressure(ms)).toBe('ok');
   });
 });

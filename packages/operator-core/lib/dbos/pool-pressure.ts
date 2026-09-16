@@ -30,7 +30,31 @@
  * FAIL-SOFT throughout: any probe error is treated as 'ok' — absence of a clean signal
  * must never cause shedding (the same rule loopPressure() follows when no monitor is
  * running). Telemetry, never a crash.
+ *
+ * LOOP-DELAY CONTAMINATION (WI-10001531 — why the raw probe is NOT the signal).
+ * The (a)/(b) split above claims the two dimensions are independent. They are not:
+ * instrument (b) is contaminated by condition (a). `now() - start` spans an `await`,
+ * so on a CPU-bound main thread the delta is dominated by SCHEDULER latency, not by
+ * pool acquisition — the probe charges event-loop delay to Postgres. Measured on the
+ * bg-host 2026-09-16: probe readings up to 8191ms against this module's own 3000ms
+ * `Promise.race` timeout (arithmetically impossible from I/O — the timer itself fired
+ * 5.2s late), while pg_stat_activity showed every one of the process's 43 connections
+ * `idle`, zero active backends host-wide, and the same `SELECT 1` answered in 16ms
+ * from another process. Concurrently: `[event-loop-lag] high loop delay — host is
+ * CPU-bound on the main thread { p95Ms: 1568.7, p99Ms: 2336.2 }` — p99 loop delay
+ * ALONE exceeds CRITICAL_PROBE_MS. Downstream, evaluateRoutineDispatchEpoch collapsed
+ * every queue's admission window to 1 and routinesTick withheld each due routine
+ * WITHOUT advancing next_fire_at, degrading all 69 git-sync slugs ~12x (WI-10001527).
+ *
+ * So we report pool latency NET of the scheduler delay the probe's own await absorbed
+ * (`poolLatencyNetOfLoopDelayMs`). This is a SIGNAL repair, deliberately not a guard
+ * relaxation: the dispatch window and the EI-11171 critical-routine floor are unchanged.
+ * Discounting is safe precisely because dimension (a) keeps its OWN guard — loopPressure()
+ * still sheds at the tick top — so a blocked loop is still shed, once, for the right
+ * reason, instead of twice under two names.
  */
+
+import { currentLoopLag, type LoopLagSample } from '../event-loop-lag-monitor';
 
 export type PoolPressure = 'ok' | 'elevated' | 'critical';
 
@@ -64,15 +88,63 @@ export function classifyPoolPressure(
   return 'ok';
 }
 
+/**
+ * The scheduler delay a SINGLE probe's `await` may be charged with, from the live
+ * loop-delay window. p99 deliberately — NOT max: one outlier block would otherwise
+ * zero out the pool signal for every probe in the same 10s window (over-correcting
+ * into permanent blindness), while p50 under-corrects so far it leaves the defect in
+ * place (measured p50 20-25ms against p95 1568ms). p99 is the tail a single sample
+ * realistically lands in. Returns 0 when there is no monitor or no usable number, so
+ * absence of a loop signal leaves the raw probe untouched — today's behaviour exactly.
+ */
+export function attributableLoopDelayMs(lag: LoopLagSample | null): number {
+  if (!lag) return 0;
+  const p99 = lag.p99Ms;
+  if (!Number.isFinite(p99) || p99 <= 0) return 0;
+  return p99;
+}
+
+/** `rawMs` net of the scheduler delay the probe's own await absorbed. Clamped at 0 —
+ *  a negative "pool latency" is meaningless. Pure; exported so the boundary is pinned
+ *  without real timers or a real pool. */
+export function poolLatencyNetOfLoopDelayMs(rawMs: number, lag: LoopLagSample | null): number {
+  if (!Number.isFinite(rawMs)) return rawMs;
+  return Math.max(0, rawMs - attributableLoopDelayMs(lag));
+}
+
+/** Reading the loop monitor must never be able to fail the probe (fail-soft rule). */
+function safeReadLoopLag(read: () => LoopLagSample | null): LoopLagSample | null {
+  try {
+    return read();
+  } catch {
+    return null;
+  }
+}
+
 // The most recent probe's latency (ms) + when it ran (epoch ms) — for the same-process
-// health fold / tests. 0 until the first probe runs.
+// health fold / tests. 0 until the first probe runs. `_lastProbeMs` is the CORRECTED
+// (net-of-loop-delay) value every consumer classifies on; the raw reading and the
+// delay discounted from it are retained beside it so a shed stays attributable —
+// without them a corrected 'ok' is indistinguishable from a genuinely idle pool.
 let _lastProbeMs = 0;
 let _lastProbeAt = 0;
+let _lastProbeRawMs = 0;
+let _lastLoopDelayMs = 0;
 export function lastPoolProbeMs(): number {
   return _lastProbeMs;
 }
 export function lastPoolProbeAt(): number {
   return _lastProbeAt;
+}
+/** The uncorrected acquire+`SELECT 1` wall-clock of the last probe (telemetry only —
+ *  never classify on this: it is the contaminated number). */
+export function lastPoolProbeRawMs(): number {
+  return _lastProbeRawMs;
+}
+/** The loop delay discounted from the last probe. > 0 means the raw reading was
+ *  partly scheduler latency, so a 'critical' raw that classified 'ok' is explained. */
+export function lastPoolProbeLoopDelayMs(): number {
+  return _lastLoopDelayMs;
 }
 
 // Cumulative count of ticks shed for pool starvation, THIS process. Same-process only
@@ -109,8 +181,11 @@ export async function probePoolLatencyMs(
   runProbe: () => Promise<unknown> = defaultProbe,
   now: () => number = Date.now,
   timeoutMs: number = PROBE_TIMEOUT_MS,
+  readLoopLag: () => LoopLagSample | null = currentLoopLag,
 ): Promise<number> {
   const start = now();
+  let rawMs: number;
+  let timedOut = false;
   try {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
@@ -125,15 +200,27 @@ export async function probePoolLatencyMs(
     } finally {
       if (timer) clearTimeout(timer);
     }
-    _lastProbeMs = now() - start;
+    rawMs = now() - start;
   } catch (e) {
-    const elapsed = now() - start;
-    // A genuine TIMEOUT means the pool couldn't service a trivial query within the
-    // budget ⇒ force the critical band regardless of the measured elapsed. A non-timeout
-    // error (fast query failure) is NOT starvation ⇒ report the small elapsed ⇒ 'ok'.
-    const timedOut = e instanceof Error && e.message === 'pool-probe-timeout';
-    _lastProbeMs = timedOut ? Math.max(elapsed, CRITICAL_PROBE_MS) : elapsed;
+    rawMs = now() - start;
+    timedOut = e instanceof Error && e.message === 'pool-probe-timeout';
   }
+  // Discount the scheduler delay this probe's own `await` absorbed (LOOP-DELAY
+  // CONTAMINATION in the header). No monitor ⇒ 0 ⇒ the raw reading is unchanged.
+  // Read the monitor ONCE: it is a live window, so two reads can disagree and would
+  // leave the recorded delay unable to explain the reported value.
+  const lag = safeReadLoopLag(readLoopLag);
+  _lastProbeRawMs = rawMs;
+  _lastLoopDelayMs = attributableLoopDelayMs(lag);
+  const netMs = poolLatencyNetOfLoopDelayMs(rawMs, lag);
+  // A genuine TIMEOUT means the POOL couldn't service a trivial query within the budget
+  // ⇒ force the critical band regardless of the measured elapsed (a small test
+  // `timeoutMs` makes the raw elapsed sub-critical). But a timeout the concurrent loop
+  // delay ACCOUNTS FOR is a scheduler artifact, not pool starvation — forcing critical
+  // there is the double-shed this repair removes, and dimension (a) keeps its own
+  // guard. A non-timeout error (fast query failure) is NOT starvation ⇒ small ⇒ 'ok'.
+  const poolAttributableTimeout = timedOut && netMs >= timeoutMs;
+  _lastProbeMs = poolAttributableTimeout ? Math.max(netMs, CRITICAL_PROBE_MS) : netMs;
   _lastProbeAt = now();
   return _lastProbeMs;
 }
@@ -151,6 +238,8 @@ export async function poolPressure(
 export function __resetPoolPressureForTest(): void {
   _lastProbeMs = 0;
   _lastProbeAt = 0;
+  _lastProbeRawMs = 0;
+  _lastLoopDelayMs = 0;
   _poolShedCount = 0;
 }
 

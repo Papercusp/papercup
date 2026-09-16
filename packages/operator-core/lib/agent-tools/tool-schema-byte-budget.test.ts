@@ -1,0 +1,128 @@
+/**
+ * tool-schema-byte-budget — the catalog-wide gate for EI-23345472964244980.
+ *
+ * THE GAP THIS CLOSES. `tool-guidance-budget`'s prompt-weight tier governs description +
+ * guidance (1,500 chars) and is enforced both at the gate and at registration time. It
+ * never looks at `inputSchema`. But the schema is the dominant per-turn cost now that psu
+ * denies ToolSearch — Claude's native schema deferral is implemented BY that tool, so
+ * every ADVERTISED tool ships its full schema on EVERY turn. EI-23319364088969722 is what
+ * that costs when nothing is watching: a 64-name Claude seed at 432,714 B (~157K tokens),
+ * every prompt-weight check green throughout.
+ *
+ * WHY PER-TOOL, when an aggregate bound already exists. `assertSelectedInputSchemaBudget()`
+ * bounds ONE ASSEMBLED SET and is wired into two in-house agent-loop seams only
+ * (`capabilityToolset`, `operator:converse`); `packages/agent-mcp/src` — the `tools/list`
+ * handler serving every psu/Claude/OMP/codex session — imports no budget symbol at all. An
+ * aggregate bound also fires at assembly time, blaming whoever assembled the set rather
+ * than whoever grew the schema, and so cannot stop the creep that made the seed expensive.
+ * This runs per tool, against the projected catalog, so growth is attributed to its edit.
+ *
+ * WHAT THE COMPANION GUARDS DO NOT COVER. `claude-seed-wire-budget.test.ts` bounds the
+ * COST of one client's seed and `psu-launcher.test.ts` bounds its NAME COUNT — both are
+ * seed-scoped, so a tool outside the Claude seed can grow without limit and neither
+ * notices. This is the catalog-wide tier beneath them.
+ */
+import { describe, it, expect, beforeAll } from 'vitest';
+import { listAllProjectedTools } from '@papercusp/tooldef';
+import {
+  ALLOW_OVER_SCHEMA_BUDGET,
+  MIN_PLAUSIBLE_CATALOG_SIZE,
+  SCHEMA_BYTE_BUDGET,
+  formatSchemaViolations,
+  namedToolSchemaBytes,
+  roundPin,
+  schemaBudgetViolations,
+  slackSchemaPins,
+  type NamedToolSchemaBytes,
+} from './tool-guidance-budget';
+
+/**
+ * Lower plausibility floor on the catalog's TOTAL projected schema bytes — this file's
+ * own vacuous-green trap.
+ *
+ * Every assertion below is an UPPER bound, and an upper bound is satisfied trivially by a
+ * broken instrument: if `inputSchema` ever stops being populated on ProjectedTool (a
+ * projection change, a renamed field), every measurement collapses toward zero, every
+ * budget passes with room to spare, and this file reports healthy while measuring
+ * nothing. The catalog-SIZE floor does not catch that — it counts tools, not bytes. The
+ * live catalog projects ~1.5 MB today, so a reading below this floor means the instrument
+ * broke, not that the catalog got cheap.
+ */
+const MIN_PLAUSIBLE_CATALOG_SCHEMA_BYTES = 600_000;
+
+describe('per-tool argSchema wire budget (EI-23345472964244980)', () => {
+  let measured: NamedToolSchemaBytes[] = [];
+
+  beforeAll(async () => {
+    // Side-effect import: registers the catalog listAllProjectedTools() reads. Without
+    // it the list is EMPTY and every upper bound below passes vacuously.
+    await import('./index');
+    measured = namedToolSchemaBytes(listAllProjectedTools());
+  });
+
+  it('sees a genuinely-registered catalog and real schema bytes (a vacuous green is worse than a red)', () => {
+    expect(measured.length).toBeGreaterThanOrEqual(MIN_PLAUSIBLE_CATALOG_SIZE);
+    const total = measured.reduce((sum, t) => sum + t.bytes, 0);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[schema-budget] tools=${measured.length} totalSchemaBytes=${total} ` +
+        `median=${[...measured].sort((a, b) => a.bytes - b.bytes)[Math.floor(measured.length / 2)]?.bytes}`,
+    );
+    if (process.env.PAPERCUSP_SCHEMA_BUDGET_CENSUS === '1') {
+      const over = [...measured].filter((t) => t.bytes > SCHEMA_BYTE_BUDGET).sort((a, b) => b.bytes - a.bytes);
+      // eslint-disable-next-line no-console
+      console.log(`[schema-budget] CENSUS — ${over.length} tool(s) over ${SCHEMA_BYTE_BUDGET} B:`);
+      for (const t of over) {
+        // eslint-disable-next-line no-console
+        console.log(`[schema-budget]   ['${t.name}', ${roundPin(t.bytes)}], // measured ${t.bytes}`);
+      }
+    }
+    expect(total).toBeGreaterThanOrEqual(MIN_PLAUSIBLE_CATALOG_SCHEMA_BYTES);
+  });
+
+  it('no tool exceeds its binding ceiling — the budget, or its pin', () => {
+    const violations = schemaBudgetViolations(measured);
+    expect(
+      violations.length === 0 ? '' : `\nargSchema budget breach:\n${formatSchemaViolations(violations)}\n`,
+    ).toBe('');
+  });
+
+  it('every pin is real and load-bearing — no stale name, no pin below the budget', () => {
+    const live = new Set(measured.map((t) => t.name));
+    const stale = [...ALLOW_OVER_SCHEMA_BUDGET.keys()].filter((name) => !live.has(name));
+    expect(
+      stale.length === 0
+        ? ''
+        : `\nALLOW_OVER_SCHEMA_BUDGET names ${stale.length} tool(s) that no longer exist — delete them: ${stale.join(', ')}\n`,
+    ).toBe('');
+
+    const pointless = [...ALLOW_OVER_SCHEMA_BUDGET.entries()].filter(([, pin]) => pin <= SCHEMA_BYTE_BUDGET);
+    expect(
+      pointless.length === 0
+        ? ''
+        : `\nALLOW_OVER_SCHEMA_BUDGET entries at or below the ${SCHEMA_BYTE_BUDGET} B budget are dead weight — delete them: ${pointless
+            .map(([n, p]) => `${n}=${p}`)
+            .join(', ')}\n`,
+    ).toBe('');
+  });
+
+  /**
+   * The ratchet's DOWNWARD half, reported rather than failed.
+   *
+   * Failing here would red the fleet gate every time a tool legitimately got cheaper,
+   * which punishes exactly the behaviour the budget wants. Enforcing the UPWARD direction
+   * is what stops the regression; banking a shrink is a cleanup the next editor of that
+   * tool should make, so it is surfaced loudly and left non-blocking.
+   */
+  it('reports pins that now have slack, so a shrink is banked instead of re-spent', () => {
+    const slack = slackSchemaPins(measured);
+    if (slack.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[schema-budget] ${slack.length} pin(s) now have slack — lower them (SHRINK-ONLY ratchet):\n` +
+          slack.map((s) => `  • ${s.name}: pinned ${s.pin}, now ${s.bytes} — lower to ${s.lowerTo}`).join('\n'),
+      );
+    }
+    expect(Array.isArray(slack)).toBe(true);
+  });
+});

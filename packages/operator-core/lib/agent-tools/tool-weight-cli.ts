@@ -1,8 +1,11 @@
 import {
   ALLOW_OVER_BUDGET,
+  ALLOW_OVER_SCHEMA_BUDGET,
   BUDGET,
   HARD_CAP,
+  SCHEMA_BYTE_BUDGET,
   budgetViolations,
+  schemaBudgetViolations,
   type NamedToolWeight,
   type PromptWeightBreakdown,
 } from './tool-guidance-budget';
@@ -21,6 +24,16 @@ export interface ToolWeightRow {
    *  (EI-19418721410168539). Absent when the caller supplied bare
    *  `{ name, weight }` weights (a fixture) rather than the live catalog. */
   breakdown?: PromptWeightBreakdown;
+  /** UTF-8 bytes of the tool's argSchema — the wire half (EI-23345472964244980).
+   *  Absent when the caller supplied bare `{ name, weight }` fixtures. */
+  schemaBytes?: number;
+  /** The schema ceiling this tool must clear: its ALLOW_OVER_SCHEMA_BUDGET pin, or
+   *  SCHEMA_BYTE_BUDGET. */
+  schemaCeiling?: number;
+  /** true iff this tool is PINNED (grandfathered) in ALLOW_OVER_SCHEMA_BUDGET. */
+  schemaPinned?: boolean;
+  overSchemaBudget?: boolean;
+  schemaCutAtLeast?: number | null;
 }
 
 export interface ToolWeightCliArgs {
@@ -62,6 +75,13 @@ export function measureToolWeights(
   selector?: string,
 ): ToolWeightRow[] {
   const violations = new Map(budgetViolations(weights).map((violation) => [violation.name, violation]));
+  // The schema tier is measured from the SAME rows, so a caller passing bare
+  // `{ name, weight }` fixtures simply gets no schema columns rather than a wrong zero.
+  const schemaViolations = new Map(
+    schemaBudgetViolations(
+      weights.flatMap((t) => (t.schemaBytes === undefined ? [] : [{ name: t.name, bytes: t.schemaBytes }])),
+    ).map((violation) => [violation.name, violation]),
+  );
   return weights
     .filter((tool) => selector === undefined || tool.name === selector)
     .map((tool) => {
@@ -79,6 +99,15 @@ export function measureToolWeights(
         grandfathered,
         cutAtLeast: violation?.cutAtLeast ?? null,
         ...(tool.breakdown === undefined ? {} : { breakdown: tool.breakdown }),
+        ...(tool.schemaBytes === undefined
+          ? {}
+          : {
+              schemaBytes: tool.schemaBytes,
+              schemaCeiling: ALLOW_OVER_SCHEMA_BUDGET.get(tool.name) ?? SCHEMA_BYTE_BUDGET,
+              schemaPinned: ALLOW_OVER_SCHEMA_BUDGET.has(tool.name),
+              overSchemaBudget: schemaViolations.has(tool.name),
+              schemaCutAtLeast: schemaViolations.get(tool.name)?.cutAtLeast ?? null,
+            }),
       };
     });
 }
@@ -94,6 +123,7 @@ export function formatToolWeightReport(
         catalogSize,
         budget: BUDGET,
         hardCap: HARD_CAP,
+        schemaByteBudget: SCHEMA_BYTE_BUDGET,
         tools: rows,
       },
       null,
@@ -125,6 +155,24 @@ export function formatToolWeightReport(
         `  description ${b.description} · when ${b.when} · notWhen ${b.notWhen} · ` +
           `chaining ${b.chaining} · byRole ${b.byRole}`,
       );
+    }
+    // EI-23345472964244980: the prompt-weight line above is only HALF the cost, and
+    // routinely the smaller half — a tool inside the 1500-char budget can still ship
+    // 40 KB of argSchema on every turn. Printing both is what stops an author trimming
+    // guidance prose while the real cost sits untouched a line below.
+    if (row.schemaBytes !== undefined) {
+      const ceiling = row.schemaCeiling ?? SCHEMA_BYTE_BUDGET;
+      let schemaStatus: string;
+      if (row.overSchemaBudget) {
+        schemaStatus = row.schemaPinned
+          ? `OVER ITS PIN; cut at least ${row.schemaCutAtLeast} bytes`
+          : `OVER BUDGET; cut at least ${row.schemaCutAtLeast} bytes`;
+      } else if (row.schemaPinned) {
+        schemaStatus = `PINNED at ${ceiling} (shrink-only)`;
+      } else {
+        schemaStatus = `OK; ${ceiling - row.schemaBytes} bytes of headroom`;
+      }
+      lines.push(`  argSchema ${row.schemaBytes} bytes (${schemaStatus})`);
     }
   }
   if (options.selector !== undefined && rows.length === 0) {

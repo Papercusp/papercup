@@ -966,16 +966,39 @@ function unguardedNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | nul
     };
   }
   if (candidateVerdict.state === 'inconclusive') {
-    return {
-      name: 'checkpoint:await',
-      args: { pipeline, candidateSha: targetSha },
-      reason:
-        `The exact candidate ${candidateVerdict.candidate ?? targetSha} rendered no code verdict (green:null; ` +
-        `reason=${candidateVerdict.reason ?? 'unknown'}). ` +
-        (candidateVerdict.reason === 'repair-in-progress' || candidateVerdict.reason === 'repair-staging-mismatch'
-          ? 'The frozen repair queue owns progress; await its next checkpoint outcome instead of opening a new gate-failure diagnosis.'
-          : 'Await the next checkpoint outcome instead of treating the prior gate state as a verdict for this candidate.'),
-    };
+    // R-1 / EI-23365548566505155. This branch sits AHEAD of both active-run branches below, so
+    // an inconclusive candidate reaches the reader first — and it used to hand back a BARE
+    // `checkpoint:await`, bypassing the certificate entirely. That is the exact shape of
+    // EI-21432980132792683 / EI-21433072117655298: an already-terminal candidate reported back
+    // as inconclusive/repair-in-progress with `nextVerb: checkpoint:await`, stranding readers
+    // "on a verdict that can never arrive" because the attempt is OVER and no producer remains.
+    //
+    // `inconclusive` means by contract that the latest attempt rendered NO verdict, so there is
+    // no standing guarantee a producer is still running — which is precisely when R-1's
+    // "progressing is NECESSARY for the await" has to bite. Routing through progressGatedAwait
+    // keeps the await when a run IS certified advancing (the reason text is preserved and
+    // extended), and replaces it with a measurement when it is not: `no-run` resolves to
+    // `unknown`, which routes to a live re-read instead of an unbounded wait.
+    //
+    // Deliberately NOT extended to the `frozenRepairHead` branch below: phase `ready-to-verify`
+    // is by contract a state a scheduled run picks up, so that await has an expected producer
+    // and no recorded stranding. Gating it would degrade a sound recommendation.
+    return progressGatedAwait(
+      {
+        name: 'checkpoint:await',
+        args: { pipeline, candidateSha: targetSha },
+        reason:
+          `The exact candidate ${candidateVerdict.candidate ?? targetSha} rendered no code verdict (green:null; ` +
+          `reason=${candidateVerdict.reason ?? 'unknown'}). ` +
+          (candidateVerdict.reason === 'repair-in-progress' || candidateVerdict.reason === 'repair-staging-mismatch'
+            ? 'The frozen repair queue owns progress; await its next checkpoint outcome instead of opening a new gate-failure diagnosis.'
+            : 'Await the next checkpoint outcome instead of treating the prior gate state as a verdict for this candidate.'),
+      },
+      checkpointRun,
+      input.snapshotGeneration,
+      position,
+      input.progressCertificateEnabled !== false,
+    );
   }
   if (frozenRepairHead) {
     return {

@@ -566,10 +566,13 @@ describe('buildReleaseTrace', () => {
     expect(out.constraints.map((c) => c.code)).toContain('gate-inconclusive');
     expect(out.constraints.map((c) => c.code)).not.toContain('gate-red');
     expect(out.constraints.map((c) => c.code)).not.toContain('no-force-past-red');
-    expect(out.nextVerb).toMatchObject({
-      name: 'checkpoint:await',
-      args: { pipeline: 'papercusp', candidateSha: sha },
-    });
+    // R-1 / EI-23365548566505155: this fixture's own detail says "no suite run",
+    // so there is NO in-flight producer to certify and the pre-R-1 bare `checkpoint:await`
+    // asserted here was the stranding recommendation itself. The projection assertions above
+    // are this test's subject and are unchanged; only the recommendation moves, to the
+    // measurement R-1 requires when advancement cannot be established.
+    expect(out.nextVerb?.name).not.toBe('checkpoint:await');
+    expect(out.nextVerb?.name).toBe('dev:pipeline_position');
     expect(out.nextVerb?.reason).not.toContain('testing:flakiness');
   });
 
@@ -610,7 +613,12 @@ describe('buildReleaseTrace', () => {
     expect(out.constraints.map((c) => c.code)).toContain('gate-inconclusive');
     expect(out.constraints.map((c) => c.code)).not.toContain('gate-red');
     expect(out.constraints.map((c) => c.code)).not.toContain('no-force-past-red');
-    expect(out.nextVerb?.name).toBe('checkpoint:await');
+    // R-1: the abort ended the run (`dependency-generation.sh exited 75`), so no producer is
+    // in flight and the verdict being awaited can never arrive. The D-066 subject of this test
+    // — the abort outranking the historical red in the PROJECTION — is asserted above and
+    // unchanged; the recommendation is now the certified one.
+    expect(out.nextVerb?.name).not.toBe('checkpoint:await');
+    expect(out.nextVerb?.name).toBe('dev:pipeline_position');
   });
 
   it('does not project a historical red while the exact candidate is actively being judged', () => {
@@ -2063,5 +2071,97 @@ describe('P-005: the progress-certificate steering kill-switch', () => {
       }),
     );
     expect(out.nextVerb?.name).toBe('release:checkpoint-run');
+  });
+});
+
+describe('R-1: an inconclusive candidate may not hand back an uncertified checkpoint:await', () => {
+  // EI-23365548566505155. The `inconclusive` branch sits AHEAD of both active-run branches in
+  // unguardedNextVerb, so it answers first — and it used to return a BARE `checkpoint:await`,
+  // bypassing the progress certificate entirely. That is the EI-21432980132792683 /
+  // EI-21433072117655298 stranding shape: `inconclusive` means the latest attempt rendered NO
+  // verdict, so for an already-terminal candidate no producer remains and the reader waits on
+  // "a verdict that can never arrive". R-1 makes `progressing` NECESSARY for the await.
+  const inconclusiveGate = () =>
+    ({
+      ...input().gate,
+      state: 'gate-red',
+      authoritative: false,
+      consecutiveReds: 3,
+      failingTests: [],
+      observedCandidate: 'older-candidate',
+      recordedVerdict: 'not-green',
+      inconclusive: {
+        status: 'repair-in-progress',
+        candidate: sha,
+        detail: 'frozen repair fixer dispatched; no suite run',
+        observedAtMs: 123,
+      },
+    }) as never;
+
+  const traceInconclusive = (
+    run: Record<string, unknown> | null,
+    progressCertificateEnabled?: boolean,
+  ) =>
+    buildReleaseTrace(
+      input({
+        snapshotGeneration: NOW_MS,
+        progressCertificateEnabled,
+        position: position({
+          positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+        }),
+        gate: { ...(inconclusiveGate() as object), checkpointRunInFlight: run } as never,
+      }),
+    );
+
+  it('control: the fixture DOES reach the inconclusive branch and awaits a certified advancing run', () => {
+    // Calibration. Without this, the "does not await" assertion below would also pass if the
+    // fixture stopped reaching this branch at all — an untested guard reading as a proven one.
+    const out = traceInconclusive({
+      active: true,
+      candidate: sha,
+      elapsedSec: 42,
+      activeSource: 'run-lock',
+      asOfAgeMs: null,
+      ...advancingHeartbeat(),
+    });
+    expect(out.gate.candidateVerdict.state).toBe('inconclusive');
+    expect(out.nextVerb).toMatchObject({
+      name: 'checkpoint:await',
+      args: { candidateSha: sha },
+    });
+  });
+
+  it('does NOT recommend the await when no in-flight producer can be certified', () => {
+    const out = traceInconclusive(null);
+    expect(out.gate.candidateVerdict.state).toBe('inconclusive');
+    // The load-bearing assertion: R-1 forbids the passive wait here, because nothing
+    // establishes that a producer is still advancing toward the verdict being awaited.
+    expect(out.nextVerb?.name).not.toBe('checkpoint:await');
+    expect(out.nextVerb?.name).toBe('dev:pipeline_position');
+  });
+
+  it('does NOT recommend the await for a stalled producer, and never says fire the gate by hand', () => {
+    const out = traceInconclusive({
+      active: true,
+      candidate: sha,
+      elapsedSec: 4242,
+      activeSource: 'run-lock',
+      asOfAgeMs: null,
+      startedAtMs: NOW_MS - 3_600_000,
+      progressAtMs: NOW_MS - 1_800_000,
+    });
+    expect(out.nextVerb?.name).not.toBe('checkpoint:await');
+    expect(out.nextVerb?.name).not.toBe('release:checkpoint-run');
+    expect(out.nextVerb?.name).toBe('processes:list');
+  });
+
+  it('kill-switch OFF restores the plain await — a clean revert, not a third behaviour', () => {
+    // P-005 / D-015: RELEASE_TRACE_PROGRESS_CERTIFICATE gates STEERING only. With it off the
+    // reader gets exactly the pre-certificate recommendation, uncertified, by design.
+    const out = traceInconclusive(null, false);
+    expect(out.nextVerb).toMatchObject({
+      name: 'checkpoint:await',
+      args: { candidateSha: sha },
+    });
   });
 });
