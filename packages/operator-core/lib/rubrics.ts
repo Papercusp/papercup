@@ -4084,7 +4084,10 @@ async function amendAcceptanceBarRubric(
         // changed. A changed BAR means different meaning, so its evidence must
         // be re-run; the edges above already exist at `revision`, which the FK
         // and the carry's own join both require.
-        if (shouldCarryBarEvidence({
+        // The `priorRevision !== undefined` check is repeated here only to narrow
+        // the type for the call below; shouldCarryBarEvidence independently
+        // refuses an undefined prior revision, and its test pins that.
+        if (priorRevision !== undefined && shouldCarryBarEvidence({
           sourceBarKey: sourceBarKeyBySpec.get(clause.spec_id),
           changedBars: changedBarKeys,
           priorRevision,
