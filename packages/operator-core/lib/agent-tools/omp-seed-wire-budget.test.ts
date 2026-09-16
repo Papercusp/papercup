@@ -42,7 +42,17 @@
  * under a lockstep guard, and bringing it under D-001's ceiling is schema-slimming work on
  * the whales (coord:send alone is ~39 KB; work_items:complete and work_items:checkpoint
  * each inline their full nested payload schema TWICE, for the single shorthand and the
- * items[] batch). What the ratchet changes is the direction of travel: growth now has to
+ * items[] batch).
+ *
+ * ⚠ THAT LAST OBSERVATION IS TRUE BUT IT IS NOT THE LEVER — it reads like one, and the
+ * first draft of this file's FIX list said so. Measured 2026-09-16: ALL removable
+ * duplication across the 48 names is 38,016 B (11.7% of the spine's 324,384 B of
+ * argSchema) and the batch-mirror shape is 21,508 B (6.6%), against a ~91 KB gap to
+ * D-001. Half that subset is coord:send, where send-arg-shape.test.ts REQUIRES both
+ * copies. The spine's actual mass is prose: 217,082 B, 66.9%. The FIX list below is
+ * ordered by that measurement, not by the shape that is easiest to notice.
+ *
+ * What the ratchet changes is the direction of travel: growth now has to
  * argue with a number instead of slipping past a name count, and the debt is stated in a
  * failing-message the next editor reads rather than in a comment they do not.
  *
@@ -197,9 +207,22 @@ describe('core MCP spine wire budget (EI-23345472964244980 / D-001)', () => {
             .join('\n') +
           `\n\nFIX, cheapest first:\n` +
           `  (a) SHRINK the argSchema of an offender above — this is the lever that actually\n` +
-          `      moves the number. The whales inline their full nested payload schema TWICE\n` +
-          `      (single shorthand + items[] batch); collapsing that duplication is the single\n` +
-          `      largest available win and costs no tool its place on the spine.\n` +
+          `      moves the number, and the material is PROSE, not duplication: 217,082 B of\n` +
+          `      the spine's 324,384 B of argSchema is .describe() text (66.9%, measured\n` +
+          `      2026-09-16). Cut text redundant WITH THE SCHEMA ITSELF (a description that\n` +
+          `      restates its own enum/type), never text a reader needs.\n` +
+          `      ⚠ DO NOT lead with the single/batch duplication collapse — it was measured\n` +
+          `      and it is neither the largest win nor fully available. Across all 48 names\n` +
+          `      ALL removable duplication is 38,016 B (11.7% of the spine) and the\n` +
+          `      batch-mirror shape is 21,508 B (6.6%) — under a quarter of the ~91 KB this\n` +
+          `      spine must shed to reach D-001. Over half of that subset is coord:send\n` +
+          `      (11,017 B), which send-arg-shape.test.ts BLOCKS outright: its test\n` +
+          `      "documents basedOn as output-only in description, guidance, and both\n` +
+          `      schemas" requires the top-level AND items[] copies to each carry\n` +
+          `      OUTPUT-ONLY/auto-derived/omit. The duplication is a TESTED documentation\n` +
+          `      requirement there, not an accident. And it recovers exactly 0 B on\n` +
+          `      fleet:launch-on-plan, facts:assert and loop:checkpoint — three of the eight\n` +
+          `      whales listed above. See fact dead-end:argschema-batch-mirror-prose-dedup.\n` +
           `      ⚠ npm run tool-weight's PROMPT budget will look fine while this fails — it\n` +
           `      measures description+guidance. Read the argSchema half of its report instead.\n` +
           `  (b) UNSEED a name — but do it in BOTH lists in the same change:\n` +
