@@ -33,6 +33,8 @@ import { dependsOnSpec } from '../../freshness/tool-schema';
 import {
   lintUncheckedExternalClaims,
   lintUncheckedImperativeActions,
+  lintRelativeScratchPaths,
+  RELATIVE_SCRATCH_ADVISORY,
   mergeCarryRows,
   parseCarryNote,
   renderCarryNote,
@@ -1752,6 +1754,18 @@ export default defineTool({
     const probeText = [...checks.map(renderCheckLine), ...walls.map(renderWallLine)].join('\n');
     const uncheckedClaims = hasNoteWrite ? lintUncheckedExternalClaims(narrativeBody, probeText) : [];
 
+    // R-6(b): a relative `scratchpad/...` reference is unresolvable to the next wake —
+    // the session scratchpad is absolute and per-session, so the successor re-derives an
+    // artifact that is already on disk. Advisory + fail-open, like every sibling here.
+    const relativeScratchRefs = (() => {
+      if (!hasNoteWrite) return [];
+      try {
+        return lintRelativeScratchPaths(narrativeBody);
+      } catch {
+        return []; // advisory lint must never cost the checkpoint write
+      }
+    })();
+
     // EI-20079511619330371: a carry-note's `left`/`next` is read as an
     // instruction at wake time, even though its singleton/shared-state
     // precondition may have changed after this write. Keep the warning
@@ -2340,6 +2354,15 @@ export default defineTool({
                       'not decay — it hardens into settled fact. Either NARROW the claim to what the probe saw, ' +
                       'or WIDEN the probe and re-run it. Advisory only; the write was kept.',
                     rows: scopeOverreach,
+                  },
+                }
+              : {}),
+            ...(relativeScratchRefs.length > 0
+              ? {
+                  scratchPathLint: {
+                    flagged: true,
+                    note: RELATIVE_SCRATCH_ADVISORY,
+                    refs: relativeScratchRefs,
                   },
                 }
               : {}),

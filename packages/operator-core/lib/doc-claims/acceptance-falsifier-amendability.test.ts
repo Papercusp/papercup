@@ -151,3 +151,55 @@ describe('CLAIM B — the bar contract snapshot grades adequacy UNSCOPED', () =>
     expect(args[0]).toContain('evidenceRefs');
   });
 });
+
+/**
+ * R-7 / P-010 of the same plan — the reviewer-handoff half.
+ *
+ * The approval ceremony only works if the reviewer can actually READ the
+ * approval object. Routing it through the work-item PAYLOAD requires
+ * `payloadTier:'full'`, which a trimmed or judge-scoped reader never gets — so
+ * the reviewer is pointed at an object they cannot copy, and the ceremony
+ * stalls on a surface difference nobody named. A THREAD POST renders on every
+ * surface, so that is what the chaining guidance must route.
+ *
+ * This rots silently in the usual way: the payload route still typechecks,
+ * still stores the object, and still reads correct to whoever has the full
+ * tier. Same tier-2 falsifiability as its siblings above — the subject is
+ * `PAPERCUSP_AMEND_SRC`-overridable, so this is provable against a copy.
+ */
+describe('rubrics:amend routes the approval object to a surface the reviewer can read (R-7)', () => {
+  /** The `chaining` guidance string, parsed from its single source of truth. */
+  function chainingGuidance(text: string): string {
+    const match = /\bchaining:\s*\n?\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/.exec(text);
+    return match ? match[1]! : '';
+  }
+
+  // The claim is about the ROUTE, not the word: the guidance should still NAME
+  // payloadTier when explaining why the payload route fails. What must be gone is
+  // the reviewer being SENT to a payload-tier read.
+  const PAYLOAD_TIER_ROUTE_RE = /work_items:get\s*\{[^}]*payloadTier/;
+
+  it('routes the approval through a thread comment, not a payload-tier read', () => {
+    const chaining = chainingGuidance(amend());
+    // The control: the matcher found a real, non-trivial guidance string. Without
+    // this, a parse miss would satisfy every negative assertion below.
+    expect(chaining.length).toBeGreaterThan(80);
+    expect(chaining).toMatch(/work_items:comment/);
+    expect(chaining).toMatch(/thread-post:/);
+    expect(chaining).not.toMatch(PAYLOAD_TIER_ROUTE_RE);
+  });
+
+  it('says WHY the payload route fails, so the fix is not re-litigated', () => {
+    // A bare removal would satisfy the assertion above and teach nothing; the
+    // next author would re-add the payload route for the same reason it existed.
+    const chaining = chainingGuidance(amend());
+    expect(chaining).toMatch(/every surface/i);
+    expect(chaining).toMatch(/payloadTier/);
+  });
+
+  it('the matcher would SEE a payload-tier route if one were there (control)', () => {
+    const fixture = `chaining:\n      "amend { dryRun:true } → reviewer reads work_items:get { id:'<id>', payloadTier:'full' } → work_items:comment → amend { approvalRef:'thread-post:<id>' }",`;
+    const chaining = chainingGuidance(fixture);
+    expect(chaining).toMatch(PAYLOAD_TIER_ROUTE_RE);
+  });
+});

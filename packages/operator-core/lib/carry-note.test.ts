@@ -6,6 +6,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  evidenceFirst,
+  isProhibitionShaped,
+  lintRelativeScratchPaths,
+  RELATIVE_SCRATCH_ADVISORY,
   hiveScope,
   workItemScope,
   loopScope,
@@ -2226,5 +2230,98 @@ describe('truncateCarryField — EI-22079495152196184: keep the TAIL, not just t
     const out = truncateCarryField('x'.repeat(50), 5, 'checks[0].claim', repairs);
     expect(out).toBe(CARRY_TRUNCATION_MARKER);
     expect(() => truncateCarryField('x'.repeat(50), 0, 'checks[0].claim', [])).not.toThrow();
+  });
+});
+
+describe('cap eviction ranks prohibition rails with evidence (R-6a)', () => {
+  const row = (claim: string, verified?: string) => ({ claim, ...(verified ? { verified } : {}) });
+
+  // The rail case: a prohibition carries no evidence BECAUSE it is not an
+  // observation, so evidence-only ranking cut it first — exactly backwards.
+  it('sinks a PREDICTED prohibition with the evidence tier, not with the tail', () => {
+    const ranked = evidenceFirst([
+      row('suite is green', 'ran 30/30'),
+      row('do NOT re-run the gate at tip — the candidate is frozen'),
+      row('the deploy sha is abc123'),
+      row('never force-deploy past a red gate'),
+      row('⛔ admission is hunk-exact'),
+      row('main is 4 commits behind', 'git log'),
+    ]).map((r) => r.claim);
+
+    // Everything that must survive is ahead of everything the cap may cut.
+    const mustSurvive = ranked.slice(0, 5);
+    expect(mustSurvive).toContain('do NOT re-run the gate at tip — the candidate is frozen');
+    expect(mustSurvive).toContain('never force-deploy past a red gate');
+    expect(mustSurvive).toContain('⛔ admission is hunk-exact');
+    expect(mustSurvive).toContain('suite is green');
+    expect(mustSurvive).toContain('main is 4 commits behind');
+    // ...and the evidence-less, non-prohibition row is the only one in the tail.
+    expect(ranked.slice(5)).toEqual(['the deploy sha is abc123']);
+  });
+
+  it('is stable within each tier, so it reorders nothing the cap was not about to cut', () => {
+    const allPredicted = [row('alpha'), row('beta'), row('gamma')];
+    expect(evidenceFirst(allPredicted).map((r) => r.claim)).toEqual(['alpha', 'beta', 'gamma']);
+
+    const allRails = [row('never alpha'), row('do not beta'), row('must not gamma')];
+    expect(evidenceFirst(allRails).map((r) => r.claim)).toEqual([
+      'never alpha',
+      'do not beta',
+      'must not gamma',
+    ]);
+  });
+
+  it('recognizes the prohibition shapes and leaves ordinary claims alone', () => {
+    for (const claim of [
+      'do not claim this item',
+      "don't re-run it",
+      'never bind a falsified bar',
+      'must not force the ship',
+      "mustn't retire the queue",
+      'under no circumstances kill by name',
+      '⛔ frozen',
+    ]) {
+      expect(isProhibitionShaped({ claim })).toBe(true);
+    }
+    for (const claim of ['gate is green', 'the candidate is 09d0c118', 'gone', '']) {
+      expect(isProhibitionShaped({ claim })).toBe(false);
+    }
+    expect(isProhibitionShaped({})).toBe(false);
+  });
+});
+
+describe('relative scratch references are advised against (R-6b)', () => {
+  it('flags a relative scratchpad reference, deduped and capped at 3', () => {
+    const refs = lintRelativeScratchPaths(
+      [
+        'cohort lives at scratchpad/p012-tree-plane-eval.json',
+        'also see ./scratchpad/notes.md and scratchpad/p012-tree-plane-eval.json again',
+        '(scratchpad/a.txt) [scratchpad/b.txt] "scratchpad/c.txt"',
+      ].join('\n'),
+    );
+    expect(refs).toEqual([
+      'scratchpad/p012-tree-plane-eval.json',
+      './scratchpad/notes.md',
+      'scratchpad/a.txt',
+    ]);
+  });
+
+  // The two forms that ARE resolvable must not be flagged, or the advisory becomes
+  // noise on exactly the notes that did the right thing.
+  it('leaves an absolute session path and the in-tree .papercusp/scratch alone', () => {
+    expect(
+      lintRelativeScratchPaths(
+        'wrote /tmp/claude-1000/-home-x/27107cad/scratchpad/eval.json and .papercusp/scratch/probe.mts',
+      ),
+    ).toEqual([]);
+    expect(lintRelativeScratchPaths('')).toEqual([]);
+    expect(lintRelativeScratchPaths('no scratch artifacts here')).toEqual([]);
+  });
+
+  it('publishes one advisory both checkpoint surfaces share', () => {
+    expect(RELATIVE_SCRATCH_ADVISORY).toMatch(/scratch_path_lint/);
+    expect(RELATIVE_SCRATCH_ADVISORY).toMatch(/absolute/i);
+    expect(RELATIVE_SCRATCH_ADVISORY).toMatch(/\.papercusp\/scratch/);
+    expect(RELATIVE_SCRATCH_ADVISORY).toMatch(/Advisory only; the write was kept\./);
   });
 });

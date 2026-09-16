@@ -2121,17 +2121,37 @@ function carriesEvidence(row: { verified?: string; observed?: string; contested?
   return Boolean((row.verified ?? row.contested ?? row.observed ?? '').trim());
 }
 
-/** Stable partition putting evidence-bearing rows ahead of PREDICTED ones, so a downstream
- *  cap that cuts from the tail cuts the cheapest-to-reproduce rows first. Stable WITHIN each
- *  tier: two rows of equal evidence status keep their established relative order, so this
- *  reorders a note only when the cap was about to destroy evidence anyway. */
-export function evidenceFirst<T extends { verified?: string; observed?: string; contested?: string }>(
-  rows: ReadonlyArray<T>,
-): T[] {
-  const withEvidence: T[] = [];
+/** R-6(a) (acceptance-machinery-seam-fixes-2026-09-16): a PROHIBITION — "do not X",
+ *  "never Y", "must not Z", a ⛔ rail — is the row whose loss is least recoverable,
+ *  and it is precisely the row that carries no evidence, because a prohibition is not
+ *  an observation: there is nothing to attach. Ranking purely on evidence therefore
+ *  cuts the safety rails FIRST and keeps the reproducible measurements, which is
+ *  backwards — a measurement can be re-run, while a successor who never reads the rail
+ *  simply re-does the thing it forbade.
+ *
+ *  Deliberately over-inclusive: a descriptive "never" ("this branch never fires") is
+ *  matched too. That asymmetry is the point — a false positive costs one retained row
+ *  at the cap, a false negative costs the rail itself. */
+const CARRY_PROHIBITION_RE = /⛔|\b(?:do not|do NOT|don'?t|never|must not|mustn'?t|under no circumstances)\b/i;
+
+export function isProhibitionShaped(row: { claim?: string }): boolean {
+  return CARRY_PROHIBITION_RE.test((row.claim ?? '').trim());
+}
+
+/** Stable partition putting rows that must survive the cap ahead of the rest, so a
+ *  downstream cap that cuts from the tail cuts the cheapest-to-reproduce rows first.
+ *  Two rows qualify: one that CARRIES EVIDENCE (expensive to re-derive) and one that
+ *  is PROHIBITION-SHAPED (unrecoverable once dropped — see {@link isProhibitionShaped}).
+ *  Stable WITHIN each tier: two rows of equal rank keep their established relative
+ *  order, so this reorders a note only when the cap was about to destroy something
+ *  it should not. */
+export function evidenceFirst<
+  T extends { verified?: string; observed?: string; contested?: string; claim?: string },
+>(rows: ReadonlyArray<T>): T[] {
+  const retained: T[] = [];
   const predicted: T[] = [];
-  for (const row of rows) (carriesEvidence(row) ? withEvidence : predicted).push(row);
-  return [...withEvidence, ...predicted];
+  for (const row of rows) (carriesEvidence(row) || isProhibitionShaped(row) ? retained : predicted).push(row);
+  return [...retained, ...predicted];
 }
 
 /** Prior claims absent from the surviving set, compared on the SAME {@link carryRowKey}
@@ -2273,6 +2293,44 @@ export function lintUncheckedExternalClaims(prose: string, probeText: string): s
   }
   return flagged;
 }
+
+/** R-6(b) (acceptance-machinery-seam-fixes-2026-09-16): a carry surface that names a
+ *  scratch artifact by a RELATIVE path — `scratchpad/p012-eval.json`, `./scratchpad/x` —
+ *  is unresolvable to the one reader it was written for. The session scratchpad lives
+ *  OUTSIDE the repo at an absolute, PER-SESSION path, so the same relative string
+ *  resolves to nothing from the repo root and, after a respawn, to a different session's
+ *  directory. The artifact is right there on disk and the successor re-derives it anyway,
+ *  which is the whole cost this lint exists to avoid.
+ *
+ *  Deliberately does NOT match an ALREADY-absolute reference (`/tmp/.../scratchpad/x` —
+ *  the `scratchpad/` there is preceded by `/`) nor the in-tree `.papercusp/scratch/`,
+ *  which is repo-relative and therefore resolvable by anyone.
+ *
+ *  Returns the offending references (deduped, clipped, max 3); never blocks a write. */
+const RELATIVE_SCRATCH_RE = /(?:(?<=^)|(?<=[\s"'`([<]))(?:\.\/)?scratchpad\/[^\s"'`)\]>,;]+/gm;
+
+export function lintRelativeScratchPaths(prose: string): string[] {
+  const found: string[] = [];
+  const seen = new Set<string>();
+  for (const match of (prose ?? '').matchAll(RELATIVE_SCRATCH_RE)) {
+    const ref = match[0];
+    if (seen.has(ref)) continue;
+    seen.add(ref);
+    found.push(ref.length > 120 ? `${ref.slice(0, 117)}…` : ref);
+    if (found.length >= 3) break;
+  }
+  return found;
+}
+
+/** The advisory both checkpoint surfaces emit for {@link lintRelativeScratchPaths}, so
+ *  the loop and work-item carry surfaces cannot drift into saying different things. */
+export const RELATIVE_SCRATCH_ADVISORY =
+  'scratch_path_lint: this note points at a scratch artifact by a RELATIVE path. The session ' +
+  'scratchpad is an ABSOLUTE, per-session directory outside the repo, so this reference resolves ' +
+  'to nothing from the repo root and to a DIFFERENT directory after a respawn — your successor ' +
+  'will re-derive the artifact that is already sitting on disk. Rewrite it as the absolute session ' +
+  'scratchpad path, or move the artifact under the in-tree `.papercusp/scratch/` (gitignored, ' +
+  'repo-relative, resolvable by any reader) and cite it repo-relative. Advisory only; the write was kept.';
 
 /**
  * Carry-note commands are read as instructions by the next wake, but their

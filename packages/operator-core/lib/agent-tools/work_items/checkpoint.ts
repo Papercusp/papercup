@@ -183,6 +183,8 @@ import {
   coerceCarryRowShape,
   type CarryArgRepair,
   evidenceFirst,
+  lintRelativeScratchPaths,
+  RELATIVE_SCRATCH_ADVISORY,
   normalizeCheckEntries,
   normalizeFlattenedContinuityProbeRow,
   patchExistingCheckEntries,
@@ -2726,6 +2728,24 @@ export default defineTool({
                       rows,
                     },
                   }
+                : {};
+            } catch {
+              return {};
+            }
+          })(),
+          /**
+           * R-6(b) (acceptance-machinery-seam-fixes-2026-09-16): a relative
+           * `scratchpad/...` reference in the stored note is unresolvable to the next
+           * holder — the session scratchpad is absolute and per-session. Read off the
+           * STORED note, like its siblings, so it reports what a successor is actually
+           * re-injected with. Advisory + fail-open.
+           */
+          ...(() => {
+            try {
+              if (stored === null) return {};
+              const refs = lintRelativeScratchPaths(splitCarryNoteChecks(stored).body);
+              return refs.length > 0
+                ? { scratchPathLint: { flagged: true as const, note: RELATIVE_SCRATCH_ADVISORY, refs } }
                 : {};
             } catch {
               return {};
