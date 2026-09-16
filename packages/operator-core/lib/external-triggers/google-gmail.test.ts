@@ -770,3 +770,74 @@ describe('buildGoogleGmailRawMessage attachments', () => {
     expect(mime).toContain('multipart/mixed');
   });
 });
+
+describe('gmail transport retry policy', () => {
+  // The policy is a CORRECTNESS decision, not an inherited default. These pin
+  // it so a later "simplify the retry config" cannot quietly reintroduce the
+  // double-send it exists to prevent.
+  //
+  // THE 429 TEST IS THE CALIBRATION CONTROL FOR THE 5xx TEST — do not delete or
+  // weaken it. `attempts === 1` on the 5xx case only means "the policy withheld
+  // a retry" while something else proves the retry machinery is live at all;
+  // otherwise a totally dead retry path would satisfy it just as well. The 429
+  // case supplies that proof (3 attempts, real backoff), so the two only pass
+  // together when the policy is both WIRED and CORRECTLY SELECTIVE.
+
+  it('NEVER retries a POST send on 5xx — a 5xx is ambiguous and replaying it could double-send', async () => {
+    let attempts = 0;
+    const fetchImpl = vi.fn(async () => {
+      attempts += 1;
+      return json({ error: { message: 'backend error' } }, 503);
+    }) as unknown as typeof fetch;
+
+    await expect(
+      sendGoogleGmailDraft('access-token', 'draft-1', { fetch: fetchImpl, apiOrigin: 'https://gmail.test' }),
+    ).rejects.toMatchObject({ name: 'GoogleGmailApiError', status: 503 });
+
+    // Exactly one wire call: the send was attempted once and never replayed.
+    expect(attempts).toBe(1);
+  });
+
+  it('DOES retry a POST send on 429 — rate-limited means the send provably did not happen', async () => {
+    let attempts = 0;
+    const fetchImpl = vi.fn(async () => {
+      attempts += 1;
+      if (attempts < 3) return json({ error: { message: 'rate limit exceeded' } }, 429);
+      return json({ id: 'sent-1', threadId: 'thread-1' });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      sendGoogleGmailDraft('access-token', 'draft-1', { fetch: fetchImpl, apiOrigin: 'https://gmail.test' }),
+    ).resolves.toMatchObject({ messageId: 'sent-1' });
+
+    expect(attempts).toBe(3);
+  });
+
+  it('retries an idempotent PUT through a transient 5xx and returns the eventual success', async () => {
+    let attempts = 0;
+    const fetchImpl = vi.fn(async () => {
+      attempts += 1;
+      if (attempts < 2) return json({ error: { message: 'unavailable' } }, 503);
+      return json({ id: 'draft-1', message: { id: 'draft-message-1', threadId: 'thread-m-1' } });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      updateGoogleGmailDraft(
+        'access-token',
+        'draft-1',
+        { to: 'ada@example.com', subject: 'Revised subject', text: 'Revised body' },
+        { fetch: fetchImpl, apiOrigin: 'https://gmail.test' },
+      ),
+    ).resolves.toMatchObject({ draftId: 'draft-1' });
+
+    expect(attempts).toBe(2);
+  });
+
+  it('surfaces the Gmail error message as the GoogleGmailApiError detail', async () => {
+    const fetchImpl = vi.fn(async () => json({ error: { message: 'Invalid draft id' } }, 400)) as unknown as typeof fetch;
+
+    await expect(
+      sendGoogleGmailDraft('access-token', 'draft-1', { fetch: fetchImpl, apiOrigin: 'https://gmail.test' }),
+    ).rejects.toThrow(/Invalid draft id/);
+  });
+});

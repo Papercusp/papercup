@@ -14,6 +14,7 @@ import {
 import { listIdentitySources, getIdentitySource } from './agent-identities/source';
 import { resolveProjectDir } from './spawn-config';
 import {
+  IDENTITY_HISTORY_LIMIT,
   parseSuLaunchSpecRecord,
   rebuildSuLaunchArtifact,
   type SuLaunchArtifactHistoryEntry,
@@ -23,7 +24,7 @@ import { requestSessionIdentityActivationInTransaction } from './agent-tools/coo
 import { findLiveHost, injectIntoHost } from './events/await/psu-pty-discovery';
 import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 
-const HISTORY_LIMIT = 12;
+const HISTORY_LIMIT = IDENTITY_HISTORY_LIMIT;
 const TRANSITION_LIMIT = 30;
 
 interface SessionRow {

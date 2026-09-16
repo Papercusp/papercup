@@ -20,6 +20,11 @@ import { getSessionBrief, type SessionBriefLifecycle } from '../../session-brief
 import { notifyAgentOrdersChanged } from '../../agent-orders-notify';
 import { fetchSelfWake, type SelfWakeSignals, type SelfWakeSource } from './presence-selfwake';
 import { stackRefsForSession } from '../../stack-binding-channel';
+import {
+  carryIdentityReceiptForControlActivation,
+  parseSuLaunchSpecRecord,
+  type SuLaunchSpecRecord,
+} from '../../su-persona-render';
 import type { SessionActivation } from '@papercusp/orchestrator/blueprint';
 import {
   desiredActivation,
@@ -986,6 +991,54 @@ export async function requestSessionIdentityActivationInTransaction(input: {
   return renderControlAnchor({ ownerId: input.ownerId, ...persisted });
 }
 
+/**
+ * P-009 (EI-23431478594488191): give a CONTROL-source activation its own launch
+ * receipt. `refreshControlAnchorAfterMutation` advances the applied STATE
+ * revision without re-rendering the launch artifact, so without this write no
+ * receipt carries the new `stateRevision`, `appliedIdentityArtifact` finds no
+ * exact match, and the kernel preflight denies every tool as `stale-artifact`.
+ *
+ * Runs in the caller's transaction, beside the activation it receipts, so a
+ * recorded activation and its receipt cannot land separately. Whether to write
+ * at all — and the fail-closed rules that govern it — is decided entirely by
+ * `carryIdentityReceiptForControlActivation`; this function only does the I/O.
+ *
+ * Returns what it did rather than throwing: a session with no launch record is
+ * the ordinary legacy path, and a losing CAS means a concurrent writer already
+ * rewrote the record (the next transition re-carries). Neither is a reason to
+ * fail the mode/loop/route write this receipt is merely accompanying.
+ */
+async function carryControlActivationIdentityReceipt(input: {
+  ownerId: string;
+  workspaceId: string;
+  revision: SessionActivation['desired'];
+  sql: Sql;
+}): Promise<'carried' | 'unchanged' | 'no-record' | 'lost-race'> {
+  const rows = await input.sql<Array<{ id: number | string; launch_spec: unknown }>>`
+    SELECT a.id, to_jsonb(a)->'launch_spec' AS launch_spec
+      FROM harness_shared.adv_sessions a
+     WHERE a.workspace_id = ${input.workspaceId} AND a.coord_owner_id = ${input.ownerId}
+     ORDER BY (a.ended_at IS NULL AND a.ended_by IS NULL) DESC, a.started_at DESC, a.id DESC
+     LIMIT 1
+  `;
+  const row = rows[0];
+  const record = parseSuLaunchSpecRecord(row?.launch_spec);
+  if (!row || !record) return 'no-record';
+  const identityHistory = carryIdentityReceiptForControlActivation(record, input.revision);
+  if (!identityHistory) return 'unchanged';
+  const next: SuLaunchSpecRecord = { ...record, identityHistory };
+  const updated = await input.sql<Array<{ id: number | string }>>`
+    UPDATE harness_shared.adv_sessions
+       SET launch_spec = ${JSON.stringify(next)}::jsonb
+     WHERE id = ${row.id}
+       AND workspace_id = ${input.workspaceId}
+       AND coord_owner_id = ${input.ownerId}
+       AND launch_spec = ${JSON.stringify(row.launch_spec)}::jsonb
+    RETURNING id
+  `;
+  return updated.length > 0 ? 'carried' : 'lost-race';
+}
+
 /** Refresh after a canonical mutation. The projection is safety context, but
  * never a reason to roll back the already-committed mode/loop/route write. */
 export async function refreshControlAnchorAfterMutation(input: {
@@ -1031,6 +1084,14 @@ export async function refreshControlAnchorAfterMutation(input: {
         sql: transaction,
       });
       if (recorded === 'missing') throw new Error('session_identity_activation_desired_not_recorded');
+      // Receipt the activation we just recorded, so the kernel preflight can
+      // match it exactly instead of relying on the reader-side fallback.
+      await carryControlActivationIdentityReceipt({
+        ownerId: input.ownerId,
+        workspaceId: input.workspaceId,
+        revision: persisted.state.activation.desired,
+        sql: transaction,
+      });
     }
     return renderControlAnchor({ ownerId: input.ownerId, ...persisted });
   };

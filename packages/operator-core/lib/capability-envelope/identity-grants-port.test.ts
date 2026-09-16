@@ -3,6 +3,7 @@ import { compileAgentSpecification, type ResolvedCapabilityProviderInput } from 
 import type { KernelEnforcementRequest } from '@papercusp/agent-mcp';
 import { appliedIdentityArtifact, checkIdentityGrantKernel, readIdentityGrantPolicy, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
+import { carryIdentityReceiptForControlActivation, type SuLaunchSpecRecord } from '../su-persona-render';
 
 const io = vi.hoisted(() => ({
   state: vi.fn(), binding: vi.fn(), load: vi.fn(), source: vi.fn(), flag: vi.fn(), tools: vi.fn(),
@@ -97,6 +98,26 @@ describe('P-005 current identity grants at the common kernel seat', () => {
     const record = { ...newer.record, stateRevision: 'state-b', identityHistory: [f.record] };
     expect(appliedIdentityArtifact(record, f.applied)).toEqual(f.artifact);
     expect(appliedIdentityArtifact(record, { ...f.applied, stateRevision: 'wrong' })).toBeNull();
+  });
+
+  // P-009 (EI-23431478594488191): the WRITER's output must satisfy THIS reader's
+  // exact-match lookup on its own, without the control-only fallback below. A
+  // receipt the writer considers well-formed but that this selection rejects
+  // would leave the denial in place while looking fixed at the write site.
+  it('selects a receipt carried forward by a control-source activation', () => {
+    const f = fixture();
+    const advanced = { specificationRevision: f.applied.specificationRevision, stateRevision: 'state-b' };
+
+    expect(appliedIdentityArtifact(f.record, advanced)).toBeNull();
+
+    const identityHistory = carryIdentityReceiptForControlActivation(
+      f.record as unknown as SuLaunchSpecRecord, advanced,
+    );
+    expect(identityHistory).not.toBeNull();
+
+    expect(appliedIdentityArtifact({ ...f.record, identityHistory }, advanced)).toEqual(f.artifact);
+    // The launch pair keeps resolving; carrying a receipt never displaces one.
+    expect(appliedIdentityArtifact({ ...f.record, identityHistory }, f.applied)).toEqual(f.artifact);
   });
 
   it('accepts a control-only state-revision advance when the applied specification is unchanged', async () => {

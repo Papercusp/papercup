@@ -282,6 +282,74 @@ export interface SuLaunchArtifactHistoryEntry {
   recordedAt: string;
 }
 
+/**
+ * The identity-receipt depth. ONE definition on purpose: the rebuild path in
+ * `identity-management` and the control-activation carry below cap the SAME
+ * history, so two limits would let one path silently evict the other's receipt.
+ */
+export const IDENTITY_HISTORY_LIMIT = 12;
+
+/**
+ * P-009 (EI-23431478594488191): a CONTROL-source activation — a `mode:set` or
+ * fleet-membership transition — advances the applied STATE revision while
+ * holding the specification fixed, and never re-renders the launch artifact. So
+ * no receipt can ever carry the new `stateRevision`, `appliedIdentityArtifact`
+ * finds no exact match, and the kernel preflight denies EVERY tool as
+ * `stale-artifact` — including the `coord:orient` the CTRL block itself
+ * prescribes as the repair.
+ *
+ * Returns the `identityHistory` to persist so that exact-match lookup succeeds
+ * on its own evidence, instead of leaning on the reader-side fallback in
+ * `checkIdentityGrantKernel`. Returns null when nothing should be written.
+ *
+ * FAILS CLOSED. This carries an EXISTING artifact forward under a new revision
+ * pair, so it must never do so unless that artifact is provably the applied
+ * specification:
+ *  - no artifact, or no current revision pair on the record → null;
+ *  - the activation's `specificationRevision` DIFFERS from the record's → null.
+ *    A differing specification means the record's artifact is not what was
+ *    applied, and carrying it would forge a receipt for a specification — and
+ *    therefore a `configuration.grants` — that nobody rendered. That is the one
+ *    case where writing a receipt would GRANT authority rather than record it.
+ *  - a receipt for this exact pair already exists → null, so a repeated
+ *    transition cannot churn the history or evict older receipts.
+ */
+export function carryIdentityReceiptForControlActivation(
+  record: SuLaunchSpecRecord | null | undefined,
+  revision: { specificationRevision?: string; stateRevision?: string } | null | undefined,
+): SuLaunchArtifactHistoryEntry[] | null {
+  if (!record || !revision) return null;
+  const artifact = record.specificationArtifact;
+  if (!artifact || !record.specificationRevision || !record.stateRevision) return null;
+  const { specificationRevision, stateRevision } = revision;
+  if (!specificationRevision || !stateRevision) return null;
+  // The control path preserves the specification by construction. A mismatch is
+  // a specification this record cannot vouch for; refuse rather than carry it.
+  if (specificationRevision !== record.specificationRevision) return null;
+  const history = record.identityHistory ?? [];
+  const alreadyReceipted =
+    record.stateRevision === stateRevision ||
+    history.some((entry) =>
+      entry.specificationRevision === specificationRevision && entry.stateRevision === stateRevision);
+  if (alreadyReceipted) return null;
+  const carried: SuLaunchArtifactHistoryEntry = {
+    stack: [...(record.stack ?? [])],
+    specificationRevision,
+    stateRevision,
+    specificationArtifact: artifact,
+    recordedAt: new Date().toISOString(),
+  };
+  const seen = new Set<string>();
+  return [carried, ...history]
+    .filter((entry) => {
+      const key = `${entry.specificationRevision}:${entry.stateRevision}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, IDENTITY_HISTORY_LIMIT);
+}
+
 /** Narrow an `adv_sessions.launch_spec` jsonb blob to a usable record, or null. */
 export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null {
   if (!raw || typeof raw !== 'object') return null;

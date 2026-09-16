@@ -107,4 +107,112 @@ describe('refreshControlAnchorAfterMutation', () => {
     expect(h.getSessionBrief).toHaveBeenCalledWith({ ownerId: input.ownerId }, tx);
     expect(h.fetchSelfWake).toHaveBeenCalledWith([input.ownerId], tx);
   });
+
+  // P-009 (EI-23431478594488191). This binds the SEAM, not the predicate: a
+  // correct carry helper that nothing calls leaves the denial exactly in place.
+  describe('control-source identity receipt', () => {
+    const APPLIED = { specificationRevision: 'spec-a', stateRevision: 'state-1' };
+
+    function launchRecord(overrides: Record<string, unknown> = {}) {
+      return {
+        v: 1,
+        agent: 'su-1',
+        workspaceId: input.workspaceId,
+        harnessSlug: 'papercusp',
+        profile: 'engineer',
+        contextSize: 'trimmed',
+        personaTier: 'full',
+        model: null,
+        planSlug: null,
+        launchedBy: null,
+        autoMode: true,
+        drainMode: false,
+        loopArmed: true,
+        fleet: null,
+        stack: ['autonomy:su.mode-auto'],
+        ...APPLIED,
+        specificationArtifact: { specificationRevision: 'spec-a' },
+        ...overrides,
+      };
+    }
+
+    /** Drives one refresh and returns every statement the transaction issued. */
+    async function refresh(opts: { source: typeof input.source; launchSpec: unknown }) {
+      const statements: Array<{ text: string; values: unknown[] }> = [];
+      const activation = {
+        schemaVersion: 1,
+        attribution: { actorId: input.ownerId, principalId: input.ownerId, sessionId: input.ownerId },
+        desired: APPLIED,
+        prepared: null,
+        applied: APPLIED,
+        status: 'applied',
+      };
+      h.getSessionBrief.mockResolvedValue({ controlState: { activation } });
+      const tx = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = strings.join(' ');
+        statements.push({ text, values });
+        if (text.includes('INSERT INTO harness_shared.session_briefs')) {
+          return [{
+            control_generation: 2,
+            control_state: {
+              modes: [],
+              activation: { ...activation, desired: { ...APPLIED, stateRevision: 'state-2' }, status: 'desired' },
+              loop: { active: false, intervalSec: null },
+              carry: 'warm' as const,
+              route: { kind: 'self' as const },
+              scope: { workspace: input.workspaceId, harness: null, plan: null, items: [] },
+            },
+            control_updated_at: new Date('2026-09-16T00:00:00.000Z'),
+            control_transition: null,
+          }];
+        }
+        if (text.includes('FROM harness_shared.adv_sessions')) {
+          return [{ id: 7, launch_spec: opts.launchSpec }];
+        }
+        if (text.includes('UPDATE harness_shared.adv_sessions')) return [{ id: 7 }];
+        return [{ id: 1 }];
+      }) as unknown as Sql;
+
+      await refreshControlAnchorAfterMutation({ ...input, source: opts.source, sql: tx });
+      return statements;
+    }
+
+    const launchSpecUpdate = (statements: Array<{ text: string; values: unknown[] }>) =>
+      statements.find((statement) => statement.text.includes('UPDATE harness_shared.adv_sessions')
+        && statement.text.includes('SET launch_spec'));
+
+    it('writes a launch receipt for the state revision a mode:set activation advances to', async () => {
+      const statements = await refresh({ source: 'mode:set', launchSpec: launchRecord() });
+
+      const update = launchSpecUpdate(statements);
+      expect(update).toBeDefined();
+      const written = JSON.parse(update?.values.find((v) => typeof v === 'string'
+        && v.includes('identityHistory')) as string);
+      expect(written.identityHistory[0]).toMatchObject({
+        specificationRevision: 'spec-a',
+        stateRevision: 'state-2',
+        specificationArtifact: { specificationRevision: 'spec-a' },
+      });
+      // The launch pointer is a receipt too; carrying one must not overwrite it.
+      expect(written).toMatchObject(APPLIED);
+    });
+
+    it('writes nothing for a non-identity mutation', async () => {
+      const statements = await refresh({ source: 'loop:arm', launchSpec: launchRecord() });
+      expect(launchSpecUpdate(statements)).toBeUndefined();
+    });
+
+    it('writes nothing when the session carries no launch record', async () => {
+      const statements = await refresh({ source: 'mode:set', launchSpec: null });
+      expect(launchSpecUpdate(statements)).toBeUndefined();
+    });
+
+    it('refuses to carry an artifact the activation specification does not match', async () => {
+      const statements = await refresh({
+        source: 'mode:set',
+        launchSpec: launchRecord({ specificationRevision: 'spec-OTHER' }),
+      });
+      expect(launchSpecUpdate(statements)).toBeUndefined();
+    });
+  });
 });
