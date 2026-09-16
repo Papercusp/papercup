@@ -17,7 +17,13 @@
 set -uo pipefail
 
 HOME_SRC="$HOME"
-VM_REQUESTED=( "$HOME_SRC/windows-vm" "$HOME_SRC/macos-vm" )
+# windows-vm REMOVED [owner 2026-09-16]: 23 daily snapshots of a
+# LIVE 247GB image (98.7->247GB in one month) bought a crash-consistent copy that may
+# not boot on restore. ~/.kopiaignore already excludes it from the curated HOME source,
+# so this dedicated source was the only thing holding those blobs. Its
+# PROTECTED_VM_REQUESTS assertion in kopia-healthcheck.sh was dropped in the same
+# change, or the healthcheck would alarm forever on a source we deliberately retired.
+VM_REQUESTED=( "$HOME_SRC/macos-vm" )
 LOG_DIR="${KOPIA_HOME_SNAPSHOT_LOG_DIR:-$HOME/.cache/kopia}"
 PID_FILE="$LOG_DIR/home-snapshot.kopia.pid"
 PROC_ROOT="${KOPIA_HOME_SNAPSHOT_PROC_ROOT:-/proc}"

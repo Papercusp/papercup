@@ -70,6 +70,52 @@ export function hasConcreteDecisionMeasurement(text: string): boolean {
   return DECISION_MEASURED_LINE_RE.test(text);
 }
 
+// `<slug>#D-NNN` — a fully qualified cross-plan decision reference.
+const QUALIFIED_DECISION_REF_RE = /\b[a-z0-9][a-z0-9-]*#D-\d{3,}\b/g;
+
+// A bare decision id LEANED ON as authority (`per D-012`, `settled by D-004`).
+// Deliberately requires an authority word: a decision that merely MENTIONS
+// another one ("D-007 covers the sibling lane") is not resting its ruling on it,
+// and warning about that would be the false alarm this file's sibling advisory
+// already explains is the expensive failure.
+const AUTHORITY_CITATION_RE =
+  /\b(?:per|see|under|citing|following|authority(?:\s+of)?|established\s+by|settled\s+by|ruled\s+(?:in|by)|governed\s+by|as\s+established\s+in|according\s+to)\s+(?:[a-z0-9][a-z0-9-]*#)?D-\d{3,}\b/gi;
+
+// A citation that RETIRES or CORRECTS a prior ruling is not leaning on it as
+// evidence — it is overruling it. Those are excluded by decision id, so
+// "supersedes D-003" never trips the advisory even in qualified `slug#D-003` form.
+const SUPERSEDING_CITATION_RE =
+  /\b(?:supersedes?|superseding|replaces?|retires?|amends?|corrects?|reverses?|contradicts?|overrides?|revokes?)\s+(?:[a-z0-9][a-z0-9-]*#)?D-\d{3,}\b/gi;
+
+const DECISION_ID_RE = /D-\d{3,}/;
+
+/**
+ * Decision references this body leans on as AUTHORITY, newest-mention-first and
+ * deduped by decision id.
+ *
+ * The repo's own rule is that "a decision cited from another decision is
+ * authority for design, not evidence about current code" — but nothing measured
+ * whether a body was doing exactly that. The tree-path advisory cannot catch it:
+ * it keys on source-like paths, so a ruling that asserts current behaviour and
+ * cites only `<slug>#D-NNN` for it names no path and passes silently.
+ */
+export function citedDecisionAuthorities(text: string): string[] {
+  const overruled = new Set<string>();
+  for (const match of text.matchAll(SUPERSEDING_CITATION_RE)) {
+    const id = DECISION_ID_RE.exec(match[0])?.[0];
+    if (id) overruled.add(id);
+  }
+  const citations = new Map<string, string>();
+  const add = (matched: string): void => {
+    const id = DECISION_ID_RE.exec(matched)?.[0];
+    if (!id || overruled.has(id) || citations.has(id)) return;
+    citations.set(id, matched.trim());
+  };
+  for (const match of text.matchAll(QUALIFIED_DECISION_REF_RE)) add(match[0]);
+  for (const match of text.matchAll(AUTHORITY_CITATION_RE)) add(match[0]);
+  return [...citations.values()].slice(0, 12);
+}
+
 /**
  * Resolve the provenance of one decision body.
  *

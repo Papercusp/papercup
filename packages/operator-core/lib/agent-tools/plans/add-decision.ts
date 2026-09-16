@@ -36,6 +36,7 @@ import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
 import { recoverHarnessFromSlugs, requireUnambiguousSlugScope } from './slug-scope';
 import {
+  citedDecisionAuthorities,
   decisionProvenance,
   FALSIFIED_OWNER_ANCHOR_NOTE,
   hasConcreteDecisionMeasurement,
@@ -161,6 +162,40 @@ export function decisionMeasurementAdvisory(body: string): DecisionMeasurementAd
       'This decision names source-like paths but has no `Measured:` line. If it asserts current tree behavior, ' +
       'open the code and amend the decision with `Measured: <file:line or command + result>`. Another decision ' +
       'is design authority, not evidence about the current tree.',
+  };
+}
+
+export interface DecisionCitedRuleAdvisory {
+  code: 'cited_rule_without_measurement';
+  citations: string[];
+  message: string;
+}
+
+// The sibling of the path advisory above, for the case it structurally cannot
+// see. `decisionMeasurementAdvisory` keys on SOURCE-LIKE PATHS, so a ruling that
+// asserts current behaviour while citing only `<slug>#D-NNN` for it names no
+// path and passes in silence — which is precisely the shape the repo's own rule
+// warns about: a decision cited from another decision is authority for DESIGN,
+// not evidence about current code. Left unchecked it compounds, because the next
+// author cites THIS decision in turn and the chain never touches the tree.
+//
+// Advisory, never a refusal, and for the same reason as its sibling: a citation
+// can legitimately carry a design ruling that asserts nothing about the tree.
+// The cheap discriminations are made in `citedDecisionAuthorities` (an authority
+// word is required; an overruling citation is excluded), and a body that DID
+// measure is exempt outright — warning an author who measured teaches "this
+// warning is noise", and then it protects nothing when it matters.
+export function decisionCitedRuleAdvisory(body: string): DecisionCitedRuleAdvisory | null {
+  if (hasConcreteDecisionMeasurement(body)) return null;
+  const citations = citedDecisionAuthorities(body);
+  if (citations.length === 0) return null;
+  return {
+    code: 'cited_rule_without_measurement',
+    citations,
+    message:
+      'This decision rests on another decision as authority and carries no `Measured:` line. A cited decision is ' +
+      'design authority, not evidence about the current tree — if this ruling asserts how the code behaves now, ' +
+      'open the code and amend it with `Measured: <file:line or command + result>`.',
   };
 }
 
@@ -331,6 +366,7 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
   // header carries the full rationale and the measurement behind enforced-vs-advisory).
   const { fields: provenance, anchors } = await decisionProvenance(`${it.title}\n${it.body}`, ctx);
   const measurementAdvisory = decisionMeasurementAdvisory(it.body);
+  const citedRuleAdvisory = decisionCitedRuleAdvisory(it.body);
   if (anchors.length > 0) {
     return {
       ok: false,

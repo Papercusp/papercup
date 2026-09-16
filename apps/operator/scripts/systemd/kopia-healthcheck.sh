@@ -557,7 +557,9 @@ fi
 # Owner-protected VM paths are deliberately excluded from the curated HOME
 # source's .kopiaignore. Assert both their existence and their own exact Kopia
 # source header so a missing VM cannot hide behind the healthy HOME ancestor.
-PROTECTED_VM_REQUESTS=( "$HOME/windows-vm" "$HOME/macos-vm" )
+# windows-vm dropped [owner 2026-09-16] — no longer snapshotted at all (see
+# kopia-home-snapshot.sh VM_REQUESTED). Asserting its coverage here would alarm forever.
+PROTECTED_VM_REQUESTS=( "$HOME/macos-vm" )
 for requested in "${PROTECTED_VM_REQUESTS[@]}"; do
   if [ ! -d "$requested" ]; then
     fail "owner-protected VM path is MISSING: $requested — its loss is not protected or detectable elsewhere"

@@ -30,6 +30,13 @@ export default defineTool({
       cc: z.array(z.string().trim().min(3).max(320)).max(25).optional(),
       subject: z.string().trim().min(1).max(998),
       text: z.string().trim().min(1).max(100_000),
+      attachments: z
+        .array(z.object({ path: z.string().trim().min(1).max(4_096) }).strict())
+        .max(10)
+        .optional()
+        .describe(
+          'Local files to attach, by absolute path; the recipient sees the basename. ALL-OR-NOTHING: an unreadable or empty path fails the whole call rather than sending a message that silently lacks a file you said it carries. Omit for a body-only send.',
+        ),
       addressee: addresseeArg,
     })
     .strict(),
@@ -47,6 +54,7 @@ export default defineTool({
         cc: args.cc,
         subject: args.subject,
         text: args.text,
+        attachments: args.attachments,
         provenance: toProvenance(args.addressee),
       });
       return { data: { ok: true, ...result } };
