@@ -460,6 +460,155 @@ export async function synchronizeAcceptanceBarRevision(
   return revisions;
 }
 
+/**
+ * Decide whether one re-projected clause may keep its existing proof (P-008).
+ *
+ * Extracted deliberately: the carry itself is inside the amendment transaction,
+ * so this predicate is the only part of the rule a unit test can reach. Every
+ * condition here is a refusal reason, and each one is load-bearing:
+ *   - a bar in `changedBars` has different MEANING, so its proof must be re-run;
+ *   - an unknown/missing bar key is NOT treated as unchanged — a clause we cannot
+ *     attribute to a bar is the one case where guessing preserves a proof that
+ *     should have died;
+ *   - a revision that did not move needs no carry (its proof is already current).
+ */
+export function shouldCarryBarEvidence(args: {
+  sourceBarKey: string | null | undefined;
+  changedBars: Iterable<string>;
+  priorRevision: number | undefined;
+  nextRevision: number;
+}): boolean {
+  if (args.priorRevision === undefined) return false;
+  if (args.priorRevision === args.nextRevision) return false;
+  const key = args.sourceBarKey?.trim();
+  if (!key) return false;
+  for (const changed of args.changedBars) {
+    if (changed === key) return false;
+  }
+  return true;
+}
+
+export interface CarryUnchangedBarEvidenceArgs {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  specId: string;
+  priorRevision: number;
+  nextRevision: number;
+  /** The content hash of the clause at `nextRevision`. */
+  nextSpecFingerprint: string;
+}
+
+/**
+ * Carry a clause's existing evidence bindings forward onto the revision an
+ * amendment just minted, for a BAR whose own meaning did NOT change
+ * (acceptance-machinery-seam-fixes-2026-09-16 P-008).
+ *
+ * Every amendment re-projects EVERY clause so each one pins the global rubric
+ * revision and BAR-set hash — deliberately, because the ship gate compares that
+ * pin against the plan's current rubric revision. The cost was that an unchanged
+ * BAR's clause still got a new revision, which stranded its proof at the old one:
+ * amending BAR R-3 invalidated the evidence for R-1, R-2 and every other bar, and
+ * the whole plan had to be re-proved. That is what made a single-criterion repair
+ * cost a full re-binding pass (observed on green-gate-zero-wait-convergence, where
+ * "all 11 AUTO-BAR clauses re-projected, so every prior binding is stale").
+ *
+ * Only the caller's UNCHANGED-bar set may be carried: a bar whose hash moved has
+ * genuinely different meaning and its proof must be re-run. Two rails keep this
+ * honest rather than merely cheap:
+ *   - the INSERT joins `work_item_spec_revision_edges` at `nextRevision`, so a
+ *     binding is carried only where the contract edge actually exists (the FK
+ *     demands it, and a missing edge means that work-item is no longer bound);
+ *   - `binding_fingerprint` is RECOMPUTED over the new revision + fingerprint.
+ *     Copying the old hash would be cheaper and wrong: the fingerprint is defined
+ *     over the revision it pins, so a copied one stops matching its own row and
+ *     the next identical bind appends a duplicate instead of deduplicating.
+ *
+ * `observed_at` and `created_by` are preserved: the proof was observed when it was
+ * observed, and the carry is not a new observation by the amending actor.
+ */
+export async function carryUnchangedBarEvidenceBindings(
+  sql: AcceptanceBarAmendmentSql,
+  args: CarryUnchangedBarEvidenceArgs,
+): Promise<number> {
+  if (args.nextRevision === args.priorRevision) return 0;
+  const rows = await sql<
+    Array<{
+      work_item_id: string;
+      evidence_kind: string;
+      evidence_ref: string;
+      source_fingerprint: string;
+      test_fingerprint: string | null;
+      fixture_fingerprint: string | null;
+      rubric_fingerprint: string | null;
+      environment_fingerprint: string | null;
+      coverage_evidence_ref: string | number | null;
+      test_run_id: string | number | null;
+      details: Record<string, unknown>;
+      observed_at: Date;
+      created_by: string;
+    }>
+  >`
+    SELECT b.work_item_id, b.evidence_kind, b.evidence_ref, b.source_fingerprint,
+           b.test_fingerprint, b.fixture_fingerprint, b.rubric_fingerprint,
+           b.environment_fingerprint, b.coverage_evidence_ref, b.test_run_id,
+           b.details, b.observed_at, b.created_by
+      FROM harness_shared.spec_evidence_bindings b
+      JOIN harness_shared.work_item_spec_revision_edges e
+        ON e.workspace_id = b.workspace_id AND e.harness_slug = b.harness_slug
+       AND e.work_item_id = b.work_item_id AND e.plan_slug = b.plan_slug
+       AND e.spec_id = b.spec_id
+     WHERE b.workspace_id = ${args.workspaceId} AND b.harness_slug = ${args.harnessSlug}
+       AND b.plan_slug = ${args.planSlug} AND b.spec_id = ${args.specId}
+       AND b.spec_revision = ${args.priorRevision}
+       AND e.spec_revision = ${args.nextRevision}
+       AND e.spec_fingerprint = ${args.nextSpecFingerprint}
+     ORDER BY b.id LIMIT 1001`;
+  if (rows.length > 1000) throw new Error('acceptance_bar_amendment_evidence_carry_truncated');
+  if (!rows.length) return 0;
+  const { specEvidenceBindingFingerprint } = await import('./agent-tools/plans/spec-evidence-store');
+  let carried = 0;
+  for (const row of rows) {
+    const coverageEvidenceRef = row.coverage_evidence_ref == null ? null : Number(row.coverage_evidence_ref);
+    const testRunId = row.test_run_id == null ? null : Number(row.test_run_id);
+    const bindingFingerprint = specEvidenceBindingFingerprint({
+      workspaceId: args.workspaceId,
+      harnessSlug: args.harnessSlug,
+      workItemId: row.work_item_id,
+      planSlug: args.planSlug,
+      specId: args.specId,
+      specRevision: args.nextRevision,
+      specFingerprint: args.nextSpecFingerprint,
+      evidenceKind: row.evidence_kind as never,
+      evidenceRef: row.evidence_ref,
+      sourceFingerprint: row.source_fingerprint,
+      testFingerprint: row.test_fingerprint,
+      fixtureFingerprint: row.fixture_fingerprint,
+      rubricFingerprint: row.rubric_fingerprint,
+      environmentFingerprint: row.environment_fingerprint,
+      coverageEvidenceRef,
+      testRunId,
+      details: row.details ?? {},
+    });
+    await sql`
+      INSERT INTO harness_shared.spec_evidence_bindings (
+        workspace_id, harness_slug, work_item_id, plan_slug, spec_id, spec_revision,
+        spec_fingerprint, evidence_kind, evidence_ref, source_fingerprint, test_fingerprint,
+        fixture_fingerprint, rubric_fingerprint, environment_fingerprint, coverage_evidence_ref,
+        test_run_id, details, observed_at, binding_fingerprint, created_by
+      ) VALUES (
+        ${args.workspaceId}, ${args.harnessSlug}, ${row.work_item_id}, ${args.planSlug},
+        ${args.specId}, ${args.nextRevision}, ${args.nextSpecFingerprint}, ${row.evidence_kind},
+        ${row.evidence_ref}, ${row.source_fingerprint}, ${row.test_fingerprint},
+        ${row.fixture_fingerprint}, ${row.rubric_fingerprint}, ${row.environment_fingerprint},
+        ${coverageEvidenceRef}, ${testRunId}, ${JSON.stringify(row.details ?? {})}::jsonb,
+        ${row.observed_at}, ${bindingFingerprint}, ${row.created_by}
+      ) ON CONFLICT DO NOTHING`;
+    carried += 1;
+  }
+  return carried;
+}
+
 export interface AcceptanceBarAmendmentPlan {
   workspaceId: string;
   harnessSlug: string;

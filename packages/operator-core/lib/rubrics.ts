@@ -74,6 +74,8 @@ import {
   withAcceptanceBarAmendmentTransaction,
   acceptanceBarAmendmentKey,
   synchronizeAcceptanceBarRevision,
+  carryUnchangedBarEvidenceBindings,
+  shouldCarryBarEvidence,
   resolveAcceptanceBarApproval,
   type AcceptanceBarApproval,
   type AcceptanceBarAmendmentSql,
@@ -3252,6 +3254,8 @@ interface AcceptanceAmendmentResult {
     scorecards: number;
     vetting: number;
   };
+  /** P-008: proofs preserved onto the new revision because their BAR did not change. */
+  evidenceCarriedForward?: number;
   idempotencyKey: string;
   replayed?: boolean;
   /** No promise changed; continue through the guarded method/pin-refresh writer. */
@@ -4025,6 +4029,12 @@ async function amendAcceptanceBarRubric(
          ORDER BY c.spec_id LIMIT 1001`;
       if (currentClauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
       const priorRevisionBySpec = new Map(clauses.map((clause) => [clause.spec_id, Number(clause.current_revision)]));
+      // P-008: an unchanged BAR's clause is still re-projected (the pin above is
+      // global), so without this its proof would be stranded at the old revision
+      // and the whole plan re-proved for a single-criterion repair.
+      const changedBarKeys = new Set(changedBars);
+      const sourceBarKeyBySpec = new Map(clauses.map((clause) => [clause.spec_id, clause.source_bar_key]));
+      let evidenceCarriedForward = 0;
       let reboundContracts = 0;
       for (const clause of currentClauses) {
         const revision = newClauseRevisions.get(clause.spec_id) ?? Number(clause.current_revision);
@@ -4070,6 +4080,26 @@ async function amendAcceptanceBarRubric(
             ) ON CONFLICT DO NOTHING`;
           reboundContracts += 1;
         }
+        // Carry proof forward ONLY for a BAR the preview did not report as
+        // changed. A changed BAR means different meaning, so its evidence must
+        // be re-run; the edges above already exist at `revision`, which the FK
+        // and the carry's own join both require.
+        if (shouldCarryBarEvidence({
+          sourceBarKey: sourceBarKeyBySpec.get(clause.spec_id),
+          changedBars: changedBarKeys,
+          priorRevision,
+          nextRevision: revision,
+        })) {
+          evidenceCarriedForward += await carryUnchangedBarEvidenceBindings(tx as never, {
+            workspaceId: subjectScope.workspaceId,
+            harnessSlug: subjectScope.harnessSlug,
+            planSlug: subjectPlanHint,
+            specId: clause.spec_id,
+            priorRevision,
+            nextRevision: revision,
+            nextSpecFingerprint: fingerprint,
+          });
+        }
       }
       injectAmendmentFault(input, 'after-rebind');
 
@@ -4080,7 +4110,18 @@ async function amendAcceptanceBarRubric(
            AND c.plan_slug = e.plan_slug AND c.spec_id = e.spec_id
          WHERE e.workspace_id = ${subjectScope.workspaceId} AND e.harness_slug = ${subjectScope.harnessSlug}
            AND e.plan_slug = ${subjectPlanHint} AND e.spec_id = ANY(${currentClauses.map((c) => c.spec_id)}::text[])
-           AND e.spec_revision < c.current_revision`;
+           AND e.spec_revision < c.current_revision
+           -- P-008: bindings are append-only, so a carried-forward proof leaves its
+           -- superseded row behind. Counting that row would report an unchanged BAR
+           -- as invalidated even though its proof survived onto the new revision.
+           AND NOT EXISTS (
+             SELECT 1 FROM harness_shared.spec_evidence_bindings n
+              WHERE n.workspace_id = e.workspace_id AND n.harness_slug = e.harness_slug
+                AND n.plan_slug = e.plan_slug AND n.spec_id = e.spec_id
+                AND n.work_item_id = e.work_item_id AND n.evidence_kind = e.evidence_kind
+                AND n.evidence_ref = e.evidence_ref
+                AND n.spec_revision = c.current_revision
+           )`;
       const scorecards = await tx<{ count: string }[]>`
         SELECT count(*)::text AS count FROM harness_shared.work_items
          WHERE workspace_id = ${subjectScope.workspaceId}
@@ -4121,6 +4162,7 @@ async function amendAcceptanceBarRubric(
           scorecards: Number(scorecards[0]?.count ?? 0),
           vetting: Number(vetting[0]?.count ?? 0),
         },
+        evidenceCarriedForward,
         idempotencyKey,
         rubricBody,
         subjectBody,

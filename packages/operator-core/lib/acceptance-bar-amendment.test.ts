@@ -14,7 +14,10 @@ import {
   acceptanceBarSourceFingerprint,
   synchronizeAcceptanceBarSubjectRevision,
   withAcceptanceBarAmendmentTransaction,
+  carryUnchangedBarEvidenceBindings,
+  shouldCarryBarEvidence,
 } from './acceptance-bar-amendment';
+import { specEvidenceBindingFingerprint } from './agent-tools/plans/spec-evidence-store';
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
 import { normalizeAcceptanceBarCriterion } from './rubrics';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
@@ -528,5 +531,195 @@ describe('approval covers the full amendment delta (R-5)', () => {
     await expect(
       resolve([bar('R-1', PRIOR, NEXT), bar('R-2', PRIOR, NEXT)], [bar('R-1', PRIOR, NEXT)]),
     ).resolves.toMatchObject({ approvedBy: 'su-reviewer' });
+  });
+});
+
+/**
+ * P-008: an amendment re-projects EVERY clause so each pins the global rubric
+ * revision, which used to strand the proof of a BAR whose own meaning never
+ * changed — amending one criterion invalidated every other criterion's evidence.
+ * These bind the carry contract, whose subtle half is that the binding
+ * fingerprint must be RECOMPUTED (it is defined over the revision it pins), not
+ * copied from the superseded row.
+ */
+describe('shouldCarryBarEvidence (P-008) — which clause may keep its proof', () => {
+  const base = { sourceBarKey: 'R-1', changedBars: ['R-3'], priorRevision: 7, nextRevision: 8 };
+
+  it('carries an unchanged bar whose clause was re-projected by the global pin', () => {
+    expect(shouldCarryBarEvidence(base)).toBe(true);
+  });
+
+  it('refuses a bar the preview reported as changed — different meaning, re-prove it', () => {
+    expect(shouldCarryBarEvidence({ ...base, changedBars: ['R-1', 'R-3'] })).toBe(false);
+    expect(shouldCarryBarEvidence({ ...base, sourceBarKey: 'R-3' })).toBe(false);
+  });
+
+  it('refuses an unattributable clause rather than guessing it is unchanged', () => {
+    // The one direction where a wrong guess PRESERVES a proof that should die.
+    expect(shouldCarryBarEvidence({ ...base, sourceBarKey: null })).toBe(false);
+    expect(shouldCarryBarEvidence({ ...base, sourceBarKey: '' })).toBe(false);
+    expect(shouldCarryBarEvidence({ ...base, sourceBarKey: '   ' })).toBe(false);
+  });
+
+  it('refuses when there is nothing to carry across', () => {
+    expect(shouldCarryBarEvidence({ ...base, priorRevision: undefined })).toBe(false);
+    expect(shouldCarryBarEvidence({ ...base, priorRevision: 8 })).toBe(false);
+  });
+
+  it('matches bar keys exactly, never by prefix', () => {
+    // 'R-1' must not be considered changed because 'R-10' changed.
+    expect(shouldCarryBarEvidence({ ...base, changedBars: ['R-10'] })).toBe(true);
+    expect(shouldCarryBarEvidence({ ...base, sourceBarKey: 'R-10', changedBars: ['R-1'] })).toBe(true);
+  });
+});
+
+describe('carryUnchangedBarEvidenceBindings (P-008)', () => {
+  const SCOPE = {
+    workspaceId: 'ws-1',
+    harnessSlug: 'papercusp',
+    planSlug: 'subject-plan',
+    specId: 'AUTO-BAR-R-1-P-001',
+  } as const;
+  const PRIOR_FP = 'a'.repeat(64);
+  const NEXT_FP = 'b'.repeat(64);
+
+  function storedRow(over: Record<string, unknown> = {}) {
+    return {
+      work_item_id: 'WI-1',
+      evidence_kind: 'test',
+      evidence_ref: 'packages/operator-core/lib/thing.test.ts',
+      source_fingerprint: 'src-fp',
+      test_fingerprint: 'test-fp',
+      fixture_fingerprint: null,
+      rubric_fingerprint: null,
+      environment_fingerprint: null,
+      coverage_evidence_ref: null,
+      test_run_id: 42,
+      details: { note: 'proof' },
+      observed_at: new Date('2026-09-01T00:00:00.000Z'),
+      created_by: 'su-original-prover',
+      ...over,
+    };
+  }
+
+  function fakeSql(resultsInOrder: unknown[][]) {
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    let next = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join('?'), values });
+      const rows = resultsInOrder[next] ?? [];
+      next += 1;
+      return Promise.resolve(rows);
+    }) as never;
+    return { sql, calls };
+  }
+
+  it('issues no query at all when the revision did not move', async () => {
+    const { sql, calls } = fakeSql([]);
+    const carried = await carryUnchangedBarEvidenceBindings(sql, {
+      ...SCOPE,
+      priorRevision: 7,
+      nextRevision: 7,
+      nextSpecFingerprint: NEXT_FP,
+    });
+    expect(carried).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('selects only bindings whose contract edge already exists at the NEW revision', async () => {
+    const { sql, calls } = fakeSql([[]]);
+    const carried = await carryUnchangedBarEvidenceBindings(sql, {
+      ...SCOPE,
+      priorRevision: 7,
+      nextRevision: 8,
+      nextSpecFingerprint: NEXT_FP,
+    });
+    expect(carried).toBe(0);
+    expect(calls).toHaveLength(1);
+    // The join must pin the NEW revision + fingerprint: the FK to
+    // work_item_spec_revision_edges demands it, and a missing edge means that
+    // work-item is no longer bound and must not silently inherit proof.
+    expect(calls[0]!.text).toContain('work_item_spec_revision_edges');
+    expect(calls[0]!.values).toContain(8);
+    expect(calls[0]!.values).toContain(NEXT_FP);
+    expect(calls[0]!.values).toContain(7);
+  });
+
+  it('recomputes the binding fingerprint over the new revision instead of copying it', async () => {
+    const row = storedRow();
+    const { sql, calls } = fakeSql([[row]]);
+    const carried = await carryUnchangedBarEvidenceBindings(sql, {
+      ...SCOPE,
+      priorRevision: 7,
+      nextRevision: 8,
+      nextSpecFingerprint: NEXT_FP,
+    });
+    expect(carried).toBe(1);
+    const insert = calls[1]!;
+    expect(insert.text).toContain('INSERT INTO harness_shared.spec_evidence_bindings');
+
+    const canonical = {
+      workspaceId: SCOPE.workspaceId,
+      harnessSlug: SCOPE.harnessSlug,
+      workItemId: 'WI-1',
+      planSlug: SCOPE.planSlug,
+      specId: SCOPE.specId,
+      specFingerprint: NEXT_FP,
+      evidenceKind: 'test' as never,
+      evidenceRef: row.evidence_ref,
+      sourceFingerprint: row.source_fingerprint,
+      testFingerprint: row.test_fingerprint,
+      fixtureFingerprint: null,
+      rubricFingerprint: null,
+      environmentFingerprint: null,
+      coverageEvidenceRef: null,
+      testRunId: 42,
+      details: row.details,
+    };
+    const expected = specEvidenceBindingFingerprint({ ...canonical, specRevision: 8 });
+    const stale = specEvidenceBindingFingerprint({
+      ...canonical,
+      specRevision: 7,
+      specFingerprint: PRIOR_FP,
+    });
+    expect(insert.values).toContain(expected);
+    // A copied fingerprint would stop matching its own row, so the next
+    // identical bind would append a duplicate instead of deduplicating.
+    expect(insert.values).not.toContain(stale);
+    expect(expected).not.toBe(stale);
+  });
+
+  it('preserves the original observation time and prover, and pins the new revision', async () => {
+    const row = storedRow();
+    const { sql, calls } = fakeSql([[row]]);
+    await carryUnchangedBarEvidenceBindings(sql, {
+      ...SCOPE,
+      priorRevision: 7,
+      nextRevision: 8,
+      nextSpecFingerprint: NEXT_FP,
+    });
+    const insert = calls[1]!;
+    // The proof was observed when it was observed; the carry is not a fresh
+    // observation by the amending actor.
+    expect(insert.values).toContain(row.observed_at);
+    expect(insert.values).toContain('su-original-prover');
+    expect(insert.values).toContain(8);
+    expect(insert.values).toContain(NEXT_FP);
+    expect(insert.values).not.toContain(7);
+  });
+
+  it('refuses an unbounded carry rather than silently truncating proof', async () => {
+    const rows = Array.from({ length: 1001 }, (_unused, index) =>
+      storedRow({ work_item_id: `WI-${index}` }),
+    );
+    const { sql } = fakeSql([rows]);
+    await expect(
+      carryUnchangedBarEvidenceBindings(sql, {
+        ...SCOPE,
+        priorRevision: 7,
+        nextRevision: 8,
+        nextSpecFingerprint: NEXT_FP,
+      }),
+    ).rejects.toThrow('acceptance_bar_amendment_evidence_carry_truncated');
   });
 });

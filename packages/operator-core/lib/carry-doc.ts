@@ -1149,6 +1149,46 @@ function sanitizeBriefForRole(brief: CarryBrief, report: CarryRoleSafetyReport):
   };
 }
 
+/** The instruction rendered BESIDE a complete recovery marker.
+ *
+ * It must DEFER to a later `⟦CTRL:…⟧` generation rather than stating an
+ * unconditional "do not re-fetch" (acceptance-machinery-seam-fixes-2026-09-16
+ * P-011). The marker is stamped for exactly ONE control generation, and a
+ * carry-respawn is routinely delivered after the control state has already moved
+ * on — the marker JSON's own `fallback.when` has always listed
+ * `control-generation-mismatch`, but the prose a reader actually acts on said
+ * "Do NOT call coord:orient" with no condition attached. A successor that read
+ * the adjacent line rather than parsing the marker therefore skipped a re-orient
+ * it was owed, and believed a stale generation's lane was current.
+ *
+ * Naming the stamped generation inline is deliberate: it makes the comparison
+ * against the turn's `⟦CTRL:…⟧` block mechanical, instead of requiring the reader
+ * to locate and parse the marker payload to discover what it was stamped for. */
+export function completeRecoveryInstruction(
+  controlGeneration: number | null | undefined,
+  judgeSafe: boolean,
+): string {
+  const stamped =
+    typeof controlGeneration === 'number'
+      ? `control generation ${controlGeneration}`
+      : 'the stamped control generation';
+  if (judgeSafe) {
+    return (
+      `Automatic recovery is complete for ${stamped}. While that is the generation reported in this turn, ` +
+      'continue the assigned evaluation using the evidence delivered here. If a control block in this turn ' +
+      'reports a DIFFERENT generation, this recovery is STALE for it — do not treat the delivered state as ' +
+      'current; continue using only the permitted read-only evidence surface.'
+    );
+  }
+  return (
+    `Automatic recovery is complete for ${stamped}. Do NOT call coord:orient to re-fetch it while ⟦CTRL:…⟧ ` +
+    `still reports ${stamped}; declare your actual lane with ` +
+    '`coord:declare-intent { intent, current_plan_slug, items }`. If a ⟦CTRL:…⟧ block in this turn reports a ' +
+    'DIFFERENT generation, this recovery is STALE for it and the do-not-re-fetch instruction above does NOT ' +
+    'apply. Call `coord:orient { afterCompaction: true }` exactly once, then continue.'
+  );
+}
+
 /** Return the role-appropriate post-compaction instruction. Normal su/worker
  * callers keep the historical constant byte-for-byte. */
 export function postCompactionRecoveryInstruction(role?: string | null): string {
@@ -1184,9 +1224,7 @@ export function renderAutomaticCompactionRecovery(
   const lines = [
     `${AUTOMATIC_COMPACTION_RECOVERY_MARKER} ${JSON.stringify(renderedMarker)}`,
     marker.complete
-      ? judgeSafe
-        ? 'Automatic recovery is complete for the stamped control generation. Continue the assigned evaluation using the evidence delivered here.'
-        : 'Automatic recovery is complete for the stamped control generation. Do NOT call coord:orient to re-fetch it; declare your actual lane with `coord:declare-intent { intent, current_plan_slug, items }`.'
+      ? completeRecoveryInstruction(marker.controlGeneration, judgeSafe)
       : judgeSafe
         ? 'Automatic recovery is incomplete. Continue the assigned evaluation using the permitted evidence; do not initiate engineering coordination.'
         : 'Automatic recovery is incomplete. Call `coord:orient { afterCompaction: true }` exactly once, then continue.',
