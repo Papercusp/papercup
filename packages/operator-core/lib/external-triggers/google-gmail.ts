@@ -10,6 +10,7 @@
  * quota-budgeted chunk per sync (`cursor.backfill`) instead of one whole-mailbox
  * walk that a per-user quota kills and the next poll restarts from zero.
  */
+import type { gmail_v1 } from '@googleapis/gmail';
 import { Gaxios, type GaxiosError } from 'gaxios';
 import MailComposer from 'nodemailer/lib/mail-composer';
 import type postgres from 'postgres';
@@ -61,53 +62,33 @@ const BACKFILL_LIST_PAGE_SIZE = 25;
 const BACKFILL_THROTTLE_BASE_MS = 60_000;
 const BACKFILL_THROTTLE_MAX_MS = 15 * 60_000;
 
-export interface GoogleGmailHeader {
-  name?: string;
-  value?: string;
-}
+/**
+ * Wire shapes are the Gmail API's OWN published types, not our transcription of
+ * them. These aliases keep the domain-meaningful names at our boundary (so call
+ * sites and consumers never churn) while `gmail_v1.Schema$*` owns what the
+ * fields actually are.
+ *
+ * The concrete gain is NULLABILITY. Every hand-written field above was written
+ * `field?: string` — `string | undefined`. Gmail publishes `string | null`, so
+ * our version asserted a guarantee the API does not make, and a `null` arriving
+ * where we had promised ourselves `undefined` reaches `?? fallback` and `!value`
+ * intact but slips straight through a `=== undefined` or a `typeof x === 'string'`
+ * assumption further out. Adopting the published type makes the compiler point at
+ * each such spot instead of leaving it to a runtime surprise.
+ *
+ * `Schema$Message` also has NO index signature, where our `GoogleGmailMessage`
+ * carried `[key: string]: unknown`. That escape hatch is what a transcribed
+ * shape needs to stay honest about fields it never enumerated; the real schema
+ * enumerates them, so dropping it is the point rather than a casualty.
+ */
+export type GoogleGmailHeader = gmail_v1.Schema$MessagePartHeader;
+export type GoogleGmailMessagePart = gmail_v1.Schema$MessagePart;
+export type GoogleGmailMessage = gmail_v1.Schema$Message;
 
-export interface GoogleGmailMessagePart {
-  mimeType?: string;
-  filename?: string;
-  headers?: GoogleGmailHeader[];
-  body?: { size?: number; data?: string; attachmentId?: string };
-  parts?: GoogleGmailMessagePart[];
-}
-
-export interface GoogleGmailMessage {
-  id?: string;
-  threadId?: string;
-  labelIds?: string[];
-  snippet?: string;
-  historyId?: string;
-  internalDate?: string;
-  payload?: GoogleGmailMessagePart;
-  [key: string]: unknown;
-}
-
-interface GoogleGmailProfile {
-  emailAddress?: string;
-  historyId?: string;
-}
-
-interface GoogleGmailWatchResponse {
-  historyId?: string;
-  expiration?: string;
-}
-
-interface GoogleGmailHistoryResponse {
-  history?: Array<{
-    id?: string;
-    messagesAdded?: Array<{ message?: GoogleGmailMessage }>;
-  }>;
-  nextPageToken?: string;
-  historyId?: string;
-}
-
-interface GoogleGmailMessagesListResponse {
-  messages?: GoogleGmailMessage[];
-  nextPageToken?: string;
-}
+type GoogleGmailProfile = gmail_v1.Schema$Profile;
+type GoogleGmailWatchResponse = gmail_v1.Schema$WatchResponse;
+type GoogleGmailHistoryResponse = gmail_v1.Schema$ListHistoryResponse;
+type GoogleGmailMessagesListResponse = gmail_v1.Schema$ListMessagesResponse;
 
 export interface GoogleGmailWatchResult {
   renewed: boolean;
@@ -573,7 +554,16 @@ export async function ensureGoogleGmailWatch(
   };
 }
 
-function decodeBase64Url(data: string | undefined): string | null {
+/**
+ * `null` is admitted deliberately, not to appease the compiler: Gmail publishes
+ * `Schema$MessagePartBody.data` as `string | null`, and an attachment part
+ * carries `attachmentId` with a null `data` rather than omitting the field. The
+ * runtime was always correct here — `nonEmpty` takes `unknown` and rejects null
+ * on the first branch — so the old `string | undefined` was a type narrower than
+ * the behavior it described, which is the kind of gap that stays invisible until
+ * something downstream trusts it.
+ */
+function decodeBase64Url(data: string | null | undefined): string | null {
   const normalized = nonEmpty(data);
   if (!normalized) return null;
   try {
