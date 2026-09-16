@@ -3,7 +3,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const migrationsDir = join(__dirname, '..', '..', 'migrations');
+// Overridable so falsifiability can be proven against a COPY outside the tree (a naive
+// 029 that drops the pinned_* columns), instead of mutating the shared checkout — which
+// git-sync would commit mid-probe. Defaults to the real chain; CI never sets it.
+const migrationsDir =
+  process.env.PROBE_MIGRATIONS_DIR ?? join(__dirname, '..', '..', 'migrations');
 
 /**
  * An INVARIANT guard over the whole migration chain, deliberately NOT a snapshot.

@@ -136,6 +136,14 @@ export const REVIEW_POLICY_KINDS: readonly ListingKind[] = [
   // duties prose an agent EXECUTES (a kickoff brief + launch defaults) — the same
   // fail-closed reasoning as `plan`, in the list from the moment the kind exists.
   'goal',
+  // migration 029 / identities-v1-2026-08-30 P-027: a datatype package installs a
+  // SCHEMA + LIFECYCLE that governs how `work_items` of that kind behave — it lands
+  // in the execution path of every surface over them, so it is actuating, not inert.
+  // It is also a PRESERVED semantic, not a new one: the parallel `datatypes:publish`
+  // surface this consolidation retires already marked its own listings pending for
+  // operator moderation (D-010). Omitting it here would have made folding that
+  // surface into the Cupboard a silent downgrade from moderated to auto-approved.
+  'datatype',
 ];
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';

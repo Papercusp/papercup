@@ -262,6 +262,7 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
     case 'recipe':
     case 'goal':
     case 'theme':
+    case 'datatype':
       return 'install';
     case 'app':
       return l.delivery_type === 'bundle' ? 'install' : 'download';

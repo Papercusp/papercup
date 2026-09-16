@@ -16,14 +16,15 @@ Original plan called for "Cloudflare-fronted Next.js + managed Postgres." This l
 - **D1 (SQLite)** instead of managed Postgres. Cupboard data is moderate-scale + relational + low-cost; D1's free tier covers v1 easily. Reusing the `papercusp-publish` pattern keeps the deploy + auth + rate-limit code shapes consistent.
 - **GitHub bearer auth** (validate `Authorization: Bearer <gh_token>` against `https://api.github.com/user`). Desktop operator passes the same token produced by Phase 1b `lib/identity/gh-token.ts`.
 
-## Listing kinds (one storefront, twelve kinds)
+## Listing kinds (one storefront, thirteen kinds)
 
 Per the distribution plan (`harness-blueprint-distribution-2026-06-03`, D-005/D-008),
 extended by `tool-distribution-granularity-2026-06-05`, `learning-packs-2026-06-11`,
 `app-templates-2026-07-04`, `cupboard-public-release-2026-07-12`,
 `cupboard-app-distribution-2026-07-14`, `cupboard-plan-rubric-recipe-sharing-2026-08-21`,
-`work-on-everything-goal-2026-08-23`, and `cupboard-themes-2026-09-05`, the Cupboard is
-no longer harness-only. It is ONE storefront with twelve listing kinds
+`work-on-everything-goal-2026-08-23`, `cupboard-themes-2026-09-05`, and
+`identities-v1-2026-08-30` (P-027, D-010), the Cupboard is
+no longer harness-only. It is ONE storefront with thirteen listing kinds
 (`LISTING_KINDS` in `src/db.ts`), each with its own consumer action and review/delivery
 semantics:
 
@@ -41,14 +42,15 @@ semantics:
 | `recipe`         | **install** | **pending** | a captured multi-step tool orchestration |
 | `goal`           | **install** | **pending** | a goal package with duties, kickoff, schemas, defaults, and tripwires; installing creates an inactive stub |
 | `theme`          | **install** | **approved** | an inert semantic-token package selectable by the existing theme runtime |
+| `datatype`       | **install** | **pending** | a generic-kind datatype package — the schema + lifecycle a workspace installs so `work_items` accept a new item kind; `datatype_registry` remains the resolution layer |
 
 Retired / aliased: `snapshot` was retired (`retire-snapshots-instance-spec-2026-06-09`
 D-005); the interim `tool-pack` value normalizes to `pack` and the pre-rename
 `learning-pack` normalizes to `knowledge-pack` (`normalizeListingKind`), so older
 clients keep parsing. Review-gated kinds (`knowledge-pack`, `blueprint`, `app`, `rubric`,
-`plan`, `recipe`, and `goal`) publish `pending` and are publicly invisible until an
-operator approves them (`REVIEW_POLICY_KINDS`); `harness`, `plugin`, `pack`, `template`,
-and `theme` publish `approved` immediately. For `app`, `delivery_type` is
+`plan`, `recipe`, `goal`, and `datatype`) publish `pending` and are publicly invisible
+until an operator approves them (`REVIEW_POLICY_KINDS`); `harness`, `plugin`, `pack`,
+`template`, and `theme` publish `approved` immediately. For `app`, `delivery_type` is
 `standalone` by default (download handoff); `bundle` is the deferred workspace-install
 model.
 
