@@ -224,3 +224,74 @@ export async function sendNewMail(
   });
   return { mode: 'send', recipients, subject, threadId: sent.threadId, messageId: sent.messageId };
 }
+
+/**
+ * `mail:draft` — the draft twin of `sendNewMail`, create-shaped and outside any
+ * existing thread.
+ *
+ * It runs D-020 rail 2 in full, exactly as the send does. A draft is not a send,
+ * but it is still the agent CHOOSING an addressee, and the address is what the
+ * rail judges: a draft addressed to an injected recipient is one careless click
+ * away from being a send to one, and it arrives wearing the owner's own
+ * compose window. Relaxing the rail here because "nothing leaves yet" would
+ * put the weakest check on the surface the owner trusts most.
+ *
+ * What the draft shape genuinely changes is WHO decides to send. The message
+ * lands in the owner's mailbox and goes nowhere until they press send, so this
+ * is the verb for outbound the owner wants to read first — review happens in
+ * their own client, on their own schedule, with the draft editable in place.
+ */
+export async function draftNewMail(
+  sql: postgres.Sql,
+  params: {
+    workspaceId: string;
+    userId: string;
+    to: readonly string[];
+    cc?: readonly string[];
+    subject: string;
+    text: string;
+    provenance: AddresseeProvenance;
+    /** Which connected account to draft in; required once more than one is. */
+    from?: string | null;
+  },
+  deps: MailDeps = {},
+): Promise<MailDraftResult> {
+  const subject = params.subject.trim();
+  const text = params.text.trim();
+  if (!subject) throw new Error('mail_draft_subject_required');
+  if (!text || text.length > 100_000) throw new Error('mail_draft_text_invalid');
+
+  const recipients = await assertTrustedAddressees(sql, {
+    workspaceId: params.workspaceId,
+    userId: params.userId,
+    addresses: [...params.to, ...(params.cc ?? [])],
+    provenance: params.provenance,
+  });
+
+  const ctx = await resolveOutboundContext(sql, {
+    workspaceId: params.workspaceId,
+    userId: params.userId,
+    vaultSource: 'gmail',
+    providerAccountId: params.from,
+  });
+  const token = await (deps.resolveAccessToken ?? resolveGoogleWorkspaceAccessToken)(ctx.source, ctx.installSlug);
+  const cleared = new Map(recipients.map((decision) => [decision.address, decision]));
+  const outbound: GoogleGmailOutboundInput = {
+    to: params.to.map((value) => cleared.get(value.trim().toLowerCase())?.address ?? value.trim()),
+    cc: params.cc?.map((value) => cleared.get(value.trim().toLowerCase())?.address ?? value.trim()),
+    subject,
+    text,
+  };
+  const draft = await (deps.createDraft ?? createGoogleGmailDraft)(token, outbound, {
+    fetch: deps.fetch,
+    apiOrigin: deps.apiOrigin,
+  });
+  return {
+    mode: 'draft',
+    recipients,
+    subject,
+    threadId: draft.threadId,
+    messageId: draft.messageId,
+    draftId: draft.draftId,
+  };
+}

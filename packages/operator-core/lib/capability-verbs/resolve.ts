@@ -155,18 +155,51 @@ export async function resolveCanonicalDocument(
  */
 export async function resolveOutboundContext(
   sql: postgres.Sql,
-  params: { workspaceId: string; userId: string; vaultSource: string; sourceId?: string | null; defaultInstallSlug?: string },
+  params: {
+    workspaceId: string;
+    userId: string;
+    vaultSource: string;
+    sourceId?: string | null;
+    /**
+     * Select the sending account by its provider address (`from`) when the
+     * owner has connected more than one. Create-shaped outbound has no stored
+     * document to resolve the account from — unlike a reply, which inherits it
+     * — so with several accounts connected there is nothing to disambiguate on
+     * and the caller must say. Matched case-insensitively against
+     * provider_account_id.
+     */
+    providerAccountId?: string | null;
+    defaultInstallSlug?: string;
+  },
 ): Promise<OutboundContext> {
   const kind = TRIGGER_KIND_BY_VAULT_SOURCE[string(params.vaultSource)];
   if (!kind) throw new Error(`outbound_source_unsupported:${params.vaultSource}`);
   const owned = await listOwnedExternalTriggerSources(sql, params.workspaceId, params.userId);
   const candidates = owned.filter((row) => row.kind === kind);
   const sourceId = string(params.sourceId);
+  const account = string(params.providerAccountId).toLowerCase();
+  const byAccount = account
+    ? candidates.filter((row) => string(row.providerAccountId).toLowerCase() === account)
+    : null;
+  if (byAccount && !byAccount.length) {
+    // Name what IS connected: the caller asked for an account the owner does
+    // not have, and the set they could have meant is the actionable half.
+    const known = candidates.map((row) => string(row.providerAccountId) || row.id).filter(Boolean);
+    throw new Error(
+      `outbound_source_account_not_connected:${kind}:${account}${known.length ? ` (connected: ${known.join(', ')})` : ''}`,
+    );
+  }
+  const pool = byAccount ?? candidates;
   const source = sourceId
-    ? candidates.find((row) => row.id === sourceId)
-    : candidates.length === 1 ? candidates[0] : undefined;
+    ? pool.find((row) => row.id === sourceId)
+    : pool.length === 1 ? pool[0] : undefined;
   if (!source && sourceId) throw new Error(`outbound_source_not_connected:${kind}:${sourceId}`);
-  if (!source && candidates.length > 1) throw new Error(`outbound_source_ambiguous:${kind}`);
+  if (!source && pool.length > 1) {
+    // An ambiguous refusal is only actionable if it says what to choose
+    // BETWEEN — otherwise the caller's only move is to guess.
+    const known = pool.map((row) => string(row.providerAccountId) || row.id).filter(Boolean);
+    throw new Error(`outbound_source_ambiguous:${kind}${known.length ? ` (connected: ${known.join(', ')})` : ''}`);
+  }
   if (!source) throw new Error(`outbound_source_not_connected:${kind}`);
   if (!source.credentialRef) throw new Error(`outbound_source_credential_missing:${kind}`);
   if (source.status === 'disabled' || source.status === 'error') {

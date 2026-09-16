@@ -300,6 +300,7 @@ import './slack/respond-in-thread';
 // caller-supplied addressee and refuse one that appears only in message
 // content (D-020 rail 2). There is deliberately no mail/calendar/chat :search —
 // personal:search already returns the externalId these verbs take.
+import './mail/draft';
 import './mail/reply';
 import './mail/send';
 import './calendar/propose';
