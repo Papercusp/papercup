@@ -10,6 +10,7 @@
  * quota-budgeted chunk per sync (`cursor.backfill`) instead of one whole-mailbox
  * walk that a per-user quota kills and the next poll restarts from zero.
  */
+import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import {
   ingestExternalTriggerEvent,
@@ -156,6 +157,19 @@ export interface GoogleGmailDraftInput {
  * `mail:send` verb (D-019 Tier 1) whose recipients cleared the D-020 rail-2
  * addressee check before reaching this seam.
  */
+/**
+ * One file to hang off a draft or send.
+ *
+ * `content` is the RAW bytes; this seam owns the base64 transfer-encoding so no
+ * caller can double-encode it. `filename` reaches the recipient verbatim, so it
+ * is header-validated exactly like a subject rather than interpolated blind.
+ */
+export interface GoogleGmailAttachment {
+  filename: string;
+  contentType: string;
+  content: Buffer;
+}
+
 export interface GoogleGmailOutboundInput {
   to: string | readonly string[];
   cc?: readonly string[];
@@ -164,6 +178,12 @@ export interface GoogleGmailOutboundInput {
   threadId?: string | null;
   inReplyTo?: string | null;
   references?: string | null;
+  /**
+   * When present and non-empty the message is encoded `multipart/mixed`; when
+   * absent the encoding stays byte-identical to the text/plain form, so adding
+   * this field cannot perturb an existing caller.
+   */
+  attachments?: readonly GoogleGmailAttachment[];
 }
 
 export interface GoogleGmailDraftResult {
@@ -634,14 +654,89 @@ export function buildGoogleGmailRawMessage(input: GoogleGmailOutboundInput): Goo
     headers.push(`In-Reply-To: ${inReplyTo}`);
     headers.push(`References: ${replyReferences(input.references, inReplyTo)}`);
   }
+  const attachments = normalizeGmailAttachments(input.attachments);
+
+  if (!attachments.length) {
+    headers.push(
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: 8bit',
+      '',
+      text,
+    );
+    return { raw: Buffer.from(headers.join('\r\n'), 'utf8').toString('base64url'), to, subject, threadId };
+  }
+
+  // A boundary must not occur anywhere in the payload it delimits, or the
+  // message silently truncates at the collision. Derive it from random bytes
+  // and assert absence rather than trusting that a fixed literal is unused.
+  let boundary = '';
+  for (let attempt = 0; attempt < 8 && !boundary; attempt += 1) {
+    const candidate = `papercusp-${randomUUID()}`;
+    const collides =
+      text.includes(candidate) || attachments.some((file) => file.filename.includes(candidate));
+    if (!collides) boundary = candidate;
+  }
+  if (!boundary) throw new Error('google_gmail_draft_boundary_unresolvable');
+
   headers.push(
     'MIME-Version: 1.0',
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    '',
+    `--${boundary}`,
     'Content-Type: text/plain; charset=UTF-8',
     'Content-Transfer-Encoding: 8bit',
     '',
     text,
   );
+
+  for (const file of attachments) {
+    headers.push(
+      `--${boundary}`,
+      `Content-Type: ${file.contentType}; name="${file.filename}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${file.filename}"`,
+      '',
+      // RFC 2045 caps an encoded line at 76 chars; Gmail accepts longer lines
+      // but some receiving MTAs reject them, so wrap here rather than hope.
+      file.content.toString('base64').replace(/(.{76})/g, '$1\r\n'),
+    );
+  }
+  headers.push(`--${boundary}--`, '');
+
   return { raw: Buffer.from(headers.join('\r\n'), 'utf8').toString('base64url'), to, subject, threadId };
+}
+
+/** Gmail rejects the whole request past ~35MB base64; cap the raw bytes well under it. */
+const GMAIL_ATTACHMENT_MAX_FILES = 10;
+const GMAIL_ATTACHMENT_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+
+function normalizeGmailAttachments(
+  input: readonly GoogleGmailAttachment[] | undefined,
+): GoogleGmailAttachment[] {
+  if (!input?.length) return [];
+  if (input.length > GMAIL_ATTACHMENT_MAX_FILES) {
+    throw new Error('google_gmail_draft_attachments_too_many');
+  }
+  let total = 0;
+  const normalized = input.map((file) => {
+    const filename = safeHeader(String(file?.filename ?? ''), 'attachment_filename', 255);
+    // A quote or semicolon would break out of the filename parameter it sits in.
+    if (/["\\;]/.test(filename)) throw new Error('google_gmail_draft_attachment_filename_invalid');
+    const contentType = safeHeader(String(file?.contentType ?? ''), 'attachment_content_type', 255);
+    if (!/^[\w.+-]+\/[\w.+-]+$/.test(contentType)) {
+      throw new Error('google_gmail_draft_attachment_content_type_invalid');
+    }
+    if (!Buffer.isBuffer(file?.content) || !file.content.length) {
+      throw new Error('google_gmail_draft_attachment_content_invalid');
+    }
+    total += file.content.length;
+    return { filename, contentType, content: file.content };
+  });
+  if (total > GMAIL_ATTACHMENT_MAX_TOTAL_BYTES) {
+    throw new Error('google_gmail_draft_attachments_too_large');
+  }
+  return normalized;
 }
 
 /**
