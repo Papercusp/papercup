@@ -3,6 +3,7 @@ import {
   type InstallSelfDescribingDeps,
   type InstallSelfDescribingInput,
   type SelfDescribingKindSpec,
+  type VerifiedContentPin,
 } from './install-self-describing-core';
 import {
   THEME_MANIFEST,
@@ -24,6 +25,8 @@ export interface InstallThemeCoreResult extends InstalledTheme {
   ok: true;
   ref: string;
   installedTo: string;
+  /** The content pin this install VERIFIED (P-002), or null for an unverified tip clone. */
+  pin: VerifiedContentPin | null;
 }
 
 export async function installThemeFromCupboardCore(
@@ -36,5 +39,6 @@ export async function installThemeFromCupboardCore(
     ...result.meta,
     ref: result.ref,
     installedTo: result.installedTo,
+    pin: result.pin,
   };
 }

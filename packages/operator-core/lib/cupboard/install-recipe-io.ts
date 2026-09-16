@@ -19,13 +19,13 @@
  * the listing source rather than the installing agent, so the recipe corpus's
  * first-write attribution stays honest.
  */
-import { tmpdir } from 'node:os';
 import {
   installRecipeFromCupboardCore,
   InstallRecipeError,
   type InstallRecipeCoreResult,
 } from './install-recipe-core';
-import { gitCloneShallow } from './install-io';
+import { cupboardGitDeps } from './install-io';
+import type { ContentPinRef } from './install-self-describing-core';
 import { resolveListingByKind } from './resolve-listing-by-kind';
 
 export interface InstallRecipeFromCupboardInput {
@@ -101,11 +101,17 @@ export async function installRecipeFromCupboard(
   let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
   let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : '';
 
+  // The Worker's publish-time content pin (P-002): present ⇒ the install fetches
+  // exactly that commit and refuses content-address-mismatch. Only a listing carries
+  // one; a direct githubUrl install is an unverified tip clone by construction.
+  let pin: ContentPinRef | undefined;
+
   if (!githubUrl && input.listingId) {
     const resolved = await resolveListingByKind(String(input.listingId), 'recipe');
     if ('error' in resolved) return { ok: false, status: resolved.status, error: resolved.error };
     githubUrl = resolved.githubUrl;
     if (!listingRef) listingRef = resolved.ref;
+    pin = resolved.pin;
   }
   if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
   if (!listingRef) return { ok: false, status: 400, error: 'listingRef required (the recipe subdir)' };
@@ -113,8 +119,8 @@ export async function installRecipeFromCupboard(
   let result: InstallRecipeCoreResult;
   try {
     result = await installRecipeFromCupboardCore(
-      { githubUrl, listingRef },
-      { cloneRepo: gitCloneShallow, tmpDir: tmpdir },
+      { githubUrl, listingRef, pin },
+      cupboardGitDeps(),
     );
   } catch (e) {
     if (e instanceof InstallRecipeError) return { ok: false, status: e.status, error: e.message };

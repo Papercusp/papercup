@@ -26,6 +26,7 @@ import {
   type InstallSelfDescribingDeps,
   type InstallSelfDescribingInput,
   type SelfDescribingKindSpec,
+  type VerifiedContentPin,
 } from './install-self-describing-core';
 import type { RubricRequirement } from './types';
 
@@ -52,6 +53,8 @@ export interface InstallPlanCoreResult {
   version: string;
   source: string;
   installedTo: string;
+  /** The content pin this install VERIFIED (P-002), or null for an unverified tip clone. */
+  pin: VerifiedContentPin | null;
 }
 
 /** The plan kind's slice of the generic installer. `plan.md` is BOTH the manifest and
@@ -82,5 +85,6 @@ export async function installPlanFromCupboardCore(
     version: r.meta.version,
     source: r.source,
     installedTo: r.installedTo,
+    pin: r.pin,
   };
 }

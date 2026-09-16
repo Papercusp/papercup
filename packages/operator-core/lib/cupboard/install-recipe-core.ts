@@ -19,6 +19,7 @@ import {
   type InstallSelfDescribingDeps,
   type InstallSelfDescribingInput,
   type SelfDescribingKindSpec,
+  type VerifiedContentPin,
 } from './install-self-describing-core';
 
 export {
@@ -42,6 +43,8 @@ export interface InstallRecipeCoreResult {
   version: string;
   source: string;
   installedTo: string;
+  /** The content pin this install VERIFIED (P-002), or null for an unverified tip clone. */
+  pin: VerifiedContentPin | null;
 }
 
 const RECIPE_KIND_SPEC: SelfDescribingKindSpec<LocalRecipe> = {
@@ -69,5 +72,6 @@ export async function installRecipeFromCupboardCore(
     version: r.meta.version,
     source: r.source,
     installedTo: r.installedTo,
+    pin: r.pin,
   };
 }

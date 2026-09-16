@@ -26,13 +26,13 @@
  * another workspace's item DAG into this one's queue. Instantiating it is a separate,
  * explicit act through the existing plans machinery.
  */
-import { tmpdir } from 'node:os';
 import {
   installPlanFromCupboardCore,
   InstallPlanError,
   type InstallPlanCoreResult,
 } from './install-plan-core';
-import { gitCloneShallow } from './install-io';
+import { cupboardGitDeps } from './install-io';
+import type { ContentPinRef } from './install-self-describing-core';
 import { resolveListingByKind } from './resolve-listing-by-kind';
 import { parseRequiredRubrics, type RubricRequirement } from './types';
 import {
@@ -132,12 +132,17 @@ export async function installPlanFromCupboard(
   let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
   let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : '';
   let declared: RubricRequirement[] = [];
+  // The Worker's publish-time content pin (P-002): present ⇒ the install fetches
+  // exactly that commit and refuses content-address-mismatch. Only a listing carries
+  // one; a direct githubUrl install is an unverified tip clone by construction.
+  let pin: ContentPinRef | undefined;
 
   if (input.listingId) {
     const resolved = await resolveListingByKind(String(input.listingId), 'plan');
     if ('error' in resolved) return { ok: false, status: resolved.status, error: resolved.error };
     if (!githubUrl) githubUrl = resolved.githubUrl;
     if (!listingRef) listingRef = resolved.ref;
+    pin = resolved.pin;
     declared = parseRequiredRubrics(resolved.requiresRubrics);
   }
   if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
@@ -176,8 +181,8 @@ export async function installPlanFromCupboard(
   let result: InstallPlanCoreResult;
   try {
     result = await installPlanFromCupboardCore(
-      { githubUrl, listingRef },
-      { cloneRepo: gitCloneShallow, tmpDir: tmpdir },
+      { githubUrl, listingRef, pin },
+      cupboardGitDeps(),
     );
   } catch (e) {
     if (e instanceof InstallPlanError) return { ok: false, status: e.status, error: e.message };

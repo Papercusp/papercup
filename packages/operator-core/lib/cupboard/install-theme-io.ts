@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { resolve, sep } from 'node:path';
-import { gitCloneShallow } from './install-io';
+import { cupboardGitDeps } from './install-io';
+import type { ContentPinRef } from './install-self-describing-core';
 import { resolveListingByKind } from './resolve-listing-by-kind';
 import { installThemeFromCupboardCore, InstallThemeError } from './install-theme-core';
 import {
@@ -26,12 +26,17 @@ export async function installThemeFromCupboard(input: InstallThemeInput): Promis
   let githubUrl = input.githubUrl?.trim() ?? '';
   let listingRef = input.listingRef?.trim() ?? '';
   let releaseVersion: string | undefined;
+  // The Worker's publish-time content pin (P-002): present ⇒ the install fetches
+  // exactly that commit and refuses content-address-mismatch. Only a listing carries
+  // one; a direct githubUrl install is an unverified tip clone by construction.
+  let pin: ContentPinRef | undefined;
   if (!githubUrl && input.listingId) {
     const resolved = await resolveListingByKind(String(input.listingId), 'theme');
     if ('error' in resolved) return { ok: false, status: resolved.status, error: resolved.error };
     githubUrl = resolved.githubUrl;
     listingRef ||= resolved.ref;
     releaseVersion = resolved.releaseVersion;
+    pin = resolved.pin;
   }
   if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
   if (!listingRef) return { ok: false, status: 400, error: 'listingRef required' };
@@ -47,8 +52,8 @@ export async function installThemeFromCupboard(input: InstallThemeInput): Promis
 
   try {
     const installed = await installThemeFromCupboardCore(
-      { githubUrl, listingRef, targetRef, replaceExisting: existing !== null && input.update === true },
-      { cloneRepo: gitCloneShallow, tmpDir: tmpdir },
+      { githubUrl, listingRef, targetRef, replaceExisting: existing !== null && input.update === true, pin },
+      cupboardGitDeps(),
     );
     return { ok: true, result: { ...installed, operation: existing ? 'update' : 'install' } };
   } catch (error) {

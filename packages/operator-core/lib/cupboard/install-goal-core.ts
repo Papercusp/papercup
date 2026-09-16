@@ -24,6 +24,7 @@ import {
   type InstallSelfDescribingDeps,
   type InstallSelfDescribingInput,
   type SelfDescribingKindSpec,
+  type VerifiedContentPin,
 } from './install-self-describing-core';
 
 export {
@@ -38,6 +39,8 @@ export interface InstallGoalCoreResult {
   pkg: LocalGoalPackage;
   source: string;
   installedTo: string;
+  /** The content pin this install VERIFIED (P-002), or null for an unverified tip clone. */
+  pin: VerifiedContentPin | null;
 }
 
 /** The goal kind's slice of the generic installer. */
@@ -59,5 +62,6 @@ export async function installGoalFromCupboardCore(
     pkg: r.meta,
     source: r.source,
     installedTo: r.installedTo,
+    pin: r.pin,
   };
 }

@@ -22,13 +22,13 @@
  * upgrade gate all apply unchanged — an install can never overwrite a rubric this
  * workspace has locally ratified.
  */
-import { tmpdir } from 'node:os';
 import {
   installRubricFromCupboardCore,
   InstallRubricError,
   type InstallRubricCoreResult,
 } from './install-rubric-core';
-import { gitCloneShallow } from './install-io';
+import { cupboardGitDeps } from './install-io';
+import type { ContentPinRef } from './install-self-describing-core';
 import { resolveListingByKind } from './resolve-listing-by-kind';
 
 export interface InstallRubricFromCupboardInput {
@@ -64,11 +64,17 @@ export async function installRubricFromCupboard(
   let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
   let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : '';
 
+  // The Worker's publish-time content pin (P-002): present ⇒ the install fetches
+  // exactly that commit and refuses content-address-mismatch. Only a listing carries
+  // one; a direct githubUrl install is an unverified tip clone by construction.
+  let pin: ContentPinRef | undefined;
+
   if (!githubUrl && input.listingId) {
     const resolved = await resolveListingByKind(String(input.listingId), 'rubric');
     if ('error' in resolved) return { ok: false, status: resolved.status, error: resolved.error };
     githubUrl = resolved.githubUrl;
     if (!listingRef) listingRef = resolved.ref;
+    pin = resolved.pin;
   }
   if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
   if (!listingRef) {
@@ -78,8 +84,8 @@ export async function installRubricFromCupboard(
   let result: InstallRubricCoreResult;
   try {
     result = await installRubricFromCupboardCore(
-      { githubUrl, listingRef },
-      { cloneRepo: gitCloneShallow, tmpDir: tmpdir },
+      { githubUrl, listingRef, pin },
+      cupboardGitDeps(),
     );
   } catch (e) {
     if (e instanceof InstallRubricError) {

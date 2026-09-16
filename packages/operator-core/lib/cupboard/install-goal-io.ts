@@ -32,13 +32,13 @@
  * status) carrying that stamp reports `seeded: false, 'exists'` rather than
  * minting a duplicate pursuit of the same packaged duty (D-002 rule 2).
  */
-import { tmpdir } from 'node:os';
 import {
   installGoalFromCupboardCore,
   InstallGoalError,
   type InstallGoalCoreResult,
 } from './install-goal-core';
-import { gitCloneShallow } from './install-io';
+import { cupboardGitDeps } from './install-io';
+import type { ContentPinRef } from './install-self-describing-core';
 import { resolveListingByKind } from './resolve-listing-by-kind';
 import { parseRequiredRubrics, type RubricRequirement } from './types';
 import {
@@ -223,6 +223,10 @@ export async function installGoalFromCupboard(
   let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
   let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : '';
   let declared: RubricRequirement[] = [];
+  // The Worker's publish-time content pin (P-002): present ⇒ the install fetches
+  // exactly that commit and refuses content-address-mismatch. Only a listing carries
+  // one; a direct githubUrl install is an unverified tip clone by construction.
+  let pin: ContentPinRef | undefined;
 
   // ── 1a. The harness gate — before ANY network or disk work. ────────────────
   const harness = typeof input.harness === 'string' ? input.harness.trim() : '';
@@ -240,6 +244,7 @@ export async function installGoalFromCupboard(
     if ('error' in resolved) return { ok: false, status: resolved.status, error: resolved.error };
     if (!githubUrl) githubUrl = resolved.githubUrl;
     if (!listingRef) listingRef = resolved.ref;
+    pin = resolved.pin;
     declared = parseRequiredRubrics(resolved.requiresRubrics);
   }
   if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
@@ -276,8 +281,8 @@ export async function installGoalFromCupboard(
   let result: InstallGoalCoreResult;
   try {
     result = await installGoalFromCupboardCore(
-      { githubUrl, listingRef },
-      { cloneRepo: gitCloneShallow, tmpDir: tmpdir },
+      { githubUrl, listingRef, pin },
+      cupboardGitDeps(),
     );
   } catch (e) {
     if (e instanceof InstallGoalError) return { ok: false, status: e.status, error: e.message };
