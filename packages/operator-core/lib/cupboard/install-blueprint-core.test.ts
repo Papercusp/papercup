@@ -49,6 +49,21 @@ const capabilityCandidate = (): CapabilityProviderCandidate => ({
   totalStructuralRuns: 3,
 });
 
+/**
+ * A SECOND conformant provider for the same class — usable (active + conformance
+ * passed) but ranked below `capabilityCandidate()` on behavioral evidence, so the
+ * ranked default stays deterministic while a genuine choice exists.
+ */
+const rivalCapabilityCandidate = (): CapabilityProviderCandidate => ({
+  ...capabilityCandidate(),
+  providerPackage: 'globex-crm',
+  providerVersion: '1.5.0',
+  verbBindings: { send: 'globex:send-email' },
+  conformanceRunId: 'run-globex',
+  behavioralStatus: 'not-run',
+  activePotBindings: 1,
+});
+
 async function writeBlueprint(dir: string, yaml: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(join(dir, 'blueprint.yaml'), yaml, 'utf8');
@@ -401,6 +416,130 @@ describe('installBlueprintFromCupboardCore', () => {
       }),
     ]);
     expect(rollback).not.toHaveBeenCalled();
+    expect(result.capabilityGrants?.disclosures).toHaveLength(1);
+  });
+
+  it('asks for a provider choice on an interactive install with two conformant candidates, before any identity bytes land', async () => {
+    await writeBlueprint(
+      fixtureRepo,
+      RUNNABLE_YAML +
+        '\nslots: [{ slot: domain }]' +
+        '\ngrants: { requires: [crm.email@1.0.0] }',
+    );
+    const commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} }));
+    await expect(installBlueprintFromCupboardCore(
+      {
+        githubUrl: 'https://github.com/acme/neat-bp',
+        capabilityContext: {
+          workspaceId: 'workspace-1',
+          potSlug: 'sales-ops',
+          mode: 'interactive',
+        },
+      },
+      makeDeps({
+        capabilityGrantDeps: {
+          getPotBinding: async () => null,
+          listCandidates: async () => [capabilityCandidate(), rivalCapabilityCandidate()],
+        },
+        commitCapabilitySelections,
+      }),
+    )).rejects.toMatchObject({
+      status: 409,
+      code: 'capability_provider_choice_required',
+      data: {
+        requiresChoice: ['crm.email@1.0.0'],
+        // A choice is REQUESTED, never pre-made: an interactive install that has
+        // not been told which provider to use carries no selection at all.
+        selected: [],
+        missingRequired: [],
+      },
+    });
+    // The ceiling seat precedes package installs, binding writes and the release
+    // commit — so refusing the choice must leave nothing behind.
+    expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
+    expect(commitCapabilitySelections).not.toHaveBeenCalled();
+  });
+
+  it('pins the exactly chosen provider on an interactive install, over the higher-ranked default', async () => {
+    await writeBlueprint(
+      fixtureRepo,
+      RUNNABLE_YAML +
+        '\nslots: [{ slot: domain }]' +
+        '\ngrants: { requires: [crm.email@1.0.0] }',
+    );
+    const commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} }));
+    const result = await installBlueprintFromCupboardCore(
+      {
+        githubUrl: 'https://github.com/acme/neat-bp',
+        capabilityContext: {
+          workspaceId: 'workspace-1',
+          potSlug: 'sales-ops',
+          mode: 'interactive',
+          selections: { 'crm.email@1.0.0': 'globex-crm@1.5.0' },
+        },
+      },
+      makeDeps({
+        capabilityGrantDeps: {
+          getPotBinding: async () => null,
+          listCandidates: async () => [capabilityCandidate(), rivalCapabilityCandidate()],
+        },
+        commitCapabilitySelections,
+      }),
+    );
+
+    // acme-crm outranks globex-crm on conformance evidence, so pinning globex
+    // proves the answer came from the CHOICE and not from the ranking.
+    expect(commitCapabilitySelections).toHaveBeenCalledWith([
+      expect.objectContaining({
+        classRef: 'crm.email@1.0.0',
+        providerPackage: 'globex-crm',
+        providerVersion: '1.5.0',
+        reason: 'explicit-selection',
+      }),
+    ]);
+    expect(result.capabilityGrants?.requiresChoice).toEqual([]);
+    expect(existsSync(join(installedDir, 'neat-bp', 'blueprint.yaml'))).toBe(true);
+  });
+
+  it('auto-selects and discloses on an agent install where an interactive one would ask (D-042)', async () => {
+    await writeBlueprint(
+      fixtureRepo,
+      RUNNABLE_YAML +
+        '\nslots: [{ slot: domain }]' +
+        '\ngrants: { requires: [crm.email@1.0.0] }',
+    );
+    const commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} }));
+    const result = await installBlueprintFromCupboardCore(
+      {
+        githubUrl: 'https://github.com/acme/neat-bp',
+        capabilityContext: {
+          workspaceId: 'workspace-1',
+          potSlug: 'sales-ops',
+          mode: 'agent',
+        },
+      },
+      makeDeps({
+        capabilityGrantDeps: {
+          getPotBinding: async () => null,
+          listCandidates: async () => [capabilityCandidate(), rivalCapabilityCandidate()],
+        },
+        commitCapabilitySelections,
+      }),
+    );
+
+    // Same grants, same two candidates, same absent hint as the interactive case
+    // above — agent mode resolves by documented evidence policy instead of
+    // asking, so `requiresChoice` is unreachable here rather than merely empty.
+    expect(result.capabilityGrants?.requiresChoice).toEqual([]);
+    expect(commitCapabilitySelections).toHaveBeenCalledWith([
+      expect.objectContaining({
+        classRef: 'crm.email@1.0.0',
+        providerPackage: 'acme-crm',
+        providerVersion: '2.0.0',
+        reason: 'evidence-policy',
+        disclosureRequired: true,
+      }),
+    ]);
     expect(result.capabilityGrants?.disclosures).toHaveLength(1);
   });
 
