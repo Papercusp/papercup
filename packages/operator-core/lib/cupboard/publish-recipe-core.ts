@@ -26,6 +26,7 @@ import { publishListingToCupboard } from './publish-listing';
 import { parseGithubRemote, fetchGithubRepoMeta } from './resolve-repo-coords';
 import { sanitizeRecipeForExport, type RecipeExport } from './recipe-export';
 import { writeRecipeDir, type WrittenRecipe } from './recipe-store';
+import { isIdentityLeakError, type IdentityLeakHit } from './identity-scrub';
 import type { CodeRecipeRow } from '../code-recipes-store';
 import type { RecipeAuthorityDescriptor, RecipeAuthorityRefs } from '../recipe-authority';
 
@@ -66,6 +67,9 @@ export type PublishRecipeResult =
       detail?: unknown;
       upstream_status?: number;
       localRefs?: Partial<Record<keyof RecipeAuthorityRefs, string[]>>;
+      /** Present when the write gate refused: publisher identity survived into the
+       *  serialized bytes, so NOTHING was written. Names what to fix at the source. */
+      identityLeaks?: IdentityLeakHit[];
     };
 
 /** Read one recipe row + derive its authority descriptor. Injected so the core is
@@ -130,8 +134,19 @@ export async function publishRecipeToCupboard(
 
   let written: WrittenRecipe;
   try {
+    // No `knownIdentityValues` harvest here, deliberately. A recipe is a SCRIPT, and
+    // the policy this module already applies to workspace-scoped refs applies to
+    // identity too: refuse, never launder — a rewritten script RUNS differently from
+    // what its title claims. So there is no structural scrub to harvest from, and the
+    // gate works off host-shaped patterns (home paths, su-ids, emails, the OS user)
+    // plus the secret detector. Goal packages scrub CONFIG and therefore do harvest.
     written = writeRecipeDir(exported, { ref, ...(input.version ? { version: input.version } : {}) });
   } catch (e) {
+    // A refused write is a PUBLISHER-FIXABLE 422 naming the leak, not an opaque 500:
+    // the dir was never created, so the only useful answer is what to remove.
+    if (isIdentityLeakError(e)) {
+      return { ok: false, status: 422, error: e.message, identityLeaks: e.hits };
+    }
     return {
       ok: false,
       status: 500,
