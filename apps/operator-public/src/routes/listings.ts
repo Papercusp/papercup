@@ -865,6 +865,36 @@ function registerListingEndpoints(
       return badCatalog('release_version', 'required_with_release_content_hash');
     }
 
+    // ── Content pin (cupboard-release-pipeline-content-trust P-001; D-003) ──
+    // A self-describing kind installs from `<listing_ref>/` of the repo. The
+    // Worker resolves the default-branch head and digests that directory NOW,
+    // with the publisher's own token, so what the installer (P-002) verifies is
+    // what the Worker saw — never what the client reported. Code kinds pin
+    // through the release gate instead (Phase 4) and are untouched here.
+    let pin: ContentPin | null = null;
+    if (isSelfDescribingKind(kind)) {
+      if (typeof repoMeta.default_branch !== 'string' || repoMeta.default_branch === '') {
+        return c.json({ error: 'github_repo_unreachable', reason: 'no_default_branch' }, 400);
+      }
+      const pinned = await pinListingContent({
+        token: extractBearer(c.req.raw),
+        owner: body.github_owner,
+        name: body.github_name,
+        defaultBranch: repoMeta.default_branch,
+        listingRef: body.listing_ref as string,
+      });
+      if (!pinned.ok) {
+        if (pinned.code === 'github_tree_unreachable') {
+          return c.json({ error: pinned.code, step: pinned.step, status: pinned.status }, 400);
+        }
+        // The package itself is unpinnable (absent, truncated, over budget):
+        // a named refusal, never a laundered publish (D-005).
+        const { ok: _ok, code, ...detail } = pinned;
+        return c.json({ error: code, ...detail }, 422);
+      }
+      pin = pinned;
+    }
+
     const id = uuidv4();
     await insertHarness(c.env.DB, {
       id,
@@ -918,6 +948,10 @@ function registerListingEndpoints(
       release_manifest_digest: releaseManifestDigest,
       release_signature: releaseSignature,
       release_published_at: releaseVersion != null ? now : null,
+      // Content pin (P-001): self-describing kinds only; null on code kinds.
+      pinned_commit_sha: pin?.commitSha ?? null,
+      pinned_tree_digest: pin?.treeDigest ?? null,
+      pinned_at: pin ? now : null,
       created_at: now,
     });
     await audit(c.env.DB, now, 'published', {

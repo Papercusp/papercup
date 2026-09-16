@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { buildApi } from '../routes/index.ts';
-import { makeEnv, makeListingRow, stubGithub } from './fake-d1.ts';
+import { makeEnv, makeListingRow, stubGithub, STUB_HEAD_SHA, stubTreeFor } from './fake-d1.ts';
 
 function publish(
   api: ReturnType<typeof buildApi>,
@@ -62,7 +62,12 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
 
   it('migration 024: publishes and filters a theme listing through the ordinary catalog path', async () => {
     const { env, store } = makeEnv();
-    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 24, private: false, permissions: { admin: true } } });
+    stubGithub({
+      user: { id: 5, login: 'pub' },
+      repo: { id: 24, private: false, permissions: { admin: true }, default_branch: 'main' },
+      head: { sha: STUB_HEAD_SHA },
+      tree: { entries: stubTreeFor('aurora') },
+    });
     const res = await publish(api, env, {
       ...BLUEPRINT_BASE,
       github_repository_id: 24,
@@ -134,7 +139,12 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
 
   it('migration 015: a plan stores each rubric requirement once without shifting later columns', async () => {
     const { env, store } = makeEnv();
-    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 8, private: false, permissions: { admin: true } } });
+    stubGithub({
+      user: { id: 5, login: 'pub' },
+      repo: { id: 8, private: false, permissions: { admin: true }, default_branch: 'main' },
+      head: { sha: STUB_HEAD_SHA },
+      tree: { entries: stubTreeFor('quality-plan') },
+    });
     const requiresRubrics = [
       { rubricRef: 'quality-bar' },
       { rubricRef: 'advisory', optional: true },
@@ -166,7 +176,12 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
 
   it('migration 016: a goal publishes as a reviewed kind with its rubric requirements intact', async () => {
     const { env, store } = makeEnv();
-    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 88, private: false, permissions: { admin: true } } });
+    stubGithub({
+      user: { id: 5, login: 'pub' },
+      repo: { id: 88, private: false, permissions: { admin: true }, default_branch: 'main' },
+      head: { sha: STUB_HEAD_SHA },
+      tree: { entries: stubTreeFor('keep-green') },
+    });
     const requiresRubrics = [{ rubricRef: 'goal-mode-e2e' }];
     const res = await publish(api, env, {
       ...BLUEPRINT_BASE,

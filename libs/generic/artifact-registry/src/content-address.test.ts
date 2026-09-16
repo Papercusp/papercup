@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { HEX_SHA256_RE, isHexSha256, sha256Hex, contentAddressing } from './content-address.ts';
+import {
+  HEX_SHA256_RE,
+  isHexSha256,
+  sha256Hex,
+  contentAddressing,
+  canonicalTreeDigest,
+  GIT_OBJECT_ID_RE,
+} from './content-address.ts';
 
 const enc = new TextEncoder();
 
@@ -54,5 +61,47 @@ describe('content addressing — scheme', () => {
     const s = contentAddressing({ prefix: 'blobs/' });
     expect(s.key(sha)).toBe(`blobs/${sha}`);
     expect(s.parse(`blobs/${sha}`)).toBe(sha);
+  });
+});
+
+describe('content addressing — canonical tree digest (P-001 content pin)', () => {
+  const NUL = String.fromCharCode(0);
+  const a = { path: 'pkg/a.json', sha: '1'.repeat(40) };
+  const b = { path: 'pkg/b.md', sha: '2'.repeat(40) };
+  const c = { path: 'pkg/nested/c.txt', sha: '3'.repeat(64) }; // SHA-256 object ids are legal too
+
+  it('is independent of entry order', async () => {
+    expect(await canonicalTreeDigest([a, b, c])).toBe(await canonicalTreeDigest([c, a, b]));
+    expect(await canonicalTreeDigest([b, c, a])).toBe(await canonicalTreeDigest([a, b, c]));
+  });
+
+  it('equals sha256Hex of the hand-built canonical form: sorted `<path> NUL <sha> LF` records', async () => {
+    const canonical = [a, b, c]
+      .sort((x, y) => (x.path < y.path ? -1 : 1))
+      .map((e) => `${e.path}${NUL}${e.sha}\n`)
+      .join('');
+    expect(await canonicalTreeDigest([c, b, a])).toBe(await sha256Hex(enc.encode(canonical)));
+  });
+
+  it('changes when a path, a sha, or the entry set changes', async () => {
+    const base = await canonicalTreeDigest([a, b]);
+    expect(await canonicalTreeDigest([a, { ...b, sha: '9'.repeat(40) }])).not.toBe(base);
+    expect(await canonicalTreeDigest([a, { ...b, path: 'pkg/B.md' }])).not.toBe(base);
+    expect(await canonicalTreeDigest([a])).not.toBe(base);
+    expect(await canonicalTreeDigest([a, b, c])).not.toBe(base);
+  });
+
+  it('refuses a duplicate path, a malformed sha, and an empty/NUL-bearing path', async () => {
+    await expect(canonicalTreeDigest([a, { ...a, sha: '4'.repeat(40) }])).rejects.toThrow(/duplicate path/);
+    await expect(canonicalTreeDigest([{ path: 'x', sha: 'nothex' }])).rejects.toThrow(/invalid blob sha/);
+    await expect(canonicalTreeDigest([{ path: 'x', sha: 'A'.repeat(40) }])).rejects.toThrow(/invalid blob sha/);
+    await expect(canonicalTreeDigest([{ path: '', sha: '1'.repeat(40) }])).rejects.toThrow(/invalid path/);
+    await expect(canonicalTreeDigest([{ path: `a${NUL}b`, sha: '1'.repeat(40) }])).rejects.toThrow(/invalid path/);
+  });
+
+  it('digests an empty set deterministically (the empty-string SHA-256)', async () => {
+    expect(await canonicalTreeDigest([])).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+    expect(GIT_OBJECT_ID_RE.test('1'.repeat(40))).toBe(true);
+    expect(GIT_OBJECT_ID_RE.test('1'.repeat(41))).toBe(false);
   });
 });
