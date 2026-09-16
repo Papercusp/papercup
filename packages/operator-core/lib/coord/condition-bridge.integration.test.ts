@@ -38,7 +38,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import type postgres from 'postgres';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import {
+  applyMigrationForTest,
+  applyMigrationsForTest,
+  createFreshPgDb,
+  type FreshPgDb,
+} from '../../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
@@ -168,10 +173,56 @@ beforeAll(async () => {
       ADD COLUMN IF NOT EXISTS assignee_rank integer,
       ADD COLUMN IF NOT EXISTS rank_writer text,
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz`);
-  // THE SUBJECT OF THIS FILE. `condition_key` + the partial unique index come
-  // from the REAL migration, never a hand-rolled copy — a fixture that
-  // re-declares the index cannot fail the way a wrong predicate would.
-  await applyMigrationForTest(db.sql, resolve(SQL_DIR, '741-work-items-condition-key-singleton.sql'));
+  // WI-10001528 / WI-10001516. The condition bridge's resolve path reaches
+  // harness_shared.event_awaits (work-items.ts → events/await/store.ts), which
+  // this fixture never created: five of this file's tests were red from
+  // 2026-08-29 with `relation "harness_shared.event_awaits" does not exist`.
+  // That is an ENVIRONMENT gap, not a defect in the bridge — the table exists in
+  // the real operator DB — and it depressed two acceptance criteria of
+  // gate-ownership-condition-singleton-2026-08-03 to `degraded`.
+  //
+  // Declared through applyMigrationsForTest rather than a hand-rolled sequence of
+  // applyMigrationForTest calls, because event_awaits is extended by MANY later
+  // migrations (871 adds `bound_to`, which is what the naive "just apply 163" fix
+  // died on). The audit proves this list has not fallen behind the migrations that
+  // actually exist, and `runtimeTables` makes the dependency MECHANICAL: if a
+  // future migration creates or extends a table this runtime path touches and is
+  // not declared here, the fixture fails loudly at setup instead of drifting back
+  // into a red-since-forever state nobody attributes to the fixture.
+  await applyMigrationsForTest(
+    db.sql,
+    [
+      '163-await-event-subscriptions.sql',
+      '175-watch-floor-coalesce-cols.sql',
+      '387-event-wake-delivery-source.sql',
+      '533-add-event-awaits-payload-filter.sql',
+      // 541 creates predicate_watches, which 871 below ALTERs alongside
+      // event_awaits. 871 is what adds `bound_to` — the column the naive
+      // "just apply 163" fix died on — and the audit does not prescribe it
+      // automatically precisely because it spans two tables.
+      '541-predicate-watches.sql',
+      '550-event-awaits-announce-scope.sql',
+      '569-event-awaits-policy-allow-announce.sql',
+      '599-event-announcement-generation.sql',
+      '741-work-items-condition-key-singleton.sql',
+      '777-work-items-embedding-recipe-discriminator.sql',
+      '825-verified-wait-producer-health.sql',
+      '871-lifecycle-bound-watches.sql',
+      '925-fleet-leader-watch-suppression.sql',
+      '953-event-announcement-logical-gate.sql',
+      '1110-work-items-admission-flags-generated-columns.sql',
+      '1135-work-items-epoch-ms-timestamp-guard.sql',
+    ],
+    {
+      label: 'condition-bridge.integration',
+      // event_awaits ONLY. work_items is deliberately built from this fixture's
+      // consolidated DDL rather than from its creating migration, so declaring it
+      // here would demand a creating migration that the list is never meant to
+      // carry; the audit still enforces every LATER work_items migration because
+      // the fixture builds that table.
+      runtimeTables: ['harness_shared.event_awaits'],
+    },
+  );
 }, 120_000);
 
 afterAll(async () => {
