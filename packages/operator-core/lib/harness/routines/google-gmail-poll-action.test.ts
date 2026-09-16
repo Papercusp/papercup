@@ -118,12 +118,123 @@ describe('google-gmail-poll system action', () => {
       succeeded: 1,
       failed: 0,
       renewed: 1,
+      watchDeferred: 0,
+      watchThrottled: 0,
       pulled: 0,
       acknowledged: 0,
       messages: 7,
       fullResyncs: 1,
       failures: [],
     });
+  });
+
+  it('defers watch renewal while the backfill is parked on a quota cool-down and the watch is still valid', async () => {
+    const now = new Date('2026-09-16T02:04:12.000Z');
+    const parked: ExternalTriggerSourceRow = {
+      ...source('source-parked', 'parked@example.com'),
+      cursor: {
+        emailAddress: 'parked@example.com',
+        historyId: 'history-pinned',
+        watchExpiration: '2026-09-22T00:00:00.000Z',
+        backfill: {
+          status: 'throttled',
+          pageToken: 'page-4',
+          pages: 3,
+          messages: 158,
+          startedAt: '2026-09-16T02:02:00.000Z',
+          completedAt: null,
+          throttledUntil: '2026-09-16T02:05:00.000Z',
+          throttleCount: 1,
+        },
+      },
+    };
+    const ensureWatch = vi.fn();
+    const updateSource = vi.fn(async () => parked);
+    const result = await runGoogleGmailPoll(CTX, {
+      sql: {} as never,
+      now: () => now,
+      listSources: vi.fn(async () => [parked]),
+      getSource: vi.fn(async () => parked),
+      resolveAccessToken: vi.fn(async () => 'token-parked'),
+      provision: vi.fn(async () => ({
+        projectId: 'project',
+        subscriptionId: 'subscription',
+        topicName: 'projects/project/topics/shared',
+        subscriptionName: 'projects/project/subscriptions/subscription',
+        topic: 'existing' as const,
+        subscription: 'existing' as const,
+        publisherGrant: 'existing' as const,
+      })),
+      ensureWatch,
+      ensureFlagshipBinding: vi.fn(),
+      pull: vi.fn(async () => []),
+      acknowledge: vi.fn(async () => 0),
+      // The parked chunk is skipped inside the sync; only the history replay runs.
+      syncSource: vi.fn(async () => ({
+        mode: 'incremental' as const,
+        messages: 0,
+        historyPages: 1,
+        messagePages: 0,
+        historyId: 'history-pinned',
+        backfill: null,
+      })),
+      updateSource,
+    });
+
+    // Renewing here would only spend the quota the chunk just exhausted; the
+    // watch has days left, so the renewal waits for the cool-down to lift.
+    expect(ensureWatch).not.toHaveBeenCalled();
+    expect(updateSource).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ succeeded: 1, failed: 0, renewed: 0, watchDeferred: 1, watchThrottled: 0, failures: [] });
+    expect(formatGoogleGmailPollLog(result)).toContain('watch_deferred=1 watch_throttled=0');
+  });
+
+  it('treats a per-user quota 403 on watch renewal as a pause and keeps the source connected', async () => {
+    // No watch yet (cursor just pinned) and the cool-down already lifted, so the
+    // renewal IS attempted — and the quota is still exhausted from the chunk.
+    const fresh: ExternalTriggerSourceRow = {
+      ...source('source-quota', 'quota@example.com'),
+      cursor: { emailAddress: 'quota@example.com', historyId: 'history-pinned' },
+    };
+    const ensureWatch = vi.fn(async () => {
+      throw new GoogleGmailApiError(
+        403,
+        'watch',
+        "Quota exceeded for quota metric 'Total Query Cost' and limit 'Units per minute per user'",
+      );
+    });
+    const updateSource = vi.fn(async () => fresh);
+    const result = await runGoogleGmailPoll(CTX, {
+      sql: {} as never,
+      listSources: vi.fn(async () => [fresh]),
+      getSource: vi.fn(async () => fresh),
+      resolveAccessToken: vi.fn(async () => 'token-quota'),
+      provision: vi.fn(async () => ({
+        projectId: 'project',
+        subscriptionId: 'subscription',
+        topicName: 'projects/project/topics/shared',
+        subscriptionName: 'projects/project/subscriptions/subscription',
+        topic: 'existing' as const,
+        subscription: 'existing' as const,
+        publisherGrant: 'existing' as const,
+      })),
+      ensureWatch,
+      ensureFlagshipBinding: vi.fn(),
+      pull: vi.fn(async () => []),
+      acknowledge: vi.fn(async () => 0),
+      updateSource,
+    });
+
+    expect(ensureWatch).toHaveBeenCalledTimes(1);
+    // The old behaviour recorded this as status='degraded' + lastError and the
+    // settings UI flapped every minute of the cool-down (WI-10001549).
+    expect(updateSource).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ status: 'degraded' }),
+    );
+    expect(result).toMatchObject({ succeeded: 1, failed: 0, renewed: 0, watchDeferred: 0, watchThrottled: 1, failures: [] });
   });
 
   it('re-syncs a cursored mailbox whose resumable backfill is still pending (EI-23378389605835281)', async () => {
@@ -254,6 +365,8 @@ describe('google-gmail-poll system action', () => {
       succeeded: 2,
       failed: 0,
       renewed: 1,
+      watchDeferred: 0,
+      watchThrottled: 0,
       pulled: 3,
       acknowledged: 3,
       messages: 5,
@@ -579,6 +692,8 @@ describe('google-gmail-poll system action', () => {
       succeeded: 0,
       failed: 2,
       renewed: 0,
+      watchDeferred: 0,
+      watchThrottled: 0,
       pulled: 0,
       acknowledged: 0,
       messages: 0,
