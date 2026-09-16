@@ -141,7 +141,9 @@ describe('refreshControlAnchorAfterMutation', () => {
     }
 
     /** Drives one refresh and returns every statement the transaction issued. */
-    async function refresh(opts: { source: typeof input.source; launchSpec: unknown }) {
+    // `input.source` narrows to the literal 'loop:arm', so name the union these
+    // cases actually span: one identity-moving source and one that is not.
+    async function refresh(opts: { source: 'mode:set' | 'loop:arm'; launchSpec: unknown }) {
       const statements: Array<{ text: string; values: unknown[] }> = [];
       const activation = {
         schemaVersion: 1,
