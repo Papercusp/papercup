@@ -13887,6 +13887,20 @@ async function runGreenCheckpointInner(
   };
 }
 
+/** One npm invocation inside a repair-tick leg. A bare string is the ROOT-script form
+ *  (`npm run <script>` at the checkout root) the static {@link NON_TEST_GATE_SCRIPTS}
+ *  registry uses; the object form carries the WORKSPACE that a `<ws> :: <script>` task id
+ *  resolves to, which is what makes a queued workspace-task signature re-measurable at all
+ *  (WI-10001529). Both forms coexist because the registry is genuinely root-only while the
+ *  queue's own signatures are not — this is the resolved shape {@link resolveGateRuns}
+ *  already returns, not a compatibility shim. */
+export type RepairTickRun = string | { script: string; workspace: string | null };
+
+const normalizeRepairTickRun = (
+  run: RepairTickRun,
+): { script: string; workspace: string | null } =>
+  typeof run === "string" ? { script: run, workspace: null } : run;
+
 /**
  * P-009: the seam-injected core of the repair-tick cheap-legs measurement, shared by the
  * real dep (realCheckpointDeps.runRepairTickLegs) and its tests. Every gate id in
