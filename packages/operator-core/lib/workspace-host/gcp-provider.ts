@@ -361,9 +361,33 @@ export interface GcpWorkspaceHostApiClient {
   waitForOperation(operation: GcpOperationRef, signal?: AbortSignal): Promise<GcpOperationObservation>;
 }
 
+/**
+ * A resource the provider actually brought into existence, reported at the exact moment its
+ * creation was confirmed durable. This is the PRODUCING half of the teardown-obligation ledger:
+ * `cloud-resource-obligations.ts` builds the table, the sweep and the escalation, but nothing
+ * writes a row unless a creation path reports through here. An unwired observer makes that
+ * ledger's silence indistinguishable from "no leaks" (WI-10001672).
+ */
+export interface WorkspaceHostResourceCreatedEvent {
+  readonly resource: WorkspaceHostResourceRef;
+  readonly operationId: string;
+  readonly stepId: string;
+}
+
+/**
+ * Errors PROPAGATE and fail the apply step on purpose: an unregistered metered resource is the
+ * exact defect this seam exists to prevent, so a failed ledger write must be loud rather than
+ * leaving a billable resource nothing is tracking. Retry is safe — the underlying recorder is
+ * idempotent (ON CONFLICT DO NOTHING on the resource identity).
+ */
+export type WorkspaceHostResourceCreatedObserver = (
+  event: WorkspaceHostResourceCreatedEvent,
+) => Promise<void> | void;
+
 export interface GcpWorkspaceHostProviderOptions {
   client: GcpWorkspaceHostApiClient;
   now?: () => string;
+  onResourceCreated?: WorkspaceHostResourceCreatedObserver;
 }
 
 interface ManagedNetworkSettings {
@@ -1281,12 +1305,14 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
   readonly target = GCP_WORKSPACE_HOST_TARGET;
   readonly capabilities = CAPABILITIES;
   private readonly now: () => string;
+  private readonly onResourceCreated?: WorkspaceHostResourceCreatedObserver;
 
   constructor(
     private readonly client: GcpWorkspaceHostApiClient,
-    options: Pick<GcpWorkspaceHostProviderOptions, 'now'> = {},
+    options: Pick<GcpWorkspaceHostProviderOptions, 'now' | 'onResourceCreated'> = {},
   ) {
     this.now = options.now ?? (() => new Date().toISOString());
+    this.onResourceCreated = options.onResourceCreated;
   }
 
   validateConnection(ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostConnectionValidation> {
@@ -2013,7 +2039,29 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     return steps;
   }
 
+  /**
+   * Single reporting seam for created resources. Every confirmed creation in `applyStep` returns
+   * through `applied(...)` carrying the resource ref it just brought into existence, so observing
+   * the RESULT covers every current insert case — and every future one — without each call site
+   * having to remember. `unchanged` results (the `use-existing-*` ops) deliberately do not fire:
+   * we did not create those, so we owe no teardown obligation for them.
+   */
   async apply(
+    request: WorkspaceHostApplyRequest,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<WorkspaceHostApplyResult> {
+    const result = await this.applyStep(request, ctx);
+    if (this.onResourceCreated && result.state === 'applied' && result.resource) {
+      await this.onResourceCreated({
+        resource: result.resource,
+        operationId: result.operationId,
+        stepId: result.stepId,
+      });
+    }
+    return result;
+  }
+
+  private async applyStep(
     request: WorkspaceHostApplyRequest,
     ctx: WorkspaceHostProviderContext,
   ): Promise<WorkspaceHostApplyResult> {
@@ -2669,14 +2717,23 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
 
 export function createGcpWorkspaceHostProvider(options: GcpWorkspaceHostProviderOptions): GcpWorkspaceHostProvider {
   if (!options?.client) throw new Error('GCP workspace-host provider requires an injected Compute Engine client');
-  return new GcpWorkspaceHostProvider(options.client, { now: options.now });
+  return new GcpWorkspaceHostProvider(options.client, {
+    now: options.now,
+    onResourceCreated: options.onResourceCreated,
+  });
 }
 
 /** Explicit production composition: ADC and Google REST are never selected implicitly. */
 export function createAdcGcpWorkspaceHostProvider(
-  options: GcpWorkspaceHostApiClientOptions = {},
+  options: GcpWorkspaceHostApiClientOptions & {
+    onResourceCreated?: WorkspaceHostResourceCreatedObserver;
+  } = {},
 ): GcpWorkspaceHostProvider {
-  return new GcpWorkspaceHostProvider(createGcpWorkspaceHostApiClient(options), { now: options.now });
+  const { onResourceCreated, ...clientOptions } = options;
+  return new GcpWorkspaceHostProvider(createGcpWorkspaceHostApiClient(clientOptions), {
+    now: options.now,
+    onResourceCreated,
+  });
 }
 
 /** Production composition selected by the persisted, non-secret cloud credential reference. */
@@ -2687,6 +2744,7 @@ export function createConfiguredGcpWorkspaceHostProvider(
       credentialRef: string;
       provider: Readonly<Record<string, unknown>>;
     }) => Promise<GcpResolvedAuth>;
+    onResourceCreated?: WorkspaceHostResourceCreatedObserver;
   } = {},
 ): GcpWorkspaceHostProvider {
   if (connection.target !== GCP_WORKSPACE_HOST_TARGET) {
@@ -2700,13 +2758,17 @@ export function createConfiguredGcpWorkspaceHostProvider(
   const acquireAuth = hosted
     ? () => options.resolveHostedAuth!({ credentialRef, provider: connection.provider ?? {} })
     : createGcpWorkspaceHostAcquireAuth(credentialRef);
-  const { resolveHostedAuth: _resolveHostedAuth, ...clientOptions } = options;
+  const {
+    resolveHostedAuth: _resolveHostedAuth,
+    onResourceCreated,
+    ...clientOptions
+  } = options;
   return new GcpWorkspaceHostProvider(
     createGcpWorkspaceHostApiClient({
       ...clientOptions,
       acquireAuth,
       credentialRef,
     }),
-    { now: clientOptions.now },
+    { now: clientOptions.now, onResourceCreated },
   );
 }
