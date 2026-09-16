@@ -67,6 +67,13 @@ export const LISTING_KINDS = [
   // migration 024 / cupboard-themes-2026-09-05: inert semantic-token package;
   // install makes it locally selectable through the existing theme runtime.
   'theme',
+  // migration 029 / identities-v1-2026-08-30 P-027, D-010: a DATATYPE PACKAGE —
+  // the schema + lifecycle a workspace installs so `work_items` and the surfaces
+  // over it accept a new item kind. It had grown a SECOND storefront of its own
+  // (`datatypes:publish` marking its own pending queue, `datatypes:catalog`
+  // browsing it); this folds publish+browse back into the one Cupboard surface,
+  // with `datatype_registry` kept as the resolution layer it always was.
+  'datatype',
 ] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
