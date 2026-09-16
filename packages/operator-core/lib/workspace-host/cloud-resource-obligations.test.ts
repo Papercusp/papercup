@@ -18,6 +18,9 @@ import {
   cloudResourceObligationSourceKey,
   CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS,
   CLOUD_RESOURCE_OBLIGATION_IN_USE_SUPPRESSION_CEILING_MS,
+  CLOUD_RESOURCE_OBLIGATION_DEFAULT_RECLAIM_AFTER_MS,
+  describeCloudResourceDeleteAddress,
+  planCloudResourceObligationReclamation,
   type CloudResourceObligationRow,
   type CloudResourceObligationCaptureDep,
 } from './cloud-resource-obligations';
@@ -31,6 +34,13 @@ function makeRow(overrides: Partial<CloudResourceObligationRow> = {}): CloudReso
     resourceKind: 'nat',
     resourceId: 'pc-p046-rel-nat',
     projectId: 'active-alcove-504205-q3',
+    // Location (migration 1168). The default kind is `nat`, so the default row is
+    // deliberately ADDRESSABLE — region + owning router + host — and a test that wants the
+    // unaddressable case blanks one of them explicitly rather than relying on an omission.
+    zone: '',
+    region: 'us-central1',
+    parentResourceId: 'pc-p046-rel-router',
+    hostId: 'pc-p046-rel',
     purpose: 'p046-release-cut',
     createdByOwnerId: 'su-example',
     sourceWorkItemId: 'WI-40474',
@@ -514,5 +524,181 @@ describe('runCloudResourceObligationSweepOnce', () => {
     );
     expect(seen).toHaveLength(1);
     expect(seen[0]).toContainEqual([...ANY_FAMILY_TERMINAL_STATES]);
+  });
+});
+
+describe('describeCloudResourceDeleteAddress', () => {
+  it('addresses a nat through its region and owning router', () => {
+    const result = describeCloudResourceDeleteAddress(makeRow());
+    expect(result.addressable).toBe(true);
+    if (!result.addressable) throw new Error('unreachable');
+    expect(result.address).toEqual({
+      op: 'delete-nat',
+      projectId: 'active-alcove-504205-q3',
+      resourceName: 'pc-p046-rel-nat',
+      hostId: 'pc-p046-rel',
+      region: 'us-central1',
+      routerName: 'pc-p046-rel-router',
+    });
+  });
+
+  it('addresses a vm by zone, and does not smuggle a region onto it', () => {
+    const result = describeCloudResourceDeleteAddress(
+      makeRow({ resourceKind: 'vm', resourceId: 'canary-vm', zone: 'us-central1-a', region: 'us-central1' }),
+    );
+    expect(result.addressable).toBe(true);
+    if (!result.addressable) throw new Error('unreachable');
+    expect(result.address.op).toBe('delete-instance');
+    expect(result.address.zone).toBe('us-central1-a');
+    expect(result.address).not.toHaveProperty('region');
+    expect(result.address).not.toHaveProperty('routerName');
+  });
+
+  it('addresses a global kind with no zone or region at all', () => {
+    const result = describeCloudResourceDeleteAddress(
+      makeRow({ resourceKind: 'network', resourceId: 'pc-net', zone: '', region: '', parentResourceId: '' }),
+    );
+    expect(result.addressable).toBe(true);
+    if (!result.addressable) throw new Error('unreachable');
+    expect(result.address.op).toBe('delete-network');
+  });
+
+  it('names the MISSING field rather than returning a bare no — zonal kind without a zone', () => {
+    const result = describeCloudResourceDeleteAddress(makeRow({ resourceKind: 'vm', zone: '' }));
+    expect(result.addressable).toBe(false);
+    if (result.addressable) throw new Error('unreachable');
+    expect(result.op).toBe('delete-instance');
+    expect(result.missing).toEqual(['zone']);
+  });
+
+  it('treats whitespace as absent, not as a value', () => {
+    const result = describeCloudResourceDeleteAddress(makeRow({ region: '   ' }));
+    expect(result.addressable).toBe(false);
+    if (result.addressable) throw new Error('unreachable');
+    expect(result.missing).toContain('region');
+  });
+
+  it('reports a kind the provider has no delete op for as unsupported, not as merely missing fields', () => {
+    const result = describeCloudResourceDeleteAddress(makeRow({ resourceKind: 'snapshot' }));
+    expect(result.addressable).toBe(false);
+    if (result.addressable) throw new Error('unreachable');
+    expect(result.op).toBeNull();
+    expect(result.missing).toEqual(['unsupported-kind:snapshot']);
+  });
+
+  it('REGRESSION (WI-10001673): a 1040-era row — the shape of all four real production rows — cannot be addressed', () => {
+    // Exactly what migration 1040 could store: no zone, no region, no router, no host.
+    const legacy = makeRow({ zone: '', region: '', parentResourceId: '', hostId: '' });
+    const result = describeCloudResourceDeleteAddress(legacy);
+    expect(result.addressable).toBe(false);
+    if (result.addressable) throw new Error('unreachable');
+    // Both halves of the gap are named: the host identity every delete step carries, and
+    // the location this kind is addressed by.
+    expect(result.missing).toEqual(expect.arrayContaining(['hostId', 'region', 'parentResourceId']));
+  });
+});
+
+describe('planCloudResourceObligationReclamation', () => {
+  const reclaimable = (overrides: Partial<CloudResourceObligationRow> = {}) =>
+    makeRow({ createdAtMs: 0, lastEscalatedAtMs: 1_000, sourceWorkItemId: 'WI-40474', ...overrides });
+  const past = CLOUD_RESOURCE_OBLIGATION_DEFAULT_RECLAIM_AFTER_MS + 1;
+  /** Source work-item established as TERMINAL: the set of still-open keys is empty. */
+  const sourceClosed = { openSourceWorkItemKeys: new Set<string>() };
+
+  it('deletes nothing before the reclaim TTL, and does not report it as blocked either', () => {
+    const plan = planCloudResourceObligationReclamation([reclaimable()], 1_000, sourceClosed);
+    expect(plan.reclaim).toHaveLength(0);
+    expect(plan.blocked).toHaveLength(0); // not yet due is not a finding
+  });
+
+  it('reclaims a past-due, escalated, addressable row whose source work-item is closed', () => {
+    const plan = planCloudResourceObligationReclamation([reclaimable()], past, sourceClosed);
+    expect(plan.blocked).toHaveLength(0);
+    expect(plan.reclaim).toHaveLength(1);
+    expect(plan.reclaim[0]!.address.op).toBe('delete-nat');
+    expect(plan.reclaim[0]!.ageMs).toBe(past);
+  });
+
+  it('NEVER deletes a resource nobody was ever told about', () => {
+    const plan = planCloudResourceObligationReclamation(
+      [reclaimable({ lastEscalatedAtMs: null })],
+      past,
+      sourceClosed,
+    );
+    expect(plan.reclaim).toHaveLength(0);
+    expect(plan.blocked).toEqual([expect.objectContaining({ reason: 'never-escalated' })]);
+  });
+
+  it('blocks while the originating work-item is still open — no age-ceiling override for deletion', () => {
+    const row = reclaimable();
+    const openKeys = new Set([cloudResourceObligationSourceKey(row.workspaceId, row.sourceWorkItemId)]);
+    // Far past even the in-use suppression ceiling that WOULD let escalation fire.
+    const veryOld = CLOUD_RESOURCE_OBLIGATION_IN_USE_SUPPRESSION_CEILING_MS * 10;
+    const plan = planCloudResourceObligationReclamation([row], veryOld, { openSourceWorkItemKeys: openKeys });
+    expect(plan.reclaim).toHaveLength(0);
+    expect(plan.blocked).toEqual([expect.objectContaining({ reason: 'source-work-item-open' })]);
+  });
+
+  it('fails toward NOT deleting when the source work-item state could not be established', () => {
+    // The escalation path treats "unestablished" as suppress-nothing (act). Reclamation must
+    // do the OPPOSITE, because a wrong delete is unrecoverable.
+    const plan = planCloudResourceObligationReclamation([reclaimable()], past, {});
+    expect(plan.reclaim).toHaveLength(0);
+    expect(plan.blocked).toEqual([expect.objectContaining({ reason: 'source-work-item-open' })]);
+  });
+
+  it('reports a past-due row it cannot address as BLOCKED rather than dropping it silently', () => {
+    const plan = planCloudResourceObligationReclamation(
+      [reclaimable({ zone: '', region: '', parentResourceId: '', hostId: '' })],
+      past,
+      sourceClosed,
+    );
+    expect(plan.reclaim).toHaveLength(0);
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.reason).toBe('unaddressable');
+    expect(plan.blocked[0]!.missing.length).toBeGreaterThan(0);
+  });
+
+  it('ignores closed and no-longer-owed obligations entirely', () => {
+    const plan = planCloudResourceObligationReclamation(
+      [reclaimable({ id: 1, closedAtMs: 5 }), reclaimable({ id: 2, resourceId: 'b', teardownOwed: false })],
+      past,
+      sourceClosed,
+    );
+    expect(plan.reclaim).toHaveLength(0);
+    expect(plan.blocked).toHaveLength(0);
+  });
+
+  it('orders oldest-first — the longest-standing obligation is the most expensive', () => {
+    const plan = planCloudResourceObligationReclamation(
+      [
+        reclaimable({ id: 2, resourceId: 'newer', createdAtMs: 500 }),
+        reclaimable({ id: 1, resourceId: 'older', createdAtMs: 0 }),
+      ],
+      past + 500,
+      sourceClosed,
+    );
+    expect(plan.reclaim.map((c) => c.id)).toEqual([1, 2]);
+  });
+
+  it('is scoped strictly to the rows it is given — it can never propose an unledgered resource', () => {
+    const plan = planCloudResourceObligationReclamation([], past, sourceClosed);
+    expect(plan.reclaim).toHaveLength(0);
+    expect(plan.blocked).toHaveLength(0);
+  });
+
+  it('rejects a non-finite clock and a negative TTL rather than silently reclaiming everything', () => {
+    expect(() => planCloudResourceObligationReclamation([], Number.NaN, {})).toThrow(/finite/);
+    expect(() => planCloudResourceObligationReclamation([], 0, { reclaimAfterMs: -1 })).toThrow(/non-negative/);
+  });
+
+  it('ASYMMETRY: the same row the escalation path acts on, the reclamation path refuses', () => {
+    // One row, one clock, unestablished source state. Escalation fires (cheap, reversible);
+    // reclamation blocks (unrecoverable). Encoding it here so the two can never be
+    // "harmonised" into agreeing by a later edit.
+    const row = reclaimable({ lastEscalatedAtMs: null });
+    const clock = past;
+    expect(selectCloudResourceObligationsToEscalate([row], clock)).toHaveLength(1);
+    expect(planCloudResourceObligationReclamation([row], clock, {}).reclaim).toHaveLength(0);
   });
 });

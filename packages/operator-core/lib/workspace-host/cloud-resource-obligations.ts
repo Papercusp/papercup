@@ -467,6 +467,240 @@ export async function readOpenSourceWorkItemKeys(
 }
 
 /**
+ * Default age at which an obligation becomes RECLAMATION-eligible (as opposed to merely
+ * escalation-eligible at `graceMs`, 6h by default).
+ *
+ * Deliberately far beyond the escalation grace AND beyond one escalation cooldown (12h):
+ * by the time anything is deleted, an escalation work-item has existed for at least half a
+ * day with nobody discharging it. Escalating is cheap and reversible; deleting is neither,
+ * so the two thresholds must not be the same number.
+ */
+export const CLOUD_RESOURCE_OBLIGATION_DEFAULT_RECLAIM_AFTER_MS = 24 * 60 * 60 * 1000; // 24h
+
+export interface CloudResourceDeleteContractEntry {
+  /** The provider delete op this kind is torn down with (`GcpStepInput`, gcp-provider.ts). */
+  readonly op: string;
+  /** Location fields that MUST be non-empty on the ledger row, or the delete cannot be built. */
+  readonly requires: readonly ('zone' | 'region' | 'parentResourceId')[];
+}
+
+/**
+ * How each resource kind is ADDRESSED for deletion. A GCP delete is not "name the thing" —
+ * zonal kinds need their zone, regional kinds their region, and a Cloud NAT is addressed
+ * THROUGH its owning router. This table is what makes "can this row even be deleted?" a
+ * decidable question instead of a runtime surprise at the provider call.
+ *
+ * Kinds absent here (e.g. `snapshot`, which the census enumerates but the provider has no
+ * delete op for) are UNSUPPORTED, and say so rather than silently never being reclaimed.
+ *
+ * DERIVED-TRUTH NOTE: this restates a mapping owned by gcp-provider.ts, which this module
+ * deliberately cannot import (the whole point of the structural/duck-typed seam above — an
+ * import here would cycle the ledger into the provider graph). It is therefore PINNED by a
+ * source-text parity test rather than hand-maintained: see
+ * cloud-resource-obligations.delete-contract-parity.test.ts, which fails if the provider's
+ * kind→op ordering or its delete union drifts from this table.
+ */
+export const CLOUD_RESOURCE_DELETE_CONTRACT: Readonly<Record<string, CloudResourceDeleteContractEntry>> = {
+  vm: { op: 'delete-instance', requires: ['zone'] },
+  disk: { op: 'delete-disk', requires: ['zone'] },
+  firewall: { op: 'delete-firewall', requires: [] },
+  nat: { op: 'delete-nat', requires: ['region', 'parentResourceId'] },
+  router: { op: 'delete-router', requires: ['region'] },
+  subnetwork: { op: 'delete-subnetwork', requires: ['region'] },
+  network: { op: 'delete-network', requires: [] },
+};
+
+/** The concrete arguments a provider delete step needs. Structural — no provider import. */
+export interface CloudResourceDeleteAddress {
+  op: string;
+  projectId: string;
+  resourceName: string;
+  hostId: string;
+  zone?: string;
+  region?: string;
+  /** `delete-nat` addresses the NAT config through its owning Cloud Router. */
+  routerName?: string;
+}
+
+export type CloudResourceAddressability =
+  | { addressable: true; address: CloudResourceDeleteAddress }
+  | { addressable: false; op: string | null; missing: readonly string[] };
+
+/**
+ * Can a delete call be constructed for this row RIGHT NOW, from the ledger alone?
+ *
+ * PURE. Returns the concrete address or the exact list of what is missing — never a
+ * boolean, because "no" without "missing which field" is precisely the answer that got
+ * this ledger built wrong twice: a caller that cannot name the gap silently skips the row,
+ * and a skipped metered resource is indistinguishable from a clean ledger.
+ */
+export function describeCloudResourceDeleteAddress(
+  row: Pick<
+    CloudResourceObligationRow,
+    'resourceKind' | 'resourceId' | 'projectId' | 'zone' | 'region' | 'parentResourceId' | 'hostId'
+  >,
+): CloudResourceAddressability {
+  const entry = CLOUD_RESOURCE_DELETE_CONTRACT[row.resourceKind];
+  if (!entry) return { addressable: false, op: null, missing: [`unsupported-kind:${row.resourceKind}`] };
+  const missing: string[] = [];
+  if (row.resourceId.trim() === '') missing.push('resourceId');
+  if (row.projectId.trim() === '') missing.push('projectId');
+  if (row.hostId.trim() === '') missing.push('hostId');
+  for (const field of entry.requires) {
+    if (row[field].trim() === '') missing.push(field);
+  }
+  if (missing.length > 0) return { addressable: false, op: entry.op, missing };
+  return {
+    addressable: true,
+    address: {
+      op: entry.op,
+      projectId: row.projectId,
+      resourceName: row.resourceId,
+      hostId: row.hostId,
+      ...(entry.requires.includes('zone') ? { zone: row.zone } : {}),
+      ...(entry.requires.includes('region') ? { region: row.region } : {}),
+      ...(entry.requires.includes('parentResourceId') ? { routerName: row.parentResourceId } : {}),
+    },
+  };
+}
+
+export type CloudResourceReclamationBlockedReason =
+  /** Past the reclaim TTL but no escalation has ever fired for it. */
+  | 'never-escalated'
+  /** Its originating work-item is still non-terminal — the resource may be in active use. */
+  | 'source-work-item-open'
+  /** The ledger row cannot address the resource (see `missing`). */
+  | 'unaddressable';
+
+export interface CloudResourceReclamationCandidate {
+  id: number;
+  workspaceId: string;
+  provider: string;
+  resourceKind: string;
+  resourceId: string;
+  sourceWorkItemId: string;
+  escalationWorkItemId: string;
+  createdAtMs: number;
+  ageMs: number;
+  address: CloudResourceDeleteAddress;
+}
+
+export interface CloudResourceReclamationBlocked {
+  id: number;
+  workspaceId: string;
+  provider: string;
+  resourceKind: string;
+  resourceId: string;
+  sourceWorkItemId: string;
+  createdAtMs: number;
+  ageMs: number;
+  reason: CloudResourceReclamationBlockedReason;
+  /** For `unaddressable`: exactly which fields are absent. Empty for the other reasons. */
+  missing: readonly string[];
+}
+
+export interface CloudResourceReclamationPlan {
+  evaluatedAtMs: number;
+  reclaimAfterMs: number;
+  /** Rows a reclaimer may delete now — every rail below already satisfied. */
+  reclaim: readonly CloudResourceReclamationCandidate[];
+  /**
+   * Rows PAST the reclaim TTL that must not be deleted, each with why. This list is the
+   * whole point of returning a plan rather than a filtered array: a past-due resource that
+   * cannot be reclaimed is a louder signal than one that can, and dropping it on the floor
+   * is how a leak becomes invisible.
+   */
+  blocked: readonly CloudResourceReclamationBlocked[];
+}
+
+export interface CloudResourceReclamationOptions {
+  reclaimAfterMs?: number;
+  /**
+   * Keys (see {@link cloudResourceObligationSourceKey}) whose originating work-item is still
+   * NON-terminal. As in the escalation path, OMITTED means "not established" — but the two
+   * paths fail in OPPOSITE directions on purpose. Escalation fails toward acting (filing a
+   * bug is cheap); reclamation fails toward NOT acting, because a wrong delete is
+   * unrecoverable. So an unestablished source state BLOCKS reclamation rather than allowing
+   * it, and there is deliberately no age-ceiling override here: "held far too long" justifies
+   * a louder escalation, never an unilateral delete of something still claimed as in use.
+   */
+  openSourceWorkItemKeys?: ReadonlySet<string>;
+}
+
+/**
+ * PURE decision logic for ENFORCED TEARDOWN — the half `runCloudResourceObligationSweepOnce`
+ * has never had. Given open obligations, decide which may actually be deleted now.
+ *
+ * Scoped STRICTLY to rows in this ledger, which is the safety property that matters: it
+ * iterates obligations WE recorded at creation time, so it can never propose deleting
+ * infrastructure nobody registered. That is not a detail — the project these rows live in
+ * also hosts unrelated long-lived infrastructure, and a label- or name-matching reaper
+ * (see `censusGcpWorkspaceHostResources`) has a far wider blast radius by construction.
+ *
+ * Every rail must hold before a row is reclaimable:
+ *   1. open + teardown still owed;
+ *   2. older than `reclaimAfterMs` (well past the escalation grace);
+ *   3. an escalation has ALREADY fired — nothing is ever deleted that no one was told
+ *      about, which makes a silent delete structurally impossible rather than merely
+ *      discouraged;
+ *   4. its originating work-item is terminal (or established-absent);
+ *   5. the row can address the resource.
+ *
+ * Ordered oldest-first: the longest-standing obligation is the most expensive one.
+ */
+export function planCloudResourceObligationReclamation(
+  rows: readonly CloudResourceObligationRow[],
+  evaluatedAtMs: number,
+  options: CloudResourceReclamationOptions = {},
+): CloudResourceReclamationPlan {
+  if (!Number.isFinite(evaluatedAtMs)) throw new Error('evaluatedAtMs must be finite');
+  const reclaimAfterMs = options.reclaimAfterMs ?? CLOUD_RESOURCE_OBLIGATION_DEFAULT_RECLAIM_AFTER_MS;
+  if (!Number.isSafeInteger(reclaimAfterMs) || reclaimAfterMs < 0) {
+    throw new Error('reclaimAfterMs must be a non-negative safe integer');
+  }
+  const openSourceKeys = options.openSourceWorkItemKeys;
+  const reclaim: CloudResourceReclamationCandidate[] = [];
+  const blocked: CloudResourceReclamationBlocked[] = [];
+  for (const row of rows) {
+    if (row.closedAtMs !== null || !row.teardownOwed) continue;
+    const ageMs = evaluatedAtMs - row.createdAtMs;
+    if (ageMs < reclaimAfterMs) continue; // not yet due — neither reclaimable nor a finding
+    const common = {
+      id: row.id,
+      workspaceId: row.workspaceId,
+      provider: row.provider,
+      resourceKind: row.resourceKind,
+      resourceId: row.resourceId,
+      sourceWorkItemId: row.sourceWorkItemId,
+      createdAtMs: row.createdAtMs,
+      ageMs,
+    };
+    if (row.lastEscalatedAtMs === null) {
+      blocked.push({ ...common, reason: 'never-escalated', missing: [] });
+      continue;
+    }
+    // Unknown source state blocks: see the fail-toward-not-acting note on the options type.
+    const sourceStillOpen =
+      row.sourceWorkItemId !== '' &&
+      (openSourceKeys === undefined ||
+        openSourceKeys.has(cloudResourceObligationSourceKey(row.workspaceId, row.sourceWorkItemId)));
+    if (sourceStillOpen) {
+      blocked.push({ ...common, reason: 'source-work-item-open', missing: [] });
+      continue;
+    }
+    const addressability = describeCloudResourceDeleteAddress(row);
+    if (!addressability.addressable) {
+      blocked.push({ ...common, reason: 'unaddressable', missing: addressability.missing });
+      continue;
+    }
+    reclaim.push({ ...common, escalationWorkItemId: row.escalationWorkItemId, address: addressability.address });
+  }
+  reclaim.sort((a, b) => a.createdAtMs - b.createdAtMs);
+  blocked.sort((a, b) => a.createdAtMs - b.createdAtMs);
+  return { evaluatedAtMs, reclaimAfterMs, reclaim, blocked };
+}
+
+/**
  * Minimal structural shape of `captureImprovement` (capture-core.ts) — duck-typed
  * rather than imported, so this workspace-host module does not pull in the whole
  * improvements-capture dependency graph. Kept deliberately narrow to exactly the
