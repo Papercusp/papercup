@@ -36,6 +36,58 @@ export async function sha256Hex(buf: ArrayBuffer | Uint8Array): Promise<string> 
     .join('');
 }
 
+/** One blob of a tree: its repo-relative path and its git blob sha (40-hex
+ *  SHA-1, or 64-hex on a SHA-256 repository). */
+export interface TreeDigestEntry {
+  readonly path: string;
+  readonly sha: string;
+}
+
+/** A git blob object id: 40 lowercase hex (SHA-1) or 64 (SHA-256 repositories). */
+export const GIT_OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+// The record separator is U+0000 (built at runtime rather than written as an
+// escape so the source file itself carries no control byte — lint:no-control-bytes
+// is a release-gate leg). A path may contain any character but NUL.
+const NUL = String.fromCharCode(0);
+
+/**
+ * Canonical digest of a set of (path, blob sha) pairs — the content identity of
+ * a directory INDEPENDENT of how it was obtained (GitHub's tree API, a local
+ * `git ls-tree -r`, a checkout walked with `git hash-object`). Two parties that
+ * see the same blobs at the same paths compute the same hex, so a publisher-side
+ * pin and an installer-side recomputation compare as plain strings.
+ *
+ * Canonical form (fixed — changing it re-keys every stored digest):
+ *   - entries sorted by `path`, compared as JS strings (UTF-16 code-unit order —
+ *     deterministic on every runtime; NOT locale collation);
+ *   - one record per entry: `<path>` U+0000 `<sha>` U+000A — the NUL separator
+ *     means a path may contain any character but NUL, and the LF terminator
+ *     means an entry set is never a prefix of a larger one;
+ *   - SHA-256 over the UTF-8 bytes of the concatenated records, lowercase hex.
+ *
+ * Refuses (throws) a duplicate path or a malformed sha rather than hashing a
+ * set that no real tree can produce: an installer that recomputes from a real
+ * checkout could never match such a digest, so storing one would be a pin that
+ * fails every verification for a reason nobody can see.
+ */
+export async function canonicalTreeDigest(entries: readonly TreeDigestEntry[]): Promise<string> {
+  const seen = new Set<string>();
+  for (const e of entries) {
+    if (typeof e.path !== 'string' || e.path.length === 0 || e.path.includes(NUL)) {
+      throw new Error(`canonicalTreeDigest: invalid path ${JSON.stringify(e.path)}`);
+    }
+    if (!GIT_OBJECT_ID_RE.test(e.sha)) {
+      throw new Error(`canonicalTreeDigest: invalid blob sha for ${e.path}`);
+    }
+    if (seen.has(e.path)) throw new Error(`canonicalTreeDigest: duplicate path ${e.path}`);
+    seen.add(e.path);
+  }
+  const sorted = [...entries].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const canonical = sorted.map((e) => `${e.path}${NUL}${e.sha}\n`).join('');
+  return sha256Hex(new TextEncoder().encode(canonical));
+}
+
 /**
  * A content-addressing scheme: a `<prefix>/<hash><ext>` key layout. Lets a host
  * pick its own namespace + extension (`snapshots/<sha>.tar.gz`,
