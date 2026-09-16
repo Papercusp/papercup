@@ -287,6 +287,92 @@ export function buildGcpIapWorkspaceHostInitializationCommand(
   });
 }
 
+/**
+ * POSIX `test`, used as the readiness probe. Absolute on purpose: `buildGcpIapSshInvocation`
+ * requires an absolute entrypoint, and resolving `test` off the remote PATH would make the probe
+ * depend on the login shell of a host we are probing precisely because it is half-configured.
+ */
+const POSIX_TEST_EXECUTABLE = '/bin/test';
+
+/**
+ * Defaults sized from the measured record rather than guessed (WI-10001677): conduit-missing
+ * failures occurred at 117s and 304s, while every attempt at 901s or later found the conduit
+ * present. 20 minutes therefore covers the observed spread with headroom, and is still far
+ * below the point at which a stuck bootstrap should be reported instead of waited on.
+ */
+export const DEFAULT_GCP_IAP_BOOTSTRAP_READINESS_TIMEOUT_MS = 20 * 60_000;
+export const DEFAULT_GCP_IAP_BOOTSTRAP_READINESS_POLL_INTERVAL_MS = 15_000;
+
+/**
+ * The remote command answered cleanly and said the conduit is absent — bootstrap is genuinely
+ * still working. Distinct from a transport failure, where we never got to ask at all.
+ */
+const PROBE_EXIT_READY = 0;
+const PROBE_EXIT_NOT_READY = 1;
+
+/**
+ * Build the bootstrap-readiness probe: does the remote initializer conduit exist and is it
+ * executable?
+ *
+ * Deliberately NOT a no-op invocation of the conduit itself. The conduit speaks a JSON protocol,
+ * so a "harmless" call would still be a real request whose failure modes overlap the ones we are
+ * trying to tell apart; `test -x` cannot have side effects and answers exactly one question.
+ */
+export function buildGcpIapWorkspaceHostBootstrapReadinessProbe(
+  profile: GcpIapWorkspaceHostInitializationProfile,
+): GcpIapWorkspaceHostInitializationCommand {
+  return buildGcpIapSshInvocation(profile, {
+    entrypoint: POSIX_TEST_EXECUTABLE,
+    entrypointLabel: 'POSIX test',
+    args: ['-x', profile.remoteEntrypoint],
+    stdin: '',
+  });
+}
+
+/**
+ * The readiness budget elapsed.
+ *
+ * `answered` is the load-bearing field, and the reason this is one error class rather than a
+ * bare timeout: it separates "we asked repeatedly and the host kept saying the conduit is not
+ * there yet" (a slow or stuck bootstrap) from "we never once got a clean answer" (a transport,
+ * auth or IAP problem wearing a timeout's clothes). Waiting out the second for twenty minutes
+ * and then blaming bootstrap would replace a loud misconfiguration with a slow lie.
+ */
+export class GcpIapWorkspaceHostBootstrapNotReadyError extends Error {
+  readonly conduitPath: string;
+  readonly probes: number;
+  readonly waitedMs: number;
+  readonly answered: boolean;
+  readonly lastExitCode: number | undefined;
+
+  constructor(input: {
+    conduitPath: string;
+    probes: number;
+    waitedMs: number;
+    answered: boolean;
+    lastExitCode?: number;
+    lastStderr?: string;
+  }) {
+    const seconds = Math.round(input.waitedMs / 1000);
+    const diagnosis = input.answered
+      ? `the host answered ${input.probes} probe(s) and reported the conduit still absent, so its bootstrap ` +
+        'is unfinished or stuck (it installs the conduit only after fetching and verifying the release bundle)'
+      : `NO probe ever completed cleanly (last exit code ${input.lastExitCode ?? 'unknown'}), so this is a ` +
+        'transport, OS Login or IAP failure rather than a slow bootstrap — the conduit was never actually checked';
+    super(
+      `Workspace host bootstrap did not become ready within ${seconds}s: ${input.conduitPath} is not an ` +
+        `executable on the host. ${diagnosis}.` +
+        formatGcpIapDiagnosticTail(input.lastStderr),
+    );
+    this.name = 'GcpIapWorkspaceHostBootstrapNotReadyError';
+    this.conduitPath = input.conduitPath;
+    this.probes = input.probes;
+    this.waitedMs = input.waitedMs;
+    this.answered = input.answered;
+    this.lastExitCode = input.lastExitCode;
+  }
+}
+
 /** Real process runner with bounded output and secret-safe failures. */
 export class NodeGcpIapWorkspaceHostInitializationCommandRunner implements GcpIapWorkspaceHostInitializationCommandRunner {
   private readonly spawn: typeof nodeSpawn;
