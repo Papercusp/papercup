@@ -3,12 +3,17 @@
  *
  * The existing Vertex service account is used only for GCP control-plane
  * operations. User mailbox access remains on the Desktop OAuth provider. The
- * provisioner uses google-auth-library for a short-lived bearer token and the
- * Pub/Sub REST API, avoiding gcloud and a second Google SDK dependency.
+ * provisioner uses google-auth-library for a short-lived bearer token, and
+ * takes both its transport (gaxios) and its wire shapes (@googleapis/pubsub)
+ * from the published libraries instead of hand-rolling either — the same
+ * pattern google-gmail.ts and google-calendar.ts already use. gcloud is still
+ * avoided; this is a typed REST client, not the heavyweight @google-cloud SDK.
  */
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { createRequire } from 'node:module';
+import { Gaxios, type GaxiosError } from 'gaxios';
+import type { pubsub_v1 } from '@googleapis/pubsub';
 
 export const GMAIL_PUSH_PUBLISHER = 'serviceAccount:gmail-api-push@system.gserviceaccount.com';
 export const PUBSUB_CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
@@ -60,17 +65,20 @@ export interface GooglePubSubPullInput extends GooglePubSubProvisionInput {
   maxMessages?: number;
 }
 
-interface IamBinding {
-  role: string;
-  members?: string[];
-  condition?: unknown;
-}
-
-interface IamPolicy {
-  version?: number;
-  etag?: string;
-  bindings?: IamBinding[];
-}
+/**
+ * Wire shapes come from @googleapis/pubsub rather than being hand-written, so
+ * a field Google adds, re-types, or makes nullable cannot silently drift out of
+ * this file. These are ALIASES, not renames: every call site below keeps the
+ * name it already used, which is what keeps the blast radius at zero.
+ *
+ * The published types are WIDER than the hand-written ones they replace —
+ * `members` is `string[] | null`, not `string[] | undefined`. That is the
+ * point: withGmailPublisher already rebuilt every binding's members through
+ * `[...(binding.members ?? [])]`, so the runtime always tolerated an absent
+ * list and only the signature was narrower than the behaviour it described.
+ */
+type IamBinding = pubsub_v1.Schema$Binding;
+type IamPolicy = pubsub_v1.Schema$Policy;
 
 function resourceSegment(value: string | undefined, field: string): string {
   const normalized = value?.trim() ?? '';
@@ -242,37 +250,75 @@ async function runtimeContext(
   };
 }
 
-async function responseJson<T>(
-  response: Response,
+const PUBSUB_MAX_RETRIES = 3;
+
+/**
+ * gaxios ships retrying GET/HEAD/PUT/OPTIONS/DELETE on 408/429/5xx and
+ * deliberately NOT retrying POST. We keep that exclusion and WIDEN it to every
+ * mutating method — but the reason here is NOT the one google-calendar.ts
+ * carries, and the distinction is worth stating rather than copying.
+ *
+ * Nothing in this file publishes a message, so no replay can duplicate a
+ * delivery. What a replayed 5xx can do:
+ *   - `pull` — lease a SECOND batch while the first (possibly delivered, its
+ *     response lost) stays leased until the ack deadline, so a doorbell is
+ *     double-leased and processed twice.
+ *   - `setIamPolicy` — a read-modify-write whose etag is sent back; a stale
+ *     replay is rejected by Google rather than clobbering a concurrent edit,
+ *     so this one is protected already.
+ *   - `acknowledge` / `create_topic` / `create_subscription` — genuinely
+ *     idempotent: re-acking the same ids is a no-op, and re-creating answers
+ *     ALREADY_EXISTS, which the callers below already handle.
+ * Only `pull` is actually hazardous; the blanket exclusion is deliberate
+ * conservatism plus consistency with the two sibling adapters, not a claim
+ * that each of these would double-write.
+ *
+ * 429 is the exception in the other direction: rate-limited means the request
+ * was provably NOT performed, so it is safe to replay for every method.
+ *
+ * Supplying `shouldRetry` REPLACES gaxios' own predicate, so this states the
+ * whole policy rather than delegating half of it.
+ */
+const PUBSUB_UNSAFE_TO_REPLAY = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+
+function shouldRetryPubSub(err: GaxiosError): boolean {
+  const attempt = err.config?.retryConfig?.currentRetryAttempt ?? 0;
+  if (attempt >= PUBSUB_MAX_RETRIES) return false;
+  const method = (err.config?.method ?? 'GET').toUpperCase();
+  const mutating = PUBSUB_UNSAFE_TO_REPLAY.has(method);
+  const status = err.response?.status;
+  if (status === undefined) {
+    // No response at all (socket/DNS): the server may still have acted on a
+    // mutating request, so only replay methods that are safe to repeat.
+    return !mutating && attempt < 2;
+  }
+  if (mutating) return status === 429;
+  return status === 408 || status === 429 || (status >= 100 && status <= 199) || (status >= 500 && status <= 599);
+}
+
+/**
+ * Format a provider failure into this file's existing error contract. The
+ * prefix stays byte-identical so existing matchers keep working; the identity
+ * diagnostic is appended only where it is the actual question.
+ */
+function pubSubApiError(
+  status: number,
   operation: string,
+  data: unknown,
   auth?: PubSubAuthContext,
-): Promise<T> {
-  const text = await response.text();
-  let payload: unknown = {};
-  if (text) {
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = { message: text.slice(0, 500) };
-    }
-  }
-  if (!response.ok) {
-    const providerMessage =
-      payload && typeof payload === 'object'
-        ? ((payload as { error?: { message?: string }; message?: string }).error?.message ??
-          (payload as { message?: string }).message)
+): Error {
+  const providerMessage =
+    typeof data === 'string'
+      ? data.slice(0, 500) || undefined
+      : data && typeof data === 'object'
+        ? ((data as { error?: { message?: string }; message?: string }).error?.message ??
+          (data as { message?: string }).message)
         : undefined;
-    // The prefix stays byte-identical so existing matchers keep working; the
-    // identity diagnostic is appended only where it is the actual question.
-    const diagnostic =
-      auth && (response.status === 401 || response.status === 403)
-        ? describePubSubAuthFailure(operation, auth)
-        : '';
-    throw new Error(
-      `google_pubsub_${operation}_${response.status}${providerMessage ? `:${providerMessage}` : ''}${diagnostic}`,
-    );
-  }
-  return payload as T;
+  const diagnostic =
+    auth && (status === 401 || status === 403) ? describePubSubAuthFailure(operation, auth) : '';
+  return new Error(
+    `google_pubsub_${operation}_${status}${providerMessage ? `:${providerMessage}` : ''}${diagnostic}`,
+  );
 }
 
 function authHeaders(token: string, body: unknown): HeadersInit {
@@ -291,13 +337,38 @@ async function request<T>(
   method: string,
   body?: unknown,
 ): Promise<{ status: number; value: T | null }> {
-  const response = await fetchImpl(url, {
-    method,
-    headers: authHeaders(auth.token, body),
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (response.status === 404) return { status: 404, value: null };
-  return { status: response.status, value: await responseJson<T>(response, operation, auth) };
+  const transport = new Gaxios({ fetchImplementation: fetchImpl });
+  try {
+    const response = await transport.request<T>({
+      url,
+      method: method as 'GET',
+      headers: authHeaders(auth.token, body) as Record<string, string>,
+      // Pre-serialized so the wire body stays a JSON string, byte-identical to
+      // what the hand-rolled encoder sent.
+      body: body === undefined ? undefined : JSON.stringify(body),
+      retryConfig: { retry: PUBSUB_MAX_RETRIES, shouldRetry: shouldRetryPubSub },
+      errorRedactor: false,
+    });
+    // Mirrors the previous parser exactly: an empty 200 body became `{}`, not
+    // null, and two callers below distinguish "absent" (404) from "present but
+    // empty" — collapsing them would turn a routable empty policy into the
+    // `unroutable` error.
+    const data = response.data as T | undefined;
+    return {
+      status: response.status,
+      value: data === undefined || (data as unknown) === '' ? ({} as T) : data,
+    };
+  } catch (err) {
+    const gaxios = err as Partial<GaxiosError> & { status?: number };
+    const status = gaxios?.response?.status ?? gaxios?.status;
+    // 404 is load-bearing and must NOT throw: `get_topic` reads it as "create
+    // it", and `get_topic_iam_policy` reads it as "the request never reached
+    // the method" (WI-41682). gaxios rejects non-2xx by default, so the branch
+    // that used to sit before the parser now lives here.
+    if (status === 404) return { status: 404, value: null };
+    if (typeof status !== 'number') throw err instanceof Error ? err : new Error(String(err));
+    throw pubSubApiError(status, operation, gaxios?.response?.data, auth);
+  }
 }
 
 function withGmailPublisher(policy: IamPolicy): { policy: IamPolicy; changed: boolean } {
