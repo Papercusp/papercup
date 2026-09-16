@@ -19,6 +19,35 @@ import { settledGradingAuditIsCurrent, type ScorecardRow } from './scorecards';
 
 export type AcceptanceRubricVettingState = 'not-required' | 'disabled' | 'unvetted' | 'vetted';
 
+/**
+ * Why one candidate meta-rubric card did not count as a settled attestation.
+ *
+ * These are the checks the card actually failed, in evaluation order.  The
+ * refusal used to be decided from the SURVIVOR COUNT alone, so every one of
+ * these landed on the single string `missing-attestation` and named no card —
+ * making the four causes indistinguishable to the agent being refused.
+ */
+export type AcceptanceRubricVettingRejection =
+  | 'rubric-unresolved'
+  | 'incomplete-ratings'
+  | 'synthesized'
+  | 'grading-audit-unsettled'
+  | 'no-critique-channel'
+  | 'stale-revision';
+
+/** One considered meta-rubric card, and the verdict the vetting read reached on it. */
+export interface AcceptanceRubricVettingCandidate {
+  /** The meta-rubric scorecard's engineer_issue id — the drill-back key. */
+  issueId: string;
+  createdAt: string;
+  /** Which check dropped it; null when this card IS a settled, current attestation. */
+  rejectedBy: AcceptanceRubricVettingRejection | null;
+  /** What that check actually observed on THIS card, in the reader's own terms. */
+  detail: string;
+  attestedRevision: number | null;
+  attestedCriteriaHash: string | null;
+}
+
 export interface AcceptanceRubricVettingStatus {
   /** Whether this rubric must carry a current meta-rubric attestation. */
   required: boolean;
@@ -32,7 +61,11 @@ export interface AcceptanceRubricVettingStatus {
     | 'meta-rubric'
     | 'gate-disabled'
     | 'meta-rubric-missing'
+    /** No meta-rubric card exists for this rubric at all — nobody has attested it. */
     | 'missing-attestation'
+    /** Cards exist but every one failed a check before currentness; see `candidates`. */
+    | 'rejected-attestation'
+    /** A complete, linked, audited attestation exists but not for the current revision. */
     | 'stale-attestation'
     | 'current';
   gateEnabled: boolean;
@@ -47,6 +80,17 @@ export interface AcceptanceRubricVettingStatus {
   /** WI-41477: the review work-item channel — set when the attestation's critique
    *  was recorded as work-item comments instead of a consult. */
   workItemId: string | null;
+  /**
+   * Every meta-rubric card considered, newest first, each with the check that
+   * dropped it.  This is what makes an `unvetted` verdict actionable: the
+   * top-level `reason` is a class, `candidates` is the evidence.
+   */
+  candidates: AcceptanceRubricVettingCandidate[];
+  /**
+   * A bounded one-line rendering of the rejected candidates, ready to splice
+   * into a teaching error.  Null when no card was rejected.
+   */
+  diagnosis: string | null;
   vettedUnderWaiver?: { consultId: string; reason?: string };
 }
 
@@ -80,7 +124,86 @@ function notRequired(
     attestationIssueId: null,
     consultId: null,
     workItemId: null,
+    candidates: [],
+    diagnosis: null,
   };
+}
+
+/** Render a revision/criteria-hash pair the way a reader can compare two of them. */
+function describeIdentity(revision: number | null | undefined, criteriaHash: string | null | undefined): string {
+  const rev = revision == null ? 'revision (unrecorded)' : `revision ${revision}`;
+  return criteriaHash ? `${rev} / criteria ${criteriaHash.slice(0, 12)}` : rev;
+}
+
+/**
+ * Decide, for ONE meta-rubric card, whether it is a settled current attestation —
+ * and when it is not, which check rejected it and what that check saw.
+ *
+ * The check order here IS the policy order the vetting read applies, and it
+ * matters: `missingKeys` is only meaningful once `rubricResolved` is true, so an
+ * unresolved rubric must be reported as such rather than as complete ratings.
+ */
+function classifyVettingCandidate(
+  card: ScorecardRow,
+  live: { revision: number | null; criteriaHash?: string | null },
+): { rejectedBy: AcceptanceRubricVettingRejection | null; detail: string } {
+  if (!card.rubricResolved) {
+    return {
+      rejectedBy: 'rubric-unresolved',
+      detail: `rubricRef '${card.rubricRef}' did not resolve, so this card's completeness cannot be judged`,
+    };
+  }
+  if (card.missingKeys.length > 0) {
+    const n = card.missingKeys.length;
+    return {
+      rejectedBy: 'incomplete-ratings',
+      detail: `rates no value for ${n} meta criteri${n === 1 ? 'on' : 'a'}: ${card.missingKeys.join(', ')}`,
+    };
+  }
+  if (card.synthesized) {
+    return { rejectedBy: 'synthesized', detail: 'synthesized floor card, never an emitted attestation' };
+  }
+  if (!settledGradingAuditIsCurrent(card)) {
+    const audit = card.gradingAudit;
+    const currentness = card.gradingAuditCurrentness;
+    const detail =
+      audit && audit.state !== 'passed'
+        ? `grade-the-grader audit is '${audit.state}' — only an audited pass settles an attestation`
+        : `grade-the-grader stamp is ${currentness?.state ?? 'unreadable'}` +
+          (currentness?.reason ? ` (${currentness.reason})` : '');
+    return { rejectedBy: 'grading-audit-unsettled', detail };
+  }
+  if (!card.vetting?.consultId && !card.vetting?.workItemId) {
+    return {
+      rejectedBy: 'no-critique-channel',
+      detail: 'no vetting linkage recorded — neither a get_feedback consult nor a review work-item',
+    };
+  }
+  const currentness = classifyRubricEvidenceCurrentness(
+    { revision: card.vetting?.rubricRevision, criteriaHash: card.vetting?.criteriaHash },
+    { revision: live.revision, criteriaHash: live.criteriaHash },
+  );
+  if (currentness.state !== 'current') {
+    return {
+      rejectedBy: 'stale-revision',
+      detail:
+        `attested ${describeIdentity(card.vetting?.rubricRevision, card.vetting?.criteriaHash)}, ` +
+        `rubric is now at ${describeIdentity(live.revision, live.criteriaHash)} (${currentness.reason})`,
+    };
+  }
+  return { rejectedBy: null, detail: 'settled attestation for the current revision' };
+}
+
+/** Bounded one-liner naming WHICH card failed WHICH check — safe to splice into an error. */
+function summarizeRejections(candidates: AcceptanceRubricVettingCandidate[], show = 5): string | null {
+  const rejected = candidates.filter((c) => c.rejectedBy !== null);
+  if (rejected.length === 0) return null;
+  const shown = rejected
+    .slice(0, show)
+    .map((c) => `${c.issueId} → ${c.rejectedBy}: ${c.detail}`)
+    .join('; ');
+  const omitted = rejected.length - Math.min(rejected.length, show);
+  return omitted > 0 ? `${shown}; +${omitted} more rejected card(s)` : shown;
 }
 
 /**
