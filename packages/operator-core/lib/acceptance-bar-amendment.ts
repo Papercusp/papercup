@@ -213,9 +213,29 @@ export async function resolveAcceptanceBarApproval(
   const parsed = acceptanceBarApprovalSchema.safeParse(body);
   if (!parsed.success) throw new Error('acceptance_bar_approval_invalid_receipt');
   const receipt = parsed.data;
-  if (receipt.rubricRef !== args.expected.rubricRef || receipt.subjectPlan !== args.expected.subjectPlan ||
-      args.expected.bars.some((expected) => !receipt.bars.some((bar) =>
-        bar.barKey === expected.barKey && bar.priorBarHash === expected.priorBarHash && bar.nextBarHash === expected.nextBarHash))) {
+  if (receipt.rubricRef !== args.expected.rubricRef || receipt.subjectPlan !== args.expected.subjectPlan) {
+    throw new Error('acceptance_bar_approval_stale_or_mismatched');
+  }
+  // R-5 (acceptance-machinery-seam-fixes-2026-09-16): NOT COVERED and STALE are
+  // different failures with different repairs, so they no longer share a code. A
+  // bar the amendment applies that the receipt never names was not reviewed at
+  // all — re-posting the same preview cannot fix that, which is exactly what a
+  // `_stale_or_mismatched` reading invites the caller to try. Name the uncovered
+  // bars so the reviewer is asked about the part of the delta they never saw.
+  const receiptBarKeys = new Set(receipt.bars.map((bar) => bar.barKey));
+  const uncovered = args.expected.bars
+    .filter((expected) => !receiptBarKeys.has(expected.barKey))
+    .map((expected) => expected.barKey);
+  if (uncovered.length > 0) {
+    throw new Error(
+      `acceptance_bar_approval_incomplete: the applied amendment changes ${uncovered.join(', ')}, ` +
+        `which the approval does not cover — have the reviewer approve the full preview delta`,
+    );
+  }
+  if (
+    args.expected.bars.some((expected) => !receipt.bars.some((bar) =>
+      bar.barKey === expected.barKey && bar.priorBarHash === expected.priorBarHash && bar.nextBarHash === expected.nextBarHash))
+  ) {
     throw new Error('acceptance_bar_approval_stale_or_mismatched');
   }
   if (args.approvedBy && args.approvedBy.trim() !== post.author_id) {

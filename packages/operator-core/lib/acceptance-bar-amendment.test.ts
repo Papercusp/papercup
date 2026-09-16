@@ -453,3 +453,80 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
     await expect(resolve(wrongSchema)).rejects.not.toThrow(/unparseable/);
   });
 });
+
+describe('approval covers the full amendment delta (R-5)', () => {
+  const PRIOR = 'a'.repeat(64);
+  const NEXT = 'b'.repeat(64);
+
+  function sqlReturning(body: string) {
+    return (() =>
+      Promise.resolve([
+        { author_id: 'su-reviewer', body, approved_at: '2026-09-07T00:00:00.000Z' },
+      ])) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+  }
+
+  const bar = (barKey: string, priorBarHash: string | null, nextBarHash: string | null) => ({
+    barKey,
+    priorBarHash,
+    nextBarHash,
+  });
+
+  const resolve = (
+    receiptBars: Array<ReturnType<typeof bar>>,
+    appliedBars: Array<ReturnType<typeof bar>>,
+  ) =>
+    resolveAcceptanceBarApproval(
+      sqlReturning(
+        JSON.stringify({
+          schemaVersion: 1,
+          kind: 'acceptance-bar-amendment-approval',
+          rubricRef: 'acceptance-plan',
+          subjectPlan: 'plan',
+          bars: receiptBars,
+        }),
+      ),
+      {
+        workspaceId: 'papercusp-workspace',
+        approvalRef: 'thread-post:123',
+        expected: {
+          schemaVersion: 1,
+          kind: 'acceptance-bar-amendment-approval',
+          rubricRef: 'acceptance-plan',
+          subjectPlan: 'plan',
+          bars: appliedBars,
+        },
+      },
+    );
+
+  // The R-5 case: the reviewer approved R-1, and the amendment ALSO changes R-2.
+  // R-2 was never reviewed, so this must not read as "your approval went stale".
+  it('refuses _incomplete, naming every applied bar the approval never covers', async () => {
+    const applied = [bar('R-1', PRIOR, NEXT), bar('R-2', PRIOR, NEXT), bar('R-9', null, NEXT)];
+    await expect(resolve([bar('R-1', PRIOR, NEXT)], applied)).rejects.toThrow(
+      /acceptance_bar_approval_incomplete/,
+    );
+    const err = await resolve([bar('R-1', PRIOR, NEXT)], applied).catch((e: Error) => e.message);
+    expect(err).toContain('R-2');
+    expect(err).toContain('R-9');
+    // Naming the uncovered bars is the whole point — a code with no bar keys sends
+    // the caller back to re-approve the same preview instead of the missing half.
+    expect(err).not.toContain('R-1');
+  });
+
+  // The split is only real if the OTHER failure keeps its own code: a bar that IS
+  // covered but whose hashes moved is stale, not uncovered, and its repair differs.
+  it('keeps _stale_or_mismatched when the bar IS covered but its hashes moved', async () => {
+    const stale = await resolve(
+      [bar('R-1', PRIOR, 'c'.repeat(64))],
+      [bar('R-1', PRIOR, NEXT)],
+    ).catch((e: Error) => e.message);
+    expect(stale).toMatch(/acceptance_bar_approval_stale_or_mismatched/);
+    expect(stale).not.toMatch(/incomplete/);
+  });
+
+  it('accepts a receipt that covers every applied bar, and tolerates extra approved bars', async () => {
+    await expect(
+      resolve([bar('R-1', PRIOR, NEXT), bar('R-2', PRIOR, NEXT)], [bar('R-1', PRIOR, NEXT)]),
+    ).resolves.toMatchObject({ approvedBy: 'su-reviewer' });
+  });
+});
