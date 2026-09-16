@@ -644,17 +644,31 @@ export function buildGoogleGmailRawMessage(input: GoogleGmailOutboundInput): Goo
   return { raw: Buffer.from(headers.join('\r\n'), 'utf8').toString('base64url'), to, subject, threadId };
 }
 
-/** Create one RFC 2822 draft reply; this seam never sends the message. */
+/**
+ * Create one RFC 2822 draft; this seam never sends the message.
+ *
+ * Reply-shaped when `threadId`/`inReplyTo` are present, create-shaped when they
+ * are not — the same two shapes `sendGoogleGmailMessage` already shares, so a
+ * draft and a send of the same message are assembled identically and cannot
+ * drift apart. The reply shape keeps its thread assertions: the caller asked
+ * for a specific thread, so Gmail answering with a DIFFERENT one is a silent
+ * mis-threading and stays an error. A create-shaped draft has no requested
+ * thread to compare against — Gmail mints one — so there is nothing to assert
+ * and asserting anyway is what made this seam reply-only.
+ *
+ * D-020: like the send seam, this performs NEITHER addressee rail. A caller
+ * reaching it must already have resolved the destination from a stored
+ * canonical object (rail 1) or cleared assertTrustedAddressee (rail 2).
+ */
 export async function createGoogleGmailDraft(
   accessToken: string,
-  input: GoogleGmailDraftInput,
+  input: GoogleGmailOutboundInput,
   provided: Pick<GoogleGmailDeps, 'fetch' | 'apiOrigin'> = {},
 ): Promise<GoogleGmailDraftResult> {
   const token = accessToken.trim();
   if (!token) throw new Error('google_gmail_access_token_required');
   const encoded = buildGoogleGmailRawMessage(input);
   const threadId = encoded.threadId;
-  if (!threadId) throw new Error('google_gmail_draft_thread_id_invalid');
   const raw = encoded.raw;
   const body = await gmailRequest<{
     id?: string;
@@ -667,14 +681,14 @@ export async function createGoogleGmailDraft(
     'draft_create',
     {
       method: 'POST',
-      body: { message: { raw, threadId } },
+      body: { message: threadId ? { raw, threadId } : { raw } },
     },
   );
   const draftId = nonEmpty(body.id);
   const messageId = nonEmpty(body.message?.id);
   const createdThreadId = nonEmpty(body.message?.threadId);
   if (!draftId || !messageId || !createdThreadId) throw new Error('google_gmail_draft_response_invalid');
-  if (createdThreadId !== threadId) throw new Error('google_gmail_draft_thread_mismatch');
+  if (threadId && createdThreadId !== threadId) throw new Error('google_gmail_draft_thread_mismatch');
   return { draftId, messageId, threadId: createdThreadId };
 }
 
