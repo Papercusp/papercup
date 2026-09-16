@@ -245,6 +245,22 @@ export async function sendNewMail(
     subject: string;
     text: string;
     provenance: AddresseeProvenance;
+    /**
+     * Local files to attach, by absolute path — read here rather than by the
+     * caller, so the message either carries every declared file or fails
+     * loudly. Identical contract to `draftNewMail`'s, deliberately: until
+     * WI-10001671 this parameter existed ONLY on the draft, so the two verbs
+     * disagreed about whether attaching was possible at all even though both
+     * funnel into the same `buildGoogleGmailRawMessage` encoder, which has
+     * emitted `multipart/mixed` for either one since it was written.
+     *
+     * That asymmetry is invisible from the tool description and cost a real
+     * mistake: 20 job applications were nearly sent through `mail:send`, which
+     * would have silently dropped the resume the whole task was about. A
+     * capability the transport already has, withheld by one signature, reads
+     * to a caller as a capability the system lacks.
+     */
+    attachments?: readonly { path: string }[];
   },
   deps: MailDeps = {},
 ): Promise<MailSendResult> {
@@ -252,6 +268,11 @@ export async function sendNewMail(
   const text = params.text.trim();
   if (!subject) throw new Error('mail_send_subject_required');
   if (!text || text.length > 100_000) throw new Error('mail_send_text_invalid');
+
+  // Read BEFORE the addressee rail and before any token work: an unreadable or
+  // empty file must fail while the message is still un-sent, never after the
+  // recipients have been cleared and a send is one call away.
+  const attachments = await readMailAttachments(params.attachments, deps);
 
   const recipients = await assertTrustedAddressees(sql, {
     workspaceId: params.workspaceId,
@@ -272,6 +293,7 @@ export async function sendNewMail(
     cc: params.cc?.map((value) => cleared.get(value.trim().toLowerCase())?.address ?? value.trim()),
     subject,
     text,
+    ...(attachments.length ? { attachments } : {}),
   };
   const sent = await (deps.sendMessage ?? sendGoogleGmailMessage)(token, outbound, {
     fetch: deps.fetch,
