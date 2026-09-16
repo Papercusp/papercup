@@ -250,10 +250,14 @@ describe('Google Calendar write contract', () => {
     const [request, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
     expect(request.pathname).toBe('/calendar/v3/calendars/team%2Fcalendar/events');
     expect(request.searchParams.get('sendUpdates')).toBe('all');
-    expect(init).toMatchObject({
-      method: 'POST',
-      headers: expect.objectContaining({ authorization: 'Bearer access-token' }),
-    });
+    expect(init.method).toBe('POST');
+    // gaxios normalizes headers into a Headers instance, so own-enumerable key
+    // matching no longer sees them. Reading the value is STRONGER than the
+    // objectContaining this replaces: it asserts the exact token, and a missing
+    // header yields null and fails rather than silently matching nothing.
+    expect(new Headers(init.headers as HeadersInit).get('authorization')).toBe(
+      'Bearer access-token',
+    );
     expect(JSON.parse(String(init.body))).toEqual({
       summary: 'Design review',
       description: 'Review the trigger contract',
@@ -307,10 +311,10 @@ describe('Google Calendar write contract', () => {
     const [request, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
     expect(request.pathname).toBe('/calendar/v3/calendars/team%2Fcalendar/events/event%2F1');
     expect(request.searchParams.get('sendUpdates')).toBe('all');
-    expect(init).toMatchObject({
-      method: 'DELETE',
-      headers: expect.objectContaining({ authorization: 'Bearer access-token' }),
-    });
+    expect(init.method).toBe('DELETE');
+    expect(new Headers(init.headers as HeadersInit).get('authorization')).toBe(
+      'Bearer access-token',
+    );
     expect(result).toEqual({ id: 'event/1', deleted: true });
   });
 
@@ -334,5 +338,115 @@ describe('Google Calendar write contract', () => {
       'google_calendar_event_id_required',
     );
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('calendar transport retry policy', () => {
+  // The policy is a CORRECTNESS decision, not an inherited default. Every write
+  // here carries sendUpdates=all, so a replayed write does not just duplicate
+  // state — it re-emails real attendees. These pin the policy so a later
+  // "simplify the retry config" cannot quietly reintroduce that.
+  //
+  // Read the 429 case FIRST: it is the calibration control. Without it, every
+  // "not retried" assertion below would pass just as cleanly if retrying were
+  // broken or disabled outright, which is the exact reading a dead transport
+  // produces.
+
+  function countingFetch(respond: () => Response) {
+    let attempts = 0;
+    const impl = (async () => {
+      attempts += 1;
+      return respond();
+    }) as unknown as typeof fetch;
+    return { impl, attempts: () => attempts };
+  }
+
+  const writeInput = {
+    calendarId: 'primary',
+    summary: 'Design review',
+    start: '2026-08-24T14:00:00.000Z',
+    end: '2026-08-24T14:30:00.000Z',
+  };
+
+  it('CALIBRATION: retries a POST on 429, proving retry is live rather than dead', async () => {
+    const { impl, attempts } = countingFetch(() => json({ error: { message: 'rate' } }, 429));
+
+    await expect(
+      createGoogleCalendarEvent('access-token', writeInput, {
+        fetch: impl,
+        apiOrigin: 'https://calendar.test',
+      }),
+    ).rejects.toThrow(/google_calendar_event_create_429/);
+
+    // A rate-limited request was provably NOT performed, so replaying it is safe.
+    expect(attempts()).toBeGreaterThan(1);
+  });
+
+  it('never retries a POST on 5xx — an ambiguous error must not duplicate an event or re-invite attendees', async () => {
+    const { impl, attempts } = countingFetch(() => json({ error: { message: 'boom' } }, 503));
+
+    await expect(
+      createGoogleCalendarEvent('access-token', writeInput, {
+        fetch: impl,
+        apiOrigin: 'https://calendar.test',
+      }),
+    ).rejects.toThrow(/google_calendar_event_create_503/);
+
+    expect(attempts()).toBe(1);
+  });
+
+  it('never retries a DELETE on 5xx — gaxios retries DELETE by default and this widening is deliberate', async () => {
+    const { impl, attempts } = countingFetch(() => json({ error: { message: 'boom' } }, 503));
+
+    await expect(
+      deleteGoogleCalendarEvent(
+        'access-token',
+        'event-1',
+        {},
+        { fetch: impl, apiOrigin: 'https://calendar.test' },
+      ),
+    ).rejects.toThrow(/google_calendar_event_delete_503/);
+
+    // A replayed DELETE re-sends the cancellation notice to every attendee.
+    expect(attempts()).toBe(1);
+  });
+
+  it('never retries a PATCH on 5xx — a replayed update re-sends the change notice', async () => {
+    const { impl, attempts } = countingFetch(() => json({ error: { message: 'boom' } }, 503));
+
+    await expect(
+      updateGoogleCalendarEvent(
+        'access-token',
+        'event-1',
+        { summary: 'Updated' },
+        { fetch: impl, apiOrigin: 'https://calendar.test' },
+      ),
+    ).rejects.toThrow(/google_calendar_event_update_503/);
+
+    expect(attempts()).toBe(1);
+  });
+
+  it('DOES retry a read on 5xx — a GET has no side effect to duplicate', async () => {
+    const { impl, attempts } = countingFetch(() => json({ error: { message: 'boom' } }, 503));
+
+    await expect(
+      syncGoogleCalendarSource(
+        {} as never,
+        source({ syncToken: 'sync-old' }),
+        'access-token',
+        {},
+        {
+          fetch: impl,
+          apiOrigin: 'https://calendar.test',
+          now: () => NOW,
+          ingest: (async () => ({ eventId: 'e', delivered: false })) as never,
+          updateSource: (async () => undefined) as never,
+          createPersonalSink: (async () => ({}) as never) as never,
+          createAppSink: (async () => null) as never,
+        },
+      ),
+    ).rejects.toThrow(/google_calendar_.*_503/);
+
+    expect(attempts()).toBeGreaterThan(1);
   });
 });

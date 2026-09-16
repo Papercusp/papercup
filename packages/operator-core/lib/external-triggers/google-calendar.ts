@@ -41,46 +41,21 @@ const DEFAULT_LEAD_MINUTES = 15;
 const MAX_LEAD_MINUTES = 24 * 60;
 const MAX_PAGES = 10_000;
 
-interface GoogleCalendarDate {
-  date?: string;
-  dateTime?: string;
-  timeZone?: string;
-}
-
-interface GoogleCalendarPerson {
-  email?: string;
-  displayName?: string;
-  self?: boolean;
-  responseStatus?: string;
-}
-
-export interface GoogleCalendarEvent {
-  id?: string;
-  etag?: string;
-  status?: string;
-  htmlLink?: string;
-  created?: string;
-  updated?: string;
-  summary?: string;
-  description?: string;
-  location?: string;
-  organizer?: GoogleCalendarPerson;
-  attendees?: GoogleCalendarPerson[];
-  start?: GoogleCalendarDate;
-  end?: GoogleCalendarDate;
-  recurringEventId?: string;
-  originalStartTime?: GoogleCalendarDate;
-  sequence?: number;
-  attachments?: Array<Record<string, unknown>>;
-  conferenceData?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-interface GoogleCalendarListResponse {
-  items?: GoogleCalendarEvent[];
-  nextPageToken?: string;
-  nextSyncToken?: string;
-}
+/**
+ * Wire shapes come from @googleapis/calendar rather than being hand-written, so
+ * a field Google adds, re-types, or makes nullable cannot silently drift out of
+ * this file. These are ALIASES, not renames: every call site below keeps the
+ * name it already used, which is what keeps the blast radius at zero.
+ *
+ * The published types are WIDER than the hand-written ones they replace —
+ * `status`/`summary`/`htmlLink` are `string | null`, not `string | undefined`.
+ * That is the point: `nonEmpty()` already took `unknown` and rejected null on
+ * its first branch, so the runtime was always correct and only the signature
+ * was narrower than the behaviour it described.
+ */
+type GoogleCalendarDate = calendar_v3.Schema$EventDateTime;
+export type GoogleCalendarEvent = calendar_v3.Schema$Event;
+type GoogleCalendarListResponse = calendar_v3.Schema$Events;
 
 export interface GoogleCalendarSyncResult {
   mode: 'full' | 'incremental';
@@ -214,23 +189,91 @@ function createdAfter(event: GoogleCalendarEvent, lastSyncAt: number | null): bo
   return Number.isFinite(created) && created > lastSyncAt;
 }
 
-async function parseResponse(response: Response, operation: string): Promise<GoogleCalendarListResponse> {
-  const text = await response.text();
-  let body: unknown = {};
-  if (text) {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = { error: { message: text.slice(0, 500) } };
-    }
+const CALENDAR_MAX_RETRIES = 3;
+
+/**
+ * Every write in this file carries `sendUpdates=all`, so it emails real people.
+ *
+ * gaxios ships retrying GET/HEAD/PUT/OPTIONS/DELETE on 408/429/5xx and
+ * deliberately NOT retrying POST. We keep that POST exclusion and WIDEN it to
+ * every mutating method, because a 5xx on any of them is AMBIGUOUS — the write
+ * may already have happened. A replayed POST duplicates a real calendar event
+ * AND re-invites every attendee; a replayed PATCH re-sends the update notice;
+ * a replayed DELETE re-sends the cancellation. None may be retried on a 5xx.
+ *
+ * 429 is the exception in the other direction: rate-limited means the request
+ * was provably NOT performed, so it is safe to replay for every method.
+ *
+ * Supplying `shouldRetry` REPLACES gaxios' own predicate, so this states the
+ * whole policy rather than delegating half of it.
+ */
+const CALENDAR_UNSAFE_TO_REPLAY = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+
+function shouldRetryCalendar(err: GaxiosError): boolean {
+  const attempt = err.config?.retryConfig?.currentRetryAttempt ?? 0;
+  if (attempt >= CALENDAR_MAX_RETRIES) return false;
+  const method = (err.config?.method ?? 'GET').toUpperCase();
+  const mutating = CALENDAR_UNSAFE_TO_REPLAY.has(method);
+  const status = err.response?.status;
+  if (status === undefined) {
+    // No response at all (socket/DNS): the server may still have acted on a
+    // mutating request, so only replay methods that are safe to repeat.
+    return !mutating && attempt < 2;
   }
-  if (!response.ok) {
-    const detail = body && typeof body === 'object'
-      ? nonEmpty((body as { error?: { message?: unknown } }).error?.message)
-      : null;
-    throw new GoogleCalendarApiError(response.status, operation, detail ?? undefined);
+  if (mutating) return status === 429;
+  return status === 408 || status === 429 || (status >= 100 && status <= 199) || (status >= 500 && status <= 599);
+}
+
+function toGoogleCalendarApiError(err: unknown, operation: string): Error {
+  const gaxios = err as Partial<GaxiosError> & { status?: number };
+  const status = gaxios?.response?.status ?? gaxios?.status;
+  if (typeof status !== 'number') return err instanceof Error ? err : new Error(String(err));
+  const data = gaxios?.response?.data as { error?: { message?: unknown } } | string | undefined;
+  const detail =
+    typeof data === 'string'
+      ? nonEmpty(data.slice(0, 500))
+      : nonEmpty((data as { error?: { message?: unknown } } | undefined)?.error?.message);
+  return new GoogleCalendarApiError(status, operation, detail ?? undefined);
+}
+
+/**
+ * The single transport choke point. Before this, three call sites each ran
+ * their own `fetchImpl(...)` plus response parsing, so a retry policy could
+ * only ever cover whichever site remembered to implement it. Routing all three
+ * through one function is what makes the policy above apply to every calendar
+ * request — the same shape google-gmail.ts already uses.
+ *
+ * `fetchImpl` stays the injection seam: gaxios calls `fetchImplementation` as
+ * (URL, init), exactly the shape the hand-rolled layer used, so every existing
+ * test that passes a mock `fetch` keeps working untouched.
+ */
+async function calendarRequest<T>(
+  fetchImpl: typeof fetch,
+  url: URL,
+  accessToken: string,
+  operation: string,
+  input: { method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'; body?: Record<string, unknown> } = {},
+): Promise<T> {
+  const transport = new Gaxios({ fetchImplementation: fetchImpl });
+  try {
+    const response = await transport.request<T>({
+      url: url.toString(),
+      method: (input.method ?? 'GET') as 'GET',
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        accept: 'application/json',
+        ...(input.body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      // Pre-serialized so the wire body stays a JSON string, byte-identical to
+      // what the hand-rolled encoder sent.
+      body: input.body === undefined ? undefined : JSON.stringify(input.body),
+      retryConfig: { retry: CALENDAR_MAX_RETRIES, shouldRetry: shouldRetryCalendar },
+      errorRedactor: false,
+    });
+    return response.data as T;
+  } catch (err) {
+    throw toGoogleCalendarApiError(err, operation);
   }
-  return body as GoogleCalendarListResponse;
 }
 
 async function listPage(
@@ -246,13 +289,7 @@ async function listPage(
     apiOrigin,
   );
   url.search = params.toString();
-  const response = await fetchImpl(url, {
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      accept: 'application/json',
-    },
-  });
-  return parseResponse(response, operation);
+  return calendarRequest<GoogleCalendarListResponse>(fetchImpl, url, accessToken, operation);
 }
 
 export interface GoogleCalendarWriteInput {
@@ -309,16 +346,10 @@ async function calendarWrite(
   const url = new URL(path, apiOrigin);
   // Google only emails invitations when explicitly asked to.
   url.searchParams.set('sendUpdates', 'all');
-  const response = await fetchImpl(url, {
+  return calendarRequest<GoogleCalendarEvent>(fetchImpl, url, accessToken, operation, {
     method,
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      accept: 'application/json',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify(body),
+    body,
   });
-  return (await parseResponse(response, operation)) as unknown as GoogleCalendarEvent;
 }
 
 function writeResult(event: GoogleCalendarEvent): GoogleCalendarWriteResult {
@@ -411,14 +442,12 @@ export async function deleteGoogleCalendarEvent(
     (provided.apiOrigin ?? GOOGLE_CALENDAR_API_ORIGIN).replace(/\/$/, ''),
   );
   url.searchParams.set('sendUpdates', 'all');
-  const response = await (provided.fetch ?? fetch)(url, {
+  // Google returns an empty 204 here; the choke point throws a
+  // GoogleCalendarApiError on any non-2xx, which is the same failure the
+  // hand-rolled `if (!response.ok)` branch produced.
+  await calendarRequest<unknown>(provided.fetch ?? fetch, url, token, 'event_delete', {
     method: 'DELETE',
-    headers: {
-      authorization: `Bearer ${token}`,
-      accept: 'application/json',
-    },
   });
-  if (!response.ok) await parseResponse(response, 'event_delete');
   return { id, deleted: true };
 }
 
