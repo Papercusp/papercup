@@ -558,6 +558,131 @@ function submoduleFor(p: string, subs: readonly string[]): string | null {
 }
 
 /**
+ * Which submodules could a SUBMODULE-RELATIVE path belong to?
+ *
+ * ⚠ THE UNQUALIFIED-PATH TRAP (EI-23433375151859491), the submodule trap's other half.
+ * `submoduleFor` above matches a SUPERPROJECT-relative path by prefix. But a failing path
+ * arrives from `harness_shared.test_runs.file_path` exactly as the runner recorded it, and a
+ * suite that ran INSIDE a submodule records it relative to THAT submodule —
+ * `src/dispatch-projected.test.ts`, never `libs/generic/tooldef/src/dispatch-projected.test.ts`.
+ * Such a path matches no prefix, so it fell through to the superproject `ls-tree` batch, where
+ * a submodule-internal path can never resolve: both blobs came back null and the row degraded
+ * to UNMEASURABLE.
+ *
+ * That degradation is SILENT and DIRECTIONAL. An unmeasurable row is indistinguishable from an
+ * unfixed one, so the convergence read UNDER-reports how converged a frozen queue is — which
+ * invites the two worst responses to a red gate: re-fixing a file whose fix already landed, or
+ * retiring a queue that was about to go green. Measured 2026-09-16 on candidate 152598ba4515 /
+ * repairHead c1c1807bc78d: the row read "says nothing either way" when the true answer was
+ * FIXED (blobs 8a1dd5928fe6 vs 7bbb58297abf inside `libs/generic/tooldef`).
+ *
+ * Working-tree existence NOMINATES candidates; it never ANSWERS. The verdict is still measured
+ * in git against the commit each ref PINS. Ambiguity is reported rather than guessed through:
+ * 35 of this repo's 38 submodules have a `src/` directory, so a bare `src/...` path genuinely
+ * can belong to more than one, and taking the first would put a confident wrong answer exactly
+ * where an honest unknown belongs.
+ */
+export function submoduleRelativeCandidates(root: string, p: string, subs: readonly string[]): string[] {
+  // A path that is absolute, empty, or climbs out of the tree is not submodule-relative.
+  if (!p || p.startsWith('/') || p.split('/').includes('..')) return [];
+  return subs.filter((s) => existsSync(join(root, s, p)));
+}
+
+/**
+ * Compare one path's blob INSIDE a submodule, at the commit each ref pins for that submodule.
+ *
+ * This is the measurement the superproject cannot make. `git rev-parse <ref>:<sub>` yields the
+ * GITLINK — the submodule commit that ref pins — and the blob compare then runs in the
+ * submodule's own object store. Strictly better evidence than the gitlink-MOVE proxy the
+ * qualified-path branch uses: a move says only "something inside this submodule changed",
+ * while this says whether THIS FILE changed, and returns two blob ids as evidence rather than
+ * a pair of nulls. Fail-soft in both legs: an unreadable pin yields null, never a throw, and
+ * null stays UNKNOWN rather than collapsing to "unchanged".
+ */
+async function blobsInsideSubmodule(
+  git: GitRunner,
+  root: string,
+  sub: string,
+  relPath: string,
+  candidateSha: string,
+  repairHeadSha: string,
+): Promise<{ candidate: string | null; repairHead: string | null }> {
+  const [candPin, headPin] = await Promise.all([
+    git(root, ['rev-parse', '--verify', '--quiet', `${candidateSha}:${sub}`]),
+    git(root, ['rev-parse', '--verify', '--quiet', `${repairHeadSha}:${sub}`]),
+  ]);
+  const subRoot = join(root, sub);
+  const [candidate, repairHead] = await Promise.all([
+    candPin === null
+      ? Promise.resolve(null)
+      : git(subRoot, ['rev-parse', '--verify', '--quiet', `${candPin}:${relPath}`]),
+    headPin === null
+      ? Promise.resolve(null)
+      : git(subRoot, ['rev-parse', '--verify', '--quiet', `${headPin}:${relPath}`]),
+  ]);
+  return { candidate, repairHead };
+}
+
+/**
+ * Last resort for a path the superproject could not resolve: read it as submodule-relative.
+ *
+ * Returns `null` when the path is nothing to do with a submodule, so the caller keeps its
+ * existing UNMEASURABLE answer untouched. Only ever reached AFTER the batched superproject
+ * compare has already failed, so the hot path pays nothing for it — which matters here: the
+ * live bg-host profile once caught this loop spending 62.1% of sampled CPU in native spawn
+ * (EI-22737582656157929), and nomination is `existsSync`, not a subprocess.
+ */
+async function submoduleRelativeComparison(
+  git: GitRunner,
+  root: string,
+  path: string,
+  subs: readonly string[],
+  candidateSha: string,
+  repairHeadSha: string,
+): Promise<Pick<
+  GateCandidateFailingFile,
+  'fixInRepairHead' | 'comparison' | 'candidateBlob' | 'repairHeadBlob' | 'reading'
+> | null> {
+  const candidates = submoduleRelativeCandidates(root, path, subs);
+  if (candidates.length === 0) return null;
+  if (candidates.length > 1) {
+    const shown = candidates.slice(0, 4).join(', ') + (candidates.length > 4 ? ', …' : '');
+    return {
+      fixInRepairHead: null,
+      comparison: `ambiguous submodule-relative path — '${path}' exists in ${candidates.length} submodules (${shown})`,
+      candidateBlob: null,
+      repairHeadBlob: null,
+      reading:
+        `UNMEASURABLE — '${path}' does not resolve in the superproject and is present in ${candidates.length} ` +
+        `submodules (${shown}), so which one this red belongs to is genuinely undetermined. Re-run the failing leg ` +
+        `for a repo-qualified path, or compare by hand inside the intended submodule. This is NOT a claim that ` +
+        `nothing landed.`,
+    };
+  }
+  const sub = candidates[0]!;
+  const { candidate, repairHead } = await blobsInsideSubmodule(git, root, sub, path, candidateSha, repairHeadSha);
+  const fixInRepairHead = candidate === null || repairHead === null ? null : candidate !== repairHead;
+  return {
+    fixInRepairHead,
+    comparison:
+      `git object ids inside ${sub}, at the submodule commits ${candidateSha.slice(0, 12)} and ` +
+      `${repairHeadSha.slice(0, 12)} pin, for ${sub}/${path} (path was recorded submodule-relative)`,
+    candidateBlob: candidate,
+    repairHeadBlob: repairHead,
+    reading:
+      fixInRepairHead === null
+        ? `UNMEASURABLE — '${path}' resolved to ${sub}/${path}, but one of the two pinned blobs did not read; ` +
+          `this says nothing either way.`
+        : fixInRepairHead
+          ? `FIXED AT repairHead, awaiting re-verification — ${sub}/${path} changed inside the ${sub} submodule ` +
+            `after the candidate was cut. Do NOT re-fix it.`
+          : `The file ${sub}/${path} is UNCHANGED between the two commits the refs pin for ${sub}, so no fix has ` +
+            `landed in THIS file. A fix riding a non-test file inside the submodule would not show here — check ` +
+            `the submodule's own diff between those pins before concluding this is real work.`,
+  };
+}
+
+/**
  * What ELSE moved between the candidate and repairHead.
  *
  * ⚠ THE NON-TEST-CARRIER TRAP — the same wrong-object failure as the submodule case
@@ -717,6 +842,14 @@ async function compareOne(
   // Either blob unresolvable ⇒ UNKNOWN. An absent path and an unresolvable ref look
   // identical here, and neither is evidence about whether a fix landed.
   const fixInRepairHead = a === null || b === null ? null : a !== b;
+  // EI-23433375151859491: a superproject miss is the ONLY signal that the path might have been
+  // recorded submodule-relative, so this is asked here and nowhere earlier — a resolvable path
+  // never reaches it, and the ordinary case pays nothing. Returning `null` from the helper means
+  // "not a submodule path at all", which leaves the UNMEASURABLE answer below exactly as it was.
+  if (fixInRepairHead === null) {
+    const viaSubmodule = await submoduleRelativeComparison(git, root, path, subs, candidateSha, repairHeadSha);
+    if (viaSubmodule) return viaSubmodule;
+  }
   return {
     fixInRepairHead,
     comparison:
