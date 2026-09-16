@@ -10,7 +10,7 @@
  * quota-budgeted chunk per sync (`cursor.backfill`) instead of one whole-mailbox
  * walk that a per-user quota kills and the next poll restarts from zero.
  */
-import { randomUUID } from 'node:crypto';
+import MailComposer from 'nodemailer/lib/mail-composer';
 import type postgres from 'postgres';
 import {
   ingestExternalTriggerEvent,
@@ -653,77 +653,58 @@ export interface GoogleGmailEncodedMessage {
  * lands OUTSIDE the thread — a silent failure, which is why no agent-facing
  * verb is allowed to assemble this itself.
  */
-export function buildGoogleGmailRawMessage(input: GoogleGmailOutboundInput): GoogleGmailEncodedMessage {
+export async function buildGoogleGmailRawMessage(
+  input: GoogleGmailOutboundInput,
+): Promise<GoogleGmailEncodedMessage> {
   const recipients = (Array.isArray(input.to) ? input.to : [input.to])
     .map((value) => String(value ?? '').trim())
     .filter(Boolean);
   if (!recipients.length) throw new Error('google_gmail_to_required');
   const to = safeHeader(recipients.join(', '), 'to', 2_000);
   const cc = (input.cc ?? []).map((value) => String(value ?? '').trim()).filter(Boolean);
+  const ccHeader = cc.length ? safeHeader(cc.join(', '), 'cc', 2_000) : null;
   const subject = safeHeader(input.subject, 'subject', 998);
   const text = input.text.trim();
   if (!text || text.length > 100_000) throw new Error('google_gmail_draft_text_invalid');
   const threadId = input.threadId?.trim() ? safeHeader(input.threadId, 'thread_id', 512) : null;
   const inReplyTo = input.inReplyTo?.trim() ? safeHeader(input.inReplyTo, 'in_reply_to', 998) : null;
-
-  const headers = [`To: ${to}`];
-  if (cc.length) headers.push(`Cc: ${safeHeader(cc.join(', '), 'cc', 2_000)}`);
-  headers.push(`Subject: ${subject}`);
-  if (inReplyTo) {
-    headers.push(`In-Reply-To: ${inReplyTo}`);
-    headers.push(`References: ${replyReferences(input.references, inReplyTo)}`);
-  }
   const attachments = normalizeGmailAttachments(input.attachments);
 
-  if (!attachments.length) {
-    headers.push(
-      'MIME-Version: 1.0',
-      'Content-Type: text/plain; charset=UTF-8',
-      'Content-Transfer-Encoding: 8bit',
-      '',
-      text,
-    );
-    return { raw: Buffer.from(headers.join('\r\n'), 'utf8').toString('base64url'), to, subject, threadId };
-  }
-
-  // A boundary must not occur anywhere in the payload it delimits, or the
-  // message silently truncates at the collision. Derive it from random bytes
-  // and assert absence rather than trusting that a fixed literal is unused.
-  let boundary = '';
-  for (let attempt = 0; attempt < 8 && !boundary; attempt += 1) {
-    const candidate = `papercusp-${randomUUID()}`;
-    const collides =
-      text.includes(candidate) || attachments.some((file) => file.filename.includes(candidate));
-    if (!collides) boundary = candidate;
-  }
-  if (!boundary) throw new Error('google_gmail_draft_boundary_unresolvable');
-
-  headers.push(
-    'MIME-Version: 1.0',
-    `Content-Type: multipart/mixed; boundary="${boundary}"`,
-    '',
-    `--${boundary}`,
-    'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: 8bit',
-    '',
+  // Every rail above still runs HERE, before the encoder sees anything: the
+  // header injection checks, the length caps and the attachment limits are ours
+  // and are not delegated. MailComposer replaces only the ASSEMBLY — boundary
+  // selection, transfer-encoding, header folding and RFC 2047 encoding — which
+  // is exactly the part a hand-rolled encoder gets wrong. Measured against live
+  // Gmail 2026-09-16: the previous builder emitted a non-ASCII `Subject:` as raw
+  // UTF-8 bytes (a spec violation) and declared the body `8bit`; MailComposer
+  // emits `=?UTF-8?Q?…?=` and quoted-printable, and Gmail round-trips it intact.
+  const built = await new MailComposer({
+    to,
+    ...(ccHeader ? { cc: ccHeader } : {}),
+    subject,
     text,
-  );
+    ...(inReplyTo
+      ? { inReplyTo, references: replyReferences(input.references, inReplyTo) }
+      : {}),
+    ...(attachments.length
+      ? {
+          attachments: attachments.map((file) => ({
+            filename: file.filename,
+            contentType: file.contentType,
+            content: file.content,
+          })),
+        }
+      : {}),
+  })
+    .compile()
+    .build();
 
-  for (const file of attachments) {
-    headers.push(
-      `--${boundary}`,
-      `Content-Type: ${file.contentType}; name="${file.filename}"`,
-      'Content-Transfer-Encoding: base64',
-      `Content-Disposition: attachment; filename="${file.filename}"`,
-      '',
-      // RFC 2045 caps an encoded line at 76 chars; Gmail accepts longer lines
-      // but some receiving MTAs reject them, so wrap here rather than hope.
-      file.content.toString('base64').replace(/(.{76})/g, '$1\r\n'),
-    );
-  }
-  headers.push(`--${boundary}--`, '');
-
-  return { raw: Buffer.from(headers.join('\r\n'), 'utf8').toString('base64url'), to, subject, threadId };
+  // MailComposer also stamps `Date` and a `Message-ID`, which the hand-rolled
+  // encoder omitted. Both are DISCARDED by Gmail, which substitutes its own
+  // (`@mail.gmail.com`) plus the account's `From:` — verified against the live
+  // API, not assumed — so there is nothing to suppress and no `@localhost`
+  // Message-ID can reach a recipient.
+  return { raw: built.toString('base64url'), to, subject, threadId };
 }
 
 /** Gmail rejects the whole request past ~35MB base64; cap the raw bytes well under it. */
@@ -781,7 +762,7 @@ export async function createGoogleGmailDraft(
 ): Promise<GoogleGmailDraftResult> {
   const token = accessToken.trim();
   if (!token) throw new Error('google_gmail_access_token_required');
-  const encoded = buildGoogleGmailRawMessage(input);
+  const encoded = await buildGoogleGmailRawMessage(input);
   const threadId = encoded.threadId;
   const raw = encoded.raw;
   const body = await gmailRequest<{
@@ -837,7 +818,7 @@ export async function updateGoogleGmailDraft(
   if (!token) throw new Error('google_gmail_access_token_required');
   const targetDraftId = draftId.trim();
   if (!targetDraftId) throw new Error('google_gmail_draft_id_required');
-  const encoded = buildGoogleGmailRawMessage(input);
+  const encoded = await buildGoogleGmailRawMessage(input);
   const threadId = encoded.threadId;
   const raw = encoded.raw;
   const body = await gmailRequest<{
@@ -1029,7 +1010,7 @@ export async function sendGoogleGmailMessage(
 ): Promise<GoogleGmailSendResult> {
   const token = accessToken.trim();
   if (!token) throw new Error('google_gmail_access_token_required');
-  const encoded = buildGoogleGmailRawMessage(input);
+  const encoded = await buildGoogleGmailRawMessage(input);
   const body = await gmailRequest<{ id?: string; threadId?: string }>(
     provided.fetch ?? fetch,
     (provided.apiOrigin ?? GMAIL_API_ORIGIN).replace(/\/$/, ''),
