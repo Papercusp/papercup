@@ -11,11 +11,14 @@
  * sends successfully while silently breaking the thread. No agent should be
  * asked to hold that knowledge, and no agent is given the chance to.
  */
+import { readFile } from 'node:fs/promises';
+import { basename, extname } from 'node:path';
 import type postgres from 'postgres';
 import {
   createGoogleGmailDraft,
   sendGoogleGmailMessage,
   replySubjectFor,
+  type GoogleGmailAttachment,
   type GoogleGmailOutboundInput,
 } from '../external-triggers/google-gmail';
 import { resolveGoogleWorkspaceAccessToken } from '../external-triggers/google-workspace';
@@ -63,7 +66,57 @@ export type MailDeps = {
   sendMessage?: typeof sendGoogleGmailMessage;
   fetch?: typeof fetch;
   apiOrigin?: string;
+  /** Injected so attachment handling is testable without touching the disk. */
+  readAttachment?: (path: string) => Promise<Buffer>;
 };
+
+/** Extension → MIME. Unknown stays octet-stream rather than guessing wrong. */
+const MAIL_ATTACHMENT_CONTENT_TYPES: Readonly<Record<string, string>> = {
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.csv': 'text/csv',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+
+/**
+ * Read every declared attachment, or throw naming the one that failed.
+ *
+ * Deliberately all-or-nothing: a draft that silently drops a file the caller's
+ * own record says it carries is worse than no draft, because the omission is
+ * invisible in the mail client until the recipient asks where the resume is.
+ */
+async function readMailAttachments(
+  declared: readonly { path: string }[] | undefined,
+  deps: MailDeps,
+): Promise<GoogleGmailAttachment[]> {
+  if (!declared?.length) return [];
+  const read = deps.readAttachment ?? (async (path: string) => readFile(path));
+  const out: GoogleGmailAttachment[] = [];
+  for (const entry of declared) {
+    const path = String(entry?.path ?? '').trim();
+    if (!path) throw new Error('mail_attachment_path_required');
+    let content: Buffer;
+    try {
+      content = await read(path);
+    } catch (cause) {
+      throw new Error(`mail_attachment_unreadable:${basename(path)}`, { cause });
+    }
+    if (!content?.length) throw new Error(`mail_attachment_empty:${basename(path)}`);
+    const filename = basename(path);
+    out.push({
+      filename,
+      contentType: MAIL_ATTACHMENT_CONTENT_TYPES[extname(filename).toLowerCase()] ?? 'application/octet-stream',
+      content,
+    });
+  }
+  return out;
+}
 
 /**
  * D-020 rail 1: derive every reply coordinate from the STORED document.
@@ -253,6 +306,13 @@ export async function draftNewMail(
     provenance: AddresseeProvenance;
     /** Which connected account to draft in; required once more than one is. */
     from?: string | null;
+    /**
+     * Local files to attach, by absolute path. Read here rather than by the
+     * caller so the draft either carries every declared file or fails loudly —
+     * a record that DECLARES an attachment the message never carried is the
+     * failure this exists to prevent.
+     */
+    attachments?: readonly { path: string }[];
   },
   deps: MailDeps = {},
 ): Promise<MailDraftResult> {
@@ -260,6 +320,8 @@ export async function draftNewMail(
   const text = params.text.trim();
   if (!subject) throw new Error('mail_draft_subject_required');
   if (!text || text.length > 100_000) throw new Error('mail_draft_text_invalid');
+
+  const attachments = await readMailAttachments(params.attachments, deps);
 
   const recipients = await assertTrustedAddressees(sql, {
     workspaceId: params.workspaceId,
@@ -281,6 +343,7 @@ export async function draftNewMail(
     cc: params.cc?.map((value) => cleared.get(value.trim().toLowerCase())?.address ?? value.trim()),
     subject,
     text,
+    ...(attachments.length ? { attachments } : {}),
   };
   const draft = await (deps.createDraft ?? createGoogleGmailDraft)(token, outbound, {
     fetch: deps.fetch,

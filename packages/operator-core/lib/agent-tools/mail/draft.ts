@@ -40,6 +40,13 @@ export default defineTool({
         .describe(
           'Which connected account to draft in, by its address. REQUIRED once the owner has connected more than one — a create-shaped draft has no thread to inherit the account from, so with several connected the call is refused rather than guessed, and the refusal names what is connected.',
         ),
+      attachments: z
+        .array(z.object({ path: z.string().trim().min(1).max(4_096) }).strict())
+        .max(10)
+        .optional()
+        .describe(
+          'Local files to attach, by absolute path; the filename the recipient sees is the basename. ALL-OR-NOTHING: an unreadable or empty path fails the whole call rather than drafting a message that silently lacks a file you told the owner it carries. Omit for a body-only draft.',
+        ),
     })
     .strict(),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
@@ -58,6 +65,7 @@ export default defineTool({
         text: args.text,
         provenance: toProvenance(args.addressee),
         from: args.from,
+        attachments: args.attachments,
       });
       return { data: { ok: true, ...result } };
     } catch (error) {
