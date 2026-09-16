@@ -222,6 +222,20 @@ const lagWith = (p99Ms: number, over: Partial<LoopLagSample> = {}): LoopLagSampl
   ...over,
 });
 
+/**
+ * The PRE-FIX probe reduction, kept PERMANENTLY as a control (the repo's prescribed
+ * falsifiability tier for imported module logic — never mutate the shared tree to prove
+ * a guard can fail). Pre-fix, `_lastProbeMs` was the RAW wall-clock, and ANY timeout
+ * forced the critical band:
+ *     _lastProbeMs = timedOut ? Math.max(rawMs, CRITICAL_PROBE_MS) : rawMs
+ * Every case that pairs this with the real subject below states which way they must
+ * DIVERGE (the defect) or AGREE (the calibration proving the control is not simply
+ * broken everywhere — without which the controls would "pass" even if the property
+ * itself were gone).
+ */
+const preFixProbeMs = (rawMs: number, timedOut = false): number =>
+  timedOut ? Math.max(rawMs, CRITICAL_PROBE_MS) : rawMs;
+
 describe('attributableLoopDelayMs (pure — the delay a single probe may be charged)', () => {
   it('is p99 — NOT max (one outlier would zero the pool signal for the whole window)', () => {
     expect(attributableLoopDelayMs(lagWith(2336, { maxMs: 9999 }))).toBe(2336);
@@ -269,6 +283,27 @@ describe('probePoolLatencyMs — loop delay is discounted, pool starvation is no
       () => lagWith(2336),
     );
     expect(ms).toBe(164);
+    expect(classifyPoolPressure(ms)).toBe('ok');
+    // DIVERGENCE — the assertion above is only meaningful because the pre-fix reduction
+    // says 'critical' on this exact input. If a refactor reverts the netting, the real
+    // subject collapses onto this control and the case above fails.
+    expect(classifyPoolPressure(preFixProbeMs(2500))).toBe('critical');
+    expect(classifyPoolPressure(ms)).not.toBe(classifyPoolPressure(preFixProbeMs(2500)));
+  });
+
+  it('CALIBRATION: control and subject AGREE on a genuinely starved pool', async () => {
+    // Without this, every control case would still "pass" with the property removed —
+    // it proves the control tracks the subject except where the defect lives.
+    const ms = await probePoolLatencyMs(fastProbe, clockOf([0, 2500, 2500]), 3000, () =>
+      lagWith(5),
+    );
+    expect(classifyPoolPressure(ms)).toBe(classifyPoolPressure(preFixProbeMs(2500)));
+    expect(classifyPoolPressure(ms)).toBe('critical');
+  });
+
+  it('CALIBRATION: control and subject AGREE on a healthy fast pool', async () => {
+    const ms = await probePoolLatencyMs(fastProbe, clockOf([0, 5, 5]), 3000, () => lagWith(2336));
+    expect(classifyPoolPressure(ms)).toBe(classifyPoolPressure(preFixProbeMs(5)));
     expect(classifyPoolPressure(ms)).toBe('ok');
   });
 
@@ -326,6 +361,12 @@ describe('probePoolLatencyMs — TIMEOUT attribution (pool starvation vs schedul
     const ms = await probePoolLatencyMs(neverSettles, clockOf([0, 100, 100]), 20, () => null);
     expect(ms).toBeGreaterThanOrEqual(CRITICAL_PROBE_MS);
     expect(classifyPoolPressure(ms)).toBe('critical');
+  });
+
+  it('PRE-FIX CONTROL: the old forcing rule fires on the same scheduler artifact', () => {
+    // Calibration for the case below: pre-fix, ANY timeout forced critical regardless of
+    // what the loop was doing, so raw 100ms became ≥ CRITICAL_PROBE_MS.
+    expect(classifyPoolPressure(preFixProbeMs(100, true))).toBe('critical');
   });
 
   it('a timeout the loop delay ACCOUNTS FOR is a scheduler artifact ⇒ not forced', async () => {
