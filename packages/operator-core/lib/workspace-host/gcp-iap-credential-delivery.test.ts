@@ -4,6 +4,8 @@ import {
   buildWorkspaceHostCredentialReference,
   buildWorkspaceHostCredentialRevocationReference,
   parseWorkspaceHostCredentialDeliveryRequest,
+  type WorkspaceHostBootstrapReadinessOptions,
+  type WorkspaceHostBootstrapReadinessResult,
   type WorkspaceHostCredentialLifecycleStep,
   type WorkspaceHostInitializationHostOperationResult,
   type WorkspaceHostInitializationHostOperations,
@@ -431,11 +433,15 @@ describe('delivery runs BEFORE the binding step it makes possible', () => {
   // is the defect that shipped. Presence must MIRROR the inner, so both directions are guarded.
   it('forwards the bootstrap-readiness gate to an inner adapter that implements it', async () => {
     const log: string[] = [];
+    // Typed to the REAL signature, not `unknown`: a loosely-typed stub would let this test keep
+    // passing against a forwarder whose types had drifted from the interface.
     const inner = new StubOperations(log) as StubOperations & {
-      awaitBootstrapReady?: (options?: unknown) => Promise<unknown>;
+      awaitBootstrapReady?: (
+        options?: WorkspaceHostBootstrapReadinessOptions,
+      ) => Promise<WorkspaceHostBootstrapReadinessResult>;
     };
-    const seen: unknown[] = [];
-    inner.awaitBootstrapReady = async (options?: unknown) => {
+    const seen: (WorkspaceHostBootstrapReadinessOptions | undefined)[] = [];
+    inner.awaitBootstrapReady = async (options?: WorkspaceHostBootstrapReadinessOptions) => {
       seen.push(options);
       return { waitedMs: 7, probes: 2, readyImmediately: false };
     };
