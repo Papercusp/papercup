@@ -20,6 +20,7 @@ vi.mock('./goal-package-store', async (importOriginal) => ({
 }));
 
 import { publishGoalToCupboard } from './publish-goal-core';
+import { IdentityLeakError } from './identity-scrub';
 import type { GoalPackageExport } from './goal-package-store';
 
 const ROW: GoalRowForExport = {
@@ -115,6 +116,73 @@ describe('publishGoalToCupboard (exportOnly)', () => {
     expect(result.export.requiresRubrics).toEqual([{ rubricRef: 'goal-mode-e2e' }]);
     const opts = mocks.write.mock.calls[0]![1] as { ref: string };
     expect(opts.ref).toBe('custom-ref');
+  });
+});
+
+describe('publishGoalToCupboard identity scrub (EI-23420285862298325)', () => {
+  // The incident shape: the owner's personal account handle repeated across per-role
+  // launch settings. The handle is SYNTHETIC here on purpose — committing the real
+  // one would re-commit the identifier this gate exists to keep out of published bytes.
+  const HANDLE = 'jdoe-personal-42';
+  const LEAKY: GoalRowForExport = {
+    ...ROW,
+    launchSettings: {
+      maxAgents: 2,
+      defaults: { account: HANDLE },
+      roles: { leader: { account: HANDLE }, member: { account: HANDLE } },
+    },
+  };
+  const leakyReader = async (id: string) => (id === LEAKY.id ? LEAKY : null);
+
+  it('scrubs identity out of the EXPORT OBJECT and reports every path it removed', async () => {
+    const result = await publishGoalToCupboard({ goalId: LEAKY.id, exportOnly: true }, leakyReader);
+    if (!result.ok) throw new Error('expected ok');
+
+    const exported = mocks.write.mock.calls[0]![0] as GoalPackageExport;
+    // Serializing is the honest check — the bytes are what would be pushed public.
+    expect(JSON.stringify(exported)).not.toContain(HANDLE);
+
+    // And the strip is REPORTED. A sanitizer nobody can inspect is the failure that
+    // produced this bug: `stripped` read as complete while nothing was sanitized.
+    expect(result.export.stripped.identityFieldsScrubbed.sort()).toEqual([
+      'launchSettings.defaults.account',
+      'launchSettings.roles.leader.account',
+      'launchSettings.roles.member.account',
+    ]);
+  });
+
+  it('POSITIVE CONTROL: the unscrubbed row really does carry the handle', async () => {
+    // Without this, the assertion above passes equally against a reader that returned
+    // an empty launchSettings, or a typo'd HANDLE.
+    expect(JSON.stringify(LEAKY)).toContain(HANDLE);
+  });
+
+  it('hands the harvested values to the write gate so a surviving copy is caught', async () => {
+    // The scrub cannot see a copy in the duty body — nothing marks it as identity.
+    // The harvest is what makes the write gate able to catch it, so it must be passed.
+    await publishGoalToCupboard({ goalId: LEAKY.id, exportOnly: true }, leakyReader);
+    const opts = mocks.write.mock.calls[0]![1] as { knownIdentityValues?: string[] };
+    expect(opts.knownIdentityValues).toEqual([HANDLE]);
+  });
+
+  it('maps a refused write to a 422 naming the leak, not an opaque 500', async () => {
+    mocks.write.mockImplementation(() => {
+      throw new IdentityLeakError('goal package demo/goal.json', [
+        { kind: 'identity-value', value: HANDLE, occurrences: 3 },
+      ]);
+    });
+
+    const result = await publishGoalToCupboard({ goalId: LEAKY.id, exportOnly: true }, leakyReader);
+    expect(result).toMatchObject({ ok: false, status: 422 });
+    expect((result as { identityLeaks?: unknown[] }).identityLeaks).toHaveLength(1);
+  });
+
+  it('reports an EMPTY scrub list for a goal that carries no identity', async () => {
+    // Guards the other direction: a scrubber that reported hits unconditionally would
+    // satisfy every assertion above while telling publishers nothing.
+    const result = await publishGoalToCupboard({ goalId: ROW.id, exportOnly: true }, reader);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.export.stripped.identityFieldsScrubbed).toEqual([]);
   });
 });
 

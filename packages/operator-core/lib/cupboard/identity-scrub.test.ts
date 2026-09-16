@@ -28,7 +28,7 @@
  * The handle below is SYNTHETIC on purpose. Using the real leaked handle would commit
  * the identifier this module exists to keep out of published bytes.
  */
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -291,6 +291,27 @@ describe('writeGoalPackageDir — a refused write leaves NOTHING on disk', () =>
       existsSync(join(root, 'leaky-goal')),
       'a refused export must not leave a directory behind for a later push',
     ).toBe(false);
+  });
+
+  it('CONTROL: the disk probe can tell gate-before-mkdir from gate-after-mkdir', () => {
+    // The assertion above is the kind that never fails and so is never tested. This
+    // control proves it has discriminating power, WITHOUT mutating shipped source:
+    // it replays the WRONG order (mkdir first, then the gate) and shows the very same
+    // existsSync probe reports `true` there. If someone reorders writeGoalPackageDir,
+    // the test above flips to this reading — which is exactly what it claims to catch.
+    const root = freshRoot();
+    const dir = join(root, 'wrong-order');
+    expect(() => {
+      mkdirSync(dir, { recursive: true }); // the defect: side effect before the check
+      assertIdentityClean(`body ${HANDLE}`, 'goal package wrong-order/goal.json', {
+        knownIdentityValues: [HANDLE],
+        ...NO_HOST,
+      });
+    }).toThrow(/still carries publisher identity/);
+
+    // Same throw, same message — and a leaked directory left behind for a later push.
+    // The throw alone therefore proves nothing; only the disk probe separates them.
+    expect(existsSync(dir)).toBe(true);
   });
 
   it('POSITIVE CONTROL: the same call writes the package when the body is clean', () => {
