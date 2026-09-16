@@ -131,6 +131,7 @@ export const LISTING_KINDS = [
   'recipe',
   'goal',
   'theme',
+  'datatype',
 ] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
