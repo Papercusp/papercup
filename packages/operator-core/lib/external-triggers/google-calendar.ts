@@ -6,6 +6,8 @@
  * public webhook, while this local time-wheel works behind NAT and reuses the
  * trigger-delivery ledger for per-event/start dedupe.
  */
+import type { calendar_v3 } from '@googleapis/calendar';
+import { Gaxios, type GaxiosError } from 'gaxios';
 import type postgres from 'postgres';
 import {
   ingestExternalTriggerEvent,
