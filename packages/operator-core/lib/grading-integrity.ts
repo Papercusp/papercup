@@ -715,6 +715,15 @@ export async function dispatchPendingGradingAudits(
 
     const idempotencyKey = `grading-audit:${issueId}`;
     const harness = input.harness?.trim();
+    // EI-23414612968722239: `role:'judge'` is a HARNESS-SCOPED persona — launch-agent
+    // refuses it outright ("no harness resolved") when no harness accompanies it, so the
+    // auditor never spawns, the stamp sticks at 'pending', and every acceptance rubric it
+    // was meant to audit is deadlocked at scorecards:emit. The role and the harness must
+    // therefore be gated on ONE condition: when the harness is absent or the '*' wildcard,
+    // omit the role and take the standard su collaborator, exactly as that refusal advises.
+    // This is strictly worse than not dispatching at all when it fails, because
+    // settledGradingAuditIsCurrent() passes an UNSTAMPED card but fails a PENDING one.
+    const harnessResolved = Boolean(harness && harness !== '*');
     const retiredTaskIds: string[] = [];
     const terminalCodes: GradingAuditRecoveryCode[] = [];
     let currentIdempotencyKey = idempotencyKey;
@@ -966,7 +975,7 @@ export async function dispatchPendingGradingAudits(
         reservationKey: idempotencyKey,
         brief: gradingAuditBrief(card),
         ctx: input.ctx,
-        ...(harness && harness !== '*' ? { harness } : {}),
+        ...(harnessResolved ? { harness } : {}),
       });
       if (routed.state !== 'fallback') {
         return {
@@ -992,7 +1001,7 @@ export async function dispatchPendingGradingAudits(
         const result = (await launch(
           {
             brief: gradingAuditBrief(card),
-            ...(harness && harness !== '*' ? { harness } : {}),
+            ...(harnessResolved ? { harness } : {}),
             headless: true,
             // Grading auditors are independent verification sessions. Without
             // this explicit fence, capability:launch-agent inherits the
@@ -1005,13 +1014,13 @@ export async function dispatchPendingGradingAudits(
             members: [
               useFallback
                 ? {
-                    role: 'judge',
+                    ...(harnessResolved ? { role: 'judge' } : {}),
                     agent: GRADING_AUDIT_FALLBACK.agent,
                     model: GRADING_AUDIT_FALLBACK.model,
                     effort: GRADING_AUDIT_FALLBACK.effort,
                     account: GRADING_AUDIT_FALLBACK.account,
                   }
-                : { role: 'judge', account: GRADING_AUDIT_ACCOUNT },
+                : { ...(harnessResolved ? { role: 'judge' } : {}), account: GRADING_AUDIT_ACCOUNT },
             ],
             label: `grading-audit:${issueId}`,
             idempotencyKey: currentIdempotencyKey,

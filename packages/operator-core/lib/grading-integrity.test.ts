@@ -715,6 +715,13 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch).toHaveBeenCalledTimes(1);
     expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: 'grading-audit:EI-current' }), ctx);
     expect(d.launch.mock.calls[0]?.[0]).not.toHaveProperty('harness');
+    // EI-23414612968722239 regression: `role:'judge'` is a HARNESS-SCOPED persona, so it must
+    // be gated on the SAME condition as `harness` itself. Sending the role without a harness
+    // makes launch-agent refuse the spawn outright ("no harness resolved"), which leaves the
+    // card's gradingAudit stamp stuck at 'pending' — and settledGradingAuditIsCurrent() FAILS a
+    // pending stamp while PASSING an unstamped card, so a failed dispatch is strictly worse
+    // than none: it deadlocks acceptance-rubric vetting for every plan it was meant to audit.
+    expect((d.launch.mock.calls[0]?.[0] as { members?: unknown[] }).members?.[0]).not.toHaveProperty('role');
     expect(result.receipts).toEqual([
       expect.objectContaining({ issueId: 'EI-current', state: 'launched', rubricRef: 'standard-rubric' }),
       expect.objectContaining({ issueId: 'EI-superseded', state: 'skipped' }),
