@@ -364,10 +364,23 @@ describe('corestore seed provider', () => {
       filtered: true,
       onProjection: () => {},
     } as unknown as Parameters<typeof provider.cut>[0]);
-    const filteredMeta = filteredEntry.meta as { coreKeys: string[]; coreLengths: Record<string, number> };
+    const filteredMeta = filteredEntry.meta as {
+      coreKeys: string[];
+      coreLengths: Record<string, number>;
+      coreProjectedFrom?: Record<string, string>;
+    };
     const filteredKeyHex = filteredMeta.coreKeys[0]!;
     expect(filteredKeyHex).not.toBe(keyHex);
     expect(filteredMeta.coreLengths[filteredKeyHex]).toBeGreaterThan(0);
+
+    // WI-10001612 — the branch must RECORD that it minted a projection. seed-degradation-guard
+    // exempts this population from the history size floor on exactly this fact; without it the
+    // guard falls back to judging bytes and refuses a healthy cut (it did, 4.5 hours in, after
+    // the block-count proxy that used to stand in for this fact expired at 1,041 blocks).
+    expect(filteredMeta.coreProjectedFrom).toEqual({ [filteredKeyHex]: keyHex });
+    // And the guard's falsifier is a REAL property of this branch, not an assumption: the
+    // projection is minted into a fresh core, so the shipped key is never its own source.
+    expect(filteredMeta.coreProjectedFrom![filteredKeyHex]).not.toBe(filteredKeyHex);
   });
 
   it('restore works from a READ-ONLY, moved seed (packaged-install regression, WI-2902)', async () => {

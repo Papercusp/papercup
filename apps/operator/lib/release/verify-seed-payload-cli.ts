@@ -114,7 +114,14 @@ export function parseVerifySeedPayloadArgs(argv: readonly string[]): VerifySeedP
  * Run the verdict. Returns an exit code rather than calling process.exit so the whole thing is
  * testable without spawning; see the three-way contract in the file header.
  *
- * `origin` only shapes the remedy wording in the guard's message. It defaults to 'reuse'
+ * ⚠ `origin` is NO LONGER COSMETIC (WI-10001612). It still selects the remedy wording, but it
+ * now also decides whether a PRE-MARKER corestore — one carrying no `coreProjectedFrom` — may be
+ * admitted by the legacy block-count fallback in seed-degradation-guard: 'reuse' allows it (the
+ * grafted artifact is frozen and predates the marker), 'fresh' does not (every fresh filtered cut
+ * records the fact, so an unmarked fresh payload is a sparse or full cut the size floor should
+ * judge). Passing 'fresh' for a grafted seed can therefore turn a pass into a refusal.
+ *
+ * It defaults to 'reuse'
  * because `--reuse-corestore` is the DEFAULT shipping path (ensure-release-seed.sh:135,
  * PAPERCUSP_SEED_REUSE_CORESTORE=auto), so a graft that inherited an unverified entry is the
  * likeliest cause of a red here — and its remedy (re-cut FRESH; never recompute the entry
