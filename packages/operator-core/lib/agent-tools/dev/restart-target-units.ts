@@ -16,7 +16,15 @@
  */
 
 /** A `dev:restart { target }` value. */
-export type RestartTargetName = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar' | 'mcp-proxy';
+export type RestartTargetName =
+  | 'dev'
+  | 'staging'
+  | 'gateway'
+  | 'bg-host'
+  | 'embed-sidecar'
+  | 'mcp-proxy'
+  | 'email-sidecar'
+  | 'calendar-sidecar';
 
 export const RESTART_TARGET_UNITS: Record<RestartTargetName, string> = {
   dev: 'papercusp-dev-api.service',
@@ -25,4 +33,9 @@ export const RESTART_TARGET_UNITS: Record<RestartTargetName, string> = {
   'bg-host': 'papercusp-bg-host.service',
   'embed-sidecar': 'papercup-embed-sidecar.service',
   'mcp-proxy': 'papercup-mcp-proxy.service',
+  // App sidecars (WI-10001633): `npx tsx apps/sidecar/src/index.ts` straight
+  // from ~/papercupai-workspace/<app> — no build, no restart-on-change, so a
+  // restart is the ONLY thing that loads a tree edit into them.
+  'email-sidecar': 'papercusp-email-sidecar.service',
+  'calendar-sidecar': 'papercusp-calendar-sidecar.service',
 };

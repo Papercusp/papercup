@@ -538,6 +538,10 @@ describe('dev:restart dry run', () => {
     ['bg-host', 'papercusp-bg-host.service', true],
     ['embed-sidecar', 'papercup-embed-sidecar.service', true],
     ['mcp-proxy', 'papercup-mcp-proxy.service', true],
+    // WI-10001633: app sidecars run tsx from the tree with no restart-on-change —
+    // without a sanctioned target the only way to load an edit was raw systemctl.
+    ['email-sidecar', 'papercusp-email-sidecar.service', true],
+    ['calendar-sidecar', 'papercusp-calendar-sidecar.service', true],
   ] as const)('target:%s dispatches to %s (coalescing note: %s)', async (target, unit, coalesces) => {
     const b = body(await call({ target }));
     expect(b).toMatchObject({
