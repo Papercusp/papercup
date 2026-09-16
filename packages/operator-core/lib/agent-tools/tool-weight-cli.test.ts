@@ -2,7 +2,12 @@ import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import { BUDGET, HARD_CAP, type NamedToolWeight } from './tool-guidance-budget';
+import {
+  BUDGET,
+  HARD_CAP,
+  SCHEMA_BYTE_BUDGET,
+  type NamedToolWeight,
+} from './tool-guidance-budget';
 import {
   formatToolWeightReport,
   measureToolWeights,
@@ -65,6 +70,76 @@ describe('tool-weight CLI', () => {
   it('returns 0 when every tool in the catalog is within budget', () => {
     const cleanWeights: NamedToolWeight[] = [{ name: 'small:tool', weight: 200 }];
     expect(runToolWeightCli([], cleanWeights, vi.fn(), vi.fn())).toBe(0);
+  });
+
+  /**
+   * The schema tier's "which lever" signal (EI-23379068490085254). The byte total alone
+   * sends an author to redesign a schema whose structure was never the bill; the split is
+   * what points them at `.describe()` instead.
+   */
+  describe('argSchema prose share', () => {
+    const OVER = SCHEMA_BYTE_BUDGET + 2_000;
+    const schemaWeights: NamedToolWeight[] = [
+      // Big AND almost all prose — the population the alert exists for (the real ones:
+      // coord:send, facts:assert, fleet:launch-on-plan).
+      { name: 'prose:heavy', weight: 200, schemaBytes: OVER, schemaProseBytes: OVER * 0.8 },
+      // Big but genuinely structural — cutting prose here would not help, so no alert.
+      { name: 'prose:light', weight: 200, schemaBytes: OVER, schemaProseBytes: OVER * 0.2 },
+      // Prose-dominated but tiny: a small, well-documented schema is what GOOD looks like.
+      { name: 'prose:tiny', weight: 200, schemaBytes: 400, schemaProseBytes: 360 },
+      // A caller that measured bytes but not prose.
+      { name: 'prose:unmeasured', weight: 200, schemaBytes: OVER },
+    ];
+    const rowsByName = new Map(measureToolWeights(schemaWeights).map((row) => [row.name, row]));
+
+    it('prints the prose/structural split under the argSchema line', () => {
+      const report = formatToolWeightReport(
+        measureToolWeights(schemaWeights, 'prose:heavy'),
+        schemaWeights.length,
+        { selector: 'prose:heavy' },
+      );
+      expect(report).toContain(`argSchema ${OVER} bytes`);
+      expect(report).toContain(`prose ${OVER * 0.8} B (80%) · structural ${OVER * 0.2} B`);
+    });
+
+    it('flags a big, prose-dominated schema as PROSE-HEAVY', () => {
+      expect(rowsByName.get('prose:heavy')?.schemaProseHeavy).toBe(true);
+      const report = formatToolWeightReport(
+        measureToolWeights(schemaWeights, 'prose:heavy'),
+        schemaWeights.length,
+        { selector: 'prose:heavy' },
+      );
+      expect(report).toContain('PROSE-HEAVY');
+    });
+
+    it('does not flag a structural schema, nor a small one that is mostly prose', () => {
+      expect(rowsByName.get('prose:light')?.schemaProseShare).toBeCloseTo(0.2, 5);
+      expect(rowsByName.get('prose:light')?.schemaProseHeavy).toBe(false);
+      // 90% prose, but 400 B of it — there is nothing here worth an author's attention.
+      expect(rowsByName.get('prose:tiny')?.schemaProseShare).toBeCloseTo(0.9, 5);
+      expect(rowsByName.get('prose:tiny')?.schemaProseHeavy).toBe(false);
+      const quiet = schemaWeights.filter((t) => t.name !== 'prose:heavy');
+      const report = formatToolWeightReport(measureToolWeights(quiet), quiet.length);
+      expect(report).toContain('prose 2000 B (20%)');
+      expect(report).not.toContain('PROSE-HEAVY');
+    });
+
+    it('omits the split entirely when the caller measured no prose — never a 0 B line', () => {
+      // A `prose 0 B (0%)` line is indistinguishable from a genuinely structural schema,
+      // and "nothing to cut here" is the wrong thing to tell someone hunting bytes.
+      const row = rowsByName.get('prose:unmeasured');
+      expect(row?.schemaBytes).toBe(OVER);
+      expect(row?.schemaProseBytes).toBeUndefined();
+      expect(row?.schemaProseShare).toBeUndefined();
+      expect(row?.schemaProseHeavy).toBeUndefined();
+      const report = formatToolWeightReport(
+        measureToolWeights(schemaWeights, 'prose:unmeasured'),
+        schemaWeights.length,
+        { selector: 'prose:unmeasured' },
+      );
+      expect(report).toContain(`argSchema ${OVER} bytes`);
+      expect(report).not.toContain('prose ');
+    });
   });
 
   it('preserves a large JSON report when the caller exits immediately (EI-22578574821528569)', () => {
