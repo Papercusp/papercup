@@ -27,9 +27,24 @@ const mocks = vi.hoisted(() => ({
   headcountEvents: [] as Record<string, unknown>[],
 }));
 
+// The stand-down guard (EI-23259368987233359) scans for a workspace-wide loop stand-down
+// through the SAME org sql handle these fixtures stub for plan-status lookups. Answer that
+// one query at the seam with "no stand-down active" so `mocks.orgSql` keeps counting ONLY
+// plan-status calls — otherwise every `expect(mocks.orgSql).not.toHaveBeenCalled()` below
+// measures the guard instead of the grant logic it is about, and the fail-open fixtures
+// (whose sql throws on purpose) trip the guard's deliberate fail-closed path.
+// The guard's own behaviour — including fail-closed — is asserted in
+// ./loop-standdown-governor-guard.test.ts; stubbing it here isolates, it does not weaken.
+const isStanddownScan = (args: unknown[]): boolean => {
+  const strings = args[0];
+  return Array.isArray(strings) && strings.join('').includes("metadata->'pause'");
+};
+
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: (...args: unknown[]) => mocks.orgSql(...args) }),
+  getOrgPg: () => ({
+    sql: (...args: unknown[]) => (isStanddownScan(args) ? Promise.resolve([]) : mocks.orgSql(...args)),
+  }),
 }));
 
 vi.mock('@papercusp/flags/server', () => ({
