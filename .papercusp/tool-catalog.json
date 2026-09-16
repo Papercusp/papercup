@@ -10198,7 +10198,7 @@
           "POST"
         ]
       },
-      "description": "Coordinated restart with drain/coalesce/audit. Targets: \"dev\" :3070 (default), \"staging\" :3170, \"desktop-dev\" :3270, \"gateway\" :8788, \"bg-host\" routines/git-sync, \"embed-sidecar\" :3384, \"mcp-proxy\" :9071. Dry-run unless confirm:true; restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or audited authorize:true. Cooldown ~2m; bg-host ~13m.",
+      "description": "Coordinated restart with drain/coalesce/audit. Targets: \"dev\" :3070 (default), \"staging\" :3170, \"desktop-dev\" :3270, \"gateway\" :8788, \"bg-host\" routines/git-sync, \"embed-sidecar\" :3384, \"mcp-proxy\" :9071, \"email-sidecar\", \"calendar-sidecar\". Dry-run unless confirm:true; restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or audited authorize:true. Cooldown ~2m; bg-host ~13m.",
       "capabilities": [
         "locks:write"
       ],

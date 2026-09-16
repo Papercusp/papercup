@@ -228,6 +228,18 @@ export async function checkIdentityGrantKernel(
   } catch {
     return denial('stale-artifact', null, request.toolName);
   }
+  // A control-only activation (e.g. re-registering an already-active mode)
+  // advances the applied STATE revision without re-rendering the launch
+  // artifact, so no receipt can ever carry the new stateRevision and the
+  // session would be denied every tool for the rest of its life
+  // (EI-23431478594488191). The immutable specification — and therefore
+  // configuration.grants — is unchanged in that case, so the record's current
+  // artifact IS the applied specification. Accept it only when the
+  // specification revisions agree; a differing specification still fails
+  // closed, so a broadening can never ride on an unacknowledged artifact.
+  if (!artifact && current && applied && current.specificationRevision === applied.specificationRevision) {
+    artifact = current;
+  }
   if (!artifact) {
     return applied || current?.configuration.grants
       ? denial('stale-artifact', null, request.toolName) : null;

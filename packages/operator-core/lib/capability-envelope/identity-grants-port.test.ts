@@ -99,6 +99,27 @@ describe('P-005 current identity grants at the common kernel seat', () => {
     expect(appliedIdentityArtifact(record, { ...f.applied, stateRevision: 'wrong' })).toBeNull();
   });
 
+  it('accepts a control-only state-revision advance when the applied specification is unchanged', async () => {
+    // EI-23431478594488191: a mode re-registration advances activation.applied
+    // to a new stateRevision without re-rendering launch_spec, so no receipt
+    // can carry it. Same specification ⇒ same grants ⇒ the current artifact is
+    // the applied one; the session must not be stranded.
+    const f = fixture();
+    const read = vi.fn(async () => f.policy);
+    const state = { activation: { applied: { ...f.applied, stateRevision: 'state-b' } }, policyRevision: 'control:2' };
+    expect(await checkIdentityGrantKernel(f.request, state, f.record, read))
+      .toMatchObject({ decision: 'allow', revisionSource: 'applied' });
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('still fails closed when the state revision advanced AND the specification differs', async () => {
+    const f = fixture({ requires: [] });
+    const broad = fixture();
+    const state = { activation: { applied: { ...f.applied, stateRevision: 'state-b' } }, policyRevision: 'control:2' };
+    expect(await checkIdentityGrantKernel(f.request, state, broad.record, async () => broad.policy))
+      .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });
+  });
+
   it('applies a pending narrowing immediately without attributing it as applied', async () => {
     const f = fixture();
     const narrowed = fixture({ requires: [] });
