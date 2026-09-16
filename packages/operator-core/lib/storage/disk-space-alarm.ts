@@ -260,6 +260,78 @@ export function criticalWriteHeadroomBytes(
   return Math.max(absolute, Math.min(proportional, cap));
 }
 
+function fmtGiB(bytes: number): string {
+  return `${(bytes / GIB).toFixed(1)} GiB`;
+}
+
+/**
+ * Explain ONE write-headroom breach in terms a responder can act on.
+ *
+ * EI-23424266636870803: the green checkpoint's wedge message named the breaching
+ * PATH and then quoted `policy.criticalFreeBytesMin` / `criticalFreePctMin` as
+ * "the floor" — but neither scalar is the floor {@link detectCriticalWriteHeadroom}
+ * applies, which is the per-filesystem reserve from {@link criticalWriteHeadroomBytes}.
+ * On this repo's box that rendered as "/tmp low-bytes breaches the standing critical
+ * write headroom floor … floor is 2.0 GiB and 2.00% bytes" beside a measurement of
+ * 40.2 GiB free. Every number in that sentence is real and the sentence is unusable:
+ * a reader either concludes the verdict contradicts its own evidence (40.2 > 2.0, so
+ * the gate must be buggy or the reading stale) or takes the percentage leg and sizes
+ * the cleanup at ~109 GiB. The reserve actually applied was 64 GiB and the true
+ * deficit 23.8 GiB — an order of magnitude apart, on the one number that decides how
+ * much a human has to delete.
+ *
+ * So report the APPLIED reserve and the ABSOLUTE deficit. Reporting a percentage
+ * invites sizing the cleanup against the volume, which is precisely the inflation
+ * this reserve's cap was introduced to retire.
+ */
+export function describeWriteHeadroomBreach(
+  breach: DiskBreach,
+  policy: DiskAlarmPolicy = DEFAULT_DISK_POLICY,
+): string {
+  const reserve = criticalWriteHeadroomBytes(breach.totalBytes, policy);
+  const parts: string[] = [];
+  if (breach.kinds.includes('low-bytes')) {
+    const deficit = Math.max(0, reserve - breach.freeBytes);
+    parts.push(
+      `low-bytes: the filesystem backing it has ${fmtGiB(breach.freeBytes)} free of ` +
+        `${fmtGiB(breach.totalBytes)}, under the ${fmtGiB(reserve)} write-headroom reserve ` +
+        `— reclaim >= ${fmtGiB(deficit)} anywhere on that filesystem`,
+    );
+  }
+  if (breach.kinds.includes('low-inodes')) {
+    parts.push(
+      `low-inodes: ${(breach.freeInodesPct * 100).toFixed(2)}% inodes free, under the ` +
+        `${(policy.freeInodesPctMin * 100).toFixed(2)}% floor`,
+    );
+  }
+  return `${breach.path} ${parts.join('; ')}`;
+}
+
+/**
+ * Aggregate form, plus the one clause that stops the expensive misreading.
+ *
+ * Free space is a property of the FILESYSTEM, never of the directory that named it.
+ * On this box `/tmp`, `/mnt/data` and `/var/lib/systemd/coredump` are three bind
+ * mounts of a single 7.3 TiB device of which `/tmp` holds ~104 GiB — so a message
+ * that says "/tmp lacked headroom" routes a responder into emptying /tmp, destroying
+ * other agents' preserved artifacts to reach a target that ~24 GiB reclaimed ANYWHERE
+ * on the device already satisfies. Naming the path without naming that relationship
+ * is what makes the destructive reading the obvious one.
+ */
+export function describeWriteHeadroomBreaches(
+  breaches: DiskBreach[],
+  policy: DiskAlarmPolicy = DEFAULT_DISK_POLICY,
+): string {
+  if (breaches.length === 0) return '';
+  return (
+    breaches.map((breach) => describeWriteHeadroomBreach(breach, policy)).join('; ') +
+    ' (free space belongs to the FILESYSTEM, not to the directory named above: other' +
+    ' mount points may share the same device, so emptying that one directory is neither' +
+    ' necessary nor sufficient — reclaim the deficit wherever it is cheapest and safest' +
+    ' on that filesystem, and check what else is mounted on it before deleting anything)'
+  );
+}
+
 function fmtGb(bytes: number): string {
   return `${(bytes / GIB).toFixed(1)} GB`;
 }

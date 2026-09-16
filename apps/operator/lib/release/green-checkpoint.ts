@@ -17213,8 +17213,11 @@ export function realCheckpointDeps(
       };
     },
     async checkDiskHeadroom() {
-      const { detectCriticalWriteHeadroom, diskPolicyFromEnv } =
-        await import("@papercusp/operator-core/lib/storage/disk-space-alarm");
+      const {
+        detectCriticalWriteHeadroom,
+        describeWriteHeadroomBreaches,
+        diskPolicyFromEnv,
+      } = await import("@papercusp/operator-core/lib/storage/disk-space-alarm");
       const policy = diskPolicyFromEnv();
       const gib = 1024 ** 3;
       const describe = (snapshots: CheckpointDiskSnapshot[]) =>
@@ -17226,14 +17229,16 @@ export function realCheckpointDeps(
               `${(snapshot.freeInodesPct * 100).toFixed(2)}% inodes free`,
           )
           .join("; ");
+      // EI-23424266636870803: the message must state the reserve this run ACTUALLY
+      // applied and the absolute deficit, and must say that free space belongs to the
+      // filesystem rather than to the named directory. Both live beside the policy that
+      // computes the reserve, so the gate cannot drift into describing a floor it did
+      // not apply — the same coupling `detectCriticalWriteHeadroom` already keeps.
       const describeBreaches = (snapshots: CheckpointDiskSnapshot[]) =>
-        detectCriticalWriteHeadroom(snapshots, policy)
-          .map(
-            (breach) =>
-              `${breach.path} ${breach.kinds.join("+")} breaches the standing ` +
-              "critical write headroom floor",
-          )
-          .join("; ");
+        describeWriteHeadroomBreaches(
+          detectCriticalWriteHeadroom(snapshots, policy),
+          policy,
+        );
 
       let before: CheckpointDiskSnapshot[];
       try {
@@ -17359,11 +17364,16 @@ export function realCheckpointDeps(
       return {
         ok: false,
         summary:
+          // EI-23424266636870803: the trailing "floor is <criticalFreeBytesMin> GiB and
+          // <criticalFreePctMin>% bytes" clause used to live here. It quoted the raw
+          // policy scalars, which are NOT the floor detectCriticalWriteHeadroom applies
+          // — that is the capped per-filesystem reserve — so it contradicted the very
+          // measurement printed beside it (40.2 GiB free "under" a stated 2.0 GiB floor).
+          // describeBreaches now carries the applied reserve and the absolute deficit,
+          // which is the number a responder needs; a second, differently-derived floor
+          // in the same sentence could only disagree with it again.
           `${describeBreaches(after)}; initial measurement: ${describe(before)}; ` +
-          `${reclamationSummary}; after cleanup: ${describe(after)}; ` +
-          `floor is ${(policy.criticalFreeBytesMin / gib).toFixed(1)} GiB and ` +
-          `${(policy.criticalFreePctMin * 100).toFixed(2)}% bytes, ` +
-          `${(policy.freeInodesPctMin * 100).toFixed(2)}% inodes`,
+          `${reclamationSummary}; after cleanup: ${describe(after)}`,
       };
     },
     // P-008: the owner-visible off switch had a DECLARED dep and a documented contract

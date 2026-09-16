@@ -3255,8 +3255,19 @@ function oneLineMeasuredDetail(detail: string | null | undefined): string | null
 export function gateStallNoopLogMessage(status: string, detail?: string | null): string {
   if (status === 'disk-headroom') {
     return (
+      // EI-23424266636870803: this said "the temp filesystem", which routes a responder
+      // into emptying /tmp. The breaching PATH is only where the shortage was sampled —
+      // free space belongs to the FILESYSTEM behind it, which other mounts can share
+      // (here /tmp, /mnt/data and /var/lib/systemd/coredump are one 7.3 TiB device, of
+      // which /tmp holds ~104 GiB). Point at the measured detail, which now names the
+      // reserve applied and the absolute byte deficit, instead of naming a directory to
+      // go delete.
       `${orchestratorStdoutTag()} 'disk-headroom' — this run ABORTED before checkout setup or tests ` +
-      `because the temp filesystem lacked safe byte/inode headroom. It rendered no code verdict, ` +
+      `because a watched filesystem lacked safe byte/inode headroom. Read the measured detail for ` +
+      `WHICH filesystem, the reserve applied and the byte deficit — reclaim that deficit anywhere ` +
+      `on that filesystem, and check what else is mounted on it before deleting: the path named in ` +
+      `the detail is where the shortage was SAMPLED, not necessarily what is consuming the space. ` +
+      `It rendered no code verdict, ` +
       `so do not triage the prior red's files and do not re-fire until space is reclaimed. No peer ` +
       `run is in flight. This tick advances gate_health.consecutiveNoVerdict (never the red streak), ` +
       `and repeated aborts escalate as a WEDGED gate rather than masquerading as hourly progress`

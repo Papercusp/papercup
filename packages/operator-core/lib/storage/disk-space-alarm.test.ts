@@ -4,6 +4,8 @@ import {
   detectLowSpace,
   detectCriticalWriteHeadroom,
   criticalWriteHeadroomBytes,
+  describeWriteHeadroomBreach,
+  describeWriteHeadroomBreaches,
   formatDiskAlarmToast,
   runDiskSpaceAlarmOnce,
   diskPolicyFromEnv,
@@ -364,5 +366,93 @@ describe('watchedPaths', () => {
       if (previous == null) delete process.env.PAPERCUSP_DISK_ALARM_PATHS;
       else process.env.PAPERCUSP_DISK_ALARM_PATHS = previous;
     }
+  });
+});
+
+describe('describeWriteHeadroomBreach (EI-23424266636870803)', () => {
+  // The measured wedge, reproduced exactly: /tmp on a 7.45 TiB device with 40.2 GiB
+  // free. Reserve = max(2 GiB, min(7451 GiB * 2% = 149.0 GiB, 64 GiB cap)) = 64 GiB,
+  // so the true deficit is 23.8 GiB.
+  // NOTE `snap` spreads overrides over PRE-COMPUTED percentages, so a caller that sets
+  // bytes/inodes must set the matching pct too or the snapshot is internally incoherent.
+  const REAL_BOX = snap({
+    path: '/tmp',
+    totalBytes: 7451 * GIB,
+    freeBytes: 40.2 * GIB,
+    freePct: 40.2 / 7451,
+  });
+
+  function onlyBreach(s: DiskSnapshot, policy?: DiskAlarmPolicy) {
+    const breaches = detectCriticalWriteHeadroom([s], policy ?? DEFAULT_DISK_POLICY);
+    expect(breaches).toHaveLength(1);
+    return breaches[0]!;
+  }
+
+  it('reports the reserve that was APPLIED, not the raw policy scalars', () => {
+    // THE BUG. The old message quoted policy.criticalFreeBytesMin (2.0 GiB) and
+    // criticalFreePctMin (2.00%) as "the floor", while the breach test used the capped
+    // per-filesystem reserve. Printed beside "40.2 GiB free" that reads as a verdict
+    // contradicting its own evidence — so a responder concludes the gate is buggy or
+    // the reading is stale, and the wedge outlives the message meant to explain it.
+    const msg = describeWriteHeadroomBreach(onlyBreach(REAL_BOX));
+    expect(msg).toContain('64.0 GiB write-headroom reserve');
+    expect(msg).not.toMatch(/floor is 2\.0 GiB/);
+    expect(msg).not.toContain('2.00%');
+  });
+
+  it('sizes the cleanup by the ABSOLUTE deficit, never a percentage of the volume', () => {
+    // 64.0 - 40.2. Taking the retired percentage leg instead would size this at ~109 GiB
+    // — a 4.6x overstatement of how much a human has to delete, on a 100%-full shared
+    // device where the difference is "prune a cache" vs "delete a backup".
+    const msg = describeWriteHeadroomBreach(onlyBreach(REAL_BOX));
+    expect(msg).toContain('23.8 GiB');
+    expect(msg).not.toContain('109');
+  });
+
+  it('the named reserve always EQUALS criticalWriteHeadroomBytes for that filesystem', () => {
+    // The drift guard, and the reason this formatter lives beside the policy: parse the
+    // reserve back out of the prose and compare it with the function the detector used.
+    // Any future divergence between what is applied and what is reported fails here
+    // rather than in a wedged gate nobody can interpret.
+    for (const totalGib of [20, 500, 1875.7, 7451]) {
+      // 1 byte under the reserve: guaranteed to breach at every volume size.
+      const freeBytes = criticalWriteHeadroomBytes(totalGib * GIB) - 1;
+      const s = snap({
+        path: '/fs',
+        totalBytes: totalGib * GIB,
+        freeBytes,
+        freePct: freeBytes / (totalGib * GIB),
+      });
+      const msg = describeWriteHeadroomBreach(onlyBreach(s));
+      const named = msg.match(/([\d.]+) GiB write-headroom reserve/)?.[1];
+      expect(named, `no reserve named for a ${totalGib} GiB filesystem`).toBeDefined();
+      expect(Number(named)).toBeCloseTo(criticalWriteHeadroomBytes(totalGib * GIB) / GIB, 1);
+    }
+  });
+
+  it('attributes free space to the FILESYSTEM, not to the directory that named it', () => {
+    // The destructive misreading. /tmp, /mnt/data and /var/lib/systemd/coredump are one
+    // device here and /tmp holds ~104 GiB of 7.3 TiB, so "/tmp lacked headroom" sends a
+    // responder to empty /tmp — destroying peers' preserved artifacts to reach a target
+    // that ~24 GiB reclaimed anywhere on the device already satisfies.
+    const msg = describeWriteHeadroomBreaches([onlyBreach(REAL_BOX)]);
+    expect(msg).toContain('/tmp');
+    expect(msg).toMatch(/filesystem backing it/i);
+    expect(msg).toMatch(/anywhere on that filesystem/i);
+    expect(msg).toMatch(/other\s+mount points may share the same device/i);
+  });
+
+  it('an inode breach reports the inode floor, not a byte deficit', () => {
+    const s = snap({ path: '/fs', totalInodes: 1_000_000, freeInodes: 10_000 });
+    const breach = onlyBreach(s);
+    expect(breach.kinds).toContain('low-inodes');
+    const msg = describeWriteHeadroomBreach(breach);
+    expect(msg).toContain('1.00% inodes free');
+    expect(msg).toContain('5.00% floor');
+    expect(msg).not.toContain('write-headroom reserve');
+  });
+
+  it('no breaches renders nothing — an empty string, never a headline with no content', () => {
+    expect(describeWriteHeadroomBreaches([])).toBe('');
   });
 });

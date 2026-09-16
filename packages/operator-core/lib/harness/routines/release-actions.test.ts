@@ -1045,6 +1045,20 @@ describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite
     expect(msg).toContain('WEDGED');
   });
 
+  it('EI-23424266636870803: disk-headroom never calls it "the temp filesystem"', () => {
+    // That wording routes the responder into emptying /tmp. The breaching path is only
+    // where the shortage was SAMPLED — free space belongs to the filesystem behind it,
+    // which other mounts can share (here /tmp, /mnt/data and /var/lib/systemd/coredump
+    // are one 7.3 TiB device, of which /tmp holds ~104 GiB). Clearing /tmp destroys
+    // peers' preserved artifacts to reach a target ~24 GiB reclaimed anywhere on the
+    // device already satisfies, and the message is what makes that the obvious move.
+    const msg = gateStallNoopLogMessage('disk-headroom');
+    expect(msg).not.toContain('temp filesystem');
+    expect(msg).toContain('a watched filesystem');
+    expect(msg).toMatch(/anywhere\s+on that filesystem/);
+    expect(msg).toContain('SAMPLED');
+  });
+
   it('names the detector that DOES cover the freeze, so the reader is not left thinking nothing watches it', () => {
     // Leaving gate_health untouched reads like "unmonitored" unless the message says
     // otherwise; the freeze is caught by checkMainBehindStaging, not by this counter.
