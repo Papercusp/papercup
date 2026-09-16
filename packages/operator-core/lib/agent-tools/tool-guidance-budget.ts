@@ -385,7 +385,10 @@ export const SCHEMA_BYTE_BUDGET = 8_000;
 export const ALLOW_OVER_SCHEMA_BUDGET: ReadonlyMap<string, number> = new Map([
   // Seeded 2026-09-15 from the projected catalog (889 exposed tools, 1,216,782 B total,
   // median 618 B). These 20 tools are 3.6% of the catalog by count and 27% by bytes.
-  ['work_items:complete', 46_000], // measured 43,283
+  // Lowered 2026-09-16 (EI-23379068490085254): 43,283 -> 40,501 after completionSpec's
+  // `.describe()` dropped its duplicated field enumeration, second object example, and
+  // the rules each field's own describe already owns. Paid twice (completion + items[]).
+  ['work_items:complete', 43_000], // measured 40,501
   ['coord:send', 41_000], // measured 38,185
   ['rubrics:propose', 39_000], // measured 36,402
   ['rubrics:amend', 30_000], // measured 27,927
