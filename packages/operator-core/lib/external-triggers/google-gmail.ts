@@ -815,10 +815,7 @@ export async function createGoogleGmailDraft(
   const encoded = await buildGoogleGmailRawMessage(input);
   const threadId = encoded.threadId;
   const raw = encoded.raw;
-  const body = await gmailRequest<{
-    id?: string;
-    message?: { id?: string; threadId?: string };
-  }>(
+  const body = await gmailRequest<gmail_v1.Schema$Draft>(
     provided.fetch ?? fetch,
     (provided.apiOrigin ?? GMAIL_API_ORIGIN).replace(/\/$/, ''),
     token,
@@ -871,10 +868,7 @@ export async function updateGoogleGmailDraft(
   const encoded = await buildGoogleGmailRawMessage(input);
   const threadId = encoded.threadId;
   const raw = encoded.raw;
-  const body = await gmailRequest<{
-    id?: string;
-    message?: { id?: string; threadId?: string };
-  }>(
+  const body = await gmailRequest<gmail_v1.Schema$Draft>(
     provided.fetch ?? fetch,
     (provided.apiOrigin ?? GMAIL_API_ORIGIN).replace(/\/$/, ''),
     token,
@@ -926,7 +920,7 @@ export async function sendGoogleGmailDraft(
   if (!token) throw new Error('google_gmail_access_token_required');
   const targetDraftId = draftId.trim();
   if (!targetDraftId) throw new Error('google_gmail_draft_id_required');
-  const body = await gmailRequest<{ id?: string; threadId?: string }>(
+  const body = await gmailRequest<gmail_v1.Schema$Message>(
     provided.fetch ?? fetch,
     (provided.apiOrigin ?? GMAIL_API_ORIGIN).replace(/\/$/, ''),
     token,
@@ -1017,7 +1011,7 @@ export async function readGoogleGmailDraftRecipients(
   if (!targetDraftId) throw new Error('google_gmail_draft_id_required');
   const params = new URLSearchParams({ format: 'metadata' });
   for (const header of ['To', 'Cc', 'Subject']) params.append('metadataHeaders', header);
-  const body = await gmailRequest<{ id?: string; message?: GoogleGmailMessage }>(
+  const body = await gmailRequest<gmail_v1.Schema$Draft>(
     provided.fetch ?? fetch,
     (provided.apiOrigin ?? GMAIL_API_ORIGIN).replace(/\/$/, ''),
     token,
@@ -1061,7 +1055,7 @@ export async function sendGoogleGmailMessage(
   const token = accessToken.trim();
   if (!token) throw new Error('google_gmail_access_token_required');
   const encoded = await buildGoogleGmailRawMessage(input);
-  const body = await gmailRequest<{ id?: string; threadId?: string }>(
+  const body = await gmailRequest<gmail_v1.Schema$Message>(
     provided.fetch ?? fetch,
     (provided.apiOrigin ?? GMAIL_API_ORIGIN).replace(/\/$/, ''),
     token,
