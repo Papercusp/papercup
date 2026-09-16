@@ -1400,8 +1400,22 @@ export async function emitScorecard(
                   `scorecards:emit { rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', ` +
                   `subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, vettingConsult:'<consult conversation_id>' ` +
                   `(or vettingWorkItem:'<review WI-/EI- id>'), ratings:{ <every meta criterion> } } — THEN grade. ` +
-                  `Grading now would be discovered invalid only at ship, after this pass is spent.`
-                : `acceptance rubric '${rubric.rubricId}' has not been VETTED against the meta-rubric yet ` +
+                  `Grading now would be discovered invalid only at ship, after this pass is spent.` +
+                  (vettingStatus.diagnosis ? ` Other cards were rejected: ${vettingStatus.diagnosis}.` : '')
+                : vettingStatus.reason === 'rejected-attestation'
+                  ? // The rubric HAS attestation cards — telling the author to "vet it"
+                    // would send them to redo work they already did. Name the check that
+                    // actually failed, on the card it failed for, so the repair is the
+                    // cheap one (settle the audit, add the linkage) not a re-vet.
+                    `acceptance rubric '${rubric.rubricId}' has attestation card(s) on record, but NOT ONE of them ` +
+                    `counts as a settled attestation — each failed a specific vetting check. ` +
+                    `WHICH card failed WHICH check: ${vettingStatus.diagnosis}. ` +
+                    `Repair the named cause on the named card where you can (a pending grade-the-grader audit or a ` +
+                    `missing critique linkage is fixable in place); otherwise emit a fresh attestation: ` +
+                    `scorecards:emit { rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', ` +
+                    `subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, vettingConsult:'<consult conversation_id>' ` +
+                    `(or vettingWorkItem:'<review WI-/EI- id>'), ratings:{ <every meta criterion> } } — THEN grade.`
+                  : `acceptance rubric '${rubric.rubricId}' has not been VETTED against the meta-rubric yet ` +
                   `(consult-min-max-and-rubric-vetting-2026-08-17). Grading it now would be discovered invalid ` +
                   `only at ship — AFTER your independent grading pass is spent, which the independent-grader pool's ` +
                   `own constraints can make expensive to redo. Have the rubric AUTHOR vet it first: ` +

@@ -283,7 +283,15 @@ export async function getAcceptanceRubricVettingStatus(
       required: true,
       satisfied: false,
       state: 'unvetted',
-      reason: vettedCards.length > 0 ? 'stale-attestation' : 'missing-attestation',
+      // Three DIFFERENT facts, no longer collapsed: a complete attestation that
+      // is merely out of date, an attestation that exists but failed a check,
+      // and no attestation at all. `candidates` says which card and which check.
+      reason:
+        vettedCards.length > 0
+          ? 'stale-attestation'
+          : candidates.length > 0
+            ? 'rejected-attestation'
+            : 'missing-attestation',
       gateEnabled,
       metaRubricRef: META_ACCEPTANCE_RUBRIC_ID,
       currentRevision,
@@ -294,6 +302,8 @@ export async function getAcceptanceRubricVettingStatus(
       attestationIssueId: vettedCards[0]?.issueId ?? null,
       consultId: vettedCards[0]?.vetting?.consultId ?? null,
       workItemId: vettedCards[0]?.vetting?.workItemId ?? null,
+      candidates,
+      diagnosis,
     };
   }
 
@@ -313,6 +323,10 @@ export async function getAcceptanceRubricVettingStatus(
     attestationIssueId: current.issueId,
     consultId: vetting.consultId ?? null,
     workItemId: vetting.workItemId ?? null,
+    candidates,
+    // Non-null when OTHER cards were rejected even though this one carried: a
+    // satisfied verdict should not hide that some attestations did not count.
+    diagnosis,
     // The unanswered waiver exists only on the consult channel (WI-41477: a
     // work-item link with no third-party comment is refused at emit, never waived).
     ...(vetting.unanswered && vetting.consultId
