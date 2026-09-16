@@ -788,6 +788,70 @@ export async function createGoogleGmailDraft(
 }
 
 /**
+ * Revise ONE existing draft IN PLACE, preserving its draft id and its position
+ * in the mailbox. `PUT /drafts/{id}` replaces the draft's message wholesale, so
+ * the caller supplies the complete new content exactly as it would for a create.
+ *
+ * WHY THIS EXISTS (WI-10001658): without it, "revise a draft" has only one
+ * implementation — delete the draft and create a replacement — which destroys
+ * owner data (every draft id, and anything the owner has since typed into it)
+ * to perform what the API models as an edit. There is deliberately no delete
+ * seam in this module; if you are reaching for one to implement an edit, use
+ * this instead.
+ *
+ * Encoding is shared with create via `buildGoogleGmailRawMessage`, so a draft
+ * updated with `attachments` present gains them through the same
+ * `multipart/mixed` branch — there is no separate attachment path to keep in
+ * sync.
+ *
+ * D-020: like create and send, this performs NEITHER addressee rail. A caller
+ * reaching it must already have resolved the destination from a stored
+ * canonical object (rail 1) or cleared assertTrustedAddressee (rail 2).
+ */
+export async function updateGoogleGmailDraft(
+  accessToken: string,
+  draftId: string,
+  input: GoogleGmailOutboundInput,
+  provided: Pick<GoogleGmailDeps, 'fetch' | 'apiOrigin'> = {},
+): Promise<GoogleGmailDraftResult> {
+  const token = accessToken.trim();
+  if (!token) throw new Error('google_gmail_access_token_required');
+  const targetDraftId = draftId.trim();
+  if (!targetDraftId) throw new Error('google_gmail_draft_id_required');
+  const encoded = buildGoogleGmailRawMessage(input);
+  const threadId = encoded.threadId;
+  const raw = encoded.raw;
+  const body = await gmailRequest<{
+    id?: string;
+    message?: { id?: string; threadId?: string };
+  }>(
+    provided.fetch ?? fetch,
+    (provided.apiOrigin ?? GMAIL_API_ORIGIN).replace(/\/$/, ''),
+    token,
+    `/gmail/v1/users/me/drafts/${encodeURIComponent(targetDraftId)}`,
+    'draft_update',
+    {
+      method: 'PUT',
+      body: {
+        id: targetDraftId,
+        message: threadId ? { raw, threadId } : { raw },
+      },
+    },
+  );
+  const updatedDraftId = nonEmpty(body.id);
+  const messageId = nonEmpty(body.message?.id);
+  const updatedThreadId = nonEmpty(body.message?.threadId);
+  if (!updatedDraftId || !messageId || !updatedThreadId) throw new Error('google_gmail_draft_response_invalid');
+  // The in-place guarantee is the reason this seam exists: a response naming a
+  // DIFFERENT draft means the API created one rather than revising ours, and
+  // the original is still sitting in the mailbox unedited. Fail loudly instead
+  // of returning a plausible-looking result for the wrong draft.
+  if (updatedDraftId !== targetDraftId) throw new Error('google_gmail_draft_id_mismatch');
+  if (threadId && updatedThreadId !== threadId) throw new Error('google_gmail_draft_thread_mismatch');
+  return { draftId: updatedDraftId, messageId, threadId: updatedThreadId };
+}
+
+/**
  * Send one message. Reply-shaped when `threadId`/`inReplyTo` are present,
  * create-shaped when they are not.
  *
