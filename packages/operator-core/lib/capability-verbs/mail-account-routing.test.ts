@@ -86,6 +86,11 @@ describe('mail reply account routing', () => {
       },
       createDraft: async (token, input) => {
         draftTokens.push(token);
+        // The draft seam now also accepts create-shaped input, where threadId is
+        // absent. This is the REPLY path, so a missing thread is a real defect —
+        // assert it rather than coercing, which would quietly stop testing the
+        // threading contract this fixture exists for.
+        if (!input.threadId) throw new Error('fixture_expected_reply_thread_id');
         return { draftId: 'draft-2', messageId: 'out-2', threadId: input.threadId };
       },
     });
@@ -118,11 +123,12 @@ describe('mail reply account routing', () => {
         selectedSources.push(selected.id);
         return `token:${selected.id}`;
       },
-      createDraft: async (_token, input) => ({
-        draftId: 'draft-legacy',
-        messageId: 'out-legacy',
-        threadId: input.threadId,
-      }),
+      createDraft: async (_token, input) => {
+        // Same reply-path assertion as above: create-shaped input is legal at
+        // the seam now, but never on this path.
+        if (!input.threadId) throw new Error('fixture_expected_reply_thread_id');
+        return { draftId: 'draft-legacy', messageId: 'out-legacy', threadId: input.threadId };
+      },
     });
 
     expect(selectedSources).toEqual([FIRST]);
