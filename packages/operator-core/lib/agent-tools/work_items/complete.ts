@@ -296,17 +296,39 @@ const completionSpec = z
     }),
   )
   .describe(
-    // EI-39573: publish the same repair shape that the schema-level string refusal returns.
-    "Structured completion record: { summary, verification?: { filesChanged?: string[], filesDeleted?: string[], testsRun?: string, testResult?: string, verifiedHow?: string, addedTests?: boolean, coverage?: { population: string[], checked?: string[], notChecked?: string[], notApplicable?: string[], residue?: string[] } }, testsRun?, testResult?, verifiedHow?, addedTests?, filesChanged?: string[], filesDeleted?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes?, coverage? }. `completion.verification` is strict: use only the listed evidence keys; put test/typecheck/diff details in `testsRun`/`testResult` (or top-level `tests`), not `verification.tests`, `verification.typecheck`, or `verification.diff`. `verifiedHow` accepts a concise free-text label; prefer 'unit'|'integration'|'live-drove-ui'|'live-service'|'manual'|'already-passing'` for coarse queryable modes. For a terminal close, `verifiedHow:'live-drove-ui'` requires a real artifact citation in `summary`, `testsRun`, `testResult`, or `filesChanged` — DESKTOP: a screenshot/capture image path, or a recorded `tauri-agent-tools` capture/screenshot/check invocation; WEB: the deployed URL with its HTTP status, or a recorded browser-driver run (playwright/puppeteer/verdict) naming the http(s) target it drove; inspect the captured image when applicable. `verifiedHow:'live-service'` requires `testsRun`/`testResult` to jointly name the concrete service/unit/process and a falsifiable runtime observation (`MainPID`, `NRestarts`, `ActiveState`, or an HTTP status). Use 'unit'/'manual'/'integration' when no live artifact or runtime process was inspected. Put structured evidence under `completion.verification`; the top-level evidence fields are legacy aliases. Keep `deferred` and `coordNotes` at the completion level, not inside `verification`. " +
+    // EI-23379068490085254: this string is serialized TWICE (the single `completion`
+    // shorthand and every `items[].completion`), so each byte here is paid twice on
+    // every tools/list. It therefore carries ONLY rules the structure cannot express.
+    // Deliberately NOT restated: the field/type enumeration (published in this schema's
+    // own `properties` — and the hand-copy that stood here had already drifted 9 fields
+    // behind), `verifiedHow`'s label list and the residue rule (each field's own
+    // `.describe()` owns those), the rootCauseVerification key list (its own subschema),
+    // and a second copy of the object example (COMPLETION_STRING_REJECTION ends with it).
+    'Structured completion record; its fields and types are published in this schema. ' +
+      // The three wrong-key literals are spelled in full ON PURPOSE: complete.test.ts
+      // asserts each one, and they are what a caller greps for after a strict-key refusal.
+      '`completion.verification` is strict: put test/typecheck/diff details in `testsRun`/`testResult`, ' +
+      'not `verification.tests`, `verification.typecheck`, or `verification.diff`. Put structured evidence under ' +
+      '`completion.verification`; the top-level evidence fields are legacy aliases. Keep `deferred` ' +
+      'and `coordNotes` at the completion level, not inside `verification`. ' +
+      // The two live-mode ARTIFACT requirements are enforced at close time and are stated
+      // nowhere else; `verifiedHow`'s own describe defines the labels but not these floors.
+      "For a terminal close, `verifiedHow:'live-drove-ui'` requires a real artifact citation in " +
+      '`summary`, `testsRun`, `testResult`, or `filesChanged` — DESKTOP: a screenshot/capture image ' +
+      'path, or a recorded `tauri-agent-tools` capture/screenshot/check invocation; WEB: the deployed ' +
+      'URL with its HTTP status, or a recorded browser-driver run (playwright/puppeteer/verdict) naming ' +
+      "the http(s) target it drove. `verifiedHow:'live-service'` requires `testsRun`/`testResult` to " +
+      'jointly name the concrete service/unit/process and a falsifiable runtime observation (`MainPID`, ' +
+      '`NRestarts`, `ActiveState`, or an HTTP status). Use ' +
+      "'unit'/'manual'/'integration' when no live artifact or runtime process was inspected. " +
       // observation-and-recall-surface-honesty-2026-08-16 P-001: coordNotes is the second
       // input to checkpoint-harvest, so it carries the same first-line-is-the-title rule as
       // loop:checkpoint { insight }. Shared constant, never re-worded here — the guard test
       // asserts every harvest-fed surface still names it.
       `${HARVESTED_COORD_NOTES_RULE} ` +
+      // EI-39573: publish the same repair shape that the schema-level string refusal returns.
       `A bare STRING is rejected because it cannot carry structured evidence. ${COMPLETION_STRING_REJECTION} ` +
-      `Bug/capability-gap terminal closes require rootCauseVerification v2: {hypothesis,alternativeHypothesis,distinguishingTest,testResult,testProcedure,predictedObservations:{hypothesis,alternativeHypothesis},actualObservation,evidenceRefs}. ` +
-      `If verification.coverage.residue is present it may be empty to explicitly declare zero residue; ['none'] remains accepted for compatibility. ` +
-      `Object example: ${COMPLETION_OBJECT_EXAMPLE}.`,
+      'Bug/capability-gap terminal closes also require `rootCauseVerification` (its own schema lists the keys).',
   );
 
 const SPEC_ADEQUACY_CURRENTNESS_GUIDANCE =
