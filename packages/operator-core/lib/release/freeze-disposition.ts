@@ -100,6 +100,62 @@ export interface FreezeAndConvergeGateHealth {
 export const FREEZE_DISPOSITION_FRESH_MS = 3 * 60 * 60 * 1_000;
 
 /**
+ * The durable frozen-repair latency ledger kind (migration 1167) — R-7 /
+ * EI-23420599799124840.
+ *
+ * ⚠ A SEPARATE kind, for the same reason migration 1054 gave the fire anchor: consumers
+ * that treat "a `green_checkpoint` row exists" as "an outcome happened" (green-stall-
+ * watchdog's last_verdict_ms clock, readLastGateRunEvidence, lost-wake reconciliation, the
+ * /admin window summary) must not see these. Nor may they ride `green_checkpoint_fire`,
+ * whose rows reconstructGateFireDays COUNTS AS FIRES — a per-disposition latency row there
+ * would inflate the very count that reconstruction exists to make trustworthy.
+ */
+export const GATE_REPAIR_LATENCY_KIND = 'green_checkpoint_repair_latency' as const;
+
+/** One durable ledger row: the repair latencies a single tick actually held. */
+export interface GateRepairLatencyLedgerRow {
+  status: FreezeAndConvergeState;
+  detail: {
+    candidate: string | null;
+    reason: string;
+    observedAtMs: number;
+    repairLatency: FrozenRepairLatency;
+  };
+}
+
+/**
+ * PURE: project a disposition into the durable latency ledger row, or `null` when this tick
+ * has nothing measurable to record.
+ *
+ * WHY THIS EXISTS. `buildFreezeAndConvergeGateHealth` publishes the same numbers into a
+ * single MUTABLE slot (`gate_health.freezeAndConverge.repairLatency`) that the next tick
+ * shallow-merges over and a retire legitimately nulls — so the figures R-7 requires to be
+ * "measurable, not anecdotal" survive only until the queue closes, which is precisely when a
+ * postmortem wants them. Measured 2026-09-16: zero rows in pipeline_events had ever carried
+ * them (positive control passed), i.e. every repair cycle's latencies to date are gone.
+ *
+ * RETURNS NULL rather than an empty row when the tick held no readable queue: a ledger whose
+ * rows can mean "nothing was measured" is one a reader must second-guess, and an hourly null
+ * row would bury the ticks that did measure something under ~24 empty rows a day.
+ */
+export function buildGateRepairLatencyLedgerRow(
+  disposition: FreezeAndConvergeDisposition,
+  observedAtMs: number,
+): GateRepairLatencyLedgerRow | null {
+  const repairLatency = disposition.repairLatency;
+  if (!repairLatency) return null;
+  return {
+    status: disposition.state,
+    detail: {
+      candidate: disposition.candidate ?? null,
+      reason: disposition.reason,
+      observedAtMs,
+      repairLatency,
+    },
+  };
+}
+
+/**
  * PURE: project a disposition into the gate_health fragment.
  *
  * Every optional field is written EXPLICITLY as null rather than omitted. Under a shallow

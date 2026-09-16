@@ -5478,6 +5478,30 @@ export async function writeFreezeAndConvergeDisposition(
   target: GateVerdictTarget,
   disposition: FreezeAndConvergeDisposition,
 ): Promise<void> {
+  // R-7 / EI-23420599799124840: FIRST append the durable latency ledger row, THEN update
+  // the mutable slot. Order is deliberate — the slot write is the leg that can throw (its
+  // catch is below), and the ledger row is the only copy that outlives this tick, so it
+  // must not be skipped by a slot failure. appendPipelineEvent is itself non-throwing.
+  try {
+    const { buildGateRepairLatencyLedgerRow, GATE_REPAIR_LATENCY_KIND } = await import(
+      '../../release/freeze-disposition'
+    );
+    const row = buildGateRepairLatencyLedgerRow(disposition, Date.now());
+    if (row) {
+      const { appendPipelineEvent } = await import('../git-sync/pipeline-events');
+      await appendPipelineEvent({
+        workspaceId: target.workspaceId,
+        installSlug: target.installSlug,
+        kind: GATE_REPAIR_LATENCY_KIND,
+        status: row.status,
+        detail: row.detail,
+      });
+    }
+  } catch (e) {
+    console.warn(
+      `${orchestratorStdoutTag()} repair-latency ledger append failed (non-fatal): ${e instanceof Error ? e.message : e}`,
+    );
+  }
   try {
     const { buildFreezeAndConvergeGateHealth } = await import(
       '../../release/freeze-disposition'

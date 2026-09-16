@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   FREEZE_DISPOSITION_FRESH_MS,
+  GATE_REPAIR_LATENCY_KIND,
   buildFreezeAndConvergeGateHealth,
+  buildGateRepairLatencyLedgerRow,
   deriveTickFreezeDisposition,
   readFreezeAndConverge,
   summarizeFreezeAndConverge,
@@ -256,5 +258,94 @@ describe('summarizeFreezeAndConverge', () => {
 
   it('returns null — never a reassuring sentence — when nothing was measured', () => {
     expect(summarizeFreezeAndConverge({}, T0)).toBeNull();
+  });
+});
+
+describe('buildGateRepairLatencyLedgerRow — R-7 durable latency ledger (EI-23420599799124840)', () => {
+  const latency = {
+    redToFixerSpawnMs: 4 * 60_000,
+    fixToAdmitMs: 9 * 60_000,
+    admitToResumeRunStartMs: 83_713,
+    admitToVerdictMs: 31 * 60_000,
+    redAwaitingFixerMs: null,
+    admitAwaitingResumeRunStartMs: null,
+    admitAwaitingVerdictMs: null,
+    stamps: {
+      openedAtMs: T0,
+      lastRedAtMs: T0,
+      fixerSpawnedAtMs: T0 + 4 * 60_000,
+      lastAdmittedAtMs: T0 + 13 * 60_000,
+      lastResumeRunStartedAtMs: T0 + 13 * 60_000 + 83_713,
+      lastVerdictAtMs: T0 + 44 * 60_000,
+    },
+  };
+
+  // THE DEFECT, stated as a test. These same numbers already reach
+  // `gate_health.freezeAndConverge.repairLatency` — but that is ONE MUTABLE SLOT: the next
+  // tick shallow-merges over it and a retire nulls it outright. So the figures R-7 requires
+  // to be "measurable, not anecdotal" evaporate exactly when a postmortem needs them.
+  it('carries the whole latency record, so it survives the queue that produced it', () => {
+    const row = buildGateRepairLatencyLedgerRow(
+      {
+        enabled: true,
+        state: 'converging',
+        reason: 'repairHead advancing',
+        candidate: 'abc123',
+        repairLatency: latency,
+      },
+      T0 + 45 * 60_000,
+    );
+    expect(row).not.toBeNull();
+    expect(row!.status).toBe('converging');
+    expect(row!.detail.candidate).toBe('abc123');
+    expect(row!.detail.observedAtMs).toBe(T0 + 45 * 60_000);
+    // Whole-record, not a hand-picked subset: a ledger that stores only today's interesting
+    // fields cannot answer tomorrow's question, and the stamps are what make a row
+    // re-derivable rather than merely readable.
+    expect(row!.detail.repairLatency).toEqual(latency);
+  });
+
+  // The retire is the case the ledger exists for: it is the tick that CLEARS the slot.
+  it('still records the latencies on the RETIRE tick — the moment the slot is cleared', () => {
+    const row = buildGateRepairLatencyLedgerRow(
+      {
+        enabled: true,
+        state: 'retired',
+        reason: 'unreachable-green',
+        candidate: 'abc123',
+        repairLatency: latency,
+      },
+      T0 + 46 * 60_000,
+    );
+    expect(row?.status).toBe('retired');
+    expect(row?.detail.repairLatency.admitToResumeRunStartMs).toBe(83_713);
+  });
+
+  it('records NOTHING when the tick held no readable queue', () => {
+    // The null is the point. `repairLatency:null` is LEGITIMATE for a tick with no readable
+    // queue (R-7's own falsifier carves that case out explicitly). Writing an empty row
+    // anyway would bury the ticks that DID measure something under ~24 meaningless rows a
+    // day, and leave a reader unable to tell "not measured" from "measured as nothing".
+    expect(
+      buildGateRepairLatencyLedgerRow({ enabled: true, state: 'none', reason: 'no frozen candidate' }, T0),
+    ).toBeNull();
+    expect(
+      buildGateRepairLatencyLedgerRow(
+        { enabled: false, state: 'off', reason: 'flag off', repairLatency: null },
+        T0,
+      ),
+    ).toBeNull();
+  });
+
+  // RECURRENCE GUARD for the CLASS, not this instance. Folding these rows into either
+  // existing gate kind is silent and corrupting: `green_checkpoint` advances
+  // green-stall-watchdog's last_verdict_ms clock (blinding the verdict-less limb), and
+  // `green_checkpoint_fire` rows are COUNTED AS FIRES by reconstructGateFireDays (inflating
+  // the very count that reconstruction exists to make trustworthy). Neither failure raises
+  // an error — each just quietly wrongs a consumer, which is why it is pinned here.
+  it('uses a kind no existing pipeline_events consumer reads', () => {
+    expect(GATE_REPAIR_LATENCY_KIND).toBe('green_checkpoint_repair_latency');
+    expect(GATE_REPAIR_LATENCY_KIND).not.toBe('green_checkpoint');
+    expect(GATE_REPAIR_LATENCY_KIND).not.toBe('green_checkpoint_fire');
   });
 });

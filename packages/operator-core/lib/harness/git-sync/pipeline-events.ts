@@ -40,6 +40,17 @@ export type PipelineEventKind =
    *  stream (it would inflate the P-003 fires denominator). Admitted by the DB CHECK once
    *  migration 1083 applies; until then inserts best-effort warn-and-noop (weekly). */
   | 'gate_fire_drill'
+  /** R-7 (green-gate-zero-wait-convergence) / EI-23420599799124840: the frozen-repair
+   *  LATENCY ledger — one row per tick that actually held a readable repair queue, carrying
+   *  the admit→verdict / red→fixer-spawn / fix→admit clocks. Distinct kind for the same two
+   *  reasons as the rows above, and it is BOTH of them at once: on the 'green_checkpoint'
+   *  stream it would advance the verdict-less clock, and on the anchor stream it would
+   *  inflate the fires denominator. It exists because those clocks otherwise live only in
+   *  the MUTABLE `gate_health.freezeAndConverge.repairLatency` slot, which the next tick
+   *  merges over and a retire nulls — so they vanish exactly when a postmortem wants them.
+   *  Admitted by the DB CHECK once migration 1167 applies; until then inserts best-effort
+   *  warn-and-noop. */
+  | 'green_checkpoint_repair_latency'
   | 'deploy'
   | 'release_fixer';
 
