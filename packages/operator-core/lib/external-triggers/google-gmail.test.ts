@@ -351,6 +351,8 @@ describe('Google Gmail adapter', () => {
       messagePages: 0,
       historyId: 'history-new',
       backfill: null,
+      messagesGone: 0,
+      resyncReason: null,
     });
     expect(d.ingested.map((input) => input.dedupeKey)).toEqual([
       'gmail:m-1:message.received',
@@ -395,7 +397,7 @@ describe('Google Gmail adapter', () => {
 
     // The old code caught ANY 404 as "history too old", cleared the cursor and
     // restarted the resumable backfill from zero every few minutes.
-    expect(result).toMatchObject({ mode: 'incremental', messages: 1, historyId: 'history-new' });
+    expect(result).toMatchObject({ mode: 'incremental', messages: 1, messagesGone: 1, resyncReason: null, historyId: 'history-new' });
     expect(d.ingested.map((input) => input.dedupeKey)).toEqual(['gmail:m-2:message.received']);
     expect(d.updates).toHaveLength(1);
     expect((d.updates[0]!.cursor as Record<string, unknown>).backfill).toMatchObject({ status: 'throttled', pages: 3, messages: 666, startedAt: '2026-09-16T02:02:51.000Z' });
@@ -442,6 +444,8 @@ describe('Google Gmail adapter', () => {
       messagePages: 1,
       historyId: 'history-after-full',
       backfill: completeBackfill,
+      messagesGone: 0,
+      resyncReason: { operation: 'history_list', status: 404 },
     });
     expect(d.updates[0]).toEqual({
       status: 'connecting',

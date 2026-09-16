@@ -132,9 +132,28 @@ export interface GoogleGmailBackfillState {
   throttleCount: number;
 }
 
+/** Why a sync ran in mode:'full' — the Gmail call + status that rejected the stored cursor. */
+export interface GoogleGmailResyncReason {
+  operation: string;
+  status: number;
+}
+
 export interface GoogleGmailSyncResult {
   mode: 'incremental' | 'full';
   messages: number;
+  /**
+   * Listed messages that were gone (messages.get 404) by the time they were
+   * fetched and were skipped. Counted so the skip path is observable in the
+   * poll summary instead of silently absorbed (WI-10001662).
+   */
+  messagesGone: number;
+  /**
+   * Set ONLY when mode:'full' was forced by history.list rejecting the stored
+   * cursor; null for an incremental sync and for a cursorless bootstrap. This
+   * is the record of WHY a full resync fired, which the aggregate
+   * full_resyncs counter alone could not tell (WI-10001662).
+   */
+  resyncReason: GoogleGmailResyncReason | null;
   historyPages: number;
   messagePages: number;
   historyId: string;
@@ -973,9 +992,10 @@ async function incrementalSync(
   startHistoryId: string,
   sinks: IngestSink[],
   deps: Required<Pick<GoogleGmailDeps, 'fetch' | 'apiOrigin' | 'ingest'>>,
-): Promise<{ messages: number; pages: number; historyId: string }> {
+): Promise<{ messages: number; gone: number; pages: number; historyId: string }> {
   let pageToken: string | null = null;
   let pages = 0;
+  let gone = 0;
   let nextHistoryId: string | null = null;
   const delivered = new Set<string>();
   do {
@@ -999,7 +1019,10 @@ async function incrementalSync(
         const id = nonEmpty(added.message?.id);
         if (!id || delivered.has(id)) continue;
         const fetched = await getMessageIfPresent(deps.fetch, deps.apiOrigin, accessToken, id);
-        if (!fetched) continue;
+        if (!fetched) {
+          gone += 1;
+          continue;
+        }
         await deliver(sql, deps.ingest, sinks, source, fetched);
         delivered.add(id);
       }
@@ -1008,7 +1031,7 @@ async function incrementalSync(
     pageToken = nonEmpty(body.nextPageToken);
   } while (pageToken);
   if (!nextHistoryId) throw new Error('google_gmail_next_history_id_missing');
-  return { messages: delivered.size, pages, historyId: nextHistoryId };
+  return { messages: delivered.size, gone, pages, historyId: nextHistoryId };
 }
 
 function newBackfillState(now: Date): GoogleGmailBackfillState {
@@ -1041,10 +1064,11 @@ async function backfillChunk(
   initial: GoogleGmailBackfillState,
   budget: number,
   now: Date,
-): Promise<{ messages: number; pages: number; state: GoogleGmailBackfillState; source: ExternalTriggerSourceRow }> {
+): Promise<{ messages: number; gone: number; pages: number; state: GoogleGmailBackfillState; source: ExternalTriggerSourceRow }> {
   let state: GoogleGmailBackfillState = { ...initial, status: 'pending', throttledUntil: null };
   let workingSource = source;
   let messages = 0;
+  let gone = 0;
   let pages = 0;
   const pageSize = Math.min(budget, BACKFILL_LIST_PAGE_SIZE, MAX_LIST_PAGE_SIZE);
   const persist = async (next: GoogleGmailBackfillState): Promise<void> => {
@@ -1074,7 +1098,10 @@ async function backfillChunk(
         const id = nonEmpty(listed.id);
         if (!id) continue;
         const fetched = await getMessageIfPresent(deps.fetch, deps.apiOrigin, accessToken, id);
-        if (!fetched) continue;
+        if (!fetched) {
+          gone += 1;
+          continue;
+        }
         await deliver(sql, deps.ingest, sinks, source, fetched);
         delivered += 1;
       }
@@ -1089,7 +1116,7 @@ async function backfillChunk(
         throttledUntil: new Date(now.getTime() + backfillThrottleMs(state.throttleCount)).toISOString(),
         throttleCount,
       });
-      return { messages: messages + delivered, pages, state, source: workingSource };
+      return { messages: messages + delivered, gone, pages, state, source: workingSource };
     }
     messages += delivered;
     pages += 1;
@@ -1105,7 +1132,7 @@ async function backfillChunk(
     });
     if (complete) break;
   }
-  return { messages, pages, state, source: workingSource };
+  return { messages, gone, pages, state, source: workingSource };
 }
 
 /**
@@ -1146,7 +1173,9 @@ export async function syncGoogleGmailSource(
   let workingSource = source;
   let historyId = googleGmailSourceHistoryId(source);
   let mode: GoogleGmailSyncResult['mode'] = historyId ? 'incremental' : 'full';
+  let resyncReason: GoogleGmailResyncReason | null = null;
   let messages = 0;
+  let messagesGone = 0;
   let historyPages = 0;
   let messagePages = 0;
 
@@ -1154,6 +1183,7 @@ export async function syncGoogleGmailSource(
     try {
       const synced = await incrementalSync(sql, source, accessToken, historyId, sinks, deps);
       messages = synced.messages;
+      messagesGone = synced.gone;
       historyPages = synced.pages;
       historyId = synced.historyId;
     } catch (cause) {
@@ -1163,6 +1193,9 @@ export async function syncGoogleGmailSource(
       // history page and its fetch — used to land here too and restarted the
       // backfill from zero every few minutes (EI-23429618437235533).
       if (!isGoogleGmailHistoryExpiredError(cause)) throw cause;
+      // The guard above is the type narrowing: it only passes a GoogleGmailApiError.
+      const expired = cause as GoogleGmailApiError;
+      resyncReason = { operation: expired.operation, status: expired.status };
       const clearedCursor = cursorWithoutHistory(source.cursor);
       workingSource = await updateSource(sql, source.workspaceId, source.id, {
         status: 'connecting',
@@ -1200,6 +1233,7 @@ export async function syncGoogleGmailSource(
       const budget = googleGmailBackfillBudget(budgetCeiling, backfill.throttleCount);
       const chunk = await backfillChunk(sql, workingSource, accessToken, sinks, deps, updateSource, backfill, budget, now);
       messages += chunk.messages;
+      messagesGone += chunk.gone;
       messagePages += chunk.pages;
       backfill = chunk.state;
       workingSource = chunk.source;
@@ -1217,5 +1251,5 @@ export async function syncGoogleGmailSource(
     lastError: null,
     connected: true,
   });
-  return { mode, messages, historyPages, messagePages, historyId, backfill };
+  return { mode, messages, messagesGone, resyncReason, historyPages, messagePages, historyId, backfill };
 }

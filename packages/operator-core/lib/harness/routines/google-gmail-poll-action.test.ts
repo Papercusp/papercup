@@ -61,6 +61,8 @@ describe('google-gmail-poll system action', () => {
         messagePages: 1,
         historyId: 'history-after-full',
         backfill: null,
+        messagesGone: 0,
+        resyncReason: null,
       };
     });
     const getSource = vi.fn(async () => {
@@ -125,8 +127,10 @@ describe('google-gmail-poll system action', () => {
       acknowledged: 0,
       messages: 7,
       fullResyncs: 1,
+      messagesGone: 0,
       failures: [],
     });
+    expect(formatGoogleGmailPollLog(result)).toContain('full_resyncs=1 messages_gone=0');
   });
 
   it('defers watch renewal while the backfill is parked on a quota cool-down and the watch is still valid', async () => {
@@ -178,6 +182,8 @@ describe('google-gmail-poll system action', () => {
         messagePages: 0,
         historyId: 'history-pinned',
         backfill: null,
+        messagesGone: 0,
+        resyncReason: null,
       })),
       updateSource,
     });
@@ -310,6 +316,8 @@ describe('google-gmail-poll system action', () => {
         messagePages: 1,
         historyId: 'history-pinned',
         backfill: null,
+        messagesGone: 0,
+        resyncReason: null,
       }),
     );
     const result = await runGoogleGmailPoll(
@@ -360,7 +368,10 @@ describe('google-gmail-poll system action', () => {
       messagePages: 0,
       historyId: `next-${current.id}`,
       backfill: null,
+      messagesGone: current.id === 'source-a' ? 2 : 0,
+      resyncReason: current.id === 'source-a' ? null : { operation: 'history_list', status: 404 },
     }));
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     const result = await runGoogleGmailPoll(CTX, {
       sql: {} as never,
@@ -422,8 +433,18 @@ describe('google-gmail-poll system action', () => {
       acknowledged: 3,
       messages: 5,
       fullResyncs: 1,
+      messagesGone: 2,
       failures: [],
     });
+    // WI-10001662: the poll summary carries the vanished-message count, and every
+    // full resync logs WHY it fired (operation + status) instead of a bare counter bump.
+    expect(formatGoogleGmailPollLog(result)).toContain('full_resyncs=1 messages_gone=2');
+    const logged = logSpy.mock.calls.map((call) => String(call[0]));
+    logSpy.mockRestore();
+    expect(logged).toContain(
+      '[google-gmail-poll] full_resync source=source-b reason=history_expired operation=history_list status=404',
+    );
+    expect(logged.some((line) => line.includes('full_resync source=source-a'))).toBe(false);
     expect(syncSource).toHaveBeenCalledTimes(2);
     expect(acknowledged).toEqual([['ack-a', 'ack-b', 'ack-irrelevant']]);
   });
@@ -463,6 +484,8 @@ describe('google-gmail-poll system action', () => {
           messagePages: 0,
           historyId: 'next',
           backfill: null,
+          messagesGone: 0,
+          resyncReason: null,
         };
       }),
       acknowledge,
@@ -546,6 +569,8 @@ describe('google-gmail-poll system action', () => {
           messagePages: 0,
           historyId: 'next-refresh',
           backfill: null,
+          messagesGone: 0,
+          resyncReason: null,
         };
       }),
       acknowledge: vi.fn(async (_workspaceId, ackIds) => ackIds.length),
@@ -597,6 +622,8 @@ describe('google-gmail-poll system action', () => {
         messagePages: 0,
         historyId,
         backfill: null,
+        messagesGone: 0,
+        resyncReason: null,
       };
     });
     const acknowledge = vi.fn(async (_workspaceId: string, ackIds: string[]) => ackIds.length);
@@ -750,6 +777,7 @@ describe('google-gmail-poll system action', () => {
       acknowledged: 0,
       messages: 0,
       fullResyncs: 0,
+      messagesGone: 0,
       failures: [
         { sourceId: 'source-a', status: 'degraded', error: provisionError },
         { sourceId: 'source-b', status: 'degraded', error: provisionError },
