@@ -84,7 +84,7 @@
       "default": "./src/papercup-chat/chat-ref-popup-params.ts"
     },
     "./chat-ref-popup-host": {
-      "types": "./src/chat-ref-popup-host.tsx",
+      "types": "./src/chat-ref-popup-host.d.ts",
       "import": "./src/chat-ref-popup-host.tsx",
       "default": "./src/chat-ref-popup-host.tsx"
     }
