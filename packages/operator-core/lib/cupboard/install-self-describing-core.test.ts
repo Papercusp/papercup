@@ -266,8 +266,8 @@ describe('install-self-describing-core content pin (P-002 — install verifies t
     expect(d.calls.fetchAtSha).toEqual([[GITHUB_URL, expect.stringContaining(root), COMMIT]]);
     expect(d.calls.cloneRepo).toEqual([]);
     const installed = await fs.readFile(join(process.env.PAPERCUSP_HOME!, 'rubrics', ref, 'rubric.json'), 'utf8');
-    expect(installed).toContain('pinned');
-    expect(installed).not.toContain('moved');
+    expect(installed).toContain('pinned rubric');
+    expect(installed).not.toContain('moved rubric');
   });
 
   it('refuses content-address-mismatch when the fetched tree differs from the pin, and places nothing', async () => {
