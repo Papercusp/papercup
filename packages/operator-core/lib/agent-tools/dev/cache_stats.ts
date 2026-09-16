@@ -15,15 +15,26 @@
  * live depth after a saturated gate proved unobservable from the running app.
  *
  * ⚠ PER-WORKER BY CONSTRUCTION. These counters live in ONE process's memory and
- * `:3070` runs a reuseport CLUSTER (PAPERCUSP_CLUSTER, 16 on this box), so a
- * single call is answered by whichever worker took the request and reports only
- * that worker's tallies. `pid` and `clusterSize` are returned so the numbers are
- * never read as fleet-wide, and `sampledWorkers` accumulates across repeat calls
- * so a caller can tell "I sampled one of 16" from "I sampled them all".
+ * `:3070` runs a reuseport CLUSTER, so a single call is answered by whichever
+ * worker took the request and reports only that worker's tallies. `pid` and
+ * `clusterSize` are returned so the numbers are never read as fleet-wide, and
+ * `sampledWorkers` accumulates across repeat calls so a caller can tell "I
+ * sampled one of N" from "I sampled them all".
+ *
+ * ⚠ `clusterSize` MUST come from `resolveClusterWorkers()` (cluster-fork.ts) and
+ * never from a hand-read env var: PAPERCUSP_CLUSTER_WORKERS SHADOWS
+ * PAPERCUSP_CLUSTER, and on this box BOTH are set (6 and 16 respectively). This
+ * tool read PAPERCUSP_CLUSTER directly until EI-23365791722890491 and so reported
+ * 16 workers where the operator forks 6 — scaling every per-worker extrapolation
+ * a caller makes from it by 2.67x, in the direction that understates per-worker
+ * load. Call the resolver; do not re-derive the precedence here (derived-truth
+ * ladder rung 1 — cluster-fork.ts owns this truth).
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { snapshotCachedReadStats } from '../../cache';
+import { resolveClusterWorkers } from '../../cluster-fork';
+import { getResourceProfile } from '../../resource-profile';
 
 /** Workers observed across calls in THIS process's lifetime — see the pid caveat. */
 const SEEN_PIDS = new Set<number>();
@@ -78,7 +89,7 @@ export default defineTool({
       })
       .sort((a, b) => b.total - a.total);
 
-    const clusterSize = Number(process.env.PAPERCUSP_CLUSTER ?? 1) || 1;
+    const clusterSize = resolveClusterWorkers(process.env, getResourceProfile().httpWorkers);
     // NOTE: this reduce enumerates fields explicitly, so a counter added to
     // CachedReadToolStats is NOT picked up here automatically the way the per-row
     // `...s` spread above picks it up — add it in BOTH places or the totals silently

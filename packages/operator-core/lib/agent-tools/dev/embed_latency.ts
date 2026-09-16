@@ -21,6 +21,13 @@ import {
   embedLatencyObservedCount,
   readEmbedLatency,
 } from '@papercusp/search';
+// ⚠ `clusterSize` MUST come from the resolver, never a hand-read env var:
+// PAPERCUSP_CLUSTER_WORKERS SHADOWS PAPERCUSP_CLUSTER and both are set on this box
+// (6 and 16). Reading PAPERCUSP_CLUSTER directly — which this tool did until
+// EI-23365791722890491 — reported 16 workers where the operator forks 6, and the
+// wrong number was quoted straight at the caller in `perWorkerCaveat`.
+import { resolveClusterWorkers } from '../../cluster-fork';
+import { getResourceProfile } from '../../resource-profile';
 
 /** Workers observed across calls in this process's lifetime. */
 const SEEN_PIDS = new Set<number>();
@@ -77,7 +84,7 @@ export default defineTool({
     const pid = process.pid;
     SEEN_PIDS.add(pid);
     const window = readEmbedLatency(args?.windowMs === undefined ? {} : { windowMs: args.windowMs });
-    const clusterSize = Number(process.env.PAPERCUSP_CLUSTER ?? 1) || 1;
+    const clusterSize = resolveClusterWorkers(process.env, getResourceProfile().httpWorkers);
     return {
       data: {
         ok: true,

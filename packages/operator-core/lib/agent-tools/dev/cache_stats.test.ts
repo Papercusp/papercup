@@ -160,7 +160,11 @@ describe('dev:cache_stats', () => {
 
   it('emits the per-worker caveat only when actually clustered', async () => {
     const prev = process.env.PAPERCUSP_CLUSTER;
+    const prevWorkers = process.env.PAPERCUSP_CLUSTER_WORKERS;
     try {
+      // Both vars must be controlled: CLUSTER_WORKERS SHADOWS CLUSTER, so an inherited
+      // one (the operator's own env sets it) would otherwise decide this assertion.
+      delete process.env.PAPERCUSP_CLUSTER_WORKERS;
       process.env.PAPERCUSP_CLUSTER = '16';
       const clustered = await read();
       expect(clustered.clusterSize).toBe(16);
@@ -171,6 +175,32 @@ describe('dev:cache_stats', () => {
     } finally {
       if (prev === undefined) delete process.env.PAPERCUSP_CLUSTER;
       else process.env.PAPERCUSP_CLUSTER = prev;
+      if (prevWorkers === undefined) delete process.env.PAPERCUSP_CLUSTER_WORKERS;
+      else process.env.PAPERCUSP_CLUSTER_WORKERS = prevWorkers;
+    }
+  });
+
+  // EI-23365791722890491 REGRESSION GUARD. This tool computed clusterSize as
+  // `Number(process.env.PAPERCUSP_CLUSTER ?? 1) || 1`, which ignores the var that
+  // actually wins. On the live box (CLUSTER_WORKERS=6, CLUSTER=16 — both set) it
+  // therefore reported 16 workers against 6 real ones. Every assertion above still
+  // passed while that was true, because none of them set both vars at once; only
+  // this case distinguishes the resolver from a hand-read of the shadowed var.
+  it('honours PAPERCUSP_CLUSTER_WORKERS over PAPERCUSP_CLUSTER when both are set', async () => {
+    const prev = process.env.PAPERCUSP_CLUSTER;
+    const prevWorkers = process.env.PAPERCUSP_CLUSTER_WORKERS;
+    try {
+      process.env.PAPERCUSP_CLUSTER = '16';
+      process.env.PAPERCUSP_CLUSTER_WORKERS = '6';
+      const data = await read();
+      expect(data.clusterSize).toBe(6);
+      expect(String(data.perWorkerCaveat)).toContain('6 workers');
+      expect(String(data.perWorkerCaveat)).not.toContain('16 workers');
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_CLUSTER;
+      else process.env.PAPERCUSP_CLUSTER = prev;
+      if (prevWorkers === undefined) delete process.env.PAPERCUSP_CLUSTER_WORKERS;
+      else process.env.PAPERCUSP_CLUSTER_WORKERS = prevWorkers;
     }
   });
 

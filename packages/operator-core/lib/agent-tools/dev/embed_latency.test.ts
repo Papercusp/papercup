@@ -30,16 +30,23 @@ async function read(args: { windowMs?: number } = {}) {
 
 describe('dev:embed_latency', () => {
   const previousCluster = process.env.PAPERCUSP_CLUSTER;
+  const previousClusterWorkers = process.env.PAPERCUSP_CLUSTER_WORKERS;
 
   beforeEach(() => {
     resetEmbedLatency();
+    // BOTH vars, because PAPERCUSP_CLUSTER_WORKERS SHADOWS PAPERCUSP_CLUSTER: clearing
+    // only the latter leaves an inherited former (the operator's own env sets it to 6)
+    // silently deciding every clusterSize assertion in this suite.
     delete process.env.PAPERCUSP_CLUSTER;
+    delete process.env.PAPERCUSP_CLUSTER_WORKERS;
   });
 
   afterEach(() => {
     resetEmbedLatency();
     if (previousCluster === undefined) delete process.env.PAPERCUSP_CLUSTER;
     else process.env.PAPERCUSP_CLUSTER = previousCluster;
+    if (previousClusterWorkers === undefined) delete process.env.PAPERCUSP_CLUSTER_WORKERS;
+    else process.env.PAPERCUSP_CLUSTER_WORKERS = previousClusterWorkers;
   });
 
   it('reads the actual @papercusp/search ring with caller budget and outcome', async () => {
@@ -82,6 +89,21 @@ describe('dev:embed_latency', () => {
     expect(data.pid).toBe(process.pid);
     expect(data.sampledWorkers).toBeGreaterThanOrEqual(1);
     expect(typeof data.uptimeSec).toBe('number');
+  });
+
+  // EI-23365791722890491 REGRESSION GUARD. This tool computed clusterSize as
+  // `Number(process.env.PAPERCUSP_CLUSTER ?? 1) || 1`, ignoring the var that actually
+  // wins, and so told callers "16 workers serve the operator" on a box running 6. The
+  // case above passed throughout, because it sets only the shadowed var; setting BOTH
+  // is what distinguishes the resolver from a hand-read of PAPERCUSP_CLUSTER.
+  it('honours PAPERCUSP_CLUSTER_WORKERS over PAPERCUSP_CLUSTER when both are set', async () => {
+    process.env.PAPERCUSP_CLUSTER = '16';
+    process.env.PAPERCUSP_CLUSTER_WORKERS = '6';
+    const data = await read();
+
+    expect(data.clusterSize).toBe(6);
+    expect(String(data.perWorkerCaveat)).toContain('6 workers');
+    expect(String(data.perWorkerCaveat)).not.toContain('16 workers');
   });
 
   it('reports an empty ring as measured zero samples, not a healthy verdict', async () => {
