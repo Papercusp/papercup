@@ -57,6 +57,7 @@ import {
 import type { CardResponse, ChatTurn, ChatTurnToolCall, OpenCardSnapshot, ReportBlock } from '@papercusp/chat-protocol';
 import { remarkWorkRefs } from './remark-work-refs';
 import type { WorkRefKind } from './parse-work-refs';
+import { canOpenWorkRef } from './chat-ref-popup-params';
 import { HydratedWorkRefPill } from './HydratedWorkRefPill';
 import { MessageTimestamp } from './message-timestamp';
 import {
@@ -225,7 +226,14 @@ export const ChatMarkdown = memo(function ChatMarkdown({
             harnessSlug={harnessSlug ?? ''}
             planSlug={planSlug}
             size="xs"
-            onActivate={onWorkRefActivate ? () => onWorkRefActivate({ id, kind, planSlug }) : undefined}
+            onActivate={
+              // WI-10001541: a seam being wired is NOT the same question as this
+              // ref having somewhere to go. Gate on the shared decision so a ref
+              // that opens nothing renders as inert text rather than a dead button.
+              onWorkRefActivate && canOpenWorkRef({ id, kind, planSlug }, harnessSlug)
+                ? () => onWorkRefActivate({ id, kind, planSlug })
+                : undefined
+            }
           />
         );
       },
@@ -584,7 +592,14 @@ function ReportItemText({
             harnessSlug={harnessSlug ?? ''}
             planSlug={planSlug}
             size="xs"
-            onActivate={onWorkRefActivate ? () => onWorkRefActivate({ id, kind, planSlug }) : undefined}
+            onActivate={
+              // WI-10001541: a seam being wired is NOT the same question as this
+              // ref having somewhere to go. Gate on the shared decision so a ref
+              // that opens nothing renders as inert text rather than a dead button.
+              onWorkRefActivate && canOpenWorkRef({ id, kind, planSlug }, harnessSlug)
+                ? () => onWorkRefActivate({ id, kind, planSlug })
+                : undefined
+            }
           />
         );
       };

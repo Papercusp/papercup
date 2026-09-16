@@ -106,3 +106,32 @@ export function workRefPopupTarget(
   if (!harnessSlug) return null;
   return { param: CHAT_WORK_ITEM_POPUP_PARAM, value: encodeScopedRef(harnessSlug, ref.id) };
 }
+
+/**
+ * Whether activating this ref would open ANYTHING — i.e. whether the pill has
+ * earned an interactive affordance (WI-10001541).
+ *
+ * WHY THIS EXISTS: `workRefPopupTarget` returning `null` is a legitimate,
+ * deliberate outcome (see its two cases above), but the renderer used to decide
+ * a pill's TAG from a different question — "did the host wire a seam at all?" —
+ * and those two questions disagree for exactly the refs that resolve to
+ * nothing. The result was a `<button>` that could be focused, tabbed to and
+ * clicked and did nothing at all: the same dead-click symptom WI-10001509 fixed
+ * for work-item pills, surviving one layer up for plan-item pills. A control
+ * that cannot act is worse than plain text, because only the control claims it
+ * can.
+ *
+ * So the ONE decision that already governs what activation does now also
+ * governs whether the pill offers activation; a ref that opens nothing renders
+ * as the inert `<span>` branch instead. Gating on the shared decision rather
+ * than on a per-host predicate is deliberate: both hosts wire this seam to
+ * these popups, and the whole point of this module is that they cannot drift.
+ * A future host with genuinely different activation semantics is when to add a
+ * host-supplied predicate — not before.
+ */
+export function canOpenWorkRef(
+  ref: ChatWorkRef,
+  harnessSlug: string | null | undefined,
+): boolean {
+  return workRefPopupTarget(ref, harnessSlug) !== null;
+}
