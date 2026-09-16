@@ -159,6 +159,68 @@ export function serializedInputSchemaBytes(inputSchema: unknown): number {
   return serialized === undefined ? 0 : UTF8_ENCODER.encode(serialized).byteLength;
 }
 
+/** The same schema with every `description` string removed — its structural remainder. */
+function stripSchemaDescriptions(node: unknown): unknown {
+  if (node === null || typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map(stripSchemaDescriptions);
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === 'description' && typeof value === 'string') continue;
+    out[key] = stripSchemaDescriptions(value);
+  }
+  return out;
+}
+
+/**
+ * How many of a schema's bytes are DESCRIPTION PROSE — the half a `.describe()` edit can
+ * actually reach (EI-23379068490085254).
+ *
+ * `serializedInputSchemaBytes()` above says HOW MUCH a tool costs; it cannot say WHICH
+ * lever moves it, which is what made schema trims guesswork in exactly the way
+ * `promptWeightBreakdown()` was added to fix for the prompt-weight tier. Measured across
+ * the live catalog 2026-09-16: 697,522 B of prose in 1,214,058 B of argSchema (57.5%,
+ * 889 tools) — and the distribution is what matters, because the outliers are the tools
+ * an author is most likely to be editing (coord:send 80%, facts:assert 84%). A tool that
+ * is 84% prose does not need a schema redesign; it needs its `.describe()` strings cut,
+ * and that is a five-minute edit an author will make only if they can SEE it.
+ *
+ * This is the DELTA — total minus the structural remainder — not the sum of the raw
+ * description strings, so it charges prose for its `"description":` key, quotes, comma and
+ * JSON escaping too, and `prose + structural === total` exactly. That is what makes it
+ * read ~6 points above the raw-string share quoted in EI-23379068490085254's body and in
+ * `.papercusp/scratch/whale-composition.mts` (51.5% catalog-wide, coord:send 77%); both
+ * are honest, but only this one answers "how many bytes would deleting the prose give me
+ * back". Do not compare a number from one method against a pin or a figure from the other.
+ */
+export function serializedInputSchemaProseBytes(inputSchema: unknown): number {
+  const total = serializedInputSchemaBytes(inputSchema);
+  if (total === 0) return 0;
+  return total - serializedInputSchemaBytes(stripSchemaDescriptions(inputSchema));
+}
+
+/**
+ * Prose share at or above which `tool-weight` calls a schema PROSE-HEAVY.
+ *
+ * The catalog-wide share is 57.5%, so most of a schema being prose is NORMAL and flagging
+ * it would be noise. This is set above the bulk of the distribution so it names
+ * the tools where prose is not merely present but is essentially the whole bill — the
+ * ones where "trim `.describe()`" is the complete answer. It is advisory only: nothing
+ * fails on it, because a high share is not itself a defect (a small, well-documented
+ * schema is exactly what good guidance looks like). `tool-weight` therefore only raises
+ * it for a tool that is ALSO over SCHEMA_BYTE_BUDGET, i.e. one the ratchet already
+ * governs and whose author is already being asked to cut something.
+ *
+ * Census at this value (2026-09-16, 889 exposed tools): 20 tools over the budget, 9 of
+ * them flagged. It therefore SPLITS the heavy population rather than firing on all of it
+ * or none — the two ways a threshold like this becomes furniture. The nine are
+ * work_items:list 86%, fleet:launch-on-plan 84%, facts:assert 84%, coord:send 80%,
+ * loop:arm 79%, capability:launch-agent 79%, work_items:checkpoint 76%, plans:set-status
+ * 76%, loop:checkpoint 74%; the loudest correct SILENCE is scorecards:emit at 41% and
+ * work_items:complete at 51% — both heavy, neither reachable by trimming prose. Re-run
+ * the census before moving this number: `npm run tool-weight -- --json --all`.
+ */
+export const SCHEMA_PROSE_SHARE_ALERT = 0.7;
+
 /** Calculate the aggregate schema load for one selected tool set. */
 export function selectedInputSchemaBudget(
   tools: readonly SelectedInputSchemaTool[],
@@ -218,6 +280,10 @@ export interface NamedToolWeight {
    *  1,500-char prompt-weight budget; the heaviest tool carries 43 KB). Optional for
    *  the same reason as `breakdown`: a fixture may supply bare `{ name, weight }`. */
   schemaBytes?: number;
+  /** Of `schemaBytes`, how many are `.describe()` prose — WHICH lever moves this tool's
+   *  schema, the schema-tier counterpart to `breakdown` (EI-23379068490085254). Optional
+   *  for the same reason, and always present when `schemaBytes` is. */
+  schemaProseBytes?: number;
 }
 
 /**
@@ -256,6 +322,7 @@ export function namedToolWeights(catalog?: readonly ProjectedTool[]): NamedToolW
         weight: breakdown.total,
         breakdown,
         schemaBytes: serializedInputSchemaBytes(t.inputSchema),
+        schemaProseBytes: serializedInputSchemaProseBytes(t.inputSchema),
       };
     })
     .filter((t) => t.name !== '(unexposed)');
