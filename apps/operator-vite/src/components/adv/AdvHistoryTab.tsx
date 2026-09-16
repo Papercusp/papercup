@@ -7,6 +7,7 @@ import {
   type BuildHistorySnapshotSource,
 } from '@papercusp/ui-primitives';
 import { useAdvScope } from './AdvShell';
+import './adv-history-tab.css';
 
 /**
  * How many plans the route serves per page when `?limit` is omitted
