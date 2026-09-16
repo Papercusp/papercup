@@ -13920,15 +13920,21 @@ export async function measureRepairTickLegs(
     resolveHead(): Promise<string>;
     /** Check whether a subject hive declares one root npm script. Absent scripts are a
      *  legitimate per-hive opt-out and must be skipped; unreadable package metadata fails
-     *  closed. Optional so older/test-only callers preserve their previous behavior. */
+     *  closed. Optional so older/test-only callers preserve their previous behavior.
+     *  Consulted for ROOT scripts only — see the call site for why a workspace run is
+     *  never pre-checked. */
     scriptAvailability?(script: string): NpmScriptCheck;
-    /** Run one root npm script; non-zero code = fail, throw = errored. */
-    runScript(script: string): Promise<{ code: number; tail: string }>;
+    /** Run one npm script; non-zero code = fail, throw = errored. `workspace` is null for
+     *  a root script and otherwise names the workspace the script must run IN. */
+    runScript(
+      script: string,
+      workspace: string | null,
+    ): Promise<{ code: number; tail: string }>;
     log(line: string): void;
     now?: () => number;
   },
   ref: string,
-  registry: Record<string, readonly string[]> = NON_TEST_GATE_SCRIPTS,
+  registry: Record<string, readonly RepairTickRun[]> = NON_TEST_GATE_SCRIPTS,
 ): Promise<RepairTickLegs | null> {
   const now = io.now ?? Date.now;
   try {
@@ -13947,7 +13953,7 @@ export async function measureRepairTickLegs(
     return null;
   }
   const legs: RepairTickLegRecord[] = [];
-  for (const [gateId, scripts] of Object.entries(registry)) {
+  for (const [gateId, runs] of Object.entries(registry)) {
     const startedAt = now();
     let worst: RepairTickLegRecord["status"] = "pass";
     const tails: string[] = [];
@@ -13956,46 +13962,58 @@ export async function measureRepairTickLegs(
     // verified", so a leg is reported `not-checked` only when NOTHING that ran verified.
     let notCheckedAny = false;
     let verifiedAny = false;
-    for (const script of scripts) {
+    for (const run of runs) {
+      const { script, workspace } = normalizeRepairTickRun(run);
+      // The same label `measureTargetedGateRuns` uses, so a workspace run is identifiable in
+      // the tail and is classified by the id `isNotCheckedNonGating` is registered against.
+      const label = workspace ? `${workspace} :: ${script}` : script;
       let availability: NpmScriptCheck | undefined;
       try {
-        availability = io.scriptAvailability?.(script);
+        // WI-10001529: a WORKSPACE run is deliberately NOT pre-checked. `scriptAvailability`
+        // reads ONE package.json — the checkout root's — so asking it about `<ws> :: <script>`
+        // answers about the root manifest and returns "absent" for a script that plainly
+        // exists in the workspace, silently skipping the very signature this path exists to
+        // keep measured. The check earns its keep only for the static ROOT registry, whose
+        // scripts a subject hive legitimately may not declare; a workspace task id came from
+        // a task the gate MEASURED failing, so its script demonstrably existed. If it has
+        // since vanished the run reports a fail — loud and honest, never a silent skip.
+        availability = workspace ? undefined : io.scriptAvailability?.(script);
       } catch (e) {
         worst = "errored";
         tails.push(
-          `${script}: package.json inspection failed: ${e instanceof Error ? e.message : String(e)}`,
+          `${label}: package.json inspection failed: ${e instanceof Error ? e.message : String(e)}`,
         );
         continue;
       }
       if (availability === "absent") continue;
       if (availability === "unreadable") {
         worst = "errored";
-        tails.push(`${script}: package.json unreadable`);
+        tails.push(`${label}: package.json unreadable`);
         continue;
       }
       ranScript = true;
       try {
-        const r = await io.runScript(script);
+        const r = await io.runScript(script, workspace);
         // WI-10000288: the same three-outcome contract `runGateAtRef` applies, and it matters
         // MORE here — this is the path that rebuilds `failingSignatures`. A guard registered
         // `notCheckedIsNonGating` exiting EXIT_NOT_CHECKED examined nothing (empty
         // working-tree diff in the clean checkout), so collapsing it into `fail` re-entered a
         // leg into the repair signature every tick that no fix to the subject could ever
         // retire — the verdict was never about the subject.
-        if (r.code === EXIT_NOT_CHECKED && isNotCheckedNonGating(script)) {
+        if (r.code === EXIT_NOT_CHECKED && isNotCheckedNonGating(label)) {
           notCheckedAny = true;
-          tails.push(`${script}: NOT CHECKED (examined nothing — not gating)`);
+          tails.push(`${label}: NOT CHECKED (examined nothing — not gating)`);
         } else if (r.code !== 0) {
           if (worst === "pass") worst = "fail";
           tails.push(
-            `${script}: exit ${r.code}${r.tail ? ` — ${r.tail}` : ""}`,
+            `${label}: exit ${r.code}${r.tail ? ` — ${r.tail}` : ""}`,
           );
         } else {
           verifiedAny = true;
         }
       } catch (e) {
         worst = "errored";
-        tails.push(`${script}: ${e instanceof Error ? e.message : String(e)}`);
+        tails.push(`${label}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
     if (!ranScript && worst === "pass") worst = "skipped";
@@ -14021,6 +14039,30 @@ export async function measureRepairTickLegs(
   };
 }
 
+/** WI-10001529: the gate ids ONE repair tick must re-measure — the static registry legs PLUS
+ *  every re-runnable signature the QUEUE is actually holding.
+ *
+ *  Measuring only the registry is what deadlocked an `awaiting-fixer` queue forever. A queued
+ *  workspace-task signature (`<ws> :: test`) is not a registry key, so no tick ever re-ran it:
+ *  `queue.failingTests` kept the signature while the tick's snapshot reproduced none of it, the
+ *  two derived failure signatures could therefore never be equal, and the dispatch guard
+ *  refused every tick — a hold no fix to the subject could ever clear (observed 2026-09-15,
+ *  `@papercusp/web :: test`). Re-running the signature is the only thing that can retire it.
+ *
+ *  A queue entry that is NOT re-runnable — a `{workspace, file}` failing test — is excluded on
+ *  purpose: that is the fixer's subject, not a cheap leg, and {@link isRerunnableGateEntry} is
+ *  the same admission test the stale-red auto-refire already applies to these exact ids. */
+export function repairTickGateIds(queue: {
+  failingTests?: readonly string[];
+}): string[] {
+  return [
+    ...new Set([
+      ...Object.keys(NON_TEST_GATE_SCRIPTS),
+      ...(queue.failingTests ?? []).filter(isRerunnableGateEntry),
+    ]),
+  ];
+}
+
 /**
  * P-009: attach the cheap-legs measurement to an `awaiting-fixer` repair hold result, at
  * the ONE point downstream of every hold-return site (the runGreenCheckpoint boundary).
@@ -14042,7 +14084,7 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
   try {
     const measured = await deps.runRepairTickLegs(
       queue.repairHead,
-      Object.keys(NON_TEST_GATE_SCRIPTS),
+      repairTickGateIds(queue),
     );
     if (!measured) return result;
     deps.log(
@@ -19015,10 +19057,15 @@ export function realCheckpointDeps(
     // measureRepairTickLegs for the contract; the hold tick's checkpoint tree is idle,
     // so materializing repairHead here steps on nothing).
     async runRepairTickLegs(ref, gateIds) {
-      const registry: Record<string, readonly string[]> = {};
+      // WI-10001529: resolve through resolveGateRuns, NOT a bare NON_TEST_GATE_SCRIPTS
+      // lookup. The lookup silently DROPPED every id that is not a registry key — which is
+      // exactly what a queued `<ws> :: <script>` task signature is — so the one id whose
+      // measurement could retire the queue was the one id never measured. The resolver
+      // expands both forms and is the same one the stale-red auto-refire runs on.
+      const registry: Record<string, readonly RepairTickRun[]> = {};
       for (const id of gateIds) {
-        const scripts = NON_TEST_GATE_SCRIPTS[id];
-        if (scripts) registry[id] = scripts;
+        const runs = resolveGateRuns([id]);
+        if (runs.length) registry[id] = runs;
       }
       const env = buildGreenCheckpointEnv(
         null,
@@ -19030,9 +19077,23 @@ export function realCheckpointDeps(
         {
           setupTree: (r) => this.setupTree(r),
           resolveHead: () => revParse(cfg.checkpointRoot, "HEAD"),
-          runScript: async (script) => {
-            const r = await exec("npm", ["run", script], {
-              cwd: cfg.checkpointRoot,
+          runScript: async (script, workspace) => {
+            // Same invocation shape runGateAtRef uses above, so a workspace leg re-runs
+            // through the standalone-package path when the workspace has one and through
+            // `npm run <script> -w <ws>` otherwise.
+            const invocation = workspace
+              ? resolveWorkspaceScriptInvocation(
+                  cfg.checkpointRoot,
+                  workspace,
+                  script,
+                )
+              : {
+                  cmd: "npm" as const,
+                  args: ["run", script],
+                  cwd: cfg.checkpointRoot,
+                };
+            const r = await exec(invocation.cmd, invocation.args, {
+              cwd: invocation.cwd,
               env,
               allowNonZero: true,
               ...rescueTaskWatchdogOptions(script, env),

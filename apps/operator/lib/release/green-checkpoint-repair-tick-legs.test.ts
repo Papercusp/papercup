@@ -45,13 +45,13 @@ function makeIo(overrides: Partial<Parameters<typeof measureRepairTickLegs>[0]> 
   };
 }
 
-function awaitingFixerQueue() {
+function awaitingFixerQueue(failingTests: string[] = ["a/one.test.ts"]) {
   return {
     ...createFrozenCandidateQueue({
       candidate: OTHER,
       base: null,
       nowMs: 1_000,
-      failingTests: ["a/one.test.ts"],
+      failingTests,
     }),
     phase: "awaiting-fixer" as const,
     repairHead: HEAD,
@@ -106,6 +106,51 @@ describe("measureRepairTickLegs", () => {
       expect(leg.status).toBe("pass");
       expect(leg).not.toHaveProperty("outputTail");
     }
+  });
+
+  // WI-10001529: the measurement half. A queued `<ws> :: <script>` signature must run IN its
+  // workspace and must NOT be filtered by the root-manifest availability pre-check — that
+  // check reads the checkout root's package.json, so consulting it for a workspace script
+  // returns "absent" and silently skips the one leg whose result can retire the queue.
+  it("runs a workspace leg in its workspace, and never pre-checks it against the root manifest", async () => {
+    const runScript = vi.fn(async (_script: string, _workspace: string | null) => ({
+      code: 1,
+      tail: "2 failed",
+    }));
+    // Would report every workspace script absent, as the real root-manifest check does.
+    const scriptAvailability = vi.fn(() => "absent" as const);
+    const measured = await measureRepairTickLegs(
+      makeIo({ runScript, scriptAvailability }),
+      HEAD,
+      {
+        "lint:tsc": ["lint:tsc"],
+        "@papercusp/web :: test": [{ script: "test", workspace: "@papercusp/web" }],
+      },
+    );
+
+    expect(scriptAvailability).toHaveBeenCalledTimes(1);
+    expect(scriptAvailability).toHaveBeenCalledWith("lint:tsc");
+    expect(runScript).toHaveBeenCalledTimes(1);
+    expect(runScript).toHaveBeenCalledWith("test", "@papercusp/web");
+    expect(measured!.legs).toEqual([
+      { id: "lint:tsc", status: "skipped", durationMs: 0 },
+      {
+        id: "@papercusp/web :: test",
+        status: "fail",
+        durationMs: 0,
+        outputTail: "@papercusp/web :: test: exit 1 — 2 failed",
+      },
+    ]);
+    expect(measured!.failingSignatures).toEqual(["@papercusp/web :: test"]);
+  });
+
+  it("passes workspace null for a bare root script, so the registry form is unchanged", async () => {
+    const runScript = vi.fn(async (_script: string, _workspace: string | null) => ({
+      code: 0,
+      tail: "",
+    }));
+    await measureRepairTickLegs(makeIo({ runScript }), HEAD, { a: ["s1"] });
+    expect(runScript).toHaveBeenCalledWith("s1", null);
   });
 
   it("skips absent platform scripts for a subject hive without false failures", async () => {
@@ -212,9 +257,43 @@ describe("augmentWithRepairTickLegs", () => {
     const runRepairTickLegs = vi.fn(async () => measured);
     const log = vi.fn();
     const result = await augmentWithRepairTickLegs(holdResult(), { runRepairTickLegs, log });
+    // A failing TEST FILE is the fixer's subject, not a cheap leg, so the asked-for set is
+    // exactly the registry — this hold's queue holds `a/one.test.ts` and nothing re-runnable.
     expect(runRepairTickLegs).toHaveBeenCalledWith(HEAD, Object.keys(NON_TEST_GATE_SCRIPTS));
     expect(result.repairTickLegs).toEqual(measured);
     expect(log).toHaveBeenCalledWith(expect.stringContaining("FAILING lint:tsc"));
+  });
+
+  // WI-10001529: the deadlock. The tick asked for the static registry ONLY, so a queued
+  // workspace-task signature was never re-measured, `queue.failingTests` never lost it, and
+  // the dispatch guard's signature comparison could never converge — an awaiting-fixer hold
+  // that no fix to the subject could clear.
+  it("also asks for a queued workspace-task signature — the only thing that can retire it", async () => {
+    const runRepairTickLegs = vi.fn(async (_ref: string, _gateIds: readonly string[]) => measured);
+    const queue = awaitingFixerQueue(["@papercusp/web :: test", "a/one.test.ts"]);
+    expect(queue.failingTests).toContain("@papercusp/web :: test");
+    await augmentWithRepairTickLegs(holdResult({ repairQueue: queue }), {
+      runRepairTickLegs,
+      log: vi.fn(),
+    });
+    const askedFor = runRepairTickLegs.mock.calls[0][1];
+    expect(askedFor).toContain("@papercusp/web :: test");
+    // Still the whole registry, and still no failing test FILE.
+    expect(askedFor).toEqual(
+      expect.arrayContaining(Object.keys(NON_TEST_GATE_SCRIPTS)),
+    );
+    expect(askedFor).not.toContain("a/one.test.ts");
+  });
+
+  it("asks for a queued signature exactly once even when it is already a registry id", async () => {
+    const runRepairTickLegs = vi.fn(async (_ref: string, _gateIds: readonly string[]) => measured);
+    const queue = awaitingFixerQueue(["lint:tsc"]);
+    await augmentWithRepairTickLegs(holdResult({ repairQueue: queue }), {
+      runRepairTickLegs,
+      log: vi.fn(),
+    });
+    const askedFor = runRepairTickLegs.mock.calls[0][1];
+    expect(askedFor.filter((id) => id === "lint:tsc")).toHaveLength(1);
   });
 
   it("does nothing for a non-hold reason", async () => {
