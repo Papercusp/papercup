@@ -47,6 +47,15 @@ export default defineTool({
         .describe(
           'Local files to attach, by absolute path; the filename the recipient sees is the basename. ALL-OR-NOTHING: an unreadable or empty path fails the whole call rather than drafting a message that silently lacks a file you told the owner it carries. Omit for a body-only draft.',
         ),
+      draftId: z
+        .string()
+        .trim()
+        .min(1)
+        .max(256)
+        .optional()
+        .describe(
+          'REVISE this existing draft in place instead of creating a new one. The draft id, its place in the mailbox, and anything the owner has typed into it since are preserved — the alternative (delete and re-create) destroys all three to perform what the API models as an edit. Subject, text and attachments REPLACE what the draft held, so send the complete intended message, not a patch. Omit to create a new draft.',
+        ),
     })
     .strict(),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
@@ -66,6 +75,7 @@ export default defineTool({
         provenance: toProvenance(args.addressee),
         from: args.from,
         attachments: args.attachments,
+        draftId: args.draftId,
       });
       return { data: { ok: true, ...result } };
     } catch (error) {

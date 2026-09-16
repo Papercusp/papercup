@@ -16,6 +16,7 @@ import { basename, extname } from 'node:path';
 import type postgres from 'postgres';
 import {
   createGoogleGmailDraft,
+  updateGoogleGmailDraft,
   sendGoogleGmailMessage,
   replySubjectFor,
   type GoogleGmailAttachment,
@@ -63,6 +64,7 @@ export interface MailDraftResult {
 export type MailDeps = {
   resolveAccessToken?: typeof resolveGoogleWorkspaceAccessToken;
   createDraft?: typeof createGoogleGmailDraft;
+  updateDraft?: typeof updateGoogleGmailDraft;
   sendMessage?: typeof sendGoogleGmailMessage;
   fetch?: typeof fetch;
   apiOrigin?: string;
@@ -313,6 +315,18 @@ export async function draftNewMail(
      * failure this exists to prevent.
      */
     attachments?: readonly { path: string }[];
+    /**
+     * REVISE an existing draft in place instead of creating a new one (WI-10001658).
+     * Same rails, same encoder, one call site apart: everything above — addressee
+     * clearance, attachment reading, account resolution, token — is identical for
+     * both, so they branch only at the final Gmail call rather than living in two
+     * functions whose rails can drift.
+     *
+     * Without this the only implementation of "revise a draft" is delete the draft
+     * and create a replacement, which destroys the draft id and anything the owner
+     * has since typed into it — data loss to perform what the API models as an edit.
+     */
+    draftId?: string | null;
   },
   deps: MailDeps = {},
 ): Promise<MailDraftResult> {
@@ -345,10 +359,16 @@ export async function draftNewMail(
     text,
     ...(attachments.length ? { attachments } : {}),
   };
-  const draft = await (deps.createDraft ?? createGoogleGmailDraft)(token, outbound, {
-    fetch: deps.fetch,
-    apiOrigin: deps.apiOrigin,
-  });
+  const reviseId = params.draftId?.trim();
+  const draft = reviseId
+    ? await (deps.updateDraft ?? updateGoogleGmailDraft)(token, reviseId, outbound, {
+        fetch: deps.fetch,
+        apiOrigin: deps.apiOrigin,
+      })
+    : await (deps.createDraft ?? createGoogleGmailDraft)(token, outbound, {
+        fetch: deps.fetch,
+        apiOrigin: deps.apiOrigin,
+      });
   return {
     mode: 'draft',
     recipients,
