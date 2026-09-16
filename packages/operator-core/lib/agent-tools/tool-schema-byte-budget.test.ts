@@ -32,6 +32,8 @@ import {
   namedToolSchemaBytes,
   roundPin,
   schemaBudgetViolations,
+  serializedInputSchemaBytes,
+  serializedInputSchemaProseBytes,
   slackSchemaPins,
   type NamedToolSchemaBytes,
 } from './tool-guidance-budget';
@@ -124,5 +126,65 @@ describe('per-tool argSchema wire budget (EI-23345472964244980)', () => {
       );
     }
     expect(Array.isArray(slack)).toBe(true);
+  });
+
+  /**
+   * WHICH lever, not just how much (EI-23379068490085254). The ratchet above tells an
+   * author to cut N bytes; it cannot tell them the bytes are `.describe()` prose rather
+   * than structure, and that gap is what turns a five-minute prose trim into a schema
+   * redesign nobody attempts. `tool-weight` prints this split under every argSchema line.
+   */
+  describe('prose share', () => {
+    it('returns exactly the bytes that deleting every description would give back', () => {
+      const schema = {
+        type: 'object',
+        description: 'the tool',
+        properties: {
+          a: { type: 'string', description: 'about a' },
+          b: { type: 'number' },
+          c: { type: 'array', items: { type: 'string', description: 'about c items' } },
+        },
+      };
+      const stripped = {
+        type: 'object',
+        properties: {
+          a: { type: 'string' },
+          b: { type: 'number' },
+          c: { type: 'array', items: { type: 'string' } },
+        },
+      };
+      const prose = serializedInputSchemaProseBytes(schema);
+      // The defining property: prose + structural === total, so a reported share is a
+      // real fraction of the wire cost rather than an unrelated second measurement.
+      expect(serializedInputSchemaBytes(schema) - prose).toBe(serializedInputSchemaBytes(stripped));
+      // It charges prose for its `"description":` key, quotes and comma too, so it reads
+      // ABOVE the raw string bytes — the honest answer to "how much would I get back".
+      expect(prose).toBeGreaterThan('the tool'.length + 'about a'.length + 'about c items'.length);
+    });
+
+    it('is 0 when there is no prose, and when there is no schema (never a phantom share)', () => {
+      expect(serializedInputSchemaProseBytes({ type: 'object', properties: { a: { type: 'string' } } })).toBe(0);
+      expect(serializedInputSchemaProseBytes(undefined)).toBe(0);
+      // A non-string `description` is structure, not prose — do not charge it either way.
+      expect(serializedInputSchemaProseBytes({ properties: { description: { type: 'string' } } })).toBe(0);
+    });
+
+    it('measures the live catalog inside a plausible band — 0% or 100% means the walk broke', () => {
+      // This instrument's own vacuous-green trap, the same shape as the total-bytes floor
+      // above. A share that collapses to 0 (the walk stopped matching `description`) or
+      // saturates at 100 (it stopped stripping) both LOOK like findings rather than like
+      // a broken instrument. Measured 2026-09-16: 57.5% across 889 exposed tools; the band
+      // is deliberately wide, because it is asserting the walk still works, not the value.
+      const tools = listAllProjectedTools();
+      const total = tools.reduce((sum, t) => sum + serializedInputSchemaBytes(t.inputSchema), 0);
+      const prose = tools.reduce((sum, t) => sum + serializedInputSchemaProseBytes(t.inputSchema), 0);
+      const share = prose / total;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[schema-budget] prose=${prose} B of ${total} B (${(share * 100).toFixed(1)}%) across ${tools.length} tools`,
+      );
+      expect(share).toBeGreaterThan(0.25);
+      expect(share).toBeLessThan(0.9);
+    });
   });
 });
