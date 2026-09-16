@@ -63,6 +63,25 @@ export default defineTool({
   // allowed + a description excerpt per row (see list-shape.ts) — the full
   // guidance playbook stays behind payloadTier:"full".
   shape: {
+    // WI-2145871: the row axis is PINNABLE — `project()` rebuilds each row FROM
+    // LITERALS, so a field added to the handler's tools[] mapping and not to that
+    // literal is dropped silently at both non-full tiers, `trimmed` being the
+    // DEFAULT read. `fields` is the INTERSECTION of both tiers' UNCONDITIONAL
+    // keys: the standard-tier extras (reason/composition/when) are behind a tier
+    // branch, so pinning them would assert something trimmed never promises.
+    // No top-level `preserve`: the envelope is `{ ...d, tools }`, a SPREAD, so a
+    // preserve pin would be TRIVIALLY SATISFIED — green while asserting nothing.
+    // Falsifiability measured, not assumed
+    // (.papercusp/scratch/wi2145871-final-two-teeth.mts, 12/12): the vacuity
+    // sentinel is ABSENT here, a dropped `description` is CAUGHT, and the same
+    // contract over an identity passthrough is REFUSED as vacuous — and the
+    // probe's CALIBRATION arm (the same assertion against logs:read's spreading
+    // shaper) DID surface the sentinel, so "absent" is a finding rather than
+    // what a broken probe also prints.
+    contract: {
+      rows: 'tools',
+      fields: ['name', 'capability', 'allowed', 'description'],
+    },
     standard: (data) => shapeAgentToolsList(data, 'standard'),
     trimmed: (data) => shapeAgentToolsList(data, 'trimmed'),
   },

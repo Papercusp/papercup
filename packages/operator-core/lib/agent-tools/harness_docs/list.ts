@@ -41,6 +41,30 @@ export default defineTool({
   // EI-8326: a caller that supplied `docId` wants a compact per-doc status,
   // not the whole harness's global entries list re-sent every time.
   shape: {
+    // WI-2145871: BOTH axes are pinnable here. `projectEntry()` rebuilds each
+    // entry FROM LITERALS (so `fields` has teeth), and — unlike most shapers in
+    // this file — the envelope is a hand-written literal rather than `{ ...d }`,
+    // so `preserve` has teeth too: a key dropped from that reconstruction goes
+    // silently, and a top-level key is typically the QUALIFIER on the rows.
+    //
+    // ⚠ SECOND EMISSION PATH, and the check cannot reach it: when the caller
+    // supplies `docId` this shaper returns a DIFFERENT envelope (entries
+    // suppressed in favour of `entriesCount` + `entries_suppressed`).
+    // checkTrimmedContract invokes the shaper with `args: {}`, so `docIdRequested`
+    // is always false there and only the main path is ever exercised. `preserve`
+    // is therefore the INTERSECTION of BOTH paths' UNCONDITIONAL keys — `entries`
+    // is deliberately NOT among them (it is main-path only, and is already the
+    // `rows` axis). Same caveat class as fleet:leader-brief's budget path.
+    // Falsifiability measured, not assumed
+    // (.papercusp/scratch/wi2145871-final-two-teeth.mts, 12/12): entry-row
+    // sentinel ABSENT, all five preserve keys survive, a dropped top-level
+    // `activePath` is CAUGHT, and the probe's CALIBRATION arm against a
+    // spreading shaper DID surface the sentinel.
+    contract: {
+      rows: 'entries',
+      fields: ['docId', 'source', 'status', 'title'],
+      preserve: ['ok', 'activePath', 'filesCount', 'content', 'activeEntry'],
+    },
     standard: (data, sctx) =>
       shapeHarnessDocsList(data, 'standard', { docIdRequested: !!(sctx.args as { docId?: string }).docId }),
     trimmed: (data, sctx) =>
