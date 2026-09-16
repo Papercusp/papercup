@@ -24,6 +24,24 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
+/**
+ * Read the authorization header whichever shape the transport used. gaxios
+ * normalizes request headers into a `Headers` instance before calling
+ * `fetchImplementation`, where the hand-rolled layer passed the plain object
+ * straight through — so a plain-object read alone silently returns undefined
+ * and an assertion built on it reports "no token" for a request that carries
+ * one. Accepting every shape pins the TOKEN rather than the transport's
+ * internal header representation.
+ */
+function authHeaderOf(init?: RequestInit): string | null | undefined {
+  const headers = init?.headers;
+  if (headers instanceof Headers) return headers.get('authorization');
+  if (Array.isArray(headers)) {
+    return headers.find(([name]) => name.toLowerCase() === 'authorization')?.[1];
+  }
+  return (headers as Record<string, string> | undefined)?.authorization;
+}
+
 describe('provisionGoogleGmailPubSub', () => {
   it('creates missing resources and grants the Gmail publisher', async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -78,10 +96,11 @@ describe('provisionGoogleGmailPubSub', () => {
       topic: 'projects/active-alcove-504205-q3/topics/papercusp-gmail-push',
       ackDeadlineSeconds: 60,
     });
+    // Still the exact bearer on EVERY request, not merely a header that exists:
+    // a calibrated probe confirmed the token survived the gaxios swap and only
+    // the header's READ shape changed (see authHeaderOf above).
     expect(
-      fetchMock.mock.calls.every(
-        ([, init]) => (init?.headers as Record<string, string>).authorization === 'Bearer access-token',
-      ),
+      fetchMock.mock.calls.every(([, init]) => authHeaderOf(init) === 'Bearer access-token'),
     ).toBe(true);
   });
 
