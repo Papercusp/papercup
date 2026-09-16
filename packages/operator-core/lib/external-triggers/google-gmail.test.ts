@@ -645,24 +645,30 @@ describe('buildGoogleGmailRawMessage attachments', () => {
     content: Buffer.from(content),
   });
 
-  it('stays text/plain and byte-identical when no attachment is supplied', () => {
-    const without = buildGoogleGmailRawMessage(BASE);
-    const empty = buildGoogleGmailRawMessage({ ...BASE, attachments: [] });
+  it('stays single-part text/plain when no attachment is supplied', async () => {
+    const without = await buildGoogleGmailRawMessage(BASE);
+    const empty = await buildGoogleGmailRawMessage({ ...BASE, attachments: [] });
 
-    expect(decode(without.raw)).toContain('Content-Type: text/plain; charset=UTF-8');
+    expect(decode(without.raw)).toMatch(/Content-Type: text\/plain; charset=utf-8/i);
     expect(decode(without.raw)).not.toContain('multipart/mixed');
-    // An empty array must not flip the encoding — that is what makes the field safe to add.
-    expect(empty.raw).toBe(without.raw);
+    // An empty array must not flip the encoding — that is what makes the field
+    // safe to add. Asserted as the INVARIANT rather than byte-equality: since
+    // the encoder became MailComposer, each build carries its own random
+    // Message-ID, so two builds of the same input are no longer byte-identical
+    // (Gmail discards that header and substitutes its own — verified live).
+    expect(decode(empty.raw)).not.toContain('multipart/mixed');
+    expect(decode(empty.raw)).toContain('Hello.');
   });
 
-  it('encodes multipart/mixed with the body first and the file base64 after it', () => {
-    const { raw } = buildGoogleGmailRawMessage({ ...BASE, attachments: [pdf()] });
+  it('encodes multipart/mixed with the body first and the file base64 after it', async () => {
+    const { raw } = await buildGoogleGmailRawMessage({ ...BASE, attachments: [pdf()] });
     const mime = decode(raw);
 
     const boundary = /boundary="([^"]+)"/.exec(mime)?.[1];
     expect(boundary).toBeTruthy();
     expect(mime).toContain(`Content-Type: multipart/mixed; boundary="${boundary}"`);
-    expect(mime).toContain('Content-Disposition: attachment; filename="resume.pdf"');
+    // RFC 2045 lets a filename that is a bare token go unquoted, so accept either.
+    expect(mime).toMatch(/Content-Disposition: attachment; filename="?resume\.pdf"?/);
     expect(mime).toContain('Content-Transfer-Encoding: base64');
     expect(mime).toContain(Buffer.from('%PDF-1.7 bytes').toString('base64'));
     // The text part must precede the file, and the envelope must terminate.
@@ -672,8 +678,8 @@ describe('buildGoogleGmailRawMessage attachments', () => {
     expect(mime).toContain(`\r\n--${boundary}\r\n`);
   });
 
-  it('wraps base64 at 76 columns so a strict receiving MTA cannot reject the line', () => {
-    const { raw } = buildGoogleGmailRawMessage({
+  it('wraps base64 at 76 columns so a strict receiving MTA cannot reject the line', async () => {
+    const { raw } = await buildGoogleGmailRawMessage({
       ...BASE,
       attachments: [pdf('x'.repeat(5_000))],
     });
@@ -689,37 +695,62 @@ describe('buildGoogleGmailRawMessage attachments', () => {
     expect(Math.max(...payloadLines.map((line) => line.length))).toBeLessThanOrEqual(76);
   });
 
-  it('refuses a filename that would break out of its own header parameter', () => {
+  it('refuses a filename that would break out of its own header parameter', async () => {
     for (const filename of ['evil".pdf', 'a;b.pdf', 'back\\slash.pdf']) {
-      expect(() =>
+      await expect(
         buildGoogleGmailRawMessage({ ...BASE, attachments: [{ ...pdf(), filename }] }),
-      ).toThrow(/attachment_filename_invalid/);
+      ).rejects.toThrow(/attachment_filename_invalid/);
     }
     // A CRLF is header injection proper, and safeHeader rejects it first.
-    expect(() =>
+    await expect(
       buildGoogleGmailRawMessage({ ...BASE, attachments: [{ ...pdf(), filename: 'a\r\nBcc: x@y.z' }] }),
-    ).toThrow(/attachment_filename_invalid/);
+    ).rejects.toThrow(/attachment_filename_invalid/);
   });
 
-  it('refuses a malformed content type, an empty file, and an over-long list', () => {
-    expect(() =>
+  it('refuses a malformed content type, an empty file, and an over-long list', async () => {
+    await expect(
       buildGoogleGmailRawMessage({ ...BASE, attachments: [{ ...pdf(), contentType: 'not-a-mime' }] }),
-    ).toThrow(/attachment_content_type_invalid/);
+    ).rejects.toThrow(/attachment_content_type_invalid/);
 
-    expect(() =>
+    await expect(
       buildGoogleGmailRawMessage({
         ...BASE,
         attachments: [{ ...pdf(), content: Buffer.alloc(0) }],
       }),
-    ).toThrow(/attachment_content_invalid/);
+    ).rejects.toThrow(/attachment_content_invalid/);
 
-    expect(() =>
+    await expect(
       buildGoogleGmailRawMessage({ ...BASE, attachments: Array.from({ length: 11 }, () => pdf()) }),
-    ).toThrow(/attachments_too_many/);
+    ).rejects.toThrow(/attachments_too_many/);
   });
 
-  it('still threads a reply that carries an attachment', () => {
-    const { raw, threadId } = buildGoogleGmailRawMessage({
+  it('RFC 2047-encodes a non-ASCII subject instead of shipping raw UTF-8 bytes', async () => {
+    // The hand-rolled encoder this replaced emitted the subject verbatim, so a
+    // non-ASCII one went out as raw 8-bit bytes in a header — an RFC 5322
+    // violation that some MTAs mangle or reject. Verified against live Gmail on
+    // 2026-09-16: the encoded form round-trips back to the original text.
+    const { raw } = await buildGoogleGmailRawMessage({
+      ...BASE,
+      subject: 'Café — naïve résumé ✓',
+    });
+    const mime = decode(raw);
+
+    expect(mime).toMatch(/^Subject: =\?UTF-8\?/m);
+    expect(mime).not.toContain('Subject: Café');
+  });
+
+  it('declares a real transfer-encoding for a non-ASCII body rather than blanket 8bit', async () => {
+    const { raw } = await buildGoogleGmailRawMessage({ ...BASE, text: 'Bonjour — café ✓' });
+    const mime = decode(raw);
+
+    // Any of quoted-printable/base64 is correct; what must NOT survive is the
+    // previous unconditional `8bit`, which declares bytes no 7-bit MTA may relay.
+    expect(mime).toMatch(/Content-Transfer-Encoding: (quoted-printable|base64)/);
+    expect(mime).not.toContain('Content-Transfer-Encoding: 8bit');
+  });
+
+  it('still threads a reply that carries an attachment', async () => {
+    const { raw, threadId } = await buildGoogleGmailRawMessage({
       ...BASE,
       threadId: 'thread-9',
       inReplyTo: '<prior@mail.example>',
