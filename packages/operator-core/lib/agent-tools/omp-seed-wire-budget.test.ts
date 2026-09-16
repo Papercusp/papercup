@@ -206,15 +206,40 @@ describe('core MCP spine wire budget (EI-23345472964244980 / D-001)', () => {
             .map((r) => `  ${String(r.bytes).padStart(7)}  ${r.name}`)
             .join('\n') +
           `\n\nFIX, cheapest first:\n` +
-          `  (a) SHRINK the argSchema of an offender above — this is the lever that actually\n` +
-          `      moves the number, and the material is PROSE, not duplication: 217,082 B of\n` +
-          `      the spine's 324,384 B of argSchema is .describe() text (66.9%, measured\n` +
-          `      2026-09-16). Cut text redundant WITH THE SCHEMA ITSELF (a description that\n` +
-          `      restates its own enum/type), never text a reader needs.\n` +
+          `  (a) SHRINK an offender above — the material is PROSE, not duplication: 240,567 B\n` +
+          `      of the spine's 350,656 B is .description text (68.6%, measured 2026-09-16).\n` +
+          `      ⚠ THAT IS IN THIS FILE'S OWN advertisedWireBytes UNIT, which is what the\n` +
+          `      total above is. An argSchema-only reading of the same spine is ~29 KB\n` +
+          `      smaller (it drops the tool-level description and the name) — real, but NOT\n` +
+          `      comparable to the number this test judges. Quote one unit or the other;\n` +
+          `      mixing them silently moves the gap by 29 KB.\n` +
+          `      Cut text redundant WITH THE SCHEMA ITSELF (a description restating its own\n` +
+          `      enum/type), never text a reader needs.\n` +
+          `      ⚠ (a) CANNOT CLOSE THIS GAP ALONE — measured, not assumed. 60.2% of that\n` +
+          `      prose (144,852 B) is PINNED: a doc-claim test asserts a phrase into it so\n` +
+          `      the description cannot drift from the behaviour, and cutting it reds a guard\n` +
+          `      that exists on purpose. The UNPINNED pool is 95,715 B against the ~88.5 KB\n` +
+          `      this spine must shed, so trimming to D-001 means deleting ~92% of EVERY\n` +
+          `      unpinned description across all 48 names. Treat (b) as structurally\n` +
+          `      required and (a) as what buys headroom — not as the whole route.\n` +
+          `      ⚠ RANK BY REMOVABILITY, NOT BY SIZE. Neither prose-share nor\n` +
+          `      duplication=0 says how much of a tool's prose may actually be cut, and\n` +
+          `      picking targets by either is how this lane keeps choosing badly. Measured\n` +
+          `      UNPINNED bytes: fleet:launch-on-plan 11,242 · loop:checkpoint 10,275 ·\n` +
+          `      work_items:checkpoint 8,923 · coord:send 6,364 · plans:set-status 5,452.\n` +
+          `      facts:assert reads like a whale and is NOT one — 75.2% pinned, only 3,037 B\n` +
+          `      removable. To re-measure: for each spine tool, harvest the toMatch/toContain\n` +
+          `      patterns from the *.test.ts files in ITS OWN directory PLUS the cross-cutting\n` +
+          `      ones (lib/doc-claims/, lib/agent-tools/ root), drop patterns under ~8 literal\n` +
+          `      chars, and classify each description pinned/unpinned. CALIBRATE IT IN BOTH\n` +
+          `      DIRECTIONS before believing a digit — facts:assert.key must come back\n` +
+          `      UNPINNED and facts:assert.ttlSec PINNED. An uncalibrated version of exactly\n` +
+          `      this probe read 99.9% pinned, because the bare regex /n/ harvested from an\n` +
+          `      unrelated test matched 856 of 895 descriptions.\n` +
           `      ⚠ DO NOT lead with the single/batch duplication collapse — it was measured\n` +
           `      and it is neither the largest win nor fully available. Across all 48 names\n` +
-          `      ALL removable duplication is 38,016 B (11.7% of the spine) and the\n` +
-          `      batch-mirror shape is 21,508 B (6.6%) — under a quarter of the ~91 KB this\n` +
+          `      ALL removable duplication is 38,016 B (10.8% of the spine) and the\n` +
+          `      batch-mirror shape is 21,508 B (6.1%) — under a quarter of the ~88.5 KB this\n` +
           `      spine must shed to reach D-001. Over half of that subset is coord:send\n` +
           `      (11,017 B), which send-arg-shape.test.ts BLOCKS outright: its test\n` +
           `      "documents basedOn as output-only in description, guidance, and both\n` +
