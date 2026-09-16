@@ -24,7 +24,12 @@ import {
 } from '@papercusp/backup/application-names';
 
 const systemdDir = fileURLToPath(new URL('../../../apps/operator/scripts/systemd/', import.meta.url));
-const guard = join(systemdDir, 'kopia-backup-guard.sh');
+// Defaults to the real script, so every run here and on the gate is unchanged. The
+// override exists so falsifiability can be proven WITHOUT mutating the shared tree:
+// `scripts/mutation-probe.sh` copies this file out, mutates the copy, and passes its
+// path in as `{}` (repo CLAUDE.md, "Proving a guard is falsifiable" — tier 2). Without
+// it the only way to test a mutant is an in-tree edit, which git-sync can commit.
+const guard = process.env.KOPIA_GUARD_SCRIPT_UNDER_TEST || join(systemdDir, 'kopia-backup-guard.sh');
 const hotScriptPath = join(systemdDir, 'kopia-snapshot-all.sh');
 const SCHEDULED_DEFER_EXIT = 75;
 const tempDirs: string[] = [];
@@ -396,6 +401,64 @@ describe('Kopia global backup guard', () => {
     expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
   });
 
+  // WI-10001467. The handoff above TERMINATES the running scheduled child, which is a
+  // cheap trade for a content-addressed Kopia snapshot and a ruinous one for the hourly
+  // `pg_dump -Fd`: it has no resume, and its ONLY success record — the `backup OK in Ns`
+  // line and the STATUS.json write — lands at the very end, so preemption discards the
+  // entire cycle and records nothing. Worse, a killed run still leaves its dump
+  // directories behind, so every artifact-mtime health check reads FRESH on exactly the
+  // runs that were lost. Measured on this host 2026-09-16: hourly cadence had collapsed
+  // to 4-17h gaps, and the 00:00 cycle was killed 21 minutes in, after dumping ~100GB.
+  // The staleness override closed the loop — it admits a cycle PRECISELY BECAUSE the
+  // backup is dangerously stale, and the handoff could still kill it 5s later.
+  it('does NOT preempt a --no-restart-safe child for a priority waiter, and says so exactly once', () => {
+    const { dir, env } = fixture();
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label db-dump --no-restart-safe -- bash -c 'touch "$1"; for _ in $(seq 1 500); do [ -e "$2" ] && break; sleep 0.01; done; touch "$3"' _ "$HOT_READY" "$HOT_GO" "$HOT_DONE" >"$HOT_LOG" 2>&1 &
+        hot=$!
+        for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
+        [ -e "$HOT_READY" ] || exit 91
+        "$GUARD" --mode wait --label daily-home-vm -- bash -c 'touch "$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1 &
+        db=$!
+        # Release the child only once the guard has SEEN the waiter and declined to yield.
+        # Polling the log instead of sleeping keeps this a contract assertion rather than a
+        # bet on scheduling latency: if the guard preempts instead, the line never appears,
+        # the child is already dead when the poll gives up, and every assertion below fails.
+        for _ in $(seq 1 500); do grep -q 'holding-against-priority-waiter' "$HOT_LOG" && break; sleep 0.01; done
+        touch "$HOT_GO"
+        wait "$hot"
+        hot_rc=$?
+        wait "$db"
+        [ "$hot_rc" -eq 0 ] &&
+          [ -e "$HOT_DONE" ] &&
+          [ "$(grep -c 'result=holding-against-priority-waiter reason=child-not-restart-safe' "$HOT_LOG")" -eq 1 ] &&
+          ! grep -q 'result=stopping-during-run reason=priority-waiter' "$HOT_LOG" &&
+          [ -e "$DB_RAN" ]
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...env,
+          HOT_READY: join(dir, 'hot-ready'),
+          HOT_GO: join(dir, 'hot-go'),
+          HOT_DONE: join(dir, 'hot-done'),
+          HOT_LOG: join(dir, 'hot.log'),
+          DB_RAN: join(dir, 'db-ran'),
+          DB_LOG: join(dir, 'db.log'),
+        },
+        timeout: 20_000,
+      },
+    );
+
+    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
+  });
+
   it('waits for the current holder and releases the lock after failure', () => {
     const { dir, env } = fixture();
     const scenario = spawnSync(
@@ -611,6 +674,18 @@ describe('Kopia managed entrypoint contract', () => {
     expect(dbService).toContain('kopia-backup-guard.sh --mode scheduled --label db-dump');
     expect(dbService).not.toContain('kopia-backup-guard.sh --mode wait --label db-dump');
     expect(dbService).toContain('Environment=PC_BACKUP_JOBS=1');
+  });
+
+  // WI-10001467. The guard's no-preemption branch is inert unless the unit ASKS for it,
+  // and the flag defaults to restart-safe precisely so Kopia stays byte-identical — which
+  // means a unit-file rewrite that drops this word silently restores the killing. Pin the
+  // activation, not just the capability. The negative half is the other direction of the
+  // same contract: a Kopia snapshot IS restart-safe, so making it hold the lock would
+  // starve the waiter this handoff exists to unblock.
+  it('activates no-preemption for the db dump only, leaving Kopia snapshots preemptible', () => {
+    expect(dbService).toContain('--label db-dump --no-restart-safe');
+    expect(hotService).not.toContain('--no-restart-safe');
+    expect(homeService).not.toContain('--no-restart-safe');
   });
 
   it('reaps only host-owned database dumps, never the concurrent workspace dump', () => {
