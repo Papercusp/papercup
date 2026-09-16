@@ -18,11 +18,30 @@ function materialize(document: ProjectHistoryDocument): BuildHistoryPlan[] {
   return document.plans.map((plan) => ({ ...plan, project: document.project, snapshot: document.source }));
 }
 
+/**
+ * Defence in depth. The route strips escapes from the generator's stderr, but any
+ * failure that reaches this box is text we did not author, so never render it raw
+ * — an unstripped SGR sequence shows the user a literal `[31m` before the message.
+ */
+function stripAnsi(value: string): string {
+  return value
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-9;?:]*[ -/]*[@-~]/g, '');
+}
+
+/** Carries the route's machine-readable `code` so the view can tell "empty" from "broken". */
+class HistoryError extends Error {
+  constructor(message: string, readonly code?: string) {
+    super(message);
+    this.name = 'HistoryError';
+  }
+}
+
 export default function AdvHistoryTab() {
   const scope = useAdvScope();
   const slug = scope.allMode ? null : scope.slug;
   const [document, setDocument] = useState<ProjectHistoryDocument | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; code?: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
 
@@ -37,13 +56,17 @@ export default function AdvHistoryTab() {
     setError(null);
     fetch(`/api/harness/${encodeURIComponent(slug)}/project-history`, { signal: controller.signal })
       .then(async (response) => {
-        const body = await response.json() as ProjectHistoryDocument & { error?: string };
-        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        const body = await response.json() as ProjectHistoryDocument & { error?: string; code?: string };
+        if (!response.ok) throw new HistoryError(body.error || `HTTP ${response.status}`, body.code);
         return body;
       })
       .then((body) => setDocument(body))
       .catch((cause: unknown) => {
-        if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause));
+        if (controller.signal.aborted) return;
+        setError({
+          message: stripAnsi(cause instanceof Error ? cause.message : String(cause)),
+          code: cause instanceof HistoryError ? cause.code : undefined,
+        });
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
@@ -61,9 +84,14 @@ export default function AdvHistoryTab() {
       </header>
       {!slug ? (
         <div className="build-history-empty"><h2>Select a pot</h2><p>History is scoped to one project at a time.</p></div>
+      ) : error?.code === 'not-a-git-repository' ? (
+        <div className="build-history-empty">
+          <h2>No history to show</h2>
+          <p>{error.message}</p>
+        </div>
       ) : error ? (
         <div className="build-history-error" role="alert">
-          <strong>History is unavailable.</strong><span>{error}</span>
+          <strong>History is unavailable.</strong><span>{error.message}</span>
           <button type="button" onClick={() => setRevision((value) => value + 1)}>Try again</button>
         </div>
       ) : loading && !document ? (
