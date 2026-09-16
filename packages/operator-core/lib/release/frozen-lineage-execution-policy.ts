@@ -351,7 +351,16 @@ function peelHeavyWrapper(words: string[]): string[] {
 
 function canonicalRootTestCwd(atom: string, cwd: string | null): string | null | undefined {
   const parsed = shellWords(atom);
-  if (!parsed) return null;
+  // Tri-state contract (same as cdTarget above): undefined = NOT a canonical-root-test,
+  // null = confirmed one whose cwd could not be resolved, string = one at that cwd.
+  // An atom shellWords cannot tokenise (unbalanced quote / trailing escape) cannot be
+  // shown to be `npm test` or affected-tests.mjs at all, so it is UNCLASSIFIED, not
+  // governed-with-unknown-cwd. Returning null here made every such command unrefusably
+  // refused: null cwd forces `applies` true, and readCheckoutHead is skipped when cwd is
+  // falsy, so `checkout-head-required` fires and can never be satisfied — which cost every
+  // agent on the box its shell for the duration of a freeze, including ones working only
+  // in /tmp, because an apostrophe in a grep pattern is an unbalanced quote.
+  if (!parsed) return undefined;
   const words = peelHeavyWrapper(parsed);
   const head = commandName(words[0]);
 

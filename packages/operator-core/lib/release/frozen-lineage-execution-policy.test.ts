@@ -245,6 +245,45 @@ describe('frozen lineage shell-command policy', () => {
     expect(classifyFrozenLineageShellCommand({ command, cwd: ROOT })).toBeNull();
   });
 
+  // Regression: an atom shellWords cannot tokenise must be UNCLASSIFIED, not
+  // governed-with-unknown-cwd. Classifying it forced `applies` true while leaving
+  // readCheckoutHead unreachable (it is skipped when checkoutCwd is falsy), so
+  // 'checkout-head-required' fired and could never be satisfied by any caller.
+  // Blast radius: every agent on the box lost its shell for the duration of a
+  // freeze -- including ones working only in /tmp -- because an apostrophe in a
+  // grep pattern is an unbalanced quote.
+  it.each([
+    [`grep -r don't /tmp/scratch`, 'unbalanced single quote'],
+    ['echo hello \\', 'trailing escape'],
+    [`sed -n 's/a/b/p' "unterminated`, 'unterminated double quote'],
+  ])('leaves an untokenisable atom unclassified (%s -- %s)', (command) => {
+    expect(classifyFrozenLineageShellCommand({ command, cwd: '/tmp/scratch' })).toBeNull();
+    expect(classifyFrozenLineageShellCommand({ command, cwd: ROOT })).toBeNull();
+  });
+
+  it('does not refuse an untokenisable command that never touches the governed tree', async () => {
+    const readMarker = vi.fn(() => marker());
+    const readCheckoutHead = vi.fn(async () => REPAIR_HEAD);
+    const classification = classifyFrozenLineageShellCommand({
+      command: `grep -r don't /tmp/scratch`,
+      cwd: '/tmp/scratch',
+    });
+    await expect(
+      evaluateFrozenLineageShellCommand(classification, ROOT, { readMarker, readCheckoutHead }),
+    ).resolves.toMatchObject({ allowed: true, reason: 'operation-not-governed' });
+    expect(readMarker).not.toHaveBeenCalled();
+
+    // Positive control -- the guard is still live, so the assertion above cannot
+    // pass merely because the policy went inert.
+    const governed = classifyFrozenLineageShellCommand({ command: 'npm test', cwd: ROOT });
+    await expect(
+      evaluateFrozenLineageShellCommand(governed, ROOT, {
+        marker: marker(),
+        readCheckoutHead: async () => CANDIDATE,
+      }),
+    ).resolves.toMatchObject({ allowed: false, reason: 'checkout-head-mismatch' });
+  });
+
   it('distinguishes package-local npm test from a root test after a literal cd', async () => {
     const classification = classifyFrozenLineageShellCommand({
       command: 'cd packages/operator-core && npm test',
