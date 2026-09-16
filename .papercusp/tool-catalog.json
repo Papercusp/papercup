@@ -27551,7 +27551,7 @@
       "guidance": {
         "when": "A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.",
         "notWhen": "For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.",
-        "chaining": "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → work_items:update { id:'<work-item-id>', payload:{ acceptanceBarApproval: preview.approval } } → send a short coord:send pointer (cap: 600 characters) → reviewer reads work_items:get { id:'<work-item-id>', payloadTier:'full' } → posts the exact approval JSON as work_items:comment → amend { approvalRef:'thread-post:<id>' }. Never truncate or manually retype approval JSON."
+        "chaining": "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → post preview.approval VERBATIM as its own work_items:comment, and point the reviewer at THAT thread post (cap: 600 characters). A thread post is readable on every surface; the item payload is not — it needs payloadTier:'full', which a trimmed or judge-scoped reader never gets, so the reviewer sees an approval they cannot copy. Reviewer re-posts that exact JSON as their own work_items:comment → amend { approvalRef:'thread-post:<their id>' }. Never truncate or retype approval JSON."
       }
     },
     {
