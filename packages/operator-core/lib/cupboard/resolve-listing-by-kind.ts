@@ -46,6 +46,11 @@ export interface ResolvedListingCoords {
   priceAmountMicros?: number;
   /** The version the storefront currently serves, when the row names one. */
   releaseVersion?: string;
+  /** The Worker's publish-time content pin (migration 028: `pinned_commit_sha` +
+   *  `pinned_tree_digest`). Undefined ⇒ the row carries none (pre-028, or a code
+   *  kind), so an install can only place the branch tip UNVERIFIED. Present ⇒ the
+   *  installer must fetch exactly this commit and verify the digest (P-002). */
+  pin?: { commitSha: string; treeDigest: string };
 }
 
 export type ResolveListingResult = ResolvedListingCoords | { error: string; status: number };
@@ -80,6 +85,15 @@ function coordsFromRow(row: Record<string, unknown>): ResolvedListingCoords | nu
     githubUrl,
     ref,
     ...(str(row.id) ? { listingId: str(row.id) as string } : {}),
+    // Both halves or neither: a lone sha or digest is not a pin an installer can act on.
+    ...(str(row.pinned_commit_sha) && str(row.pinned_tree_digest)
+      ? {
+          pin: {
+            commitSha: str(row.pinned_commit_sha) as string,
+            treeDigest: str(row.pinned_tree_digest) as string,
+          },
+        }
+      : {}),
     ...(str(row.requires_rubrics) ? { requiresRubrics: str(row.requires_rubrics) as string } : {}),
     ...(str(row.price_model) ? { priceModel: str(row.price_model) as string } : {}),
     ...(num(row.price_amount_micros) !== null

@@ -32,6 +32,12 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import {
+  canonicalTreeDigest,
+  GIT_OBJECT_ID_RE,
+  HEX_SHA256_RE,
+  type TreeDigestEntry,
+} from '@papercusp/artifact-registry';
 
 // A mirror-repo clone target. Mirrors install-blueprint-core / install-template-core.
 const GITHUB_URL_RE =
@@ -40,14 +46,44 @@ const GITHUB_URL_RE =
 // segment, so it must be a safe SINGLE segment. UNTRUSTED (from the listing/caller).
 const SAFE_REF_RE = /^[A-Za-z0-9._-]+$/;
 
+/** Machine-readable refusal codes a caller can map without parsing the message. */
+export type InstallSelfDescribingCode =
+  | 'malformed_pin'
+  | 'content-address-mismatch'
+  | 'listing_ref_missing';
+
 export class InstallSelfDescribingError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code?: InstallSelfDescribingCode,
   ) {
     super(message);
     this.name = 'InstallSelfDescribingError';
   }
+}
+
+/**
+ * The content pin a self-describing listing carries once the Cupboard Worker has
+ * pinned it at publish (cupboard-release-pipeline-content-trust-2026-09-16 P-001,
+ * D-003: `pinned_commit_sha` + `pinned_tree_digest`). The installer fetches
+ * EXACTLY `commitSha`, recomputes the digest of `<ref>/` and refuses on any
+ * difference — so the bytes an operator approved are the bytes every install
+ * receives (P-002).
+ */
+export interface ContentPinRef {
+  /** The default-branch head the Worker pinned — a 40-hex (or 64-hex) git object id. */
+  commitSha: string;
+  /** `canonicalTreeDigest` over every blob under `<ref>/` at that commit — 64-hex sha256. */
+  treeDigest: string;
+}
+
+/** What the install verified about the content it placed. `null` ⇒ the input carried
+ *  no pin (a pre-028 listing, an offline bundle unit, or a direct github_url install),
+ *  so the tip of the default branch was cloned UNVERIFIED — the caller should say so. */
+export interface VerifiedContentPin extends ContentPinRef {
+  /** Blobs under `<ref>/` that went into the recomputed digest. */
+  fileCount: number;
 }
 
 /** What makes one installable KIND different from another. Everything a caller
@@ -77,11 +113,25 @@ export interface InstallSelfDescribingInput {
   targetRef?: string;
   /** Explicit update path. Default installs remain create-only. */
   replaceExisting?: boolean;
+  /** The listing's content pin (P-002). Present ⇒ the install fetches exactly
+   *  `pin.commitSha` and refuses `content-address-mismatch` unless the recomputed
+   *  digest of `<listingRef>/` equals `pin.treeDigest`. Absent ⇒ unverified tip clone. */
+  pin?: ContentPinRef;
 }
 
 export interface InstallSelfDescribingDeps {
-  /** Shallow-clone `url` into `dest` (which does not yet exist). Throws on failure. */
+  /** Shallow-clone the default-branch TIP of `url` into `dest` (which does not yet
+   *  exist). Throws on failure. Used ONLY when the input carries no pin. */
   cloneRepo: (url: string, dest: string) => Promise<void>;
+  /** Fetch exactly commit `sha` of `url` into `dest` (which does not yet exist) and
+   *  check it out — never the branch tip. Throws on failure (an unreachable sha
+   *  included). Real: `git init` + `fetch --depth 1 origin <sha>` + checkout. */
+  fetchAtSha: (url: string, dest: string, sha: string) => Promise<void>;
+  /** Every BLOB under `<ref>/` at commit `sha` of the checkout at `cloneDir`, as
+   *  repo-relative paths (the `<ref>/` prefix KEPT) with their git blob ids — the
+   *  same (path, sha) pairs the publisher digested from GitHub's tree API, so the
+   *  two digests compare as plain strings. Real: `git ls-tree -r -z <sha> -- <ref>`. */
+  listTreeBlobs: (cloneDir: string, sha: string, ref: string) => Promise<TreeDigestEntry[]>;
   /** A scratch dir for the clone (real: os.tmpdir()). */
   tmpDir: () => string;
 }
@@ -95,6 +145,28 @@ export interface InstallSelfDescribingResult<TMeta> {
   /** The clone source (the mirror repo URL). */
   source: string;
   installedTo: string;
+  /** The pin this install VERIFIED, or `null` when the input carried none and the
+   *  branch tip was placed unverified. Never absent: a caller that forgets to look
+   *  still gets an explicit "unverified" rather than a missing field. */
+  pin: VerifiedContentPin | null;
+}
+
+/** Validate a caller-supplied pin's SHAPE before spending a fetch on it. */
+function assertWellFormedPin(pin: ContentPinRef, label: string): void {
+  if (!GIT_OBJECT_ID_RE.test(pin.commitSha ?? '')) {
+    throw new InstallSelfDescribingError(
+      `malformed ${label} pin: commitSha must be a git object id`,
+      400,
+      'malformed_pin',
+    );
+  }
+  if (!HEX_SHA256_RE.test(pin.treeDigest ?? '')) {
+    throw new InstallSelfDescribingError(
+      `malformed ${label} pin: treeDigest must be a 64-hex sha256`,
+      400,
+      'malformed_pin',
+    );
+  }
 }
 
 /** Throw unless `childPath` resolves to `parentDir` itself or a path inside it. */
@@ -175,8 +247,38 @@ export async function installSelfDescribingFromCupboard<TMeta>(
     deps.tmpDir(),
     `cupboard-${spec.label}-install-${process.pid}-${randomUUID()}`,
   );
+  // Validate the pin's SHAPE before the clone dir exists, so a malformed pin costs no
+  // network and leaves nothing to clean up.
+  if (input.pin) assertWellFormedPin(input.pin, spec.label);
+
   try {
-    await deps.cloneRepo(url, cloneDir);
+    let verifiedPin: VerifiedContentPin | null = null;
+    if (input.pin) {
+      // P-002: fetch EXACTLY the pinned commit — never the branch tip — and refuse
+      // unless `<ref>/` still hashes to what the Worker pinned at publish. Verification
+      // runs BEFORE manifest/parse validation and before anything touches the user
+      // layer, so tampered bytes never even get parsed.
+      await deps.fetchAtSha(url, cloneDir, input.pin.commitSha);
+      const entries = await deps.listTreeBlobs(cloneDir, input.pin.commitSha, ref);
+      if (entries.length === 0) {
+        throw new InstallSelfDescribingError(
+          `"${ref}/" has no blobs at pinned commit ${input.pin.commitSha}`,
+          422,
+          'listing_ref_missing',
+        );
+      }
+      const digest = await canonicalTreeDigest(entries);
+      if (digest !== input.pin.treeDigest) {
+        throw new InstallSelfDescribingError(
+          `content-address-mismatch: "${ref}/" at ${input.pin.commitSha} digests to ${digest}, listing pinned ${input.pin.treeDigest} — refusing to install content that differs from what was approved`,
+          422,
+          'content-address-mismatch',
+        );
+      }
+      verifiedPin = { ...input.pin, fileCount: entries.length };
+    } else {
+      await deps.cloneRepo(url, cloneDir);
+    }
     const srcDir = locateRefDir(cloneDir, ref, spec.label);
 
     if (!existsSync(join(srcDir, spec.manifestFile))) {
@@ -228,7 +330,7 @@ export async function installSelfDescribingFromCupboard<TMeta>(
       }
     }
 
-    return { ok: true, ref: targetRef, meta, source: url, installedTo: target };
+    return { ok: true, ref: targetRef, meta, source: url, installedTo: target, pin: verifiedPin };
   } finally {
     await fs.rm(cloneDir, { recursive: true, force: true }).catch(() => {});
   }

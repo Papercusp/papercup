@@ -27,6 +27,8 @@ import {
   type InstallPluginCoreResult,
 } from './install-plugin-core';
 import type { InstallableUnitRef } from './resolve-and-install';
+import type { TreeDigestEntry } from '@papercusp/artifact-registry';
+import type { InstallSelfDescribingDeps } from './install-self-describing-core';
 
 /** Shallow `git clone --depth 1 url dest`. Rejects on non-zero exit. */
 export function gitCloneShallow(url: string, dest: string): Promise<void> {
@@ -41,6 +43,65 @@ export function gitCloneShallow(url: string, dest: string): Promise<void> {
       code === 0 ? resolve() : reject(new Error(`git clone failed (exit ${code}): ${err.slice(0, 300)}`)),
     );
   });
+}
+
+/** Run one git command, resolving stdout on exit 0 and rejecting with a bounded
+ *  stderr excerpt otherwise. `label` names the step in the rejection. */
+function gitRun(args: string[], label: string, cwd?: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', args, { stdio: ['ignore', 'pipe', 'pipe'], ...(cwd ? { cwd } : {}) });
+    const out: Buffer[] = [];
+    let err = '';
+    child.stdout.on('data', (d: Buffer) => out.push(d));
+    child.stderr.on('data', (d) => (err += d.toString()));
+    child.on('error', reject);
+    child.on('close', (code) =>
+      code === 0
+        ? resolve(Buffer.concat(out))
+        : reject(new Error(`${label} failed (exit ${code}): ${err.slice(0, 300)}`)),
+    );
+  });
+}
+
+/**
+ * Fetch EXACTLY commit `sha` of `url` into `dest` (which does not yet exist) and check
+ * it out detached — never the branch tip (cupboard-release-pipeline-content-trust
+ * P-002). `git init` + `fetch --depth 1 origin <sha>` needs the server to serve
+ * reachable shas by id, which GitHub does; an unreachable or garbage-collected sha
+ * rejects here instead of silently degrading to the tip.
+ */
+export async function gitFetchAtSha(url: string, dest: string, sha: string): Promise<void> {
+  await gitRun(['init', '-q', '--', dest], 'git init');
+  await gitRun(['remote', 'add', 'origin', '--', url], 'git remote add', dest);
+  await gitRun(['fetch', '-q', '--depth', '1', 'origin', sha], 'git fetch by sha', dest);
+  await gitRun(['checkout', '-q', '--detach', 'FETCH_HEAD'], 'git checkout FETCH_HEAD', dest);
+}
+
+/**
+ * Every BLOB under `<ref>/` at commit `sha` of the checkout at `cloneDir`, as
+ * repo-relative paths (prefix kept) + git blob ids — the installer half of the
+ * publisher's `pinListingContent` enumeration, so `canonicalTreeDigest` over these
+ * equals the pinned digest exactly when the bytes are unchanged. Symlinks are blobs
+ * on both sides; submodules (`commit`) are excluded on both.
+ */
+export async function gitListTreeBlobs(cloneDir: string, sha: string, ref: string): Promise<TreeDigestEntry[]> {
+  const raw = await gitRun(['ls-tree', '-r', '-z', sha, '--', `${ref}/`], 'git ls-tree', cloneDir);
+  const entries: TreeDigestEntry[] = [];
+  // Records are `<mode> SP <type> SP <sha> TAB <path>` NUL-terminated; -z leaves paths unquoted.
+  for (const rec of raw.toString('utf8').split('\0')) {
+    if (!rec) continue;
+    const tab = rec.indexOf('\t');
+    if (tab < 0) continue;
+    const [, type, blobSha] = rec.slice(0, tab).split(' ');
+    if (type !== 'blob' || !blobSha) continue;
+    entries.push({ path: rec.slice(tab + 1), sha: blobSha });
+  }
+  return entries;
+}
+
+/** The real git-backed deps every self-describing Cupboard installer shares. */
+export function cupboardGitDeps(): InstallSelfDescribingDeps {
+  return { cloneRepo: gitCloneShallow, fetchAtSha: gitFetchAtSha, listTreeBlobs: gitListTreeBlobs, tmpDir: tmpdir };
 }
 
 /** Drop the in-memory plugin-host + api-route caches so a new unit goes live. */
