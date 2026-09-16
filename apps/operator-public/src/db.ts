@@ -275,6 +275,12 @@ export interface NewHarnessInput {
   release_manifest_digest?: string | null;
   release_signature?: string | null;
   release_published_at?: number | null;
+  // Content pin (migration 028 / cupboard-release-pipeline-content-trust P-001).
+  // Set by the Worker for self-describing kinds from what IT fetched (D-003);
+  // null on code kinds. Both-or-neither.
+  pinned_commit_sha?: string | null;
+  pinned_tree_digest?: string | null;
+  pinned_at?: number | null;
   created_at: number;
 }
 
@@ -296,9 +302,10 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           compatibility_json, required_permissions,
           release_version, release_content_hash, release_manifest_digest,
           release_signature, release_published_at,
+          pinned_commit_sha, pinned_tree_digest, pinned_at,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -343,6 +350,9 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.release_manifest_digest ?? null,
       h.release_signature ?? null,
       h.release_published_at ?? null,
+      h.pinned_commit_sha ?? null,
+      h.pinned_tree_digest ?? null,
+      h.pinned_at ?? null,
       h.created_at,
       h.created_at,
     )

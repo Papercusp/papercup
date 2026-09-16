@@ -28,7 +28,10 @@ export {
   isHexSha256,
   sha256Hex,
   contentAddressing,
+  canonicalTreeDigest,
+  GIT_OBJECT_ID_RE,
   type ContentAddressing,
+  type TreeDigestEntry,
 } from "./content-address.js";
 
 // Content-addressed blob store (Layer A — the storage backend)

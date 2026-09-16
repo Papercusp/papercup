@@ -100,6 +100,9 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
     release_manifest_digest: null,
     release_signature: null,
     release_published_at: null,
+    pinned_commit_sha: null,
+    pinned_tree_digest: null,
+    pinned_at: null,
     yanked_at: null,
     yanked_reason: null,
     revoked_at: null,
@@ -885,9 +888,37 @@ export function makeEnv(overrides: Partial<Env> = {}): { env: Env; store: FakeSt
   return { env, store, r2 };
 }
 
+/** A blob in the stubbed recursive tree (P-001 content pin). `type` defaults
+ *  to 'blob'; pass 'tree'/'commit' to exercise the non-blob filter. */
+export interface GhStubTreeEntry {
+  path: string;
+  sha: string;
+  size?: number;
+  type?: 'blob' | 'tree' | 'commit';
+}
+
 export interface GhStub {
   user?: { id: number; login: string } | { error: number };
-  repo?: { id: number; private: boolean; permissions?: Record<string, boolean> } | { error: number };
+  repo?:
+    | { id: number; private: boolean; permissions?: Record<string, boolean>; default_branch?: string }
+    | { error: number };
+  /** `GET git/ref/heads/<default_branch>` — the head the Worker pins (P-001).
+   *  Only a SELF-DESCRIBING publish calls it; a code kind must pass without one. */
+  head?: { sha: string } | { error: number };
+  /** `GET git/trees/<sha>?recursive=1` — the tree the Worker digests (P-001). */
+  tree?: { entries: GhStubTreeEntry[]; truncated?: boolean } | { error: number };
+}
+
+/** A well-formed 40-hex head sha for stubs — `'a'.repeat(40)` and friends. */
+export const STUB_HEAD_SHA = 'a'.repeat(40);
+
+/** Tree entries that satisfy the P-001 pin for `<listingRef>/`: one listing.json
+ *  plus one manifest, deterministic blob shas. */
+export function stubTreeFor(listingRef: string, manifest = 'listing.json'): GhStubTreeEntry[] {
+  return [
+    { path: `${listingRef}/listing.json`, sha: '1'.repeat(40), size: 120 },
+    { path: `${listingRef}/${manifest === 'listing.json' ? 'README.md' : manifest}`, sha: '2'.repeat(40), size: 64 },
+  ];
 }
 
 export function stubGithub(stub: GhStub): void {
@@ -897,6 +928,31 @@ export function stubGithub(stub: GhStub): void {
       if (stub.user && 'error' in stub.user) return new Response('', { status: stub.user.error });
       if (stub.user) return new Response(JSON.stringify(stub.user), { status: 200 });
       return new Response('', { status: 401 });
+    }
+    // Content-pin calls (P-001) — matched BEFORE the generic '/repos/' branch
+    // because their URLs contain it too.
+    if (u.includes('/git/ref/heads/')) {
+      if (stub.head && 'error' in stub.head) return new Response('', { status: stub.head.error });
+      if (stub.head) return new Response(JSON.stringify({ ref: 'refs/heads/main', object: { type: 'commit', sha: stub.head.sha } }), { status: 200 });
+      return new Response('head not stubbed', { status: 500 });
+    }
+    if (u.includes('/git/trees/')) {
+      if (stub.tree && 'error' in stub.tree) return new Response('', { status: stub.tree.error });
+      if (stub.tree) {
+        const body = {
+          sha: stub.head && !('error' in stub.head) ? stub.head.sha : STUB_HEAD_SHA,
+          truncated: stub.tree.truncated === true,
+          tree: stub.tree.entries.map((e) => ({
+            path: e.path,
+            mode: e.type === 'tree' ? '040000' : e.type === 'commit' ? '160000' : '100644',
+            type: e.type ?? 'blob',
+            sha: e.sha,
+            ...(e.type == null || e.type === 'blob' ? { size: e.size ?? 0 } : {}),
+          })),
+        };
+        return new Response(JSON.stringify(body), { status: 200 });
+      }
+      return new Response('tree not stubbed', { status: 500 });
     }
     if (u.includes('/repos/')) {
       if (stub.repo && 'error' in stub.repo) return new Response('', { status: stub.repo.error });
