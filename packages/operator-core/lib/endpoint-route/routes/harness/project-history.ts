@@ -1,26 +1,21 @@
-/** GET /api/harness/:slug/project-history — generate the portable History document on demand. */
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+/** GET /api/harness/:slug/project-history — one page of the portable History document. */
+import { access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { defineTool } from '@papercusp/agent-mcp';
+import { generateProjectHistory, type ProjectHistoryDocument } from '@papercusp/plan-parser/project-history';
 import { resolveHarnessRepoRoot } from '../../../harness/docs/harness-repo';
+import { activeWorkspaceId } from '../../../workspace-registry';
 import {
-  resolveCliBin,
-  resolvePtool,
-  runProjectHistoryGenerate,
-  type ProjectHistoryConfig,
-} from '../../../harness/routines/project-history-refresh-action';
-
-const CACHE_MS = 60_000;
-const cache = new Map<string, { expiresAt: number; document: unknown }>();
+  createOperatorProjectHistorySource,
+  PROJECT_HISTORY_MAX_PAGE_SIZE,
+  PROJECT_HISTORY_PAGE_SIZE,
+  type ProjectHistoryPage,
+} from './project-history-source';
 
 /**
- * The generator is a child CLI that colours its own diagnostics, so its stderr
- * arrives wrapped in SGR escapes. Those bytes are meaningless to an HTTP client
- * and render as literal `[31m` noise in the History tab's error box, so strip
- * them at this boundary rather than asking every consumer to.
+ * Any text that reaches a client may have come from a child process that colours
+ * its own diagnostics, and those bytes render as a literal `[31m` in the History
+ * tab's error box. Strip them at this boundary rather than asking every consumer to.
  */
 function stripAnsi(value: string): string {
   return value
@@ -50,75 +45,93 @@ async function isGitRepository(repoRoot: string): Promise<boolean> {
   }
 }
 
-export async function generateHarnessProjectHistory(
+export interface ProjectHistoryPageDocument extends ProjectHistoryDocument {
+  page: ProjectHistoryPage;
+}
+
+/**
+ * Clamp a caller's window into one the server will actually serve.
+ *
+ * A bad `?limit` is clamped rather than refused: the tab is a read surface, and
+ * answering a nonsensical window with a valid page is friendlier than a 400 the
+ * user cannot act on. The CEILING is the load-bearing half — `papercusp`'s full
+ * archive is ~63MB of plan markdown, so an unbounded limit is the defect this
+ * route exists to fix, not a power-user affordance.
+ */
+export function resolvePageWindow(params: URLSearchParams): { limit: number; offset: number } {
+  const rawLimit = Number.parseInt(params.get('limit') ?? '', 10);
+  const rawOffset = Number.parseInt(params.get('offset') ?? '', 10);
+  return {
+    limit: Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(rawLimit, PROJECT_HISTORY_MAX_PAGE_SIZE)
+      : PROJECT_HISTORY_PAGE_SIZE,
+    offset: Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0,
+  };
+}
+
+export async function loadHarnessProjectHistoryPage(
   slug: string,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<unknown> {
-  const cached = cache.get(slug);
-  if (cached && cached.expiresAt > Date.now()) return cached.document;
+  window: { limit: number; offset: number },
+): Promise<ProjectHistoryPageDocument> {
   const repoRoot = await resolveHarnessRepoRoot(slug);
   if (!repoRoot) throw new Error(`unknown project: ${slug}`);
-  // Ask the filesystem directly rather than letting the generator fail: a pot
-  // that is not a git checkout has no commits to report, which is an empty
-  // history, not a fault. Detecting it here keeps a deterministic structural
-  // check in front of a child process whose only signal would be `git`'s own
-  // localised, colourised stderr.
+  // Ask the filesystem directly: a pot that is not a git checkout has no commits
+  // to report, which is an empty history, not a fault.
   if (!await isGitRepository(repoRoot)) {
     throw new ProjectHistoryUnavailableError(
       'not-a-git-repository',
       `${slug} is not a git repository, so it has no commit history to report.`,
     );
   }
-  const runnerEnv: NodeJS.ProcessEnv = {
-    ...env,
-    PAPERCUSP_INTEGRATION_ROOT: env.PAPERCUSP_INTEGRATION_ROOT?.trim()
-      || join(dirname(fileURLToPath(import.meta.url)), '../../../../../..'),
-  };
-  if (!resolvePtool(runnerEnv)) throw new Error('ptool is unavailable to the Project History generator');
 
-  const directory = await mkdtemp(join(tmpdir(), 'papercusp-history-route-'));
-  const output = join(directory, 'project-history.json');
-  const config: ProjectHistoryConfig = {
-    workspace: runnerEnv.PAPERCUSP_WORKSPACE_ID?.trim() || 'papercusp-workspace',
+  const workspaceId = activeWorkspaceId();
+  const source = createOperatorProjectHistorySource({
+    workspaceId,
     harness: slug,
-    planPrefix: '',
-    projectId: slug,
-    projectName: slug,
     repoRoot,
-    output,
-    format: 'json',
-    exportName: 'PROJECT_HISTORY',
+    limit: window.limit,
+    offset: window.offset,
+  });
+  const [total, repository] = await Promise.all([source.countPlans(), source.detectRepository()]);
+  const document = await generateProjectHistory({
+    project: { id: slug, name: slug, repository },
+    source: {
+      kind: 'papercusp-plan-export',
+      workspace: workspaceId,
+      harness: slug,
+      planPrefix: null,
+      generatedAt: new Date().toISOString(),
+      generator: 'operator-route/project-history',
+    },
+    provider: source.provider,
+  });
+  return {
+    ...document,
+    page: {
+      count: document.plans.length,
+      total,
+      offset: window.offset,
+      limit: window.limit,
+      hasMore: window.offset + document.plans.length < total,
+    },
   };
-  try {
-    const result = await runProjectHistoryGenerate(resolveCliBin(runnerEnv), config, 90_000, runnerEnv);
-    if (result.code !== 0 || result.timedOut) {
-      throw new Error(result.timedOut
-        ? 'Project History generation timed out'
-        : stripAnsi(result.stderr).trim() || `generator exited ${result.code}`);
-    }
-    const document = JSON.parse(await readFile(output, 'utf8')) as unknown;
-    cache.set(slug, { expiresAt: Date.now() + CACHE_MS, document });
-    return document;
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
 }
 
 export default defineTool({
   method: 'GET',
   path: '/harness/:slug/project-history',
   auth: 'loopback',
-  // Generation reads the complete plan/work-item export and allows 90s for the
-  // child CLI. Keep the route watchdog above that ceiling so the default 30s
-  // stack timeout cannot turn a valid v2 document into an opaque 408.
-  timeoutSec: 120,
-  async handler(_req, ctx) {
+  // One page is a bounded PG read plus a single grep-scoped `git log`, so this is
+  // headroom for a loaded box rather than a budget the happy path approaches.
+  timeoutSec: 60,
+  async handler(req, ctx) {
     const slug = String(ctx.params.slug ?? '').trim();
     if (!/^[a-z0-9][a-z0-9._-]{0,119}$/i.test(slug)) {
       return Response.json({ error: 'invalid project slug' }, { status: 400 });
     }
     try {
-      return Response.json(await generateHarnessProjectHistory(slug));
+      const window = resolvePageWindow(new URL(req.url).searchParams);
+      return Response.json(await loadHarnessProjectHistoryPage(slug, window));
     } catch (error) {
       if (error instanceof ProjectHistoryUnavailableError) {
         // 422, not 503: the request is well-formed and the server is healthy —
