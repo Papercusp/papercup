@@ -48,6 +48,15 @@ export interface MailSendResult {
   messageId: string;
 }
 
+export interface MailDraftResult {
+  mode: 'draft';
+  recipients: AddresseeDecision[];
+  subject: string;
+  threadId: string;
+  messageId: string;
+  draftId: string;
+}
+
 export type MailDeps = {
   resolveAccessToken?: typeof resolveGoogleWorkspaceAccessToken;
   createDraft?: typeof createGoogleGmailDraft;
