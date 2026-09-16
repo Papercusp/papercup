@@ -640,37 +640,15 @@ export default defineTool({
       truncatedByLimit: z.boolean(),
     })
     .passthrough(),
+  // NO `contract` — AUDITED 2026-09-16 (WI-2145871); recorded `reasoned` in
+  // SHAPER_CONTRACT_EXEMPT, where the measurement lives. The 13-field row allowlist
+  // that used to sit here described the HANDLER (`readCoverage` rebuilds each row
+  // from an explicit key list) — but a contract is checked against the SHAPER, and
+  // `shapeTestingCoverage` only DROPS WHOLE ROWS to bound size, passing each row
+  // through untouched. So the pin read as sound against the handler while asserting
+  // nothing about the shaper it actually guarded. Do not re-add it: restoring a
+  // handler-shaped allowlist here re-banks that same vacuous green.
   shape: {
-    contract: {
-      rows: 'rows',
-      fields: [
-        'kind',
-        'surfaceId',
-        'sourceFile',
-        'provider',
-        'fidelity',
-        'depth',
-        'meets',
-        'mutationScore',
-        'authoredEvidence',
-        'lastEvidenceAt',
-        'firstSeen',
-        'retiredAt',
-        'waived',
-      ],
-      preserve: [
-        'scope',
-        'assessments',
-        'verdict',
-        'censusUnknown',
-        'census',
-        'coverage',
-        'byKind',
-        'count',
-        'total',
-        'truncatedByLimit',
-      ],
-    },
     standard: (data) => shapeTestingCoverage(data, 'standard'),
     trimmed: (data) => shapeTestingCoverage(data, 'trimmed'),
   },

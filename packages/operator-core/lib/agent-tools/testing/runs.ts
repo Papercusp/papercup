@@ -414,11 +414,15 @@ export default defineTool({
       groups: z.array(testingRunGroupResultSchema).optional(),
     })
     .passthrough(),
+  // NO `contract` — AUDITED 2026-09-16 (WI-2145871); recorded `reasoned` in
+  // SHAPER_CONTRACT_EXEMPT, where the measurement lives. There is no axis a row
+  // contract could hold: `projectTestingRun` SPREADS each row (`{ ...r, … }`) and
+  // the envelope spreads too (`{ ...d, runs: kept }`), so every key passes through
+  // and a `fields`/`preserve` pin is trivially satisfied — green while asserting
+  // nothing, which is worse than no pin because the next reader counts it guarded.
+  // What can actually regress here is the row BUDGET and the `payloadBounded`
+  // marker: behavioural, not key-presence, and covered by this shaper's own tests.
   shape: {
-    contract: {
-      rows: 'runs',
-      preserve: ['count', 'total', 'truncatedByLimit', 'latestPerFile'],
-    },
     standard: (data) => shapeTestingRuns(data, 'standard'),
     trimmed: (data) => shapeTestingRuns(data, 'trimmed'),
   },
