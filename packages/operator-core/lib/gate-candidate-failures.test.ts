@@ -5,12 +5,16 @@
  * written as the WRONG reading first, so a future change that reintroduces one fails
  * with the misreading named rather than with a bare assertion diff.
  */
-import { describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   assessCandidateFailures,
   outstandingLegIds,
   parseGitLsTreeObjectIds,
   readGateCandidateFailures,
+  submoduleRelativeCandidates,
 } from './gate-candidate-failures';
 import type { FrozenRepairLegState } from './release/repair-leg-lifecycle';
 
@@ -984,5 +988,137 @@ describe('P-007 — a red non-test leg is NEVER none-failing on any reading of t
       // stale head: only the lifecycle
       expect(outstandingLegIds([row('a', 'fail', 'fixed'), row('b', 'pass', 'failing'), row('c', 'fail', 'never-admitted')], false)).toEqual(['b']);
     });
+  });
+});
+
+/**
+ * EI-23433375151859491 — a failing path recorded SUBMODULE-relative read as UNMEASURABLE.
+ *
+ * `test_runs.file_path` stores the path exactly as the runner recorded it, and a suite that ran
+ * INSIDE a submodule records `src/dispatch-projected.test.ts`, never
+ * `libs/generic/tooldef/src/dispatch-projected.test.ts`. That matches no superproject prefix, so
+ * both blobs came back null and the row degraded to UNMEASURABLE — which is indistinguishable
+ * from an unfixed file and therefore UNDER-reports how converged a frozen queue is. The two
+ * worst responses to a red gate follow from it: re-fixing a file whose fix already landed, or
+ * retiring a queue that was about to go green.
+ *
+ * Nomination is a real filesystem test (`existsSync`), so these cases need real files on disk —
+ * a stubbed fs would assert the SHAPE of the fix rather than the fix. Hence mkdtemp.
+ */
+describe('EI-23433375151859491 — a failing path recorded submodule-relative', () => {
+  const SUB = 'libs/generic/tooldef';
+  const OTHER = 'libs/generic/search';
+  const SUBS = [SUB, OTHER];
+  const ONLY_IN_SUB = 'src/dispatch-projected.test.ts';
+  const IN_BOTH = 'src/index.test.ts';
+  // The measured 2026-09-16 case named in the module's own comment: the row read "says nothing
+  // either way" when the true answer was FIXED.
+  const CAND_PIN = '152598ba45158ae1c5349aadecae8285b5f04136';
+  const HEAD_PIN = 'c1c1807bc78d0000000000000000000000000000';
+
+  let root: string;
+
+  beforeAll(() => {
+    // Two submodules that BOTH carry a `src/`, as 35 of this repo's 38 do — that overlap is
+    // what makes a bare `src/...` path genuinely ambiguous rather than merely unresolved.
+    root = mkdtempSync(join(tmpdir(), 'gate-candidate-failures-'));
+    mkdirSync(join(root, SUB, 'src'), { recursive: true });
+    mkdirSync(join(root, OTHER, 'src'), { recursive: true });
+    writeFileSync(join(root, SUB, ONLY_IN_SUB), '');
+    writeFileSync(join(root, SUB, IN_BOTH), '');
+    writeFileSync(join(root, OTHER, IN_BOTH), '');
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  describe('submoduleRelativeCandidates — nomination only, never the verdict', () => {
+    it('nominates the ONE submodule holding the file, where the superproject prefix match cannot', () => {
+      // The wrong answer first: `submoduleFor` matches a SUPERPROJECT-relative prefix, and this
+      // path has none — which is exactly how it fell through to a batch that can never resolve it.
+      expect(SUBS.find((s) => ONLY_IN_SUB === s || ONLY_IN_SUB.startsWith(s + '/'))).toBeUndefined();
+      expect(submoduleRelativeCandidates(root, ONLY_IN_SUB, SUBS)).toEqual([SUB]);
+    });
+
+    it('returns EVERY match for a shared path, so a caller cannot quietly take the first', () => {
+      expect(submoduleRelativeCandidates(root, IN_BOTH, SUBS)).toEqual([SUB, OTHER]);
+    });
+
+    it('nominates nothing for a path no submodule has, leaving the superproject answer untouched', () => {
+      expect(submoduleRelativeCandidates(root, 'src/not-here.test.ts', SUBS)).toEqual([]);
+    });
+
+    it('refuses an absolute path, a climb out of the tree, and an empty one', () => {
+      expect(submoduleRelativeCandidates(root, '/etc/passwd', SUBS)).toEqual([]);
+      expect(submoduleRelativeCandidates(root, `../${SUB}/${ONLY_IN_SUB}`, SUBS)).toEqual([]);
+      expect(submoduleRelativeCandidates(root, '', SUBS)).toEqual([]);
+    });
+  });
+
+  it('reads the FIXED blob inside the submodule for a path the superproject cannot resolve', async () => {
+    const res = await readGateCandidateFailures({
+      candidateSha: CANDIDATE,
+      repairHeadSha: REPAIR_HEAD,
+      root,
+      // REQUIRED: `subs` comes from opts.submodulePaths. Without it there is nothing to nominate
+      // against and the row degrades exactly as it did before this fix.
+      submodulePaths: SUBS,
+      sql: fakeSql({ filesJudged: 12, failing: [{ file_path: ONLY_IN_SUB, status: 'fail', attempts: 2 }] }),
+      git: fakeGit({
+        // Deliberately NO superproject fixture for ONLY_IN_SUB — that miss is the whole trigger.
+        [revParse(CANDIDATE, SUB)]: CAND_PIN,
+        [revParse(REPAIR_HEAD, SUB)]: HEAD_PIN,
+        [revParse(CAND_PIN, ONLY_IN_SUB)]: '8a1dd5928fe6',
+        [revParse(HEAD_PIN, ONLY_IN_SUB)]: '7bbb58297abf',
+      }),
+    });
+
+    const row = res.distinctFailingFiles[0];
+    expect(row.fixInRepairHead).toBe(true);
+    // Two blob ids as evidence, where the bug returned a pair of nulls.
+    expect(row.candidateBlob).toBe('8a1dd5928fe6');
+    expect(row.repairHeadBlob).toBe('7bbb58297abf');
+    expect(row.comparison).toMatch(/recorded submodule-relative/);
+    expect(row.reading).toMatch(/Do NOT re-fix/i);
+    // The wrong reading this case exists to stop returning.
+    expect(row.reading).not.toMatch(/UNMEASURABLE/);
+    expect(res.stillBrokenCount).toBe(0);
+  });
+
+  it('reports an ambiguous path as UNMEASURABLE rather than guessing the first submodule', async () => {
+    const res = await readGateCandidateFailures({
+      candidateSha: CANDIDATE,
+      repairHeadSha: REPAIR_HEAD,
+      root,
+      submodulePaths: SUBS,
+      sql: fakeSql({ filesJudged: 12, failing: [{ file_path: IN_BOTH, status: 'fail', attempts: 1 }] }),
+      git: fakeGit({}),
+    });
+
+    const row = res.distinctFailingFiles[0];
+    expect(row.fixInRepairHead).toBeNull();
+    expect(row.comparison).toMatch(/ambiguous submodule-relative path/);
+    expect(row.reading).toMatch(/genuinely undetermined/);
+    // A confident wrong answer where an honest unknown belongs is the failure being avoided,
+    // so the unknown must not read as "nothing landed".
+    expect(row.reading).toMatch(/NOT a claim that nothing landed/);
+  });
+
+  it('keeps an unreadable pin UNKNOWN instead of collapsing it to "unchanged"', async () => {
+    const res = await readGateCandidateFailures({
+      candidateSha: CANDIDATE,
+      repairHeadSha: REPAIR_HEAD,
+      root,
+      submodulePaths: SUBS,
+      sql: fakeSql({ filesJudged: 12, failing: [{ file_path: ONLY_IN_SUB, status: 'fail', attempts: 1 }] }),
+      // The candidate pins the submodule; the repairHead pin does not read.
+      git: fakeGit({
+        [revParse(CANDIDATE, SUB)]: CAND_PIN,
+        [revParse(CAND_PIN, ONLY_IN_SUB)]: '8a1dd5928fe6',
+      }),
+    });
+
+    const row = res.distinctFailingFiles[0];
+    // `false` here would be the reassuring degradation: it reads as "no fix has landed".
+    expect(row.fixInRepairHead).toBeNull();
+    expect(row.reading).toMatch(/says nothing either way/);
   });
 });
