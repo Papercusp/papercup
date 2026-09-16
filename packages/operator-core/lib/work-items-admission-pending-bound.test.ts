@@ -82,16 +82,115 @@ describe('admission-pending states a bound, derived from the promoter cadence', 
 });
 
 describe('EI-22166155287498355: the retry bound is promoter-health-aware, and always fail-open', () => {
-  it('an empty workspaceId short-circuits to false without touching the DB', async () => {
-    await expect(admissionPromoterUnhealthy('')).resolves.toBe(false);
+  it('an empty workspaceId short-circuits to not-stalled without touching the DB', async () => {
+    await expect(admissionPromoterStall('')).resolves.toEqual({ stalled: false });
   });
 
-  it('a DB/query problem never throws — it resolves false (fail-open, same posture as loadOwnAuthorPubkeys)', async () => {
+  it('a DB/query problem never throws — it resolves not-stalled (fail-open, same posture as loadOwnAuthorPubkeys)', async () => {
     // No testcontainers DB is wired up in this plain unit file, so getOrgPg()/the query
     // itself is expected to fail here. The whole point of this test is that the failure
     // is swallowed rather than propagated: an unreadable health signal must never make
     // an admission-pending refusal look WORSE than the caller already sees.
-    await expect(admissionPromoterUnhealthy('some-workspace-id')).resolves.toBe(false);
+    await expect(admissionPromoterStall('some-workspace-id')).resolves.toEqual({ stalled: false });
+  });
+});
+
+/**
+ * EI-23383710942512978 — the floor blamed a PAUSED promoter's stale `last_error`.
+ *
+ * "`last_error` is cleared on success and set on failure" is a statement about FIRES, so it
+ * stops being informative the moment a routine stops firing: the value freezes at whatever
+ * the final fire left. Measured on this box 2026-09-16 — `last_fired_at` 16:00:03Z, four
+ * minutes BEFORE `metadata.pause.pausedAtMs` 16:04:03Z, with a live `last_error` from that
+ * final fire. The floor rendered it as "the promoter's last fire errored", which reads as a
+ * broken routine and invites re-arming an LLM-spending loop the owner deliberately paused.
+ *
+ * These pin the ORDERING RULE, not the prose. The DB half is a single indexed SELECT; the
+ * misattribution lived entirely in this decision, which is why it is a pure function.
+ */
+describe('EI-23383710942512978: a deliberate pause is not a fault', () => {
+  /** The exact production row shape, at the measured timestamps. */
+  const PAUSED_AT = Date.parse('2026-09-15T16:04:03.721Z');
+  const LAST_FIRED = Date.parse('2026-09-15T16:00:03.675Z');
+  const OWNER_REASON =
+    '[owner 2026-09-15] owner directed: pause ALL background LLM-spending loops ' +
+    "(see WI-10001478 inventory). Re-arm only on the owner's word.";
+
+  it('reports the PAUSE, not the stale error, when the error predates the pause', () => {
+    const stall = classifyAdmissionPromoterStall({
+      active: false,
+      lastFiredAtMs: LAST_FIRED,
+      pause: { reason: OWNER_REASON, pausedAtMs: PAUSED_AT },
+      lastError: 'inference-gateway: codex OAuth upstream failed: terminated',
+    });
+    expect(stall).toEqual({ stalled: true, cause: 'paused', pauseReason: OWNER_REASON });
+  });
+
+  it("the basis carries the owner's recorded reason and tells the reader NOT to re-arm", () => {
+    const basis = admissionStallBasis({ stalled: true, cause: 'paused', pauseReason: OWNER_REASON });
+    expect(basis).toContain('PAUSED BY A DELIBERATE HOLD');
+    expect(basis).toContain("Re-arm only on the owner's word");
+    expect(basis).toMatch(/do NOT re-arm/i);
+    // The bound never changed — only the blame did. The fail-open runner is still named.
+    expect(basis).toContain('work-item-admission-fail-open');
+    // The regression this file exists to prevent: the paused case must not claim a fire errored.
+    expect(basis).not.toContain('last fire errored');
+  });
+
+  it('an error that POSTDATES the pause still wins — "prefer paused" is not "suppress every error"', () => {
+    // The inverse case, so the fix cannot degrade into blanket error suppression on any
+    // paused routine. If it somehow fired and failed after being paused, that is live news.
+    const stall = classifyAdmissionPromoterStall({
+      active: false,
+      lastFiredAtMs: PAUSED_AT + 60_000,
+      pause: { reason: OWNER_REASON, pausedAtMs: PAUSED_AT },
+      lastError: 'boom',
+    });
+    expect(stall).toEqual({ stalled: true, cause: 'errored' });
+  });
+
+  it('an ARMED promoter whose last fire errored is still reported as errored (EI-22166155287498355 stands)', () => {
+    const stall = classifyAdmissionPromoterStall({
+      active: true,
+      lastFiredAtMs: LAST_FIRED,
+      pause: null,
+      lastError: 'inference-gateway: codex OAuth upstream failed: terminated',
+    });
+    expect(stall).toEqual({ stalled: true, cause: 'errored' });
+    expect(admissionStallBasis(stall)).toContain('last fire errored');
+  });
+
+  it('inactive with NO pause record is its own cause — routines:list calls this the one worth investigating', () => {
+    const stall = classifyAdmissionPromoterStall({
+      active: false,
+      lastFiredAtMs: LAST_FIRED,
+      pause: null,
+      lastError: null,
+    });
+    expect(stall).toEqual({ stalled: true, cause: 'inactive' });
+    expect(admissionStallBasis(stall)).toContain('nothing durable says why');
+  });
+
+  it('a healthy armed promoter is not stalled, and keeps the normal cadence basis', () => {
+    const stall = classifyAdmissionPromoterStall({
+      active: true,
+      lastFiredAtMs: LAST_FIRED,
+      pause: null,
+      lastError: null,
+    });
+    expect(stall).toEqual({ stalled: false });
+    expect(admissionStallBasis(stall)).toContain('cron tick');
+  });
+
+  it('a pause with no recorded reason still reads as paused rather than as a fault', () => {
+    const stall = classifyAdmissionPromoterStall({
+      active: false,
+      lastFiredAtMs: LAST_FIRED,
+      pause: { pausedAtMs: PAUSED_AT },
+      lastError: 'stale boom',
+    });
+    expect(stall).toEqual({ stalled: true, cause: 'paused', pauseReason: null });
+    expect(admissionStallBasis(stall)).toContain('no reason was recorded');
   });
 });
 
