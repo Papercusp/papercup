@@ -1,0 +1,155 @@
+{
+  "generatedAt": "2026-09-14T16:30:23.276Z",
+  "workItem": "WI-10001436",
+  "kind": "read-only source audit; not production verification",
+  "subjects": [
+    {
+      "path": "~/storewolf-central-server",
+      "head": "05f961f453907daa662369cb90c4d480369f5b02",
+      "branch": "old_node_fetch",
+      "status": "M GlobalConfig_DEBUG.js\n M GlobalConfig_ELI.js\n M OIGHALGSK.json\n m Services/DataStore\n M Services/InventoryManager/InventoryManager.js\n m Services/MarketplaceStuff\n M Services/Synchronizer/SyncPipeline.js\n M Services/Synchronizer/Synchronizer.js\n M Services/Synchronizer/WorkerFuncs.js\n M package-lock.json\n M package.json\n?? Scripts/upload-product-images-r2.js\n?? tests/marketplace-images.vitest.ts"
+    },
+    {
+      "path": "~/storewolf-central-server/Services/Transformer",
+      "head": "db4b5abcfb3062576dee5b650da1f03451cd5cd2",
+      "branch": "working",
+      "status": ""
+    },
+    {
+      "path": "~/Storewolf-Libs",
+      "head": "de7721eccf882e87d242162ae833b00f1dfc3914",
+      "branch": "master",
+      "status": ""
+    }
+  ],
+  "sourceFiles": [
+    {
+      "path": "~/storewolf-central-server/Services/Transformer/Transformer.js",
+      "sha256": "9dd64ff56695eae042191e4c8c01e05df1bff2dfec3106e1a7e13e68aba64747"
+    },
+    {
+      "path": "~/storewolf-central-server/Services/Transformer/SKUTransformerMaster.js",
+      "sha256": "6925ca735de7d419c2278db873244f3f8b736497d497f9e24671a8561cb363dc"
+    },
+    {
+      "path": "~/storewolf-central-server/Services/Transformer/SKUTransformerChild.js",
+      "sha256": "8e5aad16c89ca9436289a2838434ad9f1c7b80b2084fe84c7b1ecbccff69e5c5"
+    },
+    {
+      "path": "~/storewolf-central-server/Services/Transformer/SKUTransformer.js",
+      "sha256": "536d032f7006b4c6c4bc0c8a0149905a49996f31b7d99dcd2cf0697df613412c"
+    },
+    {
+      "path": "~/storewolf-central-server/Services/Transformer/SpecObjComparator.js",
+      "sha256": "d485eb9241214317b59c0e77e39a59492a60a9cdb9605192772e4302efa21526"
+    },
+    {
+      "path": "~/storewolf-central-server/Services/Transformer/ComparatorConfigs/Computer.js",
+      "sha256": "5024cbf5a5204489a6f49234e512907df96021d68d6f27a709d8f4f10dafcf86"
+    },
+    {
+      "path": "~/storewolf-central-server/Services/Transformer/Rankifier.js",
+      "sha256": "1598c3e5b94852ce0e79c0e22ce26e9cc50c7939e9f8b44841fa4996cbc0d6ab"
+    },
+    {
+      "path": "~/storewolf-central-server/Services/Transformer/RankifierFunctions.js",
+      "sha256": "13c39a0d9a32e8b1fadf158dc2f97929ef1909ac82ed6cffcc1219ba813a3745"
+    },
+    {
+      "path": "~/storewolf-central-server/Services/Transformer/WeightGetterByCategoryGroup.js",
+      "sha256": "ac72a4134c68fb79495d52c737cb737f18a1cd73a26a4645deff1ea3e7ed6108"
+    },
+    {
+      "path": "~/storewolf-central-server/Services/Transformer/FBEUtil.js",
+      "sha256": "78141de04e243e7f2354d3ccbe8d5841661d43abd7169a99f7ddec1bd775251b"
+    },
+    {
+      "path": "~/storewolf-central-server/Services/Transformer/package.json",
+      "sha256": "e72ace74671a543f9aa0d47cfe969936ff52aa957f904ddf90471c0e7290bd9f"
+    },
+    {
+      "path": "~/storewolf-central-server/Util/ProcessRouterParent.js",
+      "sha256": "ae0b9548e2cd219640fdc607fdeba940d331ead0c1d7874977991b5809d39604"
+    },
+    {
+      "path": "~/storewolf-central-server/lib/StoreWolfInterface.js",
+      "sha256": "9e12f79f4c90582d3baef37448e949f1fc9a0c847cfa6513cd1035a45a16df55"
+    },
+    {
+      "path": "~/storewolf-central-server/Services/OrderProcessor/OrderProcessor.js",
+      "sha256": "e1c9c58dd0c3c9b541aa417d6f10eac2d0a876c434ce5d7f500f1fb922901dbd"
+    },
+    {
+      "path": "~/storewolf-central-server/Services/Synchronizer/Synchronizer.js",
+      "sha256": "f8688ddb536eda5e2eb66e7d7d989d25e0563e6938d332eefcc2da77ce161000"
+    },
+    {
+      "path": "~/Storewolf-Libs/ProcessRouterParent.js",
+      "sha256": "a48b9113fab22d57b8892da09d35e0c2f0b6e05910d7c27384e622871f3e4e8f"
+    },
+    {
+      "path": "~/Storewolf-Libs/ProcessRouterChild.js",
+      "sha256": "da02840cc6984db9ea2f216f2be586172f02352b85603e7ebc2a5eb300d10fc2"
+    },
+    {
+      "path": "~/Storewolf-Libs/SharedMap.js",
+      "sha256": "619217c8f2f868255dae83b48a117b963e0f1931d6b29631e1b8bfc5d1e7e592"
+    }
+  ],
+  "verification": {
+    "command": "node --test audit-probes.test.cjs",
+    "exitCode": 0,
+    "tests": 10,
+    "passed": 10,
+    "failed": 0,
+    "sourceStableDuringChecks": true,
+    "mermaidParse": "pass (jsdom initialized before import)",
+    "svgXml": "pass",
+    "svgRasterization": "pass",
+    "width": 1200,
+    "height": 1070,
+    "citationPathsAndLineBounds": {
+      "checked": 29,
+      "status": "pass",
+      "limit": "Path/line integrity only, not automated semantic validation"
+    },
+    "safety": "No application boot, service calls, real fork, LMDB, persisted DB writes or commerce IO. SQLite probe uses :memory:.",
+    "firstRun": "9/10; audit fixture expected undefined while failed-category count was actually zero; corrected fixture, not application."
+  },
+  "outputs": [
+    {
+      "path": "README.md",
+      "sha256": "7d57c2e94fbe2fa7278eac6cb4c340105dc0483d59037a8751e6fccce9c53557"
+    },
+    {
+      "path": "architecture.mmd",
+      "sha256": "25a57285ca53217846c2d5dab5a63af35b4dbb91b652902ab0afc293644ef0e6"
+    },
+    {
+      "path": "architecture.svg",
+      "sha256": "08cb95d8a3dd79e6528eb8045fe80c1da70901ed223794b52725b5f33c7ab9cd"
+    },
+    {
+      "path": "architecture.png",
+      "sha256": "bdb3e0d2966ccc6e71b1d4475efd0d33bc5d8778a265f323eee76fde72f39288"
+    },
+    {
+      "path": "audit-probes.test.cjs",
+      "sha256": "3b721a01abce41e80a8ae2d323fe9780dd6b1935495dae3386876b868f500534"
+    },
+    {
+      "path": "verify-report.mjs",
+      "sha256": "76d421a60c3b1660a249800246ccb04e4d127f363681eb6c124c3ecd59e0d091"
+    }
+  ],
+  "notExercised": [
+    "production startup/deployment",
+    "persisted model roundtrip",
+    "full-model native Roaring/FBE behavior",
+    "live inventory freshness",
+    "real IPC/LMDB concurrency",
+    "application RPC/auth",
+    "exhaustive category correctness",
+    "performance/load"
+  ]
+}
