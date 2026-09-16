@@ -207,7 +207,10 @@ describe('Google Gmail adapter', () => {
       const put = JSON.parse(String(init?.body)) as { message: { raw: string } };
       const raw = Buffer.from(put.message.raw, 'base64url').toString('utf8');
       expect(raw).toContain('Content-Type: multipart/mixed; boundary=');
-      expect(raw).toContain('name="resume.pdf"');
+      // RFC 2045 permits an unquoted token here, which is what the MailComposer
+      // encoder emits; the old hand-rolled one always quoted. Assert the
+      // FILENAME reaches the part, not one encoder's quoting style.
+      expect(raw).toMatch(/name="?resume\.pdf"?/);
       expect(raw).toContain('Content-Transfer-Encoding: base64');
       // The PDF bytes must survive the round trip intact.
       expect(raw).toContain(Buffer.from('%PDF-1.7 fixture').toString('base64'));
