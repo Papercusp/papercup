@@ -251,7 +251,13 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
         slug: 'acceptance-subject-plan',
         storedTemplateData: orphaned,
         nextTemplateData: orphaned,
-        subjectPlan: { adoptionEpoch: 1 },
+        // A genuinely adopted subject carries seeding evidence, not merely an epoch.
+        subjectPlan: {
+          adoptionEpoch: 1,
+          cohort: 'post-epoch',
+          seededAt: '2026-09-06T00:00:00.000Z',
+          seededBy: 'seed-author',
+        },
       }),
     ).toThrow(/already adopted an acceptance BAR contract.*missing its server-owned barContract/);
 
@@ -263,6 +269,61 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
         subjectPlan: { adoptionEpoch: null },
       }).started,
     ).toBe(false);
+  });
+
+  // A cohort backfill stamps acceptance_bar_epoch/_cohort onto plans it never seeded
+  // (acceptance_bar_seeded_at/_by stay NULL).  Testing the bare epoch read those plans as
+  // "already adopted" and refused every generic template_data write to their rubric — with no
+  // barContract to protect and the named recovery path itself blocked by the refusal.  That
+  // deadlock stranded plan gmail-oauth-system-browser-2026-09-05 short of ship: its criteria
+  // could not be filled at all.  Observed on that row: epoch=1, cohort='post-epoch',
+  // seeded_at=NULL, seeded_by=NULL, set_hash=NULL, rubric_slug=NULL.
+  it('permits template_data writes when the subject is cohort-stamped but was never seeded', () => {
+    const { barContract: _contract, barSetHash: _setHash, ...orphaned } = started();
+    const stamped = {
+      adoptionEpoch: 1,
+      cohort: 'post-epoch' as const,
+      seededAt: null,
+      seededBy: null,
+    };
+
+    expect(
+      guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: orphaned,
+        nextTemplateData: orphaned,
+        subjectPlan: stamped,
+      }).started,
+    ).toBe(false);
+
+    // The write this unblocks is the real one: filling a criterion's empty model.
+    const filled = {
+      ...orphaned,
+      criteria: [criterion({ model: 'The flow completes in the system browser.' })],
+    };
+    expect(() =>
+      guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: orphaned,
+        nextTemplateData: filled,
+        subjectPlan: stamped,
+      }),
+    ).not.toThrow();
+
+    // Half-evidence is not adoption evidence: neither column alone re-arms the refusal.
+    for (const partial of [
+      { ...stamped, seededAt: '2026-09-06T00:00:00.000Z' },
+      { ...stamped, seededBy: 'seed-author' },
+    ]) {
+      expect(
+        guardAcceptanceBarTemplateDataWrite({
+          slug: 'acceptance-subject-plan',
+          storedTemplateData: orphaned,
+          nextTemplateData: orphaned,
+          subjectPlan: partial,
+        }).started,
+      ).toBe(false);
+    }
   });
 
   it('refuses BAR meaning changes through a generic writer', () => {

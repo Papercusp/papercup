@@ -423,12 +423,23 @@ export function guardAcceptanceBarTemplateDataWrite(
     return { data: (args.nextTemplateData ?? {}) as Record<string, unknown>, started: false, changed: false, changes: [] };
   }
   const next = nextParsed.data as unknown as Record<string, unknown>;
+  // "Adopted" means a contract was actually SEEDED — not merely that the subject row carries
+  // an epoch.  A cohort backfill stamps acceptance_bar_epoch/acceptance_bar_cohort onto plans
+  // that never had a contract seeded (acceptance_bar_seeded_at/_by stay NULL), so testing the
+  // bare epoch reads those plans as adopted and refuses EVERY generic template_data write to
+  // their rubric — including the METHOD/model fills D-002 deliberately defers to after
+  // implementation.  With no barContract there is nothing to protect, and the refusal names a
+  // recovery path that cannot run without the very write it is refusing: a deadlock that
+  // strands the plan short of ship.  Require the same seeding evidence
+  // acceptance-bar-contract-snapshot.ts already treats as adoption.
+  const subjectSeeded = Boolean(args.subjectPlan?.seededAt && args.subjectPlan?.seededBy);
   const adoptedSubjectHasOrphanedContract =
     storedParsed.success &&
     storedParsed.data.kind === 'acceptance' &&
     !storedParsed.data.barContract &&
     args.subjectPlan?.adoptionEpoch != null &&
-    args.subjectPlan.adoptionEpoch > 0;
+    args.subjectPlan.adoptionEpoch > 0 &&
+    subjectSeeded;
   if (adoptedSubjectHasOrphanedContract) {
     throw new Error(
       `invalid_args: rubric '${args.slug}' belongs to a subject that already adopted an acceptance BAR ` +
