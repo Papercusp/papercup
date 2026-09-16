@@ -189,6 +189,23 @@ function cloneFixture(repo: string): (url: string, dest: string) => Promise<void
   };
 }
 
+/** Install deps for an UNPINNED roundtrip: only the tip-clone path may run. The pin
+ *  legs throw so a core that starts fetching-by-SHA without a pin fails here loudly
+ *  instead of silently copying the fixture (the pinned path has its own suite in
+ *  install-self-describing-core.test.ts). */
+function unpinnedDeps(repo: string, root: string) {
+  return {
+    cloneRepo: cloneFixture(repo),
+    fetchAtSha: async (): Promise<void> => {
+      throw new Error('unpinned roundtrip: fetchAtSha must not be called');
+    },
+    listTreeBlobs: async (): Promise<never> => {
+      throw new Error('unpinned roundtrip: listTreeBlobs must not be called');
+    },
+    tmpDir: () => root,
+  };
+}
+
 beforeEach(async () => {
   root = await fs.mkdtemp(join(tmpdir(), 'cupboard-judgment-roundtrip-'));
   previousPapercuspHome = process.env.PAPERCUSP_HOME;
@@ -270,7 +287,7 @@ describe('rubric Cupboard round trip', () => {
 
     const result = await installRubricFromCupboardCore(
       { githubUrl: GITHUB_URL, listingRef: 'install-rubric' },
-      { cloneRepo: cloneFixture(repo), tmpDir: () => root },
+      unpinnedDeps(repo, root),
     );
 
     expect(result).toMatchObject({
@@ -318,7 +335,7 @@ describe('plan Cupboard round trip', () => {
 
     const result = await installPlanFromCupboardCore(
       { githubUrl: GITHUB_URL, listingRef: 'install-plan' },
-      { cloneRepo: cloneFixture(repo), tmpDir: () => root },
+      unpinnedDeps(repo, root),
     );
 
     expect(result).toMatchObject({
@@ -371,7 +388,7 @@ describe('recipe Cupboard round trip', () => {
 
     const result = await installRecipeFromCupboardCore(
       { githubUrl: GITHUB_URL, listingRef: 'install-recipe' },
-      { cloneRepo: cloneFixture(repo), tmpDir: () => root },
+      unpinnedDeps(repo, root),
     );
 
     expect(result).toMatchObject({

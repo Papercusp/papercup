@@ -33,6 +33,7 @@ import {
   InstallRubricError,
 } from './install-rubric-core';
 import { createTextCollector } from '../child-output';
+import { cupboardGitDeps } from './install-io';
 import type {
   InstallBundleAppInput,
   InstallBundleAppOptions,
@@ -203,7 +204,12 @@ function contentPath(kind: 'templates' | 'rubrics', unit: BundleContentUnit): st
 }
 
 function makeOfflineInstallers(): BundleAppInstallers {
-  const cloneDeps = { cloneRepo: gitCloneShallow, tmpDir: tmpdir };
+  // Offline bundle units carry NO content pin (they are addressed by the bundle's own
+  // manifest, not a Cupboard listing), so the self-describing core takes the unpinned
+  // `cloneRepo` path and never reaches fetchAtSha / listTreeBlobs — but the deps contract
+  // is total (P-002), so the real git-backed implementations are supplied rather than a
+  // stub that would silently mis-verify if a pinned unit ever arrived here.
+  const cloneDeps = { ...cupboardGitDeps(), cloneRepo: gitCloneShallow };
   return {
     resolveAndInstallDeps: async (declared) => ({
       ok: (declared.packs?.length ?? 0) === 0 && (declared.plugins?.length ?? 0) === 0,
