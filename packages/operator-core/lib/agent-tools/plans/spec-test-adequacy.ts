@@ -41,6 +41,7 @@ export const ADEQUACY_CRITERIA = [
   'execution-integrity',
   'freshness',
   'plan-class-risk-floor',
+  'disclosed-gap',
 ] as const;
 export type AdequacyCriterion = (typeof ADEQUACY_CRITERIA)[number];
 export type AdequacyRating = 'pass' | 'fail' | 'unknown' | 'waived' | 'not-applicable';
@@ -269,6 +270,13 @@ interface AdequacyDetails {
   causalPairIds?: string[];
   contractMetadataIssues?: string[];
   provisionalProofBase?: boolean;
+  /**
+   * Author-recorded holes in this proof. A disclosure is an admission that the
+   * bound evidence does NOT fully establish the clause, so it must never be able
+   * to coexist with a machine PASS: `disclosed-gap` fails whenever this is
+   * non-empty, and the gap text is named in the would-block reason.
+   */
+  disclosedGap?: string[];
 }
 
 interface L4Waiver {
@@ -368,10 +376,31 @@ export function classifySpecEvidenceLineage(
   return { lineage: 'unknown', reason: 'no durable rerun anchor' };
 }
 
+/**
+ * Normalize an author-recorded disclosure into a list of non-empty gap strings.
+ * Accepts a bare string or an array of strings; anything else is ignored.
+ */
+function disclosedGapList(value: unknown): string[] {
+  const raw = typeof value === 'string' ? [value] : Array.isArray(value) ? value : [];
+  return raw
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   const nested = evidence.details.adequacy;
-  if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return {};
+  // A disclosure is read from BOTH the nested adequacy block and the top level.
+  // `plans:bind-spec-evidence` accepts a free-form `details` object, so an author
+  // who writes `details.disclosedGap` gets no error — reading only the nested
+  // spelling would silently drop exactly the disclosure this criterion exists to
+  // catch (EI-22953893504383574 is the same trap for the other adequacy keys).
+  const topLevelGap = disclosedGapList((evidence.details as Record<string, unknown>).disclosedGap);
+  if (!nested || typeof nested !== 'object' || Array.isArray(nested)) {
+    return topLevelGap.length > 0 ? { disclosedGap: topLevelGap } : {};
+  }
   const raw = nested as Record<string, unknown>;
+  const disclosedGap = [...new Set([...topLevelGap, ...disclosedGapList(raw.disclosedGap)])];
   const bool = (key: string): boolean | undefined =>
     typeof raw[key] === 'boolean' ? (raw[key] as boolean) : undefined;
   const coverageRaw = raw.coverageRungs;
@@ -422,6 +451,7 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
     ...(evidence.provisionalProofBase === true || raw.provisionalProofBase === true
       ? { provisionalProofBase: true }
       : {}),
+    ...(disclosedGap.length > 0 ? { disclosedGap } : {}),
   };
 }
 
@@ -1444,6 +1474,40 @@ export function evaluateSpecTestAdequacy(input: {
 
   const risk = riskFloorRating(clause, classRef, evidence, input.now ?? new Date(), input.harness, input.workItemKind);
   ratings['plan-class-risk-floor'] = risk.rating;
+
+  // A DISCLOSURE IS NOT A MITIGATION. Before this criterion existed, an author
+  // could record a known hole in the proof on the binding and still collect a
+  // machine PASS, because no evaluator field read the disclosure — so the gap
+  // travelled with the evidence while the verdict said the clause was proven.
+  // Reading it here makes the disclosure cost something: it fails, and the gap
+  // text itself is named in the would-block reason rather than left on the row.
+  const disclosedGapRows = evidence.filter((row) => (detailsOf(row).disclosedGap ?? []).length > 0);
+  ratings['disclosed-gap'] =
+    disclosedGapRows.length > 0
+      ? {
+          rating: 'fail',
+          evidence: evidenceWithBindings(
+            `Bound proof for ${clauseIdentity(clause)} records an author-disclosed gap, so it cannot be read as a machine PASS. Disclosed: ${[
+              ...new Set(disclosedGapRows.flatMap((row) => detailsOf(row).disclosedGap ?? [])),
+            ].join(' | ')}.`,
+            disclosedGapRows,
+          ),
+          suggestion:
+            'Close the disclosed gap and re-bind, or supersede the binding with proof carrying no disclosure. A disclosure cannot be graded away while it stands.',
+        }
+      : {
+          rating: 'not-applicable',
+          // Still routed through evidenceWithBindings when bindings exist: every
+          // criterion's evidence string must surface the bound proof base (a
+          // provisional one especially), including the criteria that found nothing.
+          evidence:
+            evidence.length > 0
+              ? evidenceWithBindings(
+                  `No bound proof for ${clauseIdentity(clause)} records a disclosed gap.`,
+                  evidence,
+                )
+              : `No bound proof for ${clauseIdentity(clause)} records a disclosed gap.`,
+        };
 
   const rerunRecipe = rerunRecipeFor(clause, evidence, input.current, input.harness, classRef, input.rerunSelection);
   appendRatingRerunProbes(ratings, rerunRecipe);

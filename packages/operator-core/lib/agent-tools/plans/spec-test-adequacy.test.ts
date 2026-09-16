@@ -394,7 +394,9 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         },
       },
     });
-    expect(Object.keys(result.ratings)).toHaveLength(8);
+    // 9 since P-002 added `disclosed-gap`. Deliberately a literal, not
+    // ADEQUACY_CRITERIA.length — a derived count cannot catch an unintended criterion.
+    expect(Object.keys(result.ratings)).toHaveLength(9);
     expect(result.ratings['correct-layer'].rating).toBe('pass');
     expect(result.ratings['execution-integrity'].rating).toBe('pass');
     for (const [criterion, rating] of Object.entries(result.ratings)) {
@@ -1513,5 +1515,82 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     // And specifically because classRef is missing — the field a re-runner had to guess.
     const withoutClassRef = { slug: 'reconnect-plan', specIds: ['SPEC-003-01'] };
     expect(evaluatorArgsSchema.safeParse(withoutClassRef).success).toBe(false);
+  });
+});
+
+describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a machine PASS)', () => {
+  it('rates not-applicable and stays out of wouldBlock when no binding discloses a gap', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence()],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(result.ratings['disclosed-gap'].evidence).toContain('No bound proof');
+    expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+
+  it('fails the clause and names the gap text when the disclosure is nested under adequacy', () => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [
+        evidence({
+          details: {
+            adequacy: {
+              ...(base.details.adequacy as Record<string, unknown>),
+              disclosedGap: 'reconnect path is only covered for the single-subscriber case',
+            },
+          },
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(result.ratings['disclosed-gap'].evidence).toContain(
+      'reconnect path is only covered for the single-subscriber case',
+    );
+    expect(result.wouldBlock).toContain('disclosed-gap');
+    expect(result.verdict).toBe('fail');
+  });
+
+  it('fails on a TOP-LEVEL disclosure too, which the binder accepts without error', () => {
+    // plans:bind-spec-evidence takes a free-form `details` object, so `details.disclosedGap`
+    // is written with no complaint. Reading only the nested spelling would silently drop
+    // exactly the disclosure this criterion exists to catch.
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [
+        evidence({
+          details: { ...base.details, disclosedGap: ['fixture pins a stubbed clock'] },
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(result.ratings['disclosed-gap'].evidence).toContain('fixture pins a stubbed clock');
+    expect(result.wouldBlock).toContain('disclosed-gap');
+  });
+
+  it('does not treat a blank or whitespace-only disclosure as a disclosure', () => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [
+        evidence({
+          details: {
+            adequacy: { ...(base.details.adequacy as Record<string, unknown>), disclosedGap: ['   ', ''] },
+          },
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(result.wouldBlock).not.toContain('disclosed-gap');
   });
 });
