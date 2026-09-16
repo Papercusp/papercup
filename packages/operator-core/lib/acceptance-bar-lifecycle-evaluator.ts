@@ -76,6 +76,12 @@ function addCode(codes: AcceptanceBarSnapshotCode[], code: AcceptanceBarSnapshot
 }
 
 function automatedProofRequired(bar: AcceptanceBarTrace): boolean {
+  // Prefer the projection's own verdict. Only it can see the rubric criterion's
+  // instrument declaration, so only it can tell an EXPLICITLY manual BAR from an
+  // automated one: a manual BAR still projects `behaviorClass: 'happy-path'` on the
+  // `tree` plane, and re-deriving the floor from the clause class below would reinstate
+  // a floor the projection deliberately lifted.
+  if (typeof bar.automatedProofRequired === 'boolean') return bar.automatedProofRequired;
   // Missing behaviorClass is an old snapshot shape; fail closed to the historic
   // automated behavior until a fresh snapshot proves the clause is non-automated.
   return bar.behaviorClass !== 'non-automated' ||

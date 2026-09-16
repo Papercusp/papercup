@@ -21,6 +21,7 @@ import {
   buildAcceptanceBarAmendmentCandidate,
   computeAcceptanceBarHash,
   computeAcceptanceBarSetHash,
+  effectiveCriterionInstrumentKey,
   type Rubric,
   type RubricCriterion,
 } from './rubrics';
@@ -487,6 +488,56 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_proof_depth_missing');
     expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes)
       .not.toContain('bar_snapshot_proof_depth_missing');
+  });
+
+  // An EXPLICITLY manual BAR (check instrument:'none') must not carry an automated proof
+  // floor even on the `tree` plane, where acceptanceBarBehaviorClass projects every clause
+  // as `happy-path`. Before this, such a criterion was unshippable by construction: the
+  // only escapes were declaring test layers it does not have (which also mutates barHash,
+  // breaking the pin) or demoting a mandatory outcome to `disclosure` — both false.
+  it('does not invent an automated proof floor for an explicitly manual tree-plane BAR', () => {
+    const input = fixture(1);
+    input.rubrics.rows[0]!.criteria[0]!.check = { kind: 'instrument', instrumentKey: 'none' };
+    // Deliberately left as the production shape: tree plane, happy-path clause, no layers.
+    expect(input.clauses.rows[0]!.behaviorClass).toBe('happy-path');
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    // Measured: the manual BAR carries NO readiness codes at all once the exemption applies.
+    expect(effectiveCriterionInstrumentKey(input.rubrics.rows[0]!.criteria[0]!)).toBe('none');
+    expect(snapshot.bars[0]!.automatedProofRequired).toBe(false);
+    expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_proof_depth_missing');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes)
+      .not.toContain('bar_snapshot_proof_depth_missing');
+  });
+
+  // ANTI-LOOPHOLE (both directions). The exemption is keyed to an explicit authored
+  // instrument:'none'; an ordinary automated BAR keeps its floor, so this cannot become a
+  // general way to skip proof depth.
+  it('still requires proof depth for a tree-plane BAR that declares a structured test check', () => {
+    const input = fixture(1);
+    input.rubrics.rows[0]!.criteria[0]!.check = {
+      kind: 'tests',
+      files: ['packages/operator-core/lib/acceptance-bar-contract-snapshot.test.ts'],
+    };
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_proof_depth_missing');
+  });
+
+  // FAILS CLOSED: an instrument:'none' criterion whose CLAUSE still declares an automated
+  // obligation keeps the floor, matching the mixed-projection rule above it. Measured: the
+  // floor is kept as `proof_depth_missing`, because `adequacyState` reads the CRITERION's
+  // requiredTestLayers (still empty here), not the clause's.
+  it('keeps the proof floor when a manual BAR has a clause declaring a test layer', () => {
+    const input = fixture(1);
+    input.rubrics.rows[0]!.criteria[0]!.check = { kind: 'instrument', instrumentKey: 'none' };
+    input.clauses.rows[0]!.requiredTestLayers = ['unit'];
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_proof_depth_missing');
   });
 
   it('uses current evidence across planes for mixed-layer adequacy on a live BAR', () => {

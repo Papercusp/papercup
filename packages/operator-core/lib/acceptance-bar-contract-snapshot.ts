@@ -14,6 +14,7 @@ import {
   classifyRubricEvidenceCurrentness,
   computeAcceptanceBarHash,
   computeAcceptanceBarSetHash,
+  effectiveCriterionInstrumentKey,
   getAcceptanceRubricsForPlan,
   type Rubric,
   type RubricCriterion,
@@ -213,6 +214,16 @@ export interface AcceptanceBarTrace {
   behaviorClass?: SpecBehaviorClass | null;
   /** Additive trace of the clause mutation obligation. */
   mutationRequired?: boolean;
+  /**
+   * Whether this BAR carries an automated proof obligation, as computed by the projection
+   * that can see the rubric criterion (its `check`/instrument declaration), not just the
+   * clause class. Consumers MUST prefer this when present: a BAR the author explicitly
+   * declared manual projects `behaviorClass: 'happy-path'` on the `tree` plane, so
+   * re-deriving the floor from the clause class alone reinstates a floor this projection
+   * deliberately lifted. Absent on snapshots written before this field existed, where
+   * consumers keep failing closed to the historic automated behavior.
+   */
+  automatedProofRequired?: boolean;
   requiredTestLayers?: string[];
   passRatings: string[];
   coversBarKeys: string[];
@@ -832,9 +843,25 @@ export function projectAcceptanceBarContractSnapshot(
     // A generated delivery-plane BAR with no declared layers is a manual/operational
     // obligation. Any automated class, explicit layer, or mutation keeps the normal
     // adequacy floor in force; mixed projections fail closed rather than weakening it.
-    const automatedProofRequired = clauses.length === 0 || clauses.some((clause) =>
+    //
+    // A BAR whose author EXPLICITLY declared it manual (`check: {kind:'instrument',
+    // instrumentKey:'none'}`) carries no automated proof obligation, whichever plane its
+    // record lives on. Without this, `acceptanceBarBehaviorClass` projects every
+    // `evidencePlane:'tree'` clause as `happy-path`, so a manual BAR could never satisfy
+    // the adequacy floor: `adequacyState` is `undeclared` while `requiredTestLayers` is
+    // empty, and the only escapes were to declare test layers a document-census criterion
+    // does not have, or to demote a mandatory outcome to `disclosure`. Both are false
+    // statements about the BAR, so the criterion was unshippable by construction.
+    // Deliberately narrow, and fails closed: the criterion must itself declare no layers,
+    // it must have clauses, and NO clause may declare a layer or a mutation obligation.
+    const explicitlyManual =
+      effectiveCriterionInstrumentKey(criterion) === 'none' &&
+      (criterion.requiredTestLayers?.length ?? 0) === 0 &&
+      clauses.length > 0 &&
+      clauses.every((clause) => clause.requiredTestLayers.length === 0 && !clause.mutationRequired);
+    const automatedProofRequired = !explicitlyManual && (clauses.length === 0 || clauses.some((clause) =>
       clause.behaviorClass !== 'non-automated' || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
-    );
+    ));
     const mappings = clauses.map((clause) => ({
       planItemId: clause.planItemId,
       planItemStatus: itemStatus.get(clause.planItemId) ?? null,
@@ -977,6 +1004,7 @@ export function projectAcceptanceBarContractSnapshot(
       evidencePlane: criterion.evidencePlane ?? null,
       behaviorClass,
       mutationRequired: clauses.some((clause) => clause.mutationRequired),
+      automatedProofRequired,
       requiredTestLayers,
       passRatings: normalized(criterion.passRatings),
       coversBarKeys: normalized(criterion.coversBarKeys),
