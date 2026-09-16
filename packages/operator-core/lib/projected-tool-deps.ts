@@ -99,7 +99,9 @@ import { pinModuleState } from '@papercusp/module-singleton';
  */
 export function authorizationFailureHint(input: {
   toolName: string;
-  missingCapability: string;
+  missingCapability?: string;
+  deniedRole?: string;
+  allowedRoles?: readonly string[];
   ctx: UnifiedToolContext;
 }): string | undefined {
   if (
@@ -110,8 +112,15 @@ export function authorizationFailureHint(input: {
   ) {
     return undefined;
   }
+  // Both denial shapes have the SAME remedy — a differently-scoped session — so they
+  // share one sentence rather than drifting into two. The capability wording is kept
+  // byte-identical to what it has always emitted.
+  const lacks = input.missingCapability
+    ? `this principal lacks ${input.missingCapability} for ${input.toolName}`
+    : `role "${input.deniedRole ?? input.ctx.role}" is not on ${input.toolName}'s allowlist` +
+      (input.allowedRoles?.length ? ` (allowed: ${input.allowedRoles.join(', ')})` : '');
   return (
-    `This is a judge-scoped MCP session; this principal lacks ${input.missingCapability} for ${input.toolName}. ` +
+    `This is a judge-scoped MCP session; ${lacks}. ` +
     '`tools:invoke` preserves the same judge principal, so do not retry it in this session: it will be denied identically. ' +
     'Use a separate authorized su/operator session through the papercusp-su MCP server to invoke the tool.'
   );

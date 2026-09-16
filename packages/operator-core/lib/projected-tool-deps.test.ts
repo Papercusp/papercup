@@ -234,6 +234,43 @@ describe('authorizationFailureHint — judge MCP route guidance (EI-215434503419
     expect(hint).toContain('tools:invoke');
   });
 
+  // R-7 / P-012 (acceptance-machinery-seam-fixes-2026-09-16): a ROLE denial names the
+  // allowed roles and nothing else, so the caller learns what WOULD work but not where
+  // to get it. Both denial shapes have the same remedy, so they share this seam.
+  it('hints a ROLE-allowlist denial, not only a capability denial', () => {
+    const hint = authorizationFailureHint({
+      toolName: 'coord:send',
+      deniedRole: 'judge',
+      allowedRoles: ['scoper', 'worker'],
+      ctx: judgeCtx,
+    });
+    expect(hint).toContain('coord:send');
+    expect(hint).toContain('allowlist');
+    expect(hint).toContain('scoper, worker');
+    // The remedy is the whole point — it must be the SAME one the capability path gives.
+    expect(hint).toContain('papercusp-su');
+    expect(hint).toContain('do not retry it in this session');
+  });
+
+  it('keeps the capability wording byte-identical now that the input is a union', () => {
+    // Widening the input must not perturb the message the capability path has always
+    // emitted — that text is quoted in filed work-items and agent memories.
+    expect(
+      authorizationFailureHint({ toolName: 'plans:audit', missingCapability: 'plans:write', ctx: judgeCtx }),
+    ).toContain('this principal lacks plans:write for plans:audit');
+  });
+
+  it('does not hint a role denial outside a judge-scoped MCP session', () => {
+    expect(
+      authorizationFailureHint({
+        toolName: 'coord:send',
+        deniedRole: 'worker',
+        allowedRoles: ['scoper'],
+        ctx: ctx({ ...judgeCtx, role: 'worker' }),
+      }),
+    ).toBeUndefined();
+  });
+
   it('does not hint an already-authorized superuser context', () => {
     expect(authorizationFailureHint({
       toolName: 'plans:audit',
