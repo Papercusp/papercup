@@ -83,6 +83,16 @@ export interface CloudResourceObligationRow {
   resourceKind: string;
   resourceId: string;
   projectId: string;
+  /**
+   * Location (migration 1168) — what makes a row ADDRESSABLE, not merely named. GCP deletes
+   * are addressed: a zonal kind without `zone`, or a regional kind without `region`, cannot
+   * have a delete call constructed for it at all. See {@link CLOUD_RESOURCE_DELETE_CONTRACT}.
+   */
+  zone: string;
+  region: string;
+  /** The enclosing resource a kind is addressed THROUGH — for `nat`, its owning Cloud Router. */
+  parentResourceId: string;
+  hostId: string;
   purpose: string;
   createdByOwnerId: string;
   sourceWorkItemId: string;
@@ -103,6 +113,13 @@ export interface CloudResourceObligationRecordInput {
   resourceKind: string;
   resourceId: string;
   projectId?: string;
+  /** Zonal kinds (vm, disk) MUST supply this or the row is born unreclaimable. */
+  zone?: string;
+  /** Regional kinds (subnetwork, router, nat) MUST supply this or the row is born unreclaimable. */
+  region?: string;
+  /** For `nat`: the owning Cloud Router name that `delete-nat` addresses it through. */
+  parentResourceId?: string;
+  hostId?: string;
   purpose?: string;
   createdByOwnerId?: string;
   sourceWorkItemId?: string;
@@ -124,6 +141,10 @@ function toRow(raw: Record<string, unknown>): CloudResourceObligationRow {
     resourceKind: String(raw.resource_kind),
     resourceId: String(raw.resource_id),
     projectId: String(raw.project_id ?? ''),
+    zone: String(raw.zone ?? ''),
+    region: String(raw.region ?? ''),
+    parentResourceId: String(raw.parent_resource_id ?? ''),
+    hostId: String(raw.host_id ?? ''),
     purpose: String(raw.purpose ?? ''),
     createdByOwnerId: String(raw.created_by_owner_id ?? ''),
     sourceWorkItemId: String(raw.source_work_item_id ?? ''),
@@ -155,11 +176,13 @@ export async function recordCloudResourceObligation(
   if (!Number.isSafeInteger(graceMs) || graceMs < 0) throw new Error('graceMs must be a non-negative safe integer');
   const rows = await sql<{ id: number; inserted: boolean }[]>`
     INSERT INTO harness_shared.cloud_resource_obligations
-      (workspace_id, provider, resource_kind, resource_id, project_id, purpose,
-       created_by_owner_id, source_work_item_id, grace_ms)
+      (workspace_id, provider, resource_kind, resource_id, project_id, zone, region,
+       parent_resource_id, host_id, purpose, created_by_owner_id, source_work_item_id, grace_ms)
     VALUES
       (${input.workspaceId}, ${input.provider}, ${input.resourceKind}, ${input.resourceId},
-       ${input.projectId ?? ''}, ${input.purpose ?? ''}, ${input.createdByOwnerId ?? ''},
+       ${input.projectId ?? ''}, ${input.zone ?? ''}, ${input.region ?? ''},
+       ${input.parentResourceId ?? ''}, ${input.hostId ?? ''},
+       ${input.purpose ?? ''}, ${input.createdByOwnerId ?? ''},
        ${input.sourceWorkItemId ?? ''}, ${graceMs})
     ON CONFLICT (workspace_id, provider, resource_kind, resource_id) DO NOTHING
     RETURNING id, true AS inserted
@@ -186,6 +209,14 @@ export interface CloudResourceCreatedEventLike {
     readonly kind: string;
     readonly providerId: string;
     readonly parentProviderId?: string;
+    /**
+     * WI-10001673: `WorkspaceHostResourceRef` has carried these all along
+     * (libs/generic/deployment-driver/src/workspace-host-types.ts). Declaring them here is
+     * what stops the observer from discarding the resource's ADDRESS on the way to the
+     * ledger — without them every zonal/regional row is born unreclaimable.
+     */
+    readonly region?: string;
+    readonly zone?: string;
   };
   /** From the live apply context — one provider serves many workspaces. */
   readonly workspaceId: string;
@@ -197,6 +228,12 @@ export interface CloudResourceObligationObserverBinding {
   createdByOwnerId?: string;
   sourceWorkItemId?: string;
   graceMs?: number;
+  /**
+   * The workspace-host this provider is applying for. Every GCP delete step carries `hostId`
+   * and the provider asserts the target's managed-label identity against it before deleting,
+   * so an obligation recorded without one can be escalated but never reclaimed.
+   */
+  hostId?: string;
 }
 
 /**
@@ -222,6 +259,9 @@ export function createCloudResourceObligationObserver(
       resourceKind: event.resource.kind,
       resourceId: event.resource.providerId,
       ...(event.resource.parentProviderId ? { projectId: event.resource.parentProviderId } : {}),
+      ...(event.resource.zone ? { zone: event.resource.zone } : {}),
+      ...(event.resource.region ? { region: event.resource.region } : {}),
+      ...(binding.hostId ? { hostId: binding.hostId } : {}),
       ...(binding.purpose ? { purpose: binding.purpose } : {}),
       ...(binding.createdByOwnerId ? { createdByOwnerId: binding.createdByOwnerId } : {}),
       ...(binding.sourceWorkItemId ? { sourceWorkItemId: binding.sourceWorkItemId } : {}),
