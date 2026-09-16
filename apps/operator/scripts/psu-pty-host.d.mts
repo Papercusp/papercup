@@ -29,6 +29,55 @@ export function hostCodeStaleness({ loaded, path, }?: {
  */
 export function reexecExitCodeFrom(env?: EnvironmentMap, ppid?: number): number | null;
 /**
+ * WI-10001537: explain WHY `reexecExitCodeFrom` returned null, and say whether
+ * that null is a DEFECT or expected.
+ *
+ * The null is load-bearing and usually correct — a headless operator-spawned
+ * member, a nested `psu` inside a psu terminal, or the explicit kill switch all
+ * legitimately have no re-exec loop. But one cause is a real, silent fault: an
+ * unmanaged/stale shim that never advertised the loop at all. That is what
+ * killed a live interactive session mid-`AskUserQuestion` — `~/.local/bin/psu`
+ * (a retired install-standalone-mcp.sh one-liner) shadowed the managed shim on
+ * PATH, so no loop existed, `onReexec` was wired null by design, and the host's
+ * clean hand-off to a fresh process became a hard death. Nothing said a word.
+ *
+ * `actionable` is deliberately narrow, because a warning that also fires on the
+ * three benign causes would be pure noise on every headless spawn and every
+ * nested launch — and a detector nobody trusts is worse than none. In
+ * particular `nested` is EXPECTED and common (env vars are inherited by every
+ * descendant, so a psu launched from inside a psu terminal reads its parent's
+ * advertisement and correctly rejects it).
+ *
+ * @param {EnvironmentMap} [env]
+ * @param {number} [ppid]
+ * @returns {null | { reason: 'kill-switch'|'unadvertised'|'malformed'|'nested', actionable: boolean, detail: string }}
+ *   null when the loop IS wired (nothing to explain).
+ */
+export function missingReexecLoopDiagnosis(env?: EnvironmentMap, ppid?: number): null | {
+    reason: "kill-switch" | "unadvertised" | "malformed" | "nested";
+    actionable: boolean;
+    detail: string;
+};
+/**
+ * WI-10001537: the operator-facing warning for an `actionable`
+ * missingReexecLoopDiagnosis on an INTERACTIVE launch.
+ *
+ * Interactivity is the second half of the filter: the whole cost of a missing
+ * re-exec loop is that a hand-off becomes a hard death, and only a session with
+ * a human attached loses anything when that happens (a headless member is
+ * relaunched by its supervisor). A TTY is the honest test for that.
+ *
+ * Returns the message it emitted, or null when it stayed silent — so a test can
+ * assert BOTH directions without capturing stderr.
+ *
+ * @param {{ diagnosis?: ReturnType<typeof missingReexecLoopDiagnosis>, interactive?: boolean, write?: (s: string) => void }} [opts]
+ */
+export function warnMissingReexecLoop({ diagnosis, interactive, write, }?: {
+    diagnosis?: ReturnType<typeof missingReexecLoopDiagnosis>;
+    interactive?: boolean;
+    write?: (s: string) => void;
+}): string | null;
+/**
  * A host-code adoption re-exec is safe only when no human terminal is bridged.
  * Interactive carry-respawns must stay inside the current PTY host: exiting the
  * launcher visibly tears down the TUI and a missed successor handoff falls into

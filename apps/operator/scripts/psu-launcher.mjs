@@ -84,7 +84,21 @@ import {
   readHostHandoff,
   readHostHandoffForParentPid,
   reexecExitCodeFrom,
+  missingReexecLoopDiagnosis,
+  warnMissingReexecLoop,
 } from "./psu-pty-host.mjs";
+
+/**
+ * WI-10001537: `reexecExitCodeFrom`, plus a one-line operator warning when its
+ * null is the DEFECT case (an unmanaged shim earlier on PATH advertising no
+ * re-exec loop) on an interactive launch. Silent for every legitimate null —
+ * headless member, nested psu, explicit kill switch.
+ */
+function reexecExitCodeAnnounced(env) {
+  const code = reexecExitCodeFrom(env);
+  if (code == null) warnMissingReexecLoop({ diagnosis: missingReexecLoopDiagnosis(env) });
+  return code;
+}
 import { runPsuConnectionFrontController } from "./psu-connection-front-controller.mjs";
 import {
   RECOVERY_CAPABILITY_DIAGNOSTIC,
@@ -10685,7 +10699,12 @@ export function runWrapper(options) {
         // is also why the beat is stopped by hand — a heartbeat that outlives this
         // process by even one tick reports a pid that is gone, and the successor
         // is already beating for the same ownerId.
-        onReexec: reexecExitCodeFrom(env)
+        // WI-10001537: the null branch below is correct but was entirely SILENT,
+        // so a stale PATH shim turned every hand-off into a hard death with no
+        // signal at all. warnMissingReexecLoop speaks up ONLY for the actionable
+        // cause on an interactive launch (never for a headless member, a nested
+        // psu, or the kill switch) — see missingReexecLoopDiagnosis.
+        onReexec: reexecExitCodeAnnounced(env)
           ? ({ code }) => {
               try {
                 if (supervisorBeat) clearInterval(supervisorBeat);

@@ -225,6 +225,26 @@ export async function runAcceptanceBarMigrationInDatabase(
              LIMIT 1`;
           const criterion = legacyCriterionFromTemplateData(rubricRows[0]?.template_data);
           if (criterion) {
+            // EI-23379913422335853 — the legacy branch exists for a plan with no `**R-N — ...**`
+            // source bars, but it used to match clauses against the criterion's barKey. A plan old
+            // enough to need legacy backfill is exactly the plan whose clauses predate
+            // `source_bar_key`, so every row was excluded, `mapRows` came back empty, and the branch
+            // could never satisfy its own precondition — the migration refused `bar-backfill-required`
+            // for the cohort it was written for.
+            //
+            // Bar-key attribution is only meaningful when this plan actually uses bar keys. If NOTHING
+            // in it carries one, fall back to the barKey-agnostic match. A plan that DOES attribute
+            // keeps the strict match, so this can never mis-attribute a clause to the wrong bar.
+            const attributionRows = await tx<Array<{ has_attribution: boolean }>>`
+              SELECT EXISTS (
+                SELECT 1
+                  FROM harness_shared.plan_spec_clause_revisions r
+                 WHERE r.workspace_id = ${options.workspaceId}
+                   AND r.harness_slug = ${options.harnessSlug}
+                   AND r.plan_slug = ${row.plan_slug}
+                   AND r.source_bar_key IS NOT NULL
+              ) AS has_attribution`;
+            const effectiveBarKey = attributionRows[0]?.has_attribution ? criterion.barKey ?? null : null;
             const mapRows = await tx<Array<{ plan_item_id: string }>>`
               SELECT DISTINCT r.plan_item_id
                 FROM harness_shared.plan_spec_clauses c
@@ -236,7 +256,7 @@ export async function runAcceptanceBarMigrationInDatabase(
                  AND c.harness_slug = ${options.harnessSlug}
                  AND c.plan_slug = ${row.plan_slug}
                  AND r.plan_item_id IS NOT NULL
-                 AND (${criterion.barKey ?? null}::text IS NULL OR r.source_bar_key = ${criterion.barKey ?? null})
+                 AND (${effectiveBarKey}::text IS NULL OR r.source_bar_key = ${effectiveBarKey})
                  AND r.lifecycle_status NOT IN ('retired', 'exempt')
                ORDER BY r.plan_item_id`;
             if (mapRows.length > 0) {

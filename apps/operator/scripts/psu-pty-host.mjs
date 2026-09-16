@@ -157,6 +157,97 @@ export function reexecExitCodeFrom(env = process.env, ppid = process.ppid) {
 }
 
 /**
+ * WI-10001537: explain WHY `reexecExitCodeFrom` returned null, and say whether
+ * that null is a DEFECT or expected.
+ *
+ * The null is load-bearing and usually correct — a headless operator-spawned
+ * member, a nested `psu` inside a psu terminal, or the explicit kill switch all
+ * legitimately have no re-exec loop. But one cause is a real, silent fault: an
+ * unmanaged/stale shim that never advertised the loop at all. That is what
+ * killed a live interactive session mid-`AskUserQuestion` — `~/.local/bin/psu`
+ * (a retired install-standalone-mcp.sh one-liner) shadowed the managed shim on
+ * PATH, so no loop existed, `onReexec` was wired null by design, and the host's
+ * clean hand-off to a fresh process became a hard death. Nothing said a word.
+ *
+ * `actionable` is deliberately narrow, because a warning that also fires on the
+ * three benign causes would be pure noise on every headless spawn and every
+ * nested launch — and a detector nobody trusts is worse than none. In
+ * particular `nested` is EXPECTED and common (env vars are inherited by every
+ * descendant, so a psu launched from inside a psu terminal reads its parent's
+ * advertisement and correctly rejects it).
+ *
+ * @param {EnvironmentMap} [env]
+ * @param {number} [ppid]
+ * @returns {null | { reason: 'kill-switch'|'unadvertised'|'malformed'|'nested', actionable: boolean, detail: string }}
+ *   null when the loop IS wired (nothing to explain).
+ */
+export function missingReexecLoopDiagnosis(env = process.env, ppid = process.ppid) {
+  if (reexecExitCodeFrom(env, ppid) != null) return null;
+
+  if (String(env.PAPERCUSP_PSU_HOST_ADOPT ?? '').trim() === '0') {
+    return { reason: 'kill-switch', actionable: false, detail: 'PAPERCUSP_PSU_HOST_ADOPT=0' };
+  }
+
+  const raw = String(env.PAPERCUSP_PSU_REEXEC ?? '').trim();
+  if (!raw) {
+    return {
+      reason: 'unadvertised',
+      actionable: true,
+      detail: 'PAPERCUSP_PSU_REEXEC is not set: the process that launched us runs no re-exec loop',
+    };
+  }
+
+  const advertised = Number(raw || NaN);
+  if (!(Number.isInteger(advertised) && advertised > 0 && advertised < 256)) {
+    return {
+      reason: 'malformed',
+      actionable: true,
+      detail: `PAPERCUSP_PSU_REEXEC=${JSON.stringify(raw)} is not a usable exit code`,
+    };
+  }
+
+  const advertiser = Number(String(env.PAPERCUSP_PSU_REEXEC_PPID ?? '').trim() || NaN);
+  return {
+    reason: 'nested',
+    actionable: false,
+    detail: `the advertisement came from pid ${Number.isInteger(advertiser) ? advertiser : 'unknown'}, not our parent ${ppid}`,
+  };
+}
+
+/**
+ * WI-10001537: the operator-facing warning for an `actionable`
+ * missingReexecLoopDiagnosis on an INTERACTIVE launch.
+ *
+ * Interactivity is the second half of the filter: the whole cost of a missing
+ * re-exec loop is that a hand-off becomes a hard death, and only a session with
+ * a human attached loses anything when that happens (a headless member is
+ * relaunched by its supervisor). A TTY is the honest test for that.
+ *
+ * Returns the message it emitted, or null when it stayed silent — so a test can
+ * assert BOTH directions without capturing stderr.
+ *
+ * @param {{ diagnosis?: ReturnType<typeof missingReexecLoopDiagnosis>, interactive?: boolean, write?: (s: string) => void }} [opts]
+ */
+export function warnMissingReexecLoop({
+  diagnosis = missingReexecLoopDiagnosis(),
+  interactive = Boolean(process.stderr?.isTTY),
+  write = (s) => process.stderr.write(s),
+} = {}) {
+  if (!diagnosis || !diagnosis.actionable || !interactive) return null;
+  const message =
+    `papercusp superuser launcher (psu): ⚠ no host re-exec loop (${diagnosis.reason}) — ${diagnosis.detail}.\n` +
+    `  This session cannot hand off to a fresh process cleanly; an adopt/respawn becomes a HARD EXIT that\n` +
+    `  destroys anything on screen (an open question dialog included). Usual cause: an unmanaged 'psu'\n` +
+    `  earlier on PATH shadowing ~/.papercusp/bin/psu. Check with: command -v psu  (WI-10001537)\n`;
+  try {
+    write(message);
+  } catch {
+    /* a closed stderr must never take the launch down */
+  }
+  return message;
+}
+
+/**
  * A host-code adoption re-exec is safe only when no human terminal is bridged.
  * Interactive carry-respawns must stay inside the current PTY host: exiting the
  * launcher visibly tears down the TUI and a missed successor handoff falls into

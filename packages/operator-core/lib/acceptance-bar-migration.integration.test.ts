@@ -259,6 +259,107 @@ describe('runAcceptanceBarMigrationInDatabase', () => {
     expect(after).toEqual(before);
   });
 
+  // EI-23379913422335853. The sibling test above passes only because its criterion omits
+  // `barKey`; every rubric authored by the current template SETS one, so the strict
+  // `r.source_bar_key = barKey` match was live in the common case and excluded every clause of
+  // a plan whose clauses predate bar-key attribution — the exact cohort legacy-backfill exists
+  // for. These two pin the fallback AND the attribution guard that bounds it.
+  const legacyRubricWithBarKey = (slug: string, barKey: string) => ({
+    kind: 'acceptance',
+    subjectPlan: slug,
+    characteristic: 'plan-acceptance',
+    ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
+    criteria: [{
+      key: 'legacy-outcome',
+      title: 'Legacy outcome',
+      model: 'The live plan item realizes the legacy outcome.',
+      method: 'Inspect the current live spec mapping.',
+      driftMarkers: 'The mapped plan item or its live spec is absent.',
+      role: 'outcome',
+      mandatory: true,
+      barKey,
+      barHash: 'a'.repeat(64),
+      evidencePlane: 'tree',
+      passRatings: ['healthy'],
+    }],
+  });
+
+  const legacyContentWithoutBars = (slug: string) => validContent(slug, 'active')
+    .replace(
+      '**R-1 — Canonical outcome.** The migration writes one canonical BAR.',
+      'Legacy requirements predate canonical BAR identifiers.',
+    )
+    .replace(
+      '### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n' +
+        '|---|---|---|\n| R-1 | P-001 | tree |\n\n',
+      '',
+    );
+
+  const insertLegacyClause = async (
+    slug: string,
+    specId: string,
+    planItemId: string,
+    sourceBarKey: string | null,
+  ) => {
+    await db.sql`INSERT INTO harness_shared.plan_spec_clauses
+      (workspace_id,harness_slug,plan_slug,spec_id,current_revision,created_by)
+      VALUES (${WORKSPACE},${HARNESS},${slug},${specId},1,'su-migration-test')`;
+    await db.sql`INSERT INTO harness_shared.plan_spec_clause_revisions
+      (workspace_id,harness_slug,plan_slug,spec_id,revision,plan_item_id,source_bar_key,behavior,behavior_class,
+       required_evidence,required_test_layers,mutation_required,lifecycle_status,content_hash,
+       created_by,accepted_by,accepted_at)
+      VALUES (${WORKSPACE},${HARNESS},${slug},${specId},1,${planItemId},${sourceBarKey},
+              'The legacy outcome remains realized.',
+              'happy-path',ARRAY['real database trace']::text[],ARRAY['integration']::text[],false,
+              'active',${'b'.repeat(64)},'su-migration-test','su-migration-test',now())`;
+  };
+
+  it('legacy-backfills a barKey criterion when no clause in the plan carries bar attribution', async () => {
+    const slug = 'legacy-bar-key-unattributed';
+    await insertPlan(slug, legacyContentWithoutBars(slug), 'active');
+    await db.sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id,harness_slug,plan_slug,title,status,content,content_hash,version,template,template_data)
+      VALUES (${WORKSPACE},${HARNESS},${`acceptance-${slug}`},'Legacy acceptance','active','legacy body',
+              md5('legacy body'),2,'rubric',${JSON.stringify(legacyRubricWithBarKey(slug, 'R-1'))}::text::jsonb)`;
+    // source_bar_key NULL — the legacy shape: clauses generated before bar-key attribution existed.
+    await insertLegacyClause(slug, 'SPEC-001', 'P-001', null);
+
+    const result = await runAcceptanceBarMigrationInDatabase({
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      actorId: 'su-migration-test',
+      planSlug: slug,
+      dryRun: true,
+    });
+
+    // The claim under test is the CLASSIFICATION. Before the fix this was
+    // 'bar-backfill-required' ("fabricated BARs are forbidden") and the cohort was unreachable.
+    expect(result.outcomes[0]!.decision.action).toBe('legacy-backfill');
+    expect(result.outcomes[0]!.decision.action).not.toBe('bar-backfill-required');
+  });
+
+  it('still refuses when the plan DOES attribute clauses to a different bar', async () => {
+    const slug = 'legacy-bar-key-attributed-elsewhere';
+    await insertPlan(slug, legacyContentWithoutBars(slug), 'active');
+    await db.sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id,harness_slug,plan_slug,title,status,content,content_hash,version,template,template_data)
+      VALUES (${WORKSPACE},${HARNESS},${`acceptance-${slug}`},'Legacy acceptance','active','legacy body',
+              md5('legacy body'),2,'rubric',${JSON.stringify(legacyRubricWithBarKey(slug, 'R-1'))}::text::jsonb)`;
+    // This plan DOES use bar keys, just not R-1 — so the strict match must stay in force and the
+    // fallback must NOT fire, or the migration would mis-attribute R-9's clause to R-1.
+    await insertLegacyClause(slug, 'SPEC-001', 'P-001', 'R-9');
+
+    const result = await runAcceptanceBarMigrationInDatabase({
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      actorId: 'su-migration-test',
+      planSlug: slug,
+      dryRun: true,
+    });
+
+    expect(result.outcomes[0]!.decision.action).toBe('bar-backfill-required');
+  });
+
   it('keeps a post-epoch executable plan in its cohort while recording honestly backfilled BARs', async () => {
     await insertPlan('strict-late-bars', validContent('strict-late-bars', 'active'), 'active');
     await db.sql`UPDATE harness_shared.harness_plans
