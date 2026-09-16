@@ -344,7 +344,16 @@ const GATEWAY_COOLDOWN_SEC = 120;
  */
 const BG_HOST_COOLDOWN_SEC = 13 * 60; // 780s
 
-type RestartTarget = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar' | 'mcp-proxy' | 'desktop-dev';
+type RestartTarget =
+  | 'dev'
+  | 'staging'
+  | 'gateway'
+  | 'bg-host'
+  | 'embed-sidecar'
+  | 'mcp-proxy'
+  | 'email-sidecar'
+  | 'calendar-sidecar'
+  | 'desktop-dev';
 
 /**
  * Fixed listener ports for restart targets whose useful readiness contract is
@@ -360,6 +369,8 @@ const RESTART_TARGET_PORTS: Partial<Record<RestartTarget, number>> = {
   staging: 3170,
   'embed-sidecar': 3384,
   'mcp-proxy': 9071,
+  'email-sidecar': 8791,
+  'calendar-sidecar': 8792,
 };
 
 /**
@@ -446,6 +457,20 @@ export const RESTART_TARGETS: Record<
     resource: 'mcp-proxy',
     cooldownResource: 'mcp-proxy-cooldown',
     blastRadius: 'the shared MCP proxy (:9071) — Papercusp tool calls fail until it is back',
+  },
+  // WI-10001633: app sidecars run tsx from their own checkout with no
+  // restart-on-change; this is the sanctioned way to load an edit into them.
+  'email-sidecar': {
+    unit: RESTART_TARGET_UNITS['email-sidecar'],
+    resource: 'email-sidecar',
+    cooldownResource: 'email-sidecar-cooldown',
+    blastRadius: 'the Email app sidecar (:8791) — the Email app is unavailable until it is back; Gmail sync resumes on boot',
+  },
+  'calendar-sidecar': {
+    unit: RESTART_TARGET_UNITS['calendar-sidecar'],
+    resource: 'calendar-sidecar',
+    cooldownResource: 'calendar-sidecar-cooldown',
+    blastRadius: 'the Calendar app sidecar (:8792) — the Calendar app is unavailable until it is back',
   },
   'desktop-dev': {
     // This is a wrapper label, not a systemd unit. The target branch below
@@ -851,7 +876,7 @@ function gitSyncPreflightBlocks(blocked: boolean, drainSec: number): boolean {
 export default defineTool({
   name: 'dev:restart',
   description:
-    'Coordinated restart with drain/coalesce/audit. Targets: "dev" :3070 (default), "staging" :3170, "desktop-dev" :3270, "gateway" :8788, "bg-host" routines/git-sync, "embed-sidecar" :3384, "mcp-proxy" :9071. Dry-run unless confirm:true; restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or audited authorize:true. Cooldown ~2m; bg-host ~13m.',
+    'Coordinated restart with drain/coalesce/audit. Targets: "dev" :3070 (default), "staging" :3170, "desktop-dev" :3270, "gateway" :8788, "bg-host" routines/git-sync, "embed-sidecar" :3384, "mcp-proxy" :9071, "email-sidecar", "calendar-sidecar". Dry-run unless confirm:true; restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or audited authorize:true. Cooldown ~2m; bg-host ~13m.',
   guidance: {
     when: 'Load integration-tree edits into long-running hosts (no deploy). desktop-dev uses the verified wrapper-owned :3270 listener (bounded drain, no-native-teardown hard exit, waits for a new listener). Route desktop→"desktop-dev"; inference-gateway→"gateway"; routines/git-sync→"bg-host"; embeddings→"embed-sidecar"; MCP proxy/transport→"mcp-proxy"; shared server→"staging" (probe :3170).',
     notWhen:
@@ -878,7 +903,9 @@ export default defineTool({
   args: z.object({
     confirm: z.boolean().optional(),
     max_drain_sec: z.number().int().nonnegative().max(MAX_DRAIN_SEC).optional(),
-    target: z.enum(['dev', 'staging', 'gateway', 'bg-host', 'embed-sidecar', 'mcp-proxy', 'desktop-dev']).optional(),
+    target: z
+      .enum(['dev', 'staging', 'gateway', 'bg-host', 'embed-sidecar', 'mcp-proxy', 'email-sidecar', 'calendar-sidecar', 'desktop-dev'])
+      .optional(),
     /** EI-18198340374286980: in-band alternative to the operator-process-env
      *  PAPERCUSP_ALLOW_DEV_RESTART=1 gate, which an agent cannot set for a
      *  server it did not itself spawn. Only takes effect with confirm:true —
