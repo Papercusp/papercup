@@ -67,7 +67,8 @@ import {
   admissionPendingCreateRemedy,
   admissionPendingExplanation,
   admissionPromoterTickSec,
-  admissionPromoterUnhealthy,
+  admissionPromoterStall,
+  admissionStallBasis,
   autoPickableWhereSql,
   type BornAdmission,
   isWorkItemDuplicateAdmitted,
@@ -7878,7 +7879,9 @@ export async function explainIssueClaimFloors(
   // named id is actually floored on admission-pending — the common case (a fleet
   // leader diagnosing a mix of floors) never touches it.
   const anyAdmissionPending = rows.some((r) => !r.ok_admission);
-  const promoterUnhealthy = anyAdmissionPending ? await admissionPromoterUnhealthy(issueWs) : false;
+  const promoterStall = anyAdmissionPending
+    ? await admissionPromoterStall(issueWs)
+    : ({ stalled: false } as const);
   return ids.map((id) => {
     const r = byId.get(id);
     const refusedBy = !r
@@ -7945,23 +7948,24 @@ export async function explainIssueClaimFloors(
             // is stop quoting its healthy-cadence figure once that failure is
             // visible — otherwise the refusal text and reality silently diverge for
             // as long as the promoter keeps erroring.
-            retry: promoterUnhealthy
+            //
+            // EI-23383710942512978: WHY the promoter is stalled is classified rather
+            // than collapsed to "errored". All stalled causes share this fail-open
+            // bound — the bound was never the problem — but naming a deliberate
+            // owner pause as a fault invites the reader to re-arm an LLM-spending
+            // loop the owner deliberately stopped. The attribution is the fix.
+            retry: promoterStall.stalled
               ? {
                   clearsOnItsOwn: true as const,
                   expectedWithinSec: admissionFailOpenSec(),
                   guaranteedWithinSec: admissionFailOpenSec(),
-                  basis:
-                    "the work-item-admission-promoter's last fire errored, so duplicate screening is " +
-                    'currently NOT running; the independent work-item-admission-fail-open runner is ' +
-                    'the only mechanism presently admitting rows',
+                  basis: admissionStallBasis(promoterStall),
                 }
               : {
                   clearsOnItsOwn: true as const,
                   expectedWithinSec: admissionPromoterTickSec(),
                   guaranteedWithinSec: admissionFailOpenSec(),
-                  basis:
-                    'the work-item-admission-promoter cron tick, with the independent ' +
-                    'work-item-admission-fail-open runner as the backstop if that promoter is dead',
+                  basis: admissionStallBasis(promoterStall),
                 },
             remedy: admissionPendingCreateRemedy(),
           }

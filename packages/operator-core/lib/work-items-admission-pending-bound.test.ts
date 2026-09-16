@@ -8,7 +8,9 @@ import {
   admissionPendingCreateRemedy,
   admissionPendingExplanation,
   admissionPromoterTickSec,
-  admissionPromoterUnhealthy,
+  admissionPromoterStall,
+  admissionStallBasis,
+  classifyAdmissionPromoterStall,
 } from './work-items-admission';
 
 /**

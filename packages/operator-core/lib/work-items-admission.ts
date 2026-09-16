@@ -26,6 +26,7 @@ import { activeWorkspaceId } from './workspace-registry';
 import { ACTIONABLE_CONDITION_PREFIXES } from './coord/actionable-conditions';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
+import { readRoutinePause } from './harness/routines/release-pause-ttl';
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
@@ -188,26 +189,151 @@ export function admissionFailOpenSec(tickMinutes = DEFAULT_PROMOTER_TICK_MINUTES
  * last_error_source:'runner'), so its mere presence already answers the question
  * — no extra staleness/consecutive-tick math needed.
  *
+ * ⚠ EI-23383710942512978 — THAT LAST PARAGRAPH IS ONLY TRUE WHILE THE ROUTINE
+ * STILL FIRES. "cleared on success, set on failure" is a statement about FIRES,
+ * so the moment a routine stops firing, `last_error` FREEZES at whatever the
+ * final fire left and nothing will ever clear it. A deliberate pause stops the
+ * firing — so a promoter the OWNER paused reports its last pre-pause error
+ * forever, and the floor rendered that as "the promoter's last fire errored, so
+ * duplicate screening is currently NOT running".
+ *
+ * That misattribution is the actively dangerous direction: it reads as "a
+ * background routine is broken", which invites the reader to re-arm it — and
+ * here the routine was an LLM-SPENDING loop the owner paused with "re-arm only
+ * on the owner's word". Measured 2026-09-16: `last_fired_at` 16:00:03Z preceded
+ * `metadata.pause.pausedAtMs` 16:04:03Z by four minutes, and two separate agents
+ * were sent to investigate a promoter fault that did not exist (one filed it as
+ * a fleet-wide bug).
+ *
+ * So the cause is classified, not collapsed to a boolean. `routines:list` has
+ * documented this exact distinction all along — "non-null `paused` means a
+ * DELIBERATE hold ... a bare active:false with paused:null is the one worth
+ * investigating" — and this floor simply did not honour it.
+ *
  * Read-only, single indexed row lookup (routines_install_slug_name_key), and
  * fail-open on any query problem: an unreadable health signal must never make an
  * admission-pending refusal look WORSE than the caller already sees (same posture
  * as {@link loadOwnAuthorPubkeys} above).
  */
-export async function admissionPromoterUnhealthy(workspaceId: string): Promise<boolean> {
-  if (!workspaceId) return false;
+export type AdmissionPromoterStall =
+  /** The promoter is armed and its last fire succeeded — the ordinary case. */
+  | { stalled: false }
+  /** Deliberately held by an operator/owner. NOT a fault; must not be re-armed to unblock a claim. */
+  | { stalled: true; cause: 'paused'; pauseReason: string | null }
+  /** Armed, but its last fire errored — the genuine fault this predicate was born for. */
+  | { stalled: true; cause: 'errored' }
+  /** Inactive with NO pause record: stopped, and nothing durable says why. Worth investigating. */
+  | { stalled: true; cause: 'inactive' };
+
+/** The row shape {@link classifyAdmissionPromoterStall} decides from. */
+export interface AdmissionPromoterRow {
+  active: boolean | null;
+  lastFiredAtMs: number | null;
+  /** Raw `metadata.pause` jsonb — parsed here via the shared {@link readRoutinePause}. */
+  pause: unknown;
+  lastError: string | null;
+}
+
+/**
+ * The PURE decision behind {@link admissionPromoterStall}, split out so the
+ * ordering rule above is unit-testable without a database — the DB half is a
+ * single indexed SELECT with nothing to get wrong, and this half is where the
+ * misattribution actually lived.
+ */
+export function classifyAdmissionPromoterStall(row: AdmissionPromoterRow): AdmissionPromoterStall {
+  const pause = readRoutinePause(row.pause);
+  const lastError = row.lastError && row.lastError.length > 0 ? row.lastError : null;
+
+  if (pause.present) {
+    // A deliberate hold OUTRANKS a stale error, but only when the error really is
+    // an artifact of the last fire BEFORE the pause. If the routine somehow fired
+    // and failed AFTER being paused, that error is live news and still wins —
+    // "prefer paused" must not become "suppress every error on a paused routine".
+    const errorPostDatesPause =
+      lastError !== null &&
+      pause.pausedAtMs !== null &&
+      row.lastFiredAtMs !== null &&
+      row.lastFiredAtMs > pause.pausedAtMs;
+    if (!errorPostDatesPause) return { stalled: true, cause: 'paused', pauseReason: pause.reason };
+    return { stalled: true, cause: 'errored' };
+  }
+
+  // No pause record. An inactive routine is stopped for an UNRECORDED reason, which
+  // is a different (and more suspicious) thing than one that is armed and erroring.
+  if (row.active === false) return { stalled: true, cause: 'inactive' };
+  return lastError !== null ? { stalled: true, cause: 'errored' } : { stalled: false };
+}
+
+export async function admissionPromoterStall(workspaceId: string): Promise<AdmissionPromoterStall> {
+  if (!workspaceId) return { stalled: false };
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{ last_error: string | null }[]>`
-      SELECT metadata->>'last_error' AS last_error
+    const rows = await sql<
+      { active: boolean | null; last_fired_at: Date | null; pause: unknown; last_error: string | null }[]
+    >`
+      SELECT active,
+             last_fired_at,
+             metadata->'pause'      AS pause,
+             metadata->>'last_error' AS last_error
         FROM harness_shared.routines
        WHERE workspace_id = ${workspaceId}
          AND install_slug = ${operatorHomeHarnessSlug()}
          AND name = 'work-item-admission-promoter'
        LIMIT 1`;
-    return !!rows[0]?.last_error;
+    const row = rows[0];
+    if (!row) return { stalled: false };
+    const firedMs = row.last_fired_at ? new Date(row.last_fired_at).getTime() : Number.NaN;
+    return classifyAdmissionPromoterStall({
+      active: row.active,
+      lastFiredAtMs: Number.isFinite(firedMs) ? firedMs : null,
+      pause: row.pause,
+      lastError: row.last_error,
+    });
   } catch {
-    return false;
+    return { stalled: false };
   }
+}
+
+/** Clip a pause reason into refusal text without letting an essay dominate the message. */
+const clipReason = (reason: string): string =>
+  reason.length <= 240 ? reason : `${reason.slice(0, 237).trimEnd()}...`;
+
+/**
+ * The refusal `basis` for each stall cause. Lives beside the predicate (like
+ * {@link admissionPendingExplanation} and {@link admissionPendingCreateRemedy})
+ * so the cause and the sentence describing it cannot drift apart.
+ *
+ * Every stalled cause shares the SAME bound — the fail-open runner is the only
+ * thing admitting rows in all three — so what changes here is the ATTRIBUTION,
+ * which is the whole defect: the bound was already honest, the blame was not.
+ */
+export function admissionStallBasis(stall: AdmissionPromoterStall): string {
+  const failOpenTail =
+    'the independent work-item-admission-fail-open runner is the only mechanism presently admitting rows';
+  if (!stall.stalled) {
+    return (
+      'the work-item-admission-promoter cron tick, with the independent ' +
+      'work-item-admission-fail-open runner as the backstop if that promoter is dead'
+    );
+  }
+  if (stall.cause === 'paused') {
+    return (
+      'duplicate screening is PAUSED BY A DELIBERATE HOLD, not broken — ' +
+      (stall.pauseReason ? `the recorded reason is: "${clipReason(stall.pauseReason)}"; ` : 'no reason was recorded; ') +
+      'do NOT re-arm the promoter to unblock this claim (it is a background LLM-spending loop and the ' +
+      `hold may be an owner directive); ${failOpenTail}`
+    );
+  }
+  if (stall.cause === 'inactive') {
+    return (
+      'the work-item-admission-promoter is INACTIVE with no recorded pause reason, so duplicate ' +
+      `screening is currently NOT running and nothing durable says why; ${failOpenTail}`
+    );
+  }
+  return (
+    "the work-item-admission-promoter's last fire errored, so duplicate screening is " +
+    `currently NOT running; ${failOpenTail}`
+  );
 }
 
 /**

@@ -691,16 +691,30 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
     const result = await deps.checkDiskHeadroom?.();
 
     expect(result?.ok).toBe(false);
+    // EI-23424266636870803: these assertions used to pin the message that WEDGED the
+    // fleet gate unreadably — "…breaches the standing critical write headroom floor …
+    // floor is 2.0 GiB and 2.00% bytes". That trailing clause quoted the raw policy
+    // scalars, which are NOT the floor the breach test applies (the capped per-filesystem
+    // reserve is), so on the real box it printed a 2.0 GiB "floor" beside 40.2 GiB free.
+    // The assertion was real and the behaviour it pinned was wrong: a test can hold a
+    // defect in place. Pin the APPLIED reserve and the ABSOLUTE deficit instead — here a
+    // 1000 GiB filesystem reserves 2% = 20.0 GiB (under the 64 GiB cap) against 1.0 GiB
+    // free, so the responder needs 19.0 GiB, not the 2.0 GiB the old line implied.
     expect(result?.summary).toContain(
-      "/tmp low-bytes breaches the standing critical write headroom floor",
+      "/tmp low-bytes: the filesystem backing it has 1.0 GiB free of 1000.0 GiB, " +
+        "under the 20.0 GiB write-headroom reserve — reclaim >= 19.0 GiB anywhere on that filesystem",
     );
     expect(result?.summary).toContain(
-      "/mnt/data low-inodes breaches the standing critical write headroom floor",
+      "/mnt/data low-inodes: 1.00% inodes free, under the 5.00% floor",
     );
+    // The clause that stops the destructive misreading: /tmp is a mount point on a shared
+    // device, not a directory whose contents are the shortage.
+    expect(result?.summary).toContain("free space belongs to the FILESYSTEM");
     expect(result?.summary).toContain("bounded disk GC: fleet logs scanned 4 file(s)");
     expect(result?.summary).toContain("with 1 error(s)");
-    expect(result?.summary).toContain("floor is 2.0 GiB and 2.00% bytes");
-    expect(result?.summary).toContain("5.00% inodes");
+    // The self-contradicting floor clause must not come back: it is the one line that
+    // made the wedge message read as evidence against its own verdict.
+    expect(result?.summary).not.toContain("floor is 2.0 GiB");
     expect(sampleCount).toBe(2);
     expect(gcCount).toBe(1);
     expect(calls).toEqual([]);
