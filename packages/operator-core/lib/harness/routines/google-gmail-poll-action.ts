@@ -59,6 +59,8 @@ export interface GoogleGmailPollResult {
   acknowledged: number;
   messages: number;
   fullResyncs: number;
+  /** Listed messages skipped because they were gone (404) by the time they were fetched — never a cursor fault. */
+  messagesGone: number;
   failures: GoogleGmailPollFailure[];
 }
 
@@ -128,8 +130,25 @@ export function formatGoogleGmailPollLog(result: GoogleGmailPollResult): string 
     `failed=${result.failed} renewed=${result.renewed} watch_deferred=${result.watchDeferred} ` +
     `watch_throttled=${result.watchThrottled} quota_throttled=${result.quotaThrottled} pulled=${result.pulled} ` +
     `acknowledged=${result.acknowledged} messages=${result.messages} ` +
-    `full_resyncs=${result.fullResyncs}${failures}`
+    `full_resyncs=${result.fullResyncs} messages_gone=${result.messagesGone}${failures}`
   );
+}
+
+/**
+ * One line per full resync naming WHY it fired. The aggregate full_resyncs
+ * counter alone once sent a diagnosis down the wrong mechanism
+ * (EI-23429618437235533 / WI-10001662): a cursorless bootstrap and an
+ * expired-history rebootstrap both count as `full`, and only the latter
+ * discards a resumable backfill.
+ */
+export function formatGoogleGmailFullResyncLog(
+  sourceId: string,
+  synced: Pick<GoogleGmailSyncResult, 'resyncReason'>,
+): string {
+  const reason = synced.resyncReason
+    ? `reason=history_expired operation=${synced.resyncReason.operation} status=${synced.resyncReason.status}`
+    : 'reason=no_cursor';
+  return `[google-gmail-poll] full_resync source=${sourceId} ${reason}`;
 }
 
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
@@ -194,6 +213,7 @@ export async function runGoogleGmailPoll(
     acknowledged: 0,
     messages: 0,
     fullResyncs: 0,
+    messagesGone: 0,
     failures: [],
   };
   if (sources.length === 0) return result;
@@ -251,13 +271,18 @@ export async function runGoogleGmailPoll(
         let current =
           authAttempt++ === 0 ? source : ((await getSource(sql, ctx.workspaceId, source.id)) ?? source);
         let messages = 0;
+        let messagesGone = 0;
         let fullResyncs = 0;
         // A cursorless mailbox bootstraps here; a cursored one whose resumable
         // backfill is still pending advances it by one budgeted chunk per poll.
         if (!googleGmailSourceHistoryId(current) || googleGmailBackfillPending(current)) {
           const initial = await syncSource(sql, current, accessToken, syncOptions);
           messages += initial.messages;
-          if (initial.mode === 'full') fullResyncs += 1;
+          messagesGone += initial.messagesGone;
+          if (initial.mode === 'full') {
+            fullResyncs += 1;
+            console.log(formatGoogleGmailFullResyncLog(current.id, initial));
+          }
           const persisted = await getSource(sql, ctx.workspaceId, current.id);
           if (!persisted) throw new Error(`google_gmail_source_missing_after_initial_sync:${current.id}`);
           current = persisted;
@@ -291,11 +316,12 @@ export async function runGoogleGmailPoll(
                 lastError: null,
                 connected: true,
               });
-        return { readySource, renewed: watched.renewed, messages, fullResyncs };
+        return { readySource, renewed: watched.renewed, messages, messagesGone, fullResyncs };
       });
       sourceById.set(source.id, prepared.readySource);
       readySourceIds.add(source.id);
       result.messages += prepared.messages;
+      result.messagesGone += prepared.messagesGone;
       result.fullResyncs += prepared.fullResyncs;
       if (prepared.renewed) result.renewed += 1;
     } catch (cause) {
@@ -373,7 +399,11 @@ export async function runGoogleGmailPoll(
       );
       syncedSourceIds.add(sourceId);
       result.messages += synced.messages;
-      if (synced.mode === 'full') result.fullResyncs += 1;
+      result.messagesGone += synced.messagesGone;
+      if (synced.mode === 'full') {
+        result.fullResyncs += 1;
+        console.log(formatGoogleGmailFullResyncLog(sourceId, synced));
+      }
     } catch (cause) {
       if (isGoogleGmailQuotaError(cause)) {
         result.quotaThrottled += 1;
