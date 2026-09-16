@@ -12,6 +12,7 @@ export {
   encodeScopedRef,
   decodeScopedRef,
   workRefPopupTarget,
+  canOpenWorkRef,
   type ChatWorkRef,
   type ChatRefPopupTarget,
 } from '@papercusp/operator-ui/papercup-chat/chat-ref-popup-params';

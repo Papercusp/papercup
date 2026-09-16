@@ -14,6 +14,7 @@ import {
   type ReportBlockRenderContext,
 } from '@papercusp/chat-cards';
 import { HydratedWorkRefPill } from './HydratedWorkRefPill';
+import { canOpenWorkRef } from './chat-ref-popup-params';
 import { remarkWorkRefs } from './remark-work-refs';
 import type { WorkRefKind } from './parse-work-refs';
 
@@ -68,7 +69,14 @@ function RichItemText({
             harnessSlug={harnessSlug ?? ''}
             planSlug={planSlug}
             size="xs"
-            onActivate={onWorkRefActivate ? () => onWorkRefActivate({ id, kind, planSlug }) : undefined}
+            onActivate={
+              // WI-10001541: a seam being wired is NOT the same question as this
+              // ref having somewhere to go. Gate on the shared decision so a ref
+              // that opens nothing renders as inert text rather than a dead button.
+              onWorkRefActivate && canOpenWorkRef({ id, kind, planSlug }, harnessSlug)
+                ? () => onWorkRefActivate({ id, kind, planSlug })
+                : undefined
+            }
           />
         );
       },

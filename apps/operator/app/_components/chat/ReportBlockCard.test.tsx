@@ -123,3 +123,57 @@ describe('ReportBlockCard', () => {
     expect(container.querySelector('.report-block-item-drill')).toBeNull();
   });
 });
+
+/**
+ * WI-10001541 — the report card is the THIRD pill site on the same seam.
+ *
+ * `ChatMarkdown` and `ReportItemText` (both in @papercusp/operator-ui) were
+ * gated on `canOpenWorkRef`; this renderer is the operator's own copy of that
+ * splice, wired to the SAME `handleWorkRefActivate` in OperatorChat, and it
+ * still decided a pill's tag from "did the host wire a seam?" instead of "does
+ * this ref resolve to anywhere?". Its `planSlug` comes from `turn?.planSlug`,
+ * which is null for essentially every real turn — so this was the site most
+ * likely to render the dead `<button>` in practice, not the least.
+ *
+ * Fixing two of three sites would have left the bug reachable while every test
+ * passed, which is precisely what these assertions exist to prevent.
+ */
+describe('ReportBlockCard — an unopenable ref must not render as a control (WI-10001541)', () => {
+  const refReport: ReportBlock = {
+    plans: [{ title: 'Refs', items: [{ text: 'See WI-6601 and P-003', status: 'wip' }] }],
+  };
+
+  it('renders an openable work-item ref as a button and an unscoped plan-item ref as inert text, in the SAME card', () => {
+    // One card, one wired seam, one harness — so the ONLY thing separating the
+    // two pills is whether the ref resolves to somewhere to go.
+    render(
+      <ReportBlockCard report={refReport} harnessSlug="papercusp" onWorkRefActivate={() => {}} />,
+    );
+
+    expect(screen.getByLabelText('WI-6601').tagName).toBe('BUTTON');
+    expect(screen.getByLabelText('P-003').tagName).toBe('SPAN');
+  });
+
+  it('renders a plan-item ref as a real control once the card carries its plan', () => {
+    // The mirror: the pill is inert because the ref cannot be resolved, NOT
+    // because plan refs are second-class. Without this, making every plan pill
+    // inert unconditionally would also pass.
+    render(
+      <ReportBlockCard
+        report={refReport}
+        harnessSlug="papercusp"
+        planSlug="portal-parity-2026-09-05"
+        onWorkRefActivate={() => {}}
+      />,
+    );
+
+    expect(screen.getByLabelText('P-003').tagName).toBe('BUTTON');
+  });
+
+  it('renders no control at all when the host wired no seam', () => {
+    render(<ReportBlockCard report={refReport} harnessSlug="papercusp" />);
+
+    expect(screen.getByLabelText('WI-6601').tagName).toBe('SPAN');
+    expect(screen.getByLabelText('P-003').tagName).toBe('SPAN');
+  });
+});
