@@ -10,6 +10,7 @@ import {
   findStaleSwapLeftovers,
   formatStaleSwapProblems,
 } from './lib/stale-swap-leftovers.mjs';
+import { findShadowedManagedShims, formatShadowedShimProblems } from './lib/shadowed-managed-shims.mjs';
 import { missingPlaywrightBrowsers, browserCachePath } from './ensure-playwright-browsers.mjs';
 import { assertCudaProviderAssets } from './install-onnxruntime-node.mjs';
 
@@ -180,6 +181,21 @@ check('operator-vite @ alias still points at apps/operator (cross-tree import tr
 
 check('AGENT-ENV.md is not stale (regenerates identically)', () => {
   execSync('npx tsx scripts/gen-agent-env.ts --check', { cwd: REPO_ROOT, stdio: 'pipe' });
+});
+
+// WI-10001537: the managed shims in ~/.papercusp/bin are rewritten on every
+// boot, which is worth nothing if PATH resolves the NAME somewhere else. A stale
+// ~/.local/bin/psu did exactly that for three weeks; because it advertised no
+// re-exec loop, psu-launcher wired `onReexec: null` by design and a host
+// hand-off became a hard death that killed a live session mid-dialog. Nothing
+// detected it, so this is the detector.
+check('no unmanaged wrapper shadows a managed ~/.papercusp/bin shim on PATH', () => {
+  const problems = findShadowedManagedShims();
+  if (problems.length)
+    throw new Error(
+      `${formatShadowedShimProblems(problems)} — repoint the shadower at the managed shim ` +
+        '(a desktop boot heals this automatically via healShadowedManagedShims)',
+    );
 });
 
 console.log(ok ? '\nAll checks passed.' : '\nSome checks failed — see above.');

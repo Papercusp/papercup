@@ -2365,6 +2365,168 @@ export async function ensurePythonCompatibilityLinked(
   }
 }
 
+/** Suffix for the one-time backup of a displaced stale shim (WI-10001537). */
+export const SHADOWED_SHIM_BACKUP_SUFFIX = '.papercusp-shadow-backup';
+
+export type ShadowHealAction = 'repointed' | 'already-managed' | 'kept-foreign' | 'failed';
+
+export interface ShadowHealEntry {
+  /** Shim basename, e.g. `psu`. */
+  name: string;
+  /** The shadowing entry that was found earlier on PATH. */
+  shadowPath: string;
+  /** The managed shim in `~/.papercusp/bin` it should resolve to. */
+  managedPath: string;
+  action: ShadowHealAction;
+}
+
+/**
+ * Repoint an UNMANAGED wrapper that shadows a managed `~/.papercusp/bin` shim
+ * (WI-10001537).
+ *
+ * The measured failure: `~/.local/bin/psu` was a 347-byte one-liner written by
+ * the retired `install-standalone-mcp.sh` in Aug 2026 —
+ * `exec node ".../psu-launcher.mjs" "$@"`. `~/.local/bin` precedes
+ * `~/.papercusp/bin` on a login shell's PATH, so `psu` resolved to THAT, and the
+ * managed shim — refreshed every boot right next to it — never ran. The stale
+ * wrapper does not export `PAPERCUSP_PSU_REEXEC`, so `reexecExitCodeFrom(env)`
+ * returns null and psu-launcher wires `onReexec: null` BY DESIGN ("a launcher
+ * nobody will re-run must never take this path"). The host then has no clean
+ * hand-off to a fresh process, and what should be a re-exec becomes a hard
+ * death — which killed a live interactive session mid-`AskUserQuestion`,
+ * destroying the dialog under the owner. It also ran a bare `node` off PATH
+ * instead of the shim's pinned `node25`.
+ *
+ * Nothing detected it, because every layer was behaving correctly in isolation:
+ * the installer wrote a perfect shim, and a perfectly ordinary PATH meant no
+ * one ever ran it. Deleting the stale file is NOT the fix — muscle memory and
+ * existing scripts still resolve the old path — so it becomes a symlink to the
+ * managed shim and both spellings converge on one implementation.
+ *
+ * Like `ensureGhLinked` this REFRESHES every boot rather than healing once: a
+ * future installer regression (or a user re-running a retired install script)
+ * re-creates the shadow, and a once-only repair would leave it armed again.
+ *
+ * Three rails keep a self-healing PATH rewrite safe:
+ *
+ *  • **Only shims we WRITE are candidates.** Every managed entry the installer
+ *    authors (psu, ptool, papercusp, psu-sentinel*) is a regular FILE; every
+ *    entry it merely LINKS to something the user already installed (claude,
+ *    codex, bun, gh, python) is a SYMLINK. Skipping symlink-valued managed
+ *    entries is therefore exactly the right discriminator — and it is what
+ *    structurally prevents a cycle: `~/.papercusp/bin/claude` already points AT
+ *    `~/.local/bin/claude`, so repointing that one would produce a symlink loop
+ *    and make `claude` unlaunchable.
+ *  • **Only a Papercusp-authored shadow is touched.** The displaced file must
+ *    mention `papercusp`, so a user's own unrelated binary that happens to share
+ *    a name is reported (`kept-foreign`) and left strictly alone.
+ *  • **Nothing is destroyed.** The displaced file is backed up once, and the
+ *    replacement is a same-directory rename, so a reader never observes a
+ *    missing `psu`.
+ *
+ * Best-effort throughout: a permission error or a read-only dir must never make
+ * desktop boot fail.
+ */
+export async function healShadowedManagedShims(
+  home: string,
+  binDir: string,
+  searchDirs: string[] = backendSearchDirs({ home }),
+): Promise<ShadowHealEntry[]> {
+  const healed: ShadowHealEntry[] = [];
+  const resolvedBinDir = path.resolve(binDir);
+
+  let managedNames: string[];
+  try {
+    const entries = await fs.readdir(binDir, { withFileTypes: true });
+    // isFile() on a Dirent from withFileTypes is lstat-shaped: a symlink reports
+    // isSymbolicLink(), never isFile(). That is the rail described above.
+    managedNames = entries.filter((e) => e.isFile()).map((e) => e.name);
+  } catch {
+    return healed; // no managed bin dir yet — nothing can be shadowing it
+  }
+  if (managedNames.length === 0) return healed;
+
+  const candidateDirs = searchDirs.filter((dir) => path.resolve(dir) !== resolvedBinDir);
+
+  for (const name of managedNames) {
+    const managedPath = path.join(binDir, name);
+    for (const dir of candidateDirs) {
+      const shadowPath = path.join(dir, name);
+      let action: ShadowHealAction;
+      try {
+        action = await repointShadowedShim(shadowPath, managedPath);
+      } catch {
+        action = 'failed';
+      }
+      if (action === 'already-managed') continue; // steady state — not worth reporting
+      healed.push({ name, shadowPath, managedPath, action });
+    }
+  }
+  return healed;
+}
+
+async function repointShadowedShim(shadowPath: string, managedPath: string): Promise<ShadowHealAction> {
+  let stat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    stat = await fs.lstat(shadowPath);
+  } catch {
+    return 'already-managed'; // nothing there: no shadow, nothing to do
+  }
+
+  if (stat.isSymbolicLink()) {
+    // Already ours? Compare resolved targets, not the raw link text — a relative
+    // link and an absolute one can name the same file.
+    try {
+      const target = await fs.realpath(shadowPath);
+      if (path.resolve(target) === path.resolve(await fs.realpath(managedPath))) return 'already-managed';
+    } catch {
+      /* dangling or unreadable link — fall through and evaluate it as a shadow */
+    }
+  } else if (!stat.isFile()) {
+    return 'kept-foreign'; // a directory or socket named `psu` is not ours to move
+  }
+
+  // Never hijack a name that belongs to something else. Only a Papercusp-authored
+  // wrapper is repointed; anything else is reported and left untouched.
+  let body = '';
+  try {
+    const handle = await fs.open(shadowPath, 'r');
+    try {
+      const buf = Buffer.alloc(8192);
+      const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
+      body = buf.subarray(0, bytesRead).toString('utf8');
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return 'kept-foreign'; // unreadable (a binary we cannot vet) — leave it alone
+  }
+  if (!/papercusp/i.test(body)) return 'kept-foreign';
+
+  // Preserve the displaced file exactly once. A second boot must not overwrite
+  // the original backup with a copy of our own symlink.
+  if (stat.isFile()) {
+    const backupPath = `${shadowPath}${SHADOWED_SHIM_BACKUP_SUFFIX}`;
+    try {
+      await fs.access(backupPath);
+    } catch {
+      await fs.copyFile(shadowPath, backupPath);
+    }
+  }
+
+  // Same-directory rename, so `psu` is never momentarily absent for a concurrent
+  // launcher. A plain unlink+symlink leaves exactly that window open.
+  const tmpPath = `${shadowPath}.papercusp-shadow-${process.pid}-${Date.now()}`;
+  try {
+    await fs.symlink(managedPath, tmpPath);
+    await fs.rename(tmpPath, shadowPath);
+  } catch (error) {
+    await fs.rm(tmpPath, { force: true }).catch(() => {});
+    throw error;
+  }
+  return 'repointed';
+}
+
 /**
  * Ensure `~/.papercusp/bin/gh` is a symlink to the currently-bundled `gh` CLI
  * (WI-3626). `buildGithubLoginSpec` (endpoint-route/routes/desktop/setup-pty-
@@ -3650,6 +3812,13 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     psuShimWritten || ptoolShimWritten || papercuspCliWritten || psuSentinelShimWritten
       ? await ensureBinOnPath(home, paths.binDir)
       : [];
+
+  // WI-10001537: a shim refreshed every boot is worthless if an older, unmanaged
+  // wrapper EARLIER on PATH keeps winning. Repoint any Papercusp-authored
+  // shadower (the retired install-standalone-mcp.sh left one at ~/.local/bin/psu)
+  // at the managed shim, so both spellings run the same code. Must run AFTER the
+  // shims are written — it links to what this pass just authored.
+  await healShadowedManagedShims(home, paths.binDir);
 
   // Link any user-installed agent CLIs (claude/codex) into the psu bin dir so
   // `psu → <agent>` launches out of the box — without this, a fresh install
