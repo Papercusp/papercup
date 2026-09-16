@@ -43,6 +43,7 @@ import {
   enumerateSelfDescribingDirs,
 } from './self-describing-store';
 import { parseRequiredRubrics, type RubricRequirement } from './types';
+import { assertIdentityClean } from './identity-scrub';
 
 /** The manifest file that MAKES a subdir a goal package. */
 export const GOAL_PACKAGE_MANIFEST = 'goal.json';
@@ -353,7 +354,14 @@ export interface WrittenGoalPackage {
  */
 export function writeGoalPackageDir(
   exported: GoalPackageExport,
-  opts: { ref: string; version?: string; targetDir?: string },
+  opts: {
+    ref: string;
+    version?: string;
+    targetDir?: string;
+    /** Identity values `scrubIdentityFields` removed upstream. A surviving copy of
+     *  one of these anywhere in the serialized bytes refuses the write. */
+    knownIdentityValues?: readonly string[];
+  },
 ): WrittenGoalPackage {
   const ref = (opts.ref ?? '').trim();
   if (!SAFE_REF_RE.test(ref)) {
@@ -361,11 +369,8 @@ export function writeGoalPackageDir(
   }
   const root = opts.targetDir ?? userGoalPackagesDir();
   const dir = join(root, ref);
-  mkdirSync(dir, { recursive: true });
 
-  const manifestPath = join(dir, GOAL_PACKAGE_MANIFEST);
-  writeFileSync(
-    manifestPath,
+  const manifestJson =
     `${JSON.stringify(
       {
         title: exported.title,
@@ -386,17 +391,13 @@ export function writeGoalPackageDir(
       },
       null,
       2,
-    )}\n`,
-    'utf8',
-  );
+    )}\n`;
 
   // listing.json carries ONLY storefront metadata the manifest does not state.
   // The rubric declaration is included because it is the value the listing row
   // is published with — one file, so an installed dir cannot declare different
   // dependencies than the listing the installer read (the plan-kind rationale).
-  const listingPath = join(dir, 'listing.json');
-  writeFileSync(
-    listingPath,
+  const listingJson =
     `${JSON.stringify(
       {
         kind: 'goal',
@@ -411,9 +412,24 @@ export function writeGoalPackageDir(
       },
       null,
       2,
-    )}\n`,
-    'utf8',
-  );
+    )}\n`;
+
+  // THE GATE (EI-23420285862298325). Run on the EXACT bytes about to be written, and
+  // BEFORE mkdir/write, so a refused export leaves nothing on disk to be pushed by a
+  // later hand. A published package goes to a PUBLIC mirror repo by design, so this
+  // throws rather than reports: a check whose failure cannot stop the write is
+  // decoration.
+  const scanOpts = opts.knownIdentityValues
+    ? { knownIdentityValues: opts.knownIdentityValues }
+    : {};
+  assertIdentityClean(manifestJson, `goal package ${ref}/${GOAL_PACKAGE_MANIFEST}`, scanOpts);
+  assertIdentityClean(listingJson, `goal package ${ref}/listing.json`, scanOpts);
+
+  mkdirSync(dir, { recursive: true });
+  const manifestPath = join(dir, GOAL_PACKAGE_MANIFEST);
+  writeFileSync(manifestPath, manifestJson, 'utf8');
+  const listingPath = join(dir, 'listing.json');
+  writeFileSync(listingPath, listingJson, 'utf8');
 
   return { ref, dir, manifestPath, listingPath };
 }

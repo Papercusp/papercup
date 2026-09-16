@@ -34,6 +34,7 @@ import {
   type WrittenGoalPackage,
 } from './goal-package-store';
 import type { RubricRequirement } from './types';
+import { scrubIdentityFields, isIdentityLeakError, type IdentityLeakHit } from './identity-scrub';
 
 // A single safe path segment: the dir name under the user layer AND the
 // within-repo subdir. Mirrors install-self-describing-core's SAFE_REF_RE.
@@ -74,13 +75,27 @@ export interface PublishGoalExportInfo {
   stripped: {
     tripwireCurrentReadings: number;
     liveStateOmitted: readonly string[];
+    /** Dotted paths of identity-bearing CONFIG fields replaced with placeholders
+     *  (EI-23420285862298325). Empty means none were present — NOT that none were
+     *  looked for; the write gate refuses anything this missed. */
+    identityFieldsScrubbed: string[];
   };
 }
 
 export type PublishGoalResult =
   | { ok: true; exportedOnly: true; export: PublishGoalExportInfo }
   | { ok: true; exportedOnly: false; export: PublishGoalExportInfo; listing: unknown }
-  | { ok: false; status: number; error: string; detail?: unknown; upstream_status?: number };
+  | {
+      ok: false;
+      status: number;
+      error: string;
+      detail?: unknown;
+      upstream_status?: number;
+      /** Present when the write gate refused: publisher identity survived into the
+       *  serialized package. Named so the publisher fixes the source rather than
+       *  re-running a hand scan. */
+      identityLeaks?: IdentityLeakHit[];
+    };
 
 /** The goal-row slice the export reads. Aliased camelCase in the default SQL so
  *  the shape is transform-independent. */
@@ -198,6 +213,23 @@ export async function publishGoalToCupboard(
   const { tripwires, strippedCurrents } = exportTripwires(row.tripwires);
   const requiresRubrics = input.requires_rubrics ?? [];
 
+  // IDENTITY SCRUB (EI-23420285862298325). The CONFIG half of a package — launch
+  // settings and IO schemas — is where the publisher's account handle rides along
+  // (`launchSettings.roles.*.account`, 10+ sites in the leak that produced this).
+  // That is configuration, so a package ships a PLACEHOLDER default instead of this
+  // workspace's identity, and the strip is REPORTED like every other.
+  //
+  // Prose (title / body / killCriterion / description) is deliberately NOT scrubbed:
+  // it is text whose meaning the publisher owns, so identity there is REFUSED at the
+  // write gate rather than silently rewritten. The harvested values ride along to
+  // that gate, so a copy of the same handle sitting in the duty body is caught too.
+  const config = scrubIdentityFields({
+    launchSettings: isPlainObject(row.launchSettings) ? row.launchSettings : null,
+    inputSchema: isPlainObject(row.inputSchema) ? row.inputSchema : null,
+    outputSchema: isPlainObject(row.outputSchema) ? row.outputSchema : null,
+    propertySchema: isPlainObject(row.propertySchema) ? row.propertySchema : null,
+  });
+
   const exported: GoalPackageExport = {
     title,
     body,
@@ -215,10 +247,7 @@ export async function publishGoalToCupboard(
       row.budgetWindowSec > 0
         ? row.budgetWindowSec
         : null,
-    launchSettings: isPlainObject(row.launchSettings) ? row.launchSettings : null,
-    inputSchema: isPlainObject(row.inputSchema) ? row.inputSchema : null,
-    outputSchema: isPlainObject(row.outputSchema) ? row.outputSchema : null,
-    propertySchema: isPlainObject(row.propertySchema) ? row.propertySchema : null,
+    ...config.value,
     description,
     requiresRubrics,
   };
@@ -233,8 +262,16 @@ export async function publishGoalToCupboard(
     written = writeGoalPackageDir(exported, {
       ref,
       ...(input.version ? { version: input.version } : {}),
+      ...(config.identityValues.length > 0
+        ? { knownIdentityValues: config.identityValues }
+        : {}),
     });
   } catch (e) {
+    // A refused write is NOT a materialization failure — surfacing it as a generic
+    // 500 would bury the one thing the publisher has to act on.
+    if (isIdentityLeakError(e)) {
+      return { ok: false, status: 422, error: e.message, identityLeaks: e.hits };
+    }
     return {
       ok: false,
       status: 500,
@@ -252,6 +289,7 @@ export async function publishGoalToCupboard(
     stripped: {
       tripwireCurrentReadings: strippedCurrents,
       liveStateOmitted: LIVE_STATE_OMITTED,
+      identityFieldsScrubbed: config.scrubbed.map((h) => h.path),
     },
   };
 

@@ -27,6 +27,7 @@ import {
   enumerateSelfDescribingDirs,
 } from './self-describing-store';
 import type { ExportedRecipeManifest, RecipeExport } from './recipe-export';
+import { assertIdentityClean } from './identity-scrub';
 
 /** The manifest file that MAKES a subdir a recipe. */
 export const RECIPE_MANIFEST = 'recipe.json';
@@ -163,21 +164,22 @@ export interface WrittenRecipe {
  */
 export function writeRecipeDir(
   exported: RecipeExport,
-  opts: { ref?: string; version?: string; targetDir?: string } = {},
+  opts: {
+    ref?: string;
+    version?: string;
+    targetDir?: string;
+    /** Identity values scrubbed upstream; a surviving copy refuses the write. */
+    knownIdentityValues?: readonly string[];
+  } = {},
 ): WrittenRecipe {
   const ref = (opts.ref ?? exported.manifest.id).trim();
   if (!SAFE_REF_RE.test(ref)) throw new Error(`unsafe recipe ref ${JSON.stringify(ref)}`);
 
   const root = opts.targetDir ?? userRecipesDir();
   const dir = join(root, ref);
-  mkdirSync(dir, { recursive: true });
 
-  const manifestPath = join(dir, RECIPE_MANIFEST);
-  writeFileSync(manifestPath, `${JSON.stringify(exported.manifest, null, 2)}\n`, 'utf8');
-
-  const listingPath = join(dir, 'listing.json');
-  writeFileSync(
-    listingPath,
+  const manifestJson = `${JSON.stringify(exported.manifest, null, 2)}\n`;
+  const listingJson =
     `${JSON.stringify(
       {
         kind: 'recipe',
@@ -190,9 +192,23 @@ export function writeRecipeDir(
       },
       null,
       2,
-    )}\n`,
-    'utf8',
-  );
+    )}\n`;
+
+  // THE GATE (EI-23420285862298325). The manifest embeds the recipe SCRIPT verbatim,
+  // which sanitizeRecipeForExport deliberately does not rewrite — so this is the only
+  // thing standing between a script carrying the publisher's home paths / session ids
+  // and a PUBLIC mirror repo. Asserted before mkdir so a refusal leaves no dir behind.
+  const scanOpts = opts.knownIdentityValues
+    ? { knownIdentityValues: opts.knownIdentityValues }
+    : {};
+  assertIdentityClean(manifestJson, `recipe ${ref}/${RECIPE_MANIFEST}`, scanOpts);
+  assertIdentityClean(listingJson, `recipe ${ref}/listing.json`, scanOpts);
+
+  mkdirSync(dir, { recursive: true });
+  const manifestPath = join(dir, RECIPE_MANIFEST);
+  writeFileSync(manifestPath, manifestJson, 'utf8');
+  const listingPath = join(dir, 'listing.json');
+  writeFileSync(listingPath, listingJson, 'utf8');
 
   return { ref, dir, manifestPath, listingPath };
 }
