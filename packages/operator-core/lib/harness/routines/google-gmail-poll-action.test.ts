@@ -60,6 +60,7 @@ describe('google-gmail-poll system action', () => {
         historyPages: 0,
         messagePages: 1,
         historyId: 'history-after-full',
+        backfill: null,
       };
     });
     const getSource = vi.fn(async () => {
@@ -125,6 +126,68 @@ describe('google-gmail-poll system action', () => {
     });
   });
 
+  it('re-syncs a cursored mailbox whose resumable backfill is still pending (EI-23378389605835281)', async () => {
+    const resuming: ExternalTriggerSourceRow = {
+      ...source('source-resume', 'resume@example.com'),
+      cursor: {
+        emailAddress: 'resume@example.com',
+        historyId: 'history-pinned',
+        watchExpiration: '2026-09-03T12:00:00.000Z',
+        backfill: { status: 'pending', pageToken: 'page-3', pages: 2, messages: 400 },
+      },
+    };
+    const syncSource = vi.fn(
+      async (
+        _sql: unknown,
+        _current: ExternalTriggerSourceRow,
+        _accessToken: string,
+        _options?: { backfillMessagesPerSync?: number },
+      ) => ({
+        mode: 'incremental' as const,
+        messages: 200,
+        historyPages: 1,
+        messagePages: 1,
+        historyId: 'history-pinned',
+        backfill: null,
+      }),
+    );
+    const result = await runGoogleGmailPoll(
+      { ...CTX, triggerConfig: { ...CTX.triggerConfig, backfill_messages_per_sync: 50 } },
+      {
+        sql: {} as never,
+        listSources: vi.fn(async () => [resuming]),
+        getSource: vi.fn(async () => resuming),
+        resolveAccessToken: vi.fn(async () => 'token-resume'),
+        provision: vi.fn(async () => ({
+          projectId: 'project',
+          subscriptionId: 'subscription',
+          topicName: 'projects/project/topics/shared',
+          subscriptionName: 'projects/project/subscriptions/subscription',
+          topic: 'existing' as const,
+          subscription: 'existing' as const,
+          publisherGrant: 'existing' as const,
+        })),
+        ensureWatch: vi.fn(async (_sql, current: ExternalTriggerSourceRow) => ({
+          renewed: false,
+          emailAddress: 'resume@example.com',
+          historyId: 'history-pinned',
+          expiration: '2026-09-03T12:00:00.000Z',
+          source: current,
+        })),
+        ensureFlagshipBinding: vi.fn(),
+        pull: vi.fn(async () => []),
+        acknowledge: vi.fn(async () => 0),
+        syncSource,
+      },
+    );
+
+    // The pinned history cursor alone used to mean "nothing to do"; the pending
+    // backfill must keep the source on the per-poll sync path with its budget.
+    expect(syncSource).toHaveBeenCalledTimes(1);
+    expect(syncSource.mock.calls[0]?.[3]).toEqual({ backfillMessagesPerSync: 50 });
+    expect(result).toMatchObject({ succeeded: 1, failed: 0, messages: 200, fullResyncs: 0 });
+  });
+
   it('renews watches, reconciles matching mailboxes, and drains irrelevant broadcast doorbells', async () => {
     const sources = [source('source-a', 'a@example.com'), source('source-b', 'b@example.com')];
     const acknowledged: string[][] = [];
@@ -135,6 +198,7 @@ describe('google-gmail-poll system action', () => {
       historyPages: 1,
       messagePages: 0,
       historyId: `next-${current.id}`,
+      backfill: null,
     }));
 
     const result = await runGoogleGmailPoll(CTX, {
@@ -234,6 +298,7 @@ describe('google-gmail-poll system action', () => {
           historyPages: 1,
           messagePages: 0,
           historyId: 'next',
+          backfill: null,
         };
       }),
       acknowledge,
@@ -316,6 +381,7 @@ describe('google-gmail-poll system action', () => {
           historyPages: 1,
           messagePages: 0,
           historyId: 'next-refresh',
+          backfill: null,
         };
       }),
       acknowledge: vi.fn(async (_workspaceId, ackIds) => ackIds.length),
@@ -366,6 +432,7 @@ describe('google-gmail-poll system action', () => {
         historyPages: 1,
         messagePages: 0,
         historyId,
+        backfill: null,
       };
     });
     const acknowledge = vi.fn(async (_workspaceId: string, ackIds: string[]) => ackIds.length);
