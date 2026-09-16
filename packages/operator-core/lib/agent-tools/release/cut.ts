@@ -73,6 +73,7 @@ import {
   readOrCreateGate,
   type Channel,
   type CutLegs,
+  type CutRuntimeEnv,
   type Platform,
 } from '../../release-cut-launch';
 
@@ -197,6 +198,30 @@ export function validateReleaseResumeResidue(input: {
     }
   }
   return { ok: true };
+}
+
+/** The runtime env every cut / leg launch runs release-local.sh with.
+ *
+ * Centralised deliberately: there are four launch sites (run + run-leg, each with a
+ * dry-run preview and a real launch), and a fifth that forgot `canonicalDesktopRoot`
+ * would silently reintroduce the lost-version-bump class (WI-10001570). That failure
+ * is invisible at cut time and only surfaces a release later, when every source build
+ * still reports the previous version — so it must not be re-derived per call site. */
+function cutRuntimeEnv(args: {
+  ownerName: string;
+  ownerEmail?: string;
+  reuseSeed?: boolean;
+}): CutRuntimeEnv {
+  return {
+    ownerName: args.ownerName,
+    ownerEmail: args.ownerEmail,
+    reuseSeed: args.reuseSeed,
+    // release-local.sh derives its own ROOT from where the script lives, so a cut
+    // launched against an isolated worktree must be TOLD where canonical is — its
+    // .git is an independent clone and the push leg is deleted under LOCAL-only,
+    // so otherwise the bump has no route back and dies with the worktree.
+    canonicalDesktopRoot: desktopRoot(),
+  };
 }
 
 function parseWorktreeList(stdout: string): CutWorktree[] {
@@ -888,7 +913,7 @@ export default defineTool({
           legs,
           args.sourceSha,
           '<PATH>',
-          { ownerName: args.ownerName, ownerEmail: args.ownerEmail, reuseSeed: args.reuseSeed },
+          cutRuntimeEnv(args),
           platform,
           orchestratorRoot,
         );
@@ -920,7 +945,7 @@ export default defineTool({
         version: args.version,
         channel,
         expectedSourceSha: args.sourceSha,
-        runtime: { ownerName: args.ownerName, ownerEmail: args.ownerEmail, reuseSeed: args.reuseSeed },
+        runtime: cutRuntimeEnv(args),
         legs,
         platform,
         root: selected.desktopRoot,
@@ -1018,7 +1043,7 @@ export default defineTool({
         legs,
         args.sourceSha,
         '<PATH>',
-        { ownerName: args.ownerName, ownerEmail: args.ownerEmail, reuseSeed: args.reuseSeed },
+        cutRuntimeEnv(args),
         undefined,
         orchestratorRoot,
       );
@@ -1048,7 +1073,7 @@ export default defineTool({
       version: args.version,
       channel,
       expectedSourceSha: args.sourceSha,
-      runtime: { ownerName: args.ownerName, ownerEmail: args.ownerEmail, reuseSeed: args.reuseSeed },
+      runtime: cutRuntimeEnv(args),
       legs,
       root: selected.desktopRoot,
       orchestratorRoot,
