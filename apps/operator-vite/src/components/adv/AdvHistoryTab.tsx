@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { parseAsInteger, useQueryState } from 'nuqs';
 import {
   ProjectHistoryView,
   type BuildHistoryPlan,
@@ -7,11 +8,32 @@ import {
 } from '@papercusp/ui-primitives';
 import { useAdvScope } from './AdvShell';
 
+/**
+ * How many plans the route serves per page when `?limit` is omitted
+ * (`PROJECT_HISTORY_PAGE_SIZE`). Used ONLY to size a multi-page restore below;
+ * every later request reuses `page.limit` off the response, so the server stays
+ * the authority and a drift in this constant is bounded by its own hard cap.
+ */
+const HISTORY_PAGE_SIZE = 20;
+
+/** `PROJECT_HISTORY_MAX_PAGE_SIZE` — the route clamps above this, so never ask past it. */
+const HISTORY_MAX_LIMIT = 100;
+
+/** The route's pagination block. `total` is the whole archive, `count` just this response. */
+interface ProjectHistoryPage {
+  count: number;
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}
+
 interface ProjectHistoryDocument {
   schemaVersion: number;
   project: BuildHistoryProject;
   source: BuildHistorySnapshotSource;
   plans: Array<Omit<BuildHistoryPlan, 'project' | 'snapshot'>>;
+  page?: ProjectHistoryPage;
 }
 
 function materialize(document: ProjectHistoryDocument): BuildHistoryPlan[] {
@@ -40,27 +62,52 @@ class HistoryError extends Error {
 export default function AdvHistoryTab() {
   const scope = useAdvScope();
   const slug = scope.allMode ? null : scope.slug;
+  // How many pages the reader has opened. URL-backed so a reload or a shared link
+  // restores the depth they scrolled to, and so an agent can see it (useState is
+  // invisible to `ui:get_state`). The FETCH is keyed on slug/revision only, never
+  // on this value — appending must not re-request what is already rendered.
+  const [pages, setPages] = useQueryState('historyPages', parseAsInteger.withDefault(1));
+  const pagesRef = useRef(pages);
+  pagesRef.current = pages;
+
   const [document, setDocument] = useState<ProjectHistoryDocument | null>(null);
+  const [page, setPage] = useState<ProjectHistoryPage | null>(null);
   const [error, setError] = useState<{ message: string; code?: string } | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [revision, setRevision] = useState(0);
+
+  const request = useCallback(async (
+    target: string,
+    limit: number,
+    offset: number,
+    signal: AbortSignal,
+  ): Promise<ProjectHistoryDocument> => {
+    const query = `?limit=${limit}&offset=${offset}`;
+    const response = await fetch(`/api/harness/${encodeURIComponent(target)}/project-history${query}`, { signal });
+    const body = await response.json() as ProjectHistoryDocument & { error?: string; code?: string };
+    if (!response.ok) throw new HistoryError(body.error || `HTTP ${response.status}`, body.code);
+    return body;
+  }, []);
 
   useEffect(() => {
     if (!slug) {
       setDocument(null);
+      setPage(null);
       setError(null);
       return;
     }
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    fetch(`/api/harness/${encodeURIComponent(slug)}/project-history`, { signal: controller.signal })
-      .then(async (response) => {
-        const body = await response.json() as ProjectHistoryDocument & { error?: string; code?: string };
-        if (!response.ok) throw new HistoryError(body.error || `HTTP ${response.status}`, body.code);
-        return body;
+    // A restore asks for every opened page in ONE request rather than replaying the
+    // reader's clicks; the route's own cap bounds what that can cost.
+    const restore = Math.min(HISTORY_PAGE_SIZE * Math.max(1, pagesRef.current), HISTORY_MAX_LIMIT);
+    request(slug, restore, 0, controller.signal)
+      .then((body) => {
+        setDocument(body);
+        setPage(body.page ?? null);
       })
-      .then((body) => setDocument(body))
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
         setError({
@@ -70,7 +117,27 @@ export default function AdvHistoryTab() {
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [slug, revision]);
+  }, [slug, revision, request]);
+
+  const loadMore = useCallback(async () => {
+    if (!slug || !document || !page?.hasMore || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const next = await request(slug, page.limit, document.plans.length, new AbortController().signal);
+      // APPEND. Re-fetching from offset 0 would re-transmit every page already on
+      // screen, which is the cost this pagination exists to avoid.
+      setDocument((current) => current && { ...current, plans: [...current.plans, ...next.plans] });
+      setPage(next.page ?? null);
+      void setPages((current) => (current ?? 1) + 1);
+    } catch (cause: unknown) {
+      setError({
+        message: stripAnsi(cause instanceof Error ? cause.message : String(cause)),
+        code: cause instanceof HistoryError ? cause.code : undefined,
+      });
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [slug, document, page, loadingMore, request, setPages]);
 
   const plans = useMemo(() => document ? materialize(document) : [], [document]);
   return (
@@ -97,7 +164,21 @@ export default function AdvHistoryTab() {
       ) : loading && !document ? (
         <p className="build-history-loading" role="status">Generating project history…</p>
       ) : (
-        <ProjectHistoryView plans={plans} now={new Date()} />
+        <>
+          <ProjectHistoryView plans={plans} now={new Date()} />
+          {page ? (
+            <footer className="build-history-more">
+              <p role="status">
+                Showing {plans.length} of {page.total} plan{page.total === 1 ? '' : 's'}.
+              </p>
+              {page.hasMore ? (
+                <button type="button" onClick={() => void loadMore()} disabled={loadingMore}>
+                  {loadingMore ? 'Loading…' : `Load ${Math.min(page.limit, page.total - plans.length)} more`}
+                </button>
+              ) : null}
+            </footer>
+          ) : null}
+        </>
       )}
       <style>{HISTORY_CSS}</style>
     </section>
@@ -134,6 +215,10 @@ const HISTORY_CSS = `
   .build-work-items-disclosure>summary { cursor:pointer; color:var(--accent); } .build-item-heading { display:flex; justify-content:space-between; gap:8px; }
   .build-item-commits { margin-top:10px; } .build-commit-title,.build-commit-meta { display:flex; justify-content:space-between; gap:8px; } .build-commit-meta { color:var(--fg-mute); font-size:10px; }
   .build-history-empty,.build-history-error,.build-history-loading { padding:24px; border:1px solid var(--border); border-radius:10px; background:var(--bg-1); text-align:center; }
+  .build-history-more { display:flex; align-items:center; justify-content:center; gap:12px; flex-wrap:wrap; padding:14px; }
+  .build-history-more p { margin:0; color:var(--fg-mute); font-size:12px; }
+  .build-history-more button { padding:7px 14px; border:1px solid var(--border); border-radius:6px; color:var(--fg); background:var(--bg-2); }
+  .build-history-more button:disabled { cursor:default; opacity:.6; }
   .build-history-error { color:var(--bad); } button,.button { cursor:pointer; }
   .build-plan-dialog-overlay { position:fixed; inset:0; z-index:1200; background:rgba(0,0,0,.7); }
   .build-plan-dialog { position:fixed; inset:5vh 5vw; z-index:1201; display:grid; grid-template-rows:auto auto 1fr; overflow:hidden; padding:16px; border:1px solid var(--border); border-radius:12px; background:var(--bg-popover); color:var(--fg); }
