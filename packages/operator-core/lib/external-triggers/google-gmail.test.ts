@@ -9,6 +9,7 @@ import {
   googleGmailBackfillParked,
   MIN_BACKFILL_MESSAGES_PER_SYNC,
   normalizeGoogleGmailMessage,
+  sendGoogleGmailDraft,
   syncGoogleGmailSource,
   updateGoogleGmailDraft,
   type GoogleGmailMessage,

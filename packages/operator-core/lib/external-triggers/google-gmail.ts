@@ -10,6 +10,7 @@
  * quota-budgeted chunk per sync (`cursor.backfill`) instead of one whole-mailbox
  * walk that a per-user quota kills and the next poll restarts from zero.
  */
+import { Gaxios, type GaxiosError } from 'gaxios';
 import MailComposer from 'nodemailer/lib/mail-composer';
 import type postgres from 'postgres';
 import {
@@ -389,6 +390,53 @@ async function parseResponse<T>(response: Response, operation: string): Promise<
   return body as T;
 }
 
+/** Retry ceiling for a single Gmail call. */
+const GMAIL_MAX_RETRIES = 3;
+
+/**
+ * Gmail retry policy — a CORRECTNESS decision, not an inherited default.
+ *
+ * gaxios ships retrying GET/HEAD/PUT/OPTIONS/DELETE on 408/429/5xx and
+ * deliberately NOT retrying POST. That exclusion is load-bearing here: a 5xx on
+ * `drafts/send` is AMBIGUOUS — the send may already have happened — so retrying
+ * it could double-send a real job application. We keep that, and widen it by
+ * exactly one case: POST on 429, where the request was rate-limited and
+ * provably not performed. Gmail rate-limits aggressively during a batch send,
+ * which makes 429 the transient failure we actually hit.
+ *
+ * Supplying `shouldRetry` REPLACES gaxios' own predicate, so this states the
+ * whole policy rather than delegating part of it.
+ */
+function shouldRetryGmail(err: GaxiosError): boolean {
+  const attempt = err.config?.retryConfig?.currentRetryAttempt ?? 0;
+  if (attempt >= GMAIL_MAX_RETRIES) return false;
+  const method = (err.config?.method ?? 'GET').toUpperCase();
+  const status = err.response?.status;
+  if (status === undefined) {
+    // No response at all (socket/DNS): the server may still have acted on a
+    // POST, so only replay methods that are safe to repeat.
+    return method !== 'POST' && attempt < 2;
+  }
+  if (method === 'POST') return status === 429;
+  return status === 408 || status === 429 || (status >= 100 && status <= 199) || (status >= 500 && status <= 599);
+}
+
+/**
+ * Preserve the `GoogleGmailApiError(status, operation, detail)` contract that
+ * callers and tests assert on, whatever shape the transport failed in.
+ */
+function toGoogleGmailApiError(err: unknown, operation: string): Error {
+  const gaxios = err as Partial<GaxiosError> & { status?: number };
+  const status = gaxios?.response?.status ?? gaxios?.status;
+  if (typeof status !== 'number') return err instanceof Error ? err : new Error(String(err));
+  const data = gaxios?.response?.data as { error?: { message?: unknown } } | string | undefined;
+  const detail =
+    typeof data === 'string'
+      ? nonEmpty(data.slice(0, 500))
+      : nonEmpty((data as { error?: { message?: unknown } } | undefined)?.error?.message);
+  return new GoogleGmailApiError(status, operation, detail ?? undefined);
+}
+
 async function gmailRequest<T>(
   fetchImpl: typeof fetch,
   apiOrigin: string,
@@ -399,16 +447,28 @@ async function gmailRequest<T>(
 ): Promise<T> {
   const url = new URL(path, apiOrigin);
   if (input.params) url.search = input.params.toString();
-  const response = await fetchImpl(url, {
-    method: input.method ?? 'GET',
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      accept: 'application/json',
-      ...(input.body === undefined ? {} : { 'content-type': 'application/json' }),
-    },
-    body: input.body === undefined ? undefined : JSON.stringify(input.body),
-  });
-  return parseResponse<T>(response, operation);
+  // gaxios is the @googleapis/gmail transport; routing through it is what buys
+  // bounded exponential backoff, which the raw-fetch version never had.
+  const transport = new Gaxios({ fetchImplementation: fetchImpl });
+  try {
+    const response = await transport.request<T>({
+      url: url.toString(),
+      method: (input.method ?? 'GET') as 'GET',
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        accept: 'application/json',
+        ...(input.body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      // Pre-serialized so the wire body stays a JSON string, byte-identical to
+      // what the hand-rolled encoder sent.
+      body: input.body === undefined ? undefined : JSON.stringify(input.body),
+      retryConfig: { retry: GMAIL_MAX_RETRIES, shouldRetry: shouldRetryGmail },
+      errorRedactor: false,
+    });
+    return response.data as T;
+  } catch (err) {
+    throw toGoogleGmailApiError(err, operation);
+  }
 }
 
 async function profile(
