@@ -1650,6 +1650,49 @@ export default defineTool({
       .optional(),
   }),
   shape: {
+    // WI-2145871: retires this tool's `unclassified-baseline` debt in
+    // SHAPER_CONTRACT_EXEMPT. There is no `returns` prose in the
+    // `Each row: { … }` form, so the derived-field path yields nothing and the
+    // pinned set below is read off the shaper's OWN key list, not authored.
+    //
+    // `rows: 'inFlight'` picks the axis with TEETH: projectRow() rebuilds every
+    // row from a hand-written literal, so a field survives tiering ONLY by being
+    // named there — delete a line and this check fails immediately. All three
+    // buckets run through that same projectRow, so pinning one guards all three.
+    //
+    // `id`/`kind` are load-bearing, not decorative: projectRow returns null
+    // without them, which would empty the row set and fail the check for the
+    // wrong reason. Deliberately EXCLUDED are the two conditionally-spread keys
+    // — `assigneeLive` (guarded on `typeof === 'boolean'`) and `queueControl`
+    // (projectQueueControl returns undefined for a non-object). The synthetic
+    // probe row is all strings, so both are legitimately absent and pinning
+    // either would report a defect this tool does not have.
+    //
+    // The top-level axis is genuine here: `out` is a hand-built literal, so a
+    // preserve pin asserts something real (unlike a `{ ...d }` spread shaper,
+    // where any key passes by passthrough while asserting nothing).
+    // `counts` + `presentation` mechanize the promise the shaper's own note
+    // already makes in prose — "aggregate counts remain complete" while rows are
+    // capped — and `parked`/`unclaimed` catch a rebuild that silently drops a
+    // whole bucket.
+    contract: {
+      rows: 'inFlight',
+      fields: [
+        'id',
+        'kind',
+        'family',
+        'harness',
+        'title',
+        'state',
+        'assignee',
+        'takenAt',
+        'lastProgressAt',
+        'updatedAt',
+        'severity',
+        'priority',
+      ],
+      preserve: ['counts', 'presentation', 'parked', 'unclaimed'],
+    },
     standard: (data, context) => shapeBurnDown(data, 'standard', context.args as { limit?: unknown; ids?: unknown }),
     trimmed: (data, context) => shapeBurnDown(data, 'trimmed', context.args as { limit?: unknown; ids?: unknown }),
   },

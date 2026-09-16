@@ -118,6 +118,13 @@ export default defineTool({
   shape: {
     standard: (data) => shapeSchedulerRunning(data, 'standard'),
     trimmed: (data) => shapeSchedulerRunning(data, 'trimmed'),
+    // WI-2145871: retires this tool's `unclassified-baseline` debt entry. The
+    // shaper rebuilds its envelope key-by-key (`{ ok, summary, runs, … }`), so
+    // anything not named is dropped; `ok` and `summary` are unconditional and
+    // `summary` is the qualifier that scopes the run rows. The truncation keys
+    // (`runsTruncated`/`runsReturned`/`runsHint`) are emitted only past the cap
+    // and so are deliberately not pinned.
+    contract: { rows: 'runs', preserve: ['ok', 'summary'] },
   },
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],

@@ -312,6 +312,63 @@ export default defineTool({
   shape: {
     standard: (data) => shapePlansItems(data, "standard"),
     trimmed: (data) => shapePlansItems(data, "trimmed"),
+    // WI-2145871. `shapePlansItems` REBUILDS every row from the `base` object
+    // literal (items-shape.ts), so a field dropped from that literal vanishes
+    // from the tier agents get BY DEFAULT while the result still reads ok:true
+    // — the field looks absent from the data rather than removed by the shaper.
+    //
+    // WHY THESE THIRTEEN, AND ONLY THESE. `project()` has two emission paths:
+    // `base` (trimmed) and `{ ...base, blockedBy, … , archived }` (standard).
+    // The keys emitted UNCONDITIONALLY by both are exactly `base`'s, and each is
+    // an explicit key in that literal (`r.x ?? null` / `clip(...)` / a count),
+    // never a conditional spread — so none can disappear merely by being falsy.
+    // The standard-only extras are deliberately NOT pinned: this check runs the
+    // TRIMMED shaper, so pinning them would assert nothing.
+    //
+    // SECOND EMISSION PATH, and why it is PROVEN rather than reasoned. Past
+    // PLANS_ITEMS_TIER_CAPS.trimmed.rows (60) the shaper APPENDS an over-cap
+    // sentinel row `{ ...project({}), plan: '(truncated)', text: 'showing N of M' }`.
+    // checkTrimmedContract synthesises ONE row and inspects `rows[0]` only, so it
+    // reaches neither the branch nor the appended row — a key pinned on its
+    // evidence alone could be green here and missing from the row a capped reader
+    // actually sees (the fleet:leader-brief budget-path trap, same wake). The
+    // sentinel spreads `project({})` so it SHOULD be key-complete, but that is
+    // the same "structurally guaranteed" reasoning that was wrong for
+    // leader-brief. Verified instead:
+    // `.papercusp/scratch/plans-items-contract-teeth.mts` runs a 1-row arm and a
+    // 61-row arm, asserts the 61-row arm genuinely reached the sentinel
+    // (`plan === '(truncated)'`), and carries `archived` as a NEGATIVE CONTROL
+    // (standard-only, so it must be ABSENT from every trimmed row) — without
+    // which "all 13 survived" would pass identically on a probe that cannot see
+    // an absent key.
+    //
+    // `plan` and `text` are also the truncation guard — the sentinel row
+    // overwrites exactly those two — so losing either leaves a capped list
+    // looking complete.
+    //
+    // No `preserve`: the shaper returns `{ ...data, items: rows }`, so every
+    // top-level key survives unconditionally and a preserve pin would be
+    // decoration — green forever, guarding nothing, and counted as guarded by
+    // the next reader. Rows-only is a legitimate opt-in (the contract's entry
+    // test is the UNION of the two axes).
+    contract: {
+      rows: "items",
+      fields: [
+        "plan",
+        "id",
+        "status",
+        "importance",
+        "needsHuman",
+        "text",
+        "text_truncated",
+        "phase",
+        "blockers",
+        "working",
+        "diverged",
+        "specTriadMissing",
+        "citedTerminalRefs",
+      ],
+    },
   },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };

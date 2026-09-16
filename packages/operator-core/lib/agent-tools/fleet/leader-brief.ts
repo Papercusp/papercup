@@ -3331,6 +3331,35 @@ export default defineTool({
   shape: {
     standard: (data) => shapeLeaderBrief(data, 'standard'),
     trimmed: (data) => shapeLeaderBrief(data, 'trimmed'),
+    // AUDITED 2026-09-16 (WI-2145871). `shapeLeaderBrief` has TWO disjoint
+    // emission paths, and this check can only ever exercise the first: five
+    // `buildProjection` attempts, then — ONLY once all five exceed
+    // LEADER_BRIEF_SHAPER_BUDGET_CHARS — a separately hand-built `emergency`
+    // accumulator with a largely DIFFERENT key set. The envelope the check
+    // synthesises is a few hundred bytes, so it always returns on attempt 1.
+    // A key pinned on the strength of the normal path alone would therefore go
+    // GREEN while production drops it at the budget ceiling: worse than no pin,
+    // because the next reader counts it as guarded.
+    //
+    // So `preserve` is the INTERSECTION of what BOTH paths emit
+    // UNCONDITIONALLY: `ok` (a literal in each initialiser) and
+    // `leaderBriefProjection` (assigned unconditionally at the end of
+    // buildProjection, and a literal in the emergency object). Both are written
+    // by explicit assignment into a mutative accumulator — never spread — so the
+    // row-vacuity sentinel cannot leak in and the pin has real teeth.
+    //
+    // Deliberately NOT pinned: `summary`/`blockedAt`/`fleetMetrics`/`campaign`
+    // (conditional on the source key in both paths), and `specRevision`/`delta`/
+    // `deltaSummary`/`idleCauses` — emitted by buildProjection but ABSENT from
+    // the emergency tier, i.e. exactly the false-pin class above. `specRevision`
+    // is the standing negative control in
+    // .papercusp/scratch/leader-brief-contract-teeth.mts, which proves the
+    // budget path is reached AND that a normal-path-only key really is dropped.
+    //
+    // `rows: 'members'` names the row family only to satisfy the synthetic
+    // envelope: `returns` carries no `Each row: {…}` block, so `required` is
+    // empty and the row axis is skipped. This is a PRESERVE-ONLY contract.
+    contract: { rows: 'members', preserve: ['ok', 'leaderBriefProjection'] },
   },
   payloadTierCeilingChars: LEADER_BRIEF_SHAPER_BUDGET_CHARS,
   requirePrincipal: false,

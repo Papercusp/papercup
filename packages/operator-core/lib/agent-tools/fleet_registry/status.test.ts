@@ -870,7 +870,29 @@ describe('fleet:status payload-tier shaping', () => {
     });
     expect(String(row.label).length).toBeLessThanOrEqual(FLEET_STATUS_TIER_CAPS.standard.label);
     expect(String(row.intent).length).toBeLessThanOrEqual(FLEET_STATUS_TIER_CAPS.standard.intent);
-    expect((statusTool as unknown as { shape: { trimmed?: unknown; standard?: unknown } }).shape).toEqual({
+    // WI-2145871: kept as an exact deep-equal on purpose — this assertion is what
+    // makes a silent addition to `shape` detectable, so the `contract` added here
+    // is ENUMERATED rather than the assertion being loosened to toMatchObject.
+    // The `fields` list is the intersection of every projectMember return path's
+    // UNCONDITIONAL keys; a conditional key added here would fail on an ordinary
+    // live row (measured: .papercusp/scratch/fleet-status-contract-teeth.mts ARM C).
+    expect(
+      (statusTool as unknown as { shape: { trimmed?: unknown; standard?: unknown; contract?: unknown } }).shape,
+    ).toEqual({
+      contract: {
+        rows: 'members',
+        fields: [
+          'agentId',
+          'label',
+          'fleetRole',
+          'intent',
+          'heartbeatFresh',
+          'sessionState',
+          'lastActiveSecAgo',
+          'doing',
+          'load',
+        ],
+      },
       trimmed: expect.any(Function),
       standard: expect.any(Function),
     });

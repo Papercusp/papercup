@@ -478,6 +478,44 @@ export default defineTool({
   shape: {
     standard: (data, sctx) => shapePlansList(data, 'standard', sctx.args),
     trimmed: (data, sctx) => shapePlansList(data, 'trimmed', sctx.args),
+    // WI-2145871. `shapePlansList` REBUILDS every row from the `base` object
+    // literal (list-shape.ts), so a field dropped from that literal vanishes
+    // from the tier agents get BY DEFAULT while the result still reads ok:true
+    // — the field looks absent from the data rather than removed by the shaper.
+    //
+    // WHY THESE TWELVE, AND ONLY THESE. `project()` has two emission paths:
+    // `base` (trimmed) and `{ ...base, done, owner, … }` (standard). The keys
+    // emitted UNCONDITIONALLY by both are exactly `base`'s, and each is an
+    // explicit key in that literal (`r.x ?? null` / `clip(...)`), never a
+    // conditional spread — so none can disappear merely by being falsy. The
+    // standard-only extras are deliberately NOT pinned: this check runs the
+    // TRIMMED shaper, so pinning them would assert nothing.
+    //
+    // `slug` and `title` are also the truncation guard — the over-cap sentinel
+    // row is `{ ...project({}), slug: '(truncated)', title: 'showing N of M' }`
+    // — so losing either leaves a capped list looking complete.
+    //
+    // No `preserve`: the shaper returns `{ ...data, plans: rows }`, so every
+    // top-level key survives unconditionally and a preserve pin would be
+    // decoration — green forever, guarding nothing, and counted as guarded by
+    // the next reader.
+    contract: {
+      rows: 'plans',
+      fields: [
+        'slug',
+        'title',
+        'status',
+        'lifecycleVerdict',
+        'lifecycleDisposition',
+        'lifecycleContradiction',
+        'harness',
+        'updated',
+        'next',
+        'open',
+        'maxImportance',
+        'triggered',
+      ],
+    },
   },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };

@@ -259,6 +259,21 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
       'engine has neither the owner-private grant boundary nor the social scope, participant and ' +
       'time filters. This is hybrid retrieval by contract, but through the private-vault engine.',
   },
+  {
+    id: 'reports:search',
+    entry: 'agent-tools/reports/search.ts',
+    engine: 'none',
+    whyNotEngine:
+      'The LEXICAL half of the Reports library, by design rather than by omission. Ranking rides the ' +
+      'STORED generated `search_tsv` column (migration 1166), whose weights already encode the ' +
+      'domain rule that a title match outranks summary/subject_label, which outranks body — an ' +
+      'ordering a generic relevance fusion would flatten rather than improve. It is also the read ' +
+      'that has to keep working when the embedder is down: a report id is cited from plans, ' +
+      'work-items and other reports, so "find it by its words" must not acquire a vector dependency ' +
+      '(the same reason recorded for rubrics:search). The semantic half is NOT missing — P-005 ' +
+      'registers `report` as a source in the unified search stack, and this verb stays the direct, ' +
+      'dependency-free lexical path beside it.',
+  },
 
   // ─── NOT in the `*:search` naming class — added by hand (P-030) ───────────
   // Discovery cannot see any of these. Each was traced with the same import

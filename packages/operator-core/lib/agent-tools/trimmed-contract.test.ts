@@ -183,6 +183,56 @@ describe('checkTrimmedContract — the TOP-LEVEL axis (WI-2145870)', () => {
     expect(v?.droppedTopLevel).toEqual(['scope']);
   });
 
+  it('does NOT report a preserve-only contract as unresolvable (WI-2145871)', () => {
+    // The sibling assertion the test above was missing. `checkTrimmedContract`
+    // opts in on the UNION of the two axes, but `unresolvableContracts` judged
+    // vacuity on the ROW axis alone — so the very subject the test above proves
+    // is fully checked was simultaneously reported as checking nothing. Because
+    // the live-registry assertion requires that list to be EMPTY, this made a
+    // preserve-only opt-in unlandable: exactly the repair shape this class's
+    // confirmed instance needs (`fleet:assignments` dropped a top-level `scope`
+    // block, EI-18763132241176410), which is why no baseline entry could be
+    // retired that way.
+    const preserveOnly = withPreserve(keepsTopLevel, ['scope'], {
+      returns: 'prose that names no row block',
+    });
+    // Pin the premise: this fixture resolves NO row fields, so it is the case
+    // the old row-axis-only test reported.
+    expect(parseReturnsRowFields(preserveOnly.returns)).toBeNull();
+    expect(unresolvableContracts([preserveOnly])).toEqual([]);
+    // ...and it is genuinely CHECKED, not merely unreported — the dropping
+    // variant on that same axis is still caught. Without this pair, silencing
+    // the false positive would be indistinguishable from silencing the guard.
+    expect(checkTrimmedContract(preserveOnly)).toBeNull();
+    expect(
+      checkTrimmedContract(
+        withPreserve(rightShaper, ['scope'], { returns: 'prose that names no row block' }),
+      )?.droppedTopLevel,
+    ).toEqual(['scope']);
+  });
+
+  it('STILL reports a contract that resolves NEITHER axis', () => {
+    // The guard this fix must not weaken. No row fields and no preserve keys is
+    // genuinely vacuous and has to stay loud.
+    expect(
+      unresolvableContracts([
+        withPreserve(keepsTopLevel, [], { returns: 'prose that names no row block' }),
+      ]),
+    ).toEqual(['fixture:tool']);
+  });
+
+  it('does not let `rows` itself make a contract resolvable', () => {
+    // `rows` names the row CONTAINER, so preserving it is not a top-level
+    // guarantee. `checkTrimmedContract` excludes it from the preserve set and
+    // this must agree, or `preserve: ['rows']` would be a way to silence the
+    // vacuity report while promising nothing.
+    expect(
+      unresolvableContracts([
+        withPreserve(keepsTopLevel, ['rows'], { returns: 'prose that names no row block' }),
+      ]),
+    ).toEqual(['fixture:tool']);
+  });
+
   it('treats an explicitly-nulled top-level key as PRESENT (the key is the signal)', () => {
     const nulling = (data: unknown) => ({
       ...(rightShaper(data) as Record<string, unknown>),

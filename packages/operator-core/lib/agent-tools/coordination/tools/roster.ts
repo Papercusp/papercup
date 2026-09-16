@@ -124,7 +124,39 @@ export default defineTool({
   // interchangeable between this tool and coord:presence — see
   // computeRosterViewEtag for why hashing the roster instead of the emitted
   // representation would lie here.
+  // WI-2145871: opted in to the row contract, reusing coord:presence's pinned set
+  // VERBATIM — the same reuse-the-shaper argument as the lens above, one level
+  // out. `project()` in presence-shape.ts REBUILDS each row from a hand-written
+  // key list, so `fields` is the axis that actually holds; `preserve: ['agents']`
+  // pins the EI-21845811145701209 alias invariant.
+  //
+  // ⚠ Why the contract is NOT toothless despite the passthrough branch above:
+  // checkTrimmedContract feeds the shaper a synthetic `{ active: [row], agents:
+  // '__contract_top__agents' }`, and `hasCallerLens` is `!!data.projection` — a
+  // key the check never sets. So the synthetic input takes the `shapeCoordPresence`
+  // branch, not the passthrough, and a field deleted from `project()` fails here
+  // by name. A future lens keyed off a DIFFERENT marker than `projection` must
+  // re-check exactly this: if the check's synthetic input starts taking a
+  // passthrough branch, the contract silently degrades to asserting nothing while
+  // still reading as green.
   shape: {
+    contract: {
+      rows: 'active',
+      fields: [
+        'ownerId',
+        'state',
+        'wakeable',
+        'intent',
+        'confirmLiveness',
+        'dormantScheduled',
+        'contextPressure',
+        'coordHook',
+        'intentDivergent',
+        'fleetControlState',
+        'canAcquireWork',
+      ],
+      preserve: ['agents'],
+    },
     standard: (data: unknown) => (hasCallerLens(data) ? data : shapeCoordPresence(data, 'standard')),
     trimmed: (data: unknown) => (hasCallerLens(data) ? data : shapeCoordPresence(data, 'trimmed')),
   },

@@ -354,6 +354,38 @@ export default defineTool({
   // Context-trimming tiers keep the supervision decision core while bounding
   // the roster. Full-tier callers retain the lossless handler response.
   shape: {
+    // WI-2145871: the ROW axis only, and deliberately so. `projectMember`
+    // rebuilds each row FROM LITERALS (`base`, plus per-path additions), so a
+    // field added to the handler's members[] mapping and not to that literal is
+    // dropped silently at both non-full tiers — and `trimmed` is the DEFAULT
+    // read. That is the drop this pin exists to catch, and it is a real one:
+    // WI-7286 lost `lifecycleBackoff` exactly that way.
+    //
+    // `fields` is the INTERSECTION of every return path's UNCONDITIONAL keys —
+    // the nine `base` keys. Everything else is conditional and must stay out:
+    // `lifecycleBackoff` (only when the row carries it), `resumable`/`endedAt`/
+    // `endedBy` (ended|suspect only), `lastToolCallAt` (standard + present),
+    // `resumeHint`/`endedAtCaveat` (standard + ended). Pinning a conditional key
+    // would fail on the ordinary live row, which is most of the roster.
+    //
+    // No top-level `preserve`: the envelope returns `{ ...d, … }`, a SPREAD that
+    // passes every key through, so a `preserve` pin here would be TRIVIALLY
+    // SATISFIED — green while asserting nothing, and worse than no pin because
+    // the next reader counts the envelope as guarded and stops looking.
+    contract: {
+      rows: 'members',
+      fields: [
+        'agentId',
+        'label',
+        'fleetRole',
+        'intent',
+        'heartbeatFresh',
+        'sessionState',
+        'lastActiveSecAgo',
+        'doing',
+        'load',
+      ],
+    },
     standard: (data) => shapeFleetStatus(data, 'standard'),
     trimmed: (data) => shapeFleetStatus(data, 'trimmed'),
   },

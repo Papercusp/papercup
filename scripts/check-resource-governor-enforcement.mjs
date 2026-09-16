@@ -1997,6 +1997,14 @@ export const BYPASS_REGISTRY = new Map([
     },
   ],
   [
+    "packages/operator-core/lib/endpoint-route/routes/harness/project-history-source.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "defaultGit() wraps execFile for ONE bounded `git log` per History page: PROJECT_HISTORY_GIT_TIMEOUT_MS (20s) and a 32MB maxBuffer, awaited, its output returned and parsed in-process with no resident worker left behind. This file exists to REDUCE residency rather than add it — it replaced a CLI provider that shelled out once per plan and per work-item and then walked the entire commit graph with --name-only (~290s against a 90s child budget, hundreds of children, WI-10001548 defect A) with a single grep-bounded child per page.",
+    },
+  ],
+  [
     "packages/operator-core/lib/endpoint-route/routes/harness/prs.ts::resource-start-outside-admission",
     {
       disposition: "bypass",

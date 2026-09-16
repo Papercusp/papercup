@@ -1032,6 +1032,15 @@ export default defineTool({
   shape: {
     standard: (data) => shapeFleetAssignments(data, 'standard'),
     trimmed: (data) => shapeFleetAssignments(data, 'trimmed'),
+    // WI-2145871: retires this tool's `unclassified-baseline` debt entry. The
+    // shaper rebuilds its envelope from a hand-written key list, which is the
+    // exact shape that dropped the top-level `scope` block once already
+    // (EI-18763132241176410) — a self-scoped `agents:1, claims:0` then reads
+    // identically to a measured-empty fleet. `ok` and `summary` are the two
+    // keys that list emits UNCONDITIONALLY, so they are the ones a pin can
+    // hold; the conditional blocks (`scope`, `self`, `degraded*`) are absent
+    // from a well-formed result by design and cannot be guarded this way.
+    contract: { rows: 'agents', preserve: ['ok', 'summary'] },
   },
   async handler(args, ctx) {
     // A READ — identity is used only to default the optional workspace filter

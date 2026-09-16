@@ -272,7 +272,40 @@ export default defineTool({
   // context-trimming-tiers P-022: trimmed/standard sessions get projected roster
   // rows (dispatch core only — see presence-shape.ts); summary stays verbatim.
   // The pui reads this over HTTP (no ctx_tier) → always full.
+  // WI-2145871: opted in to the row contract. `project()` in presence-shape.ts
+  // REBUILDS each row from a hand-written key list, so a field survives tiering
+  // only by being named there — which is the axis `fields` actually holds. The
+  // pinned set is not a guess: each one is a field that file's own comments
+  // already declare must be kept at EVERY tier (confirmLiveness/WI-4400,
+  // dormantScheduled/EI-22805550006169069, contextPressure/P-007, coordHook,
+  // intentDivergent/EI-8988, fleetControlState/EI-22072194984361823), plus the
+  // identity + liveness core a row is useless without. This only mechanizes a
+  // promise the source states in prose.
+  //
+  // `preserve: ['agents']` pins the alias invariant from
+  // EI-21845811145701209 — `agents` is rebuilt from the SAME tier-projected
+  // rows as `active`, and deleting that line is the regression it guards.
+  // Note the top-level axis is otherwise weak here: the shaper spreads
+  // `{ ...d }` into `baseData`, so any OTHER top-level key would pass the
+  // check by passthrough while asserting nothing the tool was shown to emit.
   shape: {
+    contract: {
+      rows: 'active',
+      fields: [
+        'ownerId',
+        'state',
+        'wakeable',
+        'intent',
+        'confirmLiveness',
+        'dormantScheduled',
+        'contextPressure',
+        'coordHook',
+        'intentDivergent',
+        'fleetControlState',
+        'canAcquireWork',
+      ],
+      preserve: ['agents'],
+    },
     standard: (data) => shapeCoordPresence(data, 'standard'),
     trimmed: (data) => shapeCoordPresence(data, 'trimmed'),
   },

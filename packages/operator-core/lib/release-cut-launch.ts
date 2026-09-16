@@ -124,6 +124,15 @@ export interface CutRuntimeEnv {
   ownerEmail?: string;
   /** Explicit retry-only fast path: reuse a seed already cut in this isolated root. */
   reuseSeed?: boolean;
+  /** The CANONICAL papercusp-desktop checkout, so release-local.sh can write the
+   *  version bump back to it (WI-10001570). The cutter derives its own ROOT from
+   *  where the script lives, so a cut launched against an isolated worktree bumps
+   *  only that throwaway checkout — whose .git is an INDEPENDENT clone, not a
+   *  linked worktree. With the publish/push leg deleted under LOCAL-only there is
+   *  then no route back at all and the bump dies with the worktree, which is how
+   *  0.0.18 shipped while every canonical manifest still read 0.0.17. This is the
+   *  one place that knows BOTH roots, so it is where they get connected. */
+  canonicalDesktopRoot?: string;
 }
 
 function requiredOwnerName(value: string): string {
@@ -175,6 +184,13 @@ export function buildCutEnv(
   };
   const ownerEmail = runtime.ownerEmail?.trim();
   if (ownerEmail) env.PAPERCUSP_RELEASE_OWNER_EMAIL = ownerEmail;
+  // Absent => release-local.sh skips the writeback rather than guessing a path.
+  // It is a no-op when the cut already runs in the canonical checkout, so passing
+  // it unconditionally is safe.
+  const canonicalDesktopRoot = runtime.canonicalDesktopRoot?.trim();
+  if (canonicalDesktopRoot) {
+    env.PAPERCUSP_RELEASE_CANONICAL_DESKTOP_ROOT = canonicalDesktopRoot;
+  }
   if (runtime.reuseSeed) env.PAPERCUSP_SKIP_SEED_CUT = '1';
   // A platform leg still runs the shared release-local collector. Non-Linux legs
   // must consume the already-successful Linux bytes through its existing,

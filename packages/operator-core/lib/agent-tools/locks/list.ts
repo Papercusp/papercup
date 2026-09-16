@@ -156,6 +156,31 @@ export default defineTool({
   // (only locks:acquire/release/check_command are), so the {data} conversion
   // is safe.
   shape: {
+    // AUDITED 2026-09-16 (WI-2145871). BOTH row axes are pinned, deliberately:
+    // `shapeLocksList` runs two INDEPENDENT allowlists (projectHolder,
+    // projectResource) and each has silently dropped a field once already —
+    // `coordination_domain` (EI-21733256625452096) and `holders`/`held`
+    // (EI-22073686775053989), in separate incidents. One axis cannot guard the
+    // other, which is what `alsoRows` exists for.
+    //
+    // Field lists are the UNCONDITIONAL keys only. `reason` (`c.reason > 0`) and
+    // `description` (`c.description > 0`) are CONDITIONAL spreads and are
+    // excluded on purpose: checkTrimmedContract asserts PRESENCE, so pinning a
+    // key the shaper emits only at some tiers would fail at the others. `rule`
+    // is the OUTPUT key, built from `r.rule_text`.
+    //
+    // `alsoRows` is also what makes this pin reachable at all: the shaper's entry
+    // guard requires BOTH `resources` and `holders` to be arrays, and a
+    // single-axis check can only ever supply one — it would early-return and
+    // grade its own fixture green.
+    // A single-axis pin is NOT a usable fallback here: the entry guard needs
+    // both `resources` and `holders` to be arrays, so one axis alone
+    // early-returns and grades its own fixture green.
+    contract: {
+      rows: 'holders',
+      fields: ['resource', 'owner', 'mode', 'status', 'expires_ts', 'coordination_domain'],
+      alsoRows: { resources: ['resource', 'enforcement', 'rule', 'holders', 'held'] },
+    },
     standard: (data) => shapeLocksList(data, 'standard'),
     trimmed: (data) => shapeLocksList(data, 'trimmed'),
   },

@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { searchReports } from '../../report-library';
-import { resolveViewer, resolveWorkspaceId, toReportSummary, zReportKind } from './_shared';
+import { resolveViewer, resolveWorkspaceId, toReportSummary, zReportKind, zReportWire } from './_shared';
 
 export default defineTool({
   name: 'reports:search',
@@ -44,6 +44,14 @@ export default defineTool({
       'empty tsquery and legitimately matches nothing — retry with a distinctive term before concluding.',
     seeAlso: ['reports:list (exact filters)', 'reports:get (read one)', 'search:semantic (across all corpora)'],
   },
+  // A hit is the wire record with the ts_rank score spread on top; `query` echoes the
+  // parsed input so a zero-hit result is distinguishable from a mis-sent one.
+  result: z.object({
+    ok: z.literal(true),
+    query: z.string(),
+    count: z.number().int().nonnegative(),
+    hits: z.array(zReportWire.extend({ rank: z.number() })),
+  }),
   capability: 'reports:read',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],

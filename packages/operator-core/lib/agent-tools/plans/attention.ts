@@ -230,6 +230,14 @@ export default defineTool({
   shape: {
     standard: (data) => shapePlansAttention(data, 'standard'),
     trimmed: (data) => shapePlansAttention(data, 'trimmed'),
+    // WI-2145871: retires this tool's `unclassified-baseline` debt entry. The
+    // shaper returns a fully hand-written envelope, so every key survives only
+    // by being named. All four pinned keys are emitted unconditionally, and
+    // three of them QUALIFY the rows rather than carry them: `itemsTotal` and
+    // `tierCounts` are what say the `groups` rows are a bounded view, and
+    // `hint` carries the recovery path. Losing one leaves the rows looking
+    // complete — the confident-wrong reading this axis exists to catch.
+    contract: { rows: 'groups', preserve: ['tierCounts', 'itemsTotal', 'top', 'hint'] },
   },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
