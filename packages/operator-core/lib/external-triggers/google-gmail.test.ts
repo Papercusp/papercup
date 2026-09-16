@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildGoogleGmailRawMessage,
   createGoogleGmailDraft,
   DEFAULT_BACKFILL_MESSAGES_PER_SYNC,
   decodeGoogleGmailNotification,
@@ -523,5 +524,105 @@ describe('Google Gmail adapter', () => {
     );
     expect(parked.backfill?.status).toBe('throttled');
     expect(listCalls).toBe(1);
+  });
+});
+
+describe('buildGoogleGmailRawMessage attachments', () => {
+  const decode = (raw: string) => Buffer.from(raw, 'base64url').toString('utf8');
+  const BASE = { to: ['hiring@company.example'], subject: 'Senior Engineer', text: 'Hello.' };
+  const pdf = (content = '%PDF-1.7 bytes') => ({
+    filename: 'resume.pdf',
+    contentType: 'application/pdf',
+    content: Buffer.from(content),
+  });
+
+  it('stays text/plain and byte-identical when no attachment is supplied', () => {
+    const without = buildGoogleGmailRawMessage(BASE);
+    const empty = buildGoogleGmailRawMessage({ ...BASE, attachments: [] });
+
+    expect(decode(without.raw)).toContain('Content-Type: text/plain; charset=UTF-8');
+    expect(decode(without.raw)).not.toContain('multipart/mixed');
+    // An empty array must not flip the encoding — that is what makes the field safe to add.
+    expect(empty.raw).toBe(without.raw);
+  });
+
+  it('encodes multipart/mixed with the body first and the file base64 after it', () => {
+    const { raw } = buildGoogleGmailRawMessage({ ...BASE, attachments: [pdf()] });
+    const mime = decode(raw);
+
+    const boundary = /boundary="([^"]+)"/.exec(mime)?.[1];
+    expect(boundary).toBeTruthy();
+    expect(mime).toContain(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+    expect(mime).toContain('Content-Disposition: attachment; filename="resume.pdf"');
+    expect(mime).toContain('Content-Transfer-Encoding: base64');
+    expect(mime).toContain(Buffer.from('%PDF-1.7 bytes').toString('base64'));
+    // The text part must precede the file, and the envelope must terminate.
+    expect(mime.indexOf('Hello.')).toBeLessThan(mime.indexOf('resume.pdf'));
+    expect(mime.trimEnd().endsWith(`--${boundary}--`)).toBe(true);
+    // CRLF line endings are required by RFC 2822; a bare \n corrupts the parts.
+    expect(mime).toContain(`\r\n--${boundary}\r\n`);
+  });
+
+  it('wraps base64 at 76 columns so a strict receiving MTA cannot reject the line', () => {
+    const { raw } = buildGoogleGmailRawMessage({
+      ...BASE,
+      attachments: [pdf('x'.repeat(5_000))],
+    });
+    const mime = decode(raw);
+    // Scoped to the ENCODED PAYLOAD lines: the boundary header legitimately runs
+    // past 76 (RFC 2045 caps the encoded body, not headers), so asserting over
+    // every line would fail on a correct message.
+    const payloadLines = mime
+      .split('\r\n')
+      .filter((line) => line.length > 20 && /^[A-Za-z0-9+/]+={0,2}$/.test(line));
+
+    expect(payloadLines.length).toBeGreaterThan(1);
+    expect(Math.max(...payloadLines.map((line) => line.length))).toBeLessThanOrEqual(76);
+  });
+
+  it('refuses a filename that would break out of its own header parameter', () => {
+    for (const filename of ['evil".pdf', 'a;b.pdf', 'back\\slash.pdf']) {
+      expect(() =>
+        buildGoogleGmailRawMessage({ ...BASE, attachments: [{ ...pdf(), filename }] }),
+      ).toThrow(/attachment_filename_invalid/);
+    }
+    // A CRLF is header injection proper, and safeHeader rejects it first.
+    expect(() =>
+      buildGoogleGmailRawMessage({ ...BASE, attachments: [{ ...pdf(), filename: 'a\r\nBcc: x@y.z' }] }),
+    ).toThrow(/attachment_filename_invalid/);
+  });
+
+  it('refuses a malformed content type, an empty file, and an over-long list', () => {
+    expect(() =>
+      buildGoogleGmailRawMessage({ ...BASE, attachments: [{ ...pdf(), contentType: 'not-a-mime' }] }),
+    ).toThrow(/attachment_content_type_invalid/);
+
+    expect(() =>
+      buildGoogleGmailRawMessage({
+        ...BASE,
+        attachments: [{ ...pdf(), content: Buffer.alloc(0) }],
+      }),
+    ).toThrow(/attachment_content_invalid/);
+
+    expect(() =>
+      buildGoogleGmailRawMessage({ ...BASE, attachments: Array.from({ length: 11 }, () => pdf()) }),
+    ).toThrow(/attachments_too_many/);
+  });
+
+  it('still threads a reply that carries an attachment', () => {
+    const { raw, threadId } = buildGoogleGmailRawMessage({
+      ...BASE,
+      threadId: 'thread-9',
+      inReplyTo: '<prior@mail.example>',
+      attachments: [pdf()],
+    });
+    const mime = decode(raw);
+
+    // Both halves of threading must survive the multipart branch (see the
+    // builder's own note: supplying only one lands the message outside the thread).
+    expect(threadId).toBe('thread-9');
+    expect(mime).toContain('In-Reply-To: <prior@mail.example>');
+    expect(mime).toContain('References: <prior@mail.example>');
+    expect(mime).toContain('multipart/mixed');
   });
 });
