@@ -10,6 +10,8 @@ import {
 import { fsTokenStorage } from '../oauth/storage-fs';
 import { getOAuthToken, withRetry } from '../oauth/token';
 
+import type { gmail_v1 } from '@googleapis/gmail';
+
 export const GOOGLE_WORKSPACE_OAUTH_PLUGIN = 'google-workspace';
 export const GOOGLE_WORKSPACE_SOURCE_KINDS = ['gmail', 'gcal', 'contacts'] as const;
 export const GOOGLE_GMAIL_PROFILE_ENDPOINT = 'https://gmail.googleapis.com/gmail/v1/users/me/profile';
@@ -93,7 +95,14 @@ export async function resolveGoogleWorkspaceProviderAccount(
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!response.ok) throw new Error(`google_workspace_profile_${response.status}`);
-  const body = (await response.json()) as { emailAddress?: unknown };
+  // The wire shape comes from @googleapis/gmail (already a dependency) instead
+  // of being hand-written, so a field Google re-types cannot drift out of this
+  // file. Schema$Profile is WIDER than the `{ emailAddress?: unknown }` it
+  // replaces — `emailAddress` is `string | null | undefined` — and the
+  // `typeof === 'string'` guard below already rejected null on its first
+  // branch, so the runtime was always correct and only the annotation was
+  // narrower than the behaviour it described.
+  const body = (await response.json()) as gmail_v1.Schema$Profile;
   const emailAddress = typeof body.emailAddress === 'string' ? body.emailAddress.trim().toLowerCase() : '';
   if (!emailAddress || !emailAddress.includes('@')) {
     throw new Error('google_workspace_profile_email_required');
