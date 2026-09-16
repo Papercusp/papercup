@@ -41,6 +41,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { listAllProjectedTools, type ProjectedTool } from '@papercusp/tooldef';
+import { advertisedWireBytes } from './tool-guidance-budget';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- plain .mjs launcher script, no type declarations. Imported directly
 // (rather than mirrored into a second list guarded for drift, the way
@@ -97,16 +98,10 @@ function mcpName(t: ProjectedTool): string | null {
   return (t as { expose?: { mcp?: { name?: string } } }).expose?.mcp?.name ?? null;
 }
 
+/** The shape the server advertises per tool. Shared with omp-seed-wire-budget so the two
+ *  seed budgets cannot drift onto different measurements. */
 function wireBytes(name: string, t: ProjectedTool): number {
-  // The shape the server advertises per tool (server.ts:758).
-  return Buffer.byteLength(
-    JSON.stringify({
-      name,
-      description: (t as { description?: string }).description ?? '',
-      inputSchema: (t as { inputSchema?: unknown }).inputSchema ?? {},
-    }),
-    'utf8',
-  );
+  return advertisedWireBytes(name, t as { description?: string; inputSchema?: unknown });
 }
 
 describe('Claude seed wire budget (EI-23319364088969722)', () => {

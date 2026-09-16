@@ -498,3 +498,36 @@ export function formatSchemaViolations(violations: readonly SchemaBudgetViolatio
     })
     .join('\n');
 }
+
+/**
+ * UTF-8 bytes of ONE advertised `tools/list` entry — the per-turn context bill a SEEDED
+ * tool charges every session that lists it.
+ *
+ * This is deliberately NOT `serializedInputSchemaBytes`: that measures the schema alone,
+ * while the server advertises `{ name, description, inputSchema }` together
+ * (packages/agent-mcp/src/server.ts, the tools/list handler). The seed budgets are
+ * compared against real tools/list measurements, so they must count what is actually put
+ * on the wire.
+ *
+ * ⚠ IT READS ~20% LOW vs the live endpoint. This projection is the same catalog the
+ * server renders from, but skips the server's late entity-enum/sanitize passes — measured
+ * 2026-09-15, 90,869 B here for the 31 names the live endpoint served as 113,588 B. That
+ * makes it a faithful REGRESSION signal, not a byte-exact replica: compare in-repo
+ * readings to in-repo readings, and never quote one as the context cost.
+ *
+ * Shared by the seed guards (claude-seed-wire-budget / omp-seed-wire-budget) so their two
+ * budgets cannot drift onto different measurements — the numbers are only comparable to
+ * each other, and to their own recorded history, while one function produces them.
+ */
+export function advertisedWireBytes(
+  name: string,
+  tool: { description?: string; inputSchema?: unknown },
+): number {
+  return UTF8_ENCODER.encode(
+    JSON.stringify({
+      name,
+      description: tool.description ?? '',
+      inputSchema: tool.inputSchema ?? {},
+    }),
+  ).byteLength;
+}
