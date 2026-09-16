@@ -11,12 +11,27 @@ set -uo pipefail
 # invocation and exit in one parsed list for the same reason.
 main() {
 usage() {
-  echo "usage: $0 --mode scheduled|wait [--label NAME] -- COMMAND [ARG ...]" >&2
+  echo "usage: $0 --mode scheduled|wait [--label NAME] [--no-restart-safe] -- COMMAND [ARG ...]" >&2
   exit 64
 }
 
 mode=
 label=kopia
+# The priority-waiter handoff below TERMINATES a running scheduled child. That is
+# only sound when the child is restart-safe: a content-addressed Kopia snapshot
+# resumes cheaply, so preempting it costs almost nothing and unblocks a
+# higher-priority producer. Default 1 keeps that behaviour byte-identical.
+#
+# --no-restart-safe marks a child for which the assumption is FALSE. The db-dump
+# is the measured case (WI-10001467): `pg_dump -Fd` has no resume, and its only
+# success record -- the `backup OK in Ns` log line and the STATUS.json write --
+# lands at the very END. Preempting it discards the entire cycle and records
+# nothing, so the failure is invisible to every artifact-based health check (a
+# killed run still writes its dump directories, so mtime reads FRESH on exactly
+# the runs that were killed). Measured 2026-09-16: the 00:00 cycle dumped
+# papercusp-state (19G) and papercusp-transcript (83G), then was killed at
+# 00:21:19 before recording success; hourly cadence had collapsed to 4-17h gaps.
+restart_safe=1
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --mode)
@@ -28,6 +43,10 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || usage
       label="$2"
       shift 2
+      ;;
+    --no-restart-safe)
+      restart_safe=0
+      shift
       ;;
     --)
       shift
@@ -268,6 +287,8 @@ run_scheduled_command() {
   "$@" 9>&- &
   child_pid=$!
 
+  local declined_handoff_logged=0
+
   while kill -0 "$child_pid" 2>/dev/null; do
     sleep "$monitor_interval"
     kill -0 "$child_pid" 2>/dev/null || break
@@ -276,9 +297,22 @@ run_scheduled_command() {
     # snapshot) has priority over a hot sweep. Terminate only
     # this scheduled child and release the flock; content-addressed Kopia
     # snapshots are restart-safe, while leaving the waiter blocked is not.
+    #
+    # ...but ONLY when this child really is restart-safe. For a
+    # --no-restart-safe child (see restart_safe above) the trade inverts: the
+    # waiter loses at most this child's remaining runtime, which is bounded,
+    # whereas the child loses ALL of its work and writes no success record. We
+    # hold the lock and log it ONCE, so declining to yield stays observable
+    # instead of looking like a guard that forgot to check.
     if has_live_priority_waiter; then
-      runtime_abort_reason="priority-waiter shared-guard handoff"
-      break
+      if [ "$restart_safe" -eq 1 ]; then
+        runtime_abort_reason="priority-waiter shared-guard handoff"
+        break
+      fi
+      if [ "$declined_handoff_logged" -eq 0 ]; then
+        declined_handoff_logged=1
+        guard_log "result=holding-against-priority-waiter reason=child-not-restart-safe child_pid=$child_pid"
+      fi
     fi
 
     # NO MID-RUN PRESSURE CANCELLATION.  Both candidate signals were measured on

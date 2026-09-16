@@ -63,4 +63,4 @@ OOMPolicy=kill
 # Snapshot both the guard and its nested backup script before starting. Bash
 # reads long-running shell files lazily; an agent edit in the shared checkout
 # must not change the byte stream of an in-flight backup (EI-22458080342999427).
-ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/kopia-backup-guard.sh --mode scheduled --label db-dump -- %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/kopia-backup-guard.sh --mode scheduled --label db-dump --no-restart-safe -- %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh
