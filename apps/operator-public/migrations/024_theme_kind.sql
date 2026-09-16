@@ -3,7 +3,18 @@
 --
 -- SQLite cannot alter a CHECK constraint in place, so this is a one-shot table
 -- rebuild. It carries every column through migration 018 and recreates every
--- index from migrations 001..018. Later migrations add other tables only.
+-- index from migrations 001..018.
+--
+-- ⚠ DO NOT COPY THIS FILE'S COLUMN LIST INTO A NEW REBUILD. It is a snapshot of
+-- the table AS OF 024 and is already out of date: migration 028 ALTER-added
+-- pinned_commit_sha / pinned_tree_digest / pinned_at to `harnesses`, so a
+-- rebuild copied from here silently DROPS them (measured 2026-09-16 by
+-- execution: 67 columns -> 64). This line previously read "Later migrations add
+-- other tables only" — true when written, false from 028 onward, and load-bearing
+-- in the wrong direction: it told a reader the column set was still post-018,
+-- which is exactly the premise a destructive rebuild needs them to believe.
+-- Derive the column list from the LIVE chain instead (see migration 029), and
+-- let migration-column-preservation.test.ts prove you did.
 
 PRAGMA foreign_keys=OFF;
 DROP TABLE IF EXISTS harnesses_new;
