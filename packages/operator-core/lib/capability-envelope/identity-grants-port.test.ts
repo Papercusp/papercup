@@ -106,18 +106,28 @@ describe('P-005 current identity grants at the common kernel seat', () => {
     // the applied one; the session must not be stranded.
     const f = fixture();
     const read = vi.fn(async () => f.policy);
-    const state = { activation: { applied: { ...f.applied, stateRevision: 'state-b' } }, policyRevision: 'control:2' };
+    const applied = { ...f.applied, stateRevision: 'state-b' };
+    const state = { activation: { applied, status: 'applied' as const }, policyRevision: 'control:2' };
     expect(await checkIdentityGrantKernel(f.request, state, f.record, read))
       .toMatchObject({ decision: 'allow', revisionSource: 'applied' });
     expect(read).toHaveBeenCalledTimes(1);
   });
 
-  it('still fails closed when the state revision advanced AND the specification differs', async () => {
-    const f = fixture({ requires: [] });
+  it('still fails closed on an advanced state revision that is unacknowledged or changes the specification', async () => {
+    const f = fixture();
+    const applied = { ...f.applied, stateRevision: 'state-b' };
+    // Not yet acknowledged by the host: the receipt must still match exactly.
+    for (const status of ['desired', 'prepared', 'failed'] as const) {
+      expect(await checkIdentityGrantKernel(f.request, { activation: { applied, status } }, f.record, async () => f.policy))
+        .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });
+    }
+    // Acknowledged, but the current artifact is a different (broader) specification.
+    const narrow = fixture({ requires: [] });
     const broad = fixture();
-    const state = { activation: { applied: { ...f.applied, stateRevision: 'state-b' } }, policyRevision: 'control:2' };
-    expect(await checkIdentityGrantKernel(f.request, state, broad.record, async () => broad.policy))
-      .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });
+    expect(await checkIdentityGrantKernel(
+      f.request, { activation: { applied: { ...narrow.applied, stateRevision: 'state-b' }, status: 'applied' as const } },
+      broad.record, async () => broad.policy,
+    )).toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });
   });
 
   it('applies a pending narrowing immediately without attributing it as applied', async () => {

@@ -234,10 +234,15 @@ export async function checkIdentityGrantKernel(
   // session would be denied every tool for the rest of its life
   // (EI-23431478594488191). The immutable specification — and therefore
   // configuration.grants — is unchanged in that case, so the record's current
-  // artifact IS the applied specification. Accept it only when the
-  // specification revisions agree; a differing specification still fails
-  // closed, so a broadening can never ride on an unacknowledged artifact.
-  if (!artifact && current && applied && current.specificationRevision === applied.specificationRevision) {
+  // artifact IS the applied specification. Accept it only when the host has
+  // ACKNOWLEDGED the activation as applied AND the specification revisions
+  // agree; a desired/prepared/failed activation is unacknowledged and a
+  // differing specification is a broadening — both still fail closed.
+  if (
+    !artifact && current && applied &&
+    state.activation?.status === 'applied' &&
+    current.specificationRevision === applied.specificationRevision
+  ) {
     artifact = current;
   }
   if (!artifact) {
