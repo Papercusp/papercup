@@ -305,6 +305,73 @@ describe('CupboardClient — Apps tab always visible + empty state [owner 2026-0
   });
 });
 
+describe('CupboardClient — EVERY kind tab is visible at count 0 [owner 2026-09-15]', () => {
+  const originalFetch = global.fetch;
+  const fetchMock = vi.fn();
+
+  // The kinds that were INVISIBLE before this change: the worker returns
+  // explicit zeros for them, and the old visibleFilters dropped any tab whose
+  // count was 0. Publishing a plan/recipe/goal was therefore undiscoverable
+  // through the UI — self-perpetuating, since the tab only appeared once
+  // someone had already published into it.
+  const ZERO_KINDS = ['theme', 'pack', 'knowledge-pack', 'rubric', 'plan', 'recipe', 'goal'] as const;
+  // Kinds carrying a real corpus in the same fixture, so a passing assertion
+  // cannot come from "every tab renders regardless of the facets payload".
+  const NONZERO_KINDS = { blueprint: 17, template: 13, harness: 2, plugin: 1, app: 1 } as const;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('renders a real 0 counter for every empty kind, and keeps the non-empty counts intact', async () => {
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({
+      listings: [listing({ id: 2, title: 'Blueprint listing', listing_kind: 'blueprint' })],
+      total: 34,
+      // The live corpus shape measured 2026-09-15: explicit zeros, not omissions.
+      kind_facets: { ...NONZERO_KINDS, ...Object.fromEntries(ZERO_KINDS.map((k) => [k, 0])) },
+    }), { status: 200 }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    withTooltips(<CupboardClient />);
+    // The 'all' pill renders the FACET SUM (allKindsTotal), not the `total`
+    // field — 17+13+2+1+1, with the seven zero kinds contributing nothing.
+    const nonZeroSum = Object.values(NONZERO_KINDS).reduce((a, b) => a + b, 0);
+    await waitFor(() => expect(screen.getByTestId('cupboard-kind-count-all').textContent)
+      .toBe(String(nonZeroSum)));
+
+    for (const kind of ZERO_KINDS) {
+      expect(screen.getByTestId(`cupboard-kind-tab-${kind}`)).toBeTruthy();
+      // A real '0', never '—': the dash means "not loaded yet", which is a
+      // different fact from "nothing published" and must keep reading so.
+      expect(screen.getByTestId(`cupboard-kind-count-${kind}`).textContent).toBe('0');
+    }
+    for (const [kind, count] of Object.entries(NONZERO_KINDS)) {
+      expect(screen.getByTestId(`cupboard-kind-count-${kind}`).textContent).toBe(String(count));
+    }
+  });
+
+  it('still shows the tabs — with a — placeholder — before the facets have loaded', async () => {
+    fetchMock.mockReset();
+    // No kind_facets key at all: the pre-load state. Tabs must already be
+    // present (so the strip does not reflow as counts arrive) and must NOT
+    // claim zero for a corpus nobody has measured yet.
+    fetchMock.mockImplementation(async () => new Response(
+      JSON.stringify({ listings: [listing({ id: 2, title: 'Blueprint listing', listing_kind: 'blueprint' })] }),
+      { status: 200 },
+    ));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    withTooltips(<CupboardClient />);
+    await waitFor(() => expect(screen.getByText('Blueprint listing')).toBeTruthy());
+
+    for (const kind of ZERO_KINDS) {
+      expect(screen.getByTestId(`cupboard-kind-tab-${kind}`)).toBeTruthy();
+      expect(screen.getByTestId(`cupboard-kind-count-${kind}`).textContent).toBe('—');
+    }
+  });
+});
+
 describe('Cupboard ListingCard — app distribution (P-004)', () => {
   const APP_PLATFORMS = JSON.stringify(['darwin-aarch64', 'linux-x86_64']);
 

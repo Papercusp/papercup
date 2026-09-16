@@ -329,15 +329,25 @@ export default function CupboardClient() {
       : listings.filter((l) => listingKindOf(l) === kindFilter);
   const groupedListings = groupListingsByKind(viewListings);
   const facetCount = groupedListings.length;
-  // Per-kind counts come from the server's corpus summary. A kind tab with ZERO
-  // listings is HIDDEN (cupboard-public-release-2026-07-12 P-015: "all tabs
-  // non-empty or hidden" — e.g. pack when nothing is published yet).
-  // EXCEPTION: the Pots (harness) tab ALWAYS shows [owner 2026-07-14 "revive
-  // the pots tab, even if we don't have any shared pots yet"] — pot-sharing is a
-  // headline feature, so a fresh install must surface it (with an empty state)
-  // rather than hide it until someone happens to publish the first public pot.
-  // 'all' + the 'tools' discovery view always show; the currently-selected kind
-  // stays visible even if empty so a URL-pinned `?kind=` filter isn't stranded.
+  // Per-kind counts come from the server's corpus summary.
+  //
+  // EVERY kind tab is ALWAYS visible, including at count 0
+  // [owner 2026-09-15 "make the pills still show just with a 0 counter"].
+  // This RETIRES cupboard-public-release-2026-07-12 P-015 ("all tabs non-empty
+  // or hidden"), which the owner has now overridden three times — harness
+  // 2026-07-14, app 2026-07-14, and every remaining kind here; see that plan's
+  // Decisions for the retirement ruling.
+  //
+  // The rationale that carried the two earlier exceptions generalises: the tab
+  // strip is a CATALOGUE of what this Cupboard can share, not an index of what
+  // happens to be shared today. Hiding a kind at 0 makes an unpublished surface
+  // undiscoverable exactly when it most needs advertising, and it is
+  // self-perpetuating — nobody publishes the first plan/recipe/goal because the
+  // tab that would show them is hidden until someone does.
+  //
+  // The counter below renders a real `0` from kindCounts; `—` is retained for
+  // the genuinely-unknown state (kindFacets still loading), which is a
+  // different fact from zero and must keep reading differently.
   const kindCounts = useMemo(
     () => new Map(
       Object.entries(kindFacets ?? {})
@@ -345,20 +355,7 @@ export default function CupboardClient() {
     ),
     [kindFacets],
   );
-  const visibleFilters = VIEW_FILTERS.filter(
-    (k) =>
-      k === 'all' ||
-      k === 'tools' ||
-      k === 'harness' ||
-      // The Apps tab is ALWAYS visible [owner 2026-07-14 "1. yes" — Apps tab
-      // always-shown], with an empty state until the first app is published —
-      // apps are a headline distribution surface (Oddsmith), so a fresh install
-      // must advertise it rather than hide it until someone publishes one.
-      k === 'app' ||
-      k === kindFilter ||
-      kindFacets == null ||
-      (kindCounts.get(k as ListingKind) ?? 0) > 0,
-  );
+  const visibleFilters = VIEW_FILTERS;
   const allKindsTotal = kindFacets == null
     ? null
     : Object.values(kindFacets).reduce(
