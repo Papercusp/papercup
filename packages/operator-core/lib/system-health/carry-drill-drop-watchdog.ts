@@ -19,6 +19,19 @@
  * `respawned` is written BEFORE first-prompt injection, so counting it beside a
  * later dropped row would double-count one attempt and overstate success.
  *
+ * WI-10001537 adds a THIRD sweep on the same timer: ORPHANED respawns. The two
+ * sweeps above both judge rows that EXIST — a terminal drop, or a rate computed
+ * from terminal outcomes. An orphan is the opposite shape: a `pending` row whose
+ * host died, so no terminal row is ever written and there is nothing for either
+ * to see. It contributes to neither the numerator nor the denominator of the
+ * production rate, making a single orphaned session invisible to that metric BY
+ * CONSTRUCTION. The pre-existing orphan DETECTOR
+ * (`carry-respawn-outcome.ts`) only writes a banner into an agent's own context,
+ * which by definition cannot reach the case that matters: the CLI is gone, so
+ * nobody reads it and the owner must notice by hand. This sweep is the
+ * out-of-process half. It is deliberately ALARM-ONLY — it never relaunches a
+ * session (owner decision, 2026-09-16).
+ *
  * Design notes:
  *  - `managedSetInterval` (never a bare setInterval) — visible in
  *    schedule:inventory, category 'watchdog', like its system-health siblings.
@@ -43,7 +56,18 @@ import {
 } from '../cold-boot-drill-live';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import { PSU_PTY_DIR, readHostEventTail, type PtyHostEvent } from '../events/await/psu-pty-discovery';
+import {
+  PSU_PTY_DIR,
+  findLiveHost,
+  readHostEventTail,
+  type PtyHostEvent,
+} from '../events/await/psu-pty-discovery';
+import {
+  LOST_RESPAWN_AMBIENT_MAX_AGE_MS,
+  isDelayedPendingRespawn,
+  readPriorRespawnOutcome,
+  type PriorRespawn,
+} from '../carry-respawn-outcome';
 
 export const CARRY_DRILL_DROP_SWEEP_INTERVAL_MS = 60_000;
 /** How far back the first tick after boot looks — covers a restart gap without
@@ -57,6 +81,14 @@ export const PRODUCTION_CARRY_DELIVERY_RATE_FLOOR = 0.5;
  *  ceiling makes the watchdog bounded without discarding rows the writer still
  *  retains from a busy trailing hour. */
 export const PRODUCTION_CARRY_SCAN_TAIL_BYTES = 256 * 1024;
+
+/**
+ * An orphan older than this is history, not news — the same horizon
+ * {@link LOST_RESPAWN_AMBIENT_MAX_AGE_MS} uses for the in-context ambient
+ * warning, imported rather than re-declared so the two surfaces cannot drift
+ * about what counts as recent.
+ */
+export const ORPHANED_RESPAWN_MAX_AGE_MS = LOST_RESPAWN_AMBIENT_MAX_AGE_MS;
 
 const HOST_EVENT_SUFFIX = '.events.jsonl';
 const SHARED_DRILL_LEDGER = 'carry-drills.events.jsonl';
@@ -86,6 +118,29 @@ export interface ProductionCarryDeliveryReading {
   /** `null` means the window had no terminal outcomes, not a 0% delivery rate. */
   deliveryRate: number | null;
   failureReasons: Record<string, number>;
+}
+
+/** One session whose carry-respawn will never be delivered by anyone. */
+export interface OrphanedRespawnAlert {
+  ownerId: string;
+  /** The host's own reason on the pending row (e.g. busy-gate-expired), if any. */
+  reason: string | null;
+  /** ISO timestamp of the pending row — also the dedup subject. */
+  ts: string | null;
+  ageMs: number;
+  capMs: number | null;
+}
+
+export interface OrphanedRespawnSweepDeps {
+  /** mtime-banded candidate owners; see {@link listOrphanCandidateOwners}. */
+  listCandidates: (now: number) => string[];
+  readPrior: (ownerId: string, now: number) => Promise<PriorRespawn>;
+  /** Liveness of the owner's pty host. Throwing is treated as ALIVE (stay quiet). */
+  hostLive: (ownerId: string) => boolean;
+  escalate: (alert: OrphanedRespawnAlert) => Promise<void>;
+  flagEnabled: () => Promise<boolean>;
+  now: () => number;
+  maxAgeMs: number;
 }
 
 export interface ProductionCarryDeliverySweepDeps {
@@ -189,6 +244,92 @@ export function readRecentProductionCarryEvents(
   return events;
 }
 
+/**
+ * PURE: is this owner's carry-respawn ORPHANED — i.e. will nobody ever deliver it?
+ *
+ * THREE conjuncts, and the third is the one that makes this honest:
+ *  1. the last respawn is still `pending` (no terminal row ever landed);
+ *  2. it has outstayed its own observed wait interval plus slack
+ *     ({@link isDelayedPendingRespawn});
+ *  3. the owner has NO live pty host.
+ *
+ * Conjunct 3 is LOAD-BEARING, not belt-and-braces. `carry-respawn-outcome.ts`
+ * states the rule this obeys: "Inspect host/controller evidence to establish
+ * loss; an elapsed timer alone cannot do so." A host that is still up may
+ * legitimately retry across SEVERAL capMs windows, so 1+2 alone describe a
+ * DELAY, never a loss.
+ *
+ * Measured false positive that conjunct 3 suppresses (WI-10001537, the 2026-09-16
+ * incident): `deriveLastRespawnOutcome` counts `respawned` as pending only when
+ * `mode === 'carry-respawn'`, so an owner's manual recovery — which writes
+ * `mode:'self-relaunch'` — is skipped, and the scan keeps returning the STALE
+ * earlier pending row. On that session that left a ~5.5 minute window
+ * (00:54:09 → 00:59:47Z) in which a timer-only reconciler would have alarmed on a
+ * session that was alive and working. Host liveness is what makes it silent.
+ *
+ * Returns null (stay quiet) for every uncertain case — an alarm is only ever
+ * emitted on evidence, the same rule `lostRespawnAmbientLine` follows.
+ */
+export function orphanedRespawnAlert(
+  ownerId: string,
+  prior: PriorRespawn | null | undefined,
+  hostLive: boolean,
+  opts: { maxAgeMs?: number } = {},
+): OrphanedRespawnAlert | null {
+  if (!prior || prior.outcome !== 'pending') return null;
+  if (!isDelayedPendingRespawn(prior)) return null;
+  if (hostLive) return null;
+  const maxAge = opts.maxAgeMs ?? ORPHANED_RESPAWN_MAX_AGE_MS;
+  // An unknown age is NOT treated as recent — same reasoning as the ambient
+  // line: guessing "recent" on the rows we know least about nags forever.
+  if (prior.ageMs == null || !Number.isFinite(prior.ageMs) || prior.ageMs > maxAge) return null;
+  return {
+    ownerId,
+    reason: prior.reason ?? null,
+    ts: prior.ts ?? null,
+    ageMs: prior.ageMs,
+    capMs: prior.capMs ?? null,
+  };
+}
+
+/**
+ * Candidate owners for the orphan scan, bounded by ledger mtime.
+ *
+ * THIS BOUND IS NOT OPTIONAL. Per-owner event ledgers are never pruned (only the
+ * `.json` discovery files are, by `pruneDeadDiscoveryFiles`): measured on this box
+ * 2026-09-16, ~/.papercusp/psu-pty held 14,638 `*.events.jsonl` against 28 `.json`.
+ * Parsing all of them every tick would be absurd. An orphan's ledger stops being
+ * written the moment its host dies, so its mtime freezes at (approximately) the
+ * pending row — which means a recency band over mtime is both cheap and correct.
+ * The precise cap+grace verdict still comes from the event timestamp, never mtime.
+ */
+export function listOrphanCandidateOwners(
+  dir: string = PSU_PTY_DIR,
+  now: number = Date.now(),
+  maxAgeMs: number = ORPHANED_RESPAWN_MAX_AGE_MS,
+): string[] {
+  const cutoff = now - maxAgeMs;
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const owners: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(HOST_EVENT_SUFFIX) || entry.name === SHARED_DRILL_LEDGER) {
+      continue;
+    }
+    try {
+      if (statSync(join(dir, entry.name)).mtimeMs < cutoff) continue;
+    } catch {
+      continue;
+    }
+    owners.push(entry.name.slice(0, -HOST_EVENT_SUFFIX.length));
+  }
+  return owners;
+}
+
 async function defaultFlagEnabled(): Promise<boolean> {
   try {
     const [{ getFlag }, { FLAGS }] = await Promise.all([
@@ -266,6 +407,45 @@ async function defaultEscalateProduction(reading: ProductionCarryDeliveryReading
   });
 }
 
+async function defaultEscalateOrphan(alert: OrphanedRespawnAlert): Promise<void> {
+  const ageSec = Math.round(alert.ageMs / 1000);
+  const capSec = alert.capMs != null ? Math.round(alert.capMs / 1000) : null;
+  await openEscalation(WATCHDOG_IDENTITY, {
+    severity: 'advisory',
+    summary:
+      `Carry-respawn ORPHANED on ${alert.ownerId} — pending ${ageSec}s with no live host` +
+      (alert.reason ? ` (${alert.reason})` : ''),
+    body:
+      `Session owner ${alert.ownerId} has a carry-respawn still \`pending\` from ${alert.ts ?? 'an untimestamped row'} ` +
+      `(${ageSec}s ago${capSec != null ? `, wait interval ${capSec}s` : ''}` +
+      `${alert.reason ? `, reason: ${alert.reason}` : ''}), and it has NO live pty host — ` +
+      `\`findLiveHost\` finds no process with a live socket and a matching psu cmdline.\n\n` +
+      `So no successor is coming and nothing will ever record an outcome: the CLI died holding the ` +
+      `request. Any dialog that session had open was destroyed with it, and its agent is not going to ` +
+      `notice, because the existing orphan DETECTOR only writes a banner into the context of a session ` +
+      `that is still alive to read it (WI-10001537).\n\n` +
+      `Triage: \`psu --resume <nativeId>\` recovers the work — read the nativeId from the last ` +
+      `\`respawned\` row in ~/.papercusp/psu-pty/${alert.ownerId}.events.jsonl, or via ` +
+      `\`latestRespawnNativeSession(ownerId)\`. This alarm is deliberately ALARM-ONLY: it never ` +
+      `relaunches a session by itself (owner decision, 2026-09-16).\n\n` +
+      `Why the sibling production-carry sweep cannot see this: that metric is delivered / ` +
+      `(delivered + dropped + respawn-failed) over TERMINAL rows. An orphan produces no terminal row ` +
+      `at all, so it lands in neither numerator nor denominator and is invisible to it by construction.`,
+    meta: {
+      dedupKind: 'orphaned-carry-respawn',
+      // One escalation per orphaned ATTEMPT, not one per tick: the pending row's
+      // ts is stable for as long as the orphan persists, so the 60s sweep
+      // re-fires into openEscalation's own PG dedup instead of stacking rows.
+      subjectSignature: `${alert.ownerId}:${alert.ts ?? 'unknown'}`,
+      orphanOwnerId: alert.ownerId,
+      pendingTs: alert.ts,
+      pendingAgeMs: alert.ageMs,
+      capMs: alert.capMs,
+      reason: alert.reason,
+    },
+  });
+}
+
 function sweepDeps(overrides: Partial<CarryDrillDropSweepDeps>): CarryDrillDropSweepDeps {
   return {
     readLedger: readColdBootDrillLedger,
@@ -315,6 +495,69 @@ export async function runCarryDrillDropSweepOnce(
     }
   }
   return { watermarkMs, escalated, skipped: false };
+}
+
+function orphanSweepDeps(overrides: Partial<OrphanedRespawnSweepDeps>): OrphanedRespawnSweepDeps {
+  return {
+    listCandidates: (now) => listOrphanCandidateOwners(PSU_PTY_DIR, now),
+    readPrior: (ownerId, now) => readPriorRespawnOutcome(ownerId, { dir: PSU_PTY_DIR, now }),
+    hostLive: (ownerId) => findLiveHost(ownerId) != null,
+    escalate: defaultEscalateOrphan,
+    flagEnabled: defaultFlagEnabled,
+    now: Date.now,
+    maxAgeMs: ORPHANED_RESPAWN_MAX_AGE_MS,
+    ...overrides,
+  };
+}
+
+/**
+ * One orphaned-carry-respawn sweep: alarm on every pending respawn past
+ * cap+grace whose host is gone. Exported for focused tests.
+ *
+ * Per-owner failures are swallowed rather than aborting the sweep — one
+ * unreadable ledger must not hide every other orphan. A failed escalate is also
+ * non-fatal: the pending row is still there next tick, and the
+ * (dedupKind, subjectSignature) dedup makes the retry idempotent.
+ */
+export async function runOrphanedRespawnSweepOnce(
+  overrides: Partial<OrphanedRespawnSweepDeps> = {},
+): Promise<{ scanned: number; alerts: number; escalated: number; skipped: boolean }> {
+  const deps = orphanSweepDeps(overrides);
+  if (!(await deps.flagEnabled())) return { scanned: 0, alerts: 0, escalated: 0, skipped: true };
+
+  const now = deps.now();
+  const owners = deps.listCandidates(now);
+  let alerts = 0;
+  let escalated = 0;
+
+  for (const ownerId of owners) {
+    let prior: PriorRespawn;
+    try {
+      prior = await deps.readPrior(ownerId, now);
+    } catch {
+      continue;
+    }
+    let live: boolean;
+    try {
+      live = deps.hostLive(ownerId);
+    } catch {
+      // FAIL SAFE TOWARD SILENCE: liveness is the evidence that turns a delay
+      // into a loss. If we could not measure it, we have not established loss —
+      // assume alive and stay quiet rather than alarm on a session that is fine.
+      live = true;
+    }
+    const alert = orphanedRespawnAlert(ownerId, prior, live, { maxAgeMs: deps.maxAgeMs });
+    if (!alert) continue;
+    alerts += 1;
+    try {
+      await deps.escalate(alert);
+      escalated += 1;
+    } catch {
+      /* retried next tick; escalation-side dedup absorbs the overlap */
+    }
+  }
+
+  return { scanned: owners.length, alerts, escalated, skipped: false };
 }
 
 /** One rolling-window production carry-health sweep. Exported for focused tests. */
@@ -367,6 +610,13 @@ export function startCarryDrillDropWatchdog(opts: { intervalMs?: number } = {}):
         } catch (e) {
           console.warn(
             `[carry-drill-drop-watchdog] production sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+        try {
+          await runOrphanedRespawnSweepOnce();
+        } catch (e) {
+          console.warn(
+            `[carry-drill-drop-watchdog] orphan sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
           );
         }
       })().finally(() => {

@@ -3,12 +3,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  ORPHANED_RESPAWN_MAX_AGE_MS,
+  listOrphanCandidateOwners,
+  orphanedRespawnAlert,
+  type OrphanedRespawnAlert,
   readRecentProductionCarryEvents,
   runCarryDrillDropSweepOnce,
+  runOrphanedRespawnSweepOnce,
   runProductionCarryDeliverySweepOnce,
   summarizeProductionCarryDelivery,
 } from './carry-drill-drop-watchdog';
-import type { ColdBootDrillLedgerEvent } from '../cold-boot-drill-live';
+import { deriveLastRespawnOutcome, type PriorRespawn } from '../carry-respawn-outcome';
+import type { ColdBootDrillHostEvent, ColdBootDrillLedgerEvent } from '../cold-boot-drill-live';
 import type { PtyHostEvent } from '../events/await/psu-pty-discovery';
 
 const T0 = Date.parse('2026-07-15T12:00:00.000Z');
@@ -185,5 +191,182 @@ describe('production carry delivery rate (EI-18168050721107453)', () => {
     });
     expect(result).toEqual({ reading: null, escalated: false, skipped: true });
     expect(readEvents).not.toHaveBeenCalled();
+  });
+});
+
+/* ── Orphaned carry-respawn sweep (WI-10001537) ─────────────────────────── */
+
+const ORPHAN_NOW = Date.parse('2026-09-16T01:00:00.000Z');
+/** Comfortably past the default 360s cap + 120s grace. */
+const PAST_CAP_MS = 600_000;
+
+function pending(overrides: Partial<PriorRespawn> = {}): PriorRespawn {
+  return {
+    outcome: 'pending',
+    reason: 'busy-gate-expired',
+    ts: new Date(ORPHAN_NOW - PAST_CAP_MS).toISOString(),
+    ageMs: PAST_CAP_MS,
+    capMs: 360_000,
+    ...overrides,
+  };
+}
+
+describe('orphanedRespawnAlert (WI-10001537)', () => {
+  it('alarms on a pending respawn past cap+grace whose host is gone', () => {
+    const alert = orphanedRespawnAlert('su-dead', pending(), false);
+    expect(alert).toMatchObject({ ownerId: 'su-dead', reason: 'busy-gate-expired', ageMs: PAST_CAP_MS });
+  });
+
+  it('STAYS SILENT when the host is still live, however long it has been pending', () => {
+    // The load-bearing conjunct. A live host may legitimately retry across
+    // several capMs windows, so elapsed time alone is a DELAY, not a loss.
+    expect(orphanedRespawnAlert('su-live', pending({ ageMs: 10 * 60 * 60 * 1000 }), true)).toBeNull();
+  });
+
+  it('stays silent inside cap+grace even with a dead host', () => {
+    // 360s cap + 120s grace = 480s; 400s is still within the host's own window.
+    expect(orphanedRespawnAlert('su-early', pending({ ageMs: 400_000 }), false)).toBeNull();
+  });
+
+  it.each(['delivered', 'dropped', 'none'] as const)('stays silent on a %s outcome', (outcome) => {
+    expect(orphanedRespawnAlert('su-x', pending({ outcome }), false)).toBeNull();
+  });
+
+  it('stays silent on an orphan older than the recency horizon', () => {
+    const ancient = pending({ ageMs: ORPHANED_RESPAWN_MAX_AGE_MS + 1 });
+    expect(orphanedRespawnAlert('su-ancient', ancient, false)).toBeNull();
+  });
+
+  it('stays silent when the age is unknown rather than guessing "recent"', () => {
+    expect(orphanedRespawnAlert('su-noage', pending({ ageMs: null }), false)).toBeNull();
+    expect(orphanedRespawnAlert('su-nil', null, false)).toBeNull();
+  });
+
+  /**
+   * REGRESSION, built from the real rows of the 2026-09-16 incident ledger
+   * (~/.papercusp/psu-pty/su-66826cba-….events.jsonl). `deriveLastRespawnOutcome`
+   * counts `respawned` as pending only for mode==='carry-respawn', so the owner's
+   * MANUAL recovery (mode:'self-relaunch') is skipped and the scan keeps returning
+   * the stale 00:46 pending row. A timer-only reconciler would therefore have
+   * alarmed on a session that was alive and working, for ~5.5 minutes.
+   */
+  it('does not alarm on a session the owner already recovered via self-relaunch', () => {
+    const rows: ColdBootDrillHostEvent[] = [
+      { kind: 'respawn-rearm-queued', ts: '2026-09-16T00:46:09.599Z', reason: 'busy-gate-expired', capMs: 360_000 },
+      { kind: 'respawned', ts: '2026-09-16T00:52:58.671Z', mode: 'self-relaunch' },
+    ] as unknown as ColdBootDrillHostEvent[];
+    // 00:56Z — past the 00:54:09 cap+grace expiry, before the 00:59:47 delivery.
+    const now = Date.parse('2026-09-16T00:56:00.000Z');
+    const prior = deriveLastRespawnOutcome(rows, { now });
+
+    // The derivation itself still reports a stale pending — that is the trap.
+    expect(prior.outcome).toBe('pending');
+    // Timer-only would fire here…
+    expect(orphanedRespawnAlert('su-66826cba', prior, false)).not.toBeNull();
+    // …but the host is live, so the real predicate is silent.
+    expect(orphanedRespawnAlert('su-66826cba', prior, true)).toBeNull();
+  });
+});
+
+describe('listOrphanCandidateOwners (WI-10001537)', () => {
+  it('bounds the scan by ledger mtime and ignores the shared drill ledger', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orphan-candidates-'));
+    try {
+      const write = (name: string, ageMs: number) => {
+        const p = join(dir, name);
+        writeFileSync(p, '{}\n');
+        const t = (ORPHAN_NOW - ageMs) / 1000;
+        utimesSync(p, t, t);
+      };
+      write('su-recent.events.jsonl', 60_000);
+      write('su-ancient.events.jsonl', ORPHANED_RESPAWN_MAX_AGE_MS + 60_000);
+      write('carry-drills.events.jsonl', 60_000); // shared ledger, not an owner
+      write('su-notaledger.json', 60_000); // discovery file, wrong suffix
+
+      expect(listOrphanCandidateOwners(dir, ORPHAN_NOW)).toEqual(['su-recent']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns empty rather than throwing when the directory is absent', () => {
+    expect(listOrphanCandidateOwners(join(tmpdir(), 'no-such-psu-pty-dir-xyz'), ORPHAN_NOW)).toEqual([]);
+  });
+});
+
+describe('runOrphanedRespawnSweepOnce (WI-10001537)', () => {
+  const baseDeps = {
+    flagEnabled: async () => true,
+    now: () => ORPHAN_NOW,
+    maxAgeMs: ORPHANED_RESPAWN_MAX_AGE_MS,
+  };
+
+  it('escalates one alert per orphaned owner', async () => {
+    const escalate = vi.fn(async (_alert: OrphanedRespawnAlert) => {});
+    const result = await runOrphanedRespawnSweepOnce({
+      ...baseDeps,
+      listCandidates: () => ['su-a', 'su-b'],
+      readPrior: async (ownerId) => (ownerId === 'su-a' ? pending() : pending({ outcome: 'delivered' })),
+      hostLive: () => false,
+      escalate,
+    });
+    expect(result).toEqual({ scanned: 2, alerts: 1, escalated: 1, skipped: false });
+    expect(escalate).toHaveBeenCalledTimes(1);
+    expect(escalate.mock.calls[0][0]).toMatchObject({ ownerId: 'su-a' });
+  });
+
+  it('reads nothing when the watchdog flag is off', async () => {
+    const listCandidates = vi.fn();
+    const result = await runOrphanedRespawnSweepOnce({ ...baseDeps, flagEnabled: async () => false, listCandidates });
+    expect(result).toEqual({ scanned: 0, alerts: 0, escalated: 0, skipped: true });
+    expect(listCandidates).not.toHaveBeenCalled();
+  });
+
+  it('FAILS SAFE TOWARD SILENCE when liveness cannot be measured', async () => {
+    // Liveness is the evidence that turns a delay into a loss. If the probe
+    // throws we have not established loss — alarming there would invert the
+    // rule the predicate exists to enforce.
+    const escalate = vi.fn(async () => {});
+    const result = await runOrphanedRespawnSweepOnce({
+      ...baseDeps,
+      listCandidates: () => ['su-unknown'],
+      readPrior: async () => pending(),
+      hostLive: () => {
+        throw new Error('procfs unreadable');
+      },
+      escalate,
+    });
+    expect(result.alerts).toBe(0);
+    expect(escalate).not.toHaveBeenCalled();
+  });
+
+  it('keeps sweeping when one ledger is unreadable, so a bad file cannot hide other orphans', async () => {
+    const escalate = vi.fn(async (_alert: OrphanedRespawnAlert) => {});
+    const result = await runOrphanedRespawnSweepOnce({
+      ...baseDeps,
+      listCandidates: () => ['su-broken', 'su-orphan'],
+      readPrior: async (ownerId) => {
+        if (ownerId === 'su-broken') throw new Error('corrupt ledger');
+        return pending();
+      },
+      hostLive: () => false,
+      escalate,
+    });
+    expect(result).toMatchObject({ scanned: 2, alerts: 1, escalated: 1 });
+    expect(escalate.mock.calls[0][0]).toMatchObject({ ownerId: 'su-orphan' });
+  });
+
+  it('survives a failing escalate and leaves it to be retried next tick', async () => {
+    const escalate = vi.fn(async () => {
+      throw new Error('escalation backend down');
+    });
+    const result = await runOrphanedRespawnSweepOnce({
+      ...baseDeps,
+      listCandidates: () => ['su-a'],
+      readPrior: async () => pending(),
+      hostLive: () => false,
+      escalate,
+    });
+    expect(result).toMatchObject({ alerts: 1, escalated: 0, skipped: false });
   });
 });
