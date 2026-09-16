@@ -20,9 +20,12 @@ import {
 import {
   DEFAULT_GCP_IAP_INITIALIZATION_TIMEOUT_MS,
   GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
+  GcpIapWorkspaceHostBootstrapNotReadyError,
   GcpIapWorkspaceHostInitializationOperations,
   NodeGcpIapWorkspaceHostInitializationCommandRunner,
+  buildGcpIapWorkspaceHostBootstrapReadinessProbe,
   buildGcpIapWorkspaceHostInitializationCommand,
+  type GcpIapWorkspaceHostInitializationCommand,
   type GcpIapWorkspaceHostInitializationCommandRunner,
   type GcpIapWorkspaceHostInitializationProfile,
 } from './gcp-iap-initialization-operations';
@@ -328,4 +331,153 @@ describe('GCP IAP workspace-host initialization operations', () => {
     },
     15_000,
   );
+});
+
+/**
+ * WI-10001677. The gate exists to separate three outcomes an `exit 127` used to collapse into
+ * one, so every test here is about which outcome is reported — not merely that waiting happens.
+ */
+describe('GCP IAP workspace-host bootstrap readiness gate', () => {
+  /** Scripted runner: one queued exit code per probe, and it records every command it ran. */
+  const scriptedRunner = (
+    exitCodes: readonly number[],
+    stderr = '',
+  ): GcpIapWorkspaceHostInitializationCommandRunner & {
+    commands: GcpIapWorkspaceHostInitializationCommand[];
+  } => {
+    const commands: GcpIapWorkspaceHostInitializationCommand[] = [];
+    let index = 0;
+    return {
+      commands,
+      async run(command) {
+        commands.push(command);
+        // Past the script, keep answering with the final code: a test asserting a TIMEOUT must not
+        // depend on having guessed the exact probe count.
+        const exitCode = exitCodes[Math.min(index, exitCodes.length - 1)] ?? 1;
+        index += 1;
+        return { exitCode, stdout: '', stderr };
+      },
+    };
+  };
+
+  /** Virtual clock: advances only when the gate sleeps, so a 20-minute budget costs no wall time. */
+  const virtualTiming = () => {
+    let clock = 0;
+    const slept: number[] = [];
+    return {
+      slept,
+      now: () => clock,
+      sleep: async (ms: number) => {
+        slept.push(ms);
+        clock += ms;
+      },
+    };
+  };
+
+  it('probes the conduit with `test -x` and never invokes the conduit itself', () => {
+    const probe = buildGcpIapWorkspaceHostBootstrapReadinessProbe(PROFILE);
+    const remote = probe.args.at(-1) ?? '';
+
+    expect(remote).toContain('/bin/test');
+    expect(remote).toContain('-x');
+    expect(remote).toContain(PROFILE.remoteEntrypoint);
+    // The probe must be side-effect free: the conduit speaks a JSON protocol, and a "harmless"
+        // call to it would be a real request whose failures overlap the ones we are separating.
+    expect(probe.stdin).toBe('');
+    expect(remote.startsWith(PROFILE.remoteEntrypoint)).toBe(false);
+  });
+
+  it('returns readyImmediately when the first probe finds the conduit, without sleeping', async () => {
+    const runner = scriptedRunner([0]);
+    const timing = virtualTiming();
+    const onWaiting = vi.fn();
+
+    const result = await new GcpIapWorkspaceHostInitializationOperations(
+      PROFILE,
+      runner,
+      timing,
+    ).awaitBootstrapReady({ onWaiting });
+
+    expect(result).toMatchObject({ probes: 1, readyImmediately: true, waitedMs: 0 });
+    expect(timing.slept).toEqual([]);
+    // No waiting happened, so nothing should have reported waiting.
+    expect(onWaiting).not.toHaveBeenCalled();
+  });
+
+  it('waits through not-ready answers and reports how long the race actually took', async () => {
+    const runner = scriptedRunner([1, 1, 0]);
+    const timing = virtualTiming();
+    const onWaiting = vi.fn();
+
+    const result = await new GcpIapWorkspaceHostInitializationOperations(
+      PROFILE,
+      runner,
+      timing,
+    ).awaitBootstrapReady({ pollIntervalMs: 15_000, timeoutMs: 600_000, onWaiting });
+
+    expect(result).toMatchObject({ probes: 3, readyImmediately: false, waitedMs: 30_000 });
+    expect(timing.slept).toEqual([15_000, 15_000]);
+    // Progress must be reported per wait, or the gate is indistinguishable from a hang to
+    // anyone reading the operation row.
+    expect(onWaiting).toHaveBeenCalledTimes(2);
+    expect(onWaiting).toHaveBeenLastCalledWith({
+      elapsedMs: 15_000,
+      timeoutMs: 600_000,
+      probes: 2,
+    });
+  });
+
+  it('on timeout after clean answers, blames the unfinished bootstrap', async () => {
+    const runner = scriptedRunner([1]);
+    const timing = virtualTiming();
+
+    const error = await new GcpIapWorkspaceHostInitializationOperations(PROFILE, runner, timing)
+      .awaitBootstrapReady({ pollIntervalMs: 10_000, timeoutMs: 60_000 })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GcpIapWorkspaceHostBootstrapNotReadyError);
+    const notReady = error as GcpIapWorkspaceHostBootstrapNotReadyError;
+    expect(notReady.answered).toBe(true);
+    expect(notReady.conduitPath).toBe(PROFILE.remoteEntrypoint);
+    expect(notReady.message).toContain('bootstrap');
+    expect(notReady.message).toContain(PROFILE.remoteEntrypoint);
+    // Never sleeps past its own deadline.
+    expect(notReady.waitedMs).toBeLessThan(60_000);
+  });
+
+  it('on a budget spent entirely on transport failures, reports transport — NOT a slow bootstrap', async () => {
+    // 255 is ssh's catch-all: auth, tunnel, IAP permission and firewall all land here, and the
+    // conduit is never actually examined. Reporting this as "bootstrap was slow" would replace a
+    // loud misconfiguration with a twenty-minute lie.
+    const runner = scriptedRunner([255], 'Permission denied (publickey).');
+    const timing = virtualTiming();
+
+    const error = await new GcpIapWorkspaceHostInitializationOperations(PROFILE, runner, timing)
+      .awaitBootstrapReady({ pollIntervalMs: 10_000, timeoutMs: 60_000 })
+      .catch((caught: unknown) => caught);
+
+    const notReady = error as GcpIapWorkspaceHostBootstrapNotReadyError;
+    expect(notReady).toBeInstanceOf(GcpIapWorkspaceHostBootstrapNotReadyError);
+    expect(notReady.answered).toBe(false);
+    expect(notReady.lastExitCode).toBe(255);
+    expect(notReady.message).toContain('never actually checked');
+    expect(notReady.message).toContain('Permission denied');
+  });
+
+  it('still takes one real observation when the budget is shorter than one poll interval', async () => {
+    // A budget smaller than the interval must not degrade into zero measurements — a gate that
+    // reports "not ready" without ever having asked is the false negative this whole change exists
+    // to remove, just relocated into the gate itself.
+    const runner = scriptedRunner([0]);
+    const timing = virtualTiming();
+
+    const result = await new GcpIapWorkspaceHostInitializationOperations(
+      PROFILE,
+      runner,
+      timing,
+    ).awaitBootstrapReady({ pollIntervalMs: 30_000, timeoutMs: 1_000 });
+
+    expect(result.probes).toBe(1);
+    expect(runner.commands).toHaveLength(1);
+  });
 });

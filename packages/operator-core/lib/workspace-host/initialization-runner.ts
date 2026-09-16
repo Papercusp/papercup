@@ -270,6 +270,57 @@ export async function runWorkspaceHostInitialization(
       },
     };
 
+    /**
+     * Gate on the host's OWN bootstrap before touching step 1 (WI-10001677).
+     *
+     * `provision` reports success once the provider's resources exist, but the bootstrap it
+     * delivered as instance startup metadata is still running — and it installs the programs
+     * every step below invokes near the END of its work. Without this gate a prompt
+     * initialization died on its first step with a bare
+     * `exit 127 … No such file or directory`, which names a missing file and therefore reads as
+     * a packaging defect in a bundle that was fine and verified every time.
+     *
+     * Placed INSIDE the failure boundary deliberately: a readiness timeout must land as a
+     * durable failed operation carrying its own diagnosis, not as an apparently-live 0% orphan.
+     * It runs before the first step so the message says "bootstrap did not finish" rather than
+     * attributing the failure to whichever step happened to be first.
+     *
+     * Adapters that cannot probe their host omit the method, and absence means "no gate" — the
+     * other providers do not yet consume a host bootstrap at all, so requiring one from them
+     * would convert a capability they never declared into a refusal.
+     */
+    if (input.operations.awaitBootstrapReady) {
+      const readiness = await input.operations.awaitBootstrapReady({
+        onWaiting: async ({ elapsedMs, timeoutMs }) => {
+          await updateWorkspaceHostOperation({
+            workspaceId: input.workspaceId,
+            operationId,
+            status: 'running',
+            percent: 0,
+            message:
+              `Waiting for host bootstrap to finish (${Math.round(elapsedMs / 1000)}s of ` +
+              `${Math.round(timeoutMs / 1000)}s)`,
+          });
+        },
+      });
+      // Emitted only when waiting was actually required, so the timeline records the race being
+      // absorbed rather than adding a line to every initialization. `waitedMs` is the number that
+      // says whether the default budget still matches reality.
+      if (!readiness.readyImmediately) {
+        await appendWorkspaceHostEvent({
+          workspaceId: input.workspaceId,
+          hostId: input.hostId,
+          operationId,
+          phase: 'initialize:bootstrap-ready',
+          status: 'running',
+          level: 'info',
+          source: 'controller',
+          message: `Host bootstrap became ready after ${Math.round(readiness.waitedMs / 1000)}s`,
+          details: { waitedMs: readiness.waitedMs, probes: readiness.probes },
+        });
+      }
+    }
+
     const receipts = await executeWorkspaceHostInitialization(plan, reportingExecutor);
 
     await updateWorkspaceHostOperation({

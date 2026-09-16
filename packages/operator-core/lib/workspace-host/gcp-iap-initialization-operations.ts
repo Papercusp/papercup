@@ -8,6 +8,8 @@ import {
   WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS,
   assertWorkspaceHostSecretIsolation,
   encodeWorkspaceHostCredentialLifecycleStep,
+  type WorkspaceHostBootstrapReadinessOptions,
+  type WorkspaceHostBootstrapReadinessResult,
   type WorkspaceHostCredentialLifecycleStep,
   type WorkspaceHostInitializationHostOperationResult,
   type WorkspaceHostInitializationHostOperations,
@@ -514,13 +516,94 @@ export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHos
 
   private readonly profile: GcpIapWorkspaceHostInitializationProfile;
   private readonly runner: GcpIapWorkspaceHostInitializationCommandRunner;
+  private readonly now: () => number;
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(
     profile: GcpIapWorkspaceHostInitializationProfile,
     runner: GcpIapWorkspaceHostInitializationCommandRunner = new NodeGcpIapWorkspaceHostInitializationCommandRunner(),
+    /**
+     * Clock and delay seam. Injected rather than imported so the readiness gate's timeout and
+     * backoff are testable without a twenty-minute test — a gate whose only proof is a live
+     * provision is a gate nobody re-verifies.
+     */
+    timing: { now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
   ) {
     this.profile = profile;
     this.runner = runner;
+    this.now = timing.now ?? (() => Date.now());
+    this.sleep =
+      timing.sleep ??
+      ((ms: number) =>
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, ms).unref?.();
+        }));
+  }
+
+  /**
+   * Poll until the remote initializer conduit exists, or the budget elapses.
+   *
+   * Three outcomes, kept separate on purpose (WI-10001677):
+   *  - probe exits 0        -> ready; return, recording whether any waiting was needed at all.
+   *  - probe exits 1        -> the host ANSWERED and the conduit is absent: bootstrap is still
+   *                            working. Keep waiting, and remember that we got a clean answer.
+   *  - any other exit       -> we never reached the question (ssh exits 255 for auth, tunnel, IAP
+   *                            and firewall failures alike). Keep polling, because the bootstrap
+   *                            is what authorizes the controller's key and an early probe can
+   *                            legitimately lose the race to it — but do NOT record it as an
+   *                            answer, so a budget spent entirely on 255s is reported as the
+   *                            transport failure it is instead of a slow bootstrap.
+   */
+  async awaitBootstrapReady(
+    options: WorkspaceHostBootstrapReadinessOptions = {},
+  ): Promise<WorkspaceHostBootstrapReadinessResult> {
+    const timeoutMs = positiveInteger(
+      options.timeoutMs ?? DEFAULT_GCP_IAP_BOOTSTRAP_READINESS_TIMEOUT_MS,
+      'Bootstrap readiness timeout',
+    );
+    const pollIntervalMs = positiveInteger(
+      options.pollIntervalMs ?? DEFAULT_GCP_IAP_BOOTSTRAP_READINESS_POLL_INTERVAL_MS,
+      'Bootstrap readiness poll interval',
+    );
+    const probe = buildGcpIapWorkspaceHostBootstrapReadinessProbe(this.profile);
+    const startedAt = this.now();
+
+    let probes = 0;
+    let answered = false;
+    let lastExitCode: number | undefined;
+    let lastStderr: string | undefined;
+
+    for (;;) {
+      options.signal?.throwIfAborted();
+      const result = await this.runner.run(probe);
+      probes += 1;
+      lastExitCode = result.exitCode;
+      lastStderr = result.stderr;
+      if (result.exitCode === PROBE_EXIT_READY) {
+        return {
+          waitedMs: this.now() - startedAt,
+          probes,
+          readyImmediately: probes === 1,
+        };
+      }
+      if (result.exitCode === PROBE_EXIT_NOT_READY) answered = true;
+
+      const elapsedMs = this.now() - startedAt;
+      // Checked AFTER a probe and BEFORE sleeping: a budget smaller than one interval must still
+      // get one real observation, and we must never sleep past the deadline just to re-probe.
+      if (elapsedMs + pollIntervalMs >= timeoutMs) {
+        throw new GcpIapWorkspaceHostBootstrapNotReadyError({
+          conduitPath: this.profile.remoteEntrypoint,
+          probes,
+          waitedMs: elapsedMs,
+          answered,
+          ...(lastExitCode !== undefined ? { lastExitCode } : {}),
+          ...(lastStderr ? { lastStderr } : {}),
+        });
+      }
+      await options.onWaiting?.({ elapsedMs, timeoutMs, probes });
+      await this.sleep(pollIntervalMs);
+    }
   }
 
   async execute(step: WorkspaceHostInitializationStep): Promise<WorkspaceHostInitializationHostOperationResult>;
