@@ -50,7 +50,20 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { resolveProjectDir } from '../../spawn-config';
 import { isSuTierRole } from '../../su-role-addendum';
-import { splitModelSpec, validateCloudModelSpec } from '../../agent-config-constants';
+import { DEFAULT_MODEL_TIERS, splitModelSpec, validateCloudModelSpec } from '../../agent-config-constants';
+
+/**
+ * The model a claude-backend fleet member (and therefore the canary-first launch)
+ * takes when the caller named none and none could be inherited — owner directive
+ * 2026-09-15, WI-10001535: "opus 5 xhigh agents".
+ *
+ * DERIVED from the `max` tier rather than re-typed, so the `[1m]` marker cannot drift
+ * out of sync with DEFAULT_MODEL_TIERS. That marker is load-bearing: `modelWindowForSpec`
+ * reads it to launch the 1M auto-compact window, and a bare `opus` spec silently runs a
+ * 200k window instead.
+ */
+const FLEET_DEFAULT_CLAUDE_MODEL_SPEC =
+  DEFAULT_MODEL_TIERS.find((tier) => tier.name === 'max')?.spec ?? 'opus[1m]:xhigh';
 import {
   claimFleetLaunchSlot,
   createFleetIfAbsent,
@@ -608,6 +621,17 @@ export function resolveFleetAgent(opts: {
   const inheritedBackend = !opts.argAgent && agent === opts.callerAgent;
   let model = argModel ?? (inheritedBackend && opts.callerModel ? opts.callerModel : undefined);
   let modelSource: 'explicit' | 'inherited' | 'configured-default' | undefined;
+  // Owner directive 2026-09-15 (WI-10001535): a fleet member — and therefore the
+  // canary-first launch, which has no model knob of its own — defaults to opus 5 at
+  // xhigh rather than falling through to whatever the CLI picks. Scoped to the claude
+  // backend on purpose: `codex` resolves its own model just below via
+  // resolveCodexModelSelection, and `omp` runs local/gateway ids an Anthropic spec
+  // cannot name. Explicit and inherited models still win, so this only fills the hole
+  // where the old code left `model` undefined.
+  if (agent === 'claude' && !model) {
+    model = FLEET_DEFAULT_CLAUDE_MODEL_SPEC;
+    modelSource = 'configured-default';
+  }
   if (agent === 'codex') {
     try {
       modelSource = argModel ? 'explicit' : model ? 'inherited' : undefined;
@@ -1044,7 +1068,22 @@ export function clampFleetTopUpToCapacity(
   };
 }
 
-/** The owner-facing default is the direct system credential on every host.
+/** The owner-facing default is the inference gateway's AUTO routing on every host
+ * (owner directive 2026-09-15, WI-10001535: "set the canary agents to opus 5 xhigh
+ * agents pinned to auto mode of the inference gateway"; it ratifies the standing
+ * 2026-07-01 mandate that ALL agents auto-route rather than hard-pin an account).
+ *
+ * This is what the fleet CANARY inherits: the canary-first launch has no model or
+ * account knob of its own — `hasFreshSameProfileCanary` compares the canary against
+ * the member profile — so the canary's routing IS this default.
+ *
+ * `auto` lets the gateway pick an available account and FAIL OVER when one is
+ * rate-limited; `default` skipped the gateway entirely and therefore had no failover.
+ * The trade is deliberate and is not free: an auto-routed launch is gateway-routed, so
+ * it becomes subject to the `healthyAccounts === 0` capacity gate that a `default`
+ * launch bypassed. `overrideCapacityClamp` and a fresh same-profile canary receipt are
+ * the documented escapes when that reading is stale.
+ *
  * Platform-specific credential inheritance is an implementation concern, not
  * permission to silently change the selected routing mode. */
 export function defaultMemberAccountRouting(
@@ -1052,7 +1091,7 @@ export function defaultMemberAccountRouting(
   _platform: NodeJS.Platform = process.platform,
 ): string | undefined {
   if (account) return account;
-  return 'default';
+  return 'auto';
 }
 
 /**

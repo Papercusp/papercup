@@ -512,7 +512,15 @@ describe('cloudModelBackendHint (native cloud model-family/backend guard)', () =
 
 describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-inheritance-2026-07-03)', () => {
   it('an explicit `agent` arg wins, but no-picker Codex still requires model authority', () => {
-    expect(resolveFleetAgent({ argAgent: 'claude' })).toEqual({ agent: 'claude', model: undefined });
+    // Owner directive 2026-09-15 (WI-10001535): a claude member with no explicit and no
+    // inheritable model now takes the opus 5 xhigh configured default instead of leaving
+    // `model` undefined for the CLI to fill. The `[1m]` marker is asserted because it is
+    // what selects the 1M auto-compact window.
+    expect(resolveFleetAgent({ argAgent: 'claude' })).toEqual({
+      agent: 'claude',
+      model: 'opus[1m]:xhigh',
+      modelSource: 'configured-default',
+    });
     expect(resolveFleetAgent({ argAgent: 'codex', callerAgent: 'omp', callerModel: 'ollama-cc/x' })).toMatchObject({
       error: expect.stringMatching(/Codex model is required/),
     });
@@ -563,10 +571,18 @@ describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-
   });
 
   it('falls back to claude only when nothing is known (or the caller backend is unrecognized)', () => {
-    expect(resolveFleetAgent({})).toEqual({ agent: 'claude', model: undefined });
+    // Owner directive 2026-09-15 (WI-10001535): the claude fallback now also carries the
+    // opus 5 xhigh configured default instead of an undefined model. The BACKEND fallback
+    // — which is what this case is about — is unchanged.
+    expect(resolveFleetAgent({})).toEqual({
+      agent: 'claude',
+      model: 'opus[1m]:xhigh',
+      modelSource: 'configured-default',
+    });
     expect(resolveFleetAgent({ callerAgent: 'not-a-backend', callerModel: 'x' })).toEqual({
       agent: 'claude',
-      model: undefined,
+      model: 'opus[1m]:xhigh',
+      modelSource: 'configured-default',
     });
   });
 

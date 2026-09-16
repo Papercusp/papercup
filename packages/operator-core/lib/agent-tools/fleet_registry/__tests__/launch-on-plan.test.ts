@@ -1563,6 +1563,14 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
         headless: true,
         // The effective launch config has an effort but no model. The shared
         // command composer must reject this before any member can spawn.
+        //
+        // Pinned to `omp` as of the 2026-09-15 owner directive (WI-10001535): the
+        // CLAUDE backend now fills an omitted model with the opus 5 xhigh configured
+        // default, so effort-without-model is no longer REACHABLE there — the hazard
+        // is eliminated rather than hidden. `omp` has no such default, so it remains
+        // the backend on which this guard can genuinely fire, which is why the case is
+        // re-pointed here instead of deleted.
+        agent: 'omp',
         effort: 'xhigh',
       } as never,
       {} as never,
@@ -2087,15 +2095,20 @@ describe('memberLaunchCommand', () => {
     expect(metadata.skipWorkspaceTx).toBe(true);
   });
 
-  describe('defaultMemberAccountRouting — omission is the system account everywhere', () => {
-    it('defaults an un-pinned member to "default" on macOS', () => {
-      expect(defaultMemberAccountRouting(undefined, 'darwin')).toBe('default');
-      expect(defaultMemberAccountRouting('', 'darwin')).toBe('default');
+  // Owner directive 2026-09-15 (WI-10001535): "set the canary agents to opus 5 xhigh
+  // agents pinned to auto mode of the inference gateway". The omission default moved
+  // from 'default' (gateway SKIPPED, no failover) to 'auto' (gateway auto-routes and
+  // fails over). These cases are kept — not deleted — because they are what makes a
+  // future silent flip back to a gateway-bypassing default detectable.
+  describe('defaultMemberAccountRouting — omission is gateway AUTO routing everywhere', () => {
+    it('defaults an un-pinned member to "auto" on macOS', () => {
+      expect(defaultMemberAccountRouting(undefined, 'darwin')).toBe('auto');
+      expect(defaultMemberAccountRouting('', 'darwin')).toBe('auto');
     });
 
-    it('uses the same explicit system-account value on Linux/Windows', () => {
-      expect(defaultMemberAccountRouting(undefined, 'linux')).toBe('default');
-      expect(defaultMemberAccountRouting(undefined, 'win32')).toBe('default');
+    it('uses the same gateway-auto value on Linux/Windows', () => {
+      expect(defaultMemberAccountRouting(undefined, 'linux')).toBe('auto');
+      expect(defaultMemberAccountRouting(undefined, 'win32')).toBe('auto');
     });
 
     it('never overrides an explicit account pin — incl. the "default" escape hatch — on any platform', () => {
@@ -2107,10 +2120,10 @@ describe('memberLaunchCommand', () => {
       }
     });
 
-    it('the resolved routing flows into --account: a Mac member launch carries --account=default', () => {
+    it('the resolved routing flows into --account: a Mac member launch carries --account=auto', () => {
       const account = defaultMemberAccountRouting(undefined, 'darwin');
       const cmd = memberLaunchCommand({ fleetSlug: 'ops', agent: 'claude', harness: 'papercusp', plan: 'p', account });
-      expect(cmd).toContain('--account=default');
+      expect(cmd).toContain('--account=auto');
     });
   });
 
@@ -3625,9 +3638,22 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     const firstVerification = launchTransaction.verify.mock.calls[0][0] as {
       expectedAttestations: Array<Record<string, unknown>>;
     };
+    // Owner directive 2026-09-15 (WI-10001535): the canary — attestation[0] IS the
+    // canary-first member — launches as opus 5 xhigh on the inference gateway's `auto`
+    // routing, replacing the gateway-BYPASSING `default` credential and the previously
+    // unset model. Both halves of the directive are asserted on purpose: this is the
+    // exact record it was about, so a silent revert shows up as a diff.
+    //
+    // `model` carries the `[1m]` marker deliberately — modelWindowForSpec reads it to
+    // launch the 1M auto-compact window, and a bare `opus` spec silently runs 200k.
+    // `effort` is DERIVED from that spec by modelEffortFromSpec, so it is a second,
+    // independent witness that the composed spec really carries the xhigh suffix
+    // rather than the suffix being stripped somewhere in the fold.
     expect(firstVerification.expectedAttestations[0]).toMatchObject({
-      effort: null,
-      account: 'default',
+      model: 'opus[1m]:xhigh',
+      modelSource: 'configured-default',
+      effort: 'xhigh',
+      account: 'auto',
       carry: 'warm',
       visibility: 'visible',
     });
