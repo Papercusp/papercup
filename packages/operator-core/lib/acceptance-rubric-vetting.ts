@@ -245,27 +245,38 @@ export async function getAcceptanceRubricVettingStatus(
       limit: 50,
     }),
   ]);
-  const vettedCards = metaCards
-    .filter((card) => card.rubricResolved && card.missingKeys.length === 0 && !card.synthesized)
-    // P-013: once a meta-scorecard carries a grade-the-grader stamp, only an
-    // independently audited pass is a settled attestation. Keep accepting
-    // unstamped cards for pre-P-013 history; a pending or failed stamp must
-    // never make an acceptance rubric appear vetted.
-    .filter((card) => settledGradingAuditIsCurrent(card))
-    // WI-41477: either critique channel counts — a get_feedback consult, or the
-    // review work-item a launched independent reviewer's comments land on.
-    .filter((card) => Boolean(card.vetting?.consultId || card.vetting?.workItemId))
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  // Judge every card ONCE and keep the per-card verdict, rather than filtering
+  // the population down and then inferring a cause from how many survived.  The
+  // policy is unchanged — the checks and their order are the same, and
+  // `vettedCards` still means "survived everything except currentness" — but a
+  // rejection now travels with the card it belongs to.  P-013: a pending or
+  // failed grade-the-grader stamp must never make a rubric appear vetted, while
+  // unstamped pre-P-013 cards stay acceptable.  WI-41477: either critique
+  // channel counts — a get_feedback consult, or the review work-item a launched
+  // independent reviewer's comments land on.
+  const candidates: AcceptanceRubricVettingCandidate[] = [];
+  const vettedCards: ScorecardRow[] = [];
+  let current: ScorecardRow | undefined;
+  for (const card of [...metaCards].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))) {
+    const { rejectedBy, detail } = classifyVettingCandidate(card, {
+      revision: currentRevision,
+      criteriaHash: rubric.criteriaHash,
+    });
+    candidates.push({
+      issueId: card.issueId,
+      createdAt: card.createdAt,
+      rejectedBy,
+      detail,
+      attestedRevision: card.vetting?.rubricRevision ?? null,
+      attestedCriteriaHash: card.vetting?.criteriaHash ?? null,
+    });
+    if (rejectedBy === null || rejectedBy === 'stale-revision') vettedCards.push(card);
+    if (rejectedBy === null && !current) current = card;
+  }
   const attestedRevisions = [
     ...new Set(vettedCards.map((card) => card.vetting?.rubricRevision).filter((v): v is number => v != null)),
   ];
-  const current = vettedCards.find(
-    (card) =>
-      classifyRubricEvidenceCurrentness(
-        { revision: card.vetting?.rubricRevision, criteriaHash: card.vetting?.criteriaHash },
-        { revision: currentRevision, criteriaHash: rubric.criteriaHash },
-      ).state === 'current',
-  );
+  const diagnosis = summarizeRejections(candidates);
 
   if (!current) {
     return {
