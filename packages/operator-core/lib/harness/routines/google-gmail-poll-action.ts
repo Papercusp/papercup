@@ -6,9 +6,12 @@ import {
   decodeGoogleGmailNotification,
   ensureGoogleGmailWatch,
   GoogleGmailApiError,
+  googleGmailBackfillParked,
   googleGmailBackfillPending,
   googleGmailSourceEmail,
   googleGmailSourceHistoryId,
+  googleGmailWatchExpiresAt,
+  isGoogleGmailQuotaError,
   syncGoogleGmailSource,
   type GoogleGmailDeps,
   type GoogleGmailSyncResult,
@@ -46,6 +49,10 @@ export interface GoogleGmailPollResult {
   succeeded: number;
   failed: number;
   renewed: number;
+  /** Watch renewals not attempted because the mailbox's backfill is parked on a quota cool-down. */
+  watchDeferred: number;
+  /** Watch renewals that hit the per-user quota (403/429) and were treated as a pause, not a failure. */
+  watchThrottled: number;
   pulled: number;
   acknowledged: number;
   messages: number;
@@ -83,6 +90,7 @@ export interface GoogleGmailPollDeps {
     options?: GoogleGmailDeps,
   ) => Promise<GoogleGmailSyncResult>;
   updateSource?: typeof updateExternalTriggerSourceSyncState;
+  now?: () => Date;
 }
 
 /**
@@ -115,7 +123,8 @@ export function formatGoogleGmailPollLog(result: GoogleGmailPollResult): string 
   const failures = result.failures.length > 0 ? ` failures=${JSON.stringify(result.failures)}` : '';
   return (
     `[google-gmail-poll] sources=${result.sources} succeeded=${result.succeeded} ` +
-    `failed=${result.failed} renewed=${result.renewed} pulled=${result.pulled} ` +
+    `failed=${result.failed} renewed=${result.renewed} watch_deferred=${result.watchDeferred} ` +
+    `watch_throttled=${result.watchThrottled} pulled=${result.pulled} ` +
     `acknowledged=${result.acknowledged} messages=${result.messages} ` +
     `full_resyncs=${result.fullResyncs}${failures}`
   );
@@ -169,12 +178,15 @@ export async function runGoogleGmailPoll(
   const ensureFlagshipBinding = provided.ensureFlagshipBinding ?? ensureGmailRespondDraftBinding;
   const syncSource = provided.syncSource ?? syncGoogleGmailSource;
   const updateSource = provided.updateSource ?? updateExternalTriggerSourceSyncState;
+  const now = provided.now ?? (() => new Date());
   const sources = await listSources(sql, ctx.workspaceId, 'gmail');
   const result: GoogleGmailPollResult = {
     sources: sources.length,
     succeeded: 0,
     failed: 0,
     renewed: 0,
+    watchDeferred: 0,
+    watchThrottled: 0,
     pulled: 0,
     acknowledged: 0,
     messages: 0,
@@ -247,7 +259,27 @@ export async function runGoogleGmailPoll(
           if (!persisted) throw new Error(`google_gmail_source_missing_after_initial_sync:${current.id}`);
           current = persisted;
         }
-        const watched = await ensureWatch(sql, current, accessToken, pubsub.topicName, { renewBeforeMs });
+        // The users.watch renewal shares the per-user quota with the backfill
+        // chunk that just ran. While that backfill is parked on a quota
+        // cool-down and the existing watch is still valid, renewing now can
+        // only burn a 403 — the ≥24h renew-before margin absorbs a ≤15min
+        // wait. A quota error on the attempt itself is the same pause signal
+        // the backfill uses, never a reason to degrade the source (WI-10001549).
+        let watched: Pick<GoogleGmailWatchResult, 'renewed' | 'source'>;
+        const watchExpiresAt = googleGmailWatchExpiresAt(current);
+        const watchStillValid = watchExpiresAt !== null && watchExpiresAt > now().getTime();
+        if (watchStillValid && googleGmailBackfillParked(current, now())) {
+          watched = { renewed: false, source: current };
+          result.watchDeferred += 1;
+        } else {
+          try {
+            watched = await ensureWatch(sql, current, accessToken, pubsub.topicName, { renewBeforeMs });
+          } catch (cause) {
+            if (!isGoogleGmailQuotaError(cause)) throw cause;
+            watched = { renewed: false, source: current };
+            result.watchThrottled += 1;
+          }
+        }
         const readySource =
           watched.source.status === 'connected'
             ? watched.source

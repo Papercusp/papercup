@@ -38,12 +38,24 @@ const MAX_PAGES = 10_000;
 /** messages.list pages are capped at 500 by Gmail. */
 const MAX_LIST_PAGE_SIZE = 500;
 /**
- * Historical messages walked per sync. The poll routine fires every minute and
- * each messages.get costs 5 quota units, so 200/min stays well inside the
- * default per-user per-minute budget while a 1.5k mailbox finishes in ~8 min.
+ * Historical messages walked per sync (the CEILING of the adaptive budget).
+ * The poll routine fires every minute and each messages.get costs 5 quota
+ * units. The prior default of 200 exceeded what this project's per-user
+ * per-minute quota actually allows: a 158-message chunk tripped it live
+ * (WI-10001549), so the budget starts at 100 and halves per consecutive
+ * throttle (see `googleGmailBackfillBudget`) down to the floor below.
  */
-export const DEFAULT_BACKFILL_MESSAGES_PER_SYNC = 200;
+export const DEFAULT_BACKFILL_MESSAGES_PER_SYNC = 100;
 const MAX_BACKFILL_MESSAGES_PER_SYNC = 5_000;
+/** The adaptive budget never shrinks below this (unless the ceiling is smaller). */
+export const MIN_BACKFILL_MESSAGES_PER_SYNC = 25;
+/**
+ * messages.list page size inside a chunk. The continuation token checkpoints
+ * per PAGE, so a quota trip mid-page re-walks that page's already-delivered
+ * messages on resume (delivery is dedupe-keyed but the gets still cost quota).
+ * Small pages bound that waste to <25 gets per throttle; a list call costs 5 units.
+ */
+const BACKFILL_LIST_PAGE_SIZE = 25;
 const BACKFILL_THROTTLE_BASE_MS = 60_000;
 const BACKFILL_THROTTLE_MAX_MS = 15 * 60_000;
 
@@ -222,7 +234,8 @@ export function googleGmailSourceEmail(source: ExternalTriggerSourceRow): string
   );
 }
 
-function watchExpiration(source: ExternalTriggerSourceRow): number | null {
+/** Epoch ms the persisted users.watch expires at; null when no watch was ever recorded. */
+export function googleGmailWatchExpiresAt(source: ExternalTriggerSourceRow): number | null {
   const raw = nonEmpty(source.cursor.watchExpiration) ?? nonEmpty(source.cursor.watch_expiration);
   if (!raw) return null;
   const parsed = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw);
@@ -267,6 +280,18 @@ export function googleGmailBackfillPending(source: ExternalTriggerSourceRow): bo
   return state !== null && state.status !== 'complete';
 }
 
+/**
+ * True while the backfill is parked on a quota cool-down that has not elapsed.
+ * The per-user quota is shared by every Gmail call for that mailbox, so a
+ * parked backfill also means "do not spend quota on optional work right now".
+ */
+export function googleGmailBackfillParked(source: ExternalTriggerSourceRow, now: Date): boolean {
+  const state = googleGmailBackfillState(source);
+  if (!state || state.status !== 'throttled' || !state.throttledUntil) return false;
+  const parkedUntil = Date.parse(state.throttledUntil);
+  return Number.isFinite(parkedUntil) && parkedUntil > now.getTime();
+}
+
 /** Quota exhaustion is a pause signal for the backfill, never a source failure. */
 export function isGoogleGmailQuotaError(cause: unknown): boolean {
   if (!(cause instanceof GoogleGmailApiError)) return false;
@@ -280,6 +305,17 @@ function backfillBudget(value: number | undefined): number {
     throw new Error('google_gmail_backfill_messages_per_sync_invalid');
   }
   return value;
+}
+
+/**
+ * Messages the NEXT chunk may walk: the configured ceiling halved once per
+ * consecutive quota throttle, floored at `MIN_BACKFILL_MESSAGES_PER_SYNC`.
+ * `throttleCount` resets to 0 on a clean chunk, which restores the ceiling.
+ */
+export function googleGmailBackfillBudget(ceiling: number, throttleCount: number): number {
+  const floor = Math.min(MIN_BACKFILL_MESSAGES_PER_SYNC, ceiling);
+  const halvings = Math.min(Math.max(0, Math.trunc(throttleCount)), 10);
+  return Math.max(floor, Math.floor(ceiling / 2 ** halvings));
 }
 
 function backfillThrottleMs(throttleCount: number): number {
@@ -374,7 +410,7 @@ export async function ensureGoogleGmailWatch(
     throw new Error('google_gmail_renew_before_ms_invalid');
   }
   const currentHistoryId = googleGmailSourceHistoryId(source);
-  const currentExpiration = watchExpiration(source);
+  const currentExpiration = googleGmailWatchExpiresAt(source);
   const currentEmail = googleGmailSourceEmail(source);
   const shouldRenew =
     !currentHistoryId || currentExpiration === null || currentExpiration <= now.getTime() + renewBeforeMs;
@@ -806,7 +842,7 @@ async function backfillChunk(
   let workingSource = source;
   let messages = 0;
   let pages = 0;
-  const pageSize = Math.min(budget, MAX_LIST_PAGE_SIZE);
+  const pageSize = Math.min(budget, BACKFILL_LIST_PAGE_SIZE, MAX_LIST_PAGE_SIZE);
   const persist = async (next: GoogleGmailBackfillState): Promise<void> => {
     state = next;
     workingSource = await updateSource(sql, source.workspaceId, source.id, {
@@ -879,7 +915,7 @@ export async function syncGoogleGmailSource(
   provided: GoogleGmailDeps = {},
 ): Promise<GoogleGmailSyncResult> {
   assertSource(source, accessToken);
-  const budget = backfillBudget(provided.backfillMessagesPerSync);
+  const budgetCeiling = backfillBudget(provided.backfillMessagesPerSync);
   const deps = {
     fetch: provided.fetch ?? fetch,
     apiOrigin: (provided.apiOrigin ?? GMAIL_API_ORIGIN).replace(/\/$/, ''),
@@ -947,9 +983,10 @@ export async function syncGoogleGmailSource(
 
   let backfill = googleGmailBackfillState(workingSource);
   if (backfill && backfill.status !== 'complete') {
-    const parkedUntil = backfill.throttledUntil ? Date.parse(backfill.throttledUntil) : Number.NaN;
-    const parked = backfill.status === 'throttled' && Number.isFinite(parkedUntil) && parkedUntil > now.getTime();
-    if (!parked) {
+    if (!googleGmailBackfillParked(workingSource, now)) {
+      // A mailbox that just tripped its quota walks a smaller chunk this time;
+      // the ceiling comes back once a chunk completes cleanly.
+      const budget = googleGmailBackfillBudget(budgetCeiling, backfill.throttleCount);
       const chunk = await backfillChunk(sql, workingSource, accessToken, sinks, deps, updateSource, backfill, budget, now);
       messages += chunk.messages;
       messagePages += chunk.pages;
