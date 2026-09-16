@@ -162,6 +162,43 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(listClauses).toHaveBeenCalledWith(expect.objectContaining({ planItemIds: ['P-001'] }));
   });
 
+  // acceptance-machinery-seam-fixes-2026-09-16 P-001 (R-1): the number that misled a careful
+  // reader on 2026-09-16 was a pinned-cohort "pass 7/0/0" quoted as if it were the ship
+  // verdict, while the unscoped gate said 1/7. The label must ride on the result itself.
+  it('labels a pinned evidence cohort (evidenceRefs/workItemIds) as NON-governing and an unscoped read as governing', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockResolvedValue([{ specId: 'SPEC-001' } as never]);
+
+    const pinnedByRef = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      evidenceRefs: ['test-run:1:spec-001'],
+    });
+    expect(pinnedByRef).toMatchObject({ ok: true, governing: false });
+    expect(String(pinnedByRef.governingNote)).toMatch(/DIAGNOSTIC READ/);
+    expect(String(pinnedByRef.governingNote)).toMatch(/shipReadiness/);
+
+    const pinnedByWorkItem = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      workItemIds: ['WI-123'],
+    });
+    expect(pinnedByWorkItem).toMatchObject({ ok: true, governing: false });
+
+    // specIds / planItemIds narrow WHICH clauses are read, not the evidence cohort of a
+    // clause, so they stay governing — the gate grades the same bindings per clause.
+    const unscoped = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+    });
+    expect(unscoped).toMatchObject({ ok: true, governing: true });
+    expect(unscoped.governingNote).toBeUndefined();
+  });
+
   it('refuses an evidence-ref selector that matches no immutable binding', async () => {
     listEvidence.mockResolvedValue([]);
 

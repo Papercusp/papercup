@@ -265,6 +265,16 @@ export default defineTool({
         now,
       }),
     );
+    // acceptance-machinery-seam-fixes-2026-09-16 P-001 (R-1): a read whose EVIDENCE COHORT is
+    // pinned (workItemIds / evidenceRefs) is a DIAGNOSTIC, not the ship verdict — the ship gate
+    // (acceptance-bar-contract-snapshot) grades every binding of a clause unscoped, so a pinned
+    // pass 7/0/0 and an unscoped gate 1/7 are BOTH correct readings of different questions.
+    // Measured 2026-09-16 on green-gate-zero-wait-convergence-2026-09-08 (WI-10001661 ledger 2).
+    // The label rides on the result so the number can never be quoted without its scope.
+    const governing = !bindingSelection;
+    const governingNote = governing
+      ? null
+      : 'DIAGNOSTIC READ — the evidence cohort is PINNED (workItemIds/evidenceRefs). The ship gate evaluates every binding of each clause UNSCOPED, so a pass here is not the ship verdict; read plans:get { slug, shipReadiness:true } for the governing per-bar state.';
     return {
       data: {
         ok: true,
@@ -274,6 +284,8 @@ export default defineTool({
         harnessSlug,
         classRef: args.classRef,
         rubricRef: 'spec-test-adequacy',
+        governing,
+        ...(governingNote ? { governingNote } : {}),
         rows,
         count: rows.length,
         verdicts: {
