@@ -10,6 +10,7 @@ import type { AutomaticCompactionRecovery } from './agent-tools/coordination/com
 import {
   buildCarryDoc,
   renderCarryDoc,
+  completeRecoveryInstruction,
   deriveContinuation,
   gateOpenOwnerQuestion,
   carryDocBudgetChars,
@@ -697,6 +698,63 @@ describe('renderCarryDoc (pure)', () => {
       expect(text).not.toContain('coord:orient');
       expect(text).not.toContain('sessions:search');
     }
+  });
+
+  /** P-011: the instruction BESIDE a complete marker must defer to a later
+   * ⟦CTRL:…⟧ generation. The marker JSON always carried
+   * `control-generation-mismatch` in `fallback.when`, but the adjacent prose —
+   * the line a reader actually acts on — said "Do NOT call coord:orient" with
+   * no condition, so a successor delivered after the control state moved on
+   * skipped a re-orient it was owed. These bind the RENDERED DOCUMENT, not just
+   * the helper: a correct helper behind an unwired seam is the failure mode
+   * this plan exists to close. */
+  describe('complete-marker recovery instruction defers to a later control generation (P-011)', () => {
+    it('names the stamped generation and states the mismatch escape in the rendered document', () => {
+      const text = renderCarryDoc(doc({ automaticRecovery: automaticRecovery() }), NOW);
+      // The stamped generation is named inline so the comparison against the
+      // turn's CTRL block is mechanical rather than requiring marker parsing.
+      expect(text).toContain('Automatic recovery is complete for control generation 17');
+      expect(text).toContain('while ⟦CTRL:…⟧ still reports control generation 17');
+      // The escape itself must be present and must name the verb to call.
+      expect(text).toContain('reports a DIFFERENT generation');
+      expect(text).toContain('this recovery is STALE for it');
+      expect(text).toContain('does NOT apply');
+      expect(text).toContain('Call `coord:orient { afterCompaction: true }` exactly once');
+    });
+
+    it('still tells a matching-generation reader NOT to re-fetch, and to declare its lane', () => {
+      const text = renderCarryDoc(doc({ automaticRecovery: automaticRecovery() }), NOW);
+      expect(text).toContain('Do NOT call coord:orient to re-fetch it');
+      expect(text).toContain('coord:declare-intent { intent, current_plan_slug, items }');
+    });
+
+    it('is a CONDITIONAL do-not-re-fetch: the unconditional sentence is gone', () => {
+      const text = renderCarryDoc(doc({ automaticRecovery: automaticRecovery() }), NOW);
+      // The exact pre-fix sentence. Its whole defect was that it terminated at
+      // "re-fetch it" with no generation condition anywhere in the clause.
+      expect(text).not.toContain(
+        'Automatic recovery is complete for the stamped control generation. Do NOT call coord:orient to re-fetch it;',
+      );
+    });
+
+    it('falls back to generic wording rather than printing a null generation', () => {
+      const recovery = automaticRecovery();
+      recovery.marker.controlGeneration = null;
+      const text = renderCarryDoc(doc({ automaticRecovery: recovery }), NOW);
+      expect(text).toContain('Automatic recovery is complete for the stamped control generation');
+      expect(text).not.toContain('control generation null');
+      // The mismatch escape must survive the degraded-stamp path.
+      expect(text).toContain('reports a DIFFERENT generation');
+    });
+
+    it('gives the judge a stale-generation escape that never names coord:orient', () => {
+      const judge = completeRecoveryInstruction(17, true);
+      expect(judge).toContain('control generation 17');
+      expect(judge).toContain('reports a DIFFERENT generation');
+      expect(judge).toContain('STALE for it');
+      expect(judge).not.toContain('coord:orient');
+      expect(judge).not.toContain('coord:declare-intent');
+    });
   });
 
   it('renders exactly one orient fallback instruction when the marker is absent or incomplete', () => {
