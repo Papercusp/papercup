@@ -87,15 +87,23 @@ Proof: `libs/papercusp/packages/orchestrator/src/blueprint/research-steward-stac
 
 Point the test at the **real blueprint file** (via a path-override constant), not a fixture literal. A fixture cannot catch a topology mistake in the file that ships.
 
-### 7. Launch it — NOT YET VERIFIED
+### 7. Launch it
 
-> ⚠ **Unproven as of 2026-09-16.** No step here has been executed end to end, so nothing below is a measured procedure. Settle it by launching the composed identity and recording what the wearer's prompt actually renders, then replace this block.
+Proof: `libs/papercusp/packages/orchestrator/src/blueprint/research-launch-prompt.test.ts` (verified 2026-09-16, D-049).
 
-### 8. Switch to it in the UI — NOT YET VERIFIED
+**Two different functions are named `assembleRolePrompt` — the launch seam is the orchestrator's**, not the install-side one. Picking the wrong one verifies a renderer nobody launches through. Assert on the prompt a *launched* wearer actually receives, with the real research blueprint as the subject.
 
-> ⚠ **Unproven as of 2026-09-16**, and the method is constrained even before it is written:
+> ⚠ **Run a CONTROL, and expect it to teach you something.** The control here confirmed the prediction's result but refuted its *explanation*: `research-steward` cannot be loaded as an install at all — `loadBlueprintFromFile` throws for it both copied and in place — and `loadHarnessLexicon` **swallows that failure to `undefined`** rather than surfacing it. A missing lexicon therefore looks identical to an empty one. That swallow is pinned by a test, not repaired; do not read a blank lexicon as "the identity has no vocabulary".
+
+### 8. Switch to it in the UI — PARTIALLY VERIFIED
+
+Drive the **Tauri desktop shell** — `scripts/verify-tauri-headless.sh` plus the `tauri-agent-tools` CLI. **Never point a browser (or `verdict`) at `:3055` or `:3070`.** Those are the desktop's internal content source; a browser view is the retired webapp and has wedged the shared verdict daemon outright.
+
+**Proven by two real-shell drives (2026-09-16, D-051):** all four nuqs keys survive a hard URL load — real coverage that `page.test.tsx`'s `vi.mock("nuqs")` deletes — the identities library renders, the identity is present and inspectable, `domain` resolves as a real slot, and the console is clean. The switch *logic* is covered under jsdom at `apps/operator/app/settings/identities/page.test.tsx:275` and `:287`.
+
+> ⛔ **The Apply → `action:'switch'` round-trip is UNREACHABLE in the isolated rig — do not spend another boot on it.** `VERIFY_TAURI_ISOLATED_DB=1` guarantees a throwaway empty database, which is exactly *why* it is safe to drive real write paths against it — and an empty database has no agents, so `advRoster` is empty, `!surface?.session` holds, and the agent-gated Review/Apply controls never render (`apps/operator/app/settings/identities/page.tsx:689-691`, `:297`, `:285-286`). The precondition the test needs is the negation of the guarantee the rig provides. Tracked as `WI-10001680`; `VERIFY_TAURI_ISOLATED_SEED` accepts only `fresh|ready` and seeds no roster.
 >
-> Drive the **Tauri desktop shell** — `scripts/verify-tauri-headless.sh` plus the `tauri-agent-tools` CLI. **Never point a browser (or `verdict`) at `:3055` or `:3070`.** Those are the desktop's internal content source; a browser view is the retired webapp and has wedged the shared verdict daemon outright.
+> **Generalise it:** when a test needs a precondition, ask what the isolation mechanism *deletes*, not only what it protects. Every isolation boundary is a subtraction, and the subtracted set is rarely written down anywhere. Two boots were spent reading this as a selector problem — and the first run genuinely *did* have a bad selector, which trained the wrong prior, so the correct fix still failed and felt like more of the same.
 
 ## How to verify it worked
 
