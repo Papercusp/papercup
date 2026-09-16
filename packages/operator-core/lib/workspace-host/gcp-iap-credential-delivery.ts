@@ -23,6 +23,8 @@ import {
   type WorkspaceHostCredentialMaterial,
 } from '@papercusp/deployment-driver';
 import type {
+  WorkspaceHostBootstrapReadinessOptions,
+  WorkspaceHostBootstrapReadinessResult,
   WorkspaceHostCredentialChannel,
   WorkspaceHostCredentialLifecycleStep,
   WorkspaceHostInitializationHostOperationResult,
@@ -306,7 +308,30 @@ export class GcpIapDeliveringWorkspaceHostInitializationOperations
     // unchanged is what keeps that true — a wrapper that grew the manifest would be claiming the
     // executor may route a step kind to it that no host program implements.
     this.supportedStepKinds = inner.supportedStepKinds;
+
+    // Forward the bootstrap-readiness gate, and forward it CONDITIONALLY (WI-10001677).
+    //
+    // `awaitBootstrapReady` is optional on the interface, so this wrapper satisfied the type
+    // without it and the omission was invisible to both tsc and the adapter's own unit tests —
+    // while `resolveWorkspaceHostInitializationOperations` returns THIS object, so every real
+    // initialize ran with `operations.awaitBootstrapReady === undefined` and the runner's
+    // `if (input.operations.awaitBootstrapReady)` skipped the gate entirely. The gate was dead on
+    // the only path that has a host in front of it.
+    //
+    // Assigned here rather than declared as a method so PRESENCE MIRRORS THE INNER ADAPTER: a
+    // wrapper that always exposed it would report a gate the inner cannot perform, which is worse
+    // than no gate — the runner would wait on a promise no probe backs. Absent inner support, the
+    // property stays undefined and the documented "no gate" behaviour is preserved exactly.
+    if (typeof inner.awaitBootstrapReady === 'function') {
+      this.awaitBootstrapReady = (options?: WorkspaceHostBootstrapReadinessOptions) =>
+        inner.awaitBootstrapReady!(options);
+    }
   }
+
+  /** Present only when the wrapped adapter implements it — see the constructor. */
+  readonly awaitBootstrapReady?: (
+    options?: WorkspaceHostBootstrapReadinessOptions,
+  ) => Promise<WorkspaceHostBootstrapReadinessResult>;
 
   async execute(step: WorkspaceHostInitializationStep): Promise<WorkspaceHostInitializationHostOperationResult>;
   async execute(step: WorkspaceHostCredentialLifecycleStep): Promise<WorkspaceHostInitializationHostOperationResult>;

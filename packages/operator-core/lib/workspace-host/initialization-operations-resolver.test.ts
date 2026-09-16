@@ -133,6 +133,20 @@ describe('resolveWorkspaceHostInitializationOperations', () => {
     expect(operations.supportedStepKinds).toContain('bind-credential');
   });
 
+  // WI-10001677. THE object the routes pass to the runner is the delivering WRAPPER, not the
+  // adapter — and `awaitBootstrapReady` is optional on the interface, so a wrapper that forgets to
+  // forward it still typechecks and every adapter-level unit test still passes. The runner then
+  // reads `if (input.operations.awaitBootstrapReady)`, finds undefined, and skips the gate on the
+  // only path that has a real host in front of it. That is precisely how this shipped "green" the
+  // first time: measured live, the RESOLVED object reported awaitBootstrapReady === undefined.
+  //
+  // Asserting through the resolver, not the adapter, is the whole point of this test: it is the
+  // only construction that exercises the wrapping the production routes actually perform.
+  it('exposes the bootstrap-readiness gate through the delivering wrapper the routes resolve', () => {
+    const operations = resolveWorkspaceHostInitializationOperations(desired(), controller);
+    expect(typeof operations.awaitBootstrapReady).toBe('function');
+  });
+
   it('tunnels to the SAME instance the provider provisions (anti-divergence guard)', () => {
     const spec = desired();
     const identity = resolveGcpWorkspaceHostInstanceIdentity(spec);

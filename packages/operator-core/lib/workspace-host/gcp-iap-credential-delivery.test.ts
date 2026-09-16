@@ -424,6 +424,41 @@ describe('delivery runs BEFORE the binding step it makes possible', () => {
     const { inner, operations } = delivering([], materialSource([]));
     expect(operations.supportedStepKinds).toBe(inner.supportedStepKinds);
   });
+
+  // WI-10001677. The two halves are asserted together on purpose: forwarding alone would let a
+  // wrapper expose a gate its inner cannot perform (the runner would then await a promise no probe
+  // backs), and absence alone would let it silently drop a gate the inner does implement — which
+  // is the defect that shipped. Presence must MIRROR the inner, so both directions are guarded.
+  it('forwards the bootstrap-readiness gate to an inner adapter that implements it', async () => {
+    const log: string[] = [];
+    const inner = new StubOperations(log) as StubOperations & {
+      awaitBootstrapReady?: (options?: unknown) => Promise<unknown>;
+    };
+    const seen: unknown[] = [];
+    inner.awaitBootstrapReady = async (options?: unknown) => {
+      seen.push(options);
+      return { waitedMs: 7, probes: 2, readyImmediately: false };
+    };
+
+    const operations = new GcpIapDeliveringWorkspaceHostInitializationOperations(
+      inner,
+      PROFILE,
+      materialSource([]),
+      new RecordingRunner(log, { exitCode: 0, stdout: '', stderr: '' }),
+    );
+
+    expect(typeof operations.awaitBootstrapReady).toBe('function');
+    const result = await operations.awaitBootstrapReady!({ timeoutMs: 1234 });
+    // The inner's result is returned unchanged, and its options reach it — a forwarder that
+    // swallowed either would still satisfy a bare `typeof === 'function'` check.
+    expect(result).toEqual({ waitedMs: 7, probes: 2, readyImmediately: false });
+    expect(seen).toEqual([{ timeoutMs: 1234 }]);
+  });
+
+  it('leaves the gate undefined when the inner adapter does not implement it — no gate, not a broken one', () => {
+    const { operations } = delivering([], materialSource([]));
+    expect(operations.awaitBootstrapReady).toBeUndefined();
+  });
 });
 
 describe('a controller with no material source refuses by NAME', () => {
