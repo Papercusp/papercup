@@ -80,6 +80,14 @@ export default defineTool({
         detail: result.detail,
         status: result.status,
         ...(result.localRefs ? { localRefs: result.localRefs } : {}),
+        // Same refusal shape as the scoped-refs one above, for the same reason: a
+        // script is not laundered. Name the hits so the fix is at the source.
+        ...(result.identityLeaks
+          ? {
+              identityLeaks: result.identityLeaks,
+              hint: 'NOTHING was written — publisher identity survived into the package bytes. A script is refused rather than rewritten, because a rewritten script RUNS differently from what its title claims. Generalize the recipe and re-capture it.',
+            }
+          : {}),
       });
     }
 

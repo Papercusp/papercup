@@ -91,7 +91,21 @@ export default defineTool({
     });
 
     if (!result.ok) {
-      return ok({ ok: false, error: result.error, detail: result.detail, status: result.status });
+      return ok({
+        ok: false,
+        error: result.error,
+        detail: result.detail,
+        status: result.status,
+        // A refused write names what leaked. Surfacing the hits is the whole value of
+        // the gate to a caller: the dir was never created, so the only useful next
+        // step is removing the identity at its source and re-exporting.
+        ...(result.identityLeaks
+          ? {
+              identityLeaks: result.identityLeaks,
+              hint: 'NOTHING was written — publisher identity survived into the package bytes. Identity in a duty body is prose, so it is refused rather than rewritten. Remove or parameterize the named values in the SOURCE goal, then re-run.',
+            }
+          : {}),
+      });
     }
 
     const e = result.export;
