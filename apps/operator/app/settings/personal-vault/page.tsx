@@ -116,6 +116,26 @@ interface IntegrationSourceStatus {
   status: string;
   lastConnectedAt: string | null;
   lastSyncAt: string | null;
+  lastError?: string | null;
+  backfill?: {
+    status: "pending" | "throttled" | "complete";
+    messages: number;
+  } | null;
+}
+
+/** One line explaining a source's state beyond the bare status word. */
+function sourceStatusDetail(source: IntegrationSourceStatus): string {
+  const parts: string[] = [source.status];
+  if (source.backfill && source.backfill.status !== "complete") {
+    parts.push(
+      `importing history (${source.backfill.messages.toLocaleString()} so far` +
+        (source.backfill.status === "throttled"
+          ? ", paused for provider quota)"
+          : ")"),
+    );
+  }
+  if (source.lastSyncAt) parts.push("synced " + formatDate(source.lastSyncAt));
+  return parts.join(" · ");
 }
 
 interface IntegrationStatus {
@@ -1395,11 +1415,17 @@ export default function PersonalVaultSettingsPage() {
                                     : source.kind}
                                 </dt>
                                 <dd>
-                                  {source.status}
-                                  {source.lastSyncAt
-                                    ? " · synced " +
-                                      formatDate(source.lastSyncAt)
-                                    : ""}
+                                  {sourceStatusDetail(source)}
+                                  {source.lastError ? (
+                                    <span
+                                      style={{
+                                        display: "block",
+                                        color: "var(--bad)",
+                                      }}
+                                    >
+                                      {source.lastError}
+                                    </span>
+                                  ) : null}
                                 </dd>
                               </div>
                             ))}
@@ -1558,10 +1584,14 @@ export default function PersonalVaultSettingsPage() {
                           >
                             <dt>Profile, posts, photo metadata</dt>
                             <dd>
-                              {source.status}
-                              {source.lastSyncAt
-                                ? " · synced " + formatDate(source.lastSyncAt)
-                                : ""}
+                              {sourceStatusDetail(source)}
+                              {source.lastError ? (
+                                <span
+                                  style={{ display: "block", color: "var(--bad)" }}
+                                >
+                                  {source.lastError}
+                                </span>
+                              ) : null}
                             </dd>
                           </div>
                         ))}

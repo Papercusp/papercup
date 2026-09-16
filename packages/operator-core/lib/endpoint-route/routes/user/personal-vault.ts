@@ -24,6 +24,7 @@ import {
   googleWorkspaceOAuthField,
   googleWorkspaceSourceAccountId,
 } from '../../../external-triggers/google-workspace';
+import { googleGmailBackfillState } from '../../../external-triggers/google-gmail';
 import {
   FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN,
   FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS,
@@ -78,6 +79,10 @@ interface SafeIntegrationSource {
   status: string;
   lastConnectedAt: string | null;
   lastSyncAt: string | null;
+  /** Provider failure text for a degraded/error source; the owner's own row, so no cross-user leak. */
+  lastError: string | null;
+  /** Gmail initial-backfill progress, so partial data has a visible reason. */
+  backfill: { status: 'pending' | 'throttled' | 'complete'; messages: number } | null;
 }
 
 interface SafeIntegrationStatus {
@@ -313,13 +318,18 @@ function googleCapabilities(
 }
 
 function safeSources(owned: OwnedExternalTriggerSourceRow[]): SafeIntegrationSource[] {
-  return owned.map((source) => ({
-    kind: source.kind,
-    providerAccountId: source.providerAccountId,
-    status: source.status,
-    lastConnectedAt: source.lastConnectedAt,
-    lastSyncAt: safeLastSyncAt(source),
-  }));
+  return owned.map((source) => {
+    const backfill = source.kind === 'gmail' ? googleGmailBackfillState(source) : null;
+    return {
+      kind: source.kind,
+      providerAccountId: source.providerAccountId,
+      status: source.status,
+      lastConnectedAt: source.lastConnectedAt,
+      lastSyncAt: safeLastSyncAt(source),
+      lastError: source.status === 'degraded' || source.status === 'error' ? source.lastError : null,
+      backfill: backfill ? { status: backfill.status, messages: backfill.messages } : null,
+    };
+  });
 }
 
 function facebookOwnedSources(owned: OwnedExternalTriggerSourceRow[]): OwnedExternalTriggerSourceRow[] {

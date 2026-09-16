@@ -240,6 +240,7 @@ describe('Google Gmail adapter', () => {
       historyPages: 2,
       messagePages: 0,
       historyId: 'history-new',
+      backfill: null,
     });
     expect(d.ingested.map((input) => input.dedupeKey)).toEqual([
       'gmail:m-1:message.received',
@@ -282,19 +283,45 @@ describe('Google Gmail adapter', () => {
       d.value,
     );
 
+    const completeBackfill = {
+      status: 'complete',
+      pageToken: null,
+      pages: 1,
+      messages: 1,
+      startedAt: NOW.toISOString(),
+      completedAt: NOW.toISOString(),
+      throttledUntil: null,
+      throttleCount: 0,
+    };
     expect(result).toEqual({
       mode: 'full',
       messages: 1,
       historyPages: 0,
       messagePages: 1,
       historyId: 'history-after-full',
+      backfill: completeBackfill,
     });
     expect(d.updates[0]).toEqual({
       status: 'connecting',
       cursor: { watchExpiration: '2026-08-28T12:00:00.000Z', keep: 'yes' },
       lastError: null,
     });
-    expect(d.updates[1]).toEqual(
+    // The profile historyId is pinned BEFORE the historical walk begins.
+    expect(d.updates[1]).toEqual({
+      status: 'connecting',
+      cursor: {
+        watchExpiration: '2026-08-28T12:00:00.000Z',
+        keep: 'yes',
+        emailAddress: 'owner@example.com',
+        historyId: 'history-after-full',
+        backfill: { ...completeBackfill, status: 'pending', pages: 0, messages: 0, completedAt: null },
+      },
+      lastError: null,
+    });
+    expect(d.updates[2]).toEqual(
+      expect.objectContaining({ status: 'connecting', cursor: expect.objectContaining({ backfill: completeBackfill }) }),
+    );
+    expect(d.updates[3]).toEqual(
       expect.objectContaining({
         status: 'connected',
         cursor: {
@@ -302,9 +329,96 @@ describe('Google Gmail adapter', () => {
           keep: 'yes',
           emailAddress: 'owner@example.com',
           historyId: 'history-after-full',
+          backfill: completeBackfill,
           lastSyncAt: NOW.toISOString(),
         },
       }),
     );
+  });
+
+  it('resumes an interrupted initial backfill from its checkpointed page instead of restarting (EI-23378389605835281)', async () => {
+    const listCalls: URLSearchParams[] = [];
+    const fetchImpl = vi.fn(async (request: string | URL | Request) => {
+      const url = new URL(request instanceof Request ? request.url : request.toString());
+      if (url.pathname.endsWith('/profile')) return json({ emailAddress: 'owner@example.com', historyId: 'h-1' });
+      if (url.pathname.endsWith('/history')) return json({ historyId: 'h-2' });
+      if (url.pathname.endsWith('/messages')) {
+        listCalls.push(url.searchParams);
+        return url.searchParams.get('pageToken') === 'page-2'
+          ? json({ messages: [{ id: 'm3' }] })
+          : json({ messages: [{ id: 'm1' }, { id: 'm2' }], nextPageToken: 'page-2' });
+      }
+      const id = url.pathname.split('/').pop() ?? '';
+      if (/^m\d$/.test(id)) return json(message(id));
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+    const d = syncDeps(fetchImpl);
+    const deps = { ...d.value, backfillMessagesPerSync: 2 };
+
+    const first = await syncGoogleGmailSource({} as never, source({}), 'access-token', deps);
+    expect(first).toMatchObject({ mode: 'full', messages: 2, historyId: 'h-1' });
+    expect(first.backfill).toMatchObject({ status: 'pending', pageToken: 'page-2', pages: 1, messages: 2 });
+    expect(listCalls.map((p) => p.get('maxResults'))).toEqual(['2']);
+
+    // Simulate the interruption: the next poll starts from the persisted cursor only.
+    const persisted = d.updates.at(-1)?.cursor as Record<string, unknown>;
+    expect(persisted).toMatchObject({ historyId: 'h-1', backfill: { pageToken: 'page-2' } });
+    const second = await syncGoogleGmailSource({} as never, source(persisted), 'access-token', deps);
+    expect(second).toMatchObject({ mode: 'incremental', messages: 1, historyId: 'h-2' });
+    expect(second.backfill).toMatchObject({ status: 'complete', pageToken: null, pages: 2, messages: 3 });
+    expect(listCalls.map((p) => p.get('pageToken'))).toEqual([null, 'page-2']);
+    expect(d.ingested.map((input) => input.externalId)).toEqual(['m1', 'm2', 'm3']);
+  });
+
+  it('parks the backfill with a cool-down on a per-user quota 403 and keeps the source connected', async () => {
+    let listCalls = 0;
+    const fetchImpl = vi.fn(async (request: string | URL | Request) => {
+      const url = new URL(request instanceof Request ? request.url : request.toString());
+      if (url.pathname.endsWith('/history')) return json({ historyId: 'h-1' });
+      if (url.pathname.endsWith('/messages')) {
+        listCalls += 1;
+        return json(
+          { error: { message: "Quota exceeded for quota metric 'Total Query Cost' and limit 'Units per minute per user'" } },
+          403,
+        );
+      }
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+    const d = syncDeps(fetchImpl);
+    const pending = {
+      status: 'pending',
+      pageToken: 'page-9',
+      pages: 1,
+      messages: 5,
+      startedAt: NOW.toISOString(),
+      completedAt: null,
+      throttledUntil: null,
+      throttleCount: 0,
+    };
+
+    const throttled = await syncGoogleGmailSource(
+      {} as never,
+      source({ historyId: 'h-1', backfill: pending }),
+      'access-token',
+      d.value,
+    );
+    expect(throttled.backfill).toEqual({
+      ...pending,
+      status: 'throttled',
+      throttledUntil: new Date(NOW.getTime() + 60_000).toISOString(),
+      throttleCount: 1,
+    });
+    expect(d.updates.at(-1)).toEqual(expect.objectContaining({ status: 'connected', lastError: null }));
+    expect(listCalls).toBe(1);
+
+    // Still inside the cool-down: the chunk is skipped, nothing else changes.
+    const parked = await syncGoogleGmailSource(
+      {} as never,
+      source(d.updates.at(-1)?.cursor as Record<string, unknown>),
+      'access-token',
+      d.value,
+    );
+    expect(parked.backfill?.status).toBe('throttled');
+    expect(listCalls).toBe(1);
   });
 });

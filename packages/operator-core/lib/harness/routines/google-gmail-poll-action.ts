@@ -2,12 +2,15 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
 import {
+  DEFAULT_BACKFILL_MESSAGES_PER_SYNC,
   decodeGoogleGmailNotification,
   ensureGoogleGmailWatch,
   GoogleGmailApiError,
+  googleGmailBackfillPending,
   googleGmailSourceEmail,
   googleGmailSourceHistoryId,
   syncGoogleGmailSource,
+  type GoogleGmailDeps,
   type GoogleGmailSyncResult,
   type GoogleGmailWatchResult,
 } from '../../external-triggers/google-gmail';
@@ -77,12 +80,34 @@ export interface GoogleGmailPollDeps {
     sql: postgres.Sql,
     source: ExternalTriggerSourceRow,
     accessToken: string,
+    options?: GoogleGmailDeps,
   ) => Promise<GoogleGmailSyncResult>;
   updateSource?: typeof updateExternalTriggerSourceSyncState;
 }
 
+/**
+ * Render a failure with the transport detail a bare `message` drops. node-fetch
+ * reports a socket fault as `request to <url> failed, reason: ` with the actual
+ * cause only on `code`/`errno`/`cause`, which made ECONNRESET, DNS and timeout
+ * failures indistinguishable in `last_error` (EI-23378389605835281).
+ */
+export function describeErrorCause(cause: unknown, depth = 0): string {
+  if (!(cause instanceof Error)) return String(cause);
+  const tags: string[] = [];
+  for (const key of ['code', 'errno', 'type', 'status'] as const) {
+    const value = (cause as unknown as Record<string, unknown>)[key];
+    if (typeof value === 'string' || typeof value === 'number') tags.push(`${key}=${value}`);
+  }
+  let text = cause.message || cause.name;
+  if (tags.length > 0) text += ` [${tags.join(' ')}]`;
+  if (depth < 4 && cause.cause !== undefined && cause.cause !== cause) {
+    text += ` <- ${describeErrorCause(cause.cause, depth + 1)}`;
+  }
+  return text;
+}
+
 function errorText(cause: unknown): string {
-  return (cause instanceof Error ? cause.message : String(cause)).slice(0, 4000);
+  return describeErrorCause(cause).slice(0, 4000);
 }
 
 /** Keep per-source failure causes in the durable routine log, not only in the live result. */
@@ -188,6 +213,14 @@ export async function runGoogleGmailPoll(
     0,
     7 * 24 * 60 * 60 * 1_000,
   );
+  const syncOptions: GoogleGmailDeps = {
+    backfillMessagesPerSync: boundedInteger(
+      ctx.triggerConfig.backfill_messages_per_sync,
+      DEFAULT_BACKFILL_MESSAGES_PER_SYNC,
+      1,
+      5_000,
+    ),
+  };
   for (const source of sources) {
     try {
       // Reconcile the built-in binding on every durable poll so sources connected
@@ -204,8 +237,10 @@ export async function runGoogleGmailPoll(
           authAttempt++ === 0 ? source : ((await getSource(sql, ctx.workspaceId, source.id)) ?? source);
         let messages = 0;
         let fullResyncs = 0;
-        if (!googleGmailSourceHistoryId(current)) {
-          const initial = await syncSource(sql, current, accessToken);
+        // A cursorless mailbox bootstraps here; a cursored one whose resumable
+        // backfill is still pending advances it by one budgeted chunk per poll.
+        if (!googleGmailSourceHistoryId(current) || googleGmailBackfillPending(current)) {
+          const initial = await syncSource(sql, current, accessToken, syncOptions);
           messages += initial.messages;
           if (initial.mode === 'full') fullResyncs += 1;
           const persisted = await getSource(sql, ctx.workspaceId, current.id);
@@ -291,7 +326,7 @@ export async function runGoogleGmailPoll(
     if (!source || !readySourceIds.has(sourceId)) continue;
     try {
       const synced = await withAccessTokenRetry(source, ctx.installSlug, (accessToken) =>
-        syncSource(sql, source, accessToken),
+        syncSource(sql, source, accessToken, syncOptions),
       );
       syncedSourceIds.add(sourceId);
       result.messages += synced.messages;

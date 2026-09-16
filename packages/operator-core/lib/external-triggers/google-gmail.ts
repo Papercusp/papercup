@@ -3,6 +3,12 @@
  *
  * Pub/Sub notifications are only doorbells. The durable source cursor owns the
  * Gmail historyId, and advances only after every message delivery succeeds.
+ *
+ * Initial backfill (EI-23378389605835281): a mailbox with no history cursor is
+ * pinned to the profile historyId FIRST, so incremental sync and the watch
+ * start on the very first poll, and the historical walk runs as a resumable,
+ * quota-budgeted chunk per sync (`cursor.backfill`) instead of one whole-mailbox
+ * walk that a per-user quota kills and the next poll restarts from zero.
  */
 import type postgres from 'postgres';
 import {
@@ -29,6 +35,17 @@ type IngestSink = PersonalVaultExternalSink | AppDeliveryExternalSink;
 const GMAIL_API_ORIGIN = 'https://gmail.googleapis.com';
 const DEFAULT_RENEW_BEFORE_MS = 24 * 60 * 60 * 1_000;
 const MAX_PAGES = 10_000;
+/** messages.list pages are capped at 500 by Gmail. */
+const MAX_LIST_PAGE_SIZE = 500;
+/**
+ * Historical messages walked per sync. The poll routine fires every minute and
+ * each messages.get costs 5 quota units, so 200/min stays well inside the
+ * default per-user per-minute budget while a 1.5k mailbox finishes in ~8 min.
+ */
+export const DEFAULT_BACKFILL_MESSAGES_PER_SYNC = 200;
+const MAX_BACKFILL_MESSAGES_PER_SYNC = 5_000;
+const BACKFILL_THROTTLE_BASE_MS = 60_000;
+const BACKFILL_THROTTLE_MAX_MS = 15 * 60_000;
 
 export interface GoogleGmailHeader {
   name?: string;
@@ -86,12 +103,30 @@ export interface GoogleGmailWatchResult {
   source: ExternalTriggerSourceRow;
 }
 
+/**
+ * Resumable initial-backfill progress, persisted under `cursor.backfill`.
+ * `pageToken` is the messages.list continuation the NEXT sync resumes from;
+ * `pending` sources are re-synced by every poll until `complete`.
+ */
+export interface GoogleGmailBackfillState {
+  status: 'pending' | 'throttled' | 'complete';
+  pageToken: string | null;
+  pages: number;
+  messages: number;
+  startedAt: string;
+  completedAt: string | null;
+  throttledUntil: string | null;
+  throttleCount: number;
+}
+
 export interface GoogleGmailSyncResult {
   mode: 'incremental' | 'full';
   messages: number;
   historyPages: number;
   messagePages: number;
   historyId: string;
+  /** null for a mailbox that was cursored before resumable backfill existed. */
+  backfill: GoogleGmailBackfillState | null;
 }
 
 export interface GoogleGmailDraftInput {
@@ -149,6 +184,8 @@ export interface GoogleGmailDeps {
     sourceId: string,
   ) => Promise<AppDeliveryExternalSink | null>;
   updateSource?: typeof updateExternalTriggerSourceSyncState;
+  /** Historical messages walked per sync while a backfill is pending. */
+  backfillMessagesPerSync?: number;
 }
 
 export class GoogleGmailApiError extends Error {
@@ -196,7 +233,57 @@ function cursorWithoutHistory(cursor: Record<string, unknown>): Record<string, u
   const cleared = { ...cursor };
   delete cleared.historyId;
   delete cleared.history_id;
+  // An expired history cursor means changes were lost; the re-bootstrap walks
+  // the mailbox again (delivery is dedupe-keyed, so already-seen mail is a no-op).
+  delete cleared.backfill;
   return cleared;
+}
+
+function nonNegativeInteger(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+/** Parse the persisted backfill progress; null when the source never recorded one. */
+export function googleGmailBackfillState(source: ExternalTriggerSourceRow): GoogleGmailBackfillState | null {
+  const raw = source.cursor.backfill;
+  if (!raw || typeof raw !== 'object') return null;
+  const state = raw as Record<string, unknown>;
+  const status = state.status === 'complete' || state.status === 'throttled' ? state.status : 'pending';
+  return {
+    status,
+    pageToken: nonEmpty(state.pageToken),
+    pages: nonNegativeInteger(state.pages),
+    messages: nonNegativeInteger(state.messages),
+    startedAt: nonEmpty(state.startedAt) ?? new Date(0).toISOString(),
+    completedAt: nonEmpty(state.completedAt),
+    throttledUntil: nonEmpty(state.throttledUntil),
+    throttleCount: nonNegativeInteger(state.throttleCount),
+  };
+}
+
+/** True while the initial historical walk still has pages (or a throttle) ahead of it. */
+export function googleGmailBackfillPending(source: ExternalTriggerSourceRow): boolean {
+  const state = googleGmailBackfillState(source);
+  return state !== null && state.status !== 'complete';
+}
+
+/** Quota exhaustion is a pause signal for the backfill, never a source failure. */
+export function isGoogleGmailQuotaError(cause: unknown): boolean {
+  if (!(cause instanceof GoogleGmailApiError)) return false;
+  if (cause.status === 429) return true;
+  return cause.status === 403 && /quota|rate ?limit|usage ?limit|too many/i.test(cause.message);
+}
+
+function backfillBudget(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_BACKFILL_MESSAGES_PER_SYNC;
+  if (!Number.isInteger(value) || value < 1 || value > MAX_BACKFILL_MESSAGES_PER_SYNC) {
+    throw new Error('google_gmail_backfill_messages_per_sync_invalid');
+  }
+  return value;
+}
+
+function backfillThrottleMs(throttleCount: number): number {
+  return Math.min(BACKFILL_THROTTLE_BASE_MS * 2 ** Math.min(throttleCount, 10), BACKFILL_THROTTLE_MAX_MS);
 }
 
 async function parseResponse<T>(response: Response, operation: string): Promise<T> {
@@ -684,40 +771,107 @@ async function incrementalSync(
   return { messages: delivered.size, pages, historyId: nextHistoryId };
 }
 
-async function fullSync(
+function newBackfillState(now: Date): GoogleGmailBackfillState {
+  return {
+    status: 'pending',
+    pageToken: null,
+    pages: 0,
+    messages: 0,
+    startedAt: now.toISOString(),
+    completedAt: null,
+    throttledUntil: null,
+    throttleCount: 0,
+  };
+}
+
+/**
+ * Walk at most `budget` historical messages (newest first, as messages.list
+ * orders them), checkpointing the continuation token after every page so an
+ * interrupted walk resumes where it stopped instead of restarting from zero.
+ * Quota exhaustion parks the walk with an exponential cool-down; delivery is
+ * dedupe-keyed, so re-listing a partially delivered page is harmless.
+ */
+async function backfillChunk(
   sql: postgres.Sql,
   source: ExternalTriggerSourceRow,
   accessToken: string,
   sinks: IngestSink[],
   deps: Required<Pick<GoogleGmailDeps, 'fetch' | 'apiOrigin' | 'ingest'>>,
-): Promise<{ messages: number; pages: number }> {
-  let pageToken: string | null = null;
-  let pages = 0;
+  updateSource: typeof updateExternalTriggerSourceSyncState,
+  initial: GoogleGmailBackfillState,
+  budget: number,
+  now: Date,
+): Promise<{ messages: number; pages: number; state: GoogleGmailBackfillState; source: ExternalTriggerSourceRow }> {
+  let state: GoogleGmailBackfillState = { ...initial, status: 'pending', throttledUntil: null };
+  let workingSource = source;
   let messages = 0;
-  do {
-    if (++pages > MAX_PAGES) throw new Error('google_gmail_message_page_limit_exceeded');
-    const params = new URLSearchParams({ maxResults: '500' });
-    if (pageToken) params.set('pageToken', pageToken);
-    const body = await gmailRequest<GoogleGmailMessagesListResponse>(
-      deps.fetch,
-      deps.apiOrigin,
-      accessToken,
-      '/gmail/v1/users/me/messages',
-      'messages_list',
-      { params },
-    );
-    for (const listed of body.messages ?? []) {
-      const id = nonEmpty(listed.id);
-      if (!id) continue;
-      await deliver(sql, deps.ingest, sinks, source, await getMessage(deps.fetch, deps.apiOrigin, accessToken, id));
-      messages += 1;
+  let pages = 0;
+  const pageSize = Math.min(budget, MAX_LIST_PAGE_SIZE);
+  const persist = async (next: GoogleGmailBackfillState): Promise<void> => {
+    state = next;
+    workingSource = await updateSource(sql, source.workspaceId, source.id, {
+      status: 'connecting',
+      cursor: { ...workingSource.cursor, backfill: next },
+      lastError: null,
+    });
+  };
+  while (messages < budget) {
+    if (state.pages + 1 > MAX_PAGES) throw new Error('google_gmail_message_page_limit_exceeded');
+    const params = new URLSearchParams({ maxResults: String(pageSize) });
+    if (state.pageToken) params.set('pageToken', state.pageToken);
+    let delivered = 0;
+    let nextPageToken: string | null = null;
+    try {
+      const body = await gmailRequest<GoogleGmailMessagesListResponse>(
+        deps.fetch,
+        deps.apiOrigin,
+        accessToken,
+        '/gmail/v1/users/me/messages',
+        'messages_list',
+        { params },
+      );
+      for (const listed of body.messages ?? []) {
+        const id = nonEmpty(listed.id);
+        if (!id) continue;
+        await deliver(sql, deps.ingest, sinks, source, await getMessage(deps.fetch, deps.apiOrigin, accessToken, id));
+        delivered += 1;
+      }
+      nextPageToken = nonEmpty(body.nextPageToken);
+    } catch (cause) {
+      if (!isGoogleGmailQuotaError(cause)) throw cause;
+      const throttleCount = state.throttleCount + 1;
+      await persist({
+        ...state,
+        status: 'throttled',
+        messages: state.messages + delivered,
+        throttledUntil: new Date(now.getTime() + backfillThrottleMs(state.throttleCount)).toISOString(),
+        throttleCount,
+      });
+      return { messages: messages + delivered, pages, state, source: workingSource };
     }
-    pageToken = nonEmpty(body.nextPageToken);
-  } while (pageToken);
-  return { messages, pages };
+    messages += delivered;
+    pages += 1;
+    const complete = nextPageToken === null;
+    await persist({
+      ...state,
+      status: complete ? 'complete' : 'pending',
+      pageToken: nextPageToken,
+      pages: state.pages + 1,
+      messages: state.messages + delivered,
+      completedAt: complete ? now.toISOString() : null,
+      throttleCount: 0,
+    });
+    if (complete) break;
+  }
+  return { messages, pages, state, source: workingSource };
 }
 
-/** Reconcile one owned source and commit its history cursor after ingestion. */
+/**
+ * Reconcile one owned source: replay history since the stored cursor, bootstrap
+ * a cursorless mailbox onto its profile historyId, then advance the resumable
+ * backfill by one budgeted chunk. The history cursor commits only after every
+ * delivery of the incremental pass succeeds.
+ */
 export async function syncGoogleGmailSource(
   sql: postgres.Sql,
   source: ExternalTriggerSourceRow,
@@ -725,6 +879,7 @@ export async function syncGoogleGmailSource(
   provided: GoogleGmailDeps = {},
 ): Promise<GoogleGmailSyncResult> {
   assertSource(source, accessToken);
+  const budget = backfillBudget(provided.backfillMessagesPerSync);
   const deps = {
     fetch: provided.fetch ?? fetch,
     apiOrigin: (provided.apiOrigin ?? GMAIL_API_ORIGIN).replace(/\/$/, ''),
@@ -773,15 +928,34 @@ export async function syncGoogleGmailSource(
   }
 
   if (!historyId) {
-    const synced = await fullSync(sql, workingSource, accessToken, sinks, deps);
+    // Pin the incremental cursor BEFORE any historical walk: from here on new
+    // mail is replayed via history and the watch can be established, while the
+    // backfill below is free to take as many polls as the quota allows.
     const mailbox = await profile(deps.fetch, deps.apiOrigin, accessToken);
-    messages = synced.messages;
-    messagePages = synced.pages;
     historyId = mailbox.historyId;
-    workingSource = {
-      ...workingSource,
-      cursor: { ...workingSource.cursor, emailAddress: mailbox.emailAddress },
-    };
+    workingSource = await updateSource(sql, source.workspaceId, source.id, {
+      status: 'connecting',
+      cursor: {
+        ...workingSource.cursor,
+        emailAddress: mailbox.emailAddress,
+        historyId,
+        backfill: newBackfillState(now),
+      },
+      lastError: null,
+    });
+  }
+
+  let backfill = googleGmailBackfillState(workingSource);
+  if (backfill && backfill.status !== 'complete') {
+    const parkedUntil = backfill.throttledUntil ? Date.parse(backfill.throttledUntil) : Number.NaN;
+    const parked = backfill.status === 'throttled' && Number.isFinite(parkedUntil) && parkedUntil > now.getTime();
+    if (!parked) {
+      const chunk = await backfillChunk(sql, workingSource, accessToken, sinks, deps, updateSource, backfill, budget, now);
+      messages += chunk.messages;
+      messagePages += chunk.pages;
+      backfill = chunk.state;
+      workingSource = chunk.source;
+    }
   }
 
   const cursor = {
@@ -795,5 +969,5 @@ export async function syncGoogleGmailSource(
     lastError: null,
     connected: true,
   });
-  return { mode, messages, historyPages, messagePages, historyId };
+  return { mode, messages, historyPages, messagePages, historyId, backfill };
 }
