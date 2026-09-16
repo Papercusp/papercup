@@ -214,11 +214,71 @@ export interface WorkspaceHostInitializationHostOperationResult {
  * implement. A transport kind never implies command, transfer, pairing, or
  * credential-delivery parity.
  */
+/**
+ * Options for the bootstrap-readiness gate. All bounded: a gate that can wait forever is a
+ * different outage from the one it replaces.
+ */
+export interface WorkspaceHostBootstrapReadinessOptions {
+  /** Total budget to wait for the host bootstrap to finish. */
+  readonly timeoutMs?: number;
+  /** Delay between probes. */
+  readonly pollIntervalMs?: number;
+  /**
+   * Called after each NOT-READY probe, so the caller can write durable progress. Without this
+   * the wait is indistinguishable from a hang to anyone reading the operation row — which is the
+   * failure mode a silent gate would introduce in place of the one it fixes.
+   */
+  readonly onWaiting?: (status: WorkspaceHostBootstrapReadinessProgress) => void | Promise<void>;
+  readonly signal?: AbortSignal;
+}
+
+export interface WorkspaceHostBootstrapReadinessProgress {
+  readonly elapsedMs: number;
+  readonly timeoutMs: number;
+  readonly probes: number;
+}
+
+export interface WorkspaceHostBootstrapReadinessResult {
+  readonly waitedMs: number;
+  readonly probes: number;
+  /**
+   * True when the FIRST probe already found the host ready — i.e. no waiting was needed. Lets a
+   * caller distinguish "the gate was a no-op" from "the gate absorbed a real race", which is the
+   * measurement that says whether this gate is still earning its place.
+   */
+  readonly readyImmediately: boolean;
+}
+
 export interface WorkspaceHostInitializationHostOperations {
   readonly supportedStepKinds: readonly WorkspaceHostInitializationSupportedStepKind[];
   execute(
     step: WorkspaceHostInitializationStep,
   ): Promise<WorkspaceHostInitializationHostOperationResult>;
+  /**
+   * OPTIONAL gate: resolve once the host's own bootstrap has finished installing the programs
+   * initialization invokes.
+   *
+   * WHY THIS EXISTS (WI-10001677). `provision` reports success when the provider's resources
+   * exist, but the host bootstrap it delivered as instance startup metadata is still RUNNING —
+   * it has to mkfs the data disk, download and verify a ~2GB signed bundle, install a Node
+   * runtime and then install the vendor agent CLIs, and it installs the privileged conduits near
+   * the END of that work. Nothing gated the gap, so an initialization that began promptly after
+   * provisioning died on its very first step with a bare
+   * `exit 127 … /usr/local/bin/papercusp-workspace-host-initialize: No such file or directory`.
+   *
+   * That error names a MISSING FILE, so it reads as a packaging defect in the bundle — and the
+   * bundle is fine and verified every time. Measured across every initialization attempt on
+   * record, the two conduit-missing failures were the two SHORTEST provision→initialize gaps
+   * (117s and 304s) while every attempt at 901s or later found the conduit present. A step-0
+   * missing-file error is more often an UNFINISHED predecessor than a broken artifact, and this
+   * gate is what makes the difference observable instead of a guess.
+   *
+   * Adapters that cannot probe their host simply omit it; the runner treats absence as "no gate"
+   * rather than requiring every provider to implement one.
+   */
+  awaitBootstrapReady?(
+    options?: WorkspaceHostBootstrapReadinessOptions,
+  ): Promise<WorkspaceHostBootstrapReadinessResult>;
 }
 
 export interface WorkspaceHostInitializationReplayIdentity {
