@@ -14,6 +14,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
+import { collectChildOutput } from '../child-output';
+
 // state.ts imports getOrgPg from this SUBPATH at module scope. Nothing here
 // calls it, but mocking mirrors state.test.ts and keeps the real Drizzle
 // construct (and its live pool) out of the unit lane.
@@ -141,19 +143,20 @@ async function raceInChildProcesses(body: string, keyPath: string): Promise<stri
   const children = Array.from({ length: WORKERS }, () => {
     const child = spawn(TSX, [script, keyPath, goPath], { stdio: ['ignore', 'pipe', 'pipe'] });
     return new Promise<string>((resolve, reject) => {
-      let out = '';
-      let err = '';
+      // Chunk-safe: a multi-byte char split across two 'data' events would
+      // decode to replacement chars if accumulated with `+= String(d)`.
+      // Read `.text()` ONCE, in the close handler — polling it per chunk
+      // reproduces the exact corruption the helper exists to prevent.
+      const output = collectChildOutput(child);
       const timer = setTimeout(() => {
         child.kill('SIGKILL');
         reject(new Error('child timed out before reaching the barrier'));
       }, CHILD_TIMEOUT_MS);
-      child.stdout.on('data', (d) => (out += String(d)));
-      child.stderr.on('data', (d) => (err += String(d)));
       child.on('error', reject);
       child.on('close', (code) => {
         clearTimeout(timer);
-        if (code !== 0) reject(new Error(`child exited ${code}: ${err}`));
-        else resolve(out.trim());
+        if (code !== 0) reject(new Error(`child exited ${code}: ${output.stderr.text()}`));
+        else resolve(output.stdout.text().trim());
       });
     });
   });
@@ -243,19 +246,18 @@ describe('ensureOAuthStateKeyFile under real concurrency', () => {
 
       const child = spawn(TSX, [script, keyPath, goPath], { stdio: ['ignore', 'pipe', 'pipe'] });
       const settled = new Promise<string>((resolve, reject) => {
-        let out = '';
-        let err = '';
+        // Chunk-safe accumulation; `.text()` is read once, in the close
+        // handler. See the note in raceInChildProcesses above.
+        const output = collectChildOutput(child);
         const timer = setTimeout(() => {
           child.kill('SIGKILL');
           reject(new Error('subject timed out before reaching the barrier'));
         }, CHILD_TIMEOUT_MS);
-        child.stdout.on('data', (d) => (out += String(d)));
-        child.stderr.on('data', (d) => (err += String(d)));
         child.on('error', reject);
         child.on('close', (code) => {
           clearTimeout(timer);
-          if (code !== 0) reject(new Error(`subject exited ${code}: ${err}`));
-          else resolve(out.trim());
+          if (code !== 0) reject(new Error(`subject exited ${code}: ${output.stderr.text()}`));
+          else resolve(output.stdout.text().trim());
         });
       });
 
