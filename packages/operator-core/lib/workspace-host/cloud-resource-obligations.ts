@@ -177,6 +177,60 @@ export async function recordCloudResourceObligation(
 }
 
 /**
+ * The event shape a provider reports when it confirms a resource into existence. Declared
+ * structurally on purpose: this module stays free of any provider import, so wiring the ledger
+ * to a creation path can never introduce a cycle.
+ */
+export interface CloudResourceCreatedEventLike {
+  readonly resource: {
+    readonly kind: string;
+    readonly providerId: string;
+    readonly parentProviderId?: string;
+  };
+}
+
+export interface CloudResourceObligationObserverBinding {
+  sql: postgres.Sql;
+  workspaceId: string;
+  purpose?: string;
+  createdByOwnerId?: string;
+  sourceWorkItemId?: string;
+  graceMs?: number;
+}
+
+/**
+ * Bind the ledger to a provider's creation seam — the PRODUCING half this module was built for.
+ *
+ * Until this is attached to a real creation path, the sweep below runs faithfully over a table
+ * nothing writes to, and reports "no outstanding obligations" for a project full of live metered
+ * resources. That is strictly worse than having no detector: the table, migration and passing
+ * tests make the system look instrumented, so its silence reads as an all-clear rather than as
+ * absence (WI-10001672 — a canary VM + NAT ran 11 days and produced no signal at all).
+ *
+ * Every creation is recorded, not just the obviously-metered kinds: a network or firewall still
+ * owes teardown, and the existing real rows in this table are exactly that release-network family.
+ * Recording is idempotent, so a replayed or retried step re-reports harmlessly.
+ */
+export function createCloudResourceObligationObserver(
+  binding: CloudResourceObligationObserverBinding,
+): (event: CloudResourceCreatedEventLike) => Promise<void> {
+  requireNonEmpty(binding.workspaceId, 'workspaceId');
+  return async (event) => {
+    await recordCloudResourceObligation(binding.sql, {
+      workspaceId: binding.workspaceId,
+      provider: 'gcp',
+      resourceKind: event.resource.kind,
+      resourceId: event.resource.providerId,
+      ...(event.resource.parentProviderId ? { projectId: event.resource.parentProviderId } : {}),
+      ...(binding.purpose ? { purpose: binding.purpose } : {}),
+      ...(binding.createdByOwnerId ? { createdByOwnerId: binding.createdByOwnerId } : {}),
+      ...(binding.sourceWorkItemId ? { sourceWorkItemId: binding.sourceWorkItemId } : {}),
+      ...(binding.graceMs !== undefined ? { graceMs: binding.graceMs } : {}),
+    });
+  };
+}
+
+/**
  * Close the obligation — the resource was actually torn down (or confirmed to have
  * never existed). Idempotent: closing an already-closed row is a no-op.
  */

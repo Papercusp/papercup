@@ -1426,3 +1426,74 @@ describe('GCP workspace-host health attestation (WI-2143924)', () => {
     expect(observation.state).toBe('degraded');
   });
 });
+
+/**
+ * WI-10001672 — the teardown-obligation ledger's PRODUCING half.
+ *
+ * These assert the CREATE PATH reports, which is the one thing
+ * `cloud-resource-obligations.test.ts` structurally cannot: those tests call the recorder
+ * directly, so they passed unchanged for the entire life of the gap in which nothing in
+ * production ever called it. A guard for this defect has to drive a provision and observe that
+ * reporting happened as a CONSEQUENCE — otherwise it rebuilds the blind spot it exists to close.
+ */
+describe('GCP workspace-host provider created-resource reporting', () => {
+  it('reports every resource a provision actually creates, including the metered VM and disk', async () => {
+    const client = new FakeGcpWorkspaceHostApiClient();
+    const observed: WorkspaceHostResourceRef[] = [];
+    const provider = createGcpWorkspaceHostProvider({
+      client,
+      now: () => NOW,
+      onResourceCreated: (event) => {
+        observed.push(event.resource);
+      },
+    });
+
+    const { resources } = await provision(client, provider);
+
+    // The billable pair that went unregistered for 11 days in active-alcove-504205-q3.
+    expect(observed.map((item) => item.kind)).toContain('vm');
+    expect(observed.map((item) => item.kind)).toContain('disk');
+    // Everything the provision created is reported — no creation path may quietly opt out.
+    for (const created of resources) {
+      expect(observed.some((item) => item.providerId === created.providerId)).toBe(true);
+    }
+    // A reported resource carries what the ledger needs to identify it for teardown later.
+    for (const event of observed) {
+      expect(event.providerId).toBeTruthy();
+      expect(event.kind).toBeTruthy();
+    }
+  });
+
+  it('does not report pre-existing resources it merely adopted', async () => {
+    const client = new FakeGcpWorkspaceHostApiClient();
+    const observed: WorkspaceHostResourceRef[] = [];
+    const provider = createGcpWorkspaceHostProvider({
+      client,
+      now: () => NOW,
+      onResourceCreated: (event) => {
+        observed.push(event.resource);
+      },
+    });
+    const spec = desired();
+    spec.provider = { ...spec.provider, network: { mode: 'existing' } };
+
+    await provision(client, provider, spec);
+
+    // We owe teardown only for what we created. An adopted network is the owner's, and
+    // registering it would have the sweep escalate someone else's infrastructure.
+    expect(observed.some((item) => item.kind === 'existing-network')).toBe(false);
+  });
+
+  it('fails the step when the ledger write fails, rather than leaving a billable resource untracked', async () => {
+    const client = new FakeGcpWorkspaceHostApiClient();
+    const provider = createGcpWorkspaceHostProvider({
+      client,
+      now: () => NOW,
+      onResourceCreated: () => {
+        throw new Error('cloud_resource_obligation_write_failed');
+      },
+    });
+
+    await expect(provision(client, provider)).rejects.toThrow('cloud_resource_obligation_write_failed');
+  });
+});
