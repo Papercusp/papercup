@@ -60,6 +60,7 @@ import {
   checkRepoPermission,
 } from '../auth.ts';
 import { checkAndRecordUserPublishHourly, checkIpListPerMinute, RateLimitError } from '../ratelimit.ts';
+import { isSelfDescribingKind, pinListingContent, type ContentPin } from '../content-pin.ts';
 
 interface PublishBody {
   listing_kind?: string;             // migration 004; defaults to 'harness'
@@ -710,6 +711,7 @@ function registerListingEndpoints(
       id?: number;
       private?: boolean;
       permissions?: Record<string, boolean>;
+      default_branch?: string;
     };
     if (repoMeta.private) {
       return c.json({ error: 'private_repo_rejected' }, 400);
