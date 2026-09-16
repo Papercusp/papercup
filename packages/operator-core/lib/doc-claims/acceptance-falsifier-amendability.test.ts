@@ -202,4 +202,32 @@ describe('rubrics:amend routes the approval object to a surface the reviewer can
     const chaining = chainingGuidance(fixture);
     expect(chaining).toMatch(PAYLOAD_TIER_ROUTE_RE);
   });
+
+  // seeAlso advertises the route in prose, with no braces, so PAYLOAD_TIER_ROUTE_RE
+  // is structurally unable to see it. It needs its own matcher.
+  const SEE_ALSO_PAYLOAD_TIER_RE = /seeAlso:\s*\[[^\]]*payloadTier/;
+
+  /**
+   * The CLASS, not the instance — this is the claim that would have caught the
+   * 2026-09-16 miss. `chaining` was fixed and the tool's OTHER reviewer-facing
+   * surfaces were not: the `dryRun` argument description (the one you actually
+   * read at the moment you pass dryRun) still walked the reviewer through
+   * work_items:update → work_items:get { payloadTier:'full' }, and seeAlso still
+   * advertised that payload read. One tool, two opposite instructions — and the
+   * claim above could not see either, because it parses only the chaining string.
+   */
+  it('NO surface of the tool routes the reviewer to a payload-tier read', () => {
+    const text = amend();
+    // Control: the source really loaded. Without it every negative below is vacuous.
+    expect(text).toMatch(/chaining:/);
+    expect(text).not.toMatch(PAYLOAD_TIER_ROUTE_RE);
+    expect(text).not.toMatch(SEE_ALSO_PAYLOAD_TIER_RE);
+  });
+
+  it('both whole-file matchers would SEE the retired route (control)', () => {
+    const argDescribe = `dryRun: 'persist it, then the reviewer fetches work_items:get { id: "<id>", payloadTier: "full" }'`;
+    expect(argDescribe).toMatch(PAYLOAD_TIER_ROUTE_RE);
+    const seeAlso = `seeAlso: [\n  'work_items:get (read the exact payload with payloadTier:"full")',\n],`;
+    expect(seeAlso).toMatch(SEE_ALSO_PAYLOAD_TIER_RE);
+  });
 });
