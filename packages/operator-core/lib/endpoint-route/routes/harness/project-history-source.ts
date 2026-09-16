@@ -67,7 +67,15 @@ export interface ProjectHistoryPage {
   hasMore: boolean;
 }
 
-export type SqlQuery = (text: string, params: unknown[]) => Promise<Record<string, unknown>[]>;
+/**
+ * Everything this file binds: the two scope strings, a page limit/offset, and one
+ * id array for the `= ANY($3::text[])` read. Narrower than `unknown[]` on purpose —
+ * it is what lets the driver boundary below carry a single cast instead of every
+ * call site carrying one.
+ */
+export type SqlParam = string | number | readonly string[];
+
+export type SqlQuery = (text: string, params: readonly SqlParam[]) => Promise<Record<string, unknown>[]>;
 export type GitRunner = (args: readonly string[], cwd: string) => Promise<string>;
 
 export interface OperatorProjectHistorySourceOptions {
@@ -236,10 +244,17 @@ function defaultGit(): GitRunner {
   });
 }
 
-async function defaultQuery(queryText: string, params: unknown[]): Promise<Record<string, unknown>[]> {
+async function defaultQuery(
+  queryText: string,
+  params: readonly SqlParam[],
+): Promise<Record<string, unknown>[]> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
-  return (await sql.unsafe(queryText, params)) as Record<string, unknown>[];
+  // postgres.js types `unsafe`'s bindings against a generic it cannot infer from a
+  // query assembled at runtime, so it lands on `ParameterOrJSON<never>[]` and rejects
+  // every concrete array. The cast sits at the driver boundary `unsafe` already
+  // denotes; `SqlParam` above is what actually constrains what reaches it.
+  return (await sql.unsafe(queryText, params as unknown as string[])) as unknown as Record<string, unknown>[];
 }
 
 export interface OperatorProjectHistorySource {

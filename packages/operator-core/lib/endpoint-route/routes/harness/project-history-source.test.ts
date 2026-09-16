@@ -22,6 +22,7 @@ import {
   workItemInputFromRow,
   PROJECT_HISTORY_MAX_PAGE_SIZE,
   PROJECT_HISTORY_PAGE_SIZE,
+  type SqlParam,
 } from './project-history-source';
 
 /** Built from char codes: a raw 0x1e/0x00 in source reds `lint:no-control-bytes`. */
@@ -29,7 +30,7 @@ const RS = String.fromCharCode(0x1e);
 const NUL = String.fromCharCode(0x00);
 
 function sourceWith(rows: Record<string, unknown>[][], git?: (args: readonly string[]) => Promise<string>) {
-  const calls: { text: string; params: unknown[] }[] = [];
+  const calls: { text: string; params: readonly SqlParam[] }[] = [];
   let index = 0;
   return {
     calls,
