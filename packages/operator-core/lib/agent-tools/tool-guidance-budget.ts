@@ -213,6 +213,11 @@ export interface NamedToolWeight {
   /** Per-field split of `weight`. Optional so every existing producer of a
    *  `{ name, weight }` literal (tests, fixtures) keeps compiling. */
   breakdown?: PromptWeightBreakdown;
+  /** UTF-8 bytes of this tool's serialized argSchema — the OTHER half of its context
+   *  cost, and typically the larger one (catalog median: 618 B of schema against a
+   *  1,500-char prompt-weight budget; the heaviest tool carries 43 KB). Optional for
+   *  the same reason as `breakdown`: a fixture may supply bare `{ name, weight }`. */
+  schemaBytes?: number;
 }
 
 /**
@@ -246,7 +251,12 @@ export function namedToolWeights(catalog?: readonly ProjectedTool[]): NamedToolW
   return tools
     .map((t) => {
       const breakdown = promptWeightBreakdown(t);
-      return { name: t.expose?.mcp?.name ?? '(unexposed)', weight: breakdown.total, breakdown };
+      return {
+        name: t.expose?.mcp?.name ?? '(unexposed)',
+        weight: breakdown.total,
+        breakdown,
+        schemaBytes: serializedInputSchemaBytes(t.inputSchema),
+      };
     })
     .filter((t) => t.name !== '(unexposed)');
 }
@@ -310,4 +320,181 @@ export function formatViolations(violations: readonly BudgetViolation[]): string
     return `  • ${v.name} is ${v.weight} — cut ≥${v.cutAtLeast} to clear the ${limit}${tail}`;
   });
   return lines.join('\n');
+}
+
+/* ------------------------------------------------------------------------- *
+ * PER-TOOL argSchema WIRE BUDGET (EI-23345472964244980)
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The OTHER half of a tool's context cost, and until now the ungoverned one.
+ *
+ * `promptWeight()` above governs description + guidance (1,500 chars). That is the
+ * assembled-prompt half. It does not look at `inputSchema` at all — and the schema is
+ * what dominates the wire: measured 2026-09-15 against the live MCP tools/list (:3170,
+ * ctx_tier=trimmed), `coord:send` carries ~1.2K of guidance and 39,254 B of schema. So a
+ * tool sits comfortably inside the prompt-weight budget while costing 30-40 KB a turn,
+ * and every prompt-weight check stays green the whole time.
+ *
+ * WHY THAT BECAME A BILL RATHER THAN A DETAIL. Claude Code's native schema DEFERRAL is
+ * implemented BY ToolSearch; psu denies ToolSearch by owner directive (one call measured
+ * +67,045 tokens bypassing applyResultDoor). With deferral gone, every ADVERTISED tool
+ * ships its full schema on EVERY turn. That is EI-23319364088969722: a 64-name Claude
+ * seed reached 432,714 B (~157K tokens), essentially the whole 151K->317K regression,
+ * with no instrument watching.
+ *
+ * WHAT THIS IS NOT. `assertSelectedInputSchemaBudget()` above is an AGGREGATE bound on
+ * one selected set, and it is wired into exactly two in-house agent-loop seams
+ * (`capabilityToolset`, `operator:converse`). Neither is the MCP `tools/list` handler
+ * that serves psu/Claude/OMP/codex — `packages/agent-mcp/src` imports no budget symbol
+ * at all. An aggregate bound also cannot stop the slow creep that made the seed
+ * expensive in the first place: it fires only once a set is assembled, blaming whoever
+ * assembled it rather than whoever grew the schema. This budget is PER TOOL, at
+ * registration time, so growth is attributed to the edit that caused it.
+ *
+ * THE SHAPE, and why it is a ratchet rather than a cap. Measured across the live
+ * 923-tool catalog: median 1,305 B, p90 3,302 B, p99 12,541 B, max 44,060 B. The tail is
+ * extreme — 19 tools over 10 KB are ~20% of the catalog's 1.89 MB. A flat cap low enough
+ * to matter would red the gate fleet-wide on day one, which is the failure mode
+ * CLAUDE.md warns about for prompt-weight breaches. So:
+ *
+ *   - a NEW tool must fit SCHEMA_BYTE_BUDGET;
+ *   - an existing heavy tool is PINNED at its measured size in
+ *     ALLOW_OVER_SCHEMA_BUDGET and may not exceed that pin.
+ *
+ * The pin is what makes this stronger than the boolean ALLOW_OVER_BUDGET the
+ * prompt-weight tier uses: a grandfathered tool there may grow without limit, whereas a
+ * pinned tool here is frozen at the size it was when it was measured. The set is
+ * SHRINK-ONLY — lower a pin whenever a tool gets cheaper, and delete the entry once it
+ * fits the budget. Raising one is a budget decision, not a chore: a seeded tool's schema
+ * is paid on every turn of every session, forever, and the alternative that costs 0 B/turn
+ * is to leave the tool unseeded and let tools:find/tools:invoke reach it in one hop.
+ */
+export const SCHEMA_BYTE_BUDGET = 8_000;
+
+/**
+ * Pinned ceilings for tools that already exceed SCHEMA_BYTE_BUDGET. SHRINK-ONLY.
+ *
+ * Each value is that tool's measured in-repo projected size at the time it was pinned,
+ * rounded UP to a small round number so ordinary schema churn does not red the gate.
+ * ⚠ These are IN-REPO projection bytes, which read ~20% BELOW the wire: the in-repo
+ * catalog skips the server's late entity-enum/sanitize passes
+ * (packages/agent-mcp/src/server.ts:758). Compare in-repo to in-repo; do NOT read a pin
+ * as the context cost, and do NOT re-seed these from a live tools/list measurement.
+ */
+export const ALLOW_OVER_SCHEMA_BUDGET: ReadonlyMap<string, number> = new Map([
+  // Seeded 2026-09-15 from the projected catalog (889 exposed tools, 1,216,782 B total,
+  // median 618 B). These 20 tools are 3.6% of the catalog by count and 27% by bytes.
+  ['work_items:complete', 46_000], // measured 43,283
+  ['coord:send', 41_000], // measured 38,185
+  ['rubrics:propose', 39_000], // measured 36,402
+  ['rubrics:amend', 30_000], // measured 27,927
+  ['work_items:checkpoint', 25_000], // measured 23,358
+  ['fleet:launch-on-plan', 24_000], // measured 21,940
+  ['loop:checkpoint', 22_000], // measured 20,174
+  ['improvements:capture', 20_000], // measured 19,033
+  ['scorecards:emit', 19_000], // measured 17,743
+  ['facts:assert', 15_500], // measured 14,452
+  ['capability:launch-agent', 12_000], // measured 11,262
+  ['work_items:create', 11_500], // measured 10,778
+  ['plans:audit', 11_500], // measured 10,497
+  ['loop:arm', 10_500], // measured 9,782
+  ['goals:start', 10_500], // measured 9,669
+  ['plans:set-status', 10_000], // measured 9,381
+  ['watch:create', 10_000], // measured 9,302
+  ['work_items:list', 10_000], // measured 9,271
+  ['goals:update', 9_500], // measured 8,758
+  ['events:await', 8_500], // measured 8,024
+]);
+
+export interface NamedToolSchemaBytes {
+  name: string;
+  bytes: number;
+}
+
+/** The projected catalog's per-tool argSchema size in UTF-8 bytes. Pass a catalog to
+ *  measure (tests); omit to read the live registry, which asserts the barrel actually
+ *  registered rather than silently measuring an empty one. */
+export function namedToolSchemaBytes(catalog?: readonly ProjectedTool[]): NamedToolSchemaBytes[] {
+  const tools = catalog ?? listAllProjectedTools();
+  if (catalog === undefined) assertLiveCatalogSane(tools);
+  return tools
+    .map((t) => ({
+      name: t.expose?.mcp?.name ?? '(unexposed)',
+      bytes: serializedInputSchemaBytes(t.inputSchema),
+    }))
+    .filter((t) => t.name !== '(unexposed)');
+}
+
+export interface SchemaBudgetViolation {
+  name: string;
+  bytes: number;
+  /** The ceiling this tool actually had to clear (its pin, or the budget). */
+  ceiling: number;
+  /** true iff this tool is pinned in ALLOW_OVER_SCHEMA_BUDGET. */
+  pinned: boolean;
+  /** bytes to cut to clear `ceiling`. */
+  cutAtLeast: number;
+}
+
+/**
+ * Every tool over its binding ceiling: a pinned tool over ITS PIN, or any other tool
+ * over SCHEMA_BYTE_BUDGET. Mirrors `budgetViolations()` so the schema tier and the
+ * prompt-weight tier report breaches the same way.
+ */
+export function schemaBudgetViolations(
+  measured?: readonly NamedToolSchemaBytes[],
+): SchemaBudgetViolation[] {
+  const named = measured ?? namedToolSchemaBytes();
+  const out: SchemaBudgetViolation[] = [];
+  for (const t of named) {
+    const pin = ALLOW_OVER_SCHEMA_BUDGET.get(t.name);
+    const pinned = pin !== undefined;
+    const ceiling = pinned ? pin : SCHEMA_BYTE_BUDGET;
+    if (t.bytes <= ceiling) continue;
+    out.push({ name: t.name, bytes: t.bytes, ceiling, pinned, cutAtLeast: t.bytes - ceiling });
+  }
+  return out.sort((a, b) => b.cutAtLeast - a.cutAtLeast);
+}
+
+/**
+ * Pins that are now ABOVE what the tool actually costs — the shrink-only ratchet's
+ * downward half. Reported (never failed on) so a tool that got cheaper hands back the
+ * headroom instead of quietly banking it for future growth.
+ */
+export function slackSchemaPins(
+  measured?: readonly NamedToolSchemaBytes[],
+): { name: string; pin: number; bytes: number; lowerTo: number }[] {
+  const named = measured ?? namedToolSchemaBytes();
+  const bySize = new Map(named.map((t) => [t.name, t.bytes]));
+  const out: { name: string; pin: number; bytes: number; lowerTo: number }[] = [];
+  for (const [name, pin] of ALLOW_OVER_SCHEMA_BUDGET) {
+    const bytes = bySize.get(name);
+    if (bytes === undefined) continue;
+    const lowerTo = bytes <= SCHEMA_BYTE_BUDGET ? SCHEMA_BYTE_BUDGET : roundPin(bytes);
+    if (lowerTo < pin) out.push({ name, pin, bytes, lowerTo });
+  }
+  return out.sort((a, b) => b.pin - b.bytes - (a.pin - a.bytes));
+}
+
+/** Round a measured size UP to a tidy pin, so ordinary churn does not red the gate. */
+export function roundPin(bytes: number): number {
+  const step = bytes >= 20_000 ? 1_000 : 500;
+  return Math.ceil((bytes * 1.05) / step) * step;
+}
+
+/** Self-serve failure text: the tool, its size, and exactly how many bytes to cut. */
+export function formatSchemaViolations(violations: readonly SchemaBudgetViolation[]): string {
+  if (violations.length === 0) return '';
+  return violations
+    .map((v) => {
+      const limit = v.pinned
+        ? `${v.ceiling}-byte PIN (ALLOW_OVER_SCHEMA_BUDGET)`
+        : `${SCHEMA_BYTE_BUDGET}-byte schema budget`;
+      const tail = v.pinned
+        ? ' — a pin is SHRINK-ONLY; raising it is a budget decision paid on every turn of every session'
+        : ' (trim the schema — shorten per-field `.describe()` prose, prefer a docs pointer, collapse a wide enum — or, only if genuinely irreducible, add a pinned ALLOW_OVER_SCHEMA_BUDGET entry)';
+      return `  • ${v.name} is ${v.bytes} B — cut ≥${v.cutAtLeast} B to clear the ${limit}${tail}`;
+    })
+    .join('\n');
 }
