@@ -624,7 +624,17 @@ describe('release:cut — run (operator-gated write)', () => {
       version: '0.0.8',
       channel: 'alpha',
       expectedSourceSha: sourceSha,
-      runtime: { ownerName: 'Avi', ownerEmail: undefined, reuseSeed: undefined },
+      runtime: {
+        ownerName: 'Avi',
+        ownerEmail: undefined,
+        reuseSeed: undefined,
+        // WI-10001570: the CANONICAL desktop root, so release-local.sh can write the
+        // version bump back out of its throwaway worktree. Asserted as the literal
+        // canonical path rather than expect.any(String) on purpose — passing the CUT
+        // root here would satisfy a loose matcher while being exactly the silent no-op
+        // this field exists to prevent.
+        canonicalDesktopRoot: '/tmp/release-cut-fixture/papercusp-desktop',
+      },
       legs: { mac: true, windows: undefined, arm64: undefined },
       root: expect.any(String),
       orchestratorRoot: '/tmp/release-cut-fixture/papercusp-desktop',
@@ -750,7 +760,17 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
       version: '0.0.8',
       channel: 'alpha',
       expectedSourceSha: sourceSha,
-      runtime: { ownerName: 'Avi', ownerEmail: undefined, reuseSeed: undefined },
+      runtime: {
+        ownerName: 'Avi',
+        ownerEmail: undefined,
+        reuseSeed: undefined,
+        // WI-10001570: the CANONICAL desktop root, so release-local.sh can write the
+        // version bump back out of its throwaway worktree. Asserted as the literal
+        // canonical path rather than expect.any(String) on purpose — passing the CUT
+        // root here would satisfy a loose matcher while being exactly the silent no-op
+        // this field exists to prevent.
+        canonicalDesktopRoot: '/tmp/release-cut-fixture/papercusp-desktop',
+      },
       legs: { mac: true },
       platform: 'mac',
       root: expect.any(String),
