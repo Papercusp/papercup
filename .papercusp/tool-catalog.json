@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 889,
+  "count": 890,
   "tools": [
     {
       "name": "ablation:report",
@@ -17775,6 +17775,39 @@
         "when": "You need compiler truth rather than text: declarations across boundaries/re-exports, references, implementations, file diagnostics, or rename sites.",
         "notWhen": "Use text/regex search (`rg`/`grep`, scoped to source roots — see capability:bash guidance) for text, and gitnexus.context for call graphs. Unsupported files refuse and name the alternative.",
         "chaining": "op:\"workspace_symbols\" { name } → op:\"symbol\"/\"references\" { file, line1, character }. On degradation, op:\"health\" reports servers and the processes:kill taskId."
+      }
+    },
+    {
+      "name": "mail:draft",
+      "http": {
+        "path": "/api/agent-tools/mail/draft",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Draft a NEW email to recipients you name, outside any existing thread. It lands in the owner's own mailbox and is NOT sent — they read, edit and press send themselves. Addressees are checked exactly as mail:send checks them: one that appears only inside message content is REFUSED. Returns the draftId and who was addressed.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Outbound the owner wants to read before it goes — a first approach, a batch they asked to look over, anything where their judgement should sit between you and the recipient. Review then happens in their own mail client, editable in place.",
+        "notWhen": "They asked you to actually send it — that is mail:send. Answering an existing email is mail:reply { mode:\"draft\" }, which needs no addressee because the server resolves it from the stored message.",
+        "chaining": "personal:search (contacts) → contactExternalId → mail:draft. Echo the returned recipients[] and draftId so a wrong addressee is visible while it is still only a draft."
       }
     },
     {
