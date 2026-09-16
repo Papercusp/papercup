@@ -43,7 +43,27 @@
     "`@/app/harness/Tooltip`, ShortcutsCheatSheet's RouteLink imports",
     "`@/lib/router-compat/*` — and this tsconfig has no `@/` mapping on purpose).",
     "Measured 2026-09-06: 3 TS2307 errors, all in apps/operator, none in src/. Its",
-    "public contract is shortcuts.d.ts (portal-global-shortcuts-2026-09-06 P-001)."
+    "public contract is shortcuts.d.ts (portal-global-shortcuts-2026-09-06 P-001).",
+    "",
+    "`src/chat-ref-popup-host.tsx` is the THIRD instance of the identical shape: it",
+    "lazily imports `../../../apps/operator/app/_components/chat/ChatRefPopupHost`,",
+    "whose closure reaches WorkItemPopupModal / PlanPopupModal and through them",
+    "most of operator-core. chat-ref-popup-host.d.ts (WI-10001509) added the",
+    "CONSUMER half of the boundary on 2026-09-16, which fixed the portal — but as",
+    "the surfaces paragraph above states, `exports[...].types` only redirects",
+    "consumers, so the cost reappeared on the PRODUCER side and this leg kept it.",
+    "Measured 2026-09-16: 233 errors and ZERO in this package's own src/ (28",
+    "operator-core/lib/sync/pot-git/serve-wiring.ts, 16 PlansPane.tsx, 12",
+    "BulkResolverSettingsControl.tsx, ...; 88 are TS2307 on `@/...`, which this",
+    "tsconfig has no mapping for on purpose). It red-pinned the shared",
+    "green-checkpoint gate on lint:tsc:workspaces (WI-10000287, candidate",
+    "92e50a69). Excluding it loses nothing for the same three reasons: no file in",
+    "src/ imports it, the implementation is typechecked where it lives by",
+    "lint:tsc's operator legs, and the public contract stays the .d.ts."
   ],
-  "exclude": ["src/surfaces/index.tsx", "src/shortcuts/index.tsx"]
+  "exclude": [
+    "src/surfaces/index.tsx",
+    "src/shortcuts/index.tsx",
+    "src/chat-ref-popup-host.tsx"
+  ]
 }
