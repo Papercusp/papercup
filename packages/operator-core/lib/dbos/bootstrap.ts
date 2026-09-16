@@ -274,8 +274,20 @@ async function startDbosOnce(): Promise<void> {
   const { registerWorkspaceHostProviderFactory } = await import('@papercusp/deployment-driver');
   const { createConfiguredGcpWorkspaceHostProvider } = await import('../workspace-host/gcp-provider');
   const { resolveHostedGcpAuth } = await import('../workspace-host/hosted-gcp-auth');
+  // WI-10001672: bind the teardown-obligation ledger's PRODUCING half here. Without this the
+  // sweep in periodic-workflows runs over a table nothing writes to and reports "no outstanding
+  // obligations" for a project full of live metered resources — absence that reads as an
+  // all-clear. This is the composition root where a provisioning provider first gets a DB handle,
+  // so it is the one place the binding can be made for every provision path at once.
+  const [{ createCloudResourceObligationObserver }, { getOrgPg }] = await Promise.all([
+    import('../workspace-host/cloud-resource-obligations'),
+    import('@papercusp/db-org'),
+  ]);
   registerWorkspaceHostProviderFactory('gcp', (connection) =>
-    createConfiguredGcpWorkspaceHostProvider(connection, { resolveHostedAuth: resolveHostedGcpAuth }),
+    createConfiguredGcpWorkspaceHostProvider(connection, {
+      resolveHostedAuth: resolveHostedGcpAuth,
+      onResourceCreated: createCloudResourceObligationObserver({ sql: getOrgPg().sql }),
+    }),
   );
   await import('./workspace-host-provision-workflow');
   // The director-cadence autoloop workflow is RETIRED (autoloop-pot-operator-

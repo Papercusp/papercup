@@ -1440,15 +1440,21 @@ describe('GCP workspace-host provider created-resource reporting', () => {
   it('reports every resource a provision actually creates, including the metered VM and disk', async () => {
     const client = new FakeGcpWorkspaceHostApiClient();
     const observed: WorkspaceHostResourceRef[] = [];
+    const workspaceIds = new Set<string>();
     const provider = createGcpWorkspaceHostProvider({
       client,
       now: () => NOW,
       onResourceCreated: (event) => {
         observed.push(event.resource);
+        workspaceIds.add(event.workspaceId);
       },
     });
 
     const { resources } = await provision(client, provider);
+
+    // The ledger files rows per workspace, so a resource reported without the workspace of the
+    // apply that created it would be unattributable — and the sweep could not scope its search.
+    expect([...workspaceIds]).toEqual(['workspace-gcp-1']);
 
     // The billable pair that went unregistered for 11 days in active-alcove-504205-q3.
     expect(observed.map((item) => item.kind)).toContain('vm');
@@ -1474,10 +1480,7 @@ describe('GCP workspace-host provider created-resource reporting', () => {
         observed.push(event.resource);
       },
     });
-    const spec = desired();
-    spec.provider = { ...spec.provider, network: { mode: 'existing' } };
-
-    await provision(client, provider, spec);
+    await provision(client, provider, desired('existing'));
 
     // We owe teardown only for what we created. An adopted network is the owner's, and
     // registering it would have the sweep escalate someone else's infrastructure.

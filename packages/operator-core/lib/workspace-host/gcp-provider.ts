@@ -372,6 +372,12 @@ export interface WorkspaceHostResourceCreatedEvent {
   readonly resource: WorkspaceHostResourceRef;
   readonly operationId: string;
   readonly stepId: string;
+  /**
+   * Taken from the live apply context, never captured at construction: one provider instance
+   * serves many workspaces, so binding a workspace at wiring time would file every resource
+   * under whichever workspace happened to compose the provider.
+   */
+  readonly workspaceId: string;
 }
 
 /**
@@ -2056,6 +2062,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         resource: result.resource,
         operationId: result.operationId,
         stepId: result.stepId,
+        workspaceId: ctx.workspaceId,
       });
     }
     return result;

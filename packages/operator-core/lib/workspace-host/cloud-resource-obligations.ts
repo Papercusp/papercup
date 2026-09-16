@@ -187,11 +187,12 @@ export interface CloudResourceCreatedEventLike {
     readonly providerId: string;
     readonly parentProviderId?: string;
   };
+  /** From the live apply context — one provider serves many workspaces. */
+  readonly workspaceId: string;
 }
 
 export interface CloudResourceObligationObserverBinding {
   sql: postgres.Sql;
-  workspaceId: string;
   purpose?: string;
   createdByOwnerId?: string;
   sourceWorkItemId?: string;
@@ -214,10 +215,9 @@ export interface CloudResourceObligationObserverBinding {
 export function createCloudResourceObligationObserver(
   binding: CloudResourceObligationObserverBinding,
 ): (event: CloudResourceCreatedEventLike) => Promise<void> {
-  requireNonEmpty(binding.workspaceId, 'workspaceId');
   return async (event) => {
     await recordCloudResourceObligation(binding.sql, {
-      workspaceId: binding.workspaceId,
+      workspaceId: event.workspaceId,
       provider: 'gcp',
       resourceKind: event.resource.kind,
       resourceId: event.resource.providerId,
