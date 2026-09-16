@@ -25,12 +25,34 @@
  *      cut that degraded to full history and said so only in a warn.
  *   3. `coreSparseFrom` present, every core starting above 0 → a genuine sparse cut.
  * State 1 is still gated, but by the SIZE floor rather than the label, because a 50x installer
- * is a defect whether or not it is honestly described — QUALIFIED, since 2026-08-15, by block
- * count: bytes alone cannot separate a history dump from a big current-state projection, so the
- * size floor only fires on a payload long enough to HOLD history. See the size floor below.
+ * is a defect whether or not it is honestly described.
+ *
+ * THE FOURTH STATE, and why it is recorded rather than inferred (WI-10001612). The path that
+ * actually SHIPS is neither of the three above: `cut-seed-cli` passes `filtered: true`, and the
+ * provider's `if (filtered)` branch mints a complete current-state PROJECTION — a fresh core
+ * folded from the owner's log — which returns before the sparse block and omits `coreSparseFrom`
+ * deliberately. It therefore arrives labelled `full` and is oversized by bytes while being
+ * structurally incapable of carrying history.
+ *
+ * From 2026-08-15 that population was exempted by a PROXY: a core shorter than
+ * `DEFAULT_CORE_LENGTH_FLOOR_BLOCKS` "cannot hold history". Sound when written (the 0.0.17-alpha
+ * projection was 76 blocks against a 1,000 floor — 13x headroom) and it EXPIRED SILENTLY as the
+ * workspace grew. On 2026-09-16 the 0.0.20 cut minted ~1,041 blocks, 4.1% over, and this guard
+ * refused a healthy 4.06 GB projection after a 4.5-hour scan — while printing the SPARSE remedy,
+ * which describes a code path that cut never entered. Nothing announced the expiry; the guard
+ * simply began refusing healthy artifacts and citing a cause that had never applied.
+ *
+ * So the exemption is now STRUCTURAL: the minting branch records `coreProjectedFrom` (see
+ * `seed-projection-meta.ts`) and this guard keys off that recorded fact. A proxy for a fact is a
+ * time bomb with an unknown fuse — the repair is to record the fact, not to enlarge the proxy.
+ * ⛔ Do NOT "fix" a future recurrence by raising either floor constant: see each one's note.
  */
 
 import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
+import {
+  SEED_PROJECTED_FROM_META_KEY,
+  readCoreProjectedFrom,
+} from '@papercusp/operator-core/lib/sync/hyperbee/seed-projection-meta';
 
 /** Explicit, deliberate acknowledgement that this cut ships full history anyway. */
 export const SEED_ACK_FULL_HISTORY_ENV = 'PAPERCUSP_SEED_ACK_FULL_HISTORY';
@@ -50,10 +72,20 @@ export const SEED_ACK_FULL_HISTORY_ENV = 'PAPERCUSP_SEED_ACK_FULL_HISTORY';
  * measured 318,544,683 B across 76 blocks — 7.6x the sparse figure, so ABOVE this floor, while
  * being 6.1x SMALLER and carrying 1,430x fewer blocks than the corestore that actually shipped
  * on 2026-07-05 (1,955,653,943 B / 108,633 blocks, per that cut's committed seed manifest).
- * Healthy, in other words, and well above the floor. Do NOT re-derive this as "the floor is
- * miscalibrated for the filtered path" and raise the constant: raising it would blind the
- * SPARSE path to the very regression the floor exists to catch. The block-count qualifier is
- * what separates the classes; the byte floor stays where it is.
+ * Healthy, in other words, and well above the floor.
+ *
+ * ⛔ Do NOT re-derive this as "the floor is miscalibrated for the filtered path" and raise the
+ * constant: raising it would blind the SPARSE path to the very regression the floor exists to
+ * catch. A projection is separated from a history dump by the RECORDED projection fact
+ * (`coreProjectedFrom`), not by bytes and not by a block count; the byte floor stays where it is
+ * and keeps judging the populations it was calibrated against.
+ *
+ * ⚠ Nor is the projection's SIZE this guard's question. A 4.06 GB projection is not a
+ * degradation — measured across the 0.0.17-alpha and 0.0.20 cuts the per-block size is identical
+ * (4.19 MB) and the workspace itself grew 13.7x, so the artifact is an honest picture of a large
+ * hive. Whether an installer that size is acceptable is a PRODUCT decision; this guard exists to
+ * catch a seed that LIES about what it carries, and answering a product question with a
+ * correctness refusal is what produced the WI-10001612 false refusal.
  */
 export const DEFAULT_CORESTORE_SIZE_FLOOR_BYTES = 256 * 1024 * 1024;
 
@@ -61,6 +93,17 @@ export const DEFAULT_CORESTORE_SIZE_FLOOR_BYTES = 256 * 1024 * 1024;
  * Below this many blocks, `coreSparseFrom === 0` is not evidence of degradation — a core with
  * no history to trim legitimately starts at 0. Only a core long enough for the distinction to
  * matter can carry the lie.
+ *
+ * ⚠ SCOPE, narrowed by WI-10001612. This floor judges the SPARSE label only, where it compares
+ * a core against ITS OWN recorded start index — a self-contained question that does not drift as
+ * the workspace grows. It is no longer the projection test. Using it as a stand-in for "this
+ * payload cannot be history" is what expired on 2026-09-16, and raising it would only re-arm the
+ * identical trap one growth step further out: the proxy WAS the defect, so the repair is the
+ * recorded fact, never a larger constant.
+ *
+ * It survives in ONE reduced role beyond the sparse findings — judging a pre-marker manifest
+ * grafted forward by `--reuse-corestore`. See `legacyProjectionAdmitted` below for why that use
+ * cannot expire the way this one did.
  */
 export const DEFAULT_CORE_LENGTH_FLOOR_BLOCKS = 1_000;
 
@@ -70,7 +113,15 @@ export type SeedDegradationCode =
   /** Claims sparse from 0 for a core whose length the manifest does not record. */
   | 'sparse-label-unverifiable-length'
   /** The corestore payload is history-sized regardless of how it is labelled. */
-  | 'corestore-exceeds-size-floor';
+  | 'corestore-exceeds-size-floor'
+  /**
+   * The projection analogue of `sparse-label-but-full-history`: the manifest claims a core is a
+   * minted projection while naming the owner's OWN LOG as the shipped key. A real projection is
+   * minted into a fresh core the owner never wrote, so this claims the one thing a projection
+   * cannot be — a replica of the source history — and would otherwise buy a size-floor exemption
+   * for exactly the payload the floor exists to refuse.
+   */
+  | 'projection-label-but-source-core';
 
 export interface SeedDegradationFinding {
   readonly code: SeedDegradationCode;
@@ -82,14 +133,32 @@ export interface SeedDegradationFinding {
 /** Which branch produced the manifest under judgement — decides which remedy is quoted. */
 export type SeedCutOrigin = 'fresh' | 'reuse';
 
+/**
+ * What the manifest says it is — which decides WHICH REMEDY a refusal quotes.
+ *
+ * `projection` is the shipping path (see the header's fourth state) and is reported
+ * separately from `full` precisely so a projection refusal can stop printing sparse-path
+ * advice. Conflating the two is what made the WI-10001612 refusal quote "append a fresh head
+ * snapshot so computeSparseFrom resolves a real suffix start" at a cut that never called
+ * `computeSparseFrom` — confident, specific, actionable and wrong, which is worse than vague.
+ */
+export type SeedManifestLabel = 'sparse' | 'full' | 'projection' | 'no-corestore';
+
 export interface SeedDegradationVerdict {
   /** false ⇒ the cut must fail. `acknowledged` is applied separately by the caller. */
   readonly ok: boolean;
   /** What the manifest claims about itself. */
-  readonly label: 'sparse' | 'full' | 'no-corestore';
+  readonly label: SeedManifestLabel;
   readonly origin: SeedCutOrigin;
   readonly sizeBytes: number;
   readonly findings: readonly SeedDegradationFinding[];
+  /**
+   * True when the payload was exempted from the size floor by the LEGACY block-count
+   * heuristic rather than a recorded projection fact — a pre-marker manifest grafted forward.
+   * Surfaced on the verdict (and announced in `message`) so the heuristic can never again be
+   * the silent thing it was: a reader can see which evidence carried the verdict.
+   */
+  readonly legacyProjectionAdmitted: boolean;
   /** Human-readable verdict + remedy, ready to throw or log. */
   readonly message: string;
 }
@@ -126,15 +195,57 @@ function formatBytes(n: number): string {
   return `${n} B`;
 }
 
-const REMEDY: Record<SeedCutOrigin, string> = {
-  fresh:
+/**
+ * Remedies, keyed by the BRANCH THAT PRODUCED THE PAYLOAD — not by origin alone (WI-10001612).
+ *
+ * A remedy quoted at the wrong branch is worse than no remedy: it is confident, specific and
+ * actionable, so it gets FOLLOWED. The 2026-09-16 refusal printed `sparseDegraded` at a filtered
+ * projection, and following it meant re-running a 4.5-hour scan (plus a fleet-wide git-sync
+ * outage) to redo a head-snapshot append that had already succeeded before the scan started —
+ * arriving at a byte-identical refusal, because on the filtered path `computeSparseFrom` is
+ * never called at all. A vague error would have prompted an investigation; this one did not.
+ */
+const REMEDY = {
+  /** The sparse path degraded — this is the ONLY remedy that may mention computeSparseFrom. */
+  sparseDegraded:
     'Append a fresh head snapshot at the own-log tail before cutting (produceLogSnapshot after the ' +
     'pre-cut drain) so computeSparseFrom resolves a real suffix start.',
+  /** An honestly-labelled FULL cut, over the byte floor. Not a lie — just the wrong cut mode. */
+  oversizedFullCut:
+    'This payload is a full-history cut, not a current-state projection: it carries no ' +
+    `\`${SEED_PROJECTED_FROM_META_KEY}\` and no sparse start. Cut it FILTERED (the shipping path — ` +
+    'cut-seed-cli passes `filtered: true`), which mints a projection and records that fact, or cut ' +
+    'it sparse. Do NOT raise the size floor to admit it.',
+  /** The projection claim is self-refuting — the shipped key IS the source own-log. */
+  projectionSourceCore:
+    'The manifest claims a minted projection but ships the OWNER OWN-LOG key itself, which is a ' +
+    'replica of the source history rather than a projection of it. Fix the minting branch ' +
+    '(mintFilteredSeedContentCore must mint into a FRESH core and replicate only its blocks) — do ' +
+    'not relabel the manifest to match the payload.',
+  /** The graft dominates every other remedy: fixing the cut cannot change what is reused. */
   reuse:
     'The committed corestore is being grafted forward as-cut (D-023: PAPERCUSP_SEED_REUSE_CORESTORE ' +
-    'defaults to `auto`). Re-cut fresh with PAPERCUSP_SEED_REUSE_CORESTORE=0 — fixing the sparse path ' +
+    'defaults to `auto`). Re-cut fresh with PAPERCUSP_SEED_REUSE_CORESTORE=0 — fixing the cut path ' +
     'alone can never change what ships while the degraded core is reused.',
-};
+} as const;
+
+/**
+ * Pick the remedy for a refusal. `reuse` wins outright — while the degraded core is grafted
+ * forward, no fix to the cut path changes what ships — and otherwise the FINDINGS decide, so a
+ * projection refusal can never quote sparse-path advice.
+ */
+function selectRemedy(
+  origin: SeedCutOrigin,
+  label: SeedManifestLabel,
+  findings: readonly SeedDegradationFinding[],
+): string {
+  if (origin === 'reuse') return REMEDY.reuse;
+  if (findings.some((f) => f.code === 'projection-label-but-source-core')) {
+    return REMEDY.projectionSourceCore;
+  }
+  if (label === 'sparse') return REMEDY.sparseDegraded;
+  return REMEDY.oversizedFullCut;
+}
 
 /**
  * Judge a FINAL seed manifest — the one written to disk, after any `--reuse-corestore` graft.
@@ -156,6 +267,7 @@ export function judgeSeedDegradation(
       origin,
       sizeBytes: 0,
       findings: [],
+      legacyProjectionAdmitted: false,
       message: '[seed-guard] no corestore entry in the manifest — nothing to judge.',
     };
   }
@@ -163,7 +275,7 @@ export function judgeSeedDegradation(
   const meta = entry.meta ?? {};
   const sparseFrom = numberRecord(meta.coreSparseFrom);
   const lengths = numberRecord(meta.coreLengths) ?? {};
-  const label: 'sparse' | 'full' = sparseFrom === undefined ? 'full' : 'sparse';
+  const projectedFrom = readCoreProjectedFrom(meta);
   const findings: SeedDegradationFinding[] = [];
 
   if (sparseFrom !== undefined) {
@@ -200,30 +312,57 @@ export function judgeSeedDegradation(
     }
   }
 
-  // A payload can only be HISTORY if some core is long enough to hold history. Bytes alone
-  // cannot tell a history dump from a big current-state projection; BLOCK COUNT can.
+  // ── Is this payload a FILTERED PROJECTION? (WI-10001612) ────────────────────────────────
+  // A projection is minted by folding the source log to a current-state snapshot into a FRESH
+  // core, so it structurally cannot carry history and the byte floor must not judge it. That
+  // is a FACT the minting branch records (`coreProjectedFrom`), not something inferred here.
   //
-  // WHY THIS QUALIFIER EXISTS (2026-08-15, the 0.0.17-alpha cut, ~81 min in). The shipping path
-  // is the FILTERED branch: cut-seed-cli.ts passes `filtered: true` unconditionally, and
-  // seed-provider-corestore.ts's `if (filtered)` branch returns BEFORE the sparse block. It mints
-  // a complete current-state projection and omits `coreSparseFrom` deliberately — its own comment
-  // says the result "must not trip the history-degradation guard as though a private prefix had
-  // been dropped". So it arrives here labelled `full`, the label findings correctly stay silent,
-  // and the SIZE floor fired anyway: 318,544,683 B over the 256 MB floor. That floor is calibrated
-  // for a DIFFERENT artifact class (a ~41 MB sparse head span vs the 1.9 GB / 461,475-block
-  // history dump). The projection is a third population: 76 blocks — the head snapshot's exact
-  // chunk count — against a 1,788,251-block own-log. It cannot be history by ~23,000x.
-  //
-  // Reuse DEFAULT_CORE_LENGTH_FLOOR_BLOCKS, which already encodes this idea for the sparse
-  // findings above ("below this many blocks, a core has no history to trim"), rather than raising
-  // the byte floor — raising it would blind the sparse path to the very regression it exists to
-  // catch. FAIL SAFE: if any core's length is unknown we cannot PROVE the payload is not history,
-  // so the floor still applies.
+  // Two conditions, and both are load-bearing:
+  //   • EVERY shipped core is marked. A partial mark means some shipped core is not proven to
+  //     be a projection — the same reasoning as the per-core sparse findings above, where one
+  //     bad core among healthy siblings is still the lie. Fail safe: no exemption.
+  //   • No marked core names ITSELF as its source. The minted key is a fresh core the owner
+  //     never wrote, so `minted === source` means the payload is a replica of the owner's own
+  //     log wearing a projection label — precisely the history the floor exists to refuse, and
+  //     the one way this exemption could be turned into a hole. That is a FINDING, not a
+  //     silent loss of the exemption, because a manifest asserting it is making a false claim.
   const coreKeys = stringArray(meta.coreKeys) ?? Object.keys(lengths);
-  const everyLengthKnown = coreKeys.length > 0 && coreKeys.every((k) => lengths[k] !== undefined);
-  const historyCapable = !everyLengthKnown || coreKeys.some((k) => lengths[k]! > lengthFloor);
+  const selfSourced = coreKeys.filter((k) => projectedFrom?.[k] === k);
+  const everyCoreProjected =
+    projectedFrom !== undefined && coreKeys.length > 0 && coreKeys.every((k) => projectedFrom[k] !== undefined);
+  if (selfSourced.length > 0) {
+    findings.push({
+      code: 'projection-label-but-source-core',
+      cores: selfSourced,
+      detail:
+        `${selfSourced.length} core(s) are labelled a minted projection whose source is the SAME key, ` +
+        `so the payload ships the owner's own log rather than a projection of it: ` +
+        selfSourced.map((k) => `${k.slice(0, 12)}…`).join(', '),
+    });
+  }
+  const isProjection = everyCoreProjected && selfSourced.length === 0;
 
-  if (entry.sizeBytes > sizeFloor && historyCapable) {
+  // LEGACY, and deliberately narrow: a manifest cut BEFORE the marker existed, grafted forward
+  // by `--reuse-corestore`. The block-count proxy is the only evidence such a manifest carries,
+  // and — unlike the use that expired — it is applied to a FROZEN artifact. That is the whole
+  // difference: the proxy failed because newly-minted projections GREW past it (76 → 882 →
+  // 1,041 blocks as the workspace grew 13.7x), whereas a reused entry's block count was fixed
+  // at the moment it was cut and cannot drift afterwards. A FRESH cut needs no such fallback:
+  // cut-seed-cli passes `filtered: true`, so every fresh projection now records the fact, and a
+  // fresh payload without it is a sparse or full cut that the floor is calibrated to judge.
+  // This path sunsets itself — the first re-cut replaces the pre-marker artifact.
+  const legacyProjectionAdmitted =
+    !isProjection &&
+    origin === 'reuse' &&
+    projectedFrom === undefined &&
+    coreKeys.length > 0 &&
+    coreKeys.every((k) => lengths[k] !== undefined) &&
+    coreKeys.every((k) => lengths[k]! <= lengthFloor);
+
+  // The byte floor judges everything the two exemptions above do not clear. FAIL SAFE in both
+  // directions: an unmarked payload is not PROVEN to be a projection, and an unknown core length
+  // is not proof of harmlessness — neither turns "unknown" into "fine".
+  if (entry.sizeBytes > sizeFloor && !isProjection && !legacyProjectionAdmitted) {
     findings.push({
       code: 'corestore-exceeds-size-floor',
       detail:
@@ -232,17 +371,52 @@ export function judgeSeedDegradation(
     });
   }
 
+  // Report the projection as its OWN label rather than folding it into `full`. The two want
+  // opposite remedies, and `full` is what made a projection refusal quote sparse-path advice.
+  const label: SeedManifestLabel = isProjection ? 'projection' : sparseFrom === undefined ? 'full' : 'sparse';
+
   const ok = findings.length === 0;
+  const totalBlocks = coreKeys.reduce((n, k) => n + (lengths[k] ?? 0), 0);
   const message = ok
-    ? `[seed-guard] corestore OK (${label}, ${formatBytes(entry.sizeBytes)}).`
+    ? [
+        `[seed-guard] corestore OK (${label}, ${formatBytes(entry.sizeBytes)}` +
+          `${totalBlocks > 0 ? `, ${totalBlocks.toLocaleString()} blocks` : ''}).`,
+        // The size of an honest projection is a PRODUCT question, not a degradation — but it
+        // must never be invisible, which is how a 4 GB installer reaches a user unremarked.
+        ...(isProjection && entry.sizeBytes > sizeFloor
+          ? [
+              `[seed-guard] ⚠ this projection is ${formatBytes(entry.sizeBytes)} — above the ` +
+                `${formatBytes(sizeFloor)} history floor, and EXEMPT because it is a recorded ` +
+                `current-state projection (${SEED_PROJECTED_FROM_META_KEY}), not history. Its size ` +
+                `tracks the hive, so judge whether an installer this large is acceptable.`,
+            ]
+          : []),
+        // Never let the legacy heuristic be the silent thing the proxy was.
+        ...(legacyProjectionAdmitted && entry.sizeBytes > sizeFloor
+          ? [
+              `[seed-guard] ⚠ admitted by the LEGACY block-count heuristic (${totalBlocks.toLocaleString()} ` +
+                `≤ ${lengthFloor.toLocaleString()} blocks): this grafted manifest predates ` +
+                `${SEED_PROJECTED_FROM_META_KEY} and carries no projection fact to check. Re-cut fresh ` +
+                `(PAPERCUSP_SEED_REUSE_CORESTORE=0) for a structural verdict.`,
+            ]
+          : []),
+      ].join('\n')
     : [
         `[seed-guard] REFUSING a degraded seed (${origin} cut, labelled ${label}, ${formatBytes(entry.sizeBytes)}):`,
         ...findings.map((f) => `  • ${f.code}: ${f.detail}`),
-        `  remedy: ${REMEDY[origin]}`,
+        `  remedy: ${selectRemedy(origin, label, findings)}`,
         `  to ship it anyway, set ${SEED_ACK_FULL_HISTORY_ENV}=1 — a deliberate, recorded acknowledgement.`,
       ].join('\n');
 
-  return { ok, label, origin, sizeBytes: entry.sizeBytes, findings, message };
+  return {
+    ok,
+    label,
+    origin,
+    sizeBytes: entry.sizeBytes,
+    findings,
+    legacyProjectionAdmitted,
+    message,
+  };
 }
 
 /** Read the acknowledgement from an env bag. Kept separate so `judgeSeedDegradation` stays pure. */

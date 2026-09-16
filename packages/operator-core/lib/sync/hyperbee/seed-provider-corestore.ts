@@ -92,6 +92,15 @@ export const CORESTORE_SEED_KIND = 'corestore';
 export { SEED_EXCLUDED_TABLES, SEED_REDACT_IN_PLACE_TABLES } from './seed-excluded-tables';
 import { SEED_EXCLUDED_TABLES, SEED_REDACT_IN_PLACE_TABLES } from './seed-excluded-tables';
 
+/**
+ * The projection-fact contract the degradation guard reads. DEFINED in
+ * `./seed-projection-meta` (a dependency-free module) for the same reason as the
+ * exclusion policy above: the guard is a pure judge in apps/operator and must not have
+ * to import this file — and its whole hypercore graph — to learn one meta key.
+ */
+export { SEED_PROJECTED_FROM_META_KEY, readCoreProjectedFrom } from './seed-projection-meta';
+import { SEED_PROJECTED_FROM_META_KEY } from './seed-projection-meta';
+
 /** What {@link mintFilteredSeedContentCore} produced, for the manifest. */
 export interface MintedSeedCore {
   /** Public key of the synthetic content core, as it must appear in `meta.coreKeys`. */
@@ -932,6 +941,10 @@ export function createCorestoreSeedProvider(): SeedProvider {
           await replica.ready();
           const filteredCoreKeys: string[] = [];
           const coreLengths: Record<string, number> = {};
+          // WI-10001612 — record the PROJECTION FACT, don't leave it to be inferred.
+          // Minted key → the owner own-log key it was projected from. See
+          // `seed-projection-meta.ts` for why the mapping, and not a bare boolean.
+          const coreProjectedFrom: Record<string, string> = {};
           try {
             for (const ownerKeyHex of coreKeys) {
               const minted = await mintFilteredSeedContentCore({
@@ -946,6 +959,7 @@ export function createCorestoreSeedProvider(): SeedProvider {
               });
               filteredCoreKeys.push(minted.keyHex);
               coreLengths[minted.keyHex] = minted.length;
+              coreProjectedFrom[minted.keyHex] = ownerKeyHex;
               // EI-20592896313306826 — same guard as the sparse branch: never declare a
               // length the staging replica cannot actually serve. This is the branch that
               // produced the truncated 2026-08-15 seed (76 declared, 64 present).
@@ -977,7 +991,16 @@ export function createCorestoreSeedProvider(): SeedProvider {
             // This is a complete current-state projection, not a source-log suffix. Do not
             // label it sparse: a start index of 0 is honest here and must not trip the
             // history-degradation guard as though a private prefix had been dropped.
-            meta: { coreKeys: filteredCoreKeys, coreLengths },
+            //
+            // WI-10001612 — `coreProjectedFrom` is how the guard KNOWS that, instead of
+            // inferring it from a block count that silently expired once the workspace
+            // outgrew the 1,000-block floor. This branch is the only place the fact is
+            // available at all, so omitting it here is what forces the guess downstream.
+            meta: {
+              coreKeys: filteredCoreKeys,
+              coreLengths,
+              [SEED_PROJECTED_FROM_META_KEY]: coreProjectedFrom,
+            },
           };
           return { entry, payload: { path: stagingDir } };
         }
