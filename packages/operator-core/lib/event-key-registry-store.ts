@@ -352,7 +352,7 @@ export async function recordEventKeyDerivation(
        SET emitter         = ${input.emitter},
            emitter_exists  = ${input.emitterExists},
            emit_site_count = ${input.emitSiteCount},
-           derived_at      = ${input.derivedAt ?? null}::timestamptz,
+           derived_at      = COALESCE(${input.derivedAt ?? null}::timestamptz, now()),
            derived_from    = ${derivedFrom},
            updated_at      = now()
      WHERE workspace_id = ${input.workspaceId}
