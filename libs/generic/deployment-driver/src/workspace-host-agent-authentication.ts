@@ -41,8 +41,16 @@ import { assertWorkspaceHostSecretIsolation } from "./workspace-host-test-harnes
 // bumping it is what turns "this host is still running the old codex probe" into a loud contract
 // mismatch instead of a silent 5/6 that reads as a credential fault. That misreading cost a
 // canary and most of a session before it was traced to the bundle rather than the credentials.
+//
+// v4 (WI-10001694): readiness and identity no longer compete for one boolean. codex's
+// `authenticated-account` probe is `satisfiesReadiness: false` — it still records WHO the
+// credential claims to be, but only an inference probe can mark an agent ready. The bump is
+// required for the same reason v3's was: a host still running the v3 bundle has the SHORT-CIRCUIT
+// arrangement, where a forged `auth.json` that matches SUBJECT_PATTERN marks codex ready and
+// `live-inference` never runs. That host is not equivalent to this one, and the strict-equality
+// comparison in the controller is what refuses it instead of trusting its report.
 export const WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION =
-  "papercusp-workspace-host-agent-verification-v3";
+  "papercusp-workspace-host-agent-verification-v4";
 
 export const WORKSPACE_HOST_CANARY_AGENTS = ["claude", "codex", "omp"] as const;
 export type WorkspaceHostCanaryAgent =
@@ -93,6 +101,31 @@ export interface WorkspaceHostAgentVerificationProbeSpec {
   readonly proofPattern: RegExp;
   readonly subjectDisclosure: WorkspaceHostAgentSubjectDisclosure;
   readonly timeoutMs?: number;
+  /**
+   * Whether a matching result from this probe may mark the agent READY. Defaults to true.
+   *
+   * `false` makes the probe contribute SUBJECT EVIDENCE ONLY: it still runs, and its parsed
+   * subject is published as `selfReportedSubjectDigest`, but it can neither set `ready` nor
+   * end the probe loop. Use it for any probe whose proof the credential holder could author.
+   *
+   * This exists because ORDERING cannot express the distinction safely (WI-10001694). The loop
+   * breaks on the first ready spec, so a forgeable probe placed FIRST short-circuits the real
+   * one; and placed SECOND it runs exactly when the real one did NOT pass, so a forged
+   * credential plus a transient endpoint failure still reads ready. Both arrangements make
+   * forgery load-bearing. A probe that cannot satisfy readiness at all is safe in ANY position,
+   * which is what takes the defect out of the ordering and makes it structural.
+   */
+  readonly satisfiesReadiness?: boolean;
+}
+
+/**
+ * True when a matching result from this spec may mark the agent ready. Absent means true, so a
+ * spec that predates the flag keeps its meaning; a probe is opted OUT of readiness explicitly.
+ */
+export function workspaceHostAgentSpecSatisfiesReadiness(
+  spec: WorkspaceHostAgentVerificationProbeSpec,
+): boolean {
+  return spec.satisfiesReadiness !== false;
 }
 
 /**
@@ -188,10 +221,24 @@ export const DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES: Readonly<
       endpoint: "https://api.openai.com",
       proofPattern: SUBJECT_PATTERN,
       subjectDisclosure: "digest",
+      // WI-10001694, superseding D-265's ordering rationale. MEASURED 2026-09-17: against a fully
+      // fabricated `$CODEX_HOME/auth.json` — invented email and account_id, placeholder access
+      // token, an `alg:RS256` signature nothing signed — this command prints `Logged in using
+      // ChatGPT` and exits 0. The REAL credential prints the SAME line at the same exit code, so
+      // the outputs are byte-identical and this probe cannot tell a forged credential from a live
+      // one. (Two cruder arms WERE rejected `invalid ID token format`, so codex parses the token
+      // structurally and simply never verifies it.)
+      //
+      // It survives, rather than being removed as claude's was in WI-10001689, because it is the
+      // only signal naming WHICH account a host authenticated as — and it is safe to keep ONLY
+      // because it can no longer decide readiness. What stops the vacuity is this flag, not the
+      // fact that `Logged in using ChatGPT` happens to miss SUBJECT_PATTERN today: that miss is a
+      // coincidence of one CLI's current output string, and any auth mode or future release that
+      // prints an account line would have restored the short-circuit silently.
+      satisfiesReadiness: false,
     },
-    // D-265. Ordered SECOND so a codex that does name an account still proves the stronger
-    // account-subject property; the probe loop breaks on the first ready spec, so this runs only
-    // when the account probe did not match. It has to exist because, under ChatGPT OAuth,
+    // D-265, as amended by WI-10001694: this is now codex's ONLY readiness-bearing probe, not a
+    // fallback behind the account probe. It has to exist because, under ChatGPT OAuth,
     // `codex login status` prints exactly `Logged in using ChatGPT` — no account, no email, and
     // no `--json` to ask for one — so SUBJECT_PATTERN cannot match and codex could never pass.
     //
@@ -440,6 +487,18 @@ export interface WorkspaceHostAgentVerificationEvidence {
   readonly subject?: string;
   /** Always present on a successful probe: a stable digest of the parsed proof value. */
   readonly proofDigest?: string;
+  /**
+   * The subject a `satisfiesReadiness: false` probe reported, digested — SELF-REPORTED AND
+   * UNVERIFIED, and named that way so no reader can mistake it for a proven identity.
+   *
+   * It is deliberately a SEPARATE field from `subject`/`proofDigest` rather than a flag beside
+   * them. Those two are populated by the probe that decided `ready`; this one is populated by a
+   * probe that is not allowed to decide anything. Measured 2026-09-17 (WI-10001694): a fully
+   * fabricated codex `auth.json` makes `codex login status` print output BYTE-IDENTICAL to the
+   * real credential's, so any value derived from it is an unverifiable claim. Its presence says
+   * the CLI named a subject; it never says the credential authenticates. Read `ready` for that.
+   */
+  readonly selfReportedSubjectDigest?: string;
   readonly subjectDisclosure: WorkspaceHostAgentSubjectDisclosure;
   /** Populated only on failure, and only with a fixed reason code — never CLI output. */
   readonly failure?: WorkspaceHostAgentProbeFailureReason;
@@ -830,13 +889,25 @@ export async function probeWorkspaceHostAgents(
     if (specs.length === 0) {
       throw new Error(`agent '${agent}' has no verification probes`);
     }
+    // STRUCTURAL GUARD (WI-10001694). A probe set whose every spec is `satisfiesReadiness: false`
+    // could never mark the agent ready, and the shape that produces it — opting the last readiness
+    // probe out while meaning to keep the account one for evidence — fails SILENTLY in the
+    // direction that reads as a credential fault. Refusing the SET is what makes the defect
+    // impossible to express, rather than merely absent from the current arrangement.
+    if (!specs.some(workspaceHostAgentSpecSatisfiesReadiness)) {
+      throw new Error(
+        `agent '${agent}' has no readiness-bearing verification probe`,
+      );
+    }
+    let readiness: WorkspaceHostAgentVerificationEvidence | undefined;
+    let selfReportedSubjectDigest: string | undefined;
     for (const spec of specs) {
       if (spec.agent !== agent) {
         throw new Error(
           `agent probe for '${agent}' declares agent '${spec.agent}'`,
         );
       }
-      agents[agent] = await probeWorkspaceHostAgentVerification({
+      const evidence = await probeWorkspaceHostAgentVerification({
         // Applied AFTER the agent-mismatch check above, so a mis-declared spec is refused as a
         // mis-declared spec rather than silently rewritten to point at another agent's binary.
         spec: applyWorkspaceHostAgentRuntimePath(
@@ -849,8 +920,36 @@ export async function probeWorkspaceHostAgents(
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(input.runAsUser ? { runAsUser: input.runAsUser } : {}),
       });
-      if (agents[agent]?.ready) break;
+      if (!workspaceHostAgentSpecSatisfiesReadiness(spec)) {
+        // Contributes identity, never readiness: it cannot assign `readiness` and cannot `break`,
+        // so it is inert in EVERY position. A probe that did not match leaves no digest, which is
+        // the ChatGPT-OAuth case today — absent, rather than an empty-string claim of identity.
+        if (evidence.proofDigest) {
+          selfReportedSubjectDigest = evidence.proofDigest;
+        }
+        continue;
+      }
+      readiness = evidence;
+      if (evidence.ready) break;
     }
+    if (!readiness) {
+      // Unreachable via the structural guard above; kept because the alternative to throwing here
+      // is a non-null assertion, and this module's whole purpose is refusing unbacked booleans.
+      throw new Error(
+        `agent '${agent}' produced no readiness-bearing evidence`,
+      );
+    }
+    const merged: WorkspaceHostAgentVerificationEvidence =
+      selfReportedSubjectDigest
+        ? { ...readiness, selfReportedSubjectDigest }
+        : readiness;
+    // The merge builds a new object that leaves this function, so it faces the same gate the
+    // probe's own evidence did rather than inheriting a pass from before the field was added.
+    assertWorkspaceHostSecretIsolation(
+      merged,
+      `workspaceHost.agentAuthentication.${agent}`,
+    );
+    agents[agent] = merged;
   }
   const complete = agents as Record<
     WorkspaceHostCanaryAgent,
