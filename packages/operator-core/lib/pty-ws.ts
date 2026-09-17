@@ -110,6 +110,57 @@ export interface PtyWsServerOptions {
   allowedHosts?: string[];
   /** Allow localhost / loopback origins. Default true; set false in prod. */
   allowLocalhost?: boolean;
+  /**
+   * Resolved multi-worker cluster size (`resolveClusterWorkers(...)`). > 1 makes a
+   * PTY WS server unserviceable in this process and is REFUSED — see
+   * `ptyWsClusterRefusal`. Omitted / 1 ⇒ single-process, start normally.
+   */
+  clusterWorkers?: number;
+}
+
+/**
+ * The single wire response for BOTH pre-upgrade rejections that must remain
+ * indistinguishable to a caller (no registry entry here / no ticket presented).
+ * It deliberately attributes NEITHER cause: see `verifyClient` below. The server
+ * log names the real one.
+ */
+const PTY_UPGRADE_REJECTION = 'pty unavailable or ticket missing';
+
+/**
+ * Whether multi-worker clustering makes a PTY WS server unserviceable in this
+ * process — and, if so, the one-line reason to log. `null` ⇒ safe to start.
+ *
+ * The pty registry `pty-bridge` keeps is IN-PROCESS state shared with this host's
+ * HTTP `/pty/spawn` routes, so an attach must land in the same process that
+ * spawned. Under `node:cluster` it cannot: exactly ONE worker wins the
+ * PAPERCUSP_PTY_WS_PORT bind (the rest take the EADDRINUSE path below and skip),
+ * while spawn requests round-robin across every acceptor. A terminal whose spawn
+ * landed on any other worker finds no registry entry and is rejected at the
+ * upgrade — so the failure rate is (workers-1)/workers, strictly interleaved.
+ * That is the ~50% of terminal connections failing on the clustered :3070
+ * (WI-10001638), and it has been broken since clustering arrived (2026-06-18),
+ * NOT since the 2026-08-22 ticket hardening, which only renamed the symptom.
+ *
+ * The file header above this function already documented the two as incompatible
+ * and asserted "the two never coexist". In this deployment they do:
+ * papercup-dev-api.service.d/55-memory-envelope.conf sets
+ * PAPERCUSP_CLUSTER_WORKERS=6 while PAPERCUSP_PTY_WS_PORT=3056 is also set. So
+ * refusing to bind ENFORCES an invariant that was merely assumed, and deletes
+ * nothing that worked: the desktop product — the shipping target — pins
+ * PAPERCUSP_CLUSTER=0, where this predicate is `null` and terminals are unaffected.
+ *
+ * Pure + exported for tests; the caller passes the already-resolved worker count.
+ */
+export function ptyWsClusterRefusal(opts: { clusterWorkers?: number; port: number }): string | null {
+  const workers = Math.floor(Number(opts.clusterWorkers ?? 1));
+  if (!Number.isFinite(workers) || workers <= 1) return null;
+  return (
+    `[pty-ws] REFUSING to start on port ${opts.port}: multi-worker clustering is ACTIVE ` +
+    `(${workers} workers). The pty registry is per-process, so only 1-in-${workers} terminal ` +
+    `attaches could ever find their handle — the rest would be rejected at the upgrade. ` +
+    `Terminals are DISABLED in this process. To run terminals set PAPERCUSP_CLUSTER_WORKERS=0 ` +
+    `(or PAPERCUSP_CLUSTER=0); to silence this, unset PAPERCUSP_PTY_WS_PORT.`
+  );
 }
 
 // Pin started/serverRef on globalThis so HMR re-imports of this module
@@ -127,6 +178,14 @@ _wsGlobals.__papercuspPtyWs = wsState;
  * Next dev's instrumentation re-register) is a no-op.
  */
 export function startPtyWsServer(opts: PtyWsServerOptions): WebSocketServer | null {
+  // Checked BEFORE the idempotency short-circuit on purpose: this is a
+  // configuration precondition, not per-call state, so a clustered process must
+  // never hand back a server — not even a previously-started one.
+  const clusterRefusal = ptyWsClusterRefusal(opts);
+  if (clusterRefusal) {
+    console.error(clusterRefusal);
+    return null;
+  }
   if (wsState.started) return wsState.serverRef;
   wsState.started = true;
 
@@ -162,8 +221,32 @@ export function startPtyWsServer(opts: PtyWsServerOptions): WebSocketServer | nu
       const ptyId = match[1]!;
       const accessScope = getPtyAccessScope(ptyId);
       const ticket = ptyTicketFromProtocolHeader(info.req.headers['sec-websocket-protocol']);
-      if (!accessScope || !ticket) {
-        done(false, 401, 'pty ticket required');
+      // TWO INDEPENDENT rejections that deliberately SHARE one wire response.
+      //
+      // `!accessScope` is an in-process REGISTRY MISS: this process never spawned
+      // that pty (a stale or already-reaped id — or, before the cluster refusal in
+      // startPtyWsServer, a spawn that landed on a different cluster worker).
+      // `!ticket` is a genuinely BEARERLESS client. Keep them indistinguishable on
+      // the wire: differentiating them would let any allowed-origin caller probe
+      // which pty ids exist in this process, which is the property the header
+      // comment above claims ("cannot observe even whether a PTY handle exists").
+      //
+      // They must be distinguishable IN THE LOG, though. Until 2026-09-17 these
+      // were one branch answering `'pty ticket required'`, so a registry miss
+      // accused the TICKET — and sent two separate investigations (2026-09-16,
+      // 2026-09-17) hunting a ticket/HMAC bug that never existed. Whatever else
+      // changes here, do not re-merge these two branches under one message.
+      if (!accessScope) {
+        console.warn(
+          `[pty-ws] no registry entry for pty ${ptyId} in this process (pid ${process.pid}) — ` +
+            'rejecting the upgrade. This is NOT a ticket failure: the pty was never spawned ' +
+            'here, or its handle has already been reaped.',
+        );
+        done(false, 401, PTY_UPGRADE_REJECTION);
+        return;
+      }
+      if (!ticket) {
+        done(false, 401, PTY_UPGRADE_REJECTION);
         return;
       }
       const redeemed = redeemPtyTicket(ticket, {
