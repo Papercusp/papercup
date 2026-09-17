@@ -274,6 +274,31 @@ function apiKeyPaths(value: unknown, path: readonly string[] = []): string[] {
 }
 
 /**
+ * API-key-shaped keys still carrying a LIVE value.
+ *
+ * The neutralized state is `null` (see `neutralizeApiKeys`), so presence alone cannot be the
+ * admission predicate — a correctly-projected file has the key and must pass. An empty string
+ * counts as neutral too: it carries no secret, and refusing it would reject a file that is already
+ * harmless.
+ */
+function liveApiKeyPaths(value: unknown, path: readonly string[] = []): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((nested, index) =>
+      liveApiKeyPaths(nested, [...path, String(index)]),
+    );
+  }
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value).flatMap(([key, nested]) => {
+    const here = [...path, key];
+    const live =
+      apiKeyPaths({ [key]: null }).length > 0 && nested !== null && nested !== ""
+        ? [here.join(".")]
+        : [];
+    return [...live, ...liveApiKeyPaths(nested, here)];
+  });
+}
+
+/**
  * Neutralize every api-key-shaped key at any depth, PRESERVING the field.
  *
  * ⚠ NEUTRALIZED IN PLACE, NOT DELETED — and the distinction is load-bearing, not stylistic.
