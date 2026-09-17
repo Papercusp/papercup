@@ -92,6 +92,109 @@ describe('hosted lifecycle deferred-spend reconciliation (real PG + real RLS)', 
     await db?.cleanup();
   });
 
+  /**
+   * WI-10001739 link 3a. The exhaustion branch used to write
+   * `error = jsonb_build_object('code','hosted_lifecycle_recovery_exhausted')` unconditionally,
+   * which both ERASED a recorded cause and presented the reaper's own behaviour as a finding.
+   *
+   * These assert the SQL semantics of the CASE, so they need real Postgres: a faked `tx` would
+   * happily return whatever it was told and prove nothing about `jsonb_typeof` or `||`.
+   */
+  describe('recovery exhaustion never fabricates over a real cause (WI-10001739 link 3a)', () => {
+    async function seedExhaustedOperation(
+      workspaceId: string,
+      operationId: string,
+      error: unknown,
+    ): Promise<void> {
+      const connectionId = `conn-${operationId}`;
+      const hostId = `host-${operationId}`;
+      await db.adminSql`
+        INSERT INTO harness_shared.workspace_host_connections (
+          workspace_id, id, target, label, credential_ref, provider_config, status
+        ) VALUES (
+          ${workspaceId}, ${connectionId}, 'gcp', 'link3a connection',
+          'gcloud://active-user', ${JSON.stringify({ projectId: 'billing-project' })}::jsonb,
+          'connected'
+        )`;
+      await db.adminSql`
+        INSERT INTO harness_shared.workspace_hosts (
+          workspace_id, id, name, connection_id, target, scope_label, region, size,
+          image, disk_gib, network, desired_state, observed_state
+        ) VALUES (
+          ${workspaceId}, ${hostId}, 'link3a host', ${connectionId}, 'gcp',
+          'billing-project', 'us-central1', 'e2-small', 'papercusp-v1', 20, 'default',
+          'absent', 'absent'
+        )`;
+      // recovery_attempts at the policy ceiling (3) is what makes classify return
+      // 'recovery-exhausted', so this lands in the branch under test regardless of heartbeat age.
+      await db.adminSql`
+        INSERT INTO harness_shared.workspace_host_operations (
+          workspace_id, id, host_id, action, status, recovery_attempts, error
+        ) VALUES (
+          ${workspaceId}, ${operationId}, ${hostId}, 'destroy', 'running', 3,
+          ${error === null ? null : JSON.stringify(error)}::jsonb
+        )`;
+    }
+
+    async function readOperation(workspaceId: string, operationId: string) {
+      const [row] = await db.adminSql<{ error: unknown; status: string; recovery_state: string }[]>`
+        SELECT error, status, recovery_state
+          FROM harness_shared.workspace_host_operations
+         WHERE workspace_id = ${workspaceId} AND id = ${operationId}`;
+      return row;
+    }
+
+    it('preserves a recorded terminal cause and records exhaustion alongside it', async () => {
+      const workspaceId = freshWorkspace();
+      // Exactly the shape link 2 persists: the REAL provider failure, with its cause chain.
+      const realCause = {
+        code: 'workspace_host_provider_error',
+        message: 'googleapi: Error 403: Required permission compute.routers.delete',
+        cause: { code: 'gcp_permission_denied', status: 403 },
+      };
+      await seedExhaustedOperation(workspaceId, 'op-real-cause', realCause);
+
+      const out = await reconcileHostedLifecycleJobs(workspaceId, new Date(FIRST_ATTEMPT_AT));
+      expect(out.exhausted).toEqual(['op-real-cause']);
+
+      const row = await readOperation(workspaceId, 'op-real-cause');
+      expect(row.status).toBe('failed');
+      expect(row.recovery_state).toBe('exhausted');
+      // The real cause survives INTACT — including the nested provider cause, which is the part a
+      // blanket overwrite destroyed and which is what actually names the failure.
+      expect(row.error).toMatchObject(realCause);
+      // ...and exhaustion is still recorded, as an ADDITIONAL fact rather than a replacement.
+      expect(row.error).toMatchObject({ recoveryExhausted: true });
+      // The fabricated code must NOT appear when a real cause was available.
+      expect((row.error as { code: string }).code).toBe('workspace_host_provider_error');
+      expect(row.error).not.toMatchObject({ synthesized: true });
+    });
+
+    it('marks a cause it had to invent as synthesized-by-recency, not as a diagnosis', async () => {
+      const workspaceId = freshWorkspace();
+      await seedExhaustedOperation(workspaceId, 'op-no-cause', null);
+
+      const out = await reconcileHostedLifecycleJobs(workspaceId, new Date(FIRST_ATTEMPT_AT));
+      expect(out.exhausted).toEqual(['op-no-cause']);
+
+      const row = await readOperation(workspaceId, 'op-no-cause');
+      expect(row.status).toBe('failed');
+      // The code is still written — a reader needs SOMETHING — but it now carries the provenance
+      // that stops it being mistaken for a measured cause.
+      expect(row.error).toMatchObject({
+        code: 'hosted_lifecycle_recovery_exhausted',
+        synthesized: true,
+        classifiedBy: 'recency',
+      });
+      // Assert the OPERATIVE sentence verbatim. Asserting a paraphrase of it ('not a diagnosis')
+      // failed here while the code was correct — a guessed literal reads exactly like a real
+      // defect, which is the same trap the synthesized code itself sets one layer up.
+      const detail = String((row.error as { detail: string }).detail);
+      expect(detail).toContain('Do not read it as a diagnosis');
+      expect(detail).toContain('describes the RECONCILER giving up');
+    });
+  });
+
   it('deduplicates concurrent first reads, preserves the whole signal array, and settles on the next due pass', async () => {
     const workspaceId = freshWorkspace();
     const connectionId = 'connection-r4';

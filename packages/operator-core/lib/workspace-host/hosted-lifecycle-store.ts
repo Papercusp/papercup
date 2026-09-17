@@ -926,12 +926,42 @@ export async function reconcileHostedLifecycleJobs(
         });
         continue;
       }
+      // WI-10001739 link 3a: this branch used to OVERWRITE `error` with a fabricated
+      // `hosted_lifecycle_recovery_exhausted` unconditionally. Two distinct harms, both measured:
+      //
+      // 1. It ERASED a real cause. The provisioning workflow records its true terminal error
+      //    (link 2, `recordWorkspaceHostOperationTerminalFailure`); a later sweep of the same row
+      //    replaced that with the synthesized code, so the one place the real provider error
+      //    survived was destroyed by the component least able to explain the failure.
+      // 2. A synthesized error is WORSE THAN NO ERROR. A blank field reads as "unknown, go look";
+      //    `hosted_lifecycle_recovery_exhausted` reads as a FINDING — and it is the reaper
+      //    describing its OWN behaviour, not the operation's failure. Measured 2026-09-17: that
+      //    one fabricated code caused this defect to be misdiagnosed three times in one session
+      //    (a destroy step that died at 73 SECONDS was read as "killed at 20 minutes", because the
+      //    20-min reap band is the REPORTING path, not the EXECUTION path).
+      //
+      // So: never clobber a recorded cause, and when there is genuinely nothing to report, say
+      // that this verdict came from RECENCY and is not a diagnosis.
       await tx`
         UPDATE harness_shared.workspace_host_operations
         SET recovery_state = 'exhausted', status = 'failed', finished_at = now(),
             orphaned_at = NULL,
             message = 'Lifecycle recovery attempts exhausted',
-            error = jsonb_build_object('code', 'hosted_lifecycle_recovery_exhausted'),
+            error = CASE
+              WHEN error IS NULL OR jsonb_typeof(error) = 'null' THEN jsonb_build_object(
+                'code', 'hosted_lifecycle_recovery_exhausted',
+                'synthesized', true,
+                'classifiedBy', 'recency',
+                'detail', 'The reconciler exhausted its bounded recovery attempts. No terminal cause was ever recorded for this operation, so this describes the RECONCILER giving up, not a measured failure of the operation itself. Do not read it as a diagnosis: the real cause, if any, was never captured.'
+              )
+              WHEN jsonb_typeof(error) = 'object' THEN error || jsonb_build_object('recoveryExhausted', true)
+              -- Measured 2026-09-17: every non-null error in this table is an object (30/30), so
+              -- this arm is unreachable today. It exists because jsonb concatenation RAISES on a
+              -- non-object jsonb, and that raise would abort the whole workspace sweep inside its
+              -- transaction - a broader, harder-to-attribute failure than the one this branch is
+              -- fixing. Preserve the unexpected value rather than concatenating or discarding it.
+              ELSE jsonb_build_object('recoveryExhausted', true, 'priorError', error)
+            END,
             updated_at = now()
         WHERE workspace_id = ${workspaceId} AND id = ${job.operation_id}`;
       out.exhausted.push(job.operation_id);
