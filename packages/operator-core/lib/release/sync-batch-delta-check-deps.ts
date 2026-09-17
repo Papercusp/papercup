@@ -9,14 +9,28 @@
  * a lambda that decides something in this file is invisible to the tests
  * (EI-21559794492221235).
  *
- * Every subprocess is bounded (spawnSync timeout) and every failure resolves to
+ * Every subprocess is bounded (an execFile timeout) and every failure resolves to
  * the deps contract's "could not measure" value (`null` / `ok:false`), never to a
  * fake green — the pure runner treats those as skip-and-hold-cursor.
+ *
+ * ⛔ EVERY subprocess leg here MUST stay async — never `spawnSync`/`execFileSync`
+ * (WI-10001771). This module runs inside bg-host, which also serves :3271 and the
+ * DBOS routine engine on the SAME event loop. `spawnSync` pumps its child on a
+ * NESTED uv loop, so the main thread parks in one `epoll_pwait` for the child's
+ * whole lifetime: the outer loop's timers stop, the listening socket is never
+ * polled, and :3271 answers nothing. Bounding the CHILD's lifetime does not help —
+ * that was the original (wrong) reasoning here. Measured 2026-09-17: the
+ * `runAffected` leg's 25-minute budget became a 25-minute `epoll_pwait` timeout
+ * (strace arg `0x16e1ae` = 1,499,566 ms), bg-host served :3271 for ~4s per boot,
+ * its own watchdog SIGKILLed it at 184s, and the restart re-derived the same
+ * commit and blocked again — a self-perpetuating loop that took the routine engine
+ * down fleet-wide (~108 routines overdue) until the routine was deactivated.
  */
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { promisify } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import { createOneWorkItem } from '../agent-tools/work_items/_create-core';
 import {
@@ -73,20 +87,36 @@ interface RunResult {
   stderr: string;
 }
 
-/** argv spawn, never a shell string. `null` = the spawn itself could not be measured
- *  (ENOENT, timeout kill, …) — callers map that to their contract's undetermined value. */
-function run(cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }): RunResult | null {
+const execFileAsync = promisify(execFile);
+
+/** argv spawn, never a shell string. ASYNC by contract — see the ⛔ note in the module
+ *  header; a sync variant here wedges bg-host's shared event loop. `null` = the spawn
+ *  itself could not be measured (ENOENT, timeout kill, …) — callers map that to their
+ *  contract's undetermined value.
+ *
+ *  `execFile` REJECTS on a non-zero exit, but a non-zero exit is a MEASUREMENT here
+ *  (a red), not a failure to measure. So the catch splits them the same way the old
+ *  `spawnSync` branch did: a numeric `code` on a child that was not killed is a real
+ *  exit status; ENOENT (string code) and a timeout/signal kill (`killed`) are `null`. */
+async function run(
+  cmd: string,
+  args: string[],
+  opts: { cwd: string; timeoutMs: number },
+): Promise<RunResult | null> {
   try {
-    const r = spawnSync(cmd, args, {
+    const { stdout, stderr } = await execFileAsync(cmd, args, {
       cwd: opts.cwd,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
       timeout: opts.timeoutMs,
       killSignal: 'SIGTERM',
     });
-    if (r.error) return null;
-    return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
-  } catch {
+    return { status: 0, stdout: stdout ?? '', stderr: stderr ?? '' };
+  } catch (err) {
+    const e = err as { code?: number | string; killed?: boolean; stdout?: string; stderr?: string };
+    if (typeof e.code === 'number' && e.killed !== true) {
+      return { status: e.code, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+    }
     return null;
   }
 }
@@ -157,11 +187,11 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
       }
     },
 
-    greenCheckpointRunning(): boolean | null {
+    async greenCheckpointRunning(): Promise<boolean | null> {
       // proc-guard excludes the caller's own ancestor chain, so this cannot
       // self-match (root CLAUDE.md's pattern-poll trap). exit 0 = running,
       // 1 = not running, 2/other = usage error ⇒ undetectable.
-      const r = run('node', [script('scripts/proc-guard.mjs'), 'check', 'green-checkpoint'], {
+      const r = await run('node', [script('scripts/proc-guard.mjs'), 'check', 'green-checkpoint'], {
         cwd: cfg.root,
         timeoutMs: SYNC_DELTA_TIMEOUTS_MS.procGuard,
       });
@@ -171,8 +201,8 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
       return null;
     },
 
-    headSha(): string | null {
-      const r = run('git', ['-C', cfg.root, 'rev-parse', cfg.branch], {
+    async headSha(): Promise<string | null> {
+      const r = await run('git', ['-C', cfg.root, 'rev-parse', cfg.branch], {
         cwd: cfg.root,
         timeoutMs: SYNC_DELTA_TIMEOUTS_MS.git,
       });
@@ -181,8 +211,8 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
       return /^[0-9a-f]{7,64}$/.test(sha) ? sha : null;
     },
 
-    listBatches(sinceSha: string): SyncBatch[] | null {
-      const r = run(
+    async listBatches(sinceSha: string): Promise<SyncBatch[] | null> {
+      const r = await run(
         'git',
         [
           '-C',
@@ -199,8 +229,8 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
       return parseSyncBatches(r.stdout);
     },
 
-    probeRadius(paths: readonly string[]): RadiusProbe | null {
-      const r = run(
+    async probeRadius(paths: readonly string[]): Promise<RadiusProbe | null> {
+      const r = await run(
         'node',
         [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(','), '--print-affected'],
         { cwd: cfg.root, timeoutMs: SYNC_DELTA_TIMEOUTS_MS.probe },
@@ -209,8 +239,10 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
       return parseAffectedProbe(r.stdout);
     },
 
-    runAffected(paths: readonly string[]): { ok: boolean; failing: ReturnType<typeof parseFailingFilesLine> } {
-      const r = run('node', [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(',')], {
+    async runAffected(
+      paths: readonly string[],
+    ): Promise<{ ok: boolean; failing: ReturnType<typeof parseFailingFilesLine> }> {
+      const r = await run('node', [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(',')], {
         cwd: cfg.root,
         timeoutMs: SYNC_DELTA_TIMEOUTS_MS.affected,
       });
@@ -221,8 +253,8 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
       return { ok: false, failing: parseFailingFilesLine(`${r.stdout}\n${r.stderr}`) };
     },
 
-    runTsc(files: readonly string[]): { ok: boolean; failing: string[] } {
-      const r = run('node', [script('scripts/lint-tsc.mjs'), `--files=${files.join(',')}`], {
+    async runTsc(files: readonly string[]): Promise<{ ok: boolean; failing: string[] }> {
+      const r = await run('node', [script('scripts/lint-tsc.mjs'), `--files=${files.join(',')}`], {
         cwd: cfg.root,
         timeoutMs: SYNC_DELTA_TIMEOUTS_MS.tsc,
       });
@@ -232,8 +264,8 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
       return { ok: false, failing: parseTscFailingFiles(`${r.stdout}\n${r.stderr}`) };
     },
 
-    confirmOne(file: string): ConfirmVerdict {
-      const r = run('node', [script('scripts/test-files.mjs'), file], {
+    async confirmOne(file: string): Promise<ConfirmVerdict> {
+      const r = await run('node', [script('scripts/test-files.mjs'), file], {
         cwd: cfg.root,
         timeoutMs: SYNC_DELTA_TIMEOUTS_MS.confirm,
       });
