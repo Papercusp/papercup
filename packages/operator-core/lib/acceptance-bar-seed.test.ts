@@ -172,14 +172,21 @@ describe('acceptance BAR seed builder', () => {
     // REAL conflict (renamed/removed requirement, or the wrong rubric pinned). If this
     // ever acquires `repairable`, activation would record an audit over a rubric whose
     // bars disagree with its plan — the exact thing the extras check exists to catch.
-    // A criterion carrying a barKey must also carry the structural BAR fields, or it
-    // fails template_data parsing first and never reaches the extras check at all.
-    const barShaped = (criterion: Record<string, unknown>, barKey: string) => ({
-      ...criterion, barKey, role: 'outcome', mandatory: true,
-      passRatings: ['pass'], evidencePlane: 'tree',
-    });
+    // A barKey-bearing criterion cannot be hand-authored: the authoring schema demands a
+    // server-derived `barHash`. So the control is built by SEEDING a valid rubric and then
+    // renaming one bar to something the Requirements map does not know — which is also the
+    // real-world shape of this failure (a renamed or removed requirement).
+    const seeded = buildAcceptanceBarSeed({ ...input, planContent: plan() });
+    expect(seeded.ok).toBe(true);
+    if (!seeded.ok) throw new Error(seeded.message);
+    const renameFirstBar = (extra?: unknown) => {
+      const next = JSON.parse(JSON.stringify(seeded.templateData));
+      next.criteria[0].barKey = 'R-99';
+      if (extra) next.criteria.push(extra);
+      return next;
+    };
     const conflicting = buildAcceptanceBarSeed({ ...input, planContent: plan(),
-      existingTemplateData: templateData([barShaped(legacyCriteria[0]!, 'R-99')]) });
+      existingTemplateData: renameFirstBar() });
     expect(conflicting.ok).toBe(false);
     if (conflicting.ok) throw new Error('expected the conflicting rubric to refuse');
     expect(conflicting.problems[0]).toMatchObject({ code: 'bar_rubric_conflict' });
@@ -190,7 +197,7 @@ describe('acceptance BAR seed builder', () => {
     // presence of a single unknown barKey must make the whole refusal fatal; a per-problem
     // OR would let a real conflict ride in behind a legacy sibling.
     const mixed = buildAcceptanceBarSeed({ ...input, planContent: plan(),
-      existingTemplateData: templateData([legacyCriteria[0], barShaped(legacyCriteria[1]!, 'R-99')]) });
+      existingTemplateData: renameFirstBar({ ...legacyCriteria[0], key: 'stray-legacy-outcome' }) });
     expect(mixed.ok).toBe(false);
     if (mixed.ok) throw new Error('expected the mixed rubric to refuse');
     expect(mixed.problems[0]!.repairable).toBeUndefined();
