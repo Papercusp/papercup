@@ -10,6 +10,7 @@ import {
   NodeWorkspaceHostAgentProbeRunner,
   WORKSPACE_HOST_OMP_LOCAL_INFERENCE_MARKER,
   WORKSPACE_HOST_CODEX_LIVE_INFERENCE_MARKER,
+  WORKSPACE_HOST_CLAUDE_LIVE_INFERENCE_MARKER,
   WORKSPACE_HOST_CANARY_AGENTS,
   applyWorkspaceHostAgentRuntimePath,
   buildWorkspaceHostAgentProbeProcess,
@@ -50,7 +51,11 @@ class ScriptedRunner implements WorkspaceHostAgentProbeRunner {
 const AUTHENTICATED = {
   claude: {
     exitCode: 0,
-    stdout: "Authentication status: logged in as canary@papercup.ai\n",
+    // WI-10001689: claude's probe is live-inference now, so a PASSING run is the marker alone on
+    // its own line, not an account line. `claude auth status` never contacted the endpoint it
+    // declared — measured, it reported a fabricated subject from a hand-written config file — so
+    // it could not establish that a delivered credential actually authenticates.
+    stdout: `${WORKSPACE_HOST_CLAUDE_LIVE_INFERENCE_MARKER}\n`,
   },
   codex: {
     exitCode: 0,
@@ -78,8 +83,31 @@ describe("workspace-host agent verification probes", () => {
       }
     }
     expect(
+      DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0],
+    ).toMatchObject({
+      verificationKind: "live-inference",
+      command: "claude",
+      endpoint: "https://api.anthropic.com",
+    });
+    expect(
       DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0].args,
-    ).toEqual(["auth", "status"]);
+    ).toEqual([
+      "-p",
+      "--strict-mcp-config",
+      "--no-session-persistence",
+      `Reply with exactly ${WORKSPACE_HOST_CLAUDE_LIVE_INFERENCE_MARKER} and nothing else.`,
+    ]);
+    // WI-10001689 RECURRENCE GUARD. `claude auth status` must not come back in ANY position.
+    // Measured: it never contacts the endpoint it declares, and an entirely invented access token
+    // beside a hand-written oauthAccount block matched SUBJECT_PATTERN — so it certifies only that
+    // a writable JSON file exists. Restoring it FIRST would be worst of all: the probe loop breaks
+    // on the first ready spec, so it would short-circuit the live-inference probe below it and
+    // silently return the gate to proving nothing.
+    expect(
+      DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude.some(
+        (spec) => spec.args.includes("auth") && spec.args.includes("status"),
+      ),
+    ).toBe(false);
     expect(
       DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex[0].args,
     ).toEqual(["login", "status"]);
@@ -95,7 +123,46 @@ describe("workspace-host agent verification probes", () => {
     });
   });
 
+  // WI-10001689: these two exercise the account-subject DISCLOSURE machinery, so they must run
+  // against an agent whose probe still yields an account subject. They used claude until claude
+  // moved to live-inference, whose proof is a fixed marker — keeping them there would have left
+  // them asserting that a non-secret constant does not leak, which is no assertion at all. codex
+  // keeps `authenticated-account` with the same `digest` disclosure, so the property under test
+  // is unchanged and still has a real email to protect.
   it("reports authenticated with only the four permitted discriminators", async () => {
+    const runner = new ScriptedRunner({ codex: AUTHENTICATED.codex });
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex[0],
+      runner,
+      now: NOW,
+    });
+
+    expect(evidence.ready).toBe(true);
+    expect(evidence.verificationKind).toBe("authenticated-account");
+    expect(evidence.exitStatus).toBe(0);
+    expect(evidence.endpoint).toBe("https://api.openai.com");
+    expect(evidence.observedAt).toBe("2026-08-25T22:30:00.000Z");
+    expect(evidence.proofDigest).toBe(
+      workspaceHostAgentSubjectDigest("canary@papercup.ai"),
+    );
+  });
+
+  it("never lets raw stdout or an un-redacted subject reach the evidence", async () => {
+    const runner = new ScriptedRunner({ codex: AUTHENTICATED.codex });
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex[0],
+      runner,
+      now: NOW,
+    });
+    const serialized = JSON.stringify(evidence);
+    expect(serialized).not.toContain("canary@papercup.ai");
+    expect(serialized).not.toContain("Login status");
+    // codex's disclosure is `digest`, so no plaintext subject is published at all.
+    expect(evidence.subject).toBeUndefined();
+  });
+
+  // WI-10001689: claude's own evidence shape, now that it proves a credential by USING it.
+  it("reports claude ready from a live-inference marker, not an account line", async () => {
     const runner = new ScriptedRunner({ claude: AUTHENTICATED.claude });
     const evidence = await probeWorkspaceHostAgentVerification({
       spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0],
@@ -104,27 +171,29 @@ describe("workspace-host agent verification probes", () => {
     });
 
     expect(evidence.ready).toBe(true);
-    expect(evidence.verificationKind).toBe("authenticated-account");
+    expect(evidence.verificationKind).toBe("live-inference");
     expect(evidence.exitStatus).toBe(0);
     expect(evidence.endpoint).toBe("https://api.anthropic.com");
-    expect(evidence.observedAt).toBe("2026-08-25T22:30:00.000Z");
-    expect(evidence.proofDigest).toBe(
-      workspaceHostAgentSubjectDigest("canary@papercup.ai"),
-    );
   });
 
-  it("never lets raw stdout or an un-redacted subject reach the evidence", async () => {
-    const runner = new ScriptedRunner({ claude: AUTHENTICATED.claude });
+  // WI-10001689. The failure this replaced was silent: `claude auth status` exits 0 and prints a
+  // subject for a credential the server would reject, so the gate read "ready". Under
+  // live-inference the server itself is the judge — measured against a real credential (exit 0,
+  // marker) and an invented one (exit 1, `401 OAuth access token is invalid`).
+  it("reports claude NOT ready when the credential is rejected by the server", async () => {
+    const runner = new ScriptedRunner({
+      claude: {
+        exitCode: 1,
+        stdout: "Failed to authenticate. API Error: 401 OAuth access token is invalid.\n",
+      },
+    });
     const evidence = await probeWorkspaceHostAgentVerification({
       spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0],
       runner,
       now: NOW,
     });
-    const serialized = JSON.stringify(evidence);
-    expect(serialized).not.toContain("canary@papercup.ai");
-    expect(serialized).not.toContain("Authentication status");
-    // claude's disclosure is `digest`, so no plaintext subject is published at all.
-    expect(evidence.subject).toBeUndefined();
+
+    expect(evidence.ready).toBe(false);
   });
 
   it("publishes the subject verbatim only when the tool itself redacted it", async () => {

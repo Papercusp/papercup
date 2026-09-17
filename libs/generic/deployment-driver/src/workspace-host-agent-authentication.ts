@@ -118,6 +118,8 @@ export const WORKSPACE_HOST_OMP_LOCAL_MODEL = "qwen2.5-coder:0.5b";
 export const WORKSPACE_HOST_OMP_LOCAL_INFERENCE_MARKER =
   "P046_OMP_LOCAL_INFERENCE_OK";
 export const WORKSPACE_HOST_CODEX_LIVE_INFERENCE_MARKER = "P046_CODEX_LIVE_OK";
+export const WORKSPACE_HOST_CLAUDE_LIVE_INFERENCE_MARKER =
+  "P047_CLAUDE_LIVE_OK";
 
 export const DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES: Readonly<
   Record<
@@ -126,17 +128,55 @@ export const DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES: Readonly<
   >
 > = {
   claude: [
+    // WI-10001689. `authenticated-account` via `claude auth status` was REMOVED here rather than
+    // kept as a first spec with live-inference behind it, and both halves of that are deliberate.
+    //
+    // It could never PASS. The agent-home bundle ships only `.claude/.credentials.json`, but the
+    // subject that command names is read from `~/.claude.json` `oauthAccount.*`, which the bundle
+    // does not ship — measured, a config dir holding only the credentials file reports
+    // `"email": null` and matches no subject, so claude failed verify-initialization for EVERY
+    // account, whatever credential was delivered.
+    //
+    // And it must NOT be repaired by shipping that identity file, because the check proves nothing
+    // even when it is satisfied: `claude auth status` never contacts the endpoint it declares.
+    // Measured, an entirely invented access token beside a hand-written oauthAccount block
+    // reported `attacker@example.invalid` / `Fabricated Org` and MATCHED SUBJECT_PATTERN. The
+    // subject comes from an ordinary writable JSON file, so anything that can write the agent home
+    // can name any subject it likes. Shipping the identity file would only have turned the gate
+    // green while leaving it forgeable, and would have put a real account's identity on the host
+    // in order to do it. Ordering it FIRST would be worse still: a future oauthAccount file would
+    // short-circuit the real probe and silently restore the vacuity.
+    //
+    // This is the conclusion the codex spec below already reached about `codex login status`
+    // ("proves nothing about whether the delivered credential authenticates"); claude simply never
+    // got the live-inference treatment that replaced it there.
     {
       agent: "claude",
-      verificationKind: "authenticated-account",
+      verificationKind: "live-inference",
       command: "claude",
-      args: ["auth", "status"],
+      // No `--model` here, for the reason the codex spec documents: a model-specific value goes
+      // stale under the probe and fails it for a NON-credential reason. `--strict-mcp-config`
+      // keeps a host's MCP config out of a readiness probe, and `--no-session-persistence` keeps
+      // the probe from writing session state into the agent home it is verifying. This EXACT argv
+      // was measured against both a real and a fabricated credential before it shipped.
+      args: [
+        "-p",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        `Reply with exactly ${WORKSPACE_HOST_CLAUDE_LIVE_INFERENCE_MARKER} and nothing else.`,
+      ],
       endpoint: "https://api.anthropic.com",
-      // An email, or an account/organization identifier, whichever the status line reports.
-      // The separator class deliberately EXCLUDES alphanumerics: a `\D`-style separator matches
-      // letters, so a greedy run would swallow the subject itself and capture only its tail.
-      proofPattern: SUBJECT_PATTERN,
+      // MULTILINE-ANCHORED, mirroring codex. Measured, `claude -p` does NOT echo the prompt (1
+      // marker occurrence on a passing run, where codex exec produced 3), so the anchoring is not
+      // load-bearing TODAY. It is kept because the codex comment records exactly what an
+      // unanchored pattern costs if a CLI ever starts echoing: every credential failure reads as
+      // ready. Cheap insurance against a CLI release nobody here controls.
+      proofPattern: new RegExp(
+        `^\\s*(${WORKSPACE_HOST_CLAUDE_LIVE_INFERENCE_MARKER})\\s*$`,
+        "m",
+      ),
       subjectDisclosure: "digest",
+      timeoutMs: 180_000,
     },
   ],
   codex: [
