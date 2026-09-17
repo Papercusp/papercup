@@ -857,12 +857,48 @@ async function reconcileDeferredSpend(
  * input) is unchanged in `hosted-lifecycle-policy.ts` for whoever lands the real
  * `customer_workspaces` provisioning writer to call from here.
  */
+/**
+ * The DBOS workflow ids this workspace still holds as RUNNABLE (WI-10001739 link 3b).
+ *
+ * Runs in its OWN transaction, deliberately never the reconciliation sweep's. `harness_app` only
+ * gained `SELECT` on `dbos.workflow_status` in migration 1172, and a missing-grant or
+ * missing-schema error raised inside the sweep's `FOR UPDATE` transaction would abort the ENTIRE
+ * workspace reconciliation rather than just this probe — turning a reporting defect into a total
+ * reconciler outage on any deployment where that migration has not applied yet. Isolating it is
+ * what makes the failure catchable.
+ *
+ * Returns `null` when the probe could not answer. `null` does NOT mean "no live workflows"; the
+ * caller must map it to `unknown` and fall back to recency.
+ */
+async function readLiveWorkspaceHostWorkflowIds(workspaceId: string): Promise<Set<string> | null> {
+  try {
+    return await transaction(workspaceId, async (tx) => {
+      // Measured 2026-09-17 against dbos.workflow_status: the status vocabulary is exactly
+      // SUCCESS / CANCELLED / MAX_RECOVERY_ATTEMPTS_EXCEEDED / ERROR / PENDING / ENQUEUED. The
+      // first four are settled; only these two mean DBOS still owns the workflow as runnable.
+      const rows = await tx<Array<{ workflow_uuid: string }>>`
+        SELECT workflow_uuid
+        FROM dbos.workflow_status
+        WHERE status IN ('PENDING', 'ENQUEUED')
+          AND workflow_uuid LIKE ${`workspace-host:${workspaceId}:%`}`;
+      return new Set(rows.map((row) => String(row.workflow_uuid)));
+    });
+  } catch {
+    return null;
+  }
+}
+
 export async function reconcileHostedLifecycleJobs(
   workspaceId: string,
   now = new Date(),
 ): Promise<HostedLifecycleReconciliationResult> {
   const notices: Array<{ key: string; title: string; body: string; operationId: string }> = [];
-  const result = await transaction(required(workspaceId, 'workspace_id'), async (tx) => {
+  const scopedWorkspaceId = required(workspaceId, 'workspace_id');
+  // Read BEFORE the sweep opens, for the isolation reason on the helper. The two reads are not
+  // atomic with each other, and that is fine in the only direction it can skew: a workflow that
+  // finishes in between is simply not reaped on THIS pass and is picked up by the next sweep.
+  const liveWorkflowIds = await readLiveWorkspaceHostWorkflowIds(scopedWorkspaceId);
+  const result = await transaction(scopedWorkspaceId, async (tx) => {
     const out: HostedLifecycleReconciliationResult = {
       recoveryPending: [],
       orphaned: [],
@@ -891,12 +927,24 @@ export async function reconcileHostedLifecycleJobs(
       FOR UPDATE OF operation`;
 
     for (const job of jobs) {
+      // Derived, not stored: the operation row carries no workflow id, but the workflow id is a
+      // pure function of three columns it DOES carry. Reuse the canonical builder rather than
+      // rebuilding the string here — note the neighbouring `idempotencyKey` in
+      // provisioning-runner.ts is a DIFFERENT key shape and would never match a workflow_uuid.
+      const workflowId = workspaceHostWorkflowKeys({
+        workspaceId: scopedWorkspaceId,
+        hostId: job.host_id,
+        operationId: job.operation_id,
+      }).workflowId;
+      const workflowLiveness: HostedLifecycleWorkflowLiveness =
+        liveWorkflowIds === null ? 'unknown' : liveWorkflowIds.has(workflowId) ? 'live' : 'gone';
       const health = classifyHostedLifecycleJob(
         {
           status: job.status,
           heartbeatAt: job.heartbeat_at == null ? null : String(job.heartbeat_at),
           updatedAt: String(job.operation_updated_at),
           recoveryAttempts: job.recovery_attempts,
+          workflowLiveness,
         },
         RECONCILIATION_POLICY,
         now.getTime(),

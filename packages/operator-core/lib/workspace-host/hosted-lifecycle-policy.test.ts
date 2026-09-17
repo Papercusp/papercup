@@ -103,6 +103,78 @@ describe('hosted lifecycle policy', () => {
     expect(classifyHostedLifecycleJob({ ...job, status: 'succeeded' }, policy, now)).toBe('terminal');
   });
 
+  // WI-10001739 link 3b. Every verdict above this point is inferred from ROW RECENCY, which
+  // cannot tell "the executor died" from "the executor is busy". These pin the one authoritative
+  // signal that outranks it — and, just as importantly, pin that a FAILED probe changes nothing.
+  describe('DBOS workflow liveness (link 3b)', () => {
+    const policy = { ...DEFAULT_HOSTED_LIFECYCLE_POLICY, stuckAfterMs: 1_000, orphanAfterMs: 5_000 };
+    const now = Date.parse('2026-08-28T00:00:10Z');
+    /** Old enough to be reaped on recency alone, and already past the recovery budget. */
+    const doomedByRecency = {
+      status: 'running' as const,
+      heartbeatAt: '2026-08-28T00:00:04Z',
+      updatedAt: '2026-08-28T00:00:00Z',
+      recoveryAttempts: policy.maxRecoveryAttempts,
+    };
+
+    it('does not reap a workflow DBOS still holds as runnable, however stale the row looks', () => {
+      // The defect: this row was marked failed — and (pre-3a) had a cause fabricated over its
+      // real one — while its workflow was still executing. `recovery-exhausted` is checked before
+      // age, so it is the branch a live workflow must never reach.
+      expect(classifyHostedLifecycleJob(doomedByRecency, policy, now)).toBe('recovery-exhausted');
+      expect(classifyHostedLifecycleJob({ ...doomedByRecency, workflowLiveness: 'live' }, policy, now))
+        .toBe('healthy');
+
+      const orphanAged = { ...doomedByRecency, recoveryAttempts: 0 };
+      expect(classifyHostedLifecycleJob(orphanAged, policy, now)).toBe('orphaned');
+      expect(classifyHostedLifecycleJob({ ...orphanAged, workflowLiveness: 'live' }, policy, now))
+        .toBe('healthy');
+    });
+
+    // The rail that keeps this safe to deploy: `harness_app` cannot read dbos.workflow_status
+    // until migration 1172 applies, so on any older deployment EVERY probe returns unknown. That
+    // must be byte-identical to the pre-3b classifier, never a licence to reap differently.
+    it('treats an unanswered probe as no evidence, falling back to recency unchanged', () => {
+      for (const liveness of ['unknown', 'gone'] as const) {
+        expect(classifyHostedLifecycleJob({ ...doomedByRecency, workflowLiveness: liveness }, policy, now))
+          .toBe('recovery-exhausted');
+        expect(
+          classifyHostedLifecycleJob(
+            { ...doomedByRecency, recoveryAttempts: 0, workflowLiveness: liveness },
+            policy,
+            now,
+          ),
+        ).toBe('orphaned');
+      }
+      // An omitted field is the same no-evidence case, so a caller that never sets it is safe.
+      expect(classifyHostedLifecycleJob(doomedByRecency, policy, now)).toBe('recovery-exhausted');
+    });
+
+    // `gone` is deliberately NOT more aggressive than `unknown`: absence from the runnable set is
+    // not proof of abandonment, so it must not invent a reap that recency would not have made.
+    it('never reaps on gone alone that recency would have called healthy', () => {
+      const fresh = {
+        status: 'running' as const,
+        heartbeatAt: '2026-08-28T00:00:09.500Z',
+        updatedAt: '2026-08-28T00:00:00Z',
+        recoveryAttempts: 0,
+      };
+      expect(classifyHostedLifecycleJob({ ...fresh, workflowLiveness: 'gone' }, policy, now)).toBe('healthy');
+      expect(classifyHostedLifecycleJob({ ...fresh, workflowLiveness: 'unknown' }, policy, now)).toBe('healthy');
+    });
+
+    it('still reports a settled row as terminal rather than healthy when the probe says live', () => {
+      // Liveness must not resurrect a row the operation itself already settled.
+      expect(
+        classifyHostedLifecycleJob(
+          { ...doomedByRecency, status: 'failed', workflowLiveness: 'live' },
+          policy,
+          now,
+        ),
+      ).toBe('terminal');
+    });
+  });
+
   it('queues idle stop only for an active running workspace without another lifecycle job', () => {
     const now = Date.parse('2026-08-28T02:00:00Z');
     const active = {
