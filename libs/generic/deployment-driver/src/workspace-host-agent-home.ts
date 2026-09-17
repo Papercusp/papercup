@@ -219,21 +219,84 @@ function parseJsonObjectBytes(
  */
 export const WORKSPACE_HOST_CODEX_NEUTRALIZED_REFRESH_TOKEN = "";
 
-function refreshTokenKeyPaths(value: unknown, path: readonly string[] = []): string[] {
+/** Key comparison is shape-based, so `refresh-token`, `refresh_token` and `refreshToken` all match. */
+function normalizedKey(key: string): string {
+  return key.replace(/[_-]/g, "").toLowerCase();
+}
+
+/**
+ * Recursively collect the paths of every key the predicate names.
+ *
+ * Generalized from the original refresh-token-only walker so a second credential SHAPE can reuse
+ * the identical traversal (WI-10001688). The traversal is the part that matters — a key at any
+ * depth, including inside an array, is found — and duplicating it for each new shape is how one
+ * copy ends up shallower than the other.
+ */
+function credentialKeyPaths(
+  value: unknown,
+  matches: (normalized: string) => boolean,
+  path: readonly string[] = [],
+): string[] {
   if (Array.isArray(value)) {
     return value.flatMap((nested, index) =>
-      refreshTokenKeyPaths(nested, [...path, String(index)]),
+      credentialKeyPaths(nested, matches, [...path, String(index)]),
     );
   }
   if (!value || typeof value !== "object") return [];
   return Object.entries(value).flatMap(([key, nested]) => {
     const here = [...path, key];
-    const named =
-      key.replace(/[_-]/g, "").toLowerCase() === "refreshtoken"
-        ? [here.join(".")]
-        : [];
-    return [...named, ...refreshTokenKeyPaths(nested, here)];
+    const named = matches(normalizedKey(key)) ? [here.join(".")] : [];
+    return [...named, ...credentialKeyPaths(nested, matches, here)];
   });
+}
+
+function refreshTokenKeyPaths(value: unknown, path: readonly string[] = []): string[] {
+  return credentialKeyPaths(value, (key) => key === "refreshtoken", path);
+}
+
+/**
+ * API-key-shaped keys, which a real `~/.codex/auth.json` carries at top level as `OPENAI_API_KEY`.
+ *
+ * WHY THIS EXISTS ALONGSIDE THE REFRESH-TOKEN SCANNER (WI-10001688). The projection hunted
+ * refresh-token-shaped keys exhaustively while spreading `{ ...body }`, so a raw API key rode
+ * through untouched — and an API key is STRICTLY MORE powerful than the refresh token the hunt
+ * exists to strip: a refresh token mints access for one account session, whereas `OPENAI_API_KEY`
+ * is a direct, long-lived, independently-billable credential that no generation revocation
+ * (`pc-agent-revocation`) can reach. Matching on name SHAPE rather than one literal keeps a
+ * provider-prefixed variant (`ANTHROPIC_API_KEY`, `openaiApiKey`) from re-opening it.
+ */
+function apiKeyPaths(value: unknown, path: readonly string[] = []): string[] {
+  return credentialKeyPaths(
+    value,
+    (key) => key.endsWith("apikey") || key === "secretkey" || key === "apisecret",
+    path,
+  );
+}
+
+/**
+ * Neutralize every api-key-shaped key at any depth, PRESERVING the field.
+ *
+ * ⚠ NEUTRALIZED IN PLACE, NOT DELETED — and the distinction is load-bearing, not stylistic.
+ * D-320 (WI-10001014/WI-10001015) is the measured precedent: an earlier projection DELETED
+ * `tokens.refresh_token`, and codex-cli then could not deserialize its own auth.json, which is why
+ * that field is emptied rather than removed today. Deleting an api-key field would be the same
+ * bet on the same deserializer.
+ *
+ * `null` and not `""` because null is the value a REAL ChatGPT-mode auth.json already carries
+ * (`OPENAI_API_KEY: null` — observed both in this repo's canonical fixture and in the field, cf
+ * EI-21526350850731857). So the projected file is byte-shaped like an ordinary OAuth-mode login
+ * rather than like a file someone edited: the neutral state is one the CLI demonstrably accepts,
+ * instead of one we reasoned it ought to.
+ */
+function neutralizeApiKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(neutralizeApiKeys);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, nested]) => [
+      key,
+      apiKeyPaths({ [key]: null }).length ? null : neutralizeApiKeys(nested),
+    ]),
+  );
 }
 
 /**
@@ -266,6 +329,19 @@ export function assertWorkspaceHostCodexAccessTokenProjection(
   if (!onlyNeutralized) {
     throw new WorkspaceHostAgentHomeBundleError(
       "files.codex access-token projection must not contain a refresh token",
+    );
+  }
+  // The second half of project-then-assert (WI-10001688). The projection already strips these, so
+  // reaching here means the material was minted by something OTHER than the current projection —
+  // exactly the case an admission gate exists to refuse, and the one a stripping projection alone
+  // cannot catch. No path is named in the message: naming it would echo where a secret sat.
+  // Mirrors the refresh-token allowance directly above: the KEY may be present (D-320 — the field
+  // must survive for codex-cli to deserialize), but only carrying its neutralized value. A
+  // non-null api key means the material was minted by something other than the current
+  // projection, which is precisely what an admission gate exists to refuse.
+  if (liveApiKeyPaths(body).length > 0) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "files.codex access-token projection must not contain an API key",
     );
   }
 }
@@ -317,12 +393,17 @@ export function projectWorkspaceHostCodexAccessToken(
       "files.codex must contain a non-empty access token",
     );
   }
+  // `{ ...body }` previously spread EVERY top-level key, so a real `~/.codex/auth.json` carried
+  // its `OPENAI_API_KEY` straight to the host past the refresh-token hunt below (WI-10001688).
   const projectedTokens: Record<string, unknown> = {
-    ...tokens,
+    ...(neutralizeApiKeys(tokens) as Record<string, unknown>),
     refresh_token: WORKSPACE_HOST_CODEX_NEUTRALIZED_REFRESH_TOKEN,
   };
   const projected = Buffer.from(
-    JSON.stringify({ ...body, tokens: projectedTokens }),
+    JSON.stringify({
+      ...(neutralizeApiKeys(body) as Record<string, unknown>),
+      tokens: projectedTokens,
+    }),
     "utf8",
   );
   assertWorkspaceHostCodexProjectionCliReadable(projected);
