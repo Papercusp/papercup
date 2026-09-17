@@ -2042,6 +2042,183 @@ describe('template_data persistence boundary — the set-template-data door', ()
     ]);
   });
 
+  // EI-23454038580165889 / P-008. The PREDICATE (shouldCarryBarEvidence) and the
+  // carry helper are unit-covered in acceptance-bar-amendment.test.ts, but the
+  // TRANSACTION wiring in rubrics.ts that actually calls them reached no fixture:
+  // this file asserted `work_item_spec_revision_edges` only, and edges rebind for
+  // EVERY clause whether its bar changed or not, so they cannot witness scoping.
+  // `spec_evidence_bindings` — the table the scoped carry actually writes — did
+  // not appear in this file at all.
+  //
+  // The assertions below are deliberately BIDIRECTIONAL, so the test cannot pass
+  // vacuously in either direction: delete the carry call and the UNCHANGED bar's
+  // proof vanishes from the new revision; widen it to carry changed bars too and
+  // the CHANGED bar gains a row it must not have. Both are the real driftMarker.
+  it('carries an UNCHANGED bar proof onto the new revision and strands only the CHANGED bar (P-008 transaction wiring)', async () => {
+    const seeded = await seedBarContract('carry-unchanged-bar-evidence', { authorMethods: true });
+    const { workspaceId, subject } = seeded;
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const changedSpecId = 'AUTO-BAR-R-1-P-001'; // R-1 — this bar's MEANING changes
+    const unchangedSpecId = 'AUTO-BAR-R-2-P-002'; // R-2 — untouched; its proof must survive
+    const changedWorkItemId = 'WI-carry-changed-bar';
+    const unchangedWorkItemId = 'WI-carry-unchanged-bar';
+
+    const readClauses = async () => {
+      const rows = await db.adminSql<{ spec_id: string; revision: number; content_hash: string }[]>`
+        SELECT c.spec_id, c.current_revision AS revision, r.content_hash
+          FROM harness_shared.plan_spec_clauses c
+          JOIN harness_shared.plan_spec_clause_revisions r
+            ON r.workspace_id=c.workspace_id AND r.harness_slug=c.harness_slug
+           AND r.plan_slug=c.plan_slug AND r.spec_id=c.spec_id AND r.revision=c.current_revision
+         WHERE c.workspace_id=${workspaceId} AND c.harness_slug='papercusp'
+           AND c.plan_slug=${subject} AND c.spec_id = ANY(${[changedSpecId, unchangedSpecId]}::text[])`;
+      return new Map(rows.map((row) => [row.spec_id, { ...row, revision: Number(row.revision) }]));
+    };
+    const clauseBefore = await readClauses();
+    expect([...clauseBefore.keys()].sort()).toEqual([changedSpecId, unchangedSpecId]);
+
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, status,
+         source_plan_slug, source_plan_item_ids, payload)
+      VALUES
+        (${workspaceId}, 'papercusp', ${changedWorkItemId}, 'feature', 'Changed bar coverage', 'done',
+         ${subject}, ARRAY['P-001'], ${JSON.stringify({ plan_item: { slug: subject, item: 'P-001' } })}::jsonb),
+        (${workspaceId}, 'papercusp', ${unchangedWorkItemId}, 'feature', 'Unchanged bar coverage', 'done',
+         ${subject}, ARRAY['P-002'], ${JSON.stringify({ plan_item: { slug: subject, item: 'P-002' } })}::jsonb)
+      ON CONFLICT DO NOTHING`;
+
+    const { specEvidenceBindingFingerprint } = await import('./agent-tools/plans/spec-evidence-store');
+    const observedAt = new Date('2026-09-10T00:00:00Z');
+    const prover = 'carry-fixture-prover';
+    for (const [specId, workItemId] of [
+      [changedSpecId, changedWorkItemId],
+      [unchangedSpecId, unchangedWorkItemId],
+    ] as const) {
+      const clause = clauseBefore.get(specId)!;
+      // The binding FK points at the edge, so the edge must exist first.
+      await db.adminSql`
+        INSERT INTO harness_shared.work_item_spec_revision_edges
+          (workspace_id,harness_slug,work_item_id,plan_slug,spec_id,spec_revision,spec_fingerprint,created_by)
+        VALUES (${workspaceId},'papercusp',${workItemId},${subject},${specId},
+                ${clause.revision},${clause.content_hash},'carry-fixture')
+        ON CONFLICT DO NOTHING`;
+      const canonical = {
+        workspaceId,
+        harnessSlug: 'papercusp',
+        workItemId,
+        planSlug: subject,
+        specId,
+        specRevision: clause.revision,
+        specFingerprint: clause.content_hash,
+        evidenceKind: 'test',
+        evidenceRef: `vitest:${specId}`,
+        sourceFingerprint: 'source-fingerprint-fixture',
+        testFingerprint: 'test-fingerprint-fixture',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+        coverageEvidenceRef: null,
+        testRunId: null,
+        details: {},
+      };
+      await db.adminSql`
+        INSERT INTO harness_shared.spec_evidence_bindings
+          (workspace_id,harness_slug,work_item_id,plan_slug,spec_id,spec_revision,spec_fingerprint,
+           evidence_kind,evidence_ref,source_fingerprint,test_fingerprint,details,observed_at,
+           binding_fingerprint,created_by)
+        VALUES (${workspaceId},'papercusp',${workItemId},${subject},${specId},
+                ${clause.revision},${clause.content_hash},'test',${`vitest:${specId}`},
+                ${canonical.sourceFingerprint},${canonical.testFingerprint},'{}'::jsonb,${observedAt},
+                ${specEvidenceBindingFingerprint(canonical as never)},${prover})`;
+    }
+
+    // Change EXACTLY ONE bar's meaning. R-2 is passed through byte-identically.
+    const criteria = before.criteria.map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const { bar: _bar, barHash: _barHash, ...canonical } = criterion;
+      return { ...canonical, model: 'First outcome. Rewritten so R-1 alone changes meaning.' };
+    });
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'carry-unchanged-actor',
+      reason: 'Change one BAR so an unchanged BAR proof must survive the global re-projection.',
+      criteria,
+    };
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(preview).toMatchObject({ changedBars: ['R-1'] });
+
+    const after = await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) });
+    expect(after!.revision).toBe(before.revision! + 1);
+
+    const clauseAfter = await readClauses();
+    // BOTH clauses re-project — the revision pin is global. That global re-projection
+    // is precisely what stranded an unchanged bar's proof before P-008, so if this
+    // stops being true the rest of the test is no longer exercising the bug.
+    expect(clauseAfter.get(unchangedSpecId)!.revision).toBeGreaterThan(clauseBefore.get(unchangedSpecId)!.revision);
+    expect(clauseAfter.get(changedSpecId)!.revision).toBeGreaterThan(clauseBefore.get(changedSpecId)!.revision);
+
+    const bindings = await db.adminSql<
+      {
+        spec_id: string;
+        spec_revision: number;
+        binding_fingerprint: string;
+        created_by: string;
+        observed_at: Date;
+      }[]
+    >`
+      SELECT spec_id, spec_revision, binding_fingerprint, created_by, observed_at
+        FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}
+       ORDER BY spec_id, spec_revision`;
+    const at = (specId: string, revision: number) =>
+      bindings.filter((row) => row.spec_id === specId && Number(row.spec_revision) === revision);
+
+    // UNCHANGED bar: its proof is carried onto the newly-minted revision.
+    const carried = at(unchangedSpecId, clauseAfter.get(unchangedSpecId)!.revision);
+    expect(carried).toHaveLength(1);
+    // CHANGED bar: different meaning, so its proof is NOT carried and must be re-run.
+    expect(at(changedSpecId, clauseAfter.get(changedSpecId)!.revision)).toHaveLength(0);
+    // Append-only: both originals survive at their old revisions.
+    expect(at(unchangedSpecId, clauseBefore.get(unchangedSpecId)!.revision)).toHaveLength(1);
+    expect(at(changedSpecId, clauseBefore.get(changedSpecId)!.revision)).toHaveLength(1);
+
+    // The carry RECOMPUTES binding_fingerprint over the new revision. Copying the
+    // old hash would be cheaper and wrong: the fingerprint is defined over the
+    // revision it pins, so a copied one stops matching its own row and the next
+    // identical bind appends a duplicate instead of deduplicating.
+    const nextClause = clauseAfter.get(unchangedSpecId)!;
+    expect(carried[0]!.binding_fingerprint).toBe(
+      specEvidenceBindingFingerprint({
+        workspaceId,
+        harnessSlug: 'papercusp',
+        workItemId: unchangedWorkItemId,
+        planSlug: subject,
+        specId: unchangedSpecId,
+        specRevision: nextClause.revision,
+        specFingerprint: nextClause.content_hash,
+        evidenceKind: 'test',
+        evidenceRef: `vitest:${unchangedSpecId}`,
+        sourceFingerprint: 'source-fingerprint-fixture',
+        testFingerprint: 'test-fingerprint-fixture',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+        coverageEvidenceRef: null,
+        testRunId: null,
+        details: {},
+      } as never),
+    );
+    expect(carried[0]!.binding_fingerprint).not.toBe(
+      at(unchangedSpecId, clauseBefore.get(unchangedSpecId)!.revision)[0]!.binding_fingerprint,
+    );
+
+    // The proof was observed when it was observed: the carry is not a new
+    // observation by the amending actor.
+    expect(new Date(carried[0]!.observed_at).toISOString()).toBe(observedAt.toISOString());
+    expect(carried[0]!.created_by).toBe(prover);
+  });
+
   it('applies an identical METHOD edit through the amendment transaction when stored BAR hashes are legacy', async () => {
     const seeded = await seedBarContract('legacy-hash-method-apply', { authorMethods: true });
     const { workspaceId, subject } = seeded;
