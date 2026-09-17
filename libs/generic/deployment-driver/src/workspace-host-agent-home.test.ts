@@ -14,6 +14,9 @@ import {
   assertWorkspaceHostCodexAccessTokenProjection,
   assertWorkspaceHostCodexProjectionCliReadable,
   projectWorkspaceHostCodexAccessToken,
+  assertWorkspaceHostClaudeAccessTokenProjection,
+  assertWorkspaceHostClaudeProjectionCliReadable,
+  projectWorkspaceHostClaudeAccessToken,
   encodeWorkspaceHostAgentHomeState,
   encodeWorkspaceHostAgentHomeBundle,
   parseWorkspaceHostAgentHomeBundle,
@@ -27,7 +30,10 @@ import { NodeWorkspaceHostSystem } from "./workspace-host-remote-initializer-hos
 
 const files = {
   claude: Buffer.from(
-    JSON.stringify({ claudeAiOauth: { accessToken: "claude-secret" } }),
+    JSON.stringify({
+      // Already in projected shape (neutralized refreshToken) so the round-trip is byte-exact.
+      claudeAiOauth: { accessToken: "claude-secret", refreshToken: "" },
+    }),
   ),
   codex: Buffer.from(
     JSON.stringify({
@@ -44,7 +50,9 @@ const files = {
 };
 const rotated = {
   claude: Buffer.from(
-    JSON.stringify({ claudeAiOauth: { accessToken: "claude-rotated" } }),
+    JSON.stringify({
+      claudeAiOauth: { accessToken: "claude-rotated", refreshToken: "" },
+    }),
   ),
   codex: Buffer.from(
     JSON.stringify({
@@ -326,6 +334,154 @@ describe("workspace-host sealed agent-home bundle", () => {
           Buffer.from(JSON.stringify(member)),
         ),
       ).toThrow(/must not contain an API key/);
+    }
+  });
+
+  // WI-10001691 — the same defect one member over, and for the same reason the codex api-key hole
+  // above stayed invisible: every claude fixture was authored as `{ claudeAiOauth: { accessToken } }`
+  // with NO refresh-token field, so the byte-identical carry could not be expressed, let alone
+  // failed on. The fixtures now carry the field; these tests carry a LIVE one.
+  it("projects a canonical Claude OAuth home to access-only bytes, neutralizing the refresh token", () => {
+    const projected = projectWorkspaceHostClaudeAccessToken(
+      Buffer.from(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "claude-access",
+            refreshToken: "LIVE-REFRESH-MUST-NOT-REACH-HOST",
+            expiresAt: 1789600000000,
+            scopes: ["user:inference"],
+            subscriptionType: "max",
+          },
+        }),
+      ),
+    );
+    const text = projected.toString("utf8");
+    const body = JSON.parse(text);
+
+    expect(text).not.toContain("LIVE-REFRESH-MUST-NOT-REACH-HOST");
+    // NEUTRALIZED IN PLACE, not deleted. `""` and not `null` because `""` is the shape MEASURED to
+    // authenticate (two arms, with an invalid-token negative control ruling out ambient gateway
+    // auth); absent was never measured, so the projection does not ship it.
+    expect(Object.keys(body.claudeAiOauth)).toContain("refreshToken");
+    expect(body.claudeAiOauth.refreshToken).toBe("");
+    // Everything the CLI needs for direct guest-to-provider inference survives untouched.
+    expect(body.claudeAiOauth.accessToken).toBe("claude-access");
+    expect(body.claudeAiOauth.expiresAt).toBe(1789600000000);
+    expect(body.claudeAiOauth.scopes).toEqual(["user:inference"]);
+    expect(body.claudeAiOauth.subscriptionType).toBe("max");
+  });
+
+  // THE RECURRENCE GUARD. The defect was not a wrong transform — it was the ABSENCE of one:
+  // `encodeWorkspaceHostAgentHomeBundle` validated the claude member and discarded the result, then
+  // emitted the original bytes. So the guard has to assert on the ENCODER's output, not on the
+  // projection function: a projection can exist, be perfect, be unit-tested, and still not be
+  // called. Reverting the encoder to carry `files.claude` turns this red.
+  it("never carries the claude member byte-identical through the bundle encoder", () => {
+    const live = Buffer.from(
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "claude-access",
+          refreshToken: "LIVE-REFRESH-MUST-NOT-REACH-HOST",
+        },
+      }),
+    );
+    const material = encodeWorkspaceHostAgentHomeBundle({
+      claude: live,
+      codex: files.codex,
+      omp: files.omp,
+    });
+
+    // Positive control FIRST: without it, every assertion below passes just as loudly over material
+    // that never carried the secret at all.
+    expect(live.toString("utf8")).toContain("LIVE-REFRESH-MUST-NOT-REACH-HOST");
+
+    expect(material.toString("utf8")).not.toContain(
+      "LIVE-REFRESH-MUST-NOT-REACH-HOST",
+    );
+    const parsed = parseWorkspaceHostAgentHomeBundle(material);
+    expect(parsed.files.claude.equals(live)).toBe(false);
+    expect(parsed.files.claude.toString("utf8")).not.toContain(
+      "LIVE-REFRESH-MUST-NOT-REACH-HOST",
+    );
+    expect(
+      JSON.parse(parsed.files.claude.toString("utf8")).claudeAiOauth
+        .refreshToken,
+    ).toBe("");
+    // The delivery gate accepts what the encoder produced — project-then-assert, both halves.
+    expect(() =>
+      assertWorkspaceHostAgentHomeBundleAdmissionEligible(parsed),
+    ).not.toThrow();
+  });
+
+  it("neutralizes a refresh-token-shaped key at any depth, and an api key alongside it", () => {
+    const projected = projectWorkspaceHostClaudeAccessToken(
+      Buffer.from(
+        JSON.stringify({
+          ANTHROPIC_API_KEY: "RAW-KEY-MUST-NOT-REACH-HOST",
+          claudeAiOauth: {
+            accessToken: "a",
+            refresh_token: "SNAKE-CASE-MUST-NOT-REACH-HOST",
+          },
+          accounts: [{ "refresh-token": "NESTED-MUST-NOT-REACH-HOST" }],
+        }),
+      ),
+    );
+    const text = projected.toString("utf8");
+    const body = JSON.parse(text);
+
+    for (const secret of [
+      "RAW-KEY-MUST-NOT-REACH-HOST",
+      "SNAKE-CASE-MUST-NOT-REACH-HOST",
+      "NESTED-MUST-NOT-REACH-HOST",
+    ]) {
+      expect(text).not.toContain(secret);
+    }
+    // Shape-based, so a renamed or re-nested field cannot reopen this. Fields preserved throughout.
+    expect(body.ANTHROPIC_API_KEY).toBeNull();
+    expect(body.claudeAiOauth.refresh_token).toBe("");
+    expect(body.accounts[0]["refresh-token"]).toBe("");
+    expect(body.claudeAiOauth.accessToken).toBe("a");
+  });
+
+  it("refuses a v3 claude member carrying a live refresh token, at parse and at admission", () => {
+    for (const oauth of [
+      { accessToken: "a", refreshToken: "live" },
+      { accessToken: "a", refresh_token: "live" },
+      { accessToken: "a", nested: [{ refreshToken: "live" }] },
+    ]) {
+      expect(() =>
+        assertWorkspaceHostClaudeAccessTokenProjection(
+          Buffer.from(JSON.stringify({ claudeAiOauth: oauth })),
+        ),
+      ).toThrow(/must not contain a refresh token/);
+    }
+  });
+
+  it("keeps a pre-fix v3 claude member (no refreshToken field) readable but refuses it at admission", () => {
+    // The revocation path must survive the fix: a generation minted before it carries no refresh
+    // token to leak, so PARSE reads it — otherwise it could never be revoked — while ADMISSION
+    // refuses it, so it can never spend a paid readiness probe in a shape we never measured.
+    const preFix = Buffer.from(
+      JSON.stringify({ claudeAiOauth: { accessToken: "claude-access" } }),
+    );
+    expect(() =>
+      assertWorkspaceHostClaudeAccessTokenProjection(preFix),
+    ).not.toThrow();
+    expect(() =>
+      assertWorkspaceHostClaudeProjectionCliReadable(preFix),
+    ).toThrow(/must retain an empty refreshToken field/);
+  });
+
+  it("refuses a claude member with no access token rather than shipping unusable bytes", () => {
+    for (const member of [
+      { claudeAiOauth: { refreshToken: "" } },
+      { claudeAiOauth: { accessToken: "", refreshToken: "" } },
+    ]) {
+      expect(() =>
+        projectWorkspaceHostClaudeAccessToken(
+          Buffer.from(JSON.stringify(member)),
+        ),
+      ).toThrow(/must contain a non-empty access token/);
     }
   });
 
