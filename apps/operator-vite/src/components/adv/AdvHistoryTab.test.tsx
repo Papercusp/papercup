@@ -26,12 +26,19 @@ const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
   ...nuqsParsers,
-  useQueryState: (key: string, parser?: { __default?: unknown }) => {
+  // The default lives on `defaultValue` — the key nuqs-mock's `.withDefault()`
+  // actually writes. This used to read `__default`, which is undefined for every
+  // parser, so each UNSEEDED param silently resolved to `null`. That was inert
+  // while this suite seeded every key it used, and became load-bearing when the
+  // `?view=archive|live` switch landed (P-011): `view` arrived null instead of
+  // 'archive', so the archive effect hit its `view !== 'archive'` guard and never
+  // fetched — every assertion here failed against a component that was fine.
+  useQueryState: (key: string, parser?: { defaultValue?: unknown; __default?: unknown }) => {
     const set = vi.fn(async (v: unknown) => {
       nuqsState[key] = typeof v === 'function' ? (v as (p: unknown) => unknown)(nuqsState[key]) : v;
     });
     nuqsSetters[key] = set;
-    return [nuqsState[key] ?? parser?.__default ?? null, set];
+    return [nuqsState[key] ?? parser?.defaultValue ?? parser?.__default ?? null, set];
   },
 }));
 
