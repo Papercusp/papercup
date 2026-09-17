@@ -725,7 +725,9 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent credential consumer
   it("materializes delivered bytes into native homes and verifies them in a fresh process", async () => {
     const { system, deps } = fixture();
     const bundle = encodeWorkspaceHostAgentHomeBundle({
-      claude: Buffer.from('{"account":"claude-canary"}'),
+      claude: Buffer.from(
+        '{"account":"claude-canary","claudeAiOauth":{"accessToken":"claude-canary-access","refreshToken":"canonical-writer-only"}}',
+      ),
       codex: Buffer.from(
         '{"account":"codex-canary","auth_mode":"chatgpt","tokens":{"access_token":"codex-canary-access","refresh_token":"canonical-writer-only","id_token":"codex-canary-id"}}',
       ),
@@ -756,7 +758,13 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent credential consumer
     // the customer owned and could read the platform's Claude/Codex credentials at 0600.
     const paths = workspaceHostAgentHomePaths("/home/papercusp-agent");
     expect(system.files.get(paths.claude)).toEqual(
-      Buffer.from('{"account":"claude-canary"}'),
+      Buffer.from(
+        // Claude's refresh credential is NEUTRALIZED (empty) exactly like Codex's below, and
+        // the access token is RETAINED so the guest CLI can still perform real inference
+        // (WI-10001691). Asserting the materialized bytes is what makes this a test of the
+        // projection rather than a fixture that merely satisfies its input validation.
+        '{"account":"claude-canary","claudeAiOauth":{"accessToken":"claude-canary-access","refreshToken":""}}',
+      ),
     );
     expect(system.files.get(paths.codex)).toEqual(
       Buffer.from(

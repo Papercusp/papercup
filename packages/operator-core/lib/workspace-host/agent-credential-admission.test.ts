@@ -111,7 +111,21 @@ function bundle(codex: CodexProbeStatus): Buffer {
                 account_id: 'account-1',
               },
             }
-          : { agent, status },
+          : agent === 'claude'
+            ? {
+                agent,
+                status,
+                // The REAL ~/.claude/.credentials.json shape. A claude file with no
+                // claudeAiOauth block fails closed at encode (WI-10001691): neutralization
+                // cannot be proven, so the bundle is refused rather than shipping an
+                // un-neutralized refresh credential to a cloud VM. The rotating
+                // refresh_token here is the writer-only value the projection must blank.
+                claudeAiOauth: {
+                  accessToken: `claude-${status}-access`,
+                  refreshToken: 'canonical-writer-only',
+                },
+              }
+            : { agent, status },
       ),
       'utf8',
     );
@@ -485,7 +499,10 @@ describe('workspace-host exact-generation agent credential admission', () => {
     const seen: WorkspaceHostCredentialMaterialRequest[] = [];
     const runner = new BundleAwareRunner();
     const material = encodeWorkspaceHostAgentHomeBundle({
-      claude: Buffer.from('{"agent":"claude","status":"healthy"}', 'utf8'),
+      claude: Buffer.from(
+        '{"agent":"claude","status":"healthy","claudeAiOauth":{"accessToken":"claude-healthy-access","refreshToken":"canonical-writer-only"}}',
+        'utf8',
+      ),
       codex: Buffer.from(
         '{"agent":"codex","status":"healthy","auth_mode":"chatgpt","tokens":{"access_token":"codex-healthy-access","refresh_token":"canonical-writer-only","id_token":"codex-identity"}}',
         'utf8',
