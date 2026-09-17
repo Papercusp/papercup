@@ -57,6 +57,7 @@ import type {
   CapabilityProviderPackageInstallResult,
 } from './capability-provider-package-closure';
 import type { IdentityGrantFailure } from '../capability-envelope/blueprint-envelopes';
+import type { CupboardReleaseManifest } from './listing-manifest';
 
 export interface InstallBlueprintCoreInput {
   /** The blueprint repo's GitHub URL (https://github.com/owner/repo[.git]). */
@@ -69,7 +70,13 @@ export interface InstallBlueprintCoreInput {
   activationStack?: readonly BlueprintActivationLayer[];
   /** Immutable identity pinned on the Cupboard row. A listed release that does
    *  not match the cloned complete closure is refused before any bytes land. */
-  expectedRelease?: { version?: string | null; contentHash?: string | null };
+  expectedRelease?: {
+    version?: string | null;
+    contentHash?: string | null;
+    /** The whole signed release manifest, verbatim from the listing. A present
+     *  signature is verified before any bytes land; absent installs unsigned. */
+    manifest?: CupboardReleaseManifest | null;
+  };
   capabilityContext?: {
     workspaceId: string;
     potSlug: string;

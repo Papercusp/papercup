@@ -250,6 +250,12 @@ export async function publishListingToCupboard(
       release_content_hash: releaseManifest.contentHash,
       release_manifest_digest: listingManifestDigest(unsignedListingManifest(releaseManifest)),
       release_signature: releaseManifest.signature,
+      // The WHOLE signed manifest, so an installer can verify the signature
+      // over the bytes it was signed over instead of reconstructing them
+      // (identities-v1 D-074). The pins above are an INDEX into this; three of
+      // the signed fields (license, publisher, reviewStatus) exist nowhere else
+      // on the row, so without this a verifier cannot re-derive the bytes at all.
+      release_manifest: JSON.stringify(releaseManifest),
     };
   }
 

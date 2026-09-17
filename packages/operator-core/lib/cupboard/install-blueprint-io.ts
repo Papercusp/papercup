@@ -32,6 +32,7 @@ import {
 import { activeWorkspaceId } from '../workspace-registry';
 import { potHomeSlugForHarness } from '../hive-federation';
 import { resolveCupboardBaseUrl } from './base-url';
+import { validateListingManifest, type CupboardReleaseManifest } from './listing-manifest';
 import { derivePackCatalog, depHostSetsFromCatalog } from './pack-catalog';
 import {
   installBlueprintFromCupboardCore,
@@ -101,6 +102,7 @@ async function resolveBlueprintListing(
   listingRef?: string;
   releaseVersion?: string;
   releaseContentHash?: string;
+  releaseManifest?: CupboardReleaseManifest;
 } | { error: string; status: number }> {
   const base = resolveCupboardBaseUrl();
   let row: Record<string, unknown> | null = null;
@@ -126,7 +128,29 @@ async function resolveBlueprintListing(
   const listingRef = typeof row.listing_ref === 'string' ? row.listing_ref : undefined;
   const releaseVersion = typeof row.release_version === 'string' ? row.release_version : undefined;
   const releaseContentHash = typeof row.release_content_hash === 'string' ? row.release_content_hash : undefined;
-  return { githubUrl, listingRef, releaseVersion, releaseContentHash };
+  // Carry the WHOLE signed manifest through to the install gate so the
+  // publisher signature can be verified over the bytes it was actually signed
+  // over (identities-v1 D-074). Never reconstruct it from the row's other
+  // columns: license/publisher/reviewStatus are publisher-supplied, so a
+  // second derivation would disagree with publish over valid signatures.
+  // A malformed or absent manifest installs unsigned — still refused by the
+  // release_content_hash pin — because the bar is a PRESENT signature that
+  // fails to verify, not the absence of one (D-073).
+  let releaseManifest: CupboardReleaseManifest | undefined;
+  const rawManifest = row.release_manifest;
+  if (rawManifest != null) {
+    let parsed: unknown = rawManifest;
+    if (typeof rawManifest === 'string') {
+      try {
+        parsed = JSON.parse(rawManifest);
+      } catch {
+        parsed = null;
+      }
+    }
+    const verdict = parsed == null ? null : validateListingManifest(parsed);
+    if (verdict?.ok) releaseManifest = verdict.manifest;
+  }
+  return { githubUrl, listingRef, releaseVersion, releaseContentHash, releaseManifest };
 }
 
 function activationLayers(ids: readonly string[] | undefined): BlueprintActivationLayer[] {
@@ -350,7 +374,9 @@ export async function installBlueprintFromCupboard(
 
   let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
   let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : undefined;
-  let expectedRelease: { version?: string; contentHash?: string } | undefined;
+  let expectedRelease:
+    | { version?: string; contentHash?: string; manifest?: CupboardReleaseManifest }
+    | undefined;
 
   if (!githubUrl && input.listingId) {
     const resolved = await resolveBlueprintListing(String(input.listingId));
@@ -360,6 +386,7 @@ export async function installBlueprintFromCupboard(
     expectedRelease = {
       ...(resolved.releaseVersion ? { version: resolved.releaseVersion } : {}),
       ...(resolved.releaseContentHash ? { contentHash: resolved.releaseContentHash } : {}),
+      ...(resolved.releaseManifest ? { manifest: resolved.releaseManifest } : {}),
     };
   }
   if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };

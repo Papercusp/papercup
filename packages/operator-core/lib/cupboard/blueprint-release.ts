@@ -32,7 +32,8 @@ import {
   distributionManifestSigningBytes,
   type ArtifactDistributionManifest,
 } from '../p2p/artifact-distribution';
-import { listingManifestSigningBytes, type CupboardReleaseManifest } from './listing-manifest';
+import { listingManifestSigningBytes, unsignedListingManifest, type CupboardReleaseManifest } from './listing-manifest';
+import { verifyEd25519 } from '../identity/ed25519';
 import type { ReleaseGateInput } from './publish-release-gate';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
@@ -97,7 +98,21 @@ export interface CommitBlueprintReleaseInput {
   source: string;
   pins: readonly ResolvedPackageInput[];
   activationStack?: readonly BlueprintActivationLayer[];
-  expectedRelease?: { version?: string | null; contentHash?: string | null };
+  /**
+   * The listed release identity. `manifest` is the WHOLE signed manifest as the
+   * publisher signed it — carried verbatim, never reconstructed from the pins
+   * (identities-v1 D-074): the signing bytes are the canonical JSON of the
+   * 12-field manifest, three of whose fields (license, publisher, reviewStatus)
+   * are publisher-supplied and not derivable from a clone, so a partial
+   * reconstruction would disagree with publish while passing its own tests.
+   * A PRESENT signature is verified and refused on failure; an ABSENT manifest
+   * installs unsigned, still pin-protected by `contentHash` below (D-073).
+   */
+  expectedRelease?: {
+    version?: string | null;
+    contentHash?: string | null;
+    manifest?: CupboardReleaseManifest | null;
+  };
   nowMs?: number;
 }
 
@@ -618,6 +633,40 @@ export async function commitBlueprintRelease(
         `blueprint ${input.id} package hashes to ${archive.package.rootHash}, listed release is ${input.expectedRelease.contentHash}`,
         422,
       );
+    }
+    // Verify a PRESENT publisher signature over the listed manifest, and refuse
+    // on failure (identities-v1 D-073/D-074). The signing bytes come from the
+    // SAME helpers publish signed with, so there is exactly one byte derivation
+    // in the system; an ABSENT manifest installs unsigned, still covered by the
+    // content-hash pin above. Only reached after the closure has been hashed,
+    // so the diagnostic can name both the computed and the signed identity.
+    const listedManifest = input.expectedRelease?.manifest;
+    if (listedManifest?.signature) {
+      const publisher = listedManifest.publisher;
+      const signedBy = publisher?.login ? `${publisher.login} ` : '';
+      const listedAs = `${listedManifest.listingRef}@${listedManifest.releaseVersion}`;
+      if (
+        !verifyEd25519(
+          listingManifestSigningBytes(unsignedListingManifest(listedManifest)),
+          publisher?.devicePubkey ?? '',
+          Buffer.from(listedManifest.signature, 'base64'),
+        )
+      ) {
+        throw new BlueprintLifecycleError(
+          `blueprint ${input.id} listed release ${listedAs} has an INVALID publisher signature — ` +
+            `the manifest does not verify against the device key it names ` +
+            `(${signedBy}${(publisher?.devicePubkey ?? 'no-pubkey').slice(0, 16)}…), ` +
+            `so its contents were altered after signing; refusing to install ${archive.package.rootHash}`,
+          422,
+        );
+      }
+      if (listedManifest.contentHash.toLowerCase() !== archive.package.rootHash.toLowerCase()) {
+        throw new BlueprintLifecycleError(
+          `blueprint ${input.id} package hashes to ${archive.package.rootHash}, but the signed manifest for ` +
+            `${listedAs} pins ${listedManifest.contentHash} — the cloned source is not the release that was signed`,
+          422,
+        );
+      }
     }
     const index = await readIndex(input.installedDir, input.id);
     const priorArchive = index.activeContentHash

@@ -14,6 +14,8 @@ import {
   uninstallBlueprintRelease,
 } from './blueprint-release';
 import { prepareReleaseForPublish } from './publish-release-gate';
+import { listingManifestSigningBytes, type CupboardReleaseManifest } from './listing-manifest';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../identity/ed25519';
 
 let root = '';
 let installedDir = '';
@@ -179,6 +181,64 @@ describe('immutable blueprint release lifecycle', () => {
     expect(prepared.manifest.release.signature).toMatch(/^c2lnbmVkOj/);
     expect((prepared.release as { bytes?: Buffer }).bytes?.equals(prepared.source.archive.bytes)).toBe(true);
     expect(await prepareReleaseForPublish(prepared.release)).toMatchObject({ ok: true });
+  });
+  // identities-v1 R-2 / D-073+D-074. A real keypair, a real signature, and the
+  // SAME byte derivation publish signs with — so a refusal here cannot be an
+  // artifact of a second, divergent reconstruction of the signing bytes.
+  it('verifies a PRESENT publisher signature over the listed manifest and refuses a tampered one, while an absent manifest still installs unsigned', async () => {
+    const v1 = await source('1.0.0', 'persona\n', 1);
+    const rootHash = buildBlueprintReleaseArchive([v1.pin], 'identity').package.rootHash;
+    const keypair = generateEd25519KeypairDer();
+    const sign = (unsigned: Omit<CupboardReleaseManifest, 'signature'>): CupboardReleaseManifest => ({
+      ...unsigned,
+      signature: signWithPrivateKeyDer(keypair.privateKeyDer, listingManifestSigningBytes(unsigned)).toString('base64'),
+    });
+    const unsigned: Omit<CupboardReleaseManifest, 'signature'> = {
+      schemaVersion: 1,
+      listingKind: 'blueprint',
+      listingRef: 'identity',
+      releaseVersion: '1.0.0',
+      contentHash: rootHash,
+      dependencies: [],
+      compatibility: {},
+      permissions: [],
+      capabilities: [],
+      license: 'MIT',
+      publisher: { githubUserId: 42, login: 'publisher', devicePubkey: keypair.pubkeyBase64 },
+      reviewStatus: 'pending',
+    };
+    const manifest = sign(unsigned);
+    const commit = (expectedRelease: Parameters<typeof commitBlueprintRelease>[0]['expectedRelease']) =>
+      commitBlueprintRelease({
+        installedDir,
+        sourceDir: v1.dir,
+        id: 'identity',
+        version: '1.0.0',
+        source: 'repo',
+        pins: [v1.pin],
+        expectedRelease,
+      });
+
+    // A field INSIDE the signed bytes, altered after signing. The closure and
+    // the content-hash pin both still match, so this is refused by the
+    // signature check alone — nothing else in the system would catch it.
+    await expect(commit({ contentHash: rootHash, manifest: { ...manifest, license: 'PROPRIETARY' } })).rejects.toThrow(
+      /INVALID publisher signature/,
+    );
+    expect(existsSync(join(installedDir, 'identity'))).toBe(false);
+
+    // A signature that verifies, over a manifest pinning a DIFFERENT closure
+    // than the one cloned: authentic, but not a release of THIS source.
+    await expect(commit({ manifest: sign({ ...unsigned, contentHash: `sha256:${'0'.repeat(64)}` }) })).rejects.toThrow(
+      /signed manifest for identity@1\.0\.0 pins/,
+    );
+    expect(existsSync(join(installedDir, 'identity'))).toBe(false);
+
+    // The intact signed manifest installs, and an ABSENT manifest is permitted
+    // rather than refused (D-073 — verify-always would refuse every unsigned
+    // release, including this plan's own unpriced proof install).
+    expect((await commit({ contentHash: rootHash, manifest })).operation).toBe('install');
+    expect((await commit(undefined)).operation).toBe('no-op');
   });
 });
 
