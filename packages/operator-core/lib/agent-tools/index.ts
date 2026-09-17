@@ -1505,6 +1505,12 @@ import './cupboard/install-theme';
 // datatype_registry row, which remains the ONE resolution layer.
 import './cupboard/publish-datatype';
 import './cupboard/install-datatype';
+// identities-v1 P-029 / D-010 — the `event` storefront half. `event` was DECLARED a
+// listing kind long before either door existed (D-066), so the kind read as shipped
+// while nothing could publish or install one. Install seeds event_key_registry rows,
+// which is where a rule's `on` and an agent's `await` key must RESOLVE.
+import './cupboard/publish-event';
+import './cupboard/install-event';
 // cupboard-agent-tool-coverage-2026-07-14 P-008/P-009 — the cross-kind browse
 // (cupboard:search over browse-listings.ts) + the universal delist
 // (cupboard:unpublish over delete-listing.ts, shared with unlist-hive-rows).
