@@ -186,6 +186,14 @@ export default function CupboardClient() {
       // label keeps the Record<ViewFilter> exhaustive now the 'app' kind exists.
       app: 'Apps',
       theme: 'Themes',
+      // datatype/rule/event follow the same precedent as 'app' above: the LABEL
+      // lands with the listing kind so Record<ViewFilter> stays exhaustive,
+      // while adding each to VIEW_FILTERS (its own tab) is the storefront lane's
+      // call. Without these three the map stops compiling the moment the kind
+      // exists — which is exactly how this reached the release gate.
+      datatype: 'Datatypes',
+      rule: 'Rules',
+      event: 'Events',
       tools: 'Tools',
     }),
     [t],
