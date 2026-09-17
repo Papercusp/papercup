@@ -960,6 +960,21 @@ export function projectAcceptanceBarContractSnapshot(
     const addCode = (code: AcceptanceBarSnapshotCode) => {
       if (!codes.includes(code)) codes.push(code);
     };
+    // EI-23525318282609167: the BAR-scoped integrity checks (hash missing/mismatch,
+    // duplicate key) run in the source-completeness pass above and record a barKey
+    // on every problem they emit. This per-BAR derivation used to be computed
+    // INDEPENDENTLY of `problems`, so those codes reached the contract level and
+    // never reached the BAR they name. Two consequences: nextRepair's
+    // `bars.find(...)` matched nothing and reported barKey:null, and — worse — a BAR
+    // whose meaning no longer matched its stored hash reported state:'ready'.
+    // Measured live on acceptance-unified-requirement-contract-2026-09-05: six
+    // mismatching BARs all read clean while the contract said "0 of 6 blocking".
+    // Join by barKey instead of re-deriving the checks here, so a second source of
+    // truth cannot drift from the first and any future barKey-carrying problem is
+    // attributed without another hand-written copy.
+    for (const problem of problems) {
+      if (problem.barKey === barKey) addCode(problem.code);
+    }
     if (!criterion.barProvenance) addCode('bar_snapshot_bar_provenance_missing');
     if (mappingState === 'missing') addCode('bar_snapshot_mapping_missing');
     if (mappingState === 'dropped-only') addCode('bar_snapshot_mapping_dropped_only');

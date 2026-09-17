@@ -673,6 +673,31 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     );
   });
 
+  // EI-23525318282609167: the emitter always sets barKey, and the assertion above
+  // proves it — but per-bar readiness.codes used to be derived INDEPENDENTLY of
+  // `problems`, so the hash-integrity codes reached the contract level and never
+  // reached the BAR. Two consequences, and the second is the dangerous one:
+  // nextRepair's `bars.find(...)` missed and reported barKey:null, AND a BAR whose
+  // meaning no longer matches its stored hash reported state:'ready'. Measured live
+  // on acceptance-unified-requirement-contract-2026-09-05: six mismatching BARs all
+  // reported clean while the contract said "0 of 6 BAR(s) blocking".
+  it('attributes a BAR hash mismatch to the BAR itself, not only to the contract', () => {
+    const input = fixture(1);
+    input.rubrics.rows[0]!.criteria[0]!.model = 'Quietly rewritten outcome.';
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    const bar = snapshot.bars.find((candidate) => candidate.barKey === 'R-1');
+    expect(bar).toBeDefined();
+    // The BAR must not report itself clean while its meaning and hash diverge.
+    expect(bar!.readiness.codes).toContain('bar_snapshot_bar_hash_mismatch');
+    expect(bar!.readiness.state).toBe('blocked');
+    // ...and the ranked repair must name a target an operator can act on.
+    expect(snapshot.readiness.nextRepair).toEqual(
+      expect.objectContaining({ code: 'bar_snapshot_bar_hash_mismatch', barKey: 'R-1' }),
+    );
+  });
+
   it('accepts exactly 200 BARs and refuses + marks truncation at 201', () => {
     const atLimit = projectAcceptanceBarContractSnapshot(fixture(200));
     expect(atLimit.bars).toHaveLength(200);
