@@ -80,6 +80,53 @@ standdown() {
   [ -x "$ALERT" ] && "$ALERT" --resolved "$*" || log "STAND-DOWN (no alert script): $*"
 }
 
+degraded() {
+  # The third channel, between alarm() and standdown(): a fault in the PROBE that
+  # is not a fault in the BACKUPS. alarm() appends "the only surviving copy is the
+  # GCS bucket" to whatever reason it is given, so routing a probe-only fault
+  # through it broadcasts a backup outage that is not happening (WI-10001692).
+  [ -x "$ALERT" ] && "$ALERT" --degraded "$*" || log "DEGRADED (no alert script): $*"
+}
+
+# Measure freshness from the SNAPSHOT TREE — the immutable artifact the mirror
+# exists to produce — rather than from MIRROR-STATE.json, a single deletable file
+# whose absence says nothing about whether the backups are there. Prints
+# "<hosts> <snapshots> <newest_age_h|NONE>" and never fails its caller: a census
+# that dies must not be readable as "zero snapshots", which is the same
+# false-absence shape this whole bug is made of.
+snapshot_census() {
+  python3 - "$SNAPDIR" 2>/dev/null <<'PY' || echo "CENSUS-FAILED CENSUS-FAILED CENSUS-FAILED"
+import os, sys, datetime
+snapdir = sys.argv[1]
+now = datetime.datetime.now(datetime.timezone.utc)
+hosts = snaps = 0
+newest = None
+try:
+    entries = sorted(os.listdir(snapdir))
+except Exception:
+    print("0 0 NONE"); raise SystemExit(0)
+for h in entries:
+    hd = os.path.join(snapdir, h)
+    if not os.path.isdir(hd):
+        continue
+    stamps = [d for d in os.listdir(hd) if os.path.isdir(os.path.join(hd, d))]
+    if not stamps:
+        continue
+    hosts += 1
+    snaps += len(stamps)
+    for d in stamps:
+        try:
+            t = datetime.datetime.strptime(d[:15], "%Y%m%dT%H%M%S").replace(
+                tzinfo=datetime.timezone.utc)
+        except Exception:
+            continue
+        if newest is None or t > newest:
+            newest = t
+age = "NONE" if newest is None else "%.1f" % ((now - newest).total_seconds() / 3600.0)
+print("%d %d %s" % (hosts, snaps, age))
+PY
+}
+
 # --- immutability helpers ---------------------------------------------------
 # chattr +i is verified at runtime, never assumed: it is a filesystem
 # capability, and claiming "immutable" on a filesystem that silently ignored
@@ -461,8 +508,40 @@ do_verify() {
 do_health() {
   local problems=()
   if [ ! -f "$STATE" ]; then
-    alarm "estate mirror: no MIRROR-STATE.json at $STATE — the mirror has never completed a run"
-    return 1
+    # $STATE is ONE deletable file. Its absence is a fact about that file, never a
+    # verdict on the mirror — so MEASURE the snapshot tree before naming a
+    # consequence. This branch used to assert "the mirror has never completed a
+    # run" without ever stat-ing $SNAPDIR, and broadcast it fleet-wide with
+    # expects:"action" while 29G of same-day snapshots sat next to it
+    # (WI-10001692). An alert that names a catastrophic consequence must verify
+    # the consequence, not infer it from the first thing it happened to look at.
+    local sn_hosts sn_count sn_age
+    read -r sn_hosts sn_count sn_age <<<"$(snapshot_census)"
+    if [ "$sn_hosts" = "CENSUS-FAILED" ]; then
+      alarm "estate mirror: MIRROR-STATE.json missing at $STATE AND the snapshot census could not run — freshness is UNKNOWN, not healthy"
+      return 1
+    fi
+    if [ "${sn_count:-0}" -eq 0 ]; then
+      alarm "estate mirror: no MIRROR-STATE.json at $STATE and ZERO snapshots in $SNAPDIR — the mirror has never completed a run"
+      return 1
+    fi
+    if [ "$sn_age" = "NONE" ]; then
+      alarm "estate mirror: MIRROR-STATE.json missing and no snapshot in $SNAPDIR carries a readable timestamp ($sn_count dirs across $sn_hosts host(s)) — freshness cannot be established"
+      return 1
+    fi
+    if awk "BEGIN{exit !($sn_age > $MAX_AGE_H)}"; then
+      alarm "estate mirror: MIRROR-STATE.json missing AND newest snapshot is ${sn_age}h old (limit ${MAX_AGE_H}h) across $sn_hosts host(s) — the mirror has stopped"
+      return 1
+    fi
+    # The backups are present and current; only the probe's own bookkeeping is
+    # gone. That IS a real fault — seal, free-space and quarantine can no longer
+    # be asserted — but it is not a backup outage, so it goes out DEGRADED. It
+    # returns 0 deliberately: a non-zero exit fires the unit's
+    # OnFailure=pc-estate-mirror-alert.service, which would re-broadcast the very
+    # "only surviving copy is GCS" claim this branch exists to stop telling.
+    log "HEALTH: MIRROR-STATE.json absent but snapshots are current — $sn_count snapshot(s) across $sn_hosts host(s), newest ${sn_age}h old (limit ${MAX_AGE_H}h)"
+    degraded "MIRROR-STATE.json is missing, so seal/free-space/quarantine cannot be asserted — but the BACKUPS are present and current ($sn_count snapshots across $sn_hosts hosts, newest ${sn_age}h old, limit ${MAX_AGE_H}h). The next successful mirror run rewrites the state file."
+    return 0
   fi
   mapfile -t problems < <(python3 - "$STATE" "$MAX_AGE_H" "$MIN_FREE_GB" <<'PY'
 import json, sys, datetime

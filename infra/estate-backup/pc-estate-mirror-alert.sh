@@ -38,9 +38,19 @@ set -uo pipefail
 
 ROOT="${PC_ESTATE_MIRROR_ROOT:-/mnt/data/papercusp-estate-mirror}"
 MARKER="$ROOT/ALERT-MIRROR-FAILING"
+# A DEGRADED fault gets its OWN marker so it can neither be mistaken for a backup
+# outage nor re-broadcast every six hours once it is known (WI-10001692).
+DEGRADED_MARKER="$ROOT/ALERT-MIRROR-DEGRADED"
 
 MODE=raise
 if [ "${1:-}" = "--resolved" ]; then MODE=resolved; shift; fi
+# --degraded: a fault in the PROBE that is NOT a fault in the BACKUPS. The raise
+# path below appends "the ONLY copy is the GCS bucket" to whatever reason it is
+# handed, so routing a probe-only fault through it broadcasts a backup outage
+# that is not happening -- the false alarm that trains a fleet to ignore the one
+# alert that must never be ignored. This mode states the fault and DROPS that
+# consequence claim, because in this mode the consequence is measurably false.
+if [ "${1:-}" = "--degraded" ]; then MODE=degraded; shift; fi
 REASON="${1:-pc-estate-mirror failed}"
 # Derive the repo root from this script's own location (infra/estate-backup/)
 # rather than hardcoding a home path — this file ships, and a literal home
@@ -55,8 +65,34 @@ mkdir -p "$ROOT" 2>/dev/null || true
 # the exact fault we are standing down from.
 if [ "$MODE" = resolved ]; then
   echo "MIRROR RECOVERED: $REASON" >&2
+  # Recovery clears the degraded latch too, or a probe-only fault that has since
+  # been repaired would suppress its own next alarm forever.
+  rm -f "$DEGRADED_MARKER" 2>/dev/null || true
   command -v notify-send >/dev/null 2>&1 && \
     notify-send -u normal "Estate off-GCP mirror recovered" "$REASON" 2>/dev/null || true
+elif [ "$MODE" = degraded ]; then
+  # Deliberately does NOT write $MARKER: that marker's text asserts "the backups
+  # are not being maintained", and in this mode they measurably ARE. Writing it
+  # would re-create the false claim in the file every later reader greps.
+  ALREADY_KNOWN=0
+  [ -e "$DEGRADED_MARKER" ] && ALREADY_KNOWN=1
+  {
+    echo "OFF-GCP MIRROR DEGRADED — $(date -Iseconds)"
+    echo "$REASON"
+    echo
+    echo "THE BACKUPS ARE PRESENT AND CURRENT. This is a fault in the mirror's own"
+    echo "bookkeeping/probe, not in the off-GCP copy it maintains. This is NOT the"
+    echo "single-provider exposure of WI-645563 — do not triage it as one."
+    echo
+    echo "Triage:"
+    echo "  ls -1dt $ROOT/snapshots/*/*/ | head    # the backups themselves"
+    echo "  systemctl --user status pc-estate-mirror.service"
+    echo "  $REPO/infra/estate-backup/pc-estate-mirror.sh mirror   # rewrites MIRROR-STATE.json"
+  } >"$DEGRADED_MARKER" 2>/dev/null || true
+  echo "MIRROR DEGRADED: $REASON (see $DEGRADED_MARKER)" >&2
+  # Channel 4 is suppressed for an ALREADY-KNOWN degradation: a six-hourly probe
+  # re-broadcasting a standing fault is exactly how the alert loses its audience.
+  [ "$ALREADY_KNOWN" = 1 ] && MODE=degraded-quiet
 else
 
 {
@@ -91,8 +127,10 @@ fi
 # the BODY at 600 chars, so the summary is the part guaranteed to survive into
 # an inbox — a stand-down whose "this is over" clause got truncated would be
 # indistinguishable from the alarm it retracts.
-if [ -f "$REPO/scripts/mcp-call.mjs" ]; then
-  BODY=$(python3 - "$MODE" "$REASON" "$MARKER" <<'PY' 2>/dev/null
+ACTIVE_MARKER="$MARKER"
+[ "$MODE" = degraded ] && ACTIVE_MARKER="$DEGRADED_MARKER"
+if [ -f "$REPO/scripts/mcp-call.mjs" ] && [ "$MODE" != degraded-quiet ]; then
+  BODY=$(python3 - "$MODE" "$REASON" "$ACTIVE_MARKER" <<'PY' 2>/dev/null
 import json, sys
 mode, reason, marker = sys.argv[1], sys.argv[2], sys.argv[3]
 if mode == "resolved":
@@ -106,6 +144,23 @@ if mode == "resolved":
                  "has been removed. Any earlier OFF-GCP ESTATE MIRROR FAILING escalation from this "
                  "sender is STALE — do not open a work-item for it; confirm with "
                  "'cat %s/MIRROR-STATE.json' (ok:true) before acting on an older alert." % (marker, marker.rsplit('/', 1)[0])),
+      }],
+    }
+elif mode == "degraded":
+    # expects:"none" on purpose. expects:"action" is what makes an alert sit in
+    # every inbox demanding a response; spending that on a fault whose headline
+    # consequence is measurably NOT happening is what devalues the real alarm.
+    msg = {
+      "to": ["*"],
+      "expects": "none",
+      "summary": ("Estate mirror DEGRADED — backups verified PRESENT and CURRENT, this is NOT a "
+                  "backup outage: %s" % reason[:140]),
+      "body": [{
+        "text": ("A fault in the off-GCP mirror's own bookkeeping/probe, NOT in the backups. The "
+                 "snapshot tree was MEASURED before this was sent: present, and within its "
+                 "freshness limit. The WI-645563 single-provider exposure is NOT open and no "
+                 "backup-recovery action is needed. Marker: %s. Confirm independently: "
+                 "ls -1dt %s/snapshots/*/*/ | head" % (marker, marker.rsplit('/', 1)[0])),
       }],
     }
 else:
