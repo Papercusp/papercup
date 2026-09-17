@@ -20,7 +20,7 @@
  */
 
 import type { ReactionFailure } from '@papercusp/event-reaction';
-import { countRecentReactionFailures, recordReactionFailure } from './reaction-dedup';
+import { countRecentReactionFailures, recordBudgetDenial, recordReactionFailure } from './reaction-dedup';
 import type { ToolInvocationEvent } from './types';
 
 /** How long one rule stays quiet after an alert, so a hot-looping rule cannot spam. */
@@ -121,6 +121,7 @@ export async function surfaceReactionFailure(
   failure: ReactionFailure<ToolInvocationEvent, string>,
   deps?: {
     record?: typeof recordReactionFailure;
+    recordDenial?: typeof recordBudgetDenial;
     countRecent?: typeof countRecentReactionFailures;
     alert?: (workspaceId: string, summary: string) => Promise<void>;
     log?: (msg: string) => void;
@@ -128,6 +129,7 @@ export async function surfaceReactionFailure(
 ): Promise<void> {
   const log = deps?.log ?? ((msg: string) => console.warn(`[events] ${msg}`));
   const record = deps?.record ?? recordReactionFailure;
+  const recordDenial = deps?.recordDenial ?? recordBudgetDenial;
   const countRecent = deps?.countRecent ?? countRecentReactionFailures;
   const alert = deps?.alert ?? alertOwner;
 
@@ -139,6 +141,16 @@ export async function surfaceReactionFailure(
   }
 
   const contributor = failure.rule.source ?? null;
+
+  // A budget denial is NOT a dispatch failure, and every step below assumes it
+  // is: it would record `status='failed'`, classify the budget's own prose as
+  // `'other'` (so nobody is told), and — worst — feed the denial back into the
+  // fire count the budget reads. Branch before any of that happens.
+  if (failure.stage === 'budget') {
+    await surfaceBudgetDenial(failure, { workspaceId, contributor, recordDenial, countRecent, alert, log });
+    return;
+  }
+
   try {
     await record({
       dedupId: failure.dedupId,
@@ -185,6 +197,92 @@ export async function surfaceReactionFailure(
     );
   } catch (e) {
     log(`alerting owner about reaction ${failure.rule.id} failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** The owner-facing sentence for a budget denial. Pure, so it is directly testable. */
+export function formatBudgetDenialAlert(opts: {
+  ruleId: string;
+  fire: string;
+  contributor?: string | null;
+  reason: string;
+  windowMinutes: number;
+}): string {
+  const by = opts.contributor ? ` (contributed by ${opts.contributor})` : '';
+  return (
+    `⚠️ Reaction rule "${opts.ruleId}"${by} was NOT fired at "${opts.fire}": ${opts.reason}. ` +
+    `Reactions from this contributor are being dropped until its rate falls back under the budget. ` +
+    `Uninstall or narrow the rule if this is not expected. ` +
+    `Further denials for this rule are suppressed for ${opts.windowMinutes}m.`
+  );
+}
+
+/**
+ * Record and surface a reaction the fire budget refused (P-030 c).
+ *
+ * A denial is ALWAYS owner-actionable — unlike a dispatch error there is no
+ * transient-blip case, because crossing the budget means a contributor has been
+ * firing steadily for a whole window — so it skips `classifyReactionFailure` /
+ * `shouldAlertOwner` entirely and goes straight to the debounced alert.
+ *
+ * Both halves are best-effort and never throw: the reaction has already been
+ * dropped, and failing to report that must not become a second failure.
+ */
+async function surfaceBudgetDenial(
+  failure: ReactionFailure<ToolInvocationEvent, string>,
+  ctx: {
+    workspaceId: string;
+    contributor: string | null;
+    recordDenial: typeof recordBudgetDenial;
+    countRecent: typeof countRecentReactionFailures;
+    alert: (workspaceId: string, summary: string) => Promise<void>;
+    log: (msg: string) => void;
+  },
+): Promise<void> {
+  try {
+    await ctx.recordDenial({
+      dedupId: failure.dedupId,
+      workspaceId: ctx.workspaceId,
+      ruleId: failure.rule.id,
+      fire: failure.fire,
+      reason: failure.error,
+      triggerTool: failure.event.tool ?? null,
+      causeRootRunId: failure.cause.rootRunId ?? null,
+      depth: failure.cause.depth,
+      contributor: ctx.contributor,
+    });
+  } catch (e) {
+    ctx.log(`recording budget denial for ${failure.rule.id} failed: ${e instanceof Error ? e.message : String(e)}`);
+    // Keep going: an un-recorded denial is still worth alerting on.
+  }
+
+  try {
+    // Debounce against PRIOR DENIALS, not prior failures — see
+    // `countRecentReactionFailures`'s `status` note. A contributor over budget
+    // is denied on every subsequent fire, so without this the alert would be as
+    // loud as the runaway it is reporting.
+    const prior = await ctx.countRecent({
+      workspaceId: ctx.workspaceId,
+      ruleId: failure.rule.id,
+      contributor: ctx.contributor,
+      windowMinutes: REACTION_FAILURE_ALERT_WINDOW_MINUTES,
+      excludeDedupId: failure.dedupId,
+      status: 'budget_denied',
+    });
+    if (prior > 0) return;
+
+    await ctx.alert(
+      ctx.workspaceId,
+      formatBudgetDenialAlert({
+        ruleId: failure.rule.id,
+        fire: failure.fire,
+        contributor: ctx.contributor,
+        reason: failure.error,
+        windowMinutes: REACTION_FAILURE_ALERT_WINDOW_MINUTES,
+      }),
+    );
+  } catch (e) {
+    ctx.log(`alerting owner about budget denial for ${failure.rule.id} failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
