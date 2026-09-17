@@ -9,6 +9,7 @@
 import { createHash } from 'node:crypto';
 import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
+  WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
@@ -96,6 +97,7 @@ function artifact(version = '2026.8.22-1'): WorkspaceHostImageArtifact {
         bootstrapContractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
         actions: ['install'],
         maximumArtifactAgeDays: 30,
+        agentHomeBundleContractVersions: [WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION],
       },
     ],
   };
@@ -181,6 +183,61 @@ describe('workspace-host provision bootstrap profile', () => {
         }),
       ).rejects.toThrow(match);
     }
+  });
+
+  // WI-10001751. The publication that shipped this failure passed every gate it had — signed,
+  // trusted, and 10 days old against a 30-day ceiling — yet its host program could not parse the
+  // only agent-home material the controller is permitted to send. It was cut 2026-09-07T09:18Z;
+  // v3 landed 16:10Z the SAME DAY. A freshness ceiling measured in DAYS cannot see a skew measured
+  // in HOURS across a contract boundary, which is why this refusal names versions, not dates.
+  it('refuses a publication that cannot parse the agent-home material this controller emits', async () => {
+    const manifestDeclaring = (versions: readonly string[] | undefined): string => {
+      const doc = artifact();
+      const rule: Record<string, unknown> = { ...doc.compatibility[0] };
+      if (versions === undefined) delete rule.agentHomeBundleContractVersions;
+      else rule.agentHomeBundleContractVersions = versions;
+      return JSON.stringify({ artifact: { ...doc, compatibility: [rule] } });
+    };
+
+    const undeclared = /declares no compatibility\[\]\.agentHomeBundleContractVersions/;
+    const cases: { manifest: string; match: RegExp }[] = [
+      // Absent is refused, NOT read as "supports anything". The two are indistinguishable to a
+      // reader and opposite in consequence, and here the permissive reading is known wrong: every
+      // publication cut before this field existed also predates the version it would have to accept.
+      { manifest: manifestDeclaring(undefined), match: undeclared },
+      { manifest: manifestDeclaring([]), match: undeclared },
+      // The measured r31 case: the bundle supports {v2, v1}, the controller must emit v3, and the
+      // two sets do not intersect — so every provision against it was doomed before it started.
+      {
+        manifest: manifestDeclaring([
+          'papercusp-workspace-host-agent-home-bundle-v2',
+          'papercusp-workspace-host-agent-home-bundle-v1',
+        ]),
+        match: /supports agent-home bundle \[.*v1.*v2.*\] but this controller emits/,
+      },
+    ];
+
+    for (const { manifest, match } of cases) {
+      await expect(
+        resolveWorkspaceHostProvisionBootstrapProfile({
+          env: env(),
+          readTextFile: reader({ ...FILES, [MANIFEST_PATH]: manifest }),
+          controllerProfile: CONTROLLER,
+        }),
+      ).rejects.toThrow(match);
+    }
+  });
+
+  it('accepts a publication that declares the version this controller emits', async () => {
+    // Calibration for the three refusals above. Without it they could all be passing for an
+    // unrelated reason (a malformed fixture, a broken reader), and a guard that rejects
+    // everything is indistinguishable from one that rejects the right thing.
+    const profile = await resolveWorkspaceHostProvisionBootstrapProfile({
+      env: env(),
+      readTextFile: reader(FILES),
+      controllerProfile: CONTROLLER,
+    });
+    expect(profile.release).toBeDefined();
   });
 
   it('refuses a controller with no identityFile rather than rendering an empty authorized_keys', async () => {
