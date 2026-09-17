@@ -61,7 +61,12 @@ QUAR="$ROOT/.quarantine"
 QMETA="$ROOT/.quarantine-meta"
 LOG="$ROOT/mirror.log"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ALERT="$SELF_DIR/pc-estate-mirror-alert.sh"
+# Overridable so a test can point the alert channel at a recording stub and
+# assert on WHICH channel fired. Without this seam the only way to prove an
+# alarm is falsifiable is to mutate this file in the shared tree, which the
+# git-sync sweep can commit mid-probe; with it, the whole alert contract is
+# testable against a copy outside the tree.
+ALERT="${PC_ESTATE_MIRROR_ALERT:-$SELF_DIR/pc-estate-mirror-alert.sh}"
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG" >&2; }
 die() { log "FATAL: $*"; exit 1; }
@@ -114,6 +119,33 @@ clear_failing_marker() {
   # Never fail the health check over the marker -- a probe that dies while
   # cleaning up reports a fault that does not exist.
   log "WARN: could not clear $ROOT/ALERT-MIRROR-FAILING ($*)"
+  return 1
+}
+
+clear_degraded_marker() {
+  # Retraction half of the ALERT-MIRROR-DEGRADED latch. Before this, the ONLY
+  # thing that removed this marker was the alert script's --resolved path — and
+  # that path is reached only when clear_failing_marker() has just cleared
+  # ALERT-MIRROR-FAILING, a marker the degraded path deliberately never writes.
+  # So the common case latched forever: a probe-only fault raised DEGRADED, the
+  # probe later returned to full health, found no FAILING marker to clear, never
+  # stood anything down, and left the degraded latch on disk permanently.
+  #
+  # That is not merely a stale file. pc-estate-mirror-alert.sh reads this
+  # marker's EXISTENCE as ALREADY_KNOWN and suppresses the fleet-wide channel for
+  # a degradation it believes has already been announced. A latch that cannot
+  # clear therefore silently MUTES every future degraded alert — the anti-spam
+  # guard becomes a permanent gag, and it fails in the direction where nobody is
+  # told. Same contract as clear_failing_marker(): returns 0 only on a real
+  # transition out of a latch we actually set, and never fails the health check
+  # over a marker.
+  [ -e "$ROOT/ALERT-MIRROR-DEGRADED" ] || return 1
+  if rm -f "$ROOT/ALERT-MIRROR-DEGRADED" 2>/dev/null \
+    || sudo -n rm -f "$ROOT/ALERT-MIRROR-DEGRADED" 2>/dev/null; then
+    log "cleared ALERT-MIRROR-DEGRADED ($*)"
+    return 0
+  fi
+  log "WARN: could not clear $ROOT/ALERT-MIRROR-DEGRADED ($*)"
   return 1
 }
 
@@ -597,8 +629,37 @@ if a is None:
     print("last_run_at unreadable")
 elif a > max_age_h:
     print("STALE: last successful mirror run was %.1fh ago (limit %dh)" % (a, max_age_h))
+# ONE fault must not be reported twice at two different severities. A snapshot
+# that fails verification is recorded BOTH as a run error (driving ok:false, read
+# here) and as a standing quarantine (read below, as a stderr NOTE) — the same
+# single fact in two fields. The quarantine channel deliberately does NOT
+# re-alarm, because a permanent fault re-broadcast every six hours is how a team
+# learns to ignore this alarm; but ok:false then re-raised that identical fact at
+# FULL severity through alarm(), whose text asserts "the backups are not being
+# maintained" and ships fleet-wide with expects:"action".
+#
+# The asymmetry is what made it bite: MIRROR-STATE.json is rewritten only by the
+# DAILY mirror run, while this probe fires 6-HOURLY. So one quarantined snapshot
+# held ok:false for a full day and produced FOUR such broadcasts — each naming a
+# single-provider backup outage that measurably was not happening, for a fault
+# already on the books and already announced once by the mirror run that found it
+# (WI-10001692).
+#
+# So: attribute each error to a standing quarantine and drop the ones already
+# accounted for there. Anything left is a genuine run failure and still alarms at
+# full severity, and an ok:false with no errors at all is still reported rather
+# than silently passing — this must only ever subtract facts that another channel
+# is provably already carrying.
+standing_keys = {"%s/%s" % (q.get("host"), q.get("taken_at"))
+                 for q in (s.get("quarantined") or [])}
+errors = s.get("errors") or []
+unattributed = [e for e in errors
+                if not any(e.startswith(k + ":") for k in standing_keys)]
 if not s.get("ok"):
-    print("last run reported errors: %s" % "; ".join(s.get("errors") or [])[:300])
+    if unattributed:
+        print("last run reported errors: %s" % "; ".join(unattributed)[:300])
+    elif not errors:
+        print("state file reports ok:false but lists no errors — state is inconsistent")
 if not s.get("sealed"):
     print("mirror is NOT sealed immutable")
 if int(s.get("free_gb") or 0) < min_free:
@@ -641,9 +702,17 @@ PY
   # stand-down fires ONLY on the transition out of an alarm we actually raised,
   # never on an ordinary healthy run. A stand-down every 6 hours would be its own
   # spam.
-  if clear_failing_marker "mirror recovered"; then
+  # BOTH latches are cleared here, and EITHER transition earns the stand-down.
+  # Clearing only the FAILING marker is what stranded ALERT-MIRROR-DEGRADED
+  # permanently: the degraded path never writes the FAILING marker, so on full
+  # recovery there was nothing for clear_failing_marker() to clear, the
+  # stand-down never fired, and the degraded latch — the one that gags future
+  # degraded alerts — survived every healthy run that followed.
+  local stood_down=0
+  clear_failing_marker "mirror recovered" && stood_down=1
+  clear_degraded_marker "mirror recovered" && stood_down=1
+  [ "$stood_down" = 1 ] && \
     standdown "mirror healthy again as of $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  fi
   log "health OK"
   return 0
 }
