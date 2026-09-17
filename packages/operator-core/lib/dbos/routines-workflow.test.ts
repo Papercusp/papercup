@@ -186,7 +186,7 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
       evaluateRoutineDispatchEpoch({
         pressure: 'ok',
         probeMs: 3,
-        inFlightByQueue: {},
+        inFlightByQueue: { [ROUTINES_QUEUE]: 4 },
         activeQueues: [ROUTINES_QUEUE],
         controller,
         atMs: START + i * 30_000,
@@ -198,7 +198,7 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
     const elevated = evaluateRoutineDispatchEpoch({
       pressure: 'elevated',
       probeMs: 400,
-      inFlightByQueue: {},
+      inFlightByQueue: { [ROUTINES_QUEUE]: 4 },
       activeQueues: [ROUTINES_QUEUE],
       controller,
       atMs: START + 3 * 30_000,
@@ -211,7 +211,7 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
     const stillElevated = evaluateRoutineDispatchEpoch({
       pressure: 'elevated',
       probeMs: 500,
-      inFlightByQueue: {},
+      inFlightByQueue: { [ROUTINES_QUEUE]: 4 },
       activeQueues: [ROUTINES_QUEUE],
       controller,
       atMs: START + 4 * 30_000,
@@ -225,7 +225,7 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
       evaluateRoutineDispatchEpoch({
         pressure: 'ok',
         probeMs: 3,
-        inFlightByQueue: {},
+        inFlightByQueue: { [ROUTINES_QUEUE]: 4 },
         activeQueues: [ROUTINES_QUEUE],
         controller,
         atMs: START + i * 30_000,
@@ -234,7 +234,7 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
     const beforeCritical = evaluateRoutineDispatchEpoch({
       pressure: 'elevated',
       probeMs: 400,
-      inFlightByQueue: {},
+      inFlightByQueue: { [ROUTINES_QUEUE]: 4 },
       activeQueues: [ROUTINES_QUEUE],
       controller,
       atMs: START + 3 * 30_000,

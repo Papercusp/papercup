@@ -290,7 +290,22 @@ export function routinePoolHealthVerdict(
     evaluatedAtMs,
     state: degraded ? 'degraded' : 'healthy',
     severity,
-    actionable: degraded,
+    // WI-10001738: ONLY `critical` is actionable. `elevated` stays state:'degraded'
+    // (it genuinely is) but non-actionable, which routes it to CaplessAdaptiveController's
+    // third branch — `health-<state>-holds-window` — that HOLDS the window and zeroes
+    // healthySamples instead of contracting it.
+    //
+    // Why: contraction is multiplicative, recovery is +1 per healthy tick. Measured on
+    // bg-host over a 40min window, pool verdicts ran 75 ok / 22 elevated / 19 critical —
+    // so ~35% of ticks contracted and the window never rose above 3, sitting at its
+    // minimumWindow floor of 1 for 76 of 116 samples. At window=1 each queue starts ONE
+    // routine per tick against ~50 git-sync installs plus dozens of other routines, so
+    // routines fell permanently behind: 30+ overdue fleet-wide, worst 8h49m, which froze
+    // git-sync/papercusp for 3h and with it the green gate and every agent's deploy.
+    //
+    // Elevated must still STOP upward probing (that is the early warning doing its job,
+    // and zeroing healthySamples preserves it) — it must not tear the window down.
+    actionable: pressure === 'critical',
     evidence: [
       {
         objectiveId,
