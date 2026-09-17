@@ -278,6 +278,57 @@ describe("workspace-host sealed agent-home bundle", () => {
     }
   });
 
+  // WI-10001688. A REAL ~/.codex/auth.json carries `OPENAI_API_KEY` at top level, and the
+  // projection used to spread `{ ...body }` — so the key rode to the host past the refresh-token
+  // hunt above. It stayed invisible because every fixture here was authored WITHOUT that key,
+  // which is the specific way a fixture set can certify a projection it never exercised.
+  it("neutralizes an api-key-shaped key at any depth, which a real codex auth.json carries at top level", () => {
+    const projected = projectWorkspaceHostCodexAccessToken(
+      Buffer.from(
+        JSON.stringify({
+          OPENAI_API_KEY: "RAW-KEY-MUST-NOT-REACH-HOST",
+          auth_mode: "chatgpt",
+          tokens: {
+            access_token: "a",
+            id_token: "i",
+            refresh_token: "live-refresh",
+            ANTHROPIC_API_KEY: "NESTED-KEY-MUST-NOT-REACH-HOST",
+          },
+        }),
+      ),
+    );
+    const body = JSON.parse(projected.toString("utf8"));
+
+    expect(projected.toString("utf8")).not.toContain("RAW-KEY-MUST-NOT-REACH-HOST");
+    expect(projected.toString("utf8")).not.toContain("NESTED-KEY-MUST-NOT-REACH-HOST");
+    // NEUTRALIZED IN PLACE, not deleted — D-320 is the precedent: removing a field from this file
+    // broke codex-cli's own deserialization. The FIELD must survive; only the value dies. `null`
+    // is what a real ChatGPT-mode auth.json already carries, so this is a state the CLI is known
+    // to accept rather than one we reasoned it ought to.
+    expect(Object.keys(body)).toContain("OPENAI_API_KEY");
+    expect(body.OPENAI_API_KEY).toBeNull();
+    expect(body.tokens.ANTHROPIC_API_KEY).toBeNull();
+    expect(body.tokens.refresh_token).toBe("");
+    expect(body.tokens.access_token).toBe("a");
+    expect(body.auth_mode).toBe("chatgpt");
+  });
+
+  it("refuses at admission if an api key survived — material minted by an older projection", () => {
+    // The projection strips, so reaching the gate with one means the bytes came from somewhere
+    // else. Project-then-assert, the same defense in depth the refresh token already gets.
+    for (const member of [
+      { OPENAI_API_KEY: "k", auth_mode: "chatgpt", tokens: { access_token: "a", id_token: "i", refresh_token: "" } },
+      { auth_mode: "chatgpt", tokens: { access_token: "a", id_token: "i", refresh_token: "", "openai-api-key": "k" } },
+      { auth_mode: "chatgpt", tokens: { access_token: "a", id_token: "i", refresh_token: "" }, nested: [{ apiKey: "k" }] },
+    ]) {
+      expect(() =>
+        assertWorkspaceHostCodexAccessTokenProjection(
+          Buffer.from(JSON.stringify(member)),
+        ),
+      ).toThrow(/must not contain an API key/);
+    }
+  });
+
   // The guard the G6 failure lacked: the projection's OUTPUT must be deserializable by the real
   // Codex CLI. Fully synthetic JWTs (no credential), a private HOME, offline (`login status`
   // reads only the file — measured). Contrastive: the pre-fix shape must FAIL the same probe, so

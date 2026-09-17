@@ -138,6 +138,64 @@ describe('acceptance BAR seed builder', () => {
       backfilled: true, legacyCriterionMap: map }).ok).toBe(false);
   });
 
+  // EI-23376469015732685: a rubric authored BEFORE BAR adoption has no barKey on any
+  // criterion, so every one reads as an "extra" against the Requirements set. Refusing
+  // that FATALLY deadlocked the whole post-epoch + draft + pre-BAR class: `ready` needs a
+  // recorded activation audit, and the audit died on exactly this code. The refusal still
+  // stands — it is now merely RECORDABLE, so the audit can persist while the backfill is
+  // still owed. The ship floor is untouched (`acceptance_bar_contract_not_ready`).
+  it('marks a pre-BAR legacy rubric repairable, but keeps a genuine bar conflict fatal', () => {
+    const legacyCriteria = [
+      { key: 'persisted-outcome', title: 'Persisted outcome', model: 'The canonical bar is durably persisted.', method: 'Run the roundtrip fixture.', driftMarkers: 'The read misses the committed value.' },
+      { key: 'visible-outcome', title: 'Visible outcome', model: 'The live service exposes the verdict.', method: 'Read the service verdict.', driftMarkers: 'The response names an older revision.' },
+    ];
+    const templateData = (criteria: unknown[]) => ({ kind: 'acceptance', subjectPlan: input.planSlug,
+      characteristic: 'plan-acceptance', ratingScale: ['pass', 'partial', 'fail', 'unknown'], criteria });
+
+    // LEGACY: no criterion carries a barKey at all -> recordable as a pending backfill.
+    const legacy = buildAcceptanceBarSeed({ ...input, planContent: plan(),
+      existingTemplateData: templateData(legacyCriteria) });
+    expect(legacy.ok).toBe(false);
+    if (legacy.ok) throw new Error('expected the legacy rubric to refuse');
+    expect(legacy.problems).toHaveLength(1);
+    expect(legacy.problems[0]).toMatchObject({
+      code: 'bar_rubric_conflict',
+      repairable: 'legacy_criteria_unmapped',
+      rubricSlug: input.rubricSlug,
+    });
+    // The detail must name the owed backfill, not merely "outside the Requirements set" —
+    // that wording is what sent readers hunting for a nonexistent renamed requirement.
+    expect(legacy.problems[0]!.detail).toContain('predates BAR adoption');
+    expect(legacy.problems[0]!.detail).toContain('persisted-outcome');
+
+    // CONTROL 1: a criterion carrying a barKey the Requirements map does not know is a
+    // REAL conflict (renamed/removed requirement, or the wrong rubric pinned). If this
+    // ever acquires `repairable`, activation would record an audit over a rubric whose
+    // bars disagree with its plan — the exact thing the extras check exists to catch.
+    // A criterion carrying a barKey must also carry the structural BAR fields, or it
+    // fails template_data parsing first and never reaches the extras check at all.
+    const barShaped = (criterion: Record<string, unknown>, barKey: string) => ({
+      ...criterion, barKey, role: 'outcome', mandatory: true,
+      passRatings: ['pass'], evidencePlane: 'tree',
+    });
+    const conflicting = buildAcceptanceBarSeed({ ...input, planContent: plan(),
+      existingTemplateData: templateData([barShaped(legacyCriteria[0]!, 'R-99')]) });
+    expect(conflicting.ok).toBe(false);
+    if (conflicting.ok) throw new Error('expected the conflicting rubric to refuse');
+    expect(conflicting.problems[0]).toMatchObject({ code: 'bar_rubric_conflict' });
+    expect(conflicting.problems[0]!.repairable).toBeUndefined();
+    expect(conflicting.problems[0]!.detail).toContain('outside the current Requirements set');
+
+    // CONTROL 2: MIXED — one legacy criterion beside one genuinely conflicting one. The
+    // presence of a single unknown barKey must make the whole refusal fatal; a per-problem
+    // OR would let a real conflict ride in behind a legacy sibling.
+    const mixed = buildAcceptanceBarSeed({ ...input, planContent: plan(),
+      existingTemplateData: templateData([legacyCriteria[0], barShaped(legacyCriteria[1]!, 'R-99')]) });
+    expect(mixed.ok).toBe(false);
+    if (mixed.ok) throw new Error('expected the mixed rubric to refuse');
+    expect(mixed.problems[0]!.repairable).toBeUndefined();
+  });
+
   it('creates one mandatory outcome per requirement and one hash-pinned clause per map edge', () => {
     const built = buildAcceptanceBarSeed({ ...input, classRef: 'plan-class-bugfix', planContent: plan() });
     expect(built.ok).toBe(true);
