@@ -19,6 +19,7 @@
 import type { DispatchProjectedResult, PostInvokeEvent, UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { MatchedAction } from '@papercusp/rules';
 import { runReactions } from '@papercusp/event-reaction';
+import { surfaceReactionFailure } from './reaction-failure-surface';
 import { matchReactions } from './registry';
 import { fireReactionInProcess } from './dispatch-reaction';
 import { runDurableReaction, durableReactionsEnabled } from './durable';
@@ -258,5 +259,10 @@ function matchAndRun(event: ToolInvocationEvent): void {
       fireReactionInProcess({ fire, args, parentCtx: ev.ctx, cause, capability }),
     durable: { enabled: durableReactionsEnabled, run: (input) => runDurableReaction(input) },
     log: (msg) => console.warn(`[events] ${msg}`),
+    // P-030 (b): a failed reaction used to be a console.warn and nothing else —
+    // no durable record on the live route, and therefore nobody to tell. This
+    // records it and alerts the owner when the cause is one they can fix (a
+    // capability the wearer lacks, an unbound provider class, a missing tool).
+    onFailure: (failure) => surfaceReactionFailure(failure),
   });
 }
