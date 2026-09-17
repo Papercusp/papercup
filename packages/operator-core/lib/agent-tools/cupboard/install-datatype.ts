@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveAgentIdentity } from '../coordination/identity';
 
 const ok = (payload: Record<string, unknown>) => ({ data: payload });
 
@@ -48,6 +49,7 @@ export default defineTool({
       subject,
     });
     if (!gate.ok) return ok({ ok: false, error: gate.code, detail: gate.detail, refusedBy: 'install-door-gate' });
+    const actor = resolveAgentIdentity(ctx).ownerId;
     const { installDatatypeFromCupboard } = await import('../../cupboard/install-datatype-io');
     const result = await installDatatypeFromCupboard({
       workspaceId: subject,
@@ -55,7 +57,9 @@ export default defineTool({
       ...(args.githubUrl ? { githubUrl: args.githubUrl } : {}),
       ...(args.listingRef ? { listingRef: args.listingRef } : {}),
       ...(args.update ? { update: true } : {}),
-      ...(ctx.principal?.agentId ? { createdBy: ctx.principal.agentId } : {}),
+      // resolveAgentIdentity, not ctx.principal: a Principal carries kind/slug/workspaceId
+      // and has no agentId — this is the same resolver datatypes:declare attributes with.
+      ...(actor ? { createdBy: actor } : {}),
     });
     if (!result.ok) return ok({ ok: false, status: result.status, error: result.error, detail: result.detail });
     return ok({
