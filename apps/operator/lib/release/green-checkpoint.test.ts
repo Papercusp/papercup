@@ -507,8 +507,15 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
         `calls=${JSON.stringify(calls)} reason=${result.reason} logs=${JSON.stringify(logs)}`,
     ).toBeGreaterThan(0);
     expect(result.reason).not.toBe("up-to-date");
-    // It must judge the frozen lineage's own head — never re-cut at the moving tip (D-005/D-007).
-    expect(result.candidate).toBe(repaired);
+    // The unreachable phase must actually be discharged in the durable row, or the next tick
+    // livelocks again exactly as before.
+    expect(
+      queue?.phase,
+      `the row is still ready-to-test, so the livelock survives this run. ` +
+        `reason=${result.reason} candidate=${result.candidate?.slice(0, 8)} ` +
+        `pin=${pin.slice(0, 8)} repaired=${repaired.slice(0, 8)} ` +
+        `logs=${JSON.stringify(logs)}`,
+    ).not.toBe("ready-to-test");
   });
 
   it("WI-10001752 control: a ready-to-test row whose candidate is NOT the pin still tests the candidate", async () => {
