@@ -219,6 +219,29 @@ function parseJsonObjectBytes(
  */
 export const WORKSPACE_HOST_CODEX_NEUTRALIZED_REFRESH_TOKEN = "";
 
+/**
+ * The neutral value for `claudeAiOauth.refreshToken` (WI-10001691).
+ *
+ * MEASURED 2026-09-16 on this box, two arms with a discriminating negative control, because the
+ * whole point is that a projection is only safe if the CLI still authenticates afterwards:
+ *   arm 1 (negative control): the same file shape with an INVALID access token and
+ *          `refreshToken: ""` -> `claude -p` exits 1, `API Error: 401 Invalid bearer token`.
+ *   arm 2: the REAL access token with `refreshToken: ""` -> exits 0 and returns its marker.
+ * Arm 1 is what makes arm 2 mean anything: this repo's sessions frequently carry
+ * `ANTHROPIC_AUTH_TOKEN` for gateway routing, and if the CLI had been answering from ambient env
+ * auth rather than `CLAUDE_CONFIG_DIR`, arm 2 would have passed on any bytes whatsoever.
+ *
+ * ⚠ SEPARATE CONSTANT FROM THE CODEX ONE ON PURPOSE, despite both being `""` today. Each is a
+ * measured fact about a DIFFERENT deserializer; sharing one symbol would mean a future measurement
+ * against one CLI silently redefined the projection shipped to the other.
+ *
+ * ⚠ The field is EMITTED-AND-EMPTY rather than absent, and the honest reason is that absent is
+ * UNMEASURED here. Codex has a measured `missing field` failure for the deleted-key shape (D-320);
+ * for claude we know only that present-and-empty authenticates. So the projection always writes the
+ * shape that was demonstrated to work instead of the one we could argue ought to.
+ */
+export const WORKSPACE_HOST_CLAUDE_NEUTRALIZED_REFRESH_TOKEN = "";
+
 /** Key comparison is shape-based, so `refresh-token`, `refresh_token` and `refreshToken` all match. */
 function normalizedKey(key: string): string {
   return key.replace(/[_-]/g, "").toLowerCase();
@@ -320,6 +343,56 @@ function neutralizeApiKeys(value: unknown): unknown {
     Object.entries(value).map(([key, nested]) => [
       key,
       apiKeyPaths({ [key]: null }).length ? null : neutralizeApiKeys(nested),
+    ]),
+  );
+}
+
+/**
+ * Refresh-token-shaped keys still carrying a LIVE value (WI-10001691).
+ *
+ * The sibling of `liveApiKeyPaths`, and for the same reason: the neutralized state PRESERVES the
+ * field, so presence alone cannot be the predicate — a correctly-projected file has the key and
+ * must pass. Only a non-empty value is a finding.
+ */
+function liveRefreshTokenPaths(
+  value: unknown,
+  path: readonly string[] = [],
+): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((nested, index) =>
+      liveRefreshTokenPaths(nested, [...path, String(index)]),
+    );
+  }
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value).flatMap(([key, nested]) => {
+    const here = [...path, key];
+    const live =
+      refreshTokenKeyPaths({ [key]: null }).length > 0 &&
+      nested !== null &&
+      nested !== ""
+        ? [here.join(".")]
+        : [];
+    return [...live, ...liveRefreshTokenPaths(nested, here)];
+  });
+}
+
+/**
+ * Neutralize every refresh-token-shaped key at any depth, PRESERVING the field (WI-10001691).
+ *
+ * Exhaustive rather than targeted at one known path, which is the lesson WI-10001688 paid for: the
+ * codex projection spread `{ ...body }` and hunted one shape, so a differently-named credential in
+ * the same object rode through untouched. Neutralizing by SHAPE at every depth means a future
+ * `claudeAiOauth.refresh_token`, or a second account block, cannot reopen it.
+ */
+function neutralizeRefreshTokens(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(neutralizeRefreshTokens);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, nested]) => [
+      key,
+      refreshTokenKeyPaths({ [key]: null }).length
+        ? WORKSPACE_HOST_CLAUDE_NEUTRALIZED_REFRESH_TOKEN
+        : neutralizeRefreshTokens(nested),
     ]),
   );
 }
@@ -435,6 +508,122 @@ export function projectWorkspaceHostCodexAccessToken(
   return projected;
 }
 
+/**
+ * Validate the immutable Claude member without ever returning or naming a token value (WI-10001691).
+ *
+ * WHY THIS EXISTS AT ALL. `encodeWorkspaceHostAgentHomeBundle` used to call `decodeJsonFile` on the
+ * claude member and DISCARD the result — validation only — then carry the ORIGINAL bytes. So a real
+ * `~/.claude/.credentials.json` was copied WHOLE onto a cloud VM, `claudeAiOauth.refreshToken`
+ * included, while its codex sibling one line below was projected. A refresh token mints new access
+ * for that account session indefinitely; the access token beside it expires in ~6h. Every piece of
+ * machinery needed to stop it already existed and was already shape-based — it was simply never
+ * pointed at claude.
+ *
+ * ⚠ THE OLD FIXTURES COULD NOT HAVE CAUGHT THIS. Both test fixtures were
+ * `{ claudeAiOauth: { accessToken } }` with no refresh-token field at all, so every assertion about
+ * the claude member passed while the byte-identical carry was invisible. A fixture that cannot
+ * express the defect cannot fail on it, which is why the guards below are paired with fixtures that
+ * DO carry a live refresh token.
+ *
+ * ⚠ PREDICATE DIFFERS FROM THE CODEX SIBLING DELIBERATELY. Codex allowlists one PATH
+ * (`tokens.refresh_token`) and refuses the key anywhere else; this allows the key at ANY depth so
+ * long as it carries no live value. Claude's file is a single account object today, and a
+ * value-based predicate stays correct if a second account block or a renamed field appears, where a
+ * path allowlist would refuse a correctly-neutralized file for being shaped differently.
+ */
+export function assertWorkspaceHostClaudeAccessTokenProjection(
+  claude: Buffer,
+): void {
+  const body = parseJsonObjectBytes(claude, "files.claude JSON");
+  const oauth = record(body.claudeAiOauth, "files.claude JSON.claudeAiOauth");
+  if (
+    typeof oauth.accessToken !== "string" ||
+    oauth.accessToken.length === 0
+  ) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "files.claude must contain a non-empty access token",
+    );
+  }
+  // No path is named in either message below: naming it would echo where a secret sat.
+  if (liveRefreshTokenPaths(body).length > 0) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "files.claude access-token projection must not contain a refresh token",
+    );
+  }
+  if (liveApiKeyPaths(body).length > 0) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "files.claude access-token projection must not contain an API key",
+    );
+  }
+}
+
+/**
+ * Admission-time contract: the bytes must be the shape the Claude CLI was MEASURED to authenticate
+ * with (WI-10001691).
+ *
+ * Closed failure, no probe spent — the codex rationale applies unchanged: a generation whose claude
+ * member predates this projection is refused HERE, with a reason naming the repair (re-mint under
+ * the current projection), rather than burning a paid readiness probe to exit as `non-zero-exit`.
+ */
+export function assertWorkspaceHostClaudeProjectionCliReadable(
+  claude: Buffer,
+): void {
+  assertWorkspaceHostClaudeAccessTokenProjection(claude);
+  const body = parseJsonObjectBytes(claude, "files.claude JSON");
+  const oauth = record(body.claudeAiOauth, "files.claude JSON.claudeAiOauth");
+  if (oauth.refreshToken !== WORKSPACE_HOST_CLAUDE_NEUTRALIZED_REFRESH_TOKEN) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "files.claude must retain an empty refreshToken field — the shape measured to authenticate; " +
+        "this generation was projected before that fix and must be re-minted",
+    );
+  }
+}
+
+/**
+ * Project one canonical Claude OAuth home into immutable, access-token-only generation bytes.
+ *
+ * The sibling of `projectWorkspaceHostCodexAccessToken`, and the reason the asymmetry above is now
+ * closed. Retains the access token and all account metadata the CLI needs for direct
+ * guest-to-provider inference, and neutralizes the rotating refresh credential in place.
+ *
+ * MEASURED, not reasoned: a credential projected exactly this way performs REAL inference, verified
+ * against a negative control that rules out ambient gateway auth (see
+ * `WORKSPACE_HOST_CLAUDE_NEUTRALIZED_REFRESH_TOKEN`). The explicit `refreshToken` assignment after
+ * the exhaustive neutralize is not redundant: a source file lacking the key entirely would otherwise
+ * yield no field at all, and absent is the one shape that was NOT measured.
+ */
+export function projectWorkspaceHostClaudeAccessToken(claude: Buffer): Buffer {
+  const body = parseJsonObjectBytes(claude, "files.claude JSON");
+  const oauth = record(body.claudeAiOauth, "files.claude JSON.claudeAiOauth");
+  if (
+    typeof oauth.accessToken !== "string" ||
+    oauth.accessToken.length === 0
+  ) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "files.claude must contain a non-empty access token",
+    );
+  }
+  const projectedOauth: Record<string, unknown> = {
+    ...(neutralizeApiKeys(neutralizeRefreshTokens(oauth)) as Record<
+      string,
+      unknown
+    >),
+    refreshToken: WORKSPACE_HOST_CLAUDE_NEUTRALIZED_REFRESH_TOKEN,
+  };
+  const projected = Buffer.from(
+    JSON.stringify({
+      ...(neutralizeApiKeys(neutralizeRefreshTokens(body)) as Record<
+        string,
+        unknown
+      >),
+      claudeAiOauth: projectedOauth,
+    }),
+    "utf8",
+  );
+  assertWorkspaceHostClaudeProjectionCliReadable(projected);
+  return projected;
+}
+
 /** Parse without ever echoing a decoded byte into an error or receipt. */
 export function parseWorkspaceHostAgentHomeBundle(
   material: Buffer,
@@ -469,14 +658,16 @@ export function parseWorkspaceHostAgentHomeBundle(
     | typeof WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION
     | typeof WORKSPACE_HOST_AGENT_HOME_MUTABLE_CACHE_BUNDLE_VERSION
     | typeof WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION;
+  const claude = decodeJsonFile(files.claude, "claude");
   const codex = decodeJsonFile(files.codex, "codex");
   if (contractVersion === WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION) {
+    assertWorkspaceHostClaudeAccessTokenProjection(claude);
     assertWorkspaceHostCodexAccessTokenProjection(codex);
   }
   return {
     contractVersion,
     files: {
-      claude: decodeJsonFile(files.claude, "claude"),
+      claude,
       codex,
       omp:
         contractVersion !== WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION &&
@@ -491,7 +682,9 @@ export function parseWorkspaceHostAgentHomeBundle(
 export function encodeWorkspaceHostAgentHomeBundle(
   files: WorkspaceHostAgentHomeBundleFiles,
 ): Buffer {
-  decodeJsonFile(files.claude.toString("base64"), "claude");
+  // WI-10001691: this line used to be `decodeJsonFile(files.claude...)` with its result DISCARDED,
+  // and the member below carried `files.claude` — the ORIGINAL bytes, refresh token and all.
+  const claude = projectWorkspaceHostClaudeAccessToken(files.claude);
   const codex = projectWorkspaceHostCodexAccessToken(files.codex);
   if (files.omp !== null) {
     decodeJsonFile(files.omp.toString("base64"), "omp");
@@ -500,7 +693,7 @@ export function encodeWorkspaceHostAgentHomeBundle(
     JSON.stringify({
       contractVersion: WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
       files: {
-        claude: files.claude.toString("base64"),
+        claude: claude.toString("base64"),
         codex: codex.toString("base64"),
         omp: files.omp?.toString("base64") ?? null,
       },
@@ -518,6 +711,7 @@ export function assertWorkspaceHostAgentHomeBundleAdmissionEligible(
       `agent-home authentication admission requires ${WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION}; legacy mutable-cache bundles are read/revoke-only`,
     );
   }
+  assertWorkspaceHostClaudeProjectionCliReadable(bundle.files.claude);
   assertWorkspaceHostCodexProjectionCliReadable(bundle.files.codex);
 }
 
