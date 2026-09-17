@@ -378,6 +378,24 @@ export interface WorkspaceHostResourceCreatedEvent {
    * under whichever workspace happened to compose the provider.
    */
   readonly workspaceId: string;
+  /**
+   * The workspace-host this resource was created FOR — per-EVENT for exactly the reason
+   * `workspaceId` above is. WI-10001673: this was first modeled on the observer BINDING, which
+   * is constructed once in `dbos/bootstrap.ts` where no host is in scope, so the field silently
+   * spread to nothing and every row was born with `host_id=''`. Measured 2026-09-17: all 23 rows
+   * created after migration 1168 — the migration that ADDED the column — carried an empty one.
+   * An obligation row is ADDRESSED, not named: every GCP delete step carries `hostId` and the
+   * provider asserts the target's managed-label identity against it before deleting, so a row
+   * without one can be escalated but never reclaimed.
+   */
+  readonly hostId: string;
+  /**
+   * The enclosing resource this one is addressed THROUGH, when its delete op takes one: a Cloud
+   * NAT is deleted via its owning Cloud Router (`delete-nat` takes `routerName`). Empty for every
+   * kind addressed directly. Derived from the step input, because the generic
+   * `WorkspaceHostResourceRef` carries the project and region but not a GCP-specific parent.
+   */
+  readonly parentResourceId: string;
 }
 
 /**
@@ -614,6 +632,31 @@ const EXISTING_FIREWALL_KIND = 'existing-firewall';
  * one (`delete-instance` <-> kind `vm`), so a wrong inverse closes nothing for the VM while
  * reporting success (EI-23459044188861686).
  */
+/**
+ * WI-10001673: the ADDRESS of a resource this step creates — the host it belongs to, and the
+ * enclosing resource its delete op is routed through when it has one.
+ *
+ * Read from the step INPUT rather than from `result.resource`, because the generic
+ * `WorkspaceHostResourceRef` carries the project and region but deliberately knows nothing about
+ * GCP's `routerName`; and read per-STEP rather than from the observer binding, because the
+ * binding is constructed once at the DBOS composition root where no host exists.
+ *
+ * Only Cloud NAT has a parent today: `delete-nat` takes the owning Cloud Router's name, which is
+ * why `CLOUD_RESOURCE_DELETE_CONTRACT` lists `parentResourceId` in nat's `requires`.
+ */
+function createdAddress(step: WorkspaceHostPlanStep): { hostId: string; parentResourceId: string } {
+  // Deliberately a defensive read rather than `stepInput(step)`, for the same reason as
+  // `deleteOpName` below: that helper THROWS on a step with no op, and this runs on the observer
+  // path AFTER the resource already exists. Throwing here would turn a bookkeeping miss into a
+  // failed provision — with the resource live and metered either way.
+  const input = (step as { input?: { op?: unknown; hostId?: unknown; request?: { routerName?: unknown } } })?.input;
+  const routerName = input?.op === 'insert-nat' ? input?.request?.routerName : undefined;
+  return {
+    hostId: typeof input?.hostId === 'string' ? input.hostId : '',
+    parentResourceId: typeof routerName === 'string' ? routerName : '',
+  };
+}
+
 function deleteOpName(step: WorkspaceHostPlanStep): string | undefined {
   // Deliberately a defensive read rather than `stepInput(step)`: that helper THROWS on a step
   // with no op, and this runs on the observer path AFTER the delete already succeeded. Throwing
@@ -2147,11 +2190,14 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       result.state === 'applied' ||
       (result.state === 'unchanged' && createsOwnedResource(request.step));
     if (this.onResourceCreated && owesCreationObligation && result.resource) {
+      const address = createdAddress(request.step);
       await this.onResourceCreated({
         resource: result.resource,
         operationId: result.operationId,
         stepId: result.stepId,
         workspaceId: ctx.workspaceId,
+        hostId: address.hostId,
+        parentResourceId: address.parentResourceId,
       });
     }
     // The consuming mirror of the branch above. A destroy is confirmed PER RESOURCE here, so the

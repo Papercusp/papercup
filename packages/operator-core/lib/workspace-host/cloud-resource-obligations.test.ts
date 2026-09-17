@@ -704,3 +704,116 @@ describe('planCloudResourceObligationReclamation', () => {
     expect(planCloudResourceObligationReclamation([row], clock, {}).reclaim).toHaveLength(0);
   });
 });
+
+/**
+ * WI-10001673 — the MAPPING, which is the step nothing else can catch.
+ *
+ * The provider-side guards in `gcp-provider.test.ts` prove the creation EVENT carries the
+ * address, and `describeCloudResourceDeleteAddress` above proves a ROW bearing one is
+ * addressable. Both keep passing if this observer drops the field in between — which is exactly
+ * what it did: `hostId` was read from the process-wide BINDING (constructed once in
+ * dbos/bootstrap.ts, where no host is in scope), so it spread to nothing on every event and all
+ * 23 rows created after migration 1168 were born `host_id=''`, unreclaimable by construction.
+ */
+describe('createCloudResourceObligationObserver address mapping', () => {
+  function makeInsertCapture() {
+    const calls: { text: string; values: unknown[] }[] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      calls.push({ text, values });
+      // The recorder falls back to a SELECT when the INSERT returns nothing, and throws if that
+      // is also empty. Returning [] here would fail these tests inside the recorder, before any
+      // assertion ran — an instrument fault that reads exactly like a mapping defect.
+      if (text.includes('INSERT INTO harness_shared.cloud_resource_obligations')) {
+        return Promise.resolve([{ id: 1, inserted: true }]);
+      }
+      throw new Error(`unexpected query in fake sql: ${text}`);
+    }) as unknown as Parameters<typeof createCloudResourceObligationObserver>[0]['sql'];
+    return { sql, calls };
+  }
+
+  function createdEvent(overrides: Partial<CloudResourceCreatedEventLike> = {}): CloudResourceCreatedEventLike {
+    return {
+      resource: { kind: 'nat', providerId: 'pc-host-gcp-1-nat', parentProviderId: 'proj-1', region: 'us-central1' },
+      workspaceId: 'papercusp-workspace',
+      hostId: 'host-gcp-1',
+      parentResourceId: 'pc-host-gcp-1-router',
+      ...overrides,
+    };
+  }
+
+  it('carries the host id from the EVENT into the recorded row', async () => {
+    const { sql, calls } = makeInsertCapture();
+    await createCloudResourceObligationObserver({ sql })(createdEvent());
+
+    // Positive control: a fake that captured nothing would make every assertion below vacuous.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.text).toContain('INSERT INTO harness_shared.cloud_resource_obligations');
+    expect(calls[0]?.values).toContain('host-gcp-1');
+  });
+
+  it('carries the owning router so a NAT row can be addressed through it', async () => {
+    const { sql, calls } = makeInsertCapture();
+    await createCloudResourceObligationObserver({ sql })(createdEvent());
+    expect(calls[0]?.values).toContain('pc-host-gcp-1-router');
+  });
+
+  it('does not invent a parent for a kind addressed directly', async () => {
+    const { sql, calls } = makeInsertCapture();
+    await createCloudResourceObligationObserver({ sql })(
+      createdEvent({
+        resource: { kind: 'network', providerId: 'pc-host-gcp-1-net', parentProviderId: 'proj-1' },
+        parentResourceId: '',
+      }),
+    );
+    // Negative control for the assertion above: it must be the EVENT's router that lands, not a
+    // constant stamped onto every row.
+    expect(calls[0]?.values).not.toContain('pc-host-gcp-1-router');
+    expect(calls[0]?.values).toContain('host-gcp-1');
+  });
+
+  it('prefers the event host over a binding host — one provider serves many hosts', async () => {
+    const { sql, calls } = makeInsertCapture();
+    await createCloudResourceObligationObserver({ sql, hostId: 'host-from-binding' })(createdEvent());
+    expect(calls[0]?.values).toContain('host-gcp-1');
+    expect(calls[0]?.values).not.toContain('host-from-binding');
+  });
+
+  /**
+   * BINDING-ONLY CONTROL — the exact pre-fix mapping, kept permanently so the four assertions
+   * above can be SHOWN to fail on it, in the same spirit as the PREFIX-STRIP CONTROL in
+   * cloud-resource-obligations.close-observer.test.ts.
+   *
+   * This is not ceremony: those four were written AFTER the fix and passed on first run, so
+   * nothing else in the suite distinguishes "the mapping works" from "the assertions cannot
+   * fail". Production wiring supplies no binding host, so the `hostId` spread below is dead on
+   * every event — which is how 23 consecutive rows were written unaddressable while this
+   * module's own unit tests stayed green.
+   */
+  it('CONTROL: the pre-fix binding-only mapping drops the address the assertions above require', async () => {
+    const { sql, calls } = makeInsertCapture();
+    const binding: { sql: typeof sql; hostId?: string } = { sql };
+    const preFixObserver = async (event: CloudResourceCreatedEventLike) => {
+      await recordCloudResourceObligation(binding.sql, {
+        workspaceId: event.workspaceId,
+        provider: 'gcp',
+        resourceKind: event.resource.kind,
+        resourceId: event.resource.providerId,
+        ...(event.resource.region ? { region: event.resource.region } : {}),
+        ...(binding.hostId ? { hostId: binding.hostId } : {}),
+      });
+    };
+
+    await preFixObserver(createdEvent());
+
+    // Positive control: the row IS still written, and its non-address fields still land — the
+    // defect was never a failed write, which is precisely why it went unnoticed for 23 rows.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.values).toContain('pc-host-gcp-1-nat');
+    expect(calls[0]?.values).toContain('us-central1');
+
+    // ...but the address does not, so every assertion in this describe block would fail.
+    expect(calls[0]?.values).not.toContain('host-gcp-1');
+    expect(calls[0]?.values).not.toContain('pc-host-gcp-1-router');
+  });
+});
