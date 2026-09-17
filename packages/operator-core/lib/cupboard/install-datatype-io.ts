@@ -35,6 +35,7 @@ import {
   type InstalledDatatype,
 } from './datatype-store';
 import type { UpsertDatatypeInput } from '../datatype-registry-store';
+import { parseDatatypeDisplay, type DatatypeDisplaySpec } from '../datatype-display';
 
 export interface InstallDatatypeInput {
   listingId?: string;
@@ -83,6 +84,18 @@ export function registryInputFromPackage(
   workspaceId: string,
   createdBy?: string,
 ): UpsertDatatypeInput {
+  // A package's `display` is parsed as an opaque object by readDatatypeDir; the registry's
+  // contract is the narrower DatatypeDisplaySpec. Parse it HERE, at the D-010 boundary, and
+  // THROW on a malformed one: `seed()` turns that into a failed install, which is the honest
+  // outcome — a package whose display cannot produce a valid row is not resolvable.
+  let display: DatatypeDisplaySpec | undefined;
+  if (datatype.display) {
+    const parsed = parseDatatypeDisplay(datatype.display);
+    if (!parsed.ok) {
+      throw new Error(`datatype "${datatype.id}" has an invalid display spec: ${parsed.issues.join('; ')}`);
+    }
+    display = parsed.value;
+  }
   return {
     id: datatype.id,
     workspaceId,
@@ -91,7 +104,7 @@ export function registryInputFromPackage(
     tier: datatype.tier,
     ...(datatype.workItemKind ? { workItemKind: datatype.workItemKind } : {}),
     ...(datatype.payloadSchema ? { payloadSchema: datatype.payloadSchema } : {}),
-    ...(datatype.display ? { display: datatype.display } : {}),
+    ...(display ? { display } : {}),
     ...(datatype.authoritativeWriter ? { authoritativeWriter: datatype.authoritativeWriter } : {}),
     ...(datatype.selfImprovement ? { selfImprovement: datatype.selfImprovement } : {}),
     tags: datatype.tags,
