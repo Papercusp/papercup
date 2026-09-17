@@ -341,6 +341,15 @@ export interface NewHarnessInput {
   release_content_hash?: string | null;
   release_manifest_digest?: string | null;
   release_signature?: string | null;
+  /**
+   * The FULL signed release manifest as canonical JSON (migration 032).
+   * The signature is over listingManifestSigningBytes(manifest), whose
+   * license/publisher/reviewStatus fields are publisher-supplied and NOT
+   * derivable from a clone — so an installer cannot reconstruct the signed
+   * bytes from the pins alone. Carrying the whole manifest is what makes the
+   * install-time signature check reachable (identities-v1-2026-08-30 D-074).
+   */
+  release_manifest?: string | null;
   release_published_at?: number | null;
   // Content pin (migration 028 / cupboard-release-pipeline-content-trust P-001).
   // Set by the Worker for self-describing kinds from what IT fetched (D-003);
@@ -368,11 +377,11 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           price_amount_micros, price_currency,
           compatibility_json, required_permissions,
           release_version, release_content_hash, release_manifest_digest,
-          release_signature, release_published_at,
+          release_signature, release_manifest, release_published_at,
           pinned_commit_sha, pinned_tree_digest, pinned_at,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -416,6 +425,7 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.release_content_hash ?? null,
       h.release_manifest_digest ?? null,
       h.release_signature ?? null,
+      h.release_manifest ?? null,
       h.release_published_at ?? null,
       h.pinned_commit_sha ?? null,
       h.pinned_tree_digest ?? null,
