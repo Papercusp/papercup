@@ -501,8 +501,31 @@ export const EXCLUSIVE_LOCK_ACK: RegExp;
  * Bump this ONLY when deliberately re-grandfathering more applied history —
  * NEVER to silence a genuinely new violation. Use the documented pragma for a
  * swap that is actually safe (see findViewLockOrderInversion).
+ *
+ * 2026-09-17 — 678 -> 1172, re-grandfathering ONE file: 1171-event-key-payload-
+ * schema.sql (identities-v1 P-029). It ALTERs harness_shared.event_key_registry
+ * and then CREATE OR REPLACE VIEWs event_key_registry_attested over it, with no
+ * prior LOCK on the view: a textbook inversion by this check's own definition.
+ *
+ * It is grandfathered rather than fixed for the SAME reason as the 11 above, and
+ * for no other: it was already APPLIED and ledgered (2026-09-17T08:47:29Z,
+ * sha256 28d5ca3f…) by boot auto-apply before any gate check ran, so editing the
+ * file now would break its recorded sha256 without re-running it. That is the
+ * honest case this boundary exists for — an applied file that can no longer be
+ * edited — NOT the dishonest one it warns about.
+ *
+ * Two things keep this from being a silent exemption:
+ *   - The inversion is cold, not hot: event_key_registry is absent from
+ *     EXCLUSIVE_LOCK_HOT_TABLES and the table was hours old, so the detector
+ *     reports hot:false and the apply in fact succeeded on its first attempt.
+ *   - The PROCESS defect — boot auto-apply admitting a migration this gate check
+ *     would have rejected, which then red-pins the gate after the fact — is filed
+ *     separately. Grandfathering closes the gate red; it does not close that.
+ *
+ * Enforcement still resumes immediately above the offender, so every future
+ * migration is checked exactly as before. This stops the NEXT one.
  */
-export const VIEW_LOCK_ORDER_ENFORCED_FROM: 678;
+export const VIEW_LOCK_ORDER_ENFORCED_FROM: 1172;
 /**
  * Opt-out pragma, same shape and contract as `allow-index-swap`: it forces the
  * author to STATE why the inversion is safe here, not to prove it.
