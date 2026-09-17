@@ -110,14 +110,36 @@ describe('CLAIM A — the acceptance falsifier is reachable through the amendmen
     expect(amendableCriterionFields(rubrics())).toContain('driftMarkers');
   });
 
-  it('the amend tool still documents driftMarkers as the falsifier', () => {
-    // The correspondence is what makes "amend the falsifier" findable by an
-    // agent reading the tool rather than the rubric source. If this prose is
-    // dropped, the capability survives but becomes undiscoverable — which is
-    // how the false "cannot amend the falsifier" belief formed in the first place.
+  it('the amend tool exposes the amendable-field list ITSELF as its `field` argument', () => {
+    // WHAT THIS REPLACED, and why the replacement is not cosmetic. The previous
+    // assertion here was `amend()` toContain('driftMarkers') + toContain(
+    // 'acceptance.falsifier') — and BOTH substrings occur on ONE line of
+    // amend.ts: the alias-contract sentence saying the two spellings "must
+    // match after canonical normalization or validation fails with
+    // `requirement_alias_conflict`". That sentence is about ALIAS VALIDATION.
+    // It never says the falsifier is amendable. Measured 2026-09-17:
+    // `grep -c driftMarkers amend.ts` = 1, and the only `amendab` hits are
+    // "keys are identity, not amendable" and the enum below. So the guarantee
+    // the old test named was ALREADY ABSENT while the test stayed green — it
+    // could not fail for the reason it claimed, and it WOULD fail if that
+    // unrelated alias sentence were reworded. Found by su-4342525e's rev-9
+    // vetting critique (finding A2) on conv-mu50ok3h.
+    //
+    // The real statement that the falsifier is amendable is STRUCTURAL, not
+    // prose: the `field` argument's enum IS `AMENDABLE_CRITERION_FIELDS`, so
+    // whatever that list holds is patchable through the tool. Asserting the
+    // enum is DERIVED FROM the list — rather than re-typing the members here —
+    // is what keeps this from drifting away from its own source of truth.
     const text = amend();
-    expect(text).toContain('driftMarkers');
-    expect(text).toContain('acceptance.falsifier');
+    expect(text).toMatch(/field:\s*z\.enum\(AMENDABLE_CRITERION_FIELDS\)/);
+    // ...and that the identifier is the one imported from rubrics.ts, not a
+    // same-named local that could be narrowed independently.
+    expect(text).toMatch(/import\s*\{[^}]*\bAMENDABLE_CRITERION_FIELDS\b[^}]*\}\s*from\s*'\.\.\/\.\.\/rubrics'/);
+    // The two halves join here: the tool's field enum is that list, and that
+    // list contains driftMarkers — therefore the falsifier is amendable.
+    // Parsed from rubrics.ts rather than asserted as a literal, so removing
+    // driftMarkers from the list reddens this without anyone editing a test.
+    expect(amendableCriterionFields(rubrics())).toContain('driftMarkers');
   });
 });
 

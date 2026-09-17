@@ -291,6 +291,34 @@ describe('authorizationFailureHint — judge MCP route guidance (EI-215434503419
       }),
     })).toBeUndefined();
   });
+
+  // THE INJECTION, not just the function. Every assertion above imports
+  // `authorizationFailureHint` directly and proves the FORMATTER is correct —
+  // but production never calls it that way. The dispatch stack reaches it only
+  // through `deps.authorizationFailureHint?.({...})` (dispatch-stack.ts, in
+  // roleAllowlistStep), which is OPTIONALLY chained and wrapped in a catch that
+  // sets `hint = undefined`, so an unwired dep degrades SILENTLY to the bare
+  // denial. The wiring is one line in PROJECTED_DEPS. Until this assertion
+  // existed, deleting that line realized R-7's driftMarker verbatim — a real
+  // `role_not_allowed` naming no door — while every test in this file stayed
+  // green. Found by su-4342525e's rev-9 vetting critique (finding A3) on
+  // conv-mu50ok3h. Mirrors the kernelEnforcement identity assertion above.
+  it('is WIRED into PROJECTED_DEPS, so a real role denial can reach it', () => {
+    expect(PROJECTED_DEPS.authorizationFailureHint).toBe(authorizationFailureHint);
+  });
+
+  // ...and the wired reference still produces the door when invoked the way the
+  // dispatch stack invokes it. Identity alone would survive both symbols being
+  // re-pointed at a stub together; this closes that.
+  it('produces the papercusp-su door when called THROUGH the injected dep', () => {
+    const hint = PROJECTED_DEPS.authorizationFailureHint!({
+      toolName: 'plans:audit',
+      deniedRole: 'judge',
+      allowedRoles: ['su'],
+      ctx: judgeCtx,
+    });
+    expect(hint).toContain('papercusp-su');
+  });
 });
 
 describe('PROJECTED_DEPS.checkCapabilityEnvelope — enforce/observe wiring (gap #7)', () => {

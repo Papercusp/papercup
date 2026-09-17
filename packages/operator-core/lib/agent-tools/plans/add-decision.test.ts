@@ -901,3 +901,102 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
     expect(capturedNewBody).toContain('P-007');
   });
 });
+
+// R-4 asserts a RETURNED FIELD: "`plans:add-decision` returns an advisory
+// `citedRuleAdvisory` when a body cites another decision as authority ... and
+// carries no `Measured:` result". Until this block existed, every bound
+// assertion was either on `decisionCitedRuleAdvisory` (the pure function) or on
+// the tool's own prose — measured 2026-09-17, `citedRuleAdvisory` appeared on
+// exactly three test lines repo-wide, all of that kind. So the field could be
+// severed from the result (`citedRuleAdvisory = null` at its assignment, or
+// dropping either result spread) and the whole file stayed green while the
+// driftMarker was realized verbatim: a ruling resting on another ruling comes
+// back indistinguishable from one that measured. Found by su-4342525e's rev-9
+// vetting critique (finding A1) on conv-mu50ok3h. These assertions run the REAL
+// handler and read the field off the RESULT, on every path that spreads it.
+describe('plans:add-decision — citedRuleAdvisory reaches the caller (R-4)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    handlerMocks.readFrozenRepairMarker.mockReturnValue(null);
+    handlerMocks.carryProvenanceFields.mockResolvedValue({});
+    handlerMocks.planRevisionCapture.mockReturnValue({
+      afterWrite: undefined,
+      recorded: { current: null },
+    });
+    handlerMocks.withPlanLock.mockImplementation(
+      async (
+        _ctx: unknown,
+        _opts: unknown,
+        mutate: (body: string) => Promise<{ newBody: string | null; value: unknown }>,
+      ) => {
+        const result = await mutate(HANDLER_PLAN);
+        return { kind: 'ok', ...result, filePath: 'handler-plan.md' };
+      },
+    );
+    handlerMocks.harnessScopedCtx.mockImplementation((harness: unknown, ctx: Record<string, unknown>) => ({
+      ...ctx,
+      harnessSlug: typeof harness === 'string' ? harness : 'session-harness',
+    }));
+  });
+
+  // The body the driftMarker describes: a factual ruling whose only authority is
+  // a cited decision, with no `Measured:` line anywhere.
+  const CITED_NO_MEASUREMENT =
+    'The queue resumes the frozen candidate rather than re-cutting at tip, per ' +
+    'ship-main-greening-program-2026-09-15#D-004, so no new guard is needed here.';
+
+  it('returns citedRuleAdvisory on the RESULT of a single-decision call', async () => {
+    const result = await handlerBody(
+      {
+        harness: 'explicit-harness',
+        slug: 'handler-plan',
+        title: 'Rests on a cited ruling',
+        body: CITED_NO_MEASUREMENT,
+      },
+      handlerContext(),
+    );
+
+    expect(result.results[0]).toMatchObject({
+      ok: true,
+      decisionId: 'D-001',
+      citedRuleAdvisory: {
+        code: 'cited_rule_without_measurement',
+        citations: ['ship-main-greening-program-2026-09-15#D-004'],
+      },
+    });
+    // The message is what an author actually reads; assert it names the repair
+    // rather than merely existing.
+    expect((result.results[0].citedRuleAdvisory as { message: string }).message).toContain('Measured:');
+  });
+
+  it('returns citedRuleAdvisory on the RESULT of each bulk item independently', async () => {
+    const result = await handlerBody(
+      {
+        harness: 'explicit-harness',
+        items: [
+          { slug: 'handler-plan', title: 'Cited, unmeasured', body: CITED_NO_MEASUREMENT },
+          {
+            slug: 'handler-plan',
+            title: 'Measured',
+            body:
+              'The advisory fires on the returned result.\n' +
+              'Measured: packages/operator-core/lib/agent-tools/plans/add-decision.ts — advisory present on both spreads.',
+          },
+        ],
+      },
+      handlerContext(),
+    );
+
+    expect(result.counts).toMatchObject({ ok: 2, failed: 0 });
+    // Positive: the cited-without-measurement item carries the field.
+    expect(result.results[0]).toMatchObject({
+      ok: true,
+      citedRuleAdvisory: { code: 'cited_rule_without_measurement' },
+    });
+    // Negative control in the SAME call — so a mutation that hard-codes the
+    // field onto every result is caught just as a mutation that severs it is.
+    // Without this arm the positive assertion above could pass vacuously.
+    expect(result.results[1]).toMatchObject({ ok: true });
+    expect(result.results[1].citedRuleAdvisory).toBeUndefined();
+  });
+});
