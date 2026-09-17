@@ -21,8 +21,10 @@ import {
   CLOUD_RESOURCE_OBLIGATION_DEFAULT_RECLAIM_AFTER_MS,
   describeCloudResourceDeleteAddress,
   planCloudResourceObligationReclamation,
+  createCloudResourceObligationObserver,
   type CloudResourceObligationRow,
   type CloudResourceObligationCaptureDep,
+  type CloudResourceCreatedEventLike,
 } from './cloud-resource-obligations';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 
