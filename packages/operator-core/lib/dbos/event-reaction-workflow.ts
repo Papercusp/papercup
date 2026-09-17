@@ -65,6 +65,11 @@ export async function enqueueDurableReaction(input: DurableReactionInput): Promi
     triggerTool: input.event.tool,
     dedupId,
     capability: input.rule.capability,
+    // WHO contributed the rule, carried into the durable claim so the fire
+    // ledger can be grouped by contributor (P-030 a/c). `source` is set by the
+    // plugin path (`plugin:<name>`) and the standalone path (`standalone:<id>`);
+    // a first-party built-in rule leaves it unset, which stores as NULL.
+    contributor: input.rule.source ?? null,
   };
   await DBOS.startWorkflow(eventReactionWorkflow, {
     workflowID: `reaction:${dedupId}`,

@@ -29,6 +29,8 @@ export interface DurableReactionPayload<TParent extends { workspaceId?: string }
   dedupId: string;
   /** Capability scope for a sandboxed rule. Unset ⇒ first-party trusted. */
   capability?: string;
+  /** Who contributed the rule (`rule.source`) — the claim's attribution key. */
+  contributor?: string | null;
 }
 
 export interface ExecuteDurableReactionDeps<TParent extends { workspaceId?: string }> {
@@ -59,6 +61,7 @@ export async function executeDurableReaction<TParent extends { workspaceId?: str
     triggerTool: payload.triggerTool,
     causeRootRunId: payload.cause.rootRunId ?? null,
     depth: payload.cause.depth,
+    contributor: payload.contributor ?? null,
   });
   if (!fresh) return;
 

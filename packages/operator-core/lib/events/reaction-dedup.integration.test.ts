@@ -37,7 +37,13 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  // FAITHFUL to migration 153: dedup_id PK is the dedup gate; status default 'fired'.
+  // FAITHFUL to migration 153 + 1169: dedup_id PK is the dedup gate; status
+  // default 'fired'; contributor (1169) is nullable with no default.
+  //
+  // ⚠ This fixture is HAND-ROLLED, so it does not track migrations by itself —
+  // it falls one column behind every time one adds to event_reactions, and the
+  // symptom is an INSERT failing on a column the real table has. If you add a
+  // column upstream, add it here in the same change.
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.event_reactions (
       dedup_id text PRIMARY KEY,
@@ -49,6 +55,7 @@ beforeAll(async () => {
       depth integer NOT NULL DEFAULT 0,
       status text NOT NULL DEFAULT 'fired',
       error_message text,
+      contributor text,
       fired_at timestamptz NOT NULL DEFAULT now()
     )`);
   h.sql = rootSql;
@@ -91,5 +98,34 @@ describe('reaction-dedup ledger (PG)', () => {
       SELECT status, error_message FROM harness_shared.event_reactions WHERE dedup_id='d3'`)[0]!;
     expect(row.status).toBe('failed');
     expect(row.error_message).toBe('dispatch boom');
+  });
+
+  // P-030 (a) — the ledger's attribution key. rule_id alone cannot answer "what
+  // has contributor X fired": an id is an opaque string its contributor chose,
+  // so grouping by an id prefix is a convention, not a key.
+  it('persists the contributor, so fires can be grouped by WHO contributed the rule', async () => {
+    await claimReaction({ ...claim('c1'), ruleId: 'r-a', contributor: 'plugin:acme' } as never);
+    await claimReaction({ ...claim('c2'), ruleId: 'r-b', contributor: 'plugin:acme' } as never);
+    await claimReaction({ ...claim('c3'), ruleId: 'r-c', contributor: 'standalone:xyz' } as never);
+
+    const byContributor = await rootSql<{ contributor: string; n: bigint }[]>`
+      SELECT contributor, count(*) AS n FROM harness_shared.event_reactions
+       WHERE workspace_id = 'w1' AND contributor IS NOT NULL
+       GROUP BY contributor ORDER BY contributor`;
+    // Two DIFFERENT rule_ids collapse onto one contributor — the grouping the
+    // uninstall audit (a) and the per-contributor fire budget (c) both need.
+    expect(byContributor.map((r) => [r.contributor, Number(r.n)])).toEqual([
+      ['plugin:acme', 2],
+      ['standalone:xyz', 1],
+    ]);
+  });
+
+  // NULL is meaningful: a first-party built-in rule sets no `source`, and
+  // inventing one would assert provenance the writer never observed.
+  it('stores NULL for a first-party rule that declares no contributor', async () => {
+    await claimReaction(claim('c4')); // no contributor field at all
+    const row = (await rootSql<{ contributor: string | null }[]>`
+      SELECT contributor FROM harness_shared.event_reactions WHERE dedup_id='c4'`)[0]!;
+    expect(row.contributor).toBeNull();
   });
 });

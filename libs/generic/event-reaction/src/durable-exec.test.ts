@@ -53,6 +53,18 @@ describe('executeDurableReaction', () => {
     expect(d.fire.mock.calls[0][0].fire).toBe('sink:tool');
   });
 
+  it('carries the contributor into the claim, so the ledger can attribute the fire', async () => {
+    await executeDurableReaction(payload({ contributor: 'plugin:acme' }), d);
+    expect(d.store.claim.mock.calls[0][0].contributor).toBe('plugin:acme');
+  });
+
+  it('claims contributor NULL — never undefined — when the rule declares no source', async () => {
+    await executeDurableReaction(payload(), d);
+    // Explicit null, not a missing key: a store writing this straight into a
+    // column needs a value, and `undefined` is not one.
+    expect(d.store.claim.mock.calls[0][0].contributor).toBeNull();
+  });
+
   it('is a no-op when the dedup id was already claimed (double-fire → no-op)', async () => {
     d.store.claim.mockResolvedValue(false);
     await executeDurableReaction(payload(), d);

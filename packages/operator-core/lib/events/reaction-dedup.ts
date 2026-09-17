@@ -20,10 +20,11 @@ export async function claimReaction(claim: ReactionClaim): Promise<boolean> {
   const { sql } = getOrgPg();
   const rows = await sql<Array<{ dedup_id: string }>>`
     INSERT INTO harness_shared.event_reactions
-      (dedup_id, workspace_id, rule_id, fire, trigger_tool, cause_root_run_id, depth, status)
+      (dedup_id, workspace_id, rule_id, fire, trigger_tool, cause_root_run_id, depth, status, contributor)
     VALUES (
       ${claim.dedupId}, ${claim.workspaceId}, ${claim.ruleId}, ${claim.fire},
-      ${claim.triggerTool ?? null}, ${claim.causeRootRunId ?? null}, ${claim.depth}, 'fired'
+      ${claim.triggerTool ?? null}, ${claim.causeRootRunId ?? null}, ${claim.depth}, 'fired',
+      ${claim.contributor ?? null}
     )
     ON CONFLICT (dedup_id) DO NOTHING
     RETURNING dedup_id

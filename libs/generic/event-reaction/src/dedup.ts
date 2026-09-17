@@ -40,6 +40,15 @@ export interface ReactionClaim {
   triggerTool?: string;
   causeRootRunId?: string | null;
   depth: number;
+  /**
+   * WHO contributed the rule that is firing — `rule.source`, made durable.
+   * `ruleId` identifies the rule but not its contributor: an id is an opaque
+   * string its contributor chose, so grouping fires by contributor via an id
+   * prefix is a convention, not a key. A store that records this can answer
+   * "what has contributor X fired" (uninstall completeness) and budget per
+   * contributor. Undefined/null ⇒ a first-party rule with no recorded source.
+   */
+  contributor?: string | null;
 }
 
 /**
