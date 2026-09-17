@@ -34,11 +34,20 @@
  * them; any surface built over this module must pass a SOURCE SELECTOR and resolve the bytes
  * server-side.
  *
- * ⚠ ASYMMETRY WORTH KNOWING BEFORE CHOOSING `files.claude`. `encodeWorkspaceHostAgentHomeBundle`
- * neutralizes the codex `refresh_token` (D-311), so the codex half carries a self-expiring access
- * token and cannot be used to mint new ones. `files.claude` has NO equivalent projection — it is
- * carried whole, including whatever long-lived material it contains. Prefer a purpose-minted
- * token for the claude slot over a live interactive session credential.
+ * BOTH MEMBERS ARE NOW PROJECTED — the asymmetry this comment used to warn about is CLOSED.
+ * `encodeWorkspaceHostAgentHomeBundle` neutralizes the codex `refresh_token` (D-311) and, since
+ * WI-10001691, the claude `claudeAiOauth.refreshToken` as well: `projectWorkspaceHostClaudeAccessToken`
+ * runs the same shape-based refresh-token and api-key walkers over the claude member, writes
+ * `refreshToken: ""` (present-and-empty — the value `claude -p` was MEASURED to authenticate with,
+ * where a deleted key fails), and `assertWorkspaceHostClaudeProjectionCliReadable` REFUSES at
+ * admission any generation that predates the projection. So each half now carries a self-expiring
+ * access token (~6h) and neither can mint new ones.
+ *
+ * ⚠ Do NOT re-read that as "forwarding a live personal credential is free". What the projection
+ * bounds is DURATION and MINTING, not exposure: a working access token for that account still
+ * lands on the host for its lifetime, which is exactly the blast radius the paragraph above is
+ * about. A purpose-minted credential remains preferable — the reason is now the account the token
+ * belongs to, not a missing projection.
  */
 import {
   assertWorkspaceHostAgentHomeBundleAdmissionEligible,
