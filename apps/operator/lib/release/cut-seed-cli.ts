@@ -113,6 +113,10 @@ import { assertSeedPayloadMatchesManifest } from './seed-payload-integrity-guard
 import { judgeHolderBootInvariant } from './seed-holder-boot-invariant.js';
 import { stampOpHlc } from '@papercusp/operator-core/lib/sync/hyperbee/hlc-stamp';
 import { backfillLocalState, type BackfillResult } from '@papercusp/operator-core/lib/sync/hyperbee/backfill-local-state';
+import {
+  withPgRetry,
+  isRetriableIdempotentPgConnectionError,
+} from '@papercusp/operator-core/lib/pg-transient-retry';
 import { getHiveEpoch } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-state';
 import { resolveHiveEpochCrypto } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-serving';
 import { drainOutboxOnce, DRAIN_PASS_TIMEOUT_MS } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
@@ -791,7 +795,6 @@ export async function openSourceStoreForCut(inp: {
     // into the real live log, and we simply wait for it. Draining it ourselves is not an
     // option: it needs the write lock, and stamping `drained_at` for rows the live log
     // never received would lose them permanently.
-    const pg = inp.pg ?? getOrgPg().sql;
     const handle = { workspaceId: inp.workspaceId, harnessSlug: inp.hive } as unknown as BootedHarnessHandle;
     const forceBackfill = inp.forceBackfill !== false;
     if (!forceBackfill) {
@@ -802,15 +805,60 @@ export async function openSourceStoreForCut(inp: {
           'PRIOR backfill enqueued this corpus.',
       );
     }
-    const backfill = await (inp.backfillImpl ?? backfillLocalState)(handle, pg, {
-      force: forceBackfill,
-      maxOpsPerAuthor: 0,
+
+    // WI-10001781 — ABSORB a transient connection loss instead of discarding the build.
+    //
+    // Measured 2026-09-17: the 0.0.21-alpha cut died here on
+    // `write CONNECTION_DESTROYED 127.0.0.1:6432`, raised from postgres-js's pre-execution
+    // `execute()` guard — i.e. the pool this phase was handed had been torn down between two
+    // of its reads. Cost: the entire three-platform cut, ~2.5h, at the 3-minute mark. The
+    // second-order damage is worse than the outage: a seed phase this brittle makes every
+    // cut a coin flip, so failures get re-fired blind rather than diagnosed.
+    //
+    // Retrying is safe here because BOTH operations are idempotent, which is the standing
+    // precondition on `isRetriableIdempotentPgConnectionError` (see its doc — the error alone
+    // does NOT prove the statement never ran, so the caller owes this argument):
+    //   • backfillLocalState only ever INSERTs into `substrate_outbox`, which carries no
+    //     uniqueness constraint (PK on `id` alone) — so a repeat cannot raise a duplicate-key
+    //     error — and the drain applies a duplicate `put` of the same key+row idempotently
+    //     under LWW. A retry costs drain time, never correctness.
+    //   • waitForOperatorDrain is a poll to zero: a pure read loop.
+    //
+    // They get SEPARATE retry scopes on purpose. Sharing one would re-run the backfill after
+    // a blip during the drain wait — and that wait has been measured at ~17 min for 35k rows
+    // (P-014), so a shared scope would re-enqueue the whole corpus to recover from a dropped
+    // socket. Each scope RE-RESOLVES the pool: the failure being absorbed is a dead pool, so
+    // retrying through a captured handle would go straight back into it.
+    const retryOpts = (label: string) => ({
+      retries: 3,
+      backoffMs: 2_000,
+      classifier: isRetriableIdempotentPgConnectionError,
+      label,
+      onRetry: (attempt: number, e: unknown) =>
+        warn(
+          `[cut-seed] ${label}: transient PG connection loss on attempt ${attempt} ` +
+            `(${(e as Error)?.message ?? String(e)}). Re-resolving the pool and retrying rather than ` +
+            `discarding the cut.`,
+        ),
     });
-    const { waitedMs } = await (inp.waitImpl ?? waitForOperatorDrain)({
-      pg,
-      workspaceId: inp.workspaceId!,
-      hive: inp.hive,
-    });
+
+    const backfill = await withPgRetry(
+      () =>
+        (inp.backfillImpl ?? backfillLocalState)(handle, inp.pg ?? getOrgPg().sql, {
+          force: forceBackfill,
+          maxOpsPerAuthor: 0,
+        }),
+      retryOpts('backfill'),
+    );
+    const { waitedMs } = await withPgRetry(
+      () =>
+        (inp.waitImpl ?? waitForOperatorDrain)({
+          pg: inp.pg ?? getOrgPg().sql,
+          workspaceId: inp.workspaceId!,
+          hive: inp.hive,
+        }),
+      retryOpts('drain-wait'),
+    );
     warn(
       `[cut-seed] refreshed via the live operator for ${inp.workspaceId}::${inp.hive}: ` +
         `backfill enqueued=${backfill.enqueued} dropped=${backfill.dropped}; operator drained to zero in ${waitedMs}ms.`,

@@ -1051,6 +1051,93 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
       expect(headSnapshotImpl).toHaveBeenCalledTimes(1);
     });
 
+    it('WI-10001781: SURVIVES the transient CONNECTION_DESTROYED that killed the 0.0.21-alpha cut', async () => {
+      // The exact error, verbatim from /tmp/papercup-release-cut.log at 2026-09-17T23:00:00Z.
+      // Before the fix this propagated and discarded a ~2.5h three-platform build at the
+      // 3-minute mark; the pool it names reconnects on the very next query.
+      const { openStore } = harness({ locked: true });
+      const destroyed = Object.assign(new Error('write CONNECTION_DESTROYED 127.0.0.1:6432'), {
+        code: 'CONNECTION_DESTROYED',
+      });
+      let backfillCalls = 0;
+      const backfillImpl = vi.fn(async () => {
+        backfillCalls += 1;
+        if (backfillCalls === 1) throw destroyed;
+        return { enqueued: 7, dropped: 0 };
+      });
+      const waitImpl = vi.fn(async () => ({ undrained: 0, waitedMs: 5 }));
+
+      const res = await openSourceStoreForCut({
+        ...base,
+        sparse: true,
+        openStore,
+        backfillImpl: backfillImpl as never,
+        waitImpl: waitImpl as never,
+        findHolderImpl: holderFound,
+        headSnapshotImpl: snapshotProduced,
+      });
+
+      expect(backfillCalls).toBe(2);
+      expect(res.sourceWritable).toBe(false);
+      // The cut must go on to do the rest of the refresh, not merely swallow the error.
+      expect(waitImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('WI-10001781: a drain-wait blip does NOT re-run the backfill (separate retry scopes)', async () => {
+      // Load-bearing, and invisible from the code unless asserted: the drain wait has been
+      // measured at ~17 min for 35k rows (P-014). One shared retry scope would re-enqueue the
+      // whole corpus to recover from a dropped socket during that wait.
+      const { openStore } = harness({ locked: true });
+      const backfillImpl = vi.fn(async () => ({ enqueued: 7, dropped: 0 }));
+      let waitCalls = 0;
+      const waitImpl = vi.fn(async () => {
+        waitCalls += 1;
+        if (waitCalls === 1) {
+          throw Object.assign(new Error('write CONNECTION_DESTROYED 127.0.0.1:6432'), {
+            code: 'CONNECTION_DESTROYED',
+          });
+        }
+        return { undrained: 0, waitedMs: 5 };
+      });
+
+      await openSourceStoreForCut({
+        ...base,
+        sparse: true,
+        openStore,
+        backfillImpl: backfillImpl as never,
+        waitImpl: waitImpl as never,
+        findHolderImpl: holderFound,
+        headSnapshotImpl: snapshotProduced,
+      });
+
+      expect(waitCalls).toBe(2);
+      expect(backfillImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('WI-10001781: does NOT retry a non-transient failure — a real fault still fails the cut', async () => {
+      // The other half of the contract. A retry that swallows genuine breakage would turn a
+      // loud 3-minute failure into a silently-wrong seed, which is strictly worse.
+      const { openStore } = harness({ locked: true });
+      const backfillImpl = vi.fn(async () => {
+        throw Object.assign(new Error('null value in column "key" violates not-null constraint'), {
+          code: '23502',
+        });
+      });
+
+      await expect(
+        openSourceStoreForCut({
+          ...base,
+          sparse: true,
+          openStore,
+          backfillImpl: backfillImpl as never,
+          waitImpl: (async () => ({ undrained: 0, waitedMs: 1 })) as never,
+          findHolderImpl: holderFound,
+          headSnapshotImpl: snapshotProduced,
+        }),
+      ).rejects.toThrow('violates not-null constraint');
+      expect(backfillImpl).toHaveBeenCalledTimes(1);
+    });
+
     it('P-019: asks for the snapshot AFTER the drain and BEFORE the read-only open (D-012 ordering)', async () => {
       // Both halves are load-bearing and neither is visible from the code alone:
       //   • before the drain ⇒ the snapshot covers less than the seed ships;

@@ -5,7 +5,11 @@
  *   npx vitest run lib/pg-transient-retry.test.ts
  */
 import { describe, expect, it, vi } from 'vitest';
-import { isRetriablePgConnectError, withPgRetry } from './pg-transient-retry';
+import {
+  isRetriableIdempotentPgConnectionError,
+  isRetriablePgConnectError,
+  withPgRetry,
+} from './pg-transient-retry';
 
 /** A postgres-js-shaped connect-timeout error (code is the reliable signal). */
 function connectTimeout(): Error & { code: string } {
@@ -105,5 +109,62 @@ describe('withPgRetry', () => {
       withPgRetry(fn, { sleep, classifier: (e) => (e as { code?: string }).code === 'CONNECTION_CLOSED' }),
     ).resolves.toBe('read');
     expect(calls).toBe(2);
+  });
+});
+
+describe('isRetriableIdempotentPgConnectionError (WI-10001781)', () => {
+  const codes = ['CONNECTION_DESTROYED', 'CONNECTION_CLOSED', 'CONNECTION_ENDED'];
+
+  it.each(codes)('classifies a torn-down-pool %s as retriable for an idempotent caller', (code) => {
+    // postgres-js raises these with the code on the error AND embedded in the message
+    // (`write CONNECTION_DESTROYED 127.0.0.1:6432`); both spellings must classify, because
+    // the real cut-seed failure arrived as a bare Error with only the message.
+    expect(isRetriableIdempotentPgConnectionError(Object.assign(new Error(code), { code }))).toBe(true);
+    expect(isRetriableIdempotentPgConnectionError(new Error(`write ${code} 127.0.0.1:6432`))).toBe(true);
+  });
+
+  it('still classifies CONNECT_TIMEOUT (it is a superset of the narrow predicate)', () => {
+    expect(isRetriableIdempotentPgConnectionError(connectTimeout())).toBe(true);
+  });
+
+  it.each([
+    ['a syntax error', Object.assign(new Error('syntax error at or near "slect"'), { code: '42601' })],
+    ['a unique violation', Object.assign(new Error('duplicate key value'), { code: '23505' })],
+    ['a plain error', new Error('something else entirely')],
+    ['null', null],
+  ])('does NOT widen to %s', (_label, e) => {
+    expect(isRetriableIdempotentPgConnectionError(e)).toBe(false);
+  });
+
+  // THE GUARD THAT MATTERS. The whole safety argument for the narrow default is that a
+  // mutating background sweep never retries an error that might have already applied. If a
+  // later edit "simplifies" the two classifiers into one, this fails — which is the point.
+  it('leaves the DEFAULT classifier narrow — the mutating-caller contract is unchanged', () => {
+    for (const code of codes) {
+      expect(isRetriablePgConnectError(Object.assign(new Error(code), { code }))).toBe(false);
+    }
+    expect(isRetriablePgConnectError(connectTimeout())).toBe(true);
+  });
+
+  it('withPgRetry does not retry a torn-down-pool error unless the caller opts in', async () => {
+    const { sleep } = sleepSpy();
+    const destroyed = Object.assign(new Error('write CONNECTION_DESTROYED 127.0.0.1:6432'), {
+      code: 'CONNECTION_DESTROYED',
+    });
+    let calls = 0;
+    const fn = async () => {
+      calls += 1;
+      throw destroyed;
+    };
+    // Default: one try, straight to the caller's catch.
+    await expect(withPgRetry(fn, { sleep })).rejects.toThrow('CONNECTION_DESTROYED');
+    expect(calls).toBe(1);
+
+    // Opted in: the full budget is spent before it surfaces.
+    calls = 0;
+    await expect(
+      withPgRetry(fn, { sleep, retries: 3, classifier: isRetriableIdempotentPgConnectionError }),
+    ).rejects.toThrow('CONNECTION_DESTROYED');
+    expect(calls).toBe(4);
   });
 });
