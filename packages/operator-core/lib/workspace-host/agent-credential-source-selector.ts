@@ -150,6 +150,19 @@ async function resolveOne(
     return Buffer.from(value, 'utf8');
   }
 
+  // FAIL CLOSED on an unrecognized kind. Reaching the home-file read by FALLTHROUGH would make a
+  // typo'd, hand-written, or future source kind silently resolve to "read this operator's own
+  // credentials" — the one default this module exists to refuse, arrived at by omission rather
+  // than by choice. An unknown kind is a request nobody wrote a meaning for, so it has none.
+  if (source.kind !== 'operator-home-file') {
+    throw new WorkspaceHostAgentCredentialSourceError(
+      slot,
+      `named source kind '${String((source as { kind?: unknown }).kind)}', which is not one of ` +
+        "'operator-home-file' | 'integration-key' | 'absent'. A source names a KIND, never bytes " +
+        'and never a path.',
+    );
+  }
+
   const path = operatorAgentHomeFilePath(slot);
   let bytes: Buffer;
   try {
