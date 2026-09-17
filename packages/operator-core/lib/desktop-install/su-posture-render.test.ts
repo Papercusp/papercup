@@ -21,7 +21,7 @@
  * not a P-020 leak), together with the whole-render byte delta and the bytes of each posture
  * document. Set `SU_RENDER_BASELINE_DUMP=<dir>` to also write the renders + tables there.
  */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -32,6 +32,8 @@ import {
   extractSuPart,
   locateSuTiles,
   normalizeStackBinding,
+  suSessionBinding,
+  suStackDocuments,
 } from '@papercusp/orchestrator/blueprint';
 import { renderSuPlaybook } from './papercusp-files';
 import { formatScoreTable, measureSuRender, scoreAgainstBaseline } from './su-render-baseline';
@@ -230,4 +232,212 @@ describe('P-013 / P-020 — identity variants against the P-018 baseline (pinned
       expect(a).toBe(b);
     }
   });
+});
+
+// ── P-036 R-6 `s01-s12-writer-backed-coverage` ────────────────────────────────
+// R-6 requires that the composed single-posture stack "renders complete current SU
+// behaviour across scenarios S01 through S12 with each scenario backed by its writer",
+// and its falsifier voids the bar if "any scenario S01–S12 is missing, unrendered, or
+// not backed by a writer in the composed stack".
+//
+// Subject is the LIVE stack, not the pinned P-018 fixture above: R-6 says CURRENT SU
+// behaviour, and the fixture is a historical byte-accounting artifact (its project-guide
+// is a 445 B stub). It is also the RENDERED playbook, because several S01–S12 behaviours
+// (Tauri-only verification, sync-not-poll) are written by the project guide, which reaches
+// the agent through the render splice rather than the stack source.
+//
+// A WRITER here is a named contributing source: each composed stack document, plus the two
+// splice sources the renderer itself names (`projectGuideSource` / `overlaySource`). Content
+// that renders but matches NO writer is exactly R-6's "not backed by a writer" condition —
+// measured to genuinely exist (the coord-legend and wire-schema seams generate text at render
+// time), which is what makes the backing check below non-vacuous.
+describe('P-036 R-6 — S01–S12 behaviour coverage in the live single-posture stacks, each backed by a writer', () => {
+  const SU_SCENARIO_DIR = join(repoRoot, 'packages/operator-core/lib/llm-testing/scenarios/su');
+  const liveBaseSource = join(harnessDir, 'blueprints/base/prompts/su.md');
+  const liveOverlayDir = join(repoRoot, 'apps/operator/prompts');
+  const liveProjectGuide = join(repoRoot, 'CLAUDE.md');
+
+  /**
+   * The judgement this bar actually needs: which INSTRUCTION backs each scenario's probe.
+   * Everything else here is derived. `marker` is a literal from the rendered playbook;
+   * `writer` is the source measured to supply it (asserted to be AMONG the writers that
+   * carry the marker, not the only one — a second writer repeating an instruction is not
+   * a failure).
+   */
+  const COVERAGE: Record<string, { behaviour: string; marker: string; writer: string }> = {
+    'su-S01-harness-scope': {
+      behaviour: 'at operator (no-harness) scope, scope the ask before answering',
+      marker: 'Scope',
+      writer: 'papercusp-engineer',
+    },
+    'su-S02-tauri-only': {
+      behaviour: 'verify the app through the Tauri desktop shell, never the retired webapp',
+      marker: 'tauri-agent-tools',
+      writer: '(project-guide)',
+    },
+    'su-S03-push-not-poll': {
+      behaviour: 'push/await rather than poll for state changes',
+      marker: 'events:await',
+      writer: 'su.kernel',
+    },
+    'su-S04-design-first': {
+      behaviour: 'ground UI work in the design system before building',
+      marker: 'design-phase',
+      writer: 'papercusp-engineer',
+    },
+    'su-S05-no-invent-write': {
+      behaviour: 'do not invent a lifecycle write or raw-SQL the schema',
+      marker: 'Query PG',
+      writer: '(project-guide)',
+    },
+    'su-S06-shared-tree-git': {
+      behaviour: 'git-sync owns commit and push on the shared tree',
+      marker: 'git-sync owns commit',
+      writer: '(project-guide)',
+    },
+    'su-S07-keyed-write': {
+      behaviour: 'use the keyed lifecycle-write contract to complete work',
+      marker: 'work_items:complete',
+      writer: 'su.kernel',
+    },
+    'su-S08-compact-read': {
+      behaviour: 'read compact/compacted encodings correctly instead of guessing',
+      marker: 'compaction',
+      writer: 'su.mode-auto',
+    },
+    'su-S09-coord-injection-read': {
+      behaviour: 'read the coord injection block correctly',
+      marker: 'coord:inbox',
+      writer: 'su.kernel',
+    },
+    'su-S10-claim-before-work': {
+      behaviour: 'claim the requested lane before working it',
+      marker: 'work_items:claim',
+      writer: 'su.kernel',
+    },
+    'su-S11-lock-contention-protocol': {
+      behaviour: 'follow the same-file lock-contention protocol',
+      marker: 'locks:acquire',
+      writer: 'su.kernel',
+    },
+    'su-S12-same-turn-insight': {
+      behaviour: 'capture a proven non-obvious insight in the same turn',
+      marker: 'agent-insights',
+      writer: 'su.kernel',
+    },
+  };
+
+  /** GUARD 1 (premise): the roster is derived from the real scenario files, never hardcoded. */
+  it('covers exactly the S01–S12 scenarios the registry actually declares', () => {
+    const declared = readdirSync(SU_SCENARIO_DIR)
+      .filter((f) => /^S(0[1-9]|1[0-2])-.+\.ts$/.test(f) && !f.endsWith('.test.ts'))
+      .map((f) => `su-${f.replace(/\.ts$/, '')}`)
+      .sort();
+
+    expect(declared, 'expected exactly 12 scenario files S01–S12').toHaveLength(12);
+    // Each derived id must be the id the scenario file actually declares, so a renamed
+    // scenario cannot silently keep passing under its old filename-derived id.
+    for (const id of declared) {
+      const file = join(SU_SCENARIO_DIR, `${id.replace(/^su-/, '')}.ts`);
+      expect(readFileSync(file, 'utf8'), `${id} does not declare its own id`).toContain(
+        `id: '${id}'`,
+      );
+    }
+    expect(
+      Object.keys(COVERAGE).sort(),
+      'the coverage table has drifted from the scenario registry — a scenario was added, ' +
+        'removed or renamed, so this bar would silently stop covering it',
+    ).toEqual(declared);
+  });
+
+  for (const posture of POSTURES) {
+    it(`renders every S01–S12 behaviour in the ${posture} stack, each traced to a named writer`, async () => {
+      const opts = {
+        harnessDir,
+        binding: suSessionBinding({ fleetRole: posture, modes: ['auto'] as const }),
+      };
+      const { docs } = suStackDocuments(opts);
+      const composed = composeSuStackSource(opts);
+      const rendered = await renderSuPlaybook({
+        agent: 'claude',
+        profile: 'engineer',
+        baseSource: liveBaseSource,
+        baseText: composed.text,
+        overlayDir: liveOverlayDir,
+        projectGuideSource: liveProjectGuide,
+        tier: 'full',
+      });
+
+      const writers = [
+        ...docs.map((doc) => ({ id: doc.id, text: doc.text })),
+        { id: '(project-guide)', text: read(rendered.projectGuideSource) },
+        { id: '(client-overlay)', text: read(rendered.overlaySource) },
+      ];
+      const backers = (marker: string) =>
+        writers.filter((w) => w.text.includes(marker)).map((w) => w.id);
+
+      // GUARD 2 (real output): attribution is only meaningful against a genuinely rendered
+      // playbook carrying this posture's own document — a truncated or wrong-posture render
+      // must not be able to satisfy the loop below.
+      expect(
+        bytes(rendered.text),
+        'rendered playbook is too small to be the full composed stack',
+      ).toBeGreaterThan(200_000);
+      expect(
+        writers.map((w) => w.id),
+        `the ${posture} posture document is missing from the composed stack`,
+      ).toContain(`su.fleet-${posture}`);
+
+      const unrendered: string[] = [];
+      const unbacked: string[] = [];
+      const table: string[] = [];
+      for (const [id, entry] of Object.entries(COVERAGE)) {
+        if (!rendered.text.includes(entry.marker)) {
+          unrendered.push(`${id} (${JSON.stringify(entry.marker)})`);
+          continue;
+        }
+        const who = backers(entry.marker);
+        if (who.length === 0) unbacked.push(`${id} (${JSON.stringify(entry.marker)})`);
+        else {
+          expect(
+            who,
+            `${id}: ${JSON.stringify(entry.marker)} is backed by [${who.join(', ')}], ` +
+              `but the coverage table names ${entry.writer} as its writer`,
+          ).toContain(entry.writer);
+        }
+        table.push(`${id}→${who.join('+') || 'NONE'}`);
+      }
+
+      expect(unrendered, `scenarios whose behaviour is NOT rendered in the ${posture} stack`).toEqual(
+        [],
+      );
+      expect(unbacked, `scenarios rendered but backed by NO writer in the ${posture} stack`).toEqual(
+        [],
+      );
+
+      // GUARD 3 (permanent falsifiability control): the backing check must be able to FAIL.
+      // (a) a marker that is genuinely absent must be reported missing, and
+      // (b) withholding a real writer must strand the scenarios only it supplies — the
+      //     direct analogue of R-5's "withhold a layer and the byte equality must break".
+      expect(
+        rendered.text.includes('PAPERCUSP-R6-CONTROL-ABSENT-MARKER'),
+        'control marker must be absent — if it renders, the presence check is vacuous',
+      ).toBe(false);
+      const withoutGuide = writers.filter((w) => w.id !== '(project-guide)');
+      const strandedWithoutGuide = Object.entries(COVERAGE)
+        .filter(([, e]) => !withoutGuide.some((w) => w.text.includes(e.marker)))
+        .map(([id]) => id);
+      expect(
+        strandedWithoutGuide,
+        'withholding the project-guide writer stranded nothing — the writer-backing check ' +
+          'is not actually discriminating between writers',
+      ).toContain('su-S02-tauri-only');
+
+      process.stderr.write(
+        `[su-posture-render] P-036 R-6 ${posture}: ${Object.keys(COVERAGE).length} scenarios ` +
+          `rendered + writer-backed in ${bytes(rendered.text).toLocaleString('en-US')} B; ` +
+          `${table.join(' ')}\n`,
+      );
+    });
+  }
 });
