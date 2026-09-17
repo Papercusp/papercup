@@ -177,11 +177,22 @@ export function evaluateHostedLifecycleAdmission(
 
 export type HostedLifecycleJobHealth = 'healthy' | 'stuck' | 'orphaned' | 'recovery-exhausted' | 'terminal';
 
+/**
+ * Whether DBOS still owns this operation's workflow as runnable (WI-10001739 link 3b).
+ *
+ * `unknown` means THE PROBE DID NOT ANSWER — the reconciler could not read
+ * `dbos.workflow_status` (no grant, schema absent, query failed). It is a failed measurement,
+ * never evidence that a workflow is dead, and it must behave exactly like the pre-3b code.
+ */
+export type HostedLifecycleWorkflowLiveness = 'live' | 'gone' | 'unknown';
+
 export interface HostedLifecycleJobObservation {
   status: 'queued' | 'running' | 'succeeded' | 'failed';
   heartbeatAt?: string | null;
   updatedAt: string;
   recoveryAttempts: number;
+  /** Omitted is treated as `unknown`; see `HostedLifecycleWorkflowLiveness`. */
+  workflowLiveness?: HostedLifecycleWorkflowLiveness;
 }
 
 export function classifyHostedLifecycleJob(
@@ -190,6 +201,20 @@ export function classifyHostedLifecycleJob(
   now = Date.now(),
 ): HostedLifecycleJobHealth {
   if (job.status === 'succeeded' || job.status === 'failed') return 'terminal';
+  // WI-10001739 link 3b. Everything below this line infers abandonment from ROW RECENCY, which
+  // cannot distinguish "the executor died" from "the executor is busy and has not checkpointed
+  // lately". A workflow DBOS still holds as runnable is BY DEFINITION not abandoned, however old
+  // its row looks, so an authoritative `live` outranks every recency signal.
+  //
+  // This check sits ahead of the `recoveryAttempts` test on purpose: that is the branch that
+  // marks an operation failed and (pre-3a) fabricated a cause over the real one, so it is exactly
+  // the branch a live workflow must never reach. Measured 2026-09-17: a row reaches it after ~3
+  // sweeps (stuck at 5min, +1 attempt per sweep), which is what produced the 20-29min reap band.
+  //
+  // ONLY `live` changes behaviour. `gone` and `unknown` both fall through to the original
+  // recency path, so an unavailable or failed probe degrades to exactly the pre-3b classifier
+  // rather than reaping more aggressively on evidence it does not have.
+  if (job.workflowLiveness === 'live') return 'healthy';
   if (job.recoveryAttempts >= policy.maxRecoveryAttempts) return 'recovery-exhausted';
   const heartbeat = Date.parse(job.heartbeatAt || job.updatedAt);
   if (!Number.isFinite(heartbeat)) return 'orphaned';
