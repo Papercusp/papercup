@@ -581,6 +581,16 @@ export interface HarnessListing {
    */
   provides_tools?: string | null;
   /**
+   * Tool axis, CONSUMER half (worker migration 033 / WI-10001747): JSON-encoded
+   * string[] of the MCP tool names the unit ORCHESTRATES but does not provide
+   * (kinds recipe|plan|goal). This is the mirror of `provides_tools`, not a
+   * synonym: nothing resolves a provider from it and installing the unit
+   * registers none of these tools — it is a declaration of what the unit
+   * CALLS, so the storefront can show a recipe's tool surface and a browser
+   * can filter by it. Absent/null ⇒ no declared tool usage.
+   */
+  uses_tools?: string | null;
+  /**
    * Event axis, provider half (worker migration 012 / D-003, P-007): JSON-encoded
    * Array<{ family, keyTemplate, describe? }> of the awaitable event-key families
    * the unit registers when installed (kinds plugin|pack only). `resolveEventProvider`

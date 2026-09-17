@@ -14,10 +14,18 @@
  * is REFUSED rather than laundered. See recipe-export.ts for why silently rewriting
  * the script would be the worse outcome.
  *
- * `provides_tools` is populated from the recipe's `toolsUsed`. That is NOT a
- * misuse of the column: a recipe listing's whole promise is "this orchestrates these
- * tools", and the storefront already renders that field as the unit's tool surface —
- * so a browser can filter recipes by the tools they touch without fetching the repo.
+ * `uses_tools` (worker migration 033) is populated from the recipe's `toolsUsed`.
+ * A recipe listing's whole promise is "this orchestrates these tools", and the
+ * storefront renders that field as the unit's tool surface — so a browser can
+ * filter recipes by the tools they touch without fetching the repo.
+ *
+ * ⚠ It is deliberately NOT `provides_tools`. That column means PROVISION — tools
+ * a unit REGISTERS when installed, which the tool→provider resolver resolves —
+ * and the worker gates it to plugin|pack. Sending a recipe's CONSUMPTION list
+ * there is what made every publish fail with HTTP 400 `plugin_or_pack_kind_only`,
+ * leaving the browsable `recipe` kind empty from its introduction until
+ * WI-10001747. Owner ruling (Avi, 2026-09-17) was to add the consumption-shaped
+ * field rather than widen the provision gate. Do not "simplify" this back.
  *
  * REVIEW POLICY: 'recipe' is a REVIEW_POLICY_KIND (D-002) — an installed recipe is
  * executable orchestration, so it lands PENDING until an operator approves it.
@@ -193,7 +201,7 @@ export async function publishRecipeToCupboard(
     github_url: meta.html_url || `https://github.com/${parsed.owner}/${parsed.repo}`,
     title: exported.manifest.title,
     description: exported.description,
-    ...(exported.manifest.toolsUsed.length > 0 ? { provides_tools: exported.manifest.toolsUsed } : {}),
+    ...(exported.manifest.toolsUsed.length > 0 ? { uses_tools: exported.manifest.toolsUsed } : {}),
   });
 
   if (!result.ok) {

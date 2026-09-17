@@ -80,6 +80,11 @@ interface PublishBody {
   // installed; kinds plugin|pack only. Stored as a JSON TEXT column and
   // returned verbatim on GET (the operator's resolver parses it).
   provides_tools?: unknown;          // expected: string[]
+  // Tool axis, consumer half (migration 033 / WI-10001747). MCP tool names the
+  // unit ORCHESTRATES but does not provide; orchestrating kinds (recipe|plan|goal)
+  // only. Same bounded shape and storage posture as provides_tools — but nothing
+  // resolves a provider from it, because the unit registers none of these.
+  uses_tools?: unknown;              // expected: string[]
   // Event axis (migration 012 / D-003 / P-007). The awaitable event-key FAMILIES
   // the unit registers when installed; kinds plugin|pack only. Stored as a JSON
   // TEXT column and returned verbatim on GET (the operator's resolver parses it).
@@ -122,6 +127,14 @@ interface PublishBody {
 /** provides_tools caps (migration 006): bounded so a listing can't smuggle a payload. */
 const PROVIDES_TOOLS_MAX_ENTRIES = 200;
 const PROVIDES_TOOLS_MAX_NAME_LEN = 128;
+
+/**
+ * Kinds that may declare `uses_tools` (migration 033 / WI-10001747): the units
+ * that ORCHESTRATE tools rather than register them. Deliberately disjoint from
+ * the plugin|pack gate on `provides_tools` — a unit that provides tools is
+ * resolved as their provider at install; a unit that merely uses them is not.
+ */
+const USES_TOOLS_KINDS = ['recipe', 'plan', 'goal'] as const;
 
 /** provides_events caps (migration 012): same posture — a declaration, not a payload. */
 const PROVIDES_EVENTS_MAX_ENTRIES = 200;
@@ -418,6 +431,27 @@ function registerListingEndpoints(
         return c.json({ error: 'invalid_field', field: 'provides_tools', reason: 'non_empty_strings_max_128' }, 400);
       }
       providesToolsJson = JSON.stringify(pt);
+    }
+
+    // uses_tools (migration 033 / WI-10001747) — the CONSUMER half of the tool
+    // axis. A recipe/plan/goal ORCHESTRATES tools it does not provide, so it
+    // declares them here rather than in provides_tools, whose plugin|pack gate
+    // above is deliberately left alone: overloading one column by kind would
+    // let a future installer try to RESOLVE tools the unit never provided.
+    // Same bounded shape (JSON TEXT, 1..200 non-empty names, each ≤128 chars).
+    let usesToolsJson: string | null = null;
+    if (body.uses_tools != null) {
+      if (!USES_TOOLS_KINDS.includes(kind as (typeof USES_TOOLS_KINDS)[number])) {
+        return c.json({ error: 'invalid_field', field: 'uses_tools', reason: 'orchestrating_kind_only' }, 400);
+      }
+      const ut = body.uses_tools;
+      if (!Array.isArray(ut) || ut.length === 0 || ut.length > PROVIDES_TOOLS_MAX_ENTRIES) {
+        return c.json({ error: 'invalid_field', field: 'uses_tools', reason: 'array_1_to_200' }, 400);
+      }
+      if (!ut.every((t) => typeof t === 'string' && t.trim().length > 0 && t.length <= PROVIDES_TOOLS_MAX_NAME_LEN)) {
+        return c.json({ error: 'invalid_field', field: 'uses_tools', reason: 'non_empty_strings_max_128' }, 400);
+      }
+      usesToolsJson = JSON.stringify(ut);
     }
 
     // provides_events (migration 012 / D-003) — the event half of the pack
@@ -936,6 +970,7 @@ function registerListingEndpoints(
       publisher_device_pubkey: body.publisher_device_pubkey ?? null,
       publisher_attestation_gist_id: body.attestation_gist_id ?? null,
       provides_tools: providesToolsJson,
+      uses_tools: usesToolsJson,
       provides_events: providesEventsJson,
       requires_events: requiresEventsJson,
       requires_rubrics: requiresRubricsJson,

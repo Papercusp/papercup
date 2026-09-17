@@ -289,6 +289,8 @@ export interface NewHarnessInput {
   publisher_attestation_gist_id?: string | null;
   /** Pack model (migration 006): JSON string[] of provided tool names; plugin|pack only. */
   provides_tools?: string | null;
+  /** Tool axis, consumer half (migration 033 / WI-10001747): JSON string[] of tool names the unit ORCHESTRATES but does not provide; orchestrating kinds only. */
+  uses_tools?: string | null;
   /** Event axis (migration 012 / D-003): JSON array of provided event families; plugin|pack only. */
   provides_events?: string | null;
   /** Event axis (migration 013 / D-003): JSON array of REQUIRED event families; plugin|pack only. */
@@ -369,7 +371,7 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           title, description, topic_hex,
           publisher_github_user_id, publisher_github_login, publisher_permission,
           publisher_device_pubkey, publisher_attestation_gist_id,
-          provides_tools, provides_events, requires_events, requires_rubrics,
+          provides_tools, uses_tools, provides_events, requires_events, requires_rubrics,
           hive_pubkey, hive_title, blueprint_kind,
           review_status,
           delivery_type, latest_json_url, release_repo, icon_url, platforms,
@@ -381,7 +383,7 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           pinned_commit_sha, pinned_tree_digest, pinned_at,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -401,6 +403,7 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.publisher_device_pubkey ?? null,
       h.publisher_attestation_gist_id ?? null,
       h.provides_tools ?? null,
+      h.uses_tools ?? null,
       h.provides_events ?? null,
       h.requires_events ?? null,
       h.requires_rubrics ?? null,

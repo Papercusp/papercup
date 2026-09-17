@@ -536,6 +536,20 @@ export default function CupboardDetailPage() {
       return [];
     }
   })();
+  // uses_tools (worker migration 033 / WI-10001747): the CONSUMER half — tool
+  // names a recipe/plan/goal ORCHESTRATES but does not provide. Rendered as a
+  // distinct row from "Provides tools" on purpose: installing this unit
+  // registers none of them, so conflating the two would promise a tool surface
+  // the unit does not actually supply.
+  const usesTools: string[] = (() => {
+    if (!listing.uses_tools) return [];
+    try {
+      const parsed: unknown = JSON.parse(listing.uses_tools);
+      return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === 'string') : [];
+    } catch {
+      return [];
+    }
+  })();
   // The EVENT axis (D-003; worker migrations 012 + 013 / P-007 + P-008) — the
   // mirror of provides_tools, both halves:
   //   provides_events  what this unit lets you AWAIT once installed
@@ -643,6 +657,16 @@ export default function CupboardDetailPage() {
                 style={{ fontFamily: FONTS.mono, fontSize: SIZES.sm, color: COLORS.text }}
               >
                 {providesTools.join(', ')}
+              </span>
+            </MetaRow>
+          )}
+          {usesTools.length > 0 && (
+            <MetaRow label="Uses tools">
+              <span
+                data-testid="cupboard-detail-uses-tools"
+                style={{ fontFamily: FONTS.mono, fontSize: SIZES.sm, color: COLORS.text }}
+              >
+                {usesTools.join(', ')}
               </span>
             </MetaRow>
           )}

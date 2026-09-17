@@ -55,6 +55,7 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
     publisher_device_pubkey: null,
     publisher_attestation_gist_id: null,
     provides_tools: null,
+    uses_tools: null,        // migration 033 (tool axis — consumer half, WI-10001747)
     provides_events: null,   // migration 012 (event dependency axis — provider half)
     requires_events: null,   // migration 013 (event dependency axis — consumer half)
     requires_rubrics: null,  // migration 015 (rubric dependency axis — consumer half)
