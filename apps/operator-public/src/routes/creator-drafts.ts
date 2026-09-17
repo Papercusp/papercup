@@ -44,6 +44,11 @@ interface DraftManifest {
   project_ref?: string | null;
   blueprint_kind?: string | null;
   provides_tools?: unknown;
+  // The CONSUMPTION half of the tool axis (migration 033 / WI-10001747). It is
+  // declared and mapped beside `provides_tools` deliberately: this route is the
+  // SECOND publish path into `harnesses`, and the original defect was exactly a
+  // field one path carried and the other silently dropped.
+  uses_tools?: unknown;
   provides_events?: unknown;
   requires_events?: unknown;
   requires_rubrics?: unknown;
@@ -395,6 +400,7 @@ export function creatorDraftsRoute(): Hono<{ Bindings: Env }> {
         publisher_github_user_id: draft.owner_github_user_id,
         publisher_github_login: draft.owner_github_login,
         provides_tools: Array.isArray(manifest.provides_tools) ? JSON.stringify(manifest.provides_tools) : null,
+        uses_tools: Array.isArray(manifest.uses_tools) ? JSON.stringify(manifest.uses_tools) : null,
         provides_events: Array.isArray(manifest.provides_events) ? JSON.stringify(manifest.provides_events) : null,
         requires_events: Array.isArray(manifest.requires_events) ? JSON.stringify(manifest.requires_events) : null,
         requires_rubrics: Array.isArray(manifest.requires_rubrics) ? JSON.stringify(manifest.requires_rubrics) : null,
