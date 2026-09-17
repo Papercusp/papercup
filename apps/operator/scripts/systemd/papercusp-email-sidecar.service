@@ -1,0 +1,37 @@
+# Papercusp email app sidecar (:8791) — the receiving end of the platform→app
+# data producer (plan platform-to-app-data-producer-2026-08-30, P-008).
+#
+# TRACKED SOURCE (EI-23439593071892927). Until 2026-09-17 this unit was a
+# hand-authored file in ~/.config/systemd/user with no repo source, so the
+# restart-on-change fix (WI-10001633) had to land as a drop-in override. It is
+# now installed by symlink from this file, like every other unit in this
+# directory (see README.md § "App sidecars"), and the watch behaviour is folded
+# in below. The app checkout itself is a SEPARATE repo (materialized from the
+# papercusp app template into ~/papercupai-workspace/email); `%h` keeps this
+# unit machine-neutral without a render step.
+[Unit]
+Description=Papercusp email app sidecar (:8791) — receiving end of the platform→app data producer (plan platform-to-app-data-producer-2026-08-30, P-008)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/papercupai-workspace/email
+# Injected config only — secrets never live in either repo.
+EnvironmentFile=%h/.papercusp/app-producer.env
+# Deliberately NOT EMAIL_LOCAL_MODE=1: local mode bypasses jwtVerify entirely
+# and pins a fixed ownerId, which would leave the producer's auth leg unexercised.
+Environment=NODE_ENV=production
+# `tsx watch`, not plain `tsx` (WI-10001633): the sidecar runs straight from the
+# working tree with no build step, so without a watcher an edit in the checkout
+# is invisible until someone restarts the service by hand (the email sidecar
+# served 16 days of stale code this way). The watcher restarts the process when
+# a file in its import graph changes; Restart=always still covers a crash.
+# Confirm currency: compare /api/health `sha` to `git rev-parse HEAD` in the tree.
+ExecStart=/usr/bin/env npx tsx watch apps/sidecar/src/index.ts
+Restart=always
+RestartSec=5
+StandardOutput=append:%h/.papercusp/logs/papercusp-email-sidecar.log
+StandardError=append:%h/.papercusp/logs/papercusp-email-sidecar.log
+
+[Install]
+WantedBy=default.target
