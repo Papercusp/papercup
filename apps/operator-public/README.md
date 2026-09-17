@@ -16,15 +16,15 @@ Original plan called for "Cloudflare-fronted Next.js + managed Postgres." This l
 - **D1 (SQLite)** instead of managed Postgres. Cupboard data is moderate-scale + relational + low-cost; D1's free tier covers v1 easily. Reusing the `papercusp-publish` pattern keeps the deploy + auth + rate-limit code shapes consistent.
 - **GitHub bearer auth** (validate `Authorization: Bearer <gh_token>` against `https://api.github.com/user`). Desktop operator passes the same token produced by Phase 1b `lib/identity/gh-token.ts`.
 
-## Listing kinds (one storefront, thirteen kinds)
+## Listing kinds (one storefront, fifteen kinds)
 
 Per the distribution plan (`harness-blueprint-distribution-2026-06-03`, D-005/D-008),
 extended by `tool-distribution-granularity-2026-06-05`, `learning-packs-2026-06-11`,
 `app-templates-2026-07-04`, `cupboard-public-release-2026-07-12`,
 `cupboard-app-distribution-2026-07-14`, `cupboard-plan-rubric-recipe-sharing-2026-08-21`,
 `work-on-everything-goal-2026-08-23`, `cupboard-themes-2026-09-05`, and
-`identities-v1-2026-08-30` (P-027, D-010), the Cupboard is
-no longer harness-only. It is ONE storefront with thirteen listing kinds
+`identities-v1-2026-08-30` (P-027, P-028, P-029, D-010/D-011), the Cupboard is
+no longer harness-only. It is ONE storefront with fifteen listing kinds
 (`LISTING_KINDS` in `src/db.ts`), each with its own consumer action and review/delivery
 semantics:
 
@@ -44,12 +44,13 @@ semantics:
 | `theme`          | **install** | **approved** | an inert semantic-token package selectable by the existing theme runtime |
 | `datatype`       | **install** | **pending** | a generic-kind datatype package — the schema + lifecycle a workspace installs so `work_items` accept a new item kind; `datatype_registry` remains the resolution layer |
 | `rule`           | **install** | **pending** | an installable behaviour — "when X, fire Y". Fires a capability **class** (`class:<ref>#<verb>`), not a tool id, so the installing pot's own provider binding decides which tool runs and one listing ships across pots with different providers |
+| `event`          | **install** | **pending** | an event-key declaration — the versioned key, its payload schema, and its emitter/consumer discovery metadata, so a rule's `on` and an agent's `events:await` RESOLVE against a registered key instead of a hand-authored catalog. Independently useful with no `rule` anywhere |
 
 Retired / aliased: `snapshot` was retired (`retire-snapshots-instance-spec-2026-06-09`
 D-005); the interim `tool-pack` value normalizes to `pack` and the pre-rename
 `learning-pack` normalizes to `knowledge-pack` (`normalizeListingKind`), so older
 clients keep parsing. Review-gated kinds (`knowledge-pack`, `blueprint`, `app`, `rubric`,
-`plan`, `recipe`, `goal`, `datatype`, and `rule`) publish `pending` and are publicly invisible
+`plan`, `recipe`, `goal`, `datatype`, `rule`, and `event`) publish `pending` and are publicly invisible
 until an operator approves them (`REVIEW_POLICY_KINDS`); `harness`, `plugin`, `pack`,
 `template`, and `theme` publish `approved` immediately. For `app`, `delivery_type` is
 `standalone` by default (download handoff); `bundle` is the deferred workspace-install
