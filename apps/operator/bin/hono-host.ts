@@ -452,8 +452,16 @@ function startRequestServers(): void {
   // the SSE fallback. Must run in THIS process: the pty registry the WS attaches
   // to is in-process state shared with the spawn routes — which is precisely why
   // PTY is INCOMPATIBLE with multi-worker clustering (spawn + WS could land on
-  // different workers). It's desktop/dev-only (off on the server cluster target),
-  // so the two never coexist. Fail-soft on EADDRINUSE (a sibling already bound it).
+  // different workers).
+  //
+  // That incompatibility used to be documented here as "it's desktop/dev-only (off
+  // on the server cluster target), so the two never coexist" — ASSUMED, never
+  // enforced, and false in this deployment: papercup-dev-api.service.d/
+  // 55-memory-envelope.conf sets PAPERCUSP_CLUSTER_WORKERS=6 alongside
+  // PAPERCUSP_PTY_WS_PORT=3056, which silently broke (workers-1)/workers of all
+  // terminal attaches on :3070 from 2026-06-18 onward (WI-10001638). Passing
+  // `clusterWorkers` makes startPtyWsServer REFUSE and say so loudly instead.
+  // Fail-soft on EADDRINUSE (a sibling already bound it).
   const ptyWsPort = Number(process.env.PAPERCUSP_PTY_WS_PORT ?? '');
   if (Number.isFinite(ptyWsPort) && ptyWsPort > 0) {
     startPtyWsServer({
@@ -462,6 +470,7 @@ function startRequestServers(): void {
       // Loopback and SSH-forwarded browsers remain the local compatibility
       // path even when this process also admits exact remote HTTPS origins.
       allowLocalhost: true,
+      clusterWorkers,
     });
   }
 

@@ -12,10 +12,10 @@
  *   - exit text frame on process exit
  *   - replay (P4 screen-state) on second connect
  */
-import { describe, it, expect, afterAll, afterEach, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, beforeAll, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { spawnPty, killPty } from './pty-bridge';
-import { startPtyWsServer } from './pty-ws';
+import { startPtyWsServer, ptyWsClusterRefusal } from './pty-ws';
 import {
   _resetPtyTicketStateForTests,
   issuePtyTicket,
@@ -123,12 +123,26 @@ function openAuthorizedWs(
 async function awaitOpenOrClose(ws: WebSocket): Promise<{
   opened: boolean;
   statusCode?: number;
+  /**
+   * The rejection text. ws puts a `done(false, code, message)` message in the
+   * response BODY, not the status line — its reason phrase is always the generic
+   * `http.STATUS_CODES[code]` ("Unauthorized") — so a test that wants to assert on
+   * WHICH rejection fired has to read the body. Load-bearing for the
+   * indistinguishability guard below.
+   */
+  body?: string;
   closeCode?: number;
   closeReason?: string;
 }> {
   return new Promise((resolve) => {
     ws.once('open', () => resolve({ opened: true }));
-    ws.once('unexpected-response', (_req, res) => resolve({ opened: false, statusCode: res.statusCode }));
+    ws.once('unexpected-response', (_req, res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => { body += chunk; });
+      res.once('end', () => resolve({ opened: false, statusCode: res.statusCode, body }));
+      res.once('close', () => resolve({ opened: false, statusCode: res.statusCode, body }));
+    });
     ws.once('close', (code, reason) => resolve({ opened: false, closeCode: code, closeReason: reason.toString() }));
     ws.once('error', () => { /* swallow; close will follow */ });
   });
@@ -152,10 +166,109 @@ async function collectBytes(ws: WebSocket, predicate: (s: string) => boolean, ti
 
 describe('pty-ws', () => {
   it('rejects a bearerless unknown pty before the WebSocket upgrade', async () => {
-    const ws = openWs('/pty/00000000-0000-0000-0000-000000000000');
-    const r = await awaitOpenOrClose(ws);
-    expect(r.opened).toBe(false);
-    expect(r.statusCode).toBe(401);
+    // An unknown id is a registry miss, which now logs its real cause (see the
+    // registry-miss test below). Mocked only to satisfy vitest-fail-on-console.
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const ws = openWs('/pty/00000000-0000-0000-0000-000000000000');
+      const r = await awaitOpenOrClose(ws);
+      expect(r.opened).toBe(false);
+      expect(r.statusCode).toBe(401);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  /**
+   * WI-10001638. The pty registry is per-process, so under multi-worker clustering
+   * only the ONE worker that wins the port bind can serve an attach — every spawn
+   * that round-robins elsewhere is rejected at the upgrade. That was a silent
+   * (workers-1)/workers failure on the clustered :3070 from 2026-06-18 until it was
+   * refused outright.
+   */
+  describe('multi-worker clustering refusal', () => {
+    it('is inert for a single-process host', () => {
+      expect(ptyWsClusterRefusal({ port: 3056, clusterWorkers: 1 })).toBeNull();
+      expect(ptyWsClusterRefusal({ port: 3056, clusterWorkers: 0 })).toBeNull();
+      // Omitted ⇒ single-process. A NaN/garbage count must also stay inert rather
+      // than disable terminals on an unparseable env value.
+      expect(ptyWsClusterRefusal({ port: 3056 })).toBeNull();
+      expect(ptyWsClusterRefusal({ port: 3056, clusterWorkers: Number.NaN })).toBeNull();
+    });
+
+    it('refuses above one worker, naming the port, the count, and the way out', () => {
+      const reason = ptyWsClusterRefusal({ port: 3056, clusterWorkers: 6 });
+      expect(reason).not.toBeNull();
+      expect(reason).toContain('3056');
+      expect(reason).toContain('6 workers');
+      // The env vars are the actionable half — a refusal that does not name the
+      // setting to change just relocates the mystery.
+      expect(reason).toContain('PAPERCUSP_CLUSTER_WORKERS');
+      expect(reason).toContain('PAPERCUSP_PTY_WS_PORT');
+    });
+
+    it('binds nothing and returns null when clustering is active', () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        // Deliberately checked BEFORE the idempotency short-circuit: beforeAll has
+        // already started a server in this process, and a clustered caller must
+        // still get null rather than that live instance.
+        expect(startPtyWsServer({ port: 0, clusterWorkers: 6 })).toBeNull();
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(String(spy.mock.calls[0]?.[0])).toContain('REFUSING to start');
+      } finally {
+        spy.mockRestore();
+      }
+      // ...and the refusal left the already-running server untouched.
+      expect(startPtyWsServer({ port: 0 })).not.toBeNull();
+    });
+  });
+
+  /**
+   * WI-10001638, second half. A registry miss and a bearerless client are separate
+   * causes that must stay ONE response on the wire — differentiating them would let
+   * any allowed-origin caller probe which pty ids live in this process. This is the
+   * regression guard on that property; the diagnosis belongs in the server log,
+   * which is asserted separately below.
+   */
+  it('answers a registry miss and a bearerless client identically on the wire', async () => {
+    // The miss leg logs its cause by design; mocked for vitest-fail-on-console.
+    // Asserted properly in the registry-miss test below — here we only care that
+    // what reaches the CLIENT is identical.
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const unknown = await awaitOpenOrClose(openWs('/pty/00000000-0000-0000-0000-000000000000'));
+    spy.mockRestore();
+
+    // A pty that genuinely EXISTS here, attached with no ticket at all.
+    const handle = spawnTestPty(['sleep 30']);
+    const known = await awaitOpenOrClose(openWs(`/pty/${handle.id}`));
+
+    expect(unknown.opened).toBe(false);
+    expect(known.opened).toBe(false);
+    expect(unknown.statusCode).toBe(401);
+    expect(known.statusCode).toBe(401);
+    // The property: byte-identical, and attributing NEITHER cause. If a future
+    // change makes these differ, it has handed out a pty-id existence oracle.
+    expect(unknown.body).toBe(known.body);
+    expect(unknown.body).not.toMatch(/not found|unknown|no such|registry/i);
+  });
+
+  it('logs a registry miss as a registry miss, not as a ticket failure', async () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const missingId = '11111111-2222-3333-4444-555555555555';
+    try {
+      const r = await awaitOpenOrClose(openWs(`/pty/${missingId}`));
+      expect(r.statusCode).toBe(401);
+      const logged = spy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).toContain(missingId);
+      // The whole point of the split: this message existing at all. Reporting a
+      // registry miss as 'pty ticket required' cost two wrong investigations
+      // (2026-09-16, 2026-09-17) chasing a ticket/HMAC bug that did not exist.
+      expect(logged).toMatch(/NOT a ticket failure/i);
+      expect(logged).toContain('no registry entry');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('rejects a malformed route before the WebSocket upgrade', async () => {
