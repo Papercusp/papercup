@@ -364,13 +364,18 @@ describe('recipe Cupboard round trip', () => {
     );
 
     expect(result).toMatchObject({ ok: true, exportedOnly: false, listing: { id: 'listing-1' } });
-    expect(external.publishListingToCupboard).toHaveBeenCalledWith(
-      expect.objectContaining({
-        listing_kind: 'recipe',
-        listing_ref: 'publish-recipe',
-        provides_tools: ['work_items:list'],
-      }),
-    );
+    // A recipe's tool surface is CONSUMPTION, not provision: installing a recipe registers
+    // none of these tools, so it rides as `uses_tools`. The public Worker refuses
+    // `provides_tools` on kind='recipe' (plugin|pack only), which is why sending it there
+    // made every recipe publish fail with HTTP 400 (WI-10001747).
+    const publishedBody = vi.mocked(external.publishListingToCupboard).mock.calls[0]?.[0];
+    expect(publishedBody).toMatchObject({
+      listing_kind: 'recipe',
+      listing_ref: 'publish-recipe',
+      uses_tools: ['work_items:list'],
+    });
+    // Both directions: the field the receiver rejects must not be on the wire at all.
+    expect(publishedBody).not.toHaveProperty('provides_tools');
     const manifest = JSON.parse(
       await fs.readFile(join(root, 'recipes', 'publish-recipe', 'recipe.json'), 'utf8'),
     ) as Record<string, unknown>;
