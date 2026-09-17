@@ -135,7 +135,11 @@ describe('fabricatedPathsInCompletion — fail-open branches', () => {
 
   it('probing is bounded, so a pathological list cannot fan out', () => {
     const many = Array.from({ length: MAX_FABRICATION_PROBES + 5 }, (_, i) => `f${i}.ts`);
-    const out = fabricatedPathsInCompletion(evidence(many), probe());
+    // EI-23439632326954844: the git-spawn budget (MAX_FABRICATION_GIT_PROBES = 8) now binds
+    // BEFORE the declared-path cap: with one root, each judged path costs one probe, so only
+    // the first 8 are accused and the rest are silence. Lift the spawn cap to isolate the
+    // path cap this case was written for.
+    const out = fabricatedPathsInCompletion(evidence(many), probe({ maxGitProbes: 1_000 }));
     expect(out?.neverExisted).toHaveLength(MAX_FABRICATION_PROBES);
   });
 

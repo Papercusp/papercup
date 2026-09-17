@@ -59,6 +59,21 @@ import type { CompletionVerificationEvidence } from '../../coord-lifecycle/recor
 export const MAX_FABRICATION_PROBES = 12;
 
 /**
+ * EI-23439632326954844: bounds the git work ACROSS the whole detector, not per spawn.
+ *
+ * `git log -1 --all -- <path>` is cheap when the path has history (it stops at the first
+ * commit) and a FULL-HISTORY WALK when it has none — which is exactly the case this
+ * detector exists to find, and exactly the case an out-of-repo path (a sibling checkout's
+ * file, `~/.config/...`) produces under EVERY candidate root. Measured 2026-09-17 on :3170:
+ * 3 such paths × ~50 sibling-checkout roots → 25s+ of serial git spawns, past the MCP
+ * transport cap, so `work_items:complete` never returned. The per-spawn 5s timeout could
+ * not help: no single spawn was slow, the fan-out was. These two caps bound the SUM; once
+ * either is spent every remaining path is UNJUDGEABLE (silence), never a finding.
+ */
+export const FABRICATION_GIT_BUDGET_MS = 3_000;
+export const MAX_FABRICATION_GIT_PROBES = 8;
+
+/**
  * `true` = git has history for this path · `false` = git has none · `undefined` = COULD
  * NOT JUDGE. The three-valued return is the whole safety property: a probe that cannot
  * answer must never be collapsed into `false`, which would read as fabrication.
@@ -74,6 +89,12 @@ export interface FabricatedPathProbe {
   gitKnows?: GitPathHistoryProbe;
   /** Repo-relative submodule directory prefixes; paths under one are never judged. */
   submodulePrefixes?: (repoRoot: string) => readonly string[];
+  /** Total wall-clock budget for git probes across ALL paths × roots (default 3s). */
+  gitBudgetMs?: number;
+  /** Total git spawn cap across ALL paths × roots (default 8). */
+  maxGitProbes?: number;
+  /** Injectable clock for the budget (tests). */
+  now?: () => number;
 }
 
 /** `git log -1 --all -- <path>`: any commit on any branch means the path is real. */
@@ -148,12 +169,22 @@ export function fabricatedPathsInCompletion(
 
   const neverExisted: string[] = [];
 
+  // EI-23439632326954844: one budget for the whole detector — see the constants above.
+  const now = probe.now ?? (() => Date.now());
+  const gitBudgetMs = probe.gitBudgetMs ?? FABRICATION_GIT_BUDGET_MS;
+  const maxGitProbes = probe.maxGitProbes ?? MAX_FABRICATION_GIT_PROBES;
+  const startedAt = now();
+  let gitProbesSpent = 0;
+  const gitBudgetLeft = (): boolean => gitProbesSpent < maxGitProbes && now() - startedAt < gitBudgetMs;
+
   for (const raw of declared.slice(0, MAX_FABRICATION_PROBES)) {
     const declaredPath = (raw ?? '').trim();
     // A glob describes many files; it is not a claim that one path exists.
     if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) continue;
-    // An absolute path names another tree we have no standing to judge.
-    if (nodePath.isAbsolute(declaredPath)) continue;
+    // An absolute or home-relative (`~/...`) path names another tree we have no standing
+    // to judge — and `~` is NOT absolute to node, so without this it was resolved under
+    // every candidate root as `<root>/~/...` and history-walked in each (the measured hang).
+    if (nodePath.isAbsolute(declaredPath) || declaredPath === '~' || declaredPath.startsWith('~/')) continue;
 
     let judgedByAnyRoot = false;
     let clearedByAnyRoot = false;
@@ -179,6 +210,18 @@ export function fabricatedPathsInCompletion(
       let onDisk: boolean;
       try {
         onDisk = exists(abs);
+        // EI-21850619651553189 / EI-23439632326954844: the conventional cross-repo form
+        // `<repoName>/<path>` (how a sibling checkout's file is named in prose) exists
+        // under the root whose basename it leads with, once that segment is stripped.
+        // Checked alongside the plain form, never instead of it, and BEFORE any git
+        // spawn — an existence hit is free where a history walk is the expensive miss.
+        if (!onDisk) {
+          const prefix = `${nodePath.basename(repoRoot)}/`;
+          if (declaredPath.startsWith(prefix) && declaredPath.length > prefix.length) {
+            const stripped = nodePath.resolve(repoRoot, declaredPath.slice(prefix.length));
+            if (stripped === repoRoot || stripped.startsWith(repoRoot + nodePath.sep)) onDisk = exists(stripped);
+          }
+        }
       } catch {
         continue; // fs error → cannot judge under this root
       }
@@ -187,8 +230,11 @@ export function fabricatedPathsInCompletion(
         break;
       }
 
+      // Budget spent → this root cannot judge; a bounded detector stays silent, never accuses.
+      if (!gitBudgetLeft()) continue;
       let known: boolean | undefined;
       try {
+        gitProbesSpent += 1;
         known = gitKnows(repoRoot, declaredPath);
       } catch {
         known = undefined;
