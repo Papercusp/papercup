@@ -17,7 +17,15 @@ import { describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..', '..', '..');
-const bindingCss = readFileSync(join(here, 'adv-history-tab.css'), 'utf8');
+/**
+ * Subject override for copy-out mutation probes (CLAUDE.md "Proving a guard is falsifiable"):
+ * point `PH_BINDING_CSS_SUBJECT` at a deliberately-incomplete COPY of the binding stylesheet to
+ * record a ledger-backed counterexample run without ever mutating the tracked file. Unset ⇒ the
+ * real one. Mirrors `PH_CSS_SUBJECT` in ProjectHistoryView.css.test.ts, whose presence is the only
+ * reason a tier-2 probe was ever runnable against the primitive (plan …-2026-09-16, D-012).
+ */
+const BINDING_CSS_PATH = process.env.PH_BINDING_CSS_SUBJECT ?? join(here, 'adv-history-tab.css');
+const bindingCss = readFileSync(BINDING_CSS_PATH, 'utf8');
 const primitiveCss = readFileSync(
   join(repoRoot, 'libs', 'generic', 'ui-primitives', 'src', 'ProjectHistoryView.css'),
   'utf8',
