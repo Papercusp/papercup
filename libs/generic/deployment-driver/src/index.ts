@@ -511,6 +511,7 @@ export {
   DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_TIMEOUT_BUDGET_MS,
   NodeWorkspaceHostAgentProbeRunner,
   workspaceHostAgentSubjectDigest,
+  workspaceHostAgentSpecSatisfiesReadiness,
   applyWorkspaceHostAgentRuntimePath,
   probeWorkspaceHostAgentVerification,
   probeWorkspaceHostAgents,

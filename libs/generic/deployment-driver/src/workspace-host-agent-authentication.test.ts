@@ -17,6 +17,7 @@ import {
   classifyWorkspaceHostAgentProbeFailure,
   probeWorkspaceHostAgentVerification,
   probeWorkspaceHostAgents,
+  workspaceHostAgentSpecSatisfiesReadiness,
   workspaceHostAgentSubjectDigest,
   type WorkspaceHostAgentProbeInvocation,
   type WorkspaceHostAgentProbeOutcome,
@@ -59,7 +60,14 @@ const AUTHENTICATED = {
   },
   codex: {
     exitCode: 0,
-    stdout: "Login status: signed in as canary@papercup.ai (Team)\n",
+    // WI-10001694: codex's readiness now comes from live-inference ONLY — its account probe is
+    // `satisfiesReadiness: false`. ScriptedRunner keys by COMMAND and both codex specs shell the
+    // same one, so this single outcome serves both probes: the account line feeds the
+    // evidence-only subject digest, and the marker on its own line is what actually makes codex
+    // ready. Carrying BOTH is deliberate rather than convenient — an account line PLUS a working
+    // credential is exactly the arrangement the old short-circuit made dangerous, so a fixture
+    // with the marker alone would stop exercising the case this flag exists to defuse.
+    stdout: `Login status: signed in as canary@papercup.ai (Team)\n${WORKSPACE_HOST_CODEX_LIVE_INFERENCE_MARKER}\n`,
   },
   omp: {
     exitCode: 0,
@@ -318,8 +326,14 @@ describe("workspace-host agent verification probes", () => {
     ]);
     // Sequential, in the declared order — three CLIs racing one credential store is a source of
     // spurious failures.
+    //
+    // codex appears TWICE, and that is the WI-10001694 fix visible in the invocation log: its
+    // account probe is `satisfiesReadiness: false`, so it can no longer break the loop and
+    // live-inference now runs even when the account line matched. A single `codex` here would
+    // mean the short-circuit is back.
     expect(allGood.invocations.map((i) => i.command)).toEqual([
       "claude",
+      "codex",
       "codex",
       "omp",
     ]);
@@ -553,7 +567,15 @@ describe("attested vendor runtime paths (D-259 Defect 2)", () => {
 
     expect(report.allReady).toBe(true);
     const commands = runner.invocations.map((invocation) => invocation.command);
-    expect(commands).toEqual([VENDOR.claude, VENDOR.codex, VENDOR.omp]);
+    // codex twice: both of its specs run now that the account probe cannot end the loop
+    // (WI-10001694). Both must exec the ATTESTED path — an evidence-only probe is still a probe,
+    // and letting it fall back to the bare name would reintroduce D-259 Defect 2 through it.
+    expect(commands).toEqual([
+      VENDOR.claude,
+      VENDOR.codex,
+      VENDOR.codex,
+      VENDOR.omp,
+    ]);
     for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
       expect(commands).not.toContain(agent);
     }
@@ -616,17 +638,92 @@ describe("attested vendor runtime paths (D-259 Defect 2)", () => {
    * account probe running first is what keeps the stronger "we know WHO this is" evidence for a
    * codex that can produce it, with live inference as the fallback rather than the default.
    */
-  it("keeps codex's account probe first and its live-inference probe as the fallback", () => {
+  it("makes live-inference the ONLY probe that can mark codex ready, whatever the order", () => {
     const specs = DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex;
-    expect(specs.map((spec) => spec.verificationKind)).toEqual([
+    // WI-10001694, superseding D-265's ordering rationale. This asserts the READINESS SOURCE, not
+    // the position, and that is the whole point: the defect was positional, so an order-blind
+    // test passes on the broken arrangement and an order-ONLY test passes on a broken one that
+    // merely kept its shape. Both dangerous arrangements — the forgeable probe first (it
+    // short-circuits the real one) and second (it runs exactly when the real one did NOT pass) —
+    // are refused by this assertion, because in neither can it be readiness-bearing.
+    expect(
+      specs
+        .filter(workspaceHostAgentSpecSatisfiesReadiness)
+        .map((spec) => spec.verificationKind),
+    ).toEqual(["live-inference"]);
+    // The account probe is still PRESENT: it is the only signal naming which account a host
+    // authenticated as, and removing it was rejected as lossy. Kept, but inert for readiness.
+    expect(specs.map((spec) => spec.verificationKind)).toContain(
       "authenticated-account",
-      "live-inference",
-    ]);
+    );
+
+    // Selected by KIND, not index, so these argv rules cannot silently detach from the probe they
+    // describe if the array is ever reordered — the failure this test exists to make impossible.
+    const live = specs.find((spec) => spec.verificationKind === "live-inference");
     // No `-c` override in the argv: a model-specific value goes stale under the probe and fails
     // it for a non-credential reason (measured: HTTP 400 on `model_reasoning_effort=minimal`).
-    expect(specs[1]?.args).not.toContain("-c");
+    expect(live?.args).not.toContain("-c");
     // A readiness probe must not need write access to the host it is judging.
-    expect(specs[1]?.args).toContain("read-only");
+    expect(live?.args).toContain("read-only");
+  });
+
+  it("does NOT mark codex ready from a forged account line when live inference fails", async () => {
+    // The vacuity itself, end to end. MEASURED 2026-09-17: a fabricated `$CODEX_HOME/auth.json`
+    // makes `codex login status` print output byte-identical to the real credential's. This
+    // fixture is that forgery — an account line SUBJECT_PATTERN matches, and NO live-inference
+    // marker, because the fabricated token cannot actually reach the endpoint.
+    //
+    // Before WI-10001694 this returned ready:true: the account probe matched, the loop broke on
+    // the first ready spec, and live-inference never ran.
+    const forged = new ScriptedRunner({
+      ...AUTHENTICATED,
+      codex: {
+        exitCode: 0,
+        stdout: "Login status: signed in as attacker@example.invalid (Team)\n",
+      },
+    });
+    const report = await probeWorkspaceHostAgents({ runner: forged, now: NOW });
+
+    expect(report.agents.codex.ready).toBe(false);
+    expect(report.allReady).toBe(false);
+    // It must fail as the INFERENCE probe, not the account one — proof that live-inference
+    // actually ran rather than being short-circuited into never executing.
+    expect(report.agents.codex.verificationKind).toBe("live-inference");
+    // The forged subject is still recorded, and recorded as SELF-REPORTED. This is the half that
+    // makes keeping the probe safe: identity survives for diagnosis without ever implying it was
+    // verified, and it must never land in `subject` (publishable) or set `ready`.
+    expect(report.agents.codex.selfReportedSubjectDigest).toBe(
+      workspaceHostAgentSubjectDigest("attacker@example.invalid"),
+    );
+    expect(report.agents.codex.subject).toBeUndefined();
+  });
+
+  it("records the account subject as self-reported even on a codex that IS ready", () => {
+    // The digest must never be confused with proof. On a ready codex the readiness came from the
+    // marker, so `proofDigest` digests the MARKER while the account lands in the self-reported
+    // field — two different values, which is what stops a reader treating one as the other.
+    const specs = DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex;
+    const account = specs.find(
+      (spec) => spec.verificationKind === "authenticated-account",
+    );
+    expect(account).toBeDefined();
+    expect(workspaceHostAgentSpecSatisfiesReadiness(account!)).toBe(false);
+  });
+
+  it("refuses a probe set in which nothing can establish readiness", async () => {
+    // The structural guard. Opting the last readiness-bearing probe out is a silent failure in the
+    // direction that reads as a credential fault, so the SET is refused rather than the agent
+    // being reported permanently not-ready for a reason no one can see.
+    const account = DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex.find(
+      (spec) => spec.verificationKind === "authenticated-account",
+    );
+    await expect(
+      probeWorkspaceHostAgents({
+        runner: new ScriptedRunner({ ...AUTHENTICATED }),
+        now: NOW,
+        probes: { codex: [account!] },
+      }),
+    ).rejects.toThrow(/no readiness-bearing verification probe/);
   });
 
   it("changes only the command, leaving the proof rules that make evidence falsifiable intact", () => {

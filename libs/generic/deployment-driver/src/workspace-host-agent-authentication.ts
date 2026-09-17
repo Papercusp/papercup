@@ -889,6 +889,17 @@ export async function probeWorkspaceHostAgents(
     if (specs.length === 0) {
       throw new Error(`agent '${agent}' has no verification probes`);
     }
+    // Ordered BEFORE the readiness guard below, for the same reason the runtime path is applied
+    // after it: a mis-declared spec must be refused AS mis-declared. Checking readiness first
+    // would report a borrowed `satisfiesReadiness: false` spec as "this agent has no readiness
+    // probe", which is a true statement about the wrong problem and hides the actual mistake.
+    for (const spec of specs) {
+      if (spec.agent !== agent) {
+        throw new Error(
+          `agent probe for '${agent}' declares agent '${spec.agent}'`,
+        );
+      }
+    }
     // STRUCTURAL GUARD (WI-10001694). A probe set whose every spec is `satisfiesReadiness: false`
     // could never mark the agent ready, and the shape that produces it — opting the last readiness
     // probe out while meaning to keep the account one for evidence — fails SILENTLY in the
@@ -902,11 +913,6 @@ export async function probeWorkspaceHostAgents(
     let readiness: WorkspaceHostAgentVerificationEvidence | undefined;
     let selfReportedSubjectDigest: string | undefined;
     for (const spec of specs) {
-      if (spec.agent !== agent) {
-        throw new Error(
-          `agent probe for '${agent}' declares agent '${spec.agent}'`,
-        );
-      }
       const evidence = await probeWorkspaceHostAgentVerification({
         // Applied AFTER the agent-mismatch check above, so a mis-declared spec is refused as a
         // mis-declared spec rather than silently rewritten to point at another agent's binary.
