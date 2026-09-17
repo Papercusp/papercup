@@ -63,6 +63,13 @@
       "model": "The reusable plan-class policy supplies the floor. Feature work normally requires targeted L3 intent proof; bugfixes, migrations, mutation-required clauses, and high-risk authorization/concurrency/lifecycle/data-integrity behavior require targeted L4 hardening unless an explicit current waiver exists.",
       "method": "Resolve the plan class and behavior class, then inspect coverage rung flags or successful targeted mutation/counterexample proof. For L4 waivers require justification, approvalRef, and a non-expired expiresAt when present.",
       "driftMarkers": "Depth >= N used instead of the independent meets_lN flag; a broad mutation run with no link to this clause; an unapproved or expired waiver."
+    },
+    {
+      "key": "disclosed-gap",
+      "title": "No author-disclosed hole travels with a passing proof",
+      "model": "A disclosure recorded on a binding is an admission that the bound evidence does not fully establish the clause, so it can never coexist with a machine PASS. Any non-empty disclosed gap fails and the disclosed text is named in the blocking reason; a clause whose active bindings record no disclosure is not applicable.",
+      "method": "Read adequacy.disclosedGap on every active binding for the clause. Fail when any is non-empty, naming the disclosed text in the would-block reason rather than leaving it unread on the row; report not-applicable only when no active binding carries a disclosure.",
+      "driftMarkers": "A known hole recorded on the binding while the verdict still reads pass; a disclosure demoted to prose in an evidence blob that no evaluator field reads; a gap treated as mitigated by re-binding without closing it."
     }
   ]
 }

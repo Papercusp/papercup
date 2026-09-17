@@ -20,6 +20,7 @@ import {
   readWorkspaceHostControl,
   readWorkspaceHostDestroyTarget,
   readWorkspaceHostResourceCheckpoints,
+  recordWorkspaceHostOperationTerminalFailure,
   redactWorkspaceHostValue,
   upsertWorkspaceHostConnection,
 } from './observability-store';
@@ -482,6 +483,106 @@ describe('workspace-host observability store', () => {
       host: { endpoint: 'https://alice:[REDACTED]@example.test' },
       operations: [{ request: { token: '[REDACTED]' } }],
       logs: [{ message: 'Authorization: Bearer [REDACTED]' }],
+    });
+  });
+
+  /**
+   * WI-10001739 link 2. A DBOS step that exhausts its retries throws out of the provisioning
+   * workflow and nothing marked the operation, so the row looked ALIVE until the hosted-lifecycle
+   * reconciler reaped it ~20min later under a SYNTHESIZED hosted_lifecycle_recovery_exhausted.
+   * Measured 2026-09-17: a destroy died 73s in and was reported 20.2min later under that code,
+   * with the real cause (fence x2, then a provider network error) surviving only in the journal.
+   */
+  describe('terminal-failure recording', () => {
+    function capturingTx(): {
+      tx: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
+      sql: string[];
+      values: unknown[][];
+      returns: unknown[];
+    } {
+      const sql: string[] = [];
+      const values: unknown[][] = [];
+      const returns: unknown[] = [{ id: 'op-1' }];
+      const tx = (strings: TemplateStringsArray, ...vals: unknown[]): Promise<unknown[]> => {
+        sql.push(strings.join(' ').replace(/\s+/g, ' ').trim());
+        values.push(vals);
+        return Promise.resolve(returns);
+      };
+      Object.assign(tx, { json: (value: unknown) => value });
+      return { tx, sql, values, returns };
+    }
+
+    it('writes the cause without an authority check, without touching percent, and only while non-terminal', async () => {
+      const cap = capturingTx();
+      H.withWorkspace.mockImplementation(async (_workspaceId: string, run: (q: unknown) => unknown) =>
+        run(cap.tx),
+      );
+
+      const wrote = await recordWorkspaceHostOperationTerminalFailure({
+        workspaceId: 'ws-1',
+        operationId: 'op-1',
+        message: 'Workspace-host workflow failed',
+        error: new Error('boom'),
+      });
+
+      expect(wrote).toBe(true);
+      expect(cap.sql).toHaveLength(1);
+      const [sql] = cap.sql;
+
+      // 1. No controller-authority gate. Recording that a workflow DIED must not itself be
+      //    fenced out, or the failure that matters most is the one that goes unrecorded.
+      expect(sql).not.toMatch(/controller_fence|controller_id/);
+      // 2. percent is never written: a destroy that reached 99% must keep that evidence, which is
+      //    the only surviving signal of how far teardown actually got.
+      expect(sql).not.toMatch(/\bpercent\b/);
+      // 3. A late throw must not flip an already-finished operation to failed.
+      expect(sql).toContain("status NOT IN ('succeeded', 'failed')");
+    });
+
+    it('preserves the nested cause chain rather than collapsing the error to {}', async () => {
+      const cap = capturingTx();
+      H.withWorkspace.mockImplementation(async (_workspaceId: string, run: (q: unknown) => unknown) =>
+        run(cap.tx),
+      );
+
+      // The shape that actually reaches this writer: the provider error is NESTED inside the DBOS
+      // retry wrapper, so a hand-rolled {name, message} projection would drop the only part that
+      // identifies the real failure.
+      const wrapped = new Error('Step workspace-host-destroy-1 has exceeded its maximum of 3 retries', {
+        cause: new Error('workspace-host provider connection could not be reached'),
+      });
+
+      await recordWorkspaceHostOperationTerminalFailure({
+        workspaceId: 'ws-1',
+        operationId: 'op-1',
+        message: 'Workspace-host workflow failed',
+        error: wrapped,
+      });
+
+      const payload = cap.values[0]?.[1] as { code?: string; cause?: { message?: string; cause?: { message?: string } } };
+      expect(payload.code).toBe('workflow_terminal_failure');
+      expect(payload.cause?.message).toContain('exceeded its maximum of 3 retries');
+      expect(payload.cause?.cause?.message).toContain('provider connection could not be reached');
+    });
+
+    it('redacts a secret carried in the error and reports when the row was already terminal', async () => {
+      const cap = capturingTx();
+      cap.returns.length = 0; // the UPDATE matched nothing: the row is already succeeded/failed
+      H.withWorkspace.mockImplementation(async (_workspaceId: string, run: (q: unknown) => unknown) =>
+        run(cap.tx),
+      );
+
+      const wrote = await recordWorkspaceHostOperationTerminalFailure({
+        workspaceId: 'ws-1',
+        operationId: 'op-1',
+        message: 'Workspace-host workflow failed',
+        error: new Error('refused for Authorization: Bearer abc.def.ghi'),
+      });
+
+      expect(wrote).toBe(false);
+      const payload = cap.values[0]?.[1] as { cause?: { message?: string } };
+      expect(payload.cause?.message).toContain('[REDACTED]');
+      expect(payload.cause?.message).not.toContain('abc.def.ghi');
     });
   });
 });

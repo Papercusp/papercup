@@ -174,6 +174,84 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
     expect(queue(second, ROUTINES_QUEUE).desiredWindow).toBe(3);
   });
 
+  // WI-10001738. `elevated` used to be actionable, so it contracted exactly like
+  // `critical`. Contraction is multiplicative and recovery is +1 per healthy tick, so
+  // with bg-host's measured 40min mix (75 ok / 22 elevated / 19 critical) the window was
+  // knocked to its floor of 1 roughly every third tick and never rose above 3. At
+  // window=1 a queue starts ONE routine per tick against ~50 git-sync installs, which
+  // froze 30+ routines fleet-wide (worst 8h49m) and with them the green gate.
+  it('HOLDS the window on elevated feedback instead of contracting it', () => {
+    const controller = new CaplessAdaptiveController({ healthySamplesPerIncrease: 1 });
+    const climb = [0, 1, 2].map((i) =>
+      evaluateRoutineDispatchEpoch({
+        pressure: 'ok',
+        probeMs: 3,
+        inFlightByQueue: {},
+        activeQueues: [ROUTINES_QUEUE],
+        controller,
+        atMs: START + i * 30_000,
+      }),
+    );
+    const climbed = queue(climb[2], ROUTINES_QUEUE).desiredWindow;
+    expect(climbed).toBeGreaterThan(1);
+
+    const elevated = evaluateRoutineDispatchEpoch({
+      pressure: 'elevated',
+      probeMs: 400,
+      inFlightByQueue: {},
+      activeQueues: [ROUTINES_QUEUE],
+      controller,
+      atMs: START + 3 * 30_000,
+    });
+    // The whole point: elevated must not TEAR THE WINDOW DOWN. Before the fix this
+    // asserted equal-to-a-smaller-number; a revert makes it contract and fails here.
+    expect(queue(elevated, ROUTINES_QUEUE).desiredWindow).toBe(climbed);
+
+    // ...and it must still stop UPWARD probing — the early warning doing its job.
+    const stillElevated = evaluateRoutineDispatchEpoch({
+      pressure: 'elevated',
+      probeMs: 500,
+      inFlightByQueue: {},
+      activeQueues: [ROUTINES_QUEUE],
+      controller,
+      atMs: START + 4 * 30_000,
+    });
+    expect(queue(stillElevated, ROUTINES_QUEUE).desiredWindow).toBe(climbed);
+  });
+
+  it('still contracts on critical, so the elevated hold is not a blanket opt-out', () => {
+    const controller = new CaplessAdaptiveController({ healthySamplesPerIncrease: 1 });
+    [0, 1, 2].forEach((i) =>
+      evaluateRoutineDispatchEpoch({
+        pressure: 'ok',
+        probeMs: 3,
+        inFlightByQueue: {},
+        activeQueues: [ROUTINES_QUEUE],
+        controller,
+        atMs: START + i * 30_000,
+      }),
+    );
+    const beforeCritical = evaluateRoutineDispatchEpoch({
+      pressure: 'elevated',
+      probeMs: 400,
+      inFlightByQueue: {},
+      activeQueues: [ROUTINES_QUEUE],
+      controller,
+      atMs: START + 3 * 30_000,
+    });
+    const held = queue(beforeCritical, ROUTINES_QUEUE).desiredWindow;
+
+    const critical = evaluateRoutineDispatchEpoch({
+      pressure: 'critical',
+      probeMs: 2_800,
+      inFlightByQueue: { [ROUTINES_QUEUE]: 2 },
+      activeQueues: [ROUTINES_QUEUE],
+      controller,
+      atMs: START + 4 * 30_000,
+    });
+    expect(queue(critical, ROUTINES_QUEUE).desiredWindow).toBeLessThan(held);
+  });
+
   it('multiplicatively contracts the database-attributed class on critical feedback', () => {
     const epoch = evaluateRoutineDispatchEpoch({
       pressure: 'critical',

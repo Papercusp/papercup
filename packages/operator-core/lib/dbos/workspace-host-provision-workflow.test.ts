@@ -13,10 +13,19 @@ const control = vi.hoisted(() => ({
   resultError: null as unknown,
   startOptions: null as null | Record<string, unknown>,
   stepOptions: null as null | Record<string, unknown>,
+  /**
+   * Options captured PER STEP NAME. `stepOptions` alone is last-wins, so it silently starts
+   * describing a different step the moment the workflow gains one — which is exactly what happened
+   * when the terminal-failure recorder (WI-10001739) was added after the provisioning step.
+   */
+  stepOptionsByName: {} as Record<string, Record<string, unknown>>,
+  /** Every step invocation, by name — how we prove a retry did NOT consume a step attempt. */
+  stepCalls: [] as string[],
   sleep: vi.fn(async (_ms: number) => {}),
   provider: { target: 'gcp' },
   runDestroy: vi.fn(),
   runProvisioning: vi.fn(),
+  recordTerminalFailure: vi.fn(async (_input: unknown) => true),
 }));
 
 vi.mock('../workspace-host/provisioning-runner', async (importOriginal) => {
@@ -27,6 +36,13 @@ vi.mock('../workspace-host/provisioning-runner', async (importOriginal) => {
     runWorkspaceHostProvisioning: control.runProvisioning,
   };
 });
+
+// Without this the workflow's terminal-failure recorder would reach the real store — i.e. a unit
+// test opening a database connection, whose failure the recorder's own guard swallows.
+vi.mock('../workspace-host/observability-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../workspace-host/observability-store')>()),
+  recordWorkspaceHostOperationTerminalFailure: control.recordTerminalFailure,
+}));
 
 vi.mock('@dbos-inc/dbos-sdk', () => {
   class WorkflowQueue {
@@ -40,6 +56,10 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
     DBOS: {
       runStep: (run: () => unknown, options: Record<string, unknown>) => {
         control.stepOptions = options;
+        if (typeof options?.name === 'string') {
+          control.stepOptionsByName[options.name] = options;
+          control.stepCalls.push(options.name);
+        }
         return run();
       },
       sleep: control.sleep,
@@ -108,6 +128,9 @@ beforeEach(() => {
   control.resultError = null;
   control.startOptions = null;
   control.stepOptions = null;
+  control.stepOptionsByName = {};
+  control.stepCalls = [];
+  control.recordTerminalFailure.mockReset().mockResolvedValue(true);
   control.sleep.mockClear();
   _resetWorkspaceHostProvidersForTests();
   registerWorkspaceHostProvider(control.provider as never);
@@ -248,11 +271,131 @@ describe('workspace-host provisioning DBOS admission', () => {
 
     await expect(startWorkspaceHostProvisioningWorkflow(input)).rejects.toBe(terminal);
 
-    const shouldRetry = control.stepOptions?.shouldRetry as ((error: unknown) => boolean) | undefined;
+    // Select the PROVISIONING step by name. Reading last-wins `stepOptions` here silently
+    // retargeted this assertion at the terminal-failure step once that was added.
+    const shouldRetry = control.stepOptionsByName['workspace-host-provision-0']?.shouldRetry as
+      | ((error: unknown) => boolean)
+      | undefined;
     expect(shouldRetry).toBeTypeOf('function');
     expect(shouldRetry?.(terminal)).toBe(false);
     expect(shouldRetry?.(new WorkspaceHostProvisioningConnectionError(['connection unavailable']))).toBe(false);
     expect(shouldRetry?.(new Error('transient provider timeout'))).toBe(true);
+  });
+
+  /**
+   * WI-10001739 link 2. A step that exhausts its retries throws straight out of this workflow;
+   * nothing recorded it, so the operation row kept its last-known status and a stale updated_at and
+   * looked ALIVE. ~20min later the hosted-lifecycle reconciler reaped it on recency alone under a
+   * SYNTHESIZED hosted_lifecycle_recovery_exhausted, erasing the real cause. Measured 2026-09-17: a
+   * destroy died 73s in and was reported 20.2min later under that fabricated code.
+   */
+  it('persists the terminal cause when the step throws, and still rethrows the original error', async () => {
+    const terminal = new Error('Step workspace-host-provision-0 has exceeded its maximum of 3 retries');
+    setWorkspaceHostProvisioningExecutor(async () => {
+      throw terminal;
+    });
+
+    // The original error must still reach the caller — recording must not swallow it.
+    await expect(startWorkspaceHostProvisioningWorkflow(input)).rejects.toBe(terminal);
+
+    expect(control.recordTerminalFailure).toHaveBeenCalledTimes(1);
+    expect(control.recordTerminalFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ operationId: input.operationId, error: terminal }),
+    );
+
+    // The recorder must not itself be retried: a failure to record is logged, never retried into
+    // a second write of the same terminal row.
+    expect(control.stepOptionsByName['workspace-host-provision-terminal-failure']).toMatchObject({
+      retriesAllowed: false,
+    });
+  });
+
+  /**
+   * WI-10001739 link 1. A WorkspaceHostControllerFenceError is a CONTROL-PLANE condition, not a
+   * provider failure, but it was retried out of the step's single maxAttempts:3 — so measured
+   * 2026-09-17 a destroy spent attempts 1 and 2 on fence errors and had exactly one left when it
+   * reached the provider and hit a genuinely transient network error.
+   */
+  function fenceError(): Error {
+    return Object.assign(
+      new Error("workspace-host controller authority or host generation is stale for 'host-1'"),
+      { name: 'WorkspaceHostControllerFenceError' },
+    );
+  }
+
+  it('absorbs a transient fence inside ONE step, leaving the provider retry budget untouched', async () => {
+    vi.useFakeTimers();
+    try {
+      const execute = vi
+        .fn()
+        .mockRejectedValueOnce(fenceError())
+        .mockRejectedValueOnce(fenceError())
+        .mockResolvedValueOnce({
+          status: 'succeeded',
+          operationId: 'op-1',
+          hostId: 'host-1',
+          plan,
+          checkpoints: [],
+        });
+      setWorkspaceHostProvisioningExecutor(execute);
+
+      const pending = startWorkspaceHostProvisioningWorkflow(input);
+      await vi.runAllTimersAsync();
+      await expect(pending).resolves.toMatchObject({ status: 'succeeded' });
+
+      // Three executor calls...
+      expect(execute).toHaveBeenCalledTimes(3);
+      // ...across exactly ONE step invocation. That is the whole point: the fence retries did not
+      // draw down the attempts reserved for provider-network errors.
+      expect(control.stepCalls.filter((name) => name === 'workspace-host-provision-0')).toHaveLength(1);
+      expect(control.recordTerminalFailure).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives up on a PERSISTENT fence rather than spinning, and records it as the terminal cause', async () => {
+    vi.useFakeTimers();
+    try {
+      const persistent = fenceError();
+      const execute = vi.fn().mockRejectedValue(persistent);
+      setWorkspaceHostProvisioningExecutor(execute);
+
+      const pending = startWorkspaceHostProvisioningWorkflow(input);
+      // Attach the rejection handler BEFORE advancing timers, or the rejection surfaces unhandled.
+      const settled = expect(pending).rejects.toBe(persistent);
+      await vi.runAllTimersAsync();
+      await settled;
+
+      // Bounded, not a spin: a genuine supersede holds the host forever, so this must terminate.
+      expect(execute).toHaveBeenCalledTimes(5);
+      expect(control.recordTerminalFailure).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still rethrows the original failure when recording the terminal cause itself fails', async () => {
+    const terminal = new Error('provider exploded');
+    const recordingFailure = new Error('database unreachable');
+    control.recordTerminalFailure.mockRejectedValue(recordingFailure);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    setWorkspaceHostProvisioningExecutor(async () => {
+      throw terminal;
+    });
+
+    try {
+      // The recording failure must never mask what actually failed.
+      await expect(startWorkspaceHostProvisioningWorkflow(input)).rejects.toBe(terminal);
+      // ...but it must not vanish either, or a silently-unrecorded terminal failure is exactly the
+      // blind spot this whole change exists to remove.
+      expect(logged).toHaveBeenCalledWith(
+        '[workspace-host] could not persist terminal failure',
+        recordingFailure,
+      );
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it('rehydrates validated typed errors after DBOS serialization erases their prototypes', async () => {

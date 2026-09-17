@@ -27,6 +27,7 @@ import {
   runWorkspaceHostLifecycle,
   type RunWorkspaceHostLifecycleInput,
 } from '../workspace-host/lifecycle-runner';
+import { recordWorkspaceHostOperationTerminalFailure } from '../workspace-host/observability-store';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 
@@ -105,6 +106,44 @@ export function setWorkspaceHostProvisioningExecutor(executor: WorkspaceHostProv
   else delete hooks().executor;
 }
 
+/**
+ * WI-10001739 link 1: a control-plane fence error must not spend the PROVIDER-NETWORK retry budget.
+ *
+ * `DBOS.runStep` below has a single `maxAttempts: 3`. A WorkspaceHostControllerFenceError is not a
+ * provider failure at all, but it was being retried out of that same budget — measured 2026-09-17,
+ * a destroy spent attempts 1 and 2 on fence errors and had exactly one left when it finally reached
+ * the provider and hit a genuinely transient network error.
+ *
+ * Absorbing the fence here, INSIDE one step, is what makes the budgets separate: DBOS sees a single
+ * step invocation, so this is replay-safe (no cross-step mutable counter to diverge on replay), and
+ * the step's 3 attempts stay reserved for provider errors.
+ *
+ * A GENUINE supersede is unaffected: a newer operation holds the host permanently, so every attempt
+ * here fails and the error is rethrown — bounded, never a spin. The window is sized off a single
+ * observation (that fence cleared on its own within ~16s), which is why it is deliberately generous:
+ * over-waiting on a transient race costs seconds, under-waiting costs the whole operation.
+ */
+const FENCE_RETRY_ATTEMPTS = 5;
+const FENCE_RETRY_BASE_MS = 2_000;
+
+async function executeToleratingControllerFence(
+  input: WorkspaceHostWorkflowInput,
+): Promise<WorkspaceHostProvisioningResult> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await execute(input);
+    } catch (error) {
+      // Matched by NAME, not instanceof, deliberately: this codebase already carries a rehydration
+      // path for typed errors "after DBOS serialization erases their prototypes", so an instanceof
+      // check here would silently stop matching the moment the error crosses that boundary.
+      const isFence =
+        error instanceof Error && error.name === 'WorkspaceHostControllerFenceError';
+      if (!isFence || attempt >= FENCE_RETRY_ATTEMPTS) throw error;
+      await new Promise((resolve) => setTimeout(resolve, FENCE_RETRY_BASE_MS * attempt));
+    }
+  }
+}
+
 async function execute(input: WorkspaceHostWorkflowInput): Promise<WorkspaceHostProvisioningResult> {
   const injected = hooks().executor;
   if (injected) return injected(input);
@@ -124,21 +163,45 @@ async function execute(input: WorkspaceHostWorkflowInput): Promise<WorkspaceHost
 async function workspaceHostProvisioningWorkflowImpl(
   input: WorkspaceHostWorkflowInput,
 ): Promise<WorkspaceHostProvisioningResult> {
-  for (let turn = 0; turn < MAX_WORKFLOW_TURNS; turn += 1) {
-    const result = await DBOS.runStep(() => execute(input), {
-      name: `workspace-host-${input.action}-${turn}`,
-      retriesAllowed: true,
-      maxAttempts: 3,
-      intervalSeconds: 2,
-      shouldRetry: (error) =>
-        !(error instanceof WorkspaceHostProvisioningRequestError) &&
-        !(error instanceof WorkspaceHostProvisioningConnectionError),
-    });
-    if (result.status !== 'in-progress') return result;
-    const retryAfterMs = Math.max(250, Math.min(30_000, result.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS));
-    await DBOS.sleep(retryAfterMs);
+  try {
+    for (let turn = 0; turn < MAX_WORKFLOW_TURNS; turn += 1) {
+      const result = await DBOS.runStep(() => executeToleratingControllerFence(input), {
+        name: `workspace-host-${input.action}-${turn}`,
+        retriesAllowed: true,
+        maxAttempts: 3,
+        intervalSeconds: 2,
+        shouldRetry: (error) =>
+          !(error instanceof WorkspaceHostProvisioningRequestError) &&
+          !(error instanceof WorkspaceHostProvisioningConnectionError),
+      });
+      if (result.status !== 'in-progress') return result;
+      const retryAfterMs = Math.max(250, Math.min(30_000, result.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS));
+      await DBOS.sleep(retryAfterMs);
+    }
+    throw new Error('Workspace-host provisioning exceeded its durable workflow turn budget');
+  } catch (error) {
+    // WI-10001739 link 2: a step that exhausts its retries throws straight out of this workflow.
+    // Nothing downstream records that, so the operation row keeps its last-known status and a
+    // stale updated_at — it looks ALIVE. ~20min later the hosted-lifecycle reconciler reaps it on
+    // recency alone and writes a SYNTHESIZED hosted_lifecycle_recovery_exhausted, erasing the real
+    // cause. Persist the true terminal cause here, at the only point that still has it.
+    try {
+      await DBOS.runStep(
+        () =>
+          recordWorkspaceHostOperationTerminalFailure({
+            workspaceId: input.workspaceId,
+            operationId: input.operationId,
+            message: 'Workspace-host workflow failed',
+            error,
+          }),
+        { name: `workspace-host-${input.action}-terminal-failure`, retriesAllowed: false },
+      );
+    } catch (recordError) {
+      // The ORIGINAL error must always win: a failure to record must never mask what failed.
+      console.error('[workspace-host] could not persist terminal failure', recordError);
+    }
+    throw error;
   }
-  throw new Error('Workspace-host provisioning exceeded its durable workflow turn budget');
 }
 
 export const workspaceHostProvisioningWorkflow = idempotentRegisterWorkflow('workspace-host-provision', () =>

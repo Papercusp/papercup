@@ -775,6 +775,56 @@ export async function updateWorkspaceHostOperation(input: {
   });
 }
 
+/**
+ * Record a workflow's TERMINAL failure on its operation row (WI-10001739 link 2).
+ *
+ * Without this, a DBOS step that exhausts its retries throws out of the workflow and NOTHING ever
+ * marks the operation. The row keeps its last-known status and a stale `updated_at`, so it looks
+ * alive; ~20 minutes later the hosted-lifecycle reconciler reaps it on recency alone and
+ * SYNTHESIZES `{"code":"hosted_lifecycle_recovery_exhausted"}` — erasing the real cause. Measured
+ * 2026-09-17: a destroy died 73s in and was reported 20.2min later under that fabricated code.
+ *
+ * Deliberately NOT `updateWorkspaceHostOperation`, in three ways that each matter:
+ *  1. No `controllerAuthority`. Recording that a workflow died must not itself be fenced out, or
+ *     the failure that matters most is precisely the one that goes unrecorded.
+ *  2. `percent` is left UNCHANGED. A destroy that reached 99% must not be rewritten to 0 — that
+ *     number is the only surviving evidence of how far teardown actually got.
+ *  3. It never overwrites an already-terminal row, so a late throw cannot flip a `succeeded`
+ *     operation to `failed`.
+ *
+ * Expressing all three as flags on `updateWorkspaceHostOperation` would make that function's
+ * contract strictly worse (an authority-optional, percent-optional, sometimes-no-op writer), so
+ * this is a separate narrow verb rather than an extension of it.
+ *
+ * @returns true if this call was the writer of record; false if the row was already terminal.
+ */
+export async function recordWorkspaceHostOperationTerminalFailure(input: {
+  workspaceId: string;
+  operationId: string;
+  message: string;
+  error: unknown;
+}): Promise<boolean> {
+  // `json` -> redactWorkspaceHostValue already preserves a thrown Error readably (name/message,
+  // the full `cause` chain, circular-safe) and redacts secrets inside it. Hand-rolling a
+  // {name, message} shape here would silently drop the cause chain — which for this defect is the
+  // most valuable part, since the underlying provider error is nested inside the DBOS wrapper.
+  const described = { code: 'workflow_terminal_failure', cause: input.error };
+  return await withWorkspace(input.workspaceId, async (tx) => {
+    const rows = await tx<Array<{ id: string }>>`
+      UPDATE harness_shared.workspace_host_operations
+      SET status = 'failed',
+          message = ${redactWorkspaceHostText(input.message)},
+          error = ${tx.json(json(described) as never)},
+          finished_at = now(),
+          updated_at = now()
+      WHERE workspace_id = ${input.workspaceId} AND id = ${input.operationId}
+        AND status NOT IN ('succeeded', 'failed')
+      RETURNING id
+    `;
+    return rows.length > 0;
+  });
+}
+
 export async function upsertWorkspaceHostResourceCheckpoint(input: {
   workspaceId: string;
   hostId: string;
