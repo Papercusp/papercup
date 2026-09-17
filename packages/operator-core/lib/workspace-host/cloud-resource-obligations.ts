@@ -298,6 +298,80 @@ export async function closeCloudResourceObligation(
   return { closed: rows.length > 0 };
 }
 
+/**
+ * The event shape a provider reports when it CONFIRMS a resource out of existence — the
+ * consuming mirror of `CloudResourceCreatedEventLike`. Declared structurally for the same
+ * reason as its twin: this module stays free of any provider import, so binding the ledger
+ * to a destroy path can never introduce a cycle.
+ */
+export interface CloudResourceDestroyedEventLike {
+  readonly resource: {
+    /**
+     * The provider's own delete-op name (e.g. `delete-instance`). Deliberately the OP and not
+     * the resource kind: the two vocabularies disagree for the most expensive resource — the op
+     * is `delete-instance` while the recorded row's kind is `vm` — so a caller that derived a
+     * kind by stripping a `delete-` prefix would close nothing for the VM and report success.
+     * The mapping is owned once, by {@link CLOUD_RESOURCE_DELETE_CONTRACT}, and inverted here.
+     */
+    readonly deleteOp: string;
+    readonly providerId: string;
+  };
+  /** From the live apply context — one provider serves many workspaces. */
+  readonly workspaceId: string;
+  /** Why it was closed; defaults to the provider-confirmed-destroy reason. */
+  readonly reason?: string;
+}
+
+export interface CloudResourceObligationCloseObserverBinding {
+  sql: postgres.Sql;
+  /** Defaults to 'gcp' — the only provider whose creation seam is currently bound. */
+  provider?: string;
+  /**
+   * Called when a confirmed destroy matched NO open obligation row. This is deliberately a
+   * seam rather than a silent `closed:false`: an unmatched close is indistinguishable from a
+   * correct one at the call site, and swallowing it rebuilds the exact failure this ledger
+   * exists to detect — a table that looks instrumented while reporting all-clear.
+   */
+  onUnmatched?: (event: CloudResourceDestroyedEventLike) => void;
+}
+
+/**
+ * Bind the ledger to a provider's DESTROY seam — the CONSUMING half.
+ *
+ * `closeCloudResourceObligation` was correct from the day it was written and had ZERO
+ * production callers, so every row stayed `teardown_owed = true` forever and the sweep
+ * escalated on phantoms. That poisons the leak detector rather than merely failing to help:
+ * a REAL leak becomes indistinguishable from a torn-down one.
+ *
+ * Closing is per-confirmed-delete on purpose. Gating on an aggregate census means one slow
+ * or timed-out read discards the terminal evidence for every resource in the operation,
+ * which is how a fully-deleted host still ended `failed @99%` with "provider census is not
+ * clean" (EI-23459044188861686).
+ */
+export function createCloudResourceObligationCloseObserver(
+  binding: CloudResourceObligationCloseObserverBinding,
+): (event: CloudResourceDestroyedEventLike) => Promise<{ closed: boolean }> {
+  return async (event) => {
+    const resourceKind = cloudResourceKindForDeleteOp(event.resource.deleteOp);
+    if (!resourceKind) {
+      // An unmapped delete-op means the provider grew a delete this ledger cannot address.
+      // Surfacing it is the whole point: silently returning `closed:false` is how the VM's
+      // op/kind disagreement would have stayed invisible.
+      binding.onUnmatched?.(event);
+      return { closed: false };
+    }
+    const result = await closeCloudResourceObligation(binding.sql, {
+      workspaceId: event.workspaceId,
+      provider: binding.provider ?? 'gcp',
+      resourceKind,
+      resourceId: event.resource.providerId,
+      reason: event.reason ?? 'provider confirmed destroy',
+    });
+    if (!result.closed) binding.onUnmatched?.(event);
+    return result;
+  };
+}
+
 /** Every still-open, teardown-owed obligation — the sweep's whole input. */
 export async function listOpenCloudResourceObligations(
   sql: postgres.Sql,
@@ -509,6 +583,28 @@ export const CLOUD_RESOURCE_DELETE_CONTRACT: Readonly<Record<string, CloudResour
   subnetwork: { op: 'delete-subnetwork', requires: ['region'] },
   network: { op: 'delete-network', requires: [] },
 };
+
+/**
+ * Delete-op -> recorded resource kind, DERIVED by inverting the contract above rather than
+ * hand-written. That contract is already parity-tested against the provider's delete union, so a
+ * new deletable kind cannot appear unmapped here without failing those tests — exactly the
+ * property a second hand-maintained copy would silently lose.
+ *
+ * This inversion is the reason the destroy seam reports a `deleteOp` instead of a kind: the two
+ * vocabularies agree for six of the seven ops and disagree for the most expensive one
+ * (`delete-instance` <-> `vm`), so deriving a kind by stripping a `delete-` prefix would close
+ * nothing for the VM and still report success (EI-23459044188861686).
+ */
+export const CLOUD_RESOURCE_DELETE_OP_KIND: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(
+    Object.entries(CLOUD_RESOURCE_DELETE_CONTRACT).map(([kind, entry]) => [entry.op, kind]),
+  ),
+);
+
+/** Resolve a provider delete-op to the resource kind the create side recorded. */
+export function cloudResourceKindForDeleteOp(deleteOp: string): string | undefined {
+  return CLOUD_RESOURCE_DELETE_OP_KIND[deleteOp];
+}
 
 /** The concrete arguments a provider delete step needs. Structural — no provider import. */
 export interface CloudResourceDeleteAddress {

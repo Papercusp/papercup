@@ -390,10 +390,25 @@ export type WorkspaceHostResourceCreatedObserver = (
   event: WorkspaceHostResourceCreatedEvent,
 ) => Promise<void> | void;
 
+/**
+ * The consuming mirror of `WorkspaceHostResourceCreatedObserver`, fired when a delete step is
+ * CONFIRMED by a provider read. Carries the provider's own `deleteOp` rather than a resource
+ * kind: the op<->kind mapping is owned once by `CLOUD_RESOURCE_DELETE_CONTRACT` in
+ * cloud-resource-obligations, so the consumer resolves it there instead of this file keeping a
+ * second copy that can drift.
+ */
+export type WorkspaceHostResourceDestroyedObserver = (
+  event: {
+    readonly resource: { readonly deleteOp: string; readonly providerId: string };
+    readonly workspaceId: string;
+  },
+) => Promise<void> | void;
+
 export interface GcpWorkspaceHostProviderOptions {
   client: GcpWorkspaceHostApiClient;
   now?: () => string;
   onResourceCreated?: WorkspaceHostResourceCreatedObserver;
+  onResourceDestroyed?: WorkspaceHostResourceDestroyedObserver;
 }
 
 interface ManagedNetworkSettings {
@@ -588,6 +603,24 @@ const NAT_KIND = 'nat';
 const EXISTING_NETWORK_KIND = 'existing-network';
 const EXISTING_SUBNETWORK_KIND = 'existing-subnetwork';
 const EXISTING_FIREWALL_KIND = 'existing-firewall';
+
+/**
+ * The provider reports the delete OP it just confirmed and lets the obligations ledger resolve
+ * that to the recorded resource kind. Deliberately NOT an op->kind map here: the kind<->op
+ * mapping already exists once, as `CLOUD_RESOURCE_DELETE_CONTRACT` in cloud-resource-obligations,
+ * and it is already parity-tested against this provider's delete union. A second copy in this
+ * file would be a hand-maintained duplicate of a derived truth, free to drift — and the drift is
+ * silent: the two vocabularies agree for six of seven ops and DISAGREE for the most expensive
+ * one (`delete-instance` <-> kind `vm`), so a wrong inverse closes nothing for the VM while
+ * reporting success (EI-23459044188861686).
+ */
+function deleteOpName(step: WorkspaceHostPlanStep): string | undefined {
+  // Deliberately a defensive read rather than `stepInput(step)`: that helper THROWS on a step
+  // with no op, and this runs on the observer path AFTER the delete already succeeded. Throwing
+  // here would turn a bookkeeping miss into a failed teardown.
+  const op = (step as { input?: { op?: unknown } })?.input?.op;
+  return typeof op === 'string' ? op : undefined;
+}
 
 const CAPABILITIES: WorkspaceHostProviderCapabilities = {
   discovery: { scopes: true, regions: true, sizes: true, images: true, priceEstimates: true },
@@ -1312,13 +1345,15 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
   readonly capabilities = CAPABILITIES;
   private readonly now: () => string;
   private readonly onResourceCreated?: WorkspaceHostResourceCreatedObserver;
+  private readonly onResourceDestroyed?: WorkspaceHostResourceDestroyedObserver;
 
   constructor(
     private readonly client: GcpWorkspaceHostApiClient,
-    options: Pick<GcpWorkspaceHostProviderOptions, 'now' | 'onResourceCreated'> = {},
+    options: Pick<GcpWorkspaceHostProviderOptions, 'now' | 'onResourceCreated' | 'onResourceDestroyed'> = {},
   ) {
     this.now = options.now ?? (() => new Date().toISOString());
     this.onResourceCreated = options.onResourceCreated;
+    this.onResourceDestroyed = options.onResourceDestroyed;
   }
 
   validateConnection(ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostConnectionValidation> {
@@ -2065,6 +2100,19 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         workspaceId: ctx.workspaceId,
       });
     }
+    // The consuming mirror of the branch above. A destroy is confirmed PER RESOURCE here, so the
+    // obligation closes on the provider's own terminal evidence rather than on an aggregate
+    // census — one slow census read must not discard the terminal evidence for the whole
+    // operation (EI-23459044188861686).
+    if (this.onResourceDestroyed && result.state === 'destroyed' && result.confirmation) {
+      const deleteOp = deleteOpName(request.step);
+      if (deleteOp) {
+        await this.onResourceDestroyed({
+          resource: { deleteOp, providerId: result.confirmation.providerResourceId },
+          workspaceId: ctx.workspaceId,
+        });
+      }
+    }
     return result;
   }
 
@@ -2727,6 +2775,7 @@ export function createGcpWorkspaceHostProvider(options: GcpWorkspaceHostProvider
   return new GcpWorkspaceHostProvider(options.client, {
     now: options.now,
     onResourceCreated: options.onResourceCreated,
+    onResourceDestroyed: options.onResourceDestroyed,
   });
 }
 
@@ -2734,12 +2783,14 @@ export function createGcpWorkspaceHostProvider(options: GcpWorkspaceHostProvider
 export function createAdcGcpWorkspaceHostProvider(
   options: GcpWorkspaceHostApiClientOptions & {
     onResourceCreated?: WorkspaceHostResourceCreatedObserver;
+    onResourceDestroyed?: WorkspaceHostResourceDestroyedObserver;
   } = {},
 ): GcpWorkspaceHostProvider {
-  const { onResourceCreated, ...clientOptions } = options;
+  const { onResourceCreated, onResourceDestroyed, ...clientOptions } = options;
   return new GcpWorkspaceHostProvider(createGcpWorkspaceHostApiClient(clientOptions), {
     now: options.now,
     onResourceCreated,
+    onResourceDestroyed,
   });
 }
 
@@ -2752,6 +2803,7 @@ export function createConfiguredGcpWorkspaceHostProvider(
       provider: Readonly<Record<string, unknown>>;
     }) => Promise<GcpResolvedAuth>;
     onResourceCreated?: WorkspaceHostResourceCreatedObserver;
+    onResourceDestroyed?: WorkspaceHostResourceDestroyedObserver;
   } = {},
 ): GcpWorkspaceHostProvider {
   if (connection.target !== GCP_WORKSPACE_HOST_TARGET) {
@@ -2768,6 +2820,7 @@ export function createConfiguredGcpWorkspaceHostProvider(
   const {
     resolveHostedAuth: _resolveHostedAuth,
     onResourceCreated,
+    onResourceDestroyed,
     ...clientOptions
   } = options;
   return new GcpWorkspaceHostProvider(
@@ -2776,6 +2829,6 @@ export function createConfiguredGcpWorkspaceHostProvider(
       acquireAuth,
       credentialRef,
     }),
-    { now: clientOptions.now, onResourceCreated },
+    { now: clientOptions.now, onResourceCreated, onResourceDestroyed },
   );
 }

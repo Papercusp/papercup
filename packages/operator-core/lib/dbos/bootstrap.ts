@@ -279,16 +279,45 @@ async function startDbosOnce(): Promise<void> {
   // obligations" for a project full of live metered resources — absence that reads as an
   // all-clear. This is the composition root where a provisioning provider first gets a DB handle,
   // so it is the one place the binding can be made for every provision path at once.
-  const [{ createCloudResourceObligationObserver }, { getOrgPg }] = await Promise.all([
+  const [
+    { createCloudResourceObligationObserver, createCloudResourceObligationCloseObserver },
+    { getOrgPg },
+  ] = await Promise.all([
     import('../workspace-host/cloud-resource-obligations'),
     import('@papercusp/db-org'),
   ]);
-  registerWorkspaceHostProviderFactory('gcp', (connection) =>
-    createConfiguredGcpWorkspaceHostProvider(connection, {
+  registerWorkspaceHostProviderFactory('gcp', (connection) => {
+    // The CONSUMING half. Bound at the same composition root as its producing twin below:
+    // without it `closeCloudResourceObligation` has zero production callers, every row stays
+    // teardown_owed forever, and the sweep escalates on phantoms — which makes a REAL leak
+    // indistinguishable from a torn-down one (EI-23459044188861686).
+    const closeObligation = createCloudResourceObligationCloseObserver({
+      sql: getOrgPg().sql,
+      onUnmatched: (event) => {
+        // Loud on purpose: a confirmed destroy that matched no open obligation means the
+        // create-side kind and the delete-side kind have drifted apart, and a silent
+        // `closed:false` here is exactly how that drift stays invisible.
+        console.warn(
+          '[cloud-resource-obligations] confirmed destroy matched no open obligation',
+          {
+            workspaceId: event.workspaceId,
+            deleteOp: event.resource.deleteOp,
+            resourceId: event.resource.providerId,
+          },
+        );
+      },
+    });
+    return createConfiguredGcpWorkspaceHostProvider(connection, {
       resolveHostedAuth: resolveHostedGcpAuth,
       onResourceCreated: createCloudResourceObligationObserver({ sql: getOrgPg().sql }),
-    }),
-  );
+      // Adapted to the provider's fire-and-forget observer contract: the close observer returns
+      // { closed } so callers and tests can assert on it, while the provider deliberately does
+      // not consume a result from an observer.
+      onResourceDestroyed: async (event) => {
+        await closeObligation(event);
+      },
+    });
+  });
   await import('./workspace-host-provision-workflow');
   // The director-cadence autoloop workflow is RETIRED (autoloop-pot-operator-
   // rebuild-2026-06-05 P-010 / D-009): it read `.papercusp/director-config.json`,
