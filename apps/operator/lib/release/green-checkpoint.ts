@@ -10352,6 +10352,53 @@ async function runGreenCheckpointInner(
           `advanced ${cfg.releaseRef}; re-verifying at its own sha before promotion`,
       );
     }
+    // WI-10001752: an UNREACHABLE `ready-to-test` row — the frozen candidate IS the release
+    // pin, so that phase can never be discharged and the queue livelocks green-side.
+    //
+    // `markFrozenRepairAdmitted` deliberately leaves a `ready-to-test` row at `ready-to-test`
+    // ("every other phase moves to ready-to-verify"), because a candidate that was never judged
+    // must be judged before anything stacked on top of it. That is right — EXCEPT when the
+    // candidate already equals `cfg.releaseRef`. Then "judge the candidate" is vacuous: the pin
+    // is by definition the last GREEN sha, and the `candidate === lastReady` check below returns
+    // `up-to-date` BEFORE any suite runs. So the row re-decides `test-candidate` every tick and
+    // returns instantly: `attempts` stays 0 forever, an admitted `repairHead` is never judged,
+    // and `main` can never advance again. Measured 2026-09-17 on papercusp — candidate === main
+    // === 6686c70f, attempts 0 across consecutive hourly ticks, commitsBehindTip climbing 8→11,
+    // every in-queue lever (converge/admit/retire) correctly refusing. Note this reads HEALTHY on
+    // every gate-health field (lastVerdict green, consecutiveReds 0): the gate is not failing, it
+    // is succeeding at doing nothing, so only attempts=0 beside a climbing backlog betrays it.
+    //
+    // The repair DISCHARGES the vacuous phase; it does not release the pin. `ready-to-verify`
+    // judges `repairHead`, the frozen lineage's own head — never the moving staging tip (D-005),
+    // and never a re-cut (D-007). The immutable candidate is untouched. `repairHead !== candidate`
+    // is required: with nothing admitted there is genuinely nothing to verify, and that row is an
+    // operator `retire` decision rather than this one.
+    if (
+      repairQueue.phase === "ready-to-test" &&
+      lastReady &&
+      repairQueue.candidate === lastReady &&
+      repairQueue.repairHead !== repairQueue.candidate
+    ) {
+      const unreachable = repairQueue;
+      repairQueue = await commitFrozenRepairQueueTransition(
+        deps,
+        repairQueue,
+        (fresh) =>
+          fresh.phase === "ready-to-test" &&
+          fresh.candidate === lastReady &&
+          fresh.repairHead !== fresh.candidate
+            ? { ...fresh, phase: "ready-to-verify" }
+            : fresh,
+        "resume-unreachable-ready-to-test",
+      );
+      deps.log(
+        `frozen candidate ${unreachable.candidate.slice(0, 8)} IS ${cfg.releaseRef} — its ` +
+          `ready-to-test phase can never be discharged (the up-to-date short-circuit returns ` +
+          `before any suite runs, so attempts stays 0 forever). Verifying the admitted repairHead ` +
+          `${unreachable.repairHead.slice(0, 8)} on the frozen lineage instead; the immutable ` +
+          `candidate is untouched and no tip is re-cut`,
+      );
+    }
     const fixerAlive = repairQueue.fixerSpawnId
       ? await deps
           .frozenRepairFixerAlive?.(repairQueue.fixerSpawnId)

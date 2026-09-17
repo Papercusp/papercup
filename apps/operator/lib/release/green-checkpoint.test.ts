@@ -460,6 +460,89 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
     ).toBe(true);
   });
 
+  it("WI-10001752: a ready-to-test row whose candidate IS the release pin verifies its repairHead instead of short-circuiting up-to-date", async () => {
+    // The deadlock this guards. `markFrozenRepairAdmitted` deliberately keeps a `ready-to-test`
+    // row at `ready-to-test` after an admission, so the gate re-decides `test-candidate` and
+    // judges `queue.candidate`. When that candidate IS `cfg.releaseRef`, the `candidate ===
+    // lastReady` check returns `up-to-date` BEFORE any suite — every tick, forever. `attempts`
+    // stays 0, the admitted repairHead is never judged, and main can never advance.
+    const pin = await commit("a", "1", "pin");
+    await git(repo, ["branch", "ready", pin]);
+    // The admitted fix, stacked on the frozen lineage exactly as `op:'admit'` leaves it.
+    const repaired = await commit("b", "2", "admitted fix");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-test",
+      candidate: pin, // === lastReady: this is the whole defect
+      base: pin,
+      repairHead: repaired,
+      attempts: 0,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: null,
+      // The real deadlocked row's shape (papercusp 2026-09-17): no recorded failure signature,
+      // so the repair round resolves to `full-run-required` and the FULL gate judges the head.
+      failingTests: [],
+      signature: [],
+    };
+    const { deps, calls } = stubDeps(true);
+    const logs: string[] = [];
+    deps.log = (line: string) => {
+      logs.push(line);
+    };
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    // The discriminator: did the gate actually SPEND a suite on the admitted head? A run that
+    // returns without one is the livelock, however healthy its verdict fields read.
+    expect(
+      calls.filter((c) => c === "runGreen").length,
+      `no suite ran: the frozen row re-decided test-candidate on a candidate that equals ` +
+        `${"ready"}, so the up-to-date short-circuit returned first. ` +
+        `calls=${JSON.stringify(calls)} reason=${result.reason} logs=${JSON.stringify(logs)}`,
+    ).toBeGreaterThan(0);
+    expect(result.reason).not.toBe("up-to-date");
+    // It must judge the frozen lineage's own head — never re-cut at the moving tip (D-005/D-007).
+    expect(result.candidate).toBe(repaired);
+  });
+
+  it("WI-10001752 control: a ready-to-test row whose candidate is NOT the pin still tests the candidate", async () => {
+    // Calibration for the probe above: the ordinary ready-to-test path must be untouched, or
+    // the guard would be indistinguishable from "always verify the repairHead".
+    const pin = await commit("a", "1", "pin");
+    await git(repo, ["branch", "ready", pin]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const repaired = await commit("c", "3", "admitted fix");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-test",
+      candidate: frozen, // !== lastReady — the normal case
+      base: pin,
+      repairHead: repaired,
+      attempts: 0,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: null,
+      failingTests: ["lib/broken.test.ts"],
+      signature: [],
+    };
+    const { deps } = stubDeps(true);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.candidate).toBe(frozen);
+  });
+
   it("WI-2141375: a peer's mid-suite converge is NOT clobbered by the red-transition write", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
