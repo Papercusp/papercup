@@ -24,6 +24,9 @@ export {
   type FireResult,
   type DurableSeam,
   type DurableReactionInput,
+  type ReactionFailure,
+  type ReactionFailureStage,
+  type OnReactionFailure,
 } from './engine';
 
 export {

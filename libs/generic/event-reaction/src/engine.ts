@@ -17,6 +17,7 @@
  */
 
 import type { MatchedAction } from '@papercusp/rules';
+import { computeDedupId } from './dedup';
 import { guardReaction, type GuardDecision } from './loop-guard';
 import type { ReactionCause, ReactionRule } from './types';
 
@@ -27,6 +28,50 @@ export interface FireResult {
   ok: boolean;
   error?: string;
 }
+
+/** Where a reaction died. */
+export type ReactionFailureStage =
+  /** The dispatcher settled and reported `{ ok:false }` (the ordinary refusal path). */
+  | 'dispatch'
+  /** The dispatcher (or the scheduling around it) threw. */
+  | 'threw';
+
+/**
+ * A reaction that did NOT happen, reported as STRUCTURE.
+ *
+ * The `log` port stringifies a failure for a human tail; that is lossy by
+ * construction — a host cannot recover the rule, its contributor, the capability
+ * it was scoped to, or the dedup id from a formatted sentence, so it cannot
+ * record the failure durably or tell anyone about it. This port carries the
+ * fields instead, so surfacing is the HOST's decision and the engine stays pure
+ * orchestration over ports.
+ */
+export interface ReactionFailure<TEvent, TFire = string> {
+  rule: ReactionRule<TEvent, TFire>;
+  fire: TFire;
+  event: TEvent;
+  cause: ReactionCause;
+  /**
+   * The deterministic dedup id this reaction WOULD claim. Computed the same way
+   * on both routes, so an in-process failure and a durable ledger row for the
+   * same reaction share one key and can be correlated.
+   */
+  dedupId: string;
+  /** The dispatcher's error text (a host may classify it — e.g. a capability denial). */
+  error: string;
+  stage: ReactionFailureStage;
+}
+
+/**
+ * The failure-surfacing port. Invoked for every reaction that fails to run.
+ *
+ * MUST NOT throw and MUST NOT be awaited into the hot path — the engine calls it
+ * fire-and-forget and swallows anything it raises, because a bug in surfacing a
+ * failure must never become a second failure.
+ */
+export type OnReactionFailure<TEvent, TFire = string> = (
+  failure: ReactionFailure<TEvent, TFire>,
+) => void | Promise<void>;
 
 /** The dispatcher port — how a fire descriptor becomes a real, settled call. */
 export type FireInProcess<TEvent, TFire = string> = (args: {
@@ -67,8 +112,27 @@ export async function scheduleReaction<TEvent, TFire = string>(opts: {
   fireInProcess: FireInProcess<TEvent, TFire>;
   durable?: DurableSeam<TEvent, TFire>;
   log?: (msg: string) => void;
+  onFailure?: OnReactionFailure<TEvent, TFire>;
 }): Promise<void> {
-  const { rule, fire, args, event, cause, fireInProcess, durable, log } = opts;
+  const { rule, fire, args, event, cause, fireInProcess, durable, log, onFailure } = opts;
+
+  // Report a failure on BOTH ports: `log` keeps the human tail unchanged, while
+  // `onFailure` hands the host the structure it needs to record and surface it.
+  // Fire-and-forget + fully guarded: surfacing a failure must never itself fail
+  // the reaction, and must never delay the trigger that is already returning.
+  const reportFailure = (stage: ReactionFailureStage, error: string): void => {
+    log?.(`reaction ${rule.id} → ${String(fire)} ${stage === 'threw' ? 'threw' : 'failed'}: ${error}`);
+    if (!onFailure) return;
+    try {
+      const dedupId = computeDedupId({ rule, event, cause });
+      void Promise.resolve(onFailure({ rule, fire, event, cause, dedupId, error, stage })).catch((e) => {
+        log?.(`reaction failure surfacing for ${rule.id} failed: ${errMsg(e)}`);
+      });
+    } catch (e) {
+      log?.(`reaction failure surfacing for ${rule.id} threw: ${errMsg(e)}`);
+    }
+  };
+
   try {
     // mode 'durable' (default) → durable seam when installed; else in-process.
     // mode 'sync' → always in-process (lightweight, no durability).
@@ -84,9 +148,9 @@ export async function scheduleReaction<TEvent, TFire = string>(opts: {
       }
     }
     const r = await fireInProcess({ fire, args, event, cause, capability: rule.capability });
-    if (!r.ok) log?.(`reaction ${rule.id} → ${String(fire)} failed: ${r.error}`);
+    if (!r.ok) reportFailure('dispatch', r.error ?? 'reaction failed');
   } catch (err) {
-    log?.(`reaction ${rule.id} → ${String(fire)} threw: ${errMsg(err)}`);
+    reportFailure('threw', errMsg(err));
   }
 }
 
@@ -110,6 +174,8 @@ export function runReactions<TEvent, TFire = string>(opts: {
   fireInProcess: FireInProcess<TEvent, TFire>;
   durable?: DurableSeam<TEvent, TFire>;
   log?: (msg: string) => void;
+  /** Structured report for every reaction that fails to run (see `OnReactionFailure`). */
+  onFailure?: OnReactionFailure<TEvent, TFire>;
 }): void {
   for (const action of opts.actions) {
     const rule = action.rule as ReactionRule<TEvent, TFire>;
@@ -140,6 +206,7 @@ export function runReactions<TEvent, TFire = string>(opts: {
       fireInProcess: opts.fireInProcess,
       durable: opts.durable,
       log: opts.log,
+      onFailure: opts.onFailure,
     });
   }
 }
