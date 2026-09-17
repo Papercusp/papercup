@@ -1499,4 +1499,112 @@ describe('GCP workspace-host provider created-resource reporting', () => {
 
     await expect(provision(client, provider)).rejects.toThrow('cloud_resource_obligation_write_failed');
   });
+
+  it('reports an insert target rediscovered by reconcile — a lost confirmation is still our creation', async () => {
+    const client = new FakeGcpWorkspaceHostApiClient();
+    const observed: WorkspaceHostResourceRef[] = [];
+    const provider = createGcpWorkspaceHostProvider({
+      client,
+      now: () => NOW,
+      onResourceCreated: (event) => {
+        observed.push(event.resource);
+      },
+    });
+    const plan = await provider.plan(
+      {
+        action: 'provision',
+        operationId: 'operation-wi10001727',
+        idempotencyKey: 'operation-wi10001727',
+        desired: desired(),
+      },
+      context(),
+    );
+    const resources: WorkspaceHostResourceRef[] = [];
+    for (const step of plan.steps) {
+      const result = await provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step, knownResources: resources },
+        context(),
+      );
+      if ('resource' in result && result.resource) resources.push(result.resource);
+    }
+
+    // Positive control: without this the assertion below could pass on a dead observer.
+    const beforeReconcile = observed.length;
+    expect(beforeReconcile).toBeGreaterThan(0);
+
+    const instanceStep = plan.steps.at(-1)!;
+    const reconciled = await provider.reconcile(
+      {
+        planId: plan.planId,
+        operationId: plan.operationId,
+        step: instanceStep,
+        knownResources: resources,
+        reason: 'ambiguous-timeout',
+        previousProviderRequestId: 'operation-confirmation-lost',
+      },
+      context(),
+    );
+
+    // WI-10001727. Reconcile finding our own insert target already present returns `unchanged`,
+    // and gating the ledger on `applied` alone dropped it — measured on host
+    // pc-p317-cred-20260917b (2026-09-17T09:28-09:37Z), where create-subnetwork (attempts=5) and
+    // create-firewall (attempts=2) both ended `unchanged` and got no obligation row while
+    // create-network and create-router ended `applied` and did. Both unrecorded resources were
+    // live and metered, invisible to the teardown sweep by construction.
+    expect(reconciled.state).toBe('unchanged');
+    expect(observed.slice(beforeReconcile).map((item) => item.providerId)).toContain('pc-host-gcp-1-vm');
+  });
+
+  it('still does not report an adopted resource rediscovered by reconcile', async () => {
+    const client = new FakeGcpWorkspaceHostApiClient();
+    const observed: WorkspaceHostResourceRef[] = [];
+    const provider = createGcpWorkspaceHostProvider({
+      client,
+      now: () => NOW,
+      onResourceCreated: (event) => {
+        observed.push(event.resource);
+      },
+    });
+    client.seedExistingNetwork();
+    const plan = await provider.plan(
+      {
+        action: 'provision',
+        operationId: 'operation-adopted-reconcile',
+        idempotencyKey: 'operation-adopted-reconcile',
+        desired: desired('existing'),
+      },
+      context(),
+    );
+    const resources: WorkspaceHostResourceRef[] = [];
+    for (const step of plan.steps) {
+      const result = await provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step, knownResources: resources },
+        context(),
+      );
+      if ('resource' in result && result.resource) resources.push(result.resource);
+    }
+    const adoptedStep = plan.steps.find((step) =>
+      String((step as { input?: { op?: unknown } }).input?.op ?? '').startsWith('use-existing-'),
+    );
+    // Positive control: a fixture that adopted nothing would make the assertion below vacuous.
+    expect(adoptedStep).toBeDefined();
+
+    const beforeReconcile = observed.length;
+    const reconciled = await provider.reconcile(
+      {
+        planId: plan.planId,
+        operationId: plan.operationId,
+        step: adoptedStep!,
+        knownResources: resources,
+        reason: 'ambiguous-timeout',
+      },
+      context(),
+    );
+
+    // The blast-radius guard for the branch above: `unchanged` still means "not ours" for a
+    // use-existing-* op. Registering the owner's own network would have the sweep escalate —
+    // and eventually reclaim — someone else's infrastructure.
+    expect(reconciled.state).toBe('unchanged');
+    expect(observed.slice(beforeReconcile)).toEqual([]);
+  });
 });

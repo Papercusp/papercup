@@ -2127,7 +2127,22 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     request: WorkspaceHostApplyRequest,
     ctx: WorkspaceHostProviderContext,
   ): Promise<WorkspaceHostApplyResult> {
-    const result = await this.applyStep(request, ctx);
+    return this.report(request, ctx, await this.applyStep(request, ctx));
+  }
+
+  /**
+   * WI-10001727: the seam above only deserves the name "single" if EVERY terminal result reaches
+   * it. `reconcile` returns `unchanged`/`destroyed` DIRECTLY for the branches where it resolves a
+   * step by observation, and only falls through to `apply` when it finds nothing — so before this
+   * was extracted, precisely the results that reconciliation produces were the ones that never
+   * reported. Both entry points now funnel their results through here; a new terminal branch that
+   * forgets to is a bookkeeping hole, not a style nit.
+   */
+  private async report(
+    request: WorkspaceHostApplyRequest,
+    ctx: WorkspaceHostProviderContext,
+    result: WorkspaceHostApplyResult,
+  ): Promise<WorkspaceHostApplyResult> {
     const owesCreationObligation =
       result.state === 'applied' ||
       (result.state === 'unchanged' && createsOwnedResource(request.step));
@@ -2142,7 +2157,9 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     // The consuming mirror of the branch above. A destroy is confirmed PER RESOURCE here, so the
     // obligation closes on the provider's own terminal evidence rather than on an aggregate
     // census — one slow census read must not discard the terminal evidence for the whole
-    // operation (EI-23459044188861686).
+    // operation (EI-23459044188861686). Reaching this from `reconcile` too is what closes the
+    // matching hole on the teardown side: a delete whose confirmation arrived only on the
+    // reconciling read used to leave its obligation open forever.
     if (this.onResourceDestroyed && result.state === 'destroyed' && result.confirmation) {
       const deleteOp = deleteOpName(request.step);
       if (deleteOp) {
@@ -2580,19 +2597,27 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
                             ? EXISTING_FIREWALL_KIND
                             : undefined;
       if (kind)
-        return this.unchanged(
+        return this.report(
           request,
-          resource(kind, existing.name, {
-            parentProviderId: 'projectId' in input ? input.projectId : undefined,
-            region: 'region' in input ? input.region : undefined,
-            zone: 'zone' in input ? input.zone : undefined,
-          }),
+          ctx,
+          this.unchanged(
+            request,
+            resource(kind, existing.name, {
+              parentProviderId: 'projectId' in input ? input.projectId : undefined,
+              region: 'region' in input ? input.region : undefined,
+              zone: 'zone' in input ? input.zone : undefined,
+            }),
+          ),
         );
       if (input.op === 'set-instance-metadata') {
         if (sameMetadata(existing as GcpInstanceObservation, input.request)) {
-          return this.unchanged(
+          return this.report(
             request,
-            resource(VM_KIND, existing.name, { parentProviderId: input.projectId, zone: input.zone }),
+            ctx,
+            this.unchanged(
+              request,
+              resource(VM_KIND, existing.name, { parentProviderId: input.projectId, zone: input.zone }),
+            ),
           );
         }
         return this.apply(request, ctx);
@@ -2600,14 +2625,18 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       if ('instanceName' in input) {
         const wanted = input.op === 'stop-instance' ? 'TERMINATED' : 'RUNNING';
         if ('status' in existing && existing.status === wanted)
-          return this.unchanged(
+          return this.report(
             request,
-            resource(VM_KIND, existing.name, { parentProviderId: input.projectId, zone: input.zone }),
+            ctx,
+            this.unchanged(
+              request,
+              resource(VM_KIND, existing.name, { parentProviderId: input.projectId, zone: input.zone }),
+            ),
           );
       }
     }
     if (isDeleteStepInput(input) && !(await this.describeDeleteTarget(input))) {
-      return this.destroyed(request, input.hostId, input.resourceName);
+      return this.report(request, ctx, this.destroyed(request, input.hostId, input.resourceName));
     }
     return this.apply(request, ctx);
   }
