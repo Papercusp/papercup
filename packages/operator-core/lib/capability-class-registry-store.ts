@@ -22,6 +22,17 @@ export type JsonObject = Record<string, unknown>;
 export interface CapabilityClassVerb {
   inputSchema: JsonObject;
   outputSchema?: JsonObject;
+  /**
+   * The capability a CLASS-FIRED reaction runs under (P-028, D-054 §4).
+   *
+   * A standalone rule fires `class:<ref>#<verb>` and its provider is resolved
+   * per-pot at fire time, so the sandbox cannot be sourced from the fired tool
+   * the way a plugin rule's is — installing a different provider would silently
+   * widen what the rule may do. The class owns it instead. Optional because
+   * classes predate this field; `validateClassFireTarget` refuses to register a
+   * rule against a verb that lacks one rather than falling back to the tool's.
+   */
+  capability?: string;
 }
 
 export type CapabilityClassVerbs = Record<string, CapabilityClassVerb>;

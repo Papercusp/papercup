@@ -27,6 +27,11 @@ import { withWorkspace } from '@papercusp/db-org';
 import { PROJECTED_DEPS } from '../projected-tool-deps';
 import { activeWorkspaceId } from '../workspace-registry';
 import { fireBuiltinReactionAction, isBuiltinReactionAction } from './builtin-actions';
+import {
+  isClassFireTarget,
+  resolveClassFireTarget,
+  type ResolveClassFireResult,
+} from './class-fire-target';
 import type { ReactionCause } from './types';
 
 export interface FireReactionResult {
@@ -85,6 +90,48 @@ export function buildReactionCtx(
 }
 
 /**
+ * Resolve a `class:<ref>#<verb>` fire target through the firing pot's provider
+ * binding (P-028 / D-054 §3). The pot comes from the trigger's harness — the same
+ * `resolvePotSlugsForHarnesses` seam blueprint compilation and memory scoping use,
+ * so a rule resolves under exactly the pot its trigger ran in.
+ *
+ * Never throws: an unresolvable target is a failed reaction with a named cause,
+ * never a thrown error that would break the triggering call.
+ */
+async function resolveClassFire(
+  workspaceId: string,
+  fire: string,
+  parentCtx: UnifiedToolContext,
+): Promise<ResolveClassFireResult> {
+  const harnessSlug = parentCtx.harnessSlug;
+  if (!harnessSlug || harnessSlug === '*') {
+    return {
+      status: 'invalid',
+      error: `reaction fires "${fire}" but the trigger has no concrete harness, so no pot binding can be resolved`,
+    };
+  }
+  try {
+    const { resolvePotSlugsForHarnesses } = await import('../memory/hive-scope');
+    const pots = await resolvePotSlugsForHarnesses(workspaceId, [harnessSlug]);
+    const potSlug = pots[0];
+    if (!potSlug) {
+      return {
+        status: 'invalid',
+        error: `reaction fires "${fire}" but harness "${harnessSlug}" resolves to no pot, so no provider binding can be resolved`,
+      };
+    }
+    return await withWorkspace(workspaceId, (tx) =>
+      resolveClassFireTarget(tx, { workspaceId, potSlug, fire }),
+    );
+  } catch (err) {
+    return {
+      status: 'invalid',
+      error: `resolving "${fire}" failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+/**
  * Run a reaction in-process. Resolves the tool, scopes a workspace tx, builds
  * the reaction ctx, and dispatches. Never throws — returns `{ ok:false, error }`
  * so the caller (the engine) can log without breaking anything.
@@ -110,10 +157,29 @@ export async function fireReactionInProcess(opts: {
     return await fireBuiltinReactionAction(opts.fire, opts.args, workspaceId);
   }
 
-  const projected = lookupByMcpName(opts.fire);
-  if (!projected) return { ok: false, error: `unknown reaction tool "${opts.fire}"` };
-
   if (!workspaceId) return { ok: false, error: 'no workspace to scope the reaction' };
+
+  // A STANDALONE rule fires a capability CLASS, not a tool id (P-028 / D-054):
+  // the concrete tool is whatever THIS pot's provider binding resolves the verb
+  // to, so resolution is deferred to here and cannot be done at registration.
+  // Everything after it is the ordinary dispatch on the resolved tool name.
+  const classFire = isClassFireTarget(opts.fire)
+    ? await resolveClassFire(workspaceId, opts.fire, opts.parentCtx)
+    : null;
+  if (classFire && classFire.status !== 'resolved') {
+    return { ok: false, error: classFire.error };
+  }
+  const fireTool = classFire ? classFire.tool : opts.fire;
+
+  const projected = lookupByMcpName(fireTool);
+  if (!projected) {
+    return {
+      ok: false,
+      error: classFire
+        ? `capability class "${classFire.target.classRef}" verb "${classFire.target.verb}" resolves to "${fireTool}", which is not a registered tool`
+        : `unknown reaction tool "${opts.fire}"`,
+    };
+  }
 
   try {
     const result = await withWorkspace(workspaceId, async (tx) => {
@@ -121,7 +187,7 @@ export async function fireReactionInProcess(opts: {
         ...buildReactionCtx(opts.parentCtx, workspaceId, opts.cause, opts.capability),
         tx,
       };
-      return dispatchProjectedTool(projected, opts.fire, opts.args, ctx, PROJECTED_DEPS);
+      return dispatchProjectedTool(projected, fireTool, opts.args, ctx, PROJECTED_DEPS);
     });
     if (!result.ok) {
       return { ok: false, error: result.error ? `${result.error.code}: ${result.error.message}` : 'reaction failed' };
