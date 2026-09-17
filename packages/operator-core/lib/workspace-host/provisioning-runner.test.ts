@@ -351,6 +351,43 @@ describe('runWorkspaceHostProvisioning', () => {
     expect(error).not.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
   });
 
+  // The test above pins only the cause code the classifier ALREADY recognised, so it passed
+  // identically before and after the guard existed — it could never have caught this hole.
+  // undici omits `.cause` entirely on some transport failures, and uses codes outside the two
+  // recognised sets (EAI_AGAIN, ENETUNREACH, TLS) on others; for every one of those the bare
+  // string "fetch failed" matches none of the classifier's message patterns, so the seam fell
+  // through to the caller-fault class. Provision failures are billed in leaked VMs, so a
+  // transport blip must never be recorded as a malformed request.
+  it('keeps a BARE "fetch failed" (no cause code) from the plan seam RETRYABLE', async () => {
+    const { store } = storeHarness();
+    const { provider } = providerHarness([planStep('create-network')]);
+    vi.mocked(provider.plan).mockRejectedValueOnce(new TypeError('fetch failed'));
+
+    const error = await runWorkspaceHostProvisioning(runInput(provider, store)).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(WorkspaceHostProvisioningTransientError);
+    expect(error).not.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
+    expect(store.upsertCheckpoint).not.toHaveBeenCalled();
+  });
+
+  // A stored problem of exactly "fetch failed" is undiagnosable: it cannot distinguish a DNS
+  // failure from a refused connection from a TLS error. That is the whole reason the P-317
+  // root cause had to be guessed, and was guessed wrong twice.
+  it('records the CAUSE CODE in the problem, so a transport failure is self-diagnosing', async () => {
+    const { store } = storeHarness();
+    const { provider } = providerHarness([planStep('create-network')]);
+    vi.mocked(provider.plan).mockRejectedValueOnce(
+      Object.assign(new TypeError('fetch failed'), { cause: { code: 'EAI_AGAIN', message: 'getaddrinfo EAI_AGAIN compute.googleapis.com' } }),
+    );
+
+    const error = await runWorkspaceHostProvisioning(runInput(provider, store)).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(WorkspaceHostProvisioningTransientError);
+    const [problem] = (error as WorkspaceHostProvisioningTransientError).problems;
+    expect(problem).toContain('EAI_AGAIN');
+    expect(problem).not.toBe('fetch failed');
+  });
+
   // `.message` is all that reaches a journal line or a stored operation row. Dropping `problems`
   // there is what made the EI-23498781044665167 provision failure undiagnosable — and it was then
   // carried forward as an entirely wrong root cause.

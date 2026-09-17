@@ -41,7 +41,7 @@ import {
   type WorkspaceHostRuntimeRelease,
   type WorkspaceHostSpendSettlement,
 } from '@papercusp/deployment-driver';
-import { isTransientNetworkError } from '../loopback-fetch';
+import { describeFetchError, isTransientNetworkError } from '../loopback-fetch';
 import type { GcpWorkspaceHostInventoryRequest, GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
 import {
   censusGcpWorkspaceHostResources,
@@ -906,10 +906,16 @@ export async function runWorkspaceHostProvisioning(
       // land in the caller-fault (non-retryable) class: one blip would otherwise kill the whole
       // provision permanently. Same divergent-classification shape WI-1743793 fixed for the
       // connection seam, which `assertProviderConnectionUsable` below already handles correctly.
+      //
+      // `describeFetchError`, not `message`: undici throws a bare `TypeError: fetch failed` and
+      // hides the real reason in `.cause`, so recording only `.message` persists the string
+      // "fetch failed" and nothing else. That is exactly what made the P-317 provision failure
+      // undiagnosable — the stored problem could not distinguish a DNS failure from a refused
+      // connection from a TLS error, and the cause was then guessed wrong (EI-23498781044665167).
       if (isTransientNetworkError(error)) {
-        throw new WorkspaceHostProvisioningTransientError([message(error)]);
+        throw new WorkspaceHostProvisioningTransientError([describeFetchError(error)]);
       }
-      throw new WorkspaceHostProvisioningRequestError([message(error)]);
+      throw new WorkspaceHostProvisioningRequestError([describeFetchError(error)]);
     }
   }
 
@@ -938,10 +944,12 @@ export async function runWorkspaceHostProvisioning(
   } catch (error) {
     // Same rule as the bootstrap seam: a transport failure while planning is not evidence that
     // the request is invalid, so it stays retryable rather than terminating the workflow.
+    // `describeFetchError` so the persisted problem names the CAUSE CODE, not a bare
+    // "fetch failed" (see the bootstrap seam above — EI-23498781044665167).
     if (isTransientNetworkError(error)) {
-      throw new WorkspaceHostProvisioningTransientError([message(error)]);
+      throw new WorkspaceHostProvisioningTransientError([describeFetchError(error)]);
     }
-    throw new WorkspaceHostProvisioningRequestError([message(error)]);
+    throw new WorkspaceHostProvisioningRequestError([describeFetchError(error)]);
   }
   const identityProblems: string[] = [];
   if (plan.operationId !== operationId) identityProblems.push('provider plan changed operationId');
@@ -1715,10 +1723,12 @@ export async function runWorkspaceHostDestroy(
   } catch (error) {
     // Same rule as the bootstrap seam: a transport failure while planning is not evidence that
     // the request is invalid, so it stays retryable rather than terminating the workflow.
+    // `describeFetchError` so the persisted problem names the CAUSE CODE, not a bare
+    // "fetch failed" (see the bootstrap seam above — EI-23498781044665167).
     if (isTransientNetworkError(error)) {
-      throw new WorkspaceHostProvisioningTransientError([message(error)]);
+      throw new WorkspaceHostProvisioningTransientError([describeFetchError(error)]);
     }
-    throw new WorkspaceHostProvisioningRequestError([message(error)]);
+    throw new WorkspaceHostProvisioningRequestError([describeFetchError(error)]);
   }
   const identityProblems: string[] = [];
   if (plan.operationId !== operationId) identityProblems.push('provider destroy plan changed operationId');

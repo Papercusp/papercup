@@ -50,6 +50,48 @@ describe('isTransientNetworkError', () => {
   it('detects "timeout" message', () => {
     expect(isTransientNetworkError(new Error('request timeout'))).toBe(true);
   });
+  // EI-23498781044665167. Every fixture above attaches a cause code, so the BARE undici wrapper
+  // — the single most common real transport failure — was never covered, and the implementation
+  // returned false for it: no cause code to match, and the literal "fetch failed" hits none of
+  // the message patterns. A workspace-host provision asked this function whether a dropped
+  // provider call was transient, was told no, and was terminated as a caller-fault request.
+  it('treats a BARE "fetch failed" (no cause) as transient — fetch() rejects only on transport failure', () => {
+    expect(isTransientNetworkError(new TypeError('fetch failed'))).toBe(true);
+  });
+  it('treats "fetch failed" with an UNRECOGNISED cause code as transient (EAI_AGAIN, ENETUNREACH, TLS…)', () => {
+    const dnsAgain = Object.assign(new TypeError('fetch failed'), { cause: { code: 'EAI_AGAIN' } });
+    expect(isTransientNetworkError(dnsAgain)).toBe(true);
+    const unreachable = Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENETUNREACH' } });
+    expect(isTransientNetworkError(unreachable)).toBe(true);
+  });
+  // FALSIFIABILITY CONTROL. The bug this guards against was invisible precisely because a green
+  // suite proved nothing: every pre-existing fixture attached a RECOGNISED cause code, so the
+  // tests passed identically whether or not the "fetch failed" case existed. This control is the
+  // pre-fix predicate, kept deliberately wrong. It must return false for the two cases above —
+  // if it ever returns true, those cases have stopped discriminating and are no longer evidence.
+  // The calibration arm keeps the control honest: it must still agree on a recognised cause.
+  // Signature mirrors the real subject (`unknown`) so the control accepts exactly what the
+  // subject accepts — a narrower parameter type would make the control reject inputs the
+  // subject handles, which is a broken control rather than a passing one.
+  const preFixPredicate = (err: unknown): boolean => {
+    const cause = (err as { cause?: { code?: string } } | null)?.cause;
+    const code = cause?.code;
+    if (code) {
+      if (/^E(CONNREFUSED|CONNRESET|NOTFOUND|TIMEDOUT|NETWORK)$/.test(code)) return true;
+      if (/^UND_ERR_(SOCKET|CONNECT_TIMEOUT|HEADERS_TIMEOUT|BODY_TIMEOUT)$/.test(code)) return true;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    return /ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|ENETWORK|Connection (refused|reset)|other side closed|timeout/i.test(msg);
+  };
+  it('CONTROL: the pre-fix predicate misses exactly the cases above, and agrees elsewhere', () => {
+    // The hole — these are the assertions that would have caught the regression.
+    expect(preFixPredicate(new TypeError('fetch failed'))).toBe(false);
+    expect(preFixPredicate(Object.assign(new TypeError('fetch failed'), { cause: { code: 'EAI_AGAIN' } }))).toBe(false);
+    // Calibration: on a recognised cause the control agrees with the real subject, so a `false`
+    // above is the missing case and not a broken control.
+    expect(preFixPredicate(socketClosed())).toBe(true);
+    expect(isTransientNetworkError(socketClosed())).toBe(true);
+  });
   it('is false for non-transient errors', () => {
     expect(isTransientNetworkError(new Error('socket hang up'))).toBe(false);
   });

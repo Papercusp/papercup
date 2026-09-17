@@ -94,6 +94,17 @@ export function isTransientNetworkError(err: unknown): boolean {
     // Unknown code: don't assume non-transient — fall through to the message heuristic.
   }
   const msg = err instanceof Error ? err.message : String(err);
+  // `fetch()` REJECTS only on transport failure — an HTTP error status RESOLVES to a Response —
+  // so the bare `TypeError: fetch failed` wrapper is transport-class by construction and can
+  // never be evidence that the CALLER's request was malformed. undici hides the real reason in
+  // `.cause`, and when that cause code is absent or outside the two sets above (EAI_AGAIN,
+  // ENETUNREACH, a TLS error, …) NOTHING else here matches: the literal string "fetch failed"
+  // hits none of the patterns below. That hole is not theoretical — it made a workspace-host
+  // provision PERMANENTLY non-retryable off one blip, because the caller's transient-vs-caller-
+  // fault branch asked this function and was told "not transient" (EI-23498781044665167). The
+  // second copy of this classifier (harness/routines/hetzner-orphan-frame-reaper) has always
+  // had this case; the two diverged, and the provisioning runner imports THIS one.
+  if (/fetch failed/i.test(msg)) return true;
   // Catch error message patterns for transient network issues
   return /ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|ENETWORK|Connection (refused|reset)|other side closed|timeout/i.test(msg);
 }
