@@ -510,7 +510,13 @@ describe('frozen lineage carry policy', () => {
     expect(rendered).toContain(`repairHead=${REPAIR_HEAD}`);
     expect(rendered).toContain(`queueRevision=${REVISION}`);
     expect(rendered).toContain("source");
-    expect(rendered).toContain("release:repair-queue { op:'admit', paths:[...] }");
+    // EI-23481593402791453: a CARRY surface persists prose; it does not launch a run, so
+    // the clearing action is to REWORD the text. Asserting only that the message mentions
+    // release:repair-queue cannot distinguish prescribing it from explicitly negating it —
+    // that assertion stayed green across the very fix that inverted the advice. Pin the
+    // remediation itself, so reverting to the launch-time wording fails here.
+    expect(rendered).toContain('REWORD the carry text');
+    expect(rendered).not.toContain('Select and re-read live repairHead');
     expect(frozenLineageCarryViolationPayload(verdict)).toMatchObject({
       ok: false,
       error: 'frozen_candidate_lineage_violation',
