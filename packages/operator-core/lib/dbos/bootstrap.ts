@@ -451,6 +451,25 @@ async function startDbosOnce(): Promise<void> {
   wireCheckpointEligibilityWait();
   console.log(`[dbos] launched (schema=dbos, source=${source}, appVersion=${PINNED_APP_VERSION})`);
 
+  // WI-10001739 link 3b — the hosted-lifecycle reconciler runs as `harness_app` and must read
+  // `dbos.workflow_status` to tell "the executor died" from "the executor is busy". Migration
+  // 1172 grants that, but it can only grant on a database where schema `dbos` ALREADY existed:
+  // the SDK creates that schema at runtime, right here, which is strictly after migrations run.
+  // So a freshly-migrated database would otherwise never receive the grant, and the reconciler
+  // would silently fall back to recency forever. Re-applying it post-launch is what makes the
+  // two paths converge in either order.
+  //
+  // Best-effort by design: a failure here is safe, because an unreadable probe is classified
+  // `unknown` and degrades to exactly the pre-3b behaviour rather than reaping on absent
+  // evidence. It must never fail boot.
+  await grantDbosWorkflowStatusRead().catch((err) => {
+    console.warn(
+      '[dbos] could not grant harness_app read on dbos.workflow_status; the hosted-lifecycle ' +
+        'reconciler will fall back to recency-only liveness:',
+      err instanceof Error ? err.message : err,
+    );
+  });
+
   // EI-455 — start the dead-executor reaper: an immediate boot reap (clears dedup
   // wedges left by a prior crash/restart) plus a 2-min process-level sweep that runs
   // OUTSIDE the DBOS routine engine, so it un-wedges the scheduler even when the
@@ -779,6 +798,32 @@ async function startDbosOnce(): Promise<void> {
     console.log('[coord] boot pre-warm of coord.plans kicked off');
   } catch (e) {
     console.warn('[coord] failed to arm coord.plans boot pre-warm:', e instanceof Error ? e.message : e);
+  }
+}
+
+/**
+ * Grant `harness_app` read-only access to `dbos.workflow_status` (WI-10001739 link 3b).
+ *
+ * The hosted-lifecycle reconciler runs as `harness_app` and uses this relation to tell a dead
+ * executor from a busy one; without it, a live workflow could be reaped and marked failed purely
+ * for having a stale row. Migration 1172 applies the same grants, but it can only act on a
+ * database where schema `dbos` already exists — the SDK creates that schema at runtime, strictly
+ * AFTER migrations run, so a freshly-migrated database would never receive the grant from the
+ * migration alone. Running it here too makes the two paths converge in either order.
+ *
+ * Idempotent: re-granting an existing privilege is a no-op in Postgres, so this is safe on every
+ * boot. Callers treat failure as non-fatal — an unreadable probe classifies as `unknown` and
+ * degrades to the pre-3b recency behaviour rather than reaping on evidence it does not have.
+ */
+export async function grantDbosWorkflowStatusRead(): Promise<void> {
+  const { url } = getHarnessAdminUrlWithSource();
+  const postgres = (await import('postgres')).default;
+  const sql = postgres(url, { max: 1, connect_timeout: 5, prepare: false });
+  try {
+    await sql.unsafe('GRANT USAGE ON SCHEMA dbos TO harness_app');
+    await sql.unsafe('GRANT SELECT ON dbos.workflow_status TO harness_app');
+  } finally {
+    await sql.end({ timeout: 5 }).catch(() => {});
   }
 }
 
