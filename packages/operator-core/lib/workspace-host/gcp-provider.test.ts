@@ -1555,6 +1555,98 @@ describe('GCP workspace-host provider created-resource reporting', () => {
     expect(observed.slice(beforeReconcile).map((item) => item.providerId)).toContain('pc-host-gcp-1-vm');
   });
 
+  // WI-10001673. An obligation row is ADDRESSED, not named: every GCP delete step carries
+  // `hostId`, and the provider asserts the target's managed-label identity against it before
+  // deleting, so a row born without one can be escalated but never reclaimed. Measured
+  // 2026-09-17: all 23 rows created after migration 1168 — the migration that ADDED the column —
+  // still carry host_id=''. The column exists and the writer accepts it; nothing at this seam
+  // SUPPLIES it, because `hostId` was modeled on the process-wide observer BINDING (constructed
+  // once in dbos/bootstrap.ts, where no host is in scope) when it is a per-provision fact.
+  // `report()` has it in hand the whole time via `hostIdFor(request)`.
+  it('carries the host id on every creation event — a row without it is unreclaimable', async () => {
+    const client = new FakeGcpWorkspaceHostApiClient();
+    const events: Array<{ resource: WorkspaceHostResourceRef; hostId?: string }> = [];
+    const provider = createGcpWorkspaceHostProvider({
+      client,
+      now: () => NOW,
+      onResourceCreated: (event) => {
+        events.push(event);
+      },
+    });
+    const plan = await provider.plan(
+      {
+        action: 'provision',
+        operationId: 'operation-wi10001673-host',
+        idempotencyKey: 'operation-wi10001673-host',
+        desired: desired(),
+      },
+      context(),
+    );
+    const resources: WorkspaceHostResourceRef[] = [];
+    for (const step of plan.steps) {
+      const result = await provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step, knownResources: resources },
+        context(),
+      );
+      if ('resource' in result && result.resource) resources.push(result.resource);
+    }
+
+    // Positive control: a fixture that created nothing would make the assertion below vacuous.
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.map((event) => event.resource.providerId)).toContain('pc-host-gcp-1-vm');
+
+    // Named, not counted: a bare count would not say WHICH resource is unreclaimable.
+    expect(events.filter((event) => (event.hostId ?? '') === '').map((event) => event.resource.providerId)).toEqual(
+      [],
+    );
+    expect([...new Set(events.map((event) => event.hostId))]).toEqual(['host-gcp-1']);
+  });
+
+  // WI-10001673, the NAT half — independent of hostId and not fixed by it. `delete-nat` is
+  // addressed THROUGH its Cloud Router, which is why CLOUD_RESOURCE_DELETE_CONTRACT lists
+  // `parentResourceId` in nat's `requires`. The apply site holds the router name
+  // (`input.request.routerName`) but `resource()` carries only project + region, so the ledger
+  // never sees it: rows 4/9/16/23 all have parent_resource_id=''.
+  it('carries the owning router on a NAT creation event — delete-nat is addressed through it', async () => {
+    const client = new FakeGcpWorkspaceHostApiClient();
+    const events: Array<{ resource: WorkspaceHostResourceRef; parentResourceId?: string }> = [];
+    const provider = createGcpWorkspaceHostProvider({
+      client,
+      now: () => NOW,
+      onResourceCreated: (event) => {
+        events.push(event);
+      },
+    });
+    const plan = await provider.plan(
+      {
+        action: 'provision',
+        operationId: 'operation-wi10001673-nat',
+        idempotencyKey: 'operation-wi10001673-nat',
+        desired: desired(),
+      },
+      context(),
+    );
+    const resources: WorkspaceHostResourceRef[] = [];
+    for (const step of plan.steps) {
+      const result = await provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step, knownResources: resources },
+        context(),
+      );
+      if ('resource' in result && result.resource) resources.push(result.resource);
+    }
+
+    // Positive control: if the fixture stopped creating a NAT this test would silently pass.
+    const nat = events.find((event) => event.resource.providerId === 'pc-host-gcp-1-nat');
+    expect(nat).toBeDefined();
+    expect(nat?.parentResourceId).toBe('pc-host-gcp-1-router');
+
+    // Negative control: a kind addressed directly must NOT acquire a parent, or the assertion
+    // above would pass on a seam that stamped every event with the same router.
+    const network = events.find((event) => event.resource.providerId === 'pc-host-gcp-1-net');
+    expect(network).toBeDefined();
+    expect(network?.parentResourceId ?? '').toBe('');
+  });
+
   it('still does not report an adopted resource rediscovered by reconcile', async () => {
     const client = new FakeGcpWorkspaceHostApiClient();
     const observed: WorkspaceHostResourceRef[] = [];
