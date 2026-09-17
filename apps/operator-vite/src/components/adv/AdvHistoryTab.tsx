@@ -1,13 +1,163 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { parseAsInteger, useQueryState } from 'nuqs';
+import { parseAsInteger, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import { useSyncQuery } from '@papercusp/sync';
 import {
+  ActivityTimelineView,
   ProjectHistoryView,
+  type ActivityEventKind,
+  type ActivityFilter,
+  type ActivityTimelineEvent,
   type BuildHistoryPlan,
   type BuildHistoryProject,
   type BuildHistorySnapshotSource,
 } from '@papercusp/ui-primitives';
 import { useAdvScope } from './AdvShell';
 import './adv-history-tab.css';
+
+/**
+ * The two modes of this tab (P-011 / D-002). `archive` is the generated
+ * ProjectHistoryView document served by the REST route; `live` is the
+ * reverse-chronological activity timeline served by the sync resolver.
+ * URL-backed so a reload, a shared link, and `ui:get_state` all see it.
+ */
+const HISTORY_VIEWS = ['archive', 'live'] as const;
+type HistoryViewMode = (typeof HISTORY_VIEWS)[number];
+
+/** `ActivityFilter` = `'all' | ActivityEventKind` — kept in this order for the URL enum. */
+const HISTORY_FILTERS: readonly ActivityFilter[] = ['all', 'work-item', 'plan', 'decision', 'checkpoint'];
+
+/**
+ * `PROJECT_HISTORY_EVENTS_QUERY_NAME` from
+ * packages/operator-core/lib/sync-resolver/project-history-events.ts. Mirrored as
+ * a literal because operator-vite does not import operator-core (same convention
+ * as every other sync consumer in this app, e.g. `dev.gitPipeline`).
+ */
+const HISTORY_EVENTS_QUERY = 'projectHistoryEvents.byHarness';
+
+/**
+ * Mirror of `ProjectHistoryEventRow`, that file's declared CONSUMER CONTRACT —
+ * it names this wiring explicitly: "a field rename here is a breaking change to
+ * both". Local, like every other row type in this app's sync consumers.
+ */
+interface ProjectHistoryEventRow {
+  eventId: string;
+  kind: string;
+  tsMs: number;
+  actor: string | null;
+  subjectKind: 'work-item' | 'plan-item' | 'plan-decision';
+  /** `WI-123` | `<plan-slug>#P-004` | `<plan-slug>#<part-key>`. */
+  subjectId: string;
+  title: string;
+  status: string | null;
+  planSlug: string | null;
+  harnessSlug: string;
+}
+
+/**
+ * `ProjectHistoryEventKind` -> the timeline's four display kinds. Derived from
+ * PROJECT_HISTORY_EVENT_KINDS, not guessed: the five `work-item.*` kinds are
+ * work-item rows EXCEPT `work-item.checkpoint`, which is its own filter chip.
+ */
+function displayKind(kind: string): ActivityEventKind {
+  if (kind === 'work-item.checkpoint') return 'checkpoint';
+  if (kind === 'plan.decision') return 'decision';
+  if (kind === 'plan-item.status') return 'plan';
+  return 'work-item';
+}
+
+/** Human label for the transition column, from the resolver's dotted kind. */
+const EVENT_VERB: Record<string, string> = {
+  'work-item.created': 'created',
+  'work-item.claimed': 'claimed',
+  'work-item.state-changed': 'state changed',
+  'work-item.checkpoint': 'checkpointed',
+  'work-item.completed': 'completed',
+  'plan-item.status': 'status',
+  'plan.decision': 'decided',
+};
+
+function toTimelineEvent(row: ProjectHistoryEventRow): ActivityTimelineEvent {
+  // `subjectId` is `<plan-slug>#<item>` for plan rows; the fragment is the item.
+  const hash = row.subjectId.indexOf('#');
+  const planItem = hash >= 0 ? row.subjectId.slice(hash + 1) : null;
+  const details: Array<{ label: string; value: string }> = [{ label: 'Event', value: row.kind }];
+  if (row.planSlug) details.push({ label: 'Plan', value: row.planSlug });
+  if (row.status) details.push({ label: 'Status', value: row.status });
+  if (row.actor) details.push({ label: 'Actor', value: row.actor });
+  return {
+    id: row.eventId,
+    kind: displayKind(row.kind),
+    at: new Date(row.tsMs).toISOString(),
+    ref: row.subjectId,
+    title: row.title,
+    actor: row.actor,
+    // `status` is the DESTINATION state for a change row (the resolver says so);
+    // there is no recorded prior state, so `fromStatus` stays honestly absent.
+    toStatus: row.status ?? (EVENT_VERB[row.kind] ?? null),
+    planSlug: row.planSlug,
+    planItem: row.subjectKind === 'plan-item' ? planItem : null,
+    details,
+  };
+}
+
+/**
+ * `?view=live`. Data-in-via-props is ActivityTimelineView's contract, so ALL
+ * fetching happens here; filter/query/expansion are nuqs-owned and passed down
+ * controlled, which is what P-010 built the controlled-or-uncontrolled props for.
+ */
+function HistoryLiveView({ harnessSlug }: { harnessSlug: string }) {
+  const [filter, setFilter] = useQueryState(
+    'historyFilter',
+    parseAsStringEnum([...HISTORY_FILTERS]).withDefault('all'),
+  );
+  const [search, setSearch] = useQueryState('historyQ', parseAsString.withDefault(''));
+  const [expandedId, setExpandedId] = useQueryState('historyOpen', parseAsString);
+
+  const sync = useSyncQuery<ProjectHistoryEventRow>({
+    queryName: HISTORY_EVENTS_QUERY,
+    args: { harnessSlug, limit: 100 },
+    staleTime: 10_000,
+  });
+
+  // The resolver returns `unknown[]`; guard the boundary rather than trust it.
+  const rows = useMemo(
+    () => (Array.isArray(sync.data) ? (sync.data as ProjectHistoryEventRow[]) : []),
+    [sync.data],
+  );
+  const events = useMemo(() => rows.map(toTimelineEvent), [rows]);
+
+  // When this page of data arrived — the "Ns ago" the live dot reads.
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  useEffect(() => {
+    if (sync.data !== undefined) setLastUpdatedAt(new Date());
+  }, [sync.data]);
+
+  if (sync.error) {
+    return (
+      <div className="build-history-error" role="alert">
+        <strong>Live activity is unavailable.</strong>
+        <span>{stripAnsi(sync.error instanceof Error ? sync.error.message : String(sync.error))}</span>
+      </div>
+    );
+  }
+
+  return (
+    <ActivityTimelineView
+      events={events}
+      loading={sync.loading}
+      live
+      lastUpdatedAt={lastUpdatedAt}
+      filter={filter}
+      onFilterChange={(next) => void setFilter(next)}
+      query={search}
+      onQueryChange={(next) => void setSearch(next || null)}
+      expandedId={expandedId}
+      onExpandedChange={(next) => void setExpandedId(next)}
+      emptyTitle="No activity yet"
+      emptyBody="Work items, plan-item status changes, and plan decisions appear here as they happen."
+    />
+  );
+}
 
 /**
  * How many plans the route serves per page when `?limit` is omitted
@@ -63,6 +213,10 @@ class HistoryError extends Error {
 export default function AdvHistoryTab() {
   const scope = useAdvScope();
   const slug = scope.allMode ? null : scope.slug;
+  const [view, setView] = useQueryState(
+    'view',
+    parseAsStringEnum([...HISTORY_VIEWS]).withDefault('archive'),
+  );
   // How many pages the reader has opened. URL-backed so a reload or a shared link
   // restores the depth they scrolled to, and so an agent can see it (useState is
   // invisible to `ui:get_state`). The FETCH is keyed on slug/revision only, never
@@ -98,6 +252,9 @@ export default function AdvHistoryTab() {
       setError(null);
       return;
     }
+    // `live` is served by the sync resolver, so never pay the archive
+    // generator's REST round-trip while that view is the one on screen.
+    if (view !== 'archive') return;
     const controller = new AbortController();
     setLoading(true);
     setError(null);
@@ -118,7 +275,7 @@ export default function AdvHistoryTab() {
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [slug, revision, request]);
+  }, [slug, revision, request, view]);
 
   const loadMore = useCallback(async () => {
     if (!slug || !document || !page?.hasMore || loadingMore) return;
@@ -147,11 +304,33 @@ export default function AdvHistoryTab() {
         <div>
           <span className="pc-project-history__eyebrow">Verified delivery record</span>
           <h1>History</h1>
-          <p>Plans, completed work, commits, and the validation evidence that proves each change.</p>
+          <p>
+            {view === 'live'
+              ? 'Work items, plan-item status changes, and plan decisions, newest first, as they happen.'
+              : 'Plans, completed work, commits, and the validation evidence that proves each change.'}
+          </p>
         </div>
+        {slug ? (
+          <div className="pc-history-viewswitch" role="tablist" aria-label="History view">
+            {HISTORY_VIEWS.map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                role="tab"
+                aria-selected={view === mode}
+                className={view === mode ? 'is-active' : undefined}
+                onClick={() => void setView(mode === 'archive' ? null : mode)}
+              >
+                {mode === 'archive' ? 'Archive' : 'Live activity'}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </header>
       {!slug ? (
         <div className="build-history-empty"><h2>Select a pot</h2><p>History is scoped to one project at a time.</p></div>
+      ) : view === 'live' ? (
+        <HistoryLiveView harnessSlug={slug} />
       ) : error?.code === 'not-a-git-repository' ? (
         <div className="build-history-empty">
           <h2>No history to show</h2>
@@ -189,6 +368,9 @@ export default function AdvHistoryTab() {
 const HISTORY_CSS = `
   .pc-project-history { display:grid; gap:18px; min-width:0; padding:18px; color:var(--fg); overflow:auto; }
   .build-history-hero { display:flex; justify-content:space-between; gap:16px; }
+  .pc-history-viewswitch { display:flex; align-self:flex-start; gap:2px; padding:2px; border:1px solid var(--border); border-radius:8px; background:var(--bg-1); }
+  .pc-history-viewswitch button { padding:6px 12px; border:0; border-radius:6px; color:var(--fg-mute); background:transparent; font-size:12px; font-weight:600; }
+  .pc-history-viewswitch button.is-active { color:var(--accent-ink,var(--fg)); background:var(--accent); }
   .build-history-hero h1 { margin:4px 0; font-size:22px; }
   .build-history-hero p { margin:0; color:var(--fg-mute); font-size:13px; }
   .pc-project-history__eyebrow { color:var(--accent); font-size:10px; font-weight:800; text-transform:uppercase; }
