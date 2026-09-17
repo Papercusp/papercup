@@ -268,6 +268,11 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
     case 'goal':
     case 'theme':
     case 'datatype':
+    // An event DECLARATION is a registry entry, exactly like the `datatype` it
+    // sits beside: installing it is what makes the key RESOLVE locally, so a
+    // rule's `on` and an agent's `await` can bind to it (identities-v1 D-057,
+    // P-029). Awaiting a key is not the install; registering the declaration is.
+    case 'event':
       return 'install';
     case 'app':
       return l.delivery_type === 'bundle' ? 'install' : 'download';
