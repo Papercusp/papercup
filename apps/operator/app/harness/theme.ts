@@ -373,6 +373,19 @@ export const CUPBOARD_LISTING_KIND_TONE: Record<ListingKind, CategoryTone> = {
     bg: `color-mix(in srgb, ${CATEGORICAL.lime500.hex}, transparent 86%)`,
     border: `color-mix(in srgb, ${CATEGORICAL.lime500.hex}, transparent 74%)`,
   },
+  // event: an installable event declaration (kind #15). ⚠ This IS the collision
+  // the `rule` note above predicted: orange500 is the last unclaimed CATEGORICAL
+  // hue, but it is a warm near-duplicate of knowledge-pack (warn/amber) and app
+  // (gold), so an Events card will NOT read distinctly from those two on hue
+  // alone. Added at this value only to keep Record<ListingKind> exhaustive and
+  // unblock the release gate — it is NOT a design verdict. The real fix is the
+  // second visual channel (per-kind icon/shape) the `rule` note names; tracked
+  // as a follow-up off WI-10001702. Do not add kind #16 to this map without it.
+  event: {
+    fg: CATEGORICAL.orange500.hex,
+    bg: `color-mix(in srgb, ${CATEGORICAL.orange500.hex}, transparent 86%)`,
+    border: `color-mix(in srgb, ${CATEGORICAL.orange500.hex}, transparent 74%)`,
+  },
 };
 
 // Memory-kind chip hues (settings/user/memory). Categorical, not status —
