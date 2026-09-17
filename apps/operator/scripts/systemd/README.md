@@ -1317,3 +1317,57 @@ curl -s http://127.0.0.1:3384/healthz | jq '{models, capabilities, rerankExecuti
 start, so a restart always picks up current staging source; a long-lived sidecar
 can therefore be running a build many days older than the tree (measured
 2026-08-02: a 16.9-day-old process serving no `/rerank` route at all).
+
+# App sidecars — email (:8791) + calendar (:8792) — EI-23439593071892927
+
+`papercusp-email-sidecar.service` and `papercusp-calendar-sidecar.service` run
+the receiving end of the platform→app data producer (plan
+`platform-to-app-data-producer-2026-08-30`, P-008) for the two template-
+materialized app checkouts at `~/papercupai-workspace/{email,calendar}`. Those
+checkouts are SEPARATE repos (an app template materialization, `sidecar` npm
+script = `tsx apps/sidecar/src/index.ts`) and carry no unit source of their own,
+so — until 2026-09-17 — both units existed only as hand-written files in
+`~/.config/systemd/user/`, and the restart-on-change fix (WI-10001633, `tsx
+watch` after the email sidecar served 16 days of stale code) had to land as an
+unreviewable `<unit>.d/watch.conf` drop-in. Both are now tracked here, installed
+by symlink like every other unit in this directory, with the watcher folded into
+`ExecStart` and the drop-ins retired. The phone sidecar is NOT here: it already
+has a tracked source (`infra/phone-app/systemd/*.tmpl`, rendered by its
+`deploy.sh`) — it just lacks the `tsx watch` behaviour (filed as a follow-up).
+
+Invariants pinned by `apps/operator/lib/app-sidecar-units.test.ts`: `tsx watch`
+ExecStart · every path `%h`-relative · config from the injected
+`~/.papercusp/app-producer.env` (secrets never in a repo) · the app's
+`*_LOCAL_MODE` jwtVerify bypass NOT set · `Restart=always` · no tracked drop-in
+directory shadowing the unit.
+
+## Install (one-time, on a fresh machine)
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+for app in email calendar; do
+  rm -rf ~/.config/systemd/user/papercusp-$app-sidecar.service.d   # retired drop-ins
+  ln -sfn "$(pwd)/papercusp-$app-sidecar.service" ~/.config/systemd/user/
+done
+systemctl --user daemon-reload
+systemctl --user enable --now papercusp-email-sidecar.service papercusp-calendar-sidecar.service
+```
+
+Prerequisites the units assume: the app checkouts at
+`~/papercupai-workspace/{email,calendar}` (a symlink into
+`~/.papercusp-workspaces/...` is fine — `/api/health` reports the resolved
+`tree`), the injected `~/.papercusp/app-producer.env`, and `npx` on the
+user-manager PATH.
+
+## Verify
+
+```bash
+systemctl --user show papercusp-email-sidecar.service papercusp-calendar-sidecar.service -p MainPID -p ActiveState -p NRestarts
+curl -s http://127.0.0.1:8791/api/health | jq '{ok, sha, tree}'   # email
+curl -s http://127.0.0.1:8792/api/health | jq '{ok, sha, tree}'   # calendar
+```
+
+`sha` must equal `git -C <tree> rev-parse HEAD`; a mismatch means the watcher
+is not restarting on change (the exact WI-10001633 symptom) — check the unit's
+`ExecStart` still says `tsx watch` and the log at
+`~/.papercusp/logs/papercusp-<app>-sidecar.log`.
