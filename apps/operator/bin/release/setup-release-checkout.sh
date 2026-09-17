@@ -1198,8 +1198,29 @@ prune_stale_pnpm_store
 # patch hiccup must never wedge the deploy.
 if [ -d "$RELEASE_ROOT/patches" ] && [ -x "$RELEASE_ROOT/node_modules/.bin/patch-package" ]; then
   log "applying committed dependency patches (patch-package)"
-  (cd "$RELEASE_ROOT" && ./node_modules/.bin/patch-package 1>/dev/null 2>&1) \
-    || log "WARN patch-package reported issues (continuing)"
+  # Keep patch-package's own report instead of discarding it. This WARN exists
+  # precisely to flag a patch that did NOT apply, and `1>/dev/null 2>&1` threw away
+  # the only output naming WHICH one — so the warning could never be acted on without
+  # re-deriving applied-ness by hand against the release tree, patch by patch
+  # (measured 2026-09-17 during the 0.0.21-alpha cut: the sole failure turned out to
+  # be an orphaned patch for a package installed in no tree, but establishing that
+  # took several probes the suppressed output would have answered outright).
+  # Still non-fatal by design: a patch hiccup must never wedge the deploy.
+  _pp_log="${TMPDIR:-/tmp}/setup-release-patch-package.$$.log"
+  if (cd "$RELEASE_ROOT" && ./node_modules/.bin/patch-package) >"$_pp_log" 2>&1; then
+    rm -f "$_pp_log"
+  else
+    log "WARN patch-package reported issues (continuing) — full output: $_pp_log"
+    _pp_shown=0
+    while IFS= read -r _pp_line; do
+      if [ -n "$_pp_line" ]; then
+        if [ "$_pp_shown" -lt 40 ]; then
+          log "WARN   $_pp_line"
+          _pp_shown=$((_pp_shown + 1))
+        fi
+      fi
+    done < "$_pp_log"
+  fi
 fi
 
 # 3b-2. Post-pin package prune (EI-13127) — a dangling release symlink has TWO
