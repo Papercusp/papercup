@@ -43,12 +43,13 @@ semantics:
 | `goal`           | **install** | **pending** | a goal package with duties, kickoff, schemas, defaults, and tripwires; installing creates an inactive stub |
 | `theme`          | **install** | **approved** | an inert semantic-token package selectable by the existing theme runtime |
 | `datatype`       | **install** | **pending** | a generic-kind datatype package — the schema + lifecycle a workspace installs so `work_items` accept a new item kind; `datatype_registry` remains the resolution layer |
+| `rule`           | **install** | **pending** | an installable behaviour — "when X, fire Y". Fires a capability **class** (`class:<ref>#<verb>`), not a tool id, so the installing pot's own provider binding decides which tool runs and one listing ships across pots with different providers |
 
 Retired / aliased: `snapshot` was retired (`retire-snapshots-instance-spec-2026-06-09`
 D-005); the interim `tool-pack` value normalizes to `pack` and the pre-rename
 `learning-pack` normalizes to `knowledge-pack` (`normalizeListingKind`), so older
 clients keep parsing. Review-gated kinds (`knowledge-pack`, `blueprint`, `app`, `rubric`,
-`plan`, `recipe`, `goal`, and `datatype`) publish `pending` and are publicly invisible
+`plan`, `recipe`, `goal`, `datatype`, and `rule`) publish `pending` and are publicly invisible
 until an operator approves them (`REVIEW_POLICY_KINDS`); `harness`, `plugin`, `pack`,
 `template`, and `theme` publish `approved` immediately. For `app`, `delivery_type` is
 `standalone` by default (download handoff); `bundle` is the deferred workspace-install
