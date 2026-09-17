@@ -458,7 +458,15 @@ const TurnRow = memo(function TurnRow(props: TurnRowProps) {
   tools.forEach((call, ti) => {
     const hostCard = renderToolCard?.(call, turn, ti);
     if (hostCard) {
-      cards.push(<div key={`host-${ti}`}>{hostCard}</div>);
+      // Same wrapper as the built-in branch below. A host that supplies
+      // `renderToolCard` (the operator, via the chat-cards registry) reaches the
+      // SAME shared card as a host that does not (the portal) — so the wrapper
+      // must be the same addressable element too, or the one rendered card is
+      // only findable on one host. WI-10001780 was filed as "the persisted
+      // chat:ask_choice card does not replay on the operator host" off exactly
+      // that gap: a `.pc-chat__card` probe read 0 against this bare <div> while
+      // the card was rendering fine.
+      cards.push(<div key={`host-${ti}`} className="pc-chat__card">{hostCard}</div>);
       return;
     }
     const args = askChoiceArgsFromToolCall(call);
