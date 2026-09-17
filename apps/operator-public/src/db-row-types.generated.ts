@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: 2929d4a58808e739e095746dd36f7e5f350fdbfe1ade241f7bfa2f853c45b0cd
+ * Migration digest: 529621362c4ddd8aef6aee39aa5e5485d21327b6c018cc98acef1dbc50b075ac
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "2929d4a58808e739e095746dd36f7e5f350fdbfe1ade241f7bfa2f853c45b0cd";
+  "529621362c4ddd8aef6aee39aa5e5485d21327b6c018cc98acef1dbc50b075ac";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
