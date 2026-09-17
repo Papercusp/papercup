@@ -4,7 +4,7 @@ body_embedding_mode: "gemma"
 body_embedding_profile: null
 body_tsv: ""
 escalation: null
-mtime_ms: 1789469626984
+mtime_ms: 1789642960009
 phase: "origin-freshness-watchdog"
 risk_tier: null
 supervisor_notes: null
