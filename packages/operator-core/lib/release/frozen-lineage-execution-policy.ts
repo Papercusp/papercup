@@ -737,10 +737,22 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
   return null;
 }
 
-function frozenLineageSanctionedRoute(identity: FrozenLineageIdentity): string {
+/**
+ * The clearing action for a CARRY-TEXT refusal is to REWORD the text; nothing else clears
+ * it. This feeds only evaluateFrozenLineageCarryText, whose surfaces all PERSIST PROSE
+ * rather than launch a run, so the execution surfaces' "re-read repairHead before launch /
+ * admit paths" remediation is inapplicable here and actively misdirects: an agent refused
+ * on session:request-compaction that goes off to admit paths is still refused, still cannot
+ * compact, and rides to a FORCE compaction — losing the clean cut that self-compaction
+ * exists to deliver (EI-23481593402791453).
+ */
+function frozenLineageCarrySanctionedRoute(identity: FrozenLineageIdentity): string {
   return (
-    `Select and re-read live repairHead ${identity.repairHead} from queue revision ${identity.queueRevision} ` +
-    "immediately before launch. Land fixes through release:repair-queue { op:'admit', paths:[...] }."
+    'REWORD the carry text — that is the ONLY action that clears this refusal. ' +
+    `Name the frozen lineage explicitly (repairHead ${identity.repairHead}) instead of a ` +
+    'moving source, or negate/retract the instruction — a negated or retracted direction is ' +
+    'deliberately allowed so a successor can carry the correction that retires a stale one. ' +
+    "Landing fixes through release:repair-queue { op:'admit', paths:[...] } does NOT clear it."
   );
 }
 
@@ -775,7 +787,7 @@ export function evaluateFrozenLineageCarryText(
     unsafeSource: instruction.unsafeSource,
     matchedText: instruction.matchedText,
     liveIdentity,
-    sanctionedRoute: frozenLineageSanctionedRoute(liveIdentity),
+    sanctionedRoute: frozenLineageCarrySanctionedRoute(liveIdentity),
   };
 }
 
