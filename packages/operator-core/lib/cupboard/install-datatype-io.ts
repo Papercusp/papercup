@@ -16,10 +16,14 @@
  * not through the installed directory. So a failed seed is reported as a failed
  * INSTALL, never as a success with a warning.
  *
- * The manifest id is required to be ALREADY canonical rather than re-slugified here.
- * Re-slugifying would let a package whose manifest says `My Type` install under `my-type`
- * and then never resolve by the id its own author published — a silent identity fork
- * between the package and the row. Refusing is the honest failure.
+ * IDENTITY is enforced ONE level down, not here: `readDatatypeDir` refuses a package whose
+ * manifest id is not already its canonical slug, so by the time a package reaches this seam
+ * its id is canonical by construction. This file deliberately does NOT re-check it — a
+ * second copy of that rule would be a second place for it to drift, and the parse-time
+ * refusal is the stronger one anyway (it rejects the package, not just the row write).
+ * The same parse gate also carries P-001 (a payloadSchema must compile) and P-010 (a
+ * self-improving tier must ship its selfImprovement block), so every definition-shaped
+ * refusal surfaces here as one 422 "failed to parse its datatype.json".
  */
 import { cupboardGitDeps } from './install-io';
 import type { ContentPinRef } from './install-self-describing-core';
@@ -30,7 +34,7 @@ import {
   resolveInstalledDatatype,
   type InstalledDatatype,
 } from './datatype-store';
-import { slugifyDatatype, type UpsertDatatypeInput } from '../datatype-registry-store';
+import type { UpsertDatatypeInput } from '../datatype-registry-store';
 
 export interface InstallDatatypeInput {
   listingId?: string;
@@ -171,15 +175,6 @@ async function seed(
   createdBy: string | undefined,
   deps: InstallDatatypeDeps,
 ): Promise<{ ok: true; id: string } | { ok: false; status: number; error: string; detail?: string }> {
-  if (slugifyDatatype(datatype.id) !== datatype.id) {
-    return {
-      ok: false,
-      status: 422,
-      error:
-        `datatype package id "${datatype.id}" is not a canonical slug (expected "${slugifyDatatype(datatype.id)}") — ` +
-        'republish the package with its canonical id rather than installing under a different identity',
-    };
-  }
   try {
     const row = await deps.seedRegistry(registryInputFromPackage(datatype, workspaceId, createdBy));
     return { ok: true, id: row.id };

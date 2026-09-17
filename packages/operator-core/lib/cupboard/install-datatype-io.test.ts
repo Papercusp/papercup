@@ -66,6 +66,10 @@ async function writePackage(opts: { id?: string; version?: string; kind?: string
       version,
       tier: 'generic-kind',
       workItemKind: opts.kind ?? 'incident-report',
+      // P-010 survives the distribution boundary: readDatatypeDir REFUSES a
+      // self-improving tier that ships no selfImprovement block, so omitting this
+      // makes the package unparseable rather than merely incomplete.
+      selfImprovement: { cadence: 'per-close', signal: 'postmortem-quality' },
       tags: ['ops'],
     }),
   );
@@ -164,7 +168,11 @@ describe('installDatatypeFromCupboard', () => {
     expect(ok.ok).toBe(true);
   });
 
-  it('REFUSES a non-canonical package id instead of silently re-slugifying it', async () => {
+  it('REFUSES a non-canonical package id at the parse gate, seeding nothing', async () => {
+    // Identity is enforced by readDatatypeDir, not by this seam: a manifest id that is not
+    // already its canonical slug makes the PACKAGE invalid, so the install never reaches the
+    // registry. That is the stronger refusal — re-slugifying here would install a package
+    // under an identity its own author never published.
     await writePackage({ id: 'Incident Report' });
     const seeder = recordingSeeder();
 
@@ -176,11 +184,36 @@ describe('installDatatypeFromCupboard', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.status).toBe(422);
-    expect(result.error).toMatch(/not a canonical slug/);
-    expect(result.error).toMatch(/incident-report/);
-    // The refusal must happen BEFORE any registry write: installing under a re-slugified
-    // identity is the silent fork this gate exists to prevent.
+    expect(result.error).toMatch(/failed to parse its datatype\.json/);
     expect(seeder.writes).toEqual([]);
+  });
+
+  it('REFUSES a self-improving tier shipped without selfImprovement (P-010 crosses the boundary)', async () => {
+    const dir = join(fixtureRepo, 'incident-report');
+    await writePackage();
+    const manifest = JSON.parse(await fs.readFile(join(dir, 'datatype.json'), 'utf8')) as Record<string, unknown>;
+    delete manifest.selfImprovement;
+    await fs.writeFile(join(dir, 'datatype.json'), JSON.stringify(manifest));
+    const seeder = recordingSeeder();
+
+    const result = await installDatatypeFromCupboard(
+      { listingId: 'listing-incident-report', workspaceId: 'ws-1' },
+      seeder.deps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(422);
+    expect(seeder.writes).toEqual([]);
+
+    // POSITIVE CONTROL: restoring the block makes the identical install succeed, so the
+    // refusal is attributable to the missing block and not to the fixture at large.
+    await writePackage();
+    const ok = await installDatatypeFromCupboard(
+      { listingId: 'listing-incident-report', workspaceId: 'ws-1' },
+      seeder.deps,
+    );
+    expect(ok.ok).toBe(true);
   });
 
   it('re-seeds on a version-matched no-op, so a package stranded by an earlier failed seed recovers', async () => {
