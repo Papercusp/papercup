@@ -59,12 +59,17 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     const rendered = JSON.stringify({ description: amendTool.description, guidance: amendTool.guidance });
 
     expect(rendered).toContain('600 characters');
-    expect(rendered).toContain('work_items:update');
-    expect(rendered).toContain('acceptanceBarApproval');
+    // The durable surface is a THREAD POST, not the item payload. Superseded
+    // 2026-09-16 (73376ec7): the payload route needs payloadTier:'full', which a
+    // trimmed or judge-scoped reader never gets — so the reviewer was pointed at
+    // an approval they could not read back. Pin both halves: the surface we now
+    // prescribe, AND the reason the payload one was retired, so a future edit
+    // cannot quietly reinstate it.
+    expect(rendered).toContain('work_items:comment');
     expect(rendered).toContain('payloadTier');
     expect(rendered).toContain('full');
-    expect(rendered).toContain('short coord:send pointer');
-    expect(rendered).toContain('Never truncate or manually retype');
+    expect(rendered).toContain("approvalRef:'thread-post:");
+    expect(rendered).toContain('Never truncate or retype');
   });
 
   it('accepts a full criterion set with structured checks', () => {
