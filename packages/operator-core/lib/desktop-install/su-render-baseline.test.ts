@@ -42,7 +42,7 @@ vi.mock('./workspace-map', async (importOriginal) => {
   };
 });
 
-import { composeSuStackSource, suSessionBinding } from '@papercusp/orchestrator/blueprint';
+import { composeSuStackSource, suSessionBinding, suStackDocuments } from '@papercusp/orchestrator/blueprint';
 import { renderSuPlaybook } from './papercusp-files';
 import {
   REQUIRED_SPLICE_MARKERS_BY_ARTIFACT,
@@ -373,5 +373,83 @@ describe('su render baseline — live blueprint base (informational score + P-03
         `budget is ${COMPOSED_ENGINEER_LEADER_BUDGET_BYTES.toLocaleString('en-US')} B ` +
         `(headroom ${headroom.toLocaleString('en-US')} B)`,
     ).toBeLessThanOrEqual(COMPOSED_ENGINEER_LEADER_BUDGET_BYTES);
+  });
+
+  // P-036 R-5 `per-layer-byte-attribution`. The budget test above proves the composed stack
+  // fits 256 KiB; it says nothing about WHERE those bytes came from, so a layer contributing
+  // unattributed bytes passed it silently. This splits the same composed stack per named
+  // layer and requires the split to sum EXACTLY to the total, with no remainder.
+  it('attributes every composed-stack byte to a named layer, summing exactly to the total (P-036 R-5)', () => {
+    if (!repoRoot) throw new Error('R-5 byte attribution: repo root (libs/papercusp) not found');
+    const harnessDir = join(repoRoot, 'libs/papercusp/packages/harness');
+    // Identical binding to the budget test above — the attribution must describe the same
+    // artifact the ceiling is measured against, or it attributes a different stack.
+    const opts = {
+      harnessDir,
+      binding: suSessionBinding({ fleetRole: 'leader' as const, modes: ['auto'] }),
+    };
+    const { docs } = suStackDocuments(opts);
+    const composed = composeSuStackSource(opts);
+
+    // Guard the premise: composeStack orders the documents it was handed, it does not filter
+    // them. If that ever changes, iterating `docs` would over-count and the sum below would
+    // be arithmetic about a stack that was never rendered.
+    expect(
+      composed.order.length,
+      'composed.order dropped documents — per-document iteration would over-attribute',
+    ).toBe(docs.length);
+
+    // composeStack joins each non-empty TRIMMED document text and the kernel seal with
+    // '\n\n', then terminates with a single '\n'. Every contributor is named here; an
+    // unnamed one surfaces as a sum mismatch instead of passing silently.
+    const byLayer = new Map<string, number>();
+    let blocks = 0;
+    for (const doc of docs) {
+      const text = doc.text.trim();
+      if (!text) continue;
+      // Attribution is only honest if the bytes are genuinely in the rendered output —
+      // without this, the sum is a parallel recomputation that could agree while wrong.
+      expect(
+        composed.text.includes(text),
+        `layer ${doc.id} is attributed bytes that do not appear in the composed stack`,
+      ).toBe(true);
+      byLayer.set(doc.id, (byLayer.get(doc.id) ?? 0) + Buffer.byteLength(text, 'utf8'));
+      blocks += 1;
+    }
+    byLayer.set('(kernel-seal)', Buffer.byteLength(composed.seal, 'utf8'));
+    blocks += 1;
+    byLayer.set(
+      '(block-separators)',
+      (blocks - 1) * Buffer.byteLength('\n\n', 'utf8') + Buffer.byteLength('\n', 'utf8'),
+    );
+
+    const attributed = [...byLayer.values()].reduce((a, b) => a + b, 0);
+    const total = Buffer.byteLength(composed.text, 'utf8');
+    expect(
+      attributed,
+      `per-layer attribution sums to ${attributed.toLocaleString('en-US')} B but the composed ` +
+        `stack is ${total.toLocaleString('en-US')} B — ` +
+        `${(total - attributed).toLocaleString('en-US')} B unattributed. Layers: ` +
+        [...byLayer.entries()].map(([id, b]) => `${id}=${b}`).join(', '),
+    ).toBe(total);
+
+    // The posture-bearing layers must each carry real bytes, so the exact sum above cannot
+    // be satisfied by a stack that silently dropped one of them.
+    for (const id of ['papercusp-engineer', 'su.fleet-leader', 'su.mode-auto']) {
+      expect(byLayer.get(id) ?? 0, `layer ${id} contributed no bytes`).toBeGreaterThan(0);
+    }
+
+    // Falsifiability control, kept permanently in-test per the repo's mutation discipline
+    // (the subject is imported logic, so the control lives here rather than mutating the
+    // shared tree). Withholding any one named layer must BREAK the equality above — a sum
+    // check that cannot fail reads exactly like one that holds.
+    for (const [id, bytes] of byLayer) {
+      if (bytes === 0) continue;
+      expect(
+        attributed - bytes,
+        `withholding layer ${id} still sums to ${total} — the attribution check cannot ` +
+          'detect an unattributed layer and is therefore vacuous',
+      ).not.toBe(total);
+    }
   });
 });
