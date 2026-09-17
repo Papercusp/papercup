@@ -114,10 +114,13 @@ import './recipes/sweep';
 import './datatypes/declare';
 import './datatypes/list';
 import './datatypes/get';
-// D-010 shared leg — offer a local datatype to the global tier (PENDING moderation):
-import './datatypes/publish';
-// D-010 distribution — browse the approved global catalog + install one into your workspace:
-import './datatypes/catalog';
+// identities-v1 P-027 / D-010 — the shared leg and the global BROWSE were retired here:
+// `datatypes:publish` → cupboard:publish-datatype, `datatypes:catalog` →
+// cupboard:search { kind:'datatype' }. They were a second Cupboard, and a broken one:
+// the retired publish could mark a datatype `pending` but nothing in the tree ever
+// approved it, so a published datatype could never reach the approved-only catalog.
+// `datatypes:install` stays — it is the intra-database workspace→workspace copy of an
+// already-approved row (migration 426), not a storefront:
 import './datatypes/install';
 // P-011 — workspace observability over the datatype registry (counts by tier + review-status):
 import './datatypes/summary';
@@ -1497,6 +1500,11 @@ import './cupboard/install-goal';
 // local custom theme; install adds it to the existing selector without selecting it.
 import './cupboard/publish-theme';
 import './cupboard/install-theme';
+// identities-v1 P-027 / D-010 — the consolidated datatype storefront, replacing the
+// retired datatypes:publish + datatypes:catalog pair. Install seeds the
+// datatype_registry row, which remains the ONE resolution layer.
+import './cupboard/publish-datatype';
+import './cupboard/install-datatype';
 // cupboard-agent-tool-coverage-2026-07-14 P-008/P-009 — the cross-kind browse
 // (cupboard:search over browse-listings.ts) + the universal delist
 // (cupboard:unpublish over delete-listing.ts, shared with unlist-hive-rows).
