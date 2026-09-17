@@ -34,7 +34,15 @@ export type ReactionFailureStage =
   /** The dispatcher settled and reported `{ ok:false }` (the ordinary refusal path). */
   | 'dispatch'
   /** The dispatcher (or the scheduling around it) threw. */
-  | 'threw';
+  | 'threw'
+  /**
+   * The per-contributor fire budget refused it: the reaction never reached a
+   * dispatcher at all. NOT an error — a deliberate policy drop — but it is
+   * surfaced through the same port because a reaction that did not happen must
+   * be answerable either way. A host that treats every stage as an error will
+   * mis-report this one; branch on the stage.
+   */
+  | 'budget';
 
 /**
  * A reaction that did NOT happen, reported as STRUCTURE.
@@ -72,6 +80,43 @@ export interface ReactionFailure<TEvent, TFire = string> {
 export type OnReactionFailure<TEvent, TFire = string> = (
   failure: ReactionFailure<TEvent, TFire>,
 ) => void | Promise<void>;
+
+/** What the budget port is asked about: one contributor's reaction, about to fire. */
+export interface FireBudgetRequest<TEvent, TFire = string> {
+  /**
+   * The rule's contributor — `ReactionRule.source`, or `null` for a first-party
+   * built-in. The budget KEY. A host that budgets `null` lumps every built-in
+   * into one shared bucket and throttles itself; budget named contributors.
+   */
+  contributor: string | null;
+  rule: ReactionRule<TEvent, TFire>;
+  fire: TFire;
+  event: TEvent;
+  cause: ReactionCause;
+}
+
+/** Allow the reaction, or refuse it with a reason a human can act on. */
+export type FireBudgetDecision = { allow: true } | { allow: false; reason: string };
+
+/**
+ * The per-contributor fire budget port (identities-v1 P-030 (c)).
+ *
+ * `guardReaction`'s depth cap and cycle check bound ONE cascade; they cannot see
+ * a contributor firing a thousand shallow, unrelated reactions. That was
+ * tolerable while every rule was first-party, and stops being tolerable the
+ * moment third-party rules can install — so the bound this adds is per
+ * CONTRIBUTOR and windowed, which is a COUNT and therefore necessarily async.
+ * That is why it is a port here and not another branch inside the pure,
+ * synchronous loop guard.
+ *
+ * FAILS OPEN. If this port throws, the reaction is ALLOWED and the throw is
+ * logged. A budget is a fairness/cost control, not a safety kill-switch — the
+ * depth cap already bounds the catastrophic case — so a broken budget backend
+ * must not silently stop every reaction in the system.
+ */
+export type FireBudget<TEvent, TFire = string> = (
+  req: FireBudgetRequest<TEvent, TFire>,
+) => Promise<FireBudgetDecision>;
 
 /** The dispatcher port — how a fire descriptor becomes a real, settled call. */
 export type FireInProcess<TEvent, TFire = string> = (args: {
@@ -113,15 +158,18 @@ export async function scheduleReaction<TEvent, TFire = string>(opts: {
   durable?: DurableSeam<TEvent, TFire>;
   log?: (msg: string) => void;
   onFailure?: OnReactionFailure<TEvent, TFire>;
+  /** Per-contributor fire budget; omit to leave reactions unbudgeted. */
+  budget?: FireBudget<TEvent, TFire>;
 }): Promise<void> {
-  const { rule, fire, args, event, cause, fireInProcess, durable, log, onFailure } = opts;
+  const { rule, fire, args, event, cause, fireInProcess, durable, log, onFailure, budget } = opts;
 
   // Report a failure on BOTH ports: `log` keeps the human tail unchanged, while
   // `onFailure` hands the host the structure it needs to record and surface it.
   // Fire-and-forget + fully guarded: surfacing a failure must never itself fail
   // the reaction, and must never delay the trigger that is already returning.
   const reportFailure = (stage: ReactionFailureStage, error: string): void => {
-    log?.(`reaction ${rule.id} → ${String(fire)} ${stage === 'threw' ? 'threw' : 'failed'}: ${error}`);
+    const verb = stage === 'threw' ? 'threw' : stage === 'budget' ? 'refused (over budget)' : 'failed';
+    log?.(`reaction ${rule.id} → ${String(fire)} ${verb}: ${error}`);
     if (!onFailure) return;
     try {
       const dedupId = computeDedupId({ rule, event, cause });
@@ -134,6 +182,25 @@ export async function scheduleReaction<TEvent, TFire = string>(opts: {
   };
 
   try {
+    // Budget BEFORE the route split, so the bound covers the durable path too.
+    // Checking it after the split (or only around `fireInProcess`) would leave
+    // `mode:'durable'` — the DEFAULT — entirely unbudgeted, which is the one
+    // route a contributor would use to run up a bill.
+    if (budget) {
+      let decision: FireBudgetDecision;
+      try {
+        decision = await budget({ contributor: rule.source ?? null, rule, fire, event, cause });
+      } catch (budgetErr) {
+        // FAIL OPEN: a broken budget backend must not stop every reaction.
+        log?.(`fire budget for ${rule.id} threw; allowing the reaction: ${errMsg(budgetErr)}`);
+        decision = { allow: true };
+      }
+      if (!decision.allow) {
+        reportFailure('budget', decision.reason);
+        return;
+      }
+    }
+
     // mode 'durable' (default) → durable seam when installed; else in-process.
     // mode 'sync' → always in-process (lightweight, no durability).
     const wantsDurable = (rule.mode ?? 'durable') === 'durable';
@@ -176,6 +243,8 @@ export function runReactions<TEvent, TFire = string>(opts: {
   log?: (msg: string) => void;
   /** Structured report for every reaction that fails to run (see `OnReactionFailure`). */
   onFailure?: OnReactionFailure<TEvent, TFire>;
+  /** Per-contributor fire budget; omit to leave reactions unbudgeted (see `FireBudget`). */
+  budget?: FireBudget<TEvent, TFire>;
 }): void {
   for (const action of opts.actions) {
     const rule = action.rule as ReactionRule<TEvent, TFire>;
@@ -207,6 +276,7 @@ export function runReactions<TEvent, TFire = string>(opts: {
       durable: opts.durable,
       log: opts.log,
       onFailure: opts.onFailure,
+      budget: opts.budget,
     });
   }
 }
