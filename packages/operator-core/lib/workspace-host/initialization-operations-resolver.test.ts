@@ -26,6 +26,7 @@ import {
   UnsupportedWorkspaceHostInitializationTargetError,
   WorkspaceHostDesiredSpecUnavailableError,
   WorkspaceHostInitializationControllerProfileError,
+  WorkspaceHostHostKeyPublicationTimeoutError,
   WorkspaceHostInitializationHostKeyError,
   enrollGcpIapHostKeys,
   resolveWorkspaceHostInitializationControllerProfile,
@@ -455,6 +456,225 @@ describe('resolveWorkspaceHostInitializationOperationsForHost', () => {
         readDesiredSpec: async () => ({ desired: null, miss: 'no-recorded-spec' }),
       }),
     ).rejects.toThrow(/cannot be identified/);
+  });
+});
+
+/**
+ * WI-10001685 — the hostkeys/ publication race.
+ *
+ * MEASURED on a real GCP VM: `hostkeys/` 404s at 23:29:40Z and is fully published by 23:30:40Z,
+ * ~70s after create. This read is the LAST thing resolution does and runs BEFORE the initializer
+ * that owns the bootstrap gate, so throwing here made that gate STRUCTURALLY UNREACHABLE and wrote
+ * no operation row at all.
+ *
+ * What these guard is not "a retry exists" but that it retries the RIGHT things. The dangerous
+ * failure is over-retrying: a wrong-instance 404 is the exact case the resolver's docstring says
+ * must refuse immediately, and waiting it out would turn a 2s refusal into a 5m hang reported
+ * under the wrong cause.
+ */
+describe('hostkeys/ publication race (WI-10001685)', () => {
+  const guestAttributeNotFound = () =>
+    Object.assign(
+      new Error(
+        "gcp_preflight_http_404: The resource 'hostkeys/' of type 'Guest Attribute' was not found",
+      ),
+      { status: 404, reason: "The resource 'hostkeys/' of type 'Guest Attribute' was not found" },
+    );
+
+  const instanceNotFound = () =>
+    Object.assign(
+      new Error(
+        "gcp_preflight_http_404: The resource 'projects/p/zones/z/instances/ghost' was not found",
+      ),
+      { status: 404, reason: "The resource 'projects/p/zones/z/instances/ghost' was not found" },
+    );
+
+  /** Deterministic clock + sleep so the budget is exercised without real time passing. */
+  function fakeClock() {
+    let nowMs = 0;
+    return {
+      now: () => nowMs,
+      sleep: async (ms: number) => {
+        nowMs += ms;
+      },
+      advance: (ms: number) => {
+        nowMs += ms;
+      },
+    };
+  }
+
+  it('waits out the 404 and enrolls once the guest agent publishes', async () => {
+    const clock = fakeClock();
+    const waits: number[] = [];
+    let attempts = 0;
+    const enrolled: GcpIapHostKeyEnrollmentInput[] = [];
+
+    const resolved = await resolveWorkspaceHostInitializationOperationsForHost({
+      workspaceId: 'ws-1',
+      hostId: 'host-alpha',
+      controller,
+      readDesiredSpec: async () => ({ desired: desired() }),
+      gcpClient: {
+        async getInstanceGuestAttributes() {
+          attempts += 1;
+          if (attempts < 3) throw guestAttributeNotFound();
+          return guestHostKeys();
+        },
+      },
+      enrollHostKeys: async (input) => {
+        enrolled.push(input);
+      },
+      awaitHostKeys: {
+        now: clock.now,
+        sleep: clock.sleep,
+        pollIntervalMs: 5_000,
+        onWaiting: ({ elapsedMs }) => {
+          waits.push(elapsedMs);
+        },
+      },
+    });
+
+    expect(attempts).toBe(3);
+    expect(enrolled).toHaveLength(1);
+    expect(resolved.operations.supportedStepKinds).toContain('create-workspace');
+    // onWaiting is the ONLY positive evidence the gate ran: the non-waiting path emits nothing,
+    // so a fast clean resolve can never prove this.
+    expect(waits).toEqual([0, 5_000]);
+  });
+
+  it('waits out a PARTIAL publish, not just the 404', async () => {
+    // The guest agent writes the three keys as separate attributes, so a read landing
+    // mid-publication returns an incomplete set. `guestHostKeys` rejects that with
+    // "missing '<algorithm>'" — transient, and invisible to a 404-only retry.
+    const clock = fakeClock();
+    let attempts = 0;
+
+    await resolveWorkspaceHostInitializationOperationsForHost({
+      workspaceId: 'ws-1',
+      hostId: 'host-alpha',
+      controller,
+      readDesiredSpec: async () => ({ desired: desired() }),
+      gcpClient: {
+        async getInstanceGuestAttributes() {
+          attempts += 1;
+          return attempts < 2 ? guestHostKeys().slice(0, 1) : guestHostKeys();
+        },
+      },
+      enrollHostKeys: async () => undefined,
+      awaitHostKeys: { now: clock.now, sleep: clock.sleep },
+    });
+
+    expect(attempts).toBe(2);
+  });
+
+  it('does NOT retry a wrong-instance 404 — it refuses immediately', async () => {
+    const clock = fakeClock();
+    let attempts = 0;
+
+    await expect(
+      resolveWorkspaceHostInitializationOperationsForHost({
+        workspaceId: 'ws-1',
+        hostId: 'host-alpha',
+        controller,
+        readDesiredSpec: async () => ({ desired: desired() }),
+        gcpClient: {
+          async getInstanceGuestAttributes() {
+            attempts += 1;
+            throw instanceNotFound();
+          },
+        },
+        enrollHostKeys: async () => undefined,
+        awaitHostKeys: { now: clock.now, sleep: clock.sleep },
+      }),
+    ).rejects.toThrow(/instances\/ghost' was not found/);
+
+    // The whole point of the discrimination: one call, original error, no wait.
+    expect(attempts).toBe(1);
+  });
+
+  it('does NOT retry a non-404 failure', async () => {
+    const clock = fakeClock();
+    let attempts = 0;
+
+    await expect(
+      resolveWorkspaceHostInitializationOperationsForHost({
+        workspaceId: 'ws-1',
+        hostId: 'host-alpha',
+        controller,
+        readDesiredSpec: async () => ({ desired: desired() }),
+        gcpClient: {
+          async getInstanceGuestAttributes() {
+            attempts += 1;
+            throw Object.assign(new Error('gcp_preflight_http_403: caller lacks permission'), {
+              status: 403,
+              reason: 'caller lacks permission',
+            });
+          },
+        },
+        enrollHostKeys: async () => undefined,
+        awaitHostKeys: { now: clock.now, sleep: clock.sleep },
+      }),
+    ).rejects.toThrow(/403/);
+
+    expect(attempts).toBe(1);
+  });
+
+  it('does NOT wait out MALFORMED key material — a corrupt key is a defect, not a slow one', async () => {
+    const clock = fakeClock();
+    let attempts = 0;
+
+    await expect(
+      resolveWorkspaceHostInitializationOperationsForHost({
+        workspaceId: 'ws-1',
+        hostId: 'host-alpha',
+        controller,
+        readDesiredSpec: async () => ({ desired: desired() }),
+        gcpClient: {
+          async getInstanceGuestAttributes() {
+            attempts += 1;
+            // A COMPLETE set (so the presence predicate is satisfied) whose blob is garbage.
+            return guestHostKeys().map((attribute) =>
+              attribute.key === 'ssh-rsa' ? { ...attribute, value: 'not-base64!!' } : attribute,
+            );
+          },
+        },
+        awaitHostKeys: { now: clock.now, sleep: clock.sleep },
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceHostInitializationHostKeyError);
+
+    // Read once and failed — NOT retried until the publication budget expired, which would have
+    // reported a corrupt key under the wrong cause.
+    expect(attempts).toBe(1);
+  });
+
+  it('gives up with a dedicated timeout error instead of waiting forever', async () => {
+    const clock = fakeClock();
+    let attempts = 0;
+
+    await expect(
+      resolveWorkspaceHostInitializationOperationsForHost({
+        workspaceId: 'ws-1',
+        hostId: 'host-alpha',
+        controller,
+        readDesiredSpec: async () => ({ desired: desired() }),
+        gcpClient: {
+          async getInstanceGuestAttributes() {
+            attempts += 1;
+            throw guestAttributeNotFound();
+          },
+        },
+        enrollHostKeys: async () => undefined,
+        awaitHostKeys: {
+          now: clock.now,
+          sleep: clock.sleep,
+          timeoutMs: 20_000,
+          pollIntervalMs: 5_000,
+        },
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceHostHostKeyPublicationTimeoutError);
+
+    // Bounded: 20s budget at a 5s interval, not an unbounded spin.
+    expect(attempts).toBe(5);
   });
 });
 
