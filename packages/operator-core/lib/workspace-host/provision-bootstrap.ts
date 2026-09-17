@@ -32,6 +32,7 @@ import { isAbsolute } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import {
   DEFAULT_WORKSPACE_HOST_AGENT_USER,
+  WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   buildWorkspaceHostBootstrap,
   validateWorkspaceHostImageArtifact,
@@ -309,7 +310,72 @@ async function readRelease(
     problems.push(`release manifest '${manifestPath}' is not a valid image artifact: ${errors.join('; ')}`);
     return undefined;
   }
-  return (artifact as WorkspaceHostImageArtifact).release;
+  const validated = artifact as WorkspaceHostImageArtifact;
+  const unsupported = agentHomeBundleSupportProblem(validated, manifestPath);
+  if (unsupported) {
+    problems.push(unsupported);
+    return undefined;
+  }
+  return validated.release;
+}
+
+/**
+ * Refuse a publication that cannot parse the agent-home material this controller will send
+ * (WI-10001751).
+ *
+ * This is property 3 of this module — "fails closed, LOUDLY, controller-side" — applied one layer
+ * out. The module already refuses to render a bootstrap it cannot trust, on the reasoning that the
+ * alternative "is not 'a host without a bootstrap' — it is a billing, unreachable brick whose
+ * provisioning operation reports success". A publication whose host program predates the agent-home
+ * contract version the controller emits produces the SAME outcome by a different route: provision
+ * succeeds, the instance boots, the bootstrap installs and runs, and only ~5.5 minutes later does
+ * agent bind fail on a version mismatch — by which time a VM and a NAT are billing and cannot ever
+ * become usable. Both halves of that pincer are closed here rather than only the first.
+ *
+ * Measured instance: publication r31 (2026-09-07T09:18Z, source 7d85b492) shipped a parser
+ * accepting {v2, v1}; agent-home v3 landed at 16:10Z the SAME DAY (96b0d248). Only v3 is
+ * admission-eligible (D-311) and only the v3 path strips the refresh token (WI-10001691), so the
+ * controller cannot downgrade to meet the host — the sets simply do not intersect, and every
+ * provision against that publication was doomed before it started.
+ *
+ * An ABSENT declaration is refused rather than waved through. "No declaration" and "supports
+ * everything" are indistinguishable to a reader but opposite in consequence, and here the
+ * permissive reading is known to be the wrong one: every publication cut before this field existed
+ * predates v3 by construction. Refusing costs a re-cut; assuming costs a billing brick and a
+ * multi-hour misdiagnosis pointed at the wrong artifact entirely.
+ */
+function agentHomeBundleSupportProblem(
+  artifact: WorkspaceHostImageArtifact,
+  manifestPath: string,
+): string | undefined {
+  // Fed untrusted file bytes, so the declared value is validated rather than trusted to be shaped.
+  const declared = new Set<string>();
+  for (const rule of artifact.compatibility ?? []) {
+    const versions = rule.agentHomeBundleContractVersions;
+    if (!Array.isArray(versions)) continue;
+    for (const version of versions) {
+      if (typeof version === 'string' && version.trim().length > 0) declared.add(version);
+    }
+  }
+  if (declared.size === 0) {
+    return (
+      `release manifest '${manifestPath}' declares no compatibility[].agentHomeBundleContractVersions, ` +
+      `so it cannot be shown to parse the '${WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION}' agent-home ` +
+      `material this controller emits. A publication cut before that field existed also predates the ` +
+      `contract version it would have to accept. Re-cut the publication from current source and ` +
+      `republish, then repoint ${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile}.`
+    );
+  }
+  if (!declared.has(WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION)) {
+    return (
+      `release manifest '${manifestPath}' supports agent-home bundle [${[...declared].sort().join(', ')}] ` +
+      `but this controller emits '${WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION}', the only ` +
+      `admission-eligible version (D-311). A host bootstrapped from this publication would provision, ` +
+      `boot and bootstrap successfully and then fail agent bind, leaving a billing host that can never ` +
+      `be initialized. Re-cut the publication from current source and republish.`
+    );
+  }
+  return undefined;
 }
 
 function readInteger(

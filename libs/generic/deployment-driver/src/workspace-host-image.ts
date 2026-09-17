@@ -77,6 +77,21 @@ interface WorkspaceHostImageCompatibilityRuleBase {
   actions: readonly WorkspaceHostImageAction[];
   /** Optional freshness ceiling for new installs/upgrades. Rollback uses supportEndsAt instead. */
   maximumArtifactAgeDays?: number;
+  /**
+   * The agent-home bundle contract versions THIS bundle's host program can parse, derived at
+   * build time from the source being packaged (WI-10001751).
+   *
+   * An age ceiling cannot answer this question. `maximumArtifactAgeDays` is 30, and the r31
+   * publication was cut 2026-09-07T09:18Z — SIX HOURS AND FIFTY-TWO MINUTES before agent-home
+   * bundle v3 landed (96b0d248, 16:10Z the same day). So it was a well within-policy, 10-day-old,
+   * fully-signed artifact that could not parse the only material the controller is permitted to
+   * send (v3 alone is admission-eligible, D-311). Freshness in DAYS cannot see a skew measured in
+   * HOURS against a contract boundary; only naming the versions can.
+   *
+   * Absent means "this publication predates the declaration", NOT "any version is fine" — see the
+   * refusal in provision-bootstrap, which fails closed on exactly that reading.
+   */
+  agentHomeBundleContractVersions?: readonly string[];
 }
 
 /** One exact cell in the provider × architecture × host-model acceptance matrix. */
