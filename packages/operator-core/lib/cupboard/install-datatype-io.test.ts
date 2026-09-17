@@ -107,14 +107,18 @@ function recordingSeeder() {
 beforeEach(async () => {
   root = await fs.mkdtemp(join(tmpdir(), 'pc-datatype-io-'));
   fixtureRepo = await fs.mkdtemp(join(tmpdir(), 'pc-datatype-mirror-'));
-  process.env.PAPERCUSP_ROOT = root;
+  // PAPERCUSP_HOME, not PAPERCUSP_ROOT: `papercuspRoot()` reads PAPERCUSP_HOME and IGNORES
+  // PAPERCUSP_ROOT entirely, so setting the latter isolates NOTHING — the install silently
+  // lands in the live workspace layer (~/.papercusp-workspaces/<ws>/.papercusp/datatypes/
+  // installed) and PERSISTS, which then 409s every later run as "already installed".
+  process.env.PAPERCUSP_HOME = join(root, 'home');
   _resetPapercuspRootForTests();
   resolvedVersion = '1.0.0';
   resolveFails = false;
 });
 
 afterEach(async () => {
-  delete process.env.PAPERCUSP_ROOT;
+  delete process.env.PAPERCUSP_HOME;
   _resetPapercuspRootForTests();
   await fs.rm(root, { recursive: true, force: true });
   await fs.rm(fixtureRepo, { recursive: true, force: true });
@@ -130,7 +134,9 @@ describe('installDatatypeFromCupboard', () => {
       seeder.deps,
     );
 
-    expect(result.ok).toBe(true);
+    // toMatchObject, not `.ok === true`: on failure it prints the WHOLE result, so a
+    // refusal names its own status/error/detail instead of "expected false to be true".
+    expect(result).toMatchObject({ ok: true });
     if (!result.ok) return;
     // Distribution half: the package is resolvable on disk.
     expect(result.result.operation).toBe('install');
