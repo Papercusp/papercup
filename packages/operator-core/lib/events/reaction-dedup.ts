@@ -12,6 +12,15 @@ import type { ReactionClaim } from '@papercusp/event-reaction';
 export type { ReactionClaim };
 
 /**
+ * The recorded outcomes this module writes to `event_reactions.status`.
+ *
+ * `'fired'` means "claimed, presumed dispatching" — never "succeeded".
+ * `'budget_denied'` is a deliberate policy drop, kept distinct from `'failed'`
+ * so the two never debounce or count against each other.
+ */
+export type ReactionOutcomeStatus = 'fired' | 'failed' | 'budget_denied';
+
+/**
  * Atomically claim a reaction's dedup id. Returns true if THIS call won the claim
  * (the reaction should proceed to dispatch), false if it was already claimed (a
  * re-delivery — skip; "a double-fire is a no-op", D-007).
@@ -110,6 +119,15 @@ export async function countRecentReactionFailures(opts: {
   windowMinutes: number;
   /** Exclude the row just written, so a caller counts PRIOR failures only. */
   excludeDedupId?: string;
+  /**
+   * Which recorded outcome to debounce against. Default `'failed'`.
+   *
+   * A budget denial debounces against `'budget_denied'` — its OWN status — and
+   * not against `'failed'`: the two are different conditions with different
+   * owner advice, and counting one against the other would let a rule that is
+   * merely erroring silence the alert that says a contributor is running hot.
+   */
+  status?: ReactionOutcomeStatus;
 }): Promise<number> {
   const { sql } = getOrgPg();
   const rows = await sql<Array<{ n: string }>>`
@@ -117,10 +135,85 @@ export async function countRecentReactionFailures(opts: {
       FROM harness_shared.event_reactions
      WHERE workspace_id = ${opts.workspaceId}
        AND rule_id = ${opts.ruleId}
-       AND status = 'failed'
+       AND status = ${opts.status ?? 'failed'}
        AND contributor IS NOT DISTINCT FROM ${opts.contributor ?? null}
        AND fired_at > now() - make_interval(mins => ${opts.windowMinutes})
        AND dedup_id <> ${opts.excludeDedupId ?? ''}
   `;
   return Number(rows[0]?.n ?? '0');
+}
+
+/**
+ * How many times this CONTRIBUTOR has fired inside `windowMinutes` — the input
+ * to the per-contributor fire budget (P-030 c).
+ *
+ * Three deliberate choices, each load-bearing:
+ *
+ * 1. `contributor = $2`, NOT `IS NOT DISTINCT FROM`. That exact predicate is
+ *    what lets the planner use 1169's PARTIAL index
+ *    `(workspace_id, contributor, fired_at DESC) WHERE contributor IS NOT NULL`;
+ *    the null-safe form matches the first-party NULL bucket too, which is both
+ *    outside the partial index and outside the budget's population — the clause
+ *    scopes it to "once third-party rules can install". So the index and the
+ *    semantics agree, and `contributor` is typed non-null here to make the
+ *    first-party case unrepresentable rather than merely discouraged.
+ * 2. `status <> 'budget_denied'` — a denial is NOT a fire. Counting denials
+ *    would make the budget self-reinforcing: once a contributor crossed the
+ *    line, its own refusals would keep it over the line for a whole window even
+ *    if it never fired again.
+ * 3. A LEDGER read, not an in-process counter — the same reasoning as
+ *    `countRecentReactionFailures`: an in-memory window resets on every restart,
+ *    which is precisely when a runaway contributor would get a fresh allowance.
+ */
+export async function countRecentContributorFires(opts: {
+  workspaceId: string;
+  contributor: string;
+  windowMinutes: number;
+}): Promise<number> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ n: string }>>`
+    SELECT count(*)::text AS n
+      FROM harness_shared.event_reactions
+     WHERE workspace_id = ${opts.workspaceId}
+       AND contributor = ${opts.contributor}
+       AND status <> 'budget_denied'
+       AND fired_at > now() - make_interval(mins => ${opts.windowMinutes})
+  `;
+  return Number(rows[0]?.n ?? '0');
+}
+
+/**
+ * Record a reaction the fire budget REFUSED (P-030 c).
+ *
+ * Same upsert shape as `recordReactionFailure`, but a distinct status: a denial
+ * is a deliberate policy drop, not an error, and conflating the two would both
+ * mislabel it to an owner and — because the budget counts fires — feed the
+ * budget's own refusals back into its input. `status` is bare `text` with no
+ * CHECK constraint, so this new value needs no migration.
+ */
+export async function recordBudgetDenial(opts: {
+  dedupId: string;
+  workspaceId: string;
+  ruleId: string;
+  fire: string;
+  reason: string;
+  triggerTool?: string | null;
+  causeRootRunId?: string | null;
+  depth?: number;
+  contributor?: string | null;
+}): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    INSERT INTO harness_shared.event_reactions
+      (dedup_id, workspace_id, rule_id, fire, trigger_tool, cause_root_run_id, depth, status, error_message, contributor)
+    VALUES (
+      ${opts.dedupId}, ${opts.workspaceId}, ${opts.ruleId}, ${opts.fire},
+      ${opts.triggerTool ?? null}, ${opts.causeRootRunId ?? null}, ${opts.depth ?? 0},
+      'budget_denied', ${opts.reason}, ${opts.contributor ?? null}
+    )
+    ON CONFLICT (dedup_id) DO UPDATE
+      SET status = 'budget_denied',
+          error_message = EXCLUDED.error_message,
+          contributor = COALESCE(EXCLUDED.contributor, harness_shared.event_reactions.contributor)
+  `;
 }
