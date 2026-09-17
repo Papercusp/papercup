@@ -55,6 +55,44 @@ export function isRetriablePgConnectError(e: unknown): boolean {
   return x.code === 'CONNECT_TIMEOUT' || /\bCONNECT_TIMEOUT\b/.test(x.message ?? '');
 }
 
+/**
+ * True iff `e` is a postgres-js connection-loss error that is retry-safe **for a caller
+ * that has independently established its operation is idempotent**: `CONNECT_TIMEOUT`
+ * (provably pre-execution — see {@link isRetriablePgConnectError}) PLUS the codes
+ * postgres-js raises when the pool a caller is holding is torn down underneath it —
+ * `CONNECTION_DESTROYED`, `CONNECTION_CLOSED`, `CONNECTION_ENDED`.
+ *
+ * ## Why this is separate, and deliberately NOT the default
+ *
+ * Those three codes do **not** prove the statement never reached the server.
+ * `CONNECTION_DESTROYED` in particular is raised from two structurally different places:
+ * `connection.js`'s `execute()` guard, which fires *before a single byte is written* (so
+ * the query provably never ran), and `terminate()`/`destroy()`, which reject queries that
+ * were already in flight. The two are indistinguishable from the error alone — only the
+ * stack separates them, and a stack line number is exactly the kind of derived truth that
+ * rots on the next postgres-js bump. So this classifier cannot be used to make a
+ * *mutating* call site safe; the CALLER has to be idempotent on its own terms.
+ *
+ * {@link isRetriablePgConnectError} therefore stays the default for background sweeps.
+ * Pass this one only where re-running the whole operation is known-harmless, and say why
+ * at the call site.
+ *
+ * Real case this exists for (WI-10001781): the release cut's seed phase lost a connection
+ * between two reads and discarded a ~2.5-hour three-platform build. Its only mutation is an
+ * append-only `substrate_outbox` enqueue that carries no uniqueness constraint, and the
+ * drain re-applies a duplicate `put` idempotently under LWW — so a repeat costs drain time,
+ * never correctness. That is the shape this predicate is for.
+ */
+export function isRetriableIdempotentPgConnectionError(e: unknown): boolean {
+  if (isRetriablePgConnectError(e)) return true;
+  const x = e as { code?: string; message?: string } | null;
+  if (!x) return false;
+  // All three are postgres-js-invented codes (not Node errnos), so matching them is
+  // inherently postgres-js-scoped and cannot mask an unrelated error.
+  const codes = /\b(CONNECTION_DESTROYED|CONNECTION_CLOSED|CONNECTION_ENDED)\b/;
+  return codes.test(x.code ?? '') || codes.test(x.message ?? '');
+}
+
 export interface PgRetryOpts {
   /** Additional attempts AFTER the first (so total tries = retries + 1). Default 2. */
   retries?: number;
