@@ -124,3 +124,21 @@ describe("ExternalLinkProvider OAuth handoff", () => {
     errorLog.mockRestore();
   });
 });
+
+// Counterexample proof for scenario `system-browser-open-disabled`. Deliberately
+// TOP-LEVEL (no `describe`) so its full name is exactly the scenario id, and
+// deliberately narrow: it is the only case in this file that turns on the
+// PROTOCOL conjunct of `isOAuthStartUrl` (the cross-origin case above differs by
+// host as well, so it stays false without that conjunct). Removing the protocol
+// guard from the production recognizer therefore fails THIS case and no other —
+// which is what makes the scenario falsifiable rather than merely asserted.
+it("system-browser-open-disabled", () => {
+  const app = "http://localhost:3070/settings/plugins";
+  expect(
+    isOAuthStartUrl(
+      "https://localhost:3070/api/oauth/start?provider=google",
+      app,
+    ),
+    "system-browser-open-disabled: a same-host OAuth start link on a DIFFERENT protocol must not be treated as the app's own OAuth start route, so it is never handed to the system browser",
+  ).toBe(false);
+});
