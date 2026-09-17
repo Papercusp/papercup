@@ -29,6 +29,7 @@ const DOOR_DIR = join(__dirname, '..', 'agent-tools', 'cupboard');
 const INSTALL_DOOR_SITES = [
   'install-app.ts',
   'install-blueprint.ts',
+  'install-datatype.ts',
   'install-goal.ts',
   'install-plan.ts',
   'install-plugin.ts',
