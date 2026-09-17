@@ -220,6 +220,21 @@ export interface CloudResourceCreatedEventLike {
   };
   /** From the live apply context — one provider serves many workspaces. */
   readonly workspaceId: string;
+  /**
+   * WI-10001673: the workspace-host this resource was created FOR. REQUIRED, and per-event for
+   * the same reason `workspaceId` is: it was first modeled on the observer BINDING below, which
+   * is constructed once at the DBOS composition root where no host is in scope, so it spread to
+   * nothing on every event and all 23 rows created after migration 1168 were born `host_id=''`.
+   * A provider that cannot name the host owns a row it can never reclaim, so this is not
+   * optional — an empty address must be a loud write, never a quiet default.
+   */
+  readonly hostId: string;
+  /**
+   * The enclosing resource this one is addressed THROUGH — for kind=nat, the Cloud Router that
+   * owns the NAT config, since `delete-nat` takes `routerName`. Legitimately absent for kinds
+   * addressed directly, which is why this one IS optional where `hostId` is not.
+   */
+  readonly parentResourceId?: string;
 }
 
 export interface CloudResourceObligationObserverBinding {
@@ -261,7 +276,11 @@ export function createCloudResourceObligationObserver(
       ...(event.resource.parentProviderId ? { projectId: event.resource.parentProviderId } : {}),
       ...(event.resource.zone ? { zone: event.resource.zone } : {}),
       ...(event.resource.region ? { region: event.resource.region } : {}),
-      ...(binding.hostId ? { hostId: binding.hostId } : {}),
+      // The EVENT wins over the binding. The binding's `hostId` survives only as a fallback for
+      // a caller that composes one provider per host; the composition root does not, which is
+      // why relying on it alone left every row unaddressable (WI-10001673).
+      ...(event.hostId || binding.hostId ? { hostId: event.hostId || binding.hostId } : {}),
+      ...(event.parentResourceId ? { parentResourceId: event.parentResourceId } : {}),
       ...(binding.purpose ? { purpose: binding.purpose } : {}),
       ...(binding.createdByOwnerId ? { createdByOwnerId: binding.createdByOwnerId } : {}),
       ...(binding.sourceWorkItemId ? { sourceWorkItemId: binding.sourceWorkItemId } : {}),
