@@ -88,6 +88,35 @@ degraded() {
   [ -x "$ALERT" ] && "$ALERT" --degraded "$*" || log "DEGRADED (no alert script): $*"
 }
 
+clear_failing_marker() {
+  # Retraction half of the ALERT-MIRROR-FAILING latch, callable from EVERY branch
+  # that has positively MEASURED the backups to be fine — not only the fully
+  # healthy one. pc-estate-mirror-alert.sh writes this marker and, before
+  # WI-10001692, nothing cleared it: once any run failed it asserted "the backups
+  # are unprotected" forever, including inside the triage text broadcast
+  # fleet-wide. That is worse than no marker, because agents read its ABSENCE as
+  # evidence of health (WI-1038273 did exactly that), so a stuck marker misleads
+  # in the direction of a fault that is already fixed. An alarm that cannot stand
+  # down is a bug in the alarm.
+  #
+  # Returns 0 ONLY on the transition out of an alarm we actually raised (marker
+  # present AND cleared), so the CALLER picks the channel that announces it: the
+  # healthy path stands the alarm down, while the degraded path stays silent here
+  # and lets degraded() speak — a --resolved broadcast there would both overclaim
+  # ("the fault is over" while the probe is still blind) and delete the degraded
+  # latch it is about to set.
+  [ -e "$ROOT/ALERT-MIRROR-FAILING" ] || return 1
+  if rm -f "$ROOT/ALERT-MIRROR-FAILING" 2>/dev/null \
+    || sudo -n rm -f "$ROOT/ALERT-MIRROR-FAILING" 2>/dev/null; then
+    log "cleared ALERT-MIRROR-FAILING ($*)"
+    return 0
+  fi
+  # Never fail the health check over the marker -- a probe that dies while
+  # cleaning up reports a fault that does not exist.
+  log "WARN: could not clear $ROOT/ALERT-MIRROR-FAILING ($*)"
+  return 1
+}
+
 # Measure freshness from the SNAPSHOT TREE — the immutable artifact the mirror
 # exists to produce — rather than from MIRROR-STATE.json, a single deletable file
 # whose absence says nothing about whether the backups are there. Prints
@@ -540,6 +569,15 @@ do_health() {
     # OnFailure=pc-estate-mirror-alert.service, which would re-broadcast the very
     # "only surviving copy is GCS" claim this branch exists to stop telling.
     log "HEALTH: MIRROR-STATE.json absent but snapshots are current — $sn_count snapshot(s) across $sn_hosts host(s), newest ${sn_age}h old (limit ${MAX_AGE_H}h)"
+    # A stale ALERT-MIRROR-FAILING asserts a BACKUP OUTAGE, and the census above
+    # just falsified that claim — so retract it HERE too. Without this the branch
+    # returns below without ever reaching the stand-down block, and the false
+    # marker latches for as long as MIRROR-STATE.json stays missing: the probe
+    # would report "degraded, backups fine" every 6h while the marker on disk kept
+    # telling every triaging agent the opposite. Deliberately BEFORE degraded():
+    # the stand-down path clears the degraded latch, so raising it first would
+    # erase the latch we are about to set.
+    clear_failing_marker "backups measured present and current; probe bookkeeping still missing"
     degraded "MIRROR-STATE.json is missing, so seal/free-space/quarantine cannot be asserted — but the BACKUPS are present and current ($sn_count snapshots across $sn_hosts hosts, newest ${sn_age}h old, limit ${MAX_AGE_H}h). The next successful mirror run rewrites the state file."
     return 0
   fi
@@ -599,19 +637,12 @@ PY
   # agents read its ABSENCE as evidence of health (WI-1038273 did exactly that),
   # so a stuck marker misleads in the direction of a fault that is already fixed.
   # An alarm that cannot stand down is a bug in the alarm.
-  if [ -e "$ROOT/ALERT-MIRROR-FAILING" ]; then
-    if rm -f "$ROOT/ALERT-MIRROR-FAILING" 2>/dev/null \
-      || sudo -n rm -f "$ROOT/ALERT-MIRROR-FAILING" 2>/dev/null; then
-      log "cleared ALERT-MIRROR-FAILING (mirror recovered)"
-      # Guarded by the enclosing marker test on purpose: the stand-down fires
-      # ONLY on the transition out of an alarm we actually raised, never on an
-      # ordinary healthy run. A stand-down every 6 hours would be its own spam.
-      standdown "mirror healthy again as of $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    else
-      # Never fail the health check over the marker -- a probe that dies while
-      # cleaning up reports a fault that does not exist.
-      log "WARN: mirror healthy but could not clear $ROOT/ALERT-MIRROR-FAILING"
-    fi
+  # Guarded by clear_failing_marker's own existence test on purpose: the
+  # stand-down fires ONLY on the transition out of an alarm we actually raised,
+  # never on an ordinary healthy run. A stand-down every 6 hours would be its own
+  # spam.
+  if clear_failing_marker "mirror recovered"; then
+    standdown "mirror healthy again as of $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   fi
   log "health OK"
   return 0
