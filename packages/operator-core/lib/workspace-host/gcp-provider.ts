@@ -622,6 +622,31 @@ function deleteOpName(step: WorkspaceHostPlanStep): string | undefined {
   return typeof op === 'string' ? op : undefined;
 }
 
+/**
+ * WI-10001727: does this step BRING THE RESOURCE INTO EXISTENCE, as opposed to adopting one we
+ * did not create? Every `insert-*` op creates; every `use-existing-*` op adopts. That distinction
+ * is what decides whether an `unchanged` result still owes a teardown obligation.
+ *
+ * `reconcile` returns `unchanged` whenever it finds a step's target already present. For a
+ * `use-existing-*` op that genuinely means "someone else's resource, we owe nothing". For an
+ * `insert-*` op it means the OPPOSITE: we issued the create, the provider's confirmation was lost
+ * ("Provider outcome is uncertain; the next request will reconcile before applying"), and the
+ * resource we are now rediscovering is one WE brought into existence and must tear down.
+ *
+ * Measured on host pc-p317-cred-20260917b (2026-09-17T09:28-09:37Z): create-subnetwork
+ * (attempts=5) and create-firewall (attempts=2) both terminated `unchanged` and got NO obligation
+ * row, while create-network and create-router terminated `applied` and did. Both un-recorded
+ * resources were live and metered in GCP, invisible to the teardown sweep by construction.
+ *
+ * Defensive read rather than `stepInput(step)` for the same reason as `deleteOpName` above: this
+ * runs on the observer path after the work already succeeded, so throwing here would turn a
+ * bookkeeping miss into a failed provision.
+ */
+function createsOwnedResource(step: WorkspaceHostPlanStep): boolean {
+  const op = (step as { input?: { op?: unknown } })?.input?.op;
+  return typeof op === 'string' && op.startsWith('insert-');
+}
+
 const CAPABILITIES: WorkspaceHostProviderCapabilities = {
   discovery: { scopes: true, regions: true, sizes: true, images: true, priceEstimates: true },
   lifecycle: {
@@ -2084,15 +2109,29 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
    * Single reporting seam for created resources. Every confirmed creation in `applyStep` returns
    * through `applied(...)` carrying the resource ref it just brought into existence, so observing
    * the RESULT covers every current insert case — and every future one — without each call site
-   * having to remember. `unchanged` results (the `use-existing-*` ops) deliberately do not fire:
-   * we did not create those, so we owe no teardown obligation for them.
+   * having to remember.
+   *
+   * WI-10001727: `unchanged` is NOT a reliable proxy for "we did not create this". It has two
+   * distinct causes and only one of them is someone else's resource:
+   *   - `applyStep` returns it for the three `use-existing-*` ops — genuinely adopted, no
+   *     obligation owed. Still excluded, deliberately.
+   *   - `reconcile` returns it for an `insert-*` op whose target it finds already present — which
+   *     means WE created it on an attempt whose confirmation was lost. An obligation IS owed, and
+   *     gating on `applied` alone silently dropped it, leaving a live metered resource with no
+   *     ledger row and therefore invisible to the teardown sweep forever.
+   * `createsOwnedResource` is the discriminator. Firing is safe to repeat: the ledger writer is
+   * idempotent on (workspace, provider, kind, resourceId), so a re-reconciled step is a no-op
+   * rather than a duplicate row.
    */
   async apply(
     request: WorkspaceHostApplyRequest,
     ctx: WorkspaceHostProviderContext,
   ): Promise<WorkspaceHostApplyResult> {
     const result = await this.applyStep(request, ctx);
-    if (this.onResourceCreated && result.state === 'applied' && result.resource) {
+    const owesCreationObligation =
+      result.state === 'applied' ||
+      (result.state === 'unchanged' && createsOwnedResource(request.step));
+    if (this.onResourceCreated && owesCreationObligation && result.resource) {
       await this.onResourceCreated({
         resource: result.resource,
         operationId: result.operationId,
