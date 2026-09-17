@@ -128,6 +128,62 @@ describe('immutable blueprint release lifecycle', () => {
     expect(existsSync(join(installedDir, 'identity/stale.txt'))).toBe(false);
   });
 
+  it('installs a second identity claiming the same exclusive slot as an inactive alternative', async () => {
+    // D-029: installing into the library is allowed even when another stored
+    // identity already fills the same exclusive slot, because activation is a
+    // separate door (the P-040 desired/applied transition). An install that
+    // declares no activation stack must therefore land the alternative without
+    // refusing and without displacing the incumbent. The refusal half — a
+    // COMBINED install-and-activate whose stack collides on that slot — is the
+    // next test; together they are what makes install distinct from activation.
+    const incumbent = await source('1.0.0', 'incumbent persona\n', 1);
+    await commitBlueprintRelease({
+      installedDir,
+      sourceDir: incumbent.dir,
+      id: 'identity',
+      version: '1.0.0',
+      source: 'repo',
+      pins: [incumbent.pin],
+    });
+
+    const yaml = ['id: challenger', 'version: 1.0.0', 'slots: [{ slot: domain }]', 'knobs: { maxCostUsd: 1 }'].join('\n') + '\n';
+    const prompt = 'challenger persona\n';
+    const dir = join(root, 'source-challenger');
+    await fs.mkdir(join(dir, 'prompts'), { recursive: true });
+    await fs.writeFile(join(dir, 'blueprint.yaml'), yaml);
+    await fs.writeFile(join(dir, 'prompts', 'persona.md'), prompt);
+    const pin = pinPackageInput({
+      packageKind: 'blueprint',
+      ref: 'challenger',
+      revision: '1.0.0',
+      files: [
+        { path: 'blueprint.yaml', bytes: yaml },
+        { path: 'prompts/persona.md', bytes: prompt },
+      ],
+      value: { id: 'challenger', version: '1.0.0', slots: [{ slot: 'domain' }], knobs: { maxCostUsd: 1 } },
+    });
+
+    const alternative = await commitBlueprintRelease({
+      installedDir,
+      sourceDir: dir,
+      id: 'challenger',
+      version: '1.0.0',
+      source: 'repo',
+      pins: [pin],
+    });
+
+    expect(alternative.operation).toBe('install');
+    expect(alternative.activationPreflight.ok).toBe(true);
+    // The incumbent is untouched — the alternative did not activate over it.
+    expect(await fs.readFile(join(installedDir, 'identity/prompts/persona.md'), 'utf8')).toBe('incumbent persona\n');
+    expect(await fs.readFile(join(installedDir, 'challenger/prompts/persona.md'), 'utf8')).toBe('challenger persona\n');
+    // Library "active" is per-package content, NOT the exclusive stack slot:
+    // two identities both claiming `domain` coexist, each with its own active
+    // release, because nothing here resolved the slot.
+    expect((await readBlueprintLifecycle(installedDir, 'identity')).active?.version).toBe('1.0.0');
+    expect((await readBlueprintLifecycle(installedDir, 'challenger')).active?.version).toBe('1.0.0');
+  });
+
   it('refuses a listed-content mismatch and an exclusive-slot activation conflict before changing the active package', async () => {
     const v1 = await source('1.0.0', 'persona\n', 1);
     await expect(
