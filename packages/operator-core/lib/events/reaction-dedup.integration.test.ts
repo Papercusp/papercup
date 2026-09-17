@@ -104,9 +104,11 @@ describe('reaction-dedup ledger (PG)', () => {
   // has contributor X fired": an id is an opaque string its contributor chose,
   // so grouping by an id prefix is a convention, not a key.
   it('persists the contributor, so fires can be grouped by WHO contributed the rule', async () => {
-    await claimReaction({ ...claim('c1'), ruleId: 'r-a', contributor: 'plugin:acme' } as never);
-    await claimReaction({ ...claim('c2'), ruleId: 'r-b', contributor: 'plugin:acme' } as never);
-    await claimReaction({ ...claim('c3'), ruleId: 'r-c', contributor: 'standalone:xyz' } as never);
+    const attributed = (dedupId: string, ruleId: string, contributor: string) =>
+      ({ dedupId, workspaceId: 'w1', ruleId, fire: 'plans:set-status', depth: 0, contributor }) as never;
+    await claimReaction(attributed('c1', 'r-a', 'plugin:acme'));
+    await claimReaction(attributed('c2', 'r-b', 'plugin:acme'));
+    await claimReaction(attributed('c3', 'r-c', 'standalone:xyz'));
 
     const byContributor = await rootSql<{ contributor: string; n: bigint }[]>`
       SELECT contributor, count(*) AS n FROM harness_shared.event_reactions
