@@ -351,12 +351,31 @@ describe('registryInputFromPackage', () => {
     // POSITIVE CONTROL: a package that DOES carry the optional fields passes them through,
     // so the assertion above cannot pass merely because the mapper drops everything.
     const full = registryInputFromPackage(
-      { ...pkg, workItemKind: 'incident-report', display: { icon: 'x' } } as unknown as InstalledDatatype,
+      {
+        ...pkg,
+        workItemKind: 'incident-report',
+        display: { widget: 'text', summary: '{{title}}' },
+      } as unknown as InstalledDatatype,
       'ws-1',
       'agent-7',
     );
     expect(full.workItemKind).toBe('incident-report');
-    expect(full.display).toEqual({ icon: 'x' });
+    expect(full.display).toEqual({ widget: 'text', summary: '{{title}}' });
     expect(full.createdBy).toBe('agent-7');
+  });
+
+  it('refuses a package whose display is not a valid DatatypeDisplaySpec', () => {
+    const pkg = {
+      id: 'incident-report',
+      title: 'Incident Report',
+      tier: 'generic-kind',
+      // `icon` is not part of the display contract at all: the spec is a FORM schema
+      // discriminated on `widget`, so this object cannot name a renderer.
+      display: { icon: 'x' },
+      tags: [],
+      dir: '/tmp/x',
+    } as unknown as InstalledDatatype;
+
+    expect(() => registryInputFromPackage(pkg, 'ws-1')).toThrow(/invalid display spec/);
   });
 });
