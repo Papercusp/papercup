@@ -2,11 +2,19 @@
  * datatypes:install — install an APPROVED global datatype into your workspace
  * (reflexive-platform-extensibility-datatypes-2026-06-24 D-010 distribution).
  *
- * Copies an approved published datatype's definition (from datatypes:catalog) into THIS
- * workspace as a LOCAL datatype, so it's usable like one you declared (a generic-kind's
- * work_item_kind becomes accepted; a blueprint can depend on it). The approved source is
- * globally readable (migration 426); the copy is written into the caller's own workspace
- * (RLS WITH CHECK), so an agent can only install INTO its own workspace. Idempotent.
+ * Copies an approved published datatype's definition into THIS workspace as a LOCAL
+ * datatype, so it's usable like one you declared (a generic-kind's work_item_kind becomes
+ * accepted; a blueprint can depend on it). The approved source is globally readable
+ * (migration 426); the copy is written into the caller's own workspace (RLS WITH CHECK),
+ * so an agent can only install INTO its own workspace. Idempotent.
+ *
+ * SCOPE, since P-027 / D-010 retired the parallel storefront: this is the INTRA-DATABASE
+ * workspace→workspace copy of a row that is ALREADY approved in this same database. It is
+ * not the storefront install — cross-machine distribution is cupboard:install-datatype,
+ * over Cupboard `datatype` listings. Both are kept because they move different things:
+ * a row between workspaces here, versus a verified package between machines.
+ * `installPublishedDatatype` also has a live non-tool consumer (bundle-app-install-io
+ * resolves an app bundle's declared datatype dependencies through it).
  *
  * Server-only.
  */
@@ -18,22 +26,23 @@ import { installPublishedDatatype } from '../../datatype-registry-store';
 export default defineTool({
   name: 'datatypes:install',
   description:
-    'Install an APPROVED global datatype (from datatypes:catalog) into your workspace — copies its definition ' +
-    'as a LOCAL datatype you can use like one you declared. Idempotent: already-present ⇒ no change.',
+    'Copy an APPROVED datatype that already exists in this database into your workspace as a LOCAL datatype ' +
+    'you can use like one you declared. Idempotent: already-present ⇒ no change.',
   guidance: {
-    when: 'After finding a useful approved datatype via datatypes:catalog — install it so this workspace can create instances / reference it.',
-    notWhen: 'To declare a NEW datatype (meta:define-datatype). To publish one (datatypes:publish).',
-    chaining: 'datatypes:catalog → datatypes:install { id } → work_items:create { kind } / dependencies.datatypes.',
+    when: 'Reusing a datatype already approved in this database from another workspace, without going through the Cupboard.',
+    notWhen:
+      "Declaring a NEW datatype (meta:define-datatype). Installing a PUBLISHED datatype from the Cupboard — that is cupboard:install-datatype, over cupboard:search { kind:'datatype' }.",
+    chaining: 'datatypes:install { id } → work_items:create { kind } / dependencies.datatypes.',
     seeAlso: [
-      'datatypes:catalog (browse the global catalog to install from)',
-      'datatypes:list (what is already installed)',
+      "cupboard:install-datatype (install a published datatype from the Cupboard)",
+      'datatypes:list (what this workspace already resolves)',
     ],
   },
   capability: 'intel:write',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
-    id: z.string().min(1).max(120).describe('the approved datatype id to install (from datatypes:catalog)'),
+    id: z.string().min(1).max(120).describe('the approved datatype id to copy into this workspace'),
   }),
   async handler(args, ctx) {
     const reply = (obj: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(obj) }] });
@@ -49,7 +58,7 @@ export default defineTool({
         reason: res.reason,
         message:
           res.reason === 'not_found'
-            ? `no APPROVED global datatype "${args.id}" — browse datatypes:catalog for installable ones`
+            ? `no APPROVED datatype "${args.id}" in this database — for a PUBLISHED one, browse cupboard:search { kind:'datatype' } and install it with cupboard:install-datatype`
             : `"${args.id}" is already present in this workspace`,
       });
     }

@@ -7842,6 +7842,24 @@
       }
     },
     {
+      "name": "cupboard:install-datatype",
+      "http": {
+        "path": "/api/agent-tools/cupboard/install-datatype",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Install a published Cupboard datatype into this workspace — materializes the verified package and seeds its datatype_registry row, so its work-item kind becomes usable. Pass update:true to replace an installed package explicitly.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Installing a result from cupboard:search { kind:'datatype' } so this workspace can create instances of its kind or depend on it from a blueprint.",
+        "notWhen": "Declaring a NEW datatype (meta:define-datatype). Copying an already-approved datatype between workspaces in this same database (datatypes:install).",
+        "chaining": "cupboard:search { kind:'datatype' } → cupboard:install-datatype { listingId } → work_items:create { kind } / blueprint dependencies.datatypes."
+      }
+    },
+    {
       "name": "cupboard:install-goal",
       "http": {
         "path": "/api/agent-tools/cupboard/install-goal",
@@ -8001,6 +8019,24 @@
         "when": "Distributing a standalone app you built on the papercusp platform (its own Tauri installer + a published GitHub release with a signed latest.json), so users can find and download it from the Cupboard's Apps tab.",
         "notWhen": "Publishing a plugin/pack that runs INSIDE papercusp (that's knowledge_packs:publish / a plugin publish); a blueprint (blueprint:publish); or before the app's release + latest.json are live on GitHub — this tool validates the manifest resolves, so cut the release first.",
         "chaining": "Cut the app release first (its latest.json must be reachable). The response carries review_status=pending — the submitter sees their own listing; operators approve at /admin/cupboard-moderation, after which it appears on the Apps tab."
+      }
+    },
+    {
+      "name": "cupboard:publish-datatype",
+      "http": {
+        "path": "/api/agent-tools/cupboard/publish-datatype",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Export one locally-declared datatype as datatype.json + listing.json and list it on the Cupboard. Marks it PENDING operator moderation; local usability is unchanged. Pass exportOnly to materialize the package before pushing it to the public mirror.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Sharing a datatype you declared (meta:define-datatype) so other workspaces can install and use its kind.",
+        "notWhen": "Declaring a datatype (meta:define-datatype), or using one locally — a local datatype needs no publishing. Publishing does not distribute it by itself; approval and the Comb worker do.",
+        "chaining": "meta:define-datatype → cupboard:publish-datatype { datatypeId, githubUrl, exportOnly } → push the returned directory to the mirror → call again without exportOnly → (operator moderates) → consumers use cupboard:install-datatype."
       }
     },
     {
@@ -8272,80 +8308,6 @@
       }
     },
     {
-      "name": "datatypes:catalog",
-      "http": {
-        "path": "/api/agent-tools/datatypes/catalog",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Browse the GLOBAL catalog of APPROVED published datatypes (the shared tier) — datatypes other workspaces published and an operator approved. Install one into your workspace with datatypes:install. Read-only.",
-      "capabilities": [
-        "intel:read"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "documenter",
-        "curator",
-        "operator",
-        "oracle",
-        "cup",
-        "mug",
-        "planner",
-        "orchestrator",
-        "promote",
-        "security-reviewer",
-        "infra-reviewer",
-        "crosscheck",
-        "ui-qa",
-        "auditor",
-        "merge-resolver",
-        "content-fixer",
-        "release-manager",
-        "release-fixer",
-        "doc-steward",
-        "papercup",
-        "papercup-deep",
-        "kettle",
-        "researcher",
-        "research-director",
-        "searcher",
-        "discoverer",
-        "finding-verifier",
-        "findings-synthesizer",
-        "synthesizer",
-        "review-director",
-        "dimension-reviewer",
-        "verifier",
-        "migration-director",
-        "migration-verifier",
-        "transformer",
-        "gym-director",
-        "judge",
-        "task-generator",
-        "variant-runner",
-        "proposer",
-        "scanner",
-        "director",
-        "committer",
-        "tester",
-        "test-writer",
-        "monitor",
-        "blender",
-        "foreign-session"
-      ],
-      "guidance": {
-        "when": "Before declaring a new datatype — check whether an approved global one already fits, to reuse instead of re-inventing.",
-        "notWhen": "To browse YOUR workspace's datatypes (datatypes:list). To declare one (meta:define-datatype).",
-        "chaining": "datatypes:catalog → datatypes:install { id } → work_items:create { kind } / blueprint dependencies.datatypes."
-      }
-    },
-    {
       "name": "datatypes:get",
       "http": {
         "path": "/api/agent-tools/datatypes/get",
@@ -8427,7 +8389,7 @@
           "POST"
         ]
       },
-      "description": "Install an APPROVED global datatype (from datatypes:catalog) into your workspace — copies its definition as a LOCAL datatype you can use like one you declared. Idempotent: already-present ⇒ no change.",
+      "description": "Copy an APPROVED datatype that already exists in this database into your workspace as a LOCAL datatype you can use like one you declared. Idempotent: already-present ⇒ no change.",
       "capabilities": [
         "intel:write"
       ],
@@ -8488,9 +8450,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "After finding a useful approved datatype via datatypes:catalog — install it so this workspace can create instances / reference it.",
-        "notWhen": "To declare a NEW datatype (meta:define-datatype). To publish one (datatypes:publish).",
-        "chaining": "datatypes:catalog → datatypes:install { id } → work_items:create { kind } / dependencies.datatypes."
+        "when": "Reusing a datatype already approved in this database from another workspace, without going through the Cupboard.",
+        "notWhen": "Declaring a NEW datatype (meta:define-datatype). Installing a PUBLISHED datatype from the Cupboard — that is cupboard:install-datatype, over cupboard:search { kind:'datatype' }.",
+        "chaining": "datatypes:install { id } → work_items:create { kind } / dependencies.datatypes."
       }
     },
     {
@@ -8565,80 +8527,6 @@
         "when": "To discover what datatypes exist before declaring a new one (avoid duplicates), or to find the name to put in a blueprint's dependencies.datatypes, or the generic-kind to pass to work_items:create.",
         "notWhen": "To read one datatype's full definition — use datatypes:get. To declare one — meta:define-datatype.",
         "chaining": "datatypes:list → datatypes:get { id } (inspect) → work_items:create { kind } / blueprint dependencies.datatypes."
-      }
-    },
-    {
-      "name": "datatypes:publish",
-      "http": {
-        "path": "/api/agent-tools/datatypes/publish",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Offer a workspace-local datatype to the shared/global tier (D-010): marks it PENDING operator moderation. Local usability is UNCHANGED — an operator approves it before it is globally visible. Idempotent: a datatype already pending/approved/rejected reports its current review_status.",
-      "capabilities": [
-        "intel:write"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "documenter",
-        "curator",
-        "operator",
-        "oracle",
-        "cup",
-        "mug",
-        "planner",
-        "orchestrator",
-        "promote",
-        "security-reviewer",
-        "infra-reviewer",
-        "crosscheck",
-        "ui-qa",
-        "auditor",
-        "merge-resolver",
-        "content-fixer",
-        "release-manager",
-        "release-fixer",
-        "doc-steward",
-        "papercup",
-        "papercup-deep",
-        "kettle",
-        "researcher",
-        "research-director",
-        "searcher",
-        "discoverer",
-        "finding-verifier",
-        "findings-synthesizer",
-        "synthesizer",
-        "review-director",
-        "dimension-reviewer",
-        "verifier",
-        "migration-director",
-        "migration-verifier",
-        "transformer",
-        "gym-director",
-        "judge",
-        "task-generator",
-        "variant-runner",
-        "proposer",
-        "scanner",
-        "director",
-        "committer",
-        "tester",
-        "test-writer",
-        "monitor",
-        "blender",
-        "foreign-session"
-      ],
-      "guidance": {
-        "when": "When a datatype you declared (meta:define-datatype) is worth sharing globally, not just locally — so other workspaces can discover/reuse it.",
-        "notWhen": "To declare a datatype (meta:define-datatype). To use one locally — a local datatype needs no publishing. Publishing does NOT distribute it cross-machine by itself (that rides the Comb worker once approved).",
-        "chaining": "meta:define-datatype → datatypes:publish { id } → (operator moderates) → globally visible."
       }
     },
     {

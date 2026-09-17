@@ -1,0 +1,323 @@
+/**
+ * install-datatype-io — the seam where Cupboard DISTRIBUTION meets registry RESOLUTION
+ * (P-027 / D-010).
+ *
+ * The property under test is the one D-010 turns on: a datatype is usable only when its
+ * `datatype_registry` row exists, so "package on disk" and "install succeeded" must not be
+ * the same claim. Each gate below carries a POSITIVE CONTROL — an all-green run has to be
+ * impossible to obtain from a seam that rejects (or accepts) everything.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+let fixtureRepo = '';
+let resolvedVersion = '1.0.0';
+let resolveFails = false;
+
+// importOriginal + spread, NOT a hand-listed factory: a factory listing only the exports
+// this test happened to need makes every OTHER export `undefined` the moment the module
+// under test reaches for one — while still typechecking, because a vi.mock factory is not
+// checked against the real module. That is what red-pinned the gate on install-theme-io
+// (WI-10001674). Spreading `actual` means a newly-added export cannot strand this file.
+vi.mock('./install-io', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./install-io')>();
+  const cloneRepo = async (_url: string, dest: string): Promise<void> => {
+    await fs.cp(fixtureRepo, dest, { recursive: true });
+  };
+  return {
+    ...actual,
+    gitCloneShallow: cloneRepo,
+    cupboardGitDeps: () => ({ ...actual.cupboardGitDeps(), cloneRepo }),
+  };
+});
+vi.mock('./resolve-listing-by-kind', () => ({
+  resolveListingByKind: async (_idOrRef: string, kind: string) => {
+    if (resolveFails) return { error: `no ${kind} listing found`, status: 404 };
+    return {
+      githubUrl: 'https://github.com/acme/datatypes',
+      ref: 'incident-report',
+      listingId: 'listing-incident-report',
+      releaseVersion: resolvedVersion,
+    };
+  },
+}));
+
+import { _resetPapercuspRootForTests } from '../papercusp-root';
+import { installDatatypeFromCupboard, registryInputFromPackage } from './install-datatype-io';
+import { resolveInstalledDatatype, type InstalledDatatype } from './datatype-store';
+
+let root = '';
+
+/** Write a self-describing `datatype` package into the fixture mirror. */
+async function writePackage(opts: { id?: string; version?: string; kind?: string } = {}): Promise<void> {
+  const dir = join(fixtureRepo, 'incident-report');
+  await fs.mkdir(dir, { recursive: true });
+  const id = opts.id ?? 'incident-report';
+  const version = opts.version ?? '1.0.0';
+  await fs.writeFile(
+    join(dir, 'datatype.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      id,
+      title: 'Incident Report',
+      description: 'A postmortem-shaped work item.',
+      version,
+      tier: 'generic-kind',
+      workItemKind: opts.kind ?? 'incident-report',
+      tags: ['ops'],
+    }),
+  );
+  await fs.writeFile(
+    join(dir, 'listing.json'),
+    JSON.stringify({
+      kind: 'datatype',
+      ref: 'incident-report',
+      title: 'Incident Report',
+      version,
+      source: 'https://github.com/acme/datatypes',
+    }),
+  );
+}
+
+/** A seeder that records what the registry was asked to write. */
+function recordingSeeder() {
+  const writes: Array<{ id: string; workspaceId: string; tier: string; workItemKind?: string }> = [];
+  return {
+    writes,
+    deps: {
+      seedRegistry: async (input: Parameters<NonNullable<Parameters<typeof installDatatypeFromCupboard>[1]>['seedRegistry']>[0]) => {
+        writes.push({
+          id: input.id,
+          workspaceId: input.workspaceId,
+          tier: input.tier,
+          ...(input.workItemKind ? { workItemKind: input.workItemKind } : {}),
+        });
+        return { id: input.id };
+      },
+    },
+  };
+}
+
+beforeEach(async () => {
+  root = await fs.mkdtemp(join(tmpdir(), 'pc-datatype-io-'));
+  fixtureRepo = await fs.mkdtemp(join(tmpdir(), 'pc-datatype-mirror-'));
+  process.env.PAPERCUSP_ROOT = root;
+  _resetPapercuspRootForTests();
+  resolvedVersion = '1.0.0';
+  resolveFails = false;
+});
+
+afterEach(async () => {
+  delete process.env.PAPERCUSP_ROOT;
+  _resetPapercuspRootForTests();
+  await fs.rm(root, { recursive: true, force: true });
+  await fs.rm(fixtureRepo, { recursive: true, force: true });
+});
+
+describe('installDatatypeFromCupboard', () => {
+  it('installs the package AND seeds the registry row — the two halves of D-010', async () => {
+    await writePackage();
+    const seeder = recordingSeeder();
+
+    const result = await installDatatypeFromCupboard(
+      { listingId: 'listing-incident-report', workspaceId: 'ws-1', createdBy: 'agent-7' },
+      seeder.deps,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Distribution half: the package is resolvable on disk.
+    expect(result.result.operation).toBe('install');
+    expect(resolveInstalledDatatype(result.result.ref)).not.toBeNull();
+    // Resolution half: exactly one registry write, into the CALLER's workspace.
+    expect(seeder.writes).toEqual([
+      { id: 'incident-report', workspaceId: 'ws-1', tier: 'generic-kind', workItemKind: 'incident-report' },
+    ]);
+    expect(result.result.registryId).toBe('incident-report');
+  });
+
+  it('reports a FAILED install when the registry seed throws — a package with no row is inert', async () => {
+    await writePackage();
+
+    const result = await installDatatypeFromCupboard(
+      { listingId: 'listing-incident-report', workspaceId: 'ws-1' },
+      {
+        seedRegistry: async () => {
+          throw new Error('pool exhausted');
+        },
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(500);
+    expect(result.error).toMatch(/registry row could not be seeded/);
+    expect(result.detail).toMatch(/pool exhausted/);
+    // POSITIVE CONTROL: the identical install with a working seeder succeeds, so the
+    // refusal above is attributable to the seed and not to a broken fixture.
+    const ok = await installDatatypeFromCupboard(
+      { listingId: 'listing-incident-report', workspaceId: 'ws-1', update: true },
+      recordingSeeder().deps,
+    );
+    expect(ok.ok).toBe(true);
+  });
+
+  it('REFUSES a non-canonical package id instead of silently re-slugifying it', async () => {
+    await writePackage({ id: 'Incident Report' });
+    const seeder = recordingSeeder();
+
+    const result = await installDatatypeFromCupboard(
+      { listingId: 'listing-incident-report', workspaceId: 'ws-1' },
+      seeder.deps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(422);
+    expect(result.error).toMatch(/not a canonical slug/);
+    expect(result.error).toMatch(/incident-report/);
+    // The refusal must happen BEFORE any registry write: installing under a re-slugified
+    // identity is the silent fork this gate exists to prevent.
+    expect(seeder.writes).toEqual([]);
+  });
+
+  it('re-seeds on a version-matched no-op, so a package stranded by an earlier failed seed recovers', async () => {
+    await writePackage();
+    const first = recordingSeeder();
+    const installed = await installDatatypeFromCupboard(
+      { listingId: 'listing-incident-report', workspaceId: 'ws-1' },
+      first.deps,
+    );
+    expect(installed.ok).toBe(true);
+
+    const second = recordingSeeder();
+    const again = await installDatatypeFromCupboard(
+      { listingId: 'listing-incident-report', workspaceId: 'ws-1' },
+      second.deps,
+    );
+
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.result.operation).toBe('no-op');
+    // The row is re-written even though no bytes moved — presence of the package is not
+    // evidence about the row.
+    expect(second.writes).toHaveLength(1);
+    expect(second.writes[0]?.id).toBe('incident-report');
+  });
+
+  it('refuses a re-install of a DIFFERENT version without update:true', async () => {
+    await writePackage();
+    const ok = await installDatatypeFromCupboard(
+      { listingId: 'listing-incident-report', workspaceId: 'ws-1' },
+      recordingSeeder().deps,
+    );
+    expect(ok.ok).toBe(true);
+
+    resolvedVersion = '2.0.0';
+    await writePackage({ version: '2.0.0' });
+    const seeder = recordingSeeder();
+    const result = await installDatatypeFromCupboard(
+      { listingId: 'listing-incident-report', workspaceId: 'ws-1' },
+      seeder.deps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(409);
+    expect(result.error).toMatch(/already installed/);
+    expect(seeder.writes).toEqual([]);
+
+    // POSITIVE CONTROL: update:true is accepted and re-seeds.
+    const updated = await installDatatypeFromCupboard(
+      { listingId: 'listing-incident-report', workspaceId: 'ws-1', update: true },
+      seeder.deps,
+    );
+    expect(updated.ok).toBe(true);
+    if (!updated.ok) return;
+    expect(updated.result.operation).toBe('update');
+    expect(updated.result.version).toBe('2.0.0');
+    expect(seeder.writes).toHaveLength(1);
+  });
+
+  it('requires a workspaceId, and surfaces a listing-resolution failure unchanged', async () => {
+    await writePackage();
+    const seeder = recordingSeeder();
+
+    const noWorkspace = await installDatatypeFromCupboard(
+      { listingId: 'listing-incident-report', workspaceId: '  ' },
+      seeder.deps,
+    );
+    expect(noWorkspace.ok).toBe(false);
+    if (!noWorkspace.ok) expect(noWorkspace.error).toMatch(/workspaceId required/);
+
+    resolveFails = true;
+    const unresolvable = await installDatatypeFromCupboard(
+      { listingId: 'missing', workspaceId: 'ws-1' },
+      seeder.deps,
+    );
+    expect(unresolvable.ok).toBe(false);
+    if (!unresolvable.ok) {
+      expect(unresolvable.status).toBe(404);
+      expect(unresolvable.error).toMatch(/no datatype listing found/);
+    }
+    expect(seeder.writes).toEqual([]);
+
+    // POSITIVE CONTROL: with a workspace and a resolvable listing the same call succeeds.
+    resolveFails = false;
+    const ok = await installDatatypeFromCupboard(
+      { listingId: 'listing-incident-report', workspaceId: 'ws-1' },
+      seeder.deps,
+    );
+    expect(ok.ok).toBe(true);
+  });
+});
+
+describe('registryInputFromPackage', () => {
+  it('omits absent optional fields rather than writing nulls over an existing row', () => {
+    const pkg = {
+      installed: true,
+      packageRef: 'ref',
+      listingRef: 'incident-report',
+      installedId: 'installed:abc',
+      id: 'incident-report',
+      title: 'Incident Report',
+      description: 'desc',
+      version: '1.0.0',
+      tier: 'generic-kind',
+      workItemKind: null,
+      payloadSchema: null,
+      display: null,
+      authoritativeWriter: null,
+      selfImprovement: null,
+      tags: [],
+      source: 'https://github.com/acme/datatypes',
+      dir: '/tmp/x',
+    } as unknown as InstalledDatatype;
+
+    const input = registryInputFromPackage(pkg, 'ws-1');
+
+    expect(input).toEqual({
+      id: 'incident-report',
+      workspaceId: 'ws-1',
+      title: 'Incident Report',
+      description: 'desc',
+      tier: 'generic-kind',
+      tags: [],
+    });
+    expect('workItemKind' in input).toBe(false);
+    expect('createdBy' in input).toBe(false);
+
+    // POSITIVE CONTROL: a package that DOES carry the optional fields passes them through,
+    // so the assertion above cannot pass merely because the mapper drops everything.
+    const full = registryInputFromPackage(
+      { ...pkg, workItemKind: 'incident-report', display: { icon: 'x' } } as unknown as InstalledDatatype,
+      'ws-1',
+      'agent-7',
+    );
+    expect(full.workItemKind).toBe('incident-report');
+    expect(full.display).toEqual({ icon: 'x' });
+    expect(full.createdBy).toBe('agent-7');
+  });
+});

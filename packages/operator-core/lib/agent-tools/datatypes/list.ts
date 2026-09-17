@@ -28,7 +28,7 @@ export default defineTool({
     seeAlso: [
       'datatypes:get (full detail on one)',
       'datatypes:summary (the overview)',
-      'datatypes:catalog (installable datatypes)',
+      "cupboard:search { kind:'datatype' } (installable datatypes)",
     ],
   },
   capability: 'intel:read',
