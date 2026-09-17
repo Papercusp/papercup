@@ -135,7 +135,7 @@ function harness(over: Partial<HarnessRow> = {}): HarnessRow {
     sku_ref: null, pricing_model: null, price_amount_micros: null, price_currency: null,
     compatibility_json: null, required_permissions: null,
     release_version: null, release_content_hash: null, release_manifest_digest: null,
-    release_signature: null, release_published_at: null,
+    release_signature: null, release_manifest: null, release_published_at: null,
     yanked_at: null, yanked_reason: null, revoked_at: null, revoked_reason: null,
     pinned_commit_sha: null, pinned_tree_digest: null, pinned_at: null,
     ...over,

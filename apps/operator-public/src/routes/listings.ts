@@ -116,6 +116,7 @@ interface PublishBody {
   release_content_hash?: unknown;    // expected: 'sha256:<64 hex>'
   release_manifest_digest?: unknown; // expected: string — listingManifestDigest()
   release_signature?: unknown;       // expected: string
+  release_manifest?: unknown;        // expected: string — canonical JSON of the signed CupboardReleaseManifest
 }
 
 /** provides_tools caps (migration 006): bounded so a listing can't smuggle a payload. */
@@ -849,6 +850,26 @@ function registerListingEndpoints(
     if (releaseSignature === false) return badCatalog('release_signature', 'non_empty_string_max_1000');
     const releaseManifestDigest = optionalStr(body.release_manifest_digest, 128);
     if (releaseManifestDigest === false) return badCatalog('release_manifest_digest', 'non_empty_string_max_128');
+    // The FULL signed manifest (migration 032). The pins above can prove the
+    // CLOSURE is untampered, but only these bytes let an installer recompute
+    // listingManifestSigningBytes() and check the publisher signature — without
+    // them the install-side verifier is unreachable (identities-v1 D-071/D-074).
+    // Stored opaquely: this Worker deliberately does not import operator-core's
+    // manifest validator, so it bounds and well-forms the value and leaves the
+    // SEMANTIC check to the installer, which is the side that must not be fooled.
+    const releaseManifest = optionalStr(body.release_manifest, 16000);
+    if (releaseManifest === false) return badCatalog('release_manifest', 'non_empty_string_max_16000');
+    if (releaseManifest != null) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(releaseManifest);
+      } catch {
+        return badCatalog('release_manifest', 'json_object');
+      }
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return badCatalog('release_manifest', 'json_object');
+      }
+    }
     let releaseContentHash: string | null = null;
     if (body.release_content_hash != null) {
       if (typeof body.release_content_hash !== 'string' || !CONTENT_HASH_RE.test(body.release_content_hash)) {
@@ -947,6 +968,7 @@ function registerListingEndpoints(
       release_content_hash: releaseContentHash,
       release_manifest_digest: releaseManifestDigest,
       release_signature: releaseSignature,
+      release_manifest: releaseManifest,
       release_published_at: releaseVersion != null ? now : null,
       // Content pin (P-001): self-describing kinds only; null on code kinds.
       pinned_commit_sha: pin?.commitSha ?? null,
