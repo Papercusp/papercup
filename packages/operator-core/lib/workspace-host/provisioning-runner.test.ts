@@ -333,6 +333,40 @@ describe('runWorkspaceHostProvisioning', () => {
     expect(store.upsertCheckpoint).not.toHaveBeenCalled();
   });
 
+  // EI-23498781044665167. The failure this exists to prevent: a TRANSPORT error from the plan
+  // seam was wrapped into the non-retryable REQUEST class, so one network blip permanently
+  // killed a provision at 14% after ~22min of recovery churn. The test above is this one's
+  // calibration control — a genuine validation rejection must STAY a RequestError.
+  it('keeps a transport failure from the plan seam RETRYABLE instead of calling it a bad request', async () => {
+    const { store } = storeHarness();
+    const { provider } = providerHarness([planStep('create-network')]);
+    // undici's real shape: a generic `fetch failed` whose reason hides in `.cause.code`.
+    vi.mocked(provider.plan).mockRejectedValueOnce(
+      Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_SOCKET' } }),
+    );
+
+    const error = await runWorkspaceHostProvisioning(runInput(provider, store)).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(WorkspaceHostProvisioningTransientError);
+    expect(error).not.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
+  });
+
+  // `.message` is all that reaches a journal line or a stored operation row. Dropping `problems`
+  // there is what made the EI-23498781044665167 provision failure undiagnosable — and it was then
+  // carried forward as an entirely wrong root cause.
+  it('surfaces the rejection reason in .message, not only on .problems', () => {
+    const error = new WorkspaceHostProvisioningRequestError(['fetch failed', 'second reason']);
+
+    expect(error.message).toContain('workspace-host provisioning request rejected');
+    expect(error.message).toContain('fetch failed');
+    expect(error.message).toContain('second reason');
+    expect(error.problems).toEqual(['fetch failed', 'second reason']);
+    // An empty problems list must not leave a dangling separator.
+    expect(new WorkspaceHostProvisioningRequestError([]).message).toBe(
+      'workspace-host provisioning request rejected',
+    );
+  });
+
   function httpError(status: number): Error {
     return Object.assign(new Error(`gcp_preflight_http_${status}`), { status });
   }

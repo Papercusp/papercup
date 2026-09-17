@@ -41,6 +41,7 @@ import {
   type WorkspaceHostRuntimeRelease,
   type WorkspaceHostSpendSettlement,
 } from '@papercusp/deployment-driver';
+import { isTransientNetworkError } from '../loopback-fetch';
 import type { GcpWorkspaceHostInventoryRequest, GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
 import {
   censusGcpWorkspaceHostResources,
@@ -131,7 +132,16 @@ export class WorkspaceHostProvisioningRequestError extends Error {
   readonly problems: readonly string[];
 
   constructor(problems: readonly string[]) {
-    super('workspace-host provisioning request rejected');
+    // The constant prefix is PRESERVED so existing substring matchers/classifiers still fire
+    // (same convention as loopback-fetch's cause-code renderer). The problems are appended
+    // because `.message` is all that reaches a journal line or a stored operation row:
+    // dropping them made a real provision failure undiagnosable, and it was then carried
+    // forward as the wrong root cause entirely (EI-23498781044665167).
+    super(
+      problems.length > 0
+        ? `workspace-host provisioning request rejected: ${problems.join('; ')}`
+        : 'workspace-host provisioning request rejected',
+    );
     this.name = 'WorkspaceHostProvisioningRequestError';
     this.problems = problems;
   }
@@ -892,6 +902,13 @@ export async function runWorkspaceHostProvisioning(
         runtimeRelease = resolved.runtimeRelease;
       }
     } catch (error) {
+      // A transport failure here says NOTHING about the request being malformed, so it must not
+      // land in the caller-fault (non-retryable) class: one blip would otherwise kill the whole
+      // provision permanently. Same divergent-classification shape WI-1743793 fixed for the
+      // connection seam, which `assertProviderConnectionUsable` below already handles correctly.
+      if (isTransientNetworkError(error)) {
+        throw new WorkspaceHostProvisioningTransientError([message(error)]);
+      }
       throw new WorkspaceHostProvisioningRequestError([message(error)]);
     }
   }
@@ -919,6 +936,11 @@ export async function runWorkspaceHostProvisioning(
       context,
     ), desiredRevision);
   } catch (error) {
+    // Same rule as the bootstrap seam: a transport failure while planning is not evidence that
+    // the request is invalid, so it stays retryable rather than terminating the workflow.
+    if (isTransientNetworkError(error)) {
+      throw new WorkspaceHostProvisioningTransientError([message(error)]);
+    }
     throw new WorkspaceHostProvisioningRequestError([message(error)]);
   }
   const identityProblems: string[] = [];
@@ -1691,6 +1713,11 @@ export async function runWorkspaceHostDestroy(
       context,
     ), desiredRevision);
   } catch (error) {
+    // Same rule as the bootstrap seam: a transport failure while planning is not evidence that
+    // the request is invalid, so it stays retryable rather than terminating the workflow.
+    if (isTransientNetworkError(error)) {
+      throw new WorkspaceHostProvisioningTransientError([message(error)]);
+    }
     throw new WorkspaceHostProvisioningRequestError([message(error)]);
   }
   const identityProblems: string[] = [];

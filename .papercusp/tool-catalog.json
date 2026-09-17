@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 891,
+  "count": 893,
   "tools": [
     {
       "name": "ablation:report",
@@ -7860,6 +7860,24 @@
       }
     },
     {
+      "name": "cupboard:install-event",
+      "http": {
+        "path": "/api/agent-tools/cupboard/install-event",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Install a published Cupboard event vocabulary into this workspace — materializes the verified package and seeds its event_key_registry row, so the key resolves for events:await and rule triggers. Pass update:true to replace an installed package explicitly.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Installing a result from cupboard:search { kind:'event' } so this workspace can await, emit, or declare requires_events against that key.",
+        "notWhen": "Registering a NEW first-party key locally, or awaiting a key that already resolves here (events:catalog lists those).",
+        "chaining": "cupboard:search { kind:'event' } → cupboard:install-event { listingId } → events:await / a rule's `on` / a listing's requires_events."
+      }
+    },
+    {
       "name": "cupboard:install-goal",
       "http": {
         "path": "/api/agent-tools/cupboard/install-goal",
@@ -8037,6 +8055,24 @@
         "when": "Sharing a datatype you declared (meta:define-datatype) so other workspaces can install and use its kind.",
         "notWhen": "Declaring a datatype (meta:define-datatype), or using one locally — a local datatype needs no publishing. Publishing does not distribute it by itself; approval and the Comb worker do.",
         "chaining": "meta:define-datatype → cupboard:publish-datatype { datatypeId, githubUrl, exportOnly } → push the returned directory to the mirror → call again without exportOnly → (operator moderates) → consumers use cupboard:install-datatype."
+      }
+    },
+    {
+      "name": "cupboard:publish-event",
+      "http": {
+        "path": "/api/agent-tools/cupboard/publish-event",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Export one locally-registered event key as event.json + listing.json and list it on the Cupboard. Marks it PENDING operator moderation; local resolution is unchanged. Pass exportOnly to materialize the package before pushing it to the public mirror.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Sharing an event vocabulary you registered so other workspaces can install it and have its key resolve — and so their listings can declare requires_events on it.",
+        "notWhen": "Registering a key locally, or emitting one — a first-party key needs no publishing. Publishing does not distribute it by itself; approval and the Comb worker do.",
+        "chaining": "register the key → cupboard:publish-event { eventKey, githubUrl, exportOnly } → push the returned directory to the mirror → call again without exportOnly → (operator moderates) → consumers use cupboard:install-event."
       }
     },
     {
