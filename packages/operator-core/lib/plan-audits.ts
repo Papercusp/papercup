@@ -200,14 +200,21 @@ export interface ActivationAuditPayload {
     currentPlanContentHash: string;
     reason: 'acceptance_bar_source_changed';
   };
-  /** The audit is durable, but the pinned acceptance rubric is malformed. The
-   * repair path must fix the rubric before BAR seeding or clause projection can
-   * resume; activation must never overwrite the invalid stored data. */
+  /** The audit is durable, but the pinned acceptance rubric cannot be seeded yet.
+   * The repair path must fix the rubric before BAR seeding or clause projection
+   * can resume; activation must never overwrite the stored data.
+   *
+   * `acceptance_bar_rubric_invalid` — the stored template_data is malformed.
+   * `acceptance_bar_legacy_criteria_unmapped` — the rubric predates BAR adoption
+   * (no criterion carries a barKey), so a legacy backfill is owed. Recorded rather
+   * than thrown per EI-23376469015732685: throwing deadlocked the whole class of
+   * post-epoch DRAFT plans carrying a pre-BAR rubric, because `ready` requires a
+   * recorded activation audit and the audit refused on exactly this. */
   barSeedPendingRepair?: {
     rubricSlug: string;
     currentSubjectPlanRevision: number;
     currentPlanContentHash: string;
-    reason: 'acceptance_bar_rubric_invalid';
+    reason: 'acceptance_bar_rubric_invalid' | 'acceptance_bar_legacy_criteria_unmapped';
     problems: AcceptanceBarSeedProblem[];
   };
 }
@@ -1851,12 +1858,13 @@ export type RecordCurrentActivationAuditResult =
         reason: 'acceptance_bar_source_changed';
       };
       /** The conversation/decision audit can land while the pinned rubric is
-       * invalid; the repair remains explicit and no BAR state is rewritten. */
+       * invalid, or while it still predates BAR adoption; the repair remains
+       * explicit and no BAR state is rewritten. */
       barSeedPendingRepair?: {
         rubricSlug: string;
         currentSubjectPlanRevision: number;
         currentPlanContentHash: string;
-        reason: 'acceptance_bar_rubric_invalid';
+        reason: 'acceptance_bar_rubric_invalid' | 'acceptance_bar_legacy_criteria_unmapped';
         problems: AcceptanceBarSeedProblem[];
       };
     }
@@ -2284,15 +2292,21 @@ export async function recordCurrentActivationAudit(
         // Catch-up may already have updated the derived pin in this transaction.
         if (!seeded.ok) {
           const repairProblems = seeded.problems.filter(
-            (problem) => problem.repairable === 'invalid_template_data',
+            (problem) => problem.repairable === 'invalid_template_data' ||
+              problem.repairable === 'legacy_criteria_unmapped',
           );
-          if (repairProblems.length > 0) {
+          // A refusal is recordable only if EVERY problem is repairable. One
+          // unrepairable problem alongside a repairable one still aborts, so this
+          // never records an audit over a seed failure it has not accounted for.
+          if (repairProblems.length > 0 && repairProblems.length === seeded.problems.length) {
             const first = repairProblems[0]!;
             barSeedPendingRepair = {
               rubricSlug: first.rubricSlug ?? current.acceptance_bar_rubric_slug ?? `acceptance-${input.planSlug}`,
               currentSubjectPlanRevision: Number(current.version),
               currentPlanContentHash: current.content_hash,
-              reason: 'acceptance_bar_rubric_invalid',
+              reason: repairProblems.every((problem) => problem.repairable === 'legacy_criteria_unmapped')
+                ? 'acceptance_bar_legacy_criteria_unmapped'
+                : 'acceptance_bar_rubric_invalid',
               problems: repairProblems,
             };
           } else {

@@ -68,8 +68,18 @@ export interface AcceptanceBarSeedProblem {
   barKey?: string;
   planItemId?: string;
   /** A seed refusal that activation can record as a pending repair without
-   * mutating the invalid rubric or its projections. */
-  repairable?: 'invalid_template_data';
+   * mutating the invalid rubric or its projections.
+   *
+   * `legacy_criteria_unmapped` (EI-23376469015732685): the pinned rubric predates
+   * BAR adoption, so none of its criteria carry a `barKey` and every one reads as
+   * an "extra" against the Requirements set. That is the ordinary legacy-backfill
+   * situation, not a malformed rubric — and making it FATAL deadlocked activation:
+   * `ready` needs a recorded audit, the audit refused on this code, and every
+   * other door (`rubrics:propose`, `migrate-acceptance-bars`) needs an output of
+   * one of those two. Recording it as pending lets the audit persist while the
+   * backfill is still owed. The ship floor is unaffected: `set-plan-status ->
+   * shipped` independently refuses with `acceptance_bar_contract_not_ready`. */
+  repairable?: 'invalid_template_data' | 'legacy_criteria_unmapped';
   rubricSlug?: string;
 }
 
@@ -493,9 +503,22 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
       !Object.values(legacyMap ?? {}).includes(criterion.key),
   );
   if (extras.length > 0) {
+    // EI-23376468: distinguish a LEGACY rubric from a genuinely conflicting one.
+    // Every extra lacking a `barKey` entirely means the rubric simply predates BAR
+    // adoption — the backfill situation, recordable as pending. An extra that DOES
+    // carry a barKey which the Requirements map does not know is a real conflict
+    // (a renamed/removed requirement, or the wrong rubric pinned), and stays fatal:
+    // softening that case would let activation record an audit over a rubric whose
+    // bars disagree with the plan, which is the thing this check exists to catch.
+    const everyExtraIsLegacy = extras.every((criterion) => !criterion.barKey);
     return refusal([{
       code: 'bar_rubric_conflict',
-      detail: `active rubric contains criterion(s) outside the current Requirements set: ${extras.map((c) => c.key).join(', ')}`,
+      detail: everyExtraIsLegacy
+        ? `active rubric predates BAR adoption — no criterion carries a barKey, so a legacy backfill is owed for: ${extras.map((c) => c.key).join(', ')}`
+        : `active rubric contains criterion(s) outside the current Requirements set: ${extras.map((c) => c.key).join(', ')}`,
+      ...(everyExtraIsLegacy
+        ? { repairable: 'legacy_criteria_unmapped' as const, rubricSlug: input.rubricSlug }
+        : {}),
     }]);
   }
 
