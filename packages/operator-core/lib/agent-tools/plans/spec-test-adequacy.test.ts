@@ -15,6 +15,7 @@ import {
 import { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
 import { classifySpecEvidenceCurrentness, type EvidenceCurrentInput } from './spec-evidence-store';
 import { asStructuredObservation } from '../../harness/improvements/observation-types';
+import { resolveLocalRubric } from '../../cupboard/rubric-store';
 
 function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   return {
@@ -1592,5 +1593,23 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
 
     expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
     expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+});
+
+// EI-23499682118230306 recurrence guard — the SAME drift class as EI-13292, one pair up.
+// `ADEQUACY_CRITERIA` (what the evaluator RATES) and rubrics/spec-test-adequacy/rubric.json
+// (what the rubric DECLARES) are two copies of one list, and they silently diverged: the
+// evaluator gained `disclosed-gap` while the bundle stayed at 8 keys, so scorecards:emit
+// refused the evaluator's OWN scorecardDraft with "unexpected criterion key(s): disclosed-gap"
+// — no spec-test-adequacy card could be emitted AT ALL for a clause with a disclosed gap.
+// Pin the bundle to the evaluator's own list so the two can never silently diverge again.
+describe('spec-test-adequacy rubric bundle', () => {
+  it('declares exactly the criteria the evaluator rates (EI-23499682118230306)', () => {
+    const bundled = resolveLocalRubric('spec-test-adequacy');
+    expect(bundled, 'rubrics/spec-test-adequacy/rubric.json must resolve').not.toBeNull();
+
+    const declared = bundled!.criteria.map((c) => c.key);
+    // Order-insensitive: emit compares key SETS, so a reorder is not drift.
+    expect([...declared].sort()).toEqual([...ADEQUACY_CRITERIA].sort());
   });
 });
