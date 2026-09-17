@@ -74,6 +74,14 @@ import {
   readAgentRunsSummaryFromStore,
   type AgentRunsListWireArgs,
 } from './agent-runs-list-query';
+// P-009 — the live (`?view=live`) half of the History tab. Derived from the
+// existing lifecycle columns; see ./project-history-events for why there is no
+// new event table and how the mixed bigint/timestamptz columns are normalised.
+import {
+  PROJECT_HISTORY_EVENTS_QUERY_NAME,
+  projectHistoryEventsArgsSchema,
+  resolveProjectHistoryEvents,
+} from './project-history-events';
 import {
   SCORECARD_HISTORY_DEFAULT_PAGE,
   SCORECARD_HISTORY_PAGE_LIMIT,
@@ -3600,6 +3608,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // the joined spawn outcome + native resume session id.
   'agentRunsConsolidated.bySlug': agentRunsListQueryPair.rowsEntry as QueryEntry<unknown>,
   'agentRunsConsolidated.summary': agentRunsListQueryPair.summaryEntry as QueryEntry<unknown>,
+
+  // projectHistoryEvents.byHarness — P-009. Reverse-chronological per-harness
+  // activity timeline (work-item lifecycle + plan-item status flips + plan
+  // decisions) backing the History tab's `?view=live` mode. Cursor is the
+  // (tsMs, eventId) tuple, so a page boundary inside a group of
+  // same-millisecond events neither repeats nor drops a row.
+  [PROJECT_HISTORY_EVENTS_QUERY_NAME]: {
+    argsSchema: projectHistoryEventsArgsSchema,
+    resolve: async (args) => resolveProjectHistoryEvents(args),
+  },
 
   // agentRunsConsolidated.recent — agent runs for a harness, latest 50.
   //   zql.agentRunsConsolidated.where(harnessSlug).orderBy('ts', 'desc').limit(50)

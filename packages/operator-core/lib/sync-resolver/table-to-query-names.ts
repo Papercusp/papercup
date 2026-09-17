@@ -485,7 +485,18 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
      literal would not merge: the later one silently wins, so the goal queries
      would never be bridged at all and the meters would look simply broken. */
 
+  // P-009 — the History tab's live timeline reads three tables and is a
+  // whole-feed read (no id scoping), so ANY write to any of them changes it.
+  // The bridge is the mechanism that matters here rather than per-call-site
+  // notifies: the timeline's sources are written from ~40 different app paths
+  // AND from raw SQL, MCP-tool writes and migrations that never run app code,
+  // so an enumerated set of notify call sites would silently miss most of them.
+  'harness_shared.plan_items': ['projectHistoryEvents.byHarness'],
+  'harness_shared.harness_plan_parts': ['projectHistoryEvents.byHarness'],
+
   'harness_shared.work_items': [
+    // P-009: work-item lifecycle is the bulk of the live History timeline.
+    'projectHistoryEvents.byHarness',
     // P-030: current held-work context around a foreign producer session.
     'conversations.contextProjection',
     // P-005: pending/unreviewed queue counts and promoted→first-claim
