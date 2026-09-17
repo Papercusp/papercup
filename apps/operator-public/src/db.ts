@@ -82,6 +82,18 @@ export const LISTING_KINDS = [
   // providers. Resolves into the SAME reaction registry as every built-in and
   // plugin rule — no second engine, no second condition language.
   'rule',
+  // migration 031 / identities-v1-2026-08-30 P-029, D-010 / D-011: an EVENT-KEY
+  // DECLARATION — a versioned key family plus its payload schema and discovery
+  // metadata. The PROVIDER half of an axis whose consumer half already exists:
+  // `requires_events` (migration 013) has been able to depend on a family since
+  // the Cupboard's first release, and an unresolvable required family is a HARD
+  // install failure — but nothing could ever PUBLISH one, so the only families
+  // that ever resolved were first-party. This closes that half.
+  //
+  // An event listing fires nothing; `rule` is what fires. What it does do is
+  // make a family RESOLVABLE, which is why it is review-gated rather than inert
+  // (see REVIEW_POLICY_KINDS below).
+  'event',
 ] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
@@ -163,6 +175,27 @@ export const REVIEW_POLICY_KINDS: readonly ListingKind[] = [
   // on the pending side a fortiori, so it is in the list from the moment the
   // kind exists rather than being tightened later.
   'rule',
+  // migration 031 / identities-v1-2026-08-30 P-029, D-010: an event listing
+  // FIRES nothing, so the actuating/inert criterion above does not by itself
+  // put it here — `theme` is inert and publishes approved. Two things do.
+  //
+  // (1) The SAME preserved-semantic reasoning as `datatype` directly above.
+  //     The event-key space today is first-party curated (EVENT_CATALOG);
+  //     making it third-party-publishable while auto-approving it would be a
+  //     silent downgrade from curated to unmoderated, which is exactly the
+  //     downgrade `datatype` was added here to avoid.
+  // (2) A published key can SQUAT or shadow a first-party family, and an
+  //     installed squat changes what every `requires_events` dep and every
+  //     rule `on` in that pot resolves to. That is namespace capture, not
+  //     execution — but its blast radius is the same.
+  //
+  // Pending is also the recoverable direction: an over-moderated kind can be
+  // loosened, whereas an auto-approved squat is already published and public
+  // before anyone looks. When P-029's event-key registry lands a STRUCTURAL
+  // namespace guard (publisher-scoped prefixes — the derived-truth answer,
+  // since no operator can eyeball a squat without knowing the whole key
+  // space), revisit this entry; do not loosen it before that guard exists.
+  'event',
 ];
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';

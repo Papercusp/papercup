@@ -133,6 +133,7 @@ export const LISTING_KINDS = [
   'theme',
   'datatype',
   'rule',
+  'event',
 ] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
