@@ -74,6 +74,14 @@ export const LISTING_KINDS = [
   // browsing it); this folds publish+browse back into the one Cupboard surface,
   // with `datatype_registry` kept as the resolution layer it always was.
   'datatype',
+  // migration 030 / identities-v1-2026-08-30 P-028, D-011 / D-054: an installable
+  // BEHAVIOUR — "when X, fire Y" — beside `recipe`, which it closely resembles.
+  // What makes it portable is that a standalone rule fires a capability CLASS,
+  // not a tool id (D-004): the installing pot's own provider binding decides
+  // which tool actually runs, so one listing ships across pots with different
+  // providers. Resolves into the SAME reaction registry as every built-in and
+  // plugin rule — no second engine, no second condition language.
+  'rule',
 ] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
@@ -144,6 +152,17 @@ export const REVIEW_POLICY_KINDS: readonly ListingKind[] = [
   // operator moderation (D-010). Omitting it here would have made folding that
   // surface into the Cupboard a silent downgrade from moderated to auto-approved.
   'datatype',
+  // migration 030 / identities-v1-2026-08-30 P-028, D-011 / D-054: a rule is the
+  // most actuating kind in this list. `recipe` and `goal` are orchestration a
+  // person or agent still chooses to RUN; a rule is "when X, fire Y" — it fires
+  // BY ITSELF on a matching event, in the installing pot, under the capability
+  // its fired CLASS declares. Auto-approving it would let any publisher put
+  // self-firing behaviour into every installing pot with no operator ever
+  // looking at it. The criterion this list already applies — actuating publishes
+  // pending, inert publishes approved (`theme` is the inert case) — puts `rule`
+  // on the pending side a fortiori, so it is in the list from the moment the
+  // kind exists rather than being tightened later.
+  'rule',
 ];
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';

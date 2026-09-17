@@ -132,6 +132,7 @@ export const LISTING_KINDS = [
   'goal',
   'theme',
   'datatype',
+  'rule',
 ] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
@@ -260,6 +261,9 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
     case 'rubric':
     case 'plan':
     case 'recipe':
+    // A rule is an installable behaviour ("when X, fire Y"), so it installs
+    // exactly like the recipe it resembles (identities-v1 D-011/D-055, P-028).
+    case 'rule':
     case 'goal':
     case 'theme':
     case 'datatype':
