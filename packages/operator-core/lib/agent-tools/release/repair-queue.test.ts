@@ -1034,6 +1034,99 @@ describe('release:repair-queue', () => {
       expect(dryRuns()).toEqual([true]);
       expect(mocks.precheckFactory).not.toHaveBeenCalled();
     });
+
+    // EI-23408302754355167: the `skipPrecheck` + `precheckReason` opt-out was the ONE arm of the
+    // R6 pre-check policy with zero coverage repo-wide. It is the deliberate escape from "an
+    // unmeasured result never counts as passing" (D-002), so it is precisely the arm that needs
+    // pinning: an un-reasoned skip must REFUSE, and a reasoned one must be LEDGERED — an opt-out
+    // that published silently would leave no record of who declined measurement, or why.
+    describe('the skipPrecheck opt-out arm', () => {
+      it('REFUSES an un-reasoned skip, measuring nothing and publishing nothing', async () => {
+        mocks.admit.mockReturnValue(admissionOf(true));
+        mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
+        const result = body(
+          await tool.handler(
+            { op: 'admit', paths: ['lib/red.test.ts'], confirm: true, skipPrecheck: true } as never,
+            { role: 'su' } as never,
+          ),
+        );
+        expect(result).toMatchObject({
+          ok: false,
+          admitted: false,
+          refused: true,
+          verdict: 'refused',
+          reason: 'precheck-reason-required',
+        });
+        // The guard sits BEFORE the build: no admission is constructed, nothing is written, and
+        // no runner is created. A refusal that had already built would leave a commit behind.
+        expect(mocks.admit).not.toHaveBeenCalled();
+        expect(mocks.write).not.toHaveBeenCalled();
+        expect(mocks.precheckFactory).not.toHaveBeenCalled();
+      });
+
+      it('holds the 8-char reason floor against whitespace padding', async () => {
+        mocks.admit.mockReturnValue(admissionOf(true));
+        mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
+        // The handler TRIMS before measuring, so spaces cannot pad a 5-char reason past the floor.
+        const result = body(
+          await tool.handler(
+            {
+              op: 'admit',
+              paths: ['lib/red.test.ts'],
+              confirm: true,
+              skipPrecheck: true,
+              precheckReason: '      short      ',
+            } as never,
+            { role: 'su' } as never,
+          ),
+        );
+        expect(result).toMatchObject({ refused: true, reason: 'precheck-reason-required' });
+        expect(mocks.write).not.toHaveBeenCalled();
+      });
+
+      // Defence in depth: the arg schema rejects a short reason before the handler's own guard
+      // ever runs. Both layers are asserted because the handler is reachable directly (as every
+      // test in this file reaches it), so the zod floor alone would not pin the behaviour.
+      it('rejects a sub-floor reason at the args schema too', () => {
+        const admit = { op: 'admit', paths: ['lib/red.test.ts'], skipPrecheck: true };
+        expect(tool.args.safeParse({ ...admit, precheckReason: '1234567' }).success).toBe(false);
+        expect(tool.args.safeParse({ ...admit, precheckReason: '12345678' }).success).toBe(true);
+      });
+
+      it('a reasoned skip publishes WITHOUT measuring, and ledgers the opt-out with its reason', async () => {
+        mocks.admit.mockReturnValue(admissionOf(true));
+        mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
+        const precheckReason = 'deliberate wide admission: shared lint config, measured by the re-judge';
+        const result = body(
+          await tool.handler(
+            {
+              op: 'admit',
+              paths: ['lib/red.test.ts'],
+              confirm: true,
+              skipPrecheck: true,
+              precheckReason,
+            } as never,
+            { role: 'su' } as never,
+          ),
+        );
+        expect(result).toMatchObject({ ok: true, admitted: true, verdict: 'admitted' });
+        // The whole point of the opt-out: the built commit is never measured.
+        expect(mocks.precheckFactory).not.toHaveBeenCalled();
+        // ...and the skip is RECORDED on the ledger entry, so the audit trail carries who
+        // declined measurement and why, rather than an entry indistinguishable from a pass.
+        const [, written] = mocks.write.mock.calls[0]!;
+        expect(written).toMatchObject({
+          repairHead: NEW_HEAD,
+          admissions: [
+            expect.objectContaining({
+              precheck: expect.objectContaining({ ran: false, reason: 'skipped', precheckReason }),
+            }),
+          ],
+        });
+        // The same record rides the result, so the caller sees the skip it asked for.
+        expect(result.precheck).toMatchObject({ ran: false, reason: 'skipped', precheckReason });
+      });
+    });
   });
 
   // EI-22208176411693669: assessFrozenRepairFixerAuthorization correctly labels the
