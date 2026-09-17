@@ -6,6 +6,7 @@
  *   - Title-cased label, with dash/underscore handling.
  */
 import { describe, it, expect } from 'vitest';
+import { LISTING_KINDS } from '@papercusp/operator-core/lib/cupboard/types';
 import {
   CATEGORICAL,
   CUPBOARD_LISTING_KIND_TONE,
@@ -28,9 +29,13 @@ describe('central categorical palette', () => {
     expect(FEED_KIND_COLOR.handoff).toBe(CATEGORICAL.violet400.hex);
     expect(FEED_KIND_COLOR.handoff_accepted).toBe(CATEGORICAL.violet300.hex);
     expect(FEED_KIND_FALLBACK).toBe(CATEGORICAL.slate500.hex);
-    expect(Object.keys(CUPBOARD_LISTING_KIND_TONE).sort()).toEqual([
-      'app', 'blueprint', 'goal', 'harness', 'knowledge-pack', 'pack', 'plan', 'plugin', 'recipe', 'rubric', 'template', 'theme',
-    ]);
+    // DERIVED from LISTING_KINDS, never a hardcoded mirror. A frozen literal here
+    // agreed with the map instead of with ListingKind, so when P-027 added
+    // `datatype` to LISTING_KINDS without a tone this test kept passing while the
+    // `Record<ListingKind, …>` literal was incomplete — the break surfaced only in
+    // the apps/operator tsc leg, which a --files run scoped to operator-core never
+    // compiles. Anchored to the registry, a new kind fails HERE too (P-028/D-055).
+    expect(Object.keys(CUPBOARD_LISTING_KIND_TONE).sort()).toEqual([...LISTING_KINDS].sort());
   });
 });
 
