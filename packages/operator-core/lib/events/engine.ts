@@ -20,6 +20,7 @@ import type { DispatchProjectedResult, PostInvokeEvent, UnifiedToolContext } fro
 import type { MatchedAction } from '@papercusp/rules';
 import { runReactions } from '@papercusp/event-reaction';
 import { surfaceReactionFailure } from './reaction-failure-surface';
+import { checkContributorFireBudget } from './reaction-fire-budget';
 import { matchReactions } from './registry';
 import { fireReactionInProcess } from './dispatch-reaction';
 import { runDurableReaction, durableReactionsEnabled } from './durable';
@@ -264,5 +265,11 @@ function matchAndRun(event: ToolInvocationEvent): void {
     // records it and alerts the owner when the cause is one they can fix (a
     // capability the wearer lacks, an unbound provider class, a missing tool).
     onFailure: (failure) => surfaceReactionFailure(failure),
+    // P-030 (c): the depth cap bounds ONE cascade, so N shallow rules from one
+    // third-party contributor were unbounded. This counts a contributor's fires
+    // over a window and refuses past its budget. First-party rules are exempt
+    // (they carry no contributor), and it FAILS OPEN — a budget is a fairness
+    // control, not a kill-switch.
+    budget: (req) => checkContributorFireBudget(req),
   });
 }
