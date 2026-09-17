@@ -1607,4 +1607,57 @@ describe('GCP workspace-host provider created-resource reporting', () => {
     expect(reconciled.state).toBe('unchanged');
     expect(observed.slice(beforeReconcile)).toEqual([]);
   });
+
+  it('closes the obligation for a delete confirmed only by the reconciling read', async () => {
+    const client = new FakeGcpWorkspaceHostApiClient();
+    const destroyedResources: { deleteOp: string; providerId: string }[] = [];
+    const provider = createGcpWorkspaceHostProvider({
+      client,
+      now: () => NOW,
+      onResourceDestroyed: (event) => {
+        destroyedResources.push(event.resource);
+      },
+    });
+    const { host, resources } = await provision(client, provider);
+    const destroy = await provider.plan(
+      {
+        action: 'destroy',
+        operationId: 'operation-reconcile-destroy',
+        idempotencyKey: 'operation-reconcile-destroy',
+        host,
+        disposition: 'discard',
+        confirmation: { expectedHostId: host.hostId, confirmedBy: 'vitest', confirmedAt: NOW },
+      },
+      context(),
+    );
+    const deleteStep = destroy.steps[0]!;
+    await provider.apply(
+      { planId: destroy.planId, operationId: destroy.operationId, step: deleteStep, knownResources: resources },
+      context(),
+    );
+
+    // Positive control: a dead observer would make the assertion below vacuous.
+    const beforeReconcile = destroyedResources.length;
+    expect(beforeReconcile).toBeGreaterThan(0);
+
+    // The resource is already gone, so reconcile resolves the step by a fresh absence read
+    // rather than falling through to apply.
+    const reconciled = await provider.reconcile(
+      {
+        planId: destroy.planId,
+        operationId: destroy.operationId,
+        step: deleteStep,
+        knownResources: resources,
+        reason: 'ambiguous-timeout',
+      },
+      context(),
+    );
+
+    // The teardown-side twin of the creation hole: before the shared reporting seam, a delete
+    // whose confirmation arrived only on the reconciling read returned `destroyed` directly and
+    // never closed its obligation, leaving the row teardown_owed forever for a resource that was
+    // already gone. Re-closing is safe — the ledger write is idempotent.
+    expect(reconciled.state).toBe('destroyed');
+    expect(destroyedResources.slice(beforeReconcile)).toHaveLength(1);
+  });
 });
