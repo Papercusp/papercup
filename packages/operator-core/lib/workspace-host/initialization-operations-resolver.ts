@@ -262,6 +262,138 @@ function guestHostKeys(attributes: readonly GcpInstanceGuestAttribute[]): Map<st
   return keys;
 }
 
+/**
+ * How long to wait for the guest agent to publish `hostkeys/` on a freshly-created VM (WI-10001685).
+ *
+ * MEASURED on a real GCP e2-standard-2 in active-alcove-504205-q3, 2026-09-16:
+ *   23:29:40Z  hostkeys/ -> HTTP 404 (initialize died here, 2s in, and wrote NO operation row)
+ *   23:30:40Z  hostkeys/ -> all three keys present
+ * i.e. publication lands ~70s after create. The budget is ~4x that rather than tight, because the
+ * cost of being wrong is asymmetric: too short re-introduces the race this exists to absorb, while
+ * too long only delays a host that was never going to come up.
+ *
+ * ⚠ This is deliberately SHORTER than the bootstrap gate's 1200s. They are not the same wait: the
+ * bootstrap gate waits for a ~2GB bundle plus three CLI installs, this one waits for the guest
+ * agent to write three strings. Reusing the bootstrap budget here would hide a genuinely broken
+ * guest agent behind twenty minutes of silence.
+ */
+const HOST_KEY_PUBLICATION_TIMEOUT_MS = 300_000;
+const HOST_KEY_PUBLICATION_POLL_INTERVAL_MS = 5_000;
+
+/**
+ * Is this the "guest agent has not published hostkeys/ YET" 404, as opposed to any other 404?
+ *
+ * ⚠ THE DISCRIMINATION IS THE WHOLE POINT, and getting it wrong is worse than not retrying at all.
+ * A 404 for a NONEXISTENT INSTANCE is the exact failure this resolver's own docstring says must
+ * refuse immediately ("a tunnel to an instance that does not exist"). Retrying that blindly would
+ * convert a clear 2-second refusal into a five-minute hang and then report a timeout, which names
+ * the wrong cause. So we require the 404 to name a *Guest Attribute* — GCP puts the missing
+ * resource's type in the message — and let every other 404 through untouched.
+ */
+function isHostKeyPublicationPending(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  if ((error as { status?: unknown }).status !== 404) return false;
+  const reason = String(
+    (error as { reason?: unknown }).reason ?? (error as { message?: unknown }).message ?? '',
+  );
+  return /type\s+'Guest Attribute'/i.test(reason);
+}
+
+/**
+ * Presence-only completeness check — deliberately NOT a parse.
+ *
+ * The 404 is only half the race. The guest agent publishes the three keys as separate attributes,
+ * so a read landing mid-publication returns a PARTIAL set, which `guestHostKeys` rejects with
+ * "hostkeys/ is missing '<algorithm>'". That is transient and must be waited out.
+ *
+ * ⚠ It checks presence and NOTHING else on purpose. Validation stays in `guestHostKeys`, so
+ * MALFORMED or duplicate key material still fails fast instead of being retried for five minutes
+ * and then reported as a publication timeout — a corrupt key is a real defect, not a slow one.
+ */
+function hostKeyPublicationComplete(attributes: readonly GcpInstanceGuestAttribute[]): boolean {
+  const present = new Set<HostKeyAlgorithm>();
+  for (const attribute of attributes) {
+    if (attribute.namespace !== 'hostkeys') continue;
+    const algorithm = HOST_KEY_BY_ATTRIBUTE.get(attribute.key);
+    if (algorithm) present.add(algorithm);
+  }
+  return HOST_KEY_ALGORITHMS.every((algorithm) => present.has(algorithm));
+}
+
+export interface WorkspaceHostHostKeyPublicationOptions {
+  readonly timeoutMs?: number;
+  readonly pollIntervalMs?: number;
+  /**
+   * Called after each not-yet-published probe so the caller can write durable progress.
+   *
+   * Mirrors the bootstrap gate's `onWaiting` for the reason that gate documents: without it the
+   * wait is indistinguishable from a hang to anyone reading the operation row. It also supplies the
+   * only positive evidence that this gate ran at all — a fast clean initialize proves nothing,
+   * because the non-waiting path emits nothing by construction.
+   */
+  readonly onWaiting?: (status: { elapsedMs: number; timeoutMs: number }) => void | Promise<void>;
+  /** Test seam; production sleeps for real. */
+  readonly sleep?: (ms: number) => Promise<void>;
+  /** Test seam; production reads the wall clock. */
+  readonly now?: () => number;
+}
+
+export class WorkspaceHostHostKeyPublicationTimeoutError extends Error {
+  constructor(instanceName: string, waitedMs: number) {
+    super(
+      `host keys were not published by instance '${instanceName}' after ${Math.round(waitedMs / 1000)}s`,
+    );
+    this.name = 'WorkspaceHostHostKeyPublicationTimeoutError';
+  }
+}
+
+/**
+ * Read `hostkeys/`, waiting out the publication race on a freshly-created VM.
+ *
+ * Ordering context (WI-10001685): `initialize.ts` resolves operations BEFORE it runs the
+ * initializer that owns the bootstrap gate, and this read sits at the end of that resolution. So
+ * on a genuinely fresh host the resolver threw and the bootstrap gate was STRUCTURALLY
+ * UNREACHABLE — no operation row was written at all. No prior attempt saw it because the two
+ * historical reproductions used 117s and 304s provision->initialize gaps, both already past
+ * publication; only a ~0s gap reaches it.
+ */
+async function readPublishedHostKeys(
+  client: Pick<GcpWorkspaceHostApiClient, 'getInstanceGuestAttributes'>,
+  identity: { projectId: string; zone: string; instanceName: string },
+  options: WorkspaceHostHostKeyPublicationOptions = {},
+): Promise<readonly GcpInstanceGuestAttribute[]> {
+  const timeoutMs = options.timeoutMs ?? HOST_KEY_PUBLICATION_TIMEOUT_MS;
+  const pollIntervalMs = options.pollIntervalMs ?? HOST_KEY_PUBLICATION_POLL_INTERVAL_MS;
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const startedAt = now();
+
+  for (;;) {
+    let attributes: readonly GcpInstanceGuestAttribute[] | undefined;
+    try {
+      attributes = await client.getInstanceGuestAttributes(
+        identity.projectId,
+        identity.zone,
+        identity.instanceName,
+        'hostkeys/',
+      );
+    } catch (error) {
+      // Anything that is not the publication race propagates UNCHANGED, keeping a wrong-instance
+      // 404, an auth failure and a quota error as fast and as legible as they were before.
+      if (!isHostKeyPublicationPending(error)) throw error;
+    }
+
+    if (attributes && hostKeyPublicationComplete(attributes)) return attributes;
+
+    const elapsedMs = now() - startedAt;
+    if (elapsedMs >= timeoutMs) {
+      throw new WorkspaceHostHostKeyPublicationTimeoutError(identity.instanceName, elapsedMs);
+    }
+    await options.onWaiting?.({ elapsedMs, timeoutMs });
+    await sleep(pollIntervalMs);
+  }
+}
+
 async function enrollGcpIapHostKeysUnlocked(
   input: GcpIapHostKeyEnrollmentInput,
   hooks: GcpIapHostKeyEnrollmentTestHooks,
@@ -593,6 +725,11 @@ export interface ResolveOperationsForHostInput {
   resolveHostedAuth?: typeof resolveHostedGcpAuth;
   /** Test seam; production atomically updates the controller-owned trust store. */
   enrollHostKeys?: (input: GcpIapHostKeyEnrollmentInput) => Promise<void>;
+  /**
+   * Budget/progress for waiting out the guest agent's `hostkeys/` publication (WI-10001685).
+   * Omitted means the measured defaults; callers pass `onWaiting` to record durable progress.
+   */
+  awaitHostKeys?: WorkspaceHostHostKeyPublicationOptions;
 }
 
 /**
@@ -643,11 +780,14 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
         ...(input.gcpFetch ? { fetch: input.gcpFetch } : {}),
       });
     })();
-  const attributes = await client.getInstanceGuestAttributes(
-    identity.projectId,
-    identity.zone,
-    identity.instanceName,
-    'hostkeys/',
+  // WI-10001685: wait out the guest agent's hostkeys/ publication instead of throwing on a fresh
+  // VM. This read is the LAST thing resolution does and it runs BEFORE the initializer that owns
+  // the bootstrap gate, so throwing here made that gate structurally unreachable and wrote no
+  // operation row at all — the failure presented as `gcp_preflight_http_404 'hostkeys/'`.
+  const attributes = await readPublishedHostKeys(
+    client,
+    identity,
+    input.awaitHostKeys ?? {},
   );
   await (input.enrollHostKeys ?? enrollGcpIapHostKeys)({
     identity,

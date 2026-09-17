@@ -32,6 +32,7 @@ import {
   resolveWorkspaceHostInitializationControllerProfile,
   resolveWorkspaceHostInitializationOperations,
   resolveWorkspaceHostInitializationOperationsForHost,
+  type GcpIapHostKeyEnrollmentInput,
   type WorkspaceHostInitializationControllerProfile,
 } from './initialization-operations-resolver';
 import { resolveGcpWorkspaceHostInstanceIdentity, type GcpInstanceGuestAttribute } from './gcp-provider';
