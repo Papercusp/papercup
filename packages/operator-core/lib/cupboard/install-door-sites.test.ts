@@ -30,6 +30,11 @@ const INSTALL_DOOR_SITES = [
   'install-app.ts',
   'install-blueprint.ts',
   'install-datatype.ts',
+  // identities-v1 P-029, 2026-09-17: the `event` Cupboard listing kind. It shipped
+  // correctly gated (two gateInstallDoor calls + a braceless `if (!gate.ok) return`)
+  // and was simply never declared here — which is the ADDED-door half of this guard
+  // doing its job, not a broken door. Same change also landed migration 1171.
+  'install-event.ts',
   'install-goal.ts',
   'install-plan.ts',
   'install-plugin.ts',
