@@ -22,6 +22,18 @@
  * terminal output and exported session transcripts.
  * The prewarm pool (previously a closure inside `registerPty`) is now
  * module-level state — same one-instance-per-process lifetime.
+ *
+ * NOT A FALLBACK FOR THE WS TRANSPORT UNDER CLUSTERING. It is tempting to read
+ * "output over SSE, input over POST" as an independent path that survives when the
+ * pty WS server refuses to start — it is not. Every route below that reaches a
+ * terminal resolves it through the SAME in-process `pty-bridge` handles map the WS
+ * leg uses, so multi-worker clustering breaks both identically: a handle spawned on
+ * one worker is invisible to the (workers-1)/workers of later requests routed
+ * elsewhere. The registry-backed routes therefore share the WS leg's refusal
+ * (`ptyRegistryClusterRefusal`) and return 503 rather than the false
+ * `404 unknown pty id` that misdiagnosis cost this investigation twice
+ * (WI-10001638). The disk-backed routes — the audit-transcript reads and the tool
+ * inventory, listed in `PTY_CLUSTER_SAFE_PATHS` — are unaffected and stay enabled.
  */
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync,
@@ -35,6 +47,7 @@ import { sseResponse } from '@papercusp/sse';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import {
   killPty, markActive, resizePty, spawnGovernedPty, writePty, getPty, getPtyMeta, getHistory, PtyError,
+  ptyRegistryClusterRefusal,
   type PtyHandle,
 } from '../../../pty-bridge';
 import {
@@ -105,6 +118,72 @@ function scopeOrDenial(
   return scope ?? Response.json(
     { error: 'pty scope does not match the authenticated workspace' },
     { status: 403 },
+  );
+}
+
+/**
+ * Paths served ENTIRELY from disk, which multi-worker clustering therefore does not
+ * break: the exported-transcript reads and the static tool inventory. They are
+ * deliberately NOT cluster-guarded — refusing them would delete working functionality.
+ * Kept as an explicit declaration (rather than left implicit) so the cluster-refusal
+ * test can require that EVERY pty route is classified one way or the other, and a new
+ * route added later cannot quietly default into the unguarded set.
+ */
+/**
+ * Machine-readable discriminator on the cluster refusal. Exported so callers (and the
+ * test) identify the refusal by code rather than by its 503, which these routes also
+ * return for unrelated transient spawn failures.
+ */
+export const PTY_CLUSTER_UNSERVICEABLE_CODE = 'pty_cluster_unserviceable';
+
+export const PTY_CLUSTER_SAFE_PATHS: ReadonlySet<string> = new Set([
+  '/harness/:slug/pi-sessions/audit',
+  '/harness/:slug/pi-sessions/audit/:filename',
+  '/harness/:slug/pty/tools',
+]);
+
+/**
+ * The refusal every registry-backed pty route returns while this process is one of
+ * several cluster workers, or `null` when terminals are serviceable here.
+ *
+ * WHY A REFUSAL AND NOT A RETRY: the handles map these routes read is per-process
+ * (see `ptyRegistryClusterRefusal`), and spawn requests round-robin across workers,
+ * so a pty spawned on worker A is permanently invisible to the (workers-1)/workers of
+ * later requests that land elsewhere. There is no cross-worker lookup to fall back to.
+ *
+ * WHY 503 AND NOT THE STATUS QUO: untreated, this path fails as
+ * `404 {error:'unknown pty id'}` — a statement that is FALSE (the pty usually exists,
+ * in another worker) and that cost this investigation two wrong root-cause theories
+ * before the string itself was identified as the misdirection (WI-10001638). 503 says
+ * the honest thing: the server cannot service terminals in this configuration, it is
+ * not the caller's id that is wrong, and retrying will not help.
+ *
+ * NO EXISTENCE ORACLE: this is decided from configuration ALONE and returned before
+ * any registry lookup, so the response is byte-identical for a live pty id, a dead
+ * one, and one that never existed — preserving the property the WS leg's
+ * indistinguishable rejection was built to hold.
+ */
+function clusterRefusal(): Response | null {
+  const workers = ptyRegistryClusterRefusal();
+  if (workers == null) return null;
+  return Response.json(
+    {
+      // 503 is already used on these routes for unrelated transient failures
+      // ('prewarm spawn failed', a governed-spawn PtyError), so the status alone
+      // cannot tell a caller which one happened. This code is the discriminator:
+      // it means "disabled by configuration", never "your request failed".
+      code: PTY_CLUSTER_UNSERVICEABLE_CODE,
+      error: 'terminals are disabled in this process',
+      reason:
+        `multi-worker clustering is ACTIVE (${workers} workers) and the pty registry is ` +
+        `per-process, so only 1-in-${workers} operations could ever find their handle. ` +
+        `This is a server configuration state, NOT an unknown or expired pty id — ` +
+        `retrying will not help.`,
+      remedy:
+        'To run terminals set PAPERCUSP_CLUSTER_WORKERS=0 (or PAPERCUSP_CLUSTER=0) on this service.',
+      clusterWorkers: workers,
+    },
+    { status: 503, headers: { 'cache-control': 'no-store' } },
   );
 }
 
@@ -367,6 +446,8 @@ const spawn = defineTool({
     const slug = ctx.params.slug ?? '';
     const accessScope = scopeOrDenial(req, ctx.principal, slug);
     if (accessScope instanceof Response) return accessScope;
+    const refusal = clusterRefusal();
+    if (refusal) return refusal;
     let body: SpawnBody;
     try { body = ((await req.json()) as SpawnBody) ?? {}; } catch { body = {}; }
 
@@ -461,6 +542,8 @@ const resolve = defineTool({
     const slug = ctx.params.slug ?? '';
     const accessScope = scopeOrDenial(req, ctx.principal, slug);
     if (accessScope instanceof Response) return accessScope;
+    const refusal = clusterRefusal();
+    if (refusal) return refusal;
     let body: SpawnBody;
     try { body = ((await req.json()) as SpawnBody) ?? {}; } catch { body = {}; }
     const cfg = await buildSpawnConfig({ slug, body, requestUrl: req.url });
@@ -479,6 +562,8 @@ const prewarm = defineTool({
     const slug = ctx.params.slug ?? '';
     const accessScope = scopeOrDenial(req, ctx.principal, slug);
     if (accessScope instanceof Response) return accessScope;
+    const refusal = clusterRefusal();
+    if (refusal) return refusal;
     let body: SpawnBody;
     try { body = ((await req.json()) as SpawnBody) ?? {}; } catch { body = {}; }
 
@@ -515,6 +600,8 @@ const ticket = defineTool({
     const slug = ctx.params.slug ?? '';
     const accessScope = scopeOrDenial(req, ctx.principal, slug);
     if (accessScope instanceof Response) return accessScope;
+    const refusal = clusterRefusal();
+    if (refusal) return refusal;
     const origin = exactRequestOrigin(req);
     if (!origin) {
       return Response.json({ error: 'an exact Origin header is required' }, { status: 403 });
@@ -550,6 +637,8 @@ const stream = defineTool({
     const slug = ctx.params.slug ?? '';
     const accessScope = scopeOrDenial(req, ctx.principal, slug);
     if (accessScope instanceof Response) return accessScope;
+    const refusal = clusterRefusal();
+    if (refusal) return refusal;
     const id = ctx.params.id;
     const handle = getPty(id, accessScope);
     if (!handle) {
@@ -609,6 +698,8 @@ const input = defineTool({
     const slug = ctx.params.slug ?? '';
     const accessScope = scopeOrDenial(req, ctx.principal, slug);
     if (accessScope instanceof Response) return accessScope;
+    const refusal = clusterRefusal();
+    if (refusal) return refusal;
     const id = ctx.params.id;
     let body: { data?: string };
     try { body = ((await req.json()) as { data?: string }) ?? {}; } catch { body = {}; }
@@ -627,6 +718,8 @@ const resize = defineTool({
     const slug = ctx.params.slug ?? '';
     const accessScope = scopeOrDenial(req, ctx.principal, slug);
     if (accessScope instanceof Response) return accessScope;
+    const refusal = clusterRefusal();
+    if (refusal) return refusal;
     const id = ctx.params.id;
     let body: { cols?: number; rows?: number };
     try { body = ((await req.json()) as { cols?: number; rows?: number }) ?? {}; } catch { body = {}; }
@@ -646,6 +739,8 @@ const kill = defineTool({
     const slug = ctx.params.slug ?? '';
     const accessScope = scopeOrDenial(req, ctx.principal, slug);
     if (accessScope instanceof Response) return accessScope;
+    const refusal = clusterRefusal();
+    if (refusal) return refusal;
     const ok = killPty(ctx.params.id, accessScope);
     if (!ok) return Response.json({ error: 'unknown pty' }, { status: 404 });
     return new Response(null, { status: 204 });

@@ -26,6 +26,8 @@ import {
   samePtyAccessScope,
   type PtyAccessScope,
 } from './pty-ticket';
+import { resolveClusterWorkers } from './cluster-fork';
+import { getResourceProfile } from './resource-profile';
 import type { AdmissionContext, ResourceDemand } from './resource-governor/admission';
 import { beginGovernedExecution, governedExecutionRuntime } from './resource-governor/execution';
 
@@ -162,6 +164,52 @@ type Globals = typeof globalThis & {
 const _globals = globalThis as Globals;
 const handles: Map<string, PtyHandle> = _globals.__papercuspPtyHandles ?? new Map<string, PtyHandle>();
 _globals.__papercuspPtyHandles = handles;
+
+/**
+ * Memoized worker count for `ptyRegistryClusterRefusal`. A plain module-scope `let`
+ * on purpose (not a `globalThis` pin): the value is a pure function of `process.env`
+ * plus the host profile, so a split module record recomputes the SAME number — there
+ * is no shared mutable state to keep coherent, unlike the `handles` map above.
+ */
+let _clusterWorkersMemo: number | null = null;
+
+/**
+ * The worker count when multi-worker clustering makes the pty registry above
+ * unserviceable in this process, or `null` when it is safe to serve terminals.
+ *
+ * THE REGISTRY IS THE THING THAT BREAKS, which is why this predicate lives here
+ * rather than beside either transport. `handles` is per-process state, so every
+ * pty operation must land in the process that spawned the handle. Under
+ * `node:cluster` it cannot: spawn requests round-robin across N request workers,
+ * so a later attach/input/resize/kill finds no entry and fails (workers-1)/workers
+ * of the time, strictly interleaved. Both transports that front this map are
+ * affected identically — the WS attach path (`pty-ws.ts`) and the HTTP/SSE control
+ * plane (`endpoint-route/routes/pty`) — so both consult THIS predicate and refuse
+ * together. Refusing loudly deletes nothing that worked: the shipping desktop
+ * target pins PAPERCUSP_CLUSTER=0, where this returns `null`.
+ *
+ * Callers that already resolved the authoritative count (hono-host, which computes
+ * it once at boot) pass it in; callers with no injection point (the route handlers)
+ * omit it and get the same value re-derived from the same resolver, so the two legs
+ * cannot disagree.
+ */
+export function ptyRegistryClusterRefusal(opts?: { clusterWorkers?: number }): number | null {
+  let workers = opts?.clusterWorkers;
+  if (workers == null) {
+    if (_clusterWorkersMemo == null) {
+      _clusterWorkersMemo = resolveClusterWorkers(process.env, getResourceProfile().httpWorkers);
+    }
+    workers = _clusterWorkersMemo;
+  }
+  const n = Math.floor(Number(workers));
+  if (!Number.isFinite(n) || n <= 1) return null;
+  return n;
+}
+
+/** Test-only: drop the memoized worker count so a test can vary `process.env`. */
+export function __resetPtyRegistryClusterMemoForTests(): void {
+  _clusterWorkersMemo = null;
+}
 
 function startReaper(): void {
   if (_globals.__papercuspPtyReaperStarted) return;
