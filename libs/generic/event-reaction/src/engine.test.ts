@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runReactions, type FireInProcess, type DurableSeam } from './engine';
+import { runReactions, type FireInProcess, type DurableSeam, type OnReactionFailure } from './engine';
 import { ReactionRegistry } from './registry';
 import { MAX_REACTION_DEPTH } from './loop-guard';
 import type { ReactionCause } from './types';
@@ -146,5 +146,110 @@ describe('runReactions — durable routing', () => {
     await flush();
     expect(h.fireInProcess).toHaveBeenCalledOnce();
     expect(h.durableRun).not.toHaveBeenCalled();
+  });
+});
+
+// P-030 (b). The `log` port formats a failure into a sentence, which is why a
+// host could never record or surface one: the rule, its contributor, its
+// capability scope and the dedup id are all unrecoverable from prose. These
+// assert the STRUCTURE survives.
+describe('runReactions failure surfacing', () => {
+  const makeOnFailure = () => vi.fn<OnReactionFailure<TestEvent>>();
+  let h: ReturnType<typeof harness>;
+  let onFailure: ReturnType<typeof makeOnFailure>;
+  beforeEach(() => {
+    h = harness();
+    onFailure = makeOnFailure();
+  });
+
+  it('reports a dispatch refusal with the rule, contributor, capability and dedup id intact', async () => {
+    h.registry.add({
+      id: 'r1',
+      on: 'demo:tool',
+      fire: 'sink:tool',
+      source: 'plugin:acme',
+      capability: 'sink.write',
+    });
+    h.fireInProcess.mockResolvedValueOnce({ ok: false, error: 'missing_capability: principal lacks [sink.write]' });
+    h.run({ kind: 'demo:tool', runId: 'run-1' }, { onFailure });
+    await flush();
+
+    expect(onFailure).toHaveBeenCalledOnce();
+    const f = onFailure.mock.calls[0][0];
+    expect(f.stage).toBe('dispatch');
+    expect(f.rule.id).toBe('r1');
+    // The two fields an alert needs and a log line destroys.
+    expect(f.rule.source).toBe('plugin:acme');
+    expect(f.rule.capability).toBe('sink.write');
+    expect(f.error).toBe('missing_capability: principal lacks [sink.write]');
+    // Deterministic, and the SAME id the durable route would claim — so an
+    // in-process failure and a ledger row correlate on one key.
+    expect(f.dedupId).toBe('reaction:run-1:r1');
+    expect(f.cause.ruleId).toBe('r1');
+  });
+
+  it('reports a thrown dispatcher as stage "threw"', async () => {
+    h.registry.add({ id: 'r1', on: 'demo:tool', fire: 'sink:tool' });
+    h.fireInProcess.mockRejectedValueOnce(new Error('dispatcher exploded'));
+    h.run({ kind: 'demo:tool', runId: 'run-1' }, { onFailure });
+    await flush();
+
+    expect(onFailure).toHaveBeenCalledOnce();
+    expect(onFailure.mock.calls[0][0].stage).toBe('threw');
+    expect(onFailure.mock.calls[0][0].error).toBe('dispatcher exploded');
+  });
+
+  it('is silent on success — only a failed reaction is reported', async () => {
+    h.registry.add({ id: 'r1', on: 'demo:tool', fire: 'sink:tool' });
+    h.run({ kind: 'demo:tool', runId: 'run-1' }, { onFailure });
+    await flush();
+    expect(h.fireInProcess).toHaveBeenCalledOnce();
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it('keeps the human log line as well as the structured report', async () => {
+    h.registry.add({ id: 'r1', on: 'demo:tool', fire: 'sink:tool' });
+    h.fireInProcess.mockResolvedValueOnce({ ok: false, error: 'boom' });
+    h.run({ kind: 'demo:tool', runId: 'run-1' }, { onFailure });
+    await flush();
+    expect(h.log).toHaveBeenCalledWith(expect.stringContaining('reaction r1 → sink:tool failed: boom'));
+    expect(onFailure).toHaveBeenCalledOnce();
+  });
+
+  it('a throwing onFailure never becomes a second failure', async () => {
+    h.registry.add({ id: 'r1', on: 'demo:tool', fire: 'sink:tool' });
+    h.fireInProcess.mockResolvedValueOnce({ ok: false, error: 'boom' });
+    onFailure.mockImplementation(() => {
+      throw new Error('surfacing is broken');
+    });
+    expect(() => h.run({ kind: 'demo:tool', runId: 'run-1' }, { onFailure })).not.toThrow();
+    await flush();
+    expect(h.log).toHaveBeenCalledWith(expect.stringContaining('surfacing'));
+  });
+
+  it('a REJECTING async onFailure is swallowed too (unhandled rejections would kill the host)', async () => {
+    h.registry.add({ id: 'r1', on: 'demo:tool', fire: 'sink:tool' });
+    h.fireInProcess.mockResolvedValueOnce({ ok: false, error: 'boom' });
+    onFailure.mockRejectedValue(new Error('alerting is down'));
+    h.run({ kind: 'demo:tool', runId: 'run-1' }, { onFailure });
+    await flush();
+    await flush();
+    expect(h.log).toHaveBeenCalledWith(expect.stringContaining('alerting is down'));
+  });
+
+  it('a guard DROP is not a failure — the cap working is not something to alert on', async () => {
+    h.registry.add({ id: 'r1', on: 'demo:tool', fire: 'sink:tool' });
+    h.run(
+      {
+        kind: 'demo:tool',
+        runId: 'run-1',
+        cause: { depth: MAX_REACTION_DEPTH + 1, chain: ['x'], ruleId: 'x', rootRunId: 'run-1' },
+      },
+      { onFailure },
+    );
+    await flush();
+    expect(h.fireInProcess).not.toHaveBeenCalled();
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(h.log).toHaveBeenCalledWith(expect.stringContaining('dropped reaction'));
   });
 });
