@@ -289,7 +289,25 @@ refresh_release_worktree() {
 INTEGRATION_ROOT="$(realpath "$INTEGRATION_ROOT")"
 RELEASE_ROOT="$(realpath -m "$RELEASE_ROOT")"
 
-[ -d "$INTEGRATION_ROOT/.git" ] || { echo "[setup-release] integration root is not a git repo: $INTEGRATION_ROOT" >&2; exit 1; }
+# Worktree-safe repo check: ASK GIT, never stat `.git`. A git WORKTREE's `.git` is a
+# FILE (`gitdir: <path>`), not a directory, so the old `[ -d "$INTEGRATION_ROOT/.git" ]`
+# rejected a perfectly valid worktree as "not a git repo". That is not hypothetical: the
+# operator processes that launch deploys RUN from worktrees — papercusp-staging (:3170,
+# WorkingDirectory=.../papercusp-staging/apps/operator) and papercup-release (:3070) are
+# both worktrees, and integrationRoot defaults to scriptRepoRoot() (release-config.ts),
+# i.e. whichever tree the caller runs from. So every deploy launched via the release:deploy
+# TOOL aborted here — and so did its rollback leg, since both call this script. It fails
+# BEFORE touching the release root, so the tree stays consistent and :3070 keeps serving
+# happily: the deploy is silently a no-op to anyone watching the service. That is how the
+# pipeline sat 260 commits behind the green pin while every surface looked healthy
+# (WI-10001774; fleet outage EI-23538941588991674 was unfixable for 7.5h behind it).
+#
+# Note this file ALREADY uses `-e` for "$RELEASE_ROOT/.git" (below), precisely because the
+# release root is created by `git worktree add` — line 292 was simply the odd one out.
+# `rev-parse --git-dir` is stricter than `-e`: it accepts main repos, worktrees and
+# submodules, and still rejects a stray `.git` file that is not a real repo. It also tests
+# exactly the capability every later line depends on — they are all `git -C "$INTEGRATION_ROOT" ...`.
+git -C "$INTEGRATION_ROOT" rev-parse --git-dir >/dev/null 2>&1 || { echo "[setup-release] integration root is not a git repo: $INTEGRATION_ROOT" >&2; exit 1; }
 
 # Resolve the target commit from the integration repo (refs are shared with the worktree).
 # In dependency-only mode the existing checkout is the source of truth. An
