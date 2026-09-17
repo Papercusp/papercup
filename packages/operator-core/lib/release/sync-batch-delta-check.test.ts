@@ -49,13 +49,14 @@ function makeDeps(
       state.cursor = n;
     },
     hostLoad: () => ({ load1: 2, cores: 128 }),
-    greenCheckpointRunning: () => false,
-    headSha: () => SHA_B,
-    listBatches: () => [makeBatch()],
-    probeRadius: () => ({ workspaces: ['foo'], guards: [] }),
-    runAffected: () => ({ ok: true, failing: [] }),
-    runTsc: () => ({ ok: true, failing: [] }),
-    confirmOne: () => false,
+    // async by contract — these legs shell out; see SyncBatchDeltaDeps (WI-10001771).
+    greenCheckpointRunning: async () => false,
+    headSha: async () => SHA_B,
+    listBatches: async () => [makeBatch()],
+    probeRadius: async () => ({ workspaces: ['foo'], guards: [] }),
+    runAffected: async () => ({ ok: true, failing: [] }),
+    runTsc: async () => ({ ok: true, failing: [] }),
+    confirmOne: async () => false,
     fileRed: async (f) => {
       state.filed.push(f);
       return { ok: true, id: 'WI-1' };
@@ -138,7 +139,7 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
   });
 
   it('never fights the gate: skips while a green-checkpoint suite runs', async () => {
-    const { deps, state } = makeDeps({ greenCheckpointRunning: () => true }, { sha: SHA_A, updatedAtMs: 1 });
+    const { deps, state } = makeDeps({ greenCheckpointRunning: async () => true }, { sha: SHA_A, updatedAtMs: 1 });
     const res = await runSyncBatchDeltaCheck(deps);
     expect(res.status).toBe('skipped');
     expect(res.reason).toBe('green-checkpoint-running');
@@ -147,7 +148,7 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
 
   it('an undetermined affected run (red, no break-set line) holds the cursor', async () => {
     const { deps, state } = makeDeps(
-      { runAffected: () => ({ ok: false, failing: null }) },
+      { runAffected: async () => ({ ok: false, failing: null }) },
       { sha: SHA_A, updatedAtMs: 1 },
     );
     const res = await runSyncBatchDeltaCheck(deps);
@@ -158,7 +159,7 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
 
   it('a too-wide radius is refused but the cursor ADVANCES (a parked cursor would re-refuse forever)', async () => {
     const { deps, state } = makeDeps(
-      { probeRadius: () => ({ workspaces: ['a', 'b', 'c', 'd'], guards: [] }) },
+      { probeRadius: async () => ({ workspaces: ['a', 'b', 'c', 'd'], guards: [] }) },
       { sha: SHA_A, updatedAtMs: 1 },
     );
     const res = await runSyncBatchDeltaCheck(deps);
@@ -175,9 +176,9 @@ describe('runSyncBatchDeltaCheck — reds, confirmation, filing', () => {
     const batch = makeBatch({ paths: ['packages/foo/src/a.test.ts'] });
     const { deps, state } = makeDeps(
       {
-        listBatches: () => [batch],
-        runAffected: () => ({ ok: false, failing: [failingFile] }),
-        confirmOne: () => false, // re-confirmed red in its own invocation
+        listBatches: async () => [batch],
+        runAffected: async () => ({ ok: false, failing: [failingFile] }),
+        confirmOne: async () => false, // re-confirmed red in its own invocation
       },
       { sha: SHA_A, updatedAtMs: 1 },
     );
@@ -197,8 +198,8 @@ describe('runSyncBatchDeltaCheck — reds, confirmation, filing', () => {
   it('a red the single-file re-run does NOT reproduce is reported unconfirmed, never filed', async () => {
     const { deps, state } = makeDeps(
       {
-        runAffected: () => ({ ok: false, failing: [failingFile] }),
-        confirmOne: () => null, // collection-abort false positive: undetermined
+        runAffected: async () => ({ ok: false, failing: [failingFile] }),
+        confirmOne: async () => null, // collection-abort false positive: undetermined
       },
       { sha: SHA_A, updatedAtMs: 1 },
     );
@@ -217,7 +218,7 @@ describe('runSyncBatchDeltaCheck — reds, confirmation, filing', () => {
       confirmations: 1,
     };
     const { deps, state } = makeDeps(
-      { headSha: () => SHA_A, confirmOne: () => false },
+      { headSha: async () => SHA_A, confirmOne: async () => false },
       { sha: SHA_A, updatedAtMs: 1, openReds: [openRed] },
     );
     const res = await runSyncBatchDeltaCheck(deps);
@@ -230,7 +231,7 @@ describe('runSyncBatchDeltaCheck — reds, confirmation, filing', () => {
   it('a held-open red that re-runs green stops being held', async () => {
     const openRed = { path: failingFile.file, workspace: null, introducedBy: null, firstSeenMs: 500, confirmations: 1 };
     const { deps, state } = makeDeps(
-      { headSha: () => SHA_A, confirmOne: () => true },
+      { headSha: async () => SHA_A, confirmOne: async () => true },
       { sha: SHA_A, updatedAtMs: 1, openReds: [openRed] },
     );
     await runSyncBatchDeltaCheck(deps);

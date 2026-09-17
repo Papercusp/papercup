@@ -569,14 +569,14 @@ export interface Attribution {
  * `how` says which tier produced it so a reader never mistakes a radius hit for a
  * proven culprit.
  */
-export function attributeIntroducingBatch(input: {
+export async function attributeIntroducingBatch(input: {
   batches: readonly SyncBatch[];
   failing: FailingFile;
   /** Enumerate the affected workspaces for one batch's paths. Return null when the
    *  probe itself failed — an unmeasurable batch is skipped, never assumed clean. */
-  probeBatch: (paths: readonly string[]) => RadiusProbe | null;
+  probeBatch: (paths: readonly string[]) => Promise<RadiusProbe | null>;
   maxProbes?: number;
-}): Attribution {
+}): Promise<Attribution> {
   const maxProbes = input.maxProbes ?? MAX_ATTRIBUTION_PROBES;
   let probesUsed = 0;
   for (const batch of input.batches) {
@@ -589,7 +589,7 @@ export function attributeIntroducingBatch(input: {
     if (probesUsed >= maxProbes) break;
     if (batch.paths.length === 0) continue;
     probesUsed += 1;
-    const probe = input.probeBatch(batch.paths);
+    const probe = await input.probeBatch(batch.paths);
     if (!probe) continue;
     if (probe.workspaces.includes(input.failing.workspace)) {
       return { batch, how: 'radius', probesUsed };
@@ -714,22 +714,28 @@ export interface SyncBatchDeltaDeps {
   writeCursor(next: SyncDeltaCursor): Promise<void>;
   /** `/proc/loadavg` + core count, or null when unreadable. */
   hostLoad(): LoadReading | null;
+  // ⛔ Every leg below shells out, and therefore returns a Promise BY CONTRACT
+  // (WI-10001771). The binding runs inside bg-host, which serves :3271 and the DBOS
+  // routine engine on the same event loop, so a synchronous implementation
+  // (`spawnSync`/`execFileSync`) blocks that loop for the child's whole lifetime and
+  // takes the routine engine down fleet-wide. Keep these async even if a future
+  // binding's work looks instant.
   /** true = a green-checkpoint suite is running; false = it is not; null = undetectable. */
-  greenCheckpointRunning(): boolean | null;
+  greenCheckpointRunning(): Promise<boolean | null>;
   /** Tip of the integration branch, or null when git could not be read. */
-  headSha(): string | null;
+  headSha(): Promise<string | null>;
   /** Commits in `(sinceSha, HEAD]`, newest first; null when git could not be read. */
-  listBatches(sinceSha: string): SyncBatch[] | null;
+  listBatches(sinceSha: string): Promise<SyncBatch[] | null>;
   /** `affected-tests.mjs --print-affected` for a path set; null when the probe failed. */
-  probeRadius(paths: readonly string[]): RadiusProbe | null;
+  probeRadius(paths: readonly string[]): Promise<RadiusProbe | null>;
   /** `affected-tests.mjs --changed-paths <paths>` — the actual run. `failing: null`
    *  on a red means the run named no files, i.e. UNDETERMINED. */
-  runAffected(paths: readonly string[]): { ok: boolean; failing: FailingFile[] | null };
+  runAffected(paths: readonly string[]): Promise<{ ok: boolean; failing: FailingFile[] | null }>;
   /** `lint-tsc.mjs --files=<files>`. */
-  runTsc(files: readonly string[]): { ok: boolean; failing: string[] };
+  runTsc(files: readonly string[]): Promise<{ ok: boolean; failing: string[] }>;
   /** One file, in its OWN invocation (root CLAUDE.md's gate-triage rule).
    *  `true` = passed, `false` = failed, `null` = not measured. */
-  confirmOne(file: string): ConfirmVerdict;
+  confirmOne(file: string): Promise<ConfirmVerdict>;
   /** File/refresh the deduped work item. */
   fileRed(finding: RedFinding): Promise<{ ok: boolean; id?: string; adopted?: boolean; error?: string }>;
   now(): number;
@@ -809,14 +815,14 @@ export async function runSyncBatchDeltaCheck(
     deps.log(`[sync-batch-delta] skip: ${loadVerdict.reason}`);
     return emptyResult('skipped', loadVerdict.reason);
   }
-  if (deps.greenCheckpointRunning() === true) {
+  if ((await deps.greenCheckpointRunning()) === true) {
     await recordSkip(deps, 'green-checkpoint-running');
     deps.log('[sync-batch-delta] skip: a green-checkpoint suite is running');
     return emptyResult('skipped', 'green-checkpoint-running');
   }
 
   // ── 2. cursor ──────────────────────────────────────────────────────────────
-  const head = deps.headSha();
+  const head = await deps.headSha();
   if (!head) return emptyResult('skipped', 'git-unreadable');
 
   const cursor = await deps.readCursor();
@@ -839,7 +845,7 @@ export async function runSyncBatchDeltaCheck(
       continue;
     }
     confirmBudget -= 1;
-    const verdict = deps.confirmOne(red.path);
+    const verdict = await deps.confirmOne(red.path);
     if (verdict === null || verdict === true) {
       // undetermined ⇒ keep holding; green ⇒ the red cleared, stop holding it.
       if (verdict === null) stillOpen.push(red);
@@ -872,7 +878,7 @@ export async function runSyncBatchDeltaCheck(
   }
 
   // ── 4. the new batch window ────────────────────────────────────────────────
-  const batches = deps.listBatches(cursor.sha);
+  const batches = await deps.listBatches(cursor.sha);
   if (!batches) return emptyResult('skipped', 'git-log-unreadable');
   if (batches.length === 0) {
     const next: SyncDeltaCursor = { ...cursor, sha: head, updatedAtMs: deps.now(), openReds: stillOpen };
@@ -899,7 +905,7 @@ export async function runSyncBatchDeltaCheck(
   }
 
   // ── 5. radius probe + the cap ──────────────────────────────────────────────
-  const probe = deps.probeRadius(union.paths);
+  const probe = await deps.probeRadius(union.paths);
   if (!probe) return emptyResult('skipped', 'radius-probe-failed');
 
   const verdict = evaluateRadius({ probe, union, batchCount: batches.length, caps });
@@ -928,9 +934,11 @@ export async function runSyncBatchDeltaCheck(
   }
 
   // ── 6. execute the two legs ────────────────────────────────────────────────
-  const affected = deps.runAffected(union.paths);
+  // Sequential on purpose: these are the two heaviest subprocesses on the box, and
+  // running them concurrently would double the load the radius cap exists to bound.
+  const affected = await deps.runAffected(union.paths);
   const tsFiles = tsFilesOf(union.paths);
-  const tsc = tsFiles.length > 0 ? deps.runTsc(tsFiles) : { ok: true, failing: [] as string[] };
+  const tsc = tsFiles.length > 0 ? await deps.runTsc(tsFiles) : { ok: true, failing: [] as string[] };
 
   const candidates: Array<{ failing: FailingFile; leg: 'affected-tests' | 'lint-tsc' }> = [];
   if (!affected.ok) {
@@ -963,7 +971,7 @@ export async function runSyncBatchDeltaCheck(
         continue;
       }
       confirmBudget -= 1;
-      const v = deps.confirmOne(cand.failing.file);
+      const v = await deps.confirmOne(cand.failing.file);
       if (v === null || v === true) {
         // undetermined, or green on its own — CLAUDE.md: never attribute a batch
         // verdict to every file it named.
@@ -972,10 +980,10 @@ export async function runSyncBatchDeltaCheck(
       }
     }
 
-    const attribution = attributeIntroducingBatch({
+    const attribution = await attributeIntroducingBatch({
       batches,
       failing: cand.failing,
-      probeBatch: (paths) => {
+      probeBatch: async (paths) => {
         if (probeBudget <= 0) return null;
         probeBudget -= 1;
         return deps.probeRadius(paths);
