@@ -53,6 +53,15 @@ export interface EventKeyRow {
   reviewStatus: EventKeyReviewStatus;
   tags: string[];
   /**
+   * CURATED (1171). The intended shape of this key's emitted payload, as a JSON
+   * object; `events:await` consumers read it to know what a fired payload carries.
+   *
+   * ⚠ ITS `null` IS NOT THE `null` BELOW. Here it means NO PAYLOAD CONTRACT HAS
+   * BEEN DECLARED — a curation state. The three derived fields' `null` means
+   * NOT-YET-DERIVED, an un-run measurement. Same literal, different claim.
+   */
+  payloadSchema: Record<string, unknown> | null;
+  /**
    * DERIVED. `null` is NOT-YET-DERIVED and is a different claim from a measured
    * absence — read `derivedAt` before concluding anything from these three.
    */
@@ -93,6 +102,13 @@ export interface RegisterEventKeyInput {
   contributor?: string | null;
   status?: EventKeyStatus;
   tags?: string[];
+  /**
+   * The payload contract, as a JSON object. OMITTING IT CLEARS a previously
+   * declared contract — exactly as omitting `keyPattern`/`contributor` clears
+   * those. A curation write states the whole curated state; it is not a patch.
+   * (`embedding` is the deliberate exception, being expensive to recompute.)
+   */
+  payloadSchema?: Record<string, unknown> | null;
   embedding?: number[] | null;
   createdBy?: string | null;
 }
@@ -125,6 +141,7 @@ interface EventKeyDbRow {
   published: boolean;
   review_status: string;
   tags: string[] | null;
+  payload_schema: Record<string, unknown> | null;
   emitter: string | null;
   emitter_exists: boolean | null;
   emit_site_count: number | string | null;
@@ -166,6 +183,7 @@ function mapRow(row: EventKeyDbRow): EventKeyRow {
     published: row.published,
     reviewStatus: row.review_status as EventKeyReviewStatus,
     tags: row.tags ?? [],
+    payloadSchema: row.payload_schema ?? null,
     emitter: row.emitter,
     emitterExists: row.emitter_exists,
     emitSiteCount: toInt(row.emit_site_count),
@@ -209,6 +227,25 @@ export function normalizeEventKey(value: string): string {
 }
 
 /**
+ * Validate a curated payload contract and serialize it for `::jsonb`.
+ *
+ * `event_key_registry_payload_schema_ck` already refuses anything but a JSON
+ * object; this states the SAME rule where the caller can act on it. A constraint
+ * violation names the constraint, not the field the caller got wrong — and the
+ * shapes it catches (a scalar, a string, a top-level array) are exactly the ones
+ * that pass as valid JSON and then fail whoever reads them as a schema.
+ */
+export function normalizePayloadSchema(
+  value: Record<string, unknown> | null | undefined,
+): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('payloadSchema must be a JSON object (not an array or a scalar)');
+  }
+  return JSON.stringify(value);
+}
+
+/**
  * Register (or update) the CURATED half of an event key.
  *
  * Re-registering an existing key refreshes its curated fields and leaves every
@@ -225,16 +262,17 @@ export async function registerEventKey(
     throw new Error(`invalid event key status: ${status}`);
   }
   const tags = input.tags ?? [];
+  const payloadSchema = normalizePayloadSchema(input.payloadSchema);
   const embedding = input.embedding ? JSON.stringify(input.embedding) : null;
 
   const rows = await sql<EventKeyDbRow[]>`
     INSERT INTO harness_shared.event_key_registry (
       workspace_id, event_key, title, description, key_pattern,
-      contributor, status, tags, embedding, created_by
+      contributor, status, tags, payload_schema, embedding, created_by
     ) VALUES (
       ${input.workspaceId}, ${eventKey}, ${input.title}, ${input.description},
       ${input.keyPattern ?? null}, ${input.contributor ?? null}, ${status},
-      ${tags}, ${embedding}::vector, ${input.createdBy ?? null}
+      ${tags}, ${payloadSchema}::jsonb, ${embedding}::vector, ${input.createdBy ?? null}
     )
     ON CONFLICT (workspace_id, event_key) DO UPDATE SET
       title       = EXCLUDED.title,
@@ -243,6 +281,10 @@ export async function registerEventKey(
       contributor = EXCLUDED.contributor,
       status      = EXCLUDED.status,
       tags        = EXCLUDED.tags,
+      -- Plain assignment, NOT COALESCE: payload_schema is curated like key_pattern
+      -- and contributor, so a re-registration states the whole curated state.
+      -- The embedding below is the deliberate exception: expensive to recompute.
+      payload_schema = EXCLUDED.payload_schema,
       embedding   = COALESCE(EXCLUDED.embedding, harness_shared.event_key_registry.embedding),
       updated_at  = now()
     RETURNING *
