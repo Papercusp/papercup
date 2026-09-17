@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { WORKSPACE_HOST_AGENT_HOME_FILES } from '@papercusp/deployment-driver';
+import {
+  WORKSPACE_HOST_AGENT_HOME_FILES,
+  WORKSPACE_HOST_CLAUDE_NEUTRALIZED_REFRESH_TOKEN,
+  projectWorkspaceHostClaudeAccessToken,
+} from '@papercusp/deployment-driver';
 
 import {
   WORKSPACE_HOST_AGENT_CREDENTIAL_SOURCE_MAX_BYTES,
@@ -138,11 +142,37 @@ describe('resolveWorkspaceHostAgentCredentialSources', () => {
     ).rejects.toThrow(/over the .* ceiling/);
   });
 
-  it('warns that files.claude is carried whole when it is read from this operator home', async () => {
-    // The asymmetry is the load-bearing fact: codex is projected (D-311 / WI-10001688), claude is
-    // not. A caller must meet that at the call site, not in a doc comment.
+  it('claudeProjectionNoticeAccuracy — the claude notice states what the REAL encoder does, not a stale asymmetry', async () => {
+    // WHY THIS IS PINNED AGAINST THE ENCODER RATHER THAN A STRING. This notice is a second copy of
+    // what the projection code knows, and it DRIFTED: it claimed "files.claude is carried WHOLE"
+    // for the whole window after WI-10001691 neutralized the claude refresh token, overstating the
+    // risk in the one decision the notice exists to inform (whose credential goes on a host). A
+    // wording-only assertion is what let that happen — it passed happily while the claim it pinned
+    // had become false. So drive the real encoder and require the notice to agree with it.
+    const withLiveRefresh = Buffer.from(
+      JSON.stringify({ claudeAiOauth: { accessToken: 'claude-access', refreshToken: 'live-refresh' } }),
+      'utf8',
+    );
+    const projected = JSON.parse(
+      projectWorkspaceHostClaudeAccessToken(withLiveRefresh).toString('utf8'),
+    ) as { claudeAiOauth: { accessToken: string; refreshToken: string } };
+
+    // The ground truth the notice must not contradict: claude IS projected.
+    expect(projected.claudeAiOauth.refreshToken).toBe(
+      WORKSPACE_HOST_CLAUDE_NEUTRALIZED_REFRESH_TOKEN,
+    );
+    expect(projected.claudeAiOauth.refreshToken).not.toBe('live-refresh');
+    expect(projected.claudeAiOauth.accessToken).toBe('claude-access');
+
     const withHome = await resolveWorkspaceHostAgentCredentialSources(HOME_SELECTOR, readers());
-    expect(withHome.notices.join(' ')).toMatch(/files\.claude is carried WHOLE/);
+    const notice = withHome.notices.join(' ');
+    // Still warns — forwarding a personal credential remains a judgment call...
+    expect(notice).toMatch(/files\.claude/);
+    expect(notice).toMatch(/purpose-minted/);
+    // ...but must NOT reassert the falsified claim, in any of its spellings.
+    expect(notice).not.toMatch(/carried WHOLE/i);
+    expect(notice).not.toMatch(/no projection/i);
+    expect(notice).not.toMatch(/verbatim/i);
 
     const readIntegrationKey = vi.fn(async () => CLAUDE_JSON);
     const withMintedKey = await resolveWorkspaceHostAgentCredentialSources(

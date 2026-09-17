@@ -21,15 +21,23 @@
  * nothing and makes a silent cross-wiring expressible — the claude slot would then carry a codex
  * token that is not projected (see below), and the JSON check would happily pass it.
  *
- * ⚠ THE ASYMMETRY A CALLER MUST KNOW. `encodeWorkspaceHostAgentHomeBundle` projects the codex
- * member — neutralizing its `refresh_token` (D-311) and, since WI-10001688, any api-key-shaped
- * field — so `operator-home-file` on the codex slot delivers a self-expiring access token even
- * though the file it reads contains live long-lived material. `files.claude` has NO equivalent
- * projection: it is carried whole. Selecting `operator-home-file` for the claude slot therefore
- * copies this operator's own interactive credential to the host verbatim, which can rotate a token
- * out from under the machine it was copied from. The resolver reports that as a `notice` on the
- * result rather than refusing it, because it is a judgment about WHOSE credential a host should
- * receive, not a validity question — but no caller should learn it only by reading this comment.
+ * ⚠ WHAT A CALLER MUST KNOW. `encodeWorkspaceHostAgentHomeBundle` projects BOTH members: the codex
+ * `refresh_token` (D-311) and, since WI-10001691, the claude `claudeAiOauth.refreshToken`, each
+ * with the same shape-based walkers that also neutralize any api-key-shaped field (WI-10001688).
+ * So `operator-home-file` on EITHER slot delivers a self-expiring access token that cannot mint
+ * new ones, even though the file it reads contains live long-lived material.
+ *
+ * That bounds the DURATION and the MINTING — it does not make the choice free. `operator-home-file`
+ * on the claude slot still puts a WORKING access token for this operator's own interactive account
+ * on the host until it expires. The resolver reports that as a `notice` on the result rather than
+ * refusing it, because it is a judgment about WHOSE credential a host should receive, not a
+ * validity question — but no caller should learn it only by reading this comment.
+ *
+ * ⚠ This paragraph is a SECOND COPY of what the projection code knows (derived-truth ladder), and
+ * it has already drifted once: it asserted "files.claude has NO equivalent projection" for the
+ * whole window after WI-10001691 closed that gap, overstating the risk in the exact decision it
+ * exists to inform. `claudeProjectionNoticeAccuracy` in the test file pins the notice against the
+ * real encoder so the next such change fails a test instead of misinforming a caller.
  */
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -223,9 +231,10 @@ export async function resolveWorkspaceHostAgentCredentialSources(
 
   if (selector.claude.kind === 'operator-home-file') {
     notices.push(
-      'files.claude is carried WHOLE to the host — unlike files.codex it has no projection that ' +
-        "neutralizes long-lived material. This selector forwards this operator's own interactive " +
-        'Claude credential verbatim; prefer a purpose-minted token supplied via integration-key.',
+      'files.claude is PROJECTED before it reaches the host (WI-10001691) — its refresh token and ' +
+        'any api-key-shaped field are neutralized, so it cannot mint new access — but a WORKING ' +
+        "access token for this operator's own interactive Claude account still lands on the host " +
+        'until it expires. Prefer a purpose-minted token supplied via integration-key.',
     );
   }
 

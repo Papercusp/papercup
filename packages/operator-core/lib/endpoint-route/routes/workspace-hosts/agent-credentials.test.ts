@@ -40,7 +40,7 @@ function harness(overrides: Partial<WorkspaceHostAgentCredentialsRouteDependenci
         codex: { source: 'operator-home-file:/home/x/.codex/auth.json', bytes: 11 },
         omp: { source: 'absent', bytes: 0 },
       },
-      notices: ['files.claude is carried WHOLE to the host'],
+      notices: ['stub-notice: pass-through only, not the real notice text'],
     })) as unknown as WorkspaceHostAgentCredentialsRouteDependencies['resolveSources'],
     storeMaterial: vi.fn(async (input) => ({
       key: `derived-key:${input.generation}`,
@@ -85,7 +85,7 @@ describe('POST /workspace-hosts/:hostId/agent-credentials', () => {
     expect(json.stored).toBe(true);
     expect(json.key).toBe('derived-key:3');
     expect(json.materialBytes).toBe(42);
-    expect(json.notices).toEqual(['files.claude is carried WHOLE to the host']);
+    expect(json.notices).toEqual(['stub-notice: pass-through only, not the real notice text']);
 
     // The producer is reached with the RESOLVED bytes and the route's own writer seam.
     expect(deps.storeMaterial).toHaveBeenCalledWith(
