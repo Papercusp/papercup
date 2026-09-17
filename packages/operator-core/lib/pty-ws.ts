@@ -35,6 +35,7 @@ import {
   killPty,
   markActive,
   getScreenSerialization,
+  ptyRegistryClusterRefusal,
 } from './pty-bridge';
 import {
   PTY_WS_PROTOCOL,
@@ -152,8 +153,14 @@ const PTY_UPGRADE_REJECTION = 'pty unavailable or ticket missing';
  * Pure + exported for tests; the caller passes the already-resolved worker count.
  */
 export function ptyWsClusterRefusal(opts: { clusterWorkers?: number; port: number }): string | null {
-  const workers = Math.floor(Number(opts.clusterWorkers ?? 1));
-  if (!Number.isFinite(workers) || workers <= 1) return null;
+  // The DECISION lives on the registry that actually breaks
+  // (`ptyRegistryClusterRefusal`), shared with the HTTP/SSE control plane so the two
+  // transports cannot disagree about whether terminals are serviceable. This function
+  // only renders the WS-specific message. `?? 1` preserves this leg's own contract —
+  // an omitted count means single-process here, because every real caller
+  // (hono-host) passes the authoritative value and a bare call must not consult env.
+  const workers = ptyRegistryClusterRefusal({ clusterWorkers: opts.clusterWorkers ?? 1 });
+  if (workers == null) return null;
   return (
     `[pty-ws] REFUSING to start on port ${opts.port}: multi-worker clustering is ACTIVE ` +
     `(${workers} workers). The pty registry is per-process, so only 1-in-${workers} terminal ` +
