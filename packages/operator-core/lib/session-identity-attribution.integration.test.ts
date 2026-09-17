@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { acknowledgeControlTransition } from './agent-tools/coordination/control-anchor';
+import { acknowledgeControlTransition, failControlTransitionActivation } from './agent-tools/coordination/control-anchor';
 import { recordCurrentSessionIdentityActivation } from './session-identity-attribution';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -172,5 +172,51 @@ describe('P-009 activation span views', () => {
         FROM harness_shared.session_briefs
        WHERE owner_id = ${owner}`;
     expect(row).toEqual({ delivered: '122', applied: previous, status: 'prepared' });
+  });
+
+  it('retains the applied revision and records a failed phase when activation fails', async () => {
+    const owner = `${OWNER}-failclosed`;
+    const previous = { specificationRevision: SPEC_A, stateRevision: 'applied-previous' };
+    const revision = { specificationRevision: SPEC_B, stateRevision: 'desired-next' };
+    const activation = {
+      schemaVersion: 1,
+      attribution: { actorId: 'actor-stable', principalId: 'principal-stable', sessionId: 'session-stable' },
+      desired: revision,
+      prepared: revision,
+      applied: previous,
+      status: 'prepared',
+    };
+    await db.sql`INSERT INTO harness_shared.adv_sessions VALUES
+      (7,${WS},${owner},'native-failclosed','2026-09-17T00:00:00Z',NULL)`;
+    await db.sql`
+      INSERT INTO harness_shared.session_briefs
+        (owner_id,workspace_id,native_session_id,control_generation,control_delivered_generation,control_state)
+      VALUES (${owner},${WS},'native-failclosed',77,76,
+        ${JSON.stringify({ activation, stack: ['domain:researcher'] })}::text::jsonb)`;
+
+    await expect(
+      failControlTransitionActivation(owner, WS, 77, revision, 'render failed', db.sql),
+    ).resolves.toBe(true);
+
+    // The authority reduction must fail CLOSED: the session keeps the revision it had
+    // already applied rather than dropping to the one that failed to render. Retention
+    // is by omission from the jsonb_set chain, so only reading `applied` back can catch
+    // a regression that starts clearing it.
+    const [brief] = await db.sql<Array<{
+      applied: unknown; prepared: unknown; status: string; failure: string;
+    }>>`
+      SELECT control_state->'activation'->'applied' AS applied,
+             control_state->'activation'->'prepared' AS prepared,
+             control_state #>> '{activation,status}' AS status,
+             control_state #>> '{activation,failure}' AS failure
+        FROM harness_shared.session_briefs
+       WHERE owner_id = ${owner}`;
+    expect(brief).toEqual({ applied: previous, prepared: null, status: 'failed', failure: 'render failed' });
+
+    const events = await db.sql<Array<{ phase: string; failure: string; specification_revision: string }>>`
+      SELECT phase, failure, specification_revision
+        FROM harness_shared.session_identity_activation_events
+       WHERE owner_id = ${owner}`;
+    expect(events).toEqual([{ phase: 'failed', failure: 'render failed', specification_revision: SPEC_B }]);
   });
 });
