@@ -3616,6 +3616,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // same-millisecond events neither repeats nor drops a row.
   [PROJECT_HISTORY_EVENTS_QUERY_NAME]: {
     argsSchema: projectHistoryEventsArgsSchema,
+    // One table per event source the resolver reads, in the order the comment
+    // above names them: work-item lifecycle, plan-item status flips, plan
+    // decisions (which live in plan parts).
+    backingTables: [
+      'harness_shared.work_items',
+      'harness_shared.plan_items',
+      'harness_shared.harness_plan_parts',
+    ] as const,
     resolve: async (args) => resolveProjectHistoryEvents(args),
   },
 

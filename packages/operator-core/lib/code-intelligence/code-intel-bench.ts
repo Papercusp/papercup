@@ -110,7 +110,7 @@ export const BENCH_PROBES: readonly BenchProbe[] = Object.freeze([
   {
     caseId: 'shadowed-symbol-no-cross-contamination',
     file: 'packages/operator-core/lib/pty-bridge.ts',
-    line1: 169,
+    line1: 217,
     symbol: 'managedSetInterval',
     rationale:
       'Ask from a real USE site. The single correct definition must come back and ' +
@@ -1462,7 +1462,7 @@ export const AST_GREP_BENCH_CASE: CorpusCase = Object.freeze({
   expectedSites: [
     {
       path: 'packages/operator-core/lib/pty-bridge.ts',
-      line1: 169,
+      line1: 217,
       symbolOnLine: "managedSetInterval('pty-idle-reaper'",
     },
   ],
