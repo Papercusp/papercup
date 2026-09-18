@@ -58,8 +58,13 @@ const CTX = {
   signal: new AbortController().signal,
 } as never;
 
-const body = (result: unknown) =>
-  JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text) as Record<string, unknown>;
+// Accepts EITHER shape (the 07-26 parseTextPayload pattern): this tool now returns the
+// canonical { data } envelope, but the reader stays shape-agnostic so it does not have to
+// be re-edited by the next migration in either direction.
+const body = (result: unknown) => {
+  const r = result as { data?: unknown; content?: Array<{ text: string }> };
+  return (r.data !== undefined ? r.data : JSON.parse(r.content![0]!.text)) as Record<string, unknown>;
+};
 
 async function loadTool() {
   return (await import('./checkpoint-cancel')).default;

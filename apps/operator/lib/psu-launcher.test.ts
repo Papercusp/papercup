@@ -6008,6 +6008,86 @@ describe("roleLaunchArgs (interactive role session)", () => {
     );
   });
 
+  // P-007 (agent-launch-context-cost-2026-09-18). ENABLE_TOOL_SEARCH exists for exactly one
+  // job: forcing claude's native schema deferral back on for gateway-routed sessions. That
+  // deferral is conditional on ToolSearch EXISTING, which psu denies. Both halves shipped
+  // independently and contradicted each other in production for days while each read healthy
+  // on its own — so the pair is now DERIVED rather than detected, and these pin the derivation.
+  describe("ENABLE_TOOL_SEARCH × the ToolSearch deny cannot contradict (P-007)", () => {
+    it("lockstep: the launcher mirror agrees with the canonical orchestrator predicate", () => {
+      expect(nativeDeferralReachable()).toBe(canonicalNativeDeferralReachable());
+      // Today's state, stated explicitly so a change has to be deliberate.
+      expect(nativeDeferralReachable()).toBe(false);
+    });
+
+    it("is a REAL derivation, not a hardcoded false — remove ToolSearch and deferral returns", () => {
+      // The load-bearing assertion of this whole item. A test that only checked "the env is
+      // absent" would pass identically against `return false`, which would silently strand the
+      // env forever if the owner ever lifts the 2026-09-11 lockout. Drive the predicate from a
+      // deny flag that does NOT carry ToolSearch and it must flip.
+      expect(nativeDeferralReachable("--disallowedTools=SomethingElse")).toBe(true);
+      expect(nativeDeferralReachable("--disallowedTools=")).toBe(true);
+      expect(nativeDeferralReachable("--disallowedTools=A,ToolSearch,B")).toBe(false);
+      // Whitespace-padded entries must still be recognised, or the derivation silently
+      // reports "reachable" for a deny that is actually in force.
+      expect(nativeDeferralReachable("--disallowedTools=A, ToolSearch")).toBe(false);
+      // Canonical side too, driven by name list rather than flag string.
+      expect(canonicalNativeDeferralReachable(["SomethingElse"])).toBe(true);
+      expect(canonicalNativeDeferralEnv(["SomethingElse"])).toEqual({
+        ENABLE_TOOL_SEARCH: "true",
+      });
+      expect(canonicalNativeDeferralEnv()).toEqual({});
+    });
+
+    it("contextTrimmingEnv omits ENABLE_TOOL_SEARCH while ToolSearch is denied", () => {
+      const claude = contextTrimmingEnv("claude");
+      expect(claude.ENABLE_TOOL_SEARCH).toBeUndefined();
+      // The keys that are unconditionally correct must SURVIVE — this fix removes one key,
+      // it does not disarm context trimming (PAPERCUSP_TOOLS is what actually holds the
+      // baseline now that native deferral is off fleet-wide).
+      expect(claude.PAPERCUSP_TOOLS).toBeTypeOf("string");
+      expect(claude.PAPERCUSP_CONTEXT_TIER).toBe("trimmed");
+    });
+
+    it("NO claude launch path emits the deny AND ENABLE_TOOL_SEARCH together", () => {
+      // The invariant itself, asserted against every arg builder rather than the one that
+      // happened to be edited. Reading a deny literal out of ONE builder is what produced the
+      // wrong diagnosis this plan already had to retract once.
+      const paths: Array<[string, string[]]> = [
+        ["suLaunchArgs", suLaunchArgs("claude", { promptFile: "/p.md" }).args],
+        ["roleLaunchArgs", roleLaunchArgs("claude", files).args],
+        ["resumeArgsFor", resumeArgsFor({ agent: "claude", cwd: "/x" }).args],
+      ];
+      const env = contextTrimmingEnv("claude");
+      for (const [name, args] of paths) {
+        const denies = args.includes(NATIVE_TOOL_SEARCH_DENY_FLAG);
+        expect(denies, `${name} must deny ToolSearch`).toBe(true);
+        expect(
+          denies && env.ENABLE_TOOL_SEARCH !== undefined,
+          `${name} emits the ToolSearch deny AND ENABLE_TOOL_SEARCH — that pair injects a ` +
+            `DeferredToolPlaceholder for an empty deferred set on every request`,
+        ).toBe(false);
+      }
+    });
+
+    it("healContextTrimmingEnv STRIPS a carried ENABLE_TOOL_SEARCH from older host code", () => {
+      // Fill-only healing cannot converge here: a host-code handoff is written by the
+      // predecessor's in-memory (OLD) code, which set this key unconditionally, so it arrives
+      // already present and every fill-only path leaves it. Without the strip, adopting the
+      // fixed code would never clear the state the fix exists to remove.
+      const env: Record<string, string | undefined> = {
+        PAPERCUSP_AGENT: "claude",
+        ENABLE_TOOL_SEARCH: "true",
+      };
+      healContextTrimmingEnv(env, "claude");
+      expect(env.ENABLE_TOOL_SEARCH).toBeUndefined();
+      // Non-claude agents never had the key and must be left alone.
+      const omp: Record<string, string | undefined> = { PAPERCUSP_AGENT: "omp" };
+      healContextTrimmingEnv(omp, "omp");
+      expect(omp.ENABLE_TOOL_SEARCH).toBeUndefined();
+    });
+  });
+
   it("role sessions DENY subagent fanout by DEFAULT; allowSubagents:true opts in (owner mandate 2026-07-02)", () => {
     expect(roleLaunchArgs("claude", files).args).toContain(
       NO_SUBAGENTS_DENY_FLAG,

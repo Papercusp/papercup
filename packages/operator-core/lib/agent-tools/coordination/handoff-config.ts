@@ -19,7 +19,7 @@ import {
 } from '../../coord-liveness-config';
 
 function json(obj: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
+  return { data: obj };
 }
 
 export default defineTool({

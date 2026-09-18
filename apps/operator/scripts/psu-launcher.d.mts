@@ -328,6 +328,30 @@ export function suWrapperExtraArgs(agent: any, { model, resumeSession }?: {}): a
 export function addDirArgs(agent: any, dirs?: any[]): string[];
 export function forkUnsupportedMessage(agent: any): string;
 /**
+ * Is claude's NATIVE schema deferral REACHABLE on a psu launch?
+ *
+ * DERIVED from {@link NATIVE_TOOL_SEARCH_DENY_FLAG} rather than hand-set, so the deny and the
+ * `ENABLE_TOOL_SEARCH` env that exists to force deferral ON cannot drift into contradicting
+ * each other. Flip the flag's contents and the env follows automatically. Mirror of
+ * `nativeDeferralReachable` in `@papercusp/orchestrator/native-tool-search-deny` (plain node
+ * here, so the literal is duplicated and pinned by the lockstep test in
+ * `apps/operator/lib/psu-launcher.test.ts`).
+ *
+ * WHY THIS EXISTS (P-007, agent-launch-context-cost-2026-09-18): both halves shipped
+ * independently — the deny on 2026-09-11, the env long before — and CONTRADICTED each other in
+ * production for days with nothing detecting it, because each half read healthy on its own.
+ * MEASURED 2026-09-18 on real captured /v1/messages bodies (repeated, stable): the pair emits a
+ * `DeferredToolPlaceholder` tool carrying `defer_loading: true` into EVERY request, standing in
+ * for an empty deferred set, with no `ToolSearch` that could ever resolve it. Dropping the env
+ * under the deny removes exactly that tool and nothing else (66 → 65 tools, −204 B).
+ *
+ * ⚠ ASSUMPTION THIS DERIVATION RESTS ON: every psu claude launch path applies the deny —
+ * `roleLaunchArgs`, `suLaunchArgs` AND `resumeArgsFor` all do. That is asserted directly by
+ * `psu-launcher.test.ts` ("every claude launch path denies ToolSearch"), so if a future path
+ * omits it that test fails and tells you to thread this predicate per-path instead of globally.
+ */
+export function nativeDeferralReachable(denyFlag?: string): boolean;
+/**
  * EI-3294 known-risk warning: an opted-in subagent (Task/Agent tool) session
  * running on the DEFAULT (no-gateway, direct local OAuth) account route died
  * with 401 "Please run /login" after 12-39 tool calls, while the PARENT
@@ -1113,14 +1137,22 @@ export function claudeSeedToolNames(env?: NodeJS.ProcessEnv): string[];
  *  - ENABLE_TOOL_SEARCH: claude silently disables ToolSearch deferral whenever
  *    ANTHROPIC_BASE_URL is set (it can't assume a proxy forwards tool_reference blocks — both
  *    of ours are pass-throughs), so every gateway-routed session must force it back on.
+ *    ⚠ EMITTED ONLY WHEN DEFERRAL IS ACTUALLY REACHABLE ({@link nativeDeferralReachable}) —
+ *    i.e. when ToolSearch is NOT denied. Since the 2026-09-11 lockout it is NOT reachable on
+ *    any psu launch, so this key is currently absent by derivation, not by an edit someone has
+ *    to remember to keep in sync. Do not re-add it unconditionally: with ToolSearch denied it
+ *    does not enable deferral, it injects a `DeferredToolPlaceholder` (`defer_loading: true`)
+ *    into every request for a deferred set that is empty (measured, P-007).
+ *    ⚠ AND THE COMMENT BELOW IS NOW HISTORY, NOT CURRENT BEHAVIOUR: the ~143k-not-756k
+ *    baseline it describes is held by PAPERCUSP_TOOLS alone. Native deferral is off fleet-wide.
  *  - PAPERCUSP_TOOLS: the core spine the user-level papercusp-su MCP url env-expands (D-010),
  *    so the superuser MCP advertises ONLY the spine (~9k) and the tail stays reachable via
  *    tools:find / tools:invoke.
  *  - PAPERCUSP_CONTEXT_TIER: the payload tier the same url env-expands (`ctx_tier=`, P-009);
  *    TRIMMED for EVERY launch, model window irrelevant [owner 2026-08-10]. Every agent. */
 export function contextTrimmingEnv(agent: any, env?: NodeJS.ProcessEnv): {
-    ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_TOOLS?: string | undefined;
+    ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_CONTEXT_TIER: string;
 };
 /** Fill the trio into `env` wherever it is ABSENT (an explicitly carried value always wins)
@@ -1329,8 +1361,8 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv }?: {
         env?: Record<string, string>;
     } | null;
 }): {
-    ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_TOOLS?: string | undefined;
+    ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_CONTEXT_TIER: string;
     CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN?: undefined;
     DISABLE_AUTO_COMPACT: string;
@@ -1342,8 +1374,8 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv }?: {
     PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
 } | {
-    ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_TOOLS?: string | undefined;
+    ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_CONTEXT_TIER: string;
     CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: string;
     DISABLE_AUTO_COMPACT: string;
@@ -1355,8 +1387,8 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv }?: {
     PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
 } | {
-    ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_TOOLS?: string | undefined;
+    ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_CONTEXT_TIER: string;
     CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN?: undefined;
     DISABLE_AUTO_COMPACT?: undefined;
@@ -1368,8 +1400,8 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv }?: {
     PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
 } | {
-    ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_TOOLS?: string | undefined;
+    ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_CONTEXT_TIER: string;
     CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: string;
     DISABLE_AUTO_COMPACT?: undefined;

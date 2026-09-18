@@ -26,9 +26,7 @@ import {
 import { resolveAgentIdentity } from '../coordination/identity';
 import { LIMITS, softText } from '../limits';
 
-const json = (payload: unknown) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-});
+const json = (payload: unknown) => ({ data: payload });
 
 type CheckpointCancelContext = {
   harnessSlug?: string | null;

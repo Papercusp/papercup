@@ -1630,6 +1630,41 @@ export const NO_SUBAGENTS_DENY_FLAG = "--disallowedTools=Task,Agent,Workflow";
 export const NATIVE_TOOL_SEARCH_DENY_FLAG = "--disallowedTools=ToolSearch";
 
 /**
+ * Is claude's NATIVE schema deferral REACHABLE on a psu launch?
+ *
+ * DERIVED from {@link NATIVE_TOOL_SEARCH_DENY_FLAG} rather than hand-set, so the deny and the
+ * `ENABLE_TOOL_SEARCH` env that exists to force deferral ON cannot drift into contradicting
+ * each other. Flip the flag's contents and the env follows automatically. Mirror of
+ * `nativeDeferralReachable` in `@papercusp/orchestrator/native-tool-search-deny` (plain node
+ * here, so the literal is duplicated and pinned by the lockstep test in
+ * `apps/operator/lib/psu-launcher.test.ts`).
+ *
+ * WHY THIS EXISTS (P-007, agent-launch-context-cost-2026-09-18): both halves shipped
+ * independently — the deny on 2026-09-11, the env long before — and CONTRADICTED each other in
+ * production for days with nothing detecting it, because each half read healthy on its own.
+ * MEASURED 2026-09-18 on real captured /v1/messages bodies (repeated, stable): the pair emits a
+ * `DeferredToolPlaceholder` tool carrying `defer_loading: true` into EVERY request, standing in
+ * for an empty deferred set, with no `ToolSearch` that could ever resolve it. Dropping the env
+ * under the deny removes exactly that tool and nothing else (66 → 65 tools, −204 B).
+ *
+ * ⚠ ASSUMPTION THIS DERIVATION RESTS ON: every psu claude launch path applies the deny —
+ * `roleLaunchArgs`, `suLaunchArgs` AND `resumeArgsFor` all do. That is asserted directly by
+ * `psu-launcher.test.ts` ("every claude launch path denies ToolSearch"), so if a future path
+ * omits it that test fails and tells you to thread this predicate per-path instead of globally.
+ */
+export function nativeDeferralReachable(
+  denyFlag = NATIVE_TOOL_SEARCH_DENY_FLAG,
+) {
+  const prefix = "--disallowedTools=";
+  if (!denyFlag.startsWith(prefix)) return true;
+  return !denyFlag
+    .slice(prefix.length)
+    .split(",")
+    .map((s) => s.trim())
+    .includes("ToolSearch");
+}
+
+/**
  * Dead-weight NATIVE-tool lockout (context-baseline repair 2026-09-15).
  *
  * With ToolSearch denied there is no schema deferral, so every advertised tool
@@ -4208,6 +4243,14 @@ export function claudeSeedToolNames(env = process.env) {
  *  - ENABLE_TOOL_SEARCH: claude silently disables ToolSearch deferral whenever
  *    ANTHROPIC_BASE_URL is set (it can't assume a proxy forwards tool_reference blocks — both
  *    of ours are pass-throughs), so every gateway-routed session must force it back on.
+ *    ⚠ EMITTED ONLY WHEN DEFERRAL IS ACTUALLY REACHABLE ({@link nativeDeferralReachable}) —
+ *    i.e. when ToolSearch is NOT denied. Since the 2026-09-11 lockout it is NOT reachable on
+ *    any psu launch, so this key is currently absent by derivation, not by an edit someone has
+ *    to remember to keep in sync. Do not re-add it unconditionally: with ToolSearch denied it
+ *    does not enable deferral, it injects a `DeferredToolPlaceholder` (`defer_loading: true`)
+ *    into every request for a deferred set that is empty (measured, P-007).
+ *    ⚠ AND THE COMMENT BELOW IS NOW HISTORY, NOT CURRENT BEHAVIOUR: the ~143k-not-756k
+ *    baseline it describes is held by PAPERCUSP_TOOLS alone. Native deferral is off fleet-wide.
  *  - PAPERCUSP_TOOLS: the core spine the user-level papercusp-su MCP url env-expands (D-010),
  *    so the superuser MCP advertises ONLY the spine (~9k) and the tail stays reachable via
  *    tools:find / tools:invoke.
@@ -4218,7 +4261,10 @@ export function contextTrimmingEnv(agent, env = process.env) {
     PAPERCUSP_CONTEXT_TIER: "trimmed",
     ...(agent === "claude"
       ? {
-          ENABLE_TOOL_SEARCH: "true",
+          // DERIVED, not hand-set — see nativeDeferralReachable. Denying ToolSearch removes the
+          // mechanism this key turns on, so emitting both is a contradiction the launcher must
+          // not be able to express (P-007).
+          ...(nativeDeferralReachable() ? { ENABLE_TOOL_SEARCH: "true" } : {}),
           PAPERCUSP_TOOLS: claudeSeedToolNames(env).join(","),
         }
       : {}),
@@ -4237,6 +4283,15 @@ export function healContextTrimmingEnv(env, agent = env?.PAPERCUSP_AGENT) {
       env[k] = v;
       filled.push(k);
     }
+  }
+  // P-007 — the one case where healing must REMOVE rather than fill. Filling alone cannot make
+  // the contradiction unrepresentable here: a host-code handoff is written by the predecessor's
+  // IN-MEMORY code, i.e. the OLD code, which set ENABLE_TOOL_SEARCH unconditionally. That value
+  // arrives already present, so every fill-only path leaves it untouched and the successor
+  // re-inherits the exact state this item exists to eliminate. Strip it whenever deferral is
+  // unreachable, so adopting new host code converges on the FIRST handoff rather than never.
+  if (agent === "claude" && !nativeDeferralReachable()) {
+    delete env.ENABLE_TOOL_SEARCH;
   }
   return filled;
 }
@@ -11673,10 +11728,16 @@ async function launchResume(
       // The FRESH path forces it back on; the resume path never did, so every resumed
       // gateway-routed session has been silently paying that. Force it here too — otherwise
       // routing default-account sessions through the cache proxy would spread the same defect.
+      // ⚠ GATED ON DEFERRAL BEING REACHABLE (P-007): resumeArgsFor ALSO emits
+      // NATIVE_TOOL_SEARCH_DENY_FLAG, so on a resume this key would turn on nothing and merely
+      // inject a `DeferredToolPlaceholder` for an empty deferred set. Same single derivation as
+      // the fresh path (contextTrimmingEnv) — a second, independent write here is exactly how
+      // the two halves drifted apart in the first place.
       if (
         session.agent === "claude" &&
         env.ANTHROPIC_BASE_URL &&
-        env.ENABLE_TOOL_SEARCH === undefined
+        env.ENABLE_TOOL_SEARCH === undefined &&
+        nativeDeferralReachable()
       ) {
         env.ENABLE_TOOL_SEARCH = "true";
       }
