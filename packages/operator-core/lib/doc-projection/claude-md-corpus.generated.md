@@ -13,7 +13,7 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 314
+  corpus-parts: 315
   corpus-blocks: 268
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
@@ -835,7 +835,7 @@ Two specifics worth knowing:
 
 So when the gate is red: **author the fix on the shared staging checkout as normal — there is NO repair worktree (D-010) — wait for git-sync to commit it, then land it on the frozen lineage BY PATH: `release:repair-queue { op:'admit', paths:[...] }`**, naming exactly the files you changed (dry run by default; `confirm:true` publishes). That lands your fix ON TOP of the frozen candidate (advancing `repairHead`); the queue re-tests that head, and the immutable candidate never moves. Admission is hunk-exact (D-008): only YOUR ledgered hunks ride in, so a peer's concurrent edit in the same file stays out. An admission whose file imports a sibling you did not name is refused `admission-incomplete` naming that path — admit it too; **the tip is NEVER widened for you.**
 
-Do NOT fire `release:checkpoint-run` to "try again" as a bypass: with a frozen queue it applies the queue policy and resumes the exact frozen lineage. Do not hand-pin with `--candidate` either — that fights the mechanism instead of using it.
+Do NOT fire `release:checkpoint-run` to "try again" as a bypass: when a frozen queue exists, it applies the queue policy and resumes the exact frozen lineage (`ready-to-test` uses `queue.candidate`; `ready-to-verify` uses `queue.repairHead`; non-suite states refuse before launch). Only when no frozen queue exists does it cut a fresh candidate from the current quiet cut at tip. Do not hand-pin with `--candidate` either — that fights the mechanism instead of using it.
 
 `release:repair-queue { op:'retire' }` clears ONE queue ROW, not the mechanism, and is **not a "make the gate move" lever**. Retire ONLY when the queue is provably *unreachable-green*: its fixer is dead AND the fixes are absent from the frozen candidate (per path, `git rev-parse <candidate>:<path>` vs `git rev-parse staging:<path>` — equal blobs mean the fix is NOT in it). Then let the next run re-freeze; do not start re-cutting.
 
@@ -1732,7 +1732,7 @@ The duplicate-number race is EI-6843 — it cost a rename plus every in-code ref
 
 | you want | use | not |
 |---|---|---|
-| how many tests fail on the **frozen candidate** | `state:read { cell:'gate.greenCheckpoint.candidateFailures' }` — read `stillBrokenCount` (files with NO fix yet), not `failingFileCount`; `fixInRepairHead` says whether a file's fix already landed | ANY hand-written `test_runs` query. That table mixes THREE populations and only one judges the candidate: full-suite rows carry `commit_sha=NULL`, and `worktree_dirty=true` rows measure a tree ~100 agents are mutating. Aggregating them reports fleet churn as the gate's verdict (measured: "45 → 29 failing" when the true answer was **1**, already fixed) |
+| how many tests fail on the **frozen candidate** | `state:read { cell:'gate.greenCheckpoint.candidateFailures' }` — read `stillBrokenCount` (files with NO fix yet), not `failingFileCount`; `fixInRepairHead` says whether a file's fix already landed | ANY hand-written `test_runs` query. That table mixes THREE populations and only one judges the candidate: full-suite rows carry `commit_sha=NULL`, and `worktree_dirty=true` rows measure a tree ~100 agents are mutating. Aggregating them reports fleet churn as the gate's verdict |
 | what issue-family work is claimable now | `work_items:claimable { harness }` | `WHERE status='open'` / the `work_items_claimable` view (overcounts ~13×) |
 | a filtered work-item / issue slice | `work_items:list` (server-side filters) | a hand-written `harness_shared.work_items` query |
 | what plans exist / the recent ones | `plans:list { updatedSince, createdSince, order, limit }` — `order` is `'updated'\|'created'\|'slug'` (NOT `'recent'` — that is `invalid_input`) | a hand-written `harness_plans` query |
@@ -1752,8 +1752,33 @@ SELECT file_path, status FROM harness_shared.test_runs
 ```
 
 Then per path, `git rev-parse <candidate>:<path>` vs `git rev-parse <repairHead>:<path>`: **DIFFERENT blobs mean the fix ALREADY LANDED** and the file awaits re-verification, not repair. Equal blobs are the real queue. For a SUBMODULE path the blobs are identical while the gitlink moved — use `git diff --raw <candidate> <repairHead> -- <sub> | grep '^:160000'`. And `filesJudged` is the AFFECTED RADIUS, never the ~6,700-file suite: an empty failing list is **not** "the gate is green".
+#### Why the `test_runs` routing row exists — the measured failure
 
-⚠ **A hand-written population query over `harness_shared.work_items` is mostly OBSERVATION LANE.** Every tool defaults `includeObservations:false` — a `lane='observation'` row is an agent's turn-end reflection: never claimable, never triaged. Raw SQL has no such default, so it answers about a different population than any tool you compare it against (measured 2026-09-01: of open items whose title matches `P-[0-9]{3}`, 2,194 of 2,340 were observations). Add `AND lane IS DISTINCT FROM 'observation'` whenever you mean WORK, and say which population a count describes. A title/prose regex compounds it: it cannot distinguish an item that EXECUTES a reference from one that merely CITES it, so "N items reference X" is never "N items are doing X".
+`harness_shared.test_runs` mixes three populations and only one of them judges the frozen
+candidate: full-suite rows carry `commit_sha=NULL`, and `worktree_dirty=true` rows measure a
+working tree that ~100 agents are concurrently mutating. An agent aggregating all three
+reported the gate as **"45 → 29 failing"** when the true number of files still broken on the
+candidate was **1** — and that one already had its fix in the repair head. The report described
+fleet churn, not the gate's verdict, and it read as a large and worsening problem rather than a
+solved one. That is why the row prescribes the cell, and why the fallback SQL carries
+`source='ci' AND worktree_dirty=false AND commit_sha='<candidate>'` as a single inseparable
+predicate set.
+
+The `status` literal is the second trap in the same query. The column's domain is
+`pass | fail | skip | cancelled | error | running`, so a `WHERE status='failed'` predicate can
+NEVER match and returns a clean-looking zero — an absence manufactured by the instrument, not
+observed in the data.
+
+#### Note on the observation-lane warning
+
+An earlier revision of this part ended with an inline copy of the
+`lane='observation'` population warning, which also ships as its own invariant part
+(`storage-policy-postgres-by-d-a-hand-written-popul`) in the same section. The shipped guide
+therefore carried the same rule twice, as two consecutive paragraphs. The inline copy was the
+shorter and strictly weaker of the two — it lacked the four-weeks-earlier trend figure (417 of
+472) and the "a remediation sized from the first number can be an order of magnitude too large"
+consequence — so it was removed and the standalone part kept. Nothing was lost; the duplication
+was.
 
 
   Nothing in the table fits and the shape is genuinely one-off? Then **`dev:pg_query`**
