@@ -127,7 +127,7 @@ export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats
             // session. ON by default; kill with PAPERCUSP_CACHE_SPLIT_BOUNDARY=0.
             splitBoundary: process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY !== '0',
             // P-002 (agent-launch-context-cost-2026-09-18): defer oversized tool schemas and
-            // inject the BM25 search tool. ON BY DEFAULT since 2026-09-18 (D-015) — the P-003
+            // inject the BM25 search tool. ON BY DEFAULT since 2026-09-18 (D-016) — the P-003
             // both-arms live A/B it was waiting on RAN, and D-002 records control 169,167 vs
             // 115,273 at the measured 1200 B threshold (−31.9%, below the ~120,000 target), with
             // the rewrite directly evidenced by a per-request proxy log line. Kill with

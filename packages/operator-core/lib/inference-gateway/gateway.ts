@@ -869,7 +869,7 @@ const cacheToolsBreakpointOn = () => process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOIN
  * P-002 (agent-launch-context-cost-2026-09-18): mark oversized tool schemas `defer_loading` and
  * inject the BM25 tool-search tool so they stay reachable.
  *
- * ON BY DEFAULT since 2026-09-18 (D-015). It shipped OPT-IN "until a both-arms live A/B has run
+ * ON BY DEFAULT since 2026-09-18 (D-016). It shipped OPT-IN "until a both-arms live A/B has run
  * (P-003)". That A/B ran and is recorded in D-002: three live psu arms, identical launch command,
  * varying only the cache-proxy — control 169,167, 8000 B threshold 163,508 (−3.3%), and the
  * MEASURED 1200 B threshold 115,273 (−31.9%), which is below this plan's ~120,000 target. The
@@ -2834,6 +2834,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
     codexModernTtl: 0,
     codexCacheKeySet: 0,
   };
+  /** D-016 / P-009(d): throttle counter for the deferral mechanism log below. */
+  let cacheDeferralLogCount = 0;
   const cachePolicyEnabled = cachePolicyOn();
   const cacheToolsBreakpointEnabled = cacheToolsBreakpointOn();
   const cacheSplitBoundaryEnabled = cacheSplitBoundaryOn();
@@ -2852,6 +2854,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
         cachePolicyStats.toolsDeferred += s.toolDeferral.toolsDeferred;
         cachePolicyStats.toolsDeferredBytes += s.toolDeferral.toolsDeferredBytes;
         if (s.toolDeferral.searchToolInjected) cachePolicyStats.searchToolInjected++;
+        // D-016 / P-009(d): MECHANISM EVIDENCE for the gateway plane. These counters were
+        // accumulated but never surfaced, so this plane was unobservable while the sibling
+        // cache-proxy plane logged every rewrite — and D-002 Ruling 5 is explicit that a token
+        // delta with no mechanism evidence is not a result (arm B's 163,508 nearly read as a 30%
+        // win for that exact reason). Same wording as the proxy's line on purpose, so ONE grep
+        // (`deferred .* tool`) answers "are both planes actually deferring?" instead of an
+        // absence on one plane being misread as the flag being off there.
+        // Throttled: first rewrite, then every 100th — enough to prove liveness, not a spam source.
+        if (s.toolDeferral.toolsDeferred > 0) {
+          cacheDeferralLogCount++;
+          if (cacheDeferralLogCount === 1 || cacheDeferralLogCount % 100 === 0) {
+            log(
+              'info',
+              `inference-gateway: deferred ${s.toolDeferral.toolsDeferred} tool(s), ${s.toolDeferral.toolsDeferredBytes} B` +
+                `${s.toolDeferral.searchToolInjected ? ' + injected tool_search_tool_bm25' : ''}` +
+                ` (rewrite #${cacheDeferralLogCount})`,
+            );
+          }
+        }
       }
       const idx = Math.min(s.breakpointsBefore, cachePolicyStats.breakpointHistogram.length - 1);
       cachePolicyStats.breakpointHistogram[idx]++;

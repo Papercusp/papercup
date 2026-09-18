@@ -127,7 +127,7 @@ describe('cache-proxy — per-tool deferral fires AT THE PROXY BOUNDARY (P-002)'
     messages: [],
   });
 
-  // D-015 (2026-09-18): the default INVERTED. It was opt-in pending the P-003 live A/B; that A/B
+  // D-016 (2026-09-18): the default INVERTED. It was opt-in pending the P-003 live A/B; that A/B
   // ran (D-002: control 169,167 vs 115,273 at the measured 1200 B threshold, −31.9%), so leaving
   // it off was what this repo's flag policy calls unfinished work. `unset` is now the TREATMENT
   // arm and `'0'` is the kill switch — the two assertions below deliberately swapped meaning, so
