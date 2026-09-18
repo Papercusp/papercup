@@ -297,23 +297,23 @@ This is not a paperwork nicety — it changes outcomes.
 
 ## Every plan ships with a graded acceptance rubric
 
-⛔ **CARRYING A PLAN "START TO FINISH" INCLUDES THESE VALIDATION STEPS — they are the finish, not paperwork after it.** An owner who says "carry out the plan", "take it from start to finish", or "finish it yourself" is asking for a SHIPPED plan. Stopping at the last implementation item and reporting done — or naming the remaining validation and handing it back — is the same silent halt in two different costumes. Neither is completion.
+⛔ **CARRYING A PLAN "START TO FINISH" INCLUDES THESE VALIDATION STEPS — they are the finish, not paperwork after it.** An owner who says "carry out the plan" or "finish it yourself" is asking for a SHIPPED plan. Stopping at the last implementation item and reporting done — or naming the remaining validation and handing it back — is the same silent halt in two costumes.
 
-⚠ **You may not grade your own implementation — but that is a ROUTING obligation, never an exit.** GET a non-implementer to grade it by ROUTING to one, never by LAUNCHING one: a grader you launch is refused BY CONSTRUCTION (`grader_in_implementer_lineage`), and it fails in exactly its main case, after a full boot and grading pass have been paid for. Route instead: recruit an existing live session outside your lineage (`coord:presence` / `coord:dispatch`) and `work_items:create` the grading request WITH `assign_to` naming them by id — that makes it born-admitted and claimable in the same write. **Do NOT file it unassigned "for scheduler pull"** — an unassigned create is refused to every claimant, including the grader you named, for a window that outlives most sessions, silently stranding the routing you thought you had completed. Other routes: a reciprocal swap with another rubric author in the same bind, or `coord:handoff`. Launching is correct ONLY when the launcher is not the rubric author. None of this means you stop and tell the owner someone else should do it: everything you CAN do — finishing or dropping stragglers, writing a missing spec triad, running the per-item code-truth audit, assembling the grader's evidence — is still yours, and doing it first is what makes the grading cheap.
+⚠ **You may not grade your own implementation — but that is a ROUTING obligation, never an exit.** A grader you LAUNCH is refused by construction (`grader_in_implementer_lineage`), after a full boot has been paid for. Instead ROUTE: recruit a live session outside your lineage (`coord:presence` / `coord:dispatch`) and `work_items:create` the grading request WITH `assign_to` naming them — that makes it born-admitted and claimable in one write. **Do NOT file it unassigned "for scheduler pull"** — an unassigned create is refused to every claimant, including the grader you named. Everything else — finishing or dropping stragglers, the per-item audit, assembling the grader's evidence — stays yours, and doing it first is what makes the grading cheap.
 
-**Every plan completes through TWO independent evidence families: a per-item CODE-TRUTH audit, then a GRADED acceptance rubric.** `plans:set-plan-status → 'shipped'` (and its `done` alias) enforces both. After implementation is verified:
+**Two independent evidence families gate `plans:set-plan-status → 'shipped'`: a per-item CODE-TRUTH audit, then a GRADED acceptance rubric.** After implementation is verified:
 
-1. **Finish or intentionally drop every item.** `todo`/`blocked`/`needs-human` refuse shipping. A deliberate departure is `plans:set-status { slug, item, status:'dropped', note:'<why>' }`; silence is what the gate forbids.
-2. **Audit the actual code, per item** — `plans:audit { slug, items:[{ itemId, verdict, citations }] }`. Only `code`/`test` citations count as verification: paths must resolve, and their blob SHAs are stored. `doc`/`none` explicitly mean NON-verification. Never treat a work-item, doc, or memory of writing code as code truth.
-3. **Author the post-implementation rubric** — `rubrics:propose { rubricRef, kind:'acceptance', subjectPlan, classRef, characteristic, title, criteria }`, under the plan's class, with 3–7 OUTCOME criteria tracing to the goal + Decisions (a pure investigation may use `criteria:[]`). It activates immediately.
-4. **Vet its current revision** — `consult:get_feedback { policy:'rubric-vetting' }` — pass that key and NO responder count. Improve the rubric, then attest with `scorecards:emit` against `meta-acceptance-rubric`. Any later rubric edit invalidates BOTH the attestation AND any independent grading, so batch every intended revision BEFORE requesting grading.
-5. **Have a NON-implementer grade it** — `scorecards:emit { rubricRef, ratings }`, concrete evidence for every criterion; the grader must be neither the rubric author NOR in their spawn/rebind lineage. The class rubrics require the grader to spot-check the implementer's audit citations.
-6. **The implementer records the acceptance call.** After reading the independent card, the rubric author re-emits the complete ratings with `acceptance:{ verdict, reasoning }`. The implementer owns the passing bar; there is no universal numeric threshold. A latest `reject` blocks ship until addressed and superseded.
+1. **Finish or intentionally drop every item** — `todo`/`blocked`/`needs-human` refuse shipping; a deliberate departure is `plans:set-status { status:'dropped', note }`.
+2. **Audit the actual code, per item** — `plans:audit { slug, items:[{ itemId, verdict, citations }] }`. Only `code`/`test` citations verify; paths must resolve and their blob SHAs are stored. Never treat a work-item, doc, or memory of writing code as code truth.
+3. **Author the rubric AFTER implementation** — `rubrics:propose { rubricRef, kind:'acceptance', subjectPlan, classRef, characteristic, title, criteria }`, 3–7 OUTCOME criteria tracing to the goal + Decisions (a pure investigation may use `criteria:[]`). Deliberately authored against as-built reality — never at plan creation.
+4. **Vet the current revision** — `consult:get_feedback { policy:'rubric-vetting' }` (that key, NO responder count), improve, then attest with `scorecards:emit` against `meta-acceptance-rubric`. Any later edit invalidates BOTH the attestation and any grading, so batch every revision BEFORE requesting grading.
+5. **A NON-implementer grades it** — `scorecards:emit { rubricRef, ratings }` with concrete evidence per criterion; the grader must be outside the rubric author's spawn/rebind lineage and spot-checks the audit citations.
+6. **The implementer records the acceptance call** — re-emit the complete ratings with `acceptance:{ verdict, reasoning }`. The implementer owns the passing bar; a latest `reject` blocks ship until superseded.
 7. **Ship** — `plans:set-plan-status { slug, status:'shipped' }`; the rubric auto-retires.
 
-`force:{ reason }` on the ship write waives ONLY the code-truth checks, and permanently marks the plan with every check it waived, who waived it and why. It NEVER waives rubric existence, vetting, independent grading, or the implementer's verdict.
+`force:{ reason }` waives ONLY the code-truth checks, and permanently marks the plan with what was waived, by whom and why. It NEVER waives rubric existence, vetting, independent grading, or the implementer's verdict.
 
-Do NOT author the acceptance rubric at plan creation or maintain it mid-implementation; it is deliberately authored against as-built reality. Each refusal code names its own repair in the runbook — that, the full payloads and the citation-root rules: [Plan completion — code-truth audit, acceptance grading, and ship verdict](/internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook). Vetting detail: [Acceptance rubric vetting](/internal/docs/agent-insights/acceptance-rubric-vetting).
+Each refusal code names its own repair: [plan completion runbook](/internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook) · [rubric vetting](/internal/docs/agent-insights/acceptance-rubric-vetting).
 
 
 ## Verify mixed-family work-item citations against the base table
@@ -484,50 +484,19 @@ Two specifics worth knowing:
 - **Waiting for one to CHANGE** (a verdict, a deploy sha) → `state:subscribe`, not a
   poll loop and not a hand-built await.
 
-⛔ **A RED CANDIDATE IS FROZEN ON PURPOSE — never "just re-run" the gate at tip.** The standard
-main-greening procedure is **freeze-and-converge** (`RELEASE_FREEZE_AND_CONVERGE_DEFAULT`,
-default ON; P-013 / D-007). On the first real code red the gate opens ONE frozen repair queue,
-and every later run RESUMES that exact candidate rather than a newer tip. Turning it off
-"restores the pre-D-001 re-cut-at-tip stream — the treadmill D-007 diagnosed, where each new cut
-re-admits the whole sweep and imports breakage faster than fixes land."
+⛔ **A RED CANDIDATE IS FROZEN ON PURPOSE — never "just re-run" the gate at tip.** The standard main-greening procedure is **freeze-and-converge** (`RELEASE_FREEZE_AND_CONVERGE_DEFAULT`, default ON; P-013 / D-007). On the first real code red the gate opens ONE frozen repair queue, and every later run RESUMES that exact candidate rather than a newer tip. Turning it off restores the treadmill D-007 diagnosed, where each new cut re-admits the whole sweep and imports breakage faster than fixes land.
 
-So when the gate is red: **author the fix on the shared staging checkout as normal — there is NO
-repair worktree (D-010) — wait for git-sync to commit it, then land it on the frozen lineage BY
-PATH: `release:repair-queue { op: 'admit', paths: [...] }`**, naming exactly the files you changed
-(a dry run by default; `confirm: true` publishes). That lands your fix ON TOP of the frozen
-candidate (advancing `repairHead`); the queue re-tests that head itself, and the immutable
-candidate never moves. Admission is hunk-exact (D-008): only YOUR ledgered hunks for each path
-ride in — a peer's concurrent edit in the same file stays out — and the PostToolUse edit hook
-prints this exact command the moment you touch a file in the repair radius. An admission whose
-file imports a sibling you did not name is refused `admission-incomplete` naming that path
-(P-004): admit it too — **the tip is NEVER widened for you.** Do NOT fire
-`release:checkpoint-run` to "try again" as a way to bypass this queue: when a frozen queue
-exists, it applies the queue policy and resumes the exact frozen lineage (`ready-to-test` uses
-`queue.candidate`; `ready-to-verify` uses `queue.repairHead`; non-suite states refuse before
-launch). Only when no frozen queue exists does it cut a fresh candidate from the current quiet
-cut at tip. Do not hand-pin with `--candidate` either — that fights the mechanism instead of
-using it.
+So when the gate is red: **author the fix on the shared staging checkout as normal — there is NO repair worktree (D-010) — wait for git-sync to commit it, then land it on the frozen lineage BY PATH: `release:repair-queue { op:'admit', paths:[...] }`**, naming exactly the files you changed (dry run by default; `confirm:true` publishes). That lands your fix ON TOP of the frozen candidate (advancing `repairHead`); the queue re-tests that head, and the immutable candidate never moves. Admission is hunk-exact (D-008): only YOUR ledgered hunks ride in, so a peer's concurrent edit in the same file stays out. An admission whose file imports a sibling you did not name is refused `admission-incomplete` naming that path — admit it too; **the tip is NEVER widened for you.**
 
-`release:repair-queue { op:'retire' }` clears ONE queue ROW, not the mechanism, and is **not a
-"make the gate move" lever**. Retire ONLY when the queue is provably *unreachable-green*: its
-fixer is dead AND the fixes are absent from the frozen candidate (verify per path with
-`git rev-parse <candidate>:<path>` vs `git rev-parse staging:<path>` — equal blobs mean the fix
-is NOT in it). Having retired one, let the next run re-freeze; do not start re-cutting.
+Do NOT fire `release:checkpoint-run` to "try again" as a bypass: with a frozen queue it applies the queue policy and resumes the exact frozen lineage. Do not hand-pin with `--candidate` either — that fights the mechanism instead of using it.
 
-If a refusal is surprising, treat its policy fields as build-scoped evidence: compare `refusal_provenance` with the health/build SHA on staging `:3170` and green `:3070` using [the two-port A/B procedure](/internal/docs/agent-insights/connection-closed-6432-is-an-idle-tx-kill-not-pgbouncer) before attributing it to current queue policy. A deployed refusal can be stale while staging accepts the same request.
+`release:repair-queue { op:'retire' }` clears ONE queue ROW, not the mechanism, and is **not a "make the gate move" lever**. Retire ONLY when the queue is provably *unreachable-green*: its fixer is dead AND the fixes are absent from the frozen candidate (per path, `git rev-parse <candidate>:<path>` vs `git rev-parse staging:<path>` — equal blobs mean the fix is NOT in it). Then let the next run re-freeze; do not start re-cutting.
 
-✅ **"Is the freeze ON, and if not WHY" is a READ — do not grep run logs for it.** The structured
-form is `gate_health.freezeAndConverge` (`{ enabled, state, reason, candidate }`); `release:deploy
-status` renders the same record as one prose line. `state` is one of **`off` · `none` · `held` ·
-`retired` · `converging`**, and **`reason` is the load-bearing field** — a state without its reason
-sends you straight back to the logs this read exists to replace.
+✅ **"Is the freeze ON, and if not WHY" is a READ — do not grep run logs.** `gate_health.freezeAndConverge` returns `{ enabled, state, reason, candidate }`; `release:deploy status` renders it as one line. `state` is **`off` · `none` · `held` · `retired` · `converging`**, and **`reason` is load-bearing** — a state without its reason sends you back to the logs this read replaces.
 
-⚠ **`off` and `none` are NOT synonyms.** `off` = the owner switched the mechanism off, so reds do
-not freeze a candidate at all; `none` = it is ON and simply had no frozen candidate this tick, which
-is a green gate's normal state. Conflating them is precisely how freeze-and-converge sat off
-fleet-wide for a full day — 20 frozen candidates retired, 0 resumed — while looking like an ordinary
-week. A retire CLEARS the queue row, so `repairQueue` reads null exactly when it matters most; read
-the disposition, not the queue's absence.
+⚠ **`off` and `none` are NOT synonyms.** `off` = the mechanism is switched off, so reds do not freeze at all; `none` = it is ON and simply had no frozen candidate this tick, which is a green gate's normal state. Conflating them is how freeze-and-converge sat off fleet-wide for a full day — 20 frozen candidates retired, 0 resumed — while looking like an ordinary week. A retire CLEARS the queue row, so `repairQueue` reads null exactly when it matters most: read the disposition, not the queue's absence.
+
+If a refusal is surprising, treat its policy fields as build-scoped evidence: compare `refusal_provenance` with the health/build SHA on staging `:3170` and green `:3070` ([two-port A/B](/internal/docs/agent-insights/connection-closed-6432-is-an-idle-tx-kill-not-pgbouncer)) before attributing it to current queue policy — **a deployed refusal can be stale while staging accepts the same request.**
 
 
 ✅ **It DOES answer *"which sha is the run judging right now"*, AND it now names its own
@@ -560,29 +529,19 @@ text and `green-checkpoint.ts` cannot drift apart silently.
 green-checkpoint resolves it as `opts.candidate ?? opts.candidateHint ?? cfg.integrationBranch`, and `integrationBranch` defaults to the literal `'staging'` (`overrides.integrationBranch ?? process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging'`, in `release-config.ts`). Grep those expressions rather than a line number — the numbers this box used to carry had rotted to unrelated code by 2026-08-31 while the claim itself stayed true, which is the whole failure mode the derived-truth ladder warns about. There is no `git fetch` invocation anywhere in `green-checkpoint.ts`, and every `origin/` mention is either the post-green promotion push or prose about GitHub Actions' `origin/main` base-ref default — none resolves a candidate. Its submodule resync is `submodule update --init --recursive`, never `--remote`, so it materialises the gitlink the candidate already PINS instead of advancing it to a remote tip. The CLI path cuts the same way. So the hop that matters for containment is **COMMIT** (git-sync's local commit); the push to origin is a separate, later concern that no containment test below depends on.
 
 
-⚠ **A path inside a SUBMODULE needs its own containment check — every blob recipe here answers about the wrong object.** The superproject tracks a submodule as ONE gitlink, so `git rev-parse <candidate>:<sub>/<path>` is ABSENT and `git log -S… -- <sub>/<path>` is empty regardless of what the submodule actually holds. Both read exactly like *"my fix is not in the candidate"*. Not a corner case: there are ~37 submodules here and **every DB migration lives in `libs/papercusp/libs/db/sql/`**, so the whole recurring class of migration gate-reds lands on it. (The *committed-vs-untracked* question has its own in-submodule answer above; this is the *containment* one.)
+⚠ **A path inside a SUBMODULE needs its own containment check — every blob recipe above answers about the wrong object.** The superproject tracks a submodule as ONE gitlink, so `git rev-parse <candidate>:<sub>/<path>` is ABSENT and `git log -S… -- <sub>/<path>` is empty regardless of what the submodule holds. Both read exactly like *"my fix is not in the candidate"*. Not a corner case: there are ~37 submodules here and **every DB migration lives in `libs/papercusp/libs/db/sql/`**, so the whole recurring class of migration gate-reds lands on it.
 
-✅ **The cell answers it — ask it with the SUPERPROJECT-relative path, exactly as you would for any other file:**
+✅ **The cell answers it — ask with the SUPERPROJECT-relative path, exactly as for any other file:**
 
 ```
 state:read { cell: 'gate.greenCheckpoint.candidate', as: 'libs/papercusp/libs/db/sql/727-….sql' }
 ```
 
-It resolves the gitlink the judged candidate PINS for that submodule and compares blobs **inside** the submodule, so `changeInCandidate.judgingContainsPath` is a real verdict for a submodule path (`dev:pipeline_position { path }` runs the same resolver and accepts `marker`, which is counted inside the pinned commit too). Read `changeInCandidate.submodule` beside it: `{ path, relPath, judgingPin, nextPin }` — the pins are the `PIN` the old hand recipe made you compute. A `false` with `missingReason:'newer-commit'` there means the **superproject gitlink bump** is what the candidate lacks: the submodule commit exists, but nothing points the candidate at it, and the hop that matters is git-sync's superproject COMMIT. An unreadable gitlink comes back as a `resolver-failed` hoist on the containment leg — a measurement that failed, never a verdict, never "not applicable".
+It resolves the gitlink the judged candidate PINS and compares blobs **inside** the submodule, so `changeInCandidate.judgingContainsPath` is a real verdict. Read `changeInCandidate.submodule` beside it: `{ path, relPath, judgingPin, nextPin }`. A `false` with `missingReason:'newer-commit'` means the **superproject gitlink bump** is what the candidate lacks — the hop that matters is git-sync's superproject COMMIT. An unreadable gitlink returns `resolver-failed` — a measurement that failed, never a verdict.
 
-⛔ **Do NOT reach for `git ls-remote origin refs/heads/staging` to answer this.** It is the natural next thought — *"the gate must see it on the remote"* — and it is wrong under the premise above: the candidate is cut from LOCAL `staging` and the gate never fetches, so a gitlink that is committed-but-unpushed is ALREADY in the candidate. Asking the remote returns NOT-IN-CANDIDATE for a fix the gate can see, sending you to wait on a push that was never blocking.
+⛔ **Do NOT reach for `git ls-remote origin refs/heads/staging` to answer this.** It is the natural next thought — *"the gate must see it on the remote"* — and it is wrong: the candidate is cut from LOCAL `staging` and the gate never fetches, so a committed-but-unpushed gitlink is ALREADY in the candidate. Asking the remote returns NOT-IN-CANDIDATE for a fix the gate can see.
 
-**Fallback only** — when the cell is unavailable to you, or you need the blob-level answer against a sha the gate is not judging. Resolve the gitlink first, then ask the submodule:
-
-```bash
-CAND=<the candidate sha>; SUB=libs/papercusp; P=<path RELATIVE TO THE SUBMODULE>
-PIN=$(git rev-parse "$CAND:$SUB")                        # the submodule commit the candidate PINS
-A=$(git -C "$SUB" rev-parse --verify --quiet "$PIN:$P")  # blob the gate will judge
-B=$(git -C "$SUB" rev-parse --verify --quiet "HEAD:$P")  # blob you committed
-[ -n "$A" ] && [ "$A" = "$B" ] && echo IN-CANDIDATE || echo NOT-IN-CANDIDATE
-```
-
-`$P` is relative to the SUBMODULE (`libs/db/sql/727-….sql`), **not** the superproject — the superproject form resolves to nothing and reads as absent. Keep the `-n "$A"` guard: with `--verify --quiet` an absent path yields empty on BOTH sides, so `"" = ""` would otherwise report a match. Everything the recipe computes by hand is what the cell returns as `submodule.judgingPin` and `judgingContainsPath`; reach for it only when the cell cannot be asked.
+Manual gitlink-resolution fallback (when the cell is unavailable, or you need a sha the gate is not judging): [git evidence and containment recipes](/internal/docs/agent-insights/git-evidence-and-containment-recipes).
 
 
 Get this wrong and every recipe below still *runs*, but answers about the wrong object: an
@@ -712,36 +671,39 @@ change the approach first.
 be a file.** No plain-JSON state files, no module-scoped TTL `Map`s, no "PG
 mirror with file primary". Helpers: `packages/operator-core/lib/operator-state-pg.ts`.
 
-- **Schema = migrations only; NO runtime DDL.** ⚠ **Pick the migration number via the atomic allocator — NEVER `ls sql/ | tail` by eye.** On this heavily-parallel fleet, two agents racing an `ls`-then-write gap WILL pick the same NNN. Run `node scripts/next-migration.mjs --name <slug> --intent "..."` (or `npm run db:next-migration --`) FIRST — it reserves the number atomically under an advisory lock (`harness_shared.migration_reservations`) and prints a `.DRAFT`-suffixed path to write. **Write + iterate at that `.DRAFT` path, not the bare `.sql` name**: the runner only ever applies files matching `*.sql` (same mechanism as the pre-existing `NNN-*.sql.PENDING-CODE-DEPLOY` idiom), so a `.DRAFT` file is invisible to boot auto-apply / `db:migrate` / the green-checkpoint preflight while you edit it — including a deliberate temporary both-ways guard-test mutation, which otherwise races the operator's auto-apply and can execute half-finished SQL against the live DB. Once it's finished and tested, ARM it with the tool's printed `arm_command` (`mv <path>.DRAFT <path>`) at `libs/papercusp/libs/db/sql/<NNN>-…sql` (≥107), and run `node libs/papercusp/libs/db/scripts/pull-schema.mjs`. Never an `ensureXxx()` / inline `CREATE TABLE`. `000-baseline.sql` is frozen/generated.
+- **Schema = migrations only; NO runtime DDL.** ⚠ **Pick the migration number via the atomic allocator — NEVER `ls sql/ | tail` by eye.** On this parallel fleet two agents racing an `ls`-then-write gap WILL pick the same NNN. Run `node scripts/next-migration.mjs --name <slug> --intent "..."` (or `npm run db:next-migration --`) FIRST — it reserves the number under an advisory lock (`harness_shared.migration_reservations`) and prints a `.DRAFT`-suffixed path.
+
+  **Write and iterate at that `.DRAFT` path, not the bare `.sql` name**: the runner only applies files matching `*.sql`, so a `.DRAFT` file is invisible to boot auto-apply / `db:migrate` / the green-checkpoint preflight while you edit it — including a deliberate temporary both-ways guard-test mutation, which otherwise races the operator's auto-apply and can execute half-finished SQL against the live DB. When it is finished and tested, ARM it with the printed `arm_command` (`mv <path>.DRAFT <path>`) at `libs/papercusp/libs/db/sql/<NNN>-…sql` (≥107), then run `node libs/papercusp/libs/db/scripts/pull-schema.mjs`. Never an `ensureXxx()` / inline `CREATE TABLE`. `000-baseline.sql` is frozen/generated.
 - **Never hardcode `localhost:5432`** — resolve via `getHarnessAdminUrl()`. Embedded-pg is the ship target; the dev box runs native PG on `:5432`.
-- **Reading PG-canonical state? Query PG — don't dump-and-jq a projection.** Plans, work-items, issues, observations (`engineer_issues`), `tool_invocations`, scorecards, recipes live in Postgres; the `*:list` tools and `docs/plans/*.md` files are *projections*. `dev:pg_query` is for **genuinely ad-hoc / analytic** reads (a one-off group-by, join, or recency slice you won't run repeatedly). A HOT read with a stable shape belongs behind a TOOL that wraps the canonical SQL so it can't drift — e.g. "what's claimable" is `work_items:claimable`, NOT a raw floor query (see the claimability note below). **Before you write `SELECT`, check this table** — these are the reads agents most often hand-write, and each already has a tool that scopes + applies the real semantics for you:
+- **Reading PG-canonical state? Query PG — don't dump-and-jq a projection.** Plans, work-items, issues, observations (`engineer_issues`), `tool_invocations`, scorecards and recipes live in Postgres; the `*:list` tools and `docs/plans/*.md` files are *projections*. `dev:pg_query` is for **genuinely ad-hoc / analytic** reads (a one-off group-by, join, or recency slice you won't repeat). A HOT read with a stable shape belongs behind a TOOL that wraps the canonical SQL so it can't drift — "what's claimable" is `work_items:claimable`, NOT a raw floor query.
+
+
+**Before you write `SELECT`, check this table** — these are the reads agents most often hand-write, and each already has a tool that scopes + applies the real semantics. (`dev:pg_query` echoes the same routing as a `See also:` line on every result.)
 
 | you want | use | not |
 |---|---|---|
-| how many tests fail on the **frozen candidate** (what we are actually promoting) | `state:read { cell:'gate.greenCheckpoint.candidateFailures' }` — read `stillBrokenCount` (files with NO fix yet), not `failingFileCount`; each file's `fixInRepairHead` says whether its fix already landed | ANY hand-written `test_runs` query. That table mixes THREE populations and only one judges the candidate: full-suite rows carry `commit_sha=NULL`, and `worktree_dirty=true` rows measure a tree ~100 agents are mutating. Aggregating them reports fleet churn as the gate's verdict (measured: "45 → 29 failing" when the true answer was **1**, already fixed) |
+| how many tests fail on the **frozen candidate** | `state:read { cell:'gate.greenCheckpoint.candidateFailures' }` — read `stillBrokenCount` (files with NO fix yet), not `failingFileCount`; `fixInRepairHead` says whether a file's fix already landed | ANY hand-written `test_runs` query. That table mixes THREE populations and only one judges the candidate: full-suite rows carry `commit_sha=NULL`, and `worktree_dirty=true` rows measure a tree ~100 agents are mutating. Aggregating them reports fleet churn as the gate's verdict (measured: "45 → 29 failing" when the true answer was **1**, already fixed) |
 | what issue-family work is claimable now | `work_items:claimable { harness }` | `WHERE status='open'` / the `work_items_claimable` view (overcounts ~13×) |
 | a filtered work-item / issue slice | `work_items:list` (server-side filters) | a hand-written `harness_shared.work_items` query |
-| what plans exist / the recent ones | `plans:list { updatedSince, createdSince, order, limit }` — `order` is `'updated'\|'created'\|'slug'` (NOT `'recent'` — that value is `invalid_input`; use `order:'updated'` for "the N most-recent plans") | a hand-written `harness_shared.harness_plans` query |
-| plan COUNTS (by status / harness / day) | `plans:list { groupBy, aggregateOnly }` | a hand-written `GROUP BY` over `harness_plans` |
+| what plans exist / the recent ones | `plans:list { updatedSince, createdSince, order, limit }` — `order` is `'updated'\|'created'\|'slug'` (NOT `'recent'` — that is `invalid_input`) | a hand-written `harness_plans` query |
+| plan COUNTS (by status / harness / day) | `plans:list { groupBy, aggregateOnly }` | a hand-written `GROUP BY` |
 | pickable plan items across plans | `plans:items { actionable: true }` | unnesting the items jsonb |
-| prose / full-text | exact keyword or phrase → `search:fulltext`; paraphrased concept → `search:semantic` | `ILIKE '%…%'` |
+| prose / full-text | exact phrase → `search:fulltext`; paraphrased concept → `search:semantic` | `ILIKE '%…%'` |
 | definition, references, type truth | `lsp:query` (compiler semantics) | `grep` for a declaration — cannot resolve shadowing or re-exports |
 | call chains, impact radius, topology | `gitnexus.context` / `gitnexus.impact` (dot, not colon) | `gitnexus.query` — UNRANKED NOISE, not empty: a wrong answer looks like a confident one (D-021) |
-| who CALLS this symbol (callers / callees) | `graph:query { op:'callers', name }` — a FIRST-CLASS op: returns call sites with `line1`, excludes the definition site, and reports index staleness | `gitnexus.impact { direction:'callers' }` — `callers` is NOT a valid direction (only `upstream`/`downstream`/`both`) and the plugin SILENTLY answers with callees, self-reporting `epistemic:"exact"`; measured byte-identical to a nonsense direction (WI-2142910). `graph:query` rejects the bad value instead of inverting the answer |
+| who CALLS this symbol | `graph:query { op:'callers', name }` — returns call sites with `line1`, excludes the definition site, reports index staleness | `gitnexus.impact { direction:'callers' }` — `callers` is NOT a valid direction (only `upstream`/`downstream`/`both`) and the plugin SILENTLY answers with callees, self-reporting `epistemic:"exact"` |
 
-⚠ **If `gate.greenCheckpoint.candidateFailures` is unavailable to you, the ONLY query that answers it is scoped to one population — and the blob check is half the answer, not a footnote:**
+⚠ **If `gate.greenCheckpoint.candidateFailures` is unavailable, the ONLY query that answers it is scoped to one population — and the blob check is half the answer:**
 
 ```sql
--- sql-snippet-justified: the documented fallback for when the gate.greenCheckpoint.candidateFailures
--- cell is unavailable. testing:runs cannot express this three-population scoping
--- (source='ci' AND worktree_dirty=false AND one frozen candidate sha), and the inline
--- 'failed'/'passed' never-match comment below is itself the teaching point.
 SELECT file_path, status FROM harness_shared.test_runs
  WHERE source='ci' AND worktree_dirty=false AND commit_sha='<the frozen candidate sha>'
    AND status IN ('fail','error');   -- 'failed'/'passed' can NEVER match
 ```
 
-Then for each path, `git rev-parse <candidate>:<path>` vs `git rev-parse <repairHead>:<path>`: **DIFFERENT blobs mean the fix ALREADY LANDED** and the file is awaiting re-verification, not repair. Equal blobs are the real queue. For a path inside a SUBMODULE the blobs are identical while the gitlink moved, so use `git diff --raw <candidate> <repairHead> -- <sub> | grep '^:160000'` instead — a blob compare there answers about the wrong object, in the false-negative direction. And `filesJudged` is the AFFECTED RADIUS, never the ~6,700-file suite: an empty failing list is **not** "the gate is green".
+Then per path, `git rev-parse <candidate>:<path>` vs `git rev-parse <repairHead>:<path>`: **DIFFERENT blobs mean the fix ALREADY LANDED** and the file awaits re-verification, not repair. Equal blobs are the real queue. For a SUBMODULE path the blobs are identical while the gitlink moved — use `git diff --raw <candidate> <repairHead> -- <sub> | grep '^:160000'`. And `filesJudged` is the AFFECTED RADIUS, never the ~6,700-file suite: an empty failing list is **not** "the gate is green".
+
+⚠ **A hand-written population query over `harness_shared.work_items` is mostly OBSERVATION LANE.** Every tool defaults `includeObservations:false` — a `lane='observation'` row is an agent's turn-end reflection: never claimable, never triaged. Raw SQL has no such default, so it answers about a different population than any tool you compare it against (measured 2026-09-01: of open items whose title matches `P-[0-9]{3}`, 2,194 of 2,340 were observations). Add `AND lane IS DISTINCT FROM 'observation'` whenever you mean WORK, and say which population a count describes. A title/prose regex compounds it: it cannot distinguish an item that EXECUTES a reference from one that merely CITES it, so "N items reference X" is never "N items are doing X".
 
 
 ⚠ **A hand-written population query over `harness_shared.work_items` is mostly OBSERVATION LANE — the tools exclude it by default and raw SQL does not.** `work_items:list` / `:search` / `:claimable` all default `includeObservations:false`, because a `lane='observation'` row is an agent's turn-end reflection: never claimable, never triaged, and correctly carrying no assignee and no plan link. Raw SQL has no such default, so `SELECT … FROM work_items WHERE <predicate>` answers about a different population than every tool you would compare it against — and the gap is widening fast (measured 2026-09-01: of open items whose title matches `P-[0-9]{3}`, 2,194 of 2,340 were observations; four weeks earlier the same query was 417 of 472). Add `AND lane IS DISTINCT FROM 'observation'` whenever you mean WORK, and say which population a count describes.
@@ -972,33 +934,15 @@ gate descendants whose argv only names the `papercusp-checkpoint` tree; the repo
 labels those rows as identity matches. Other patterns remain operational-argv
 matches, and a peer's prose or JSON payload is still ignored. 
 
-⚠ **Do not use human-relative or absolute timestamp strings with `find -newermt` on this box.**
-`find` resolves to **bfs 4.1.1** here. Human-relative values such as `12 minutes ago`,
-`-10 minutes`, or `America/New_York` are rejected, while absolute strings such as
-`2026-08-28 18:35:00 UTC` can be silently mis-parsed and under-report by hundreds of
-times. If stderr is hidden, either case can look like a valid "nothing changed" result.
-For "files modified since T", use `git status --porcelain` or `TZ=UTC stat -c '%y %n'
-<paths>`; if you must use `find`, pass an epoch predicate such as `@<unix-seconds>`
-or an ISO-8601-like timestamp with `Z`/a numeric offset, keep stderr visible, and
-corroborate the result with a positive control.
+⚠ **Three `find` traps on this box, all of which return a CONFIDENT, WELL-FORMED EMPTY result.**
 
-⚠ **A bare `find` also SILENTLY OMITS symlinked sibling hives — a second false-absence trap,
-distinct from the one above.** Some sibling "checkouts" under `~/papercupai-workspace/` (e.g.
-`sidestage`) are symlinks into `~/.papercusp/hives/`, not real directories, and `find` does not
-descend a symlinked directory without `-L`. Measured: a bare workspace-wide `find -name '<file>'`
-returned hits for the real checkouts and silently omitted `sidestage`'s copy of the same file —
-output that looked complete. For any cross-checkout search prefer `git ls-files` / `grep -rl`
-(both follow the symlink correctly here); and — the same rule as the `| head` truncation trap
-above — never act on a `find` EMPTY (or seemingly-complete) result without a positive control.
+**1. Timestamps.** `find` here is **bfs 4.1.1**. With `-newermt` it REJECTS human-relative values (`12 minutes ago`, `-10 minutes`, `America/New_York`) and can SILENTLY mis-parse absolute ones (`2026-08-28 18:35:00 UTC`), under-reporting by hundreds of times. With stderr hidden, either case looks like a valid "nothing changed". For "files modified since T" use `git status --porcelain` or `TZ=UTC stat -c '%y %n' <paths>`; if you must use `find`, pass an epoch predicate (`@<unix-seconds>`) or an ISO-8601 timestamp with `Z`/a numeric offset, keep stderr visible, and corroborate with a positive control.
 
-⛔ **But NEVER an UNBOUNDED `find -L` over a broad root** (`~`, `~/.papercusp`, `~/.papercusp/hives`,
-`~/papercupai-workspace`). Those roots reach ~50 checkouts whose `node_modules/@papercusp/*` entries
-symlink back into workspace packages, and bfs expands that symlink DAG without bound — it never
-finishes and never errors. Measured 2026-09-08: one `find -L ~/.papercusp -name …` from an agent
-Bash tool ran 32 h, reached 70 GB RSS + 1.86 TB swap (of a 2 TB swapfile) and put the whole host at
-memory PSI-full 65% — the owner's desktop became unusable (WI-10000836). The bash gate now DENIES
-`-L`/`-follow` from those roots unless the walk is bounded. If you must follow symlinks, bound it:
-`find -L <root> -maxdepth 6 -name node_modules -prune -o -name '<file>' -print`.
+**2. Symlinked sibling hives are SKIPPED.** Some "checkouts" under `~/papercupai-workspace/` (e.g. `sidestage`) are symlinks into `~/.papercusp/hives/`, and `find` does not descend a symlinked directory without `-L`. Measured: a workspace-wide `find -name '<file>'` returned the real checkouts and silently omitted `sidestage`'s copy — output that looked complete. For any cross-checkout search prefer `git ls-files` / `grep -rl`.
+
+**3. ⛔ But NEVER an UNBOUNDED `find -L` over a broad root** (`~`, `~/.papercusp`, `~/.papercusp/hives`, `~/papercupai-workspace`). Those roots reach ~50 checkouts whose `node_modules/@papercusp/*` symlink back into workspace packages, and bfs expands that DAG without bound — it never finishes and never errors. Measured 2026-09-08: one such call ran 32 h, reached 70 GB RSS + 1.86 TB swap and made the owner's desktop unusable (WI-10000836). The bash gate now DENIES `-L`/`-follow` from those roots unless bounded: `find -L <root> -maxdepth 6 -name node_modules -prune -o -name '<file>' -print`.
+
+**The general rule behind all three: AN ABSENCE CLAIM NEEDS A POSITIVE CONTROL.** Before reporting "X does not exist", run the same search for something you KNOW is in that haystack. If the control also comes back empty, the instrument is broken, not the subject.
 
 
 ⚠⚠ **`pgrep -q` DOES NOT EXIST on this box** (procps here has no `-q`), and this one
