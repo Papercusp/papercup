@@ -959,10 +959,14 @@ describe("PersonalVaultSettingsPage", () => {
         name: "Approve access for meeting-prep-brief",
       }),
     ).toBeTruthy();
-    expect(screen.getAllByText("personal:gmail").length).toBeGreaterThanOrEqual(
-      2,
-    );
-    expect(screen.getByText("personal:calendar")).toBeTruthy();
+    /* Scoped to the approval dialog on purpose: the direct-grant section below
+       also renders a `personal:*` code chip per scope, so a page-wide count
+       matches those too and says nothing about what the owner is approving.
+       `getByText` throws on 0 or 2+, so this pins each declared scope to
+       exactly one row of the dialog's list. */
+    const approval = within(screen.getByRole("dialog"));
+    expect(approval.getByText("personal:gmail")).toBeTruthy();
+    expect(approval.getByText("personal:calendar")).toBeTruthy();
     expect(
       (
         screen.getByRole("button", {
