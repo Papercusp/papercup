@@ -355,6 +355,15 @@ export type WatchdogSource =
   // persists for a fortnight is not new news every night, and ~15 clusters on
   // this box already sit above the threshold.
   | 'sql-read-census'
+  // agent-launch-context-cost-2026-09-18 P-009(c) / D-016: the standing launch-cost
+  // watch. Keyed by the LEG(s) that crossed (`ceiling`, `regression`, or both) for
+  // the same EI-16071 reason as the census above — a bad LEVEL that persists must
+  // not suppress a REGRESSION crossing for the first time. Debounced 24h: launch
+  // cost is measured per UTC day, so a shorter window would re-alarm on the same
+  // day's data. This exists because the measurement script was committed, correct,
+  // and never RUN, while launch cost drifted 108k -> 306k over five weeks and the
+  // only detector that ever fired was a human noticing agents felt slow.
+  | 'launch-cost-ceiling'
   // EI-19409061552037718: the stale-routine-executor watchdog — a long-lived host
   // with PAPERCUSP_DBOS_ROUTINES=1 running code frozen at boot while this
   // checkout's tree HEAD has since moved. Debounced per executor identity
