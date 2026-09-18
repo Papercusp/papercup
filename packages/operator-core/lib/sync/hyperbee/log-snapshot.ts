@@ -990,14 +990,17 @@ export async function produceLogSnapshot(
   // OP COUNT, and materializing all 461,475 decoded ops first is what put the holder at a
   // `20.1G memory peak` and killed it with SIGABRT ~110s in. Peak retention is now
   // (live keys + one window of SNAPSHOT_READ_CONCURRENCY blocks). See `SnapshotRowFolder`.
-  const folder = new SnapshotRowFolder({ excludeTables: opts.excludeTables });
+  // Materialized BEFORE the folder consumes it — see the same note in
+  // `produceFilteredSnapshotIntoLog`; `excludeTables` is an `Iterable` and there are now
+  // three consumers here too.
+  const ownExcluded = new Set(opts.excludeTables ?? []);
+  const folder = new SnapshotRowFolder({ excludeTables: ownExcluded });
 
   // A prior complete snapshot already represents every op before its anchor.
   // Seed those rows directly and start the streaming fold after the entire
   // chunk span, so the producer's second invocation is O(new tail), not
   // O(history). If no complete set is discoverable in the bounded scan window,
   // foldedUpTo remains zero and the existing full-fold behavior is preserved.
-  const ownExcluded = new Set(opts.excludeTables ?? []);
   const priorSnapshot = await findLatestProducerSnapshot(ownLog);
   let foldedUpTo = 0;
   if (priorSnapshot) {
@@ -1085,7 +1088,7 @@ export async function produceLogSnapshot(
     ts: opts.now,
     schema_version: opts.schemaVersion,
     maxChunkBytes: opts.maxChunkBytes,
-    excludeTables: opts.excludeTables ? [...ownExcluded] : undefined,
+    excludeTables: [...ownExcluded],
   });
   // Append the whole set in ONE batch so the chunks land CONTIGUOUSLY at
   // [coversUpTo, coversUpTo + N) — the reader recognizes the set by that span and
@@ -1182,8 +1185,14 @@ export async function produceFilteredSnapshotIntoLog(
     return { appended: false, coversUpTo: targetLog.length, rowCount: 0, chunkCount: 0 };
   }
 
+  // MATERIALIZED ONCE, and that matters: `excludeTables` is an `Iterable`, and this
+  // function now has three consumers (the folder, the seek guard, the recorded
+  // provenance). A one-shot iterator would be drained by the first, leaving the other
+  // two silently empty — a seek that looks safe and a snapshot that under-reports what
+  // it dropped, while the folder itself filtered correctly.
+  const excluded = new Set(opts.excludeTables ?? []);
   const folder = new SnapshotRowFolder({
-    excludeTables: opts.excludeTables,
+    excludeTables: excluded,
     transformValue: opts.transformValue,
   });
   const reportStall =
@@ -1221,7 +1230,7 @@ export async function produceFilteredSnapshotIntoLog(
     // `conflictingSnapshotExclusion`: seeding from a snapshot that dropped a table THIS
     // seed keeps would ship a silently THINNER seed, which is strictly worse than a slow
     // one. Falling back to the full fold is always correct.
-    const conflict = conflictingSnapshotExclusion(priorSnapshot, new Set(opts.excludeTables ?? []));
+    const conflict = conflictingSnapshotExclusion(priorSnapshot, excluded);
     if (conflict) {
       console.error(
         `[snapshot] filtered source scan: prior snapshot at ${priorSnapshot.coversUpTo} ` +
@@ -1258,7 +1267,7 @@ export async function produceFilteredSnapshotIntoLog(
     maxChunkBytes: opts.maxChunkBytes,
     // What THIS fold dropped, so anyone folding the shipped seed forward inherits the
     // same protection rather than having to know the cutter's policy.
-    excludeTables: opts.excludeTables ? [...new Set(opts.excludeTables)] : undefined,
+    excludeTables: [...excluded],
   });
 
   if (snapshotOps.length === 0) {
