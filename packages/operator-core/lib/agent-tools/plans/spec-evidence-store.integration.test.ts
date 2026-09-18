@@ -1300,6 +1300,71 @@ describe('recorded retraction is the one sanctioned repair for a malformed bindi
       })
     ).map((r) => Number((r as { id: number }).id));
 
+  /**
+   * THE REPAIR MUST ACTUALLY REPAIR. Retracting a malformed binding is only half of D-011's
+   * sanctioned path; the other half is binding the corrected evidence afterwards. Migration
+   * 1174 left spec_evidence_bindings_dedup a TOTAL unique index, so a retracted row kept its
+   * dedup slot: the re-bind's `INSERT ... ON CONFLICT DO NOTHING` returned nothing, the
+   * writer's fallback lookup matched that one retracted row (the index is unique over exactly
+   * those columns, so it can match nothing else), and the call answered 'unchanged' naming it.
+   * The caller was told the evidence was bound while every default reader excluded it — silent
+   * success with zero live evidence, which is the undiagnosable state D-011 exists to end.
+   *
+   * Migration 1175 scopes the index to `retracted_at IS NULL` so a withdrawn row releases its
+   * slot, and the writer's fallback lookup gained the matching filter. Binding the SAME payload
+   * twice is the whole point of this test: a fresh testRunId would produce a different
+   * binding_fingerprint and never reach the dedup path at all, which is why `bindOne` above
+   * (it re-seeds external evidence per call) cannot be reused here.
+   */
+  it('lets identical evidence be re-bound after a retraction instead of deduping onto the withdrawn row', async () => {
+    await specs.setSpecClause(clause());
+    const external = await seedExternalEvidence();
+    const identical = {
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      evidenceKind: 'coverage-census' as const,
+      evidenceRef: 'surface:POST /events',
+      sourceFingerprint: 'git:abc123',
+      coverageEvidenceRef: external.coverageEvidenceRef,
+      testRunId: external.testRunId,
+      actorId: 'su-test',
+    };
+
+    const first = await evidenceStore.bindSpecEvidence(identical);
+    expect(first.status).toBe('created');
+    const firstId = Number((first as { id: number }).id);
+
+    // Positive control for the dedup path itself. While the row is LIVE the same payload must
+    // still dedup onto it — otherwise the re-bind below would be proving only that two
+    // different payloads insert twice, which says nothing about retraction.
+    const replay = await evidenceStore.bindSpecEvidence(identical);
+    expect(replay.status).toBe('unchanged');
+    expect(Number((replay as { id: number }).id)).toBe(firstId);
+
+    const withdrawn = await evidenceStore.retractSpecEvidence({
+      harnessSlug: HARNESS,
+      bindingId: firstId,
+      reason: 'bound run was never collected or executed',
+      actorId: RETRACTOR,
+    });
+    expect(withdrawn.status).toBe('retracted');
+
+    const rebound = await evidenceStore.bindSpecEvidence(identical);
+    expect(rebound.status).toBe('created');
+    const reboundId = Number((rebound as { id: number }).id);
+    expect(reboundId).not.toBe(firstId);
+
+    // The decisive assertion: the default read carries LIVE proof again. Before 1175 this read
+    // was empty for this binding while the call above reported success.
+    const live = await visibleIds();
+    expect(live).toContain(reboundId);
+    expect(live).not.toContain(firstId);
+    // The withdrawal itself stays auditable — the repair adds a row, it never erases one.
+    expect(await visibleIds(true)).toContain(firstId);
+  });
+
   it('accepts one complete stamp, then hides the row from default reads but not from an audit read', async () => {
     const id = await bindOne();
     expect(await visibleIds()).toContain(id);
