@@ -1870,8 +1870,11 @@ const PROMPT_PROJECTION_TRIGGER_PATHS = new Set([
 // PROMPT_PROJECTION_TRIGGER_PATHS) rather than a glob, so a new prose surface must be
 // registered deliberately instead of being absorbed by a pattern.
 const LAUNCH_PROSE_BUDGET_TRIGGER_PATHS = new Set([
-  // The surfaces themselves.
+  // The surfaces themselves. CLAUDE.md and AGENTS.md are two client projections of the
+  // SAME harness_doc_parts, so a part edit re-projects both; each is governed separately
+  // because their reader thresholds differ.
   "CLAUDE.md",
+  "AGENTS.md",
   "apps/operator/prompts/papercusp-su-engineer.tools.md",
   "apps/operator/prompts/papercusp-su-power.tools.md",
   "apps/operator/prompts/papercusp-su.claude.md",

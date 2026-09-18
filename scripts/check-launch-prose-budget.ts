@@ -133,7 +133,17 @@ export async function measureLaunchProseSurfaces(): Promise<ProseSurfaceMeasurem
     {
       surface: 'project-guide:claude-md',
       bytes: await fileBytes(path.join(ROOT, 'CLAUDE.md')),
-      source: 'CLAUDE.md (the projected harness_doc_parts output)',
+      source: 'CLAUDE.md (the projected harness_doc_parts output, client=claude)',
+    },
+    {
+      // The SECOND projection of the same parts. Easy to miss precisely because it is a
+      // sibling output of the same generator: reducing CLAUDE.md moves it too, and growing
+      // a part grows BOTH. It is governed separately because the client that reads it has a
+      // different, much tighter reader threshold — the projector itself reports AGENTS.md as
+      // over an 80,000-char warn threshold that CLAUDE.md is not measured against.
+      surface: 'project-guide:agents-md',
+      bytes: await fileBytes(path.join(ROOT, 'AGENTS.md')),
+      source: 'AGENTS.md (the projected harness_doc_parts output, client=codex)',
     },
     {
       surface: 'compaction-strategy',

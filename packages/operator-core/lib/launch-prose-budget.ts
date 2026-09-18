@@ -73,6 +73,13 @@ export interface ProseSurfaceCeiling {
   floorBytes: number;
   /** Why this surface is governed, and what a reader should do before raising it. */
   note: string;
+  /**
+   * Optional provenance for a surface that was found the hard way. Recorded because
+   * "how did we learn this surface existed" is the part that decays first, and for
+   * `project-guide:agents-md` the answer is the gate's own `unbaselined` branch — which
+   * is the evidence that branch earns its keep.
+   */
+  surfaceDiscovered?: string;
 }
 
 export interface ProseBudgetBaseline {
