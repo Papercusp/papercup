@@ -287,6 +287,23 @@ for (const file of TOOL_FILES) {
 // this is the "bump BASELINE with a note" path the assertion names, taken under a
 // 124-red gate streak, NOT a new grandfathering: the migration of the eight is filed
 // as a work-item, and the next migrator LOWERS this back toward 429.
+// 2026-09-18 (frozen-candidate 0ba8f863 repair, release-fixer s-1789727000450): red at 438 vs
+// 436. ATTRIBUTABLE: six tool files added since the 09-05 bump (645eb5ef) hand-roll inline JSON
+// — capability/{notebook,patch}, learning/dream-control, release/checkpoint-cancel, routines/fire,
+// sessions/digest — against four migrated away in the same window, net +2. Three of the six carry
+// `isError` (capability/{notebook,patch}, routines/fire) and are NOT the mechanical shape; the
+// other three are. Migrated those three plus one more mechanical single-return handler, per this
+// file's thrice-stated "migrate a batch and lower this further — do NOT just bump it":
+// learning/dream-control, sessions/digest (its ERROR path only — the main return was already
+// { data }), release/checkpoint-cancel and coordination/handoff-config (each a single shared
+// `json()` helper, so one line apiece covers every call site). Real count 438 → 434, verified by
+// re-running the discovery walk after the batch (dropped by exactly four — the trap-(1) proof
+// that none of them was a stringify-outside-the-return file). checkpoint-cancel.test.ts and
+// handoff-config.test.ts each had ONE shared `body()` reader on the legacy content[0].text shape
+// → repointed to accept EITHER shape (the 07-26 parseTextPayload pattern) rather than edited
+// assertion-by-assertion. Ceiling STAYS 436, restoring the established two slots of churn
+// headroom. The three isError offenders remain for the next migrator: `{ data }` has no isError
+// slot, so migrating them would silently drop their error signaling and needs its own design.
 const BASELINE = 436;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
