@@ -1741,7 +1741,29 @@ export interface RenderCarryBriefColdExtrasOpts {
    *  possible (e.g. no transcript available); every carry surface renders as
    *  before — this is purely additive. */
   sessionActivityMs?: number | null;
+  /** Clock injection for the aged-wall re-scope prompt below, so its threshold is
+   *  deterministic under test. Omitted ⇒ `Date.now()`. */
+  nowMs?: number;
 }
+
+/**
+ * A carried owner-gated wall older than this has survived many wakes without
+ * clearing — the mechanical signature of a blocker being RE-REPORTED rather than
+ * re-examined. Past it the carry surface stops merely restating the wall and tells
+ * the agent to ask whether the blocked work is still WANTED.
+ *
+ * Owner directive (2026-09-18), after a plan sat frozen for hours behind a
+ * genuinely unsatisfiable gate: "if I've reported the same blocker to you more than
+ * once, that's the signal to ask whether the blocked thing is still wanted, not to
+ * write a better report about it." The wall analysis in that incident was CORRECT —
+ * the failure was never asking whether the feature behind it was worth its only
+ * sound implementation. One dialog cleared a multi-turn freeze.
+ *
+ * `sinceMs` is preserved across rewrites of the same claim (see mergeWallEntries),
+ * so this measures the AGE OF THE COMMITMENT, not the age of its latest wording —
+ * re-phrasing a wall cannot reset the prompt.
+ */
+export const AGED_WALL_RESCOPE_PROMPT_MS = 2 * 60 * 60 * 1000;
 
 /**
  * The sections a COLD reset/recycle injection appends AFTER the loop carry-note
@@ -1827,6 +1849,33 @@ export function renderCarryBriefColdExtras(
     sections.push(
       `⛔ OPEN WALLS — owner-gated commitments you still carry (re-check, do not re-litigate or re-declare resolved; clear via loop:checkpoint { walls }):\n${lines.join('\n')}`,
     );
+    // A wall that has stood this long is being RE-REPORTED, not re-examined. The
+    // carry surface already redelivers it every wake, which is exactly what makes
+    // the trap invisible: each redelivery reads as "still blocked", never as "you
+    // have never asked whether this is still wanted". See AGED_WALL_RESCOPE_PROMPT_MS.
+    const nowMs = opts.nowMs ?? Date.now();
+    const agedAges = brief.walls
+      .map((w) => (w.sinceMs != null && Number.isFinite(w.sinceMs) ? nowMs - w.sinceMs : null))
+      .filter((age): age is number => age != null && age >= AGED_WALL_RESCOPE_PROMPT_MS);
+    if (agedAges.length > 0) {
+      const aged = brief.walls.filter(
+        (w) =>
+          w.sinceMs != null &&
+          Number.isFinite(w.sinceMs) &&
+          nowMs - w.sinceMs >= AGED_WALL_RESCOPE_PROMPT_MS,
+      );
+      sections.push(
+        `⚠ AGED WALL${aged.length > 1 ? 'S' : ''} — carried ${humanAge(Math.max(...agedAges))} without clearing: ` +
+          `${aged.map((w) => `"${cap(w.claim, 80)}"`).join('; ')}\n` +
+          '  A wall you have carried this long has stopped being a blocker and become an UNEXAMINED PREMISE. ' +
+          'ASK WHETHER THE BLOCKED THING IS STILL WANTED — as a real, answerable question with the options ' +
+          'spelled out (an interactive dialog where your client has one, else coord:ask-owner), NOT another ' +
+          'status report. "Nobody can clear this" is a sound finding; it is NOT the same as "this must be ' +
+          "cleared\", and dropping or rescoping the work behind the wall is the owner's call to make, not " +
+          'yours to assume. If you have already asked and are awaiting the answer, say so in the wall claim ' +
+          '(loop:checkpoint { walls }) so this stops firing.',
+      );
+    }
   }
   if (brief.checks && brief.checks.length > 0) {
     // P-001 delivery parity: same double-delivery rationale as walls — a carried

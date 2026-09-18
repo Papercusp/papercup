@@ -17,6 +17,7 @@ import {
   readDeferredWorkItems,
   renderCarryBriefFocus,
   renderCarryBriefColdExtras,
+  AGED_WALL_RESCOPE_PROMPT_MS,
   renderCarryBriefText,
   renderHeldItemOwnershipWarning,
   renderDeferredWorkItems,
@@ -1234,6 +1235,53 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     expect(out).toContain('  • zombie PIDs await owner OK — re-check: ps -p 95902');
     expect(out).toContain('  • capital arming pending owner');
     expect(out.indexOf('OPEN WALLS')).toBeLessThan(out.indexOf('You HELD'));
+  });
+
+  describe('an AGED wall prompts re-scoping instead of another re-report', () => {
+    // Owner directive 2026-09-18: re-reporting the same blocker is the signal to ask
+    // whether the blocked thing is still WANTED. The carry surface redelivers a wall
+    // every wake, so each redelivery reads as "still blocked" and never as "you have
+    // never asked" — this block is what makes the trap visible at that exact moment.
+    const now = 1_800_000_000_000;
+    const briefWithWall = (sinceMs: number | undefined): CarryBrief => ({
+      ownerId: 'x',
+      workspaceId: 'ws-test',
+      loop: null,
+      heldItems: [],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [{ claim: 'owner must enrol a hardware key', recheck: 'plans:items', sinceMs }],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    });
+
+    it('stays silent on a wall younger than the threshold', () => {
+      const out = renderCarryBriefColdExtras(briefWithWall(now - (AGED_WALL_RESCOPE_PROMPT_MS - 60_000)), {
+        nowMs: now,
+      });
+      expect(out).toContain('⛔ OPEN WALLS');
+      expect(out).not.toContain('AGED WALL');
+    });
+
+    it('fires once the wall has stood past the threshold, and says to ASK rather than re-report', () => {
+      const out = renderCarryBriefColdExtras(briefWithWall(now - (AGED_WALL_RESCOPE_PROMPT_MS + 60_000)), {
+        nowMs: now,
+      });
+      expect(out).toContain('AGED WALL');
+      expect(out).toContain('owner must enrol a hardware key');
+      expect(out).toContain('UNEXAMINED PREMISE');
+      expect(out).toContain('ASK WHETHER THE BLOCKED THING IS STILL WANTED');
+      // The wall itself must still be delivered verbatim — the prompt ADDS to the
+      // commitment, it never replaces it.
+      expect(out).toContain('  • owner must enrol a hardware key — re-check: plans:items');
+    });
+
+    it('cannot measure, so stays silent, when the wall carries no sinceMs', () => {
+      const out = renderCarryBriefColdExtras(briefWithWall(undefined), { nowMs: now });
+      expect(out).toContain('⛔ OPEN WALLS');
+      expect(out).not.toContain('AGED WALL');
+    });
   });
 
   it('caps a long checkpoint and flags a missing one', () => {
