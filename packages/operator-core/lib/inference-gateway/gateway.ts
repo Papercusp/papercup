@@ -1280,6 +1280,13 @@ export interface GatewayStats {
     toolsBreakpointSkippedNoBudget: number;
     toolsBreakpointSkippedAllDeferred: number;
     boundarySplit: number;
+    /** P-002 per-tool deferral: the flag's live state, plus what the pass actually did. The
+     *  counters are what makes the P-003 both-arms A/B checkable from outside the process —
+     *  a flag that reads "on" while deferring nothing is the failure mode to catch. */
+    deferLargeTools: boolean;
+    toolsDeferred: number;
+    toolsDeferredBytes: number;
+    searchToolInjected: number;
     breakpointHistogram: number[];
     codexRequests: number;
     codexLegacyRetention: number;
@@ -2793,6 +2800,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     /** Tool-search sessions: every tool deferred ⇒ no legal cache anchor (see cache-policy). */
     toolsBreakpointSkippedAllDeferred: 0,
     boundarySplit: 0,
+    /** P-002: what the per-tool deferral pass actually did, cumulative over this process. */
+    toolsDeferred: 0,
+    toolsDeferredBytes: 0,
+    searchToolInjected: 0,
     breakpointHistogram: [0, 0, 0, 0, 0] as number[],
     codexRequests: 0,
     codexLegacyRetention: 0,
@@ -2813,6 +2824,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (s.toolsBreakpointSkippedNoBudget) cachePolicyStats.toolsBreakpointSkippedNoBudget++;
       if (s.toolsBreakpointSkippedAllDeferred) cachePolicyStats.toolsBreakpointSkippedAllDeferred++;
       if (s.boundarySplit) cachePolicyStats.boundarySplit++;
+      if (s.toolDeferral) {
+        cachePolicyStats.toolsDeferred += s.toolDeferral.toolsDeferred;
+        cachePolicyStats.toolsDeferredBytes += s.toolDeferral.toolsDeferredBytes;
+        if (s.toolDeferral.searchToolInjected) cachePolicyStats.searchToolInjected++;
+      }
       const idx = Math.min(s.breakpointsBefore, cachePolicyStats.breakpointHistogram.length - 1);
       cachePolicyStats.breakpointHistogram[idx]++;
     } else {
