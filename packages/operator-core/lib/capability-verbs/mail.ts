@@ -26,6 +26,11 @@ import {
 } from '../external-triggers/google-gmail';
 import { resolveGoogleWorkspaceAccessToken } from '../external-triggers/google-workspace';
 import { assertTrustedAddressees, type AddresseeDecision, type AddresseeProvenance } from './addressing';
+import {
+  assertDeliverableAddressees,
+  type DeliverabilityReport,
+  type MailboxProbe,
+} from './deliverability';
 import { resolveCanonicalDocument, resolveOutboundContext, string, type CanonicalDocument } from './resolve';
 
 export interface MailReplyCoordinates {
@@ -52,6 +57,12 @@ export interface MailSendResult {
   subject: string;
   threadId: string;
   messageId: string;
+  /**
+   * What the recipients' own servers said before we sent. Worth reading even on
+   * success: a `catch-all` verdict means the domain accepts every address, so
+   * acceptance proved nothing and this send may still bounce.
+   */
+  deliverability: DeliverabilityReport[];
 }
 
 export interface MailDraftResult {
@@ -61,6 +72,8 @@ export interface MailDraftResult {
   threadId: string;
   messageId: string;
   draftId: string;
+  /** See `MailSendResult.deliverability`. */
+  deliverability: DeliverabilityReport[];
 }
 
 export interface MailSendDraftResult {
@@ -77,6 +90,8 @@ export interface MailSendDraftResult {
   sentTo: string[];
   sentCc: string[];
   subject: string | null;
+  /** See `MailSendResult.deliverability`. */
+  deliverability: DeliverabilityReport[];
 }
 
 export type MailDeps = {
@@ -90,6 +105,12 @@ export type MailDeps = {
   apiOrigin?: string;
   /** Injected so attachment handling is testable without touching the disk. */
   readAttachment?: (path: string) => Promise<Buffer>;
+  /**
+   * Injected so the deliverability rail is testable without opening an SMTP
+   * connection — and so a caller with a better source of truth (a warmed cache,
+   * a provider-side validation API) can supply it instead.
+   */
+  probeMailbox?: MailboxProbe;
 };
 
 /** Extension → MIME. Unknown stays octet-stream rather than guessing wrong. */
@@ -281,6 +302,12 @@ export async function sendNewMail(
      * to a caller as a capability the system lacks.
      */
     attachments?: readonly { path: string }[];
+    /**
+     * Send even to a recipient whose own server has already stated the mailbox
+     * does not exist. Off by default: the send would bounce, and our transport
+     * cannot report that bounce on this call.
+     */
+    allowUndeliverable?: boolean;
   },
   deps: MailDeps = {},
 ): Promise<MailSendResult> {
@@ -301,6 +328,15 @@ export async function sendNewMail(
     provenance: params.provenance,
   });
 
+  // AFTER the trust rail, deliberately. The probe opens an outbound connection
+  // to a host the recipient's domain controls, so probing an unvalidated address
+  // would turn an addressee injected by a hostile inbound message into a beacon
+  // confirming we process injections. Trust first, then deliverability.
+  const deliverability = await assertDeliverableAddressees(
+    recipients.map((decision) => decision.address),
+    { probe: deps.probeMailbox, allowUndeliverable: params.allowUndeliverable },
+  );
+
   const ctx = await resolveOutboundContext(sql, {
     workspaceId: params.workspaceId,
     userId: params.userId,
@@ -319,7 +355,14 @@ export async function sendNewMail(
     fetch: deps.fetch,
     apiOrigin: deps.apiOrigin,
   });
-  return { mode: 'send', recipients, subject, threadId: sent.threadId, messageId: sent.messageId };
+  return {
+    mode: 'send',
+    recipients,
+    subject,
+    threadId: sent.threadId,
+    messageId: sent.messageId,
+    deliverability,
+  };
 }
 
 /** Set-compare two address lists, order- and duplicate-insensitive. */
@@ -385,6 +428,11 @@ export async function sendMailDraft(
     provenance: AddresseeProvenance;
     /** Which connected account holds the draft; required once more than one is. */
     from?: string | null;
+    /**
+     * Send even to a recipient whose own server has already stated the mailbox
+     * does not exist. Off by default. See `sendNewMail`.
+     */
+    allowUndeliverable?: boolean;
   },
   deps: MailDeps = {},
 ): Promise<MailSendDraftResult> {
@@ -431,6 +479,16 @@ export async function sendMailDraft(
     );
   }
 
+  // Third, and last: deliverability. It runs AFTER the mismatch check by the
+  // same reasoning that puts the rail first — when a draft has been re-addressed,
+  // the caller must be told THAT, not the blander fact that the address it was
+  // re-pointed at happens to be undeliverable. It probes the LIVE recipients,
+  // for the same reason the rail does: the draft is what Gmail holds now.
+  const deliverability = await assertDeliverableAddressees(
+    recipients.map((decision) => decision.address),
+    { probe: deps.probeMailbox, allowUndeliverable: params.allowUndeliverable },
+  );
+
   const sent = await (deps.sendDraft ?? sendGoogleGmailDraft)(token, draftId, {
     fetch: deps.fetch,
     apiOrigin: deps.apiOrigin,
@@ -444,6 +502,7 @@ export async function sendMailDraft(
     sentTo: live.to,
     sentCc: live.cc,
     subject: live.subject,
+    deliverability,
   };
 }
 
@@ -494,6 +553,13 @@ export async function draftNewMail(
      * has since typed into it — data loss to perform what the API models as an edit.
      */
     draftId?: string | null;
+    /**
+     * Draft even for a recipient whose own server has already stated the mailbox
+     * does not exist. Off by default — catching it here is the point: a draft is
+     * composed for review, and putting a known-dead address in front of a
+     * reviewer spends their attention on a message that can never arrive.
+     */
+    allowUndeliverable?: boolean;
   },
   deps: MailDeps = {},
 ): Promise<MailDraftResult> {
@@ -510,6 +576,13 @@ export async function draftNewMail(
     addresses: [...params.to, ...(params.cc ?? [])],
     provenance: params.provenance,
   });
+
+  // After the trust rail — see the note in `sendNewMail`. Running it at DRAFT
+  // time is deliberate: a dead address caught here never reaches the reviewer.
+  const deliverability = await assertDeliverableAddressees(
+    recipients.map((decision) => decision.address),
+    { probe: deps.probeMailbox, allowUndeliverable: params.allowUndeliverable },
+  );
 
   const ctx = await resolveOutboundContext(sql, {
     workspaceId: params.workspaceId,
@@ -543,5 +616,6 @@ export async function draftNewMail(
     threadId: draft.threadId,
     messageId: draft.messageId,
     draftId: draft.draftId,
+    deliverability,
   };
 }
