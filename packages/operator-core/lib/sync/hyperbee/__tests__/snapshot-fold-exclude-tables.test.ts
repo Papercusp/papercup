@@ -527,3 +527,154 @@ describe('produceFilteredSnapshotIntoLog — the synthetic seed core (EI-2010816
     }
   });
 });
+
+/**
+ * WI-10001822 — the seed fold used to start at a HARDCODED 0, re-expanding every
+ * superseded snapshot generation in the source log's tail. Measured on the failed
+ * 0.0.21 cut: 39,340,332 row-projections to yield 1,415,542 rows (27.7x), ~half the
+ * ~7h wall clock spent on 1.1% of the blocks. Its sibling `produceLogSnapshot`
+ * already seeks the latest snapshot and folds only the new tail.
+ *
+ * ── WHAT MAKES THESE TESTS ABLE TO FAIL ──────────────────────────────────────────
+ * The cheap version of this test asserts the RESULT is unchanged — and it passes
+ * whether or not the seek happens, because a full fold and a seeded fold produce the
+ * same rows BY DESIGN. That is the whole point of the optimization, so a row
+ * assertion cannot detect it. These tests instead assert on WHICH INDICES WERE READ,
+ * which is the only observable that distinguishes O(new tail) from O(history).
+ */
+describe('produceFilteredSnapshotIntoLog — prior-snapshot seek (WI-10001822)', () => {
+  /** Wrap a log, recording every index handed to `get`. */
+  function readRecording(inner: OwnLog): { log: OwnLog; reads: number[] } {
+    const reads: number[] = [];
+    const log = {
+      get keyHex() {
+        return inner.keyHex;
+      },
+      get length() {
+        return inner.length;
+      },
+      append: (op: PeerLogOp) => inner.append(op),
+      appendBatch: (batch: PeerLogOp[]) => inner.appendBatch(batch),
+      async get(i: number) {
+        reads.push(i);
+        return inner.get(i);
+      },
+    } as unknown as OwnLog;
+    return { log, reads };
+  }
+
+  /**
+   * A source in the real seed's shape: `historyOps` raw ops already folded into a
+   * snapshot set, then a short tail of newer raw ops. Returns the boundary index
+   * below which nothing should be read once the seek works.
+   */
+  async function sourceWithSnapshotThenTail(opts: { producerExcludes?: string[] } = {}) {
+    const src = memLog('source-own-log');
+    await src.append(put('plans', 'p1', { title: 'keep me' }, 1));
+    await src.append(put('presence', IDENTITY_ROW.hbKey, { machine_label: SYNTHETIC_MACHINE_LABEL }, 2));
+    await src.append(put('usage', 'u1', { tokens: 5 }, 3));
+    const historyOps = src.length;
+    await produceLogSnapshot(src, {
+      now: 1000,
+      schemaVersion: 1,
+      ...(opts.producerExcludes ? { excludeTables: opts.producerExcludes } : {}),
+    });
+    // The newer tail the seed must still fold.
+    await src.append(put('plans', 'p2', { title: 'newer' }, 4));
+    return { src, historyOps };
+  }
+
+  it('folds only the new tail — the summarized history is never re-read', async () => {
+    const { src, historyOps } = await sourceWithSnapshotThenTail();
+    const { log, reads } = readRecording(src);
+    const target = memLog('synthetic-seed-core');
+
+    const res = await produceFilteredSnapshotIntoLog(log, target, {
+      now: 2000,
+      schemaVersion: 1,
+      excludeTables: ['presence'],
+    });
+
+    // THE ASSERTION THAT FAILS AGAINST THE HARDCODED 0: every op below the snapshot
+    // anchor is summarized by the set we seeded from, so reading any of them is the
+    // redundant work this fix removes.
+    expect(reads.filter((i) => i < historyOps)).toEqual([]);
+
+    // ...and the output is still complete: the seeded rows AND the newer tail.
+    const rows = await rowsOfSetAt(target, res.coversUpTo, res.chunkCount);
+    expect(rows.filter((r) => r.table === 'plans').map((r) => r.hbKey).sort()).toEqual(['p1', 'p2']);
+    expect(rows.some((r) => r.table === 'presence')).toBe(false);
+    expect(rows.some((r) => r.table === 'usage')).toBe(true);
+  });
+
+  it('refuses the seek when the prior snapshot dropped a table this seed KEEPS', async () => {
+    // The producer excluded `usage`; this seed keeps it. Seeding would ship a seed
+    // with no `usage` rows at all — silently thinner than the source, which is worse
+    // than being slow.
+    const { src, historyOps } = await sourceWithSnapshotThenTail({ producerExcludes: ['usage'] });
+    const { log, reads } = readRecording(src);
+    const target = memLog('synthetic-seed-core');
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await produceFilteredSnapshotIntoLog(log, target, {
+        now: 2000,
+        schemaVersion: 1,
+        excludeTables: ['presence'],
+      });
+
+      // Fell back to the full fold: history WAS re-read, deliberately.
+      expect(reads.filter((i) => i < historyOps).length).toBeGreaterThan(0);
+      expect(errors).toHaveBeenCalledTimes(1);
+      expect(String(errors.mock.calls[0]?.[0])).toContain("'usage'");
+
+      // The point of the refusal: `usage` survives because the full fold read the
+      // original raw op instead of a snapshot that had already dropped it.
+      const rows = await rowsOfSetAt(target, res.coversUpTo, res.chunkCount);
+      expect(rows.some((r) => r.table === 'usage')).toBe(true);
+      expect(rows.some((r) => r.table === 'presence')).toBe(false);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('takes the seek when the prior snapshot dropped only tables this seed also drops', async () => {
+    // Producer dropped `presence`; this seed drops `presence` too ⇒ nothing the seed
+    // wants is missing from the snapshot, so the seek is safe. This is the real
+    // release-cut pairing (both sides use SEED_EXCLUDED_TABLES).
+    const { src, historyOps } = await sourceWithSnapshotThenTail({ producerExcludes: ['presence'] });
+    const { log, reads } = readRecording(src);
+    const target = memLog('synthetic-seed-core');
+
+    await produceFilteredSnapshotIntoLog(log, target, {
+      now: 2000,
+      schemaVersion: 1,
+      excludeTables: ['presence', 'usage'],
+    });
+
+    expect(reads.filter((i) => i < historyOps)).toEqual([]);
+  });
+
+  it('records the excluded set on every chunk, and omits it when nothing was excluded', async () => {
+    const { src } = await sourceWithSnapshotThenTail();
+    const filtered = memLog('filtered-seed-core');
+    const res = await produceFilteredSnapshotIntoLog(src, filtered, {
+      now: 2000,
+      schemaVersion: 1,
+      excludeTables: ['usage', 'presence'],
+    });
+
+    for (let j = 0; j < res.chunkCount; j++) {
+      const op = await filtered.get(res.coversUpTo + j);
+      // Sorted, so the serialization is stable rather than caller-order dependent.
+      expect((op!.value as SnapshotPayload).excludeTables).toEqual(['presence', 'usage']);
+    }
+
+    // An unfiltered snapshot stays byte-for-byte what it was before this field existed.
+    const plain = memLog('plain-source');
+    await plain.append(put('plans', 'p1', { title: 'x' }, 1));
+    const plainRes = await produceLogSnapshot(plain, { now: 1000, schemaVersion: 1 });
+    const plainOp = await plain.get(plainRes.coversUpTo);
+    expect((plainOp!.value as SnapshotPayload).excludeTables).toBeUndefined();
+  });
+});
