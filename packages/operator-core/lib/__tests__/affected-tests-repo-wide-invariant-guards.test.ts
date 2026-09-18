@@ -548,6 +548,79 @@ describe('affected-tests: SU splice-marker exact-once guard (identities-v1 P-024
   });
 });
 
+/**
+ * agent-launch-context-cost-2026-09-18 P-004 — the shrink-only ceilings on the PROSE half
+ * of a launch payload.
+ *
+ * ROUTING IS THE WHOLE RISK HERE, which is why it is pinned rather than trusted. The
+ * largest governed surface is the repo-ROOT CLAUDE.md, which belongs to no workspace, and
+ * the rest straddle apps/operator/prompts and operator-core — so the ONE change that grows
+ * these surfaces (a prose edit) is precisely the change ordinary workspace selection
+ * cannot route to the gate. A guard that is registered but never attached is exactly the
+ * state the reachable-advisories entry above was written to describe: falsifiable, and
+ * never run.
+ */
+const LAUNCH_PROSE_BUDGET_SCRIPT = 'lint:launch-prose-budget';
+const LAUNCH_PROSE_BUDGET_TASK = HOST_WORKSPACE + ' :: ' + LAUNCH_PROSE_BUDGET_SCRIPT;
+
+describe('affected-tests: launch prose byte-budget guard (agent-launch-context-cost-2026-09-18 P-004)', () => {
+  it.each([
+    // The project guide — repo root, owned by no workspace suite.
+    'CLAUDE.md',
+    // The authored playbook bases and a client overlay.
+    'apps/operator/prompts/papercusp-su-engineer.tools.md',
+    'apps/operator/prompts/papercusp-su-power.tools.md',
+    'apps/operator/prompts/papercusp-su.codex.md',
+    // The compaction protocol sources.
+    'apps/operator/prompts/papercusp-compaction.base.md',
+    // The renderer — a splice change moves every measured number at once.
+    'packages/operator-core/lib/desktop-install/papercusp-files.ts',
+    // The gate, its comparison module and its baseline each decide what "clean" means.
+    'scripts/check-launch-prose-budget.ts',
+    'scripts/launch-prose-budget-baseline.json',
+    'packages/operator-core/lib/launch-prose-budget.ts',
+  ])('attaches for a governed prose surface or its instrument: %s', (changedPath) => {
+    expect(dryTasks(changedPath)).toContain(LAUNCH_PROSE_BUDGET_TASK);
+  });
+
+  it('does not attach for an unrelated prose path', () => {
+    expect(dryTasks(PROMPT_UNRELATED_PATH)).not.toContain(LAUNCH_PROSE_BUDGET_TASK);
+  });
+
+  it('does not attach for ordinary source that cannot change a prose surface', () => {
+    expect(dryTasks(OUTSIDE_TS_PATH)).not.toContain(LAUNCH_PROSE_BUDGET_TASK);
+  });
+
+  it('STILL attaches when operator-core is affected — its suite never renders the real tree', () => {
+    // No hostSuiteRatchet by design: the unit tests drive the comparison against fixtures,
+    // but only this task renders the actual playbook and measures the actual files. If a
+    // ratchet were ever added, this assertion is what would catch the resulting blind spot.
+    expect(dryTasks('packages/operator-core/lib/launch-prose-budget.ts')).toContain(LAUNCH_PROSE_BUDGET_TASK);
+  });
+
+  it('keeps the guard script defined on the host workspace', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    expect(pkg.scripts?.[LAUNCH_PROSE_BUDGET_SCRIPT]).toContain('check-launch-prose-budget.ts');
+  });
+
+  it('keeps every declared surface in the baseline paired with a stated reason', () => {
+    // A ceiling with an empty `note` is a number nobody can evaluate later: the next agent
+    // to hit a red has to guess whether the surface may grow. The note is the only place
+    // that answer lives.
+    const baseline = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'scripts/launch-prose-budget-baseline.json'), 'utf8'),
+    ) as { ceilings: Array<{ surface: string; ceilingBytes: number; floorBytes: number; note: string }> };
+    expect(baseline.ceilings.length).toBeGreaterThan(0);
+    for (const c of baseline.ceilings) {
+      expect(c.note.trim().length, `${c.surface} needs a stated reason`).toBeGreaterThan(40);
+      expect(c.floorBytes, `${c.surface} floor must sit below its ceiling`).toBeLessThan(c.ceilingBytes);
+      expect(c.floorBytes, `${c.surface} needs a real plausibility floor`).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe('affected-tests: authored-doc guard candidate scope (EI-21079330201572062)', () => {
   it('passes the exact changed authored doc to the guard', () => {
     const line = dryTaskLine(dryTasks(AUTHORED_DOC_PATH), AUTHORED_DOC_TASK);
