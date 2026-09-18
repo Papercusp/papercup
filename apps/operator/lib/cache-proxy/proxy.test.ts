@@ -127,8 +127,23 @@ describe('cache-proxy — per-tool deferral fires AT THE PROXY BOUNDARY (P-002)'
     messages: [],
   });
 
-  it('forwards tools UNTOUCHED when the flag is unset (the default every session runs today)', async () => {
+  // D-015 (2026-09-18): the default INVERTED. It was opt-in pending the P-003 live A/B; that A/B
+  // ran (D-002: control 169,167 vs 115,273 at the measured 1200 B threshold, −31.9%), so leaving
+  // it off was what this repo's flag policy calls unfinished work. `unset` is now the TREATMENT
+  // arm and `'0'` is the kill switch — the two assertions below deliberately swapped meaning, so
+  // a future silent revert to `=== '1'` turns BOTH of them red rather than quietly re-inerting
+  // the fix the way it stayed inert for three epochs.
+  it('DEFERS by default when the flag is unset — the arm every session now runs (D-015)', async () => {
     const fwd = await forward(realisticBody(), { PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS: undefined });
+    expect(fwd.tools!.filter((t) => t.defer_loading)).toHaveLength(6);
+    expect(fwd.tools!.at(-1)).toEqual({
+      type: 'tool_search_tool_bm25_20251119',
+      name: 'tool_search_tool_bm25',
+    });
+  });
+
+  it('forwards tools UNTOUCHED only when explicitly killed with =0 (the kill switch)', async () => {
+    const fwd = await forward(realisticBody(), { PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS: '0' });
     expect(fwd.tools).toHaveLength(7);
     expect(fwd.tools!.some((t) => t.defer_loading)).toBe(false);
     expect(fwd.tools!.some((t) => String(t.type ?? '').startsWith('tool_search_tool_'))).toBe(false);
@@ -154,7 +169,10 @@ describe('cache-proxy — per-tool deferral fires AT THE PROXY BOUNDARY (P-002)'
   it('the flag is the ONLY difference — same input, two arms, measurably different bytes', async () => {
     // The calibration this whole file's arm-B lesson turned on: show that the control arm and
     // the treatment arm differ, and differ ONLY because of the flag.
-    const off = await forward(realisticBody(), { PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS: undefined });
+    // D-015: the control arm is now '0' (the kill switch). Using `undefined` here would compare
+    // ON against ON and pass vacuously — which is exactly the arm-B near-miss D-002 Ruling 5
+    // records, a coincidence in a result's clothing.
+    const off = await forward(realisticBody(), { PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS: '0' });
     const on = await forward(realisticBody(), { PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS: '1' });
     expect(JSON.stringify(off)).not.toBe(JSON.stringify(on));
     expect(on.tools!.filter((t) => t.defer_loading).length).toBeGreaterThan(

@@ -127,10 +127,14 @@ export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats
             // session. ON by default; kill with PAPERCUSP_CACHE_SPLIT_BOUNDARY=0.
             splitBoundary: process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY !== '0',
             // P-002 (agent-launch-context-cost-2026-09-18): defer oversized tool schemas and
-            // inject the BM25 search tool. OPT-IN and it stays that way until the P-003 live
-            // both-arms A/B has run — same forward point, same rewrite, same EI-16980 blast
-            // radius as the opt-in knob above.
-            deferLargeTools: process.env.PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS === '1',
+            // inject the BM25 search tool. ON BY DEFAULT since 2026-09-18 (D-015) — the P-003
+            // both-arms live A/B it was waiting on RAN, and D-002 records control 169,167 vs
+            // 115,273 at the measured 1200 B threshold (−31.9%, below the ~120,000 target), with
+            // the rewrite directly evidenced by a per-request proxy log line. Kill with
+            // PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS=0. See the gateway.ts header for the scoped
+            // claim (functional reachability via `tools:invoke`, NOT native schema
+            // materialization) and the three mutation-proven EI-16980 rails.
+            deferLargeTools: process.env.PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS !== '0',
             deferMinToolBytes: (() => {
               const n = Number(process.env.PAPERCUSP_GATEWAY_DEFER_MIN_TOOL_BYTES);
               return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
