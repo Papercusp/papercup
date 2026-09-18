@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-18T08:39:10.768Z",
+  "generatedAt": "2026-09-18T08:50:05.387Z",
   "ceilings": [
     {
       "surface": "su-playbook-render:engineer:full:claude",
@@ -10,19 +10,19 @@
     },
     {
       "surface": "su-playbook-render:power:full:claude",
-      "ceilingBytes": 222000,
+      "ceilingBytes": 221000,
       "floorBytes": 110000,
       "note": "The POWER profile render — a psu session managing an EXTERNAL repo. Smaller than engineer because the repo-specific deploy-pipeline notes are engineer-only, but it carries the same platform spine and the same project guide."
     },
     {
       "surface": "project-guide:claude-md",
-      "ceilingBytes": 113000,
+      "ceilingBytes": 112000,
       "floorBytes": 40000,
       "note": "The projected CLAUDE.md spliced into every su render. GENERATED from harness_shared.harness_doc_parts — to reduce it, edit the PART and re-project (npm run set-doc-part / node scripts/project-doc-parts.mjs --write); never hand-edit the file. The projector already enforces PROJECTION_BUDGET_CHARS=160000 by DROPPING low-priority parts, which is a catastrophe floor, not a ratchet: this ceiling fails loudly at the current size instead of letting the document grow ~38000 chars into that headroom and start silently deleting guidance."
     },
     {
       "surface": "project-guide:agents-md",
-      "ceilingBytes": 113000,
+      "ceilingBytes": 112000,
       "floorBytes": 40000,
       "note": "The SECOND projection of the SAME harness_doc_parts, for codex clients. Governed separately from CLAUDE.md because the reader threshold differs sharply: the projector reports this file as OVER an 80,000-char warn threshold by ~40,000, which CLAUDE.md is not measured against — so reducing the parts is worth more here than the shared ceiling suggests. It moves in lockstep with project-guide:claude-md (same parts, different client scope), so a part edit changes BOTH; that is why it is declared rather than folded into one ceiling. Found only because the guard REFUSED it as `unbaselined` after a re-projection surfaced it.",
       "surfaceDiscovered": "2026-09-18 by the unbaselined branch of this same gate"
