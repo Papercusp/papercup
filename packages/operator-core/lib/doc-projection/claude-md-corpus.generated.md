@@ -503,14 +503,14 @@ Two mechanisms make this cheap in practice:
 
 ⛔ **CARRYING A PLAN "START TO FINISH" INCLUDES THESE VALIDATION STEPS — they are the finish, not paperwork after it.** An owner who says "carry out the plan" or "finish it yourself" is asking for a SHIPPED plan. Stopping at the last implementation item and reporting done — or naming the remaining validation and handing it back — is the same silent halt in two costumes.
 
-⚠ **You may not grade your own implementation — but that is a ROUTING obligation, never an exit.** A grader you LAUNCH is refused by construction (`grader_in_implementer_lineage`), after a full boot has been paid for. Instead ROUTE: recruit a live session outside your lineage (`coord:presence` / `coord:dispatch`) and `work_items:create` the grading request WITH `assign_to` naming them — that makes it born-admitted and claimable in one write. **Do NOT file it unassigned "for scheduler pull"** — an unassigned create is refused to every claimant, including the grader you named. Everything else — finishing or dropping stragglers, the per-item audit, assembling the grader's evidence — stays yours, and doing it first is what makes the grading cheap.
+⚠ **You may not grade your own implementation — but that is a ROUTING obligation, never an exit.** GET a non-implementer to grade it by ROUTING to one, never by LAUNCHING one: a grader you launch is refused BY CONSTRUCTION (`grader_in_implementer_lineage`), after a full boot has been paid for. ROUTE instead — recruit a live session outside your lineage (`coord:presence` / `coord:dispatch`) and `work_items:create` the grading request WITH `assign_to` naming them, which makes it born-admitted and claimable in one write. **Do NOT file it unassigned "for scheduler pull"** — an unassigned create is refused to every claimant, including the grader you named. Everything else — finishing or dropping stragglers, the per-item audit, assembling the grader's evidence — stays yours, and doing it first is what makes the grading cheap.
 
 **Two independent evidence families gate `plans:set-plan-status → 'shipped'`: a per-item CODE-TRUTH audit, then a GRADED acceptance rubric.** After implementation is verified:
 
 1. **Finish or intentionally drop every item** — `todo`/`blocked`/`needs-human` refuse shipping; a deliberate departure is `plans:set-status { status:'dropped', note }`.
 2. **Audit the actual code, per item** — `plans:audit { slug, items:[{ itemId, verdict, citations }] }`. Only `code`/`test` citations verify; paths must resolve and their blob SHAs are stored. Never treat a work-item, doc, or memory of writing code as code truth.
 3. **Author the rubric AFTER implementation** — `rubrics:propose { rubricRef, kind:'acceptance', subjectPlan, classRef, characteristic, title, criteria }`, 3–7 OUTCOME criteria tracing to the goal + Decisions (a pure investigation may use `criteria:[]`). Deliberately authored against as-built reality — never at plan creation.
-4. **Vet the current revision** — `consult:get_feedback { policy:'rubric-vetting' }` (that key, NO responder count), improve, then attest with `scorecards:emit` against `meta-acceptance-rubric`. Any later edit invalidates BOTH the attestation and any grading, so batch every revision BEFORE requesting grading.
+4. **Vet its current revision** — `consult:get_feedback { policy:'rubric-vetting' }` (that key, NO responder count), improve, then attest with `scorecards:emit` against `meta-acceptance-rubric`. Any later edit invalidates BOTH the attestation and any grading, so batch every revision BEFORE requesting grading.
 5. **A NON-implementer grades it** — `scorecards:emit { rubricRef, ratings }` with concrete evidence per criterion; the grader must be outside the rubric author's spawn/rebind lineage and spot-checks the audit citations.
 6. **The implementer records the acceptance call** — re-emit the complete ratings with `acceptance:{ verdict, reasoning }`. The implementer owns the passing bar; a latest `reject` blocks ship until superseded.
 7. **Ship** — `plans:set-plan-status { slug, status:'shipped' }`; the rubric auto-retires.
@@ -707,6 +707,12 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > For authorship use the commissioning work-item or a timestamp-correlated `sessions:search`;
 > if neither resolves, say "not attributable" — never name a person.
 >
+> **Which commit carries your change → `TZ=UTC git log -1 --date=iso-strict-local --format='%cd %H %s' -- <path>`.
+> NOT `git rev-parse HEAD`:** the tip is routinely a DIFFERENT commit from the same sweep, so
+> quoting it attributes your work to a stranger's diff. Only a `--date=*-local` format honours
+> `TZ`, which is what makes that stamp read `+00:00` and directly comparable to Papercusp's UTC
+> timestamps; keep `TZ=UTC` on `--since`/`--until` too.
+>
 > ⚠ **Containment is a CONTENT question, never a date or ancestry one.** `git rev-parse
 > <sha>:<path>` vs `git rev-parse staging:<path>` — equal blobs ⇒ it carries it.
 > `merge-base --is-ancestor` proves REACHABILITY only and stays true after a later sweep reverts
@@ -833,7 +839,7 @@ Two specifics worth knowing:
 
 ⛔ **A RED CANDIDATE IS FROZEN ON PURPOSE — never "just re-run" the gate at tip.** The standard main-greening procedure is **freeze-and-converge** (`RELEASE_FREEZE_AND_CONVERGE_DEFAULT`, default ON; P-013 / D-007). On the first real code red the gate opens ONE frozen repair queue, and every later run RESUMES that exact candidate rather than a newer tip. Turning it off restores the treadmill D-007 diagnosed, where each new cut re-admits the whole sweep and imports breakage faster than fixes land.
 
-So when the gate is red: **author the fix on the shared staging checkout as normal — there is NO repair worktree (D-010) — wait for git-sync to commit it, then land it on the frozen lineage BY PATH: `release:repair-queue { op:'admit', paths:[...] }`**, naming exactly the files you changed (dry run by default; `confirm:true` publishes). That lands your fix ON TOP of the frozen candidate (advancing `repairHead`); the queue re-tests that head, and the immutable candidate never moves. Admission is hunk-exact (D-008): only YOUR ledgered hunks ride in, so a peer's concurrent edit in the same file stays out. An admission whose file imports a sibling you did not name is refused `admission-incomplete` naming that path — admit it too; **the tip is NEVER widened for you.**
+So when the gate is red: **author the fix on the shared staging checkout as normal — there is NO repair worktree (D-010) — wait for git-sync to commit it, then land it on the frozen lineage BY PATH: `release:repair-queue { op:'admit', paths:[...] }`**, naming exactly the files you changed (dry run by default; `confirm:true` publishes). That lands your fix ON TOP of the frozen candidate (advancing `repairHead`); the queue re-tests that head itself, and the immutable candidate never moves. Admission is hunk-exact (D-008): only YOUR ledgered hunks ride in, so a peer's concurrent edit in the same file stays out. An admission whose file imports a sibling you did not name is refused `admission-incomplete` naming that path — admit it too; **the tip is NEVER widened for you.**
 
 Do NOT fire `release:checkpoint-run` to "try again" as a bypass: when a frozen queue exists, it applies the queue policy and resumes the exact frozen lineage (`ready-to-test` uses `queue.candidate`; `ready-to-verify` uses `queue.repairHead`; non-suite states refuse before launch). Only when no frozen queue exists does it cut a fresh candidate from the current quiet cut at tip. Do not hand-pin with `--candidate` either — that fights the mechanism instead of using it.
 
@@ -930,6 +936,24 @@ state:read { cell: 'gate.greenCheckpoint.candidate', as: 'libs/papercusp/libs/db
 It resolves the gitlink the judged candidate PINS and compares blobs **inside** the submodule, so `changeInCandidate.judgingContainsPath` is a real verdict. Read `changeInCandidate.submodule` beside it: `{ path, relPath, judgingPin, nextPin }`. A `false` with `missingReason:'newer-commit'` means the **superproject gitlink bump** is what the candidate lacks — the hop that matters is git-sync's superproject COMMIT. An unreadable gitlink returns `resolver-failed` — a measurement that failed, never a verdict.
 
 ⛔ **Do NOT reach for `git ls-remote origin refs/heads/staging` to answer this.** It is the natural next thought — *"the gate must see it on the remote"* — and it is wrong: the candidate is cut from LOCAL `staging` and the gate never fetches, so a committed-but-unpushed gitlink is ALREADY in the candidate. Asking the remote returns NOT-IN-CANDIDATE for a fix the gate can see.
+
+> ⛔ **`git show <ref>:<submodule path> > file` leaves a ZERO-BYTE file behind, so a POSITIVE
+> CONTROL built from it reports 0.** The shell creates the redirect BEFORE git runs, so the
+> `fatal: path '…' exists on disk, but not in 'HEAD'` (exit 128) still leaves an empty file, and
+> every later `grep -c` on it returns 0 — the exact reading that means "the string is already gone
+> / my pattern is wrong". So it defeats the one check meant to catch a broken instrument: the
+> control that MUST come back non-zero comes back zero, and the whole scan is then believed. Same
+> false-zero family as a `| head` SIGPIPE truncation or a wrong-relation SQL zero-row. Extract
+> INSIDE the submodule with a SUBMODULE-relative path, and check the exit status:
+> `git -C libs/papercusp show "HEAD:plugins/design-phase/index.cjs" > /tmp/before.cjs || { echo EXTRACT-FAILED; exit 1; }`
+
+> ⚠ **Equal blobs prove that PATH is current — NOT that the candidate is.** When a failing
+> test's runtime SUBJECT lives in a submodule (e.g. `readdirSync('…/libs/papercusp/libs/db/sql')`),
+> the test blob is identical in both refs while the gitlink moved underneath it — so containment
+> answers "not stale" on a red that is pure staleness. Diff the gitlinks too:
+> `git diff --raw <sha> staging | grep '^:160000'`. ⛔ And `git diff <sha> staging -- <sub>/<file>`
+> prints NOTHING for a submodule-backed path — a superproject diff carries only the gitlink — so the
+> empty result reads as "the subject did not change" and CONFIRMS the wrong conclusion.
 
 Manual gitlink-resolution fallback (when the cell is unavailable, or you need a sha the gate is not judging): [git evidence and containment recipes](/internal/docs/agent-insights/git-evidence-and-containment-recipes).
 

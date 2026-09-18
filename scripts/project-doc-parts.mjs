@@ -25,6 +25,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, lstatSync, unlinkSync, readlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connectScriptPg } from './lib/pg-url.mjs';
@@ -1534,5 +1535,75 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   } finally {
     await client.end();
   }
+  if (write && !failed && !argv.includes('--no-verify')) {
+    failed = !verifyDocClaims();
+  }
   process.exit(failed ? 1 : 0);
+}
+
+/**
+ * Run the doc-claims guards against the corpus this script just regenerated.
+ *
+ * WHY HERE, and nowhere else on the authoring path (WI-10001827).
+ *
+ * The doc-claims guards pin LITERAL PROSE from these same parts — their subject is
+ * `packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md` (and, for some,
+ * the projected CLAUDE.md / AGENTS.md), i.e. exactly the files written above. An edit that
+ * compresses a part can therefore delete a rule a guard requires, and NOTHING else on the
+ * path can see it:
+ *
+ *   - `lint:launch-prose-budget` measures BYTES ONLY. During the incident it stayed green on
+ *     all eight surfaces while seven doc-claim files were red — a deleted rule makes a byte
+ *     budget MORE satisfied, not less, so that gate reports the damage as progress.
+ *   - `set-doc-part` prints a diff, but no reader can tell from a diff which clause a guard
+ *     pins; two of the losses were inside paragraphs that still read as coherent prose.
+ *   - `test:affected` selects by CHANGED PATHS, and a doc-part edit changes a Postgres ROW,
+ *     not a file. The radius does not reach `lib/doc-claims/` until this projection is
+ *     written AND swept into a commit — by which point the red is in the gate's candidate
+ *     and `main` cannot promote, for the whole fleet rather than for the editing lane.
+ *
+ * The projection is the first moment the guards' real subject exists on disk, which makes it
+ * the only point where the whole class is catchable BEFORE the sweep. ~40s on an operation
+ * that runs a handful of times a day.
+ *
+ * Escape hatches, both deliberate: `--no-verify` for a bootstrap/repair projection that must
+ * land while the corpus is knowingly mid-repair, and PAPERCUSP_SKIP_DOC_CLAIMS_VERIFY=1 for a
+ * non-interactive caller (a test that invokes this script) that must not recurse into Vitest.
+ * A MISSING or unrunnable Vitest is reported as NOT VERIFIED and fails, rather than passing
+ * quietly — an unrun guard suite and a green one are the same silence, which is the precise
+ * failure this function exists to end.
+ */
+function verifyDocClaims() {
+  if (process.env.PAPERCUSP_SKIP_DOC_CLAIMS_VERIFY === '1') {
+    console.log('\n  ⚠ doc-claims verification SKIPPED (PAPERCUSP_SKIP_DOC_CLAIMS_VERIFY=1) — NOT verified.');
+    return true;
+  }
+  console.log('\n  running doc-claims guards against the regenerated corpus…');
+  const res = spawnSync(
+    'npx',
+    ['vitest', 'run', '--root', 'packages/operator-core', '--config', 'vitest.config.ts', 'lib/doc-claims/'],
+    { cwd: ROOT, encoding: 'utf8', env: { ...process.env, PAPERCUSP_SKIP_DOC_CLAIMS_VERIFY: '1' } },
+  );
+  if (res.error || typeof res.status !== 'number') {
+    console.error(`  ✗ doc-claims guards could NOT be run (${res.error?.message ?? 'no exit status'}).`);
+    console.error('    Treating as NOT VERIFIED. Re-run `npx vitest run --root packages/operator-core --config vitest.config.ts lib/doc-claims/`');
+    console.error('    by hand, or pass --no-verify if you are deliberately projecting a mid-repair corpus.');
+    return false;
+  }
+  const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+  const summary = out.split('\n').filter((l) => /^\s*(Test Files|Tests)\s/.test(l));
+  if (res.status === 0) {
+    for (const l of summary) console.log(`    ${l.trim()}`);
+    console.log('  ✓ doc-claims guards pass against the new corpus.');
+    return true;
+  }
+  console.error('\n  ✗ doc-claims guards FAILED against the corpus just written.');
+  for (const l of summary) console.error(`    ${l.trim()}`);
+  for (const l of out.split('\n').filter((l) => l.includes('FAIL '))) console.error(`    ${l.trim()}`);
+  console.error('\n    A guard here means a doc PART lost text the guard pins — almost always a');
+  console.error('    compression that dropped a load-bearing clause. Recover the ORIGINAL wording from');
+  console.error('    git (`git log -S "<missing literal>" -- CLAUDE.md`, then read the parent commit)');
+  console.error('    rather than writing a minimal string that satisfies the matcher: the guard pins the');
+  console.error('    rule, and a string that only matches the regex leaves the rule gone.');
+  return false;
 }
