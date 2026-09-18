@@ -158,7 +158,19 @@ export async function measureLaunchProseSurfaces(): Promise<ProseSurfaceMeasurem
   ];
 }
 
-export async function readBaseline(file = BASELINE_PATH): Promise<ProseBudgetBaseline> {
+/**
+ * The baseline in force. `PAPERCUSP_LAUNCH_PROSE_BASELINE` points it at a COPY, which is
+ * what makes this gate falsifiable without mutating a tracked file: the repo's
+ * mutation-probe discipline (CLAUDE.md, "Proving a guard is falsifiable") forbids the
+ * copy-mutate-restore shape on this shared tree, because git-sync sweeps the whole tree
+ * every few minutes and can commit the mutant even when nothing goes wrong. An overridable
+ * subject path is the prescribed tier for a file artifact, and this one line is what makes
+ * that tier available at all. Read-only and never written by `--ratchet`, which always
+ * targets the tracked baseline.
+ */
+export async function readBaseline(
+  file = process.env.PAPERCUSP_LAUNCH_PROSE_BASELINE || BASELINE_PATH,
+): Promise<ProseBudgetBaseline> {
   return JSON.parse(await readFile(file, 'utf8')) as ProseBudgetBaseline;
 }
 
@@ -171,6 +183,16 @@ async function main(): Promise<void> {
   const measurements = await measureLaunchProseSurfaces();
 
   if (doRatchet) {
+    // The override exists for falsifiability runs against a COPY; ratcheting would read
+    // that copy and write the TRACKED baseline, silently importing a synthetic ceiling
+    // into the repo. Refuse rather than do something surprising.
+    if (process.env.PAPERCUSP_LAUNCH_PROSE_BASELINE) {
+      console.error(
+        '[lint:launch-prose-budget] REFUSED: --ratchet writes the TRACKED baseline, but ' +
+          'PAPERCUSP_LAUNCH_PROSE_BASELINE points the read at a different file. Unset it to ratchet.',
+      );
+      process.exit(2);
+    }
     const result = ratchetCeilings(baseline, measurements);
     if (result.skippedImplausible.length > 0) {
       console.error(

@@ -1858,6 +1858,42 @@ const PROMPT_PROJECTION_TRIGGER_PATHS = new Set([
   "packages/operator-core/lib/__tests__/affected-tests-repo-wide-invariant-guards.test.ts",
 ]);
 
+// agent-launch-context-cost-2026-09-18 P-004 — the shrink-only ceilings on the PROSE
+// half of a launch payload. WIRED REPO-WIDE because the subject spans trees that route
+// to different suites and, for the largest surface, to NO suite at all: the project
+// guide is the repo-ROOT CLAUDE.md, and the playbook bases and client overlays live
+// under apps/operator/prompts while the renderer and the comparison live in
+// operator-core. A prose edit is exactly the change that grows these surfaces and
+// exactly the one ordinary workspace selection cannot route to the guard.
+//
+// Kept as a literal path set (the same fail-safe import boundary as
+// PROMPT_PROJECTION_TRIGGER_PATHS) rather than a glob, so a new prose surface must be
+// registered deliberately instead of being absorbed by a pattern.
+const LAUNCH_PROSE_BUDGET_TRIGGER_PATHS = new Set([
+  // The surfaces themselves.
+  "CLAUDE.md",
+  "apps/operator/prompts/papercusp-su-engineer.tools.md",
+  "apps/operator/prompts/papercusp-su-power.tools.md",
+  "apps/operator/prompts/papercusp-su.claude.md",
+  "apps/operator/prompts/papercusp-su.codex.md",
+  "apps/operator/prompts/papercusp-su.omp.md",
+  "apps/operator/prompts/papercusp-compaction.base.md",
+  "apps/operator/prompts/papercusp-compaction.claude.md",
+  "apps/operator/prompts/papercusp-compaction.protocol.md",
+  // The renderer: a splice change moves every measured number at once.
+  "packages/operator-core/lib/desktop-install/papercusp-files.ts",
+  // The gate, its comparison module, and its baseline — each decides what "clean" means,
+  // so a change to any of them can move the verdict with no surface changing.
+  "scripts/check-launch-prose-budget.ts",
+  "scripts/launch-prose-budget-baseline.json",
+  "packages/operator-core/lib/launch-prose-budget.ts",
+  "packages/operator-core/lib/launch-prose-budget.test.ts",
+  "scripts/affected-tests.mjs",
+  "package.json",
+  "packages/operator-core/package.json",
+  "packages/operator-core/lib/__tests__/affected-tests-repo-wide-invariant-guards.test.ts",
+]);
+
 // identities-v1 P-024 — the exact-once splice contract spans authored prompt
 // bases, derived identity/part documents, and packaged projections in different
 // workspace trees. Keep the runner independent of the guard module (the same
@@ -4045,6 +4081,33 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     workspace: "@papercusp/operator-core",
     script: "lint:su-splice-markers",
     appliesTo: (f) => SU_SPLICE_MARKER_TRIGGER_PATHS.has(f),
+  },
+  {
+    // agent-launch-context-cost-2026-09-18 P-004 — the shrink-only ceilings on the PROSE
+    // half of a launch payload. The sibling budget (claude-seed-wire-budget) governs the
+    // TOOLS half; measured 2026-09-18 a psu Claude launch is roughly 50/50 between them,
+    // and nothing governed prose at all — the playbook render, the spliced project guide
+    // and the compaction protocol each grew one well-argued paragraph at a time with no
+    // aggregate. A per-paragraph justification process with no total is not a budget.
+    //
+    // WIRED REPO-WIDE, not left to workspace selection, for the reason given on
+    // LAUNCH_PROSE_BUDGET_TRIGGER_PATHS: the largest governed surface is the repo-ROOT
+    // CLAUDE.md, which no workspace suite owns, and the remaining surfaces straddle
+    // apps/operator/prompts and operator-core.
+    //
+    // No hostSuiteRatchet, on the lint:su-splice-markers precedent directly above: the
+    // operator-core Vitest proves the comparison falsifiable against fixtures (including
+    // each way an upper-bound check goes green without measuring anything), but ONLY this
+    // task renders the real playbook and measures the real tree.
+    //
+    // Measured GREEN over the real tree BEFORE registration (2026-09-18): 7 surfaces,
+    // 816,220 B measured against 819,000 B of ceilings, 0 over, 0 unmeasured. Registering
+    // it therefore cannot red-pin the fleet on debt that accrued while it slept.
+    // COST measured 2026-09-18 via this exact npm script: 34.2s, exit 0 — the bulk is tsx
+    // compiling the renderer's import graph, paid only when a prose surface actually changes.
+    workspace: "@papercusp/operator-core",
+    script: "lint:launch-prose-budget",
+    appliesTo: (f) => LAUNCH_PROSE_BUDGET_TRIGGER_PATHS.has(f),
   },
   {
     // EI-19453217565223331 — `positions.deployed` is git ancestry, not proof that
