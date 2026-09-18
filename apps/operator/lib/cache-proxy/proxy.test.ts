@@ -7,6 +7,7 @@
  *
  * Run: npm run test:file -- apps/operator/lib/cache-proxy/proxy.test.ts
  */
+import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -164,6 +165,28 @@ describe('cache-proxy — per-tool deferral fires AT THE PROXY BOUNDARY (P-002)'
     }
     expect(fwd.tools!.some((t) => !t.defer_loading)).toBe(true);
     expect(fwd.tools!.find((t) => String(t.type ?? '').startsWith('tool_search_tool_'))!.defer_loading).toBeUndefined();
+  });
+
+  it('P-009(d): the proxy DELEGATES the flag read to cache-policy rather than re-implementing it', async () => {
+    // D-017. gateway.ts and this file are SEPARATE PROCESSES reading the SAME env var; while each
+    // re-implemented the read inline, editing one polarity split the fleet into fixed and unfixed
+    // halves with nothing to catch it. Both now call `deferLargeToolsEnabled` from cache-policy,
+    // so they cannot disagree by construction. The cross-plane guard lives in cache-policy.test.ts
+    // ('neither forward point re-implements the env read inline'); this is the proxy-side half —
+    // it fails here, in the proxy's OWN suite, if this file reintroduces an inline read.
+    const src = readFileSync(new URL('./proxy.ts', import.meta.url), 'utf8');
+
+    // POSITIVE CONTROL first: prove the instrument can see the file, so an absence claim below
+    // cannot come from an empty/moved read — the false-negative shape this repo keeps hitting.
+    expect(src.length, 'proxy.ts unreadable/empty — broken instrument, not a clean result').toBeGreaterThan(1_000);
+    expect(src).toContain('deferLargeToolsEnabled');
+
+    // Comments may NAME the flag (the kill-switch docs do); only a process.env READ is drift.
+    const inlineReads = src
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => /process\.env\.PAPERCUSP_GATEWAY_DEFER_/.test(l) && !l.startsWith('//') && !l.startsWith('*'));
+    expect(inlineReads, `proxy.ts re-implemented the flag read inline:\n${inlineReads.join('\n')}`).toEqual([]);
   });
 
   it('the flag is the ONLY difference — same input, two arms, measurably different bytes', async () => {
