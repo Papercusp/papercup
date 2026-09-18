@@ -663,6 +663,8 @@ import './capability/read';
 import './capability/list';
 import './capability/write';
 import './capability/edit';
+import './capability/patch';
+import './capability/notebook';
 import './capability/git';
 import './capability/fetch';
 // Read-only verification exec (EI-524 / P-035): typecheck/test via fixed commands,
