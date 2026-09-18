@@ -104,6 +104,7 @@
     "check:screenshot": "tsx libs/generic/image-blankness/src/cli.ts",
     "doctor:deps": "node scripts/check-declared-deps-extracted.mjs",
     "doctor:fixed-but-open": "node scripts/check-fixed-but-open.mjs",
+    "measure:launch-cost": "tsx scripts/measure-launch-cost.ts",
     "census:leaks": "tsx scripts/leak-census.ts",
     "leaks:ratchet": "tsx scripts/leak-ratchet.ts",
     "stats:proof": "tsx scripts/stats-proof.ts",
