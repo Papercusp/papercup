@@ -274,13 +274,11 @@ Interactive (human-present) PSU sessions can still take a fast redirect from the
 
 ⛔ **Before you report an OWNER-GATED wall for a credential or permission, exhaust the privilege you already hold — on this box `sudo -n` is `NOPASSWD: ALL`.** The recurring failure is escalating "needs a superuser / needs credentials I don't have" after probing only the *unprivileged* path, which hands the owner a chore the agent could have done itself.
 
-Measured case (P-037 / WI-40505, 2026-08-27): an agent needed `GRANT hosted_app TO harness_app WITH INHERIT FALSE`, correctly established that `harness_admin` is not superuser and holds no ADMIN OPTION, then probed password auth, peer auth, `~/.pgpass` and the env — and declared an owner-gated wall. It never tried `sudo`. The Postgres superuser was one command away the whole time:
-
 ```bash
 sudo -n -u postgres psql -d papercusp -c '<SQL>'
 ```
 
-So: a permission blocker is owner-gated only once **`sudo -n` has also failed**. When you do report one, name the privileged paths you actually tried — "no superuser is reachable" is a claim about YOUR probe set, not about the machine, and stating it the second way is how a five-second fix becomes an owner's task.
+A permission blocker is owner-gated only once **`sudo -n` has also failed**. When you do report one, name the privileged paths you actually tried — "no superuser is reachable" is a claim about YOUR probe set, not about the machine, and stating it the second way is how a five-second fix becomes an owner's task.
 
 
 ## A cross-lane ruling is a plan Decision, recorded the moment it forms

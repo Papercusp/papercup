@@ -13,7 +13,7 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 312
+  corpus-parts: 313
   corpus-blocks: 268
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
@@ -465,13 +465,14 @@ Interactive (human-present) PSU sessions can still take a fast redirect from the
 
 ⛔ **Before you report an OWNER-GATED wall for a credential or permission, exhaust the privilege you already hold — on this box `sudo -n` is `NOPASSWD: ALL`.** The recurring failure is escalating "needs a superuser / needs credentials I don't have" after probing only the *unprivileged* path, which hands the owner a chore the agent could have done itself.
 
-Measured case (P-037 / WI-40505, 2026-08-27): an agent needed `GRANT hosted_app TO harness_app WITH INHERIT FALSE`, correctly established that `harness_admin` is not superuser and holds no ADMIN OPTION, then probed password auth, peer auth, `~/.pgpass` and the env — and declared an owner-gated wall. It never tried `sudo`. The Postgres superuser was one command away the whole time:
-
 ```bash
 sudo -n -u postgres psql -d papercusp -c '<SQL>'
 ```
 
-So: a permission blocker is owner-gated only once **`sudo -n` has also failed**. When you do report one, name the privileged paths you actually tried — "no superuser is reachable" is a claim about YOUR probe set, not about the machine, and stating it the second way is how a five-second fix becomes an owner's task.
+A permission blocker is owner-gated only once **`sudo -n` has also failed**. When you do report one, name the privileged paths you actually tried — "no superuser is reachable" is a claim about YOUR probe set, not about the machine, and stating it the second way is how a five-second fix becomes an owner's task.
+Measured case behind the `sudo -n` rule (P-037 / WI-40505, 2026-08-27): an agent needed `GRANT hosted_app TO harness_app WITH INHERIT FALSE`, correctly established that `harness_admin` is not superuser and holds no ADMIN OPTION, then probed password auth, peer auth, `~/.pgpass` and the env — and declared an owner-gated wall. It never tried `sudo`. The Postgres superuser was one command away the whole time (`sudo -n -u postgres psql -d papercusp -c '<SQL>'`).
+
+The generalisable shape: the agent's probe set was thorough within one privilege level and never crossed to the next, and its escalation described the machine ("no superuser is reachable") when it could only honestly describe the probe set ("no superuser is reachable BY THE PATHS I TRIED").
 
 
 ## A cross-lane ruling is a plan Decision, recorded the moment it forms
