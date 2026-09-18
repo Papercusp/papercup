@@ -4811,7 +4811,11 @@ describe("psu-launcher arg parsing", () => {
     };
     const env = buildResumeEnv(claude) as Record<string, string>;
     expect(env).toMatchObject(contextTrimmingEnv("claude"));
-    expect(env.ENABLE_TOOL_SEARCH).toBe("true");
+    // P-007: derived, not unconditional — resumeArgsFor ALSO denies ToolSearch, so on a resume
+    // this key would enable nothing and merely inject a DeferredToolPlaceholder every request.
+    expect(env.ENABLE_TOOL_SEARCH).toBe(
+      nativeDeferralReachable() ? "true" : undefined,
+    );
     expect(env.PAPERCUSP_CONTEXT_TIER).toBe("trimmed");
     expect(env.PAPERCUSP_TOOLS).toContain("coord:orient");
     // Non-claude agents get only the payload tier (no CC-specific keys).

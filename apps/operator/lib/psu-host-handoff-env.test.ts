@@ -11,14 +11,28 @@ import {
   contextTrimmingEnv,
   healContextTrimmingEnv,
   healTerminalRenderEnv,
+  nativeDeferralReachable,
   terminalRenderEnv,
 } from '../scripts/psu-launcher.mjs';
 import { HOST_HANDOFF_ENV_KEYS } from '../scripts/psu-pty-host.mjs';
 
+// P-007: ENABLE_TOOL_SEARCH is now DERIVED from whether the ToolSearch deny leaves claude's
+// native schema deferral reachable, so the claude key set is a duo while the 2026-09-11 lockout
+// stands and a trio if it is ever lifted. Computing the expectation from the predicate here
+// keeps these assertions honest either way: it cross-checks two independent code paths (the env
+// builder against the predicate) rather than restating the env builder's own output.
+const CLAUDE_TRIMMING_KEYS = nativeDeferralReachable()
+  ? ['ENABLE_TOOL_SEARCH', 'PAPERCUSP_CONTEXT_TIER', 'PAPERCUSP_TOOLS']
+  : ['PAPERCUSP_CONTEXT_TIER', 'PAPERCUSP_TOOLS'];
+
 describe('host-code handoff × context-trimming env (WI-2140943 lane 2)', () => {
-  it('contextTrimmingEnv: claude gets the full trio, every other agent only the payload tier', () => {
+  it('contextTrimmingEnv: claude gets the deferral-derived key set, every other agent only the payload tier', () => {
     const claude = contextTrimmingEnv('claude');
-    expect(claude.ENABLE_TOOL_SEARCH).toBe('true');
+    // P-007: present IFF native deferral is actually reachable. Emitting it under the
+    // ToolSearch deny turns on nothing and injects a DeferredToolPlaceholder into every request.
+    expect(claude.ENABLE_TOOL_SEARCH).toBe(
+      nativeDeferralReachable() ? 'true' : undefined,
+    );
     expect(claude.PAPERCUSP_CONTEXT_TIER).toBe('trimmed');
     expect(typeof claude.PAPERCUSP_TOOLS).toBe('string');
     expect(String(claude.PAPERCUSP_TOOLS ?? '').split(',').length).toBeGreaterThan(5);
@@ -28,8 +42,12 @@ describe('host-code handoff × context-trimming env (WI-2140943 lane 2)', () => 
 
   it('HOST_HANDOFF_ENV_KEYS ⊇ every key contextTrimmingEnv sets (allowlist pinned to the helper)', () => {
     const trio = Object.keys(contextTrimmingEnv('claude'));
-    expect(trio.sort()).toEqual(['ENABLE_TOOL_SEARCH', 'PAPERCUSP_CONTEXT_TIER', 'PAPERCUSP_TOOLS']);
+    expect(trio.sort()).toEqual([...CLAUDE_TRIMMING_KEYS].sort());
     for (const key of trio) expect(HOST_HANDOFF_ENV_KEYS).toContain(key);
+    // The allowlist must stay a SUPERSET even of the key P-007 stopped emitting: lifting the
+    // ToolSearch lockout would restore ENABLE_TOOL_SEARCH, and it must not then fall out of the
+    // handoff the way the original trio did (WI-2140943).
+    expect(HOST_HANDOFF_ENV_KEYS).toContain('ENABLE_TOOL_SEARCH');
     // Falsifiability control: the pre-fix allowlist (the same list minus the trio) MUST fail
     // this pin — otherwise the assertion above is not measuring anything.
     const preFix = HOST_HANDOFF_ENV_KEYS.filter((k) => !trio.includes(k));
@@ -41,9 +59,13 @@ describe('host-code handoff × context-trimming env (WI-2140943 lane 2)', () => 
       PAPERCUSP_AGENT: 'claude',
       PAPERCUSP_CONTEXT_TIER: 'full',
     };
-    expect(healContextTrimmingEnv(env).sort()).toEqual(['ENABLE_TOOL_SEARCH', 'PAPERCUSP_TOOLS']);
+    expect(healContextTrimmingEnv(env).sort()).toEqual(
+      CLAUDE_TRIMMING_KEYS.filter((k) => k !== 'PAPERCUSP_CONTEXT_TIER').sort(),
+    );
     expect(env.PAPERCUSP_CONTEXT_TIER).toBe('full');
-    expect(env.ENABLE_TOOL_SEARCH).toBe('true');
+    expect(env.ENABLE_TOOL_SEARCH).toBe(
+      nativeDeferralReachable() ? 'true' : undefined,
+    );
     expect(healContextTrimmingEnv(env)).toEqual([]);
   });
 
@@ -57,8 +79,18 @@ describe('host-code handoff × context-trimming env (WI-2140943 lane 2)', () => 
       DISABLE_COMPACT: '1',
     };
     const filled = healContextTrimmingEnv(env, env.PAPERCUSP_AGENT);
-    expect(filled.sort()).toEqual(['ENABLE_TOOL_SEARCH', 'PAPERCUSP_CONTEXT_TIER', 'PAPERCUSP_TOOLS']);
+    expect(filled.sort()).toEqual([...CLAUDE_TRIMMING_KEYS].sort());
     expect(env).toMatchObject(contextTrimmingEnv('claude'));
+    // P-007: healing must also CONVERGE a successor that inherited the pre-fix contradiction.
+    // Fill-only cannot do it — the key arrives already present from the predecessor's old code.
+    const carried: Record<string, string | undefined> = {
+      PAPERCUSP_AGENT: 'claude',
+      ENABLE_TOOL_SEARCH: 'true',
+    };
+    healContextTrimmingEnv(carried, 'claude');
+    expect(carried.ENABLE_TOOL_SEARCH).toBe(
+      nativeDeferralReachable() ? 'true' : undefined,
+    );
     // A non-claude successor gets only the tier — never a claude-only key.
     const codex: Record<string, string | undefined> = { PAPERCUSP_AGENT: 'codex' };
     expect(healContextTrimmingEnv(codex)).toEqual(['PAPERCUSP_CONTEXT_TIER']);
