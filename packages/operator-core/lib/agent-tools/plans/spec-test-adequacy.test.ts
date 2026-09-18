@@ -361,6 +361,45 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['execution-integrity'].rating).toBe('pass');
   });
 
+  it('lets a ledger-backed re-bind filed under a DIFFERENT work item supersede an unbacked row', () => {
+    // Regression: the logical key once included workItemId, so a corrected
+    // re-bind of the SAME proof by a different binder landed BESIDE the stale
+    // row instead of superseding it. The table is append-only by design, so the
+    // stale row was unreachable and dragged execution-integrity to 'unknown'
+    // forever via the any-drags unbackedExecution rule.
+    const evidenceRef = 'test-run:18136690:R-2-integration-leg@2d6cd439b6';
+    const stale = evidence({
+      id: 51,
+      workItemId: 'WI-1980934',
+      evidenceRef,
+      createdAt: '2026-09-16T10:18:56.016Z',
+      coverageEvidenceRef: null,
+      testRunId: null,
+      details: { adequacy: { executed: false, skipped: true, coverageRungs: { l3: false } } },
+      currentness: {
+        ...evidence().currentness,
+        overall: 'unknown',
+        provenance: 'not-supplied',
+        unknownReasons: ['source-current-fingerprint-not-supplied'],
+      },
+    });
+    const rebound = evidence({
+      id: 52,
+      workItemId: 'WI-10001789',
+      evidenceRef,
+      createdAt: '2026-09-18T02:36:09.882Z',
+    });
+
+    expect(latestLogicalEvidence([stale, rebound])).toEqual([rebound]);
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [stale, rebound, negativeEvidence()],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['execution-integrity'].rating).toBe('pass');
+    expect(result.verdict).toBe('pass');
+  });
+
   it('produces a complete scorecards:emit draft for a current L3 feature proof', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause(),

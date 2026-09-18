@@ -91,7 +91,17 @@ function hasTestAttemptReference(row: SpecEvidenceForAdequacy): boolean {
 /**
  * Bindings are immutable history, but adequacy grades the active VERSION of a
  * logical evidence reference. A corrected re-bind must not remain poisoned by
- * an older incomplete row with the same work item/spec/kind/ref.
+ * an older incomplete row for the same plan/spec/revision/kind/ref.
+ *
+ * The binder is deliberately NOT part of that identity. `evidenceRef` names the
+ * PROOF; `workItemId` names whoever happened to append the row. Keying on the
+ * binder splits one logical reference into per-work-item lineages, so a later
+ * ledger-backed re-bind filed under a different work item cannot supersede an
+ * earlier incomplete row — it lands beside it, and the stale row keeps dragging
+ * every criterion that reads it (execution-integrity to 'unknown' via the
+ * any-drags rule, plus falsifiability/correct-layer/oracle-independence) with no
+ * reachable repair, because the table is append-only by design. That is the exact
+ * poisoning this function exists to prevent, so the binder must not key it.
  */
 export function latestLogicalEvidence<T extends SpecEvidenceForAdequacy>(rows: readonly T[]): T[] {
   const selected = new Map<string, { row: T; index: number }>();
@@ -105,9 +115,7 @@ export function latestLogicalEvidence<T extends SpecEvidenceForAdequacy>(rows: r
     return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
   };
   rows.forEach((row, index) => {
-    const key = [row.workItemId, row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef].join(
-      '\0',
-    );
+    const key = [row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef].join('\0');
     const prior = selected.get(key);
     if (!prior) {
       selected.set(key, { row, index });
