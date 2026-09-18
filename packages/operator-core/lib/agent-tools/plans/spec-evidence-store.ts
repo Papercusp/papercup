@@ -427,8 +427,17 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
          AND plan_slug = ${planSlug}
          AND spec_id = ${identity.spec_id}
          AND spec_revision = ${specRevision}
-         AND binding_fingerprint = ${bindingFingerprint}`
+         AND binding_fingerprint = ${bindingFingerprint}
+         AND retracted_at IS NULL`
       )[0];
+    // The retraction filter is load-bearing, not defensive. This lookup only runs when the
+    // INSERT above conflicted, and it reports the row the caller is told it now has bound.
+    // Returning a RETRACTED row here would answer 'unchanged' while every reader excludes
+    // that row by default — silent success with zero live evidence, which is precisely the
+    // failure D-011's repair path exists to remove. Migration 1175 scopes the dedup index to
+    // live rows so a retracted binding no longer blocks its replacement's insert; with both
+    // halves in place a conflict can only mean a LIVE duplicate, and this lookup finds it.
+    // If it does not, throwing is correct: a loud failure beats a wrong id.
     if (!existing) throw new Error(`spec_evidence_binding_insert_failed:${bindingFingerprint}`);
 
     return {
