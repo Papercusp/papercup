@@ -135,8 +135,8 @@ export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats
             // both-arms live A/B it was waiting on RAN, and D-002 records control 169,167 vs
             // 115,273 at the measured 1200 B threshold (−31.9%). ⚠ That 115,273 is ONE A/B ARM,
             // not the fleet: the plan's headline <120,000 target was NOT met (D-009/D-013 record
-            // the live median well above it), so do not read this number as the target reached —
-            // the rewrite directly evidenced by a per-request proxy log line. Kill with
+            // the live median well above it), so do not read this number as the target reached.
+            // The rewrite itself is directly evidenced by a per-request proxy log line. Kill with
             // PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS=0. See the gateway.ts header for the scoped
             // claim (functional reachability via `tools:invoke`, NOT native schema
             // materialization) and the three mutation-proven EI-16980 rails.
