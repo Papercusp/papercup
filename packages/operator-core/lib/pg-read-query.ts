@@ -3574,7 +3574,74 @@ export function assertSingleReadStatement(raw: string): string {
       'only SELECT / WITH…SELECT queries are allowed (this is a read-only surface; use the documented write verbs to change state)',
     );
   }
+  const vaultRefusal = personalVaultRefusal(q);
+  if (vaultRefusal) throw new PgReadQueryError(vaultRefusal);
   return q;
+}
+
+/**
+ * Personal Vault relations — the owner's synced mail, calendar and contacts,
+ * plus the consent rows that gate them.
+ *
+ * `authorizePersonalAccess` fences the `personal:*` TOOL surface. It does not
+ * reach these tables, and MEASURED 2026-09-18 (WI-10001796) in ONE session,
+ * seconds apart:
+ *
+ *   personal:search { scopes:['personal:gmail'] }  -> allowed:false, no_live_grant
+ *   SELECT count(*) FROM harness_shared.personal_documents -> 32,653 gmail messages
+ *
+ * ⚠ The data-layer control is NOT missing, it is INERT — do not "fix" this by
+ * deleting the refusal below once you see RLS in the schema. Migration 874 does
+ * run ENABLE ROW LEVEL SECURITY on all six of these and create a policy, so it
+ * reads as complete. It has never once evaluated: every agent connection arrives
+ * as `harness_admin`, which is simultaneously rolsuper, rolbypassrls, and the
+ * tables' OWNER with relforcerowsecurity=false — four independent bypasses, any
+ * one of them sufficient on its own. `ALTER TABLE … FORCE ROW LEVEL SECURITY`
+ * therefore does NOT repair it either (a superuser bypasses RLS even under
+ * FORCE), though it would test green against any non-superuser role. Until agent
+ * tooling stops connecting as a superuser, THIS is the control — not a
+ * belt-and-braces addition to a working one.
+ */
+const PERSONAL_VAULT_RELATIONS = [
+  'personal_documents',
+  'personal_identities',
+  'personal_identity_aliases',
+  'personal_sync_state',
+  'personal_vault_settings',
+  'personal_grants',
+] as const;
+
+/**
+ * The refusal message when `rawSql` touches a Personal Vault relation, else null.
+ *
+ * Deliberately NOT built on {@link extractReferencedTables}: that one is capped at
+ * GUARD_MAX_TABLES and only sees FROM/JOIN/UPDATE/INTO, so a fifth-table join or a
+ * set-operation arm slips straight past it. An advisory may be best-effort; a
+ * fence may not. This scans the whole statement for the identifier instead.
+ *
+ * Stripping literals and comments FIRST is what keeps the guard usable rather
+ * than merely strict: auditing the vault's own schema — `WHERE relname =
+ * 'personal_documents'`, or this file's own doc comments — stays allowed, because
+ * there the name is a string, not a table reference. `personal_documents_id` does
+ * not match either: `_` is a word character, so the trailing `\b` fails.
+ *
+ * Absolute rather than grant-aware on purpose. This is a pure SQL helper with no
+ * principal in scope; a consent check it cannot actually perform would be worse
+ * than none, because it would read like one. The authorized path is
+ * `personal:search`, which resolves the caller and requires a live owner grant.
+ */
+export function personalVaultRefusal(rawSql: string): string | null {
+  const stripped = stripSqlLiteralsAndComments(rawSql);
+  const hit = PERSONAL_VAULT_RELATIONS.find((rel) => new RegExp(`\\b${rel}\\b`, 'i').test(stripped));
+  if (!hit) return null;
+  return (
+    `refused: harness_shared.${hit} holds Personal Vault data — the owner's synced mail, ` +
+    'calendar and contacts. Ad-hoc SQL is not an authorized path to it: no grant is checked ' +
+    'here and no vault access is audited, so this door reads the mailbox that personal:search ' +
+    'refuses without consent (WI-10001796). Use personal:search, which resolves your principal ' +
+    "and requires a live owner grant. Reading vault SCHEMA is still fine — quote the name " +
+    "('personal_documents') so it is a literal rather than a table reference."
+  );
 }
 
 /**

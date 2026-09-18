@@ -34,6 +34,7 @@ import {
   PG_READ_QUERY_CALL_OVERHEAD_MS,
   SET_LOCAL_UTC,
   callTimeoutMessage,
+  personalVaultRefusal,
   stripSqlLiteralsAndComments,
   withCallDeadline,
 } from './pg-read-query';
