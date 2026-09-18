@@ -531,3 +531,43 @@ describe('AcceptanceBarLifecycleEvaluator — phase-aware BAR contract', () => {
     expect(evaluateAcceptanceBarLifecycle(investigation, 'ship').satisfied).toBe(true);
   });
 });
+
+describe('a refusal names its REPAIR VERB and says it is not recruiting', () => {
+  // Measured 2026-09-18: this refusal handed an agent seven codes and zero verbs, and
+  // said nothing about recruitment. The agent spent hours recruiting a grader for a
+  // phase-2 step that a phase-1 refusal cannot reach. Both halves are now asserted.
+
+  it('is a MEANINGFUL fixture — the default ship verdict actually refuses', () => {
+    // Guards the assertions below against passing vacuously on a satisfied verdict
+    // whose message is null.
+    const verdict = evaluateAcceptanceBarLifecycle(snapshot(), 'ship');
+    expect(verdict.satisfied).toBe(false);
+    expect(typeof verdict.message).toBe('string');
+  });
+
+  it('names the prioritised repair ACTION, not just the code', () => {
+    const verdict = evaluateAcceptanceBarLifecycle(snapshot(), 'ship');
+    const message = verdict.message ?? '';
+    expect(message).toContain('NEXT REPAIR');
+    // The ACTION text itself must be present — a bare "NEXT REPAIR: <code>" would
+    // satisfy a naive matcher while leaving the caller exactly as stuck as before.
+    const action = verdict.nextRepair?.action;
+    expect(action).toBeTruthy();
+    expect(message).toContain(action ?? '__no_action_was_computed__');
+  });
+
+  it('states that this refusal does not recruit a grader', () => {
+    const message = evaluateAcceptanceBarLifecycle(snapshot(), 'ship').message ?? '';
+    expect(message).toContain('does NOT recruit a grader');
+    // Name the codes that DO recruit, so the reader learns the two-phase shape rather
+    // than just being told "not now".
+    expect(message).toContain('acceptance_ungraded');
+    expect(message).toContain('self_graded_only');
+  });
+
+  it('still carries the original attribution — the repair line is additive', () => {
+    const message = evaluateAcceptanceBarLifecycle(snapshot(), 'ship').message ?? '';
+    expect(message).toContain('acceptance BAR contract is not ready for ship');
+    expect(message).toMatch(/BAR\(s\) blocking/);
+  });
+});
