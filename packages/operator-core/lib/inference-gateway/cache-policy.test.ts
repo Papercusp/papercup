@@ -4,6 +4,9 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/inference-gateway/cache-policy.test.ts
  */
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   ANTHROPIC_MAX_BREAKPOINTS,
@@ -13,6 +16,8 @@ import {
   applyAnthropicCachePolicy,
   applyOpenAiCachePolicy,
   applyToolDeferral,
+  deferLargeToolsEnabled,
+  deferMinToolBytesFromEnv,
   openAiCacheGeneration,
   rewriteAnthropicCacheBody,
   rewriteOpenAiCacheBody,
@@ -764,5 +769,81 @@ describe('applyAnthropicCachePolicy — deferral is OFF by default and ordered b
   it('leaves the buffer byte-identical when deferral is off and nothing else changed', () => {
     const buf = Buffer.from(JSON.stringify({ tools: [bigTool('a'), bigTool('b')] }), 'utf8');
     expect(rewriteAnthropicCacheBody(buf).body).toBe(buf);
+  });
+});
+
+describe('P-009(d) — the two forward points cannot disagree about the kill switch', () => {
+  // WHY THIS EXISTS. gateway.ts (gateway-routed sessions) and apps/operator/lib/cache-proxy/
+  // proxy.ts (default-account sessions) are SEPARATE PROCESSES reading the SAME env var. While
+  // each re-implemented the read inline, editing one polarity — or restarting one service
+  // without the other — split the fleet into fixed and unfixed halves with nothing to catch it.
+  // The plan (D-002) closed on exactly that class of failure: "P-002's code is landed and inert."
+  // Overridable so falsifiability can be proven against COPIES outside the shared tree
+  // (CLAUDE.md "Proving a guard is falsifiable"): mutating the real files in-tree races
+  // git-sync, which commits the whole tree every few minutes and would land the mutant.
+  const repoRoot =
+    process.env.PAPERCUSP_FORWARD_POINT_ROOT ??
+    join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+  const forwardPoints = [
+    'packages/operator-core/lib/inference-gateway/gateway.ts',
+    'apps/operator/lib/cache-proxy/proxy.ts',
+  ];
+
+  it('pins the shipped polarity: default ON, "0" is the kill switch (D-016)', () => {
+    // The polarity is `!== '0'`, NOT `=== '1'`. A silent revert to the latter restores the
+    // landed-and-inert state this plan exists to prevent, so both directions are asserted.
+    expect(deferLargeToolsEnabled({})).toBe(true); // unset => ON (the owner-directed default)
+    expect(deferLargeToolsEnabled({ PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS: '0' })).toBe(false);
+    expect(deferLargeToolsEnabled({ PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS: '1' })).toBe(true);
+    // Anything that is not exactly '0' is ON — a truthiness-based rewrite would fail here.
+    expect(deferLargeToolsEnabled({ PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS: '' })).toBe(true);
+    expect(deferLargeToolsEnabled({ PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS: 'false' })).toBe(true);
+  });
+
+  it('reads the byte threshold from env, falling back to the measured default', () => {
+    expect(deferMinToolBytesFromEnv({})).toBeUndefined();
+    expect(deferMinToolBytesFromEnv({ PAPERCUSP_GATEWAY_DEFER_MIN_TOOL_BYTES: '2048' })).toBe(2048);
+    expect(deferMinToolBytesFromEnv({ PAPERCUSP_GATEWAY_DEFER_MIN_TOOL_BYTES: '2048.7' })).toBe(2048);
+    // Invalid/zero/negative must fall back rather than disable deferral by producing 0.
+    for (const bad of ['', 'abc', '0', '-5']) {
+      expect(deferMinToolBytesFromEnv({ PAPERCUSP_GATEWAY_DEFER_MIN_TOOL_BYTES: bad })).toBeUndefined();
+    }
+  });
+
+  it('neither forward point re-implements the env read inline', () => {
+    // The falsifier that matters: if a future edit inlines
+    // `process.env.PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS` at either site again, the two planes can
+    // drift apart silently. Both files must reach the flag ONLY through cache-policy.
+    const offenders: string[] = [];
+    for (const rel of forwardPoints) {
+      const src = readFileSync(join(repoRoot, rel), 'utf8');
+
+      // POSITIVE CONTROL: an absence claim needs proof the instrument can see the file at all.
+      // If the path ever moves, this fails loudly instead of passing vacuously on an empty read.
+      expect(
+        src.length,
+        `${rel} unreadable or empty — instrument broken, not a clean result`,
+      ).toBeGreaterThan(1_000);
+      expect(
+        src,
+        `${rel} no longer references the deferral flag at all — did it move?`,
+      ).toContain('PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS');
+
+      // Comments legitimately NAME the flag (kill-switch docs); only a process.env READ is drift.
+      const inlineRead = /process\.env\.PAPERCUSP_GATEWAY_DEFER_(LARGE_TOOLS|MIN_TOOL_BYTES)/;
+      const hits = src
+        .split('\n')
+        .map((line, i) => ({ line: line.trim(), n: i + 1 }))
+        .filter(
+          ({ line }) => inlineRead.test(line) && !line.startsWith('*') && !line.startsWith('//'),
+        );
+      for (const { line, n } of hits) offenders.push(`${rel}:${n}  ${line}`);
+    }
+    expect(
+      offenders,
+      'Inline env read(s) found at a forward point. Both planes must call ' +
+        'deferLargeToolsEnabled()/deferMinToolBytesFromEnv() from cache-policy so they cannot ' +
+        'disagree (P-009(d)). Offending lines:\n' + offenders.join('\n'),
+    ).toEqual([]);
   });
 });

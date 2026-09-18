@@ -31,7 +31,11 @@
  */
 import http from 'node:http';
 import https from 'node:https';
-import { rewriteAnthropicCacheBody } from '@papercusp/operator-core/lib/inference-gateway/cache-policy';
+import {
+  deferLargeToolsEnabled,
+  deferMinToolBytesFromEnv,
+  rewriteAnthropicCacheBody,
+} from '@papercusp/operator-core/lib/inference-gateway/cache-policy';
 
 export interface CacheProxyOptions {
   listenPort: number;
@@ -129,16 +133,19 @@ export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats
             // P-002 (agent-launch-context-cost-2026-09-18): defer oversized tool schemas and
             // inject the BM25 search tool. ON BY DEFAULT since 2026-09-18 (D-016) — the P-003
             // both-arms live A/B it was waiting on RAN, and D-002 records control 169,167 vs
-            // 115,273 at the measured 1200 B threshold (−31.9%, below the ~120,000 target), with
+            // 115,273 at the measured 1200 B threshold (−31.9%). ⚠ That 115,273 is ONE A/B ARM,
+            // not the fleet: the plan's headline <120,000 target was NOT met (D-009/D-013 record
+            // the live median well above it), so do not read this number as the target reached —
             // the rewrite directly evidenced by a per-request proxy log line. Kill with
             // PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS=0. See the gateway.ts header for the scoped
             // claim (functional reachability via `tools:invoke`, NOT native schema
             // materialization) and the three mutation-proven EI-16980 rails.
-            deferLargeTools: process.env.PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS !== '0',
-            deferMinToolBytes: (() => {
-              const n = Number(process.env.PAPERCUSP_GATEWAY_DEFER_MIN_TOOL_BYTES);
-              return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
-            })(),
+            // P-009(d): BOTH reads delegate to cache-policy's single read site, shared with the
+            // gateway.ts forward point. These are separate processes reading the same env var,
+            // so an inline re-implementation here could silently split the fleet into fixed and
+            // unfixed halves — the guard test pins that this file contains no inline read.
+            deferLargeTools: deferLargeToolsEnabled(),
+            deferMinToolBytes: deferMinToolBytesFromEnv(),
           });
           if (out.stats) {
             if (out.body !== body) stats.rewritten++;

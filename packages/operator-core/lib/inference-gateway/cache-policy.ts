@@ -185,6 +185,36 @@ export function toolSerializedBytes(tool: unknown): number {
  */
 export const DEFAULT_DEFER_MIN_TOOL_BYTES = 1200;
 
+/**
+ * P-009(d) — THE single read site for the deferral kill switch, shared by BOTH forward points.
+ *
+ * `inference-gateway/gateway.ts` (gateway-routed sessions) and
+ * `apps/operator/lib/cache-proxy/proxy.ts` (default-account sessions) are SEPARATE PROCESSES
+ * reading the SAME env var. While each re-implemented the read inline, editing one polarity —
+ * or restarting one service without the other — split the fleet into fixed and unfixed halves
+ * with nothing to catch it. Both now import this, so the two planes cannot disagree by
+ * construction rather than by assertion.
+ *
+ * Default ON since 2026-09-18 (D-016, owner-directed); `PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS=0`
+ * is the kill switch. The polarity is `!== '0'` and NOT `=== '1'`: a revert to the latter
+ * restores the landed-and-inert state that D-002 closed on, which is the specific regression
+ * P-009 exists to prevent.
+ */
+export function deferLargeToolsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS !== '0';
+}
+
+/**
+ * Companion read for the deferral byte threshold — same one-site rule as
+ * {@link deferLargeToolsEnabled}, and duplicated inline at both forward points before P-009(d).
+ * Returns undefined when unset/invalid so the caller falls back to
+ * {@link DEFAULT_DEFER_MIN_TOOL_BYTES}.
+ */
+export function deferMinToolBytesFromEnv(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const n = Number(env.PAPERCUSP_GATEWAY_DEFER_MIN_TOOL_BYTES);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+}
+
 export interface ToolDeferralStats {
   /** Tools this pass newly marked `defer_loading`. */
   toolsDeferred: number;

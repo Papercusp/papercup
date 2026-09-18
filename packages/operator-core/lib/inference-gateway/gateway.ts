@@ -149,6 +149,8 @@ import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 import { egressEntries } from '../deployment/account-pool';
 import { egressCacheKey, egressIsHttpProxy, egressIsSocks5Proxy } from './egress-dispatcher';
 import {
+  deferLargeToolsEnabled,
+  deferMinToolBytesFromEnv,
   rewriteAnthropicCacheBody,
   rewriteOpenAiCacheBody,
   shardedCacheKey,
@@ -898,12 +900,12 @@ const cacheToolsBreakpointOn = () => process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOIN
  * every tool, keep the search tool itself non-deferred — are enforced in cache-policy.ts and
  * mutation-proven (ledger row 18385266).
  */
-const cacheDeferLargeToolsOn = () => process.env.PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS !== '0';
-/** Serialized-byte threshold above which a tool is deferred. Default 8000 (see cache-policy.ts). */
-const cacheDeferMinToolBytes = () => {
-  const n = Number(process.env.PAPERCUSP_GATEWAY_DEFER_MIN_TOOL_BYTES);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
-};
+/** P-009(d): delegates to cache-policy's single read site, shared with the cache-proxy forward
+ *  point, so the two planes cannot disagree about the kill switch by construction. */
+const cacheDeferLargeToolsOn = () => deferLargeToolsEnabled();
+/** Serialized-byte threshold above which a tool is deferred. Default see DEFAULT_DEFER_MIN_TOOL_BYTES.
+ *  Same single-read-site rule as above (P-009(d)). */
+const cacheDeferMinToolBytes = () => deferMinToolBytesFromEnv();
 /** P-004 stable/volatile system split — ON by default (measured +66k shared tokens/session);
  *  PAPERCUSP_CACHE_SPLIT_BOUNDARY=0 kills it. */
 const cacheSplitBoundaryOn = () => process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY !== '0';
