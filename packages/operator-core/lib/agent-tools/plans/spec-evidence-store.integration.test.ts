@@ -62,6 +62,11 @@ const MIGRATION_1150 = migration('1150-test-runs-execution-details.sql');
 // table is a known recurring break (EI-21270668928342264) — this suite hit it.
 const MIGRATION_929 = migration('929-spec-clause-falsifier.sql');
 const MIGRATION_930 = migration('930-spec-clause-falsifier-null-safe.sql');
+// 1174 adds the recorded-retraction path (WI-10001850 / D-011): the three stamp columns,
+// the all-or-nothing CHECK, and the bindings-only guard that replaces the shared
+// append-only trigger with a strict superset of it. Applied LAST so the guards below
+// exercise the trigger this migration installs, not the one 855 installed.
+const MIGRATION_1174 = migration('1174-spec-evidence-binding-retraction.sql');
 const CTX = {
   isSuperuser: true,
   uiClientId: 'su-spec-evidence-integration',
@@ -206,6 +211,8 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_855);
   await applyMigrationForTest(db.sql, MIGRATION_929);
   await applyMigrationForTest(db.sql, MIGRATION_930);
+  await applyMigrationForTest(db.sql, MIGRATION_1174);
+  await applyMigrationForTest(db.sql, MIGRATION_1174); // idempotent and replay-safe
 }, 90_000);
 
 afterAll(async () => {
@@ -927,9 +934,16 @@ describe('exact spec evidence bindings', () => {
     });
     expect(bound.status).toBe('created');
 
+    // NARROWED, not loosened, by migration 1174 (WI-10001850 / D-011). Forging a
+    // fingerprint is still rejected — but the table is no longer refusing EVERY update,
+    // so a bare /append-only/ would now also be satisfied by the re-retraction and
+    // alters-another-column errors and could no longer tell this case apart. Pin the
+    // specific non-retraction message instead; the retraction cases are asserted in
+    // their own describe block below.
     await expect(db.sql`
       UPDATE harness_shared.spec_evidence_bindings SET source_fingerprint = 'forged'
-       WHERE id = ${(bound as { id: number }).id}`).rejects.toThrow(/append-only/);
+       WHERE id = ${(bound as { id: number }).id}`)
+      .rejects.toThrow(/append-only; the only permitted update is a complete retraction stamp/);
     await expect(db.sql`
       DELETE FROM harness_shared.work_item_spec_revision_edges
        WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
@@ -1239,5 +1253,162 @@ describe('narrowed reruns carry sibling scenarios only from a CURRENT ledger row
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
     expect(bundle.verificationFingerprint).toBeTruthy();
     expect((await persisted(RERUN))!.details.testExecution.rerunScope).toBeUndefined();
+  });
+});
+
+/**
+ * Migration 1174 / WI-10001850 / decision D-011.
+ *
+ * The adequacy evaluator scans EVERY bound row for a (spec, revision) cohort and fails
+ * the clause if ANY row names an uncollected/unexecuted run or has gone stale. Bindings
+ * are append-only with no DISTINCT ON in the loader, so appending a corrected row cannot
+ * outrank a bad one, and spec_revision is the only partitioning dimension — which left
+ * bumping a clause revision purely to shed failing evidence as the only escape. D-011
+ * forbids that as gate evasion. A recorded retraction is the sanctioned repair, so these
+ * cases pin BOTH halves: the one mutation now permitted, and every mutation still refused.
+ */
+describe('recorded retraction is the one sanctioned repair for a malformed binding (D-011)', () => {
+  const RETRACTOR = 'su-retraction-integration';
+
+  async function bindOne(): Promise<number> {
+    await specs.setSpecClause(clause());
+    const external = await seedExternalEvidence();
+    const bound = await evidenceStore.bindSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      evidenceKind: 'coverage-census',
+      evidenceRef: 'surface:POST /events',
+      sourceFingerprint: 'git:abc123',
+      coverageEvidenceRef: external.coverageEvidenceRef,
+      testRunId: external.testRunId,
+      actorId: 'su-test',
+    });
+    expect(bound.status).toBe('created');
+    return Number((bound as { id: number }).id);
+  }
+
+  const visibleIds = async (includeRetracted?: boolean): Promise<number[]> =>
+    (
+      await evidenceStore.listSpecEvidence({
+        harnessSlug: HARNESS,
+        planSlugs: ['reconnect-plan'],
+        workItemIds: ['WI-101'],
+        ...(includeRetracted === undefined ? {} : { includeRetracted }),
+      })
+    ).map((r) => Number((r as { id: number }).id));
+
+  it('accepts one complete stamp, then hides the row from default reads but not from an audit read', async () => {
+    const id = await bindOne();
+    expect(await visibleIds()).toContain(id);
+
+    const result = await evidenceStore.retractSpecEvidence({
+      harnessSlug: HARNESS,
+      bindingId: id,
+      reason: 'bound run was never collected or executed',
+      actorId: RETRACTOR,
+    });
+    expect(result.status).toBe('retracted');
+    // "Returns it in full" is the point of the audit read — a retraction must never be an
+    // unattributable disappearance, so assert the recorded author and cause, not just the id.
+    expect(result.binding).toMatchObject({
+      retracted_by: RETRACTOR,
+      retraction_reason: 'bound run was never collected or executed',
+    });
+    expect(result.binding?.retracted_at).toBeTruthy();
+
+    // The default read is what the evaluator consumes: the bad row must stop counting.
+    expect(await visibleIds()).not.toContain(id);
+    expect(await visibleIds(false)).not.toContain(id);
+    expect(await visibleIds(true)).toContain(id);
+
+    // The row is hidden, never deleted — the withdrawn claim stays auditable.
+    const [row] = await db.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM harness_shared.spec_evidence_bindings WHERE id = ${id}`;
+    expect(row.n).toBe(1);
+  });
+
+  it('refuses a second retraction, so the recorded author and reason are final', async () => {
+    const id = await bindOne();
+    await evidenceStore.retractSpecEvidence({
+      harnessSlug: HARNESS, bindingId: id, reason: 'first and only withdrawal', actorId: RETRACTOR,
+    });
+
+    // The store reports the benign replay as a status rather than surfacing an opaque 55000.
+    const replay = await evidenceStore.retractSpecEvidence({
+      harnessSlug: HARNESS, bindingId: id, reason: 'rewriting history', actorId: 'su-someone-else',
+    });
+    expect(replay.status).toBe('already_retracted');
+    expect(replay.binding).toMatchObject({
+      retracted_by: RETRACTOR,
+      retraction_reason: 'first and only withdrawal',
+    });
+
+    // …and the trigger refuses it underneath, so a raw writer cannot rewrite it either.
+    await expect(db.sql`
+      UPDATE harness_shared.spec_evidence_bindings
+         SET retracted_at = now(), retracted_by = 'su-forger', retraction_reason = 'rewritten'
+       WHERE id = ${id}`).rejects.toThrow(/already retracted; a retraction is one-way/);
+  });
+
+  it('refuses a retraction that alters any other column, and still refuses DELETE', async () => {
+    const id = await bindOne();
+
+    await expect(db.sql`
+      UPDATE harness_shared.spec_evidence_bindings
+         SET retracted_at = now(), retracted_by = ${RETRACTOR},
+             retraction_reason = 'smuggling a fingerprint rewrite',
+             source_fingerprint = 'forged'
+       WHERE id = ${id}`).rejects.toThrow(/may not alter any other column/);
+
+    await expect(db.sql`
+      DELETE FROM harness_shared.spec_evidence_bindings WHERE id = ${id}`)
+      .rejects.toThrow(/append-only; append a new exact evidence binding/);
+
+    // Neither refusal left a mark: the row is untouched and still live proof.
+    const [row] = await db.sql<{ source_fingerprint: string; retracted_at: Date | null }[]>`
+      SELECT source_fingerprint, retracted_at
+        FROM harness_shared.spec_evidence_bindings WHERE id = ${id}`;
+    expect(row).toMatchObject({ source_fingerprint: 'git:abc123', retracted_at: null });
+  });
+
+  it('refuses a half-written stamp at BOTH rails — the trigger, and the CHECK beneath it', async () => {
+    const id = await bindOne();
+
+    // Rail 1, the trigger, which is what a real writer meets first.
+    await expect(db.sql`
+      UPDATE harness_shared.spec_evidence_bindings SET retracted_at = now()
+       WHERE id = ${id}`).rejects.toThrow(/only permitted update is a complete retraction stamp/);
+
+    // Rail 2, the CHECK. The trigger SHADOWS it for every update, so without disabling the
+    // trigger this constraint is asserted by nothing and its absence would be invisible —
+    // exactly the untested defence-in-depth claim this suite exists to keep honest.
+    await db.sql.unsafe(
+      'ALTER TABLE harness_shared.spec_evidence_bindings DISABLE TRIGGER spec_evidence_bindings_immutable',
+    );
+    try {
+      await expect(db.sql`
+        UPDATE harness_shared.spec_evidence_bindings SET retracted_at = now()
+         WHERE id = ${id}`).rejects.toThrow(/spec_evidence_bindings_retraction_complete/);
+      // A blank author or reason is half-written too, not a complete stamp.
+      await expect(db.sql`
+        UPDATE harness_shared.spec_evidence_bindings
+           SET retracted_at = now(), retracted_by = '  ', retraction_reason = 'stated cause'
+         WHERE id = ${id}`).rejects.toThrow(/spec_evidence_bindings_retraction_complete/);
+    } finally {
+      await db.sql.unsafe(
+        'ALTER TABLE harness_shared.spec_evidence_bindings ENABLE TRIGGER spec_evidence_bindings_immutable',
+      );
+    }
+
+    expect(await visibleIds()).toContain(id);
+  });
+
+  it('reports an unknown binding rather than silently succeeding', async () => {
+    const missing = await evidenceStore.retractSpecEvidence({
+      harnessSlug: HARNESS, bindingId: 2_147_000_001, reason: 'no such row', actorId: RETRACTOR,
+    });
+    expect(missing).toMatchObject({ status: 'not_found', binding: null });
   });
 });
