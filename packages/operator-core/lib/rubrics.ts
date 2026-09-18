@@ -4114,6 +4114,10 @@ async function amendAcceptanceBarRubric(
          WHERE e.workspace_id = ${subjectScope.workspaceId} AND e.harness_slug = ${subjectScope.harnessSlug}
            AND e.plan_slug = ${subjectPlanHint} AND e.spec_id = ANY(${currentClauses.map((c) => c.spec_id)}::text[])
            AND e.spec_revision < c.current_revision
+           -- A retracted row is withdrawn proof, so it was never evidence this amendment
+           -- could invalidate. Counting it would inflate the invalidation count with rows
+           -- the author already disowned, and report an unchanged bar as damaged.
+           AND e.retracted_at IS NULL
            -- P-008: bindings are append-only, so a carried-forward proof leaves its
            -- superseded row behind. Counting that row would report an unchanged BAR
            -- as invalidated even though its proof survived onto the new revision.
@@ -4124,6 +4128,10 @@ async function amendAcceptanceBarRubric(
                 AND n.work_item_id = e.work_item_id AND n.evidence_kind = e.evidence_kind
                 AND n.evidence_ref = e.evidence_ref
                 AND n.spec_revision = c.current_revision
+                -- The survivor only excuses the superseded row if it is itself live. A
+                -- RETRACTED carried-forward copy is not surviving proof, and treating it as
+                -- one would mask the superseded row and under-report the invalidation.
+                AND n.retracted_at IS NULL
            )`;
       const scorecards = await tx<{ count: string }[]>`
         SELECT count(*)::text AS count FROM harness_shared.work_items

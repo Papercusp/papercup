@@ -316,9 +316,10 @@ async function readBgHostRestartFreshness(): Promise<BgHostRestartFreshness> {
 const STAGING_COOLDOWN_SEC = 120;
 
 /**
- * EI-10896: the SHARED long-running hosts beyond the operator. Every one of these executes source
- * straight from the STAGING tree (tsx, no build step), so an edit to their code is on their disk
- * IMMEDIATELY but is NOT loaded until the process restarts — no deploy is involved at all. Before
+ * EI-10896: the SHARED long-running hosts beyond the operator. Every one of these runs code from the
+ * STAGING tree with no deploy hop — the gateway via tsx; bg-host and embed-sidecar via a bundle their
+ * unit REBUILDS on every start (ExecStartPre=bundle-host.sh, fail-closed). Either way an edit is on
+ * their disk IMMEDIATELY but is NOT loaded until the process restarts — no deploy is involved. Before
  * this, none of them had a sanctioned restart path: the target enum was ['dev','staging'], so the
  * ONLY way to land a gateway fix was the exact raw `systemctl --user restart` this tool's own
  * guidance forbids. A rule you can only obey by not doing your job gets broken — so the rule now

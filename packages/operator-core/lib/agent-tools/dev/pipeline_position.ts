@@ -915,8 +915,9 @@ export default defineTool({
     }
 
     // EI-10895: the `awaitable` below is only TRUE ADVICE for code the release
-    // pipeline actually carries. For a staging-tree tsx host (gateway / bg-host /
-    // embed-sidecar) or the Tauri shell, a deploy is a NO-OP — telling the agent to
+    // pipeline actually carries. For a staging-tree host (gateway / bg-host /
+    // embed-sidecar — tsx, or a bundle the unit rebuilds at each start) or the Tauri
+    // shell, a deploy is a NO-OP — telling the agent to
     // sleep on `deploy:await` sends it to wait forever for an event that will land
     // and change nothing. Emit the real activation lever instead.
     const runtime = result.runtime;

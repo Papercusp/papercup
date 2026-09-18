@@ -2191,8 +2191,9 @@ describe('gitPipelinePosition (P-002)', () => {
  *
  * The bug being fixed: this tool reported `deployed ✗` + "sleep on the deploy:
  * deploy:await" for code that the release pipeline DOES NOT CARRY. The gateway,
- * bg-host and embed-sidecar all execute tsx straight from the staging tree, so a
- * deploy is a no-op for them and a RESTART is the only activation. An agent that
+ * bg-host and embed-sidecar all run staging-tree code with no deploy hop (the
+ * gateway via tsx; the other two via a bundle their unit rebuilds at every start),
+ * so a deploy is a no-op for them and a RESTART is the only activation. An agent that
  * follows the old advice waits forever for an event that lands and changes
  * nothing (this cost an hour on WI-4541, a gateway admission fix).
  * ------------------------------------------------------------------------- */

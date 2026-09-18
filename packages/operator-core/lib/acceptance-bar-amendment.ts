@@ -561,6 +561,14 @@ export async function carryUnchangedBarEvidenceBindings(
      WHERE b.workspace_id = ${args.workspaceId} AND b.harness_slug = ${args.harnessSlug}
        AND b.plan_slug = ${args.planSlug} AND b.spec_id = ${args.specId}
        AND b.spec_revision = ${args.priorRevision}
+       -- A retracted binding must NOT be carried onto the next revision. Carry re-INSERTS
+       -- the row under nextRevision, so without this filter a retraction would be undone by
+       -- the next bar amendment: the withdrawn proof reappears as a fresh, un-retracted row
+       -- and the clause is re-poisoned. D-011 makes recorded retraction the ONLY sanctioned
+       -- repair for a malformed binding, so carry silently resurrecting one defeats the
+       -- repair path outright. Retraction is one-way: what a default read must not see, a
+       -- carry must not propagate.
+       AND b.retracted_at IS NULL
        AND e.spec_revision = ${args.nextRevision}
        AND e.spec_fingerprint = ${args.nextSpecFingerprint}
      ORDER BY b.id LIMIT 1001`;
