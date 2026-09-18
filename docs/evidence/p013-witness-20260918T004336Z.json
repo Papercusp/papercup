@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-013 two-host Papercup chat replication with complete R-7 deployed-plane provenance (p013-witness-20260918T004336Z)",
+  "framework": "tauri-agent-tools + verdict",
+  "command": [
+    "bash",
+    ".papercusp/scratch/p013-witness/run-pass-v3.sh"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-18T00:43:36.000Z",
+  "finishedAt": "2026-09-18T00:46:05.398Z",
+  "summary": "One contemporaneous pass covering both AUTO-BAR-R-3 (live two-host replication) and AUTO-BAR-R-7-P-010 rev 7 (deployed-plane provenance). The isolated operator desktop host and the external portal at http://127.0.0.1:3081 each rendered the same persisted conversation dc1c7dc0-65b1-48e1-8561-50fa71cc2b89: the subject was asserted on both hosts before any parity claim, then parity held across every extracted dimension including the D-011 compact inline timestamps and icon-only Papercup identity. All five provenance facts the R-7 clause names were captured inside this same run: the portal's discovered operator origin http://127.0.0.1:9071, that origin's build sha 59105f87bb, converse conversation/turn route identity read from the response body rather than a status code, the tested portal build (webpack-6ccb50e67e502d8d.js) and session, and staging/main/deployed pipeline position. The tested subject packages/operator-ui/src/papercup-chat/PapercupChat.tsx is NOT DEPLOYED: staging blob 5f71128d7a27053f82ef1b15ae2cc0db43419152 differs from the deployed blob f394dac2c88bf556fc5b63c152a07e8b09371c93 at :3070 sha 59105f87bb. Recorded as a pipeline state, never as a product failure. The stale-origin control failed as required, so a dead origin cannot be mistaken for a healthy one.",
+  "assertions": [
+    {
+      "id": "portal-operator-origin-discovered",
+      "passed": true,
+      "evidence": "The portal's operator origin was DISCOVERED, not assumed: http://127.0.0.1:9071 read from /proc/375749/environ PAPERCUSP_OPERATOR_URL of the live portal process pid 375749."
+    },
+    {
+      "id": "origin-health-build-sha",
+      "passed": true,
+      "evidence": "Origin http://127.0.0.1:9071 reported service papercusp-operator sha 59105f87bb at 2026-09-18T00:43:38.462Z; :3070 reported sha 59105f87bb. sameBuild=true, so the origin the portal actually calls and the operator build under test are the same build."
+    },
+    {
+      "id": "converse-route-identity-from-body",
+      "passed": true,
+      "evidence": "Route http://127.0.0.1:9071/api/operator/conversations/dc1c7dc0-65b1-48e1-8561-50fa71cc2b89/turns returned turn IDENTITY from its response body (not a bare status): conversationId echo dc1c7dc0-65b1-48e1-8561-50fa71cc2b89, 21 turns, first turn id 17ee9d08-e11e-4cf5-828c-58419dfd01b3, every turn matching the requested conversation (true). Status 200 alone is NOT the evidence — \"200-only provenance\" is named in this clause's falsifier."
+    },
+    {
+      "id": "portal-build-and-session",
+      "passed": true,
+      "evidence": "Tested portal build/session: http://127.0.0.1:3081 pid 375749 started Sun Sep  6 21:46:14 2026 UTC, serving next chunk webpack-6ccb50e67e502d8d.js with css digests aae0940dbce73e73,6650180f75156836,74cd0783bb34386e,67230937d39a6399,a11ba9cf25e55d5f,108038487435c3e0; browser session p013w; conversation under test dc1c7dc0-65b1-48e1-8561-50fa71cc2b89."
+    },
+    {
+      "id": "pipeline-position-staging-main-deployed",
+      "passed": true,
+      "evidence": "staging 95629531af5df83fc0e362437db9b01df675e17d, main 384a2166edc67027abbf44aec6dfdb1f84f85636, deployed 59105f87bb (resolved locally as 59105f87bb958d9fd62fc87f60729fe75e3fd3d7). Subject blobs — staging 5f71128d7a27053f82ef1b15ae2cc0db43419152, main f394dac2c88bf556fc5b63c152a07e8b09371c93, deployed f394dac2c88bf556fc5b63c152a07e8b09371c93. Classification by CONTENT, not ancestry: NOT-DEPLOYED — the staging subject blob differs from the deployed blob. The tested subject packages/operator-ui/src/papercup-chat/PapercupChat.tsx is NOT DEPLOYED: staging blob 5f71128d7a27053f82ef1b15ae2cc0db43419152 differs from the deployed blob f394dac2c88bf556fc5b63c152a07e8b09371c93 at :3070 sha 59105f87bb. Recorded as a pipeline state, never as a product failure."
+    },
+    {
+      "id": "provenance-contemporaneous-with-behaviour",
+      "passed": true,
+      "evidence": "Provenance was captured at 2026-09-18T00:43:36.341Z inside run p013-witness-20260918T004336Z — the same pass that produced the behaviour result below. No facts were sampled from an earlier run; the clause falsifies on cross-run evidence splicing."
+    },
+    {
+      "id": "stale-origin-control-fails-as-required",
+      "passed": true,
+      "evidence": "Control probe of a dead origin (http://127.0.0.1:3099/api/health) returned status null and failed as required (true), so the method distinguishes provenance from mere liveness rather than reporting any reachable service as healthy."
+    },
+    {
+      "id": "two-host-subject-asserted-then-parity",
+      "passed": true,
+      "evidence": "Both hosts were asserted on the SUBJECT before any parity claim: operator turns=4 cards=1 cardWrappers=1 proseBodies=4; portal turns=4 cards=1 cardWrappers=1 proseBodies=4; fixture card question present on both ([\"Which backup route should the estate mirror use?Snapshot + seal (curre\"]). Parity then held across turns, cards, cardWrappers, cardQuestions, proseBodies, proseMarkdown, compact inline timestamps (text + retained ISO) and icon-only identity roles. The UI renders a recent-turn window (4) of the conversation's 21 persisted turns, identically on both hosts."
+    }
+  ]
+}
