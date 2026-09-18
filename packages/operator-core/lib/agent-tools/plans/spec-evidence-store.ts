@@ -413,7 +413,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       ) ON CONFLICT (
         workspace_id, harness_slug, work_item_id,
         plan_slug, spec_id, spec_revision, binding_fingerprint
-      ) DO NOTHING
+      ) WHERE retracted_at IS NULL DO NOTHING
       RETURNING id`;
 
     const existing =
