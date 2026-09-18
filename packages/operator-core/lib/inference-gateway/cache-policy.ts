@@ -167,11 +167,23 @@ export function toolSerializedBytes(tool: unknown): number {
 /**
  * Default size above which a tool is worth deferring, in serialized bytes.
  *
- * Measured over the 895-tool catalog on 2026-09-18: 20 tools exceed 8,000 B and account for
- * 356,320 B — 29.1% of the payload. Below this the per-tool win stops paying for the round trip
- * the model spends re-fetching a schema it needed.
+ * ⚠ 1200 IS A MEASURED VALUE. DO NOT "TIDY" IT TO A ROUNDER NUMBER.
+ * The first version of this constant was 8,000, derived from the 895-tool CATALOG (20 tools over
+ * 8 KB, 356,320 B, 29.1% of catalog bytes). A live both-arms A/B on 2026-09-18 showed that
+ * reasoning was measuring the wrong population: a psu SESSION advertises ~119 tools with a quite
+ * different size distribution, and at 8,000 B almost nothing qualifies.
+ *
+ * Three headless psu launches, identical in every respect except this threshold
+ * (plan `agent-launch-context-cost-2026-09-18` D-002):
+ *   control (deferral off) 169,167 launch tokens
+ *   threshold 8000         163,508   (−3.3%  — the catalog-derived value, near-worthless)
+ *   threshold 1200         115,273   (−31.9% — 45 tools / 142,012 B deferred)
+ *
+ * Raising this back toward 8,000 silently returns the feature to a ~3% no-op that still looks
+ * enabled in config — the most expensive failure shape available here, because it reads as
+ * working. Re-measure with `npm run measure:launch-cost` before changing it.
  */
-export const DEFAULT_DEFER_MIN_TOOL_BYTES = 8000;
+export const DEFAULT_DEFER_MIN_TOOL_BYTES = 1200;
 
 export interface ToolDeferralStats {
   /** Tools this pass newly marked `defer_loading`. */

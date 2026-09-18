@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ANTHROPIC_MAX_BREAKPOINTS,
+  DEFAULT_DEFER_MIN_TOOL_BYTES,
   PSU_CACHE_BOUNDARY,
   TOOL_SEARCH_BM25_TOOL,
   applyAnthropicCachePolicy,
@@ -618,6 +619,25 @@ describe('applyToolDeferral — selection', () => {
     expect(s.toolsDeferredBytes).toBeGreaterThan(20_000);
     expect((body.tools as any)[0].defer_loading).toBe(true);
     expect((body.tools as any)[1].defer_loading).toBeUndefined();
+  });
+
+  it('pins the MEASURED default threshold (D-002) — a regression here is a silent 3% no-op', () => {
+    // 1200 came from a live both-arms A/B, not from taste: the previous 8000 (derived from the
+    // 895-tool CATALOG rather than a ~119-tool SESSION) measured −3.3% where 1200 measured
+    // −31.9%. The failure mode this guards is the worst kind — the feature still reads as
+    // ENABLED in config while doing essentially nothing.
+    expect(DEFAULT_DEFER_MIN_TOOL_BYTES).toBe(1200);
+
+    // ...and the behavioural consequence, so the constant cannot be bypassed by a caller default:
+    // a mid-sized tool (~2 KB) that 8000 would have MISSED is deferred under the shipped default.
+    const midTool = {
+      name: 'mid',
+      description: 'y'.repeat(2_000),
+      input_schema: { type: 'object', properties: {} },
+    };
+    const body: Record<string, unknown> = { tools: [midTool, smallTool('keep'), smallTool('k2')] };
+    expect(applyToolDeferral(body).toolsDeferred).toBe(1);
+    expect((body.tools as any)[0].defer_loading).toBe(true);
   });
 
   it('honours a custom threshold', () => {
