@@ -126,6 +126,11 @@ export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats
             // P-004 stable/volatile split — measured +66k shared tokens per subsequent cohort
             // session. ON by default; kill with PAPERCUSP_CACHE_SPLIT_BOUNDARY=0.
             splitBoundary: process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY !== '0',
+            // P-002 (agent-launch-context-cost-2026-09-18): defer oversized tool schemas and
+            // inject the BM25 search tool. OPT-IN and it stays that way until the P-003 live
+            // both-arms A/B has run — same forward point, same rewrite, same EI-16980 blast
+            // radius as the opt-in knob above.
+            deferLargeTools: process.env.PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS === '1',
           });
           if (out.stats) {
             if (out.body !== body) stats.rewritten++;

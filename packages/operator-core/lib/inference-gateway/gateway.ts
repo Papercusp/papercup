@@ -865,6 +865,21 @@ const cachePolicyOn = () => process.env.PAPERCUSP_CACHE_POLICY !== '0';
 // OPT-IN: measured a no-op 2026-07-19 (identical read/write with and without) and it caused
 // EI-16980. Enable only with P-004 + a measured read-delta.
 const cacheToolsBreakpointOn = () => process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT === '1';
+/**
+ * P-002 (agent-launch-context-cost-2026-09-18): mark oversized tool schemas `defer_loading` and
+ * inject the BM25 tool-search tool so they stay reachable.
+ *
+ * OPT-IN, and it must stay that way until a both-arms live A/B has run (P-003). This gateway is
+ * on the inference path of EVERY session, and the sibling knob above is here precisely because
+ * shipping a tools-array rewrite on a passing unit test alone produced EI-16980 — verified with a
+ * bare `claude -p` that loaded no deferred tools, so the illegal pairing was never exercised.
+ */
+const cacheDeferLargeToolsOn = () => process.env.PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS === '1';
+/** Serialized-byte threshold above which a tool is deferred. Default 8000 (see cache-policy.ts). */
+const cacheDeferMinToolBytes = () => {
+  const n = Number(process.env.PAPERCUSP_GATEWAY_DEFER_MIN_TOOL_BYTES);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+};
 /** P-004 stable/volatile system split — ON by default (measured +66k shared tokens/session);
  *  PAPERCUSP_CACHE_SPLIT_BOUNDARY=0 kills it. */
 const cacheSplitBoundaryOn = () => process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY !== '0';
@@ -2787,6 +2802,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const cachePolicyEnabled = cachePolicyOn();
   const cacheToolsBreakpointEnabled = cacheToolsBreakpointOn();
   const cacheSplitBoundaryEnabled = cacheSplitBoundaryOn();
+  const cacheDeferLargeToolsEnabled = cacheDeferLargeToolsOn();
+  const cacheDeferMinToolBytesValue = cacheDeferMinToolBytes();
   function recordCachePolicy(provider: 'anthropic' | 'codex', stats: AnthropicCacheStats | OpenAiCacheStats): void {
     if (provider === 'anthropic') {
       const s = stats as AnthropicCacheStats;
@@ -3806,6 +3823,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         enabled: cachePolicyEnabled,
         toolsBreakpoint: cacheToolsBreakpointEnabled,
         splitBoundary: cacheSplitBoundaryEnabled,
+        deferLargeTools: cacheDeferLargeToolsEnabled,
         ...cachePolicyStats,
       },
       inFlight: admission.running + codexAdmission.running,
@@ -4494,6 +4512,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const cached = rewriteAnthropicCacheBody(bodyBuf, {
           injectToolsBreakpoint: cacheToolsBreakpointEnabled,
           splitBoundary: cacheSplitBoundaryEnabled,
+          deferLargeTools: cacheDeferLargeToolsEnabled,
+          deferMinToolBytes: cacheDeferMinToolBytesValue,
         });
         bodyBuf = cached.body;
         if (cached.stats) {
