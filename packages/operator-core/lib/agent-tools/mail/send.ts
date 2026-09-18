@@ -39,6 +39,15 @@ export default defineTool({
           'Local files to attach, by absolute path; the recipient sees the basename. ALL-OR-NOTHING: an unreadable or empty path fails the whole call rather than sending a message that silently lacks a file you said it carries. Omit for a body-only send.',
         ),
       addressee: addresseeArg,
+      from: z
+        .string()
+        .trim()
+        .min(3)
+        .max(320)
+        .optional()
+        .describe(
+          'Which connected account to send AS, e.g. "you@gmail.com"; required once more than one Google account is connected. Omit it with several connected and the send is refused `outbound_source_ambiguous:gmail`, which names the connected accounts — pass one of those back here.',
+        ),
       allowUndeliverable: z
         .boolean()
         .optional()
@@ -62,6 +71,7 @@ export default defineTool({
         subject: args.subject,
         text: args.text,
         attachments: args.attachments,
+        from: args.from,
         allowUndeliverable: args.allowUndeliverable,
         provenance: toProvenance(args.addressee),
       });

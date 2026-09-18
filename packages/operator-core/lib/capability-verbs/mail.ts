@@ -287,6 +287,21 @@ export async function sendNewMail(
     text: string;
     provenance: AddresseeProvenance;
     /**
+     * Which connected account to send AS; required once more than one is
+     * connected. Identical contract to `sendMailDraft`'s `from`, deliberately —
+     * and for the same reason the `attachments` note below records.
+     *
+     * Until this existed, `sendNewMail` called `resolveOutboundContext` with no
+     * account selector at all, so the resolver's own ambiguity guard made the
+     * verb UNUSABLE the moment a second Google source was connected: every send
+     * threw `outbound_source_ambiguous:gmail`, for every caller, with no
+     * argument any caller could pass to resolve it. `mail:send-draft` and
+     * `mail:reply` were unaffected — the first takes `from`, the second infers
+     * the account from the document it replies to — which is what made this
+     * look like a Gmail/credential outage rather than one missing parameter.
+     */
+    from?: string | null;
+    /**
      * Local files to attach, by absolute path — read here rather than by the
      * caller, so the message either carries every declared file or fails
      * loudly. Identical contract to `draftNewMail`'s, deliberately: until
@@ -341,6 +356,7 @@ export async function sendNewMail(
     workspaceId: params.workspaceId,
     userId: params.userId,
     vaultSource: 'gmail',
+    providerAccountId: params.from,
   });
   const token = await (deps.resolveAccessToken ?? resolveGoogleWorkspaceAccessToken)(ctx.source, ctx.installSlug);
   const cleared = new Map(recipients.map((decision) => [decision.address, decision]));
