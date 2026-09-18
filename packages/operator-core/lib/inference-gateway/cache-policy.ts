@@ -366,10 +366,17 @@ export function applyAnthropicCachePolicy(
     const tools = body.tools;
     if (Array.isArray(tools) && tools.length > 0) {
       // A tool marked `defer_loading` CANNOT also carry `cache_control` — the API rejects the
-      // whole request with a 400 ("Tools with defer_loading cannot use prompt caching"). Every
+      // whole request with a 400 ("Tools with defer_loading cannot use prompt caching"), so the
+      // naive "mark the last tool" can land on a deferred tool and break the session outright.
+      // ⚠ DO NOT ASSUME WHICH SESSIONS HAVE DEFERRED TOOLS. This comment used to read "every
       // tool-search session (the fleet forces ENABLE_TOOL_SEARCH=true) defers most of its
-      // catalog, so the naive "mark the last tool" lands on a deferred tool and breaks the
-      // session outright. Mark the LAST NON-DEFERRED tool instead: it still ends a stable,
+      // catalog"; that premise is FALSE for psu sessions and has been since the 2026-09-11
+      // ToolSearch lockout — native deferral is conditional on ToolSearch existing, so psu
+      // sessions defer almost nothing from the CLIENT side (P-007). The guard below is still
+      // load-bearing, just for different reasons than it was written for: claude ships a
+      // deferred `advisor` (and, before P-007, a `DeferredToolPlaceholder`) regardless, and the
+      // gateway's own opt-in deferral marks tools here. Which is exactly why the code tests the
+      // tools rather than the session type. Mark the LAST NON-DEFERRED tool instead: it ends a stable,
       // org-shareable prefix (tools render in order at position 0) and is always legal.
       // If every tool is deferred there is no legal anchor — skip, and record why.
       const idx = findLastNonDeferredToolIndex(tools);
