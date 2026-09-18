@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { sendMailDraft } from './mail';
+import { allowAllMailboxProbe } from './deliverability';
 
 const WORKSPACE = 'workspace';
 const USER = '00000000-0000-4000-8000-000000000001';
@@ -43,6 +44,9 @@ function fakeSql(options: {
 
 function deps(overrides: Record<string, unknown> = {}) {
   return {
+    // Draft-send semantics, not deliverability, are this file's subject — but
+    // the rail runs on every send, so it needs a probe or it would do live DNS.
+    probeMailbox: allowAllMailboxProbe,
     resolveAccessToken: async () => 'access-token',
     readDraftRecipients: vi.fn(async () => ({
       to: ['hiring@company.example'],

@@ -5,6 +5,7 @@ import { getSessionUserOrDefault } from '../../auth';
 import { authorizePersonalAccess } from '../../personal-vault/authorization';
 import { sendMailDraft } from '../../capability-verbs/mail';
 import { AddresseeRefused } from '../../capability-verbs/addressing';
+import { UndeliverableAddressee } from '../../capability-verbs/deliverability';
 import { addresseeArg, toProvenance } from '../_addressee-arg';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
@@ -48,6 +49,12 @@ export default defineTool({
         .optional()
         .describe('Which connected account holds the draft; required once more than one is connected.'),
       addressee: addresseeArg,
+      allowUndeliverable: z
+        .boolean()
+        .optional()
+        .describe(
+          'Send even to a recipient the receiving server has ALREADY named nonexistent (a 5xx on RCPT, or a domain publishing no MX and no address record). Default false. Note this rail probes the LIVE recipients the draft actually carries, not expectedTo — so it still applies when the draft was re-pointed since you read it. Only an affirmative server statement blocks; a timeout, 4xx, refused probe or catch-all never does.',
+        ),
     })
     .strict(),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
@@ -65,9 +72,24 @@ export default defineTool({
         expectedCc: args.expectedCc,
         from: args.from,
         provenance: toProvenance(args.addressee),
+        allowUndeliverable: args.allowUndeliverable,
       });
       return { data: { ok: true, ...result } };
     } catch (error) {
+      // Same structured shape as the trust rail beside it: a provable bounce is
+      // a refusal the caller can act on, not an exception to surface raw.
+      if (error instanceof UndeliverableAddressee) {
+        return {
+          data: {
+            ok: false,
+            refused: true,
+            code: error.code,
+            address: error.address,
+            reason: error.reason,
+            detail: error.message,
+          },
+        };
+      }
       if (error instanceof AddresseeRefused) {
         return {
           data: { ok: false, refused: true, code: error.code, address: error.address, standing: error.standing, detail: error.message },

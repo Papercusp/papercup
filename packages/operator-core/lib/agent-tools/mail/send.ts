@@ -5,6 +5,7 @@ import { getSessionUserOrDefault } from '../../auth';
 import { authorizePersonalAccess } from '../../personal-vault/authorization';
 import { sendNewMail } from '../../capability-verbs/mail';
 import { AddresseeRefused } from '../../capability-verbs/addressing';
+import { UndeliverableAddressee } from '../../capability-verbs/deliverability';
 import { addresseeArg, toProvenance } from '../_addressee-arg';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
@@ -38,6 +39,12 @@ export default defineTool({
           'Local files to attach, by absolute path; the recipient sees the basename. ALL-OR-NOTHING: an unreadable or empty path fails the whole call rather than sending a message that silently lacks a file you said it carries. Omit for a body-only send.',
         ),
       addressee: addresseeArg,
+      allowUndeliverable: z
+        .boolean()
+        .optional()
+        .describe(
+          'Send even to a recipient the receiving server has ALREADY named nonexistent (a 5xx on RCPT, or a domain publishing no MX and no address record). Default false: that send is refused, because it is a bounce we can prove in advance. Only an affirmative server statement blocks — a timeout, a 4xx, a refused probe or a catch-all domain never does — so reaching for this means overriding the server itself, and is almost always a typo to fix instead.',
+        ),
     })
     .strict(),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
@@ -55,10 +62,25 @@ export default defineTool({
         subject: args.subject,
         text: args.text,
         attachments: args.attachments,
+        allowUndeliverable: args.allowUndeliverable,
         provenance: toProvenance(args.addressee),
       });
       return { data: { ok: true, ...result } };
     } catch (error) {
+      // Same structured shape as the trust rail beside it: a provable bounce is
+      // a refusal the caller can act on, not an exception to surface raw.
+      if (error instanceof UndeliverableAddressee) {
+        return {
+          data: {
+            ok: false,
+            refused: true,
+            code: error.code,
+            address: error.address,
+            reason: error.reason,
+            detail: error.message,
+          },
+        };
+      }
       if (error instanceof AddresseeRefused) {
         return {
           data: { ok: false, refused: true, code: error.code, address: error.address, standing: error.standing, detail: error.message },

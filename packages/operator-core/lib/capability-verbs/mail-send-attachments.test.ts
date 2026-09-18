@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { sendNewMail } from './mail';
+import { allowAllMailboxProbe } from './deliverability';
 
 /**
  * WI-10001671: `sendNewMail` could not attach a file until this change, while
@@ -68,6 +69,9 @@ function deps(overrides: Record<string, unknown> = {}) {
     resolveAccessToken: async () => 'access-token',
     sendMessage: vi.fn(async () => ({ messageId: 'message-1', threadId: 'thread-1' })),
     readAttachment: vi.fn(async () => PDF),
+    // Attachments, not deliverability, are this file's subject — but the rail
+    // runs on every send, so it needs a probe or it would do live DNS.
+    probeMailbox: allowAllMailboxProbe,
     ...overrides,
   };
 }

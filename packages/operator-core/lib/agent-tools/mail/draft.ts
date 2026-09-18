@@ -5,6 +5,7 @@ import { getSessionUserOrDefault } from '../../auth';
 import { authorizePersonalAccess } from '../../personal-vault/authorization';
 import { draftNewMail } from '../../capability-verbs/mail';
 import { AddresseeRefused } from '../../capability-verbs/addressing';
+import { UndeliverableAddressee } from '../../capability-verbs/deliverability';
 import { addresseeArg, toProvenance } from '../_addressee-arg';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
@@ -56,6 +57,12 @@ export default defineTool({
         .describe(
           'REVISE this existing draft in place instead of creating a new one. The draft id, its place in the mailbox, and anything the owner has typed into it since are preserved — the alternative (delete and re-create) destroys all three to perform what the API models as an edit. Subject, text and attachments REPLACE what the draft held, so send the complete intended message, not a patch. Omit to create a new draft.',
         ),
+      allowUndeliverable: z
+        .boolean()
+        .optional()
+        .describe(
+          'Draft even to a recipient the receiving server has ALREADY named nonexistent (a 5xx on RCPT, or a domain publishing no MX and no address record). Default false: drafting is refused too, because a draft exists to be sent and a provable bounce is better caught now than after the owner sends it. Only an affirmative server statement blocks — a timeout, 4xx, refused probe or catch-all never does.',
+        ),
     })
     .strict(),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
@@ -76,9 +83,24 @@ export default defineTool({
         from: args.from,
         attachments: args.attachments,
         draftId: args.draftId,
+        allowUndeliverable: args.allowUndeliverable,
       });
       return { data: { ok: true, ...result } };
     } catch (error) {
+      // Same structured shape as the trust rail beside it: a provable bounce is
+      // a refusal the caller can act on, not an exception to surface raw.
+      if (error instanceof UndeliverableAddressee) {
+        return {
+          data: {
+            ok: false,
+            refused: true,
+            code: error.code,
+            address: error.address,
+            reason: error.reason,
+            detail: error.message,
+          },
+        };
+      }
       if (error instanceof AddresseeRefused) {
         return {
           data: { ok: false, refused: true, code: error.code, address: error.address, standing: error.standing, detail: error.message },
