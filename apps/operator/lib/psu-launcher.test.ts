@@ -193,6 +193,7 @@ import {
   NATIVE_DEADWEIGHT_DENY_FLAG,
   NO_CHROME_FLAG,
   NATIVE_SCHEDULER_DENY_FLAG,
+  SU_SCHEDULER_TOOLS_DENY_FLAG,
   NATIVE_TOOL_SEARCH_DENY_FLAG,
   NO_SUBAGENTS_DENY_FLAG,
   subagentGatewayRiskNotice,
@@ -271,7 +272,13 @@ import {
   startSupervisorBeat,
   spawnInherit,
 } from "../scripts/psu-launcher.mjs";
-import { nativeSchedulerDenyFlag } from "@papercusp/orchestrator/native-scheduler-deny";
+import {
+  nativeSchedulerDenyFlag,
+  suSchedulerToolsDenyFlag,
+  NATIVE_SCHEDULER_TOOL_DENY,
+  NATIVE_SCHEDULER_SKILL_DENY,
+  NATIVE_SCHEDULER_DENY,
+} from "@papercusp/orchestrator/native-scheduler-deny";
 import { nativeToolSearchDenyFlag } from "@papercusp/orchestrator/native-tool-search-deny";
 import { noSubagentToolsDenyFlag } from "@papercusp/orchestrator/no-subagent-deny";
 import { ownerDesktopNotifyDenyFlag } from "@papercusp/orchestrator/owner-desktop-notify-deny";
@@ -3409,6 +3416,10 @@ describe("psu-launcher arg parsing", () => {
         NO_SUBAGENTS_DENY_FLAG,
         NATIVE_TOOL_SEARCH_DENY_FLAG,
         OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+        // Re-armed on RESUME too (P-006): a spawn-time deny does not persist
+        // into a resume, so without this a resumed su session silently regains
+        // 9,156 B of scheduler-tool schemas per turn.
+        SU_SCHEDULER_TOOLS_DENY_FLAG,
         NATIVE_DEADWEIGHT_DENY_FLAG,
         NO_CHROME_FLAG,
       ],
@@ -5843,6 +5854,49 @@ describe("roleLaunchArgs (interactive role session)", () => {
     expect(/\s/.test(NATIVE_SCHEDULER_DENY_FLAG)).toBe(false);
   });
 
+  // ── su scheduler-TOOLS lockout (agent-launch-context-cost-2026-09-18 P-006) ──
+  const denyNames = (flag: string) =>
+    flag.slice("--disallowedTools=".length).split(",");
+
+  it("the su scheduler-TOOLS literal stays in LOCKSTEP with the canonical TS module (P-006)", () => {
+    // Same reason as the full flag: psu-launcher.mjs can't import TS, so it
+    // duplicates the rendered token; this pins the copy to the source of truth.
+    expect(SU_SCHEDULER_TOOLS_DENY_FLAG).toBe(suSchedulerToolsDenyFlag());
+  });
+
+  it("the su scheduler-TOOLS lockout is one `=` token (same variadic greed-guard)", () => {
+    expect(SU_SCHEDULER_TOOLS_DENY_FLAG.startsWith("--disallowedTools=")).toBe(
+      true,
+    );
+    expect(/\s/.test(SU_SCHEDULER_TOOLS_DENY_FLAG)).toBe(false);
+  });
+
+  it("the su scheduler-TOOLS deny is a STRICT SUBSET of the full lockout — it can never widen it", () => {
+    const su = denyNames(SU_SCHEDULER_TOOLS_DENY_FLAG);
+    const full = denyNames(NATIVE_SCHEDULER_DENY_FLAG);
+    expect(su.length).toBeGreaterThan(0);
+    for (const name of su) expect(full).toContain(name);
+    expect(su.length).toBeLessThan(full.length);
+  });
+
+  it("the su scheduler-TOOLS deny EXCLUDES the owner-facing skills — D-003's carve-out survives", () => {
+    // This is the assertion that keeps the cost fix from quietly becoming a
+    // capability removal: `/schedule` and `/loop` are what the HUMAN types, and
+    // D-003 preserves them. Denying them here would be a silent regression.
+    const su = denyNames(SU_SCHEDULER_TOOLS_DENY_FLAG);
+    for (const skill of NATIVE_SCHEDULER_SKILL_DENY)
+      expect(su).not.toContain(skill);
+    // ...and it carries every model-facing TOOL, which is the whole point.
+    for (const tool of NATIVE_SCHEDULER_TOOL_DENY) expect(su).toContain(tool);
+  });
+
+  it("the full lockout is DERIVED from its two halves — the subsets cannot drift from the union", () => {
+    expect([...NATIVE_SCHEDULER_DENY]).toEqual([
+      ...NATIVE_SCHEDULER_TOOL_DENY,
+      ...NATIVE_SCHEDULER_SKILL_DENY,
+    ]);
+  });
+
   it("the dead-weight lockout is one `=` token of BARE NATIVE names (context-baseline repair 2026-09-15)", () => {
     // Same greed-guard as the flags above: the variadic space form eats following argv.
     expect(NATIVE_DEADWEIGHT_DENY_FLAG.startsWith("--disallowedTools=")).toBe(
@@ -6210,6 +6264,10 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       NATIVE_TOOL_SEARCH_DENY_FLAG,
       // notify-send lockout is unconditional — su sessions included (2026-07-14).
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      // Model-facing scheduler TOOLS (2026-09-18): 9,156 B of schemas per turn
+      // for tools the su playbook already forbids. STRICT SUBSET of the full
+      // lockout — the owner's Skill(schedule)/Skill(loop) survive (D-003).
+      SU_SCHEDULER_TOOLS_DENY_FLAG,
       // Dead-weight native tools (2026-09-15): ~75,000 B of schemas that ride
       // EVERY prompt while ToolSearch deferral is off. See its doc comment.
       NATIVE_DEADWEIGHT_DENY_FLAG,
@@ -6221,12 +6279,23 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
     expect(args).not.toContain("--strict-mcp-config");
   });
 
-  it("claude su: the HUMAN session keeps native SCHEDULERS — NO scheduler-lockout flag (native-scheduler-lockout D-003)", () => {
+  it("claude su: the HUMAN session keeps native SCHEDULERS — NO full scheduler-lockout flag (native-scheduler-lockout D-003)", () => {
     const { args } = suLaunchArgs("claude", files);
     // D-003 for SCHEDULERS still holds — assert the scheduler-deny specifically, NOT
     // the mere presence of a --disallowedTools token: the subagent deny is now
     // default-ON (owner mandate 2026-07-02) and adds its own --disallowedTools.
     expect(args).not.toContain(NATIVE_SCHEDULER_DENY_FLAG);
+    // ...and specifically the OWNER's surface survives: `/schedule` + `/loop`
+    // must appear in NO deny token this launch carries (P-006 narrowed the su
+    // deny to the model-facing TOOLS only — see the subset tests above).
+    const denyTokens = args.filter((a) => a.startsWith("--disallowedTools="));
+    for (const skill of NATIVE_SCHEDULER_SKILL_DENY)
+      expect(denyTokens.join(",")).not.toContain(skill);
+  });
+
+  it("claude su: DENIES the model-facing scheduler TOOLS — 9,156 B/turn the playbook already forbids (P-006)", () => {
+    const { args } = suLaunchArgs("claude", files);
+    expect(args).toContain(SU_SCHEDULER_TOOLS_DENY_FLAG);
   });
 
   it("claude su: DENIES the subagent tool by DEFAULT (owner mandate 2026-07-02 — inverted the D-003 carve-out)", () => {
