@@ -131,6 +131,10 @@ export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats
             // both-arms A/B has run — same forward point, same rewrite, same EI-16980 blast
             // radius as the opt-in knob above.
             deferLargeTools: process.env.PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS === '1',
+            deferMinToolBytes: (() => {
+              const n = Number(process.env.PAPERCUSP_GATEWAY_DEFER_MIN_TOOL_BYTES);
+              return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+            })(),
           });
           if (out.stats) {
             if (out.body !== body) stats.rewritten++;
@@ -139,6 +143,21 @@ export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats
             if (out.stats.toolsBreakpointSkippedNoBudget) stats.toolsBreakpointSkippedNoBudget++;
             if (out.stats.toolsBreakpointSkippedAllDeferred) stats.toolsBreakpointSkippedAllDeferred++;
             if (out.stats.boundarySplit) stats.boundarySplit++;
+            // P-002 OBSERVABILITY. Without this line there is NO way to tell, from outside the
+            // process, whether the deferral pass fired: the client transcript records what the
+            // CLIENT sent, and this rewrite happens after that — so a flag-on arm and a flag-off
+            // arm produce byte-identical transcripts. The 2026-09-18 A/B measured a 5,659-token
+            // delta with no way to attribute it until this existed. One line per rewriting
+            // request, only when it actually deferred something.
+            if (out.stats.toolDeferral && out.stats.toolDeferral.toolsDeferred > 0) {
+              const d = out.stats.toolDeferral;
+              log(
+                `deferred ${d.toolsDeferred} tool(s), ${d.toolsDeferredBytes} B` +
+                  `${d.searchToolInjected ? ' + injected tool_search_tool_bm25' : ''}` +
+                  `${d.skippedCacheControl ? ` (skipped ${d.skippedCacheControl} carrying cache_control)` : ''}` +
+                  `${d.heldBackToKeepNonDeferred ? ' (held one back to keep a non-deferred tool)' : ''}`,
+              );
+            }
           }
           body = out.body;
         } catch (e) {
