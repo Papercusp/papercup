@@ -422,6 +422,13 @@ export async function mintFilteredSeedContentCore(inp: {
   readonly onStall?: (stall: SnapshotFoldStall) => void;
   /** Override the cursor-stall diagnostic threshold. The scan is never timed out. */
   readonly filteredScanStallMs?: number;
+  /**
+   * Override how long ONE prior-snapshot seek read may hang before the seek is
+   * abandoned and the full fold is used instead. Unlike the stall threshold above
+   * this one DOES end a wait, so the production default is deliberately generous;
+   * a test that gates reads indefinitely must shrink it or it waits that long.
+   */
+  readonly seekReadBudgetMs?: number;
   /** Receives the per-cut projection report; omitted ⇒ one `console.warn` line. */
   readonly onProjection?: (report: SeedProjectionReport) => void;
 }): Promise<MintedSeedCore> {
@@ -458,6 +465,7 @@ export async function mintFilteredSeedContentCore(inp: {
         onProgress: inp.onProgress,
         onStall: reportStall,
         stallMs: inp.filteredScanStallMs,
+        seekReadBudgetMs: inp.seekReadBudgetMs,
         transformValue: projection.transform,
       });
       (inp.onProjection ?? logProjectionReport)({
