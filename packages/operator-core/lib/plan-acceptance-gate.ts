@@ -1329,7 +1329,11 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `its implementer${implementer ? ` ('${implementer}')` : ''} has not recorded the post-grading acceptance ` +
         `call. After reading that grading, the rubric author must run scorecards:emit ` +
         `{ rubricRef:'${rubric.rubricId}', ratings:{ <every criterion key> }, ` +
-        `acceptance:{ verdict:'accept'|'reject', reasoning:'<why this grading is acceptable or not>' } }.`,
+        `acceptance:{ verdict:'accept'|'accept-pending-delivery'|'reject', reasoning:'<why this grading is acceptable or not>' } }. ` +
+        `Use 'accept-pending-delivery' when the grading is accepted and the ONLY outstanding obligation is evidence on a ` +
+        `delivery plane you cannot reach (a deployed/live BAR behind a gate, or a deploy another agent owns): 'accept' ` +
+        `would overclaim delivery and 'reject' would be false. It does not block this gate, and it does not waive the ` +
+        `delivery-plane evidence, which keeps blocking on its own code.`,
     };
   }
   if (verdictFollowsLatestIndependent && latestVerdict?.acceptance?.verdict === 'reject') {

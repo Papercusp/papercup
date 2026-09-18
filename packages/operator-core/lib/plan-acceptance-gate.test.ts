@@ -749,7 +749,12 @@ describe('evaluatePlanAcceptanceGate', () => {
       rubricId: 'ar-some-plan',
       gradedBy: 'su-grader',
     });
-    expect(v.message).toContain("acceptance:{ verdict:'accept'|'reject'");
+    // WI-10001843: the refusal must name the repair verb's COMPLETE contract. Advertising
+    // only 'accept'|'reject' omitted the third valid enum value and steered the reader toward
+    // a plain 'accept' even when delivery was still held open — the exact overclaim
+    // 'accept-pending-delivery' exists to prevent. Pin all three so the omission cannot return.
+    expect(v.message).toContain("acceptance:{ verdict:'accept'|'accept-pending-delivery'|'reject'");
+    expect(v.message).toContain('accept-pending-delivery');
   });
 
   describe('WI-2141007 — acceptance seat inherited from a dead rubric author', () => {

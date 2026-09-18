@@ -1237,7 +1237,7 @@ export async function emitScorecard(
         return {
           ok: false as const,
           error:
-            "the acceptance-rubric author must record acceptance:{ verdict:'accept'|'reject', reasoning } after reading the independent grading; independent graders omit acceptance",
+            "the acceptance-rubric author must record acceptance:{ verdict:'accept'|'accept-pending-delivery'|'reject', reasoning } after reading the independent grading; independent graders omit acceptance",
         };
       }
       if (callerIsImplementer && acceptance && args.supersedes) {
