@@ -623,6 +623,9 @@ interface ProducerSnapshotSeed {
  */
 const PRODUCER_SNAPSHOT_SCAN_LOOKBACK = SNAPSHOT_COMPACT_EVERY_OPS * 4;
 
+/** A seek read exceeded its budget; the seek is abandoned for this invocation. */
+const SEEK_ABANDONED = Symbol('producer-snapshot-seek-abandoned');
+
 /**
  * Find and read the newest complete snapshot set near the own-log tail.
  *
@@ -670,16 +673,37 @@ function conflictingSnapshotExclusion(
 
 async function findLatestProducerSnapshot(
   log: Pick<OwnLog, 'length' | 'get'>,
+  opts: { readBudgetMs?: number; describe?: string } = {},
 ): Promise<ProducerSnapshotSeed | null> {
   const length = log.length;
   const floor = Math.max(0, length - PRODUCER_SNAPSHOT_SCAN_LOOKBACK);
+  const readBudgetMs = opts.readBudgetMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS;
   const cache = new Map<number, PeerLogOp | null>();
+  let abandonedAt: number | null = null;
 
   const readAt = async (index: number): Promise<PeerLogOp | null> => {
     const cached = cache.get(index);
     if (cached !== undefined || cache.has(index)) return cached ?? null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const op = await log.get(index);
+      const read = Promise.resolve(log.get(index));
+      // Losing the race abandons this read without cancelling it, so it must
+      // already carry a handler or it surfaces later as an unhandled rejection.
+      read.catch(() => {});
+      const op =
+        readBudgetMs > 0
+          ? await Promise.race([
+              read,
+              new Promise<typeof SEEK_ABANDONED>((resolve) => {
+                timer = setTimeout(() => resolve(SEEK_ABANDONED), readBudgetMs);
+                timer.unref?.();
+              }),
+            ])
+          : await read;
+      if (op === SEEK_ABANDONED) {
+        abandonedAt = index;
+        return null;
+      }
       cache.set(index, op);
       return op;
     } catch {
@@ -688,11 +712,41 @@ async function findLatestProducerSnapshot(
       // a persistent failure if the block cannot actually be read.
       cache.set(index, null);
       return null;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
+  };
+
+  /**
+   * Report an abandoned seek and disable seeding for this invocation.
+   *
+   * ⚠ THE FOLD DELIBERATELY NEVER ABORTS — `FILTERED_SNAPSHOT_SCAN_STALL_MS` is an
+   * observability threshold there because the fold has NO safe fallback: it must
+   * read every block or the snapshot is wrong. The seek is the exact opposite. It
+   * is a pure optimization whose fallback (`foldedUpTo = 0`) is the behavior that
+   * shipped before it existed, so a read that never settles must abandon it rather
+   * than wedge the caller. `log.get` can HANG rather than reject, and a bare
+   * try/catch cannot observe a hang — so without this bound one stuck block near
+   * the tail blocks the whole snapshot with no progress line, no stall diagnostic
+   * and no timeout, which is strictly worse than the slow fold it replaces.
+   *
+   * The budget is PER READ, not per seek, on purpose: this window spans up to
+   * `PRODUCER_SNAPSHOT_SCAN_LOOKBACK` sequential reads, so a whole-seek deadline
+   * would make a merely slow — but perfectly healthy — log fall back to the
+   * O(history) fold, reintroducing the cost this seek exists to remove.
+   */
+  const abandon = (): null => {
+    console.error(
+      `[snapshot] ${opts.describe ?? 'producer snapshot'}: prior-snapshot seek abandoned — ` +
+        `read of block ${abandonedAt} did not settle within ${readBudgetMs}ms; folding from 0 ` +
+        `instead of seeding (correct, but O(history); the abandoned read is not cancelled)`,
+    );
+    return null;
   };
 
   for (let index = length - 1; index >= floor; index--) {
     const candidate = await readAt(index);
+    if (abandonedAt !== null) return abandon();
     if (!candidate || !isSnapshotOp(candidate)) continue;
 
     const payload = candidate.value as SnapshotPayload | undefined;
@@ -1001,7 +1055,10 @@ export async function produceLogSnapshot(
   // chunk span, so the producer's second invocation is O(new tail), not
   // O(history). If no complete set is discoverable in the bounded scan window,
   // foldedUpTo remains zero and the existing full-fold behavior is preserved.
-  const priorSnapshot = await findLatestProducerSnapshot(ownLog);
+  const priorSnapshot = await findLatestProducerSnapshot(ownLog, {
+    readBudgetMs: opts.stallMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS,
+    describe: 'own compaction',
+  });
   let foldedUpTo = 0;
   if (priorSnapshot) {
     // TWO PRODUCERS SHARE THIS LOG WITH DIFFERENT SETS (boot.ts): the release-cut
@@ -1223,7 +1280,10 @@ export async function produceFilteredSnapshotIntoLog(
   // a COMPLETE head snapshot over the same data via the seeking path in 435,920ms (7.3
   // min, 1045 chunks, 1,416,626 rows) — and then folded from 0 anyway, ignoring it. Same
   // box, same data, same fold primitive: 7.3 minutes with the seek, ~7 hours without.
-  const priorSnapshot = await findLatestProducerSnapshot(sourceLog);
+  const priorSnapshot = await findLatestProducerSnapshot(sourceLog, {
+    readBudgetMs: opts.stallMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS,
+    describe: 'filtered source scan',
+  });
   let foldFrom = 0;
   if (priorSnapshot) {
     // The guard that makes this safe to ship rather than merely fast. See
