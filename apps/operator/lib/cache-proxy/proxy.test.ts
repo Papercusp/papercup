@@ -64,6 +64,105 @@ function upstreamEcho(): { server: http.Server; seen: { headers: http.IncomingHt
   return { server, seen };
 }
 
+describe('cache-proxy — per-tool deferral fires AT THE PROXY BOUNDARY (P-002)', () => {
+  // WHY THIS EXISTS, and why the pure-function tests in cache-policy.test.ts are not enough.
+  // A live arm-B probe on 2026-09-18 ran a headless psu session through a flag-on proxy and came
+  // back 163,508 launch tokens — a number that LOOKS like a large win. But the client transcript
+  // records what the CLIENT sent, and the rewrite happens AFTER that, so the transcript showed
+  // zero `defer_loading` and zero `tool_search_tool` either way. There was no evidence the
+  // mechanism had fired at all, and a token delta with no mechanism proof is a coincidence
+  // wearing a result's clothes. These tests are that missing proof, at the real proxy boundary:
+  // they assert on the bytes the proxy actually FORWARDED to an upstream stub.
+  const bigTool = (name: string) => ({
+    name,
+    description: 'x'.repeat(12_000),
+    input_schema: { type: 'object', properties: {} },
+  });
+  const smallTool = (name: string) => ({
+    name,
+    description: 'small',
+    input_schema: { type: 'object', properties: {} },
+  });
+
+  async function forward(body: unknown, env: Record<string, string | undefined>) {
+    const prior: Record<string, string | undefined> = {};
+    for (const [k, v] of Object.entries(env)) {
+      prior[k] = process.env[k];
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    try {
+      const up = upstreamEcho();
+      await listen(up.server);
+      const proxy = track(
+        createCacheProxy({
+          listenPort: 0,
+          upstreamHost: '127.0.0.1',
+          upstreamPort: port(up.server),
+          upstreamInsecure: true,
+          log: () => {},
+        }),
+      );
+      await listen(proxy);
+      await request(port(proxy), {
+        body: JSON.stringify(body),
+        headers: { authorization: 'Bearer sk-ant-oat-TEST', 'anthropic-version': '2023-06-01' },
+      });
+      return JSON.parse(up.seen[0]!.body) as { tools?: Record<string, unknown>[] };
+    } finally {
+      for (const [k, v] of Object.entries(prior)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  }
+
+  const realisticBody = () => ({
+    model: 'claude-opus-5',
+    tools: [
+      smallTool('Read'),
+      ...Array.from({ length: 6 }, (_, i) => bigTool(`mcp__papercusp-su__tool_${i}`)),
+    ],
+    system: [{ type: 'text', text: 'x', cache_control: { type: 'ephemeral' } }],
+    messages: [],
+  });
+
+  it('forwards tools UNTOUCHED when the flag is unset (the default every session runs today)', async () => {
+    const fwd = await forward(realisticBody(), { PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS: undefined });
+    expect(fwd.tools).toHaveLength(7);
+    expect(fwd.tools!.some((t) => t.defer_loading)).toBe(false);
+    expect(fwd.tools!.some((t) => String(t.type ?? '').startsWith('tool_search_tool_'))).toBe(false);
+  });
+
+  it('DOES defer and inject once the flag is set — the A/B arm, proven on forwarded bytes', async () => {
+    const fwd = await forward(realisticBody(), { PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS: '1' });
+
+    const deferred = fwd.tools!.filter((t) => t.defer_loading);
+    expect(deferred).toHaveLength(6);
+    expect(fwd.tools!.at(-1)).toEqual({
+      type: 'tool_search_tool_bm25_20251119',
+      name: 'tool_search_tool_bm25',
+    });
+    // Same three invariants, asserted on what actually went out on the wire.
+    for (const t of fwd.tools!) {
+      expect(Boolean(t.defer_loading) && Boolean(t.cache_control), `illegal pair on ${t.name}`).toBe(false);
+    }
+    expect(fwd.tools!.some((t) => !t.defer_loading)).toBe(true);
+    expect(fwd.tools!.find((t) => String(t.type ?? '').startsWith('tool_search_tool_'))!.defer_loading).toBeUndefined();
+  });
+
+  it('the flag is the ONLY difference — same input, two arms, measurably different bytes', async () => {
+    // The calibration this whole file's arm-B lesson turned on: show that the control arm and
+    // the treatment arm differ, and differ ONLY because of the flag.
+    const off = await forward(realisticBody(), { PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS: undefined });
+    const on = await forward(realisticBody(), { PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS: '1' });
+    expect(JSON.stringify(off)).not.toBe(JSON.stringify(on));
+    expect(on.tools!.filter((t) => t.defer_loading).length).toBeGreaterThan(
+      off.tools!.filter((t) => t.defer_loading).length,
+    );
+  });
+});
+
 describe('cache-proxy — credential passthrough (D-005: NOT an account substitution)', () => {
   it('forwards Authorization, anthropic-version and anthropic-beta VERBATIM', async () => {
     const up = upstreamEcho();
