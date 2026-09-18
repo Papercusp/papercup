@@ -133,6 +133,10 @@ function attributedMessage(
   phaseLabel: string,
   blockingBars: AcceptanceBarLifecycleVerdict['blockingBars'],
   contractCodes: readonly AcceptanceBarSnapshotCode[],
+  // PHASE-FILTERED, never snapshot.readiness.nextRepair directly: the caller narrows
+  // that to a repair whose code is actually in THIS phase's blocking set. Rendering the
+  // contract-wide one can name a repair that is not among the codes printed beside it.
+  nextRepair: AcceptanceBarLifecycleVerdict['nextRepair'],
 ): string {
   const segments = blockingBars.map((bar) => `${bar.barKey}: ${bar.codes.join(', ')}`);
   if (contractCodes.length > 0) segments.push(`contract-level: ${contractCodes.join(', ')}`);
@@ -141,7 +145,28 @@ function attributedMessage(
     total === 0
       ? 'no BARs declared'
       : `${blockingBars.length} of ${total} BAR(s) blocking, ${total - blockingBars.length} clean`;
-  return `acceptance BAR contract is not ready for ${phaseLabel} — ${scope}: ${segments.join('; ')}`;
+  const head = `acceptance BAR contract is not ready for ${phaseLabel} — ${scope}: ${segments.join('; ')}`;
+
+  // A refusal that names CODES but no VERB is the outlier among this repo's gates
+  // (facts:assert names the exact overage, the arg validators print a CORRECTED CALL).
+  // The repair text already exists — nextRepair() computes the prioritised action and
+  // the snapshot carries it — it was simply dropped at the last render step, so every
+  // caller had to go read the evaluator to learn what to do next.
+  const repair = nextRepair;
+  const repairLine = repair?.action
+    ? `\nNEXT REPAIR${repair.barKey ? ` (${repair.barKey}, ${repair.code})` : ` (${repair.code})`}: ${repair.action}`
+    : '';
+
+  // The second omission that cost real time: this refusal does not recruit a grader,
+  // and nothing said so. Recruitment fires only for ACCEPTANCE_GRADER_GATE_CODES
+  // ({acceptance_ungraded, self_graded_only}) — deliberately, so a malformed rubric
+  // cannot spawn agents. Every code rendered HERE is a contract code, so recruitment
+  // is categorically not in play and the author owns every repair above.
+  const recruitmentLine =
+    '\nThis refusal does NOT recruit a grader: grader recruitment fires only on acceptance_ungraded / '
+    + 'self_graded_only. These repairs are the plan author\'s alone — do not recruit or wake a peer for them.';
+
+  return `${head}${repairLine}${recruitmentLine}`;
 }
 
 function allSnapshotCodes(snapshot: AcceptanceBarContractSnapshot): AcceptanceBarSnapshotCode[] {
@@ -361,7 +386,10 @@ export function evaluateAcceptanceBarLifecycle(
     contractCodes,
     codeAttribution,
     nextRepair,
-    message: codes.length === 0 ? null : attributedMessage(snapshot, phaseLabel, blockingBars, contractCodes),
+    message:
+      codes.length === 0
+        ? null
+        : attributedMessage(snapshot, phaseLabel, blockingBars, contractCodes, nextRepair),
   };
 }
 
