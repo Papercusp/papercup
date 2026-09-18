@@ -149,6 +149,13 @@ export function assertSingleWriteStatement(raw: string): string {
   if (stripped.includes(';')) {
     throw new PgMutateQueryError('only a single statement is allowed — remove the `;`-separated statements');
   }
+  // Same Personal Vault fence the read surface applies (WI-10001796). Writing
+  // the vault ad-hoc is strictly worse than reading it: an UPDATE here forges
+  // owner consent rows or rewrites their mail, still with no grant checked and
+  // no vault audit trail. Shared with pg-read-query so the two doors cannot
+  // drift apart into one being fenced and the other not.
+  const vaultRefusal = personalVaultRefusal(q);
+  if (vaultRefusal) throw new PgMutateQueryError(vaultRefusal);
   const words = depthZeroWords(stripped);
   if (!words.length) throw new PgMutateQueryError('empty statement');
 

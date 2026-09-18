@@ -6,11 +6,15 @@
  * advisory) through an injected client stub.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// The write half of the shared Personal Vault fence — imported here so the two
+// doors are pinned by ONE test block and cannot drift into one being fenced.
+import { assertSingleWriteStatement } from './pg-mutate-query';
 import {
   assertSingleReadStatement,
   assertReadOnlyExplainStatement,
   extractPgErrorInfo,
   extractReferencedTables,
+  personalVaultRefusal,
   describeReferencedTableColumns,
   buildTenantScopeAdvisory,
   buildSilentNullPathAdvisory,
@@ -3662,5 +3666,83 @@ describe('EI-21338326327553651 — tenant population cache is scope-keyed, not t
       c.probedWorkspaces.length,
       'a repeat call in the SAME scope must be served from cache, not re-probed',
     ).toBe(afterFirst);
+  });
+});
+
+describe('personalVaultRefusal — the Personal Vault fence (WI-10001796)', () => {
+  it.each([
+    ['message bodies', "SELECT subject, body_text FROM harness_shared.personal_documents WHERE source='gmail'"],
+    ['an aggregate count', 'SELECT count(*) FROM harness_shared.personal_documents'],
+    ['the bare, unqualified name', 'SELECT * FROM personal_documents'],
+    ['consent rows', 'SELECT * FROM harness_shared.personal_grants'],
+    ['identities', 'SELECT * FROM harness_shared.personal_identities'],
+    ['identity aliases', 'SELECT * FROM harness_shared.personal_identity_aliases'],
+    ['sync state', 'SELECT * FROM harness_shared.personal_sync_state'],
+    ['vault settings', 'SELECT * FROM harness_shared.personal_vault_settings'],
+  ])('refuses a vault read: %s', (_label, sql) => {
+    expect(personalVaultRefusal(sql)).toMatch(/Personal Vault/);
+    expect(() => assertSingleReadStatement(sql)).toThrow(/Personal Vault/);
+  });
+
+  it('refuses a vault table sitting PAST the bounded extractor s join budget', () => {
+    // This is why the fence does not reuse extractReferencedTables: that helper
+    // stops at GUARD_MAX_TABLES references, so a vault table in the fifth join
+    // position is invisible to it. The precondition below asserts the bypass
+    // against the REAL extractor — if the extractor is ever made unbounded this
+    // test fails loudly rather than silently ceasing to prove anything.
+    const sql = `
+      SELECT d.subject
+        FROM harness_shared.work_items a
+        JOIN harness_shared.harness_plans b ON true
+        JOIN harness_shared.test_runs c ON true
+        JOIN harness_shared.tool_invocations e ON true
+        JOIN harness_shared.personal_documents d ON true`;
+    expect(
+      extractReferencedTables(sql),
+      'precondition: the bounded extractor must NOT see the vault table here',
+    ).not.toContain('harness_shared.personal_documents');
+    expect(() => assertSingleReadStatement(sql)).toThrow(/Personal Vault/);
+  });
+
+  it('refuses a vault table in a set-operation arm and in a scalar subquery', () => {
+    expect(() =>
+      assertSingleReadStatement(
+        'SELECT id FROM harness_shared.work_items UNION ALL SELECT id FROM harness_shared.personal_documents',
+      ),
+    ).toThrow(/Personal Vault/);
+    expect(() =>
+      assertSingleReadStatement('SELECT (SELECT count(*) FROM harness_shared.personal_documents) AS n'),
+    ).toThrow(/Personal Vault/);
+  });
+
+  it('refuses a vault WRITE — forging a consent row is worse than reading one', () => {
+    expect(() =>
+      assertSingleWriteStatement(
+        "INSERT INTO harness_shared.personal_grants (principal_id, scopes) VALUES ('operator', '{personal:gmail}')",
+      ),
+    ).toThrow(/Personal Vault/);
+  });
+
+  // CALIBRATION. A fence that refused everything would pass every case above
+  // while making the database unusable, so these cases are what make the ones
+  // above mean something. Each must stay ALLOWED.
+  it('allows schema/audit reads, where the vault name is a literal not a table', () => {
+    expect(
+      personalVaultRefusal(
+        "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'personal_documents'",
+      ),
+      'auditing whether vault RLS actually bites is how this bug was found — fencing that would be self-defeating',
+    ).toBeNull();
+    expect(
+      personalVaultRefusal("SELECT * FROM information_schema.columns WHERE table_name = 'personal_grants'"),
+    ).toBeNull();
+  });
+
+  it('allows ordinary reads, and an identifier that merely starts with a vault name', () => {
+    expect(personalVaultRefusal('SELECT * FROM harness_shared.work_items')).toBeNull();
+    expect(
+      personalVaultRefusal('SELECT personal_documents_id FROM harness_shared.some_table'),
+      'the trailing word boundary must not fire on personal_documents_id',
+    ).toBeNull();
   });
 });
