@@ -7,6 +7,7 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 interface ReviewManifest {
+  schemaVersion: number;
   sourcePath: string;
   sourceSha256: string;
   answerBankPath: string;
@@ -29,7 +30,8 @@ const manifestPath = [
   resolve(process.cwd(), 'packages/operator-core/lib/interview-prep-evidence/servicenow-staff-ml-manual-review.json'),
 ].find(existsSync);
 if (!manifestPath) throw new Error('servicenow_staff_ml_review_manifest_not_found');
-const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as ReviewManifest;
+const manifestRaw = readFileSync(manifestPath, 'utf8');
+const manifest = JSON.parse(manifestRaw) as ReviewManifest;
 const resolveEvidencePath = (path: string): string => (isAbsolute(path) ? path : resolve(homedir(), path));
 const sourcePath = process.env.SERVICENOW_INTERVIEW_PREP_FILE ?? resolveEvidencePath(manifest.sourcePath);
 
@@ -54,9 +56,11 @@ const reviewedCollectionSlugs = [
 // pin, the reciprocal-link mutant-kill and the no-<script> assertion, failing three
 // consecutive gate runs at repairHead while every tracked file was byte-identical.
 //
-// So it now runs only when asked for, by whoever maintains the evidence. Coverage did
-// NOT move to another suite — it is reachable on demand and nowhere else. Re-pinning
-// the digests deliberately stays manual: the pins attest a human review recorded in
+// So the suite is split by what each half can actually prove. The half that reads $HOME
+// runs only when asked for, by whoever maintains the evidence. The half that reads the
+// TRACKED review record stays on for every gate run below — that part is hermetic, so
+// skipping it would forfeit real coverage for nothing. Re-pinning the digests stays
+// manual on purpose: they attest a human review recorded in
 // servicenow-staff-ml-manual-review.json, and an agent must not forge that by pasting
 // in whatever hash the file happens to have today.
 const evidenceOptIn =
@@ -120,6 +124,53 @@ let html = '';
 beforeAll(() => {
   html = readFileSync(sourcePath, 'utf8');
   document.body.innerHTML = html;
+});
+
+// Always-on half: the manual-review record IS tracked in this repo, so every property
+// below is hermetic and stays gate-enforced even when the $HOME collection is absent.
+// It also keeps this file from becoming a run that measures nothing — the test router
+// rightly refuses to read an all-skipped file as a pass (TEST_FILE_ALL_SKIPPED).
+describe('ServiceNow Staff ML interview-prep review record (tracked, always enforced)', () => {
+  const HEX64 = /^[0-9a-f]{64}$/;
+
+  it('keeps a complete, non-blanked manual review on the tracked record', () => {
+    expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.manualReview.result).toBe('pass');
+    expect(manifest.manualReview.scope.length).toBeGreaterThanOrEqual(6);
+    expect(manifest.manualReview.falsifierCoverage.length).toBeGreaterThanOrEqual(4);
+    // A blanked/placeholder review must not pass as a reviewed one.
+    for (const claim of [...manifest.manualReview.scope, ...manifest.manualReview.falsifierCoverage]) {
+      expect(claim.trim().length).toBeGreaterThan(20);
+    }
+  });
+
+  it('pins well-formed, distinct digests rather than a collapsed copy-paste', () => {
+    const digests = [
+      manifest.sourceSha256,
+      manifest.answerBankSha256,
+      manifest.expectedDigests.meetingTimeTextSha256,
+      manifest.expectedDigests.participantsTextSha256,
+      manifest.expectedDigests.meetingUrlSha256,
+      ...manifest.expectedDigests.interviewerQuestionHeadingSha256,
+    ];
+    expect(manifest.expectedDigests.interviewerQuestionHeadingSha256.length).toBeGreaterThanOrEqual(2);
+    for (const digest of digests) expect(digest).toMatch(HEX64);
+    expect(new Set(digests).size, 'a repeated digest means two distinct facts collapsed onto one pin').toBe(
+      digests.length,
+    );
+  });
+
+  it('keeps the evidence pointers machine-portable and the tracked record digest-only', () => {
+    // Relative, so the record resolves per-machine instead of freezing one home directory.
+    expect(isAbsolute(manifest.sourcePath)).toBe(false);
+    expect(isAbsolute(manifest.answerBankPath)).toBe(false);
+    expect(manifest.sourcePath).toMatch(/\.html$/);
+    expect(manifest.answerBankPath).toMatch(/\.html$/);
+    // The privacy claim is that supplied meeting details appear ONLY as one-way digests.
+    // Assert it instead of trusting the sentence that states it.
+    expect(manifestRaw).not.toMatch(/https?:\/\//);
+    expect(manifestRaw).not.toMatch(/\b[\w.+-]+@[\w-]+\.[\w.]+\b/);
+  });
 });
 
 describe.skipIf(skipReason !== null)('ServiceNow Staff ML interview-prep source contract', () => {
