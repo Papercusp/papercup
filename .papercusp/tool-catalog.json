@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 893,
+  "count": 895,
   "tools": [
     {
       "name": "ablation:report",
@@ -3209,6 +3209,154 @@
         "when": "You want to know what is in a directory, when entries were last modified, or how big they are — and especially when you will COMPARE an mtime against a papercusp timestamp, because those are UTC and `ls`/`stat` render local time.",
         "notWhen": "To read a file's contents use capability:read. To search file CONTENT, or to walk a tree recursively, use capability:bash with grep/rg/find — this lists exactly one directory and does not recurse.",
         "chaining": "capability:list → capability:read (open a file it named) or capability:edit."
+      }
+    },
+    {
+      "name": "capability:notebook_edit",
+      "http": {
+        "path": "/api/agent-tools/capability/notebook_edit",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Replace, insert, or delete ONE cell of a Jupyter notebook (.ipynb) under the managed file lock. Parses the notebook, so it honors cell addressing, source-array representation, stale-output clearing and cell-type schema rules that a text splice cannot — never edit an .ipynb with capability:edit or capability:patch.",
+      "capabilities": [
+        "capability:fs-write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Any change to a .ipynb cell: rewriting a cell body, adding a cell, or removing one.",
+        "notWhen": "A plain text file (capability:edit), several files at once (capability:patch), or a whole-file rewrite (capability:write).",
+        "chaining": "capability:read the notebook to get each cell id → capability:notebook_edit. Replacing a code cell clears its outputs; re-run the notebook to regenerate them. On file_locked, nothing was written."
+      }
+    },
+    {
+      "name": "capability:patch",
+      "http": {
+        "path": "/api/agent-tools/capability/patch",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Apply exact-string hunks across several files as ONE all-or-nothing unit, holding every target path's file lock for the whole operation. Every hunk is validated before any file is written, so a stale or ambiguous old_string writes nothing. Use instead of looping capability:edit when the change must land together.",
+      "capabilities": [
+        "capability:fs-write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "A change that is only correct if every file lands together — a rename across call sites, moving a symbol, or a signature change plus its callers.",
+        "notWhen": "One independent file (capability:edit), a whole-file rewrite (capability:write), or a notebook cell (capability:notebook_edit).",
+        "chaining": "capability:read each hunk verbatim → capability:patch → capability:inspect. On file_locked, no file was written; wait or coordinate with the holder."
       }
     },
     {

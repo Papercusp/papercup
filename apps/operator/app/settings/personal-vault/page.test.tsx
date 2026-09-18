@@ -317,6 +317,12 @@ beforeEach(() => {
           },
         });
       }
+      if (
+        url === "/api/user/personal-vault/grants" &&
+        init?.method === "POST"
+      ) {
+        return Response.json({ ok: true });
+      }
       if (url === "/api/user/personal-vault/grants/preview") {
         return Response.json({
           ok: true,
@@ -964,5 +970,113 @@ describe("PersonalVaultSettingsPage", () => {
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(false);
+  });
+
+  /* The direct-grant mint path (WI-10001809). Before it existed the only route
+     to an agent-role or work-item grant was a hand-typed curl, which carries no
+     scope picker, no expiry and no statement of who it authorizes — so these
+     assert the three things the curl could silently omit: which principal shape
+     is sent, exactly which scopes the owner ticked, and that an expiry rides
+     along unless the owner deliberately chose an open-ended grant. */
+  async function openAdvanced() {
+    fireEvent.click(
+      await screen.findByText("Advanced privacy and access controls"),
+    );
+  }
+
+  function directGrantPost() {
+    return fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url) === "/api/user/personal-vault/grants" &&
+        (init as RequestInit | undefined)?.method === "POST",
+    );
+  }
+
+  it("mints an agent-role grant with the ticked scopes and a finite expiry", async () => {
+    render(<PersonalVaultSettingsPage />);
+    await openAdvanced();
+    fireEvent.change(await screen.findByLabelText("Agent role identifier"), {
+      target: { value: "  operator  " },
+    });
+    fireEvent.click(screen.getByLabelText("Authorize Gmail"));
+    fireEvent.click(screen.getByRole("button", { name: "Review grant" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Grant access to operator" }),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Grant access" }));
+
+    await waitFor(() => {
+      const call = directGrantPost();
+      expect(call).toBeTruthy();
+      const body = JSON.parse(String((call![1] as RequestInit).body)) as {
+        principalType: string;
+        principalId: string;
+        scopes: string[];
+        expiresAt?: string;
+      };
+      expect(body.principalType).toBe("agent-role");
+      expect(body.principalId).toBe("operator");
+      expect(body.scopes).toEqual(["personal:gmail"]);
+      expect(new Date(String(body.expiresAt)).getTime()).toBeGreaterThan(
+        Date.now(),
+      );
+    });
+  });
+
+  it("sends the work-item principal type and no expiry for an open-ended grant", async () => {
+    render(<PersonalVaultSettingsPage />);
+    await openAdvanced();
+    fireEvent.click(screen.getByLabelText("Principal type"));
+    fireEvent.click(await screen.findByRole("option", { name: "Work item" }));
+    fireEvent.change(await screen.findByLabelText("Work item identifier"), {
+      target: { value: "WI-10001783" },
+    });
+    fireEvent.click(screen.getByLabelText("Authorize Calendar"));
+    fireEvent.click(screen.getByLabelText("Grant expiry"));
+    fireEvent.click(
+      await screen.findByRole("option", { name: "Until I revoke it" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Review grant" }));
+
+    expect(
+      await screen.findByText(/It stays active until you revoke it\./),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Grant access" }));
+
+    await waitFor(() => {
+      const call = directGrantPost();
+      expect(call).toBeTruthy();
+      const body = JSON.parse(String((call![1] as RequestInit).body)) as Record<
+        string,
+        unknown
+      >;
+      expect(body.principalType).toBe("binding");
+      expect(body.principalId).toBe("WI-10001783");
+      expect(body.scopes).toEqual(["personal:calendar"]);
+      expect("expiresAt" in body).toBe(false);
+    });
+  });
+
+  it("warns that a coding role would get a grant authorizing nothing", async () => {
+    const { container } = render(<PersonalVaultSettingsPage />);
+    await openAdvanced();
+    const identifier = await screen.findByLabelText("Agent role identifier");
+    const section = container.querySelector(
+      '[aria-labelledby="vault-direct-grant-heading"]',
+    );
+    expect(section).toBeTruthy();
+
+    fireEvent.change(identifier, { target: { value: "engineer" } });
+    await waitFor(() =>
+      expect(
+        within(section as HTMLElement).getByRole("alert").textContent,
+      ).toContain("would be created but would authorize nothing"),
+    );
+
+    fireEvent.change(identifier, { target: { value: "operator" } });
+    await waitFor(() =>
+      expect(within(section as HTMLElement).queryByRole("alert")).toBeNull(),
+    );
   });
 });

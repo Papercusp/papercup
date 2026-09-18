@@ -13,6 +13,9 @@ import {
   openExternalWebUrl,
 } from "../../_components/ExternalLinkProvider";
 import { isDesktop } from "@/lib/ipc-status-tauri";
+// The SAME predicate the server-side fence applies, not a copy of it — so the
+// mint-time warning below cannot drift away from the rule it describes.
+import { isCodingAgentRole } from "@papercusp/operator-core/lib/personal-vault/coding-roles";
 
 /**
  * Sentinel for the "no provider account" choice in the archive-account picker.
@@ -72,9 +75,11 @@ interface PersonalVaultImportJob {
   updatedAt: string;
 }
 
+type PersonalPrincipalType = "plan-template" | "binding" | "agent-role";
+
 interface PersonalGrant {
   id: string;
-  principal_type: "plan-template" | "binding" | "agent-role";
+  principal_type: PersonalPrincipalType;
   principal_id: string;
   scopes: string[];
   granted_by: string;
@@ -232,6 +237,60 @@ const GOOGLE_CAPABILITY_META: Record<
   },
 };
 
+/**
+ * The three principal shapes `POST /api/user/personal-vault/grants` accepts,
+ * stated the way the owner has to reason about them: WHO does this authorize?
+ *
+ * The plan-template row deliberately points back at "Approve plan access" —
+ * that path reads the scopes the template itself declared, so it cannot grant
+ * more than the plan asked for. Minting one here takes the scopes from the
+ * owner instead, which is strictly weaker evidence of what the plan needs.
+ */
+const PRINCIPAL_TYPE_META: Record<
+  PersonalPrincipalType,
+  { label: string; who: string; placeholder: string }
+> = {
+  "agent-role": {
+    label: "Agent role",
+    who: "every agent session running under this role",
+    placeholder: "operator",
+  },
+  binding: {
+    label: "Work item",
+    who: "agents working this one work item, by its id",
+    placeholder: "WI-10001783",
+  },
+  "plan-template": {
+    label: "Plan template",
+    who: "runs of this plan template",
+    placeholder: "meeting-prep-brief",
+  },
+};
+
+/**
+ * Expiry choices for a hand-minted grant. `null` means no `expires_at`.
+ *
+ * A finite default is deliberate: the owner's own 2026-08-28 agent-role grant
+ * carried a 10-minute expiry, so time-boxing is the shape actually reached for,
+ * and the curl path this UI replaces makes `expiresAt` an easily-omitted field.
+ */
+const GRANT_EXPIRY_CHOICES: ReadonlyArray<{
+  id: string;
+  label: string;
+  ms: number | null;
+}> = [
+  { id: "10m", label: "10 minutes", ms: 10 * 60_000 },
+  { id: "1h", label: "1 hour", ms: 60 * 60_000 },
+  { id: "24h", label: "24 hours", ms: 24 * 60 * 60_000 },
+  { id: "7d", label: "7 days", ms: 7 * 24 * 60 * 60_000 },
+  { id: "never", label: "Until I revoke it", ms: null },
+];
+
+function expiryIsoFor(choiceId: string): string | undefined {
+  const ms = GRANT_EXPIRY_CHOICES.find((c) => c.id === choiceId)?.ms ?? null;
+  return ms === null ? undefined : new Date(Date.now() + ms).toISOString();
+}
+
 export function googleWorkspaceConnectHref(
   includeCalendarWrite = true,
   providerAccountId?: string,
@@ -334,6 +393,12 @@ export default function PersonalVaultSettingsPage() {
   const [planSlug, setPlanSlug] = useState("");
   const [harnessSlug, setHarnessSlug] = useState("papercusp");
   const [grantPreview, setGrantPreview] = useState<GrantPreview | null>(null);
+  const [directType, setDirectType] =
+    useState<PersonalPrincipalType>("agent-role");
+  const [directPrincipalId, setDirectPrincipalId] = useState("");
+  const [directScopes, setDirectScopes] = useState<string[]>([]);
+  const [directExpiry, setDirectExpiry] = useState("24h");
+  const [directConfirmOpen, setDirectConfirmOpen] = useState(false);
   const [googleOAuthPending, setGoogleOAuthPending] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -787,6 +852,37 @@ export default function PersonalVaultSettingsPage() {
       setBusy(null);
     }
   }, [grantPreview, load]);
+
+  const createDirectGrant = useCallback(async () => {
+    const principalId = directPrincipalId.trim();
+    if (!principalId || !directScopes.length) return;
+    setBusy("grant-direct");
+    try {
+      await responseJson<{ ok: true }>(
+        await fetch("/api/user/personal-vault/grants", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            principalType: directType,
+            principalId,
+            scopes: directScopes,
+            expiresAt: expiryIsoFor(directExpiry),
+          }),
+        }),
+      );
+      toast.success(
+        `Granted ${directScopes.length} Personal Vault scope${directScopes.length === 1 ? "" : "s"} to ${principalId}.`,
+      );
+      setDirectConfirmOpen(false);
+      setDirectPrincipalId("");
+      setDirectScopes([]);
+      await load();
+    } catch (err) {
+      toast.error(`Grant failed: ${(err as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  }, [directExpiry, directPrincipalId, directScopes, directType, load]);
 
   const revoke = useCallback(
     async (grant: PersonalGrant) => {
@@ -2011,6 +2107,163 @@ export default function PersonalVaultSettingsPage() {
 
           <section
             className="pc-settings-section pc-vault-advanced-section"
+            aria-labelledby="vault-direct-grant-heading"
+          >
+            <span className="pc-vault-eyebrow">Advanced</span>
+            <h2 id="vault-direct-grant-heading">Grant access directly</h2>
+            <p className="pc-settings-note">
+              For access that is not tied to a plan template — an agent role, or
+              a single work item. You choose the scopes here, so prefer “Approve
+              plan access” above whenever a plan declares what it needs.
+            </p>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(160px, 1fr) minmax(220px, 2fr)",
+                gap: 10,
+                alignItems: "end",
+                maxWidth: 840,
+              }}
+            >
+              <label>
+                <span style={{ display: "block", marginBottom: 4 }}>
+                  Grant to
+                </span>
+                <Select
+                  ariaLabel="Principal type"
+                  value={directType}
+                  onChange={(value) =>
+                    setDirectType(value as PersonalPrincipalType)
+                  }
+                  disabled={busy !== null}
+                  options={(
+                    Object.keys(PRINCIPAL_TYPE_META) as PersonalPrincipalType[]
+                  ).map((type) => ({
+                    value: type,
+                    label: PRINCIPAL_TYPE_META[type].label,
+                  }))}
+                />
+              </label>
+              <label>
+                <span style={{ display: "block", marginBottom: 4 }}>
+                  {PRINCIPAL_TYPE_META[directType].label} identifier
+                </span>
+                <input
+                  value={directPrincipalId}
+                  onChange={(event) =>
+                    setDirectPrincipalId(event.target.value)
+                  }
+                  placeholder={PRINCIPAL_TYPE_META[directType].placeholder}
+                />
+              </label>
+            </div>
+
+            <fieldset
+              style={{
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                padding: "10px 14px 14px",
+                margin: "14px 0 0",
+                maxWidth: 840,
+              }}
+            >
+              <legend style={{ padding: "0 6px", fontSize: 12 }}>
+                Scopes to authorize
+              </legend>
+              {Object.entries(GOOGLE_CAPABILITY_META).map(([id, meta]) => {
+                const scope = `personal:${id}`;
+                const checked = directScopes.includes(scope);
+                return (
+                  <label
+                    key={scope}
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "flex-start",
+                      marginTop: 8,
+                    }}
+                  >
+                    <Checkbox
+                      checked={checked}
+                      disabled={busy !== null}
+                      onChange={(next) =>
+                        setDirectScopes((prev) =>
+                          next
+                            ? [...prev, scope]
+                            : prev.filter((s) => s !== scope),
+                        )
+                      }
+                      ariaLabel={`Authorize ${meta.label}`}
+                    />
+                    <span>
+                      <strong>{meta.label}</strong> <code>{scope}</code>
+                      <span
+                        className="pc-settings-note"
+                        style={{ display: "block" }}
+                      >
+                        {meta.detail}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+            </fieldset>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(200px, 1fr) auto",
+                gap: 10,
+                alignItems: "end",
+                maxWidth: 840,
+                marginTop: 14,
+              }}
+            >
+              <label>
+                <span style={{ display: "block", marginBottom: 4 }}>
+                  Expires
+                </span>
+                <Select
+                  ariaLabel="Grant expiry"
+                  value={directExpiry}
+                  onChange={setDirectExpiry}
+                  disabled={busy !== null}
+                  options={GRANT_EXPIRY_CHOICES.map((choice) => ({
+                    value: choice.id,
+                    label: choice.label,
+                  }))}
+                />
+              </label>
+              <Button
+                variant="primary"
+                onClick={() => setDirectConfirmOpen(true)}
+                disabled={
+                  !directPrincipalId.trim() ||
+                  !directScopes.length ||
+                  busy !== null
+                }
+              >
+                Review grant
+              </Button>
+            </div>
+
+            {directType === "agent-role" &&
+            isCodingAgentRole(directPrincipalId) ? (
+              <p
+                role="alert"
+                className="pc-settings-note"
+                style={{ marginTop: 12, color: "var(--bad)" }}
+              >
+                <code>{directPrincipalId.trim()}</code> is a coding or review
+                role. Those are denied Personal Vault access before any grant is
+                consulted, so this grant would be created but would authorize
+                nothing.
+              </p>
+            ) : null}
+          </section>
+
+          <section
+            className="pc-settings-section pc-vault-advanced-section"
             aria-labelledby="vault-grants-heading"
           >
             <span className="pc-vault-eyebrow">Advanced</span>
@@ -2136,6 +2389,68 @@ export default function PersonalVaultSettingsPage() {
             {busy === "grant-approve"
               ? "Approving…"
               : "Approve declared scopes"}
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={directConfirmOpen}
+        onOpenChange={(open) => !open && setDirectConfirmOpen(false)}
+        title="Grant Personal Vault access"
+        description="Review exactly who this authorizes, and to read what, before granting."
+        contentStyle={{
+          width: "min(560px, calc(100vw - 4rem))",
+          padding: 22,
+          borderRadius: 12,
+          background: "var(--bg-1)",
+          border: "1px solid var(--border)",
+        }}
+      >
+        <h2>Grant access to {directPrincipalId.trim()}</h2>
+        <p className="pc-settings-note">
+          This authorizes {PRINCIPAL_TYPE_META[directType].who} to read:
+        </p>
+        <ul>
+          {directScopes.map((scope) => (
+            <li key={scope}>
+              <code>{scope}</code>
+            </li>
+          ))}
+        </ul>
+        <p>
+          {GRANT_EXPIRY_CHOICES.find((c) => c.id === directExpiry)?.ms === null
+            ? "It stays active until you revoke it."
+            : `It expires in ${GRANT_EXPIRY_CHOICES.find((c) => c.id === directExpiry)?.label ?? directExpiry}.`}{" "}
+          You can revoke it at any time from Grant history below. Coding and
+          review agents remain denied even while this grant is live.
+        </p>
+        {directType === "agent-role" &&
+        isCodingAgentRole(directPrincipalId) ? (
+          <p role="alert" style={{ color: "var(--bad)" }}>
+            <code>{directPrincipalId.trim()}</code> is one of those denied
+            roles, so this grant would authorize nothing.
+          </p>
+        ) : null}
+        <div
+          className="pc-settings-actions"
+          style={{ justifyContent: "flex-end" }}
+        >
+          <Button
+            onClick={() => setDirectConfirmOpen(false)}
+            disabled={busy === "grant-direct"}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => void createDirectGrant()}
+            disabled={
+              !directPrincipalId.trim() ||
+              !directScopes.length ||
+              busy === "grant-direct"
+            }
+          >
+            {busy === "grant-direct" ? "Granting…" : "Grant access"}
           </Button>
         </div>
       </Modal>

@@ -2,11 +2,11 @@ import type { Sql } from 'postgres';
 import type { PersonalPrincipal, PersonalToolContext } from './types';
 import { isPersonalVaultEnabled, personalScope } from './store';
 
-const CODING_ROLE_RE = /^(?:su|engineer|worker|coder|coding|implementer|validator|reviewer|architect|debugger|documenter|scoper|project[_-]?manager)$/i;
+import { isCodingAgentRole } from './coding-roles';
 
-export function isCodingAgentRole(role: string | null | undefined): boolean {
-  return !!role && CODING_ROLE_RE.test(role.trim());
-}
+// Re-exported so existing importers keep their entry point; the predicate itself
+// lives in the browser-safe leaf so the settings UI can share it (WI-10001809).
+export { isCodingAgentRole };
 
 export function contextualPersonalPrincipals(ctx: PersonalToolContext): PersonalPrincipal[] {
   const out: PersonalPrincipal[] = [];
