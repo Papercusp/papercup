@@ -304,8 +304,20 @@ export function identityLiterals(): IdentityLiteral[] {
         // git config names the COMMITTER. On an automated box that is by construction not
         // the owner. So the name comes from OWNER_NAME_ENV or it does not come at all, and
         // hasOwnerNameLiteral() goes false, and callers that publish fail closed on it.
-        // The Python sibling (audit-release-bundle.py) already works this way; this keeps
-        // the two gates from disagreeing about who the owner is.
+        // The Python sibling (audit-release-bundle.py) reaches the same REFUSAL by a
+        // DIFFERENT route. Do NOT "align" the two by copying its heuristic back to here:
+        // it still reads `user.name` and drops it only when looks_like_automation_identity()
+        // matches (identity_literals()) — the very denylist the paragraph above rejects —
+        // and its OWNER_NAME_ENV read REPLACES that value rather than adding to it, and
+        // accepts a LIST where this side takes a single string.
+        //
+        // Measured on this box 2026-09-18: `papercusp-buildbox` is NOT matched by that
+        // denylist, so the bot name IS recorded as build-git-name — and the gate is still
+        // safe, because has_owner_name_literal() independently returns False and main()
+        // exits 2 (CANNOT CHECK). The denylist failing open is not load-bearing there;
+        // that second backstop is what makes this divergence safe, and it is pinned by
+        // audit-release-bundle-fails-closed.test.ts. If it ever goes TRUE for a bot
+        // spelling nobody enumerated, the Python gate goes blind and this comment is wrong.
         continue;
       }
       lits.push({ kind, value: v });
