@@ -869,12 +869,36 @@ const cacheToolsBreakpointOn = () => process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOIN
  * P-002 (agent-launch-context-cost-2026-09-18): mark oversized tool schemas `defer_loading` and
  * inject the BM25 tool-search tool so they stay reachable.
  *
- * OPT-IN, and it must stay that way until a both-arms live A/B has run (P-003). This gateway is
- * on the inference path of EVERY session, and the sibling knob above is here precisely because
- * shipping a tools-array rewrite on a passing unit test alone produced EI-16980 — verified with a
- * bare `claude -p` that loaded no deferred tools, so the illegal pairing was never exercised.
+ * ON BY DEFAULT since 2026-09-18 (D-015). It shipped OPT-IN "until a both-arms live A/B has run
+ * (P-003)". That A/B ran and is recorded in D-002: three live psu arms, identical launch command,
+ * varying only the cache-proxy — control 169,167, 8000 B threshold 163,508 (−3.3%), and the
+ * MEASURED 1200 B threshold 115,273 (−31.9%), which is below this plan's ~120,000 target. The
+ * mechanism is directly evidenced by a per-request proxy log line (`deferred 45 tool(s), 142012 B
+ * + injected tool_search_tool_bm25`), not inferred from a token delta.
+ *
+ * WHY THE DEFAULT FLIPPED RATHER THAN WAITING LONGER: this repo's flag policy treats finished,
+ * measured, reversible work left default-OFF as UNFINISHED. D-002 ended "P-002's code is landed
+ * and inert" — and inert is exactly what it stayed while the +134k launch regression (the
+ * ToolSearch deny turning native schema deferral off, commit 0091eb05) went on costing every
+ * session. The same finding was re-derived four times across three epochs without the fix ever
+ * reaching a live agent.
+ *
+ * SCOPED, per D-002 Ruling 4: what is proven is FUNCTIONAL reachability — a deferred tool is
+ * still callable because `tools:invoke` dispatches server-side and needs no schema at all. The
+ * native schema-MATERIALIZATION path through `tool_search_tool_bm25` remains UNPROVEN and is
+ * explicitly accepted as unused here: papercusp agents discover via `tools:find` and call via
+ * `tools:invoke`, both of which transit `applyResultDoor`'s ~1,500-token cap. That is precisely
+ * the property native `ToolSearch` lacked (one call, +67,045 tokens, ~45x the cap) and why it is
+ * denied at launch.
+ *
+ * KILL SWITCH: PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS=0 restores the pre-2026-09-18 passthrough.
+ * This gateway is on the inference path of EVERY session, and the sibling knob above is opt-in
+ * precisely because shipping a tools-array rewrite on a passing unit test alone produced
+ * EI-16980. Those three rails — never pair `defer_loading` with `cache_control`, never defer
+ * every tool, keep the search tool itself non-deferred — are enforced in cache-policy.ts and
+ * mutation-proven (ledger row 18385266).
  */
-const cacheDeferLargeToolsOn = () => process.env.PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS === '1';
+const cacheDeferLargeToolsOn = () => process.env.PAPERCUSP_GATEWAY_DEFER_LARGE_TOOLS !== '0';
 /** Serialized-byte threshold above which a tool is deferred. Default 8000 (see cache-policy.ts). */
 const cacheDeferMinToolBytes = () => {
   const n = Number(process.env.PAPERCUSP_GATEWAY_DEFER_MIN_TOOL_BYTES);
