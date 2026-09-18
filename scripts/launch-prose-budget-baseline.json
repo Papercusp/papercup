@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-18T00:00:00.000Z",
+  "ceilings": [
+    {
+      "surface": "su-playbook-render:engineer:full:claude",
+      "ceilingBytes": 260000,
+      "floorBytes": 120000,
+      "note": "The headline surface: what a psu Claude ENGINEER session pays in prose before its first turn. Contains the base playbook, the Claude overlay, the generated sections, the compaction protocol and the whole project guide, so lowering any component below lowers this too. Floor 120000 is set just under a render that lost the project guide (~132000 B measured 2026-09-18) so that collapse is caught by the floor as well as by the composition probe."
+    },
+    {
+      "surface": "su-playbook-render:power:full:claude",
+      "ceilingBytes": 236000,
+      "floorBytes": 110000,
+      "note": "The POWER profile render — a psu session managing an EXTERNAL repo. Smaller than engineer because the repo-specific deploy-pipeline notes are engineer-only, but it carries the same platform spine and the same project guide."
+    },
+    {
+      "surface": "project-guide:claude-md",
+      "ceilingBytes": 124000,
+      "floorBytes": 40000,
+      "note": "The projected CLAUDE.md spliced into every su render. GENERATED from harness_shared.harness_doc_parts — to reduce it, edit the PART and re-project (npm run set-doc-part / node scripts/project-doc-parts.mjs --write); never hand-edit the file. The projector already enforces PROJECTION_BUDGET_CHARS=160000 by DROPPING low-priority parts, which is a catastrophe floor, not a ratchet: this ceiling fails loudly at the current size instead of letting the document grow ~38000 chars into that headroom and start silently deleting guidance."
+    },
+    {
+      "surface": "compaction-strategy",
+      "ceilingBytes": 19000,
+      "floorBytes": 6000,
+      "note": "The rendered compaction floor (papercusp-compaction.base.md + the client overlay) that every Claude session carries. Rendered through the SAME renderCompactionStrategy the install flow uses, so this cannot drift from what agents receive."
+    },
+    {
+      "surface": "su-base:engineer",
+      "ceilingBytes": 91000,
+      "floorBytes": 30000,
+      "note": "The authored engineer base playbook — the file a person actually edits, capped separately from the render so growth is ATTRIBUTABLE to the prose rather than to a component further down the chain."
+    },
+    {
+      "surface": "su-base:power",
+      "ceilingBytes": 77000,
+      "floorBytes": 25000,
+      "note": "The authored power base playbook. Same attribution rationale as su-base:engineer."
+    },
+    {
+      "surface": "su-client-overlays:all",
+      "ceilingBytes": 27500,
+      "floorBytes": 9000,
+      "note": "The three per-client tooling overlays (claude, codex, omp) summed. One ceiling over the sum rather than three: each is small, they grow for the same reasons, and a single total still catches growth in any one of them. Only one overlay is spliced per launch, so this is a governance bound on the authored set, not a per-session cost."
+    }
+  ]
+}
