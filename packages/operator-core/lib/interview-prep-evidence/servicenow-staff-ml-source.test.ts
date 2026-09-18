@@ -43,11 +43,41 @@ const reviewedCollectionSlugs = [
   'servicenow-staff-ml-interview-prep',
   'twg-recruiter-screen',
 ];
+// ── Opt-in: this suite's subject is NOT in version control (WI-10001853) ──────
+// It reads the reviewed role page, the answer bank, build-standalone.sh and every
+// *-standalone.html from an interview-prep collection under $HOME. Those are personal
+// working documents that change whenever their owner studies them, so this suite can
+// never be hermetic: its result describes a machine's home directory, not this commit.
+// Left on by default it red-lights the hourly green-checkpoint for the whole fleet on
+// an edit that never touched the repo — frozen candidate 6102736d is exactly that: a
+// study-timer <script> added to the page at 2026-09-18T19:20Z broke the sha256 review
+// pin, the reciprocal-link mutant-kill and the no-<script> assertion, failing three
+// consecutive gate runs at repairHead while every tracked file was byte-identical.
+//
+// So it now runs only when asked for, by whoever maintains the evidence. Coverage did
+// NOT move to another suite — it is reachable on demand and nowhere else. Re-pinning
+// the digests deliberately stays manual: the pins attest a human review recorded in
+// servicenow-staff-ml-manual-review.json, and an agent must not forge that by pasting
+// in whatever hash the file happens to have today.
+const evidenceOptIn =
+  process.env.PAPERCUSP_RUN_INTERVIEW_PREP_EVIDENCE === '1' ||
+  process.env.SERVICENOW_INTERVIEW_PREP_FILE !== undefined;
 const collectionDir = dirname(sourcePath);
-const buildScript = readFileSync(resolve(collectionDir, 'build-standalone.sh'), 'utf8');
+const buildScriptPath = resolve(collectionDir, 'build-standalone.sh');
+const skipReason: string | null = !evidenceOptIn
+  ? 'opt-in only — set PAPERCUSP_RUN_INTERVIEW_PREP_EVIDENCE=1 (untracked $HOME evidence collection)'
+  : !existsSync(sourcePath)
+    ? `reviewed source absent: ${sourcePath}`
+    : !existsSync(buildScriptPath)
+      ? `interview-prep collection absent: ${buildScriptPath}`
+      : null;
+
+// Guarded so an absent/opted-out collection SKIPS instead of throwing at import time,
+// which would fail collection for the whole file rather than reporting a skip.
+const buildScript = skipReason === null ? readFileSync(buildScriptPath, 'utf8') : '';
 const sourceBlock = buildScript.match(/SOURCES=\(([\s\S]*?)\n\)/);
-if (!sourceBlock) throw new Error('interview_prep_collection_not_declared');
-const collectionSlugs = [...sourceBlock[1].matchAll(/"([a-z0-9-]+)\.html"/g)].map((match) => match[1]);
+if (skipReason === null && !sourceBlock) throw new Error('interview_prep_collection_not_declared');
+const collectionSlugs = [...(sourceBlock?.[1] ?? '').matchAll(/"([a-z0-9-]+)\.html"/g)].map((match) => match[1]);
 const expectedCollectionTargets = collectionSlugs.map((slug) => `${slug}-standalone.html`).sort();
 
 // Shared navigation grows independently of this reviewed role document. Reconstruct ONLY
@@ -92,7 +122,7 @@ beforeAll(() => {
   document.body.innerHTML = html;
 });
 
-describe('ServiceNow Staff ML interview-prep source contract', () => {
+describe.skipIf(skipReason !== null)('ServiceNow Staff ML interview-prep source contract', () => {
   it('pins the reviewed role content while allowing maintained shared navigation to grow', () => {
     expect(sha256(reviewedSource(html))).toBe(manifest.sourceSha256);
     expect(manifest.manualReview.result).toBe('pass');
