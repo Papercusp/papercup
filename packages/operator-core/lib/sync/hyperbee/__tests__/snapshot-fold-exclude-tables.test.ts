@@ -404,8 +404,9 @@ describe('produceFilteredSnapshotIntoLog — the synthetic seed core (EI-2010816
     expect(stalls).toEqual([]);
   });
 
-  it('reports one edge-triggered stall when a source read never advances the cursor', async () => {
+  it('abandons a hung prior-snapshot seek, then reports one edge-triggered fold stall', async () => {
     vi.useFakeTimers();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const src = memLog('source-own-log', { neverAt: 0 });
       await src.append(put('plans', 'p-0', { title: 'stuck' }, 1));
@@ -414,9 +415,23 @@ describe('produceFilteredSnapshotIntoLog — the synthetic seed core (EI-2010816
         now: 2000,
         schemaVersion: 1,
         stallMs: 25,
+        seekReadBudgetMs: 5,
         onStall: (event) => stalls.push(event),
       });
 
+      // THE SEEK RUNS FIRST AND MUST NOT SWALLOW THE HANG. `neverAt: 0` makes the read
+      // HANG rather than throw, and the seek's `try/catch` cannot observe a hang — so
+      // without its read budget the seek parks here forever and the fold below is never
+      // entered: no progress line, no stall, no timeout. That is strictly worse than the
+      // slow fold it replaces, and reads externally as a wedged release cut.
+      await vi.advanceTimersByTimeAsync(5);
+      expect(errors).toHaveBeenCalledTimes(1);
+      expect(String(errors.mock.calls[0]![0])).toContain('prior-snapshot seek abandoned');
+      expect(stalls).toEqual([]);
+
+      // Abandoning the seek must FALL BACK to the full fold (foldFrom stays 0), which is
+      // the behavior that shipped before the seek existed — so the fold's own stall
+      // diagnostic still arms on the very same hung block.
       await vi.advanceTimersByTimeAsync(25);
       expect(stalls).toHaveLength(1);
       expect(stalls[0]).toMatchObject({
@@ -424,11 +439,14 @@ describe('produceFilteredSnapshotIntoLog — the synthetic seed core (EI-2010816
         processed: 0,
         total: 1,
       });
-      // A stuck cursor is edge-triggered, not a repeating timer storm.
+      // A stuck cursor is edge-triggered, not a repeating timer storm. The abandoned
+      // seek is likewise reported once, not re-reported as the fold keeps waiting.
       await vi.advanceTimersByTimeAsync(100);
       expect(stalls).toHaveLength(1);
+      expect(errors).toHaveBeenCalledTimes(1);
       void pending;
     } finally {
+      errors.mockRestore();
       vi.useRealTimers();
     }
   });
@@ -457,7 +475,11 @@ describe('produceFilteredSnapshotIntoLog — the synthetic seed core (EI-2010816
     const originalGet = source.get.bind(source);
     let tailReads = 0;
     const reads = vi.spyOn(source, 'get').mockImplementation(async (index) => {
-      if (index === SNAPSHOT_READ_CONCURRENCY && ++tailReads === (mode === 'own' ? 2 : 1)) {
+      // Block the FOLD's read of the tail, which is the SECOND one in both modes:
+      // the prior-snapshot seek reads the tail block first, scanning backward for a
+      // snapshot set before the fold starts. Blocking the first read would gate the
+      // SEEK instead, which is bounded and falls back — so no fold stall would arm.
+      if (index === SNAPSHOT_READ_CONCURRENCY && ++tailReads === 2) {
         reportBlocked();
         await readGate;
       }

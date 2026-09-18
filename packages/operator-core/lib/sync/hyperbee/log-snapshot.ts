@@ -627,6 +627,19 @@ const PRODUCER_SNAPSHOT_SCAN_LOOKBACK = SNAPSHOT_COMPACT_EVERY_OPS * 4;
 const SEEK_ABANDONED = Symbol('producer-snapshot-seek-abandoned');
 
 /**
+ * How long ONE seek read may hang before the seek gives up on seeding.
+ *
+ * Deliberately an order of magnitude above `FILTERED_SNAPSHOT_SCAN_STALL_MS` rather
+ * than equal to it. 30s is the threshold at which a read becomes worth REPORTING,
+ * and the fold keeps waiting past it precisely because a slow read is usually still
+ * a healthy one — a loaded box mid-release-cut produces plenty. Abandoning must
+ * clear a far higher bar than reporting, because its fallback is the O(history)
+ * fold this seek exists to avoid: giving up on a merely-slow read would trade a
+ * hang for a multi-hour scan, which is the same bug wearing a different hat.
+ */
+const PRODUCER_SNAPSHOT_SEEK_READ_BUDGET_MS = FILTERED_SNAPSHOT_SCAN_STALL_MS * 10;
+
+/**
  * Find and read the newest complete snapshot set near the own-log tail.
  *
  * A complete set is the contiguous span `[coversUpTo, coversUpTo + chunkCount)`
@@ -1008,6 +1021,8 @@ export async function produceLogSnapshot(
     onStall?: SnapshotFoldStallCallback;
     /** Override the own-compaction cursor-stall threshold. */
     stallMs?: number;
+    /** Override how long one prior-snapshot seek read may hang before it is abandoned. */
+    seekReadBudgetMs?: number;
     /**
      * Tables dropped from the fold (EI-20108164746219771). Omitted by every live
      * caller, so the behavior of the running system is unchanged; supplied only by
@@ -1056,7 +1071,7 @@ export async function produceLogSnapshot(
   // O(history). If no complete set is discoverable in the bounded scan window,
   // foldedUpTo remains zero and the existing full-fold behavior is preserved.
   const priorSnapshot = await findLatestProducerSnapshot(ownLog, {
-    readBudgetMs: opts.stallMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS,
+    readBudgetMs: opts.seekReadBudgetMs ?? PRODUCER_SNAPSHOT_SEEK_READ_BUDGET_MS,
     describe: 'own compaction',
   });
   let foldedUpTo = 0;
@@ -1226,6 +1241,8 @@ export async function produceFilteredSnapshotIntoLog(
     onStall?: SnapshotFoldStallCallback;
     /** Override the diagnostic threshold in tests or a release runner. */
     stallMs?: number;
+    /** Override how long one prior-snapshot seek read may hang before it is abandoned. */
+    seekReadBudgetMs?: number;
   },
 ): Promise<ProduceSnapshotResult> {
   // An EMPTY SOURCE means there is nothing to seed — mirror `produceLogSnapshot`'s
@@ -1281,7 +1298,7 @@ export async function produceFilteredSnapshotIntoLog(
   // min, 1045 chunks, 1,416,626 rows) — and then folded from 0 anyway, ignoring it. Same
   // box, same data, same fold primitive: 7.3 minutes with the seek, ~7 hours without.
   const priorSnapshot = await findLatestProducerSnapshot(sourceLog, {
-    readBudgetMs: opts.stallMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS,
+    readBudgetMs: opts.seekReadBudgetMs ?? PRODUCER_SNAPSHOT_SEEK_READ_BUDGET_MS,
     describe: 'filtered source scan',
   });
   let foldFrom = 0;
