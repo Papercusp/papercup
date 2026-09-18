@@ -78,10 +78,10 @@ export function isRetriablePgConnectError(e: unknown): boolean {
  * at the call site.
  *
  * Real case this exists for (WI-10001781): the release cut's seed phase lost a connection
- * between two reads and discarded a ~2.5-hour three-platform build. Its only mutation is an
- * append-only `substrate_outbox` enqueue that carries no uniqueness constraint, and the
- * drain re-applies a duplicate `put` idempotently under LWW — so a repeat costs drain time,
- * never correctness. That is the shape this predicate is for.
+ * between two reads and aborted the whole cut. Its only mutation is an append-only
+ * `substrate_outbox` enqueue that carries no uniqueness constraint, and the drain re-applies
+ * a duplicate `put` idempotently under LWW — so a repeat costs drain time, never
+ * correctness. That is the shape this predicate is for.
  */
 export function isRetriableIdempotentPgConnectionError(e: unknown): boolean {
   if (isRetriablePgConnectError(e)) return true;

@@ -1053,8 +1053,10 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
 
     it('WI-10001781: SURVIVES the transient CONNECTION_DESTROYED that killed the 0.0.21-alpha cut', async () => {
       // The exact error, verbatim from /tmp/papercup-release-cut.log at 2026-09-17T23:00:00Z.
-      // Before the fix this propagated and discarded a ~2.5h three-platform build at the
-      // 3-minute mark; the pool it names reconnects on the very next query.
+      // Before the fix it propagated and aborted the cut during the seed phase — which runs
+      // BEFORE any platform build, so the loss was the preflight work (3 min and 12 min on the
+      // two attempts that night), not the 2.5h build. The pool it names reconnects on the very
+      // next query, which is what makes discarding the run the wrong response to it.
       const { openStore } = harness({ locked: true });
       const destroyed = Object.assign(new Error('write CONNECTION_DESTROYED 127.0.0.1:6432'), {
         code: 'CONNECTION_DESTROYED',

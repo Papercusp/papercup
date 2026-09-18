@@ -811,9 +811,15 @@ export async function openSourceStoreForCut(inp: {
     // Measured 2026-09-17: the 0.0.21-alpha cut died here on
     // `write CONNECTION_DESTROYED 127.0.0.1:6432`, raised from postgres-js's pre-execution
     // `execute()` guard — i.e. the pool this phase was handed had been torn down between two
-    // of its reads. Cost: the entire three-platform cut, ~2.5h, at the 3-minute mark. The
-    // second-order damage is worse than the outage: a seed phase this brittle makes every
-    // cut a coin flip, so failures get re-fired blind rather than diagnosed.
+    // of its reads.
+    //
+    // ⚠ Size this honestly, because the obvious framing is wrong: the seed runs at phase ~16
+    // of the pipeline, ~2.5 min in and BEFORE any platform build starts, so a death here
+    // costs the preflight work (toolchain checks, lint:migrations, the migration boot-smoke
+    // suite, the manifest bump) — 3 min and 12 min on the two 2026-09-17 attempts — not the
+    // 2.5h cut. The reason to fix it anyway is the SECOND-order cost: an abort this cheap and
+    // this arbitrary trains everyone to re-fire blind instead of diagnosing, which is how two
+    // attempts died the same night for two unrelated reasons.
     //
     // Retrying is safe here because BOTH operations are idempotent, which is the standing
     // precondition on `isRetriableIdempotentPgConnectionError` (see its doc — the error alone
