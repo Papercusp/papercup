@@ -717,6 +717,21 @@ export function deriveContinuation(
   const requestByKey = new Map<string, Array<(typeof requests)[number]>>();
   const requestHistoryStatus = tail.find((turn) => turn.requestHistoryStatus)?.requestHistoryStatus;
 
+  // Does this surface stamp native request/response ids AT ALL? The id-based
+  // settlement below is unreachable by construction on one that does not: an
+  // unkeyed owner turn is filed under a synthetic `tail-owner-N` key, while
+  // settle() is only ever called with an assistant turn's OWN id — so the two
+  // can never meet, `answered` stays false forever, and every carry-respawn
+  // re-delivers a message the owner already received an answer to (and
+  // gateOpenOwnerQuestion HOLDs every deliberate compaction as
+  // 'known-unanswered'). The native CLI transcript is exactly such a surface:
+  // it carries neither field, and both default to null at the tail boundary.
+  // When nothing is stamped, fall back to the POSITIONAL semantics this field
+  // is documented with — "did a model turn follow it?".
+  const surfaceStampsRequestIds = tail.some(
+    (turn) => turn.requestId != null || turn.responseDisposition != null,
+  );
+
   const settle = (requestId: string | null | undefined) => {
     if (!requestId) return;
     for (const request of requestByKey.get(requestId) ?? []) request.settled = true;
@@ -742,11 +757,23 @@ export function deriveContinuation(
       requestByKey.set(key, same);
     }
 
-    // A response settles ONLY the request whose native/thread id it shares and
-    // only at the client's final delivered boundary. Commentary, acknowledg-
-    // ments, unrelated final answers and interrupted turns remain open.
-    if (turn.speaker === 'assistant' && turn.responseDisposition === 'delivered') {
-      settle(turn.requestId);
+    // On a STAMPED surface a response settles ONLY the request whose native/
+    // thread id it shares, and only at the client's final delivered boundary.
+    // Commentary, acknowledgments, unrelated final answers and interrupted
+    // turns remain open.
+    //
+    // On an UNSTAMPED surface (see surfaceStampsRequestIds) that rule can never
+    // fire, so settlement is positional instead: a model turn following an
+    // owner turn answers it. The guard is whole-tail, never per-turn, so a
+    // stamped surface keeps strict id matching even for an individual turn that
+    // happens to carry no id — a half-firing fallback would silently settle
+    // requests the strict rule deliberately leaves open.
+    if (turn.speaker === 'assistant') {
+      if (surfaceStampsRequestIds) {
+        if (turn.responseDisposition === 'delivered') settle(turn.requestId);
+      } else {
+        for (const entry of requests) entry.settled = true;
+      }
     }
   }
 
