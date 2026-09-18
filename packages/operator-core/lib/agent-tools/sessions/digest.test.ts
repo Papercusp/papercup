@@ -40,7 +40,11 @@ describe('sessions:digest time-window bounds', () => {
     const result = await handler()({ since: 'yesterday-ish' }, { workspaceId: 'ws-test', tx });
 
     expect(tx).not.toHaveBeenCalled();
-    const text = (result as { content: Array<{ text: string }> }).content[0]!.text;
-    expect(JSON.parse(text).error).toContain('relative window like "45m", "12h", "7d"');
+    // { data } envelope, not the legacy MCP content[0].text one: digest.ts signals the
+    // invalid-bound rejection through the same `data` shape as its success path, so the
+    // tool-data-shape ratchet holds. Reading `content` here strands on that contract.
+    const { ok, error } = (result as { data: { ok: boolean; error: string } }).data;
+    expect(ok).toBe(false);
+    expect(error).toContain('relative window like "45m", "12h", "7d"');
   });
 });
