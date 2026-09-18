@@ -609,7 +609,17 @@ export async function carryUnchangedBarEvidenceBindings(
         ${args.specId}, ${args.nextRevision}, ${args.nextSpecFingerprint}, ${row.evidence_kind},
         ${row.evidence_ref}, ${row.source_fingerprint}, ${row.test_fingerprint},
         ${row.fixture_fingerprint}, ${row.rubric_fingerprint}, ${row.environment_fingerprint},
-        ${coverageEvidenceRef}, ${testRunId}, ${JSON.stringify(row.details ?? {})}::jsonb,
+        -- ::text::jsonb, never a bare ::jsonb. A bare cast makes Postgres resolve this
+        -- parameter AS jsonb, so postgres-js applies its own json serializer to the
+        -- already-stringified value and stores a jsonb STRING (jsonb_typeof = 'string')
+        -- instead of the object. That idiom is correct only on the bespoke getOrgPg
+        -- client; this function takes its sql handle as a PARAMETER and so cannot assume
+        -- one. Pinning ::text first makes the bind correct on either pool, and matches
+        -- the canonical writer for this very table (bindSpecEvidence in
+        -- spec-evidence-store.ts). The details CHECK (jsonb_typeof = 'object') is what
+        -- turns the wrong form into a loud failure rather than silent corruption. See
+        -- /internal/docs/agent-insights/postgres-js-jsonb-binding.
+        ${coverageEvidenceRef}, ${testRunId}, ${JSON.stringify(row.details ?? {})}::text::jsonb,
         ${row.observed_at}, ${bindingFingerprint}, ${row.created_by}
       ) ON CONFLICT DO NOTHING`;
     carried += 1;
