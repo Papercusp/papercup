@@ -695,6 +695,10 @@ async function findLatestProducerSnapshot(
   let abandonedAt: number | null = null;
 
   const readAt = async (index: number): Promise<PeerLogOp | null> => {
+    // Once abandoned, never issue another read: each one would race a FRESH budget,
+    // so a log whose reads have stopped settling would otherwise pay the budget again
+    // for every remaining block instead of falling back immediately.
+    if (abandonedAt !== null) return null;
     const cached = cache.get(index);
     if (cached !== undefined || cache.has(index)) return cached ?? null;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -780,6 +784,7 @@ async function findLatestProducerSnapshot(
     let complete = true;
     for (let chunkIdx = 0; chunkIdx < chunkCount; chunkIdx++) {
       const chunk = await readAt(coversUpTo + chunkIdx);
+      if (abandonedAt !== null) return abandon();
       const chunkPayload = chunk?.value as SnapshotPayload | undefined;
       if (
         !chunk ||

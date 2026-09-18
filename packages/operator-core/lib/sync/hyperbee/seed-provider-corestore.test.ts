@@ -107,7 +107,9 @@ describe('corestore seed provider', () => {
     const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
     let reportStall!: () => void;
     const reported = new Promise<void>((resolve) => { reportStall = resolve; });
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => reportStall());
+    const errors = vi.spyOn(console, 'error').mockImplementation((...args) => {
+      if (String(args[0]).includes('filtered source scan stalled')) reportStall();
+    });
     const originalStoreGet = source.get.bind(source);
     const restoreReads: Array<() => void> = [];
     const storeReads = vi.spyOn(source, 'get').mockImplementation((...args) => {
@@ -128,6 +130,11 @@ describe('corestore seed provider', () => {
       stagingStore: staging,
       redactValues: [],
       filteredScanStallMs: 25,
+      // This fixture gates EVERY core read until `releaseRead()`, and the prior-snapshot
+      // seek reads before the fold does. Its production budget is minutes — deliberately,
+      // since abandoning costs an O(history) fold — so it must be shrunk here or the seek
+      // parks on the gate far past this test's timeout.
+      seekReadBudgetMs: 5,
       onProjection: () => {},
     }).then((result) => {
       settled = true;
@@ -135,8 +142,12 @@ describe('corestore seed provider', () => {
     });
     try {
       await reported;
-      expect(errors).toHaveBeenCalledTimes(1);
-      const message = String(errors.mock.calls[0]![0]);
+      // Two distinct events, in order: the gated read first abandons the bounded seek
+      // (which FALLS BACK to the full fold — the scan this test is actually about),
+      // then that fold's cursor stalls on the very same gated read.
+      expect(errors).toHaveBeenCalledTimes(2);
+      expect(String(errors.mock.calls[0]![0])).toContain('prior-snapshot seek abandoned');
+      const message = String(errors.mock.calls[1]![0]);
       for (const field of [
         '[seed:corestore]',
         'phase=filtered-source-scan',
@@ -151,7 +162,7 @@ describe('corestore seed provider', () => {
       expect(message).not.toContain(NEVER_EMIT_MARKER);
       expect(message.length).toBeLessThan(600);
       await new Promise<void>((resolve) => setTimeout(resolve, 75));
-      expect(errors).toHaveBeenCalledTimes(1);
+      expect(errors).toHaveBeenCalledTimes(2);
       expect(settled).toBe(false);
       releaseRead();
       expect((await pending).length).toBeGreaterThan(0);

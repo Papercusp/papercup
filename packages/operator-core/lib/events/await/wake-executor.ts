@@ -56,9 +56,7 @@ import {
   sessionMcpJsonPath,
   codexHomeForSessionKey,
 } from '@papercusp/orchestrator/session-launch-dirs';
-import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
-import { nativeToolSearchDenyFlag } from '@papercusp/orchestrator/native-tool-search-deny';
-import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
+import { capabilityPolicyFlags } from '@papercusp/orchestrator/managed-capability-policy';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
 import { fallbackCodexLaunchSpecFromAdvSession, getAdvSession, claimAdvSessionResume } from '../../adv-sessions';
 import { resolveAgentBinarySync } from '../../agent-bin-detect';
@@ -1876,21 +1874,19 @@ export function resumeCommandFor(
         '--dangerously-skip-permissions',
         '--permission-mode',
         'bypassPermissions',
-        // Native-scheduler lockout (native-scheduler-lockout-2026-06-09): CLI
-        // flags don't persist into resumes, so every autonomous wake re-arms
-        // the deny. MUST stay the single `=` token — the space form is
+        // Capability policy, re-armed for the WAKE surface (P-005).
+        //
+        // CLI deny flags do NOT persist into a `--resume`, so every autonomous
+        // wake must re-arm the full restriction set or it silently lapses.
+        // This used to be three hand-listed `*DenyFlag()` calls here and four
+        // at the headless launch site — and they had already drifted: the
+        // owner-desktop-notify deny held at launch and was silently absent on
+        // every wake. Resolving the ONE policy per surface makes that class of
+        // drift unrepresentable rather than merely fixed once.
+        //
+        // Every emitted flag stays a single `=` token: the space form is
         // variadic and would eat the positional wakeText below (D-002).
-        nativeSchedulerDenyFlag(),
-        // Subagent-fanout deny (owner mandate 2026-07-02): SAME persistence gap —
-        // a spawn-time `--disallowedTools=Task,Agent` does NOT survive into a
-        // resume, so a woken bee would silently regain its subagent-launch tool.
-        // Re-arm it every wake. Also a single `=` token (same greed-guard).
-        noSubagentToolsDenyFlag(),
-        // Native tool-search deny (owner directive 2026-09-11): SAME persistence
-        // gap as the subagent deny — a spawn-time deny does not survive into a
-        // resume, so a woken agent would regain ToolSearch and its uncapped
-        // schema loads. Re-arm every wake. Single `=` token (greed-guard).
-        nativeToolSearchDenyFlag(),
+        ...capabilityPolicyFlags({ client: 'claude', surface: 'wake' }),
         ...mcpArgs,
         wakeText,
       ],
