@@ -13,7 +13,7 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 313
+  corpus-parts: 314
   corpus-blocks: 268
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
@@ -1945,10 +1945,15 @@ your OWN `--client` or writes land under an anonymous `mcp-call-*` (EI-8509):
 
 ## `cd` outside the repo tree does NOT persist across Bash calls — a failed one silently falls back to the repo ROOT
 
-**The Bash tool's own description says "the working directory persists between commands" — that is only true while you stay INSIDE this repo tree.** `cd /tmp/some-scratch-dir` succeeds and holds for the REST of that one call, but the *next* Bash call starts back at this repo's root, with a post-hoc `Shell cwd was reset to <repo root>` note on the PRIOR call's result — no warning before it runs, just after. `cd` to a path still *inside* the tree (e.g. a package subdir) genuinely persists across calls with no reset. So the boundary is exactly "inside vs. outside this tree", not "cd never persists".
+**The Bash tool's own description says "the working directory persists between commands" — that is only true while you stay INSIDE this repo tree.** `cd /tmp/some-scratch-dir` succeeds and holds for the REST of that one call, but the *next* Bash call starts back at this repo's root, with a post-hoc `Shell cwd was reset to <repo root>` note on the PRIOR call's result — no warning before it runs, just after. A `cd` to a path still *inside* the tree genuinely persists across calls. The boundary is exactly "inside vs. outside this tree", not "cd never persists".
 
-⚠ **That in-tree half is NOT the benign one — a persisted in-tree cwd changes which `package.json` a later ROOT `npm run <script>` resolves against.** npm walks up to the NEAREST enclosing workspace, so after a `cd packages/<pkg>/…` the root commands this guide prescribes — `test:affected`, `install:safe`, `doctor`, `gen:*`, `docs:rebuild`, `set-doc-part` — die with `npm error location …/packages/<pkg>` and `Missing script: "<name>"`. **The trap is the READING, not the error**, and it is the same misreading this guide documents for `npm run --workspace <dir> test`: "Missing script" invites *"that script does not exist, so there is nothing to run"* when the truth is *"wrong directory, and NOTHING was measured"* — so an agent mid-verification moves on believing it verified something. Measured 2026-09-05: 207 of the root's 260 scripts are absent from `packages/operator-core` alone, `test:affected` and `install:safe` among them.
-Verified live (EI-19409936180303618, 2026-08-03).
+⚠ **The in-tree half is NOT the benign one — a persisted in-tree cwd changes which `package.json` a later ROOT `npm run <script>` resolves against.** npm walks up to the NEAREST enclosing workspace, so after a `cd packages/<pkg>/…` the root commands this guide prescribes — `test:affected`, `install:safe`, `doctor`, `gen:*`, `docs:rebuild`, `set-doc-part` — die with `npm error location …/packages/<pkg>` and `Missing script: "<name>"`. **The trap is the READING, not the error**: "Missing script" invites *"that script does not exist"* when the truth is *"wrong directory, and NOTHING was measured"* — so an agent mid-verification moves on believing it verified something.
+Evidence for the in-tree `cd` / ROOT-`npm run` trap. Measured 2026-09-05: **207 of the repo root's 260 scripts are absent from `packages/operator-core` alone** — `test:affected` and `install:safe` among them. So after a persisted in-tree `cd`, a root command does not merely run in the wrong place; for the large majority of scripts it cannot resolve at all, and npm reports that as `Missing script: "<name>"`.
+
+This is the same misreading the guide documents for `npm run --workspace <dir> test`: the message describes the SCRIPT as missing when the true fault is the DIRECTORY, so the natural reading ("that script does not exist, nothing to run") sends an agent onward believing it verified something when nothing was measured.
+
+The defensive forms: scope the `cd` to a subshell — `( cd packages/<pkg> && <cmd> )` — or re-anchor before a root script with `cd "$(git rev-parse --show-superproject-working-tree 2>/dev/null)" 2>/dev/null || cd "$(git rev-parse --show-toplevel)" || exit 1`. The first `cd` is deliberately allowed to fail: `--show-superproject-working-tree` prints an empty string with exit status 0 from the superproject itself, so a non-empty-aware fallback is required.
+
 
 **Why this is dangerous, not just surprising:** a multi-line script with no
 `set -e` does NOT abort on a failed `cd` — it keeps executing every later line
@@ -1992,27 +1997,24 @@ This re-anchor removes the `Missing script` misdirection above at its source.
 ## Scratch probes: name the file `.mts`, not `.ts`
 
 A one-off probe that imports repo modules belongs in the in-tree, gitignored
-`.papercusp/scratch/` — it resolves workspace imports, where `/tmp` does not. **Name it
-`.mts`.** Neither location sits under a `package.json` declaring `"type": "module"`, so
-tsx/esbuild compiles a bare `.ts` there as **CJS**, and any top-level `await` — the
-natural way to write `const { fn } = await import('file:///.../module.ts')` to measure
-something against the real implementation — dies at transform time with:
+`.papercusp/scratch/` — it resolves workspace imports, where `/tmp` does not. **Name it `.mts`.**
+
+Neither location sits under a `package.json` declaring `"type": "module"`, so tsx/esbuild compiles a
+bare `.ts` there as **CJS**, and any top-level `await` — the natural way to write
+`const { fn } = await import('file:///.../module.ts')` to measure something against the real
+implementation — dies at transform time with:
 
 ```
 ERROR: Top-level await is currently not supported with the "cjs" output format
 ```
 
-⚠ **The error names the OUTPUT FORMAT, not the fix.** It reads as a problem with your
-code, so the natural next moves are all wrong ones: hunt for an esbuild/tsconfig knob,
-or restructure the probe into an `async main()` with a `.catch`. Nothing in the code is
-wrong. Rename `probe.ts` → `probe.mts` and it runs unchanged. Measured 2026-09-05: that
-directory holds 34 `.mts` files beside 52 `.ts` — the workaround is being rediscovered
-one agent at a time, which is what this note exists to stop.
+⚠ **The error names the OUTPUT FORMAT, not the fix.** It reads as a problem with your code, so the
+natural next moves are all wrong ones: hunt for an esbuild/tsconfig knob, or restructure the probe
+into an `async main()` with a `.catch`. Nothing in the code is wrong. Rename `probe.ts` → `probe.mts`
+and it runs unchanged.
+Evidence for the `.mts` scratch-probe rule. Measured 2026-09-05: `.papercusp/scratch/` held 34 `.mts` files beside 52 `.ts` — the workaround was being rediscovered one agent at a time, which is what the rule exists to stop.
 
-Pinned by `packages/operator-core/lib/doc-claims/scratch-probe-module-format.test.ts`:
-if a `"type": "module"` package.json is ever dropped over the scratch tree — a real fix
-that makes a bare `.ts` work — that test fails, so this guidance gets corrected instead
-of silently rotting into a lie.
+The claim is pinned by `packages/operator-core/lib/doc-claims/scratch-probe-module-format.test.ts`: if a `"type": "module"` package.json is ever dropped over the scratch tree — a real fix that would make a bare `.ts` work — that test fails, so the guidance gets corrected rather than silently rotting into a lie.
 
 
 ## Long jobs: background them at the LAUNCH, don't poll for them afterwards
