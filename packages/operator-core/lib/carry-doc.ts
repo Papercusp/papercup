@@ -320,6 +320,12 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
    *  clean soft rung passes `false` explicitly so the rendered continuation
    *  never claims a flush that did not happen. */
   boundarySelfRequested?: boolean;
+  /** Is the FINAL tail turn the caller's own turn, still executing as this doc is
+   *  built? Only an in-process caller can know this (session:request-compaction
+   *  runs inside that turn); an external initiator reading a transcript cannot,
+   *  and must leave it false. Credits that turn's answer — see the in-flight
+   *  credit in {@link deriveContinuation} for why the tail cannot infer it. */
+  finalTurnInFlight?: boolean;
   // Test seams — each defaults to the real reader (or a best-effort empty leg).
   buildCarryBriefFn?: (ownerId: string, opts: BuildCarryBriefOpts) => Promise<CarryBrief>;
   buildAutomaticRecoveryFn?: (
@@ -617,6 +623,7 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
       tail,
       opts.boundaryDeliberate ?? false,
       opts.boundarySelfRequested,
+      { finalTurnInFlight: opts.finalTurnInFlight },
     ),
     ...(retractedContinuationRefs.length > 0 ? { retractedContinuationRefs } : {}),
     roleSafety,
@@ -706,6 +713,12 @@ export function deriveContinuation(
   tail: ReadonlyArray<CarryDocTailTurn>,
   boundaryDeliberate: boolean,
   boundarySelfRequested: boolean = boundaryDeliberate,
+  opts: {
+    /** The caller attests that the FINAL tail turn is its own turn, still
+     *  executing right now — knowledge no tail can contain (see the in-flight
+     *  credit below). Default false: a plain historical read is unchanged. */
+    finalTurnInFlight?: boolean;
+  } = {},
 ): CarryDocContinuation {
   // A cut can only have been self-requested if it was also clean/deliberate.
   const selfRequested = boundaryDeliberate && boundarySelfRequested;
@@ -747,6 +760,33 @@ export function deriveContinuation(
     // ments, unrelated final answers and interrupted turns remain open.
     if (turn.speaker === 'assistant' && turn.responseDisposition === 'delivered') {
       settle(turn.requestId);
+    }
+  }
+
+  // EI-23580220186598636 — credit the turn that is WRITING this carry doc.
+  //
+  // A self-requested compaction is issued from INSIDE a tool call, so the
+  // answering turn's latest node is `stop_reason:'tool_use'` ⇒ `'progress'`
+  // (session-ingest.ts:395-404) and can never reach `'end_turn'` ⇒ `'delivered'`
+  // while it is still running the tool that requests the cut. The rule above is
+  // therefore structurally unreachable for it, and the owner message this very
+  // turn is answering reads as open — re-delivered to the successor as its first
+  // prompt, i.e. the owner sees their prompt twice.
+  //
+  // The tail CANNOT supply this: a live in-flight turn and a recorded
+  // acknowledgement are byte-identical (both assistant + 'progress' + the same
+  // requestId). Only the caller knows it is executing inside the live turn, so
+  // it attests that — and by default nothing changes.
+  //
+  // The safety property is `settle`'s requestId keying, not the flag: turn-journal
+  // links an assistant turn to the NEAREST PRECEDING user turn, so a live turn
+  // carries the owner request's id only when it IS the response to it. A different
+  // open owner message keeps a different key, stays unsettled, and keeps the P-010
+  // gate armed. `interrupted` is an explicit non-delivery and never settles.
+  if (opts.finalTurnInFlight && tail.length > 0) {
+    const live = tail[tail.length - 1];
+    if (live.speaker === 'assistant' && live.responseDisposition !== 'interrupted') {
+      settle(live.requestId);
     }
   }
 
@@ -797,6 +837,9 @@ export async function deriveSessionContinuation(opts: {
   transcriptSourceKind?: 'claude' | 'omp' | 'codex';
   boundaryDeliberate?: boolean;
   boundarySelfRequested?: boolean;
+  /** See {@link BuildCarryDocOpts.finalTurnInFlight} — the in-process caller
+   *  attesting that the final tail turn is its own, still-executing turn. */
+  finalTurnInFlight?: boolean;
 }): Promise<CarryDocContinuation> {
   const tail = await defaultGetTail({
     transcriptPath: opts.transcriptPath ?? undefined,
@@ -806,6 +849,7 @@ export async function deriveSessionContinuation(opts: {
     tail.slice(-CARRY_DOC_MAX_TAIL_TURNS),
     opts.boundaryDeliberate ?? false,
     opts.boundarySelfRequested,
+    { finalTurnInFlight: opts.finalTurnInFlight },
   );
 }
 
