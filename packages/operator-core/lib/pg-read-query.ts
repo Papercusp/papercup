@@ -3598,8 +3598,29 @@ export function assertSingleReadStatement(raw: string): string {
  * tables' OWNER with relforcerowsecurity=false — four independent bypasses, any
  * one of them sufficient on its own. `ALTER TABLE … FORCE ROW LEVEL SECURITY`
  * therefore does NOT repair it either (a superuser bypasses RLS even under
- * FORCE), though it would test green against any non-superuser role. Until agent
- * tooling stops connecting as a superuser, THIS is the control — not a
+ * FORCE), though it would test green against any non-superuser role.
+ *
+ * ⛔ Nor is the repair to repoint agent SQL at a non-superuser role, which is the
+ * obvious next move and the one this comment used to recommend. MEASURED
+ * 2026-09-18 on this cluster via `SET ROLE harness_app`:
+ *
+ *   personal_documents ->       0 rows   (vault closed)
+ *   work_items         ->       0 rows   (the fleet's backlog table, SILENTLY empty)
+ *   engineer_issues    -> 214,597 rows   (no RLS, unaffected)
+ *
+ * Both zeros have the SAME cause: `app.workspace_id` is unset, so every
+ * workspace-isolation policy — migration 402 on work_items, 874 here — matches
+ * nothing. Neither zero is a consent decision, and neither is an error a caller
+ * can see. That makes the obvious repair for the work_items regression (set
+ * `app.workspace_id` on agent connections) the exact change that RE-OPENS the
+ * vault: policy 874 is `workspace_id = current_setting('app.workspace_id')`, it
+ * encodes no grant at all, and this cluster holds exactly ONE workspace — the one
+ * every agent already runs in. The role swap closes the vault only for as long as
+ * it is also silently emptying work_items, and fixing that undoes it.
+ *
+ * A data-layer control that actually holds needs the vault policy to encode
+ * CONSENT (or these tables revoked outright from whatever role agent SQL uses),
+ * not merely workspace. Until one exists, THIS is the control — not a
  * belt-and-braces addition to a working one.
  */
 const PERSONAL_VAULT_RELATIONS = [
