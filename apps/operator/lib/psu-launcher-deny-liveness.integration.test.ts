@@ -25,7 +25,22 @@ import {
   claudeBinaryAvailable,
   bareDeniedToolNames,
 } from './advertised-tools.js';
-import { suLaunchArgs, roleLaunchArgs } from '../scripts/psu-launcher.mjs';
+import { fileURLToPath } from 'node:url';
+import {
+  suLaunchArgs,
+  roleLaunchArgs,
+  contextTrimmingEnv,
+} from '../scripts/psu-launcher.mjs';
+
+/** Committed fixture — see its header for why an MCP server is mandatory for the P-007 case. */
+const STUB_MCP_SERVER = fileURLToPath(
+  new URL('./psu-launcher-deny-liveness.stub-mcp-server.mjs', import.meta.url),
+);
+const STUB_MCP_CONFIG = JSON.stringify({
+  mcpServers: {
+    denyLivenessStub: { command: process.execPath, args: [STUB_MCP_SERVER] },
+  },
+});
 
 const AVAILABLE = claudeBinaryAvailable();
 
@@ -140,6 +155,60 @@ describe.skipIf(!AVAILABLE)(
             `environment-gated (add it to KNOWN_NOT_ADVERTISED with a reason). ` +
             `Current catalog: [${catalog.join(', ')}].`,
         ).toEqual([]);
+      },
+      240_000,
+    );
+
+    it(
+      'the production launch advertises NO DeferredToolPlaceholder (P-007 contradiction)',
+      async () => {
+        // ENABLE_TOOL_SEARCH exists to force claude's native schema deferral back on for
+        // gateway-routed sessions; that deferral is conditional on ToolSearch EXISTING, which
+        // psu denies. Setting both enabled nothing and injected a `DeferredToolPlaceholder`
+        // (defer_loading: true) standing in for an EMPTY deferred set, into EVERY request of
+        // EVERY psu claude session. contextTrimmingEnv now DERIVES the env from the deny list
+        // so the pair cannot be expressed; this asserts that against a real claude rather than
+        // against our own unit-level belief about what the launcher emits.
+        const suDeny = denyFlagsOf(suLaunchArgs('claude', files).args);
+        const prodEnv = contextTrimmingEnv('claude') as Record<string, string | undefined>;
+
+        // ⚠ AN MCP SERVER IS MANDATORY HERE. DeferredToolPlaceholder is only ever advertised
+        // when MCP servers exist, so an MCP-empty capture reports it absent unconditionally and
+        // this guard would pass while testing nothing.
+        const preFix = await captureAdvertisedTools(suDeny, {
+          mcpConfig: STUB_MCP_CONFIG,
+          env: { ENABLE_TOOL_SEARCH: 'true' },
+        });
+        const production = await captureAdvertisedTools(suDeny, {
+          mcpConfig: STUB_MCP_CONFIG,
+          env: { ENABLE_TOOL_SEARCH: prodEnv.ENABLE_TOOL_SEARCH },
+        });
+
+        expect(preFix, 'pre-fix arm captured nothing').not.toBeNull();
+        expect(production, 'production arm captured nothing').not.toBeNull();
+
+        // POSITIVE CONTROL: the pre-fix combination MUST produce the placeholder. Without this
+        // the absence below could just mean the capture, the stub server, or this claude build
+        // never emits one — the same vacuous-pass shape the deny guard above guards against.
+        expect(
+          preFix!.names,
+          `positive control failed: forcing ENABLE_TOOL_SEARCH=true alongside the ToolSearch ` +
+            `deny did NOT produce a DeferredToolPlaceholder, so the absence assertion below ` +
+            `proves nothing. Observed: [${preFix!.names.join(', ')}]`,
+        ).toContain('DeferredToolPlaceholder');
+
+        // THE GUARD.
+        expect(
+          production!.names,
+          `psu's production launch advertises a DeferredToolPlaceholder. That means ` +
+            `ENABLE_TOOL_SEARCH is being emitted alongside the ToolSearch deny again: it ` +
+            `enables no deferral and ships a placeholder for an empty deferred set on every ` +
+            `request. Check contextTrimmingEnv / nativeDeferralReachable in psu-launcher.mjs.`,
+        ).not.toContain('DeferredToolPlaceholder');
+
+        // And the placeholder must not merely be absent — it must be absent BECAUSE the env is
+        // withheld, which is the property that makes the contradiction unrepresentable.
+        expect(prodEnv.ENABLE_TOOL_SEARCH).toBeUndefined();
       },
       240_000,
     );

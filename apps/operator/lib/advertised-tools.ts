@@ -21,6 +21,8 @@ export interface AdvertisedTool {
   name: string;
   /** Serialized size of this tool's full definition, in bytes. */
   bytes: number;
+  /** True when the tool carries `defer_loading: true` (schema withheld pending a search). */
+  deferred: boolean;
 }
 
 export interface AdvertisedToolCapture {
@@ -89,9 +91,15 @@ function writeStubSse(res: http.ServerResponse): void {
 /**
  * Spawn `claude -p` with `extraArgs` and return the advertised tool list.
  *
- * MCP servers are disabled (`--strict-mcp-config` + an empty config) so the
+ * MCP servers are disabled BY DEFAULT (`--strict-mcp-config` + an empty config) so the
  * capture is the NATIVE surface only and cannot vary with whatever MCP servers
  * happen to be configured on the running host.
+ *
+ * ⚠ PASS `mcpConfig` WHEN THE PROPERTY UNDER TEST INVOLVES DEFERRAL. `ToolSearch` and
+ * `DeferredToolPlaceholder` are advertised ONLY when MCP servers exist, so an MCP-EMPTY
+ * capture reports "absent" for both no matter what the flags say — a null result that looks
+ * exactly like a working deny (P-007). Point this at a stub server to give deferral a surface
+ * to act on; `psu-launcher-deny-liveness.stub-mcp-server.mjs` is the committed fixture.
  *
  * Returns null when no request was captured — treat that as "not measured",
  * never as "the list was empty": a failed capture and a perfect deny look
@@ -99,9 +107,10 @@ function writeStubSse(res: http.ServerResponse): void {
  */
 export async function captureAdvertisedTools(
   extraArgs: string[] = [],
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; mcpConfig?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<AdvertisedToolCapture | null> {
   const timeoutMs = opts.timeoutMs ?? 90_000;
+  const mcpConfig = opts.mcpConfig ?? '{"mcpServers":{}}';
   const captures: AdvertisedToolCapture[] = [];
 
   const server = http.createServer((req, res) => {
@@ -110,11 +119,14 @@ export async function captureAdvertisedTools(
     req.on('end', () => {
       if (req.url?.includes('/v1/messages')) {
         try {
-          const parsed = JSON.parse(body) as { tools?: { name: string }[] };
+          const parsed = JSON.parse(body) as {
+            tools?: { name: string; defer_loading?: boolean }[];
+          };
           if (Array.isArray(parsed.tools)) {
             const tools = parsed.tools.map((t) => ({
               name: t.name,
               bytes: Buffer.byteLength(JSON.stringify(t), 'utf8'),
+              deferred: t.defer_loading === true,
             }));
             captures.push({
               tools,
@@ -156,6 +168,13 @@ export async function captureAdvertisedTools(
       ])
         delete env[k];
 
+      // Caller-supplied env LAST so a test can force or clear a key (e.g. ENABLE_TOOL_SEARCH)
+      // without losing the auth/route scrubbing above. An explicit `undefined` clears.
+      for (const [k, v] of Object.entries(opts.env ?? {})) {
+        if (v === undefined) delete env[k];
+        else env[k] = v;
+      }
+
       const child = spawn(
         'claude',
         [
@@ -163,7 +182,7 @@ export async function captureAdvertisedTools(
           'say ok',
           '--strict-mcp-config',
           '--mcp-config',
-          '{"mcpServers":{}}',
+          mcpConfig,
           ...extraArgs,
         ],
         { env, cwd: '/tmp', stdio: ['ignore', 'pipe', 'pipe'] },
