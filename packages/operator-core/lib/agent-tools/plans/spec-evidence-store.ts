@@ -641,6 +641,14 @@ interface EvidenceRow extends CurrentnessRow {
   binding_fingerprint: string;
   created_by: string;
   created_at: Date | string;
+  /**
+   * Withdrawal stamp (migration 1174). NULL on live proof; set all-three-or-none, once,
+   * and never cleared — the row itself is never deleted, so a withdrawn claim stays
+   * auditable. Only an `includeRetracted` read can see a row with these set.
+   */
+  retracted_at: Date | string | null;
+  retracted_by: string | null;
+  retraction_reason: string | null;
   provisionalProofBase?: boolean;
   provisionalScorecard?: ProvisionalScorecardProof;
 }
@@ -694,6 +702,23 @@ export interface ListSpecEvidenceOptions {
   /** Provenance for a replayed current tuple. */
   currentProvenance?: 'server-measured' | 'partially-server-measured';
   currentness?: Array<'current' | 'stale' | 'unknown'>;
+  /**
+   * Include bindings that were deliberately WITHDRAWN (migration 1174, decision D-011).
+   *
+   * Defaults to false, and that default is the whole point: the spec-test-adequacy
+   * evaluator scans EVERY row of a (spec, revision) cohort — execution-integrity fails
+   * the clause if ANY binding names a run that was never collected or executed, and
+   * freshness fails it if ANY binding has gone stale — so one malformed binding
+   * permanently bricks its clause. Appending a corrected row cannot outrank the bad one
+   * (this loader has no DISTINCT ON; both rows are read), and spec_revision is the only
+   * partitioning dimension, so before 1174 the only escape was bumping the clause
+   * revision purely to shed the failing evidence. D-011 rules that out as gate evasion.
+   *
+   * So a retraction is what a default read must NOT see, or it repairs nothing. Pass
+   * true only for an AUDIT read — one that must show what was withdrawn, by whom and
+   * why — never from an evaluator, a gate, or anything that counts evidence.
+   */
+  includeRetracted?: boolean;
   limit?: number;
 }
 
@@ -899,6 +924,77 @@ export async function listWorkItemSpecRevisionEdges(options: {
   }));
 }
 
+export interface RetractSpecEvidenceOptions {
+  harnessSlug?: string;
+  /**
+   * The exact binding row to withdraw, as returned by plans:get-spec-evidence.
+   *
+   * Deliberately the row id and never a (workItemId, evidenceRef) pair: changed
+   * fingerprints APPEND history, so that pair routinely matches several rows and a
+   * retraction is one-way and per-row. Targeting by id forces the caller to have
+   * actually looked at the row they are withdrawing.
+   */
+  bindingId: number;
+  reason: string;
+  actorId: string;
+}
+
+export interface RetractedBindingRow {
+  id: number;
+  work_item_id: string;
+  plan_slug: string;
+  spec_id: string;
+  spec_revision: number;
+  evidence_kind: SpecEvidenceKind;
+  evidence_ref: string;
+  retracted_at: Date | string | null;
+  retracted_by: string | null;
+  retraction_reason: string | null;
+}
+
+/**
+ * Record a one-way, attributable withdrawal of a single evidence binding (D-011).
+ *
+ * The row is never deleted and never edited — it acquires a stamp, and default reads
+ * stop counting it while an `includeRetracted` audit read still returns it in full.
+ * This is the ONLY sanctioned repair for a malformed binding: because the adequacy
+ * evaluator fails a clause if ANY bound row is uncollected/unexecuted or stale, and
+ * spec_revision is its only partitioning dimension, the alternative was bumping a
+ * clause revision purely to shed failing evidence — which D-011 forbids as gate
+ * evasion, since a bar whose hash moved has genuinely different meaning.
+ */
+export async function retractSpecEvidence(options: RetractSpecEvidenceOptions) {
+  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const reason = options.reason.trim();
+  const actorId = options.actorId.trim();
+  return withWorkspace(scope.workspaceId, async (tx) => {
+    const [existing] = await tx<RetractedBindingRow[]>`
+      SELECT id, work_item_id, plan_slug, spec_id, spec_revision,
+             evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason
+        FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${scope.workspaceId}
+         AND harness_slug = ${scope.harnessSlug}
+         AND id = ${options.bindingId}`;
+    // Not-found and already-retracted are reported as statuses rather than thrown: a
+    // retraction is idempotent from the caller's side, and the trigger's own
+    // re-retraction error would otherwise surface as an opaque 55000 for the benign
+    // case of replaying the same repair.
+    if (!existing) return { status: 'not_found' as const, bindingId: options.bindingId, binding: null };
+    if (existing.retracted_at != null) return { status: 'already_retracted' as const, bindingId: existing.id, binding: existing };
+    const [updated] = await tx<RetractedBindingRow[]>`
+      UPDATE harness_shared.spec_evidence_bindings
+         SET retracted_at = now(), retracted_by = ${actorId}, retraction_reason = ${reason}
+       WHERE workspace_id = ${scope.workspaceId}
+         AND harness_slug = ${scope.harnessSlug}
+         AND id = ${options.bindingId}
+         AND retracted_at IS NULL
+      RETURNING id, work_item_id, plan_slug, spec_id, spec_revision,
+                evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason`;
+    if (!updated) return { status: 'already_retracted' as const, bindingId: existing.id, binding: existing };
+    return { status: 'retracted' as const, bindingId: updated.id, binding: updated };
+  });
+}
+
 export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   // No namespace selected can never match a row, so say so without a round-trip. Kept
   // explicit rather than leaning on `= ANY('{}')`: a reader must not have to know that
@@ -913,6 +1009,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   const evidenceKinds = options.evidenceKinds ?? [];
   const evidenceRefs = options.evidenceRefs ?? [];
   const limit = options.limit ?? 200;
+  const includeRetracted = options.includeRetracted === true;
   const specRevision = options.specRevision;
   const specFingerprint = options.specFingerprint;
   const rows = await withWorkspace(
@@ -932,6 +1029,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            b.test_fingerprint, b.fixture_fingerprint, b.rubric_fingerprint,
            b.environment_fingerprint, b.coverage_evidence_ref, b.test_run_id,
            b.details, b.observed_at, b.binding_fingerprint, b.created_by, b.created_at,
+           b.retracted_at, b.retracted_by, b.retraction_reason,
            ${specIsCurrent} AS spec_is_current,
            (b.coverage_evidence_ref IS NOT NULL AND EXISTS (
               SELECT 1 FROM harness_shared.coverage_evidence ce
@@ -962,6 +1060,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
        AND (${sourceValIds.length} = 0 OR c.source_val_id = ANY(${sourceValIds}::text[]))
        AND (${evidenceKinds.length} = 0 OR b.evidence_kind = ANY(${evidenceKinds}::text[]))
        AND (${evidenceRefs.length} = 0 OR b.evidence_ref = ANY(${evidenceRefs}::text[]))
+       AND (${includeRetracted}::boolean IS TRUE OR b.retracted_at IS NULL)
      ORDER BY b.observed_at DESC, b.id DESC
       LIMIT ${limit}`;
       const scorecardIds = [

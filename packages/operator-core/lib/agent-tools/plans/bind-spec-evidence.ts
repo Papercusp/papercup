@@ -11,6 +11,7 @@ import {
   bindSpecEvidence,
   measureRepoFilesEvidence,
   repoFilesEvidenceMeasurementSchema,
+  retractSpecEvidence,
   SPEC_EVIDENCE_KINDS,
 } from './spec-evidence-store';
 import { SPEC_PROOF_OBLIGATION_ID_RE } from './spec-clauses-store';
@@ -152,6 +153,31 @@ export const bindingSchema = z
     }
   });
 
+/**
+ * Withdraw one already-bound piece of evidence (decision D-011).
+ *
+ * Lives on THIS verb rather than a new one deliberately: retraction is the inverse of
+ * binding over the same rows, the same scope resolution and the same bulk envelope, so
+ * forking `plans:retract-spec-evidence` would duplicate all of it to express one flag.
+ */
+const retractionSchema = z.object({
+  bindingId: z
+    .number()
+    .int()
+    .positive()
+    .describe(
+      'The exact binding row id, from plans:get-spec-evidence. Never a (workItemId, evidenceRef) pair: changed fingerprints append history, so that pair routinely matches several rows.',
+    ),
+  reason: z
+    .string()
+    .trim()
+    .min(12)
+    .max(2000)
+    .describe(
+      'Why this proof is being withdrawn (for example: the bound run was never collected or executed). Required and stored on the row — a retraction with no stated cause is indistinguishable from evidence-shedding, which D-011 forbids.',
+    ),
+});
+
 const argsSchema = z
   .object({
     harness: harnessArg,
@@ -165,9 +191,15 @@ const argsSchema = z
       ),
     binding: bindingSchema.optional().describe('Single-binding shorthand (n=1 of items).'),
     items: z.array(bindingSchema).min(1).max(500).optional(),
+    retract: z
+      .array(retractionSchema)
+      .min(1)
+      .max(100)
+      .optional()
+      .describe('Withdraw already-bound evidence instead of appending it. Mutually exclusive with binding/items.'),
   })
-  .refine((args) => Boolean(args.binding) !== Boolean(args.items), {
-    message: 'pass exactly one of binding or items',
+  .refine((args) => [args.binding, args.items, args.retract].filter(Boolean).length === 1, {
+    message: 'pass exactly one of binding, items or retract',
   });
 
 const OK = new Set(['created', 'unchanged']);
@@ -175,7 +207,7 @@ const OK = new Set(['created', 'unchanged']);
 export default defineTool({
   name: 'plans:bind-spec-evidence',
   description:
-    'Bind tests, fixtures, coverage-census rows, mutations/counterexamples, checks, manual proof, or operational evidence to an exact immutable spec revision and work item. Repository-backed evidence may pass measurement so the server hashes and later re-measures bounded source/test file sets; opaque evidence passes sourceFingerprint and remains caller-attested. Legacy coversVALs are accepted as sourceValId aliases. Exact replays are idempotent; changed fingerprints append history.',
+    'Bind tests, fixtures, coverage-census rows, mutations/counterexamples, checks, manual proof, or operational evidence to an exact immutable spec revision and work item. Repository-backed evidence may pass measurement so the server hashes and later re-measures bounded source/test file sets; opaque evidence passes sourceFingerprint and remains caller-attested. Legacy coversVALs are accepted as sourceValId aliases. Exact replays are idempotent; changed fingerprints append history. The retract op withdraws a bound row by id with a required reason — stamped, never deleted, and excluded from default reads.',
   guidance: {
     when: 'Recording execution proof for one or more plan specs before work-item completion or plan acceptance.',
     notWhen: 'Authoring behavior — plans:set-specs. Running a test — testing:run.',
@@ -192,6 +224,27 @@ export default defineTool({
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
     const actorId = resolveAgentIdentity(ctx).ownerId;
+    if (args.retract) {
+      const retractions = await runBulk(
+        args.retract,
+        async (item) => {
+          const result = await retractSpecEvidence({
+            harnessSlug,
+            bindingId: item.bindingId,
+            reason: item.reason,
+            actorId,
+          });
+          // already_retracted is a SUCCESS: the repair is idempotent, so replaying it
+          // must not read as a failure. Only a binding that does not exist in this
+          // scope is an error — that means the caller targeted the wrong row.
+          return result.status === 'not_found'
+            ? { ok: false as const, error: 'not_found' as const, ...result }
+            : { ok: true as const, ...result };
+        },
+        { keyOf: (item) => ({ bindingId: item.bindingId }) },
+      );
+      return bulkContent(retractions);
+    }
     const bindings = args.items ?? [args.binding!];
     const measurementScope = bindings.some((binding) => binding.measurement)
       ? await resolvePlanScope({ harnessSlug })
