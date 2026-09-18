@@ -155,3 +155,53 @@ describe('audit-release-bundle.py release false-positive controls', () => {
     expect(fs.readFileSync(path.join(docs, 'nested/guide.html'), 'utf8')).toBe('<h1>keep me</h1>');
   });
 });
+
+describe('audit-release-bundle.py — the owner-name check does not rest on the denylist', () => {
+  // PINS the claim release-content-scrub.ts makes about this file. The TS scrub drops a
+  // git-derived name at COLLECTION time; this gate keeps it (so a bot's name is still
+  // REDACTED) and refuses one layer later instead. That reads like a disagreement about
+  // who the owner is, and a future reader "aligning" them would reintroduce the denylist
+  // the TS side deliberately abandoned. What actually makes the divergence safe is that
+  // has_owner_name_literal() ignores the literal set entirely and consults only the env.
+
+  /** Both owner-name predicates, without touching this box's real git config. */
+  function ownerNamePredicates(
+    name: string,
+    ownerEnv?: string,
+  ): { denylisted: boolean; detectable: boolean } {
+    const source = [
+      'import json, runpy, sys',
+      'ns = runpy.run_path(sys.argv[1])',
+      'name = sys.argv[2]',
+      'print(json.dumps({',
+      '    "denylisted": bool(ns["looks_like_automation_identity"](name)),',
+      '    "detectable": bool(ns["has_owner_name_literal"]({"build-git-name": name})),',
+      '}))',
+    ].join('\n');
+    const env = { ...process.env };
+    delete env[OWNER_NAME_ENV];
+    if (ownerEnv !== undefined) env[OWNER_NAME_ENV] = ownerEnv;
+    const r = spawnSync('python3', ['-c', source, AUDIT, name], { env, encoding: 'utf8' });
+    if (r.error) throw r.error;
+    expect(r.status, r.stderr).toBe(0);
+    return JSON.parse(r.stdout) as { denylisted: boolean; detectable: boolean };
+  }
+
+  // An AUTOMATION spelling the denylist does not enumerate (never an owner identity). If
+  // someone later adds it to AUTOMATION_NAME_RE, the premise assertion below fails loudly
+  // rather than the pin silently testing nothing — pick another unenumerated spelling at
+  // that point, do not delete the case.
+  const UNENUMERATED_BOT = 'papercusp-buildbox';
+
+  it('a bot name the denylist MISSES still cannot satisfy the owner-name check', () => {
+    const { denylisted, detectable } = ownerNamePredicates(UNENUMERATED_BOT);
+    expect(denylisted).toBe(false); // premise: this is the fails-open case, not a caught one
+    expect(detectable).toBe(false); // and it refuses anyway — the denylist is not load-bearing
+  });
+
+  it('only the EXPLICIT owner name satisfies it — the calibration control', () => {
+    // Without this, a has_owner_name_literal() hard-wired to False would pass the case
+    // above and look like a stronger gate than it is.
+    expect(ownerNamePredicates(UNENUMERATED_BOT, STANDIN_OWNER).detectable).toBe(true);
+  });
+});
