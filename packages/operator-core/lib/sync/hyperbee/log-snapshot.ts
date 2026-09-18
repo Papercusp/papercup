@@ -107,6 +107,19 @@ export interface SnapshotPayload {
    * skip the ops the missing chunks summarize.
    */
   chunkCount?: number;
+  /**
+   * Tables this snapshot's own fold DROPPED (`SnapshotRowFolder.excludeTables`),
+   * sorted. ABSENT ⇒ either nothing was excluded, or the set predates this field.
+   *
+   * Recorded because the rows alone cannot express it: an excluded table is simply
+   * missing, indistinguishable from a table that never had rows. Without this,
+   * anyone seeding a fold FROM this snapshot cannot tell whether it summarizes the
+   * prefix completely or only the part some other producer cared about — and there
+   * are two producers on the live own log with different sets (`boot.ts` filters
+   * `SEED_EXCLUDED_TABLES` on the release-cut head-snapshot route, while routine
+   * compaction excludes nothing). `conflictingSnapshotExclusion` is the consumer.
+   */
+  excludeTables?: string[];
 }
 
 /**
@@ -422,6 +435,7 @@ function buildSnapshotChunkOp(opts: {
   author_pubkey: string;
   ts: number;
   schema_version: number;
+  excludeTables?: readonly string[];
 }): PeerLogOp {
   const payload: SnapshotPayload = {
     coversUpTo: opts.coversUpTo,
@@ -429,6 +443,11 @@ function buildSnapshotChunkOp(opts: {
     chunkIdx: opts.chunkIdx,
     chunkCount: opts.chunkCount,
   };
+  // Omitted when nothing was excluded, so an unfiltered snapshot stays byte-for-byte
+  // what it was before this field existed. Sorted for a stable serialization.
+  if (opts.excludeTables && opts.excludeTables.length > 0) {
+    payload.excludeTables = [...opts.excludeTables].sort();
+  }
   return {
     type: 'put',
     table: SNAPSHOT_TABLE_TAG,
@@ -455,6 +474,8 @@ export function buildSnapshotOps(opts: {
   ts: number;
   schema_version: number;
   maxChunkBytes?: number;
+  /** Recorded on every chunk; see `SnapshotPayload.excludeTables`. */
+  excludeTables?: readonly string[];
 }): PeerLogOp[] {
   // EI-1688: pass `now` (= the snapshot ts) so old tombstones GC out at production.
   const rows = buildSnapshotRows(opts.ops, { now: opts.ts });
@@ -476,6 +497,8 @@ export function buildSnapshotOpsFromRows(opts: {
   ts: number;
   schema_version: number;
   maxChunkBytes?: number;
+  /** Recorded on every chunk; see `SnapshotPayload.excludeTables`. */
+  excludeTables?: readonly string[];
 }): PeerLogOp[] {
   const chunks = chunkSnapshotRows(opts.rows, opts.maxChunkBytes ?? SNAPSHOT_MAX_CHUNK_BYTES);
   const chunkCount = chunks.length;
@@ -488,6 +511,7 @@ export function buildSnapshotOpsFromRows(opts: {
       author_pubkey: opts.author_pubkey,
       ts: opts.ts,
       schema_version: opts.schema_version,
+      excludeTables: opts.excludeTables,
     }),
   );
 }
@@ -608,6 +632,42 @@ const PRODUCER_SNAPSHOT_SCAN_LOOKBACK = SNAPSHOT_COMPACT_EVERY_OPS * 4;
  * for this invocation: folding from zero remains correct and is preferable to
  * guessing that a partial set summarizes history.
  */
+/**
+ * Decide whether a discovered prior snapshot may SEED a fold that excludes
+ * `callerExcluded` — returning the offending table name, or null when safe.
+ *
+ * Direction is the whole point, and it is asymmetric. A table the snapshot dropped
+ * but THIS fold wants to KEEP is unrecoverable from the snapshot's rows, so seeding
+ * would silently yield a THINNER result than the full fold it replaces — on the seed
+ * path, shipped to a customer as if the source had no such rows. The converse is
+ * harmless: a table the snapshot KEPT but this fold drops is filtered again by
+ * `SnapshotRowFolder.add`, which applies `excludeTables` to expanded chunk rows too.
+ *
+ * ⚠ An ABSENT record is deliberately TRUSTED rather than treated as a conflict, and
+ * that is a bounded, self-closing exposure rather than an oversight:
+ *  - every snapshot already on a live log predates this field, and refusing the seek
+ *    for them would force exactly the from-zero fold `produceLogSnapshot` documents
+ *    as UNCOMPLETABLE on the live log (five successive release cuts died there), so
+ *    fail-closed here would regress a fixed critical bug to guard a narrower one;
+ *  - legacy sets age out within one compaction cadence (`SNAPSHOT_COMPACT_EVERY_OPS`),
+ *    after which every snapshot on the log carries its own provenance;
+ *  - the only table any producer in this tree has ever dropped is `presence`
+ *    (`SEED_EXCLUDED_TABLES`), which self-heals within one 30s keep-alive.
+ */
+function conflictingSnapshotExclusion(
+  seed: ProducerSnapshotSeed,
+  callerExcluded: ReadonlySet<string>,
+): string | null {
+  for (const chunk of seed.chunks) {
+    const recorded = (chunk.value as SnapshotPayload | undefined)?.excludeTables;
+    if (!recorded) continue;
+    for (const table of recorded) {
+      if (!callerExcluded.has(table)) return table;
+    }
+  }
+  return null;
+}
+
 async function findLatestProducerSnapshot(
   log: Pick<OwnLog, 'length' | 'get'>,
 ): Promise<ProducerSnapshotSeed | null> {
@@ -937,11 +997,27 @@ export async function produceLogSnapshot(
   // chunk span, so the producer's second invocation is O(new tail), not
   // O(history). If no complete set is discoverable in the bounded scan window,
   // foldedUpTo remains zero and the existing full-fold behavior is preserved.
+  const ownExcluded = new Set(opts.excludeTables ?? []);
   const priorSnapshot = await findLatestProducerSnapshot(ownLog);
   let foldedUpTo = 0;
   if (priorSnapshot) {
-    for (const chunk of priorSnapshot.chunks) folder.add(chunk);
-    foldedUpTo = priorSnapshot.coversUpTo + priorSnapshot.chunkCount;
+    // TWO PRODUCERS SHARE THIS LOG WITH DIFFERENT SETS (boot.ts): the release-cut
+    // head-snapshot route filters `SEED_EXCLUDED_TABLES`, routine compaction excludes
+    // nothing. `findLatestProducerSnapshot` returns whichever is NEWEST, so without
+    // this check an unfiltered compaction could seed from the filtered set and then
+    // republish it as if nothing had been excluded — dropping those rows from the
+    // log's snapshot lineage permanently.
+    const conflict = conflictingSnapshotExclusion(priorSnapshot, ownExcluded);
+    if (conflict) {
+      console.error(
+        `[snapshot] own compaction: prior snapshot at ${priorSnapshot.coversUpTo} excluded ` +
+          `table '${conflict}' which this fold keeps; folding from 0 instead of seeding ` +
+          `(correct, but O(history) — see conflictingSnapshotExclusion)`,
+      );
+    } else {
+      for (const chunk of priorSnapshot.chunks) folder.add(chunk);
+      foldedUpTo = priorSnapshot.coversUpTo + priorSnapshot.chunkCount;
+    }
   }
 
   /**
@@ -1009,6 +1085,7 @@ export async function produceLogSnapshot(
     ts: opts.now,
     schema_version: opts.schemaVersion,
     maxChunkBytes: opts.maxChunkBytes,
+    excludeTables: opts.excludeTables ? [...ownExcluded] : undefined,
   });
   // Append the whole set in ONE batch so the chunks land CONTIGUOUSLY at
   // [coversUpTo, coversUpTo + N) — the reader recognizes the set by that span and
@@ -1117,7 +1194,47 @@ export async function produceFilteredSnapshotIntoLog(
           `the scan remains live and will not be aborted by this diagnostic`,
       );
     });
-  await foldLogRangeInto(sourceLog, folder, 0, sourceLog.length, {
+  // ── SEED FROM THE PRIOR SNAPSHOT, LIKE `produceLogSnapshot` ALREADY DOES ─────────
+  //
+  // This fold used to start at a HARDCODED 0 while its sibling (:940) sought the latest
+  // producer snapshot and folded only the new tail, documented "O(new tail), not
+  // O(history)". The seed path never got that treatment, and the cost is not a constant
+  // factor — it is re-expanding every SUPERSEDED snapshot generation still sitting in the
+  // log's tail. A snapshot chunk block carries ~1,356 rows where a raw put carries ~1, so
+  // a tiny minority of blocks dominates the scan.
+  //
+  // MEASURED on the failed 0.0.21 cut (2026-09-18, /tmp/papercup-release-cut.log, 199
+  // time-throttled progress lines at CUT_SEED_FILTERED_PROGRESS_INTERVAL_MS=60_000, so
+  // each delta IS a blocks-per-minute rate): deciles 0-8 are FLAT at 44k-91k blocks/min,
+  // then the tail collapses to exactly 256 (= SNAPSHOT_READ_CONCURRENCY, one read window
+  // per >=60s). 96 of 198 intervals — about half the ~7h wall clock — advanced 1.1% of the
+  // blocks. 39,340,332 row-projections to yield 1,415,542 rows: 27.7x redundant.
+  //
+  // The same-run control is what sizes this, rather than an estimate: that cut also built
+  // a COMPLETE head snapshot over the same data via the seeking path in 435,920ms (7.3
+  // min, 1045 chunks, 1,416,626 rows) — and then folded from 0 anyway, ignoring it. Same
+  // box, same data, same fold primitive: 7.3 minutes with the seek, ~7 hours without.
+  const priorSnapshot = await findLatestProducerSnapshot(sourceLog);
+  let foldFrom = 0;
+  if (priorSnapshot) {
+    // The guard that makes this safe to ship rather than merely fast. See
+    // `conflictingSnapshotExclusion`: seeding from a snapshot that dropped a table THIS
+    // seed keeps would ship a silently THINNER seed, which is strictly worse than a slow
+    // one. Falling back to the full fold is always correct.
+    const conflict = conflictingSnapshotExclusion(priorSnapshot, new Set(opts.excludeTables ?? []));
+    if (conflict) {
+      console.error(
+        `[snapshot] filtered source scan: prior snapshot at ${priorSnapshot.coversUpTo} ` +
+          `excluded table '${conflict}' which this seed keeps; folding the full source ` +
+          `instead of seeding (correct, but O(history))`,
+      );
+    } else {
+      for (const chunk of priorSnapshot.chunks) folder.add(chunk);
+      foldFrom = priorSnapshot.coversUpTo + priorSnapshot.chunkCount;
+    }
+  }
+
+  await foldLogRangeInto(sourceLog, folder, foldFrom, sourceLog.length, {
     phase: FILTERED_SNAPSHOT_SCAN_PHASE,
     coreKey: (sourceLog as Partial<Pick<OwnLog, 'keyHex'>>).keyHex,
     onProgress: opts.onProgress,
@@ -1139,6 +1256,9 @@ export async function produceFilteredSnapshotIntoLog(
     ts: opts.now,
     schema_version: opts.schemaVersion,
     maxChunkBytes: opts.maxChunkBytes,
+    // What THIS fold dropped, so anyone folding the shipped seed forward inherits the
+    // same protection rather than having to know the cutter's policy.
+    excludeTables: opts.excludeTables ? [...new Set(opts.excludeTables)] : undefined,
   });
 
   if (snapshotOps.length === 0) {
