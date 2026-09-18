@@ -195,6 +195,8 @@ import {
   NATIVE_SCHEDULER_DENY_FLAG,
   SU_SCHEDULER_TOOLS_DENY_FLAG,
   NATIVE_TOOL_SEARCH_DENY_FLAG,
+  nativeDeferralReachable,
+  healContextTrimmingEnv,
   NO_SUBAGENTS_DENY_FLAG,
   subagentGatewayRiskNotice,
   OWNER_DESKTOP_NOTIFY_DENY_FLAG,
@@ -279,7 +281,11 @@ import {
   NATIVE_SCHEDULER_SKILL_DENY,
   NATIVE_SCHEDULER_DENY,
 } from "@papercusp/orchestrator/native-scheduler-deny";
-import { nativeToolSearchDenyFlag } from "@papercusp/orchestrator/native-tool-search-deny";
+import {
+  nativeToolSearchDenyFlag,
+  nativeDeferralReachable as canonicalNativeDeferralReachable,
+  nativeDeferralEnv as canonicalNativeDeferralEnv,
+} from "@papercusp/orchestrator/native-tool-search-deny";
 import { noSubagentToolsDenyFlag } from "@papercusp/orchestrator/no-subagent-deny";
 import { ownerDesktopNotifyDenyFlag } from "@papercusp/orchestrator/owner-desktop-notify-deny";
 import {
