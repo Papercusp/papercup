@@ -67,7 +67,7 @@ const CLIENT_OVERLAYS = ['papercusp-su.claude.md', 'papercusp-su.codex.md', 'pap
  * worth seeing.
  */
 const ENGINEER_RENDER_COMPOSITION: readonly CompositionProbe[] = [
-  { component: 'the base playbook', literal: '## Working in a shared environment' },
+  { component: 'the base playbook', literal: '## Working in the shared dev environment' },
   { component: 'the Claude client overlay', literal: 'You are running under Claude Code' },
   { component: 'the compaction protocol', literal: '## Managing your own compaction' },
   { component: 'the project guide (CLAUDE.md)', literal: '# Papercup — agent guide' },

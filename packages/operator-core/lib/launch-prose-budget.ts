@@ -237,15 +237,41 @@ export interface RatchetResult {
 }
 
 /**
- * Lower each ceiling to its current measurement. STRICTLY DOWN-ONLY: a measurement at
- * or above the ceiling leaves it untouched, so the ratchet can never be used to absorb
- * a regression. Raising a ceiling is a deliberate edit to the baseline file with a
- * stated reason — that asymmetry is what makes this a ratchet rather than a rubber stamp.
+ * The allowance a ratcheted ceiling keeps above the measurement: the ceiling is the
+ * measurement rounded UP to the next whole kilobyte, so a surface carries at most 999 B
+ * of slack.
+ *
+ * WHY NOT ZERO. A zero-slack ceiling is the literal reading of "seeded at the current
+ * measured size", and it is the wrong engineering call for a SHARED gate: a typo fix or
+ * a three-word clarification that nets +8 B would red the tree for the whole fleet, and
+ * `--ratchet` could not clear it (it only lowers), so the remedy would be a manual
+ * ceiling raise — turning every prose touch-up into a budget negotiation. The growth
+ * class this guard exists to catch is not measured in bytes: a new paragraph is ~1 KB and
+ * a new section several, both of which still red at this granularity. The allowance buys
+ * ordinary editing and gives up nothing real.
+ *
+ * Rounding UP also makes the ratchet IDEMPOTENT — re-running it on an unchanged tree
+ * produces a byte-identical baseline instead of oscillating.
+ */
+export const RATCHET_GRANULARITY_BYTES = 1_000;
+
+/** The ceiling a measurement ratchets to: the next whole kilobyte at or above it. */
+export function ceilingForMeasurement(bytes: number, granularity = RATCHET_GRANULARITY_BYTES): number {
+  return Math.ceil(bytes / granularity) * granularity;
+}
+
+/**
+ * Lower each ceiling toward its current measurement. STRICTLY DOWN-ONLY: a proposed
+ * ceiling at or above the current one leaves it untouched, so the ratchet can never be
+ * used to absorb a regression. Raising a ceiling is a deliberate edit to the baseline
+ * file with a stated reason — that asymmetry is what makes this a ratchet rather than a
+ * rubber stamp.
  */
 export function ratchetCeilings(
   baseline: ProseBudgetBaseline,
   measurements: readonly ProseSurfaceMeasurement[],
   now: Date = new Date(),
+  granularity = RATCHET_GRANULARITY_BYTES,
 ): RatchetResult {
   const byMeasurement = new Map<string, ProseSurfaceMeasurement>();
   for (const m of measurements) byMeasurement.set(m.surface, m);
@@ -264,12 +290,13 @@ export function ratchetCeilings(
       skippedImplausible.push(c.surface);
       return c;
     }
-    if (m.bytes >= c.ceilingBytes) {
+    const proposed = ceilingForMeasurement(m.bytes, granularity);
+    if (proposed >= c.ceilingBytes) {
       unchanged.push(c.surface);
       return c;
     }
-    lowered.push({ surface: c.surface, from: c.ceilingBytes, to: m.bytes, savedBytes: c.ceilingBytes - m.bytes });
-    return { ...c, ceilingBytes: m.bytes };
+    lowered.push({ surface: c.surface, from: c.ceilingBytes, to: proposed, savedBytes: c.ceilingBytes - proposed });
+    return { ...c, ceilingBytes: proposed };
   });
 
   return {
