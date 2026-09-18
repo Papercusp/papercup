@@ -1029,6 +1029,44 @@ describe('P-005-request-settlement-regressions: deriveContinuation (pure, P-010)
     expect(deriveContinuation([ownerTurn('q'), wake('w')], true).answered).toBe(false);
   });
 
+  // EI-23580220186598636 — the turn writing the carry doc is still executing, so it
+  // can never carry the `delivered` receipt; without the caller's attestation the
+  // owner message it is answering is re-delivered to the successor as a duplicate.
+  describe('in-flight final turn (finalTurnInFlight)', () => {
+    it('credits the live answering turn that cannot yet be delivered', () => {
+      const tail = [ownerTurn('q'), model('answering now', 'request-1', 'progress')];
+      // Without the attestation this is indistinguishable from an acknowledgement.
+      expect(deriveContinuation(tail, true).answered).toBe(false);
+      expect(deriveContinuation(tail, true, true, { finalTurnInFlight: true }).answered).toBe(true);
+    });
+
+    it('does not settle an interrupted live turn — an explicit non-delivery', () => {
+      const tail = [ownerTurn('q'), model('died', 'request-1', 'interrupted')];
+      expect(deriveContinuation(tail, true, true, { finalTurnInFlight: true }).answered).toBe(false);
+    });
+
+    it('settles ONLY the request the live turn shares an id with, keeping others open', () => {
+      const cont = deriveContinuation(
+        [ownerTurn('first', 'request-1'), ownerTurn('second', 'request-2'), model('on the second', 'request-2', 'progress')],
+        true,
+        true,
+        { finalTurnInFlight: true },
+      );
+      expect(cont.answered).toBe(true);
+      expect(cont.pendingOwnerMessages?.map((r) => r.text)).toEqual(['first']);
+    });
+
+    it('credits only the FINAL turn — an earlier progress turn stays an acknowledgement', () => {
+      const cont = deriveContinuation(
+        [ownerTurn('q'), model('ack', 'request-1', 'progress'), wake('machine wake')],
+        true,
+        true,
+        { finalTurnInFlight: true },
+      );
+      expect(cont.answered).toBe(false);
+    });
+  });
+
   it('preserves multiple simultaneous requests and settles only the matching one', () => {
     const cont = deriveContinuation([
       ownerTurn('first', 'request-1'),

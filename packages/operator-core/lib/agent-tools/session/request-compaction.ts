@@ -717,6 +717,11 @@ export default defineTool({
         transcriptPath: self?.filePath,
         transcriptSourceKind: self?.sourceKind,
         boundaryDeliberate: true,
+        // This tool runs INSIDE the turn being compacted, so the final tail turn
+        // is ours and still executing — it cannot carry the `delivered` receipt
+        // yet (EI-23580220186598636). Attest it, so the owner message this turn
+        // is answering is not re-delivered to the successor as a duplicate.
+        finalTurnInFlight: true,
       },
     });
     if (!spec) {
