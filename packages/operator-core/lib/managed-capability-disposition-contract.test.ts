@@ -160,4 +160,102 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
     expect(scripts.cutoverReady).toBe(false);
     expect(MANAGED_CAPABILITY_CUTOVER_READY).toBe(false);
   });
+
+  it('records the P-006 patch/notebook adapter closure without claiming cross-client mutation parity', () => {
+    const mutation = managedCapabilityDisposition('edit-write-patch-notebook');
+
+    // The adapters are registered, so the family is managed execution rather than an unsupported gap.
+    expect(mutation.disposition).toBe('managed-execution');
+    expect(mutation.managedAuthorities).toContain('capability:patch');
+    expect(mutation.managedAuthorities).toContain('capability:notebook_edit');
+
+    // The closed gap is gone and P-006 owns nothing further in this family.
+    expect(mutation.gaps.map((gap) => gap.id)).not.toContain('patch-notebook-adapters');
+    expect(mutation.gaps.flatMap((gap) => gap.owningPlanItems)).not.toContain('P-006');
+
+    // What remains is the narrower real-client acceptance gap, owned by the items that can prove it.
+    expect(mutation.gaps).toContainEqual(
+      expect.objectContaining({
+        id: 'patch-notebook-real-client-acceptance',
+        kind: 'evidence',
+        owningPlanItems: ['P-007', 'P-008'],
+      }),
+    );
+
+    // Registration is asserted positively now, so a silently unregistered adapter cannot pass.
+    expect(mutation.evidence.anchors).toContain("import './capability/patch';");
+    expect(mutation.evidence.anchors).toContain("import './capability/notebook';");
+
+    // R-1: the boundary must still forbid passing an exact-string edit off as a patch.
+    expect(mutation.boundary).toContain('renaming an exact-string edit');
+
+    // Closing an adapter gap must not open the cutover gate.
+    expect(mutation.cutoverReady).toBe(false);
+    expect(mutation.cutoverReason).not.toContain('P-006');
+    expect(MANAGED_CAPABILITY_CUTOVER_READY).toBe(false);
+  });
+
+  it('keeps R-7 HTTP fetch distinct from search and browser/DOM instead of equating them', () => {
+    const network = managedCapabilityDisposition('http-search-browser-computer');
+
+    // A browser/DOM provider is an honest declared gap, not a hidden one (R-1: discovery-only hiding is not security).
+    expect(network.disposition).toBe('unsupported-gap');
+    // Same `in` narrowing the anchor-verification test uses: absentAnchors is optional across the citation union.
+    const evidence = network.evidence;
+    expect('absentAnchors' in evidence ? (evidence.absentAnchors ?? []) : []).toContain(
+      "import './browser/browser';",
+    );
+    expect(network.gaps).toContainEqual(expect.objectContaining({ id: 'browser-provider-contract' }));
+
+    // R-7: fetch, search, and browser/computer must be named as separate surfaces.
+    expect(network.boundary).toContain('capability:fetch');
+    expect(network.boundary).toContain('remain distinct');
+    expect(network.managedAuthorities).toContain('capability:fetch');
+
+    // No false equivalence: raw HTTP or sandbox pixels must not be registered as a browser authority.
+    expect(network.managedAuthorities.some((authority) => /browser/i.test(authority))).toBe(false);
+    const browserGap = network.gaps.find((gap) => gap.id === 'browser-provider-contract');
+    expect(browserGap?.falsifier).toContain('without conflating it with raw HTTP or sandbox pixels');
+
+    expect(network.cutoverReady).toBe(false);
+    expect(MANAGED_CAPABILITY_CUTOVER_READY).toBe(false);
+  });
+
+  it('keeps the remaining four R-7 canonical-state distinctions explicit instead of collapsing them', () => {
+    // R-7 names five distinctions. HTTP fetch vs search/browser is asserted above; these are the other four.
+
+    // (1) Session tasks are not the shared ledger.
+    const tasks = managedCapabilityDisposition('tasks-plans-goals');
+    expect(tasks.boundary).toContain('session-local');
+    expect(tasks.boundary).toContain('must not masquerade as the shared ledger');
+    expect(tasks.managedAuthorities).toContain('tasks:ops');
+    expect(tasks.managedAuthorities).toContain('work_items:*');
+    // The session surface and the durable authorities are cited as DIFFERENT files — not one store under two names.
+    const durableSites = tasks.reuseSites.map((site) => site.path);
+    expect(durableSites).not.toContain(tasks.evidence.path);
+    expect(durableSites.some((path) => /work_items\//.test(path))).toBe(true);
+    expect(durableSites.some((path) => /plans\//.test(path))).toBe(true);
+
+    // (2)+(3) Durable memory is not scratch context, and transcript resume is not filesystem rewind.
+    const memory = managedCapabilityDisposition('memory-checkpoint-resume-rewind');
+    // Native transcript UX is retained precisely because its operations run on managed authority (R-7).
+    expect(memory.disposition).toBe('managed-backed-native-interface');
+    expect(memory.boundary).toContain('transcript continuation is never filesystem rewind');
+    expect(memory.boundary).toContain('shadow durable-memory store');
+    expect(memory.managedAuthorities).toContain('work_items:checkpoint');
+    // No false equivalence: retaining transcript resume must not register a filesystem-rewind authority.
+    expect(memory.managedAuthorities.some((authority) => /rewind/i.test(authority))).toBe(false);
+
+    // (4) A multi-file patch is not an exact-string edit wearing a different name.
+    const mutation = managedCapabilityDisposition('edit-write-patch-notebook');
+    expect(mutation.boundary).toContain('must not be hidden by renaming an exact-string edit');
+    for (const authority of ['capability:edit', 'capability:patch', 'capability:notebook_edit']) {
+      expect(mutation.managedAuthorities).toContain(authority);
+    }
+    expect(new Set(mutation.managedAuthorities).size).toBe(mutation.managedAuthorities.length);
+
+    // None of these distinctions opens the cutover gate.
+    for (const entry of [tasks, memory, mutation]) expect(entry.cutoverReady).toBe(false);
+    expect(MANAGED_CAPABILITY_CUTOVER_READY).toBe(false);
+  });
 });
