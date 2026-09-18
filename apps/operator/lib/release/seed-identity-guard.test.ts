@@ -28,8 +28,16 @@ import {
   type IdentityKey,
   type IdentityLiterals,
 } from './seed-identity-guard.js';
+import { OWNER_NAME_ENV } from './release-content-scrub.js';
 
 const NEUTRAL = 'papercusp-build';
+// The owner name is ASSERTED by whoever runs the release, never read from `git config`
+// (WI-10001835). Synthetic, like every other literal here, and long enough not to be
+// low-entropy so it is hunted in binary fixtures too.
+const FAKE_OWNER = 'Zqxwerty Testperson';
+// Every assertStagedSeedCarriesNoIdentity case needs this: without it the guard fails
+// CLOSED on the owner-name class rather than certifying a seed it cannot see the name in.
+const OWNER_ENV = { [OWNER_NAME_ENV]: FAKE_OWNER };
 // Synthetic stand-ins for the five real literals, shaped like them but belonging to no one.
 const FAKE_HOST = 'zqx-workstation-77';
 const FAKE_USER = 'zqxoperator';
@@ -91,7 +99,11 @@ describe('literal resolution', () => {
   };
 
   it('resolves all five keys and never scans for the neutral label itself', () => {
-    const { literals: lits, unknownHostname } = resolveIdentityLiterals({ env: {}, neutralHostname: NEUTRAL, probe });
+    const { literals: lits, unknownHostname, unknownOwnerName } = resolveIdentityLiterals({
+      env: OWNER_ENV,
+      neutralHostname: NEUTRAL,
+      probe,
+    });
     expect([...lits.keys()].sort()).toEqual([
       'build-git-email',
       'build-git-name',
@@ -100,6 +112,12 @@ describe('literal resolution', () => {
       'build-user-name',
     ]);
     expect(unknownHostname).toBe(false);
+    expect(unknownOwnerName).toBe(false);
+    // THE CONTRACT (WI-10001835): the name is the ASSERTED one, never the git-supplied one.
+    // `probe.gitName` returns FAKE_SHORT_NAME here and is deliberately ignored — this is the
+    // assertion that fails if anyone reconnects `git config user.name` to this class.
+    expect(lits.get('build-git-name')).toBe(FAKE_OWNER);
+    expect(lits.get('build-git-name')).not.toBe(FAKE_SHORT_NAME);
 
     // The neutral hostname is the FIX — published in every SST on purpose. Scanning for it
     // would fail every correctly-neutralized cut.
@@ -137,6 +155,22 @@ describe('literal resolution', () => {
       probe: { user: () => 'runner', home: () => '/root', hostname: () => 'runner-9', gitName: () => undefined, gitEmail: () => undefined },
     });
     expect([...lits.keys()]).toEqual([]);
+  });
+
+  // WI-10001835. The PAIRED control for the assertion in the five-keys case above: that one
+  // proves the asserted name is USED, this one proves the git-supplied name is not a
+  // fallback when it is absent. Without both, "resolves to FAKE_OWNER" is also satisfied by
+  // an implementation that merely prefers the env var.
+  it('never falls back to the git-supplied name, and flags the owner class UNKNOWN', () => {
+    const { literals: lits, unknownOwnerName } = resolveIdentityLiterals({
+      env: {},
+      neutralHostname: NEUTRAL,
+      probe,
+    });
+    expect(lits.has('build-git-name')).toBe(false);
+    expect(unknownOwnerName).toBe(true);
+    // The email class is deliberately NOT subject to this rule — it is caught by shape.
+    expect(lits.get('build-git-email')).toBe(FAKE_EMAIL);
   });
 });
 
@@ -228,10 +262,10 @@ describe('assertStagedSeedCarriesNoIdentity', () => {
   it('throws on a dirty seed, and the message names the re-cut remedy (no acceptance path exists)', async () => {
     const dir = await stageDir({ 'corestore/db/000009.sst': binaryBody(`host.identity${FAKE_HOST}`) });
     await expect(
-      assertStagedSeedCarriesNoIdentity({ dir, neutralHostname: NEUTRAL, env: {}, probe }),
+      assertStagedSeedCarriesNoIdentity({ dir, neutralHostname: NEUTRAL, env: OWNER_ENV, probe }),
     ).rejects.toThrow(/THE STAGED SEED CARRIES THE BUILD BOX'S IDENTITY/);
     await expect(
-      assertStagedSeedCarriesNoIdentity({ dir, neutralHostname: NEUTRAL, env: {}, probe }),
+      assertStagedSeedCarriesNoIdentity({ dir, neutralHostname: NEUTRAL, env: OWNER_ENV, probe }),
     ).rejects.toThrow(/re-cut it fresh/);
   });
 
@@ -242,15 +276,15 @@ describe('assertStagedSeedCarriesNoIdentity', () => {
     const handle = 'zqxhandle';
     const dirty = await stageDir({ 'corestore/db/000009.log': `row ${handle.toUpperCase()} row` });
     await expect(
-      assertStagedSeedCarriesNoIdentity({ dir: dirty, neutralHostname: NEUTRAL, env: {}, probe, extraLiterals: [handle, FAKE_USER] }),
+      assertStagedSeedCarriesNoIdentity({ dir: dirty, neutralHostname: NEUTRAL, env: OWNER_ENV, probe, extraLiterals: [handle, FAKE_USER] }),
     ).rejects.toThrow(/release-literal:0@/);
     // control: the same call on the same bytes without the release set is CLEAN — the exact
     // false-clean cut #3 produced — and with the set but clean bytes is clean too.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      await expect(assertStagedSeedCarriesNoIdentity({ dir: dirty, neutralHostname: NEUTRAL, env: {}, probe })).resolves.toMatchObject({ ok: true });
+      await expect(assertStagedSeedCarriesNoIdentity({ dir: dirty, neutralHostname: NEUTRAL, env: OWNER_ENV, probe })).resolves.toMatchObject({ ok: true });
       const clean = await stageDir({ 'corestore/db/000009.log': 'row plain row' });
-      const v = await assertStagedSeedCarriesNoIdentity({ dir: clean, neutralHostname: NEUTRAL, env: {}, probe, extraLiterals: [handle, FAKE_USER] });
+      const v = await assertStagedSeedCarriesNoIdentity({ dir: clean, neutralHostname: NEUTRAL, env: OWNER_ENV, probe, extraLiterals: [handle, FAKE_USER] });
       expect(v.ok).toBe(true);
       expect(v.literalKeys).toContain('release-literal:0');
       expect(v.literalKeys).not.toContain('release-literal:1'); // FAKE_USER is already build-user-name
@@ -270,7 +304,7 @@ describe('assertStagedSeedCarriesNoIdentity', () => {
       const v = await assertStagedSeedCarriesNoIdentity({
         dir,
         neutralHostname: NEUTRAL,
-        env: {},
+        env: OWNER_ENV,
         probe,
         extraLiterals: [NEUTRAL, NEUTRAL.toUpperCase(), 'zqxhandle'],
       });
@@ -282,7 +316,7 @@ describe('assertStagedSeedCarriesNoIdentity', () => {
     }
     // NON-VACUITY: the same bytes with a real host in the release set still red.
     await expect(
-      assertStagedSeedCarriesNoIdentity({ dir, neutralHostname: 'other-neutral', env: {}, probe, extraLiterals: [NEUTRAL] }),
+      assertStagedSeedCarriesNoIdentity({ dir, neutralHostname: 'other-neutral', env: OWNER_ENV, probe, extraLiterals: [NEUTRAL] }),
     ).rejects.toThrow(/release-literal:0@/);
   });
 
@@ -296,10 +330,13 @@ describe('assertStagedSeedCarriesNoIdentity', () => {
     // skipped — the D-009 failure mode, one level up.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const v = await assertStagedSeedCarriesNoIdentity({ dir, neutralHostname: NEUTRAL, env: {}, probe });
+      const v = await assertStagedSeedCarriesNoIdentity({ dir, neutralHostname: NEUTRAL, env: OWNER_ENV, probe });
       expect(v.ok).toBe(true);
       expect(warn).toHaveBeenCalledTimes(1);
-      expect(String(warn.mock.calls[0]![0])).toMatch(/clean — 2 staged file\(s\) carry none of 3 build-identity/);
+      // 4, not 3: the asserted owner name (OWNER_ENV) now contributes `build-git-name`, which
+      // this probe's `gitName: () => undefined` previously left absent (WI-10001835). Updated
+      // rather than loosened — the exact count is what makes a silently-dropped class visible.
+      expect(String(warn.mock.calls[0]![0])).toMatch(/clean — 2 staged file\(s\) carry none of 4 build-identity/);
     } finally {
       warn.mockRestore();
     }
