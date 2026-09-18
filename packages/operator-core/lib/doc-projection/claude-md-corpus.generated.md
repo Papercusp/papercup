@@ -13,7 +13,7 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 311
+  corpus-parts: 312
   corpus-blocks: 268
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
@@ -500,26 +500,44 @@ Two mechanisms make this cheap in practice:
 
 ## Every plan ships with a graded acceptance rubric
 
-⛔ **"ALL ITEMS TERMINAL" IS NOT A FINISHED PLAN, AND `plans:items` CANNOT TELL YOU IT ISN'T.** This is the most common way a plan is reported complete while it is not. Every item reading `done`/`dropped` means IMPLEMENTATION landed; it says nothing about whether the plan was VALIDATED, and the item list is the instrument agents reach for precisely because it is the one that cannot see the gap. A plan is finished only when it is `status: shipped`, which requires the audit and the graded rubric below. Check the PLAN's status, not its items — a plan sitting in `draft` with sixteen `done` items is a draft.
-
 ⛔ **CARRYING A PLAN "START TO FINISH" INCLUDES THESE VALIDATION STEPS — they are the finish, not paperwork after it.** An owner who says "carry out the plan", "take it from start to finish", or "finish it yourself" is asking for a SHIPPED plan. Stopping at the last implementation item and reporting done — or naming the remaining validation and handing it back — is the same silent halt in two different costumes. Neither is completion.
 
-⚠ **You may not grade your own implementation — but that is a ROUTING obligation, never an exit.** The independent-grader rule means you must GET a non-implementer to grade it — by ROUTING to one, never by LAUNCHING one. `grader-eligibility.ts` resolves the rubric's `createdBy` as the implementer and refuses any session in that author's spawn/rebind lineage (`grader_in_implementer_lineage`), so a grader YOU launch is ineligible BY CONSTRUCTION — and since the rubric author is normally the one who needs a grader, "launch one" fails in exactly its main case, after a full boot and grading pass have already been paid for. Route instead: recruit an existing live session outside your lineage (`coord:presence` / `coord:dispatch`) and `work_items:create` the grading request WITH `assign_to` naming them by id — `bypass:explicit-assignment` makes it born-admitted and claimable in the same write. Do NOT file it unassigned "for scheduler pull": an unassigned create still goes through duplicate-screening admission first (`admission:'pending'`), which refuses every claimant — including the grader you already named in the body — for a ~30–60min window (promoter tick / fail-open backstop) that outlives most short-lived sessions and silently strands the routing you thought you'd completed (EI-22183121787169840; EI-22129349476264584; EI-22008434629323224). Other routes: offer a reciprocal swap to another rubric author in the same bind, or hand the plan off with `coord:handoff`. Launching is correct ONLY when the launcher is not the rubric author. It does not mean you stop and tell the owner someone else should do it. Everything you CAN do — finishing or dropping stragglers, writing a missing spec triad, running the per-item code-truth audit on items you did not implement, assembling the evidence the grader needs — is still yours, and doing it first is what makes the grading cheap.
+⚠ **You may not grade your own implementation — but that is a ROUTING obligation, never an exit.** GET a non-implementer to grade it by ROUTING to one, never by LAUNCHING one: a grader you launch is refused BY CONSTRUCTION (`grader_in_implementer_lineage`), and it fails in exactly its main case, after a full boot and grading pass have been paid for. Route instead: recruit an existing live session outside your lineage (`coord:presence` / `coord:dispatch`) and `work_items:create` the grading request WITH `assign_to` naming them by id — that makes it born-admitted and claimable in the same write. **Do NOT file it unassigned "for scheduler pull"** — an unassigned create is refused to every claimant, including the grader you named, for a window that outlives most sessions, silently stranding the routing you thought you had completed. Other routes: a reciprocal swap with another rubric author in the same bind, or `coord:handoff`. Launching is correct ONLY when the launcher is not the rubric author. None of this means you stop and tell the owner someone else should do it: everything you CAN do — finishing or dropping stragglers, writing a missing spec triad, running the per-item code-truth audit, assembling the grader's evidence — is still yours, and doing it first is what makes the grading cheap.
 
 **Every plan completes through TWO independent evidence families: a per-item CODE-TRUTH audit, then a GRADED acceptance rubric.** `plans:set-plan-status → 'shipped'` (and its `done` alias) enforces both. After implementation is verified:
 
 1. **Finish or intentionally drop every item.** `todo`/`blocked`/`needs-human` refuse shipping. A deliberate departure is `plans:set-status { slug, item, status:'dropped', note:'<why>' }`; silence is what the gate forbids.
 2. **Audit the actual code, per item** — `plans:audit { slug, items:[{ itemId, verdict, citations }] }`. Only `code`/`test` citations count as verification: paths must resolve, and their blob SHAs are stored. `doc`/`none` explicitly mean NON-verification. Never treat a work-item, doc, or memory of writing code as code truth.
 3. **Author the post-implementation rubric** — `rubrics:propose { rubricRef, kind:'acceptance', subjectPlan, classRef, characteristic, title, criteria }`, under the plan's class, with 3–7 OUTCOME criteria tracing to the goal + Decisions (a pure investigation may use `criteria:[]`). It activates immediately.
-4. **Vet its current revision** — `consult:get_feedback { policy:'rubric-vetting' }` — pass that key and NO responder count, so the bound stays in `selection-policies.ts` where it is enforced. Improve the rubric, then attest with `scorecards:emit` against `meta-acceptance-rubric`. Any later rubric edit invalidates BOTH the attestation AND any independent grading — the gate pins cards to harness_plans.version, so a revision bump un-counts a peer card and requires a re-emit. Batch every intended revision BEFORE requesting independent grading.
-5. **Have a NON-implementer grade it** — `scorecards:emit { rubricRef, ratings }`, concrete evidence for every criterion; the grader must be neither the rubric author NOR in their spawn/rebind lineage — route to one per the rule above, because a grader you launch is refused at emit. The class rubrics require the grader to spot-check the implementer's audit citations.
+4. **Vet its current revision** — `consult:get_feedback { policy:'rubric-vetting' }` — pass that key and NO responder count. Improve the rubric, then attest with `scorecards:emit` against `meta-acceptance-rubric`. Any later rubric edit invalidates BOTH the attestation AND any independent grading, so batch every intended revision BEFORE requesting grading.
+5. **Have a NON-implementer grade it** — `scorecards:emit { rubricRef, ratings }`, concrete evidence for every criterion; the grader must be neither the rubric author NOR in their spawn/rebind lineage. The class rubrics require the grader to spot-check the implementer's audit citations.
 6. **The implementer records the acceptance call.** After reading the independent card, the rubric author re-emits the complete ratings with `acceptance:{ verdict, reasoning }`. The implementer owns the passing bar; there is no universal numeric threshold. A latest `reject` blocks ship until addressed and superseded.
 7. **Ship** — `plans:set-plan-status { slug, status:'shipped' }`; the rubric auto-retires.
 
 `force:{ reason }` on the ship write waives ONLY the code-truth checks, and permanently marks the plan with every check it waived, who waived it and why. It NEVER waives rubric existence, vetting, independent grading, or the implementer's verdict.
 
 Do NOT author the acceptance rubric at plan creation or maintain it mid-implementation; it is deliberately authored against as-built reality. Each refusal code names its own repair in the runbook — that, the full payloads and the citation-root rules: [Plan completion — code-truth audit, acceptance grading, and ship verdict](/internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook). Vetting detail: [Acceptance rubric vetting](/internal/docs/agent-insights/acceptance-rubric-vetting).
+Evidence behind the plan-completion rule (the rule itself is the invariant sibling; this is the case history, kept out of the projected guide).
 
+## Why "route, never launch" a grader — the mechanism
+
+`grader-eligibility.ts` resolves the rubric's `createdBy` as the implementer and refuses any session in that author's spawn/rebind lineage with `grader_in_implementer_lineage`. Because the rubric author is normally the very agent who needs a grader, "just launch one" fails in exactly its main case — and it fails LATE, after a full agent boot and a complete grading pass have already been paid for. That is why the rule is stated as a routing obligation rather than a preference.
+
+## Why an unassigned work-item silently strands the routing
+
+An unassigned `work_items:create` goes through duplicate-screening admission first and lands `admission:'pending'`, which refuses EVERY claimant — including the grader already named in the body — for roughly 30–60 minutes (promoter tick, then the fail-open backstop). That window outlives most short-lived sessions, so the routing looks complete at the moment it is filed and quietly never happens.
+
+Passing `assign_to` takes the `bypass:explicit-assignment` path, which makes the item born-admitted and claimable in the same write.
+
+Filed instances: EI-22183121787169840, EI-22129349476264584, EI-22008434629323224.
+
+## Why a rubric edit invalidates grading
+
+The ship gate pins scorecards to `harness_plans.version`, so a revision bump un-counts a peer's card and requires a re-emit. This is what makes "batch every intended revision BEFORE requesting independent grading" an efficiency rule rather than a style preference — a late one-line rubric fix costs another full grading round trip from a peer.
+
+## Why `consult:get_feedback { policy:'rubric-vetting' }` takes no responder count
+
+Passing the policy key and NO count keeps the responder bound inside `selection-policies.ts`, where it is enforced. Supplying a count moves that decision to the call site, where it drifts.
 
 
 ## Verify mixed-family work-item citations against the base table
