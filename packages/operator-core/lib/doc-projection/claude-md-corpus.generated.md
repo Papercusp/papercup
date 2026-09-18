@@ -681,9 +681,6 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > status is not.
 
 
-> @papercupai/papercusp-monorepo@0.0.1 set-doc-part
-> tsx scripts/set-doc-part.ts --part-key commit-discipline-git-sync-o-git-blame-on-this-r --show
-
 > ⚠ **Neither `git blame` NOR a commit's SUBJECT is evidence about a change in this
 > repo — never cite either, least of all in an escalation.** git-sync sweeps the WHOLE
 > tree on a schedule, commits it under ONE identity, and labels it with whatever
