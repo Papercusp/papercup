@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { fileLockedResult, guardFileLock } from '../locks/file-lock-guard';
 import { resolveCapabilityBaseDir } from './base-dir';
+import { occurrences, spliceLiteral, squashWhitespace } from './text-splice';
 
 export default defineTool({
   name: 'capability:edit',
@@ -60,16 +61,12 @@ export default defineTool({
       // string. `` $` `` in particular expands to "everything before the match",
       // which silently spliced an entire file into itself when new_string happened
       // to contain a literal `$` followed by a backtick (e.g. prose quoting shell
-      // expansion markers). split/join (the replace_all path) is already immune —
-      // neither treats `$` specially — so mirror that here via a literal index
-      // splice instead of `.replace()`. `indexOf` is safe: the caller already
-      // enforced (above) that old_string occurs exactly once when !replace_all.
-      const next = args.replace_all
-        ? raw.split(args.old_string).join(args.new_string)
-        : (() => {
-            const idx = raw.indexOf(args.old_string);
-            return raw.slice(0, idx) + args.new_string + raw.slice(idx + args.old_string.length);
-          })();
+      // expansion markers). spliceLiteral (shared with capability:patch, so the fix
+      // has ONE home rather than one per mutation door) is immune on both paths:
+      // split/join for replace_all, an index splice otherwise. The index splice is
+      // safe here because the caller already enforced (above) that old_string occurs
+      // exactly once when !replace_all.
+      const next = spliceLiteral(raw, args.old_string, args.new_string, args.replace_all === true);
       try {
         writeFileSync(abs, next, 'utf8');
       } catch (e: unknown) {
@@ -134,11 +131,6 @@ function diagnoseMiss(raw: string, args: { old_string: string; new_string: strin
   return notes.length > 0 ? ` ${notes.join(' ')}` : '';
 }
 
-/** Collapse every whitespace run to a single space, so indentation drift stops mattering. */
-function squashWhitespace(s: string): string {
-  return s.replace(/\s+/g, ' ').trim();
-}
-
 function secondsSinceWrite(abs: string): number | null {
   try {
     return Math.max(0, (Date.now() - statSync(abs).mtimeMs) / 1000);
@@ -152,17 +144,6 @@ function formatAge(sec: number): string {
   if (sec < 5400) return `${Math.round(sec / 60)}m`;
   if (sec < 172800) return `${Math.round(sec / 3600)}h`;
   return `${Math.round(sec / 86400)}d`;
-}
-
-function occurrences(haystack: string, needle: string): number {
-  if (needle === '') return 0;
-  let n = 0;
-  let i = haystack.indexOf(needle);
-  while (i !== -1) {
-    n++;
-    i = haystack.indexOf(needle, i + needle.length);
-  }
-  return n;
 }
 
 function err(reason: string, message: string) {
