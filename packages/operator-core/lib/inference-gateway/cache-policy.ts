@@ -71,6 +71,10 @@ export interface AnthropicCacheStats {
   /** P-004: the stable/volatile system-block split happened this request (set by the buffer
    *  wrapper, not applyAnthropicCachePolicy — the split runs one layer up). */
   boundarySplit?: boolean;
+  /** Per-tool `defer_loading` pass (agent-launch-context-cost-2026-09-18 P-002). Present only
+   *  when `deferLargeTools` was requested; absent means the pass did not run, which is NOT the
+   *  same as a pass that ran and deferred nothing. */
+  toolDeferral?: ToolDeferralStats;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -102,12 +106,167 @@ export function isDeferredTool(tool: unknown): boolean {
   return isRecord(tool) && Boolean(tool.defer_loading);
 }
 
+/**
+ * The server-side BM25 tool-search tool
+ * (docs "Server Tools": type `tool_search_tool_bm25_20251119`, name `tool_search_tool_bm25`).
+ *
+ * WHY THIS IS NOT OPTIONAL WHEN WE DEFER. A deferred tool's schema is not in the request; the
+ * model reaches it by CALLING a tool-search tool. Defer without one in the body and those tools
+ * are simply UNREACHABLE — the request succeeds, and the capability silently disappears. psu
+ * launches deny native `ToolSearch`, so no search tool is present by default: if this gateway
+ * defers, this gateway must inject.
+ */
+export const TOOL_SEARCH_BM25_TOOL = {
+  type: 'tool_search_tool_bm25_20251119',
+  name: 'tool_search_tool_bm25',
+} as const;
+
+/** Every tool-search variant (bm25 and regex), by `type` or by `name`. */
+export function isToolSearchTool(tool: unknown): boolean {
+  if (!isRecord(tool)) return false;
+  const type = typeof tool.type === 'string' ? tool.type : '';
+  const name = typeof tool.name === 'string' ? tool.name : '';
+  return type.startsWith('tool_search_tool_') || name.startsWith('tool_search_tool_');
+}
+
+/**
+ * A SERVER tool — declared by `type` with no `input_schema` (web_search, code_execution,
+ * tool_search_*, memory, bash, …) rather than a client tool with a JSON schema.
+ *
+ * Used to keep a cache breakpoint OFF a server tool: `cache_control` on one is unvalidated here,
+ * and the injected search tool would otherwise become the last tool and therefore the anchor.
+ * Deliberately narrower than "has a type": a client tool that also carries `input_schema` stays
+ * markable, which is what keeps the pre-existing tool-search fixtures behaving as before.
+ */
+export function isServerTool(tool: unknown): boolean {
+  return isRecord(tool) && typeof tool.type === 'string' && tool.input_schema === undefined;
+}
+
 /** Index of the last tool that can legally anchor a cache breakpoint, or -1 when none can. */
 export function findLastNonDeferredToolIndex(tools: readonly unknown[]): number {
   for (let i = tools.length - 1; i >= 0; i--) {
-    if (isRecord(tools[i]) && !isDeferredTool(tools[i])) return i;
+    const tool = tools[i];
+    if (!isRecord(tool)) continue;
+    if (isDeferredTool(tool)) continue;
+    if (isServerTool(tool)) continue; // never anchor the prefix on a server tool
+    return i;
   }
   return -1;
+}
+
+/** Serialized size of one tool definition, in bytes. Unserializable → 0 (never a defer candidate). */
+export function toolSerializedBytes(tool: unknown): number {
+  try {
+    const json = JSON.stringify(tool);
+    return typeof json === 'string' ? Buffer.byteLength(json, 'utf8') : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Default size above which a tool is worth deferring, in serialized bytes.
+ *
+ * Measured over the 895-tool catalog on 2026-09-18: 20 tools exceed 8,000 B and account for
+ * 356,320 B — 29.1% of the payload. Below this the per-tool win stops paying for the round trip
+ * the model spends re-fetching a schema it needed.
+ */
+export const DEFAULT_DEFER_MIN_TOOL_BYTES = 8000;
+
+export interface ToolDeferralStats {
+  /** Tools this pass newly marked `defer_loading`. */
+  toolsDeferred: number;
+  /** Serialized bytes of the tools this pass deferred. */
+  toolsDeferredBytes: number;
+  /** We appended the BM25 tool-search tool because deferred tools needed a way to be reached. */
+  searchToolInjected: boolean;
+  /** Eligible-by-size tools left alone because they already carry `cache_control` (EI-16980). */
+  skippedCacheControl: number;
+  /** We held the smallest candidate back so at least one client tool stays non-deferred. */
+  heldBackToKeepNonDeferred: boolean;
+}
+
+/**
+ * Mark oversized tools `defer_loading` and guarantee they remain reachable, IN PLACE.
+ *
+ * ⚠ THREE INVARIANTS, EACH A HARD API FAILURE IF BROKEN. All three are tested.
+ *  1. NEVER `defer_loading` + `cache_control` on the same tool. The API rejects the whole request
+ *     with a 400 ("Tools with defer_loading cannot use prompt caching"). This is not theoretical:
+ *     EI-16980 shipped exactly that pairing and every affected session failed outright. Claude
+ *     Code marks a tool itself, so a body arriving here may ALREADY carry one — which is why the
+ *     rule is implemented as "skip a tool that has cache_control", not "strip its cache_control".
+ *     Stripping would silently discard the client's own caching intent to serve ours.
+ *  2. NEVER defer every tool — the API returns 400 `All tools have defer_loading set`. If the
+ *     candidate set would leave no non-deferred CLIENT tool, the smallest candidate is held back.
+ *     The injected search tool is deliberately NOT counted as satisfying this: resting the
+ *     invariant on a tool we appended makes an unrelated future change to the injection able to
+ *     break the request.
+ *  3. NEVER defer the search tool itself — same 400 family, and it is the one tool that must be
+ *     inline for any of the others to be recoverable.
+ *
+ * Returns the stats; does nothing and reports zeros when `body.tools` is absent or empty.
+ */
+export function applyToolDeferral(
+  body: Record<string, unknown>,
+  opts: { minToolBytes?: number } = {},
+): ToolDeferralStats {
+  const minToolBytes = opts.minToolBytes ?? DEFAULT_DEFER_MIN_TOOL_BYTES;
+  const stats: ToolDeferralStats = {
+    toolsDeferred: 0,
+    toolsDeferredBytes: 0,
+    searchToolInjected: false,
+    skippedCacheControl: 0,
+    heldBackToKeepNonDeferred: false,
+  };
+
+  const tools = body.tools;
+  if (!Array.isArray(tools) || tools.length === 0) return stats;
+
+  // Candidates: large CLIENT tools that are not already deferred, not a search tool, and — the
+  // EI-16980 rule — not already carrying a cache_control marker.
+  const candidates: { tool: Record<string, unknown>; bytes: number }[] = [];
+  let nonDeferredClientTools = 0;
+  for (const tool of tools) {
+    if (!isRecord(tool)) continue;
+    const alreadyDeferred = isDeferredTool(tool);
+    const serverTool = isServerTool(tool);
+    if (!alreadyDeferred && !serverTool) nonDeferredClientTools++;
+    if (alreadyDeferred || isToolSearchTool(tool) || serverTool) continue;
+    const bytes = toolSerializedBytes(tool);
+    if (bytes <= minToolBytes) continue;
+    if (isRecord(tool.cache_control)) {
+      stats.skippedCacheControl++;
+      continue;
+    }
+    candidates.push({ tool, bytes });
+  }
+
+  // Invariant 2: keep at least one non-deferred client tool. Hold back the SMALLEST candidate —
+  // it is the one whose deferral buys the least.
+  let toDefer = candidates;
+  if (candidates.length > 0 && candidates.length >= nonDeferredClientTools) {
+    const sorted = [...candidates].sort((a, b) => a.bytes - b.bytes);
+    toDefer = sorted.slice(1);
+    stats.heldBackToKeepNonDeferred = true;
+  }
+
+  for (const { tool, bytes } of toDefer) {
+    tool.defer_loading = true;
+    stats.toolsDeferred++;
+    stats.toolsDeferredBytes += bytes;
+  }
+
+  // Reachability: any deferred tool in the body — ours or the client's — needs a search tool.
+  const anyDeferred = tools.some((tool) => isDeferredTool(tool));
+  if (anyDeferred && !tools.some((tool) => isToolSearchTool(tool))) {
+    // Appended, not prepended: the tools array is prefix position 0, so adding at the END leaves
+    // the longest possible shared cache prefix intact. `findLastNonDeferredToolIndex` skips
+    // server tools, so this never becomes the breakpoint anchor.
+    tools.push({ ...TOOL_SEARCH_BM25_TOOL });
+    stats.searchToolInjected = true;
+  }
+
+  return stats;
 }
 
 /** An ephemeral cache_control marker, if this block carries one. */
@@ -141,7 +300,13 @@ export function applyAnthropicCachePolicy(
   body: Record<string, unknown>,
   /** `injectToolsBreakpoint` defaults to FALSE (measured no-op — see the header). Pass true to
    *  opt in; the callers gate it behind PAPERCUSP_CACHE_TOOLS_BREAKPOINT=1. */
-  opts: { ttl?: string; injectToolsBreakpoint?: boolean } = {},
+  opts: {
+    ttl?: string;
+    injectToolsBreakpoint?: boolean;
+    /** P-002: mark oversized tools `defer_loading` and inject the BM25 search tool. Default OFF. */
+    deferLargeTools?: boolean;
+    deferMinToolBytes?: number;
+  } = {},
 ): AnthropicCacheStats {
   const ttl = opts.ttl ?? ANTHROPIC_EXTENDED_TTL;
   const stats: AnthropicCacheStats = {
@@ -152,6 +317,15 @@ export function applyAnthropicCachePolicy(
     toolsBreakpointSkippedNoBudget: false,
     toolsBreakpointSkippedAllDeferred: false,
   };
+
+  // ORDER IS LOAD-BEARING: the deferral pass runs FIRST so that everything downstream sees the
+  // post-deferral tool list. Specifically, `findLastNonDeferredToolIndex` below must not pick an
+  // anchor we are about to mark `defer_loading` — that pairing is the EI-16980 hard 400.
+  if (opts.deferLargeTools === true) {
+    const deferral = applyToolDeferral(body, { minToolBytes: opts.deferMinToolBytes });
+    stats.toolDeferral = deferral;
+    if (deferral.toolsDeferred > 0 || deferral.searchToolInjected) stats.changed = true;
+  }
 
   const blocks = cacheableBlocks(body);
   for (const b of blocks) {
@@ -271,7 +445,13 @@ export function splitSystemAtBoundary(system: unknown, ttl: string = ANTHROPIC_E
  *  request forwards byte-identically). Never throws. */
 export function rewriteAnthropicCacheBody(
   bodyBuf: Buffer,
-  opts: { ttl?: string; injectToolsBreakpoint?: boolean; splitBoundary?: boolean } = {},
+  opts: {
+    ttl?: string;
+    injectToolsBreakpoint?: boolean;
+    splitBoundary?: boolean;
+    deferLargeTools?: boolean;
+    deferMinToolBytes?: number;
+  } = {},
 ): { body: Buffer; stats: AnthropicCacheStats | null } {
   if (!bodyBuf.length) return { body: bodyBuf, stats: null };
   try {
