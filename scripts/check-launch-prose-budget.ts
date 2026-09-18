@@ -229,8 +229,12 @@ async function main(): Promise<void> {
   const report = compareProseBudget(measurements, baseline);
 
   if (asJson) {
+    // EI-20055889379250637: this payload is an unbounded, data-derived JSON dump and
+    // machine-readable output gets piped. `process.exit()` does NOT drain an async pipe
+    // write, so it truncated the report. Set the code and let the program end naturally.
     console.log(JSON.stringify(report, null, 2));
-    process.exit(report.ok ? 0 : 1);
+    process.exitCode = report.ok ? 0 : 1;
+    return;
   }
 
   console.log('[lint:launch-prose-budget] launch prose surfaces:');
