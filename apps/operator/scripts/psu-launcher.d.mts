@@ -3619,6 +3619,31 @@ export const MIN_COMPACTION_LIMIT_TOKENS: 20000;
  */
 export const NATIVE_SCHEDULER_DENY_FLAG: "--disallowedTools=CronCreate,CronDelete,CronList,ScheduleWakeup,Skill(schedule),Skill(loop),Bash(crontab:*),Bash(systemd-run:*),Bash(batch:*)";
 /**
+ * su-session scheduler-TOOL lockout (agent-launch-context-cost-2026-09-18 P-006).
+ *
+ * The su session deliberately does NOT get NATIVE_SCHEDULER_DENY_FLAG (D-003 —
+ * the human keeps `/schedule` + `/loop`). But D-003's rationale is the OWNER's
+ * surface, and it only covers the SKILLS a human types. The four Cron and
+ * ScheduleWakeup TOOLS are MODEL-facing, and the su playbook already forbids the
+ * model from using them ("do NOT self-pace with Claude Code's native `/loop` (or
+ * `ScheduleWakeup`) … declare an engine loop with `loop:arm`") — so su paid for
+ * 9,156 B of schemas per turn AND for the prose banning them.
+ *
+ * Measured 2026-09-18 from a captured `/v1/messages` body, 7-arm A/B with a
+ * no-deny positive control: ScheduleWakeup 4,923 B, CronCreate 3,642 B,
+ * CronDelete 360 B, CronList 231 B.
+ *
+ * ⚠ This is a STRICT SUBSET of NATIVE_SCHEDULER_DENY_FLAG and must stay one: the
+ * `Skill(...)` and `Bash(...)` entries are deliberately absent so D-003's
+ * owner-facing carve-out is preserved exactly. The lockstep test in
+ * apps/operator/lib/psu-launcher.test.ts pins this literal to
+ * `suSchedulerToolsDenyFlag()` in `@papercusp/orchestrator/native-scheduler-deny`
+ * AND asserts the subset relationship, so neither copy can drift.
+ *
+ * MUST stay one `=` token — same greed-guard reason as NATIVE_SCHEDULER_DENY_FLAG.
+ */
+export const SU_SCHEDULER_TOOLS_DENY_FLAG: "--disallowedTools=CronCreate,CronDelete,CronList,ScheduleWakeup";
+/**
  * Subagent-fanout deny (owner request 2026-07-01): AGENT role/bee sessions
  * lose the built-in subagent-launch tool — unconditional, no opt-out, mirrors
  * the native-scheduler lockout's posture for role sessions. `Task` is the
