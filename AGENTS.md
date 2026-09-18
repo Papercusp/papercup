@@ -385,83 +385,32 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 [repo-conventions § branch + commit](/internal/docs/system/repo-conventions).
 
 
-> ⚠ **Neither `git blame` NOR a commit's SUBJECT is evidence about a change in this
-> repo — never cite either, least of all in an escalation.** git-sync sweeps the WHOLE
-> tree on a schedule, commits it under ONE identity, and labels it with whatever
-> agent/plan context happened to be current. So blame names the wrong person, and the
-> subject describes the sweeping agent's INTENT, not the diff. Both are false-positive
-> generators, not dead ends.
+> ⚠ **Neither `git blame` NOR a commit's SUBJECT (nor a `Co-Authored-By` trailer) is evidence
+> about a change in this repo — never cite one, least of all in an escalation.** git-sync sweeps
+> the WHOLE tree under ONE identity and labels it with whatever context was current, so blame
+> names the wrong person and the subject describes the sweeping agent's INTENT, not the diff.
+> For authorship use the commissioning work-item or a timestamp-correlated `sessions:search`;
+> if neither resolves, say "not attributable" — never name a person.
 >
-> **Which commit carries your change → `TZ=UTC git log -1 --date=iso-strict-local --format='%cd %H %s' -- <path>`.
-> NOT `git rev-parse HEAD`:** the tip is routinely a DIFFERENT commit from the same
-> sweep, so quoting it attributes your work to a stranger's diff. ⚠ **`TZ=UTC` is INERT
-> on `%cI`/`%aI`/`%cd`/`%ad`**: git renders those in the COMMIT'S OWN recorded offset —
-> not yours, and not UTC (they all read `-0400` here only because the commits were made
-> on this box). Only a `--date=*-local` format honours `TZ`, which is what makes the
-> stamp above `+00:00` and directly comparable to Papercusp's UTC timestamps; keep
-> `TZ=UTC` for `--since`/`--until` too. Misreading a `-04:00` stamp as UTC is a silent
-> 4h skew, and it lands exactly where it hurts — gate triage, deciding whether a fix
-> predates a candidate. ⛔ `git log --full-history` is NOT a repair for any of this
-> (measured identical to the default here). Whether a sha really carries your change is
-> a CONTENT question, never a date one → `git rev-parse <sha>:<path>` vs
-> `git rev-parse staging:<path>` (equal blobs ⇒ it carries it), or `git show --stat <sha>`.
+> ⚠ **Containment is a CONTENT question, never a date or ancestry one.** `git rev-parse
+> <sha>:<path>` vs `git rev-parse staging:<path>` — equal blobs ⇒ it carries it.
+> `merge-base --is-ancestor` proves REACHABILITY only and stays true after a later sweep reverts
+> the same lines, so it is never evidence a fix is live. For "is my change live", ask
+> `dev:pipeline_position { path }` or `state:read { cell:'gate.greenCheckpoint.candidate', as:'<path>' }`.
 >
-> ⚠ **`HEAD` is a MOVING baseline here — never read it, `HEAD~1`, or `@{1}` as "before my
-> change".** git-sync commits the WHOLE tree every few minutes, so the distance from your edit
-> to `HEAD` is WALL-CLOCK, not commit-count: `git show HEAD:<path>` a few minutes after an edit
-> hands back YOUR OWN edit, so the "pre-fix" content you test against IS your fix. Measured
-> 2026-08-03: a guard checked that way returned 0 offenders and read exactly like "this guard is
-> vacuous" — and a SOUND guard produces that identical reading, so the error is not
-> self-announcing in either direction. It is the clean-`git status` trap from the other side:
-> there a clean tree means the sweep RAN, here an ordinary-looking `HEAD` means the same thing.
-> Need pre-edit content? PIN the sha BEFORE you edit (`B=$(git rev-parse HEAD)`), or select the
-> last commit that does NOT contain your change by CONTENT (`git log --oneline -n 10 -- <path>`,
-> then `git show <sha>:<path>`) — never by position. `scripts/mutation-probe.sh
-> --against-last-without <literal>` automates exactly that selection.
+> ⛔ **Four of these misreport SILENTLY, each toward a confident WRONG conclusion — know the
+> signature, then look up the exact form before you act:** `HEAD` is a WALL-CLOCK moving baseline,
+> so `git show HEAD:<path>` minutes after an edit hands back YOUR OWN edit and a vacuous guard
+> reads identical to a sound one · `TZ=UTC` is INERT on `%cd`/`%cI` (a `-04:00` stamp read as UTC
+> is a silent 4h skew in gate triage) · a bare `rev-parse staging:<missing>` PRINTS the ref to
+> stdout before exiting 128, and a SUBMODULE has no `staging` ref at all · `git show
+> <ref>:<submodule path> > file` leaves a ZERO-BYTE file, so the positive control that must come
+> back non-zero returns 0 and the whole scan is believed. A submodule path needs its own check
+> INSIDE the submodule; equal blobs there prove the PATH is current, not the candidate — the
+> gitlink moves underneath it.
 >
-> ⚠ **Ancestry containment is NOT content containment.**
-> `git merge-base --is-ancestor <fix-sha> <candidate>` proves only that the commit is
-> reachable from the candidate; it stays true forever even when a later git-sync sweep
-> overwrites or reverts the same lines. Never cite ancestry alone as evidence that a fix
-> is live. Ask the content question against the actual candidate with
-> `dev:pipeline_position { path }` or
-> `state:read { cell: 'gate.greenCheckpoint.candidate', as: '<path>' }`, then inspect
-> `git show <candidate>:<path>` or compare its blob with the known-good content. Whole-blob
-> equality is sufficient; after legitimate later edits, verify the fix's specific content
-> predicate instead.
->
-> ⛔ **Use `--verify --quiet`, and NEVER `staging:` inside a submodule — both misreport SILENTLY.**
-> A bare `git rev-parse staging:<missing-path>` PRINTS the ref string to STDOUT before exiting 128,
-> so `S=$(git rev-parse "staging:$p" 2>/dev/null || echo ABSENT)` captures `staging:<path>` as if it
-> were a sha. And a SUBMODULE has no `staging` ref at all (`libs/papercusp` tracks `main`), so the
-> check above reports a file committed minutes ago as missing — the false-negative direction, which
-> sends you to re-fire git-sync or escalate "my work did not land". Correct forms:
-> `git rev-parse --verify --quiet "staging:$p" || echo ABSENT` in the superproject, and
-> `git -C libs/papercusp rev-parse --verify --quiet "HEAD:$p" || echo ABSENT` under a submodule.
-> An unresolvable REF and an absent PATH look identical — tell them apart before acting.
->
-> ⛔ **`git show <ref>:<submodule path> > file` leaves a ZERO-BYTE file behind, so a POSITIVE
-> CONTROL built from it reports 0.** The shell creates the redirect BEFORE git runs, so the
-> `fatal: path '…' exists on disk, but not in 'HEAD'` (exit 128) still leaves an empty file, and
-> every later `grep -c` on it returns 0 — the exact reading that means "the string is already gone
-> / my pattern is wrong". So it defeats the one check meant to catch a broken instrument: the
-> control that MUST come back non-zero comes back zero, and the whole scan is then believed. Same
-> false-zero family as a `| head` SIGPIPE truncation or a wrong-relation SQL zero-row. Extract
-> INSIDE the submodule with a SUBMODULE-relative path, and check the exit status:
-> `git -C libs/papercusp show "HEAD:plugins/design-phase/index.cjs" > /tmp/before.cjs || { echo EXTRACT-FAILED; exit 1; }`
->
-> ⚠ **Equal blobs prove that PATH is current — NOT that the candidate is.** When a failing
-> test's runtime SUBJECT lives in a submodule (e.g. `readdirSync('…/libs/papercusp/libs/db/sql')`),
-> the test blob is identical in both refs while the gitlink moved underneath it — so containment
-> answers "not stale" on a red that is pure staleness. Diff the gitlinks too:
-> `git diff --raw <sha> staging | grep '^:160000'` (measured 2026-08-30: 0 moved at 1h, 3 at 3h,
-> 8 at 8h — selective enough to be worth the one command). ⛔ And `git diff <sha> staging -- <sub>/<file>`
-> prints NOTHING for a submodule-backed path — a superproject diff carries only the gitlink — so the
-> empty result reads as "the subject did not change" and CONFIRMS the wrong conclusion.
->
-> For live/deployed status, use `dev:pipeline_position { path }`, whose timestamps are
-> UTC. For authorship, use the commissioning work-item/plan-item or a timestamp-correlated
-> `sessions:search`; if neither resolves, say "not attributable" — never name a person.
+> Exact commands, the measured incident behind each, and the gitlink-drift check:
+> [git evidence and containment recipes](/internal/docs/agent-insights/git-evidence-and-containment-recipes).
 
 
 > 🚨 **NEVER run a tree-wide destructive git op on the shared checkout** — not
