@@ -33,6 +33,19 @@ The desktop “+” and “Resume in new terminal” buttons are UI actions, not
 * If the subject is a **command**, use `capability:terminal`.
 * If the action came from the desktop console UI, follow `/console/launch` → `spawnConsole`.
 
+## Queue screening and honest launch evidence
+
+Duplicate screening governs whether a **work item may be claimed automatically**. It does not block opening an authorized agent or fleet process. For an existing-plan fleet, use `plans:start` and `fleet:launch-on-plan` even when an individual item reports `admission-pending`; the member still needs claimable or validly pre-assigned work once it starts. Do not invent a wait-before-launch rule from a queue-screening refusal. Exact-plan, dependency, lock, credential, security, and resource admission remain separate safeguards and are not bypassed by this distinction.
+
+A successful launcher response reports observations, not a promise that every process is already working. Read `launchEvidence` as a count-preserving summary:
+
+* `processOpened` is the number of processes the launcher opened.
+* `sessionRegistered` is the number of those processes observed in the session ledger, or `null` when registration was not observed.
+* `firstTurn` is `true`, `false`, or `null`: observed success, observed failure, or not yet known. Supplying a first-turn request is not evidence that the agent received or executed it.
+* `taskDisposition.claimed`, `.noClaim`, and `.unknown` partition the opened processes. Their counts sum to `processOpened`; an unobserved disposition stays in `unknown`.
+
+Process-open evidence alone must never be paraphrased as “agents are working.” A first turn also does not prove a scheduler pull or task claim. Use the detailed `FreshLaunchWorkerAttestation` / `launchTransaction` evidence, then `fleet:status` or `coord:presence`, when the next action depends on verified pickup. Preserve `null` and `unknown` in summaries instead of upgrading absence of evidence into success.
+
 ## Per-member config + runtime reconfigure (per-member-declarative-launch-specs)
 
 A multi-agent launch is **declarative**: pass `members: MemberSpec[]` to either `capability:launch-agent` or `fleet:launch-on-plan`. Entry `i` configures agent `i` (index-aligned to `count`); each set field OVERRIDES the flat top-level arg for that agent only, an unset field falls through to the flat arg then the system default, and a shorter array is fine (`count` defaults to `members.length`). `MemberSpec` carries `model`, `effort`, `account`, `carry`, `contextSize`, `compactionLimit`, `role`, `agent`, `brief`, `claimKinds`, `headless`, and more (see `agent-launch-core.ts`).

@@ -16,9 +16,10 @@ again today. It looks impossible.
 ## Why it happens
 
 **The watchdog does not run from the release checkout (`:3070`) or re-read source.**
-The improvement-watchdog routine runs in the **bg-host**, which executes `tsx`
-straight from the staging tree **once at process start, with no file-watch**. A
-module loaded at boot stays loaded. So the RUNNING watchdog holds whatever the code
+The improvement-watchdog routine runs in the **bg-host**, which loads a BUNDLE built
+from the staging tree **once at process start, with no file-watch** — the unit's
+`ExecStartPre=bundle-host.sh` rebuilds that bundle on every start (fail-closed), so a
+restart, and only a restart, picks up your edit. A module loaded at boot stays loaded. So the RUNNING watchdog holds whatever the code
 was **at the moment bg-host last started** — not what is on disk now, and a `:3070`
 deploy does not touch it (deploy restarts the release operator, not bg-host).
 
