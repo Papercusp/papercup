@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import type { SpecClauseWrite } from './spec-clauses-store';
+import { carryUnchangedBarEvidenceBindings } from '../../acceptance-bar-amendment';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, repoRoot: '', siblingRoot: '' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -1410,5 +1411,103 @@ describe('recorded retraction is the one sanctioned repair for a malformed bindi
       harnessSlug: HARNESS, bindingId: 2_147_000_001, reason: 'no such row', actorId: RETRACTOR,
     });
     expect(missing).toMatchObject({ status: 'not_found', binding: null });
+  });
+
+  /* Hiding a retraction from READS is only half the repair. `carryUnchangedBarEvidenceBindings`
+   * is the one reader outside this store that does not merely READ the table — it re-INSERTS
+   * prior-revision rows under the next revision on every bar amendment. Unfiltered, it would
+   * therefore RESURRECT a retracted binding as a fresh, un-retracted row, silently undoing the
+   * repair at a later revision bump that nobody would connect to the retraction. That is worse
+   * than never retracting: the clause goes green in between, and a green verdict is exactly what
+   * stops anyone looking. D-011 makes recorded retraction the ONLY sanctioned repair, so a carry
+   * that reverses one defeats the whole path. */
+  it('does not resurrect a retracted binding when a bar amendment carries proof forward', async () => {
+    await specs.setSpecClause(clause());
+    const external = await seedExternalEvidence();
+    const bind = async (evidenceRef: string): Promise<number> => {
+      const bound = await evidenceStore.bindSpecEvidence({
+        harnessSlug: HARNESS,
+        planSlug: 'reconnect-plan',
+        workItemId: 'WI-101',
+        specId: 'SPEC-003-01',
+        evidenceKind: 'coverage-census',
+        evidenceRef,
+        sourceFingerprint: 'git:abc123',
+        coverageEvidenceRef: external.coverageEvidenceRef,
+        testRunId: external.testRunId,
+        actorId: 'su-test',
+      });
+      expect(bound.status).toBe('created');
+      return Number((bound as { id: number }).id);
+    };
+
+    const poisoned = await bind('surface:POST /events');
+    // POSITIVE CONTROL, and it is load-bearing: a carry of 0 is ambiguous on its own, because
+    // "the retraction filter worked" and "the carry matched nothing at all" (a mis-seeded edge,
+    // the wrong prior revision, a broken join) produce an identical reading. The surviving row
+    // proves the carry ran, saw this cohort, and rejected only the retracted member.
+    await bind('surface:GET /events');
+
+    const withdrawn = await evidenceStore.retractSpecEvidence({
+      harnessSlug: HARNESS,
+      bindingId: poisoned,
+      reason: 'bound run was never collected or executed',
+      actorId: RETRACTOR,
+    });
+    expect(withdrawn.status).toBe('retracted');
+
+    // Amend the clause (revision 1 -> 2) and attach the work-item to the NEW revision: that
+    // edge is what the carry joins through, so without it nothing is eligible to carry.
+    const amended = await specs.setSpecClause(
+      clause({
+        expectedRevision: 1,
+        behavior: 'Acknowledged event 42 is not replayed after reconnect, even across a restart.',
+      }),
+    );
+    expect(amended.status).not.toBe('conflict');
+    const [next] = await db.sql<{ revision: number; content_hash: string }[]>`
+      SELECT revision, content_hash FROM harness_shared.plan_spec_clause_revisions
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-01'
+       ORDER BY revision DESC LIMIT 1`;
+    expect(Number(next.revision)).toBe(2);
+    await db.sql`
+      INSERT INTO harness_shared.work_item_spec_revision_edges
+        (workspace_id, harness_slug, work_item_id, plan_slug, spec_id, spec_revision,
+         spec_fingerprint, created_by)
+      VALUES (${WORKSPACE}, ${HARNESS}, 'WI-101', 'reconnect-plan', 'SPEC-003-01',
+              ${next.revision}, ${next.content_hash}, 'su-test')
+      ON CONFLICT DO NOTHING`;
+
+    const carried = await carryUnchangedBarEvidenceBindings(db.sql, {
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      specId: 'SPEC-003-01',
+      priorRevision: 1,
+      nextRevision: Number(next.revision),
+      nextSpecFingerprint: next.content_hash,
+    });
+    expect(carried).toBe(1);
+
+    const landed = (
+      await db.sql<{ evidence_ref: string }[]>`
+        SELECT evidence_ref FROM harness_shared.spec_evidence_bindings
+         WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+           AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-01'
+           AND spec_revision = ${next.revision}
+         ORDER BY evidence_ref`
+    ).map((row) => row.evidence_ref);
+    expect(landed).toEqual(['surface:GET /events']);
+    expect(landed).not.toContain('surface:POST /events');
+
+    // And the withdrawal itself is still the only record of that proof: the retracted row stays
+    // retracted at its own revision rather than being joined by an un-retracted twin.
+    const [{ count }] = await db.sql<{ count: string }[]>`
+      SELECT count(*)::text AS count FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-01'
+         AND evidence_ref = 'surface:POST /events' AND retracted_at IS NULL`;
+    expect(Number(count)).toBe(0);
   });
 });

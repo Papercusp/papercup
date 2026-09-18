@@ -645,6 +645,24 @@ describe('carryUnchangedBarEvidenceBindings (P-008)', () => {
     expect(calls[0]!.values).toContain(7);
   });
 
+  it('excludes retracted bindings from the carry so a withdrawal is not resurrected', async () => {
+    const { sql, calls } = fakeSql([[]]);
+    await carryUnchangedBarEvidenceBindings(sql, {
+      ...SCOPE,
+      priorRevision: 7,
+      nextRevision: 8,
+      nextSpecFingerprint: NEXT_FP,
+    });
+    // Carry re-INSERTS rather than reads, so without this predicate a retracted binding comes
+    // back as a fresh, un-retracted row at the next bar amendment — the retraction silently
+    // undone at an unrelated later event, which is the one repair path D-011 sanctions. The
+    // behavioural proof (retract, amend, assert only the control carries) lives in
+    // spec-evidence-store.integration.test.ts; this cheap twin exists because that suite runs
+    // only under test:affected:integration, so an edit to this SQL in the ordinary unit loop
+    // would otherwise be checked by nothing.
+    expect(calls[0]!.text).toContain('b.retracted_at IS NULL');
+  });
+
   it('recomputes the binding fingerprint over the new revision instead of copying it', async () => {
     const row = storedRow();
     const { sql, calls } = fakeSql([[row]]);
