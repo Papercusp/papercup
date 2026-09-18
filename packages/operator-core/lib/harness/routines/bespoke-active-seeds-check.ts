@@ -178,6 +178,10 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'reconcile-silent-halts', seedScript: 'seed-silent-halt-routine.ts' },
   { name: 'resolver-whole-corpus', seedScript: 'seed-resolver-whole-corpus-routine.ts' },
   { name: 'sql-read-census', seedScript: 'seed-sql-read-census-routine.ts' },
+  // agent-launch-context-cost-2026-09-18 P-009(c) / D-016. Listed here for the same
+  // reason the routine exists at all: the detector it replaces was committed and never
+  // run, so a launch-cost watch that is silently absent must itself be detectable.
+  { name: 'launch-cost-ceiling', seedScript: 'seed-launch-cost-ceiling-routine.ts' },
   { name: 'supervision-reconcile', seedScript: 'seed-supervision-reconcile-routine.ts' },
   { name: 'sweep-stalled-loops', seedScript: 'seed-stalled-loops-routine.ts' },
   { name: 'sweep-wedged-pty-hosts', seedScript: 'seed-pty-host-wedge-routine.ts' },

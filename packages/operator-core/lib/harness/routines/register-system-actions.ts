@@ -507,6 +507,21 @@ import './corpus-term-df-action';
 // row it writes each night is the pre-ship baseline a later night's no-fall check reads,
 // and `tool_invocations` is pruned to 14 days so that history cannot be recomputed.
 import './sql-read-census-action';
+// agent-launch-context-cost-2026-09-18 P-009(c) / D-016: `system:launch-cost-ceiling` —
+// the standing watch on agent launch cost. DURABLE because it is one measurement per
+// period for the whole install: an ephemeral row is armed per host, so a multi-host
+// install would re-scan every transcript and alarm once per host. No LLM and no daily
+// agent turn — it scans transcripts and compares medians, and wakes an agent ONLY on a
+// leg crossing (a >=20% regression against the trailing baseline, or a median at/over the
+// 250,000-token fleet-member compaction limit, where a session breaches its 90% steer
+// point at birth).
+//
+// THIS IS THE DETECTOR THAT DID NOT EXIST. `scripts/measure-launch-cost.ts` was committed
+// and correct and already exited 1 against a --target, and NOTHING RAN IT; launch cost
+// drifted 107,841 -> 305,926 median tokens over five weeks and the only thing that ever
+// fired was a human noticing agents felt slow. A measurement nobody runs is not a
+// detector, which is why the import belongs here and not in a runbook.
+import './launch-cost-ceiling-action';
 // work-queue-admission-and-bulk-dedup P-003/P-004/P-011: one durable
 // 30-minute duplication-only promoter, an independently scheduled
 // deterministic fail-open/liveness guard, and the hourly one-call root-cause
