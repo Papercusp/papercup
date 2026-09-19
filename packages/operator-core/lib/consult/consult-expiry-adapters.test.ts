@@ -275,4 +275,61 @@ describe('consultExpiryFindSilentResponders', () => {
     );
     expect(threadReads).not.toContain('thread-conv-live-fresh');
   });
+
+  it.each(['ended', 'recorded'] as const)(
+    'advances a terminal no-pickup responder without waiting for the expiry window (%s)',
+    async (sessionState) => {
+      const routedAt = '2026-08-27T05:59:59.000Z';
+      const rows = [
+        { workspaceId: ROW_WS, conversationId: `conv-${sessionState}`, responderId: `su-${sessionState}`, routedAt },
+        { workspaceId: ROW_WS, conversationId: `conv-posted-${sessionState}`, responderId: `su-posted-${sessionState}`, routedAt },
+      ];
+      const verdicts = new Map([
+        [rows[0]!.responderId, { sessionState }],
+        [rows[1]!.responderId, { sessionState }],
+      ]);
+      const resolveSessionStates = vi.fn(async () => verdicts);
+      const threadReads: string[] = [];
+
+      const found = await consultExpiryFindSilentResponders({
+        getPresence: async () => null,
+        resolveSessionStates,
+        getThreadStore: () => ({
+          getThreadByParent: async (parent) => ({ thread_id: `thread-${parent.ref}` }) as never,
+          listRecentPosts: async (threadId) => {
+            threadReads.push(threadId);
+            return { total: threadId === `thread-conv-posted-${sessionState}` ? 1 : 0 };
+          },
+        }),
+        now: () => new Date('2026-08-27T06:00:00.000Z'),
+      })(rows);
+
+      expect(found).toEqual(new Set([`conv-${sessionState}`]));
+      expect(threadReads).toEqual(
+        expect.arrayContaining([`thread-conv-${sessionState}`, `thread-conv-posted-${sessionState}`]),
+      );
+    },
+  );
+
+  it('bounds a parked responder that never became active after the pickup window', async () => {
+    const now = new Date('2026-08-27T06:00:00.000Z');
+    const staleRoute = new Date(now.getTime() - 30 * 60_000).toISOString();
+    const rows = [
+      { workspaceId: ROW_WS, conversationId: 'conv-parked-stale', responderId: 'su-parked-stale', routedAt: staleRoute },
+      { workspaceId: ROW_WS, conversationId: 'conv-parked-fresh', responderId: 'su-parked-fresh', routedAt: now.toISOString() },
+    ];
+
+    const found = await consultExpiryFindSilentResponders({
+      getPresence: async () => ({ lastActiveAt: null }),
+      resolveSessionStates: async () =>
+        new Map(rows.map((row) => [row.responderId, { sessionState: 'parked' }])),
+      getThreadStore: () => ({
+        getThreadByParent: async (parent) => ({ thread_id: `thread-${parent.ref}` }) as never,
+        listRecentPosts: async () => ({ total: 0 }),
+      }),
+      now: () => now,
+    })(rows);
+
+    expect(found).toEqual(new Set(['conv-parked-stale']));
+  });
 });

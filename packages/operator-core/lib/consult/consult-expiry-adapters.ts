@@ -38,7 +38,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import type { NotifyAgentsOpts, NotifyAgentsResult } from '../agent-tools/coordination/notify-agents';
 import type { EmitAwaitedEventOpts, EmitResult } from '../events/await/engine';
 import type { ExpirySweepDeps, SilentResponderCandidate } from './consult-expiry-core';
-import { HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
+import { DEAD_RESPONDER_STATES, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
 import type { ConsultReviveContext, ConsultReviveResult } from './revive-responder';
 import type { ThreadableStore } from '@papercusp/coordination/capabilities';
 
@@ -164,13 +164,16 @@ export function consultExpiryRevive(
 }
 
 /** Detect post-routing no-pickup failures that otherwise wait for the full
- * expiry window. Two observations are safe enough to advance as an implicit
+ * expiry window. Three observations are safe enough to advance as an implicit
  * decline when the consult thread is still empty:
  *
  *  - the selected owner became active after routing and re-parked; or
- *  - the owner is still live after one hard-blocked expiry window. This is the
- *    continuously-busy case: a queued wake can sit behind unrelated work for
- *    the four-hour `proceed` window even though no consult turn was picked up.
+ *  - the owner is still live or parked after one hard-blocked expiry window.
+ *    This is the continuously-busy or queued-but-never-picked-up case: a queued
+ *    wake can sit behind unrelated work for the four-hour `proceed` window even
+ *    though no consult turn was picked up; or
+ *  - the owner terminalized after routing, which makes waiting for expiry
+ *    pointless because the queued wake can no longer be consumed.
  *
  * Reusing HARD_BLOCKED_EXPIRY_MS gives a live responder the same bounded pickup
  * opportunity a blocking requester already accepts, while still cutting the
@@ -216,13 +219,14 @@ export function consultExpiryFindSilentResponders(
         const routedMs = Date.parse(row.routedAt);
         if (!Number.isFinite(routedMs)) return;
         const sessionState = verdicts.get(row.responderId)?.sessionState;
+        const terminalAfterRoute = DEAD_RESPONDER_STATES.has(sessionState ?? '');
         const reparkedAfterRoute =
           sessionState === 'parked' && Number.isFinite(activeMs) && activeMs > routedMs;
-        const livePastPickupWindow =
-          sessionState === 'live' &&
+        const inactivePastPickupWindow =
+          (sessionState === 'live' || sessionState === 'parked') &&
           Number.isFinite(checkedAtMs) &&
           checkedAtMs - routedMs >= HARD_BLOCKED_EXPIRY_MS;
-        if (!reparkedAfterRoute && !livePastPickupWindow) return;
+        if (!terminalAfterRoute && !reparkedAfterRoute && !inactivePastPickupWindow) return;
 
         const store = getStore(row.workspaceId);
         const thread = await store.getThreadByParent({ kind: 'conversation', ref: row.conversationId });

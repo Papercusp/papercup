@@ -429,7 +429,13 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     expect(row.closed_at).toBeNull();
     expect(row.responder_id).toBe('resp-2');
     expect(row.cascade_cursor).toBe(1);
-    expect(row.cascade_digest).toMatchObject([{ ownerId: 'resp-1', kind: 'wake_failed' }]);
+    expect(row.cascade_digest).toMatchObject([
+      {
+        ownerId: 'resp-1',
+        kind: 'wake_failed',
+        excerpt: 'queued responder did not produce a consult post before bounded pickup recovery (implicit decline)',
+      },
+    ]);
     expect(new Date(row.expires_at as string).getTime()).toBeGreaterThan(NOW.getTime());
     expect(reachCalls).toHaveLength(1);
   });

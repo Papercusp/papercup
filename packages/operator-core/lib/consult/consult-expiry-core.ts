@@ -105,9 +105,9 @@ export interface ExpirySweepDeps {
     brief: string;
     workspaceId: string;
   }) => Promise<{ spawned: boolean; verified: boolean | null; detail: string }>;
-  /** Optional bounded detector for a responder that became active after
-   * routing, re-parked, and left the row-workspace thread empty. Detector
-   * failures fail closed for this early leg; due rows retain normal expiry. */
+  /** Optional bounded detector for a responder that did not pick up after
+   * routing and left the row-workspace thread empty. Detector failures fail
+   * closed for this early leg; due rows retain normal expiry. */
   findSilentResponders?: (
     rows: readonly SilentResponderCandidate[],
   ) => Promise<ReadonlySet<string>>;
@@ -200,7 +200,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
             nowIso,
             isDue
               ? `expired unanswered (${row.latency_contract} window elapsed)`
-              : 'responder went active after routing, re-parked without posting (implicit decline)',
+              : 'queued responder did not produce a consult post before bounded pickup recovery (implicit decline)',
           ),
           stateOnAdvance: 'awaiting_responder',
           nowIso,
