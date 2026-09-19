@@ -736,6 +736,23 @@ detect_pc_heavy_marker_collision() {
   grep -Eq "$PC_HEAVY_MARKER_COLLISION_ERE" "$1" 2>/dev/null
 }
 
+# The reporter accepts several legacy scope names, but the probe's child command
+# should receive the canonical names explicitly. This matters when a caller has
+# only the interactive/session aliases set: downstream runners and reporters
+# launched by npm must see the same scope without each caller repeating a long
+# environment prefix. Preserve genuinely unscoped probes as unscoped; never
+# invent a harness or workspace default here.
+propagate_test_run_scope() {
+  local harness_scope="${PAPERCUSP_TEST_RUN_HARNESS:-${HARNESS_SLUG:-${PAPERCUSP_HARNESS_SLUG:-}}}"
+  local workspace_scope="${PAPERCUSP_WORKSPACE_ID:-${PAPERCUSP_WORKSPACE:-}}"
+  if [ -n "$harness_scope" ]; then
+    export PAPERCUSP_TEST_RUN_HARNESS="$harness_scope"
+  fi
+  if [ -n "$workspace_scope" ]; then
+    export PAPERCUSP_WORKSPACE_ID="$workspace_scope"
+  fi
+}
+
 # Run a guard in an interruptible child and preserve its output for the
 # machine-readable verdict below. The phase marker lets a guard's own test
 # fixture skip an intentionally slow baseline setup without weakening the
@@ -753,6 +770,7 @@ run_guard() {
       # the caller's environment.
       export PAPERCUSP_MUTATION_PROBE=1
       export PAPERCUSP_MUTATION_MODE="$HISTORICAL_MODE"
+      propagate_test_run_scope
       if [ "$FAKE_DESTRUCTIVE" -eq 1 ]; then
         # PATH-level interception, scoped to the supervised child only.
         export PATH="$FAKE_BIN:$PATH"

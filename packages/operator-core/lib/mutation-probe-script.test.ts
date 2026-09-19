@@ -59,8 +59,8 @@ function runProbe(args: string[]): number {
 }
 
 /** Run the probe and return its exit code AND combined output (for asserting guidance text). */
-function runProbeIO(args: string[]): { code: number; out: string } {
-  const r = spawnSync('bash', [SCRIPT, ...args], { encoding: 'utf8', timeout: 60_000 });
+function runProbeIO(args: string[], env: NodeJS.ProcessEnv = process.env): { code: number; out: string } {
+  const r = spawnSync('bash', [SCRIPT, ...args], { encoding: 'utf8', timeout: 60_000, env });
   return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
 
@@ -123,6 +123,56 @@ function makeHistoricalTsRepo(): { repo: string; file: string; oldSha: string } 
 }
 
 describe('mutation-probe.sh — copy-out mode (the default)', () => {
+  it('propagates available legacy scope aliases to canonical test-run variables', () => {
+    const env = { ...process.env };
+    delete env.PAPERCUSP_TEST_RUN_HARNESS;
+    delete env.PAPERCUSP_HARNESS_SLUG;
+    delete env.PAPERCUSP_WORKSPACE_ID;
+    env.HARNESS_SLUG = 'probe-harness';
+    env.PAPERCUSP_WORKSPACE = 'probe-workspace';
+    const { code, out } = runProbeIO(
+      [
+        '--file',
+        subject,
+        '--mutate',
+        's/beta/BETA/',
+        '--test',
+        'test "$PAPERCUSP_TEST_RUN_HARNESS" = probe-harness && test "$PAPERCUSP_WORKSPACE_ID" = probe-workspace && test -f {} && if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then exit 1; fi',
+      ],
+      env,
+    );
+    expect(code).toBe(0);
+    expect(out).toMatch(/MUTANT CAUGHT/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('does not invent scope for an explicitly unscoped caller', () => {
+    const env = { ...process.env };
+    for (const key of [
+      'PAPERCUSP_TEST_RUN_HARNESS',
+      'HARNESS_SLUG',
+      'PAPERCUSP_HARNESS_SLUG',
+      'PAPERCUSP_WORKSPACE_ID',
+      'PAPERCUSP_WORKSPACE',
+    ] as const) {
+      delete env[key];
+    }
+    const { code, out } = runProbeIO(
+      [
+        '--file',
+        subject,
+        '--mutate',
+        's/beta/BETA/',
+        '--test',
+        'test -z "${PAPERCUSP_TEST_RUN_HARNESS:-}" && test -z "${PAPERCUSP_WORKSPACE_ID:-}" && test -f {} && if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then exit 1; fi',
+      ],
+      env,
+    );
+    expect(code).toBe(0);
+    expect(out).toMatch(/MUTANT CAUGHT/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('leaves the subject file byte-identical while still exercising the guard', () => {
     const code = runProbe(['--file', subject, '--mutate', 's/beta/BETA/', '--test', 'grep -q "^beta$" {}']);
     // The guard fails on the mutant => the mutant was CAUGHT => probe exits 0.
