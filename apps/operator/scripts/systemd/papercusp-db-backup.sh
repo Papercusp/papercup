@@ -225,7 +225,10 @@ if ! exec 9>"$LOCK"; then
 fi
 if ! flock -n 9; then
   log "skipped: previous backup still running"
-  exit 0
+  # 75 (EX_TEMPFAIL) is the systemd unit's intentional-defer status. Returning
+  # zero records a successful run even though no artifact advanced, masking a
+  # stale recovery point until the health probe notices it.
+  exit 75
 fi
 
 renice 19 -p $$ >/dev/null 2>&1 || true

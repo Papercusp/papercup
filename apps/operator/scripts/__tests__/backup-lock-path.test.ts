@@ -58,4 +58,69 @@ describe('papercusp-db-backup.sh lock acquisition', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('returns EX_TEMPFAIL when another backup owns the producer lock', () => {
+    const root = mkdtempSync(join(tmpdir(), 'papercusp-backup-lock-held-'));
+    try {
+      const script = join(root, 'papercusp-db-backup.sh');
+      const dump = join(root, 'dump');
+      const bin = join(root, 'bin');
+      const lock = join(root, 'db-backup.lock');
+      const ready = join(root, 'lock-held');
+
+      copyFileSync(PRODUCER, script);
+      chmodSync(script, 0o755);
+      mkdirSync(bin, { recursive: true });
+
+      // Stub the root-owned output setup; the held-lock branch must be reached
+      // without connecting to or mutating the live database.
+      const sudo = join(bin, 'sudo');
+      writeFileSync(sudo, '#!/usr/bin/env bash\nexit 0\n');
+      chmodSync(sudo, 0o755);
+
+      const result = spawnSync(
+        'bash',
+        [
+          '-c',
+          `
+            set -uo pipefail
+            (
+              exec 8>"$LOCK"
+              if ! flock -n 8; then exit 92; fi
+              touch "$READY"
+              sleep 2
+            ) &
+            holder=$!
+            for _ in $(seq 1 100); do
+              [ -e "$READY" ] && break
+              sleep 0.01
+            done
+            [ -e "$READY" ] || exit 91
+            bash "$SCRIPT"
+            rc=$?
+            wait "$holder"
+            exit "$rc"
+          `,
+        ],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            PAPERCUSP_HOST_PG_DUMP_DIR: dump,
+            PC_BACKUP_LOCK: lock,
+            LOCK: lock,
+            READY: ready,
+            SCRIPT: script,
+          },
+        },
+      );
+      const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+
+      expect(result.status).toBe(75);
+      expect(output).toContain('skipped: previous backup still running');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
