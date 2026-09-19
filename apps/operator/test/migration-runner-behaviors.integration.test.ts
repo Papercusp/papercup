@@ -157,6 +157,37 @@ describe('migration runner — failure paths + recording contract (synthetic sql
     expect(await recorded()).toEqual([{ filename: '001-widgets.sql', sha256: sha256(raw) }]);
   });
 
+  it('retries a transient 55P03 per transaction attempt after rollback, then records the migration', async () => {
+    const raw = 'CREATE TABLE mrb1b_lock_retry (id int PRIMARY KEY);\n';
+    const dir = await makeSqlDir({ '001-lock-retry.sql': raw });
+    let transientFailuresRemaining = 2;
+    let transactionAttempts = 0;
+    let rollbacks = 0;
+    const logs: string[] = [];
+    const client = {
+      unsafe: async (query: string) => {
+        if (query.startsWith('BEGIN;')) {
+          transactionAttempts += 1;
+          if (transientFailuresRemaining > 0) {
+            transientFailuresRemaining -= 1;
+            throw Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+          }
+        }
+        if (query.trim() === 'ROLLBACK') rollbacks += 1;
+        return sql.unsafe(query);
+      },
+    };
+
+    const result = await applyPendingMigrations({ client, sqlDir: dir, log: (line) => logs.push(line) });
+
+    expect(result).toMatchObject({ appliedCount: 1, totalKnown: 1, failed: [] });
+    expect(transactionAttempts).toBe(3);
+    expect(rollbacks).toBe(2);
+    expect(logs.filter((line) => line.includes('SQLSTATE 55P03'))).toHaveLength(2);
+    await expect(tableExists('mrb1b_lock_retry')).resolves.toBe(true);
+    expect(await recorded()).toEqual([{ filename: '001-lock-retry.sql', sha256: sha256(raw) }]);
+  });
+
   it('flushes bulk migration WAL without a cluster checkpoint, including a failed final file', async () => {
     const files: Record<string, string> = {};
     for (let i = 1; i <= 19; i += 1) files[`${String(i).padStart(3, '0')}-bulk.sql`] = 'SELECT 1;';
