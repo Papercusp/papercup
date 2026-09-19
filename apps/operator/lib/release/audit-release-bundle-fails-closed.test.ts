@@ -122,6 +122,13 @@ describe('audit-release-bundle.py --scan-dir — the installer backstop must fai
 });
 
 describe('audit-release-bundle.py release false-positive controls', () => {
+  it('prints a tar exclude for verdict-cli per-session runtime state', () => {
+    const result = spawnSync('python3', [AUDIT, '--tar-excludes'], { encoding: 'utf8' });
+    if (result.error) throw result.error;
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/(?:^|\n)(?:\.\/|\*\/)?\.verdict-data(?:\n|$)/);
+  });
+
   it('accepts only the two exact gh 2.80 string-table values by SHA-256', () => {
     // Keep credential-shaped third-party bytes out of source. These code points
     // reconstruct the two measured public gh binary strings only in test memory;
