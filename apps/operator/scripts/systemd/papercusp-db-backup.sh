@@ -73,7 +73,11 @@ LOG="$DUMP/db-backup.log"
 BACKUP_USER="${USER:-$(id -un)}"
 BACKUP_GROUP="$(id -gn)"
 BACKUP_HOME="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
-LOCK="${PC_BACKUP_LOCK:-$BACKUP_HOME/.cache/kopia/db-backup.lock}"
+# Keep the producer lock in a directory owned by this producer, not under the
+# Kopia cache. The latter is a relocatable symlink on managed hosts and can be
+# left dangling during a cache move; a failed lock open must never look like a
+# successful "previous backup still running" skip.
+LOCK="${PC_BACKUP_LOCK:-$BACKUP_HOME/.cache/papercusp/db-backup.lock}"
 PSQL="sudo -n -u postgres psql -h /var/run/postgresql -d postgres -tAc"
 
 # pg_dump runs as the `postgres` OS user (peer auth on the unix socket — there is
@@ -160,8 +164,17 @@ fs_avail_gb() {
 # automatically instead of being silently skipped.
 EXCLUDE_RE='(_test$|_e2e|^e2e|^repro_|scratch|restore_check|gym_smoke|^template)'
 
-mkdir -p "$DUMP" "$(dirname "$LOCK")"
 log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" | tee -a "$LOG" >&2; }
+
+if ! mkdir -p "$DUMP"; then
+  printf '[%s] FATAL: unable to create backup dump directory %s\n' \
+    "$(date -Iseconds)" "$DUMP" >&2
+  exit 1
+fi
+if ! mkdir -p "$(dirname "$LOCK")"; then
+  log "FATAL: unable to create backup lock directory $(dirname "$LOCK") — refusing to skip this backup"
+  exit 1
+fi
 
 # ── The dump directory OWNS its .kopiaignore ────────────────────────────────
 # This script writes each dump to <db>.tmp (mode 0700 postgres) and renames it
@@ -206,7 +219,10 @@ ensure_kopiaignore_rule '*.tmp' \
 
 # Single instance. A backup still running when the next timer fires must not be
 # joined by a second one (that is WI-3550's overlap failure, on a bigger job).
-exec 9>"$LOCK"
+if ! exec 9>"$LOCK"; then
+  log "FATAL: unable to open backup lock $LOCK — refusing to report a skipped run"
+  exit 1
+fi
 if ! flock -n 9; then
   log "skipped: previous backup still running"
   exit 0
