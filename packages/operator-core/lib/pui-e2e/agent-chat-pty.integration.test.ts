@@ -1704,12 +1704,32 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       await pane.waitFor('RENAME');
       pane.write('P8 renamed');
       pane.enter();
-      await pane.waitFor('Renamed session to P8 renamed', { timeoutMs: 30_000 });
+      // Notifications are muted in the default workbench. Verify the write
+      // itself, then find the new title: the old title filter no longer matches.
+      await vi.waitFor(async () => {
+        const [renamed] = await db.adminSql<Array<{ title: string }>>`
+          SELECT title FROM harness_shared.agent_chats_consolidated
+           WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND id = ${sourceId}`;
+        expect(renamed?.title).toBe('P8 renamed');
+      }, { timeout: 30_000, interval: 100 });
+      pane.escape();
+      await pane.waitFor('P8 renamed', { timeoutMs: 30_000 });
+      pane.write('/P8 renamed');
+      pane.enter();
+      await pane.waitForGone('P8 sibling', { timeoutMs: 20_000 });
 
       stage = 'archive-source';
       pane.write('d');
+      await pane.waitFor('ARCHIVE P8 renamed?');
       pane.write('y');
-      await pane.waitFor('Archived session (history remains recoverable)', { timeoutMs: 30_000 });
+      await vi.waitFor(async () => {
+        const [archived] = await db.adminSql<Array<{ archived_at: string | null }>>`
+          SELECT archived_at FROM harness_shared.agent_chats_consolidated
+           WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND id = ${sourceId}`;
+        expect(archived?.archived_at).toBeTruthy();
+      }, { timeout: 30_000, interval: 100 });
+      await pane.waitForGone('ARCHIVE P8 renamed?');
+      await pane.waitFor('P8 renamed');
 
       const [stored] = await db.adminSql<Array<{ id: string; title: string; archived_at: string | null }>>`
         SELECT id, title, archived_at
@@ -1717,6 +1737,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
          WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND id = ${sourceId}`;
       expect(stored).toMatchObject({ id: sourceId, title: 'P8 renamed' });
       expect(stored.archived_at).toBeTruthy();
+      const [sibling] = await db.adminSql<Array<{ title: string; archived_at: string | null }>>`
+        SELECT title, archived_at FROM harness_shared.agent_chats_consolidated
+         WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND id = ${siblingId}`;
+      expect(sibling).toEqual({ title: 'P8 sibling', archived_at: null });
       expect(pane.screen()).not.toContain('sibling history');
       console.info('PUI_SESSION_LIFECYCLE_ACCEPTANCE', JSON.stringify({
         binary: bin, binarySha256, stored, indexed, frame: pane.screen(),
