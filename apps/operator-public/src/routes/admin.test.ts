@@ -139,6 +139,8 @@ describe('POST /admin/listings/:id/review', () => {
       unlisted_at: null,
       listing_kind: 'knowledge-pack',
       publisher_github_user_id: 42,
+      pinned_commit_sha: null,
+      pinned_tree_digest: null,
     });
   });
 
@@ -184,6 +186,26 @@ describe('POST /admin/listings/:id/review', () => {
     expect(h.setReviewStatus).toHaveBeenCalledWith(expect.anything(), 'l1', 'approved', 'good', expect.any(Number));
     const auditDetail = h.audit.mock.calls[0][3] as Record<string, unknown>;
     expect(auditDetail).toMatchObject({ decision: 'approved', operator_github_user_id: 7, publisher_github_user_id: 42 });
+  });
+
+  it('refuses approval of an unpinned self-describing listing', async () => {
+    h.getHarnessById.mockResolvedValue({
+      id: 'plan-legacy',
+      review_status: 'pending',
+      unlisted_at: null,
+      listing_kind: 'plan',
+      publisher_github_user_id: 42,
+      pinned_commit_sha: null,
+      pinned_tree_digest: null,
+    });
+    const res = await jsonPost('/admin/listings/plan-legacy/review', { decision: 'approve' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'content_pin_required',
+      listing_kind: 'plan',
+      reason: 'republish_required_before_approval',
+    });
+    expect(h.setReviewStatus).not.toHaveBeenCalled();
   });
 
   it('rejects a pending listing (status rejected, null reason when blank)', async () => {

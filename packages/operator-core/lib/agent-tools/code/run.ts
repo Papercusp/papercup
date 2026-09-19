@@ -571,7 +571,11 @@ export default defineTool({
     } = result;
     void traceOnlyCallRecords;
     const shownResult = shapeCodeRunSummary(
-      shapeCodeRunLogs(annotateChildFailureWarning(shapeMutationEcho(resultForPayload))),
+      shapeCodeRunLogs(
+        annotateChildFailureWarning(
+          shapeMutationEcho(annotatePublicCodeRunStatus(resultForPayload)),
+        ),
+      ),
     );
 
     const similarRecipePayload = similarRecipes.length > 0 ? shapeCodeRunSimilarRecipes(similarRecipes) : {};
@@ -1897,6 +1901,46 @@ export function annotateChildFailureWarning<T extends OrchestrationRunResult | R
       `their own result: ${unnamed.join(', ')}. The script still ran to completion, so \`ok\` is ` +
       'true — but any value derived from these calls may be wrong, not merely missing. Check ' +
       '`childFailures` for each result before trusting this summary.',
+  };
+}
+
+/**
+ * Project child WRITE failures onto the public code:run status.
+ *
+ * `runToolOrchestration.ok` intentionally answers a narrower question: whether the script
+ * itself completed. That keeps existing orchestration callers able to distinguish a script
+ * error from a script that completed with a diagnostic. The agent-facing code:run envelope,
+ * however, is commonly branched on as the success of the whole batch. Leaving `ok:true` there
+ * when a write was rejected (either before dispatch or by its own `{ ok:false }` result) lets a
+ * confirmation in the same batch claim an action that did not happen.
+ *
+ * Read-only semantic failures stay advisory: they remain `ok:true` with `partial:true` and the
+ * existing `childFailureWarning`, because no write was falsely reported as successful.
+ */
+export function annotatePublicCodeRunStatus<T extends OrchestrationRunResult | Record<string, unknown>>(
+  result: T,
+): T | Record<string, unknown> {
+  const rejectedMutations = (result as { rejectedMutations?: unknown }).rejectedMutations;
+  const okFalseMutations = (result as { okFalseMutations?: unknown }).okFalseMutations;
+  const rejectedCount = Array.isArray(rejectedMutations) ? rejectedMutations.length : 0;
+  const okFalseCount = Array.isArray(okFalseMutations) ? okFalseMutations.length : 0;
+  if (rejectedCount === 0 && okFalseCount === 0) return result;
+
+  const failureKinds = [
+    ...(rejectedCount > 0 ? [`${rejectedCount} write-effect call(s) rejected before execution`] : []),
+    ...(okFalseCount > 0 ? [`${okFalseCount} write-effect call(s) returned ok:false`] : []),
+  ];
+  const existingError = (result as { error?: unknown }).error;
+  return {
+    ...result,
+    ok: false,
+    ...(typeof existingError === 'string' && existingError.length > 0
+      ? { error: existingError }
+      : {
+          error:
+            `code:run completed with child write failure: ${failureKinds.join('; ')}. ` +
+            'Inspect rejectedMutations/okFalseMutations before retrying the batch.',
+        }),
   };
 }
 

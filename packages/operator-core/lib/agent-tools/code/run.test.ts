@@ -82,6 +82,7 @@ import codeRunTool, {
   shapeCodeRunSummary,
   shapeMutationEcho,
   annotateChildFailureWarning,
+  annotatePublicCodeRunStatus,
   bindInnerDispatch,
   buildFacadeHelp,
   shapeCodeRunSimilarRecipes,
@@ -2021,6 +2022,72 @@ describe('annotateChildFailureWarning — a failed READ-effect child call is nam
       ],
     }) as Record<string, unknown>;
     expect(annotated.childFailureWarning).toBeUndefined();
+  });
+});
+
+describe('annotatePublicCodeRunStatus — child WRITE failures make the public envelope unsuccessful', () => {
+  const base = {
+    ok: true as const,
+    summary: { done: true },
+    logs: [] as string[],
+    dryRun: false,
+    plannedMutations: [{ tool: 'routines:set', args: { active: false } }],
+    runtimeObservations: NO_RUNTIME_OBSERVATIONS,
+  };
+
+  it('flips ok:false for a pre-dispatch rejected write and preserves the rejection evidence', () => {
+    const rejected = { tool: 'routines:set', args: { active: false }, error: 'reason too long' };
+    const projected = annotatePublicCodeRunStatus({
+      ...base,
+      rejectedMutations: [rejected],
+    }) as Record<string, unknown>;
+
+    expect(projected.ok).toBe(false);
+    expect(projected.error).toEqual(expect.stringContaining('child write failure'));
+    expect(projected.error).toEqual(expect.stringContaining('rejected before execution'));
+    expect(projected.rejectedMutations).toEqual([rejected]);
+
+    // The real response path shapes mutation evidence after status projection, moving rejected
+    // calls under `mutations.rejected`; the public failure must survive that shaping boundary.
+    const shaped = shapeMutationEcho(projected as never) as Record<string, unknown>;
+    expect(shaped.ok).toBe(false);
+    expect(shaped.mutations).toMatchObject({ rejectedCount: 1 });
+  });
+
+  it('flips ok:false for a dispatched write whose own result is ok:false', () => {
+    const failed = {
+      tool: 'routines:set',
+      args: { active: false },
+      result: { ok: false, error: 'completion_integrity_required' },
+    };
+    const projected = annotatePublicCodeRunStatus({
+      ...base,
+      okFalseMutations: [failed],
+    }) as Record<string, unknown>;
+
+    expect(projected.ok).toBe(false);
+    expect(projected.error).toEqual(expect.stringContaining('returned ok:false'));
+    expect(projected.okFalseMutations).toEqual([failed]);
+  });
+
+  it('leaves read-only semantic diagnostics unchanged', () => {
+    const readFailure = {
+      tool: 'routines:list',
+      kind: 'semantic',
+      result: { ok: false, error: 'not_found' },
+    };
+    const input = {
+      ...base,
+      plannedMutations: [],
+      partial: true,
+      childFailures: [readFailure],
+    };
+    const projected = annotatePublicCodeRunStatus(input) as Record<string, unknown>;
+
+    expect(projected).toBe(input);
+    expect(projected.ok).toBe(true);
+    expect(projected.error).toBeUndefined();
+    expect(projected.childFailures).toEqual([readFailure]);
   });
 });
 

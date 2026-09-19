@@ -23,6 +23,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { Env } from '../env.ts';
 import { AuthError, isCupboardOperator, resolveGithubBearer } from '../auth.ts';
+import { isSelfDescribingKind } from '../content-pin.ts';
 import {
   audit,
   banPublisherPubkey,
@@ -172,6 +173,22 @@ export function adminRoute(): Hono<{ Bindings: Env }> {
     if (!row || row.unlisted_at) return c.json({ error: 'not_found' }, 404);
     if (row.review_status !== 'pending') {
       return c.json({ error: 'not_pending', review_status: row.review_status }, 409);
+    }
+    // P-001/D-005: a self-describing listing must have an immutable content
+    // pin before moderation can make it public.  Rows created before migration
+    // 028 legitimately have NULL pins, but approving one would bypass the
+    // trust gate; the publisher must re-publish it so the Worker can pin the
+    // exact bytes that moderation will expose.
+    if (
+      body.decision === 'approve' &&
+      isSelfDescribingKind(row.listing_kind) &&
+      (row.pinned_commit_sha == null || row.pinned_tree_digest == null)
+    ) {
+      return c.json({
+        error: 'content_pin_required',
+        listing_kind: row.listing_kind,
+        reason: 'republish_required_before_approval',
+      }, 409);
     }
 
     const now = Date.now();
