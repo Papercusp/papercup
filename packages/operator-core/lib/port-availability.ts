@@ -51,6 +51,8 @@ export function portAvailable(port: number, host: string): Promise<boolean> {
  * large startup graph. The child owns the asynchronous bind/close lifecycle;
  * the caller blocks only for that tiny probe and receives the same OS-level
  * answer without a top-level await (which `tsx` compiles to CommonJS).
+ * A child startup/transport failure is not evidence that a port is occupied.
+ * Throw for an unmeasured result so callers cannot mislabel it EADDRINUSE.
  */
 export function portAvailableSync(port: number, host: string): boolean {
   if (!Number.isInteger(port) || port < 0 || port > 65535) return false;
@@ -58,9 +60,29 @@ export function portAvailableSync(port: number, host: string): boolean {
   const probe = [
     "const net=require('node:net');",
     'const server=net.createServer();',
-    "server.once('error',()=>process.exit(1));",
-    `server.listen(${port}, ${JSON.stringify(host)}, () => server.close(() => process.exit(0)));`,
+    "server.once('error',error=>{process.stdout.write(JSON.stringify({errorCode:error.code??'UNKNOWN'}));process.exitCode=1;});",
+    `server.listen(${port}, ${JSON.stringify(host)}, () => server.close(() => {process.stdout.write('available');}));`,
   ].join('');
-  const result = spawnSync(process.execPath, ['-e', probe], { stdio: 'ignore' });
-  return result.status === 0;
+  const result = spawnSync(process.execPath, ['-e', probe], {
+    encoding: 'utf8',
+    timeout: 5_000,
+    maxBuffer: 64 * 1024,
+  });
+  if (result.status === 0 && result.stdout === 'available') return true;
+  let errorCode: string | undefined;
+  try {
+    const report: unknown = JSON.parse(result.stdout ?? '');
+    if (report && typeof report === 'object' && 'errorCode' in report && typeof report.errorCode === 'string') {
+      errorCode = report.errorCode;
+    }
+  } catch {
+    // No probe report means the subprocess failed before measuring the bind.
+  }
+  if (result.status === 1 && errorCode === 'EADDRINUSE') return false;
+  const spawnCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  throw new Error(
+    `Port availability probe failed for ${host}:${port}: ` +
+      `code=${spawnCode ?? errorCode ?? 'unmeasured'} exit=${result.status} signal=${result.signal} ` +
+      `stderrPresent=${Boolean(result.stderr)}`,
+  );
 }

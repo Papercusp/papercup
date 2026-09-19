@@ -133,3 +133,33 @@ describe('psu-pty busy-gate defer leaves durable evidence for EVERY mode (WI-214
     expect(readFileSync(HOST_SOURCE, 'utf-8')).not.toContain("'carry-respawn-busy-gate-expired'");
   });
 });
+
+describe('pending carry-respawn wake deferral is durable-only (WI-10001960)', () => {
+  function pendingRespawnDeferralBlock(): string {
+    const src = readFileSync(HOST_SOURCE, 'utf-8');
+    const openIdx = src.indexOf('if (shouldDeferWakeForPendingRespawn(');
+    if (openIdx === -1) {
+      throw new Error(
+        'psu-pty-host.mjs no longer contains the pending carry-respawn wake guard; ' +
+          'this regression guard cannot pass vacuously.',
+      );
+    }
+    const returnText = "return { ok: false, reason: 'deferred-carry-respawn-pending' };";
+    const endIdx = src.indexOf(returnText, openIdx);
+    if (endIdx === -1) {
+      throw new Error(
+        `psu-pty-host.mjs no longer contains ${returnText}; re-anchor this guard.`,
+      );
+    }
+    return src.slice(openIdx, endIdx + returnText.length);
+  }
+
+  it('records the deferral durably without writing an internal warning into the owner TUI', () => {
+    const block = pendingRespawnDeferralBlock();
+    expect(block).toContain(
+      "appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', dropExtra)",
+    );
+    expect(block).not.toContain('process.stderr.write');
+    expect(block).not.toContain('successor');
+  });
+});

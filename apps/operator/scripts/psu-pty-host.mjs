@@ -6536,14 +6536,10 @@ export function hostThroughPty(o) {
       if (shouldDeferWakeForPendingRespawn(msg.mode, carryRearm.pendingCount())) {
         const dropExtra = { reason: 'carry-respawn-pending' };
         appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', dropExtra);
-        try {
-          process.stderr.write(
-            `psu-pty-host: wake turn DEFERRED for ${ownerId} (a carry-respawn re-arm is pending) — ` +
-              `left in inbox for the successor's first natural turn\n`,
-          );
-        } catch {
-          /* diagnostic only */
-        }
+        // This is an internal delivery-ordering decision, not an agent-facing
+        // failure. The durable host event above is the diagnostic surface; the
+        // host's stderr is the owner's TUI, so writing the same state there
+        // interrupts the agent with a message that looks like a stop signal.
         return { ok: false, reason: 'deferred-carry-respawn-pending' };
       }
       // EI-18109211232286833: stamp the receipt time ONCE, here, so both this

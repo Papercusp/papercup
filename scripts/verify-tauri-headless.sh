@@ -2574,9 +2574,12 @@ MAX_BOOT_ATTEMPTS="${VERIFY_TAURI_MAX_BOOT_ATTEMPTS:-2}"
 # boot that was about to heal itself and turn an 8-second recovery into a ~2min
 # re-boot. Only once it exhausts them does it call onFatal, producing
 # `[hono-host] fatal uncaughtException — exiting: Error: listen EADDRINUSE ... :<port>`.
+# The first-import guard can also terminate before bootstrap with a confirmed
+# EADDRINUSE. That terminal form needs the same recovery; probe execution errors
+# carry no EADDRINUSE marker and must not be treated as a bind race.
 # $DEV_PORT/$LOG are read at CALL time, so this stays correct after a re-pick.
 port_lost_to_squatter() {
-  grep -qE "fatal uncaughtException.*EADDRINUSE.*:$DEV_PORT\b" "$LOG" 2>/dev/null
+  grep -qE "(fatal uncaughtException.*EADDRINUSE|fatal EADDRINUSE during pre-bootstrap port check).*:$DEV_PORT\b" "$LOG" 2>/dev/null
 }
 
 # EI-21903832503219853: has the desktop binary DIED because ITS DISPLAY is

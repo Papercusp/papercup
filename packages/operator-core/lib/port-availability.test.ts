@@ -1,6 +1,6 @@
 /** Regression tests for the shared OS-level port availability probe. */
 import { createServer } from 'node:net';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { portAvailable, portAvailableSync } from './port-availability';
 
 const openServers: ReturnType<typeof createServer>[] = [];
@@ -29,9 +29,18 @@ async function closeAll(): Promise<void> {
   );
 }
 
-afterEach(closeAll);
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await closeAll();
+});
 
 describe('portAvailable', () => {
+  it('reports a failed probe subprocess instead of claiming a free port is occupied', async () => {
+    const port = await freePort();
+    vi.stubEnv('NODE_OPTIONS', '--require=/papercusp-missing-port-probe-preload.cjs');
+    expect(() => portAvailableSync(port, '127.0.0.1')).toThrow(/port availability probe failed/i);
+  });
+
   it('returns true for a free port and false for a held port', async () => {
     const port = await freePort();
     expect(await portAvailable(port, '127.0.0.1')).toBe(true);

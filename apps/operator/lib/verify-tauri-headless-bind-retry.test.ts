@@ -206,6 +206,14 @@ describe('EI-19446616147360269 — the bind-time re-pick is reachable without th
       ),
       'the terminal give-up MUST trip the re-pick',
     ).toBe(true);
+    expect(
+      re.test('[hono-host] fatal EADDRINUSE during pre-bootstrap port check: 127.0.0.1:33700 is already in use'),
+      'the pre-bootstrap terminal conflict MUST trip the same re-pick',
+    ).toBe(true);
+    expect(
+      re.test('[hono-host] fatal EADDRINUSE during pre-bootstrap port check: 127.0.0.1:33701 is already in use'),
+      'another port must not trigger this verifier re-pick',
+    ).toBe(false);
   });
 
   it('surfaces the lost port on the script\'s OWN stdout — a dead boot must not read as a slow one', () => {
