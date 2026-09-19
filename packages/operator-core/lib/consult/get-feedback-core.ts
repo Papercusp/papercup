@@ -409,24 +409,43 @@ async function rubricGraderExclusions(
   // payload.observation.rubricRef. The emitter is persisted by the issue-view
   // writer at payload._ei.created_by and projected by scorecards:list as
   // ScorecardRow.createdBy. Read those WRITER-backed fields directly so this
-  // gate cannot drift from what scorecards:list calls a grader.
-  const rows = (await sql`
-    SELECT DISTINCT payload -> '_ei' ->> 'created_by' AS owner_id
-     FROM harness_shared.work_items
-     WHERE workspace_id = ${workspaceId}
-       -- Match migration 1103's expression exactly so the tiny partial
-       -- work_items_obs_rubric_ref_v2_idx is usable. The accessor is LOAD-BEARING,
-       -- not cosmetic: an expression index is matched structurally, so the
-       -- semantically-equal _ei-subtracting traversal silently misses it and this
-       -- becomes a full scan of a 173k-row / 4.5GB table. That subtracting form was
-       -- correct against migration 842, until 1096 stopped the engineer_issues view
-       -- subtracting _ei and thereby orphaned both 842 indexes (WI-2143953).
-       -- Keep this accessor identical to 1103's index expression.
-       AND payload -> 'observation' ->> 'rubricRef' = ANY(${refs}::text[])
-       AND payload -> '_ei' ->> 'created_by' IS NOT NULL
-  ORDER BY owner_id
-  `) as unknown as Array<{ owner_id: string }>;
-  return rows.map((row) => row.owner_id);
+  // gate cannot drift from what scorecards:list calls a grader. The rubric plan
+  // itself is a second authoring identity source: harness_plans.owner is the
+  // original author, while template_data.proposedBy is the latest proposer.
+  const [scorecardRows, rubricRows] = await Promise.all([
+    sql`
+      SELECT DISTINCT payload -> '_ei' ->> 'created_by' AS owner_id
+       FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         -- Match migration 1103's expression exactly so the tiny partial
+         -- work_items_obs_rubric_ref_v2_idx is usable. The accessor is LOAD-BEARING,
+         -- not cosmetic: an expression index is matched structurally, so the
+         -- semantically-equal _ei-subtracting traversal silently misses it and this
+         -- becomes a full scan of a 173k-row / 4.5GB table. That subtracting form was
+         -- correct against migration 842, until 1096 stopped the engineer_issues view
+         -- subtracting _ei and thereby orphaned both 842 indexes (WI-2143953).
+         -- Keep this accessor identical to 1103's index expression.
+         AND payload -> 'observation' ->> 'rubricRef' = ANY(${refs}::text[])
+         AND payload -> '_ei' ->> 'created_by' IS NOT NULL
+    ORDER BY owner_id
+    `,
+    sql`
+      SELECT owner AS author_id, template_data ->> 'proposedBy' AS proposer_id
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId}
+         AND template = 'rubric'
+         AND template_slug IS NULL
+         AND plan_slug = ANY(${refs}::text[])
+       ORDER BY plan_slug, author_id, proposer_id
+    `,
+  ]) as unknown as [
+    Array<{ owner_id: string }>,
+    Array<{ author_id: string | null; proposer_id: string | null }>,
+  ];
+  return [
+    ...scorecardRows.map((row) => row.owner_id),
+    ...rubricRows.flatMap((row) => [row.author_id, row.proposer_id].filter((id): id is string => Boolean(id))),
+  ];
 }
 
 /**

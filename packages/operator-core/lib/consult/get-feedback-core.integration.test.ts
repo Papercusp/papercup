@@ -83,11 +83,16 @@ beforeAll(async () => {
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
   // Minimal landing pad for the migration's coord_conversations kind-CHECK
-  // widening (the real table is migration-132-owned; only `kind` matters here).
+  // widening (the real table is migration-132-owned). Keep the workspace key
+  // and lifecycle columns used by expiry settlement in sync with that table.
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.coord_conversations (
-      id text PRIMARY KEY,
-      kind text NOT NULL DEFAULT 'question'
+      workspace_id text NOT NULL,
+      id text NOT NULL,
+      kind text NOT NULL DEFAULT 'question',
+      state text NOT NULL DEFAULT 'open',
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (workspace_id, id)
     )`);
   // The REAL migration — consult_state + consult_post_meta cannot drift.
   await rootSql.unsafe(readFileSync(MIGRATION_834, 'utf8'));
@@ -122,6 +127,19 @@ beforeAll(async () => {
       taken_at timestamptz,
       last_progress_at timestamptz,
       payload jsonb NOT NULL DEFAULT '{}'::jsonb
+    )`);
+  // Rubric-vetting independence reads the authoring identities from the
+  // rubric-template plan row, not from the scorecard work-item ledger.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.harness_plans (
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL DEFAULT 'papercusp',
+      plan_slug text NOT NULL,
+      template text,
+      template_slug text,
+      owner text,
+      template_data jsonb,
+      PRIMARY KEY (workspace_id, harness_slug, plan_slug)
     )`);
   // The source-audit router's persisted-responder liveness check uses the same
   // session-log evidence as the production oracle. Keep this fixture minimal,
@@ -876,6 +894,8 @@ describe('getFeedbackCore — rubric grader/critic role separation (EI-214692075
   it('excludes prior scorecard authors before routing a critique of that rubric', async () => {
     const rubricRef = 'acceptance-hlc-contention-free-clock-2026-08-12';
     const grader = cand('agent-rubric-grader', { score: 0.91 });
+    const rubricAuthor = cand('agent-rubric-author', { score: 0.87 });
+    const rubricProposer = cand('agent-rubric-proposer', { score: 0.83 });
     const independent = cand('agent-independent-critic', { score: 0.79 });
     await rootSql`
       INSERT INTO harness_shared.work_items (feature_id, workspace_id, status, payload)
@@ -892,8 +912,15 @@ describe('getFeedbackCore — rubric grader/critic role separation (EI-214692075
             supersedes: 'EI-RUBRIC-GRADE-1',
           },
         })})`;
+    await rootSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, plan_slug, template, template_slug, owner, template_data)
+      VALUES
+        (${WS}, ${rubricRef}, 'rubric', NULL, ${rubricAuthor.ownerId}, ${rootSql.json({ proposedBy: rubricProposer.ownerId })})`;
 
-    const routed = routeOf([grader, independent], { all: [grader, independent] });
+    const routed = routeOf([grader, rubricAuthor, rubricProposer, independent], {
+      all: [grader, rubricAuthor, rubricProposer, independent],
+    });
     const { deps, routeCalls } = makeDeps(routed);
     // Mirror the production routeConsult seam: owners passed in excludeOwners
     // cannot appear in either the qualified or minimum-fill candidate pool.
@@ -919,7 +946,9 @@ describe('getFeedbackCore — rubric grader/critic role separation (EI-214692075
     );
 
     expect(routeCalls).toHaveLength(1);
-    expect(routeCalls[0]?.excludeOwners).toEqual(['agent-rubric-grader']);
+    expect(new Set(routeCalls[0]?.excludeOwners)).toEqual(
+      new Set([grader.ownerId, rubricAuthor.ownerId, rubricProposer.ownerId]),
+    );
     expect(result.responder?.ownerId).toBe('agent-independent-critic');
   });
 
