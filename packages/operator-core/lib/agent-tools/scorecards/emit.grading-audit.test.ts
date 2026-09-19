@@ -424,6 +424,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
 
     expect(res.ok).toBe(false);
     expect((res as { error?: string }).error).toContain('grading-integrity');
+    expect((res as { error?: string }).error).toContain("supersedes:'EI-PENDING-SUBJECT'");
     expect((res as { error?: string }).error).toContain("subject:{ kind:'scorecard'");
     expect((res as { error?: string }).error).toContain('EI-PENDING-SUBJECT');
     expect(captureImprovement).not.toHaveBeenCalled();
@@ -480,6 +481,27 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     });
     expect(res.ok).toBe(false);
     expect((res as { error?: string }).error).toContain('self_audit_refused');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('refuses an auditor in the graded card author lineage, not only the exact author', async () => {
+    const lineageRelated = vi.fn(async (first: string | null, second: string | null) => {
+      return first === 'su-grader-author' && second === 'su-grader-descendant';
+    });
+    const res = await emitScorecard(
+      auditArgs,
+      {
+        createdBy: 'su-grader-descendant',
+        ctxHarness: 'papercusp',
+        workspaceId: 'ws-test',
+      },
+      { lineageRelated },
+    );
+    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('self_audit_refused') });
+    expect(lineageRelated).toHaveBeenCalledWith('su-grader-author', 'su-grader-descendant', {
+      workspaceId: 'ws-test',
+    });
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });

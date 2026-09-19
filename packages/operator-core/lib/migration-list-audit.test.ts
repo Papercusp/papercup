@@ -236,6 +236,37 @@ describe('auditMigrationList', () => {
     expect(audit.runtimeMissing).toEqual([]);
   });
 
+  it('catches a later runtime-table ALTER even when the migration is wider', () => {
+    const migrations: [string, string][] = [
+      [
+        '163-await-event-subscriptions.sql',
+        'CREATE TABLE harness_shared.event_awaits (event_key text);',
+      ],
+      [
+        '541-predicate-watches.sql',
+        'CREATE TABLE harness_shared.predicate_watches (id text);',
+      ],
+      [
+        '871-lifecycle-bound-watches.sql',
+        `ALTER TABLE harness_shared.event_awaits ADD COLUMN bound_to text;
+         ALTER TABLE harness_shared.predicate_watches ADD COLUMN condition_key text;`,
+      ],
+    ];
+    const audit = auditMigrationList(
+      ['163-await-event-subscriptions.sql'],
+      migrations,
+      ['harness_shared.event_awaits'],
+    );
+
+    expect(audit.wider.map((m) => m.file)).toContain('871-lifecycle-bound-watches.sql');
+    expect(audit.runtimeStale).toEqual([
+      {
+        table: 'harness_shared.event_awaits',
+        migration: '871-lifecycle-bound-watches.sql',
+      },
+    ]);
+  });
+
   it('reports missing files in numeric order', () => {
     const audit = auditMigrationList(['444-agent-facts.sql'], MIGRATIONS);
     const nums = audit.missing.map((m) => migrationNumber(m.file));
@@ -266,6 +297,27 @@ describe('formatStaleMigrationList', () => {
     expect(msg).toContain('harness_shared.event_key_fires');
     expect(msg).toContain('632-event-key-fire-latch.sql');
     expect(msg).toContain('Runtime-used tables');
+  });
+
+  it('names a later runtime-table migration even when it is wider', () => {
+    const audit = auditMigrationList(
+      ['163-await-event-subscriptions.sql'],
+      [
+        [
+          '163-await-event-subscriptions.sql',
+          'CREATE TABLE harness_shared.event_awaits (event_key text);',
+        ],
+        [
+          '871-lifecycle-bound-watches.sql',
+          `ALTER TABLE harness_shared.event_awaits ADD COLUMN bound_to text;
+           ALTER TABLE harness_shared.predicate_watches ADD COLUMN condition_key text;`,
+        ],
+      ],
+      ['harness_shared.event_awaits'],
+    );
+    const msg = formatStaleMigrationList(audit, 'runtime-fixture');
+    expect(msg).toContain('871-lifecycle-bound-watches.sql');
+    expect(msg).toContain('extends runtime-used table');
   });
 
   // WI-1413193. The remedy used to say ONLY "add them (in numeric order) to fix
