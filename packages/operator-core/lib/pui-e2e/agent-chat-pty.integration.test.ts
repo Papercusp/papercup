@@ -1640,6 +1640,92 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
     }
   });
 
+  test('AUTO-BAR-R-04-P-008: legacy continuation preserves source identity, history and the unsent draft', async ({ onTestFailed }) => {
+    const sourceId = `pui-legacy-${randomUUID()}`;
+    const siblingId = `pui-legacy-sibling-${randomUUID()}`;
+    const now = Date.now();
+    const history = [
+      { role: 'user', content: 'P8 legacy question', ts: new Date(now - 3_000).toISOString() },
+      { role: 'assistant', content: 'P8 legacy answer', ts: new Date(now - 2_000).toISOString() },
+    ];
+    const draft = '  P8 preserved continuation draft λ  ';
+    let stage = 'seed';
+    let pane: PuiPane | undefined;
+    onTestFailed(() => console.info('PUI_LEGACY_CONTINUATION_FAILURE', JSON.stringify({
+      sourceId, siblingId, stage, ...(pane?.failureEvidence() ?? {}),
+    })));
+    await seedAgentChat({
+      id: sourceId, title: 'P8 legacy source', runtimeClass: 'legacy-owned-loop',
+      transcript: history, createdAt: now - 2_000, updatedAt: now - 2_000,
+    });
+    await seedAgentChat({
+      id: siblingId, title: 'P8 other history', runtimeClass: 'legacy-owned-loop',
+      transcript: [
+        { role: 'user', content: 'P8 unrelated question', ts: new Date(now).toISOString() },
+        { role: 'assistant', content: 'P8 unrelated answer', ts: new Date(now).toISOString() },
+      ],
+      createdAt: now, updatedAt: now,
+    });
+    await ingestSeededAgentChats();
+    const readSource = async () => {
+      const [row] = await db.adminSql<Array<{ snapshot: Record<string, unknown> }>>`
+        SELECT to_jsonb(c) AS snapshot FROM harness_shared.agent_chats_consolidated c
+         WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND id = ${sourceId}`;
+      return row.snapshot;
+    };
+    const sourceBefore = await readSource();
+    await putViewState('Sessions');
+    pane = new PuiPane(bin, operatorPort, home);
+    try {
+      stage = 'open-legacy-history';
+      await pane.waitFor('P8 legacy source', { timeoutMs: 40_000 });
+      pane.write('/P8 legacy source');
+      pane.enter();
+      await pane.waitForGone('P8 other history');
+
+      stage = 'continue';
+      pane.write('K');
+      await pane.waitFor('Message — Enter send', { timeoutMs: 60_000 });
+      await pane.waitFor('P8 legacy answer');
+      const [successor] = await db.adminSql<Array<{
+        id: string; su_runtime_class: string; continued_from_chat_id: string;
+        continued_from_turn_count: number; transcript: typeof history;
+      }>>`
+        SELECT id, su_runtime_class, continued_from_chat_id, continued_from_turn_count, transcript
+          FROM harness_shared.agent_chats_consolidated
+         WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+           AND continued_from_chat_id = ${sourceId}`;
+      expect(successor).toMatchObject({
+        su_runtime_class: 'su-session', continued_from_chat_id: sourceId,
+        continued_from_turn_count: history.length, transcript: history,
+      });
+      expect(successor.id).not.toBe(sourceId);
+      expect(await readSource()).toEqual(sourceBefore);
+      expect(scriptedEngine.requests).toEqual([]);
+      expect(commandPosts.filter((command) => command.type === 'owner_turn')).toEqual([]);
+      expect(nativeTerminalLaunch).not.toHaveBeenCalled();
+
+      stage = 'preserve-text-on-successor';
+      pane.write('i');
+      pane.write(draft);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      const saved = await waitForSavedTurn(draft);
+      expect(saved.id).toBe(successor.id);
+      expect(saved.transcript.slice(0, history.length)).toEqual(history);
+      expect(scriptedEngine.requests).toEqual([draft]);
+      expect(await readSource()).toEqual(sourceBefore);
+      expect((await persistedChats(db)).find((chat) => chat.id === siblingId)?.transcript)
+        .not.toEqual(expect.arrayContaining([expect.objectContaining({ content: draft })]));
+      console.info('PUI_LEGACY_CONTINUATION_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, sourceId, successorId: successor.id,
+        sourceBefore, sourceAfter: await readSource(), frame: pane.screen(),
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  }, 180_000);
+
   test('PUI-SESSION-LIFECYCLE: session browser keeps isolated history addressable and supports rename/archive', async ({ onTestFailed }) => {
     const sourceId = `pui-session-source-${randomUUID()}`;
     const siblingId = `pui-session-sibling-${randomUUID()}`;
