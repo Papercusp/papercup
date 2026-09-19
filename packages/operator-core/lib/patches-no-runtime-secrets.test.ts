@@ -32,12 +32,14 @@
  * starts carrying tokens or per-session runtime directories fails here.
  */
 import { readdir, readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
 const patchesDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'patches');
+const { parsePatchFile } = createRequire(import.meta.url)('patch-package/dist/patch/parse.js');
 
 /** Secret/runtime shapes that have no business in a dependency patch. */
 const FORBIDDEN: ReadonlyArray<{ label: string; pattern: RegExp }> = [
@@ -76,5 +78,33 @@ describe('dependency patches carry no runtime state (EI-22165824068092618)', () 
     const planted = `+  {"port":1234,"${'token'}":"${'8d283a06'}-ab1c-4034-bba2-4cbd0c98be16"}`;
     const caught = FORBIDDEN.some(({ pattern }) => pattern.test(planted));
     expect(caught).toBe(true);
+  });
+});
+
+describe('committed dependency patches parse with the installer', () => {
+  it('accepts every committed patch without a hunk integrity error', async () => {
+    const entries = (await readdir(patchesDir)).filter((entry) => entry.endsWith('.patch'));
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      const body = await readFile(join(patchesDir, entry), 'utf8');
+      expect(() => parsePatchFile(body), entry).not.toThrow();
+      expect(parsePatchFile(body).length, entry).toBeGreaterThan(0);
+    }
+  });
+
+  it('rejects an extra blank hunk line that its declared lengths do not cover', () => {
+    // patch-package treats this extra empty line as context. The old tsx patch
+    // therefore failed even though its one deletion and one insertion looked valid.
+    const valid = [
+      'diff --git a/node_modules/example/index.js b/node_modules/example/index.js',
+      '--- a/node_modules/example/index.js',
+      '+++ b/node_modules/example/index.js',
+      '@@ -1,1 +1,1 @@',
+      '-before',
+      '+after',
+      '',
+    ].join('\n');
+    expect(parsePatchFile(valid)).toHaveLength(1);
+    expect(() => parsePatchFile(`${valid}\n`)).toThrow('hunk header integrity check failed');
   });
 });
