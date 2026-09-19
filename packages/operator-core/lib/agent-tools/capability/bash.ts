@@ -56,6 +56,9 @@ import { resolveOwnerGoal } from '../coordination/agent-goal-sources';
 import { readAgentStateStamp } from '../../agent-state-stamp';
 import { readHeldWorkItems } from '../../carry-brief';
 import { listLiveTasks } from '../../task-manager/store';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { readFrozenCandidateRepairQueue } from '../../harness/routines/release-actions';
+import { activeWorkspaceId } from '../../workspace-registry';
 import {
   classifyFrozenLineageShellCommand,
   evaluateFrozenLineageShellCommand,
@@ -641,6 +644,11 @@ export default defineTool({
       const verdict = await evaluateFrozenLineageShellCommand(frozenLineageCommand, frozenLineageRoot, {
         readCheckoutHead: repoHeadSha,
         canonicalizePath: realpathSoft,
+        readFrozenRepairQueue: () =>
+          readFrozenCandidateRepairQueue({
+            workspaceId: activeWorkspaceId(),
+            installSlug: operatorHomeHarnessSlug(),
+          }),
       });
       return frozenLineageShellCommandViolationPayload(verdict);
     };

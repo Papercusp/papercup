@@ -87,6 +87,7 @@ const future = () => new Date(Date.now() + 60 * 60_000);
 
 async function insertRoutine(o: {
   id: string;
+  name?: string;
   cfg: Record<string, unknown>;
   active?: boolean;
   nextFireAt?: Date | 'infinity' | null;
@@ -97,7 +98,7 @@ async function insertRoutine(o: {
   await rootSql`
     INSERT INTO harness_shared.routines
       (id, install_slug, name, trigger_kind, trigger_config, target_role, active, next_fire_at, workspace_id, reschedule_interval_sec)
-    VALUES (${o.id}, 'web', ${o.id}, 'schedule', ${JSON.stringify(o.cfg)}::text::jsonb, 'system:loop-wake',
+    VALUES (${o.id}, 'web', ${o.name ?? o.id}, 'schedule', ${JSON.stringify(o.cfg)}::text::jsonb, 'system:loop-wake',
             ${o.active ?? true}, ${nf}, ${o.workspaceId ?? 'ws1'}, ${o.rescheduleIntervalSec ?? null})`;
   // 'infinity' can't bind as a Date param — set it via SQL after insert (mirrors a parked loop).
   if (o.nextFireAt === 'infinity') {
@@ -205,6 +206,16 @@ describe('readDeadRoutines — census integrity under a WIDE freeze (EI-20045691
     await insertRoutine({ id: 'cron-future', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
     const census = await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1');
     expect(census).toMatchObject({ count: 0, names: [], criticalNames: [], namesTruncated: false, censusTruncated: false });
+  });
+
+  it('reports overdue and active rows per routine name, not just the global census', async () => {
+    await insertRoutine({ id: 'git-sync-dead-1', name: 'git-sync', cfg: { cron: '*/30 * * * * *' }, nextFireAt: overduePast() });
+    await insertRoutine({ id: 'git-sync-dead-2', name: 'git-sync', cfg: { cron: '*/30 * * * * *' }, nextFireAt: overduePast() });
+    await insertRoutine({ id: 'git-sync-healthy-1', name: 'git-sync', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
+    await insertRoutine({ id: 'git-sync-healthy-2', name: 'git-sync', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
+
+    const census = await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1');
+    expect(census.routineCoverage).toEqual({ 'git-sync': { overdue: 2, active: 4 } });
   });
 });
 

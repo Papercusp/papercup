@@ -1420,4 +1420,16 @@ describe('summarizeDeadRoutines — census vs. exemplar list (EI-200456914514713
     // of this set in a later refactor — the failure would be invisible until the next freeze.
     expect([...FLEET_BLOCKING_ROUTINE_NAMES].sort()).toEqual(['git-sync', 'green-checkpoint', 'release-trigger']);
   });
+
+  it('carries per-name overdue/active coverage separately from row and exemplar counts', () => {
+    const c = summarizeDeadRoutines(
+      ['git-sync', 'git-sync', 'pr-poll'],
+      { count: 3, totalInScope: 74 },
+      { routineCoverage: { 'git-sync': { overdue: 2, active: 70 }, 'pr-poll': { overdue: 1, active: 1 } } },
+    );
+    expect(c.routineCoverage).toEqual({
+      'git-sync': { overdue: 2, active: 70 },
+      'pr-poll': { overdue: 1, active: 1 },
+    });
+  });
 });

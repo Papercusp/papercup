@@ -23,6 +23,8 @@ import {
   type InvokeEnvelope,
 } from '../../bash-substitution/invoke-envelope';
 import { getSubstitutionRows } from '../../bash-substitution/registry';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { readFrozenCandidateRepairQueue } from '../../harness/routines/release-actions';
 import { readFileLockIdentity } from './identity';
 import { checkBashCommand } from './resource-command-match';
 import { checkGoalModeEditGuard } from './goal-mode-edit-guard';
@@ -141,6 +143,11 @@ export default defineTool({
         ? evaluateFrozenLineageShellCommand(frozenLineageCommand, frozenLineageRoot, {
             readCheckoutHead: repoHeadSha,
             canonicalizePath: realpathSoft,
+            readFrozenRepairQueue: () =>
+              readFrozenCandidateRepairQueue({
+                workspaceId,
+                installSlug: operatorHomeHarnessSlug(),
+              }),
           })
         : Promise.resolve(null),
     ]);
