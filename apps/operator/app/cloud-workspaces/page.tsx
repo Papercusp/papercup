@@ -565,6 +565,7 @@ export default function CloudWorkspacesPage() {
           {activeStep === "connect" ? (
             <ConnectStage
               connections={connections}
+              selectedConnectionId={selectedConnection?.id ?? null}
               busyKeys={busyKeys}
               connectTarget={connectTarget}
               draft={connectDraft}

@@ -124,6 +124,30 @@ vi.mock('../../grading-integrity', () => ({
 }));
 
 import { z } from 'zod';
+
+type JsonSchemaNode = {
+  $ref?: string;
+  [key: string]: unknown;
+};
+
+type JsonSchemaDocument = JsonSchemaNode & {
+  $defs?: Record<string, JsonSchemaNode>;
+};
+
+function resolveLocalSchemaRef(root: { $defs?: Record<string, JsonSchemaNode> }, node: unknown): JsonSchemaNode {
+  let current = (node ?? {}) as JsonSchemaNode;
+  const seen = new Set<string>();
+
+  while (typeof current.$ref === 'string') {
+    const ref = current.$ref;
+    const prefix = '#/$defs/';
+    if (!ref.startsWith(prefix) || seen.has(ref)) return current;
+    seen.add(ref);
+    current = root.$defs?.[ref.slice(prefix.length)] ?? current;
+  }
+
+  return current;
+}
 import complete, {
   WORK_ITEMS_COMPLETE_TIMEOUT_SEC,
   WORK_ITEMS_COMPLETION_CONTRACT,
@@ -5650,6 +5674,34 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       }
     });
 
+    it('publishes the shared completion schema once via defs and refs (EI-23318249512516833)', () => {
+      const json = z.toJSONSchema(complete.args as never, { io: 'input' }) as {
+        $defs?: Record<string, JsonSchemaNode>;
+        anyOf?: Array<{
+          properties?: {
+            completion?: { $ref?: string };
+            items?: { items?: { properties?: { completion?: { $ref?: string } } } };
+          };
+        }>;
+        oneOf?: Array<{
+          properties?: {
+            completion?: { $ref?: string };
+            items?: { items?: { properties?: { completion?: { $ref?: string } } } };
+          };
+        }>;
+      };
+      const branches = json.anyOf ?? json.oneOf ?? [];
+      const completionRef = '#/$defs/work-items-completion-record-v1';
+
+      expect(json.$defs).toHaveProperty('work-items-completion-record-v1');
+      expect(branches).toHaveLength(2);
+      for (const branch of branches) expect(branch.properties?.completion?.$ref).toBe(completionRef);
+      const bulkBranch = branches.find(
+        (branch) => (branch.properties?.items as { type?: unknown } | undefined)?.type === 'array',
+      );
+      expect(bulkBranch?.properties?.items?.items?.properties?.completion?.$ref).toBe(completionRef);
+    });
+
     it('documents that assumptions are required only for terminal closes', () => {
       const json = z.toJSONSchema(complete.args as never) as {
         anyOf?: Array<{ required?: string[]; properties?: Record<string, { description?: string }> }>;
@@ -5667,7 +5719,9 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         oneOf?: Array<{ properties?: Record<string, { required?: string[] }> }>;
       };
       const branches = json.anyOf ?? json.oneOf ?? [];
-      const completionSchemas = branches.map((branch) => branch.properties?.completion).filter(Boolean);
+      const completionSchemas = branches
+        .map((branch) => resolveLocalSchemaRef(json, branch.properties?.completion))
+        .filter(Boolean);
 
       expect(completionSchemas).toHaveLength(2);
       for (const schema of completionSchemas) {
@@ -5688,7 +5742,9 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         oneOf?: Array<{ properties?: Record<string, { description?: string }> }>;
       };
       const branches = json.anyOf ?? json.oneOf ?? [];
-      const descriptions = branches.map((branch) => branch.properties?.completion?.description ?? '');
+      const descriptions = branches.map(
+        (branch) => String(resolveLocalSchemaRef(json, branch.properties?.completion).description ?? ''),
+      );
 
       expect(descriptions).toHaveLength(2);
       for (const description of descriptions) {
@@ -5765,7 +5821,9 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         oneOf?: Array<{ properties?: { completion?: unknown } }>;
       };
       const branches = json.anyOf ?? json.oneOf ?? [];
-      const completionSchema = branches.map((branch) => branch.properties?.completion ?? null);
+      const completionSchema = branches.map((branch) =>
+        resolveLocalSchemaRef(json, branch.properties?.completion),
+      );
       const text = `${description}\n${when}\n${JSON.stringify(completionSchema)}`;
 
       expect(text).toContain('completion.verification');

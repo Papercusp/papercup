@@ -38,6 +38,30 @@ import sendTool, { itemSpec } from './send';
 import { BODY_MUST_BE_ARRAY_MESSAGE, SECTION_ONLY_FIELDS } from '../message-fields';
 import { DEFAULT_INBOX_BODY_CAP } from './inbox-content-bounds';
 
+type JsonSchemaNode = {
+  $ref?: string;
+  [key: string]: unknown;
+};
+
+type JsonSchemaDocument = JsonSchemaNode & {
+  $defs?: Record<string, JsonSchemaNode>;
+};
+
+function resolveLocalSchemaRef(root: { $defs?: Record<string, JsonSchemaNode> }, node: unknown): JsonSchemaNode {
+  let current = (node ?? {}) as JsonSchemaNode;
+  const seen = new Set<string>();
+
+  while (typeof current.$ref === 'string') {
+    const ref = current.$ref;
+    const prefix = '#/$defs/';
+    if (!ref.startsWith(prefix) || seen.has(ref)) return current;
+    seen.add(ref);
+    current = root.$defs?.[ref.slice(prefix.length)] ?? current;
+  }
+
+  return current;
+}
+
 describe('EI-20223353810864057 — primary coord:send guidance names required summary', () => {
   it('describes summary as the required inbox headline on both guidance surfaces', () => {
     const description = String((sendTool as { description?: unknown }).description ?? '');
@@ -213,21 +237,36 @@ describe('EI-23083567306363709 — `body` schema matches its runtime refusal', (
   };
 
   it('publishes an array-only body shape on both single and items[] forms', () => {
-    const schema = z.toJSONSchema(sendTool.args) as {
+    const schema = z.toJSONSchema(sendTool.args) as JsonSchemaDocument & {
       properties?: {
         body?: BodySchema;
         items?: { items?: { properties?: { body?: BodySchema } } };
       };
     };
     const bodies = [
-      schema.properties?.body,
-      schema.properties?.items?.items?.properties?.body,
+      resolveLocalSchemaRef(schema, schema.properties?.body),
+      resolveLocalSchemaRef(schema, schema.properties?.items?.items?.properties?.body),
     ];
 
     for (const body of bodies) {
       expect(body).toMatchObject({ type: 'array', minItems: 1, maxItems: 20 });
       expect(body).not.toHaveProperty('anyOf');
     }
+  });
+
+  it('publishes the shared body schema once via defs and refs (EI-23318249512516833)', () => {
+    const schema = z.toJSONSchema(sendTool.args, { io: 'input' }) as {
+      $defs?: Record<string, unknown>;
+      properties?: {
+        body?: { $ref?: string };
+        items?: { items?: { properties?: { body?: { $ref?: string } } } };
+      };
+    };
+    const bodyRef = '#/$defs/coord-send-body-v1';
+
+    expect(schema.$defs).toHaveProperty('coord-send-body-v1');
+    expect(schema.properties?.body?.$ref).toBe(bodyRef);
+    expect(schema.properties?.items?.items?.properties?.body?.$ref).toBe(bodyRef);
   });
 
   it('still refuses plain strings with the actionable array-shape message', () => {
@@ -682,15 +721,17 @@ describe("EI-22369606583733422 — the expects!=='none' body cap is discoverable
   // follows it automatically and these stay green, while a description that
   // hardcoded a stale number goes red instead of quietly lying to callers.
   const bodyDescriptions = (): Record<string, string> => {
-    const schema = z.toJSONSchema(sendTool.args) as {
+    const schema = z.toJSONSchema(sendTool.args) as JsonSchemaDocument & {
       properties?: {
         body?: { description?: string };
         items?: { items?: { properties?: { body?: { description?: string } } } };
       };
     };
     return {
-      'top-level body': schema.properties?.body?.description ?? '',
-      'items[].body': schema.properties?.items?.items?.properties?.body?.description ?? '',
+      'top-level body': String(resolveLocalSchemaRef(schema, schema.properties?.body).description ?? ''),
+      'items[].body': String(
+        resolveLocalSchemaRef(schema, schema.properties?.items?.items?.properties?.body).description ?? '',
+      ),
     };
   };
 

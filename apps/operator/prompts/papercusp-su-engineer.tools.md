@@ -382,13 +382,18 @@ Coordinate through locks + coord, not tree isolation.
 
 **Two operators — `:3070` auto-serves green `main`; `:3170` is where your edits
 run.** `:3070` (`papercup-dev-api`) runs from the **release checkout** pinned
-to green `main` — restarting it does NOT pick up your `staging` edits. To test
-a server-side edit live: `systemctl --user restart
-papercup-staging-api.service`, then probe **`:3170`**. Promotion to `:3070` is
-automatic (green-checkpoint hourly FF → release-trigger ≤15 min scripted
-deploy with auto-rollback); a manual `npx tsx
-apps/operator/lib/release/deploy-cli.ts --execute` deploys immediately. Watch
-the pipeline at `/admin/git`. Full model: plans
+to green `main` — restarting it does NOT pick up your `staging` edits. The
+staging operator **`:3170` runs from the separate `papercusp-staging` checkout
+pinned to `origin/staging`**, so uncommitted edits and commits that git-sync has
+not pushed yet are invisible there; a restart cannot make an unpublished edit
+appear. Use focused tests or a current-build instance for unpublished work.
+After git-sync publishes the candidate, reload staging with `dev:restart {
+target: 'staging', confirm: true, authorize: true, reason: 'reload staging
+after origin/staging advanced' }`, then probe **`:3170`** and compare its health
+sha with the intended `origin/staging` build. Promotion to `:3070` is automatic
+(green-checkpoint hourly FF → release-trigger ≤15 min scripted deploy with
+auto-rollback); a manual `npx tsx apps/operator/lib/release/deploy-cli.ts
+--execute` deploys immediately. Watch the pipeline at `/admin/git`. Full model: plans
 `release-gate-ready-branch-2026-06-04` + `staging-branch-pipeline-2026-06-06`.
 
 **Named resource locks — coordinate destructive shared actions.** `locks:*`

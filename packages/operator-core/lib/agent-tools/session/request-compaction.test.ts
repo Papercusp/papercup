@@ -443,7 +443,7 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
-  it('refuses the same stale instruction when carry assembly hides it in the host addendum', async () => {
+  it('does not reinterpret stale candidate prose in the immutable host addendum as a live instruction', async () => {
     readFrozenRepairMarker.mockReturnValue({
       candidate: 'c'.repeat(40),
       repairHead: 'r'.repeat(40),
@@ -461,13 +461,37 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
 
     const out = await call({ focus: 'Resume the currently held work-item from live state.' });
 
+    expect(out.isError).toBeUndefined();
+    expect(body(out)).toMatchObject({ ok: true, requested: true, respawn: 'queued' });
+    expect(buildOwnerRespawnLaunchSpec).toHaveBeenCalledTimes(1);
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
+    expect(injected().systemPromptAddendum).toContain('staging resolves to');
+  });
+
+  it('still refuses unsafe candidate prose in the live firstPrompt at the host boundary', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+    buildOwnerRespawnLaunchSpec.mockResolvedValue({
+      ...closedSpec,
+      firstPrompt: 'Then pin whatever staging resolves to at that instant.',
+      openOwnerQuestion: { crossesOpenOwnerMessage: true },
+    });
+
+    const out = await call({ focus: 'Resume the currently held work-item from live state.' });
+
     expect(out.isError).toBe(true);
     expect(body(out)).toMatchObject({
       error: 'frozen_candidate_lineage_violation',
       surface: 'compaction-continuation',
       unsafeSource: 'staging',
     });
-    expect(buildOwnerRespawnLaunchSpec).toHaveBeenCalledTimes(1);
     expect(injectIntoHost).not.toHaveBeenCalled();
   });
 

@@ -431,7 +431,7 @@ describe('engineer issues surface (real PG)', () => {
     expect(readAgentStateStamp('agB').goalRef).toBeNull();
   });
 
-  it('EI-23167326985120403: stamps a new-holder subject baseline and preserves it across same-holder/truncated reclaims', async () => {
+  it('EI-23476131268587322: stamps, refreshes, and preserves issue claim subject baselines correctly', async () => {
     const original = await issues.createIssue({
       title: 'original watchdog subject',
       body: 'original watchdog observation',
@@ -449,6 +449,15 @@ describe('engineer issues surface (real PG)', () => {
       watchdogKey: 'repeated-tool-error:original',
     });
 
+    // An unchanged same-holder reclaim remains payload-idempotent.
+    const unchangedReclaim = await issues.claimIssue(original.id, 'agB');
+    expect(unchangedReclaim?.payload).toEqual(firstClaim?.payload);
+
+    // A legacy/current row with no private stamp gets one on explicit re-claim.
+    await db.sql`UPDATE harness_shared.work_items SET payload = payload - '_claimSubjectBaseline' WHERE feature_id = ${original.id}`;
+    const baselineRestored = await issues.claimIssue(original.id, 'agB');
+    expect((baselineRestored?.payload as Record<string, unknown>)?._claimSubjectBaseline).toEqual(firstBaseline);
+
     // Simulate the exact watchdog coalescer mutation: visible subject + exact-key identity
     // change while the original holder is still working.
     await issues.updateIssue(original.id, {
@@ -459,31 +468,32 @@ describe('engineer issues surface (real PG)', () => {
     });
     await issues.mergeIssuePayload(original.id, { watchdogKey: 'repeated-tool-error:new' });
 
-    // Idempotent same-holder reclaim must NOT move the baseline to the refreshed subject.
+    // An explicit same-holder re-claim accepts the refreshed subject as the new baseline.
     const sameHolder = await issues.claimIssue(original.id, 'agB');
-    expect((sameHolder?.payload as Record<string, unknown>)?._claimSubjectBaseline).toEqual(firstBaseline);
+    const refreshedBaseline = {
+      kind: 'bug',
+      title: 'new coalesced subject',
+      summary: 'new coalesced observation',
+      body: 'new coalesced observation',
+      watchdogKey: 'repeated-tool-error:new',
+    };
+    expect((sameHolder?.payload as Record<string, unknown>)?._claimSubjectBaseline).toEqual(refreshedBaseline);
 
     // The baseline is private server-owned identity; payload bookkeeping cannot forge or
     // remove it, even when a caller explicitly supplies the reserved key.
     const afterForgedPatch = await issues.mergeIssuePayload(original.id, {
       _claimSubjectBaseline: { title: 'forged replacement' },
     });
-    expect((afterForgedPatch?.payload as Record<string, unknown>)?._claimSubjectBaseline).toEqual(firstBaseline);
+    expect((afterForgedPatch?.payload as Record<string, unknown>)?._claimSubjectBaseline).toEqual(refreshedBaseline);
 
     // A truncated-assignee self-heal is also the same holder, not a new claim.
     await db.sql`UPDATE harness_shared.work_items SET taken_by = 'ag' WHERE feature_id = ${original.id}`;
     const truncatedReclaim = await issues.claimIssue(original.id, 'agB');
-    expect((truncatedReclaim?.payload as Record<string, unknown>)?._claimSubjectBaseline).toEqual(firstBaseline);
+    expect((truncatedReclaim?.payload as Record<string, unknown>)?._claimSubjectBaseline).toEqual(refreshedBaseline);
 
     // A genuine handover gets a fresh baseline for the subject now being accepted.
     const handover = await issues.claimIssue(original.id, 'agC', { fromHolder: 'agB' });
-    expect((handover?.payload as Record<string, unknown>)?._claimSubjectBaseline).toEqual({
-      kind: 'bug',
-      title: 'new coalesced subject',
-      summary: 'new coalesced observation',
-      body: 'new coalesced observation',
-      watchdogKey: 'repeated-tool-error:new',
-    });
+    expect((handover?.payload as Record<string, unknown>)?._claimSubjectBaseline).toEqual(refreshedBaseline);
   });
 
   // WI-2142171: no-op lifecycle writes used to re-fan the FULL subscriber set. Claiming

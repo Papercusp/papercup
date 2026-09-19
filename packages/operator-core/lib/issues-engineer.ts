@@ -2895,9 +2895,11 @@ export async function claimIssue(
   // that refreshed row as the subject the holder originally accepted.
   //
   // Exact same-holder reclaims and truncated-assignee self-heals are not new
-  // claims. Preserve their original baseline so a coalescer mutation remains
-  // detectable across idempotent retries. Blank/"unassigned" sentinels and a
-  // genuinely different holder are new-holder claims and receive a fresh stamp.
+  // claims. An unchanged subject keeps the payload byte-for-byte idempotent,
+  // while a coalescer mutation is accepted only when the holder explicitly
+  // re-claims and thereby refreshes the baseline. Blank/"unassigned" sentinels
+  // and a genuinely different holder are new-holder claims and receive a fresh
+  // stamp.
   const sameHolderPredicate = sql`(
     target.assignee = ${assignee}
     OR (target.assignee IS NOT NULL AND btrim(target.assignee) <> '' AND position(target.assignee in ${assignee}) = 1)
@@ -2918,26 +2920,32 @@ export async function claimIssue(
         ELSE NULL
       END
     )`;
+  const stampedClaimSubjectPayload = sql`
+    jsonb_set(
+      ${baselinePayload},
+      ARRAY[${CLAIM_SUBJECT_BASELINE_KEY}]::text[],
+      ${claimSubjectBaseline},
+      true
+    )`;
+  const stampedNewClaimPayload = sql`
+    jsonb_set(
+      ${stampedClaimSubjectPayload},
+      '{claim_history_post_id}',
+      to_jsonb(COALESCE((
+        SELECT max(post.id)
+          FROM harness_shared.coord_thread_posts post
+         WHERE post.workspace_id = ${ws}
+      ), 0)),
+      true
+    )`;
   const rows = await withPgContentionRetry(() => sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues AS target SET
       payload = CASE
         WHEN ${sameHolderPredicate}
+          AND target.payload -> ${CLAIM_SUBJECT_BASELINE_KEY} IS NOT DISTINCT FROM ${claimSubjectBaseline}
         THEN target.payload
-        ELSE jsonb_set(
-          jsonb_set(
-            ${baselinePayload},
-            ARRAY[${CLAIM_SUBJECT_BASELINE_KEY}]::text[],
-            ${claimSubjectBaseline},
-            true
-          ),
-          '{claim_history_post_id}',
-          to_jsonb(COALESCE((
-            SELECT max(post.id)
-              FROM harness_shared.coord_thread_posts post
-             WHERE post.workspace_id = ${ws}
-          ), 0)),
-          true
-        )
+        WHEN ${sameHolderPredicate} THEN ${stampedClaimSubjectPayload}
+        ELSE ${stampedNewClaimPayload}
       END,
       assignee = ${assignee}, assigned_at = now(), origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}

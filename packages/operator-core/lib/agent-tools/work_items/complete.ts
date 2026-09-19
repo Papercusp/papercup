@@ -2969,13 +2969,13 @@ async function completeOne(
   // intent can be inferred from completion.status after the schema has parsed.
   const closeIntentRequested =
     Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
-  // EI-23167326985120403: issue coalescing may refresh an open row's title/body
+  // EI-23476131268587322: issue coalescing may refresh an open row's title/body
   // and watchdog identity after a worker claimed it. The claim path stamps the
-  // subject baseline atomically and preserves it across same-holder reclaims;
-  // compare it before any completion/state write so stale proof cannot close the
-  // newly coalesced subject. Rows without the private stamp are legacy claims and
-  // remain compatible, while a mismatch is a hard close refusal with no partial
-  // completion record.
+  // subject baseline atomically and refreshes it only when an explicit same-holder
+  // re-claim accepts the current subject; compare it before any completion/state
+  // write so stale proof cannot close a newly coalesced subject. Rows without the
+  // private stamp are legacy claims and remain compatible, while a mismatch is a
+  // hard close refusal with no partial completion record.
   const claimSubjectMismatches =
     closeIntentRequested && existing.family === 'issue'
       ? claimSubjectBaselineMismatches(existing)

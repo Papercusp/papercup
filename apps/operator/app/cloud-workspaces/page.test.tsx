@@ -31,6 +31,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 
 const H = vi.hoisted(() => ({
@@ -455,9 +456,10 @@ describe("CloudWorkspacesPage — mutation seam", () => {
     H.queryDefaults = { step: "connect", connection: id };
     render(<CloudWorkspacesPage />);
 
-    expect(screen.getByText(label)).toBeTruthy();
+    const providers = within(screen.getByRole("list", { name: "Provider connections" }));
+    expect(providers.getByText(label)).toBeTruthy();
     expect(
-      screen.queryByText(id === "gcp-main" ? "Selected GCP" : "Production GCP"),
+      providers.queryByText(id === "gcp-main" ? "Selected GCP" : "Production GCP"),
     ).toBeNull();
     fireEvent.click(
       screen.getByRole("button", { name: "Validate Google Cloud connection" }),

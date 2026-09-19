@@ -188,6 +188,22 @@ describe('validateScorecardCompleteness — the P-014a completeness gate', () =>
 });
 
 describe('asStructuredObservation — read-side payload surfacing', () => {
+  it('preserves a server-stamped vetting seat through the structured observation parser', () => {
+    const seat = {
+      succeededFrom: 'su-ended-author',
+      authorSessionState: 'ended',
+      basisWorkItemId: 'WI-vetting',
+      basisPlanSlug: 'some-plan',
+      succeededAt: '2026-09-06T04:26:17.205Z',
+    };
+    const out = asStructuredObservation({
+      rubricRef: 'meta-acceptance-rubric',
+      ratings: { quality: { rating: 'pass', evidence: 'e' } },
+      vetting: { consultId: 'conv-vet', rubricRevision: 7, seat },
+    });
+    expect(out?.vetting).toEqual({ consultId: 'conv-vet', rubricRevision: 7, seat });
+  });
+
   it('round-trips a full v2 observation', () => {
     const out = asStructuredObservation({
       kind: 'friction',

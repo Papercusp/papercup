@@ -60,6 +60,7 @@ export function connectDraftComplete(draft: ConnectDraft): boolean {
 
 export function ConnectStage({
   connections,
+  selectedConnectionId,
   busyKeys,
   connectTarget,
   draft,
@@ -69,6 +70,7 @@ export function ConnectStage({
   onValidate,
 }: {
   connections: readonly WorkspaceHostConnectionRow[];
+  selectedConnectionId: string | null;
   busyKeys: ReadonlySet<string>;
   connectTarget: ProviderTarget | null;
   draft: ConnectDraft;
@@ -126,9 +128,10 @@ export function ConnectStage({
       <div className={styles.connectLayout} data-panel-open={activeProvider ? "true" : "false"}>
         <ul className={styles.providerRows} aria-label="Provider connections">
           {PROVIDERS.map((provider) => {
-            const connection = connections.find(
-              (row) => row.target === provider.target,
-            );
+            const connection =
+              connections.find(
+                (row) => row.id === selectedConnectionId && row.target === provider.target,
+              ) ?? connections.find((row) => row.target === provider.target);
             const selected = connectTarget === provider.target;
             return (
               <li key={provider.target}>

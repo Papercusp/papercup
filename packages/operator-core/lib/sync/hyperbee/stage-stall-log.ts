@@ -40,6 +40,173 @@
  *     philosophy rather than pre-emptively wrapping every await in the repo.
  */
 
+import { randomUUID } from 'node:crypto';
+import { pinModuleState } from '@papercusp/module-singleton';
+
+const processIdentity = pinModuleState('operator-core.stage-stall-log.identity', () => ({
+  id: randomUUID(),
+}));
+
+// These are source-defined operation names, never row values, SQL, or error text.
+const diagnosticStages = [
+  'scope-query', 'epoch-query', 'epoch-load', 'baseline-evidence', 'owner-check',
+  'key-provider', 'keychain', 'native-loader', 'serialize', 'native-encrypt',
+  'epoch-encrypt', 'hypercore-append', 'mark-drained',
+] as const;
+export type StageDiagnosticName = typeof diagnosticStages[number];
+type StageBoundary = 'await' | 'sync';
+type StageOutcome = 'fulfilled' | 'rejected' | 'expired' | 'abandoned';
+
+export interface StageAttemptContext {
+  readonly processInstanceId: string;
+  readonly buildSha: string | null;
+  readonly rowId: string | null;
+  readonly attemptId: string;
+}
+
+export interface StageDiagnosticEvent extends StageAttemptContext {
+  readonly event: 'attempt-start' | 'attempt-end' | 'hop-start' | 'hop-end' | 'hop-stall' | 'hop-unobserved';
+  readonly hopId: number | null;
+  readonly stage: StageDiagnosticName | null;
+  readonly boundary: StageBoundary | null;
+  readonly outcome: StageOutcome | null;
+  /** Monotonic duration of this observed boundary, never CPU or PG acquisition time. */
+  readonly elapsedMs: number;
+  readonly thresholdMs: number | null;
+  readonly timerDeliveryDelayMs: number | null;
+}
+
+interface StageSpan {
+  end(outcome: 'fulfilled' | 'rejected'): void;
+  stalled(thresholdMs: number): void;
+}
+
+export interface StageAttempt {
+  readonly context: StageAttemptContext;
+  begin(stage: StageDiagnosticName, boundary: StageBoundary): StageSpan;
+  finish(outcome?: StageOutcome): void;
+  snapshot(): Readonly<{
+    context: StageAttemptContext;
+    status: 'disabled' | 'active' | StageOutcome;
+    unobservedHops: number;
+    activeHops: readonly Readonly<{ hopId: number; stage: StageDiagnosticName; boundary: StageBoundary }>[];
+  }>;
+}
+
+const NO_STAGE_SPAN: StageSpan = Object.freeze({ end() {}, stalled() {} });
+const MAX_ACTIVE_HOPS = 64;
+
+/** Local, opt-in observation only. No operation/envelope is retained or modified.
+ * The owner finishes the attempt on retry/timeout; expiry bounds forgotten attempts.
+ * Closing an attempt drops its active spans but never cancels their business promises.
+ * There is no global history: public retention belongs to the existing diagnostic channel.
+ */
+export function createStageAttempt(options: {
+  rowId: string | number;
+  onEvent?: (event: StageDiagnosticEvent) => void | Promise<void>;
+  enabled?: boolean;
+  maxAgeMs?: number;
+}): StageAttempt {
+  const buildSha = process.env.PAPERCUSP_BUILD_SHA ?? '';
+  const rowId = String(options.rowId);
+  const context: StageAttemptContext = Object.freeze({
+    processInstanceId: processIdentity.id,
+    buildSha: /^[a-f0-9]{7,64}$/i.test(buildSha) ? buildSha : null,
+    rowId: /^\d{1,30}$/.test(rowId) ? rowId : null,
+    attemptId: randomUUID(),
+  });
+  let sink = options.enabled === false ? undefined : options.onEvent;
+  let status: 'disabled' | 'active' | StageOutcome = sink ? 'active' : 'disabled';
+  let nextHop = 0;
+  let unobservedHops = 0;
+  const startedAt = performance.now();
+  const active = new Map<number, { stage: StageDiagnosticName; boundary: StageBoundary; startedAt: number }>();
+  let expiry: ReturnType<typeof setTimeout> | undefined;
+
+  function emit(event: StageDiagnosticEvent['event'], hopId: number | null = null,
+    stage: StageDiagnosticName | null = null, boundary: StageBoundary | null = null,
+    outcome: StageOutcome | null = null, since = startedAt, thresholdMs: number | null = null) {
+    if (!sink) return;
+    const elapsedMs = Math.max(0, performance.now() - since);
+    const record = Object.freeze({ ...context, event, hopId, stage, boundary, outcome, elapsedMs,
+      thresholdMs, timerDeliveryDelayMs: thresholdMs === null ? null : Math.max(0, elapsedMs - thresholdMs) });
+    try {
+      // Async observers are also detached: neither their latency nor rejection is business work.
+      const result = sink(record);
+      if (result) void Promise.resolve(result).catch(() => {});
+    } catch { /* A broken diagnostic consumer cannot replace the operation's result. */ }
+  }
+
+  function finish(outcome: StageOutcome = 'fulfilled') {
+    if (status !== 'active') return;
+    status = outcome;
+    clearTimeout(expiry);
+    active.clear();
+    emit('attempt-end', null, null, null, outcome);
+    sink = undefined;
+  }
+
+  if (status === 'active') {
+    const requestedAge = options.maxAgeMs ?? 300_000;
+    const age = Number.isFinite(requestedAge) ? Math.max(1, Math.min(requestedAge, 600_000)) : 300_000;
+    expiry = setTimeout(() => finish('expired'), age);
+    expiry.unref?.();
+    emit('attempt-start');
+  }
+
+  return Object.freeze({
+    context,
+    begin(stage: StageDiagnosticName, boundary: StageBoundary): StageSpan {
+      if (status !== 'active') return NO_STAGE_SPAN;
+      if (!diagnosticStages.includes(stage) || (boundary !== 'await' && boundary !== 'sync')) {
+        unobservedHops++;
+        emit('hop-unobserved');
+        return NO_STAGE_SPAN;
+      }
+      const hopId = ++nextHop;
+      if (active.size >= MAX_ACTIVE_HOPS) {
+        unobservedHops++;
+        emit('hop-unobserved', hopId, stage, boundary);
+        return NO_STAGE_SPAN;
+      }
+      const hop = { stage, boundary, startedAt: performance.now() };
+      active.set(hopId, hop);
+      emit('hop-start', hopId, stage, boundary, null, hop.startedAt);
+      return {
+        end(outcome) {
+          if (status !== 'active' || !active.delete(hopId)) return;
+          emit('hop-end', hopId, stage, boundary, outcome, hop.startedAt);
+        },
+        stalled(thresholdMs) {
+          if (status !== 'active' || !active.has(hopId) || boundary !== 'await') return;
+          emit('hop-stall', hopId, stage, boundary, null, hop.startedAt, thresholdMs);
+        },
+      };
+    },
+    finish,
+    snapshot() {
+      return Object.freeze({ context, status, unobservedHops,
+        activeHops: Object.freeze(Array.from(active, ([hopId, hop]) => Object.freeze({
+          hopId, stage: hop.stage, boundary: hop.boundary,
+        }))),
+      });
+    },
+  });
+}
+
+/** Synchronous boundaries cannot be diagnosed by a timer on the blocked event loop. */
+export function traceStageSync<T>(attempt: StageAttempt | undefined, stage: StageDiagnosticName, run: () => T): T {
+  const span = attempt?.begin(stage, 'sync');
+  try {
+    const value = run();
+    span?.end('fulfilled');
+    return value;
+  } catch (error) {
+    span?.end('rejected');
+    throw error;
+  }
+}
+
 /** Default stall-log threshold: an await pending this long gets a named,
  *  grep-able journal line. Shared across every adopter unless a specific
  *  stage has a reason to override it (pass a different `thresholdMs`). */
@@ -64,8 +231,11 @@ export async function logIfStageStalls<T>(
   stage: string,
   p: PromiseLike<T>,
   thresholdMs: number = STAGE_STALL_LOG_MS,
+  diagnostic?: { attempt: StageAttempt; stage: StageDiagnosticName },
 ): Promise<T> {
+  const span = diagnostic?.attempt.begin(diagnostic.stage, 'await');
   const timer = setTimeout(() => {
+    span?.stalled(thresholdMs);
     console.error(
       `[stage-stall] STAGE STALL for ${scope}: '${stage}' still pending after ` +
         `${thresholdMs}ms — this is the hung await (named-hop pipeline observability, P-012)`,
@@ -73,7 +243,12 @@ export async function logIfStageStalls<T>(
   }, thresholdMs);
   timer.unref?.();
   try {
-    return await p;
+    const value = await p;
+    span?.end('fulfilled');
+    return value;
+  } catch (error) {
+    span?.end('rejected');
+    throw error;
   } finally {
     clearTimeout(timer);
   }

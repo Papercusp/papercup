@@ -790,12 +790,12 @@ export default defineTool({
           return note; // provenance must never break a boundary
         }
       })();
-    // The deterministic addendum is itself successor authority. Checking the
-    // exact host payload closes the case where a stale plan decision/fact was
-    // assembled into the carry even though the caller supplied a safe focus.
-    const hostCarryRefusal = frozenCompactionCarryRefusal(
-      [firstPrompt, spec.systemPromptAddendum].filter(Boolean).join('\n'),
-    );
+    // Only the first prompt is live caller-authored successor input at this
+    // boundary. The deterministic system addendum may contain immutable
+    // transcript/history prose that names a stale candidate while documenting
+    // what the carry contains; scanning it again turns historical evidence into
+    // an executable instruction and can strand compaction permanently.
+    const hostCarryRefusal = frozenCompactionCarryRefusal(firstPrompt);
     if (hostCarryRefusal) return hostCarryRefusal;
     // EI-19480099650947832: read what happened to this session's PREVIOUS
     // carry-respawn BEFORE injecting this one, so the verdict describes prior
