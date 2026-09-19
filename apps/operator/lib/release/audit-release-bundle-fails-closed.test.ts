@@ -191,7 +191,13 @@ describe('audit-release-bundle.py — the owner-name check does not rest on the 
   // someone later adds it to AUTOMATION_NAME_RE, the premise assertion below fails loudly
   // rather than the pin silently testing nothing — pick another unenumerated spelling at
   // that point, do not delete the case.
-  const UNENUMERATED_BOT = 'papercusp-buildbox';
+  //
+  // Keep the spelling SYNTHETIC. Naming a REAL build box here is a bare box-identity
+  // literal, which lint:no-identity-literals refuses — and because that lint is repo-wide
+  // and carries no failing test FILE for the re-triage to rescue, one such literal
+  // red-pins every later green-checkpoint candidate. Nothing in this case needs a real
+  // box's name; it needs only a name the denylist misses.
+  const UNENUMERATED_BOT = 'example-buildbox';
 
   it('a bot name the denylist MISSES still cannot satisfy the owner-name check', () => {
     const { denylisted, detectable } = ownerNamePredicates(UNENUMERATED_BOT);

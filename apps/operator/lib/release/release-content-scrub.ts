@@ -314,11 +314,13 @@ export function identityLiterals(): IdentityLiteral[] {
         // explicit owner name or on nothing, exactly as it does here. The git-derived
         // literal is kept only so a bot's name still gets REDACTED.
         //
-        // Measured on this box 2026-09-18: `papercusp-buildbox` is NOT matched by that
+        // Measured on this box 2026-09-18: its own git user.name is NOT matched by that
         // denylist, so the bot name IS recorded as build-git-name — and the gate still
         // refuses (exit 2, CANNOT CHECK) when no owner env is set. That independence is
         // the property this side leans on; it is pinned by
-        // audit-release-bundle-fails-closed.test.ts.
+        // audit-release-bundle-fails-closed.test.ts. (The box's name is deliberately NOT
+        // spelled out here: a bare box-identity literal is precisely what
+        // lint:no-identity-literals refuses, and that lint is repo-wide.)
         //
         // One REAL divergence remains, and it is deliberate: the Python accepts a LIST of
         // owner names (`build-git-name`, `-2`, …) because a person has several spellings,
