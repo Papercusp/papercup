@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { getTestPg } from '@papercusp/test-config/pg';
 import { sweepExpiredConsults, type ExpirySweepDeps } from './consult-expiry-core';
+import { consultExpiryFindSilentResponders } from './consult-expiry-adapters';
 
 const WS = 'ws-consult-expiry';
 const NOW = new Date('2026-08-16T12:00:00Z');
@@ -438,6 +439,42 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     ]);
     expect(new Date(row.expires_at as string).getTime()).toBeGreaterThan(NOW.getTime());
     expect(reachCalls).toHaveLength(1);
+  });
+
+  it('wires the production detector into the real-PG cascade for a parked no-pickup responder', async () => {
+    const routedAt = new Date(NOW.getTime() - 60 * 60_000).toISOString();
+    const id = await seedConsult({
+      latency: 'hard-blocked',
+      expiresAt: FUTURE,
+      updatedAt: routedAt,
+      routing: menuSnapshot(['resp-1', 'resp-2']),
+    });
+    const { deps, reachCalls } = makeDeps({ withReach: true });
+    deps.findSilentResponders = consultExpiryFindSilentResponders({
+      getPresence: async () => ({ lastActiveAt: null }),
+      resolveSessionStates: async () =>
+        new Map([
+          ['resp-1', { sessionState: 'parked' }],
+          ['resp-2', { sessionState: 'parked' }],
+        ]),
+      getThreadStore: () => ({
+        getThreadByParent: async (parent) => ({ thread_id: `thread-${parent.ref}` }) as never,
+        listRecentPosts: async () => ({ total: 0 }),
+      }),
+      now: () => NOW,
+    });
+
+    const r = await sweepExpiredConsults(deps);
+
+    expect(r).toMatchObject({ advanced: 1, expired: 0, woke: [], saturated: false });
+    expect(await cascadeRow(id)).toMatchObject({
+      state: 'awaiting_responder',
+      closed_at: null,
+      responder_id: 'resp-2',
+      cascade_cursor: 1,
+    });
+    expect(reachCalls).toHaveLength(1);
+    expect(reachCalls[0]).toMatchObject({ responder: 'resp-2', conversationId: id, workspaceId: WS });
   });
 
   it('a due row with menu remaining ADVANCES instead of expiring: cursor+responder move under a fresh window, digest records the expiry, next selectee woken — NO park emit', async () => {

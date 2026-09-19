@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  ReplaySafeWorkspaceHostInitializationExecutor,
   DEFAULT_WORKSPACE_HOST_AGENT_PROBE_TIMEOUT_MS,
   DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES,
   DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_TIMEOUT_BUDGET_MS,
@@ -136,9 +137,14 @@ describe('GCP IAP workspace-host initialization operations', () => {
     });
     const operations = new GcpIapWorkspaceHostInitializationOperations(PROFILE, { run });
 
-    expect(operations.supportedStepKinds).toEqual(WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS);
-    expect(operations.supportedStepKinds).toContain('install-desktop-pack');
+    expect(operations.supportedStepKinds).toEqual(WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS.filter(
+      (kind) => kind !== 'install-desktop-pack',
+    ));
     expect(run).not.toHaveBeenCalled();
+    expect(() => new ReplaySafeWorkspaceHostInitializationExecutor({
+      operations,
+      replayStore: { runOnce: async (_identity, execute) => execute() },
+    })).not.toThrow();
     await expect(operations.execute(step())).resolves.toEqual({
       observedAt: '2026-08-23T06:01:00Z',
       publicEvidence: { workspaceCreated: true },

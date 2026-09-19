@@ -332,4 +332,33 @@ describe('consultExpiryFindSilentResponders', () => {
 
     expect(found).toEqual(new Set(['conv-parked-stale']));
   });
+
+  it.each(['unknown', 'draining', 'suspect'] as const)(
+    'does not recover a %s responder without terminal or empty-pickup evidence',
+    async (sessionState) => {
+      const now = new Date('2026-08-27T06:00:00.000Z');
+      const staleRoute = new Date(now.getTime() - 60 * 60_000).toISOString();
+      const getThreadStore = vi.fn(() => {
+        throw new Error('thread store must not be read for an unresolved responder');
+      });
+
+      const found = await consultExpiryFindSilentResponders({
+        getPresence: async () => null,
+        resolveSessionStates: async () =>
+          new Map([['su-unresolved', { sessionState }]]),
+        getThreadStore,
+        now: () => now,
+      })([
+        {
+          workspaceId: ROW_WS,
+          conversationId: `conv-${sessionState}`,
+          responderId: 'su-unresolved',
+          routedAt: staleRoute,
+        },
+      ]);
+
+      expect(found).toEqual(new Set());
+      expect(getThreadStore).not.toHaveBeenCalled();
+    },
+  );
 });

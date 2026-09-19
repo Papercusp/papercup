@@ -512,9 +512,11 @@ function parseResponse(stdout: string, stepId: string): WorkspaceHostInitializat
 
 /** Concrete capability-declaring adapter for the signed remote initializer. */
 export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHostInitializationHostOperations {
-  // This adapter is shared by the initialization and credential-lifecycle runners, so its
-  // capability manifest intentionally advertises the complete remote wire union.
-  readonly supportedStepKinds = WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS;
+  // The replay-safe initializer accepts only initialization/lifecycle kinds. Optional pack
+  // management shares the wire but must not enter that executor's capability manifest.
+  readonly supportedStepKinds = WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS.filter(
+    (kind) => kind !== 'install-desktop-pack',
+  );
 
   private readonly profile: GcpIapWorkspaceHostInitializationProfile;
   private readonly runner: GcpIapWorkspaceHostInitializationCommandRunner;
