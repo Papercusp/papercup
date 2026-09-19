@@ -95,6 +95,11 @@ MAX_SNAP_AGE_S="${MAX_SNAP_AGE_S:-3600}"     # 30m cadence: tolerate one missed 
 # one overran), two is a fault. It must NOT reuse MAX_SNAP_AGE_S's 3600s — that bar measures
 # a 30-MINUTE cadence and would page against this source every single day.
 MAX_HOME_SNAP_AGE_S="${MAX_HOME_SNAP_AGE_S:-172800}"
+# The daily VM leg records a source-bound verification marker after Kopia exits
+# successfully, including its "no files have been changed" result.  A fresh
+# marker is evidence that the timer ran and verified the source even when Kopia
+# correctly emitted no new snapshot row.
+VM_VERIFY_MARKER="${KOPIA_VM_VERIFY_MARKER:-$LOG_DIR/macos-vm-verified}"
 
 # 12h — the oddsmith embedded PG (5544) is dumped by its own leg in db-backup.sh
 # (WI-39502) and asserted SEPARATELY here. Looser than the cluster bar on purpose:
@@ -169,6 +174,16 @@ exact_source_block() {
     }
     active { print }
   '
+}
+
+vm_verification_epoch() {
+  local marker="$1" source="$2" verified_at="" verified_source=""
+  [ -r "$marker" ] || return 1
+  verified_at="$(sed -n 's/^verified_at=\([0-9][0-9]*\)$/\1/p' "$marker" | head -1)"
+  verified_source="$(sed -n 's/^source=//p' "$marker" | head -1)"
+  [[ "$verified_at" =~ ^[0-9]+$ ]] || return 1
+  [ "$verified_source" = "$source" ] || return 1
+  printf '%s\n' "$verified_at"
 }
 
 fail() {
@@ -586,8 +601,19 @@ for requested in "${PROTECTED_VM_REQUESTS[@]}"; do
     fail "owner-protected VM source ($requested -> $protected_src) has NO usable Kopia snapshot"
   else
     protected_age=$(( now - $(date -d "$protected_last" +%s) ))
-    [ "$protected_age" -gt "$MAX_HOME_SNAP_AGE_S" ] \
-      && fail "owner-protected VM source ($requested -> $protected_src) is STALE: $(dur "$protected_age") old ($protected_last, limit $(dur "$MAX_HOME_SNAP_AGE_S"))"
+    if [ "$protected_age" -gt "$MAX_HOME_SNAP_AGE_S" ]; then
+      # A no-change run intentionally leaves protected_last unchanged.  Accept
+      # it only when the daily VM leg wrote a recent marker for this exact
+      # resolved source; an old/mismatched marker still fails closed.
+      if verified_at="$(vm_verification_epoch "$VM_VERIFY_MARKER" "$protected_src")"; then
+        verification_age=$(( now - verified_at ))
+        if [ "$verification_age" -ge 0 ] && [ "$verification_age" -le "$MAX_HOME_SNAP_AGE_S" ]; then
+          echo "[$(date -Iseconds)] OK: owner-protected VM source ($requested -> $protected_src) verified unchanged $(dur "$verification_age") ago; no new snapshot row was required" >> "$LOG"
+          continue
+        fi
+      fi
+      fail "owner-protected VM source ($requested -> $protected_src) is STALE: $(dur "$protected_age") old ($protected_last, limit $(dur "$MAX_HOME_SNAP_AGE_S")); no recent successful no-change verification was recorded"
+    fi
   fi
 done
 

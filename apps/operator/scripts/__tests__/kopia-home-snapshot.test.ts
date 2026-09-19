@@ -33,6 +33,19 @@ describe('kopia-home-snapshot bounded execution contract', () => {
     expect(() => execFileSync('bash', ['-n', SCRIPT], { encoding: 'utf8' })).not.toThrow();
   });
 
+  it('binds no-change freshness to an atomic, source-specific verification marker', () => {
+    const snapshot = readFileSync(SCRIPT, 'utf8');
+    const healthcheck = readFileSync(resolve(__dirname, '..', 'systemd', 'kopia-healthcheck.sh'), 'utf8');
+
+    expect(snapshot).toContain('VM_VERIFY_MARKER="${KOPIA_VM_VERIFY_MARKER:-$LOG_DIR/macos-vm-verified}"');
+    expect(snapshot).toContain("printf 'verified_at=%s\\n' \"$(date +%s)\"");
+    expect(snapshot).toContain("printf 'source=%s\\n' \"$source\"");
+    expect(snapshot).toContain('write_vm_verification_marker "${VM_SRCS[0]}"');
+    expect(healthcheck).toContain('vm_verification_epoch');
+    expect(healthcheck).toContain('no new snapshot row was required');
+    expect(healthcheck).toContain('no recent successful no-change verification was recorded');
+  });
+
   testIfInstalled('cleanup kills a matching Kopia PID and refuses a reused/non-Kopia PID', () => {
     const root = mkdtempSync(join(tmpdir(), 'kopia-home-snapshot-cleanup-'));
     const stateDir = join(root, 'state');

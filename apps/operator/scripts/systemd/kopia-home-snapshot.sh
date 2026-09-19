@@ -38,6 +38,23 @@ if ! ensure_kopia_cache_dir "$LOG_DIR"; then
   exit 1
 fi
 LOG="$LOG_DIR/home-snapshot.log"
+# A successful `kopia snapshot create` also means "no files changed".  Persist
+# that verification separately from the snapshot timestamp so the healthcheck
+# can distinguish a healthy unchanged source from a dead timer.  The marker is
+# source-bound and written atomically only after the protected VM leg succeeds.
+VM_VERIFY_MARKER="${KOPIA_VM_VERIFY_MARKER:-$LOG_DIR/macos-vm-verified}"
+
+write_vm_verification_marker() {
+  local source="$1" tmp="${VM_VERIFY_MARKER}.$$"
+  if ! {
+    printf 'verified_at=%s\n' "$(date +%s)"
+    printf 'source=%s\n' "$source"
+  } >"$tmp" || ! mv -f -- "$tmp" "$VM_VERIFY_MARKER"; then
+    rm -f -- "$tmp"
+    echo "WARN: unable to persist protected VM verification marker: $VM_VERIFY_MARKER" >&2
+    return 1
+  fi
+}
 
 # systemd's user manager cannot reliably kill a root-owned sudo child when it
 # tears down this user unit (the historical OOM left PID 2701540 behind). Keep
@@ -158,6 +175,15 @@ rc=0
     rc=0
     [ "$home_rc" -eq 0 ] || rc="$home_rc"
     [ "$vm_rc" -eq 0 ] || rc="$vm_rc"
+
+    if [ "$vm_rc" -eq 0 ]; then
+      # Kopia exits 0 both when it writes a new snapshot and when it reports
+      # "no files have been changed".  Both are successful verifications, but
+      # only this marker makes the latter observable to the healthcheck.
+      if ! write_vm_verification_marker "${VM_SRCS[0]}"; then
+        rc=1
+      fi
+    fi
 
     # Loud on failure. This system's recurring bug is the silent success-looking
     # failure (EI-10733: a healthcheck that exit-1'd every run for weeks unnoticed),
