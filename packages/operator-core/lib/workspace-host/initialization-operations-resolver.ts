@@ -62,6 +62,10 @@ import {
 } from './gcp-provider';
 import { readWorkspaceHostDesiredSpec } from './observability-store';
 
+/** Public typed initializer transport; keep implementation-private fields out of the seam. */
+export type WorkspaceHostControllerOperations = WorkspaceHostInitializationHostOperations &
+  Pick<GcpIapDeliveringWorkspaceHostInitializationOperations, 'execute'>;
+
 /**
  * Controller-owned, host-independent settings. These are NOT per-host database columns: the
  * known-hosts file is a controller-managed trust store and the remote entrypoint is a fixed
@@ -529,7 +533,7 @@ export function resolveWorkspaceHostInitializationOperations(
   desired: WorkspaceHostDesiredSpec,
   controller: WorkspaceHostInitializationControllerProfile,
   credentialMaterialSource?: WorkspaceHostCredentialMaterialSource,
-): GcpIapDeliveringWorkspaceHostInitializationOperations {
+): WorkspaceHostControllerOperations {
   if (desired.target !== GCP_WORKSPACE_HOST_TARGET) {
     throw new UnsupportedWorkspaceHostInitializationTargetError(String(desired.target));
   }
@@ -746,7 +750,7 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
   input: ResolveOperationsForHostInput,
 ): Promise<{
   desired: WorkspaceHostDesiredSpec;
-  operations: GcpIapDeliveringWorkspaceHostInitializationOperations;
+  operations: WorkspaceHostControllerOperations;
   deliveryCapabilities: WorkspaceHostDeliveryCapabilities;
 }> {
   const read = input.readDesiredSpec ?? readWorkspaceHostDesiredSpec;

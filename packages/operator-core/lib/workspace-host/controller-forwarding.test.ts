@@ -23,6 +23,18 @@ const row = (overrides: Partial<ControllerRow> = {}) => ({
 });
 
 describe('workspace-host controller forwarding', () => {
+  it.each(['initialize', 'desktop-pack'] as const)('preserves durable %s acceptance and its audit location', async (action) => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({ status: 'accepted', operationId: 'op-1' }, {
+      status: 202, headers: { location: '/api/workspace-hosts/host-1/audit' },
+    }));
+    const response = await forwardWorkspaceHostRequest(`/api/workspace-hosts/host-1/${action}`, { operationId: 'op-1' }, {
+      isRequestOnly: () => true, collectControllers: async () => [row()], fetchImpl,
+    });
+    expect(response?.status).toBe(202);
+    expect(response?.headers.get('location')).toBe('/api/workspace-hosts/host-1/audit');
+    await expect(response?.json()).resolves.toEqual({ status: 'accepted', operationId: 'op-1' });
+  });
+
   it('selects the direct bg-host sibling and relays the typed response', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () =>
       new Response(JSON.stringify({ ok: true, status: 'succeeded' }), {

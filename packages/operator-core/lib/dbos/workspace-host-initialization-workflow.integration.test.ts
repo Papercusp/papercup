@@ -66,6 +66,7 @@ it('accepts while execution is blocked, persists the original input, excludes co
     expect(await handle.getWorkflowInputs()).toEqual([{ ...request, action: 'initialize' }]);
     await expect(workflow.startWorkspaceHostInitializationWorkflow({ ...request, requestedAt: '2026-09-19T01:00:00Z' })).resolves.toEqual(accepted);
     await expect(workflow.startWorkspaceHostInitializationWorkflow({ ...request, operationId: 'competitor' })).rejects.toBeInstanceOf(workflow.WorkspaceHostProvisioningConflictError);
+    await expect(workflow.startWorkspaceHostDesktopPackWorkflow({ workspaceId: request.workspaceId, hostId: request.hostId, operationId: 'pack-competitor', requestedAt: request.requestedAt, action: 'install-desktop-pack' })).rejects.toBeInstanceOf(workflow.WorkspaceHostProvisioningConflictError);
     await expect(workflow.startWorkspaceHostInitializationWorkflow({ ...request, requestedAgents: ['omp'] })).rejects.toBeInstanceOf(workflow.WorkspaceHostOperationIdentityConflictError);
     release();
     expect(await handle.getResult()).toMatchObject({ status: 'succeeded' });

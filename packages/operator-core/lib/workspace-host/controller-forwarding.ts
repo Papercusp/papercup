@@ -119,9 +119,13 @@ export async function forwardWorkspaceHostRequest(
       body: JSON.stringify(forwardedBody),
     });
     const contentType = response.headers.get('content-type');
+    const location = response.headers.get('location');
     return new Response(await response.text(), {
       status: response.status,
-      headers: contentType ? { 'content-type': contentType } : undefined,
+      headers: {
+        ...(contentType ? { 'content-type': contentType } : {}),
+        ...(location ? { location } : {}),
+      },
     });
   } catch {
     // The controller waits for the durable workflow's result, which can outlive

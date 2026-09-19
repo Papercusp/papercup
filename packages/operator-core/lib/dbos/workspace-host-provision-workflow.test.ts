@@ -14,6 +14,7 @@ const control = vi.hoisted(() => ({
   storedInput: null as unknown,
   getResult: vi.fn(),
   runInitialization: vi.fn(),
+  runDesktopPack: vi.fn(),
   startOptions: null as null | Record<string, unknown>,
   stepOptions: null as null | Record<string, unknown>,
   /**
@@ -33,6 +34,7 @@ const control = vi.hoisted(() => ({
 
 vi.mock('../workspace-host/initialization-admission', () => ({
   executeAdmittedWorkspaceHostInitialization: control.runInitialization,
+  executeAdmittedWorkspaceHostDesktopPack: control.runDesktopPack,
 }));
 
 vi.mock('../workspace-host/provisioning-runner', async (importOriginal) => {
@@ -94,6 +96,7 @@ import {
   startWorkspaceHostDestroyWorkflow,
   startWorkspaceHostProvisioningWorkflow,
   startWorkspaceHostInitializationWorkflow,
+  startWorkspaceHostDesktopPackWorkflow,
   workspaceHostProvisioningWorkflow,
   WorkspaceHostOperationIdentityConflictError,
   WorkspaceHostProvisioningConflictError,
@@ -143,6 +146,7 @@ beforeEach(() => {
   control.storedInput = null;
   control.getResult.mockClear();
   control.runInitialization.mockReset();
+  control.runDesktopPack.mockReset();
   control.startOptions = null;
   control.stepOptions = null;
   control.stepOptionsByName = {};
@@ -178,6 +182,17 @@ describe('workspace-host provisioning DBOS admission', () => {
       workflowID: 'workspace-host:ws-1:host-1:operation:init-1', queueName: 'workspace-host-provision',
       enqueueOptions: { deduplicationID: 'workspace-host:ws-1:host-1' },
     });
+  });
+
+  it('admits the typed desktop pack through the same host queue and executes its separate action', async () => {
+    const request = { workspaceId: 'ws-1', hostId: 'host-1', operationId: 'pack-1', requestedAt: initialization.requestedAt, action: 'install-desktop-pack' as const };
+    await expect(startWorkspaceHostDesktopPackWorkflow(request)).resolves.toMatchObject({ status: 'accepted', operationId: 'pack-1' });
+    expect(control.getResult).not.toHaveBeenCalled();
+    expect(control.startOptions).toMatchObject({ enqueueOptions: { deduplicationID: 'workspace-host:ws-1:host-1' } });
+    control.runDesktopPack.mockResolvedValueOnce({ status: 'succeeded', hostId: 'host-1', operationId: 'pack-1' });
+    await workspaceHostProvisioningWorkflow(request);
+    expect(control.runDesktopPack).toHaveBeenCalledWith(request);
+    expect(control.runInitialization).not.toHaveBeenCalled();
   });
 
   it('reuses the original request on retry and refuses materially different inputs', async () => {

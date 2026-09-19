@@ -3,8 +3,11 @@ import { WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION, type WorkspaceHostIniti
 
 const h = vi.hoisted(() => ({
   read: vi.fn(), profile: vi.fn(() => ({})), resolve: vi.fn(), begin: vi.fn(), run: vi.fn(),
+  append: vi.fn(), update: vi.fn(), execute: vi.fn(), ready: vi.fn(),
+  replay: vi.fn(async (_identity: unknown, run: () => Promise<unknown>) => run()),
 }));
-vi.mock('./observability-store', () => ({ readWorkspaceHostDesiredSpec: h.read, beginWorkspaceHostOperation: h.begin }));
+vi.mock('./observability-store', () => ({ readWorkspaceHostDesiredSpec: h.read, beginWorkspaceHostOperation: h.begin, appendWorkspaceHostEvent: h.append, updateWorkspaceHostOperation: h.update }));
+vi.mock('./initialization-replay-store', () => ({ createWorkspaceHostInitializationReplayStore: () => ({ runOnce: h.replay }) }));
 vi.mock('./initialization-runner', () => ({ runWorkspaceHostInitialization: h.run }));
 vi.mock('./credential-material-source', () => ({ createOperatorWorkspaceHostCredentialMaterialSource: () => ({}) }));
 vi.mock('./initialization-operations-resolver', async (original) => ({
@@ -13,7 +16,7 @@ vi.mock('./initialization-operations-resolver', async (original) => ({
   resolveWorkspaceHostInitializationOperationsForHost: h.resolve,
 }));
 
-import { prepareWorkspaceHostInitialization, executeAdmittedWorkspaceHostInitialization } from './initialization-admission';
+import { prepareWorkspaceHostInitialization, executeAdmittedWorkspaceHostInitialization, prepareWorkspaceHostDesktopPack, executeAdmittedWorkspaceHostDesktopPack } from './initialization-admission';
 
 const input: Omit<WorkspaceHostInitializationRequest, 'deliveryCapabilities'> = {
   contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
@@ -58,5 +61,26 @@ describe('durable initialization admission', () => {
     const request = await prepareWorkspaceHostInitialization(input);
     await expect(executeAdmittedWorkspaceHostInitialization(request)).resolves.toEqual({ status: 'succeeded', operationId: 'init-1', hostId: 'host-1' });
     expect(h.run).toHaveBeenCalledWith(expect.objectContaining({ ...input, operations: {}, credentialMaterialSource: {} }));
+  });
+
+  it('executes only the fixed desktop step through the replay store and records installation evidence', async () => {
+    const request = await prepareWorkspaceHostDesktopPack({
+      workspaceId: 'ws-1', hostId: 'host-1', operationId: 'pack-1', requestedAt: input.requestedAt, action: 'install-desktop-pack',
+    });
+    h.resolve.mockResolvedValueOnce({ operations: { execute: h.execute, awaitBootstrapReady: h.ready } });
+    h.execute.mockResolvedValueOnce({ observedAt: input.requestedAt, publicEvidence: { hostId: 'host-1', status: 'healthy' } });
+    expect(await executeAdmittedWorkspaceHostDesktopPack(request)).toMatchObject({ status: 'succeeded', operationId: 'pack-1' });
+    expect(h.execute).toHaveBeenCalledWith({ id: 'desktop-pack', kind: 'install-desktop-pack', dependsOn: [], idempotencyKey: 'pack-1:desktop-pack', input: { hostId: 'host-1' } });
+    expect(h.replay).toHaveBeenCalledWith({ idempotencyKey: 'pack-1:desktop-pack', stepFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) }, expect.any(Function));
+    expect(h.append).toHaveBeenCalledWith(expect.objectContaining({ phase: 'desktop-pack:installed', details: { publicEvidence: { hostId: 'host-1', status: 'healthy' } } }));
+    expect(h.update).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('desktop session acceptance is separate'), status: 'succeeded' }));
+    expect(h.run).not.toHaveBeenCalled();
+  });
+
+  it('reuses a persisted pack receipt without running the installer again', async () => {
+    h.resolve.mockResolvedValueOnce({ operations: { execute: h.execute } });
+    h.replay.mockResolvedValueOnce({ stepId: 'desktop-pack', status: 'succeeded', observedAt: input.requestedAt });
+    await executeAdmittedWorkspaceHostDesktopPack({ workspaceId: 'ws-1', hostId: 'host-1', operationId: 'pack-1', requestedAt: input.requestedAt, action: 'install-desktop-pack' });
+    expect(h.execute).not.toHaveBeenCalled();
   });
 });
