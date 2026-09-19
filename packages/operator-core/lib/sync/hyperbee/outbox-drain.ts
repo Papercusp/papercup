@@ -37,7 +37,13 @@ import { recordLocalWrite } from './clobber-events';
 import { shouldEncryptOpForRekey } from './hive-epoch-content-ops';
 import { isSessionClosedError } from './own-log-fork-guard';
 import { redactContentOpValueForEgress } from './content-op-egress-guard';
-import { logIfStageStalls, STAGE_STALL_LOG_MS } from './stage-stall-log';
+import {
+  createStageAttempt,
+  withStageAttempt,
+  logIfStageStalls,
+  STAGE_STALL_LOG_MS,
+  type StageDiagnosticEvent,
+} from './stage-stall-log';
 import { extractPgErrorInfo } from '../../pg-read-query';
 import { trackDetached } from '../../detached-imports';
 
@@ -557,6 +563,12 @@ export interface DrainOptions {
    *  would otherwise still exhaust the pass-level watchdog after only ~2-3 rows.
    *  Default `FANOUT_ROW_TIMEOUT_MS`; `<= 0` disables the bound. */
   fanoutTimeoutMs?: number;
+  /** Optional local diagnostic sink for per-row attempt and named-hop events.
+   * The sink is observational: it is detached from the business path and any
+   * throw/rejection is swallowed by the stage-attempt helper. */
+  onDiagnosticEvent?: (event: StageDiagnosticEvent) => void | Promise<void>;
+  /** Disable local per-row diagnostic attempts even when a sink is supplied. */
+  diagnosticsEnabled?: boolean;
 }
 
 interface OutboxDbRow {
@@ -769,146 +781,188 @@ export async function drainOutboxOnce(
       throw e;
     }
 
-    // P-015 (federated-scout-gym D-006): EGRESS secrets-guard. A shareable fact
-    // (body) / federatable elite (rationale) carries agent-authored free text that
-    // could embed a credential — redact secret-bearing lines from the WIRE copy
-    // HERE, before epoch-encryption + append, so a secret never leaves the hive.
-    // Keeps the local PG row intact (only op.value is scrubbed). Fail-soft:
-    // redactContentOpValueForEgress returns the value unchanged on any fault /
-    // non-content tag / no-secret, so the drain can never break on redaction.
-    if (op.type === 'put' && op.value !== undefined) {
-      const guarded = redactContentOpValueForEgress(op.table, op.value);
-      if (guarded.redacted) {
-        op = { ...op, value: guarded.value };
+    // P-002: each selected outbox row receives a fresh attempt identity. The
+    // identity is local-only and never enters the LocalWriteOp, encrypted
+    // envelope, AAD, or replicated wire data. Retries therefore cannot close
+    // or relabel an earlier attempt, while all named dependency hops below can
+    // share the same row-scoped context.
+    const attempt = createStageAttempt({
+      rowId: r.id,
+      onEvent: opts.onDiagnosticEvent,
+      enabled: opts.diagnosticsEnabled,
+    });
 
-        console.warn(
-          `[outbox-drain] egress secrets-guard redacted a secret-bearing '${op.table}' op before federation`,
-        );
-      }
-    }
+    try {
+      // P-015 (federated-scout-gym D-006): EGRESS secrets-guard. A shareable fact
+      // (body) / federatable elite (rationale) carries agent-authored free text that
+      // could embed a credential — redact secret-bearing lines from the WIRE copy
+      // HERE, before epoch-encryption + append, so a secret never leaves the hive.
+      // Keeps the local PG row intact (only op.value is scrubbed). Fail-soft:
+      // redactContentOpValueForEgress returns the value unchanged on any fault /
+      // non-content tag / no-secret, so the drain can never break on redaction.
+      if (op.type === 'put' && op.value !== undefined) {
+        const guarded = redactContentOpValueForEgress(op.table, op.value);
+        if (guarded.redacted) {
+          op = { ...op, value: guarded.value };
 
-    // Re-key encrypt-on-capture (C-001, shared-hive-rekey-2026-06-19): when the
-    // re-key is active for this harness (capability threaded) AND this is a
-    // hive-CONTENT put with a payload (admission/key/policy ops + dels stay
-    // plaintext — shouldEncryptOpForRekey), encrypt the payload under the current
-    // epoch + stamp op.epoch BEFORE append. A null result leaves the op plaintext;
-    // a rejection (the epoch key is not yet on this device) propagates like an
-    // append failure (halt + retry) so the op federates once the key arrives — it
-    // is never dropped or sent in the clear.
-    const epochEncrypt = opts.resolveEpochEncrypt?.() ?? opts.epochEncrypt;
-    if (epochEncrypt && op.type === 'put' && op.value !== undefined && shouldEncryptOpForRekey(op.table)) {
-      const encryptStage = `epoch-encrypt (row id=${r.id} table=${r.table_name})`;
-      const enc = await raceRowStage(
-        r.id,
-        encryptStage,
-        logIfStageStalls(scope, encryptStage, epochEncrypt.encryptOp(op)),
-        rowTimeoutMs,
-      );
-      if (enc) op = { ...op, value: enc.value, epoch: enc.epoch };
-    }
-
-    // AT-LEAST-ONCE: append FIRST. If this throws we stop here, leaving this
-    // row + all later rows undrained for the next pass to re-attempt.
-    // WI-3896: bounded per-row (`rowTimeoutMs`) on top of `logIfStageStalls`'s
-    // observability-only stall log, so ONE genuinely-hung append can't wedge
-    // this pass for the full pass-level DRAIN_PASS_TIMEOUT_MS — see this row's
-    // consecutive-timeout handling in `startOutboxDrain`'s `drainSafely`.
-    const appendStage = `hypercore-append (row id=${r.id} table=${r.table_name})`;
-    await raceRowStage(r.id, appendStage, logIfStageStalls(scope, appendStage, handle.append(op)), rowTimeoutMs);
-
-    // P-007: record this LOCAL plan write so a racing REMOTE plan op for the same
-    // plan_slug is detected as a clobber (harness-plans.ts writeToPg fires
-    // observeMergedOp on remote apply). Keyed by the device's own log key — a
-    // remote op's receiver-stamped source key never equals it, so it never
-    // self-clobbers. Plans only (see PLAN_TABLE_TAG). Best-effort: an in-memory
-    // tracker write must never break federation.
-    if (op.table === PLAN_TABLE_TAG) {
-      try {
-        recordLocalWrite({ table: op.table, hbKey: op.hbKey, ts: op.ts, pubkey: handle.ownLog.keyHex });
-      } catch {
-        // tracker is pure in-process bookkeeping; ignore.
-      }
-    }
-
-    // Local subscribe→inject fan-out on the SAME row (Phase 2). BEST-EFFORT and
-    // federation-safe: a fan-out failure is logged but must NOT stall federation
-    // (the critical at-least-once path) or block this row's drained_at — so it is
-    // caught here. The genuine double-process case (fan-out succeeds, then the
-    // drained_at write fails → row reprocessed) is deduped by the idempotent
-    // insert (deterministic msg_id + ON CONFLICT, mig 126). Non-subscribable
-    // tables are a no-op inside the fan-out.
-    if (opts.fanout) {
-      try {
-        // WI-3896 follow-up: fan-out was previously bounded ONLY by logIfStageStalls
-        // (observability-only — logs at 15s but never times out), so a genuinely-hung
-        // fanout() blocked this row FOREVER, wedging the whole pass until the
-        // pass-level DRAIN_PASS_TIMEOUT_MS (120s) watchdog fired.
-        //
-        // WI-3896 fanout-follow-up-2: the FIRST fix (racing against the shared
-        // 45s `rowTimeoutMs`) was insufficient — live post-deploy evidence showed
-        // the PASS TIMEOUT still recurring every ~2min with ZERO quarantine lines,
-        // because the stalling row id kept ADVANCING (6012522 → 6012523 → …,
-        // across different tables) — this is a systemically-degraded fan-out path
-        // (getOrgPg()'s pool, separate from the harness admin pool epoch-encrypt/
-        // append use), not one poison row. At 45s/row only ~2-3 rows fit before the
-        // 120s pass watchdog fires anyway, so the per-row quarantine (which needs 3
-        // CONSECUTIVE timeouts on the SAME id) never gets a chance to engage. Using
-        // the much tighter, SEPARATE `fanoutTimeoutMs` (default 8s — fan-out is
-        // best-effort/non-blocking, unlike epoch-encrypt/append) lets ~15 rows fit
-        // per pass even if every one's fan-out hangs, so `drained_at`/merge-cursor
-        // progress keeps moving while fan-out itself degrades independently.
-        const fanoutStage = `fanout (row id=${r.id} table=${r.table_name})`;
-        await raceRowStage(
-          r.id,
-          fanoutStage,
-          logIfStageStalls(
-            scope,
-            fanoutStage,
-            opts.fanout({ id: r.id, table_name: r.table_name, op: r.op, key: r.key, row: r.row }),
-          ),
-          fanoutTimeoutMs,
-        );
-      } catch (e) {
-        const schemaSig = fanoutSchemaMismatchSignature(r.table_name, e);
-        if (schemaSig) {
-          if (!loggedFanoutSchemaMismatches.has(schemaSig)) {
-            loggedFanoutSchemaMismatches.add(schemaSig);
-            console.error(
-              `[outbox-drain] FAN-OUT SCHEMA MISMATCH for table '${r.table_name}': ${schemaSig} — ` +
-                `the fan-out query references a column/table this DB doesn't have (a migration is ` +
-                `missing or hasn't run here, or code shipped ahead of its migration). This will recur ` +
-                `for EVERY row of this table on EVERY drain tick until fixed — logged ONCE per ` +
-                `signature to avoid log-flood; federation is unaffected (fan-out is local-only ` +
-                `best-effort). Root-cause via the migration allocator / schema drift check, not a retry.`,
-            );
-          }
-        } else {
-          console.error(
-            `[outbox-drain] fan-out failed for ${r.table_name} key=${r.key} (federation unaffected):`,
-            e instanceof Error ? e.message : String(e),
+          console.warn(
+            `[outbox-drain] egress secrets-guard redacted a secret-bearing '${op.table}' op before federation`,
           );
         }
       }
-    }
 
-    // Mark drained only after the append + fan-out resolved. WI-2136: also stamp
-    // WHICH own-log key this row was appended into, so the orphan-tail recurrence
-    // guard can later detect a row drained onto a PRIOR-era log that no longer
-    // matches the live process's log (the WI-2105 non-persistent-keypair class).
-    // Optional-chained: a handle without an ownLog (a capability-seam/test handle,
-    // or a pre-log boot state) must not crash the drain — NULL is an explicitly
-    // supported value here (mig 495: 'NULL = undrained or drained pre-migration'),
-    // and the recurrence guard treats NULL as unknowable, never as stranded.
-    await logIfStageStalls(
-      scope,
-      `mark-drained (row id=${r.id})`,
-      pg`
-      UPDATE harness_shared.substrate_outbox
-         SET drained_at = ${now},
-             drained_log_key = ${handle.ownLog?.keyHex ?? null}
-       WHERE id = ${r.id}`,
-    );
-    drained += 1;
+      // Re-key encrypt-on-capture (C-001, shared-hive-rekey-2026-06-19): when the
+      // re-key is active for this harness (capability threaded) AND this is a
+      // hive-CONTENT put with a payload (admission/key/policy ops + dels stay
+      // plaintext — shouldEncryptOpForRekey), encrypt the payload under the current
+      // epoch + stamp op.epoch BEFORE append. A null result leaves the op plaintext;
+      // a rejection (the epoch key is not yet on this device) propagates like an
+      // append failure (halt + retry) so the op federates once the key arrives — it
+      // is never dropped or sent in the clear.
+      const epochEncrypt = opts.resolveEpochEncrypt?.() ?? opts.epochEncrypt;
+      if (epochEncrypt && op.type === 'put' && op.value !== undefined && shouldEncryptOpForRekey(op.table)) {
+        const encryptStage = `epoch-encrypt (row id=${r.id} table=${r.table_name})`;
+        const enc = await raceRowStage(
+          r.id,
+          encryptStage,
+          logIfStageStalls(
+            scope,
+            encryptStage,
+            withStageAttempt(attempt, () => epochEncrypt.encryptOp(op)),
+            STAGE_STALL_LOG_MS,
+            {
+              attempt,
+              stage: 'epoch-encrypt',
+            },
+          ),
+          rowTimeoutMs,
+        );
+        if (enc) op = { ...op, value: enc.value, epoch: enc.epoch };
+      }
+
+      // AT-LEAST-ONCE: append FIRST. If this throws we stop here, leaving this
+      // row + all later rows undrained for the next pass to re-attempt.
+      // WI-3896: bounded per-row (`rowTimeoutMs`) on top of `logIfStageStalls`'s
+      // observability-only stall log, so ONE genuinely-hung append can't wedge
+      // this pass for the full pass-level DRAIN_PASS_TIMEOUT_MS — see this row's
+      // consecutive-timeout handling in `startOutboxDrain`'s `drainSafely`.
+      const appendStage = `hypercore-append (row id=${r.id} table=${r.table_name})`;
+      await raceRowStage(
+        r.id,
+        appendStage,
+        logIfStageStalls(
+          scope,
+          appendStage,
+          withStageAttempt(attempt, () => handle.append(op)),
+          STAGE_STALL_LOG_MS,
+          {
+            attempt,
+            stage: 'hypercore-append',
+          },
+        ),
+        rowTimeoutMs,
+      );
+
+      // P-007: record this LOCAL plan write so a racing REMOTE plan op for the same
+      // plan_slug is detected as a clobber (harness-plans.ts writeToPg fires
+      // observeMergedOp on remote apply). Keyed by the device's own log key — a
+      // remote op's receiver-stamped source key never equals it, so it never
+      // self-clobbers. Plans only (see PLAN_TABLE_TAG). Best-effort: an in-memory
+      // tracker write must never break federation.
+      if (op.table === PLAN_TABLE_TAG) {
+        try {
+          recordLocalWrite({ table: op.table, hbKey: op.hbKey, ts: op.ts, pubkey: handle.ownLog.keyHex });
+        } catch {
+          // tracker is pure in-process bookkeeping; ignore.
+        }
+      }
+
+      // Local subscribe→inject fan-out on the SAME row (Phase 2). BEST-EFFORT and
+      // federation-safe: a fan-out failure is logged but must NOT stall federation
+      // (the critical at-least-once path) or block this row's drained_at — so it is
+      // caught here. The genuine double-process case (fan-out succeeds, then the
+      // drained_at write fails → row reprocessed) is deduped by the idempotent
+      // insert (deterministic msg_id + ON CONFLICT, mig 126). Non-subscribable
+      // tables are a no-op inside the fan-out.
+      if (opts.fanout) {
+        try {
+          // WI-3896 follow-up: fan-out was previously bounded ONLY by logIfStageStalls
+          // (observability-only — logs at 15s but never times out), so a genuinely-hung
+          // fanout() blocked this row FOREVER, wedging the whole pass until the
+          // pass-level DRAIN_PASS_TIMEOUT_MS (120s) watchdog fired.
+          //
+          // WI-3896 fanout-follow-up-2: the FIRST fix (racing against the shared
+          // 45s `rowTimeoutMs`) was insufficient — live post-deploy evidence showed
+          // the PASS TIMEOUT still recurring every ~2min with ZERO quarantine lines,
+          // because the stalling row id kept ADVANCING (6012522 → 6012523 → …,
+          // across different tables) — this is a systemically-degraded fan-out path
+          // (getOrgPg()'s pool, separate from the harness admin pool epoch-encrypt/
+          // append use), not one poison row. At 45s/row only ~2-3 rows fit before the
+          // 120s pass watchdog fires anyway, so the per-row quarantine (which needs 3
+          // CONSECUTIVE timeouts on the SAME id) never gets a chance to engage. Using
+          // the much tighter, SEPARATE `fanoutTimeoutMs` (default 8s — fan-out is
+          // best-effort/non-blocking, unlike epoch-encrypt/append) lets ~15 rows fit
+          // per pass even if every one's fan-out hangs, so `drained_at`/merge-cursor
+          // progress keeps moving while fan-out itself degrades independently.
+          const fanoutStage = `fanout (row id=${r.id} table=${r.table_name})`;
+          await raceRowStage(
+            r.id,
+            fanoutStage,
+            logIfStageStalls(
+              scope,
+              fanoutStage,
+              opts.fanout({ id: r.id, table_name: r.table_name, op: r.op, key: r.key, row: r.row }),
+            ),
+            fanoutTimeoutMs,
+          );
+        } catch (e) {
+          const schemaSig = fanoutSchemaMismatchSignature(r.table_name, e);
+          if (schemaSig) {
+            if (!loggedFanoutSchemaMismatches.has(schemaSig)) {
+              loggedFanoutSchemaMismatches.add(schemaSig);
+              console.error(
+                `[outbox-drain] FAN-OUT SCHEMA MISMATCH for table '${r.table_name}': ${schemaSig} — ` +
+                  `the fan-out query references a column/table this DB doesn't have (a migration is ` +
+                  `missing or hasn't run here, or code shipped ahead of its migration). This will recur ` +
+                  `for EVERY row of this table on EVERY drain tick until fixed — logged ONCE per ` +
+                  `signature to avoid log-flood; federation is unaffected (fan-out is local-only ` +
+                  `best-effort). Root-cause via the migration allocator / schema drift check, not a retry.`,
+              );
+            }
+          } else {
+            console.error(
+              `[outbox-drain] fan-out failed for ${r.table_name} key=${r.key} (federation unaffected):`,
+              e instanceof Error ? e.message : String(e),
+            );
+          }
+        }
+      }
+
+      // Mark drained only after the append + fan-out resolved. WI-2136: also stamp
+      // WHICH own-log key this row was appended into, so the orphan-tail recurrence
+      // guard can later detect a row drained onto a PRIOR-era log that no longer
+      // matches the live process's log (the WI-2105 non-persistent-keypair class).
+      // Optional-chained: a handle without an ownLog (a capability-seam/test handle,
+      // or a pre-log boot state) must not crash the drain — NULL is an explicitly
+      // supported value here (mig 495: 'NULL = undrained or drained pre-migration'),
+      // and the recurrence guard treats NULL as unknowable, never as stranded.
+      await logIfStageStalls(
+        scope,
+        `mark-drained (row id=${r.id})`,
+        pg`
+        UPDATE harness_shared.substrate_outbox
+           SET drained_at = ${now},
+               drained_log_key = ${handle.ownLog?.keyHex ?? null}
+         WHERE id = ${r.id}`,
+        STAGE_STALL_LOG_MS,
+        { attempt, stage: 'mark-drained' },
+      );
+      attempt.finish('fulfilled');
+      drained += 1;
+    } catch (error) {
+      attempt.finish(error instanceof RowStageTimeoutError ? 'abandoned' : 'rejected');
+      throw error;
+    }
   }
 
   return drained;
@@ -922,6 +976,10 @@ export interface StartDrainOptions {
   batch?: number;
   /** Local subscribe→inject fan-out consumer, run per row (Phase 2). */
   fanout?: OutboxFanoutFn;
+  /** Optional local diagnostic sink for per-row attempt and named-hop events. */
+  onDiagnosticEvent?: (event: StageDiagnosticEvent) => void | Promise<void>;
+  /** Disable local per-row diagnostic attempts even when a sink is supplied. */
+  diagnosticsEnabled?: boolean;
   /** Re-key encrypt-on-capture capability (C-001) — threaded to each drain pass. */
   epochEncrypt?: EpochEncryptCapability;
   /**
@@ -1470,6 +1528,8 @@ export function startOutboxDrain(
         const drainOpts: DrainOptions = {};
         if (batch !== undefined) drainOpts.batch = batch;
         if (fanout !== undefined) drainOpts.fanout = fanout;
+        if (opts.onDiagnosticEvent !== undefined) drainOpts.onDiagnosticEvent = opts.onDiagnosticEvent;
+        if (opts.diagnosticsEnabled !== undefined) drainOpts.diagnosticsEnabled = opts.diagnosticsEnabled;
         // WI-40905: thread the resolver itself, not a pass-start snapshot. A
         // pre-refresh pass may still be between SELECT stages when the re-key
         // completes; resolving at the row's encryption point prevents that

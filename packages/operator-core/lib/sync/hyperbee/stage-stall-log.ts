@@ -41,19 +41,34 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { pinModuleState } from '@papercusp/module-singleton';
 
 const processIdentity = pinModuleState('operator-core.stage-stall-log.identity', () => ({
   id: randomUUID(),
 }));
+const attemptContext = pinModuleState(
+  'operator-core.stage-stall-log.context',
+  () => new AsyncLocalStorage<StageAttempt>(),
+);
 
 // These are source-defined operation names, never row values, SQL, or error text.
 const diagnosticStages = [
-  'scope-query', 'epoch-query', 'epoch-load', 'baseline-evidence', 'owner-check',
-  'key-provider', 'keychain', 'native-loader', 'serialize', 'native-encrypt',
-  'epoch-encrypt', 'hypercore-append', 'mark-drained',
+  'scope-query',
+  'epoch-query',
+  'epoch-load',
+  'baseline-evidence',
+  'owner-check',
+  'key-provider',
+  'keychain',
+  'native-loader',
+  'serialize',
+  'native-encrypt',
+  'epoch-encrypt',
+  'hypercore-append',
+  'mark-drained',
 ] as const;
-export type StageDiagnosticName = typeof diagnosticStages[number];
+export type StageDiagnosticName = (typeof diagnosticStages)[number];
 type StageBoundary = 'await' | 'sync';
 type StageOutcome = 'fulfilled' | 'rejected' | 'expired' | 'abandoned';
 
@@ -65,7 +80,10 @@ export interface StageAttemptContext {
 }
 
 export interface StageDiagnosticEvent extends StageAttemptContext {
-  readonly event: 'attempt-start' | 'attempt-end' | 'hop-start' | 'hop-end' | 'hop-stall' | 'hop-unobserved';
+  readonly event: 'attempt-start' | 'attempt-end' | 'hop-start' | 'hop-end' | 'hop-stall' | 'hop-unobserved' | 'cache';
+  readonly cacheState?: 'hit' | 'miss' | 'shared';
+  /** Random local operation identity; never a key, SQL, or payload identifier. */
+  readonly sharedWorkId?: string;
   readonly hopId: number | null;
   readonly stage: StageDiagnosticName | null;
   readonly boundary: StageBoundary | null;
@@ -84,6 +102,7 @@ interface StageSpan {
 export interface StageAttempt {
   readonly context: StageAttemptContext;
   begin(stage: StageDiagnosticName, boundary: StageBoundary): StageSpan;
+  cache(stage: StageDiagnosticName, state: 'hit' | 'miss' | 'shared', sharedWorkId?: string): void;
   finish(outcome?: StageOutcome): void;
   snapshot(): Readonly<{
     context: StageAttemptContext;
@@ -123,18 +142,37 @@ export function createStageAttempt(options: {
   const active = new Map<number, { stage: StageDiagnosticName; boundary: StageBoundary; startedAt: number }>();
   let expiry: ReturnType<typeof setTimeout> | undefined;
 
-  function emit(event: StageDiagnosticEvent['event'], hopId: number | null = null,
-    stage: StageDiagnosticName | null = null, boundary: StageBoundary | null = null,
-    outcome: StageOutcome | null = null, since = startedAt, thresholdMs: number | null = null) {
+  function emit(
+    event: StageDiagnosticEvent['event'],
+    hopId: number | null = null,
+    stage: StageDiagnosticName | null = null,
+    boundary: StageBoundary | null = null,
+    outcome: StageOutcome | null = null,
+    since = startedAt,
+    thresholdMs: number | null = null,
+    cache?: { cacheState: 'hit' | 'miss' | 'shared'; sharedWorkId?: string },
+  ) {
     if (!sink) return;
     const elapsedMs = Math.max(0, performance.now() - since);
-    const record = Object.freeze({ ...context, event, hopId, stage, boundary, outcome, elapsedMs,
-      thresholdMs, timerDeliveryDelayMs: thresholdMs === null ? null : Math.max(0, elapsedMs - thresholdMs) });
+    const record = Object.freeze({
+      ...context,
+      ...cache,
+      event,
+      hopId,
+      stage,
+      boundary,
+      outcome,
+      elapsedMs,
+      thresholdMs,
+      timerDeliveryDelayMs: thresholdMs === null ? null : Math.max(0, elapsedMs - thresholdMs),
+    });
     try {
       // Async observers are also detached: neither their latency nor rejection is business work.
       const result = sink(record);
       if (result) void Promise.resolve(result).catch(() => {});
-    } catch { /* A broken diagnostic consumer cannot replace the operation's result. */ }
+    } catch {
+      /* A broken diagnostic consumer cannot replace the operation's result. */
+    }
   }
 
   function finish(outcome: StageOutcome = 'fulfilled') {
@@ -156,6 +194,15 @@ export function createStageAttempt(options: {
 
   return Object.freeze({
     context,
+    cache(stage: StageDiagnosticName, state: 'hit' | 'miss' | 'shared', sharedWorkId?: string) {
+      if (status !== 'active' || !diagnosticStages.includes(stage) || !['hit', 'miss', 'shared'].includes(state))
+        return;
+      const safeId = sharedWorkId && /^[a-f0-9-]{36}$/i.test(sharedWorkId) ? sharedWorkId : undefined;
+      emit('cache', null, stage, null, null, startedAt, null, {
+        cacheState: state,
+        ...(safeId ? { sharedWorkId: safeId } : {}),
+      });
+    },
     begin(stage: StageDiagnosticName, boundary: StageBoundary): StageSpan {
       if (status !== 'active') return NO_STAGE_SPAN;
       if (!diagnosticStages.includes(stage) || (boundary !== 'await' && boundary !== 'sync')) {
@@ -185,13 +232,44 @@ export function createStageAttempt(options: {
     },
     finish,
     snapshot() {
-      return Object.freeze({ context, status, unobservedHops,
-        activeHops: Object.freeze(Array.from(active, ([hopId, hop]) => Object.freeze({
-          hopId, stage: hop.stage, boundary: hop.boundary,
-        }))),
+      return Object.freeze({
+        context,
+        status,
+        unobservedHops,
+        activeHops: Object.freeze(
+          Array.from(active, ([hopId, hop]) =>
+            Object.freeze({
+              hopId,
+              stage: hop.stage,
+              boundary: hop.boundary,
+            }),
+          ),
+        ),
       });
     },
   });
+}
+
+/** Carry local diagnostics across existing dependency interfaces without touching wire data. */
+export function withStageAttempt<T>(attempt: StageAttempt | undefined, run: () => T): T {
+  return attempt ? attemptContext.run(attempt, run) : run();
+}
+
+export function currentStageAttempt(): StageAttempt | undefined {
+  return attemptContext.getStore();
+}
+
+/** Invoke the actual dependency only after recording its await boundary. */
+export async function traceStageAwait<T>(stage: StageDiagnosticName, run: () => PromiseLike<T>): Promise<T> {
+  const span = currentStageAttempt()?.begin(stage, 'await');
+  try {
+    const value = await run();
+    span?.end('fulfilled');
+    return value;
+  } catch (error) {
+    span?.end('rejected');
+    throw error;
+  }
 }
 
 /** Synchronous boundaries cannot be diagnosed by a timer on the blocked event loop. */
