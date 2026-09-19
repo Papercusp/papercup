@@ -17,7 +17,7 @@
  */
 import { spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { applyGlStrategy, detectGlStrategy, type GlStrategy } from '../../desktop/gl-strategy';
+import { applyGlStrategy, detectGlStrategy, hostGlProbe, type GlStrategy } from '../../desktop/gl-strategy';
 import { managedSpawn, markManagedSpawnTeardown } from '../../task-manager/managed-spawn';
 import { killScopeUnit, killTask } from '../../task-manager/control';
 import { sandboxXEnv } from './desktop-driver';
@@ -453,6 +453,27 @@ async function waitForDisplay(display: string, timeoutMs: number): Promise<void>
   throw new Error(`desktop-provisioner — X display ${display} did not come up within ${timeoutMs}ms`);
 }
 
+/** Fail before creating credentials or processes when the selected X stack is absent. */
+export function assertDesktopPrerequisites(
+  opts: ProvisionOptions,
+  hasBinary: (binary: string) => boolean = hostGlProbe().hasBinary,
+): void {
+  const xServer = opts.xServer ?? 'xvfb';
+  const required = [opts.xServerBinaryPath ?? (xServer === 'kasmvnc' ? 'Xkasmvnc' : 'Xvfb'), 'xdpyinfo'];
+  if (opts.windowManager !== false) required.push('openbox');
+  if (xServer === 'kasmvnc' && !opts.kasmvncPasswordFile) {
+    required.push(opts.kasmvncPasswdBinaryPath ?? 'kasmvncpasswd');
+  }
+  const missing = required.filter((binary) => !hasBinary(binary));
+  if (missing.length > 0) {
+    throw new Error(
+      `desktop-provisioner — missing ${xServer} prerequisites: ${missing.join(', ')}. ` +
+      'Install the selected desktop stack before provisioning. BYOC hosts are headless by default; ' +
+      'their optional desktop pack provides KasmVNC and requires an isolated desktop-user runtime.',
+    );
+  }
+}
+
 /**
  * Provision a disposable sandbox desktop. Starts Xvfb on a free display (never
  * :0), an openbox WM, and any requested apps; returns a handle whose `release()`
@@ -463,6 +484,7 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
   if (!Number.isInteger(number) || number <= 0) {
     throw new Error(`desktop-provisioner — refusing to provision on display :${number} (host :0 / invalid)`);
   }
+  assertDesktopPrerequisites(opts);
   const display = `:${number}`;
   const width = opts.width ?? DEFAULT_W;
   const height = opts.height ?? DEFAULT_H;

@@ -5,6 +5,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  assertDesktopPrerequisites,
   findFreeDisplayNumber,
   provisionSandboxDesktop,
   releaseDesktopResources,
@@ -32,6 +33,39 @@ describe('provisionSandboxDesktop — safety', () => {
   });
   it('refuses a negative display number', async () => {
     await expect(provisionSandboxDesktop({ displayNumber: -5 })).rejects.toThrow(/refusing/);
+  });
+  it('names an absent X server before waiting for a display or starting children', async () => {
+    await expect(provisionSandboxDesktop({
+      displayNumber: 249,
+      xServerBinaryPath: '/nonexistent/papercusp-test-X-server',
+      readyTimeoutMs: 0,
+    })).rejects.toThrow(/missing xvfb prerequisites: .*\/nonexistent\/papercusp-test-X-server/);
+  });
+});
+
+describe('desktop prerequisites', () => {
+  it('reports the absent stack on a headless host, including the readiness probe', () => {
+    expect(() => assertDesktopPrerequisites({}, () => false))
+      .toThrow(/missing xvfb prerequisites: Xvfb, xdpyinfo, openbox.*optional desktop pack provides KasmVNC/);
+  });
+
+  it('accepts a complete KasmVNC stack without requiring Xvfb', () => {
+    const installed = new Set(['Xkasmvnc', 'xdpyinfo', 'openbox', 'kasmvncpasswd']);
+    expect(() => assertDesktopPrerequisites({ xServer: 'kasmvnc' }, (binary) => installed.has(binary)))
+      .not.toThrow();
+  });
+
+  it('requires credential tooling before trying to mint KasmVNC credentials', () => {
+    expect(() => assertDesktopPrerequisites({ xServer: 'kasmvnc' }, (binary) => binary !== 'kasmvncpasswd'))
+      .toThrow(/missing kasmvnc prerequisites: kasmvncpasswd/);
+  });
+
+  it('honors a custom server, existing credentials, and a disabled window manager', () => {
+    const installed = new Set(['/opt/kasm/Xkasmvnc', 'xdpyinfo']);
+    expect(() => assertDesktopPrerequisites({
+      xServer: 'kasmvnc', xServerBinaryPath: '/opt/kasm/Xkasmvnc',
+      kasmvncPasswordFile: '/run/desktop/passwd', windowManager: false,
+    }, (binary) => installed.has(binary))).not.toThrow();
   });
 });
 
