@@ -24,11 +24,19 @@ const ENV = {
   PAPERCUSP_HARNESS_SLUG: 'papercusp',
 };
 
-function rpc(inner: Record<string, unknown>, isError = false) {
+function rpc(
+  inner: Record<string, unknown>,
+  isError = false,
+  resultExtra: Record<string, unknown> = {},
+) {
   return JSON.stringify({
     jsonrpc: '2.0',
     id: 1,
-    result: { isError, content: [{ type: 'text', text: JSON.stringify(inner) }] },
+    result: {
+      isError,
+      content: [{ type: 'text', text: JSON.stringify(inner) }],
+      ...resultExtra,
+    },
   });
 }
 
@@ -74,8 +82,25 @@ describe('managed Codex PreCompact bridge', () => {
     expect(capturedRequest?.headers).not.toHaveProperty('Authorization');
     expect(JSON.parse(String(capturedRequest?.body))).toMatchObject({
       method: 'tools/call',
-      params: { name: 'session:request-compaction', arguments: {} },
+      params: {
+        name: 'session:request-compaction',
+        arguments: {},
+        _meta: { format: 'json' },
+      },
     });
+  });
+
+  it('accepts a structured MCP result when the text content block is absent', async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      rpc({}, false, {
+        content: [],
+        structuredContent: { ok: true, requested: true, respawn: 'queued' },
+      }),
+    ));
+    const decision = await runManagedPreCompact(PAYLOAD, { env: ENV, fetchImpl });
+
+    expect(decision.continue).toBe(false);
+    expect(decision.systemMessage).toContain('QUEUED');
   });
 
   it('uses the token file only for the superuser route and never changes that route', async () => {
@@ -131,16 +156,22 @@ describe('managed Codex PreCompact bridge', () => {
       }),
     });
     const malformed = preCompactDecision(parseManagedCarryResponse('not-json'));
+    const compactResult = preCompactDecision(parseManagedCarryResponse(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { isError: false, content: [{ type: 'text', text: 'ok: true\nrequested: true\nrespawn: queued' }] },
+    })));
     const invalidFetch = vi.fn();
     const invalid = await runManagedPreCompact(
       { hook_event_name: 'PreCompact', trigger: 'manual' },
       { env: ENV, fetchImpl: invalidFetch },
     );
-    for (const decision of [down, malformed, invalid]) {
+    for (const decision of [down, malformed, compactResult, invalid]) {
       expect(decision.continue).toBe(false);
     }
     expect(down.systemMessage).toContain('connection refused');
     expect(malformed.systemMessage).toContain('no MCP result');
+    expect(compactResult.systemMessage).toContain('no JSON text');
     expect(invalid.systemMessage).toContain('invalid PreCompact payload');
     expect(invalidFetch).not.toHaveBeenCalled();
   });
