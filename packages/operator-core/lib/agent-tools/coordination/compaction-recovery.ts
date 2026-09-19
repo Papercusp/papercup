@@ -8,6 +8,7 @@ import {
   renderHeldItemOwnershipWarning,
   type CarryBriefHeldItem,
 } from '../../carry-brief';
+import { controlStateHash } from './control-anchor';
 
 export const AUTOMATIC_COMPACTION_RECOVERY_SCHEMA = 'post-compaction-recovery-v1' as const;
 export const AUTOMATIC_COMPACTION_RECOVERY_MARKER = '⟦post-compaction-recovery⟧' as const;
@@ -62,11 +63,12 @@ export type CompactionPlanAuthority =
  * drifting back to an unconditional recovery-orient round-trip. */
 export const MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION =
   `Inspect the ${AUTOMATIC_COMPACTION_RECOVERY_MARKER} marker already delivered in the carry context. ` +
-  'If it is complete and its controlGeneration matches the latest ⟦CTRL:…⟧ generation, recovery ' +
+  'If it is complete and its controlStateHash matches the latest ⟦CTRL:…⟧ stateHash, recovery ' +
   'already arrived: do not call coord:orient; declare your actual lane with ' +
   'coord:declare-intent { intent, current_plan_slug, items }. Call ' +
   'coord:orient { afterCompaction: true } exactly once only when the marker is absent, incomplete, ' +
-  'generation-mismatched, or you deliberately need live data excluded from the injected block.';
+  'content-mismatched, or a legacy marker/CTRL pair has no stateHash and its generation mismatches, ' +
+  'or you deliberately need live data excluded from the injected block.';
 
 /**
  * Post-compaction recovery fold for coord:orient
@@ -185,10 +187,17 @@ export interface AutomaticCompactionRecovery {
     complete: boolean;
     memoryEpoch: number;
     controlGeneration: number | null;
+    /** Hash of normalized control state; generation alone can advance on activation churn. */
+    controlStateHash: string | null;
     fallback: {
       verb: 'coord:orient';
       args: { afterCompaction: true };
-      when: readonly ['marker-absent', 'marker-incomplete', 'control-generation-mismatch'];
+      when: readonly [
+        'marker-absent',
+        'marker-incomplete',
+        'control-state-mismatch',
+        'legacy-control-generation-mismatch',
+      ];
     };
   };
   recovery: CompactionRecovery;
@@ -521,10 +530,16 @@ export async function buildAutomaticCompactionRecovery(
         recovery.coverage.planAuthority !== false,
       memoryEpoch,
       controlGeneration: recovery.control?.generation ?? null,
+      controlStateHash: recovery.control ? controlStateHash(recovery.control.state) : null,
       fallback: {
         verb: 'coord:orient',
         args: { afterCompaction: true },
-        when: ['marker-absent', 'marker-incomplete', 'control-generation-mismatch'],
+        when: [
+          'marker-absent',
+          'marker-incomplete',
+          'control-state-mismatch',
+          'legacy-control-generation-mismatch',
+        ],
       },
     },
     recovery,

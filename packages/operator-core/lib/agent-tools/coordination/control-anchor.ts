@@ -9,6 +9,7 @@
  * post-compaction anchor on any missing base/schema/generation mismatch and
  * never merge a generation-behind payload.
  */
+import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -116,6 +117,9 @@ export interface ControlAnchorState {
 export interface ControlAnchor {
   schemaVersion: typeof CONTROL_ANCHOR_SCHEMA;
   generation: number;
+  /** Stable fingerprint of the normalized semantic state. Generation is a
+   * delivery/version counter and may advance for a byte-identical activation. */
+  stateHash?: string;
   state: ControlAnchorState;
   provenance: {
     source: 'harness_shared.session_briefs.control_state';
@@ -147,6 +151,8 @@ export interface ControlTransition {
   targetOwnerId: string;
   previousGeneration: number;
   generation: number;
+  /** Stable fingerprint of `state`; optional for legacy persisted transitions. */
+  stateHash?: string;
   state: ControlAnchorState;
   /**
    * P-012: the `stack` refs of the generation this transition REPLACES (stamped by
@@ -333,6 +339,18 @@ export function estimateControlAnchorTokens(value: unknown): number {
   return Math.ceil(Buffer.byteLength(JSON.stringify(value), 'utf8') / 4);
 }
 
+/**
+ * Hash the normalized semantic control state, excluding delivery metadata such
+ * as generation and timestamps. A carry marker and a later CTRL block can use
+ * this to distinguish a real state change from a generation-only activation
+ * churn (for example a carry-respawn restart).
+ */
+export function controlStateHash(state: ControlAnchorState): string {
+  return createHash('sha256')
+    .update(JSON.stringify(normalizeControlAnchorState(state)), 'utf8')
+    .digest('hex');
+}
+
 const TRANSITION_RESYNC = {
   verb: 'coord:orient' as const,
   args: { afterCompaction: true as const },
@@ -352,9 +370,11 @@ function defaultTransitionProvenance(ownerId: string): ControlTransitionProvenan
 export function renderControlTransitionDelivery(
   input: Omit<ControlTransitionDelivery, 'budget'>,
 ): ControlTransitionDelivery {
+  const state = normalizeControlAnchorState(input.state);
   const base = {
     ...input,
-    state: normalizeControlAnchorState(input.state),
+    state,
+    stateHash: input.stateHash ?? controlStateHash(state),
   };
   let estimatedTokens = estimateControlAnchorTokens({
     ...base,
@@ -429,10 +449,12 @@ export function renderControlAnchor(input: {
   state: ControlAnchorState;
   updatedAt: string;
 }): ControlAnchor {
+  const state = normalizeControlAnchorState(input.state);
   const base = {
     schemaVersion: CONTROL_ANCHOR_SCHEMA,
     generation: input.generation,
-    state: normalizeControlAnchorState(input.state),
+    stateHash: controlStateHash(state),
+    state,
     provenance: {
       source: 'harness_shared.session_briefs.control_state' as const,
       ownerId: input.ownerId,
@@ -753,7 +775,13 @@ export async function acknowledgeControlTransition(
 }
 
 export function renderControlTransitionContext(delivery: ControlTransitionDelivery): string {
-  return `⟦CTRL:${delivery.kind}⟧ ${JSON.stringify(delivery)}`;
+  // Recompute for legacy callers/tests that still pass a persisted transition
+  // without the additive hash field. The live renderer always emits it.
+  const withStateHash = {
+    ...delivery,
+    stateHash: delivery.stateHash ?? controlStateHash(delivery.state),
+  };
+  return `⟦CTRL:${delivery.kind}⟧ ${JSON.stringify(withStateHash)}`;
 }
 
 /** Reconcile the existing authoritative stores into the compact projection. */
