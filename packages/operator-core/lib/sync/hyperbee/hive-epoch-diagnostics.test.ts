@@ -105,6 +105,13 @@ function assertNativeBoundary(events: StageDiagnosticEvent[]) {
 function assertPrivate(events: StageDiagnosticEvent[]) {
   expect(JSON.stringify(events), 'diagnostics must not retain plaintext').not.toContain('private payload');
 }
+// Expose the same wrong-behavior assertion to the runner for a deliberate red
+// probe. Normal CI requires the exact rejection. This never changes production
+// source, and a test-name filter never changes a test's behavior.
+function rejectsWrong(check: () => void, message: string) {
+  if (process.env.PAPERCUSP_P002_RED_CONTROL === '1') check();
+  else expect(check).toThrow(message);
+}
 const op: LocalWriteOp = {
   type: 'put',
   table: 'features-by-id',
@@ -409,7 +416,7 @@ describe('P-002 calibrated counterexamples (local diagnostic proof only)', () =>
     expect(() => check(good)).not.toThrow();
     seams.fault = fault;
     const bad = await exercise();
-    expect(() => check(bad)).toThrow(message);
+    rejectsWrong(() => check(bad), message);
   });
 
   it.each(['scope-query', 'epoch-query', 'baseline-evidence', 'owner-check', 'key-provider', 'keychain'] as const)(
@@ -439,7 +446,7 @@ describe('P-002 calibrated counterexamples (local diagnostic proof only)', () =>
           // of the diagnostic whose correctness is being tested.
           await entered.promise;
           if (omitted) {
-            expect(() => assertPendingOnly(events, stage)).toThrow(`missing actual pending stage: ${stage}`);
+            rejectsWrong(() => assertPendingOnly(events, stage), `missing actual pending stage: ${stage}`);
           } else {
             expect(() => assertPendingOnly(events, stage)).not.toThrow();
           }
@@ -473,7 +480,7 @@ describe('P-002 calibrated counterexamples (local diagnostic proof only)', () =>
       try {
         await entered.promise;
         if (faulty) {
-          expect(() => assertPendingOnly(events, 'epoch-query')).toThrow('premature native work');
+          rejectsWrong(() => assertPendingOnly(events, 'epoch-query'), 'premature native work');
         } else {
           expect(() => assertPendingOnly(events, 'epoch-query')).not.toThrow();
         }
@@ -510,7 +517,7 @@ describe('P-002 calibrated counterexamples (local diagnostic proof only)', () =>
         assertUniqueAttempts([...first.events, ...second.events]);
       };
       try {
-        if (faulty) expect(assertShared).toThrow('one actual epoch lookup for concurrent rows');
+        if (faulty) rejectsWrong(assertShared, 'one actual epoch lookup for concurrent rows');
         else expect(assertShared).not.toThrow();
       } finally {
         held.resolve(3);
@@ -527,98 +534,5 @@ describe('P-002 calibrated counterexamples (local diagnostic proof only)', () =>
         hit.attempt.finish();
       }
     }
-  });
-});
-
-/**
- * Selector-driven red controls. The ordinary file run proves each mutant is
- * rejected. Selecting one named control inverts that same assertion, so
- * testing:run records a genuine failed assertion with the exact failure text;
- * no source mutation or caller-supplied `killed` metadata is involved.
- */
-const redControlSelected = () =>
-  process.argv.some((arg) => arg.startsWith('--testNamePattern=') && arg.includes('P-002 RED CONTROL'));
-const redControl = (assertion: () => void, message: string) => {
-  if (redControlSelected()) expect(assertion).not.toThrow(message);
-  else expect(assertion).toThrow(message);
-};
-
-describe('P-002 selector-driven red controls', () => {
-  it('P-002 RED CONTROL R1: retry identity', async () => {
-    seams.releaseNative();
-    seams.fault = 'collapse-attempts';
-    const { cap } = makeGate();
-    const first = observation(31);
-    const second = observation(31);
-    await withStageAttempt(first.attempt, () => cap.encryptOp(op));
-    await withStageAttempt(second.attempt, () => cap.encryptOp(op));
-    first.attempt.finish();
-    second.attempt.finish();
-    redControl(
-      () => assertUniqueAttempts([...first.events, ...second.events]),
-      'retry identities must be distinct',
-    );
-  });
-
-  it('P-002 RED CONTROL R2: shared epoch load', async () => {
-    seams.releaseNative();
-    const held = deferred<number>();
-    const getCurrentEpoch = vi.fn(() => held.promise);
-    const deps = {
-      crypto: createHiveEpochCrypto(),
-      resolveKey: async () => key as never,
-      potId: 'diagnostic-pot',
-      getCurrentEpoch,
-    };
-    const shared = buildEpochEncryptCapability(deps);
-    const first = observation(32);
-    const second = observation(33);
-    const faulty = buildEpochEncryptCapability(deps);
-    const a = withStageAttempt(first.attempt, () => faulty.encryptOp(op));
-    const b = withStageAttempt(second.attempt, () => (redControlSelected() ? faulty : shared).encryptOp(op));
-    await vi.waitFor(() => expect(getCurrentEpoch).toHaveBeenCalledTimes(2));
-    held.resolve(3);
-    await Promise.all([a, b]);
-    first.attempt.finish();
-    second.attempt.finish();
-    redControl(
-      () => expect(getCurrentEpoch).toHaveBeenCalledTimes(1),
-      'one actual epoch lookup for concurrent rows',
-    );
-  });
-
-  it('P-002 RED CONTROL R3: synchronous native boundary', async () => {
-    seams.releaseNative();
-    seams.fault = 'sync-as-await';
-    const { cap } = makeGate();
-    const { attempt, events } = observation(34);
-    await withStageAttempt(attempt, () => cap.encryptOp(op));
-    attempt.finish();
-    redControl(() => assertNativeBoundary(events), 'native boundaries must remain synchronous');
-  });
-
-  it('P-002 RED CONTROL R4: plaintext privacy', async () => {
-    seams.releaseNative();
-    seams.fault = 'leak-payload';
-    const { cap } = makeGate();
-    const { attempt, events } = observation(35);
-    await withStageAttempt(attempt, () => cap.encryptOp(op));
-    attempt.finish();
-    redControl(() => assertPrivate(events), 'diagnostics must not retain plaintext');
-  });
-
-  it('P-002 RED CONTROL R6: held dependency reachability', async () => {
-    seams.releaseNative();
-    seams.omitStage = 'scope-query';
-    const held = deferred<unknown>();
-    seams.scope.mockReturnValueOnce(held.promise);
-    const { cap } = makeGate();
-    const { attempt, events } = observation(36);
-    const pending = withStageAttempt(attempt, () => cap.encryptOp(op));
-    await vi.waitFor(() => expect(seams.scope).toHaveBeenCalled());
-    redControl(() => assertPendingOnly(events, 'scope-query'), 'missing actual pending stage: scope-query');
-    held.resolve('diagnostic-pot');
-    await pending;
-    attempt.finish();
   });
 });
