@@ -1278,12 +1278,12 @@ describe('psu-pty-host owner composer gate (EI-20199370837439455)', () => {
         data: '⟦turn-origin:loop-fire nonce:second⟧\n[await-event] loop wake',
       });
       expect(second).toBe(true);
-      // WI-785151: wait for the second delivery to be OBSERVED, then snapshot.
-      // 'nonce:second' is unique to this delivery, so this is the same wait the
-      // fixed sleep was approximating — without the load-dependent margin.
-      expect(await waitForOutput(captured, 'nonce:second', 5000)).toBe(true);
+      // Wait for the child acknowledgement, not the bare nonce: terminal echo
+      // can expose the injected input before the child has processed it.
+      const secondAcknowledgement = 'ECHO:⟦turn-origin:loop-fire nonce:second⟧';
+      expect(await waitForOutput(captured, secondAcknowledgement, 5000)).toBe(true);
       const output = captured();
-      expect(output).toContain('ECHO:⟦turn-origin:loop-fire nonce:second⟧');
+      expect(output).toContain(secondAcknowledgement);
       expect(output).not.toContain('ECHO:owner goal⟦turn-origin:loop-fire');
 
       const code = await done;
