@@ -1867,8 +1867,15 @@ export async function emitScorecard(
         }
       }
       const gradedAuthor = graded?.createdBy ?? null;
+      const identityWorkspace = input.workspaceId || activeWorkspaceId();
+      const authorLineageRelated =
+        gradedAuthor && input.createdBy
+          ? await (deps.lineageRelated ?? areAcceptanceLineageRelated)(gradedAuthor, input.createdBy, {
+              workspaceId: identityWorkspace,
+            })
+          : false;
       // Unattributable identity on EITHER side refuses — strict toward auditing again.
-      if (!gradedAuthor || !input.createdBy || gradedAuthor === input.createdBy) {
+      if (!gradedAuthor || !input.createdBy || gradedAuthor === input.createdBy || authorLineageRelated) {
         return {
           ok: false as const,
           error: `self_audit_refused: a grading audit must come from a NON-AUTHOR (graded card author: ${gradedAuthor ?? 'unknown'}, auditor: ${input.createdBy ?? 'unknown'}) — mirror of the acceptance grader ≠ author rule`,
@@ -1887,7 +1894,7 @@ export async function emitScorecard(
           gradingEvidenceSources.map(async (source) => ({
             source,
             related: await (deps.lineageRelated ?? areAcceptanceLineageRelated)(source, input.createdBy, {
-              workspaceId: input.workspaceId || activeWorkspaceId(),
+              workspaceId: identityWorkspace,
             }),
           })),
         )
@@ -2001,7 +2008,8 @@ export async function emitScorecard(
           code: 'grading_audit_required' as const,
           error:
             `scorecard '${pendingSubject.issueId}' for rubric '${args.rubricRef}' has a pending grading audit — ` +
-            "emit the audit as { rubricRef:'grading-integrity', ratings, terminal:true, " +
+            `either supersede it by passing supersedes:'${pendingSubject.issueId}' on a corrected ` +
+            'same-rubric scorecard, or emit the audit as { rubricRef:\'grading-integrity\', ratings, terminal:true, ' +
             `subject:{ kind:'scorecard', ref:'${pendingSubject.issueId}' } } instead of filing another ` +
             'same-rubric peer scorecard',
         };
