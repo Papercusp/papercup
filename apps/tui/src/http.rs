@@ -430,6 +430,7 @@ impl HttpClient {
         let mut req = match method {
             "GET" => self.http.get(self.url(path)),
             "POST" => self.http.post(self.url(path)),
+            "PUT" => self.http.put(self.url(path)),
             "DELETE" => self.http.delete(self.url(path)),
             other => return Err(anyhow!("unsupported method {other}")),
         };
@@ -1092,6 +1093,26 @@ mod tests {
             req.contains("authorization: Bearer secret-token")
                 || req.contains("Authorization: Bearer secret-token")
         );
+    }
+
+    #[tokio::test]
+    async fn sys_http_put_sends_json_body_and_returns_body() {
+        let (addr, req_rx) = spawn_http(
+            "200 OK",
+            "Content-Type: application/json\r\n",
+            r#"{"title":"P8 renamed"}"#,
+        )
+        .await;
+        let client = HttpClient::new(addr, None);
+        let bytes = client
+            .sys_http("PUT", "/api/harness/papercusp/agent-chats/chat-1", Some(r#"{"title":"P8 renamed"}"#.into()))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["title"], serde_json::json!("P8 renamed"));
+        let req = req_rx.await.unwrap();
+        assert!(req.starts_with("PUT /api/harness/papercusp/agent-chats/chat-1 "));
+        assert!(req.contains(r#"{"title":"P8 renamed"}"#));
     }
 
     #[tokio::test]
