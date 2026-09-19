@@ -821,6 +821,7 @@ describe("provider-cause classification (WI-2144034)", () => {
   it("classifies the measured quota phrasings and nothing else", () => {
     for (const text of [
       QUOTA_STDERR,
+      "You've hit your weekly limit · resets Sep 24, 7am (America/New_York)",
       "usage limit reached for this account",
       "Quota exceeded for model",
       "error code: insufficient_quota",
@@ -846,6 +847,7 @@ describe("provider-cause classification (WI-2144034)", () => {
       "Incorrect API key provided: sk-live-…",
       "403 Forbidden: invalid api key",
       "error: connection refused",
+      "The weekly limit setting is unavailable",
       "Logged in using ChatGPT",
       "",
     ]) {
@@ -1039,6 +1041,26 @@ describe("provider-cause classification (WI-2144034)", () => {
     expect(outcome.failureHint).toBe("provider-usage-limit");
     expect(outcome.stdout).toBe("");
     expect(JSON.stringify(outcome)).not.toContain("usage limit");
+  });
+
+  it("preserves Claude weekly quota from a real child without asserting readiness", async () => {
+    const message = "You've hit your weekly limit · resets Sep 24, 7am (America/New_York)";
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: {
+        ...DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0],
+        command: process.execPath,
+        args: ["-e", `console.log(${JSON.stringify(message)}); process.exit(1)`],
+      },
+      runner: new NodeWorkspaceHostAgentProbeRunner(),
+      now: NOW,
+    });
+    expect(evidence).toMatchObject({
+      ready: false,
+      exitStatus: 1,
+      failure: "provider-usage-limit",
+    });
+    expect(evidence.proofDigest).toBeUndefined();
+    expect(JSON.stringify(evidence)).not.toContain(message);
   });
 
   it("leaves failureHint absent for a real child whose stderr says nothing recognizable", async () => {
