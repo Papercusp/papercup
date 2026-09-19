@@ -61,3 +61,13 @@ export {
   type UnlistResult,
   type ClaimResult,
 } from "./registry.js";
+
+// Runtime-neutral content identity gate (Worker + operator publish paths).
+export {
+  collectIdentityValues,
+  isIdentityFieldName,
+  scanIdentityLeaks,
+  type ContentIdentityLeakHit,
+  type ContentIdentityLeakKind,
+  type ContentIdentityScanOptions,
+} from "./content-identity.js";

@@ -47,7 +47,11 @@
  * detectable by shape and will pass. Widen IDENTITY_KEYS when such a field appears.
  */
 import { userInfo } from 'node:os';
-import { redactSensitiveText } from '../sensitive-text';
+import {
+  isIdentityFieldName,
+  scanIdentityLeaks as scanGenericIdentityLeaks,
+  type ContentIdentityLeakHit,
+} from '@papercusp/artifact-registry';
 
 /** One structured field the scrubber replaced. */
 export interface IdentityScrubHit {
@@ -70,12 +74,7 @@ export interface IdentityScrubResult<T> {
   identityValues: string[];
 }
 
-export interface IdentityLeakHit {
-  kind: 'identity-value' | 'home-path' | 'agent-session-id' | 'email' | 'os-user' | 'secret';
-  /** A bounded excerpt — the publisher needs to see WHAT to fix. */
-  value: string;
-  occurrences: number;
-}
+export type IdentityLeakHit = ContentIdentityLeakHit;
 
 /**
  * Keys whose VALUE identifies a person, an agent, or this installation.
@@ -87,65 +86,6 @@ export interface IdentityLeakHit {
  * Compared case- and separator-insensitively, so `account_id`, `accountId` and
  * `Account-ID` all match one entry.
  */
-const IDENTITY_KEYS: ReadonlySet<string> = new Set([
-  'account',
-  'accountid',
-  'accounthandle',
-  'accountname',
-  'owner',
-  'ownerid',
-  'ownerlabel',
-  'ownerhandle',
-  'user',
-  'userid',
-  'username',
-  'handle',
-  'login',
-  'email',
-  'emailaddress',
-  'createdby',
-  'updatedby',
-  'authoredby',
-  'assignee',
-  'sessionid',
-  'suid',
-  'agentid',
-  'workspace',
-  'workspaceid',
-  'installslug',
-  'potslug',
-  'harnessslug',
-  'homedir',
-]);
-
-/** Host-shaped identity that needs no harvesting — these are leaks by their shape alone. */
-const HOME_PATH_RE = /(?:\/home|\/Users)\/[A-Za-z0-9._-]+/g;
-const AGENT_SESSION_ID_RE =
-  /\bsu-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
-const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
-
-/** Usernames too generic to be identifying — flagging them would be noise, and a
- *  fail-closed gate that cries wolf gets routed around, which defeats it. */
-const GENERIC_OS_USERS: ReadonlySet<string> = new Set([
-  'root',
-  'user',
-  'users',
-  'node',
-  'admin',
-  'ubuntu',
-  'runner',
-  'docker',
-  'build',
-  'app',
-  'test',
-]);
-
-/** Shortest value worth hunting for as a literal. Below this the false-positive rate
- *  swamps the signal (a 2-char handle matches inside ordinary words). */
-const MIN_HARVESTED_LENGTH = 3;
-
-const normalizeKey = (key: string): string => key.toLowerCase().replace(/[^a-z0-9]/g, '');
-
 const placeholderFor = (key: string): string => `<scrubbed:${key}>`;
 
 const isPlaceholder = (value: unknown): boolean =>
@@ -157,6 +97,8 @@ const isScrubbableValue = (value: unknown): value is string | number => {
   if (typeof value === 'string') return value.trim() !== '';
   return typeof value === 'number' && Number.isFinite(value);
 };
+
+const MIN_HARVESTED_LENGTH = 3;
 
 /**
  * Replace every identity-bearing CONFIG value with a typed placeholder, returning a
@@ -179,7 +121,7 @@ export function scrubIdentityFields<T>(input: T): IdentityScrubResult<T> {
     for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
       const childPath = path === '' ? key : `${path}.${key}`;
 
-      if (IDENTITY_KEYS.has(normalizeKey(key))) {
+      if (isIdentityFieldName(key)) {
         // Already scrubbed (a re-export of an exported package) — clean, not a hit.
         if (isPlaceholder(value)) {
           out[key] = value;
@@ -206,20 +148,6 @@ export function scrubIdentityFields<T>(input: T): IdentityScrubResult<T> {
   };
 }
 
-const countOccurrences = (haystack: string, needle: string): number => {
-  if (needle === '') return 0;
-  let count = 0;
-  let from = 0;
-  for (;;) {
-    const at = haystack.indexOf(needle, from);
-    if (at < 0) return count;
-    count += 1;
-    from = at + needle.length;
-  }
-};
-
-const excerpt = (value: string): string => (value.length <= 80 ? value : `${value.slice(0, 77)}…`);
-
 export interface ScanIdentityOptions {
   /**
    * Values harvested by `scrubIdentityFields`. A surviving copy of one of these is
@@ -241,54 +169,16 @@ export interface ScanIdentityOptions {
  * The refusing caller is `assertIdentityClean`.
  */
 export function scanIdentityLeaks(text: string, opts: ScanIdentityOptions = {}): IdentityLeakHit[] {
-  const hits: IdentityLeakHit[] = [];
-  const seen = new Set<string>();
-
-  const add = (kind: IdentityLeakHit['kind'], value: string, occurrences: number): void => {
-    if (occurrences <= 0) return;
-    const dedupeKey = JSON.stringify([kind, value]);
-    if (seen.has(dedupeKey)) return;
-    seen.add(dedupeKey);
-    hits.push({ kind, value: excerpt(value), occurrences });
-  };
-
-  for (const value of opts.knownIdentityValues ?? []) {
-    if (typeof value !== 'string' || value.length < MIN_HARVESTED_LENGTH) continue;
-    add('identity-value', value, countOccurrences(text, value));
-  }
-
-  for (const [re, kind] of [
-    [HOME_PATH_RE, 'home-path'],
-    [AGENT_SESSION_ID_RE, 'agent-session-id'],
-    [EMAIL_RE, 'email'],
-  ] as const) {
-    // Reset lastIndex each pass: these are module-scoped /g regexes.
-    re.lastIndex = 0;
-    for (const match of text.matchAll(re)) {
-      add(kind, match[0], countOccurrences(text, match[0]));
-    }
-  }
-
-  const osUser = opts.osUser === undefined ? currentOsUser() : opts.osUser;
-  if (osUser && osUser.length >= 4 && !GENERIC_OS_USERS.has(osUser.toLowerCase())) {
-    add('os-user', osUser, countOccurrences(text, osUser));
-  }
-
-  // Credentials are a neighbouring concern with its own detector — compose it here
-  // so ONE chokepoint refuses a package carrying either a handle or a secret.
-  if (redactSensitiveText(text) !== text) {
-    add('secret', '[secret-shaped value detected by sensitive-text]', 1);
-  }
-
-  return hits;
+  return scanGenericIdentityLeaks(text, {
+    ...opts,
+    osUser: opts.osUser === undefined ? currentOsUser() : opts.osUser,
+  });
 }
 
 function currentOsUser(): string | null {
   try {
     return userInfo().username || null;
   } catch {
-    // Some sandboxes have no passwd entry. An unreadable host identity is a
-    // measurement that failed, never a clean verdict — the other legs still run.
     return null;
   }
 }
