@@ -22,7 +22,7 @@
  *
  * Principal-gated; CORS-open (operator binds loopback-only).
  */
-import { mkdirSync, writeFileSync, existsSync, renameSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, isKnownWorkspace } from '../../../workspace-registry';
@@ -104,7 +104,8 @@ export interface BootstrapRoleResult {
   promptFile: string;
   /**
    * The signed role-scoped MCP config the agent discovers. claude/omp: a
-   * `.mcp.json` written into cwd. codex: the CODEX_HOME `config.toml`.
+   * per-session `.mcp.json` under the launch-context MCP directory. codex:
+   * the CODEX_HOME `config.toml`.
    */
   mcpJsonPath: string;
   /**
@@ -535,35 +536,18 @@ const post = defineTool({
         return jsonRes({ status: 'error', error: `write codex home: ${e?.message}` }, 500);
       }
     } else {
-      // Write the signed role-scoped .mcp.json into cwd (back up any existing
-      // one, mirroring console-launch). omp path-discovers it; claude is
-      // pointed at it via --mcp-config by the launcher.
+      // Write the signed role-scoped .mcp.json only into the per-session MCP
+      // directory. A role launch must never materialize a signed, single-agent
+      // config in spec.cwd: claude/omp can both discover project config there,
+      // so a shared harness checkout would leak this session's identity to the
+      // next launch. claude is pointed at this path via --mcp-config; roleFlow
+      // copies the same bytes into OMP's isolated PI_CONFIG_DIR.
       try {
-        mcpJsonPath = join(spec.cwd, '.mcp.json');
-        if (existsSync(mcpJsonPath)) {
-          const bak = `${mcpJsonPath}.papercusp.bak`;
-          if (!existsSync(bak)) renameSync(mcpJsonPath, bak);
-        }
+        mcpJsonPath = join(spec.sessionMcpDir, '.mcp.json');
+        mkdirSync(spec.sessionMcpDir, { recursive: true });
         writeFileSync(mcpJsonPath, spec.mcpJsonContents, { mode: 0o600 });
       } catch (e: any) {
-        return jsonRes({ status: 'error', error: `write .mcp.json: ${e?.message}` }, 500);
-      }
-
-      // Also stash the signed .mcp.json at the per-session MCP dir (keyed by
-      // sid via the shared helper, the same path wake-executor's resume leg
-      // remounts via `--mcp-config … --strict-mcp-config`). Without this a woken
-      // claude role session resumed TOOLLESS (its original launch loaded the
-      // role MCP via --mcp-config; the resume must too). unify-launch-mechanics
-      // P-003/P-004 — claude only (omp resumes by thread, codex by CODEX_HOME).
-      if (agent === 'claude') {
-        try {
-          mkdirSync(spec.sessionMcpDir, { recursive: true });
-          writeFileSync(join(spec.sessionMcpDir, '.mcp.json'), spec.mcpJsonContents, { mode: 0o600 });
-        } catch (e: any) {
-          // Non-fatal: the launch still works; only a later wake-by-resume would
-          // degrade to a toolless turn. stderr (not console.*) for the vitest guard.
-          process.stderr.write(`[bootstrap-role] session-mcp stash failed (non-fatal): ${e?.message}\n`);
-        }
+        return jsonRes({ status: 'error', error: `write session .mcp.json: ${e?.message}` }, 500);
       }
 
       // Write the role prompt to a launch-context file the launcher injects

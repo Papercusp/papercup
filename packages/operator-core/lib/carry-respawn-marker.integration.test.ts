@@ -86,20 +86,32 @@ async function rowCount(ownerId: string): Promise<number> {
 }
 
 describe('carry-respawn marker — real Postgres (migration 716)', () => {
-  it('clears the predecessor process identity in the same durable mark statement', async () => {
+  it('clears the predecessor identity and context estimate in the same durable mark statement', async () => {
     await sql`
       INSERT INTO harness_shared.coord_presence
-        (owner_id, heartbeat_at, host, pid, tty)
+        (owner_id, heartbeat_at, host, pid, tty, context_tokens, context_estimated_at)
       VALUES
-        ('su-respawn-identity', now(), 'old-host', 4051146, '/dev/pts/9')`;
+        ('su-respawn-identity', now(), 'old-host', 4051146, '/dev/pts/9', 380000, now())`;
 
     await markRespawnExpected('su-respawn-identity', RESPAWN_EXPECTED_TTL_MS, { sql });
 
-    const [presence] = await sql<{ host: string; pid: number | null; tty: string | null }[]>`
-      SELECT host, pid, tty
+    const [presence] = await sql<{
+      host: string;
+      pid: number | null;
+      tty: string | null;
+      context_tokens: number | null;
+      context_estimated_at: Date | null;
+    }[]>`
+      SELECT host, pid, tty, context_tokens, context_estimated_at
         FROM harness_shared.coord_presence
        WHERE owner_id = 'su-respawn-identity'`;
-    expect(presence).toEqual({ host: '', pid: null, tty: null });
+    expect(presence).toMatchObject({
+      host: '',
+      pid: null,
+      tty: null,
+      context_tokens: null,
+      context_estimated_at: null,
+    });
     expect(await rowCount('su-respawn-identity')).toBe(1);
   });
 

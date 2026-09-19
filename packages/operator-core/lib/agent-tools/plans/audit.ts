@@ -220,16 +220,16 @@ interface Problem {
 }
 
 /**
- * A carried-forward item keeps the blob provenance from the pass that actually
- * inspected it. If a fresh item in the same pass cites that path with a
- * different blobSha, the pass is internally contradictory: the path cannot
- * represent two file contents in one audit snapshot. Refuse the whole pass
- * rather than recording a mixed row that will fail later at ship time.
+ * Fresh items in one pass must agree on the blob provenance for a cited path.
+ * Carried-forward items intentionally retain the blob provenance from the pass
+ * that inspected them, so they are not comparable with this pass's fresh
+ * snapshot and must be excluded from this consistency check.
  */
 function divergentCitationBlobShaProblems(entries: AuditItemEntry[]): Problem[] {
   const byPath = new Map<string, Map<string, Set<string>>>();
 
   for (const entry of entries) {
+    if (entry.carriedFrom !== undefined) continue;
     for (const citation of entry.citations) {
       if (!isVerifyingCitation(citation) || !citation.path || !citation.blobSha) continue;
       const path = citation.path.trim();

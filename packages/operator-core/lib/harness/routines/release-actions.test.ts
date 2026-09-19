@@ -4254,6 +4254,8 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     expect(brief).toContain('parent gate owner intentionally retains the singleton hold');
     expect(brief).toContain("callerAuthorization.status='authorized-delegate'");
     expect(brief).toContain('VERIFIED signed spawn id must exactly equal repairQueue.fixerSpawnId');
+    expect(brief).toContain('PAPERCUSP_SID');
+    expect(brief).not.toContain('PAPERCUSP_SPAWN_ID');
     expect(brief).toContain('status is queue-unassigned');
     // P-003 / D-010: the brief names the ONE admission door and says outright that there is
     // no worktree to look for — the old brief pointed the fixer at a per-queue worktree path.

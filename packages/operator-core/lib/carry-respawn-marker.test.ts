@@ -84,6 +84,7 @@ describe('carry-respawn-marker', () => {
     expect(statements[0]).toMatch(/WITH marked AS/);
     expect(statements[0]).toMatch(/UPDATE harness_shared\.coord_presence/);
     expect(statements[0]).toMatch(/SET host = ''[\s\S]*pid = NULL[\s\S]*tty = NULL/);
+    expect(statements[0]).toMatch(/context_tokens = NULL[\s\S]*context_estimated_at = NULL/);
     expect(statements[0]).toMatch(/presence\.owner_id = marked\.owner_id/);
   });
 

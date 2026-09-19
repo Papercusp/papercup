@@ -4887,6 +4887,10 @@ export function writeOmpSessionConfigDir(
     // When present they replace (not merge with) the user's global registry so
     // a selected auto/pin route cannot be shadowed by a direct provider entry.
     modelsYml = null,
+    // Role launches receive already-signed MCP bytes from bootstrap-role. Keep
+    // those bytes verbatim: rewriting the URL/query would invalidate its role
+    // signature and reintroduce the shared-cwd identity leak.
+    mcpJsonContents = null,
     clientId = null,
     nativeMcp = false,
     mcpEnv = null,
@@ -5150,34 +5154,44 @@ export function writeOmpSessionConfigDir(
     // map. There is no longer a --context-size opt-out: 'full' is normalized to 'trimmed' at
     // parse (see parseArgs), so an SU launch asking for it still gets the allowlist.
     const srcMcp = join(srcAgent, "mcp.json");
-    if (existsSync(srcMcp)) {
-      let mcpText = readFileSync(srcMcp, "utf8");
-      if (toolsAllowlist && toolsAllowlist.length)
-        mcpText = filterTrimmedOmpMcpServers(mcpText);
-      mcpText = applyOmpOperatorOrigin(mcpText, operatorUrl);
-      if (toolsAllowlist && toolsAllowlist.length)
-        mcpText = applyOmpToolsAllowlist(mcpText, toolsAllowlist);
-      // Stamp the caller's backend (always omp here) + resolved model so the operator can inherit
-      // them for a fleet this session launches (fleet-launch-agent-inheritance-2026-07-03).
-      // WI-1866: ALSO stamp the per-session coord ownerId as `client=` — the user-level template
-      // bakes a single PER-MACHINE client id, and omp (unlike claude's ${PAPERCUSP_SID} url
-      // env-expansion) can't interpolate the SID at connect, so every omp session on the box
-      // collapsed into ONE in-band coord identity: shared claims (fleet:assignments showed one
-      // agent doing every member's work), void claim-conflict protection between members, and
-      // wakes to the transcript-visible identity black-holing (sessions 9980–9982, 2026-07-03).
-      // Overriding client= per-session is exactly how claude/codex thread identity (_mcp-handler
-      // resolution: x-papercusp-client header || mcp-session || ?client=).
-      mcpText = applyOmpMcpUrlParams(mcpText, {
-        agent: "omp",
-        model: model || undefined,
-        client: clientId || undefined,
-      });
-      if (nativeMcp && nativeOmpExtensionArgs("omp").length) {
-        const native = nativeMcpRequire(fileURLToPath(nativeMcpBundle));
-        mcpText = native.prepareNativeOmpConfig(mcpText, {
-          mode: native.agentMcpMode(process.env.PAPERCUSP_MCP_TRANSPORT),
-          home, env: { ...process.env, ...mcpEnv, PAPERCUSP_SID: clientId || mcpEnv?.PAPERCUSP_SID },
+    const explicitMcpJson =
+      typeof mcpJsonContents === "string" && mcpJsonContents.trim()
+        ? mcpJsonContents
+        : null;
+    if (explicitMcpJson || existsSync(srcMcp)) {
+      // Role MCP contents are already signed for this session. Do not apply
+      // the normal SU profile rewrites (origin, client, allowlist, native
+      // adapter): any URL/query mutation would invalidate the role signature.
+      const roleMcp = explicitMcpJson !== null;
+      let mcpText = roleMcp ? explicitMcpJson : readFileSync(srcMcp, "utf8");
+      if (!roleMcp) {
+        if (toolsAllowlist && toolsAllowlist.length)
+          mcpText = filterTrimmedOmpMcpServers(mcpText);
+        mcpText = applyOmpOperatorOrigin(mcpText, operatorUrl);
+        if (toolsAllowlist && toolsAllowlist.length)
+          mcpText = applyOmpToolsAllowlist(mcpText, toolsAllowlist);
+        // Stamp the caller's backend (always omp here) + resolved model so the operator can inherit
+        // them for a fleet this session launches (fleet-launch-agent-inheritance-2026-07-03).
+        // WI-1866: ALSO stamp the per-session coord ownerId as `client=` — the user-level template
+        // bakes a single PER-MACHINE client id, and omp (unlike claude's ${PAPERCUSP_SID} url
+        // env-expansion) can't interpolate the SID at connect, so every omp session on the box
+        // collapsed into ONE in-band coord identity: shared claims (fleet:assignments showed one
+        // agent doing every member's work), void claim-conflict protection between members, and
+        // wakes to the transcript-visible identity black-holing (sessions 9980–9982, 2026-07-03).
+        // Overriding client= per-session is exactly how claude/codex thread identity (_mcp-handler
+        // resolution: x-papercusp-client header || mcp-session || ?client=).
+        mcpText = applyOmpMcpUrlParams(mcpText, {
+          agent: "omp",
+          model: model || undefined,
+          client: clientId || undefined,
         });
+        if (nativeMcp && nativeOmpExtensionArgs("omp").length) {
+          const native = nativeMcpRequire(fileURLToPath(nativeMcpBundle));
+          mcpText = native.prepareNativeOmpConfig(mcpText, {
+            mode: native.agentMcpMode(process.env.PAPERCUSP_MCP_TRANSPORT),
+            home, env: { ...process.env, ...mcpEnv, PAPERCUSP_SID: clientId || mcpEnv?.PAPERCUSP_SID },
+          });
+        }
       }
       writeFileSync(join(dstAgent, "mcp.json"), mcpText, { mode: 0o600 });
     }
@@ -13964,11 +13978,12 @@ async function roleFlow(args, role, rolesMeta) {
     kickoffSeeded: roleKickoffSeeded,
   } = finalizeFreshRoleArgs(res.agent, launchArgs, res, args);
   let roleOmpConfigDir = null;
-  if (res.agent === "omp" && res.envelopeEnv?.PAPERCUSP_OMP_MODELS_YML) {
+  if (res.agent === "omp") {
     roleOmpConfigDir = await writeOmpSessionConfigDirAsync(res.sessionId, {
       discoveryOff: true,
       model: roleModel,
       modelsYml: res.envelopeEnv.PAPERCUSP_OMP_MODELS_YML,
+      mcpJsonContents: readFileSync(res.mcpJsonPath, "utf8"),
       clientId: res.envelopeEnv?.PAPERCUSP_SID || null,
       env: { ...process.env, ...res.envelopeEnv },
       interactive: !!process.stdout.isTTY,

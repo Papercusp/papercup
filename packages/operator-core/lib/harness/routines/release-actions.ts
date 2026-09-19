@@ -5098,7 +5098,7 @@ export function buildReleaseFixerKickoff(input: {
       `scripts/mcp-call.mjs recovery path, that transport authenticates you as an operator, not your ` +
       `signed release-fixer spawn, so this SAME read reports status='not-applicable' by design — that is ` +
       `NOT evidence you lost delegation. In that one case, compare the read's repairQueue.fixerSpawnId ` +
-      `directly against your own PAPERCUSP_SPAWN_ID: if they still match and repairQueue.phase is still ` +
+      `directly against your own PAPERCUSP_SID: if they still match and repairQueue.phase is still ` +
       `'awaiting-fixer', you remain the delegated fixer and may proceed (this tool independently ` +
       `authorizes an operator-role caller to converge); if they do not match, or the phase moved on, the ` +
       `queue was reassigned or closed — stop. Once authorized, author the fix in the canonical ` +

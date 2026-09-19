@@ -121,6 +121,18 @@ describe('acceptance BAR amendment transaction contract', () => {
       bars: [{ barKey: 'R-2', priorBarHash: 'b'.repeat(64), nextBarHash: null }],
     });
     expect(removed.success).toBe(true);
+    const scoped = acceptanceBarApprovalSchema.safeParse({
+      schemaVersion: 1,
+      kind: 'acceptance-bar-amendment-approval',
+      rubricRef: 'acceptance-plan',
+      subjectPlan: 'plan',
+      certifies: 'R-1 was checked against the source and focused tests.',
+      doesNotCertify: ['runtime deployment', 'unrelated rubric bars'],
+      bars: [{ barKey: 'R-2', priorBarHash: 'b'.repeat(64), nextBarHash: null }],
+    });
+    expect(scoped.success).toBe(true);
+    expect(scoped.success && scoped.data.certifies).toContain('R-1');
+    expect(scoped.success && scoped.data.doesNotCertify).toEqual(['runtime deployment', 'unrelated rubric bars']);
     expect(
       acceptanceBarApprovalSchema.safeParse({
         schemaVersion: 1,
@@ -429,10 +441,36 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
     expect(approvalReceiptJsonSource('{"a":1}')).toBe('{"a":1}');
   });
 
+  it('extracts the first JSON fence from surrounding review prose', () => {
+    expect(
+      approvalReceiptJsonSource(
+        'I checked the amendment and its source mappings.\n\n```json\n{"a":1}\n```\n\nThe prose is part of the review.',
+      ),
+    ).toBe('{"a":1}');
+    expect(approvalReceiptJsonSource('```json\n{"first":1}\n```\n```json\n{"second":2}\n```')).toBe(
+      '{"first":1}',
+    );
+  });
+
   it('accepts a fenced reviewer receipt', async () => {
     await expect(resolve('```json\n' + JSON.stringify(RECEIPT) + '\n```')).resolves.toMatchObject({
       approvalRef: 'thread-post:123',
       approvedBy: 'su-reviewer',
+    });
+  });
+
+  it('returns reviewer scope from a prose-wrapped receipt', async () => {
+    const scopedReceipt = {
+      ...RECEIPT,
+      certifies: 'all changed BAR hashes were checked against source',
+      doesNotCertify: ['runtime deployment', 'unrelated plan items'],
+    };
+    await expect(
+      resolve(`Review complete.\n\n\`\`\`json\n${JSON.stringify(scopedReceipt)}\n\`\`\`\n\nNo other claims.`),
+    ).resolves.toMatchObject({
+      approvedBy: 'su-reviewer',
+      certifies: 'all changed BAR hashes were checked against source',
+      doesNotCertify: ['runtime deployment', 'unrelated plan items'],
     });
   });
 

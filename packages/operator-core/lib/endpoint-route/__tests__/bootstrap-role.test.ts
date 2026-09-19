@@ -4,7 +4,7 @@
  * composition, and the recorded session shape. Filesystem writes go to a
  * throwaway launch-context dir.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -206,6 +206,8 @@ beforeEach(() => {
 
 describe('bootstrap-role', () => {
   it('worker + feature → role-scoped session recorded with role+feature+agent', async () => {
+    const sharedMcp = join(LC_DIR, '.mcp.json');
+    writeFileSync(sharedMcp, 'pre-existing shared config');
     const res = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' });
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -216,6 +218,10 @@ describe('bootstrap-role', () => {
     expect(json.cwd).toBe(LC_DIR);
     expect(json.envelopeEnv.PAPERCUSP_ROLE).toBe('worker');
     expect(json.envelopeEnv.PAPERCUSP_FEATURE_ID).toBe('F-001');
+    expect(json.mcpJsonPath).toBe(join(LC_DIR, 'session-mcp', 'role-abc', '.mcp.json'));
+    expect(existsSync(json.mcpJsonPath)).toBe(true);
+    expect(readFileSync(json.mcpJsonPath, 'utf8')).toContain('role=worker');
+    expect(readFileSync(sharedMcp, 'utf8')).toBe('pre-existing shared config');
     // Identity comes from the spec primitive now (P-002): PAPERCUSP_SID === spec.sid.
     expect(json.envelopeEnv.PAPERCUSP_SID).toBe('role-abc');
     // claude exact-resume (P-003 inv d): the forced native session id is exported

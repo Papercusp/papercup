@@ -956,6 +956,12 @@ describe("OMP ox-alpha Responses compatibility guard (EI-21439300345381616)", ()
     expect(roleBody).toContain(
       "await writeOmpSessionConfigDirAsync(res.sessionId",
     );
+    expect(roleBody).toContain(
+      'mcpJsonContents: readFileSync(res.mcpJsonPath, "utf8")',
+    );
+    expect(roleBody).not.toContain(
+      'res.agent === "omp" && res.envelopeEnv?.PAPERCUSP_OMP_MODELS_YML',
+    );
     expect(freshBody).toContain("ompResponsesCompatibilityEnv(");
     expect(freshBody).toContain(
       "await writeOmpSessionConfigDirAsync(res.sessionId",
@@ -1569,6 +1575,25 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
         PAPERCUSP_MCP_TRANSPORT: "http",
       });
     } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("writes signed role MCP contents verbatim even without a models registry override", () => {
+    const roleMcp = JSON.stringify({
+      mcpServers: {
+        papercusp: {
+          type: "http",
+          url: "http://localhost:3070/api/mcp?role=worker&client=role-abc&sig=signed",
+        },
+      },
+    });
+    const dir = writeOmpSessionConfigDir(
+      "role-isolated",
+      { mcpJsonContents: roleMcp, modelsYml: null },
+      home,
+    );
+    expect(readFileSync(join(home, dir!, "agent", "mcp.json"), "utf8")).toBe(
+      roleMcp,
+    );
   });
 
   it.each(["uds", "auto"])("preserves %s and authoritative SU identity through a new-shell resume", (mode) => {

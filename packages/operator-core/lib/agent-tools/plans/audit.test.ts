@@ -351,28 +351,80 @@ describe('plans:audit D-008 writer contract', () => {
     expect(mockRecord).not.toHaveBeenCalled();
   });
 
-  it('refuses divergent blob provenance for one path across fresh and carried entries', async () => {
+  it('does not add a stale blob conflict when an invalid fresh citation has carried history', async () => {
     mockItems.mockResolvedValue([
-      { itemId: 'P-001', status: 'done', itemText: 'ship the audit gate' },
       { itemId: 'P-002', status: 'done', itemText: 'ship the second gate' },
+      { itemId: 'P-003', status: 'done', itemText: 'ship the third gate' },
+      { itemId: 'P-005', status: 'done', itemText: 'ship the fifth gate' },
     ]);
-    mockPrevious.mockResolvedValue([{
-      entry: {
-        itemId: 'P-001',
-        verdict: 'implemented',
-        citations: [{
-          kind: 'code',
-          path: 'src/gate.ts',
-          blobSha: 'abcdefabcdefabcdefabcdefabcdefabcdefabcd',
-        }],
-        auditedSha: 'old-head',
-        auditedAt: '2026-08-20T12:00:00.000Z',
-        itemTextHash: 'a'.repeat(64),
-      },
-      auditSeq: 4,
-    }]);
+    mockPrevious.mockResolvedValue([
+      ...['P-002', 'P-005'].map((itemId) => ({
+        entry: {
+          itemId,
+          verdict: 'implemented' as const,
+          citations: [{
+            kind: 'code' as const,
+            path: 'src/gate.ts',
+            blobSha: 'abcdefabcdefabcdefabcdefabcdefabcdefabcd',
+          }],
+          auditedSha: 'old-head',
+          auditedAt: '2026-08-20T12:00:00.000Z',
+          itemTextHash: 'a'.repeat(64),
+        },
+        auditSeq: 4,
+      })),
+    ]);
 
     const result = await body([
+      { itemId: 'P-002', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'missingGateSymbol' }] },
+      { itemId: 'P-003', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] },
+      { itemId: 'P-005', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'missingGateSymbol' }] },
+    ]);
+
+    expect(result).toMatchObject({
+      ok: true,
+      partial: true,
+      rejectedItemIds: ['P-002', 'P-005'],
+      itemsCarriedForward: 2,
+      carriedItemIds: ['P-002', 'P-005'],
+    });
+    expect(result.problems).toEqual([
+      expect.objectContaining({ itemId: 'P-002', code: 'citation_symbol_not_found' }),
+      expect.objectContaining({ itemId: 'P-005', code: 'citation_symbol_not_found' }),
+    ]);
+    expect(result.problems).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'citation_blob_sha_conflict' }),
+    ]));
+    expect(mockRecord).toHaveBeenCalledTimes(1);
+    expect(mockRecord.mock.calls[0]?.[0].items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ itemId: 'P-002', carriedFrom: 4, auditedSha: 'old-head' }),
+      expect.objectContaining({ itemId: 'P-003', auditedSha: null }),
+      expect.objectContaining({ itemId: 'P-005', carriedFrom: 4, auditedSha: 'old-head' }),
+    ]));
+  });
+
+  it('still refuses divergent blob provenance across fresh entries', async () => {
+    mockItems.mockResolvedValue([
+      { itemId: 'P-001', status: 'done', itemText: 'ship the first gate' },
+      { itemId: 'P-002', status: 'done', itemText: 'ship the second gate' },
+    ]);
+    let blobShaCalls = 0;
+    mockContext.mockResolvedValue({
+      repoRoot: '/repo',
+      rootSource: 'canonical-repo',
+      deps: {
+        statFile: (path) => (path === 'src/gate.ts' ? { isFile: true } : null),
+        readFile: (path) => (path === 'src/gate.ts' ? 'export const gate = true;\n' : null),
+        blobSha: (path) => {
+          if (path !== 'src/gate.ts') return null;
+          blobShaCalls += 1;
+          return blobShaCalls === 1 ? '0'.repeat(40) : '1'.repeat(40);
+        },
+      },
+    });
+
+    const result = await body([
+      { itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts' }] },
       { itemId: 'P-002', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts' }] },
     ]);
 
@@ -383,8 +435,8 @@ describe('plans:audit D-008 writer contract', () => {
         detail: expect.stringContaining('src/gate.ts'),
       }),
     ]));
-    expect(result.problems[0].detail).toContain('P-001');
-    expect(result.problems[0].detail).toContain('P-002');
+    expect(result.problems.find((problem: { code: string }) => problem.code === 'citation_blob_sha_conflict')?.detail)
+      .toMatch(/P-001.*P-002|P-002.*P-001/);
     expect(mockRecord).not.toHaveBeenCalled();
   });
 

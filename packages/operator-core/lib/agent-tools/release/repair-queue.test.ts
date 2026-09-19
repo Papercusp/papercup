@@ -1153,6 +1153,8 @@ describe('release:repair-queue', () => {
     );
     expect(result).toMatchObject({ ok: true, admitted: true, persisted: true });
     expect(result.callerAuthorization).toMatchObject({ status: 'not-applicable', authorized: null });
+    expect(result.callerAuthorization.safeAction).toContain('PAPERCUSP_SID');
+    expect(result.callerAuthorization.safeAction).not.toContain('PAPERCUSP_SPAWN_ID');
     expect(mocks.write).toHaveBeenCalled();
   });
 

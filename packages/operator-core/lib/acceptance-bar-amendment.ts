@@ -153,6 +153,8 @@ export const acceptanceBarApprovalSchema = z
     kind: z.literal('acceptance-bar-amendment-approval'),
     rubricRef: z.string().min(1),
     subjectPlan: z.string().min(1),
+    certifies: z.string().min(1).optional(),
+    doesNotCertify: z.array(z.string().min(1)).max(1000).optional(),
     bars: z
       .array(
         z
@@ -186,18 +188,25 @@ export type AcceptanceBarApproval = z.infer<typeof acceptanceBarApprovalSchema>;
 
 /** EI-22617748468342848: reviewers routinely post the approval receipt inside a
  * ```json fence, which is the natural way to post JSON in a comment thread. The
- * fence is presentation, so strip it before parsing. Authenticity is unaffected:
- * it derives from post.author_id and the append-only post row, never from how the
- * body was framed. A body with no fence is returned unchanged. */
+ * fence is presentation, so strip the first one before parsing, even when review
+ * prose surrounds it. Authenticity is unaffected: it derives from post.author_id
+ * and the append-only post row, never from how the body was framed. A body with
+ * no fence is returned unchanged. */
 export function approvalReceiptJsonSource(body: string): string {
-  const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n?```$/.exec(body.trim());
+  const fenced = /```(?:json)?\s*\n([\s\S]*?)\n?```/i.exec(body);
   return fenced ? fenced[1] : body;
 }
 
 export async function resolveAcceptanceBarApproval(
   sql: SpecClauseSql,
   args: { workspaceId: string; approvalRef?: string; approvedBy?: string; expected: AcceptanceBarApproval },
-): Promise<{ approvalRef: string; approvedBy: string; approvedAt: string }> {
+): Promise<{
+  approvalRef: string;
+  approvedBy: string;
+  approvedAt: string;
+  certifies?: string;
+  doesNotCertify?: string[];
+}> {
   const match = /^thread-post:([1-9][0-9]*)$/.exec(args.approvalRef?.trim() ?? '');
   if (!match) throw new Error('acceptance_bar_approval_required: use thread-post:<id> from an authenticated reviewer post containing the preview approval JSON');
   const [post] = await sql<Array<{ author_id: string | null; body: string; approved_at: string }>>`
@@ -209,7 +218,7 @@ export async function resolveAcceptanceBarApproval(
      FOR SHARE`;
   if (!post?.author_id?.trim()) throw new Error('acceptance_bar_approval_unreadable');
   let body: unknown;
-  try { body = JSON.parse(approvalReceiptJsonSource(post.body)); } catch { throw new Error('acceptance_bar_approval_unparseable: the approval post body is not JSON. Post the preview approval object as the entire comment body — a heading or a covering sentence around it breaks this (a ```json fence is tolerated).'); }
+  try { body = JSON.parse(approvalReceiptJsonSource(post.body)); } catch { throw new Error('acceptance_bar_approval_unparseable: the approval post body does not contain JSON. Post the preview approval object directly or inside a ```json fence.'); }
   const parsed = acceptanceBarApprovalSchema.safeParse(body);
   if (!parsed.success) throw new Error('acceptance_bar_approval_invalid_receipt');
   const receipt = parsed.data;
@@ -241,7 +250,13 @@ export async function resolveAcceptanceBarApproval(
   if (args.approvedBy && args.approvedBy.trim() !== post.author_id) {
     throw new Error('acceptance_bar_approval_author_mismatch');
   }
-  return { approvalRef: `thread-post:${match[1]}`, approvedBy: post.author_id, approvedAt: post.approved_at };
+  return {
+    approvalRef: `thread-post:${match[1]}`,
+    approvedBy: post.author_id,
+    approvedAt: post.approved_at,
+    certifies: receipt.certifies,
+    doesNotCertify: receipt.doesNotCertify,
+  };
 }
 
 /** Refresh execution projections from the canonical rubric, never from its old

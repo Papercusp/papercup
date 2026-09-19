@@ -306,13 +306,13 @@ export function assessFrozenRepairFixerAuthorization(
   // past the check below and landed on the fail-closed 'unsigned-caller' verdict
   // even when the caller genuinely was the queue's own delegated fixer. Route it to
   // 'not-applicable' like any other non-release-fixer-role caller: the buildReleaseFixerKickoff
-  // brief already documents the fallback (compare fixerSpawnId to PAPERCUSP_SPAWN_ID
+  // brief already documents the fallback (compare fixerSpawnId to PAPERCUSP_SID
   // directly), and the converge write-gate independently authorizes this transport tier.
   if (caller.isSuperuser === true) {
     return result(
       'not-applicable',
       null,
-      'This caller reached the queue over the superuser-bearer transport, which carries no verified per-spawn signature regardless of its ?role= catalog hint — the signed-delegate check does not apply here. Compare repairQueue.fixerSpawnId directly against your own PAPERCUSP_SPAWN_ID to confirm you remain the delegated fixer; converge is independently authorized for this transport tier.',
+      'This caller reached the queue over the superuser-bearer transport, which carries no verified per-spawn signature regardless of its ?role= catalog hint — the signed-delegate check does not apply here. Compare repairQueue.fixerSpawnId directly against your own PAPERCUSP_SID to confirm you remain the delegated fixer; converge is independently authorized for this transport tier.',
     );
   }
   if (caller.role !== 'release-fixer') {

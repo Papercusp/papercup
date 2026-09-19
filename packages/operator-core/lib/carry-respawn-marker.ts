@@ -105,7 +105,9 @@ export async function markRespawnExpected(
       UPDATE harness_shared.coord_presence AS presence
          SET host = '',
              pid = NULL,
-             tty = NULL
+             tty = NULL,
+             context_tokens = NULL,
+             context_estimated_at = NULL
         FROM marked
        WHERE presence.owner_id = marked.owner_id`;
   } catch (e) {

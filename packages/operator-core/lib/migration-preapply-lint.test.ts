@@ -72,4 +72,28 @@ describe('migration pre-apply lint', () => {
       }),
     ).toThrow(/top-level transaction control/);
   });
+
+  it('refuses a view lock-order inversion before the migration can be applied', () => {
+    expect(() =>
+      assertMigrationPassesPreApplyLints({
+        filename: '1172-new-view-lock-order.sql',
+        sqlText: [
+          'ALTER TABLE harness_shared.work_items ADD COLUMN lane text;',
+          'CREATE OR REPLACE VIEW harness_shared.engineer_issues AS',
+          '  SELECT lane FROM harness_shared.work_items;',
+        ].join('\n'),
+        sqlDir: sqlDir(),
+      }),
+    ).toThrow(/view lock-order inversion/);
+  });
+
+  it('refuses an unaccounted view drop before the migration can be applied', () => {
+    expect(() =>
+      assertMigrationPassesPreApplyLints({
+        filename: '1040-new-view-drop.sql',
+        sqlText: 'DROP VIEW harness_shared.engineer_issues;',
+        sqlDir: sqlDir(),
+      }),
+    ).toThrow(/unguarded view drop/);
+  });
 });

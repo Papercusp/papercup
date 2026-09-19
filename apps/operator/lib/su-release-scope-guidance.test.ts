@@ -86,7 +86,7 @@ describe('SU two-port staging checkout guidance', () => {
     for (const source of sources) {
       expect(source).toContain('separate `papercusp-staging` checkout');
       expect(source).toContain('pinned to `origin/staging`');
-      expect(source).toContain('uncommitted edit');
+      expect(source).toMatch(/uncommitted\s+edit/);
       expect(source).toContain('dev:restart');
       expect(source).not.toContain(':3170 serves the working tree at current HEAD');
       expect(source).not.toContain('systemctl --user restart\npapercup-staging-api.service');

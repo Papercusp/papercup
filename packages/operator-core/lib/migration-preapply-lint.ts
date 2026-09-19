@@ -2,11 +2,15 @@ import {
   ENFORCED_FROM as MIGRATION_LINT_ENFORCED_FROM,
   EXCLUSIVE_LOCK_ENFORCED_FROM,
   INDEX_SWAP_ENFORCED_FROM,
+  VIEW_DROP_ENFORCED_FROM,
+  VIEW_LOCK_ORDER_ENFORCED_FROM,
   findLiteralTenantDefault,
   findRawTxControl,
   findUnacknowledgedExclusiveLock,
   findUnguardedConstraintRename,
+  findUnguardedViewDrop,
   findUnguardedReslug,
+  findViewLockOrderInversion,
   findUniqueIndexShapeSwap,
 } from '../../../scripts/lint-migrations.mjs';
 import {
@@ -74,6 +78,32 @@ export function assertMigrationPassesPreApplyLints(args: {
       failures.push(
         `ACCESS EXCLUSIVE lock with no -- EXCLUSIVE-LOCK: acknowledgement (${locks
           .map((hit: { table: string; action: string; target: string }) => `${hit.action} TRIGGER ${hit.target} on ${hit.table}`)
+          .join(', ')})`,
+      );
+    }
+  }
+
+  if (num >= VIEW_DROP_ENFORCED_FROM) {
+    const drops = findUnguardedViewDrop(sqlText);
+    if (drops.length > 0) {
+      failures.push(
+        `unguarded view drop (${drops
+          .map((hit: { view: string; dynamic: boolean; cascade: boolean }) =>
+            `${hit.dynamic ? 'dynamic ' : ''}${hit.view}${hit.cascade ? ' CASCADE' : ''}`,
+          )
+          .join(', ')})`,
+      );
+    }
+  }
+
+  if (num >= VIEW_LOCK_ORDER_ENFORCED_FROM) {
+    const inversions = findViewLockOrderInversion(sqlText);
+    if (inversions.length > 0) {
+      failures.push(
+        `view lock-order inversion (${inversions
+          .map((hit: { view: string; table: string; dynamic?: boolean }) =>
+            hit.dynamic ? 'dynamic ALTER TABLE then CREATE OR REPLACE VIEW' : `${hit.view} over ${hit.table}`,
+          )
           .join(', ')})`,
       );
     }
