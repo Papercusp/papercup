@@ -67,11 +67,18 @@ export function unwrapOutputEnvelope(parsed: any, { readSpill, fileExists, env }
 export function parseMcpToolResult(rawText: any, options?: {}): Promise<{
     ok: boolean;
     detail: string;
+    error: any;
+    inner?: undefined;
+} | {
+    ok: boolean;
+    detail: string;
+    error?: undefined;
     inner?: undefined;
 } | {
     ok: boolean;
     inner: any;
     detail?: undefined;
+    error?: undefined;
 }>;
 /**
  * POST one `record-edit` through the same door the lock hook uses (bearer + ?client=owner so
@@ -92,6 +99,7 @@ export function recordOneHunk({ operatorUrl, token, owner, marker, path, hunk, t
     recorded: boolean;
     detail: string | undefined;
     unknownOperation: boolean;
+    retryableAdmission: any;
     inserted?: undefined;
     inner?: undefined;
     transportFailure?: undefined;
@@ -101,12 +109,14 @@ export function recordOneHunk({ operatorUrl, token, owner, marker, path, hunk, t
     inner: any;
     detail?: undefined;
     unknownOperation?: undefined;
+    retryableAdmission?: undefined;
     transportFailure?: undefined;
 } | {
     recorded: boolean;
     detail: any;
     inner: any;
     unknownOperation: boolean;
+    retryableAdmission: any;
     inserted?: undefined;
     transportFailure?: undefined;
 } | {
@@ -114,6 +124,7 @@ export function recordOneHunk({ operatorUrl, token, owner, marker, path, hunk, t
     detail: string;
     unknownOperation: boolean;
     transportFailure: boolean;
+    retryableAdmission?: undefined;
     inserted?: undefined;
     inner?: undefined;
 }>;

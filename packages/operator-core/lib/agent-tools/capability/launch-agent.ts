@@ -445,6 +445,13 @@ export default defineTool({
         .describe(
           'Harness slug to bootstrap for an operator-scope launch. Required when the caller context is wildcard/unset; otherwise the caller harness is used.',
         ),
+      workItem: z
+        .string()
+        .max(200)
+        .optional()
+        .describe(
+          'Exact work-item id that authorizes this launch under a work-scope exception (for example, the scorecard being independently audited).',
+        ),
       resume: z
         .object({
           agentId: z
@@ -722,7 +729,11 @@ export default defineTool({
     // the workspace work-scope policy excludes.
     {
       const { gateWorkScope } = await import('../../work-scope-policy');
-      const scope = await gateWorkScope('capability:launch-agent', { harness: slug, plan: (args as { plan?: string }).plan ?? null });
+      const scope = await gateWorkScope('capability:launch-agent', {
+        harness: slug,
+        plan: (args as { plan?: string }).plan ?? null,
+        workItem: (args as { workItem?: string }).workItem ?? null,
+      });
       if (!scope.allowed) return err(scope.message);
     }
 

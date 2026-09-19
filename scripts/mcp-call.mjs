@@ -227,6 +227,11 @@ export function parseSse(raw, requestId = 1) {
     if (d.error) return { error: d.error };
     if (!('result' in d)) continue;
     const result = d.result;
+    // MCP tool failures are returned as successful JSON-RPC envelopes with
+    // `result.isError: true`. Preserve the complete result so main() routes
+    // the tool's text to stderr and exits nonzero instead of presenting a
+    // refusal as a successful stdout value.
+    if (result?.isError === true) return { error: result };
     // A projected result places trust-degrading warnings in a leading text
     // item and keeps the retained JSON body in a following item. Selecting
     // only content[0] turns a valid partial projection into a warning-only

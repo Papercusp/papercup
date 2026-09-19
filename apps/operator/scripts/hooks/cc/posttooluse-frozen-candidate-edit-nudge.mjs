@@ -523,7 +523,11 @@ export async function parseMcpToolResult(rawText, options = {}) {
     }
   }
   if (rpcError) {
-    return { ok: false, detail: `rpc: ${rpcError.message ?? JSON.stringify(rpcError)}` };
+    return {
+      ok: false,
+      detail: `rpc: ${rpcError.message ?? JSON.stringify(rpcError)}`,
+      error: rpcError,
+    };
   }
   if (!result || typeof result !== 'object') return { ok: false, detail: 'no result' };
 
@@ -581,6 +585,30 @@ function isUnknownOperationFailure(value) {
   });
 }
 
+/**
+ * The MCP admission gate sheds before a tool runs. Preserve this typed signal so the hook can
+ * retry the idempotent ledger write through staging; treating it as an ordinary refusal loses
+ * the hunk even though the request is explicitly retry-safe.
+ */
+function isRetryableAdmissionShedding(value) {
+  const seen = new Set();
+  const visit = (entry) => {
+    if (!entry || typeof entry !== 'object' || seen.has(entry)) return false;
+    seen.add(entry);
+    const data = entry.data;
+    if (
+      data &&
+      typeof data === 'object' &&
+      data.retryable === true &&
+      String(data.reason ?? '').toLowerCase() === 'loop_pressure_critical'
+    ) {
+      return true;
+    }
+    return visit(entry.error) || visit(entry.rpcError) || visit(entry.inner);
+  };
+  return visit(value);
+}
+
 function recordEditUrl(operatorUrl, owner) {
   return (
     String(operatorUrl ?? '').replace(/\/api\/mcp.*$/, '').replace(/\/+$/, '') +
@@ -634,7 +662,12 @@ async function recordAtOperatorUrl({
     const parsed = await parseMcpToolResult(text);
     if (!parsed.ok) {
       const detail = res.ok ? parsed.detail : `HTTP ${res.status}: ${parsed.detail}`;
-      return { recorded: false, detail, unknownOperation: isUnknownOperationFailure(parsed) };
+      return {
+        recorded: false,
+        detail,
+        unknownOperation: isUnknownOperationFailure(parsed),
+        retryableAdmission: isRetryableAdmissionShedding(parsed),
+      };
     }
     const inner = parsed.inner;
     if (inner.ok === true && inner.recorded === true) {
@@ -646,6 +679,7 @@ async function recordAtOperatorUrl({
       detail: res.ok ? detail : `HTTP ${res.status}: ${detail}`,
       inner,
       unknownOperation: isUnknownOperationFailure(inner),
+      retryableAdmission: isRetryableAdmissionShedding(inner),
     };
   } catch (err) {
     return {
@@ -677,13 +711,14 @@ export async function recordOneHunk({ operatorUrl, token, owner, marker, path, h
   const hasStableToolUseId = typeof toolUseId === 'string' && toolUseId.trim().length > 0;
   if (
     !primary.recorded &&
-    (primary.unknownOperation || primary.transportFailure) &&
+    (primary.unknownOperation || primary.transportFailure || primary.retryableAdmission) &&
     hasStableToolUseId &&
     normalizedOperatorOrigin(operatorUrl) !== normalizedOperatorOrigin(STAGING_OPERATOR_URL)
   ) {
     // A release operator can legitimately be older than the hook's record-edit
-    // protocol, and the primary operator/proxy can transiently be unreachable.
-    // The ledger key is idempotent, so retry those two transport/protocol cases
+    // protocol, the admission gate can shed a retry-safe request, and the primary
+    // operator/proxy can transiently be unreachable.
+    // The ledger key is idempotent, so retry those transport/protocol/admission cases
     // through staging. Ordinary application refusals stay authoritative and must
     // not be retried as a different write.
     return recordAtOperatorUrl({

@@ -46,6 +46,65 @@ describe('work_items:set_blocker', () => {
     expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
+  it('accepts legacy capability-in-kind calls and persists the canonical human blocker', async () => {
+    const item = {
+      id: 'WI-credential-alias',
+      family: 'issue',
+      kind: 'bug',
+      state: 'open',
+      harness: 'papercusp',
+      payload: {},
+    };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+      ...item,
+      payload: { ...item.payload, ...patch },
+    }));
+    setWorkItemStateWithAliasInfo.mockResolvedValueOnce({
+      workItem: { ...item, state: 'needs-human' },
+      aliased: false,
+      requestedState: 'needs-human',
+      appliedState: 'needs-human',
+    });
+
+    const out = await one({
+      id: item.id,
+      kind: 'credential',
+      ref: 'credential:prod-db',
+      summary: 'Provide the production DB credential.',
+      nextVerb: 'setup:save_key',
+    });
+
+    expect(out).toMatchObject({
+      ok: true,
+      workItem: { state: 'needs-human' },
+      activeBlockers: [
+        expect.objectContaining({
+          kind: 'human',
+          capability: 'credential',
+          ref: 'credential:prod-db',
+          status: 'active',
+        }),
+      ],
+    });
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      item.id,
+      'needs-human',
+      expect.objectContaining({ by: 'su-a' }),
+    );
+  });
+
+  it('rejects an ambiguous capability shorthand combined with a different capability', () => {
+    expect(() =>
+      parse({
+        id: 'WI-1',
+        kind: 'credential',
+        capability: 'physical-device',
+        ref: 'credential:prod-db',
+      }),
+    ).toThrow(/shorthand for capability 'credential'.*physical-device/);
+  });
+
   it('persists an event blocker, parks the item, and returns the push-based await key', async () => {
     const item = {
       id: 'WI-1',

@@ -3937,6 +3937,13 @@ test('GET /admin/route retains the lowest exact input total per native session a
   };
 
   await send(firstNative);
+  const firstSession = (await (await ask(`/admin/route?owner=${owner}`)).json()) as {
+    usage: { inputTotal: number; observedInputFloor: number; observations: number };
+  };
+  assert.equal(firstSession.usage.inputTotal, 168_100, 'the first message_start is immediately visible to the served-route reader');
+  assert.equal(firstSession.usage.observedInputFloor, 168_100, 'the first sample seeds the prompt floor');
+  assert.equal(firstSession.usage.observations, 1, 'the first sample starts the native-session observation count');
+
   await send(firstNative);
   const sameSession = (await (await ask(`/admin/route?owner=${owner}`)).json()) as {
     usage: {

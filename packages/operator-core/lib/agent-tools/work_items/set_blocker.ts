@@ -25,14 +25,74 @@ import {
   externalBlockerCapabilityPolicy,
   EXTERNAL_BLOCKER_CAPABILITIES,
   readExternalBlockers,
+  type ExternalBlockerCapability,
   type ExternalBlockerKind,
 } from '../../external-blockers';
 import { isStrictOwnerActionCapability } from '../../harness/improvements/agent-review-policy';
 import { stagingFirstBlockerProblem } from '../plans/staging-first-activation-guard';
 import { workItemRefBlockerProblem } from './work-item-ref-blocker-guard';
 
-const BLOCKER_KIND = z.enum(['event', 'gate', 'runtime', 'human']);
+// Older callers used the missing capability as `kind` (for example,
+// `kind:'credential'`). Keep accepting those inputs at the tool boundary, but
+// normalize them to the canonical trigger/capability split before persistence.
+const BLOCKER_KIND = z.enum([
+  'event',
+  'gate',
+  'runtime',
+  'human',
+  'credential',
+  'physical-device',
+  'external-service-action',
+  'product-decision',
+  'approval-auto-clearable',
+]);
 const BLOCKER_CAPABILITY = z.enum(EXTERNAL_BLOCKER_CAPABILITIES);
+type BlockerKindInput = z.infer<typeof BLOCKER_KIND>;
+type BlockerCapabilityInput = z.infer<typeof BLOCKER_CAPABILITY>;
+type BlockerInput = {
+  id: string;
+  kind?: BlockerKindInput;
+  capability?: BlockerCapabilityInput;
+  ref?: string;
+  summary?: string;
+  evidence?: string;
+  nextVerb?: string;
+  clear?: boolean;
+  harness?: string;
+};
+type NormalizedBlockerInput = Omit<BlockerInput, 'kind'> & { kind?: ExternalBlockerKind };
+const CAPABILITY_KIND_ALIASES = {
+  credential: { kind: 'human', capability: 'credential' },
+  'physical-device': { kind: 'human', capability: 'physical-device' },
+  'external-service-action': { kind: 'human', capability: 'external-service-action' },
+  'product-decision': { kind: 'human', capability: 'product-decision' },
+  'approval-auto-clearable': { kind: 'human', capability: 'approval-auto-clearable' },
+} as const satisfies Record<string, { kind: ExternalBlockerKind; capability: ExternalBlockerCapability }>;
+
+function validateCapabilityKindAlias(
+  value: { kind?: BlockerKindInput; capability?: BlockerCapabilityInput },
+  ctx: z.RefinementCtx,
+) {
+  const alias = value.kind ? CAPABILITY_KIND_ALIASES[value.kind as keyof typeof CAPABILITY_KIND_ALIASES] : undefined;
+  if (alias && value.capability && value.capability !== alias.capability) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['capability'],
+      message: `kind '${value.kind}' is a shorthand for capability '${alias.capability}' and cannot be combined with capability '${value.capability}'`,
+    });
+  }
+}
+
+function normalizeBlockerInput(input: BlockerInput): NormalizedBlockerInput {
+  const alias = input.kind ? CAPABILITY_KIND_ALIASES[input.kind as keyof typeof CAPABILITY_KIND_ALIASES] : undefined;
+  if (!alias) return { ...input, kind: input.kind as ExternalBlockerKind | undefined };
+  return {
+    ...input,
+    kind: alias.kind,
+    capability: input.capability ?? alias.capability,
+  };
+}
+
 const fields = {
   kind: BLOCKER_KIND.optional(),
   capability: BLOCKER_CAPABILITY.optional(),
@@ -43,7 +103,10 @@ const fields = {
   clear: z.boolean().optional(),
   harness: z.string().max(80).optional(),
 };
-const itemSpec = z.object({ id: z.string().min(1), ...fields }).strict();
+const itemSpec = z
+  .object({ id: z.string().min(1), ...fields })
+  .strict()
+  .superRefine(validateCapabilityKindAlias);
 
 const TERMINAL = new Set(['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped']);
 
@@ -51,7 +114,7 @@ export default defineTool({
   name: 'work_items:set_blocker',
   profile: 'engineer',
   description:
-    "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history.",
+    "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. For compatibility, capability shorthands such as kind:'credential' normalize to kind:'human', capability:'credential'. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history.",
   guidance: {
     // P-011: response documentation lives here, not in `description` — `returns` is not
     // counted against the 1500-char prompt-weight budget and is demand-loaded via
@@ -96,6 +159,7 @@ export default defineTool({
       },
     )
     .superRefine((args, ctx) => {
+      validateCapabilityKindAlias(args, ctx);
       if (!args.items?.length) return;
       for (const [index, item] of args.items.entries()) {
         if (!item.clear && !item.ref) {
@@ -135,7 +199,7 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const items = args.items?.length
+    const rawItems: BlockerInput[] = args.items?.length
       ? args.items
       : [
           {
@@ -150,6 +214,7 @@ export default defineTool({
             harness: args.harness,
           },
         ];
+    const items: NormalizedBlockerInput[] = rawItems.map(normalizeBlockerInput);
     const wantsAutoAuthority = items.some((input) => !input.clear && input.capability === 'approval-auto-clearable');
     let autoAuthority = false;
     if (wantsAutoAuthority) {

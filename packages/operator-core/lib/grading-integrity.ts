@@ -1002,6 +1002,7 @@ export async function dispatchPendingGradingAudits(
           {
             brief: gradingAuditBrief(card),
             ...(harnessResolved ? { harness } : {}),
+            workItem: issueId,
             headless: true,
             // Grading auditors are independent verification sessions. Without
             // this explicit fence, capability:launch-agent inherits the

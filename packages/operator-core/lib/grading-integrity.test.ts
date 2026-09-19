@@ -312,6 +312,7 @@ describe('dispatchPendingGradingAudits', () => {
       expect.objectContaining({
         brief: expect.stringContaining('scorecard EI-audit-1'),
         harness: 'papercusp',
+        workItem: 'EI-audit-1',
         headless: true,
         independent: true,
         account: 'auto',

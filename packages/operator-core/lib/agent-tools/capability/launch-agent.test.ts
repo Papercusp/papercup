@@ -68,6 +68,11 @@ vi.mock('../../modes/store', async (orig) => ({
   getModes: (...args: unknown[]) => getModesMock(...args),
 }));
 
+const gateWorkScopeMock = vi.hoisted(() => vi.fn());
+vi.mock('../../work-scope-policy', () => ({
+  gateWorkScope: (...args: unknown[]) => gateWorkScopeMock(...args),
+}));
+
 const listFactsMock = vi.hoisted(() => vi.fn());
 vi.mock('../../agent-facts/store', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -315,6 +320,7 @@ beforeEach(() => {
   windowScopeVerdictMock.mockReturnValue('dead');
   waitForPtyHostGoneMock.mockResolvedValue(true);
   getModesMock.mockResolvedValue([]);
+  gateWorkScopeMock.mockResolvedValue({ allowed: true, reason: 'no-policy' });
   listFactsMock.mockResolvedValue([]);
   getLoopStatusMock.mockResolvedValue(null);
   getFleetHeadcountTargetMock.mockResolvedValue(null);
@@ -542,6 +548,16 @@ describe('published launch args schema', () => {
 });
 
 describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
+  it('forwards an explicit work-item subject to the work-scope gate', async () => {
+    await launchAgent.handler({ brief: 'audit the release script', harness: 'portal', workItem: 'EI-audit-1' }, ctx);
+
+    expect(gateWorkScopeMock).toHaveBeenCalledWith('capability:launch-agent', {
+      harness: 'portal',
+      plan: null,
+      workItem: 'EI-audit-1',
+    });
+  });
+
   it('launches a visible agent whose FIRST TURN is the brief', async () => {
     const res = await launchAgent.handler({ brief: 'audit the release script' }, ctx);
 

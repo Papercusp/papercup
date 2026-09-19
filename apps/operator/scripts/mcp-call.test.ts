@@ -198,6 +198,21 @@ describe('mcp-call result-format contract', () => {
     expect(parseSse(raw)).toEqual({ result: text });
   });
 
+  it('fails closed when the MCP tool returns a result.isError envelope', () => {
+    const response = {
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        content: [{ type: 'text', text: 'invalid_input: Unrecognized key: "harness"' }],
+        isError: true,
+      },
+    };
+
+    expect(parseSse(`data: ${JSON.stringify(response)}\n\n`)).toEqual({
+      error: response.result,
+    });
+  });
+
   it('pins JSON so the maintained vmcall driver can validate successful output', () => {
     const query = buildMcpSessionQuery({
       client: 'vm-rig-probe',
