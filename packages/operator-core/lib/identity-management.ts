@@ -314,7 +314,24 @@ export async function resolveIdentityStackMutation(
   const slotRaw = input.slot?.trim() || '';
   if (!identityId) throw new Error('identityId is required');
   const identity = await getIdentitySource(identityId, { ...(repoDir ? { repoDir } : {}) });
-  if (!identity.ok) throw new Error(identity.error);
+  if (!identity.ok) {
+    const validationDetail =
+      'errors' in identity && Array.isArray(identity.errors)
+        ? identity.errors
+            .map((entry) => {
+              if (!entry || typeof entry !== 'object') return String(entry);
+              const value = entry as { code?: unknown; message?: unknown };
+              return [value.code, value.message].filter(Boolean).join(': ');
+            })
+            .filter(Boolean)
+            .join('; ')
+        : '';
+    throw new Error(
+      identity.error ||
+        validationDetail ||
+        `Unable to read identity source ${identityId}`,
+    );
+  }
   const declared = identity.identity.slots.find((entry) => !slotRaw || entry.slot === slotRaw);
   if (!declared)
     throw new Error(
