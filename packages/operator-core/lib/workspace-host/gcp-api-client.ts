@@ -822,26 +822,45 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
   ): Promise<readonly WorkspaceHostSize[]> {
     const projectId = projectFromConnection(connection, this.boundCredentialRef);
     assertCatalogProject(query, projectId);
-    const result = await this.request<{ items?: Record<string, { machineTypes?: RawMachineType[] }> }>(
-      `${this.projectBase(projectId)}/aggregated/machineTypes?maxResults=500&fields=items/*/machineTypes(name,guestCpus,memoryMb,deprecated)`,
-    );
+    const url = new URL(`${this.projectBase(projectId)}/aggregated/machineTypes`);
+    url.searchParams.set('maxResults', '500');
+    // The field mask must retain the cursor: the first page may contain only
+    // another region, even when the selected region has hundreds of sizes.
+    url.searchParams.set('fields', 'nextPageToken,items/*/machineTypes(name,guestCpus,memoryMb,deprecated)');
+    if (query.region) {
+      if (!/^[a-z][a-z0-9-]*$/.test(query.region)) throw new Error('invalid_region');
+      // Filter at GCP as well as below so a regional catalog does not need to
+      // transfer every machine type in every zone worldwide.
+      url.searchParams.set('filter', `zone eq .*${query.region}-.*`);
+    }
     const sizes = new Map<string, WorkspaceHostSize>();
-    for (const [scope, group] of Object.entries(result.items ?? {})) {
-      const zone = scope.startsWith('zones/') ? scope.slice('zones/'.length) : undefined;
-      if (!zone || (query.region && !zone.startsWith(`${query.region}-`))) continue;
-      for (const raw of group.machineTypes ?? []) {
-        if (!raw.name || !Number.isFinite(raw.guestCpus) || !Number.isFinite(raw.memoryMb)) continue;
-        const available = !raw.deprecated || raw.deprecated.state === 'ACTIVE';
-        const current = sizes.get(raw.name);
-        sizes.set(raw.name, {
-          id: raw.name,
-          label: raw.name,
-          cpuCount: Number(raw.guestCpus),
-          memoryMiB: Number(raw.memoryMb),
-          available: available || current?.available === true,
-          ...(available ? {} : { constraints: [`Deprecated by GCP (${raw.deprecated?.state ?? 'unknown'})`] }),
-        });
+    const seenPageTokens = new Set<string>();
+    for (;;) {
+      const result = await this.request<{
+        items?: Record<string, { machineTypes?: RawMachineType[] }>;
+        nextPageToken?: string;
+      }>(url.toString());
+      for (const [scope, group] of Object.entries(result.items ?? {})) {
+        const zone = scope.startsWith('zones/') ? scope.slice('zones/'.length) : undefined;
+        if (!zone || (query.region && !zone.startsWith(`${query.region}-`))) continue;
+        for (const raw of group.machineTypes ?? []) {
+          if (!raw.name || !Number.isFinite(raw.guestCpus) || !Number.isFinite(raw.memoryMb)) continue;
+          const available = !raw.deprecated || raw.deprecated.state === 'ACTIVE';
+          const current = sizes.get(raw.name);
+          sizes.set(raw.name, {
+            id: raw.name,
+            label: raw.name,
+            cpuCount: Number(raw.guestCpus),
+            memoryMiB: Number(raw.memoryMb),
+            available: available || current?.available === true,
+            ...(available ? {} : { constraints: [`Deprecated by GCP (${raw.deprecated?.state ?? 'unknown'})`] }),
+          });
+        }
       }
+      if (!result.nextPageToken) break;
+      if (seenPageTokens.has(result.nextPageToken)) throw new Error('gcp_machine_type_pagination_cycle');
+      seenPageTokens.add(result.nextPageToken);
+      url.searchParams.set('pageToken', result.nextPageToken);
     }
     return [...sizes.values()].sort((left, right) => left.id.localeCompare(right.id));
   }

@@ -271,6 +271,73 @@ function desired(): WorkspaceHostDesiredSpec {
 }
 
 describe('ADC-backed GCP workspace-host API client', () => {
+  it('reads every machine-type page for the requested region and merges availability across zones', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      expect(url.searchParams.get('fields')).toContain('nextPageToken');
+      expect(url.searchParams.get('filter')).toBe('zone eq .*us-central1-.*');
+      if (!url.searchParams.has('pageToken')) {
+        return json({
+          items: {
+            [`zones/${ZONE}`]: { machineTypes: [
+              { name: 'n2-standard-2', guestCpus: 2, memoryMb: 8192, deprecated: { state: 'DEPRECATED' } },
+            ] },
+          },
+          nextPageToken: 'next+page/=2',
+        });
+      }
+      expect(url.searchParams.get('pageToken')).toBe('next+page/=2');
+      return json({ items: {
+        'zones/us-central1-b': { machineTypes: [
+          { name: 'n2-standard-2', guestCpus: 2, memoryMb: 8192 },
+          { name: 'e2-standard-4', guestCpus: 4, memoryMb: 16384 },
+        ] },
+        'zones/europe-west1-b': { machineTypes: [
+          { name: 'outside-region', guestCpus: 1, memoryMb: 1024 },
+        ] },
+      } });
+    }) as typeof fetch;
+
+    const sizes = await makeClient(fetchImpl).listSizes(
+      { scope: { kind: 'project', id: PROJECT }, region: REGION }, connection(),
+    );
+    expect(sizes).toEqual([
+      { id: 'e2-standard-4', label: 'e2-standard-4', cpuCount: 4, memoryMiB: 16384, available: true },
+      { id: 'n2-standard-2', label: 'n2-standard-2', cpuCount: 2, memoryMiB: 8192, available: true },
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not treat an empty first machine-type page as an empty catalog', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      expect(url.searchParams.has('filter')).toBe(false);
+      return json(url.searchParams.has('pageToken') ? {
+        items: { [`zones/${ZONE}`]: { machineTypes: [
+          { name: 'e2-standard-4', guestCpus: 4, memoryMb: 16384 },
+        ] } },
+      } : { items: {}, nextPageToken: 'next' });
+    }) as typeof fetch;
+    await expect(makeClient(fetchImpl).listSizes({ scope: { kind: 'project', id: PROJECT } }, connection()))
+      .resolves.toMatchObject([{ id: 'e2-standard-4' }]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a repeated machine-type page token instead of looping or returning a partial catalog', async () => {
+    const fetchImpl = vi.fn(async () => json({ items: {}, nextPageToken: 'same-token' })) as typeof fetch;
+    await expect(makeClient(fetchImpl).listSizes({ scope: { kind: 'project', id: PROJECT } }, connection()))
+      .rejects.toThrow('gcp_machine_type_pagination_cycle');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses region expressions that could widen the GCP catalog filter', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    await expect(makeClient(fetchImpl).listSizes({
+      scope: { kind: 'project', id: PROJECT }, region: 'us-central1|.*',
+    }, connection())).rejects.toThrow('invalid_region');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('validates an ADC connection and maps bounded project catalogs without returning credential material', async () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
