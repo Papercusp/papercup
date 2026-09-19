@@ -604,6 +604,61 @@ fn merge_session_switcher_rows(
     rows
 }
 
+fn session_search_args(query: &str) -> Option<serde_json::Value> {
+    let trimmed = query.trim();
+    (!trimmed.is_empty()).then(|| {
+        serde_json::json!({
+            "query": trimmed,
+            "mode": "hybrid",
+            "limit": 20,
+            "context": 0,
+        })
+    })
+}
+
+fn merge_agent_chat_summaries(
+    mut rows: Vec<RosterEntry>,
+    chats: &[crate::agent_chats::AgentChatSummary],
+    harness: &str,
+    query: &str,
+) -> Vec<RosterEntry> {
+    let query = query.trim().to_ascii_lowercase();
+    for chat in chats {
+        let title = chat
+            .title
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| chat.id.clone());
+        if let Some(row) = rows
+            .iter_mut()
+            .find(|row| row.agent_chat_id.as_deref() == Some(chat.id.as_str()))
+        {
+            row.label = title;
+            row.agent_chat_id = Some(chat.id.clone());
+            row.session_harness = Some(harness.to_string());
+            continue;
+        }
+        if !query.is_empty() && !title.to_ascii_lowercase().contains(&query) {
+            continue;
+        }
+        rows.push(RosterEntry {
+            owner_id: format!("agent-chat:{}", chat.id),
+            label: title,
+            source: "agent_chat".into(),
+            agent: Some("agent_chat".into()),
+            role: Some(chat.role.clone()),
+            session_state: Some("recorded".into()),
+            heartbeat_at: Some(chat.updated_at.clone()),
+            transcript_at: Some(chat.updated_at.clone()),
+            transcript_availability: SessionTranscriptAvailability::Unknown,
+            agent_chat_id: Some(chat.id.clone()),
+            session_harness: Some(harness.to_string()),
+            ..RosterEntry::default()
+        });
+    }
+    rows
+}
+
 /// Parse the first hit from an exact-session `sessions:search`. A true empty
 /// page is `Ok(None)`; a malformed hit is an error so it can never be rendered
 /// as proof that the transcript is unavailable.
@@ -1542,21 +1597,68 @@ impl OperatorClient {
     /// enriched by the owner-scoped indexed transcript search. Search hits with
     /// no launch record remain visible as `recorded` rows; routing them still
     /// goes through the ordinary resolver, which truthfully offers its menu.
-    pub async fn session_switcher_rows(&self, query: &str) -> Result<Vec<RosterEntry>> {
+    pub async fn session_switcher_rows(
+        &self,
+        harness: Option<&str>,
+        query: &str,
+    ) -> Result<Vec<RosterEntry>> {
         let v = self.roster().await?;
         let resp = serde_json::from_value::<RosterResponse>(v).context("decode roster")?;
         let mut rows = resp.active;
         rows.extend(resp.ended);
 
-        let trimmed = query.trim();
-        let args = if trimmed.is_empty() {
-            serde_json::json!({ "query": "%", "mode": "verbatim", "limit": 20, "context": 0 })
+        // `sessions:search` owns content search and its verbatim query is a
+        // literal substring. The old empty-query sentinel `%` therefore
+        // searched for a literal percent sign and returned no indexed
+        // agent-chat rows, leaving the Sessions destination empty even when
+        // the chat store contained fresh history. Enumerate the current
+        // harness's agent chats for the browse-all case, and only invoke
+        // content search when the owner supplied a real filter.
+        let chats = if let Some(harness) = harness.filter(|value| !value.trim().is_empty()) {
+            Some((
+                harness.to_string(),
+                self.list_agent_chats(
+                    harness,
+                    &crate::agent_chats::AgentChatListOptions {
+                        include_archived: true,
+                        limit: Some(100),
+                        ..Default::default()
+                    },
+                )
+                .await?,
+            ))
         } else {
-            serde_json::json!({ "query": trimmed, "mode": "hybrid", "limit": 20, "context": 0 })
+            None
         };
-        let env = self.run_tool("sessions:search", args).await?;
-        let inner = run_tool_inner_json(&env)?;
-        Ok(merge_session_switcher_rows(rows, &inner))
+        let title_match = chats.as_ref().is_some_and(|(_, chats)| {
+            let query = query.trim().to_ascii_lowercase();
+            !query.is_empty()
+                && chats.iter().any(|chat| {
+                    chat.title
+                        .as_deref()
+                        .is_some_and(|title| title.to_ascii_lowercase().contains(&query))
+                })
+        });
+        let search_rows = if !title_match {
+            if let Some(args) = session_search_args(query) {
+                let env = self.run_tool("sessions:search", args).await?;
+                merge_session_switcher_rows(rows, &run_tool_inner_json(&env)?)
+            } else {
+                rows
+            }
+        } else {
+            rows
+        };
+        if let Some((harness, chats)) = chats {
+            Ok(merge_agent_chat_summaries(
+                search_rows,
+                &chats,
+                &harness,
+                query,
+            ))
+        } else {
+            Ok(search_rows)
+        }
     }
 
     /// Resolve transcript availability for one exact roster-native session.
@@ -4327,6 +4429,21 @@ mod tests {
                 ..
             }) if id == "recorded-only"
         ));
+    }
+
+    #[test]
+    fn empty_session_search_is_browse_mode_not_a_literal_wildcard() {
+        assert!(session_search_args("").is_none());
+        assert!(session_search_args("  ").is_none());
+        assert_eq!(
+            session_search_args("P8 source"),
+            Some(serde_json::json!({
+                "query": "P8 source",
+                "mode": "hybrid",
+                "limit": 20,
+                "context": 0,
+            }))
+        );
     }
 
     #[test]
