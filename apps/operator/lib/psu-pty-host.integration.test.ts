@@ -1241,7 +1241,7 @@ describe('P-020 carry-respawn drill correlation', () => {
 
 describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
   it(
-    'retries one CR then records turn-start-unverified instead of delivered when PTY output has no fresh native turn',
+    'retries one CR and one fresh epoch before terminally dropping an unverified native turn',
     async () => {
       const root = mkdtempSync(join(tmpdir(), 'psu-carry-turn-proof-'));
       const claudeConfig = join(root, 'claude');
@@ -1303,7 +1303,7 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
         while (Date.now() < outcomeDeadline) {
           if (existsSync(eventLog)) {
             events = readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-            if (events.some((event) => event.kind === 'turn-start-unverified')) break;
+            if (events.some((event) => event.kind === 'respawn-carry-dropped')) break;
           }
           await sleep(20);
         }
@@ -1318,6 +1318,13 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
           nativeId,
         }));
         expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-fresh-epoch-retry',
+          reason: 'turn-start-unverified',
+          detail: 'native-turn-marker-timeout',
+          attempt: 1,
+          maxRetries: 1,
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
           kind: 'respawn-carry-dropped',
           nativeId,
           reason: 'turn-start-unverified',
@@ -1325,6 +1332,7 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
           turnStartVerified: false,
         }));
         expect(events.some((event) => event.kind === 'respawn-carry-delivered')).toBe(false);
+        expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(3);
 
         await rawInject(sock, 'QUIT\n');
         expect(await done).toBe(0);
@@ -1997,7 +2005,7 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
   );
 
   it(
-    'DROPS LOUDLY when the fresh child never settles — carry not injected, meta.carryDropCount bumped',
+    'retries one fresh epoch, then DROPS LOUDLY when the child never settles',
     async () => {
       const ownerId = `su-recycle-drop-itest-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
@@ -2012,8 +2020,9 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       // boot bursts briefly then goes quiet; the RESPAWNED boot (marked via
       // mintRecycleArgs, WI-1980-style) SPINS FOREVER — every post-recycle
       // waitAtPrompt attempt across the budget defers and the carry is
-      // ultimately DROPPED. The dropped iteration must be OBSERVABLE (WI-1941:
-      // never traceless) — asserted via the durable meta counter. QUIT still
+      // ultimately DROPPED after the bounded fresh-epoch retry. The dropped
+      // iteration must be OBSERVABLE (WI-1941: never traceless) — asserted via
+      // the durable meta counter. QUIT still
       // lands (raw inject bypasses the gate; the stdin handler fires between
       // the non-blocking spin ticks).
       const childCode =
@@ -2070,12 +2079,20 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
         metaAfter = JSON.parse(readFileSync(meta, 'utf8'));
       }
-      expect(bootsAfter).toHaveLength(2); // respawned, even though the carry drops
+      expect(bootsAfter).toHaveLength(3); // original + one bounded fresh-epoch retry
       // The carry was NEVER injected (the fresh child never reached its prompt)…
       expect(captured()).not.toContain('ECHO:CARRIED');
       // …and the drop is DURABLY OBSERVABLE, not silent (WI-1941 core guarantee).
       expect(metaAfter.carryDropCount).toBe(1);
       expect(typeof metaAfter.lastCarryDropAt).toBe('number');
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+        .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      expect(events).toContainEqual(expect.objectContaining({
+        kind: 'respawn-carry-fresh-epoch-retry',
+        reason: 'never-settled',
+        attempt: 1,
+        maxRetries: 1,
+      }));
 
       await rawInject(sock, 'QUIT\n');
       const code = await done;

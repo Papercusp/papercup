@@ -53,6 +53,7 @@ import {
   verifyNativeTurnStartWithRetry,
   observeKickoffModelTurnStart,
   carryTurnProofRequiresNativeId,
+  shouldRetryCarryOnFreshEpoch,
   signalNameFromCode,
   resolveTeardownSignal,
   reapDetachedPtyScopeResidue,
@@ -2679,6 +2680,28 @@ describe('verifyNativeTurnStartWithRetry (EI-216539 execution-backed kickoff)', 
     });
     expect(waitForMarker).not.toHaveBeenCalled();
     expect(writeCr).not.toHaveBeenCalled();
+  });
+});
+
+describe('shouldRetryCarryOnFreshEpoch (WI-10001987)', () => {
+  it('retries only transient production failures within the bound', () => {
+    expect(shouldRetryCarryOnFreshEpoch({ reason: 'never-settled' })).toBe(true);
+    expect(shouldRetryCarryOnFreshEpoch({ reason: 'no-startup-ready-marker-last-resort-failed' })).toBe(true);
+    expect(shouldRetryCarryOnFreshEpoch({
+      reason: 'turn-start-unverified',
+      proofReason: 'native-turn-marker-timeout',
+    })).toBe(true);
+    expect(shouldRetryCarryOnFreshEpoch({
+      reason: 'turn-start-unverified',
+      proofReason: 'missing-native-id',
+    })).toBe(false);
+    expect(shouldRetryCarryOnFreshEpoch({ reason: 'fresh-child-owner-input' })).toBe(false);
+    expect(shouldRetryCarryOnFreshEpoch({ reason: 'never-settled', drillId: 'drill-1' })).toBe(false);
+    expect(shouldRetryCarryOnFreshEpoch({
+      reason: 'never-settled',
+      retryCount: 1,
+      maxRetries: 1,
+    })).toBe(false);
   });
 });
 

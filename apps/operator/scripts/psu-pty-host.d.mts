@@ -263,6 +263,23 @@ export function observeKickoffModelTurnStart({ lastOutputAt, wait, pollMs, polls
  * the post-respawn mtime floor is the strongest available native proof. Unknown
  * backends stay fail-closed. */
 export function carryTurnProofRequiresNativeId(agent: any): boolean;
+/** Is a carry failure safe to retry on a freshly minted child? Only transient
+ * fresh-child failures qualify. Missing provenance/native-id is deterministic,
+ * owner input must never be overwritten, and drills remain one-shot.
+ * @param {object} [opts]
+ * @param {string} [opts.drillId]
+ * @param {string} [opts.reason]
+ * @param {string|null} [opts.proofReason]
+ * @param {number} [opts.retryCount]
+ * @param {number} [opts.maxRetries]
+ */
+export function shouldRetryCarryOnFreshEpoch({ drillId, reason, proofReason, retryCount, maxRetries, }?: {
+    drillId?: string | undefined;
+    reason?: string | undefined;
+    proofReason?: string | null | undefined;
+    retryCount?: number | undefined;
+    maxRetries?: number | undefined;
+}): boolean;
 /** Filename-safe key for an ownerId (SIDs are already `[a-z0-9-]`-ish, but a
  *  defensive sanitize keeps a stray char from escaping the dir). Pure. */
 export function sanitizeKey(ownerId: any): string;

@@ -856,6 +856,30 @@ export function carryTurnProofRequiresNativeId(agent) {
   return String(agent ?? '').trim().toLowerCase() !== 'codex';
 }
 
+/** Is a carry failure safe to retry on a freshly minted child? Only transient
+ * fresh-child failures qualify. Missing provenance/native-id is deterministic,
+ * owner input must never be overwritten, and drills remain one-shot.
+ * @param {object} [opts]
+ * @param {string} [opts.drillId]
+ * @param {string} [opts.reason]
+ * @param {string|null} [opts.proofReason]
+ * @param {number} [opts.retryCount]
+ * @param {number} [opts.maxRetries]
+ */
+export function shouldRetryCarryOnFreshEpoch({
+  drillId = '',
+  reason = '',
+  proofReason = null,
+  retryCount = 0,
+  maxRetries = 1,
+} = {}) {
+  if (drillId || retryCount >= maxRetries) return false;
+  if (reason === 'never-settled' ||
+      reason === 'no-startup-ready-marker' ||
+      reason === 'no-startup-ready-marker-last-resort-failed') return true;
+  return reason === 'turn-start-unverified' && proofReason === 'native-turn-marker-timeout';
+}
+
 /** After writing an injected TURN's text, the host sends the submit Enter (CR)
  *  as a SEPARATE keystroke this long later. A single `text + CR` burst is
  *  swallowed by the Claude Code TUI's paste detector — the CR lands as a literal
@@ -983,6 +1007,11 @@ const RECYCLE_CARRY_INJECT_BUDGET_MS =
  *  requeue when an attempt defers fast. */
 const RECYCLE_CARRY_RETRY_BACKOFF_MS =
   Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS) || 3_000;
+/** Native transcript proof can lag a freshly painted TUI even after the
+ *  verifier's raw-CR retry. Give the carry one fresh child epoch to retry the
+ *  whole submission before recording a terminal drop. This is intentionally
+ *  bounded: a persistent backend/transcript failure must remain loud. */
+const CARRY_PROOF_RETRY_MAX = 1;
 /** A backend readiness marker is the strongest proof that its composer exists,
  * but it is not a permanent liveness dependency. UI chrome changes across CLI
  * releases, so a healthy successor can emit output forever without matching
@@ -5107,6 +5136,10 @@ export function hostThroughPty(o) {
     env.PAPERCUSP_PSU_PTY_RESPAWN_REPORT_TIMEOUT_MS,
     RESPAWN_REPORT_TIMEOUT_MS,
   );
+  const configuredCarryProofRetryMax = Number(env.PAPERCUSP_PSU_PTY_CARRY_PROOF_RETRIES);
+  const carryProofRetryMax = Number.isFinite(configuredCarryProofRetryMax) && configuredCarryProofRetryMax >= 0
+    ? Math.floor(configuredCarryProofRetryMax)
+    : CARRY_PROOF_RETRY_MAX;
   let managedKickoffDisposition = null;
   const acknowledgeManagedKickoff = (proof) => {
     if (!managedKickoff) return Promise.resolve();
@@ -6910,7 +6943,6 @@ export function hostThroughPty(o) {
         const stale =
           !superseded &&
           msg.mode === 'carry-respawn' &&
-          Boolean(msg.drillId) &&
           isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs });
         if (superseded || stale) {
           const ageMs = msg.receivedAtMs != null ? Date.now() - msg.receivedAtMs : null;
@@ -7783,7 +7815,13 @@ export function hostThroughPty(o) {
     // (a spawn failure leaves the host running, carry stays in the inbox).
     recycleChild = async (
       carryText,
-      { systemPromptAddendum = '', drillId = '', sessionClass = '', quotaRecovery = null } = {},
+      {
+        systemPromptAddendum = '',
+        drillId = '',
+        sessionClass = '',
+        quotaRecovery = null,
+        carryProofRetryCount = 0,
+      } = {},
     ) => {
       const settleQuotaRecovery = (delivered, reason, extra = {}) => {
         if (quotaRecovery) {
@@ -8333,8 +8371,38 @@ export function hostThroughPty(o) {
         // Apply the same backend-aware boot proof as a scripted resume/port.
         requireInitialOutput: true,
         freshChildOwnerInputGeneration,
-        onDrop: recordCarryDrop,
+        // Decide whether a failed fresh epoch is retryable before recording a
+        // terminal carry drop; a retry must not increment the drop counter.
+        onDrop: () => {},
       });
+      const retryOnFreshEpoch = (reason, proofReason = null) => {
+        if (!shouldRetryCarryOnFreshEpoch({
+          drillId,
+          reason,
+          proofReason,
+          retryCount: carryProofRetryCount,
+          maxRetries: carryProofRetryMax,
+        })) return null;
+        appendHostEvent(ownerId, 'respawn-carry-fresh-epoch-retry', {
+          mode: respawnMode,
+          nativeId: nativeId ?? null,
+          reason,
+          detail: proofReason,
+          attempt: carryProofRetryCount + 1,
+          maxRetries: carryProofRetryMax,
+        });
+        return recycleChild(carryText, {
+          systemPromptAddendum,
+          drillId,
+          sessionClass,
+          quotaRecovery,
+          carryProofRetryCount: carryProofRetryCount + 1,
+        });
+      };
+      if (!carryResult.delivered) {
+        const retry = retryOnFreshEpoch(carryResult.reason);
+        if (retry) return retry;
+      }
       let turnStartProof = null;
       // EI-21561923024113260: PTY output proves only that the successor painted
       // something. The incident had outputSeen:true and no user turn for 182s.
@@ -8363,13 +8431,26 @@ export function hostThroughPty(o) {
           },
         });
         if (!turnStartProof.persisted) {
-          recordCarryDrop();
-          carryResult = { ...carryResult, delivered: false, reason: 'turn-start-unverified' };
           appendHostEvent(ownerId, 'turn-start-unverified', {
             mode: respawnMode,
             nativeId: nativeId ?? null,
             detail: turnStartProof.reason ?? 'native-turn-marker-timeout',
           });
+          // A fresh epoch clears the exact state that made the native marker
+          // invisible (stale transcript tail, a repainting composer, or a
+          // child that accepted the CR but never entered its backend turn).
+          // Retry only the timeout class: missing provenance/native-id is a
+          // deterministic contract failure and cannot be repaired by respawn.
+          const retry = retryOnFreshEpoch('turn-start-unverified', turnStartProof.reason);
+          if (retry) {
+            // `recycling` is already false once the successor is spawned, so
+            // this recursive call performs a real hard cut and mints a new
+            // native id before resubmitting the same carry text. Returning its
+            // result prevents the failed epoch from emitting a false terminal
+            // drop or incrementing carryDropCount.
+            return retry;
+          }
+          carryResult = { ...carryResult, delivered: false, reason: 'turn-start-unverified' };
           try {
             process.stderr.write(
               `psu-pty-host: carry turn start UNVERIFIED for ${ownerId} ` +
@@ -8381,6 +8462,7 @@ export function hostThroughPty(o) {
           }
         }
       }
+      if (!carryResult.delivered) recordCarryDrop();
       if (drillId) {
         // EI-12655 (drill-1 instrumentation, leader-concurred): a never-settled
         // drop was previously indistinguishable from a never-booted child.
