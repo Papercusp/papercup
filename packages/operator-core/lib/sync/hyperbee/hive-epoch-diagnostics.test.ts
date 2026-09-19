@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import type { LocalWriteOp } from './boot';
+import type { StageDiagnosticName } from './stage-stall-log';
 
 const seams = vi.hoisted(() => {
   let releaseNative!: () => void;
@@ -13,6 +14,32 @@ const seams = vi.hoisted(() => {
     keychain: vi.fn(),
     nativeReady,
     releaseNative,
+    // Permanent test-only mutants: never edit the swept production tree to
+    // demonstrate that a regression assertion can actually reject bad behavior.
+    fault: null as null | 'collapse-attempts' | 'premature-native' | 'sync-as-await' | 'leak-payload',
+    omitStage: null as StageDiagnosticName | null,
+  };
+});
+vi.mock('./stage-stall-log', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./stage-stall-log')>();
+  return {
+    ...actual,
+    createStageAttempt: (options: Parameters<typeof actual.createStageAttempt>[0]) =>
+      actual.createStageAttempt({
+        ...options,
+        onEvent: options.onEvent && ((event) => options.onEvent!({
+          ...event,
+          ...(seams.fault === 'collapse-attempts' ? { attemptId: 'same-attempt' } : {}),
+          ...(seams.fault === 'sync-as-await' && event.boundary === 'sync' ? { boundary: 'await' as const } : {}),
+          ...(seams.fault === 'leak-payload' ? { payload: 'private payload' } : {}),
+        })),
+      }),
+    traceStageAwait: <T>(stage: StageDiagnosticName, run: () => PromiseLike<T>) => {
+      if (seams.fault === 'premature-native' && stage === 'epoch-query') {
+        actual.currentStageAttempt()?.begin('native-encrypt', 'sync');
+      }
+      return stage === seams.omitStage ? run() : actual.traceStageAwait(stage, run);
+    },
   };
 });
 vi.mock('../../federated-pot-scope', () => ({ resolveFederatedPotScope: seams.scope }));
@@ -61,6 +88,23 @@ function observation(rowId = 1, sink?: 'disabled' | 'throwing') {
   return { attempt, events };
 }
 const starts = (events: StageDiagnosticEvent[]) => events.filter((e) => e.event === 'hop-start').map((e) => e.stage);
+function assertPendingOnly(events: StageDiagnosticEvent[], stage: StageDiagnosticName) {
+  expect(starts(events), `missing actual pending stage: ${stage}`).toContain(stage);
+  expect(starts(events), `premature serialization while ${stage} is pending`).not.toContain('serialize');
+  expect(starts(events), `premature native work while ${stage} is pending`).not.toContain('native-encrypt');
+}
+function assertUniqueAttempts(events: StageDiagnosticEvent[]) {
+  const ids = events.filter((event) => event.event === 'attempt-start').map((event) => event.attemptId);
+  expect(ids, 'two attempts actually ran').toHaveLength(2);
+  expect(new Set(ids).size, 'retry identities must be distinct').toBe(2);
+}
+function assertNativeBoundary(events: StageDiagnosticEvent[]) {
+  expect(events.filter((event) => event.stage === 'native-encrypt').map((event) => [event.event, event.boundary]),
+    'native boundaries must remain synchronous').toEqual([['hop-start', 'sync'], ['hop-end', 'sync']]);
+}
+function assertPrivate(events: StageDiagnosticEvent[]) {
+  expect(JSON.stringify(events), 'diagnostics must not retain plaintext').not.toContain('private payload');
+}
 const op: LocalWriteOp = {
   type: 'put',
   table: 'features-by-id',
@@ -104,6 +148,8 @@ function makeGate(
   return { cap, crypto };
 }
 beforeEach(() => {
+  seams.fault = null;
+  seams.omitStage = null;
   seams.scope.mockReset().mockResolvedValue('diagnostic-pot');
   seams.sql.mockReset().mockResolvedValue([
     {
@@ -119,6 +165,8 @@ beforeEach(() => {
 });
 afterEach(() => {
   for (const attempt of attempts.splice(0)) attempt.finish();
+  seams.fault = null;
+  seams.omitStage = null;
   vi.restoreAllMocks();
 });
 
@@ -135,11 +183,7 @@ describe('P-002 actual encrypt dependencies with local diagnostic context', () =
       seams.releaseNative();
     }
     expect((await pending)?.epoch).toBe(3);
-    const native = events.filter((e) => e.stage === 'native-encrypt');
-    expect(native.map((e) => [e.event, e.boundary])).toEqual([
-      ['hop-start', 'sync'],
-      ['hop-end', 'sync'],
-    ]);
+    assertNativeBoundary(events);
   });
 
   it.each(['scope-query', 'epoch-query'] as const)(
@@ -162,6 +206,7 @@ describe('P-002 actual encrypt dependencies with local diagnostic context', () =
       const pending = withStageAttempt(attempt, () => cap.encryptOp(op));
       try {
         await vi.waitFor(() => expect(attempt.snapshot().activeHops.map((h) => h.stage)).toContain(stage));
+        assertPendingOnly(events, stage);
         expect(starts(events)).not.toContain('owner-check');
         expect(starts(events)).not.toContain('native-loader');
         expect(starts(events)).not.toContain('native-encrypt');
@@ -181,6 +226,7 @@ describe('P-002 actual encrypt dependencies with local diagnostic context', () =
     const rejected = expect(pending).rejects.toBeInstanceOf(EpochKeyUnavailableError);
     try {
       await vi.waitFor(() => expect(starts(events)).toContain('baseline-evidence'));
+      assertPendingOnly(events, 'baseline-evidence');
       expect(starts(events)).not.toContain('owner-check');
       expect(starts(events)).not.toContain('serialize');
     } finally {
@@ -202,6 +248,7 @@ describe('P-002 actual encrypt dependencies with local diagnostic context', () =
       const pending = withStageAttempt(attempt, () => cap.encryptOp(op));
       try {
         await vi.waitFor(() => expect(attempt.snapshot().activeHops.map((h) => h.stage)).toContain(stage));
+        assertPendingOnly(events, stage);
         expect(starts(events)).not.toContain('serialize');
         expect(starts(events)).not.toContain('native-encrypt');
       } finally {
@@ -231,7 +278,7 @@ describe('P-002 actual encrypt dependencies with local diagnostic context', () =
         JSON.stringify(op.value),
       );
       await expect(crypto.decryptOp(ciphertext, key as never, { ...aad, opId: 'wrong-row' })).rejects.toThrow();
-      expect(JSON.stringify(events)).not.toContain('private payload');
+      assertPrivate(events);
       expect(JSON.stringify(events)).not.toContain('SELECT');
       if (sink) expect(events).toEqual([]);
     }
@@ -292,7 +339,7 @@ describe('P-002 actual encrypt dependencies with local diagnostic context', () =
     await expect(drainOutboxOnce(handle, pg, options)).resolves.toBe(1);
     const starts = events.filter((event) => event.event === 'attempt-start');
     expect(starts).toHaveLength(2);
-    expect(starts[0].attemptId).not.toBe(starts[1].attemptId);
+    assertUniqueAttempts(events);
     expect(starts.map((event) => event.rowId)).toEqual(['22', '22']);
     expect(operations[1]).toEqual(operations[0]);
     expect(JSON.stringify(operations)).not.toContain(starts[0].attemptId);
@@ -334,5 +381,151 @@ describe('P-002 actual encrypt dependencies with local diagnostic context', () =
     now += 1;
     await withStageAttempt(second.attempt, () => cap.encryptOp(op));
     expect(getCurrentEpoch).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe('P-002 calibrated counterexamples (local diagnostic proof only)', () => {
+  // Same assertions as the production-entry tests above. Each wrong behavior
+  // is injected only at the diagnostic module boundary, while the real gate,
+  // settings and crypto path still execute. This proves the oracle detects
+  // these named faults; it is not a claim about live runtime causality.
+  it.each([
+    ['collapse-attempts', assertUniqueAttempts, 'retry identities must be distinct'],
+    ['sync-as-await', assertNativeBoundary, 'native boundaries must remain synchronous'],
+    ['leak-payload', assertPrivate, 'diagnostics must not retain plaintext'],
+  ] as const)('rejects %s and accepts the production path with the same assertion', async (fault, check, message) => {
+    seams.releaseNative();
+    async function exercise() {
+      const { cap } = makeGate();
+      const first = observation(22);
+      const second = observation(22);
+      await withStageAttempt(first.attempt, () => cap.encryptOp(op));
+      await withStageAttempt(second.attempt, () => cap.encryptOp(op));
+      first.attempt.finish();
+      second.attempt.finish();
+      return fault === 'collapse-attempts' ? [...first.events, ...second.events] : first.events;
+    }
+    const good = await exercise();
+    expect(() => check(good)).not.toThrow();
+    seams.fault = fault;
+    const bad = await exercise();
+    expect(() => check(bad)).toThrow(message);
+  });
+
+  it.each(['scope-query', 'epoch-query', 'baseline-evidence', 'owner-check', 'key-provider', 'keychain'] as const)(
+    'rejects an omitted %s label at the real held dependency, not merely an empty fixture',
+    async (stage) => {
+      seams.releaseNative();
+      for (const omitted of [false, true]) {
+        const held = deferred<unknown>();
+        const entered = deferred<void>();
+        const wait = () => {
+          entered.resolve();
+          return held.promise;
+        };
+        if (stage === 'scope-query') seams.scope.mockImplementationOnce(wait);
+        if (stage === 'epoch-query') seams.sql.mockImplementationOnce(wait);
+        if (stage === 'keychain') seams.keychain.mockImplementationOnce(wait);
+        const { cap } = makeGate({
+          ...(stage === 'baseline-evidence' ? { epoch: 0, baseline: () => wait() as Promise<boolean> } : {}),
+          ...(stage === 'owner-check' ? { owner: () => wait() as Promise<boolean> } : {}),
+          ...(stage === 'key-provider' ? { provider: () => wait() as Promise<never> } : {}),
+        });
+        seams.omitStage = omitted ? stage : null;
+        const { attempt, events } = observation();
+        const pending = withStageAttempt(attempt, () => cap.encryptOp(op));
+        try {
+          // Reaching the BUSINESS seam establishes the held point independently
+          // of the diagnostic whose correctness is being tested.
+          await entered.promise;
+          if (omitted) {
+            expect(() => assertPendingOnly(events, stage)).toThrow(`missing actual pending stage: ${stage}`);
+          } else {
+            expect(() => assertPendingOnly(events, stage)).not.toThrow();
+          }
+        } finally {
+          held.resolve(stage === 'scope-query' ? 'diagnostic-pot'
+            : stage === 'epoch-query' ? [{ value: '3' }]
+            : stage === 'baseline-evidence' ? false
+            : stage === 'owner-check' ? true
+            : stage === 'key-provider' ? key
+            : { kind: 'ok', value: key });
+          await pending;
+          attempt.finish();
+        }
+      }
+    },
+  );
+
+  it('rejects premature native attribution while the actual epoch query is still held', async () => {
+    seams.releaseNative();
+    for (const faulty of [false, true]) {
+      const held = deferred<unknown>();
+      const entered = deferred<void>();
+      seams.sql.mockImplementationOnce(() => {
+        entered.resolve();
+        return held.promise;
+      });
+      const { cap } = makeGate();
+      seams.fault = faulty ? 'premature-native' : null;
+      const { attempt, events } = observation();
+      const pending = withStageAttempt(attempt, () => cap.encryptOp(op));
+      try {
+        await entered.promise;
+        if (faulty) {
+          expect(() => assertPendingOnly(events, 'epoch-query')).toThrow('premature native work');
+        } else {
+          expect(() => assertPendingOnly(events, 'epoch-query')).not.toThrow();
+        }
+      } finally {
+        held.resolve([{ value: '3' }]);
+        await pending;
+        attempt.finish();
+      }
+    }
+  });
+
+  it('rejects a per-row gate that loses single-flight and accepts one genuinely shared load', async () => {
+    seams.releaseNative();
+    for (const faulty of [false, true]) {
+      const held = deferred<number>();
+      const getCurrentEpoch = vi.fn(() => held.promise);
+      const deps = { crypto: createHiveEpochCrypto(), resolveKey: async () => key as never,
+        potId: 'diagnostic-pot', getCurrentEpoch };
+      const shared = buildEpochEncryptCapability(deps);
+      // Deliberately wrong construction: rebuilding the gate per row discards
+      // the cache/single-flight state. The real gate itself remains untouched.
+      const encrypt = () => (faulty ? buildEpochEncryptCapability(deps) : shared).encryptOp(op);
+      const first = observation(1), second = observation(2);
+      const a = withStageAttempt(first.attempt, encrypt);
+      const b = withStageAttempt(second.attempt, encrypt);
+      const assertShared = () => {
+        expect(getCurrentEpoch.mock.calls.length, 'one actual epoch lookup for concurrent rows').toBe(1);
+        const aLoad = first.events.find((e) => e.event === 'cache' && e.stage === 'epoch-load');
+        const bLoad = second.events.find((e) => e.event === 'cache' && e.stage === 'epoch-load');
+        expect(aLoad?.cacheState).toBe('miss');
+        expect(bLoad?.cacheState).toBe('shared');
+        expect(aLoad?.sharedWorkId).toBeTypeOf('string');
+        expect(bLoad?.sharedWorkId).toBe(aLoad?.sharedWorkId);
+        assertUniqueAttempts([...first.events, ...second.events]);
+      };
+      try {
+        if (faulty) expect(assertShared).toThrow('one actual epoch lookup for concurrent rows');
+        else expect(assertShared).not.toThrow();
+      } finally {
+        held.resolve(3);
+        await Promise.all([a, b]);
+        first.attempt.finish();
+        second.attempt.finish();
+      }
+      if (!faulty) {
+        const hit = observation(3);
+        await withStageAttempt(hit.attempt, encrypt);
+        expect(getCurrentEpoch).toHaveBeenCalledTimes(1);
+        expect(hit.events).toContainEqual(expect.objectContaining({ event: 'cache', stage: 'epoch-load', cacheState: 'hit' }));
+        expect(starts(hit.events)).not.toContain('epoch-load');
+        hit.attempt.finish();
+      }
+    }
   });
 });
