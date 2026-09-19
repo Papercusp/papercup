@@ -137,13 +137,35 @@ describe('GCP IAP workspace-host initialization operations', () => {
     const operations = new GcpIapWorkspaceHostInitializationOperations(PROFILE, { run });
 
     expect(operations.supportedStepKinds).toEqual(WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS);
-    expect(operations.supportedStepKinds).toHaveLength(10);
+    expect(operations.supportedStepKinds).toContain('install-desktop-pack');
     expect(run).not.toHaveBeenCalled();
     await expect(operations.execute(step())).resolves.toEqual({
       observedAt: '2026-08-23T06:01:00Z',
       publicEvidence: { workspaceCreated: true },
     });
     expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('carries optional desktop installation over the fixed initializer conduit', async () => {
+    const desktopStep = {
+      id: 'desktop-pack', kind: 'install-desktop-pack' as const, dependsOn: [],
+      idempotencyKey: 'host-1-desktop-pack', input: { hostId: 'host-1' },
+    };
+    const run = vi.fn<GcpIapWorkspaceHostInitializationCommandRunner['run']>().mockResolvedValue({
+      exitCode: 0, stderr: '', stdout: JSON.stringify({
+        protocolVersion: GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
+        stepId: desktopStep.id, status: 'succeeded', observedAt: '2026-08-23T06:01:00Z',
+        publicEvidence: { hostId: 'host-1', action: 'install' },
+      }),
+    });
+    const operations = new GcpIapWorkspaceHostInitializationOperations(PROFILE, { run });
+    await expect(operations.execute(desktopStep)).resolves.toMatchObject({
+      publicEvidence: { hostId: 'host-1', action: 'install' },
+    });
+    const command = run.mock.calls[0][0];
+    expect(parseWorkspaceHostRemoteInitializerRequest(JSON.parse(command.stdin)).step).toEqual(desktopStep);
+    expect(command.command).toBe('ssh');
+    expect(command.args.join(' ')).not.toMatch(/\b(?:bash|scp)\b/);
   });
 
   it('round-trips a planner-produced credential-lifecycle step through the command builder', () => {

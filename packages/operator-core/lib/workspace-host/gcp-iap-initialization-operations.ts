@@ -14,6 +14,7 @@ import {
   type WorkspaceHostInitializationHostOperationResult,
   type WorkspaceHostInitializationHostOperations,
   type WorkspaceHostInitializationStep,
+  type WorkspaceHostRemoteInitializerStep,
 } from '@papercusp/deployment-driver';
 import { quotePosixShellArg } from './local-connection-manager';
 import { redactWorkspaceHostText } from './observability-store';
@@ -155,7 +156,8 @@ export function gcpIapHostKeyAlias(
 
 export type GcpIapWorkspaceHostInitializationStep =
   | WorkspaceHostInitializationStep
-  | WorkspaceHostCredentialLifecycleStep;
+  | WorkspaceHostCredentialLifecycleStep
+  | WorkspaceHostRemoteInitializerStep;
 
 function isWorkspaceHostCredentialLifecycleStep(
   step: GcpIapWorkspaceHostInitializationStep,
@@ -608,6 +610,7 @@ export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHos
 
   async execute(step: WorkspaceHostInitializationStep): Promise<WorkspaceHostInitializationHostOperationResult>;
   async execute(step: WorkspaceHostCredentialLifecycleStep): Promise<WorkspaceHostInitializationHostOperationResult>;
+  async execute(step: WorkspaceHostRemoteInitializerStep): Promise<WorkspaceHostInitializationHostOperationResult>;
   async execute(step: GcpIapWorkspaceHostInitializationStep): Promise<WorkspaceHostInitializationHostOperationResult> {
     const command = buildGcpIapWorkspaceHostInitializationCommand(this.profile, step);
     const result = await this.runner.run(command);
