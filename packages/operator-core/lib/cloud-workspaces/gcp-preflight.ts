@@ -612,6 +612,45 @@ function gcpRateLimitThrottle(body: unknown): boolean {
 }
 
 /**
+ * Socket teardowns where the connection died without delivering a response. Google's frontend
+ * closes pooled keep-alive sockets on its own idle timeout, and undici only observes the close
+ * when it next reaches for that socket — so it hands a dead one to the following request and the
+ * fetch rejects before anything is written. A single un-retried call turns that routine pool
+ * eviction into a hard provisioning failure.
+ *
+ * Deliberately NOT here: timeouts. Under the event-loop stall that made this failure visible
+ * (WI-10001862) a retried timeout just pays the same multi-second wait again.
+ */
+const GCP_RETRYABLE_TRANSPORT_CODES = new Set(['UND_ERR_SOCKET', 'ECONNRESET', 'EPIPE']);
+const GCP_TRANSPORT_RETRY_DELAYS_MS = [100, 300] as const;
+
+/** `fetch` wraps the real cause, so walk the chain rather than reading only the surface error. */
+function gcpTransportCloseFailure(error: unknown): boolean {
+  for (let node: unknown = error, depth = 0; node != null && depth < 4; depth += 1) {
+    const { code, message, name } = node as { code?: unknown; message?: unknown; name?: unknown };
+    if (name === 'AbortError') return false;
+    if (typeof code === 'string' && GCP_RETRYABLE_TRANSPORT_CODES.has(code)) return true;
+    if (typeof message === 'string' && /other side closed|socket hang up/i.test(message)) return true;
+    node = (node as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * Whether replaying this request is safe. GET/HEAD are safe by the HTTP spec; for everything else
+ * the signal is Google's OWN idempotency token — a Compute request carrying `requestId` is
+ * deduplicated provider-side, which is exactly the guarantee a replay needs. An unannotated
+ * mutation is never replayed, because "other side closed" cannot distinguish a request that was
+ * dropped from one that was applied with its response lost.
+ */
+function gcpRequestReplayable(url: string, init: RequestInit): boolean {
+  if (typeof init.body !== 'string' && init.body !== undefined) return false; // a stream body cannot be re-read
+  const method = (init.method ?? 'GET').toUpperCase();
+  if (method === 'GET' || method === 'HEAD') return true;
+  return /[?&]requestId=/.test(url);
+}
+
+/**
  * Shared authenticated Google API JSON transport. The raw error body is never copied into the
  * thrown error, so bearer tokens and provider internals cannot leak through logs or persisted
  * workflow failures; only the redacted field-level reason above travels with it.
@@ -621,16 +660,29 @@ export async function fetchGcpApiJson<T>(
   token: string,
   url: string,
   init: RequestInit = {},
+  transport: { sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<T> {
-  const response = await fetchImpl(url, {
-    ...init,
-    headers: {
-      authorization: `Bearer ${token}`,
-      accept: 'application/json',
-      ...(init.body === undefined ? {} : { 'content-type': 'application/json' }),
-      ...(init.headers ?? {}),
-    },
-  });
+  const sleep = transport.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const replays = gcpRequestReplayable(url, init) ? GCP_TRANSPORT_RETRY_DELAYS_MS.length : 0;
+  const send = async (): Promise<Response> => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await fetchImpl(url, {
+          ...init,
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: 'application/json',
+            ...(init.body === undefined ? {} : { 'content-type': 'application/json' }),
+            ...(init.headers ?? {}),
+          },
+        });
+      } catch (error) {
+        if (attempt >= replays || init.signal?.aborted || !gcpTransportCloseFailure(error)) throw error;
+        await sleep(GCP_TRANSPORT_RETRY_DELAYS_MS[attempt]!);
+      }
+    }
+  };
+  const response = await send();
   if (!response.ok) {
     // Parsed ONCE and read twice: the redacted human reason, and the machine throttle signal.
     const body = await response.json().catch(() => undefined);

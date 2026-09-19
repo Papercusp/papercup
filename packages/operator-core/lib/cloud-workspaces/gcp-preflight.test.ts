@@ -555,3 +555,111 @@ describe('provider failure reasons on the shared Google API transport', () => {
     expect((error as { throttled?: boolean }).throttled).toBeUndefined();
   });
 });
+
+// WI-10001862: Google's frontend evicts idle pooled keep-alive sockets, and undici only notices
+// when it reaches for one — so it hands a dead socket to the next request. A single un-retried
+// fetch turned that routine eviction into a hard BYOC provisioning failure (~40% of connection
+// validations), which is what these cover.
+describe('transport replay on a closed pooled socket', () => {
+  const NEVER_SLEEP = { sleep: async () => {} };
+
+  function socketClose(): Error {
+    const error = new TypeError('fetch failed');
+    (error as { cause?: unknown }).cause = Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' });
+    return error;
+  }
+
+  it('replays a GET past a socket close and returns the eventual response', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(socketClose())
+      .mockResolvedValueOnce(json({ ok: true })) as unknown as typeof fetch;
+
+    await expect(
+      fetchGcpApiJson(fetchImpl, SECRET, 'https://compute.googleapis.com/compute/v1/x', {}, NEVER_SLEEP),
+    ).resolves.toEqual({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up after a bounded number of replays rather than retrying forever', async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(socketClose()) as unknown as typeof fetch;
+
+    await expect(
+      fetchGcpApiJson(fetchImpl, SECRET, 'https://compute.googleapis.com/compute/v1/x', {}, NEVER_SLEEP),
+    ).rejects.toThrow('fetch failed');
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  // The control that keeps the retry from becoming a silent duplicate-resource bug: a socket close
+  // cannot distinguish a request that was dropped from one that was applied with its reply lost.
+  it('never replays an unannotated mutation', async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(socketClose()) as unknown as typeof fetch;
+
+    await expect(
+      fetchGcpApiJson(
+        fetchImpl,
+        SECRET,
+        'https://compute.googleapis.com/compute/v1/networks',
+        { method: 'POST', body: '{}' },
+        NEVER_SLEEP,
+      ),
+    ).rejects.toThrow('fetch failed');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  // ...but a Compute mutation carrying Google's own idempotency token IS deduplicated
+  // provider-side, which is exactly the guarantee a replay needs.
+  it('replays a mutation that carries a requestId idempotency token', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(socketClose())
+      .mockResolvedValueOnce(json({ name: 'operation-1' })) as unknown as typeof fetch;
+
+    await expect(
+      fetchGcpApiJson(
+        fetchImpl,
+        SECRET,
+        'https://compute.googleapis.com/compute/v1/networks?requestId=abc-123',
+        { method: 'POST', body: '{}' },
+        NEVER_SLEEP,
+      ),
+    ).resolves.toEqual({ name: 'operation-1' });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not replay a non-transport failure', async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error('certificate has expired')) as unknown as typeof fetch;
+
+    await expect(
+      fetchGcpApiJson(fetchImpl, SECRET, 'https://compute.googleapis.com/compute/v1/x', {}, NEVER_SLEEP),
+    ).rejects.toThrow('certificate has expired');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replay an aborted request', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fetchImpl = vi.fn().mockRejectedValue(socketClose()) as unknown as typeof fetch;
+
+    await expect(
+      fetchGcpApiJson(
+        fetchImpl,
+        SECRET,
+        'https://compute.googleapis.com/compute/v1/x',
+        { signal: controller.signal },
+        NEVER_SLEEP,
+      ),
+    ).rejects.toThrow('fetch failed');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  // An HTTP error means a response ARRIVED; the retry must stay out of that path entirely.
+  it('leaves HTTP-level failures to the existing error mapping', async () => {
+    const fetchImpl = vi.fn(async () => json({ error: { code: 500 } }, 500)) as unknown as typeof fetch;
+
+    await expect(
+      fetchGcpApiJson(fetchImpl, SECRET, 'https://compute.googleapis.com/compute/v1/x', {}, NEVER_SLEEP),
+    ).rejects.toThrow('gcp_preflight_http_500');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});

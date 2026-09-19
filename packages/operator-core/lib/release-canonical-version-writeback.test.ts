@@ -62,6 +62,14 @@ function helperSource(): string {
   return match![0];
 }
 
+/** Every real invocation of the helper — its definition, and any comment naming it, excluded. */
+function callSites(): string[] {
+  return SCRIPT.split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.includes('bump_version_manifests'))
+    .filter((line) => !line.startsWith('#') && !line.startsWith('bump_version_manifests()'));
+}
+
 const OLD = '0.0.17';
 const NEW = '0.0.20';
 
@@ -170,6 +178,30 @@ describe('bump_version_manifests (extracted from release-local.sh)', () => {
       ),
     });
     expect(verdict).toEqual({ ok: true });
+  });
+});
+
+// The call SITES, not the helper's behaviour. Every test above picks the arity itself via
+// runBump(), so all of them keep passing if the worktree call starts passing with-lock. The two
+// directions are protected asymmetrically: DROPPING with-lock from the canonical call is caught
+// loudly on every cut by that call's own post-write verifier, while ADDING it to the worktree
+// call is caught only by validateReleaseResumeResidue, and only on a reuseSeed resume — so it
+// stays latent until a retry refuses the very root it meant to resume.
+describe('bump_version_manifests call sites in release-local.sh', () => {
+  it('invokes the helper exactly twice', () => {
+    expect(callSites()).toHaveLength(2);
+  });
+
+  it('calls the cut WORKTREE without with-lock', () => {
+    const worktree = callSites().filter((line) => line.includes('"$ROOT"'));
+    expect(worktree, 'expected exactly one bump_version_manifests "$ROOT" call').toHaveLength(1);
+    expect(worktree[0]).not.toContain('with-lock');
+  });
+
+  it('calls the CANONICAL checkout with with-lock', () => {
+    const canonical = callSites().filter((line) => line.includes('"$_canon"'));
+    expect(canonical, 'expected exactly one bump_version_manifests "$_canon" call').toHaveLength(1);
+    expect(canonical[0]).toContain('with-lock');
   });
 });
 
