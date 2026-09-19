@@ -17,15 +17,15 @@
 Description=Papercusp Phone app — portal-facing sidecar (plan phone-app-2026-08-30 WI-1409555)
 After=network.target papercusp-phone-livekit.service
 Wants=papercusp-phone-livekit.service
-# Same crash-loop policy as the media plane and the worker: a genuinely broken
-# sidecar should stop and STAY stopped so it is visible, rather than retrying
-# forever behind a healthy-looking portal.
+# The watcher owns source-change restarts; systemd still brings the watcher back
+# after a crash so a transient failure cannot leave the portal-facing control
+# plane down indefinitely.
 StartLimitIntervalSec=300
 StartLimitBurst=10
 
 [Service]
 Type=simple
-WorkingDirectory=${SIDECAR_DIR}
+WorkingDirectory=${PHONE_SIDECAR_DIR}
 
 # TWO env files, and the split is deliberate.
 #
@@ -51,8 +51,11 @@ Environment=PHONE_HTTP_PORT=8793
 Environment=PHONE_OPERATOR_ORIGIN=http://127.0.0.1:3070
 Environment=PHONE_OPERATOR_HARNESS=portal
 
-ExecStart=${NODE_BIN} --import tsx src/index.ts
-Restart=on-failure
+# Node's built-in watcher restarts the tsx entrypoint when the out-of-repo phone
+# checkout changes. This is deliberately in the rendered unit rather than a
+# drop-in, so deploy.sh and review see the restart-on-change contract.
+ExecStart=${PHONE_NODE_BIN} --import tsx --watch src/index.ts
+Restart=always
 RestartSec=5
 
 [Install]
