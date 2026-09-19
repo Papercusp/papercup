@@ -1301,7 +1301,7 @@ function resourceLabel(resource: WorkspaceHostResourceRef): string {
  */
 function describeUncleanDestroyCensus(
   providerCensus: GcpWorkspaceHostResourceCensus,
-  orphanCensus: WorkspaceHostCanaryOrphanCensus,
+  orphanCensus: WorkspaceHostCanaryOrphanCensus | undefined,
   attempts: number,
   waitedMs: number,
 ): string {
@@ -1333,13 +1333,13 @@ function describeUncleanDestroyCensus(
           .join(', ')}]`,
       );
   }
-  if (!orphanCensus.clean) {
+  if (orphanCensus && !orphanCensus.clean) {
     note('orphan.stillLive', orphanCensus.stillLive);
     note('orphan.untracked', orphanCensus.untracked);
     note('orphan.observedTagged', orphanCensus.observedTagged);
     note('orphan.missingWithoutReceipt', orphanCensus.missingWithoutReceipt);
   }
-  const which = [!providerCensus.clean ? 'provider' : null, !orphanCensus.clean ? 'orphan' : null]
+  const which = [!providerCensus.clean ? 'provider' : null, orphanCensus && !orphanCensus.clean ? 'orphan' : null]
     .filter(Boolean)
     .join('+');
   const detail = parts.length > 0 ? ` ${parts.join(' ')}` : ' (no resource named by either census)';
@@ -1590,6 +1590,7 @@ async function finalizeOrdinaryDestroy(
       hostId: input.hostId,
       workspaceId: input.workspaceId,
       expected: preserved,
+      registeredHostResources: target.resources.map((entry) => entry.resource),
       observed: inventory.observed,
       inventoryEvidence: inventory.inventoryEvidence,
       evaluatedAt: new Date().toISOString(),
@@ -1598,12 +1599,7 @@ async function finalizeOrdinaryDestroy(
     if (providerCensus.clean) break;
     const waitedMs = Date.now() - startedAt;
     if (waitedMs + pollMs > settleMs) {
-      const survivors = providerCensus.untracked.map((entry) => resourceLabel(entry.resource)).join(', ');
-      const missing = providerCensus.missing.map(resourceLabel).join(', ');
-      throw new Error(
-        `Workspace-host destroy provider census is not clean after ${attempts} read(s) over ${waitedMs}ms` +
-          `${survivors ? `; still live: ${survivors}` : ''}${missing ? `; missing recovery point: ${missing}` : ''}`,
-      );
+      throw new Error(describeUncleanDestroyCensus(providerCensus, undefined, attempts, waitedMs));
     }
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }

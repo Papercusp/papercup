@@ -13,6 +13,7 @@ import {
   evaluateFrozenLineageCarryText,
   frozenLineageCarryViolationPayload,
   frozenLineageShellCommandViolationPayload,
+  frozenLineageIdentityFromQueue,
   frozenLineageIdentityFromMarker,
   frozenLineageIdentityMatches,
   isUnsafeFrozenCandidateSource,
@@ -61,6 +62,16 @@ const launchPreflight = (
 });
 
 describe('frozen lineage identity', () => {
+  it('projects the authoritative repair_queue identity fields', () => {
+    expect(
+      frozenLineageIdentityFromQueue({
+        candidate: CANDIDATE,
+        repairHead: REPAIR_HEAD,
+        updatedAtMs: REVISION,
+      }),
+    ).toEqual(identity());
+  });
+
   it('projects the queue update stamp as the typed queue revision', () => {
     expect(frozenLineageIdentityFromMarker(marker())).toEqual(identity());
   });
@@ -341,6 +352,70 @@ describe('frozen lineage shell-command policy', () => {
     ).resolves.toMatchObject({ allowed: true, reason: 'repair-head-match' });
   });
 
+  it('uses authoritative repair_queue identity instead of a stale marker projection', async () => {
+    const readMarker = vi.fn(() => marker({ repairHead: CANDIDATE, updatedAtMs: REVISION - 1 }));
+    const readFrozenRepairQueue = vi.fn(async () => ({
+      candidate: CANDIDATE,
+      repairHead: REPAIR_HEAD,
+      updatedAtMs: REVISION,
+      phase: 'ready-to-verify',
+    }));
+    const classification = classifyFrozenLineageShellCommand({ command: 'npm test', cwd: ROOT });
+
+    await expect(
+      evaluateFrozenLineageShellCommand(classification, ROOT, {
+        readMarker,
+        readFrozenRepairQueue,
+        readCheckoutHead: async () => REPAIR_HEAD,
+      }),
+    ).resolves.toMatchObject({ allowed: true, reason: 'repair-head-match' });
+    expect(readFrozenRepairQueue).toHaveBeenCalledTimes(2);
+    expect(readMarker).not.toHaveBeenCalled();
+  });
+
+  it('treats authoritative ready-to-test as inactive even with a stale marker', async () => {
+    const readMarker = vi.fn(() => marker());
+    const readFrozenRepairQueue = vi.fn(async () => ({
+      candidate: CANDIDATE,
+      repairHead: REPAIR_HEAD,
+      updatedAtMs: REVISION,
+      phase: 'ready-to-test',
+    }));
+    const readCheckoutHead = vi.fn(async () => REPAIR_HEAD);
+
+    await expect(
+      evaluateFrozenLineageShellCommand(classifyFrozenLineageShellCommand({ command: 'npm test', cwd: ROOT }), ROOT, {
+        readMarker,
+        readFrozenRepairQueue,
+        readCheckoutHead,
+      }),
+    ).resolves.toMatchObject({ allowed: true, reason: 'no-frozen-queue' });
+    expect(readFrozenRepairQueue).toHaveBeenCalledOnce();
+    expect(readMarker).not.toHaveBeenCalled();
+    expect(readCheckoutHead).not.toHaveBeenCalled();
+  });
+
+  it('refuses a governed test when the effective checkout cwd is unresolved', async () => {
+    const classification = classifyFrozenLineageShellCommand({ command: 'cd "$UNKNOWN_CWD" && npm test', cwd: ROOT });
+    const readCheckoutHead = vi.fn(async () => REPAIR_HEAD);
+
+    expect(classification).toMatchObject({
+      kind: 'canonical-root-test',
+      checkoutCwd: null,
+    });
+    await expect(
+      evaluateFrozenLineageShellCommand(classification, ROOT, {
+        marker: marker(),
+        readCheckoutHead,
+      }),
+    ).resolves.toMatchObject({
+      allowed: false,
+      reason: 'checkout-cwd-unresolved',
+      policy: { sanctionedRoute: expect.stringContaining('explicit absolute cwd') },
+    });
+    expect(readCheckoutHead).not.toHaveBeenCalled();
+  });
+
   it('refuses a staging worktree cut without paying for a Git HEAD probe', async () => {
     const classification = classifyFrozenLineageShellCommand({
       command: 'git worktree add --detach /tmp/candidate staging',
@@ -484,6 +559,8 @@ describe('frozen lineage carry policy', () => {
     'Never derive the judged candidate from staging; use the live repairHead.',
     'A checkpoint that instructs a successor to use current HEAD as the judged candidate is rejected.',
     'The policy refuses candidate selection from integrationBranch.',
+    'The refusal says staging was selected as the judged candidate; this sentence describes the diagnostic, not a directive.',
+    'A carry row describing the refusal contains selecting staging as the judged candidate.',
     'current-build verification on staging is available — re-check: curl http://127.0.0.1:3170/api/desktop/version',
     'staging availability for current-build verification — re-check: curl :3170',
     'staging is available for current-build verification — re-check: curl :3170',

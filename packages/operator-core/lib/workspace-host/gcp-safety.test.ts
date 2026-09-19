@@ -248,6 +248,34 @@ describe('GCP managed-resource census and orphan reaper', () => {
     expect(census.reaperPlan).toEqual([]);
   });
 
+  it.each([
+    { name: 'another host', providerId: 'peer-disk', hostLabel: 'host-2', clean: true, mismatch: false },
+    { name: 'a relabelled registered disk', providerId: 'registered-disk', hostLabel: 'host-2', clean: false, mismatch: true },
+    { name: 'an unregistered owned disk', providerId: 'orphan-disk', hostLabel: 'host-1', clean: false, mismatch: false },
+    { name: 'an unattributed workspace disk', providerId: 'unknown-disk', hostLabel: '', clean: false, mismatch: true },
+  ])('scopes ordinary host inventory safely for $name', ({ providerId, hostLabel, clean, mismatch }) => {
+    const observedDisk = resource('disk', providerId);
+    const census = censusGcpWorkspaceHostResources({
+      hostId: 'host-1',
+      workspaceId: 'workspace-1',
+      expected: [],
+      registeredHostResources: [resource('disk', 'registered-disk')],
+      observed: [{
+        resource: observedDisk,
+        labels: { ...labels(), [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]: hostLabel },
+        observedAt: NOW,
+      }],
+      inventoryEvidence: inventoryEvidence(),
+      evaluatedAt: NOW,
+      orphanGraceMs: HOUR,
+    });
+
+    expect(census.clean).toBe(clean);
+    expect(census.labelMismatches.map(({ resource: entry }) => entry.providerId)).toEqual(mismatch ? [providerId] : []);
+    expect(census.untracked.map(({ resource: entry }) => entry.providerId)).toEqual(hostLabel === 'host-1' ? [providerId] : []);
+    expect(census.reaperPlan.map(({ resource: entry }) => entry.providerId)).toEqual(hostLabel === 'host-1' ? [providerId] : []);
+  });
+
   it('requires non-vacuous all-kind inventory evidence and detects deterministic Router/NAT orphans', () => {
     const evidence = inventoryEvidence().map((entry) =>
       entry.kind === 'router'

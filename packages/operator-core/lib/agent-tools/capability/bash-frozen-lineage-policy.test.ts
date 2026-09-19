@@ -10,6 +10,7 @@ import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const markerIo = vi.hoisted(() => ({ read: vi.fn() }));
+const queueIo = vi.hoisted(() => ({ read: vi.fn() }));
 const gitIo = vi.hoisted(() => ({ head: vi.fn() }));
 const jobs = vi.hoisted(() => ({
   startBackground: vi.fn(() => ({
@@ -30,6 +31,9 @@ const jobs = vi.hoisted(() => ({
 vi.mock('../../release/frozen-repair-edit-marker', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/frozen-repair-edit-marker')>()),
   readFrozenRepairMarker: markerIo.read,
+}));
+vi.mock('../../harness/routines/release-actions', () => ({
+  readFrozenCandidateRepairQueue: queueIo.read,
 }));
 vi.mock('../../harness/docs/git-runner', () => ({ repoHeadSha: gitIo.head }));
 vi.mock('./bash-jobs', async (importOriginal) => ({
@@ -61,6 +65,10 @@ const MARKER = {
   admittedPaths: [],
   legs: [],
 };
+const QUEUE = {
+  ...MARKER,
+  phase: 'ready-to-verify',
+};
 
 type ToolResult = { content: Array<{ text: string }>; isError?: boolean };
 type Tool = { handler: (args: unknown, ctx: unknown) => Promise<ToolResult> };
@@ -83,7 +91,10 @@ function payload(result: ToolResult): Record<string, unknown> {
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.PAPERCUSP_INTEGRATION_ROOT = ROOT;
-  markerIo.read.mockReturnValue(MARKER);
+  // The queue is authoritative. Keep the marker deliberately stale so these
+  // handler tests cannot pass by accidentally falling back to the projection.
+  markerIo.read.mockReturnValue({ ...MARKER, repairHead: CANDIDATE, updatedAtMs: 1 });
+  queueIo.read.mockResolvedValue(QUEUE);
   gitIo.head.mockResolvedValue(CANDIDATE);
   jobs.snapshotJobResult.mockReturnValue({
     status: 'completed',
@@ -97,6 +108,19 @@ beforeEach(() => {
 });
 
 describe('capability:bash frozen-lineage guard', () => {
+  it('uses the authoritative repair_queue identity instead of a stale marker', async () => {
+    const result = await bash.handler({ command: 'npm test', cwd: ROOT }, ctx());
+
+    expect(queueIo.read).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: expect.any(String) }));
+    expect(markerIo.read).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    expect(payload(result)).toMatchObject({
+      error: 'frozen_candidate_lineage_violation',
+      checkoutHead: CANDIDATE,
+      liveIdentity: { candidate: CANDIDATE, repairHead: REPAIR_HEAD },
+    });
+  });
+
   it('refuses a canonical root test from a checkout other than repairHead', async () => {
     const result = await bash.handler({ command: 'npm test', cwd: ROOT }, ctx());
     expect(result.isError).toBe(true);
@@ -116,6 +140,29 @@ describe('capability:bash frozen-lineage guard', () => {
     const result = await bash.handler({ command: 'npm run test:affected', cwd: ROOT }, ctx());
     expect(result.isError).not.toBe(true);
     expect(jobs.startBackground).toHaveBeenCalledOnce();
+  });
+
+  it('treats an authoritative ready-to-test queue as inactive even when the marker is stale', async () => {
+    queueIo.read.mockResolvedValue({ ...QUEUE, phase: 'ready-to-test' });
+
+    const result = await bash.handler({ command: 'npm test', cwd: ROOT }, ctx());
+
+    expect(result.isError).not.toBe(true);
+    expect(markerIo.read).not.toHaveBeenCalled();
+    expect(gitIo.head).not.toHaveBeenCalled();
+    expect(jobs.startBackground).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a governed test when its effective checkout cwd cannot be resolved', async () => {
+    const result = await bash.handler({ command: 'cd "$UNKNOWN_CWD" && npm test', cwd: ROOT }, ctx());
+
+    expect(result.isError).toBe(true);
+    expect(payload(result)).toMatchObject({
+      error: 'frozen_candidate_lineage_violation',
+      reason: 'checkout-cwd-unresolved',
+    });
+    expect(gitIo.head).not.toHaveBeenCalled();
+    expect(jobs.startBackground).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -386,6 +386,12 @@ export interface GcpWorkspaceHostResourceCensusInput {
   hostId: string;
   workspaceId: string;
   expected: readonly WorkspaceHostResourceRef[];
+  /**
+   * Ordinary host teardown: retain the full registered population, including resources expected
+   * absent, so a survivor cannot evade the census by changing its host label. Explicitly labelled
+   * peers outside this population are not defects. Omit for the strict workspace-wide canary census.
+   */
+  registeredHostResources?: readonly WorkspaceHostResourceRef[];
   observed: readonly GcpManagedWorkspaceHostResourceObservation[];
   inventoryEvidence: readonly GcpWorkspaceHostInventoryEvidence[];
   evaluatedAt: string;
@@ -431,6 +437,9 @@ export function censusGcpWorkspaceHostResources(
   const evaluatedAtMs = timestamp(input.evaluatedAt, 'census evaluatedAt');
   const orphanGraceMs = positiveDuration(input.orphanGraceMs, 'census orphanGraceMs');
   input.expected.forEach((resource, index) => assertGcpResource(resource, `census expected[${index}]`));
+  input.registeredHostResources?.forEach((resource, index) =>
+    assertGcpResource(resource, `census registeredHostResources[${index}]`),
+  );
   input.observed.forEach((entry, index) => assertGcpResource(entry.resource, `census observed[${index}].resource`));
   const inventoryByKind = new Map<GcpWorkspaceHostCensusResourceKind, GcpWorkspaceHostInventoryEvidence>();
   for (const [index, evidence] of input.inventoryEvidence.entries()) {
@@ -475,6 +484,7 @@ export function censusGcpWorkspaceHostResources(
     [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId]: gcpWorkspaceHostLabelValue(input.workspaceId),
   } as const;
   const expectedKeys = new Set(input.expected.map(resourceKey));
+  const registeredKeys = new Set(input.registeredHostResources?.map(resourceKey));
   const observedByKey = new Map(input.observed.map((entry) => [resourceKey(entry.resource), entry]));
   const matchesManagedIdentity = (entry: GcpManagedWorkspaceHostResourceObservation) => {
     const kind = entry.resource.kind as GcpWorkspaceHostCensusResourceKind;
@@ -496,7 +506,11 @@ export function censusGcpWorkspaceHostResources(
   const labelMismatches = input.observed.filter(
     (entry) =>
       !matchesManagedIdentity(entry) &&
-      (expectedKeys.has(resourceKey(entry.resource)) || matchesManagedWorkspace(entry)),
+      (expectedKeys.has(resourceKey(entry.resource)) ||
+        registeredKeys.has(resourceKey(entry.resource)) ||
+        (matchesManagedWorkspace(entry) &&
+          (input.registeredHostResources === undefined ||
+            !entry.labels[GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]?.trim()))),
   );
   const untracked = managed.filter((entry) => !expectedKeys.has(resourceKey(entry.resource)));
   const missing = input.expected.filter((entry) => {

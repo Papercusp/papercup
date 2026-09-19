@@ -6,6 +6,7 @@ import {
   CONTROL_TRANSITION_MAX_TOKENS,
   CONTROL_TRANSITION_SCHEMA,
   acknowledgeControlTransition,
+  controlStateHash,
   failControlTransitionActivation,
   markControlTransitionPrepared,
   decideControlTransitionDelivery,
@@ -179,6 +180,13 @@ describe('compact durable CTRL anchor', () => {
     });
   });
 
+  it('fingerprints normalized state rather than delivery generation', () => {
+    const base = state({ modes: ['auto'], scope: { ...state().scope, items: ['P-014', 'P-013'] } });
+    const reordered = state({ modes: ['auto'], scope: { ...state().scope, items: ['P-013', 'P-014'] } });
+    expect(controlStateHash(base)).toBe(controlStateHash(reordered));
+    expect(controlStateHash(base)).not.toBe(controlStateHash({ ...base, carry: 'cold' }));
+  });
+
   it('holds generation on an unchanged reconciliation and increments on semantic change', async () => {
     const sql = inMemoryPersistSql();
     const a = await persistControlAnchor(
@@ -223,6 +231,7 @@ describe('compact durable CTRL anchor', () => {
       rule: 'replace-full-never-merge-behind',
     });
     expect(anchor.provenance.source).toBe('harness_shared.session_briefs.control_state');
+    expect(anchor.stateHash).toBe(controlStateHash(anchor.state));
     expect(anchor.budget.estimatedTokens).toBe(estimateControlAnchorTokens(anchor));
     expect(anchor.budget.estimatedTokens).toBeLessThanOrEqual(CONTROL_ANCHOR_MAX_TOKENS);
   });
@@ -263,6 +272,7 @@ describe('compact durable CTRL anchor', () => {
       provenance: { origin: 'owner', actorId: 'su-x', ownerDirected: true },
     });
     expect(delivery.budget.estimatedTokens).toBeLessThanOrEqual(CONTROL_TRANSITION_MAX_TOKENS);
+    expect(delivery.stateHash).toBe(controlStateHash(delivery.state));
   });
 
   it('separates prepare from acknowledgement so a render failure leaves the generation pending', async () => {

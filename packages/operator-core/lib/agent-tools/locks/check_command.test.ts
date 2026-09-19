@@ -28,6 +28,10 @@ const frozenM = vi.hoisted(() => ({
   evaluate: vi.fn(),
   payload: vi.fn(),
 }));
+const queueIo = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock('../../harness/routines/release-actions', () => ({
+  readFrozenCandidateRepairQueue: queueIo.read,
+}));
 vi.mock('../../release/frozen-lineage-execution-policy', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/frozen-lineage-execution-policy')>()),
   classifyFrozenLineageShellCommand: frozenM.classify,
@@ -84,6 +88,7 @@ beforeEach(() => {
     policy: null,
   });
   frozenM.payload.mockReturnValue(null);
+  queueIo.read.mockResolvedValue(null);
 });
 
 describe('locks:check_command handler', () => {
@@ -150,6 +155,37 @@ describe('locks:check_command handler', () => {
       decision: 'block',
       frozenLineageDenyReason: message,
       frozenLineage: frozenVerdict,
+    });
+  });
+
+  it('wires the authoritative repair_queue reader with the handler workspace', async () => {
+    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
+    frozenM.classify.mockReturnValue({
+      kind: 'canonical-root-test',
+      operation: 'canonical-verification',
+      selectionSource: 'effective-checkout-head',
+      checkoutCwd: '/repo',
+    });
+    frozenM.evaluate.mockResolvedValue({
+      allowed: true,
+      reason: 'no-frozen-queue',
+      classification: null,
+      policy: null,
+    });
+
+    await tool.handler(
+      { command: 'npm test', cwd: '/repo' } as ToolArgs,
+      { workspaceId: 'ws-live' } as ToolContext,
+    );
+
+    const probe = frozenM.evaluate.mock.calls[0]?.[2] as {
+      readFrozenRepairQueue?: () => Promise<unknown>;
+    };
+    expect(probe.readFrozenRepairQueue).toEqual(expect.any(Function));
+    await probe.readFrozenRepairQueue?.();
+    expect(queueIo.read).toHaveBeenCalledWith({
+      workspaceId: 'ws-live',
+      installSlug: expect.any(String),
     });
   });
 });

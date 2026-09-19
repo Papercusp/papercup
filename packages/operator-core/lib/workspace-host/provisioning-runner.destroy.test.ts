@@ -338,6 +338,47 @@ describe('runWorkspaceHostDestroy', () => {
     }));
   });
 
+  it('completes ordinary teardown while another labelled host remains in the same workspace', async () => {
+    const { provider, apply, inventoryManagedResources } = providerHarness();
+    const { store, updateHostState } = storeHarness({ ...desired, labels: undefined });
+    const foreignResources = legacyInventorySnapshot().observed
+      .filter(({ resource }) => ['vm', 'disk'].includes(resource.kind))
+      .map((entry) => ({
+        ...entry,
+        resource: { ...entry.resource, providerId: `other-${entry.resource.providerId}` },
+        labels: { ...entry.labels, [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]: 'host-2' },
+      }));
+    inventoryManagedResources.mockResolvedValue(legacyInventorySnapshot(foreignResources));
+
+    const result = await runWorkspaceHostDestroy({ ...ordinaryInput(provider, store), censusSettleMs: 0 });
+
+    expect(result.status).toBe('succeeded');
+    expect(inventoryManagedResources).toHaveBeenCalledOnce();
+    expect(apply.mock.calls.map(([request]) => request.step.input.resourceName)).toEqual(
+      resources.map((resource) => resource.providerId),
+    );
+    expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'absent' }));
+  });
+
+  it.each(['host-1', 'host-2', ''])('rejects an ordinary registered survivor with host label %j and names it', async (hostLabel) => {
+    const { provider, inventoryManagedResources } = providerHarness();
+    const { store, updateOperation, updateHostState } = storeHarness({ ...desired, labels: undefined });
+    const survivor = legacyInventorySnapshot().observed.find(({ resource }) => resource.kind === 'vm')!;
+    inventoryManagedResources.mockResolvedValue(legacyInventorySnapshot([{
+      ...survivor,
+      labels: { ...survivor.labels, [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]: hostLabel },
+    }]));
+
+    const result = await runWorkspaceHostDestroy({ ...ordinaryInput(provider, store), censusSettleMs: 0 });
+
+    expect(result.status).toBe('failed');
+    expect(updateHostState).not.toHaveBeenCalledWith(expect.objectContaining({ state: 'absent' }));
+    const failure = updateOperation.mock.calls.map(([entry]) => entry).find((entry) => entry.status === 'failed');
+    const reason = String((failure?.error as { reason?: unknown } | undefined)?.reason ?? '');
+    expect(reason).toContain(survivor.resource.providerId);
+    expect(reason).toContain(hostLabel === 'host-1' ? 'provider.untracked' : 'provider.labelMismatches');
+  });
+
   it('persists a durable snapshot identity before deleting resources and projects it as the recovery point', async () => {
     const { provider, apply, inventoryManagedResources } = providerHarness();
     const snapshot: WorkspaceHostResourceRef = {

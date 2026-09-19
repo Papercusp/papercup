@@ -287,7 +287,8 @@ export const SELF_RECALL_POINTER =
 export const REORIENT_BANNER =
   'This is a stale snapshot of a live system, but its post-compaction recovery is pushed ' +
   'automatically below. A complete marker means do not re-fetch it; use the named fallback ' +
-  'exactly once only when the marker is absent, incomplete, or control-generation-mismatched.';
+  'exactly once only when the marker is absent, incomplete, or its control-state hash mismatches ' +
+  '(legacy markers fall back to generation mismatch).';
 
 // ── Build ─────────────────────────────────────────────────────────────────────
 
@@ -1211,25 +1212,30 @@ function sanitizeBriefForRole(brief: CarryBrief, report: CarryRoleSafetyReport):
 export function completeRecoveryInstruction(
   controlGeneration: number | null | undefined,
   judgeSafe: boolean,
+  controlStateHash?: string | null,
 ): string {
   const stamped =
     typeof controlGeneration === 'number'
       ? `control generation ${controlGeneration}`
       : 'the stamped control generation';
+  const hashed = controlStateHash ? ` (control state hash ${controlStateHash})` : '';
   if (judgeSafe) {
     return (
-      `Automatic recovery is complete for ${stamped}. While that is the generation reported in this turn, ` +
-      'continue the assigned evaluation using the evidence delivered here. If a control block in this turn ' +
-      'reports a DIFFERENT generation, this recovery is STALE for it — do not treat the delivered state as ' +
+      `Automatic recovery is complete for ${stamped}${hashed}. While that generation and control state hash ` +
+      'are reported in this turn, continue the assigned evaluation using the evidence delivered here. If a ' +
+      'control block in this turn reports a DIFFERENT control state hash (or, for a legacy block without a ' +
+      'hash, a DIFFERENT generation), this recovery is STALE for it — do not treat the delivered state as ' +
       'current; continue using only the permitted read-only evidence surface.'
     );
   }
   return (
-    `Automatic recovery is complete for ${stamped}. Do NOT call coord:orient to re-fetch it while ⟦CTRL:…⟧ ` +
-    `still reports ${stamped}; declare your actual lane with ` +
+    `Automatic recovery is complete for ${stamped}${hashed}. Do NOT call coord:orient to re-fetch it while ` +
+    `⟦CTRL:…⟧ still reports the same control state hash${controlStateHash ? ` ${controlStateHash}` : ''} ` +
+    `(or, for a legacy block without a hash, ${stamped}); declare your actual lane with ` +
     '`coord:declare-intent { intent, current_plan_slug, items }`. If a ⟦CTRL:…⟧ block in this turn reports a ' +
-    'DIFFERENT generation, this recovery is STALE for it and the do-not-re-fetch instruction above does NOT ' +
-    'apply. Call `coord:orient { afterCompaction: true }` exactly once, then continue.'
+    'DIFFERENT control state hash (or, for a legacy block without a hash, a DIFFERENT generation), this ' +
+    'recovery is STALE for it and the do-not-re-fetch instruction above does NOT apply. Call ' +
+    '`coord:orient { afterCompaction: true }` exactly once, then continue.'
   );
 }
 
@@ -1268,7 +1274,7 @@ export function renderAutomaticCompactionRecovery(
   const lines = [
     `${AUTOMATIC_COMPACTION_RECOVERY_MARKER} ${JSON.stringify(renderedMarker)}`,
     marker.complete
-      ? completeRecoveryInstruction(marker.controlGeneration, judgeSafe)
+      ? completeRecoveryInstruction(marker.controlGeneration, judgeSafe, marker.controlStateHash)
       : judgeSafe
         ? 'Automatic recovery is incomplete. Continue the assigned evaluation using the permitted evidence; do not initiate engineering coordination.'
         : 'Automatic recovery is incomplete. Call `coord:orient { afterCompaction: true }` exactly once, then continue.',

@@ -19,6 +19,14 @@ export interface FrozenLineageIdentity {
   queueRevision: number;
 }
 
+/** The authoritative queue fields required at an execution boundary. */
+export interface FrozenLineageAuthoritativeQueue {
+  candidate: string;
+  repairHead: string;
+  updatedAtMs: number;
+  phase: string;
+}
+
 export type FrozenLineageIdentityField = keyof FrozenLineageIdentity;
 
 export interface FrozenLineageIdentityComparison {
@@ -28,14 +36,20 @@ export interface FrozenLineageIdentityComparison {
   actual: FrozenLineageIdentity;
 }
 
+export function frozenLineageIdentityFromQueue(
+  queue: Pick<FrozenLineageAuthoritativeQueue, 'candidate' | 'repairHead' | 'updatedAtMs'>,
+): FrozenLineageIdentity {
+  return {
+    candidate: queue.candidate,
+    repairHead: queue.repairHead,
+    queueRevision: queue.updatedAtMs,
+  };
+}
+
 export function frozenLineageIdentityFromMarker(
   marker: Pick<FrozenRepairEditMarker, 'candidate' | 'repairHead' | 'updatedAtMs'>,
 ): FrozenLineageIdentity {
-  return {
-    candidate: marker.candidate,
-    repairHead: marker.repairHead,
-    queueRevision: marker.updatedAtMs,
-  };
+  return frozenLineageIdentityFromQueue(marker);
 }
 
 export function readFrozenLineageIdentity(path?: string): FrozenLineageIdentity | null {
@@ -101,6 +115,8 @@ export interface FrozenLineagePolicyInput {
   selectionSource: FrozenLineageSelectionSource;
   /** Effective checkout HEAD observed at the execution boundary. */
   checkoutHead?: string | null;
+  /** Effective cwd of the governed command; null means it could not be resolved. */
+  checkoutCwd?: string | null;
   /** Queue identity captured by the authority boundary that requested the launch. */
   expectedIdentity?: FrozenLineageIdentity | null;
 }
@@ -112,6 +128,7 @@ export type FrozenLineagePolicyRefusalReason =
   | 'unsafe-candidate-source'
   | 'queue-identity-required'
   | 'queue-identity-mismatch'
+  | 'checkout-cwd-unresolved'
   | 'checkout-head-required'
   | 'checkout-head-mismatch';
 
@@ -139,6 +156,8 @@ export type FrozenLineagePolicyVerdict =
 export interface FrozenLineagePolicyProbe {
   /** Injected by tests/callers that already performed the live marker read. */
   marker?: FrozenRepairEditMarker | null;
+  /** Injected identity from the authoritative repair_queue reader. */
+  identity?: FrozenLineageIdentity | null;
 }
 
 function refusal(
@@ -157,9 +176,11 @@ function refusal(
     checkoutHead: input.checkoutHead ?? null,
     mismatchedIdentityFields,
     sanctionedRoute:
-      `Select and re-read live repairHead ${liveIdentity.repairHead} from queue revision ` +
-      `${liveIdentity.queueRevision} immediately before launch. Land fixes through ` +
-      "release:repair-queue { op:'admit', paths:[...] }.",
+      reason === 'checkout-cwd-unresolved'
+        ? 'Re-run with an explicit absolute cwd so the governed checkout can be resolved before launch.'
+        : `Select and re-read live repairHead ${liveIdentity.repairHead} from queue revision ` +
+          `${liveIdentity.queueRevision} immediately before launch. Land fixes through ` +
+          "release:repair-queue { op:'admit', paths:[...] }.",
   };
 }
 
@@ -174,8 +195,14 @@ export function evaluateFrozenLineagePolicy(
   input: FrozenLineagePolicyInput,
   probe: FrozenLineagePolicyProbe = {},
 ): FrozenLineagePolicyVerdict {
-  const marker = 'marker' in probe ? probe.marker : readFrozenRepairMarker();
-  if (!marker) {
+  const hasInjectedIdentity = Object.prototype.hasOwnProperty.call(probe, 'identity');
+  const marker = hasInjectedIdentity ? null : 'marker' in probe ? probe.marker : readFrozenRepairMarker();
+  const liveIdentity = hasInjectedIdentity
+    ? probe.identity ?? null
+    : marker
+      ? frozenLineageIdentityFromMarker(marker)
+      : null;
+  if (!liveIdentity) {
     return {
       allowed: true,
       reason: 'no-frozen-queue',
@@ -185,7 +212,6 @@ export function evaluateFrozenLineagePolicy(
     };
   }
 
-  const liveIdentity = frozenLineageIdentityFromMarker(marker);
   if (!isGovernedFrozenLineageOperation(input.operation)) {
     return {
       allowed: true,
@@ -207,6 +233,9 @@ export function evaluateFrozenLineagePolicy(
   const comparison = compareFrozenLineageIdentity(input.expectedIdentity, liveIdentity);
   if (!comparison.matches) {
     return refusal(input, liveIdentity, 'queue-identity-mismatch', comparison.mismatchedFields);
+  }
+  if (input.checkoutCwd === null) {
+    return refusal(input, liveIdentity, 'checkout-cwd-unresolved');
   }
   if (!input.checkoutHead) {
     return refusal(input, liveIdentity, 'checkout-head-required');
@@ -261,6 +290,8 @@ export interface FrozenLineageShellCommandProbe {
   marker?: FrozenRepairEditMarker | null;
   /** Production/default is the live marker read; a sequence makes CAS races testable. */
   readMarker?: () => FrozenRepairEditMarker | null;
+  /** The authoritative persisted repair_queue read; takes precedence over marker I/O. */
+  readFrozenRepairQueue?: () => Promise<FrozenLineageAuthoritativeQueue | null>;
   /** The handler supplies the shared sidecar-backed Git HEAD reader. */
   readCheckoutHead?: (cwd: string) => Promise<string | null>;
   /** The handler supplies its existing fail-soft realpath seam. */
@@ -534,11 +565,24 @@ export async function evaluateFrozenLineageShellCommand(
 
   const hasInjectedMarker = Object.prototype.hasOwnProperty.call(probe, 'marker');
   const readMarker = hasInjectedMarker ? () => probe.marker ?? null : (probe.readMarker ?? readFrozenRepairMarker);
-  const expectedMarker = readMarker();
-  if (!expectedMarker) {
+  const readLiveIdentity = async (): Promise<FrozenLineageIdentity | null> => {
+    if (probe.readFrozenRepairQueue) {
+      const queue = await probe.readFrozenRepairQueue();
+      if (!queue || queue.phase === 'ready-to-test') return null;
+      return frozenLineageIdentityFromQueue(queue);
+    }
+    const marker = readMarker();
+    return marker ? frozenLineageIdentityFromMarker(marker) : null;
+  };
+  const expectedIdentity = await readLiveIdentity();
+  if (!expectedIdentity) {
     const policy = evaluateFrozenLineagePolicy(
-      { operation: classification.operation, selectionSource: classification.selectionSource },
-      { marker: null },
+      {
+        operation: classification.operation,
+        selectionSource: classification.selectionSource,
+        checkoutCwd,
+      },
+      { identity: null },
     );
     return { allowed: true, reason: policy.reason, classification, policy };
   }
@@ -552,9 +596,10 @@ export async function evaluateFrozenLineageShellCommand(
       operation: classification.operation,
       selectionSource: classification.selectionSource,
       checkoutHead,
-      expectedIdentity: frozenLineageIdentityFromMarker(expectedMarker),
+      checkoutCwd,
+      expectedIdentity,
     },
-    { marker: readMarker() },
+    { identity: await readLiveIdentity() },
   );
   return { allowed: policy.allowed, reason: policy.reason, classification, policy };
 }
@@ -639,6 +684,12 @@ const CARRY_NEGATION_BEFORE =
   /\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|refus(?:e|es|ed|ing)|reject(?:s|ed|ing)?|forbid(?:s|den|ding)?|block(?:s|ed|ing)?)\b(?:\s+\S+){0,7}\s*$/i;
 const CARRY_RETRACTION_AFTER =
   /\b(?:is|are|was|were|has\s+been|have\s+been|must\s+be|will\s+be)\s+(?:wrong|unsafe|invalid|retracted|withdrawn|superseded|rejected|refused|forbidden|blocked)\b/i;
+// A carry row may quote the unsafe wording while explaining why a previous write
+// was refused. That is evidence about the guard, not a new instruction for the
+// successor. Keep this frame narrow: it requires a diagnostic/reporting subject
+// followed by a reporting verb before the candidate relation.
+const CARRY_DIAGNOSTIC_BEFORE =
+  /\b(?:refusal|refused|diagnostic|description|describ(?:e|es|ed|ing)|report(?:s|ed|ing)?|match(?:es|ed)?|contain(?:s|ed|ing)?|mention(?:s|ed|ing)?|quot(?:e|es|ed|ing)?|explain(?:s|ed|ing)?|error|message|row|prose|text|guard|policy)\b(?:\s+\S+){0,10}\s+(?:say(?:s|ing)?|said|report(?:s|ed|ing)?|match(?:es|ed)?|contain(?:s|ed|ing)?|mention(?:s|ed|ing)?|quot(?:e|es|ed|ing)?|describ(?:e|es|ed|ing)?|explain(?:s|ed|ing)?|flag(?:s|ged|ging)?|reject(?:s|ed|ing)?|refus(?:e|es|ed|ing)?|block(?:s|ed|ing)?)\b/i;
 
 function normalizedCarryClause(clause: string): string {
   return clause
@@ -652,6 +703,7 @@ function carryDirectiveIsNegated(clause: string, start: number, end: number): bo
   const span = clause.slice(start, end);
   const after = clause.slice(end, Math.min(clause.length, end + 160));
   if (CARRY_NEGATION_BEFORE.test(before)) return true;
+  if (CARRY_DIAGNOSTIC_BEFORE.test(before)) return true;
   if (/\b(?:not|never)\b/i.test(span)) return true;
   if (CARRY_RETRACTION_AFTER.test(after)) return true;
   return false;
