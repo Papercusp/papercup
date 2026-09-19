@@ -97,7 +97,6 @@ fi
 # shellcheck source=/dev/null
 source "$DISK_PREFLIGHT_LIB"
 
-LOCK="${VITE_BUILD_LOCK:-/tmp/papercup-operator-vite-build.lock}"
 CMD="${VITE_BUILD_CMD:-npx vite build}"
 WAIT_SECS="${VITE_BUILD_WAIT_SECS:-300}"
 
@@ -146,6 +145,17 @@ fi
 # Where dist/ lives. Overridable so the tests can exercise the real swap
 # mechanics against a throwaway tree instead of the app's live bundle.
 OUT_ROOT="${VITE_BUILD_OUT_ROOT:-$PWD}"
+# Serialize writers of the same physical output tree. A global lock made an
+# isolated release time out behind a staging build writing unrelated files.
+# Resolve aliases before hashing, and keep the lock outside the output tree so
+# a checkout cleanup cannot unlink a live lock. Explicit shared locks still win.
+LOCK="${VITE_BUILD_LOCK:-}"
+if [ -z "$LOCK" ]; then
+  mkdir -p "$OUT_ROOT"
+  LOCK_ROOT="$(cd "$OUT_ROOT" && pwd -P)"
+  LOCK_KEY="$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$LOCK_ROOT")"
+  LOCK="${TMPDIR:-/tmp}/papercup-operator-vite-build-${LOCK_KEY}.lock"
+fi
 DIST="$OUT_ROOT/dist"
 STAGE="$OUT_ROOT/dist.next"
 PREV="$OUT_ROOT/dist.prev"

@@ -182,7 +182,7 @@ index a3392d2..c83809b 100755
 +  } else { outputError(e.message); }
  }
 diff --git a/node_modules/verdict-cli/src/server.mjs b/node_modules/verdict-cli/src/server.mjs
-index 249847c..d98b574 100644
+index 249847c..b1a1ac7 100644
 --- a/node_modules/verdict-cli/src/server.mjs
 +++ b/node_modules/verdict-cli/src/server.mjs
 @@ -54,6 +54,23 @@ function profilePath(name) {
@@ -237,6 +237,15 @@ index 249847c..d98b574 100644
  
  function resetIdle() {
    clearTimeout(idleTimer);
+@@ -102,7 +140,7 @@ function parseAriaSnapshot(snapshot) {
+         refCounter++;
+         const ref = `@e${refCounter}`;
+         const locator = name
+-          ? page.getByRole(role, { name, exact: false })
++          ? page.getByRole(role, { name, exact: true })
+           : page.getByRole(role);
+         refs.set(ref, { locator, role, name });
+         output.push(`${ref} ${line.trim()}`);
 @@ -136,13 +174,14 @@ const commands = {
    async goto(args) {
      const url = args[0];

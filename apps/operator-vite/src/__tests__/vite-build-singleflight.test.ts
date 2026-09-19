@@ -18,7 +18,7 @@
 // app's live bundle).
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -65,6 +65,16 @@ function collect(child: ChildProcess): { stdout: () => string; stderr: () => str
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+async function waitForFile(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (existsSync(path)) return;
+    await sleep(50);
+  }
+  throw new Error(`Build did not reach its command: ${path}`);
+}
+
+const holdBuild = 'touch "$TEST_STARTED"; for i in $(seq 1 200); do [ ! -e "$TEST_RELEASE" ] || exit 0; sleep 0.05; done; exit 9';
+
 /** Seed a previous, WORKING bundle in dist/ — the thing a red build must not eat. */
 function seedWorkingBundle(): void {
   mkdirSync(join(tmp, 'dist', 'assets'), { recursive: true });
@@ -97,6 +107,55 @@ afterEach(() => {
 });
 
 describe('vite-build-singleflight — build serialization (EI-9836)', () => {
+  it('allows independent output roots to build concurrently with the default lock', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const started = join(tmp, 'started');
+    const release = join(tmp, 'release');
+    const first = collect(launch({
+      VITE_BUILD_LOCK: '', TMPDIR: tmp, VITE_BUILD_OUT_ROOT: join(tmp, 'first'),
+      TEST_STARTED: started, TEST_RELEASE: release, VITE_BUILD_CMD: holdBuild,
+    }));
+    try {
+      await waitForFile(started);
+      const second = collect(launch({
+        VITE_BUILD_LOCK: '', TMPDIR: tmp, VITE_BUILD_OUT_ROOT: join(tmp, 'second'),
+        VITE_BUILD_WAIT_SECS: '1', VITE_BUILD_CMD: 'echo independent-build',
+      }));
+      expect(await second.exited).toBe(0);
+      expect(second.stdout()).toContain('independent-build');
+    } finally {
+      writeFileSync(release, 'release');
+      await first.exited;
+    }
+  }, 15_000);
+
+  it('serializes symlink aliases of the same output root with the default lock', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const output = join(tmp, 'output');
+    const alias = join(tmp, 'alias');
+    mkdirSync(output);
+    symlinkSync(output, alias, 'dir');
+    const started = join(tmp, 'started');
+    const release = join(tmp, 'release');
+    const first = collect(launch({
+      VITE_BUILD_LOCK: '', TMPDIR: tmp, VITE_BUILD_OUT_ROOT: output,
+      TEST_STARTED: started, TEST_RELEASE: release, VITE_BUILD_CMD: holdBuild,
+    }));
+    try {
+      await waitForFile(started);
+      const second = collect(launch({
+        VITE_BUILD_LOCK: '', TMPDIR: tmp, VITE_BUILD_OUT_ROOT: alias,
+        VITE_BUILD_WAIT_SECS: '1', VITE_BUILD_CMD: 'echo raced',
+      }));
+      expect(await second.exited).toBe(1);
+      expect(second.stderr()).toContain('TIMED OUT');
+      expect(second.stdout()).not.toContain('raced');
+    } finally {
+      writeFileSync(release, 'release');
+      await first.exited;
+    }
+  }, 15_000);
+
   it('a second one-shot build WAITS for the first, then runs — never races or refuses', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
     const first = launch({ VITE_BUILD_CMD: 'sleep 1.5 && echo first-done' });
