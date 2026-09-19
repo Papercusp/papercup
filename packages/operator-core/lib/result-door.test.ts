@@ -370,7 +370,11 @@ describe('applyResultDoor', () => {
     expect(parsed).not.toHaveProperty('_projection');
     expect(parsed).not.toHaveProperty('items');
     expect((parsed as unknown[]).length).toBeLessThan(rows.length);
-    expect((parsed as unknown[]).at(-1)).toEqual(expect.objectContaining({ _truncated: true }));
+    expect((parsed as unknown[]).at(-1)).toEqual(expect.objectContaining({
+      kind: 'projection-truncation',
+      type: 'projection-truncation',
+      _truncated: true,
+    }));
 
     const resultDoor = (doored._meta!.resultDoor as {
       structural: boolean;
@@ -383,6 +387,99 @@ describe('applyResultDoor', () => {
     );
     expect(readSpill('ws-1', 'work_items:list', RUN_ID).endsWith(original)).toBe(true);
     expect(doored.structuredContent).toBe(rows);
+  });
+
+  it('REGRESSION (EI-23481355842555588): coord:thread array truncation is explicitly typed as a marker, not an empty message row', () => {
+    const entries = Array.from({ length: 300 }, (_, index) => ({
+      msg_id: `coord-${index}`,
+      kind: 'message',
+      from: 'peer',
+      summary: `reply-${index} ` + 'x'.repeat(240),
+    }));
+    const original = JSON.stringify({
+      root: 'coord-0',
+      entries,
+      entries_shown: entries.length,
+      entries_total: entries.length,
+    });
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      { toolName: 'coord:thread', workspaceId: 'ws-1', runId: RUN_ID },
+    ) as DoorableResult;
+    const projected = JSON.parse((doored.content[0] as { text: string }).text) as {
+      entries: Array<Record<string, unknown>>;
+      _projection: { truncated: boolean };
+    };
+    const marker = projected.entries.at(-1);
+
+    expect(projected._projection.truncated).toBe(true);
+    expect(marker).toMatchObject({
+      kind: 'projection-truncation',
+      type: 'projection-truncation',
+      _truncated: true,
+    });
+    expect(marker).not.toHaveProperty('msg_id');
+    expect(marker).not.toHaveProperty('summary');
+  });
+
+  it('REGRESSION (EI-23481355842555588): coord:send delivery verdicts survive generic result-door trimming', () => {
+    const noise = Object.fromEntries(
+      Array.from({ length: 32 }, (_, index) => [`detail${index}`, 'n'.repeat(900)]),
+    );
+    const payload = {
+      ok: true,
+      results: [{
+        ok: true,
+        ...noise,
+        msg_id: 'coord-send-verified-123',
+        wake: {
+          targets: ['peer-1'],
+          queued: 1,
+          woken: 1,
+          wakeOutcome: 'queued',
+          pickupConfirmed: false,
+          recipient_absent: false,
+          diagnostic: 'd'.repeat(BUDGET_CHARS * 2),
+        },
+        summary: 'delivery receipt ' + 's'.repeat(BUDGET_CHARS),
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const original = JSON.stringify(payload);
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const door = (toolName: string) => {
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        { toolName, workspaceId: 'ws-1', runId: RUN_ID },
+      ) as DoorableResult;
+      return JSON.parse((doored.content[0] as { text: string }).text) as {
+        results: Array<Record<string, any>>;
+        _projection: { truncated: boolean };
+      };
+    };
+
+    const parsed = door('coord:send');
+    expect(parsed._projection.truncated).toBe(true);
+    expect(parsed.results[0]).toMatchObject({
+      msg_id: 'coord-send-verified-123',
+      wake: {
+        queued: 1,
+        woken: 1,
+        wakeOutcome: 'queued',
+        pickupConfirmed: false,
+        recipient_absent: false,
+      },
+    });
+
+    // FALSIFIABILITY CONTROL: the same receipt-shaped bytes through an unrelated
+    // tool have no coord:send preservation declaration, so the delivery verdict
+    // is not passing merely because the fixture happened to fit.
+    const control = door('plans:list');
+    expect(control._projection.truncated).toBe(true);
+    expect(control.results[0]).not.toHaveProperty('wake');
   });
 
   it('REGRESSION (EI-22186855527494865): plans:get shipReadiness survives the door while unrequested bulk does not', () => {
@@ -589,6 +686,9 @@ describe('applyResultDoor', () => {
         stalled: false,
         repairQueue: { status: 'frozen', admissions },
       },
+      ...Object.fromEntries(
+        Array.from({ length: 24 }, (_, index) => [`queueNoise${index}`, 'q'.repeat(900)]),
+      ),
       changeInCandidate: {
         judgingSha: 'judged-sha',
         judgingShaSource: 'marker',

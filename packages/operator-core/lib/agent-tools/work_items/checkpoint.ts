@@ -596,8 +596,11 @@ function frozenWorkItemCarryViolation(text: string | null | undefined): FrozenCa
   );
 }
 
-function enforceFrozenWorkItemCarry<T extends string | null | undefined>(text: T): T {
-  const violation = frozenWorkItemCarryViolation(text);
+function enforceFrozenWorkItemCarry<T extends string | null | undefined>(text: T, suppliedText?: string): T {
+  // `text` may be the locked merge of this write with an older checkpoint. Only
+  // the bytes supplied by this call are executable authority; inherited history
+  // can contain a legacy directive that the caller is trying to document or retire.
+  const violation = frozenWorkItemCarryViolation(suppliedText ?? text);
   if (violation) throw new FrozenCarryCheckpointError(violation);
   return text;
 }
@@ -735,6 +738,7 @@ function rowsModeSpec() {
       'P-013: how supplied `checks` rows are applied. `merge` (default) unions ' +
         'supplied rows onto the carried set, so an incremental check update cannot drop unmentioned rows. `merge` + ' +
         '`checks:[]` is a no-op; use explicit `replace` + `checks:[]` to clear rows. This controls CHECK ROWS only, ' +
+        "and `retireIds` is rejected unless `rowsMode:'replace'` is explicit — it is never silently ignored on a merge. " +
         "never the checkpoint body: a full authoritative body+rows replacement is `append:false, rowsMode:'replace', " +
         'confirmShrink:true, confirmRetire:true`. Without confirmShrink, a >50% body shrink is auto-preserved and its ' +
         'checks become additive; without confirmRetire, omitted carried checks are refused before write. Prefer ' +
@@ -1323,6 +1327,29 @@ export default defineTool({
         const wantsConfirmClear = it.confirmClear ?? args.confirmClear ?? false;
         const wantsAppend = it.append ?? args.append ?? false;
         const rawSuppliedChecks = it.checks ?? args.checks;
+        const rowsMode = it.rowsMode ?? args.rowsMode ?? 'merge';
+        const wantsRetireIds = it.retireIds ?? args.retireIds;
+        // EI-23618780798277092: `retireIds` only has meaning for an explicit
+        // replace. The default merge path does not retire rows, so accepting this
+        // combination would acknowledge the request while silently ignoring the
+        // named retirements and leaving the caller's replacement rows at the cap.
+        // Reject before lookup/store work so the contradictory shape is visibly
+        // actionable and cannot be mistaken for a successful checkpoint write.
+        if (it.unchanged !== true && wantsRetireIds !== undefined && rowsMode !== 'replace') {
+          return {
+            ok: false as const,
+            id: it.id,
+            error: 'checkpoint_retire_ids_requires_replace',
+            errorCode: 'checkpoint_retire_ids_requires_replace',
+            retryable: true,
+            rowsMode,
+            retireIdsRequested: wantsRetireIds,
+            message:
+              "`retireIds` is only valid with explicit `rowsMode:'replace'`; this call used `rowsMode:'" +
+              rowsMode +
+              "'`. NOTHING was written. Use `rowsMode:'replace'` to retire the named rows, or omit `retireIds` for an additive merge.",
+          };
+        }
         // P-017: `learned`/`learnedLevel` are append-only effort-thread metadata,
         // not replacement checkpoint content. A learned-only call must therefore
         // take the same body-preserving route as checks/dependsOn; otherwise the
@@ -1476,9 +1503,7 @@ export default defineTool({
         // contradiction (append has nothing to append, and blank normally means
         // CLEAR), except when checks are supplied: that is an additive checks-only
         // patch and must preserve the narrative body.
-        const rowsMode = it.rowsMode ?? args.rowsMode ?? 'merge';
         const wantsConfirmRetire = it.confirmRetire ?? args.confirmRetire ?? false;
-        const wantsRetireIds = it.retireIds ?? args.retireIds;
         const isChecksOnlyPatch = checkpoint === undefined && rawSuppliedChecks !== undefined;
         if (wantsAppend && !(checkpoint && checkpoint.length > 0) && !isChecksOnlyPatch) {
           return {
@@ -1833,8 +1858,9 @@ export default defineTool({
           currentProvenanceText = markUnverifiedOwnerAttribution(currentProvenanceText) ?? currentProvenanceText;
         }
         // Reject caller-authored authority before entering the checkpoint store.
-        // The locked transform below checks the FINAL merged bytes as well, which
-        // is what catches a checks/dependency-only patch preserving stale prior text.
+        // The locked transform rechecks these same supplied bytes after composing
+        // the final note, but deliberately does not reinterpret inherited history
+        // as a new instruction.
         const directFrozenCarryViolation = frozenWorkItemCarryViolation(currentProvenanceText);
         if (directFrozenCarryViolation) {
           return { ...directFrozenCarryViolation, id: it.id };
@@ -2061,9 +2087,11 @@ export default defineTool({
                 } else if (rowsMode === 'replace' && !wantsConfirmRetire && droppedCheckClaims.length > 0) {
                   throw new ReplaceWouldDropError(droppedCheckClaims);
                 }
-                if (merged.length === 0) return enforceFrozenWorkItemCarry(body.length > 0 ? body : null);
+                if (merged.length === 0)
+                  return enforceFrozenWorkItemCarry(body.length > 0 ? body : null, currentProvenanceText);
                 const rendered = withCarryNoteChecks(body, merged);
-                if (rendered.length <= CHECKPOINT_CAP) return enforceFrozenWorkItemCarry(rendered);
+                if (rendered.length <= CHECKPOINT_CAP)
+                  return enforceFrozenWorkItemCarry(rendered, currentProvenanceText);
                 // Over cap: trim the BODY and re-attach, so the checks — bounded to
                 // CARRY_NOTE_MAX_CHECKS rows — are never the part that gets cut.
                 // EI-21472322403787688: trim DIRECTION follows the body's ordering.
@@ -2076,7 +2104,7 @@ export default defineTool({
                 const trimmedBody = shouldAppendRefresh
                   ? body.slice(0, keepBody) + TRUNCATION_MARKER
                   : TRUNCATION_MARKER + body.slice(Math.min(overflow, body.length));
-                return enforceFrozenWorkItemCarry(withCarryNoteChecks(trimmedBody, merged));
+                return enforceFrozenWorkItemCarry(withCarryNoteChecks(trimmedBody, merged), currentProvenanceText);
               }
             : undefined;
         /**

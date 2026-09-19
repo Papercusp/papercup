@@ -5,6 +5,8 @@
   "workItemId": "WI-10000630",
   "specRevision": "SERVICENOW-P002-CONTENT@2",
   "reviewedAt": "2026-09-08T02:33:25Z",
+  "reviewStale": true,
+  "reviewStaleReason": "sourceSha256 was re-pinned after the recorded manual review; the owner must re-review the source and update reviewedAt before this record can return to pass.",
   "sourcePath": "interview-prep/servicenow-staff-ml-interview-prep.html",
   "sourceSha256": "3ef5b4dcedc0a3fb3fdbbae19359d21a18d1c0a8d51eb1abe8837d082f812ed5",
   "answerBankPath": "interview-prep/papercusp-answer-bank.html",
@@ -20,7 +22,7 @@
     ]
   },
   "manualReview": {
-    "result": "pass",
+    "result": "stale",
     "scope": [
       "Supplied meeting time, participant names, and meeting URL match the owner-provided values byte-for-byte after whitespace normalization.",
       "The page explicitly says the interview date was not supplied and does not invent one in the meeting card or facts panel.",

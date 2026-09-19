@@ -209,6 +209,8 @@ function operatorKernelDenial(
  */
 interface OperatorKernelState extends KernelContextState {
   identityLaunchRecord?: unknown;
+  /** The control anchor exists, but its owning adv_sessions row does not. */
+  identityLaunchRecordMissing?: boolean;
   authorityUnavailable?: boolean;
 }
 
@@ -231,7 +233,13 @@ export async function readControlAnchorKernelState(
 
   const { sql } = getOrgPg();
   let stateRow:
-    | { control_state: unknown; control_generation: number | string | null; workspace_id: string | null; launch_spec?: unknown }
+    | {
+        control_state: unknown;
+        control_generation: number | string | null;
+        workspace_id: string | null;
+        adv_session_id: number | string | null;
+        launch_spec?: unknown;
+      }
     | undefined;
   let controlReadFailed = false;
   try {
@@ -239,10 +247,11 @@ export async function readControlAnchorKernelState(
       control_state: unknown;
       control_generation: number | string | null;
       workspace_id: string | null;
+      adv_session_id: number | string | null;
       launch_spec?: unknown;
     }>>`
       SELECT b.control_state, b.control_generation, COALESCE(b.workspace_id, a.workspace_id) AS workspace_id,
-             a.launch_spec
+             a.id AS adv_session_id, a.launch_spec
         FROM (
           SELECT control_state, control_generation, workspace_id
             FROM harness_shared.session_briefs
@@ -312,8 +321,18 @@ export async function readControlAnchorKernelState(
   if (!hasAnyState) return null;
 
   const generation = stateRow?.control_generation == null ? null : String(stateRow.control_generation);
+  // The SQL row carries an explicit joined-table identity so a null launch_spec
+  // cannot be mistaken for an absent adv_sessions row. Only the latter opens
+  // the narrow coord:orient recovery door; an existing row with a missing or
+  // malformed launch_spec remains an ordinary stale-artifact denial.
+  const identityLaunchRecordMissing = Boolean(
+    stateRow &&
+    Object.prototype.hasOwnProperty.call(stateRow, 'adv_session_id') &&
+    stateRow.adv_session_id == null,
+  );
   return {
     ...(controlReadFailed ? { authorityUnavailable: true } : {}),
+    ...(identityLaunchRecordMissing ? { identityLaunchRecordMissing: true } : {}),
     ...(stateRow && Object.prototype.hasOwnProperty.call(stateRow, 'launch_spec')
       ? { identityLaunchRecord: stateRow.launch_spec } : {}),
     ...(activation ? { activation } : {}),

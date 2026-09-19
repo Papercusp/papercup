@@ -5594,7 +5594,8 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "guidance": {
         "when": "The consult is settled (answered) — or engaged-but-stuck: you validated relevance yet cannot help (cant_help, with the reason) — or the QUESTION is void (duplicate, inadmissible, already settled elsewhere): cant_help + reason is the TERMINAL, NON-ADVANCING exit, the only one that does not spend the next reviewer — or cap-hit while STILL deliberating: graduate it into shared live work.",
@@ -5630,7 +5631,8 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "guidance": {
         "when": "You validated the consult (read the cited evidence) and your context genuinely does not cover it. Declining fast is the helpful move — never answer from guesswork.",
@@ -5704,7 +5706,8 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "guidance": {
         "when": "You were routed a consult (a 🧭 wake naming a conversation) and are answering/clarifying from your own transcript — or you are the requester following up.",
@@ -5896,7 +5899,8 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "guidance": {
         "when": "You have conversation ids and need the full thread. Use `id` or `conversation_id` for one, or `ids` for a batch.",
@@ -7006,7 +7010,7 @@
         "judge"
       ],
       "guidance": {
-        "when": "At turn start or wake. Pass `intent` to recall memory and declare it. For repeating leader ticks, pass `mode:'monitor'` to skip heavy backlog/facts/events/catch-up/recipes/recall folds while keeping assignments, inbox, and declaration. Inspect the ⟦post-compaction-recovery⟧ marker already delivered in the carry context. If it is complete and its controlGeneration matches the latest ⟦CTRL:…⟧ generation, recovery already arrived: do not call coord:orient; declare your actual lane with coord:declare-intent { intent, current_plan_slug, items }. Call coord:orient { afterCompaction: true } exactly once only when the marker is absent, incomplete, generation-mismatched, or you deliberately need live data excluded from the injected block.",
+        "when": "At turn start or wake. Pass `intent` to recall memory and declare it. For repeating leader ticks, pass `mode:'monitor'` to skip heavy backlog/facts/events/catch-up/recipes/recall folds while keeping assignments, inbox, and declaration. Inspect the ⟦post-compaction-recovery⟧ marker already delivered in the carry context. If it is complete and its controlStateHash matches the latest ⟦CTRL:…⟧ stateHash, recovery already arrived: do not call coord:orient; declare your actual lane with coord:declare-intent { intent, current_plan_slug, items }. Call coord:orient { afterCompaction: true } exactly once only when the marker is absent, incomplete, content-mismatched, or a legacy marker/CTRL pair has no stateHash and its generation mismatches, or you deliberately need live data excluded from the injected block.",
         "notWhen": "A human status display or full presence roster; use coord:glance or coord:presence. Do not immediately re-call folds returned here.",
         "chaining": "Prefer over separate bootstrap calls. A close `recipes` hit → recipes:run it. Then work_items:pickup { id, intent }; claimable[] is advisory (EI-6468)."
       }

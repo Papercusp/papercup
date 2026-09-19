@@ -163,6 +163,7 @@ import {
   takeStoredInitializeHandler,
   wrapInitializeWithInstructions,
   buildInitializeStageTelemetry,
+  isNativeInstructionBudgetClient,
   type InitializeStageOutcome,
 } from './_mcp-initialize-enrich';
 import { buildMcpPrelude } from '../../../memory/mcp-prelude';
@@ -4582,7 +4583,7 @@ export function registerMcpHost(server: McpServer): void {
           });
           if (telemetry) console.warn('[mcp-initialize-stage]', telemetry);
         }
-      }) as StoredInitializeHandler,
+      }, (req) => !isNativeInstructionBudgetClient(req)) as StoredInitializeHandler,
     );
   }
 

@@ -377,7 +377,7 @@ describe('evaluatePlanAcceptanceGate', () => {
           plan_slug: 'some-plan-2026-08-11',
           template: null,
           template_slug: null,
-          content: '## Now\n\nReport: https://claude.ai/code/artifact/abc123',
+          content: '## Now\n\nThe detector docs are here.\nReport: https://claude.ai/code/artifact/abc123',
         },
       ]),
     );
@@ -385,8 +385,28 @@ describe('evaluatePlanAcceptanceGate', () => {
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v).toMatchObject({ satisfied: false, code: 'ephemeral_deliverable_unbacked' });
     expect(v.message).toContain('claude.ai/code/artifact/abc123');
+    expect(v.message).toContain("line 4, column 9");
     expect(v.message).toContain('durable companion/source reference');
     expect(v.message).toContain('not waived by');
+  });
+
+  it('locates a bare scratch directory reference when prose triggers the durability gate', async () => {
+    mockPg.mockReturnValue(
+      sqlReturning([
+        {
+          plan_slug: 'scratch-prose-plan',
+          template: null,
+          template_slug: null,
+          content:
+            '## Notes\n\nThe in-tree `.papercusp/scratch/` directory is deliberately not flagged by the sibling lint.',
+        },
+      ]),
+    );
+
+    const v = await evaluatePlanAcceptanceGate('scratch-prose-plan');
+    expect(v).toMatchObject({ satisfied: false, code: 'ephemeral_deliverable_unbacked' });
+    expect(v.message).toContain("scratch-path '.papercusp/scratch'");
+    expect(v.message).toMatch(/line 3, column \d+/);
   });
 
   it('allows an ephemeral URL when the plan records its durable source path', async () => {

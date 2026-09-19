@@ -13,7 +13,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { COORD_ROLES } from '../roles';
+import { COORD_READ_ROLES } from '../roles';
 import { resolveAgentIdentity, type AgentIdentity } from '../identity';
 import { getConversation, getConsultStates } from '../conversations';
 import { mergeIds, runBulk, bulkContent } from '../../_bulk';
@@ -34,7 +34,7 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_READ_ROLES],
   args: z
     .object({
       id: z.string().min(1).optional().describe('a single conversation id (n=1 shorthand for ids:[id])'),

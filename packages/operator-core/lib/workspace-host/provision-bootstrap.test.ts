@@ -228,6 +228,61 @@ describe('workspace-host provision bootstrap profile', () => {
     }
   });
 
+  it('identifies the post-forward evaluator unit and its identity drop-in in a manifest refusal', async () => {
+    const base = artifact();
+    const manifest = JSON.stringify({
+      artifact: {
+        ...base,
+        compatibility: [{ ...base.compatibility[0], agentHomeBundleContractVersions: ['v1'] }],
+      },
+    });
+    const error = await resolveWorkspaceHostProvisionBootstrapProfile({
+      env: env(),
+      readTextFile: reader({ ...FILES, [MANIFEST_PATH]: manifest }),
+      controllerProfile: CONTROLLER,
+      resolveServiceUnit: async () => 'papercusp-bg-host.service',
+      evaluatorPid: 3303202,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(WorkspaceHostProvisionBootstrapProfileError);
+    expect((error as WorkspaceHostProvisionBootstrapProfileError).message).toContain(
+      "manifest was read by systemd unit 'papercusp-bg-host.service' (MainPID 3303202) after request forwarding",
+    );
+    expect((error as WorkspaceHostProvisionBootstrapProfileError).message).toContain(
+      "~/.config/systemd/user/papercusp-bg-host.service.d/53-workspace-host-identity.conf",
+    );
+    expect((error as WorkspaceHostProvisionBootstrapProfileError).message).toContain(
+      "repointing the request-only endpoint's unit has no effect",
+    );
+  });
+
+  it('keeps the diagnostic honest when no systemd evaluator unit can be resolved', async () => {
+    const base = artifact();
+    const error = await resolveWorkspaceHostProvisionBootstrapProfile({
+      env: env(),
+      readTextFile: reader({
+        ...FILES,
+        [MANIFEST_PATH]: JSON.stringify({
+          artifact: {
+            ...base,
+            compatibility: [{ ...base.compatibility[0], agentHomeBundleContractVersions: ['v1'] }],
+          },
+        }),
+      }),
+      controllerProfile: CONTROLLER,
+      resolveServiceUnit: async () => null,
+      evaluatorPid: 4421,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(WorkspaceHostProvisionBootstrapProfileError);
+    expect((error as WorkspaceHostProvisionBootstrapProfileError).message).toContain(
+      'manifest was read by process PID 4421; no systemd .service unit could be resolved',
+    );
+    expect((error as WorkspaceHostProvisionBootstrapProfileError).message).toContain(
+      'update PAPERCUSP_WORKSPACE_HOST_RELEASE_MANIFEST on the background controller that received it',
+    );
+  });
+
   it('accepts a publication that declares the version this controller emits', async () => {
     // Calibration for the three refusals above. Without it they could all be passing for an
     // unrelated reason (a malformed fixture, a broken reader), and a guard that rejects

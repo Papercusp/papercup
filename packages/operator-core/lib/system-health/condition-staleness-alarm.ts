@@ -53,8 +53,14 @@ import {
   type ReconcileSummary,
 } from '../coord/condition-bridge';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
-import { evaluateGitSyncStall } from '../release/git-sync-stall-watchdog';
-import { readRoutineEngineLiveness } from '../release/routine-engine-liveness';
+import {
+  evaluateGitSyncStall,
+  type GitSyncStallVerdict,
+} from '../release/git-sync-stall-watchdog';
+import {
+  readRoutineEngineLiveness,
+  type RoutineEngineLiveness,
+} from '../release/routine-engine-liveness';
 import type { SystemHealth } from './types';
 import type { BeesLivenessContext } from './liveness-alarm';
 
@@ -104,6 +110,24 @@ interface GitSyncHealthRow {
   reaped_count: number | null;
   wd_error_sweeps: number | null;
   git_sync_activity: unknown;
+}
+
+/**
+ * Convert a git-sync stall verdict into an auto-clear decision only when the
+ * routine engine is live enough to make that verdict meaningful.
+ *
+ * `evaluateGitSyncStall` deliberately suppresses its downstream signals when
+ * the routine engine is stale: the engine freeze is the root cause, and a
+ * quiet/old git-sync row cannot distinguish healthy from unevaluated. Treating
+ * that suppressed `stalled:false` as healthy is a false all-clear, so stale or
+ * unknown engine liveness must remain UNKNOWN (undefined) and fail open.
+ */
+export function verifiedGitSyncHealth(
+  verdict: Pick<GitSyncStallVerdict, 'stalled'>,
+  routineEngine: Pick<RoutineEngineLiveness, 'stale' | 'unknown'>,
+): boolean | undefined {
+  if (routineEngine.unknown || routineEngine.stale) return undefined;
+  return !verdict.stalled;
 }
 
 /**
@@ -195,7 +219,10 @@ async function defaultReadGitSyncHealth(
         },
         now,
       );
-      out.set(`${GIT_SYNC_STALL_PREFIX}${row.install_slug}`, !verdict.stalled);
+      const healthy = verifiedGitSyncHealth(verdict, routineEngine);
+      if (healthy !== undefined) {
+        out.set(`${GIT_SYNC_STALL_PREFIX}${row.install_slug}`, healthy);
+      }
     }
   } catch {
     // A read failure is unknown, never evidence that git-sync recovered.

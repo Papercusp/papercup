@@ -5,6 +5,7 @@ import {
   selectReconcilableConditions,
   selectAbsentConditions,
   readInfraLivenessHealthFromSharedSnapshot,
+  verifiedGitSyncHealth,
   toBridgeConditionStates,
   _resetConditionStalenessDebounce,
 } from './condition-staleness-alarm';
@@ -141,6 +142,31 @@ describe('readInfraLivenessHealthFromSharedSnapshot', () => {
 
     expect(result).toEqual(new Map());
     expect(evaluated).toBe(false);
+  });
+});
+
+describe('verifiedGitSyncHealth', () => {
+  it('keeps a stale routine-engine verdict unknown instead of treating suppressed alarms as healthy', () => {
+    expect(
+      verifiedGitSyncHealth(
+        { stalled: false },
+        { stale: true, unknown: false },
+      ),
+    ).toBeUndefined();
+  });
+
+  it('keeps an unreadable routine-engine verdict unknown', () => {
+    expect(
+      verifiedGitSyncHealth(
+        { stalled: false },
+        { stale: false, unknown: true },
+      ),
+    ).toBeUndefined();
+  });
+
+  it('returns the stall verdict only when routine-engine liveness is current', () => {
+    expect(verifiedGitSyncHealth({ stalled: false }, { stale: false, unknown: false })).toBe(true);
+    expect(verifiedGitSyncHealth({ stalled: true }, { stale: false, unknown: false })).toBe(false);
   });
 });
 

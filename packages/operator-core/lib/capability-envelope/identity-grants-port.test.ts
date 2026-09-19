@@ -183,6 +183,18 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'policy-unavailable' } } });
   });
 
+  it('opens only coord:orient for an explicitly missing launch record', async () => {
+    const f = fixture();
+    const read = vi.fn(async () => f.policy);
+    const state = { ...f.state, identityLaunchRecordMissing: true };
+
+    expect(await checkIdentityGrantKernel({ ...f.request, toolName: 'coord:orient' }, state, null, read))
+      .toMatchObject({ decision: 'allow', code: 'identity-recovery', applied: false });
+    expect(await checkIdentityGrantKernel(f.request, state, null, read))
+      .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'no-launch-record' } } });
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it('keeps verified grantless artifacts and legacy sessions unchanged without policy I/O', async () => {
     const f = fixture();
     const artifact = compileAgentSpecification({

@@ -379,6 +379,30 @@ export function evaluateEphemeralDeliverableDurability(content: string): {
 }
 
 /**
+ * Add source coordinates to the gate's refusal without changing the shared
+ * detector's public reference shape. References are found in scan order, so a
+ * repeated path is paired with its next occurrence in the plan body.
+ */
+function locateEphemeralDeliverableReferences(
+  content: string,
+  references: EphemeralDeliverableReference[],
+): string[] {
+  const nextSearchOffset = new Map<string, number>();
+  return references.map(({ kind, reference }) => {
+    const key = `${kind}:${reference.toLowerCase()}`;
+    const from = nextSearchOffset.get(key) ?? 0;
+    const offset = content.indexOf(reference, from);
+    if (offset < 0) return `${kind} '${reference}' (location unavailable)`;
+    nextSearchOffset.set(key, offset + reference.length);
+
+    const lineStart = content.lastIndexOf('\n', offset - 1) + 1;
+    const lineNumber = content.slice(0, offset).split('\n').length;
+    const columnNumber = offset - lineStart + 1;
+    return `${kind} '${reference}' (line ${lineNumber}, column ${columnNumber})`;
+  });
+}
+
+/**
  * Evaluate the acceptance gate for a plan about to be marked shipped/complete.
  * Never throws — an infrastructure failure inside a check degrades toward the
  * feature's default posture for that check (the flag read fails toward ON;
@@ -562,7 +586,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   // ability to inspect the promised deliverable at all.
   const deliverableDurability = evaluateEphemeralDeliverableDurability(planContent ?? '');
   if (!deliverableDurability.satisfied) {
-    const listed = deliverableDurability.references.map(({ kind, reference }) => `${kind} '${reference}'`).join(', ');
+    const listed = locateEphemeralDeliverableReferences(planContent ?? '', deliverableDurability.references).join(', ');
     return {
       satisfied: false,
       code: 'ephemeral_deliverable_unbacked',

@@ -54,6 +54,7 @@ import type {
   BeesHealth,
   WorkItemsHealth,
   WorkFeedHealth,
+  DeadRoutineNameCoverage,
   TokensHealth,
   WatchdogHealth,
   DeployHealth,
@@ -727,7 +728,13 @@ export function countStuckFrontier(rows: ReadonlyArray<{ ageDays?: number; title
  * (`isLoop && !hasRecurrence`).
  */
 export async function readDeadRoutines(sql: Sql, overdueMs: number, workspaceId: string): Promise<DeadRoutineCensus> {
-  const rows = await sql<Array<{ name: string; overdue_total: number; scope_total: number }>>`
+  const rows = await sql<Array<{
+    name: string;
+    overdue_total: number;
+    scope_total: number;
+    overdue_name_total: number;
+    active_name_total: number;
+  }>>`
     WITH scope AS (
       SELECT name, next_fire_at FROM harness_shared.routines
        WHERE active = true AND next_fire_at IS NOT NULL
@@ -736,23 +743,48 @@ export async function readDeadRoutines(sql: Sql, overdueMs: number, workspaceId:
                    AND NOT jsonb_exists(trigger_config, 'cron')
                    AND NOT jsonb_exists(trigger_config, 'rrule') )
     )
-    SELECT name,
+    , scope_counts AS (
+      SELECT name, count(*)::int AS active_name_total
+        FROM scope
+       GROUP BY name
+    )
+    , overdue AS (
+      SELECT name, next_fire_at
+        FROM scope
+       WHERE next_fire_at < now() - make_interval(secs => ${overdueMs / 1000})
+    )
+    SELECT overdue.name,
            count(*) OVER ()::int AS overdue_total,
-           (SELECT count(*)::int FROM scope) AS scope_total
-      FROM scope
-     WHERE next_fire_at < now() - make_interval(secs => ${overdueMs / 1000})
-     ORDER BY next_fire_at ASC
+           (SELECT count(*)::int FROM scope) AS scope_total,
+           count(*) OVER (PARTITION BY overdue.name)::int AS overdue_name_total,
+           scope_counts.active_name_total
+      FROM overdue
+      JOIN scope_counts ON scope_counts.name = overdue.name
+     ORDER BY overdue.next_fire_at ASC
      LIMIT ${DEAD_ROUTINE_CENSUS_LIMIT}`;
   // Zero overdue rows ⇒ no alarm fires, so the denominator is never read; report a clean zero
   // rather than paying a second query for a scope count nothing will consume.
   if (rows.length === 0) {
-    return { count: 0, distinctCount: 0, totalInScope: 0, names: [], criticalNames: [], namesTruncated: false, censusTruncated: false };
+    return {
+      count: 0,
+      distinctCount: 0,
+      totalInScope: 0,
+      names: [],
+      criticalNames: [],
+      routineCoverage: {},
+      namesTruncated: false,
+      censusTruncated: false,
+    };
+  }
+  const routineCoverage: Record<string, DeadRoutineNameCoverage> = {};
+  for (const row of rows) {
+    routineCoverage[row.name] = { overdue: row.overdue_name_total, active: row.active_name_total };
   }
   return summarizeDeadRoutines(rows.map((r) => r.name), {
     count: rows[0].overdue_total,
     totalInScope: rows[0].scope_total,
     censusTruncated: rows.length >= DEAD_ROUTINE_CENSUS_LIMIT,
-  });
+  }, { routineCoverage });
 }
 
 /**
@@ -778,6 +810,8 @@ export interface DeadRoutineCensus {
   names: string[];
   /** Every fleet-blocking routine implicated (git-sync / green-checkpoint / release-trigger). */
   criticalNames: string[];
+  /** Per-name overdue/active row counts for every named overdue routine. */
+  routineCoverage: Record<string, DeadRoutineNameCoverage>;
   /** `names` was cut to the exemplar cap. Bounds the LIST only — `count` remains exact. */
   namesTruncated: boolean;
   /** The census fetch itself hit `DEAD_ROUTINE_CENSUS_LIMIT`; `count` is still exact. */
@@ -815,7 +849,11 @@ export interface DeadRoutineCensus {
 export function summarizeDeadRoutines(
   overdueMostOverdueFirst: readonly string[],
   totals: { count: number; totalInScope: number; censusTruncated?: boolean },
-  opts: { exemplarLimit?: number; criticalNames?: ReadonlySet<string> } = {},
+  opts: {
+    exemplarLimit?: number;
+    criticalNames?: ReadonlySet<string>;
+    routineCoverage?: Readonly<Record<string, DeadRoutineNameCoverage>>;
+  } = {},
 ): DeadRoutineCensus {
   const limit = opts.exemplarLimit ?? DEAD_ROUTINE_EXEMPLAR_LIMIT;
   const critical = opts.criticalNames ?? FLEET_BLOCKING_ROUTINE_NAMES;
@@ -835,6 +873,7 @@ export function summarizeDeadRoutines(
     totalInScope: totals.totalInScope,
     names,
     criticalNames,
+    routineCoverage: { ...(opts.routineCoverage ?? {}) },
     // Compared in the SAME UNIT as `names` (distinct names), never against the row count —
     // mixing the two would report "+134 more" when only 2 more distinct routines exist.
     // A truncated CENSUS also implies more names exist than were ever fetched, so it counts as
@@ -1283,6 +1322,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
       deadRoutinesInScope: deadCensus.totalInScope,
       deadRoutinesDistinct: deadCensus.distinctCount,
       deadRoutineCriticalNames: deadCensus.criticalNames,
+      deadRoutineCoverage: deadCensus.routineCoverage,
       ...(deadCensus.namesTruncated ? { deadRoutineNamesTruncated: true } : {}),
       stalePausedRoutines: stalePaused.length, stalePausedRoutineNames, stalePausedCriticalRoutines,
       ...(stalePausedUnreadable ? { stalePausedRoutinesUnreadable: true } : {}),

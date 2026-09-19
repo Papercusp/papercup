@@ -1235,6 +1235,58 @@ export function registerResumeTurnOutcomeHandler(fn: (d: DeliveryWork, exit: Res
 }
 
 /**
+ * A detached resume is optimistically marked delivered before its child exits. If the
+ * bounded retry ladder later exhausts, the row is terminally dead without ever reaching
+ * the await owner. Keep that loss visible in the owner's durable coord inbox instead of
+ * making `events:status` the only place where the failure can be found.
+ */
+async function notifyDeadResumeDeliveries(dead: DeliveryWork[], error: string): Promise<void> {
+  if (dead.length === 0) return;
+
+  const first = dead[0];
+  const details = dead
+    .map(
+      (d) =>
+        `delivery #${d.id} · event '${d.eventKey}' · attempts ${MAX_ATTEMPTS} · ` +
+        `last error '${error}'`,
+    )
+    .join('\n');
+  try {
+    await sendMessage(emitterIdentity('await-event', first.workspaceId), {
+      to: [first.subscriberId],
+      summary:
+        dead.length === 1
+          ? `Event wake delivery #${first.id} for '${first.eventKey}' was abandoned after ${MAX_ATTEMPTS} resume-turn deaths.`
+          : `${dead.length} event wake deliveries were abandoned after ${MAX_ATTEMPTS} resume-turn deaths.`,
+      body:
+        `An awaited event fired, but its detached resume delivery reached terminal status 'dead' ` +
+        `after the retry budget was exhausted. No successful resumed turn completed.\n\n` +
+        `${details}\n\n` +
+        `Inspect events:status for the delivery rows and the await owner/session before re-registering ` +
+        `the detector or taking a recovery action.`,
+      category: 'event',
+      extra: {
+        auto: true,
+        event_key: dead.length === 1 ? first.eventKey : undefined,
+        event_keys: dead.map((d) => d.eventKey),
+        wake_delivery_id: dead.length === 1 ? first.id : undefined,
+        wake_delivery_ids: dead.map((d) => d.id),
+        terminal_status: 'dead',
+        attempts: MAX_ATTEMPTS,
+        last_error: error,
+      },
+    });
+  } catch (e) {
+    // The delivery row and its terminal status remain authoritative when the
+    // secondary inbox alarm is unavailable; never fail the outcome observer.
+    log(
+      `terminal dead resume delivery alarm failed for ${first.subscriberId}: ` +
+        `${e instanceof Error ? e.message : e}`,
+    );
+  }
+}
+
+/**
  * Settle a detached resume's asynchronous outcome after the pump has written
  * its optimistic delivered/coalesced rows. Loop wakes retain their specialized
  * circuit/re-arm handler; ordinary event wakes reuse the bounded delivery retry
@@ -1275,7 +1327,9 @@ async function handleSettledResumeTurnExit(
     ),
   );
   const reopened = results.filter((r) => r === 'retrying').length;
-  const dead = results.filter((r) => r === 'dead').length;
+  const deadDeliveries = retryable.filter((_, index) => results[index] === 'dead');
+  const dead = deadDeliveries.length;
+  await notifyDeadResumeDeliveries(deadDeliveries, error);
   if (reopened || dead) {
     log(
       `resume turn DIED (${outcome.error.class}) for ${observed.subscriberId}: ` +

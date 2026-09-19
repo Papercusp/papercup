@@ -28,6 +28,8 @@ import { MAX_MCP_REQUEST_TRACE_ID_CHARS } from '../../../mcp-request-trace';
 
 export type InitializeHandler = (req: unknown, extra: unknown) => Promise<unknown>;
 
+export type ShouldEnrichInitialize = (req: unknown) => boolean;
+
 export interface InitializeHandlerTiming {
   startedAtMs: number;
   sdkMs: number;
@@ -90,6 +92,33 @@ export function takeStoredInitializeHandler(server: unknown): InitializeHandler 
 }
 
 /**
+ * Native Codex and OMP clients mount MCP `initialize.instructions` into their
+ * own model/tool context. Their native tool calls then carry that text back to
+ * the model, so appending the per-session memory prelude here causes the
+ * prelude to be re-injected on every native call. Keep the compact static
+ * server instructions for discoverability, but deliver dynamic memory through
+ * the normal turn-start path for these clients.
+ *
+ * Client names are deliberately matched by normalized tokens rather than an
+ * exact-version allowlist: the wrappers and native protocol adapters use
+ * names such as `codex-su`, `codex-cli`, `omp-su`, and `oh-my-pi (omp)` across
+ * releases. Names that merely contain a partial token (for example
+ * `codexish`) do not opt into the native budget guard.
+ */
+export function isNativeInstructionBudgetClient(req: unknown): boolean {
+  if (!req || typeof req !== 'object') return false;
+  const params = (req as { params?: unknown }).params;
+  if (!params || typeof params !== 'object') return false;
+  const clientInfo = (params as { clientInfo?: unknown }).clientInfo;
+  if (!clientInfo || typeof clientInfo !== 'object') return false;
+  const name = (clientInfo as { name?: unknown }).name;
+  if (typeof name !== 'string' || !name.trim()) return false;
+
+  const normalized = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return /(?:^|-)codex(?:-|$)/.test(normalized) || /(?:^|-)omp(?:-|$)/.test(normalized) || normalized.includes('oh-my-pi');
+}
+
+/**
  * Wrap the SDK initialize handler: delegate the whole request (negotiation +
  * client-info side effects), then best-effort enrich the `instructions`
  * field. `enrich` receives the SDK's own instructions string (the static
@@ -102,15 +131,25 @@ export function wrapInitializeWithInstructions(
     base: string | undefined,
     extra: unknown,
     timing: InitializeHandlerTiming,
+    req: unknown,
   ) => Promise<string | null | undefined>,
+  shouldEnrich: ShouldEnrichInitialize = () => true,
 ): InitializeHandler {
   return async (req, extra) => {
     const startedAtMs = Date.now();
     const base = (await original(req, extra)) as Record<string, unknown>;
     const sdkMs = Date.now() - startedAtMs;
     try {
+      if (!shouldEnrich(req)) return base;
+    } catch {
+      // An optional client classifier is a budget guard, not a reason to make
+      // initialize fail. Fail closed if a future classifier cannot inspect the
+      // request shape.
+      return base;
+    }
+    try {
       const baseInstructions = typeof base.instructions === 'string' ? base.instructions : undefined;
-      const enriched = await enrich(baseInstructions, extra, { startedAtMs, sdkMs });
+      const enriched = await enrich(baseInstructions, extra, { startedAtMs, sdkMs }, req);
       if (typeof enriched === 'string' && enriched.length > 0 && enriched !== baseInstructions) {
         return { ...base, instructions: enriched };
       }

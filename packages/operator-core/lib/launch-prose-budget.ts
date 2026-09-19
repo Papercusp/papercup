@@ -244,9 +244,11 @@ export interface RatchetResult {
 }
 
 /**
- * The allowance a ratcheted ceiling keeps above the measurement: the ceiling is the
- * measurement rounded UP to the next whole kilobyte, so a surface carries at most 999 B
- * of slack.
+ * The allowance a ratcheted ceiling keeps above the measurement. The historical rule
+ * rounded UP to the next whole kilobyte, but that can leave only a few bytes of slack
+ * when the measurement is near a boundary. A shared prose gate needs a small, explicit
+ * reserve for ordinary edits, so the ratchet now keeps at least one kilobyte above the
+ * measurement while retaining the whole-kilobyte rounding rule where it gives more.
  *
  * WHY NOT ZERO. A zero-slack ceiling is the literal reading of "seeded at the current
  * measured size", and it is the wrong engineering call for a SHARED gate: a typo fix or
@@ -257,14 +259,24 @@ export interface RatchetResult {
  * a new section several, both of which still red at this granularity. The allowance buys
  * ordinary editing and gives up nothing real.
  *
- * Rounding UP also makes the ratchet IDEMPOTENT — re-running it on an unchanged tree
- * produces a byte-identical baseline instead of oscillating.
+ * The minimum is deliberately applied before the down-only comparison: re-running it on
+ * an unchanged tree produces a byte-identical baseline instead of oscillating, while a
+ * measurement near a granularity boundary can no longer collapse the reserve to a few
+ * bytes.
  */
 export const RATCHET_GRANULARITY_BYTES = 1_000;
+export const RATCHET_MINIMUM_HEADROOM_BYTES = 1_000;
 
-/** The ceiling a measurement ratchets to: the next whole kilobyte at or above it. */
+/**
+ * The ceiling a measurement ratchets to: the next whole kilobyte at or above it, with a
+ * minimum reserve for ordinary edits. The explicit maximum is important: rounding alone
+ * gives less than the reserve for every non-multiple of the granularity.
+ */
 export function ceilingForMeasurement(bytes: number, granularity = RATCHET_GRANULARITY_BYTES): number {
-  return Math.ceil(bytes / granularity) * granularity;
+  return Math.max(
+    Math.ceil(bytes / granularity) * granularity,
+    bytes + RATCHET_MINIMUM_HEADROOM_BYTES,
+  );
 }
 
 /**

@@ -266,7 +266,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
   });
 
-  it('refuses a metadata-only patch when its locked merge would preserve the stale instruction', async () => {
+  it('allows a metadata-only patch when the stale instruction exists only in the locked prior', async () => {
     const stale = 'Then pin whatever staging resolves to at that instant, still never a quoted sha.';
     readFrozenRepairMarker.mockReturnValue({
       candidate: 'c'.repeat(40),
@@ -289,16 +289,39 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       },
     );
 
+    setWorkItemCheckpoint.mockImplementation(async (_ref: unknown, stored: string | null | undefined) => stored);
+
     const result = await one({ id: 'WI-7', checks: [{ claim: 'the focused unit suite is green' }] });
 
-    expect(result).toMatchObject({
-      ok: false,
-      error: 'frozen_candidate_lineage_violation',
-      surface: 'work-item-checkpoint',
-      unsafeSource: 'staging',
-    });
+    expect(result).toMatchObject({ ok: true, id: 'WI-7' });
     expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
-    expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+    expect(setWorkItemCheckpoint).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a diagnostic check that quotes the refusal wording', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+    setWorkItemCheckpoint.mockImplementation(async (_ref: unknown, stored: string | null | undefined) => stored);
+
+    const result = await one({
+      id: 'WI-7',
+      checkpoint: 'Documenting the prior refusal.',
+      checks: [
+        {
+          claim: 'The refusal says staging was selected as the judged candidate; this row documents the diagnostic.',
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({ ok: true, id: 'WI-7' });
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
   });
 
   it('accepts factual canonical-tree location prose while a frozen queue is open', async () => {
@@ -521,7 +544,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(itemBodyRef).toBe(shorthandBodyRef);
     expect(shorthandChecksRef).toBe('#/$defs/work-items-checks-v1');
     expect(itemChecksRef).toBe(shorthandChecksRef);
-    expect(JSON.stringify(json)).toHaveLength(23344);
+    expect(JSON.stringify(json)).toHaveLength(23455);
   });
 
   it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {
@@ -2993,6 +3016,34 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         expect(r.ok).toBe(true);
         expect(r.checksDropped).toBeUndefined();
       });
+
+      it.each([undefined, 'merge'] as const)(
+        'EI-23618780798277092: refuses retireIds with %s rowsMode before writing',
+        async (rowsMode) => {
+          const prior = await seedThree();
+          withPrior(await prior);
+          const before = setWorkItemCheckpointWithPrior.mock.calls.length;
+          const r = await one({
+            id: 'WI-7',
+            checkpoint: 'new body',
+            checks: [{ claim: 'a replacement row' }],
+            ...(rowsMode === undefined ? {} : { rowsMode }),
+            retireIds: ['gate is green'],
+          });
+
+          expect(r).toMatchObject({
+            ok: false,
+            errorCode: 'checkpoint_retire_ids_requires_replace',
+            retryable: true,
+            rowsMode: 'merge',
+            retireIdsRequested: ['gate is green'],
+          });
+          expect(r.message).toContain("rowsMode:'replace'");
+          expect(r.message).toContain('omit `retireIds`');
+          expect(setWorkItemCheckpointWithPrior.mock.calls.length).toBe(before);
+          expect(await lastStored()).toBe(await prior);
+        },
+      );
 
       // EI-22385255026192781: the ONLY place an agent ever SEES a stored row id is the
       // rendered `[#id]` anchor, and '#' is outside CARRY_ROW_ID_ALLOWED, so the stored

@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-015 R-3 live launch and applied attribution observation",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-2143764",
+  "capturedAt": "2026-09-19T13:44:12.649256Z",
+  "command": [
+    "dev:pg_query",
+    "scoped reads of session_identity_activation_events, session_identity_layer_spans, tool_invocations, and agent_usage_samples_identity_attribution"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-19T13:44:12.649256Z",
+  "finishedAt": "2026-09-19T13:44:12.649256Z",
+  "timeBasis": "Database clock_timestamp returned by the single read-only observation below; these equal timestamps denote the observation instant, not a measured process duration.",
+  "summary": "Observed a real launch-sourced desired receipt for owner su-5fe0f2de-a2a8-4019-99cb-85117be748c0 (event 8077), its prepared/applied phases (8079/8080), and a later applied event 8546 with stack autonomy:su.mode-auto. Three named raw tool invocations joined the persisted layer span for 8546. The repaired attribution view joined inference samples 122407, 122458, and 122526, whose successor native session id was absent from the predecessor event, back to event 8546 with the same owner. Separate scoped reads confirmed the applied specification/state revisions. The paired migration-1149 versus migration-1177 regression passed 5/5 in testRunId 18465150. This is read-only historical live-data observation, not an end-to-end drive, a staging launch receipt, lost-ack retry/resync, authority-reduction refusal, or a passing acceptance grade.",
+  "replication": {
+    "tool": "dev:pg_query",
+    "args": {
+      "allowUnscoped": false,
+      "timeoutMs": 15000,
+      "maxRows": 1,
+      "sql": "SELECT clock_timestamp() AS observed_at, (SELECT jsonb_agg(jsonb_build_object('id',e.id,'phase',e.phase,'source',e.source,'stack',e.stack_refs) ORDER BY e.id) FROM harness_shared.session_identity_activation_events e WHERE e.workspace_id='papercusp-workspace' AND e.owner_id='su-5fe0f2de-a2a8-4019-99cb-85117be748c0' AND e.id IN (8077,8079,8080,8546)) AS events, (SELECT jsonb_agg(jsonb_build_object('id',u.id,'event',u.identity_activation_event_id,'owner',u.identity_owner_id) ORDER BY u.id) FROM harness_shared.agent_usage_samples_identity_attribution u WHERE u.workspace_id='papercusp-workspace' AND u.id IN (122407,122458,122526)) AS usage, (SELECT jsonb_agg(jsonb_build_object('id',t.id,'event',s.activation_event_id,'layer',s.layer_ref) ORDER BY t.id) FROM harness_shared.tool_invocations t JOIN harness_shared.session_identity_layer_spans s ON s.workspace_id=t.workspace_id AND s.owner_id=t.coord_owner_id AND t.invoked_at>=s.active_from AND (s.active_until IS NULL OR t.invoked_at<s.active_until) WHERE t.workspace_id='papercusp-workspace' AND t.harness_slug='papercusp' AND t.id IN (28198603,28198741,28198742) AND s.activation_event_id=8546) AS tools"
+    }
+  },
+  "assertions": [
+    {
+      "id": "launch-receipt-chain",
+      "passed": true,
+      "evidence": "Scoped event census for workspace papercusp-workspace, owner su-5fe0f2de-a2a8-4019-99cb-85117be748c0, adv_session_id 29444: 8077 desired/source=launch, 8079 prepared, 8080 applied; positive control returned event 8077."
+    },
+    {
+      "id": "applied-stack-span",
+      "passed": true,
+      "evidence": "Event 8546 is applied/control with stack_refs [autonomy:su.mode-auto], specification_revision 33cde0f0d27318874f490b2430eefe5cd82c86e95f6b8cbccd9494fc2e5921ab, state_revision 6d031da47dd39792a88f48637eea526c61d72bc60e1aed220260b074ae15a25f. Its persisted layer span is active from 2026-09-19T10:55:04.947061Z through 2026-09-19T12:01:03.829454Z."
+    },
+    {
+      "id": "tool-span-join",
+      "passed": true,
+      "evidence": "Raw tool rows 28198603, 28198741, and 28198742 joined the event-8546 layer span by workspace, owner, and invocation interval; each returned the applied specification/state revisions and layer_ref autonomy:su.mode-auto. Positive control returned a separate matching raw tool row."
+    },
+    {
+      "id": "carry-inference-attribution",
+      "passed": true,
+      "evidence": "The repaired view returned samples 122407, 122458, and 122526 with session_id 01a0b94d-d8e0-7480-a4d2-bba89b39b082, identity_activation_event_id 8546, owner su-5fe0f2de-a2a8-4019-99cb-85117be748c0, the same specification/state revisions, and stack autonomy:su.mode-auto. Positive control returned sample 122407."
+    },
+    {
+      "id": "paired-regression",
+      "passed": true,
+      "evidence": "testRunId 18465150: packages/operator-core/lib/session-identity-attribution.integration.test.ts, five tests passed. The carry test applies migration 1149, observes the successor sample is unattributed, reapplies migration 1177, and observes the repaired attribution while preserving pending, revocation, foreign-workspace, source-kind, and ambiguous-owner exclusions."
+    }
+  ],
+  "notProven": [
+    "staging launch provenance or compiled-artifact consumption on every adapter",
+    "leadership-posture attachment",
+    "lost acknowledgement retry/resync",
+    "authority-reduction refusal",
+    "a populated launch event with all desired/prepared/applied phases for this exact owner after the carry repair",
+    "an e2e-layer test result",
+    "independent passing grading"
+  ],
+  "sourcePaths": [
+    "packages/operator-core/lib/session-identity-attribution.ts",
+    "packages/operator-core/lib/session-identity-attribution.integration.test.ts",
+    "libs/papercusp/libs/db/sql/1149-session-identity-activation-spans.sql",
+    "libs/papercusp/libs/db/sql/1177-identity-usage-carry-correlation.sql"
+  ],
+  "testRunIds": [
+    18465150
+  ]
+}

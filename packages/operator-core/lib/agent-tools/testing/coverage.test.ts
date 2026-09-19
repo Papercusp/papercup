@@ -197,6 +197,26 @@ describe('the vacuous-ratio guard — an empty census is NOT-MEASURED, never 0% 
     expect(r.censusUnknown!.join(' ')).toContain('no-surfaces-match-filters');
   });
 
+  it('uses the unfiltered scope census timestamp when a filter matches no rows', () => {
+    const r = assembleCoverage(
+      input({
+        // The filtered aggregate is empty, but the scope-level aggregate proves that
+        // the census has run. This is the exact false-absence case from EI-235293.
+        totals: {
+          ...input().totals!,
+          last_census_at: null,
+          scope_last_census_at: '2026-09-17T16:56:31.335Z',
+        },
+        registrations: { registered: 3, enabled: 3 },
+      }),
+    );
+
+    expect(r.assessments.censusPopulation).toBe('empty-measured');
+    expect(r.censusUnknown!.join(' ')).toContain('no-surfaces-match-filters');
+    expect(r.censusUnknown!.join(' ')).not.toContain('census-has-not-run');
+    expect(r.census.lastCensusAt).toBe('2026-09-17T16:56:31.335Z');
+  });
+
   it('goes quiet the moment there IS a denominator — the hoist must not become noise', () => {
     const r = assembleCoverage(
       input({
@@ -535,6 +555,81 @@ describe('testing:coverage payload-tier shape', () => {
     const shaped = shapeTestingCoverage(full, 'trimmed') as Record<string, unknown>;
     expect(shaped).toMatchObject({ count: 1, total: 1, truncatedByLimit: false });
     expect(shaped.payloadBounded).toBeUndefined();
+  });
+});
+
+describe('testing:coverage filtered-zero census provenance', () => {
+  it('uses scope-level census metadata when the filtered aggregate has no rows', async () => {
+    sqlMock.mockReset();
+    sqlMock.mockImplementation((strings: TemplateStringsArray | string) => {
+      if (typeof strings === 'string') return { identifier: strings };
+      const text = Array.from(strings).join(' ');
+      if (text.includes('FROM harness_shared.census_provider_registrations')) {
+        return Promise.resolve([{ registered: '3', enabled: '3' }]);
+      }
+      if (text.includes('scope_row.last_seen')) {
+        // The filtered aggregate is empty; only the unfiltered scope subquery can
+        // provide this timestamp.
+        return Promise.resolve([
+          {
+            surfaces: '0',
+            retired: '0',
+            waived: '0',
+            last_census_at: null,
+            scope_last_census_at: '2026-09-17T16:56:31.335Z',
+            meets_l1: '0',
+            meets_l2: '0',
+            meets_l3: '0',
+            meets_l4: '0',
+            meets_floor: '0',
+            evidenced: '0',
+            below_unwaived_l1: '0',
+            below_unwaived_l2: '0',
+            below_unwaived_l3: '0',
+            below_unwaived_l4: '0',
+            below_unwaived_floor: '0',
+          },
+        ]);
+      }
+      if (text.includes('SELECT fidelity, count(*) AS n')) return Promise.resolve([]);
+      if (text.includes('SELECT kind,') && text.includes('GROUP BY kind, fidelity')) return Promise.resolve([]);
+      if (text.includes('SELECT kind, surface_id')) return Promise.resolve([]);
+      if (text.includes('SELECT count(*) AS n FROM')) return Promise.resolve([{ n: '0' }]);
+      if (text.includes('FROM harness_shared.testing_surface_depth')) {
+        // If the scope subquery is removed, this fallback makes the regression fail
+        // with the old false "census-has-not-run" classification.
+        return Promise.resolve([
+          {
+            surfaces: '0',
+            retired: '0',
+            waived: '0',
+            last_census_at: null,
+            meets_l1: '0',
+            meets_l2: '0',
+            meets_l3: '0',
+            meets_l4: '0',
+            meets_floor: '0',
+            evidenced: '0',
+            below_unwaived_l1: '0',
+            below_unwaived_l2: '0',
+            below_unwaived_l3: '0',
+            below_unwaived_l4: '0',
+            below_unwaived_floor: '0',
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const raw = (await coverageTool.handler(
+      { harness: 'papercusp', workspace: 'ws', sourceFile: 'sync-resolver', rung: 'l3', limit: 10 } as never,
+      {} as never,
+    )) as { data: ReturnType<typeof assembleCoverage> };
+
+    expect(raw.data.assessments.censusPopulation).toBe('empty-measured');
+    expect(raw.data.censusUnknown!.join(' ')).toContain('no-surfaces-match-filters');
+    expect(raw.data.censusUnknown!.join(' ')).not.toContain('census-has-not-run');
+    expect(raw.data.census.lastCensusAt).toBe('2026-09-17T16:56:31.335Z');
   });
 });
 

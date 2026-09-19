@@ -56,6 +56,11 @@ interface PolicyInput {
 
 type PolicyReader = (input: PolicyInput) => Promise<IdentityGrantPolicy>;
 
+interface IdentityGrantKernelState extends KernelContextState {
+  /** Set only when the control anchor's adv_sessions join found no row. */
+  identityLaunchRecordMissing?: boolean;
+}
+
 function object(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : null;
@@ -208,7 +213,7 @@ function denial(
 
 export async function checkIdentityGrantKernel(
   request: KernelEnforcementRequest,
-  state: KernelContextState,
+  state: IdentityGrantKernelState,
   rawRecord: unknown,
   readPolicy: PolicyReader = readIdentityGrantPolicy,
 ): Promise<KernelEnforcementResult | null> {
@@ -216,7 +221,26 @@ export async function checkIdentityGrantKernel(
   const applied = state.activation?.applied ?? state.appliedRevision;
   // No launch artifact is the legacy, non-opted-in path. An acknowledged
   // identity with a missing receipt is not legacy: fail closed.
-  if (!record) return applied ? denial('stale-artifact', null, request.toolName) : null;
+  if (!record) {
+    if (state.identityLaunchRecordMissing) {
+      // coord:orient is the recovery verb named by the CTRL block. It is the
+      // only tool allowed to run without the launch record; every other tool
+      // receives a distinct diagnosis so operators do not chase a revision
+      // mismatch that never existed.
+      if (request.toolName === 'coord:orient') {
+        return {
+          decision: 'allow',
+          availability: 'available',
+          applied: false,
+          code: 'identity-recovery',
+          reason: 'identity launch record is missing; coord:orient is the recovery door',
+          ...(state.policyRevision !== undefined ? { policyRevision: state.policyRevision } : {}),
+        };
+      }
+      return denial('no-launch-record', null, request.toolName, state.policyRevision);
+    }
+    return applied ? denial('stale-artifact', null, request.toolName) : null;
+  }
   let artifact: ResolvedAgentSpecification | null;
   let current: ResolvedAgentSpecification | null;
   try {

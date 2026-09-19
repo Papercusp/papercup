@@ -14,7 +14,7 @@
  *   4. Enrichment replaces instructions; null/undefined/throwing enrich
  *      leaves the SDK result byte-identical (never-throws contract).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
   LATEST_PROTOCOL_VERSION,
@@ -24,6 +24,7 @@ import {
   takeStoredInitializeHandler,
   wrapInitializeWithInstructions,
   buildInitializeStageTelemetry,
+  isNativeInstructionBudgetClient,
 } from '../_mcp-initialize-enrich';
 
 const STATIC_INSTRUCTIONS = 'STATIC BASE INSTRUCTIONS';
@@ -38,16 +39,38 @@ function makeServer(instructions: string | null = STATIC_INSTRUCTIONS) {
   );
 }
 
-function initializeRequest(protocolVersion: string) {
+function initializeRequest(protocolVersion: string, clientName = 'test-client') {
   return {
     method: 'initialize' as const,
     params: {
       protocolVersion,
       capabilities: { roots: { listChanged: true } },
-      clientInfo: { name: 'test-client', version: '9.9.9' },
+      clientInfo: { name: clientName, version: '9.9.9' },
     },
   };
 }
+
+describe('isNativeInstructionBudgetClient', () => {
+  it.each(['codex', 'codex-su', 'codex-cli', 'omp', 'omp-su', 'oh-my-pi', 'oh-my-pi (omp)'])(
+    'recognizes native client name %s',
+    (clientName) => {
+      expect(isNativeInstructionBudgetClient(initializeRequest('2025-03-26', clientName))).toBe(true);
+    },
+  );
+
+  it.each(['test-client', 'claude-code', 'papercusp_pui', 'codexish', ''])(
+    'does not classify non-native client name %s',
+    (clientName) => {
+      expect(isNativeInstructionBudgetClient(initializeRequest('2025-03-26', clientName))).toBe(false);
+    },
+  );
+
+  it('fails closed for malformed or missing client info', () => {
+    expect(isNativeInstructionBudgetClient(undefined)).toBe(false);
+    expect(isNativeInstructionBudgetClient({ params: {} })).toBe(false);
+    expect(isNativeInstructionBudgetClient({ params: { clientInfo: { name: 42 } } })).toBe(false);
+  });
+});
 
 type InitResult = {
   protocolVersion: string;
@@ -174,6 +197,32 @@ describe('wrapInitializeWithInstructions — never-throws / keep-base contract',
     await wrapped(initializeRequest(LATEST_PROTOCOL_VERSION), {});
     expect(timing?.startedAtMs).toEqual(expect.any(Number));
     expect(timing?.sdkMs).toEqual(expect.any(Number));
+  });
+
+  it('skips dynamic enrichment for a native client while retaining static instructions', async () => {
+    const server = makeServer();
+    const original = takeStoredInitializeHandler(server)!;
+    const enrich = vi.fn(async () => 'SHOULD NOT BE USED');
+    const wrapped = wrapInitializeWithInstructions(original, enrich, (req) => !isNativeInstructionBudgetClient(req));
+
+    const res = (await wrapped(initializeRequest(LATEST_PROTOCOL_VERSION, 'codex-su'), {})) as InitResult;
+    expect(res.instructions).toBe(STATIC_INSTRUCTIONS);
+    expect(enrich).not.toHaveBeenCalled();
+  });
+
+  it('still enriches an ordinary client and passes the initialize request to enrich', async () => {
+    const server = makeServer();
+    const original = takeStoredInitializeHandler(server)!;
+    let seenReq: unknown;
+    const request = initializeRequest(LATEST_PROTOCOL_VERSION, 'ordinary-client');
+    const wrapped = wrapInitializeWithInstructions(original, async (base, _extra, _timing, req) => {
+      seenReq = req;
+      return `${base}\n\nENRICHED`;
+    }, (req) => !isNativeInstructionBudgetClient(req));
+
+    const res = (await wrapped(request, {})) as InitResult;
+    expect(res.instructions).toBe(`${STATIC_INSTRUCTIONS}\n\nENRICHED`);
+    expect(seenReq).toBe(request);
   });
 });
 

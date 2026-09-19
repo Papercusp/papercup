@@ -443,7 +443,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(setLoopCarryNote).not.toHaveBeenCalled();
   });
 
-  it('refuses a rows-only merge when it would preserve the stale instruction from the locked prior', async () => {
+  it('allows a rows-only merge when the stale instruction exists only in the locked prior', async () => {
     readFrozenRepairMarker.mockReturnValue({
       candidate: 'c'.repeat(40),
       repairHead: 'r'.repeat(40),
@@ -459,14 +459,34 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
 
     const out = await call({ checks: [{ claim: 'the focused unit suite is green' }] });
 
-    expect(out.isError).toBe(true);
-    expect(body(out)).toMatchObject({
-      error: 'frozen_candidate_lineage_violation',
-      surface: 'loop-checkpoint',
-      unsafeSource: 'staging',
-    });
+    expect(out.isError).toBeUndefined();
+    expect(body(out)).toMatchObject({ ok: true });
     expect(setLoopCarryNoteWithPrior).toHaveBeenCalledTimes(1);
-    expect(setLoopCarryNote).not.toHaveBeenCalled();
+    expect(setLoopCarryNote).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a diagnostic row that quotes the refusal wording', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+
+    const out = await call({
+      checks: [
+        {
+          claim: 'The refusal says staging was selected as the judged candidate; this row documents the diagnostic.',
+        },
+      ],
+    });
+
+    expect(out.isError).toBeUndefined();
+    expect(body(out)).toMatchObject({ ok: true });
+    expect(setLoopCarryNote).toHaveBeenCalledTimes(1);
   });
 
   it('allows an explicit correction to replace the stale prior while the marker remains frozen', async () => {

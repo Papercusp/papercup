@@ -149,8 +149,11 @@ function frozenLoopCarryViolation(text: string | null | undefined): FrozenCarryV
   );
 }
 
-function enforceFrozenLoopCarry<T extends string | null | undefined>(text: T): T {
-  const violation = frozenLoopCarryViolation(text);
+function enforceFrozenLoopCarry<T extends string | null | undefined>(text: T, suppliedText?: string): T {
+  // `text` may be the locked merge of this write with an older carry note. Only
+  // the bytes supplied by this call are executable authority; inherited history
+  // can contain a legacy directive that the caller is trying to document or retire.
+  const violation = frozenLoopCarryViolation(suppliedText ?? text);
   if (violation) throw new FrozenCarryCheckpointError(violation);
   return text;
 }
@@ -1387,8 +1390,9 @@ export default defineTool({
       currentProvenanceText = markUnverifiedOwnerAttribution(currentProvenanceText) ?? currentProvenanceText;
     }
     // Refuse the caller-authored portion before touching the carry-note store.
-    // The transform also checks its final authoritative merge so rows-only
-    // updates cannot preserve a stale candidate-selection instruction.
+    // The locked transform rechecks these same supplied bytes after composing
+    // the final note, but deliberately does not reinterpret inherited history
+    // as a new instruction.
     const directFrozenCarryViolation = frozenLoopCarryViolation(currentProvenanceText);
     if (directFrozenCarryViolation) {
       return {
@@ -1516,13 +1520,16 @@ export default defineTool({
                 // rows, so re-merging it would re-trigger the very overflow being refused.
                 const priorWallParts = splitCarryNoteWalls(priorNote ?? '');
                 const priorCheckParts = splitCarryNoteChecks(priorWallParts.body);
-                return enforceFrozenLoopCarry(withCarryNoteWalls(
-                  withCarryNoteChecks(merged.narrativeBody, priorCheckParts.checks),
-                  priorWallParts.walls,
-                ));
+                return enforceFrozenLoopCarry(
+                  withCarryNoteWalls(
+                    withCarryNoteChecks(merged.narrativeBody, priorCheckParts.checks),
+                    priorWallParts.walls,
+                  ),
+                  currentProvenanceText,
+                );
               }
             }
-            return enforceFrozenLoopCarry(merged.note);
+            return enforceFrozenLoopCarry(merged.note, currentProvenanceText);
               },
             },
           ),

@@ -46,6 +46,7 @@ import {
   resolveWorkspaceHostInitializationControllerProfile,
   type WorkspaceHostInitializationControllerProfile,
 } from './initialization-operations-resolver';
+import { resolveOwnServiceUnit } from '../service-health';
 
 /**
  * Controller deployment configuration. These mirror `CONTROLLER_ENV` in the initialization
@@ -99,6 +100,15 @@ export interface ResolveWorkspaceHostProvisionBootstrapProfileInput {
    * host authorizes is by construction the key the controller connects with.
    */
   controllerProfile?: WorkspaceHostInitializationControllerProfile;
+  /** Test seam for identifying the process that resolves the release manifest. */
+  resolveServiceUnit?: () => Promise<string | null>;
+  /** Test seam for making the evaluator PID deterministic in diagnostics. */
+  evaluatorPid?: number;
+}
+
+interface WorkspaceHostProvisionManifestResolutionContext {
+  evaluator: string;
+  remediation: string;
 }
 
 /**
@@ -159,6 +169,10 @@ export async function resolveWorkspaceHostProvisionBootstrapProfile(
   const env = input.env ?? process.env;
   const readTextFile = input.readTextFile ?? ((path: string) => readFile(path, 'utf8'));
   const problems: string[] = [];
+  const manifestResolutionContext = await resolveManifestResolutionContext(
+    input.resolveServiceUnit ?? resolveOwnServiceUnit,
+    input.evaluatorPid ?? process.pid,
+  );
 
   const manifestPath = (env[WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile] ?? '').trim();
   let release: WorkspaceHostBootstrapRelease | undefined;
@@ -172,7 +186,7 @@ export async function resolveWorkspaceHostProvisionBootstrapProfile(
       `${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile} must be an absolute path (got '${manifestPath}')`,
     );
   } else {
-    release = await readRelease(manifestPath, readTextFile, problems);
+    release = await readRelease(manifestPath, readTextFile, problems, manifestResolutionContext);
   }
 
   const migrationId = (env[WORKSPACE_HOST_PROVISION_ENV.migrationId] ?? '').trim();
@@ -274,6 +288,7 @@ async function readRelease(
   manifestPath: string,
   readTextFile: (path: string) => Promise<string>,
   problems: string[],
+  manifestResolutionContext: WorkspaceHostProvisionManifestResolutionContext,
 ): Promise<WorkspaceHostBootstrapRelease | undefined> {
   let raw: string;
   try {
@@ -311,7 +326,7 @@ async function readRelease(
     return undefined;
   }
   const validated = artifact as WorkspaceHostImageArtifact;
-  const unsupported = agentHomeBundleSupportProblem(validated, manifestPath);
+  const unsupported = agentHomeBundleSupportProblem(validated, manifestPath, manifestResolutionContext);
   if (unsupported) {
     problems.push(unsupported);
     return undefined;
@@ -347,6 +362,7 @@ async function readRelease(
 function agentHomeBundleSupportProblem(
   artifact: WorkspaceHostImageArtifact,
   manifestPath: string,
+  manifestResolutionContext: WorkspaceHostProvisionManifestResolutionContext,
 ): string | undefined {
   // Fed untrusted file bytes, so the declared value is validated rather than trusted to be shaped.
   const declared = new Set<string>();
@@ -363,7 +379,8 @@ function agentHomeBundleSupportProblem(
       `so it cannot be shown to parse the '${WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION}' agent-home ` +
       `material this controller emits. A publication cut before that field existed also predates the ` +
       `contract version it would have to accept. Re-cut the publication from current source and ` +
-      `republish, then repoint ${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile}.`
+      `republish, then repoint ${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile}. ` +
+      `${manifestResolutionContext.evaluator}. ${manifestResolutionContext.remediation}`
     );
   }
   if (!declared.has(WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION)) {
@@ -372,10 +389,35 @@ function agentHomeBundleSupportProblem(
       `but this controller emits '${WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION}', the only ` +
       `admission-eligible version (D-311). A host bootstrapped from this publication would provision, ` +
       `boot and bootstrap successfully and then fail agent bind, leaving a billing host that can never ` +
-      `be initialized. Re-cut the publication from current source and republish.`
+      `be initialized. Re-cut the publication from current source and republish. ` +
+      `${manifestResolutionContext.evaluator}. ${manifestResolutionContext.remediation}`
     );
   }
   return undefined;
+}
+
+async function resolveManifestResolutionContext(
+  resolveServiceUnit: () => Promise<string | null>,
+  evaluatorPid: number,
+): Promise<WorkspaceHostProvisionManifestResolutionContext> {
+  let serviceUnit: string | null = null;
+  try {
+    serviceUnit = await resolveServiceUnit();
+  } catch {
+    // Diagnostics must never turn a trusted-profile refusal into an unrelated resolver failure.
+  }
+  if (serviceUnit) {
+    return {
+      evaluator: `manifest was read by systemd unit '${serviceUnit}' (MainPID ${evaluatorPid}) after request forwarding`,
+      remediation:
+        `update ${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile} in '~/.config/systemd/user/${serviceUnit}.d/53-workspace-host-identity.conf', then run 'systemctl --user daemon-reload' and 'systemctl --user restart ${serviceUnit}' (repointing the request-only endpoint's unit has no effect)`,
+    };
+  }
+  return {
+    evaluator: `manifest was read by process PID ${evaluatorPid}; no systemd .service unit could be resolved`,
+    remediation:
+      `if this request was forwarded, update ${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile} on the background controller that received it, not the request-only endpoint, then restart that controller`,
+  };
 }
 
 function readInteger(

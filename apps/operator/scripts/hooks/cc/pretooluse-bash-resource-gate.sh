@@ -4163,6 +4163,108 @@ def _looks_like_redirect_path(raw):
     return True
 
 
+def _mask_postgres_json_arrows_in_substitutions(text):
+    """Hide PostgreSQL JSON operators from the shell redirect scanner.
+
+    `_strip_quotes_and_comments(..., preserve_expansions=True)` deliberately
+    keeps command substitutions visible so a real write inside `$(...)` is
+    still protected.  That leaves a second language in the same text, though:
+    an unquoted psql expression such as `payload->'observation'->>'state'`
+    becomes `payload-> ->> ` after quote stripping.  The flat redirect regex
+    then reads the `>` in each SQL arrow as shell syntax and can resolve the
+    following `-` as a tree-relative filename.
+
+    Do not skip every redirect in a substitution.  First isolate balanced
+    `$()`/backtick bodies, then mask only an arrow chain in a command segment
+    that invokes `psql`; shell redirects remain byte-for-byte in the returned
+    text.  Replacements are spaces, so match offsets used by the caller stay
+    stable.  Malformed substitutions are left unchanged (the guard's normal
+    fail-open behavior handles them).
+    """
+    if '$(' not in text and '`' not in text:
+        return text
+
+    def _spans(value):
+        spans = []
+        i = 0
+        while i < len(value):
+            if value.startswith('$(', i):
+                parsed = _scan_command_substitution(value, i)
+                if parsed is None:
+                    i += 2
+                    continue
+                _body, end = parsed
+                spans.append((i, end, i + 2, end - 1))
+                i = end
+                continue
+            if value[i] == '`':
+                end = value.find('`', i + 1)
+                if end == -1:
+                    i += 1
+                    continue
+                spans.append((i, end + 1, i + 1, end))
+                i = end + 1
+                continue
+            i += 1
+        return spans
+
+    def _mask_segment_arrows(value):
+        spans = _spans(value)
+        # Nested substitutions are handled recursively; blank them in this
+        # view so an outer `psql` segment cannot reinterpret their shell text
+        # as SQL and mask a genuine nested redirect.
+        view = list(value)
+        for _start, _end, _body_start, _body_end in spans:
+            for _pos in range(_start, _end):
+                view[_pos] = ' '
+        scan = ''.join(view)
+        out = list(value)
+
+        def _mask_arrow(op_start, op_end):
+            # Keep the '-' that makes this a JSON operator; only the `>`
+            # characters matter to the shell redirect regex.
+            for _pos in range(op_start + 1, op_end):
+                out[_pos] = ' '
+
+        for _part in re.finditer(r'[^;&|\n]+', scan):
+            _segment = _part.group(0)
+            if not re.search(r'(?<![\w-])psql(?=\s|$)', _segment, re.IGNORECASE):
+                continue
+            _segment_start = _part.start()
+            # A SQL key may have disappeared during quote stripping, leaving
+            # only whitespace between chained `->` operators.  Seed on an
+            # identifier/closing JSON container, then consume adjacent arrow
+            # tokens whose operands were removed by normalization.
+            for _seed in re.finditer(
+                r'(?:[A-Za-z_][A-Za-z0-9_$]*|[)\]])[ \t]*(->>|->)',
+                _segment,
+            ):
+                _end = _segment_start + _seed.end(1)
+                _mask_arrow(_segment_start + _seed.start(1), _end)
+                while True:
+                    _next = re.match(r'[ \t]*(->>|->)', scan[_end:])
+                    if _next is None:
+                        break
+                    _start = _end + _next.start(1)
+                    _end += _next.end(1)
+                    _mask_arrow(_start, _end)
+
+        return ''.join(out)
+
+    def _rewrite(value):
+        spans = _spans(value)
+        if not spans:
+            return _mask_segment_arrows(value)
+        out = list(value)
+        for _start, _end, _body_start, _body_end in spans:
+            _body = value[_body_start:_body_end]
+            _masked = _rewrite(_body)
+            out[_body_start:_body_end] = list(_masked)
+        return _mask_segment_arrows(''.join(out))
+
+    return _rewrite(text)
+
+
 # WI-6026 (EI-18664655909328670, 3rd instance): `tee`/`sed -i`/`perl -i`/
 # `ruby -i`/`cp` all find their target(s) by `.split()`-ing the raw
 # command-tail segment on whitespace, same as the substitution-fragment bug
@@ -4491,6 +4593,10 @@ def _shell_write_guard():
     _clean = _strip_quotes_and_comments(
         _strip_heredoc_bodies(command), preserve_expansions=True
     )
+    # The raw redirect scan must see shell writes inside `$()` but not confuse
+    # PostgreSQL JSON `->`/`->>` operators in a nested `psql` expression with
+    # redirects.  This pass preserves all other text and all match offsets.
+    _clean = _mask_postgres_json_arrows_in_substitutions(_clean)
     _has_paren = '(' in _clean or ')' in _clean
     _targets = []  # (raw_target, human-readable construct name, position in _clean)
     # EI-19966359020779598 — set when an in-place-write construct's target

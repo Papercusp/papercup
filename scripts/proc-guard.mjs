@@ -136,6 +136,9 @@ const GREEN_CHECKPOINT_CGROUP =
 
 const PROMPT_ARG_MARKERS = ["PAPERCUSP_KICKOFF_PROMPT=", "⟦turn-origin:"];
 const PROMPT_ARG_PREFIXES = ["--kickoff=", "--label="];
+const CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV =
+  "PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID";
+const CAPABILITY_BASH_SLICE = "papercusp-bash-job.slice";
 const DEFAULT_INTERPRETER_BASENAMES = new Set([
   "node",
   "nodejs",
@@ -243,6 +246,38 @@ export function getOperationalArgv(argv) {
 
 function argvBasename(arg) {
   return path.basename(String(arg).replaceAll("\\", "/"));
+}
+
+/**
+ * Is this the transient-service client that capability:bash launched for the
+ * CURRENT command?
+ *
+ * A confined capability:bash payload runs in a transient service, while the
+ * `systemd-run --pipe --wait` client remains a sibling of that payload from
+ * the payload's point of view. Its command string therefore contains the
+ * proc-guard pattern and defeats ancestor exclusion. The task marker is set by
+ * the capability:bash handler after caller env input is applied, so matching
+ * the exact current task id plus the managed unit/slice and service-only
+ * `--pipe --wait` shape is the narrow identity boundary. PAPERCUSP_SID alone
+ * is intentionally not used: every process in the same agent session may
+ * carry it, including a real target that must remain visible.
+ *
+ * @param {string[]} argv
+ * @param {string | null | undefined} taskId
+ * @returns {boolean}
+ */
+export function isCapabilityBashSystemdRunWrapper(argv, taskId) {
+  if (typeof taskId !== "string" || !taskId) return false;
+  const operationalArgv = getOperationalArgv(argv);
+  const expectedUnit = `--unit=pc-${taskId}.service`;
+  return (
+    argvBasename(operationalArgv[0] ?? "") === "systemd-run" &&
+    operationalArgv.includes("--user") &&
+    operationalArgv.includes("--pipe") &&
+    operationalArgv.includes("--wait") &&
+    operationalArgv.includes(expectedUnit) &&
+    operationalArgv.includes(`--slice=${CAPABILITY_BASH_SLICE}`)
+  );
 }
 
 function isCommandToken(arg, commandName, commandBasenames) {
@@ -682,7 +717,7 @@ export function walkProcessTree(rootPid, opts = {}) {
  * still matches.
  *
  * @param {string} pattern - A RegExp source, matched against operational argv.
- * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
+ * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[]; capabilityBashTaskId?: string | null }} [opts]
  * Agent identity is read from PAPERCUSP_SID so a live agent whose owner id is
  * absent from argv is not reported absent. For the known `green-checkpoint`
  * workload, checkpoint-cgroup identity is also accepted so argv-blind
@@ -702,7 +737,7 @@ export function matchExternalProcesses(pattern, opts = {}) {
  * audit what was ignored — nothing is silently dropped.
  *
  * @param {string} pattern - A RegExp source.
- * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
+ * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[]; capabilityBashTaskId?: string | null }} [opts]
  * `identityMatches` includes PAPERCUSP_SID owner matches and checkpoint-cgroup
  * matches. Gate markers are diagnostic evidence only; they are not sufficient
  * without the checkpoint cgroup. The owner id itself is retained only in the
@@ -725,8 +760,19 @@ export function matchExternalProcessesDetailed(pattern, opts = {}) {
   });
   const byPid = new Map(all.map((p) => [p.pid, p.ppid]));
   const excluded = getAncestryChain(selfPid, byPid);
+  const capabilityBashTaskId =
+    opts.capabilityBashTaskId ??
+    process.env[CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV] ??
+    null;
+  const capabilityBashWrapperPids = new Set(
+    all
+      .filter((p) => isCapabilityBashSystemdRunWrapper(p.argv, capabilityBashTaskId))
+      .map((p) => p.pid),
+  );
   const re = new RegExp(pattern);
-  const external = all.filter((p) => !excluded.has(p.pid));
+  const external = all.filter(
+    (p) => !excluded.has(p.pid) && !capabilityBashWrapperPids.has(p.pid),
+  );
   const fullMatches = external.filter((p) => re.test(p.cmdline));
   const operationalMatches = opts.argvSequence
     ? external.filter((p) =>

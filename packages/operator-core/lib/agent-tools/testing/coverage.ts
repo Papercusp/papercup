@@ -180,6 +180,8 @@ export interface CoverageRawInput {
         retired: string | number;
         waived: string | number;
         last_census_at: string | null;
+        /** Scope-level census timestamp, independent of the caller's row filters. */
+        scope_last_census_at?: string | null;
         meets_l1: string | number;
         meets_l2: string | number;
         meets_l3: string | number;
@@ -419,6 +421,14 @@ export function assembleCoverage(input: CoverageRawInput) {
   }
 
   const providersRegistered = num(registrations?.registered);
+  // `last_census_at` is scoped by the caller's filters in the SQL below. Use the
+  // unfiltered scope timestamp for population classification, otherwise a filter miss
+  // makes a healthy census look like it has never run.
+  const lastCensusAt = totals?.scope_last_census_at
+    ? toIso(totals.scope_last_census_at)
+    : totals?.last_census_at
+      ? toIso(totals.last_census_at)
+      : null;
 
   /**
    * The hoist (D-039 shape): result-level, enumerated, and populated ONLY when the
@@ -432,7 +442,7 @@ export function assembleCoverage(input: CoverageRawInput) {
       censusUnknown.push(
         'no-providers-registered: harness_shared.census_provider_registrations has no row for this scope, so runCensus iterates an empty list and can never write a surface — its fires still report success (WI-39809)',
       );
-    } else if (!totals?.last_census_at) {
+    } else if (!lastCensusAt) {
       censusUnknown.push(
         'census-has-not-run: providers are registered but no census run has ever written a surface row for this scope',
       );
@@ -441,7 +451,6 @@ export function assembleCoverage(input: CoverageRawInput) {
     }
   }
 
-  const lastCensusAt = totals?.last_census_at ? toIso(totals.last_census_at) : null;
   const verdict = surfaces > 0 ? ('measured' as const) : ('not-measured' as const);
   const meetsFloor = num(totals?.meets_floor);
   const belowUnwaivedFloor = num(totals?.below_unwaived_floor);
@@ -746,6 +755,7 @@ export async function readCoverage(args: CoverageArgs) {
         retired: string;
         waived: string;
         last_census_at: string | null;
+        scope_last_census_at: string | null;
         meets_l1: string;
         meets_l2: string;
         meets_l3: string;
@@ -763,6 +773,12 @@ export async function readCoverage(args: CoverageArgs) {
              count(*) FILTER (WHERE retired_at IS NOT NULL)                AS retired,
              count(*) FILTER (WHERE waived)                                AS waived,
              max(last_seen)                                                AS last_census_at,
+             (
+               SELECT max(scope_row.last_seen)
+                 FROM harness_shared.testing_surface_depth AS scope_row
+                WHERE scope_row.workspace_id = ${workspace}
+                  AND scope_row.harness_slug = ${harness}
+             )                                                              AS scope_last_census_at,
              count(*) FILTER (WHERE meets_l1)                              AS meets_l1,
              count(*) FILTER (WHERE meets_l2)                              AS meets_l2,
              count(*) FILTER (WHERE meets_l3)                              AS meets_l3,

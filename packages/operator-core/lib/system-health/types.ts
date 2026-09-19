@@ -234,6 +234,12 @@ export interface WorkItemsHealth {
   reaperStale?: boolean;
 }
 
+/** Per-name routine coverage used to distinguish one late install from a routine-wide stop. */
+export interface DeadRoutineNameCoverage {
+  overdue: number;
+  active: number;
+}
+
 /** Work-feed flow. */
 export interface WorkFeedHealth {
   /** Ready-to-place frontier items (unblocked todo feature-family). */
@@ -287,6 +293,9 @@ export interface WorkFeedHealth {
    *  exemplar cap — so a fleet-wide commit outage can never be announced under a bystander
    *  routine's name (the filed incident led with `pr-poll` and omitted `git-sync`). */
   deadRoutineCriticalNames?: string[];
+  /** Per-name overdue/active row counts. A single routine name can have one row per install,
+   * so a name appearing in `deadRoutineCriticalNames` is not by itself fleet-wide evidence. */
+  deadRoutineCoverage?: Record<string, DeadRoutineNameCoverage>;
   /** `deadRoutineNames` was cut to the exemplar cap (more routines are overdue than are named).
    *  Optional; absent ⇒ the list is complete. Bounds the LIST only — `deadRoutines` stays exact. */
   deadRoutineNamesTruncated?: boolean;

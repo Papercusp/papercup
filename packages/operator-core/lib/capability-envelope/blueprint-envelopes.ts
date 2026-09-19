@@ -71,7 +71,7 @@ export function blueprintRoleEnvelopes(
 export interface IdentityGrantFailure {
   code: 'capability_unsatisfied';
   classRef: string | null;
-  cause: 'stale-artifact' | 'policy-unavailable' | 'provider-unbound' | 'provider-changed' | 'tool-unavailable' | 'outside-ceiling';
+  cause: 'stale-artifact' | 'no-launch-record' | 'policy-unavailable' | 'provider-unbound' | 'provider-changed' | 'tool-unavailable' | 'outside-ceiling';
   toolName?: string;
   routes: readonly ['operator-notify', 'suggest-provider', 'needs_human'];
 }

@@ -78,6 +78,7 @@ function anchorRow(control_state: unknown, over: Record<string, unknown> = {}) {
     control_state,
     control_generation: 9,
     workspace_id: 'ws-a',
+    adv_session_id: 1,
     launch_spec: {
       workspaceId: 'ws-a', harnessSlug: 'sales', ...REVISION_A,
       specificationArtifact: PLAIN_ARTIFACT,
@@ -212,6 +213,33 @@ describe('control-anchor kernel resolver (D-030)', () => {
     });
     db.rows.push([]);
     await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow', availability: 'unavailable' });
+  });
+
+  it('opens only coord:orient when the control anchor has no adv_sessions launch row', async () => {
+    const missing = {
+      control_state: { activation: appliedActivation() },
+      control_generation: 9,
+      workspace_id: 'ws-a',
+      adv_session_id: null,
+      launch_spec: null,
+    };
+    db.rows.push([missing]);
+    await expect(controlAnchorKernelResolver(request({ toolName: 'coord:orient' }))).resolves.toMatchObject({
+      decision: 'allow', code: 'identity-recovery', applied: false,
+    });
+
+    db.rows.push([missing]);
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+      decision: 'deny', code: 'capability_unsatisfied',
+      obligations: { capabilityUnsatisfied: { cause: 'no-launch-record' } },
+    });
+
+    // A real adv_sessions row with no usable launch_spec is still stale, not
+    // recoverable through the missing-row door.
+    db.rows.push([{ ...missing, adv_session_id: 7 }]);
+    await expect(controlAnchorKernelResolver(request({ toolName: 'coord:orient' }))).resolves.toMatchObject({
+      decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
+    });
   });
 
   it('installs the live resolver through the shared operator port', async () => {

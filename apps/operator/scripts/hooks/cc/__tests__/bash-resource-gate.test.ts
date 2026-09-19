@@ -4305,6 +4305,27 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
   });
 
   /**
+   * EI-23394109515758945 — the raw redirect scan also sees the body of a
+   * command substitution. Quote stripping removes PostgreSQL JSON keys from
+   * an unquoted psql expression, leaving `payload-> -> ->>`; the `>` in the
+   * first arrow was then read as a redirect targeting `-`. Only the SQL
+   * operators are ignored: a genuine redirect in the same substitution must
+   * continue to hit the shell-write guard.
+   */
+  it('allows PostgreSQL JSON `->`/`->>` operators inside a nested psql substitution', () => {
+    const command =
+      "value=$(psql -Atc SELECT payload->'observation'->'gradingAudit'->>'state' FROM records)";
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('still denies a genuine tree redirect inside a nested psql substitution', () => {
+    const command =
+      "value=$(psql -Atc SELECT payload->'observation'->>'state' FROM records > apps/operator/generated.ts)";
+    const reason = expectShellWriteDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+
+  /**
    * EI-18691980588797795 — a command substitution whose LITERAL TEXT contains
    * a space defeats the naive `.split()` that every token-based leg (`tee`,
    * `sed -i`, `perl -i`/`ruby -i`, `cp`) uses to find its target(s): the

@@ -169,7 +169,8 @@ describe('P-009 activation span views', () => {
       (904,${WS},'carry-foreign',${ms('2026-09-10T00:03:00Z')}),
       (905,${WS},'carry-chat',${ms('2026-09-10T00:03:00Z')}),
       (906,${WS},'carry-ambiguous',${ms('2026-09-10T00:03:00Z')}),
-      (907,'foreign-workspace','carry-middle',${ms('2026-09-10T00:03:00Z')})`;
+      (907,'foreign-workspace','carry-middle',${ms('2026-09-10T00:03:00Z')}),
+      (908,${WS},'carry-before',${ms('2026-09-10T00:03:00Z')})`;
     const read = () => db.sql`
       SELECT id::text, identity_transition_id, identity_owner_id
         FROM harness_shared.agent_usage_samples_identity_attribution WHERE id >= 901 ORDER BY id`;
@@ -178,9 +179,34 @@ describe('P-009 activation span views', () => {
       { id: '902', identity_transition_id: null, identity_owner_id: null },
       { id: '903', identity_transition_id: 'carry-revoked', identity_owner_id: owner },
       ...['904', '905', '906', '907'].map((id) => ({ id, identity_transition_id: null, identity_owner_id: null })),
+      { id: '908', identity_transition_id: 'carry-applied', identity_owner_id: owner },
     ];
     expect(await read()).toEqual(expected);
     await db.sql`UPDATE harness_shared.adv_sessions SET session_id='carry-after' WHERE id=90`;
+    expect(await read()).toEqual(expected);
+
+    // Calibrate the regression against the actual predecessor view, not a
+    // hand-written approximation: after reanchor it loses the middle native id
+    // even though the applied event and transcript-owner mapping still exist.
+    // Only this disposable database is changed; never downgrade the live view.
+    await applyMigrationForTest(db.sql, migration);
+    try {
+      const [withoutBridge] = await db.sql`
+        SELECT identity_transition_id, identity_owner_id
+          FROM harness_shared.agent_usage_samples_identity_attribution WHERE id=901`;
+      expect(withoutBridge).toEqual({
+        identity_transition_id: null,
+        identity_owner_id: null,
+      });
+      const [positiveControl] = await db.sql`
+        SELECT identity_transition_id
+          FROM harness_shared.agent_usage_samples_identity_attribution WHERE id=908`;
+      expect(positiveControl).toEqual({ identity_transition_id: 'carry-applied' });
+    } finally {
+      await applyMigrationForTest(db.sql, carryMigration);
+    }
+    // The repaired view restores the historical sample without weakening the
+    // pending/revocation, workspace, source-kind, or ambiguous-owner exclusions.
     expect(await read()).toEqual(expected);
   });
 

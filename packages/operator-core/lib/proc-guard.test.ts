@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   getAncestryChain,
+  isCapabilityBashSystemdRunWrapper,
   getOperationalArgv,
   matchesAdjacentArgvSequence,
   isStructuredPayloadArg,
@@ -121,6 +122,49 @@ describe('parseCmdline', () => {
 
   it('drops the trailing empty segment from the terminating NUL', () => {
     expect(parseCmdline(Buffer.from('node\0script.mjs\0'))).toBe('node script.mjs');
+  });
+});
+
+describe('isCapabilityBashSystemdRunWrapper', () => {
+  const taskId = '0mu5adly174temv1c19';
+  const wrapper = [
+    '/usr/bin/systemd-run',
+    '--user',
+    '--pipe',
+    '--wait',
+    '--quiet',
+    `--unit=pc-${taskId}.service`,
+    '--slice=papercusp-bash-job.slice',
+    '--property=KillMode=control-group',
+    '--',
+    'bash',
+    '-o',
+    'pipefail',
+    '-c',
+    'node scripts/proc-guard.mjs check auto-apply-runner',
+  ];
+
+  it('recognizes only the exact current capability:bash service client shape', () => {
+    expect(isCapabilityBashSystemdRunWrapper(wrapper, taskId)).toBe(true);
+  });
+
+  it('does not exclude a wrapper for a different task id', () => {
+    expect(isCapabilityBashSystemdRunWrapper(wrapper, '0mu-other-task')).toBe(false);
+  });
+
+  it('does not exclude a real same-session target using the scope or another slice', () => {
+    expect(
+      isCapabilityBashSystemdRunWrapper(
+        wrapper.map((arg) => (arg === '--pipe' ? '--scope' : arg)),
+        taskId,
+      ),
+    ).toBe(false);
+    expect(
+      isCapabilityBashSystemdRunWrapper(
+        wrapper.map((arg) => (arg === '--slice=papercusp-bash-job.slice' ? '--slice=papercusp-agent.slice' : arg)),
+        taskId,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -351,6 +395,45 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
 
     const matches = matchExternalProcesses(PATTERN, { procRoot: fixtureRoot, selfPid: 100 });
     expect(matches.map((m) => m.pid)).toEqual([777]);
+  });
+
+  it('excludes only the current capability:bash wrapper, retaining a different task and a same-session target', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
+    const PATTERN = 'auto-apply-runner';
+    const currentTaskId = '0mu5adly174temv1c19';
+    const sessionId = 'su-same-session';
+    const wrapper = (taskId: string) => [
+      'systemd-run',
+      '--user',
+      '--pipe',
+      '--wait',
+      '--quiet',
+      `--unit=pc-${taskId}.service`,
+      '--slice=papercusp-bash-job.slice',
+      '--property=KillMode=control-group',
+      '--',
+      'bash',
+      '-o',
+      'pipefail',
+      '-c',
+      `node scripts/proc-guard.mjs check ${PATTERN}`,
+    ];
+    fixtureProc(fixtureRoot, 1, 0, ['/sbin/init']);
+    fixtureProc(fixtureRoot, 100, 1, ['node', 'scripts/proc-guard.mjs', 'check', PATTERN]);
+    fixtureProc(fixtureRoot, 200, 1, wrapper(currentTaskId));
+    fixtureIdentity(fixtureRoot, 200, { environment: [`PAPERCUSP_SID=${sessionId}`] });
+    fixtureProc(fixtureRoot, 201, 1, wrapper('0mu-other-task'));
+    fixtureIdentity(fixtureRoot, 201, { environment: [`PAPERCUSP_SID=${sessionId}`] });
+    fixtureProc(fixtureRoot, 202, 1, ['node', '/repo/real-auto-apply-runner.mjs']);
+    fixtureIdentity(fixtureRoot, 202, { environment: [`PAPERCUSP_SID=${sessionId}`] });
+
+    const report = matchExternalProcessesDetailed(PATTERN, {
+      procRoot: fixtureRoot,
+      selfPid: 100,
+      capabilityBashTaskId: currentTaskId,
+    });
+    expect(report.matches.map((m) => m.pid)).toEqual([201, 202]);
+    expect(report.fullMatches.map((m) => m.pid)).toEqual([201, 202]);
   });
 
   it('excludes an unrelated process that is merely a SIBLING ancestor-less match correctly, and excludes self', () => {

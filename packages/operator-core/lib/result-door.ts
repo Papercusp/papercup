@@ -395,6 +395,27 @@ function isTextItem(it: unknown): it is { type: 'text'; text: string } {
 const SPEC_TEST_ADEQUACY_TOOL = 'plans:evaluate-spec-test-adequacy';
 const PIPELINE_POSITION_TOOL = 'dev:pipeline_position';
 /**
+ * coord:send's result is a write receipt, not a list whose detail can be
+ * safely reduced to row identity. These fields are the delivery verdict the
+ * sender uses to distinguish "queued" from "missed" and to verify the durable
+ * message handle. Keep them in the generic result-door projection even when a
+ * large body/diagnostic section is evicted; otherwise a successful send can
+ * render exactly like a failed one (EI-23481355842555588).
+ */
+const COORD_SEND_DELIVERY_PRESERVE_PATHS = [
+  'results[].msg_id',
+  'results[].queued',
+  'results[].woken',
+  'results[].wakeOutcome',
+  'results[].pickupConfirmed',
+  'results[].recipient_absent',
+  'results[].wake.queued',
+  'results[].wake.woken',
+  'results[].wake.wakeOutcome',
+  'results[].wake.pickupConfirmed',
+  'results[].wake.recipient_absent',
+] as const;
+/**
  * `dev:pipeline_position`'s marker argument exists to settle these verdicts,
  * but the handler's compact response places them after the verbose gate/queue
  * fields. Keep the marker result and the two legs it corrects addressable when
@@ -1431,6 +1452,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const preservePaths = [
       ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
       ...(opts.toolName === PIPELINE_POSITION_TOOL ? PIPELINE_POSITION_PRESERVE_PATHS : []),
+      ...(opts.toolName === 'coord:send' ? COORD_SEND_DELIVERY_PRESERVE_PATHS : []),
       // work_items:complete writes these fields before its bulky echoes, and its
       // tier shaper deliberately spreads them through unchanged. The generic
       // result-door is a later, independent projection seam, though: without an

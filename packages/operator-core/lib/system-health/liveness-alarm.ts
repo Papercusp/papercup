@@ -59,7 +59,13 @@
  * dead-routines keeps firing/recovering) remains its own, separate open bug —
  * this only stops the ALARM SYSTEM from amplifying it into a broadcast storm.
  */
-import { PANEL_LABELS, type SystemHealth, type PanelKey, type InfraHealth } from './types';
+import {
+  PANEL_LABELS,
+  type SystemHealth,
+  type PanelKey,
+  type InfraHealth,
+  type DeadRoutineNameCoverage,
+} from './types';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { lastSystemHealth, readSharedSystemHealthSnapshot } from './compute';
 import {
@@ -1049,6 +1055,7 @@ export function formatDeadRoutinesSummary(wf: {
   deadRoutinesInScope?: number;
   deadRoutinesDistinct?: number;
   deadRoutineCriticalNames?: string[];
+  deadRoutineCoverage?: Record<string, DeadRoutineNameCoverage>;
 }): string {
   const count = wf.deadRoutines;
   const total = wf.deadRoutinesInScope;
@@ -1074,9 +1081,19 @@ export function formatDeadRoutinesSummary(wf: {
   // Half the durable engine overdue is no longer "some routines are late" — say the stronger word.
   const frozen = hasDenominator && count / (total as number) >= 0.5;
   const critical = wf.deadRoutineCriticalNames ?? [];
-  const consequence = critical.includes('git-sync')
-    ? ' git-sync is among them, so NOTHING in the shared tree is being committed — the release gate ' +
+  const gitSyncCoverage = wf.deadRoutineCoverage?.['git-sync'];
+  const gitSyncHasStrictMajority =
+    gitSyncCoverage != null &&
+    gitSyncCoverage.active > 0 &&
+    gitSyncCoverage.overdue * 2 > gitSyncCoverage.active;
+  const gitSyncCoverageNote = gitSyncCoverage
+    ? ` (${gitSyncCoverage.overdue} of ${gitSyncCoverage.active} active rows overdue)`
+    : '';
+  const consequence = critical.includes('git-sync') && gitSyncHasStrictMajority
+    ? ` git-sync is among them${gitSyncCoverageNote}, so NOTHING in the shared tree is being committed — the release gate ` +
       'will keep re-judging a candidate that structurally cannot contain anyone\'s fix.'
+    : critical.includes('git-sync')
+      ? ` Fleet-blocking: git-sync${gitSyncCoverageNote}; this is not evidence of a fleet-wide commit outage.`
     : critical.length > 0
       ? ` Fleet-blocking: ${critical.join(', ')}.`
       : '';

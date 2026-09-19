@@ -20,6 +20,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   RATCHET_GRANULARITY_BYTES,
+  RATCHET_MINIMUM_HEADROOM_BYTES,
   ceilingForMeasurement,
   checkComposition,
   compareProseBudget,
@@ -175,13 +176,13 @@ describe('checkComposition — the positive control a byte floor cannot provide'
 });
 
 describe('ratchetCeilings — down-only, by construction', () => {
-  it('lowers a ceiling to the next whole kilobyte above the measurement', () => {
+  it('lowers a ceiling while preserving the minimum headroom reserve', () => {
     const r = ratchetCeilings(baseline, [m('playbook', 61_200), m('guide', 45_000)]);
     expect(r.lowered).toEqual([
-      { surface: 'playbook', from: 100_000, to: 62_000, savedBytes: 38_000 },
-      { surface: 'guide', from: 50_000, to: 45_000, savedBytes: 5_000 },
+      { surface: 'playbook', from: 100_000, to: 62_200, savedBytes: 37_800 },
+      { surface: 'guide', from: 50_000, to: 46_000, savedBytes: 4_000 },
     ]);
-    expect(r.baseline.ceilings[0]!.ceilingBytes).toBe(62_000);
+    expect(r.baseline.ceilings[0]!.ceilingBytes).toBe(62_200);
   });
 
   it('NEVER raises — a measurement over the ceiling leaves it untouched', () => {
@@ -221,18 +222,30 @@ describe('ratchetCeilings — down-only, by construction', () => {
 });
 
 describe('ceilingForMeasurement', () => {
-  it('rounds up to the granularity, and leaves an exact multiple alone', () => {
-    expect(ceilingForMeasurement(1)).toBe(RATCHET_GRANULARITY_BYTES);
-    expect(ceilingForMeasurement(253_315)).toBe(254_000);
-    expect(ceilingForMeasurement(254_000)).toBe(254_000);
+  it('keeps the minimum headroom even at and near a granularity boundary', () => {
+    expect(ceilingForMeasurement(1)).toBe(1 + RATCHET_MINIMUM_HEADROOM_BYTES);
+    expect(ceilingForMeasurement(253_315)).toBe(253_315 + RATCHET_MINIMUM_HEADROOM_BYTES);
+    expect(ceilingForMeasurement(254_000)).toBe(254_000 + RATCHET_MINIMUM_HEADROOM_BYTES);
+    expect(ceilingForMeasurement(254_001) - 254_001).toBeGreaterThanOrEqual(
+      RATCHET_MINIMUM_HEADROOM_BYTES,
+    );
   });
 
-  it('keeps the slack under one kilobyte for any measurement', () => {
+  it('never produces less than the minimum slack for any measurement', () => {
     for (const bytes of [1, 999, 1_000, 1_001, 18_529, 121_670, 253_315]) {
       const slack = ceilingForMeasurement(bytes) - bytes;
-      expect(slack).toBeGreaterThanOrEqual(0);
-      expect(slack).toBeLessThan(RATCHET_GRANULARITY_BYTES);
+      expect(slack).toBeGreaterThanOrEqual(RATCHET_MINIMUM_HEADROOM_BYTES);
     }
+  });
+
+  it('does not collapse to near-zero slack at a whole-kilobyte boundary', () => {
+    const measurement = 220_971;
+    expect(ceilingForMeasurement(measurement)).toBe(measurement + RATCHET_MINIMUM_HEADROOM_BYTES);
+    expect(ceilingForMeasurement(measurement) - measurement).toBe(1_000);
+  });
+
+  it('retains a larger whole-kilobyte increment when a custom granularity exceeds the floor', () => {
+    expect(ceilingForMeasurement(12_345, 10_000)).toBe(20_000);
   });
 });
 

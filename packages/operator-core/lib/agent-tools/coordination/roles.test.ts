@@ -40,6 +40,30 @@ describe('COORD_ROLES', () => {
     expect(COORD_ROLES).not.toContain('judge');
   });
 
+  test('acceptance judge can read and advance routed consults without becoming a general coordinator', async () => {
+    const [
+      { default: conversationsGet },
+      { default: consultReply },
+      { default: consultDecline },
+      { default: consultClose },
+    ] = await Promise.all([
+      import('./tools/conversations-get.js'),
+      import('../consult/reply.js'),
+      import('../consult/decline.js'),
+      import('../consult/close.js'),
+    ]);
+
+    for (const [name, tool] of [
+      ['conversations:get', conversationsGet],
+      ['consult:reply', consultReply],
+      ['consult:decline', consultDecline],
+      ['consult:close', consultClose],
+    ] as const) {
+      expect(tool.agentRoles, `${name} must admit judge`).toContain('judge');
+    }
+    expect(COORD_ROLES).not.toContain('judge');
+  });
+
   test('bee is a coord role (P-001 — improvements:capture + work_items:* resolve for a bee URL)', () => {
     expect(COORD_ROLES).toContain('cup');
   });

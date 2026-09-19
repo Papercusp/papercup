@@ -12,7 +12,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { COORD_ROLES } from '../coordination/roles';
+import { COORD_REPLY_ROLES } from '../coordination/roles';
 import { hardText } from '../limits';
 
 const ok = (payload: Record<string, unknown>) => ({ data: payload });
@@ -37,7 +37,7 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_REPLY_ROLES],
   args: z
     .object({
       conversation_id: z.string().min(1).describe('The consult conversation (from the wake / get_feedback result).'),

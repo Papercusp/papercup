@@ -858,6 +858,48 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     );
   });
 
+  it('notifies the await owner when detached resume deaths exhaust the delivery budget', async () => {
+    const dead = workRow({
+      id: 94,
+      subscriberId: 'su-owner',
+      eventKey: 'detector:done',
+      summary: 'The detector condition is true.',
+      attempts: 8,
+    });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([dead]);
+    h.store.reopenDeliveredAfterResumeDeath.mockResolvedValueOnce('dead');
+    h.executeWake.mockImplementationOnce(
+      async (d: DeliveryWork, deps: { onResumeTurnExit?: (d: DeliveryWork, exit: unknown) => void }) => {
+        deps.onResumeTurnExit?.(d, {
+          exitCode: 1,
+          signal: null,
+          stdoutTail: '',
+          stderrTail: 'agent crash',
+        });
+        return { kind: 'delivered', channel: 'resume-headless' };
+      },
+    );
+
+    await pumpWakeDeliveries('ws-test');
+
+    await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
+    const [, message] = h.sendMessage.mock.calls[0] as unknown as [
+      unknown,
+      { to: string[]; summary: string; body: string; extra: Record<string, unknown> },
+    ];
+    expect(message.to).toEqual(['su-owner']);
+    expect(message.summary).toContain('delivery #94');
+    expect(message.body).toContain("event 'detector:done'");
+    expect(message.body).toContain('terminal status \'dead\'');
+    expect(message.extra).toMatchObject({
+      event_key: 'detector:done',
+      wake_delivery_id: 94,
+      terminal_status: 'dead',
+      attempts: 8,
+      last_error: 'resume-turn-death:agent_crash',
+    });
+  });
+
   it('does not reopen a timeout-only delivery after detached death', async () => {
     const timeout = workRow({ id: 93, payload: { timeout: true }, attempts: 2 });
     h.store.claimDueDeliveries.mockResolvedValueOnce([timeout]);

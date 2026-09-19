@@ -1,15 +1,19 @@
 // @vitest-environment jsdom
 
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 interface ReviewManifest {
   schemaVersion: number;
+  reviewedAt: string;
   sourcePath: string;
   sourceSha256: string;
+  reviewStale?: boolean;
+  reviewStaleReason?: string;
   answerBankPath: string;
   answerBankSha256: string;
   expectedDigests: {
@@ -34,6 +38,20 @@ const manifestRaw = readFileSync(manifestPath, 'utf8');
 const manifest = JSON.parse(manifestRaw) as ReviewManifest;
 const resolveEvidencePath = (path: string): string => (isAbsolute(path) ? path : resolve(homedir(), path));
 const sourcePath = process.env.SERVICENOW_INTERVIEW_PREP_FILE ?? resolveEvidencePath(manifest.sourcePath);
+
+function sourceDigestIntroducedAt(): number | null {
+  try {
+    const introducedAt = execFileSync(
+      'git',
+      ['log', '-1', '--format=%cI', `-S${manifest.sourceSha256}`, '--', relative(process.cwd(), manifestPath)],
+      { cwd: process.cwd(), encoding: 'utf8' },
+    ).trim();
+    const timestamp = Date.parse(introducedAt);
+    return Number.isFinite(timestamp) ? timestamp : null;
+  } catch {
+    return null;
+  }
+}
 
 const sha256 = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 const normalized = (value: string | null | undefined): string => value?.replace(/\s+/g, ' ').trim() ?? '';
@@ -122,6 +140,11 @@ function factValue(scope: ParentNode, label: string): string {
 let html = '';
 
 beforeAll(() => {
+  if (skipReason !== null) {
+    html = '';
+    document.body.innerHTML = '';
+    return;
+  }
   html = readFileSync(sourcePath, 'utf8');
   document.body.innerHTML = html;
 });
@@ -135,12 +158,37 @@ describe('ServiceNow Staff ML interview-prep review record (tracked, always enfo
 
   it('keeps a complete, non-blanked manual review on the tracked record', () => {
     expect(manifest.schemaVersion).toBe(1);
-    expect(manifest.manualReview.result).toBe('pass');
+    expect(['pass', 'stale']).toContain(manifest.manualReview.result);
     expect(manifest.manualReview.scope.length).toBeGreaterThanOrEqual(6);
     expect(manifest.manualReview.falsifierCoverage.length).toBeGreaterThanOrEqual(4);
     // A blanked/placeholder review must not pass as a reviewed one.
     for (const claim of [...manifest.manualReview.scope, ...manifest.manualReview.falsifierCoverage]) {
       expect(claim.trim().length).toBeGreaterThan(20);
+    }
+  });
+
+  it('never presents a digest pin newer than reviewedAt as a fresh manual pass', () => {
+    const reviewedAt = Date.parse(manifest.reviewedAt);
+    expect(Number.isFinite(reviewedAt)).toBe(true);
+    const digestIntroducedAt = sourceDigestIntroducedAt();
+
+    // A source checkout is expected in the release gate. If a packaged test run
+    // cannot inspect git history, the explicit stale marker is still the safe
+    // representation of an unverified digest pin.
+    if (digestIntroducedAt === null) {
+      expect(manifest.reviewStale).toBe(true);
+      expect(manifest.reviewStaleReason).toMatch(/re-review/i);
+      expect(manifest.manualReview.result).toBe('stale');
+      return;
+    }
+
+    if (digestIntroducedAt > reviewedAt) {
+      expect(manifest.reviewStale).toBe(true);
+      expect(manifest.reviewStaleReason).toMatch(/re-review/i);
+      expect(manifest.manualReview.result).toBe('stale');
+    } else {
+      expect(manifest.reviewStale).not.toBe(true);
+      expect(manifest.manualReview.result).toBe('pass');
     }
   });
 
@@ -176,7 +224,7 @@ describe('ServiceNow Staff ML interview-prep review record (tracked, always enfo
 describe.skipIf(skipReason !== null)('ServiceNow Staff ML interview-prep source contract', () => {
   it('pins the reviewed role content while allowing maintained shared navigation to grow', () => {
     expect(sha256(reviewedSource(html))).toBe(manifest.sourceSha256);
-    expect(manifest.manualReview.result).toBe('pass');
+    expect(['pass', 'stale']).toContain(manifest.manualReview.result);
     expect(manifest.manualReview.scope.length).toBeGreaterThanOrEqual(6);
     expect(manifest.manualReview.falsifierCoverage.length).toBeGreaterThanOrEqual(4);
   });

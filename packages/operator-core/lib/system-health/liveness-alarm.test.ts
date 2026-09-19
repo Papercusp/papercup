@@ -2650,6 +2650,7 @@ describe('formatDeadRoutinesSummary — magnitude + consequence (EI-200456914514
       deadRoutinesDistinct: 9,
       deadRoutineNames: ['git-sync', 'green-checkpoint', 'pr-poll'],
       deadRoutineCriticalNames: ['git-sync', 'green-checkpoint'],
+      deadRoutineCoverage: { 'git-sync': { overdue: 70, active: 70 } },
     });
     expect(s).toContain('101 of 151');            // the ratio, not a bare count
     expect(s).toContain('FROZEN');                 // >=50% of the engine is a freeze, say so
@@ -2728,5 +2729,32 @@ describe('formatDeadRoutinesSummary — magnitude + consequence (EI-200456914514
     });
     expect(s).toContain('Fleet-blocking: release-trigger.');
     expect(s).not.toContain('shared tree');
+  });
+
+  it('does not turn a minority of per-install git-sync rows into a fleet-wide outage', () => {
+    const s = formatDeadRoutinesSummary({
+      deadRoutines: 2,
+      deadRoutinesInScope: 153,
+      deadRoutinesDistinct: 1,
+      deadRoutineNames: ['git-sync'],
+      deadRoutineCriticalNames: ['git-sync'],
+      deadRoutineCoverage: { 'git-sync': { overdue: 2, active: 70 } },
+    });
+    expect(s).toContain('2 of 70 active rows overdue');
+    expect(s).toContain('not evidence of a fleet-wide commit outage');
+    expect(s).not.toContain('NOTHING in the shared tree is being committed');
+  });
+
+  it('requires a strict majority, not half, before asserting a fleet-wide commit outage', () => {
+    const s = formatDeadRoutinesSummary({
+      deadRoutines: 2,
+      deadRoutinesInScope: 4,
+      deadRoutinesDistinct: 1,
+      deadRoutineNames: ['git-sync'],
+      deadRoutineCriticalNames: ['git-sync'],
+      deadRoutineCoverage: { 'git-sync': { overdue: 2, active: 4 } },
+    });
+    expect(s).not.toContain('NOTHING in the shared tree is being committed');
+    expect(s).toContain('not evidence of a fleet-wide commit outage');
   });
 });
