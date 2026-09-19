@@ -234,6 +234,7 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       speaker       TEXT        NOT NULL,
       text          TEXT        NOT NULL,
       text_tsv      tsvector GENERATED ALWAYS AS (to_tsvector('english', left(text, 20000))) STORED,
+      text_simple_tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', lower(left(text, 20000)))) STORED,
       ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
       text_embedding public.vector(384),
       text_embedding_mode TEXT,
@@ -248,6 +249,8 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       turn_origin_classifier_version INTEGER,
       PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx)
     );
+    CREATE INDEX session_turns_simple_tsv_idx
+      ON harness_shared.session_turns USING gin (text_simple_tsv);
   `);
 
   // ── session_turn_chunks (749-session-turn-chunks.sql) ──
@@ -410,6 +413,11 @@ const T_ALL_B = stId(2);
 const T_FOUR = stId(3);
 const T_TRAP = stId(4);
 const T_DECOY_B = stId(20);
+const COMPACT_QUERY = 'furnishedfinder';
+const COMPACT_SESSION = 'sess-compact-token';
+const COMPACT_DECOY_SESSION = 'sess-compact-token-decoy';
+const COMPACT_ID = `codex:${COMPACT_SESSION}:1`;
+const COMPACT_DECOY_ID = `codex:${COMPACT_DECOY_SESSION}:1`;
 
 async function seedP17(s: postgres.Sql): Promise<void> {
   const turn = async (
@@ -454,6 +462,21 @@ async function seedP17(s: postgres.Sql): Promise<void> {
   await issue(WS_A, 'EI-N2', 'corpus pointer', 'section noise, no anchor');
   await issue(WS_A, 'EI-N3', 'recall pointer', 'section noise, no anchor');
   await issue(WS_B, 'EI-D9', 'corpus recall pointer', 'section clamp in another workspace');
+}
+
+/** EI-23237047797741772 fixture: the compact domain is present literally
+ * inside a hostname token, so neither dictionary can match it as a word. */
+async function seedCompactToken(s: postgres.Sql): Promise<void> {
+  await s`INSERT INTO harness_shared.session_turns
+            (workspace_id, source_kind, session_id, turn_idx, speaker, text, ts)
+          VALUES (${WS_A}, 'codex', ${COMPACT_SESSION}, 1, 'assistant',
+                  '[Furnished Finder](https://www.furnishedfinder.com/rooms/123) — compact domain link.',
+                  '2026-08-04T00:00:01Z')`;
+  await s`INSERT INTO harness_shared.session_turns
+            (workspace_id, source_kind, session_id, turn_idx, speaker, text, ts)
+          VALUES (${WS_B}, 'codex', ${COMPACT_DECOY_SESSION}, 1, 'assistant',
+                  '[Furnished Finder](https://www.furnishedfinder.com/rooms/decoy) — compact domain decoy.',
+                  '2026-08-04T00:00:02Z')`;
 }
 
 /**
@@ -509,6 +532,7 @@ beforeAll(async () => {
   await setupSchema(sql);
   await seed(sql);
   await seedP17(sql);
+  await seedCompactToken(sql);
   await seedChunks(sql);
 }, 60_000);
 
@@ -1026,6 +1050,50 @@ describe('P-017 — session_turn.lexical lexicalMode', () => {
       p17Params({ workspaceId: WS_B, lexicalMode: 'coverage-graded' }),
     );
     expect(b.map((r) => r.row.source_id)).toEqual([T_DECOY_B]);
+  });
+});
+
+describe('EI-23237047797741772 — compact transcript tokens use the literal fallback', () => {
+  it('retrieves a pasted compact URL token when dictionary lookup misses it', async () => {
+    const dictionaryProbe = await sql<Array<{ english_matches: boolean; simple_matches: boolean; literal_match: boolean }>>`
+      SELECT text_tsv @@ plainto_tsquery('english', ${COMPACT_QUERY}) AS english_matches,
+             text_simple_tsv @@ plainto_tsquery('simple', ${COMPACT_QUERY}) AS simple_matches,
+             position(lower(${COMPACT_QUERY}) in lower(text)) > 0 AS literal_match
+        FROM harness_shared.session_turns
+       WHERE workspace_id = ${WS_A}
+         AND source_kind = 'codex'
+         AND session_id = ${COMPACT_SESSION}
+         AND turn_idx = 1
+    `;
+    expect(dictionaryProbe).toEqual([{ english_matches: false, simple_matches: false, literal_match: true }]);
+
+    const out = await byName('session_turn').lexical(
+      params({ query: COMPACT_QUERY, limit: 20 }),
+    );
+
+    expect(out.map((r) => r.row.source_id)).toEqual([COMPACT_ID]);
+    expect(out[0].row.highlight).toContain('https://www.furnishedfinder.com/rooms/123');
+    expect(out[0].row.rankers).toEqual(['lexical']);
+  });
+
+  it('keeps the fallback workspace-scoped and does not surface the B decoy', async () => {
+    const a = await byName('session_turn').lexical(
+      params({ query: COMPACT_QUERY, limit: 20 }),
+    );
+    expect(a.map((r) => r.row.source_id)).not.toContain(COMPACT_DECOY_ID);
+    expect(a).toHaveLength(1);
+    expect(a[0].row.excerpt).toContain('compact domain link');
+
+    const b = await byName('session_turn').lexical(
+      params({ query: COMPACT_QUERY, workspaceId: WS_B, limit: 20 }),
+    );
+    expect(b.map((r) => r.row.source_id)).toEqual([COMPACT_DECOY_ID]);
+  });
+
+  it('preserves the English ranker for ordinary terms', async () => {
+    const out = await byName('session_turn').lexical(params({ query: P17_QUERY }));
+    expect(out.map((r) => r.row.source_id).sort()).toEqual([T_ALL_A, T_ALL_B].sort());
+    expect(out.every((r) => r.row.highlight.includes('<mark>'))).toBe(true);
   });
 });
 

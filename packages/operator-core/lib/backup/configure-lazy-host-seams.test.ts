@@ -26,6 +26,7 @@
  * fails at the dynamic import below.
  */
 import { beforeEach, describe, it, expect, vi } from 'vitest';
+import type { BackupMigrationLockWaitInfo } from '@papercusp/backup';
 
 const h = vi.hoisted(() => ({
   configureBackup: vi.fn(),
@@ -39,7 +40,11 @@ const pg = vi.hoisted(() => {
     vi.fn((_strings: readonly string[], ..._values: unknown[]): Promise<unknown> => Promise.resolve([])),
     { end: vi.fn(async () => {}) },
   );
-  return { client, postgres: vi.fn(() => client) };
+  const observer = Object.assign(
+    vi.fn((_strings: readonly string[], ..._values: unknown[]): Promise<unknown> => Promise.resolve([])),
+    { end: vi.fn(async () => {}) },
+  );
+  return { client, observer, postgres: vi.fn(() => client) };
 });
 
 vi.mock('@papercusp/backup', () => ({ configureBackup: h.configureBackup }));
@@ -64,11 +69,20 @@ beforeEach(() => {
     status: 'none',
     reason: 'routine-not-found',
   });
+  h.managedSetInterval.mockReset().mockImplementation(() => ({ stop: vi.fn() }));
+  pg.postgres.mockReset().mockImplementation(() => pg.client);
+  pg.client.mockReset().mockResolvedValue([]);
+  pg.client.end.mockReset().mockResolvedValue(undefined);
+  pg.observer.mockReset().mockResolvedValue([]);
+  pg.observer.end.mockReset().mockResolvedValue(undefined);
 });
 
 async function configuredHost(): Promise<{
   readIntervalSnapshotAdmission: (workspaceId: string) => Promise<unknown>;
-  acquireMigrationLock: (options?: { tryOnly?: boolean }) => Promise<{
+  acquireMigrationLock: (options?: {
+    tryOnly?: boolean;
+    onWaiting?: (info: BackupMigrationLockWaitInfo) => void | Promise<void>;
+  }) => Promise<{
     release: () => Promise<void>;
   } | undefined>;
   scheduleInterval: (name: string, intervalMs: number, callback: () => void | Promise<void>) => { stop: () => void };
@@ -76,7 +90,10 @@ async function configuredHost(): Promise<{
   await import('./configure');
   return h.configureBackup.mock.calls[0]![0] as {
     readIntervalSnapshotAdmission: (workspaceId: string) => Promise<unknown>;
-    acquireMigrationLock: (options?: { tryOnly?: boolean }) => Promise<{
+    acquireMigrationLock: (options?: {
+      tryOnly?: boolean;
+      onWaiting?: (info: BackupMigrationLockWaitInfo) => void | Promise<void>;
+    }) => Promise<{
       release: () => Promise<void>;
     } | undefined>;
     scheduleInterval: (name: string, intervalMs: number, callback: () => void | Promise<void>) => { stop: () => void };
@@ -176,22 +193,84 @@ describe('backup host binding — lazy host seams (WI-40369)', () => {
     // also cancels a `pg_advisory_lock` wait, so resetting only `lock_timeout` would
     // leave this deliberately-unbounded rendezvous cancellable the moment a role-level
     // statement_timeout exists. Order matters only in that both precede the acquire.
-    expect(pg.client).toHaveBeenCalledTimes(3);
+    expect(pg.client).toHaveBeenCalledTimes(4);
     expect(String(pg.client.mock.calls[0]![0])).toContain('SET lock_timeout = 0');
     expect(String(pg.client.mock.calls[1]![0])).toContain('SET statement_timeout = 0');
-    expect(String(pg.client.mock.calls[2]![0])).toContain('pg_advisory_lock');
+    expect(String(pg.client.mock.calls[2]![0])).toContain('pg_try_advisory_lock');
+    expect(String(pg.client.mock.calls[3]![0])).toContain('pg_advisory_lock');
 
     if (!lock) throw new Error('blocking advisory-lock acquisition unexpectedly returned no lock');
     await lock.release();
-    expect(pg.client).toHaveBeenCalledTimes(4);
-    expect(String(pg.client.mock.calls[3]![0])).toContain('pg_advisory_unlock');
+    expect(pg.client).toHaveBeenCalledTimes(5);
+    expect(String(pg.client.mock.calls[4]![0])).toContain('pg_advisory_unlock');
     expect(pg.client.end).toHaveBeenCalledTimes(1);
 
     // The release handle is idempotent, so a defensive double-finally cannot
     // issue an unlock against a session that has already been closed.
     await lock.release();
-    expect(pg.client).toHaveBeenCalledTimes(4);
+    expect(pg.client).toHaveBeenCalledTimes(5);
     expect(pg.client.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the holder immediately and periodically while a blocking acquire waits', async () => {
+    vi.useFakeTimers();
+    h.managedSetInterval.mockImplementation((_name, intervalMs, callback) => {
+      const timer = setInterval(() => void callback(), intervalMs);
+      return { stop: () => clearInterval(timer) };
+    });
+    pg.postgres.mockReset().mockImplementationOnce(() => pg.client).mockImplementation(() => pg.observer);
+    pg.observer.mockResolvedValue([
+      {
+        pid: 1503379,
+        application_name: 'pcbackup-workspace',
+        state: 'idle',
+        query_started_at: '2026-09-19T10:00:00.000Z',
+      },
+    ]);
+    let releaseBlocking!: () => void;
+    const blocking = new Promise<void>((resolve) => {
+      releaseBlocking = resolve;
+    });
+    pg.client
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ acquired: false }])
+      .mockImplementationOnce(() => blocking);
+
+    const host = await configuredHost();
+    const reports: Array<Record<string, unknown>> = [];
+    const lockPromise = host.acquireMigrationLock({
+      onWaiting: (info) => {
+        reports.push(info as unknown as Record<string, unknown>);
+      },
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({
+      lockKey: 'papercusp:backup:migration-rendezvous',
+      holderPid: 1503379,
+      holderApplicationName: 'pcbackup-workspace',
+      holderState: 'idle',
+    });
+    expect(String(pg.observer.mock.calls.at(-1)?.[0])).toContain('FROM pg_locks AS l');
+    expect(String(pg.observer.mock.calls.at(-1)?.[0])).toContain('l.classid = 0');
+    expect(String(pg.observer.mock.calls.at(-1)?.[0])).toContain('l.objid::bigint');
+    expect(h.managedSetInterval).toHaveBeenCalledWith(
+      expect.stringMatching(/^backup-migration-lock-wait:/),
+      15_000,
+      expect.any(Function),
+      { category: 'lifecycle', classification: 'must-sample', instanced: true },
+    );
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(reports).toHaveLength(2);
+
+    releaseBlocking();
+    const lock = await lockPromise;
+    expect(lock).toBeDefined();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(reports).toHaveLength(2);
+    await lock!.release();
   });
 
   it('returns no lock and closes the session when a try-only probe is busy', async () => {

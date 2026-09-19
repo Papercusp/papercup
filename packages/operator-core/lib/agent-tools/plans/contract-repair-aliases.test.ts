@@ -106,6 +106,11 @@ describe('plans:get — `decisionIds` aliases `decisions` (EI-21158047068641416)
     parseOk(getTool.args, { slug: 'a-plan-2026-09-05', items: ['P-006'] });
     expect(getTool.args.shape.itemIds.description).toMatch(/`items` wins/i);
   });
+
+  it('accepts explicitly empty item selectors (EI-23680403897684638)', () => {
+    parseOk(getTool.args, { slug: 'a-plan-2026-09-05', items: [], decisions: [] });
+    parseOk(getTool.args, { slug: 'a-plan-2026-09-05', itemIds: [] });
+  });
 });
 
 describe('plans:get-specs — singular plan-item aliases (EI-21722550422531809)', () => {

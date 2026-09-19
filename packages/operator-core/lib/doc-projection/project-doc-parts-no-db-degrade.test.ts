@@ -46,11 +46,20 @@ const SCRIPT = process.env.PROBE_PROJECT_DOC_PARTS ?? resolve(ROOT, 'scripts/pro
  */
 const UNREACHABLE_PG = 'postgres://nobody:nobody@127.0.0.1:59999/papercusp_no_such_db';
 
-function runProjector(args: string[]): { status: number; output: string } {
+function runProjector(
+  args: string[],
+  extraEnv: NodeJS.ProcessEnv = {},
+): { status: number; output: string } {
   try {
     const stdout = execFileSync(process.execPath, [SCRIPT, ...args], {
       cwd: ROOT,
-      env: { ...process.env, HARNESS_ADMIN_DATABASE_URL: UNREACHABLE_PG },
+      env: {
+        ...process.env,
+        GREEN_CHECKPOINT: '0',
+        PAPERCUSP_TEST_RUN_COMMIT: '',
+        HARNESS_ADMIN_DATABASE_URL: UNREACHABLE_PG,
+        ...extraEnv,
+      },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 60_000,
@@ -68,6 +77,50 @@ function runProjector(args: string[]): { status: number; output: string } {
 }
 
 describe('project-doc-parts — the no-DB degrade is CHECK-ONLY', () => {
+  function currentCommit(): string {
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    }).trim();
+  }
+
+  it('frozen candidates read committed artifacts and never connect to live Postgres', () => {
+    const { status, output } = runProjector([], {
+      GREEN_CHECKPOINT: '1',
+      PAPERCUSP_TEST_RUN_COMMIT: currentCommit(),
+    });
+    expect(status).toBe(0);
+    expect(output).toContain('frozen candidate');
+    expect(output).toContain('CLAUDE.md');
+    expect(output).toContain('AGENTS.md');
+    expect(output).toContain('claude-md-corpus.generated.md');
+    expect(output).toContain('no live Postgres read performed');
+    expect(output).not.toContain('ECONNREFUSED');
+    expect(output).not.toContain('SKIPPED');
+  });
+
+  it('frozen candidates fail closed on an unreadable committed artifact without connecting', () => {
+    const { status, output } = runProjector([], {
+      GREEN_CHECKPOINT: '1',
+      PAPERCUSP_TEST_RUN_COMMIT: '0'.repeat(40),
+    });
+    expect(status).not.toBe(0);
+    expect(output).toContain('candidate artifact check failed');
+    expect(output).toContain('CLAUDE.md');
+    expect(output).toContain('Refusing to consult live Postgres');
+    expect(output).not.toContain('ECONNREFUSED');
+  });
+
+  it('frozen candidates refuse write flags before any database connection', () => {
+    const { status, output } = runProjector(['--write'], {
+      GREEN_CHECKPOINT: '1',
+      PAPERCUSP_TEST_RUN_COMMIT: currentCommit(),
+    });
+    expect(status).not.toBe(0);
+    expect(output).toContain('candidate artifact checks are read-only');
+    expect(output).not.toContain('ECONNREFUSED');
+  });
+
   it.each(['--help', '-h'])('prints usage without connecting to Postgres for %s', (flag) => {
     const { status, output } = runProjector([flag, '--write']);
     expect(status).toBe(0);

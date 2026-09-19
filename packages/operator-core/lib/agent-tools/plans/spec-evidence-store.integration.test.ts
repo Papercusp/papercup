@@ -68,6 +68,12 @@ const MIGRATION_930 = migration('930-spec-clause-falsifier-null-safe.sql');
 // append-only trigger with a strict superset of it. Applied LAST so the guards below
 // exercise the trigger this migration installs, not the one 855 installed.
 const MIGRATION_1174 = migration('1174-spec-evidence-binding-retraction.sql');
+// 1175 scopes the dedup index to live rows so a retracted binding releases its
+// slot for an identical corrected binding (WI-10001850 / D-011).
+const MIGRATION_1175 = migration('1175-spec-evidence-dedup-partial-on-live.sql');
+// 1176 completes the expand/contract sequence after the predicate-aware writer is
+// deployed by dropping the obsolete total index (WI-10001850 / EI-23634085867209303).
+const MIGRATION_1176 = migration('1176-spec-evidence-drop-total-dedup-contract-phase.sql');
 const CTX = {
   isSuperuser: true,
   uiClientId: 'su-spec-evidence-integration',
@@ -214,6 +220,10 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_930);
   await applyMigrationForTest(db.sql, MIGRATION_1174);
   await applyMigrationForTest(db.sql, MIGRATION_1174); // idempotent and replay-safe
+  await applyMigrationForTest(db.sql, MIGRATION_1175);
+  await applyMigrationForTest(db.sql, MIGRATION_1175); // idempotent and replay-safe
+  await applyMigrationForTest(db.sql, MIGRATION_1176);
+  await applyMigrationForTest(db.sql, MIGRATION_1176); // idempotent and replay-safe
 }, 90_000);
 
 afterAll(async () => {

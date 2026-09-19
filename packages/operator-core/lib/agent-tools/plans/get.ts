@@ -114,7 +114,6 @@ const argsSchema = z
       .describe('Plan slugs to fetch in one call. Equivalent to calling this tool once per slug.'),
     items: z
       .array(z.string().min(1))
-      .min(1)
       .max(100)
       .optional()
       .describe(
@@ -126,7 +125,6 @@ const argsSchema = z
     // meaning, different spelling; `items` wins when both are supplied.
     itemIds: z
       .array(z.string().min(1))
-      .min(1)
       .max(100)
       .optional()
       .describe(

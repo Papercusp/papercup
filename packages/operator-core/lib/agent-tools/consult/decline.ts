@@ -57,6 +57,20 @@ export default defineTool({
       {
         getSql: () => getOrgPg().sql,
         post: (input) => conversations.postReply(identity, input),
+        // Terminal declines have a typed `declined` consult_state outcome but
+        // must also settle the coarse coord_conversations projection. The
+        // shared settlement seam maps the non-answering outcome to `closed`.
+        settleConversation: (input, tx) =>
+          conversations.settleConsultConversation(
+            identity,
+            {
+              conversationId: input.conversationId,
+              outcome: 'cant_help',
+              postId: input.postId,
+              now: input.now,
+            },
+            tx,
+          ),
         emitReplyEvent: async (e) => {
           await import('../../events/await/engine')
             .then(({ emitAwaitedEvent }) => emitAwaitedEvent({ ...e, source: identity.ownerId }))

@@ -36,7 +36,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
   DEFAULT_RESOURCE_BUDGET,
@@ -66,17 +66,18 @@ import { packerFacade, type PackerEffects, type PackerEngine, type PackerResult 
 /**
  * A cursor question for one corpus case.
  *
- * `file` is repo-relative; `line1` is ONE-indexed as a human states it. The
- * `character` offset is deliberately absent — see the file header.
+ * `file` is repo-relative; `anchor` is a unique literal used to derive the
+ * current ONE-indexed line. The `character` offset is deliberately absent —
+ * see the file header.
  */
 export interface BenchProbe {
   /** Corpus case this probe asks about. */
   readonly caseId: string;
   /** Repo-relative path of the file the cursor sits in. */
   readonly file: string;
-  /** ONE-indexed line the symbol occurs on. */
-  readonly line1: number;
-  /** Literal text that must appear on `line1`; the cursor is placed inside it. */
+  /** Unique literal anchor used to resolve the current source line. */
+  readonly anchor: string;
+  /** Literal text on the resolved line; the cursor is placed inside it. */
   readonly symbol: string;
   /** Why the cursor is HERE and not at the declaration — the case's whole point. */
   readonly rationale: string;
@@ -91,7 +92,7 @@ export const BENCH_PROBES: readonly BenchProbe[] = Object.freeze([
   {
     caseId: 'definition-cross-package-bare-specifier',
     file: 'libs/generic/search/src/leg-health.ts',
-    line1: 41,
+    anchor: "import { pinModuleState",
     symbol: 'pinModuleState',
     rationale:
       'Ask from the IMPORT site, where the specifier is the bare workspace name. ' +
@@ -101,7 +102,7 @@ export const BENCH_PROBES: readonly BenchProbe[] = Object.freeze([
   {
     caseId: 'references-through-barrel-reexport',
     file: 'libs/generic/dock-workbench/src/panel-registry.ts',
-    line1: 30,
+    anchor: 'export class PanelRegistry',
     symbol: 'PanelRegistry',
     rationale:
       'Ask at the declaration; the answer must still include the barrel index that ' +
@@ -110,7 +111,7 @@ export const BENCH_PROBES: readonly BenchProbe[] = Object.freeze([
   {
     caseId: 'shadowed-symbol-no-cross-contamination',
     file: 'packages/operator-core/lib/pty-bridge.ts',
-    line1: 217,
+    anchor: "managedSetInterval('pty-idle-reaper'",
     symbol: 'managedSetInterval',
     rationale:
       'Ask from a real USE site. The single correct definition must come back and ' +
@@ -120,7 +121,7 @@ export const BENCH_PROBES: readonly BenchProbe[] = Object.freeze([
   {
     caseId: 'rust-trait-implementations',
     file: 'papercusp-desktop/src-tauri/src/endpoint_ipc.rs',
-    line1: 308,
+    anchor: 'enum IpcStream',
     symbol: 'IpcStream',
     rationale:
       'Ask at the enum declaration; the answer must enumerate the trait impls. ' +
@@ -140,30 +141,59 @@ export interface ResolvedCursor {
   readonly lineText: string;
 }
 
+export interface ResolvedAnchor {
+  /** ONE-indexed line containing the unique anchor. */
+  readonly line1: number;
+  /** The complete source line containing the unique anchor. */
+  readonly lineText: string;
+}
+
+/**
+ * Resolve a unique literal anchor without trusting a source-file line number.
+ *
+ * A first-match search is deliberately not enough: the old benchmark silently
+ * re-armed the same drift every time a call site moved, and a naive first match
+ * would also select the import instead of the real use site. Zero or multiple
+ * matches are therefore fixture failures, not reasons to guess.
+ */
+export function resolveUniqueAnchorLine(source: string, anchor: string, label: string): ResolvedAnchor {
+  const first = source.indexOf(anchor);
+  if (first < 0) {
+    throw new Error(`bench anchor drift: ${label} has no match for '${anchor}'`);
+  }
+
+  const second = source.indexOf(anchor, first + 1);
+  if (second >= 0) {
+    throw new Error(
+      `bench anchor drift: ${label} expected exactly one match for '${anchor}', found multiple`,
+    );
+  }
+
+  const line1 = source.slice(0, first).split('\n').length;
+  const lineText = source.split('\n')[line1 - 1];
+  if (lineText === undefined) {
+    throw new Error(`bench anchor drift: ${label} resolved outside the source line map`);
+  }
+  return { line1, lineText };
+}
+
 /**
  * Resolve a probe's cursor against the working tree.
  *
- * THROWS if the file is short or the symbol has moved off the line. That is
- * deliberate: a drifted probe is a broken *question*, and letting it through
- * would score the backend wrong for our bookkeeping error — the exact
- * false-signal this corpus exists to prevent.
+ * THROWS if the unique anchor or symbol is missing. That is deliberate: a
+ * drifted probe is a broken *question*, and letting it through would score the
+ * backend wrong for our bookkeeping error — the exact false-signal this corpus
+ * exists to prevent.
  */
 export function resolveProbeCursor(probe: BenchProbe, repoRoot: string): ResolvedCursor {
   const abs = join(repoRoot, probe.file);
-  const lines = readFileSync(abs, 'utf8').split('\n');
-  const lineText = lines[probe.line1 - 1];
-
-  if (lineText === undefined) {
-    throw new Error(
-      `bench probe drift: ${probe.file} has ${lines.length} lines but probe ` +
-        `${probe.caseId} points at line ${probe.line1}`,
-    );
-  }
+  const source = readFileSync(abs, 'utf8');
+  const { line1, lineText } = resolveUniqueAnchorLine(source, probe.anchor, probe.caseId);
 
   const at = lineText.indexOf(probe.symbol);
   if (at < 0) {
     throw new Error(
-      `bench probe drift: ${probe.file}:${probe.line1} no longer contains ` +
+      `bench probe drift: ${probe.file}:${line1} no longer contains ` +
         `'${probe.symbol}' (probe ${probe.caseId}). Line reads: ${lineText.trim()}`,
     );
   }
@@ -173,7 +203,7 @@ export function resolveProbeCursor(probe: BenchProbe, repoRoot: string): Resolve
   // end of the preceding token); the middle is unambiguously inside.
   return {
     file: abs,
-    line1: probe.line1,
+    line1,
     character: at + Math.floor(probe.symbol.length / 2),
     rootPath: repoRoot,
     lineText,
@@ -1452,6 +1482,35 @@ export async function runGitnexusFacadeLeg(
  * answers an AST-pattern question, not a symbol-definition question. Giving it
  * a symbol case merely because both produce sites would compare unlike things.
  */
+const BENCH_REPO_ROOT = resolve(import.meta.dirname, '../../../..');
+const AST_GREP_BENCH_FALSIFIES =
+  'A text-shaped or mutating implementation either misses the multiline call, ' +
+  'returns non-AST matches, or changes the source while claiming to preview.';
+
+/** The structural case uses the same self-verifying anchor as the cursor probe. */
+export const AST_GREP_BENCH_ANCHOR = Object.freeze({
+  path: 'packages/operator-core/lib/pty-bridge.ts',
+  anchor: "managedSetInterval('pty-idle-reaper'",
+  symbolOnLine: "managedSetInterval('pty-idle-reaper'",
+});
+
+/** Resolve the structural case's expected site against the current source tree. */
+export function resolveAstGrepExpectedSite(repoRoot: string): { path: string; line1: number; symbolOnLine: string } {
+  const probe: BenchProbe = {
+    caseId: 'structural-managed-interval-call',
+    file: AST_GREP_BENCH_ANCHOR.path,
+    anchor: AST_GREP_BENCH_ANCHOR.anchor,
+    symbol: AST_GREP_BENCH_ANCHOR.symbolOnLine,
+    rationale: AST_GREP_BENCH_FALSIFIES,
+  };
+  const cursor = resolveProbeCursor(probe, repoRoot);
+  return {
+    path: AST_GREP_BENCH_ANCHOR.path,
+    line1: cursor.line1,
+    symbolOnLine: AST_GREP_BENCH_ANCHOR.symbolOnLine,
+  };
+}
+
 export const AST_GREP_BENCH_CASE: CorpusCase = Object.freeze({
   id: 'structural-managed-interval-call',
   planCase: 10,
@@ -1459,18 +1518,18 @@ export const AST_GREP_BENCH_CASE: CorpusCase = Object.freeze({
   title: 'Structural search finds the real managedSetInterval call and rewrite preview is read-only',
   query: 'managedSetInterval($$$ARGS)',
   gradeMode: 'exact-set',
-  expectedSites: [
-    {
-      path: 'packages/operator-core/lib/pty-bridge.ts',
-      line1: 217,
-      symbolOnLine: "managedSetInterval('pty-idle-reaper'",
-    },
-  ],
+  expectedSites: [resolveAstGrepExpectedSite(BENCH_REPO_ROOT)],
   eligibleBackends: ['ast-grep'] as const,
-  falsifies:
-    'A text-shaped or mutating implementation either misses the multiline call, ' +
-    'returns non-AST matches, or changes the source while claiming to preview.',
+  falsifies: AST_GREP_BENCH_FALSIFIES,
 });
+
+/** Build a gradeable structural case with a line resolved from its unique anchor. */
+function resolveAstGrepBenchCase(repoRoot: string): CorpusCase {
+  return {
+    ...AST_GREP_BENCH_CASE,
+    expectedSites: [resolveAstGrepExpectedSite(repoRoot)],
+  };
+}
 
 export interface AstGrepLegOptions {
   readonly repoRoot: string;
@@ -1493,17 +1552,18 @@ export async function runAstGrepFacadeLeg(
   opts: AstGrepLegOptions,
   facade: typeof astGrepFacade = astGrepFacade,
 ): Promise<AstGrepLegReport> {
-  const expected = AST_GREP_BENCH_CASE.expectedSites[0];
+  const kase = resolveAstGrepBenchCase(opts.repoRoot);
+  const expected = kase.expectedSites[0];
   if (!expected) throw new Error('ast-grep bench case has no expected site');
 
   // Resolve the pin before calling the backend. A moved fixture is a broken
   // question, not evidence that ast-grep answered incorrectly.
   const probe: BenchProbe = {
-    caseId: AST_GREP_BENCH_CASE.id,
-    file: expected.path,
-    line1: expected.line1,
-    symbol: expected.symbolOnLine,
-    rationale: AST_GREP_BENCH_CASE.falsifies,
+    caseId: kase.id,
+    file: AST_GREP_BENCH_ANCHOR.path,
+    anchor: AST_GREP_BENCH_ANCHOR.anchor,
+    symbol: AST_GREP_BENCH_ANCHOR.symbolOnLine,
+    rationale: kase.falsifies,
   };
   const cursor = resolveProbeCursor(probe, opts.repoRoot);
   const before = readFileSync(cursor.file, 'utf8');
@@ -1515,12 +1575,12 @@ export async function runAstGrepFacadeLeg(
   };
 
   const search = await facade('search', args);
-  const searchGrade = gradeSites(AST_GREP_BENCH_CASE, search.sites);
+  const searchGrade = gradeSites(kase, search.sites);
   const preview = await facade('rewrite_preview', {
     ...args,
     rewrite: opts.rewrite ?? 'managedSetTimeout($$$ARGS)',
   });
-  const previewGrade = gradeSites(AST_GREP_BENCH_CASE, preview.sites);
+  const previewGrade = gradeSites(kase, preview.sites);
   const sourceByteIdentical = readFileSync(cursor.file, 'utf8') === before;
 
   return {

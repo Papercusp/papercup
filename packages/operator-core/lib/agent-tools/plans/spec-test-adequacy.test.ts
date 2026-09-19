@@ -768,6 +768,34 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(expired.ratings['plan-class-risk-floor'].rating).toBe('fail');
   });
 
+  it('counts a mutation probe caught verdict as successful negative proof', () => {
+    const mutation = evidence({
+      evidenceKind: 'mutation',
+      evidenceRef: 'mutation-probe:drop-dedupe:caught',
+      details: {
+        adequacy: {
+          falsifiable: true,
+          oracleIndependent: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'caught',
+          targeted: true,
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ behaviorClass: 'concurrency' }),
+      evidence: [evidence(), mutation],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['plan-class-risk-floor'].rating).toBe('pass');
+    expect(result.ratings.falsifiability.rating).toBe('pass');
+    expect(result.ratings['execution-integrity'].rating).toBe('pass');
+  });
+
   it('accepts stronger targeted L4 counterexample proof for an L3 floor', () => {
     const counterexample = evidence({
       evidenceKind: 'counterexample',

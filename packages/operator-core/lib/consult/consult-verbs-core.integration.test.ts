@@ -467,7 +467,7 @@ describe('consultDeclineCore', () => {
 
   it('declines: state+outcome+closed_at, decline meta, park-key emit, cascade menu (decliner + route-time-dead excluded)', async () => {
     const id = await seedConsult({ routing: SNAPSHOT });
-    const { deps, emits } = makeDeps();
+    const { deps, emits, settlements } = makeDeps({ withSettlement: true });
     const r = await consultDeclineCore(
       { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'my transcript covers the file, not this subsystem' },
       deps,
@@ -485,6 +485,29 @@ describe('consultDeclineCore', () => {
     expect(row.outcome).toEqual({ reason: 'my transcript covers the file, not this subsystem' });
     expect(row.closed_at).not.toBeNull();
     expect(await jsonbShapes(id)).toEqual({ routing_type: 'object', outcome_type: 'object', cascade_digest_type: 'array' });
+
+    // A terminal decline must settle the coarse conversation projection too;
+    // otherwise asker-side `state='open'` queries resurrect this dead consult.
+    expect(settlements).toEqual([
+      {
+        conversationId: id,
+        outcome: 'cant_help',
+        answer: undefined,
+        postId: r.post_id,
+        now: NOW.toISOString(),
+      },
+    ]);
+    const [conversation] = await rootSql`
+      SELECT state, accepted_answer, accepted_post_id, resolved_at
+        FROM harness_shared.coord_conversations
+       WHERE workspace_id = ${WS} AND id = ${id}
+    `;
+    expect(conversation).toMatchObject({
+      state: 'closed',
+      accepted_answer: null,
+      accepted_post_id: null,
+      resolved_at: null,
+    });
 
     const meta = await metaRows(id);
     expect(meta).toHaveLength(1);

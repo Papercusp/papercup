@@ -100,8 +100,11 @@ export interface ConsultVerbDeps {
     via_consult_verb: true;
   }) => Promise<PostResult | { error: string }>;
   /** Keep the coarse coord_conversations lifecycle in sync with the consult's
-   * fine-grained terminal state. Bound by consult:close; optional so the
-   * lower-level verb tests and non-production callers can focus on consult_state. */
+   * fine-grained terminal state. Bound by consult:close and terminal
+   * consult:decline; optional so the lower-level verb tests and non-production
+   * callers can focus on consult_state. For a terminal decline, the coarse
+   * projection uses the non-answering `closed` state via outcome='cant_help';
+   * consult_state remains the typed `declined` authority. */
   settleConversation?: (input: {
     conversationId: string;
     outcome: ConsultCloseRequest['outcome'];
@@ -650,22 +653,38 @@ export async function consultDeclineCore(
   // so on its outcome — "declined" alone conflates "nobody helped" with "the
   // last selectee declined after real answers landed".
   const declineAnswerEvents = digestFromRow(row.cascade_digest).filter((e) => e.kind === 'answer');
-  await sql`
-    UPDATE harness_shared.consult_state
-       SET state = 'declined',
-           outcome = ${sql.json({
-             reason,
-             ...(declineAnswerEvents.length > 0
-               ? {
-                   answers: declineAnswerEvents.length,
-                   answered_by: [...new Set(declineAnswerEvents.map((e) => e.ownerId))],
-                 }
-               : {}),
-           } as never)},
-           closed_at = ${now}::timestamptz,
-           updated_at = ${now}::timestamptz
-     WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
-  `;
+  await sql.begin(async (tx) => {
+    await tx`
+      UPDATE harness_shared.consult_state
+         SET state = 'declined',
+             outcome = ${tx.json({
+               reason,
+               ...(declineAnswerEvents.length > 0
+                 ? {
+                     answers: declineAnswerEvents.length,
+                     answered_by: [...new Set(declineAnswerEvents.map((e) => e.ownerId))],
+                   }
+                 : {}),
+             } as never)},
+             closed_at = ${now}::timestamptz,
+             updated_at = ${now}::timestamptz
+       WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
+    `;
+    if (deps.settleConversation) {
+      // coord_conversations has only the coarse open/resolved/closed lifecycle;
+      // keep the typed `declined` outcome in consult_state while projecting the
+      // non-answering terminal into its closed state.
+      await deps.settleConversation(
+        {
+          conversationId: req.conversationId,
+          outcome: 'cant_help',
+          postId,
+          now,
+        },
+        tx,
+      );
+    }
+  });
 
   // Menu exhausted: this terminal decline IS the reply a parked requester is
   // waiting for — emit the latched key.

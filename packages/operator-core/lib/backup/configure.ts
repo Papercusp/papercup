@@ -23,8 +23,114 @@ import {
   BACKUP_MIGRATION_ADVISORY_LOCK_KEY,
   WORKSPACE_BACKUP_APPLICATION_NAME,
 } from '@papercusp/backup/application-names';
+import type { BackupMigrationLockWaitInfo, BackupMigrationLockWaitReporter } from '@papercusp/backup';
 import { readQualificationAdmission } from '../release-checkpoint-config';
 import { readCheckpointSerializerAuthority } from '../release/checkpoint-serializer-authority';
+
+/**
+ * A backup can legitimately wait minutes for a migration rendezvous while the
+ * operator remains healthy. Keep that wait visible without turning the log
+ * into a busy stream (EI-23418285058251870).
+ */
+export const MIGRATION_LOCK_WAIT_REPORT_INTERVAL_MS = 15_000;
+const MIGRATION_LOCK_WAIT_OBSERVER_TIMEOUT_MS = 5_000;
+
+interface MigrationLockHolderRow {
+  pid: number | string;
+  application_name: string | null;
+  state: string | null;
+  query_started_at: string | null;
+}
+
+async function readMigrationLockHolder(url: string): Promise<MigrationLockHolderRow | null> {
+  const observer = postgres(url, {
+    max: 1,
+    prepare: false,
+    onnotice: () => {},
+    connection: { application_name: `${WORKSPACE_BACKUP_APPLICATION_NAME}-observer` },
+  });
+  try {
+    await observer`SELECT set_config('statement_timeout', ${`${MIGRATION_LOCK_WAIT_OBSERVER_TIMEOUT_MS}ms`}, false)`;
+    const rows = await observer<MigrationLockHolderRow[]>`
+      SELECT
+        l.pid,
+        a.application_name,
+        a.state,
+        a.query_start::text AS query_started_at
+      FROM pg_locks AS l
+      LEFT JOIN pg_stat_activity AS a ON a.pid = l.pid
+      WHERE l.locktype = 'advisory'
+        AND l.objsubid = 1
+        AND l.classid = 0
+        AND l.objid::bigint = (hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY})::bigint & 4294967295)
+        AND l.database = (
+          SELECT oid
+          FROM pg_database
+          WHERE datname = current_database()
+        )
+        AND l.granted
+        AND l.pid <> pg_backend_pid()
+      ORDER BY a.query_start ASC NULLS LAST, l.pid
+      LIMIT 1
+    `;
+    return rows[0] ?? null;
+  } catch {
+    return null;
+  } finally {
+    await observer.end({ timeout: 1 }).catch(() => {});
+  }
+}
+
+function startMigrationLockWaitReporter(
+  url: string,
+  reporter: BackupMigrationLockWaitReporter | undefined,
+): () => void {
+  if (!reporter) return () => {};
+
+  const startedAt = Date.now();
+  let stopped = false;
+  let inFlight = false;
+
+  const report = async (): Promise<void> => {
+    if (stopped || inFlight) return;
+    inFlight = true;
+    try {
+      const holder = await readMigrationLockHolder(url);
+      if (stopped) return;
+      const pid = holder ? Number(holder.pid) : NaN;
+      const info: BackupMigrationLockWaitInfo = {
+        lockKey: BACKUP_MIGRATION_ADVISORY_LOCK_KEY,
+        waitedMs: Math.max(0, Date.now() - startedAt),
+        holderPid: Number.isSafeInteger(pid) ? pid : null,
+        holderApplicationName: holder?.application_name ?? null,
+        holderState: holder?.state ?? null,
+        holderQueryStartedAt: holder?.query_started_at ?? null,
+      };
+      await reporter(info);
+    } catch {
+      // Progress reporting is strictly best-effort; the lock wait remains the
+      // correctness boundary and must not fail because its observer is slow.
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  void report();
+  const timer = managedSetInterval(
+    `backup-migration-lock-wait:${process.pid}:${startedAt}`,
+    MIGRATION_LOCK_WAIT_REPORT_INTERVAL_MS,
+    () => {
+      void report();
+    },
+    { category: 'lifecycle', classification: 'must-sample', instanced: true },
+  );
+
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    timer.stop();
+  };
+}
 
 configureBackup({
   // Called per use (not cached) so getOrgPg's discovery-file change
@@ -98,7 +204,16 @@ configureBackup({
       } else {
         await client`SET lock_timeout = 0`;
         await client`SET statement_timeout = 0`;
-        await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+        const rows = await client<{ acquired: boolean }[]>`
+          SELECT pg_try_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY})) AS acquired`;
+        if (rows[0]?.acquired !== true) {
+          const stopWaiting = startMigrationLockWaitReporter(url, options?.onWaiting);
+          try {
+            await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+          } finally {
+            stopWaiting();
+          }
+        }
       }
     } catch (error) {
       await client.end({ timeout: 5 }).catch(() => {});

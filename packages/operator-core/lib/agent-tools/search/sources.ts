@@ -194,21 +194,52 @@ function lexicalSql(
   tsv: ReturnType<SearchSourceParams['sql']>,
   /** The source's table, as a fragment: `p.sql\`harness_shared.session_turns\``. */
   table: ReturnType<SearchSourceParams['sql']>,
+  /** Optional exact-token vector used only for fallback-only transcript rows. */
+  simpleTsv?: ReturnType<SearchSourceParams['sql']>,
+  /** Optional bounded raw text used for literal substring fallback rows. */
+  literalText?: ReturnType<SearchSourceParams['sql']>,
 ) {
   const sql = p.sql;
   // `?? ` and not `||`: a caller passing 0 is asking for the argmin-only
   // control arm, not for the default.
   const anchorDfBudget = p.lexicalAnchorDfBudget ?? ANCHOR_DF_BUDGET;
   const orText = sql`replace(plainto_tsquery('english', ${p.query})::text, ' & ', ' | ')`;
+  const literalMatch = literalText
+    ? sql`(length(btrim(${p.query})) > 0
+            AND position(lower(${p.query}) in lower(left(${literalText}, 20000))) > 0)`
+    : sql`FALSE`;
 
   if (p.lexicalMode !== 'coverage-graded') {
     return {
-      with: sql`WITH q AS (SELECT plainto_tsquery('english', ${p.query}) AS andq)`,
+      with: sql`WITH q AS (
+        SELECT plainto_tsquery('english', ${p.query}) AS andq
+               ${simpleTsv ? sql`, plainto_tsquery('simple', ${p.query}) AS simpleq` : sql``}
+      )`,
       join: sql`, q`,
       coverage: sql`1`,
-      rank: sql`ts_rank_cd(${tsv}, q.andq)`,
-      match: sql`${tsv} @@ q.andq`,
-      headlineQuery: sql`q.andq`,
+      literalMatch,
+      fallbackOnly: simpleTsv
+        ? sql`NOT (${tsv} @@ q.andq) AND NOT (${simpleTsv} @@ q.simpleq)`
+        : sql`FALSE`,
+      rank: simpleTsv
+        ? sql`CASE WHEN ${tsv} @@ q.andq
+                   THEN ts_rank_cd(${tsv}, q.andq)
+                   WHEN ${simpleTsv} @@ q.simpleq
+                   THEN ts_rank_cd(${simpleTsv}, q.simpleq)
+                   ELSE 0
+               END`
+        : sql`ts_rank_cd(${tsv}, q.andq)`,
+      match: simpleTsv
+        ? sql`(${tsv} @@ q.andq
+               OR ((${simpleTsv} @@ q.simpleq OR ${literalMatch})
+                   AND NOT (${tsv} @@ q.andq)))`
+        : sql`${tsv} @@ q.andq`,
+      headlineQuery: simpleTsv
+        ? sql`CASE WHEN ${tsv} @@ q.andq THEN q.andq ELSE q.simpleq END`
+        : sql`q.andq`,
+      headlineConfig: simpleTsv
+        ? sql`CASE WHEN ${tsv} @@ q.andq THEN 'english'::regconfig ELSE 'simple'::regconfig END`
+        : sql`'english'::regconfig`,
     };
   }
 
@@ -217,6 +248,7 @@ function lexicalSql(
       WITH q AS (
         SELECT ${orText}::tsquery       AS orq,
                string_to_array(${orText}, ' | ') AS lexemes
+               ${simpleTsv ? sql`, plainto_tsquery('simple', ${p.query}) AS simpleq` : sql``}
       ), df AS (
         SELECT l, (SELECT count(*) FROM (
                      SELECT 1 FROM ${table} d
@@ -243,8 +275,24 @@ function lexicalSql(
             OR (n < ${DF_PROBE_CAP} AND prior + n <= ${anchorDfBudget})
       )`,
     join: sql`, q, anchor`,
-    coverage: sql`(SELECT count(*) FROM unnest(q.lexemes) AS cl WHERE ${tsv} @@ cl::tsquery)`,
-    rank: sql`ts_rank_cd(${tsv}, q.orq)`,
+    literalMatch,
+    fallbackOnly: simpleTsv
+      ? sql`NOT (${tsv} @@ anchor.a) AND NOT (${simpleTsv} @@ q.simpleq)`
+      : sql`FALSE`,
+    coverage: simpleTsv
+      ? sql`CASE WHEN ${tsv} @@ anchor.a
+                 THEN (SELECT count(*) FROM unnest(q.lexemes) AS cl WHERE ${tsv} @@ cl::tsquery)
+                 ELSE 0
+             END`
+      : sql`(SELECT count(*) FROM unnest(q.lexemes) AS cl WHERE ${tsv} @@ cl::tsquery)`,
+      rank: simpleTsv
+        ? sql`CASE WHEN ${tsv} @@ anchor.a
+                   THEN ts_rank_cd(${tsv}, q.orq)
+                   WHEN ${simpleTsv} @@ q.simpleq
+                   THEN ts_rank_cd(${simpleTsv}, q.simpleq)
+                   ELSE 0
+               END`
+        : sql`ts_rank_cd(${tsv}, q.orq)`,
     // ⚠ NO `AND ${tsv} @@ q.orq` HERE, AND ITS ABSENCE IS NOT AN OVERSIGHT.
     // The anchor is a disjunction of a SUBSET of `q.lexemes`, so matching it
     // ALREADY implies matching `q.orq` — the clause was provably dead. Measured
@@ -253,12 +301,21 @@ function lexicalSql(
     // nothing at runtime but read as though the stage retrieved the whole
     // disjunction (23,464 rows), which is how "coverage-graded" came to be
     // reasoned about as a disjunctive leg when it never was one.
-    match: sql`${tsv} @@ anchor.a`,
+    match: simpleTsv
+      ? sql`(${tsv} @@ anchor.a
+             OR ((${simpleTsv} @@ q.simpleq OR ${literalMatch})
+                 AND NOT (${tsv} @@ anchor.a)))`
+      : sql`${tsv} @@ anchor.a`,
     // Highlight against the DISJUNCTIVE query on purpose: a four-of-five
     // document has no fragment matching all five terms, and highlighting it
     // with the AND query would return the document's lead instead of the part
     // that actually matched.
-    headlineQuery: sql`q.orq`,
+    headlineQuery: simpleTsv
+      ? sql`CASE WHEN ${tsv} @@ anchor.a THEN q.orq ELSE q.simpleq END`
+      : sql`q.orq`,
+    headlineConfig: simpleTsv
+      ? sql`CASE WHEN ${tsv} @@ anchor.a THEN 'english'::regconfig ELSE 'simple'::regconfig END`
+      : sql`'english'::regconfig`,
   };
 }
 
@@ -783,7 +840,13 @@ const sessionTurn: SearchSource = {
     // P-017 / D-062: `lex` supplies the term-combination fragments. Without
     // `lexicalMode: 'coverage-graded'` this is byte-identical to the pre-P-017
     // query — `coverage` is the constant 1, so the ordering is `rank DESC`.
-    const lex = lexicalSql(p, p.sql`text_tsv`, p.sql`harness_shared.session_turns`);
+    const lex = lexicalSql(
+      p,
+      p.sql`text_tsv`,
+      p.sql`harness_shared.session_turns`,
+      p.sql`text_simple_tsv`,
+      p.sql`text`,
+    );
     // EI-21924046411702156: see LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS. Same
     // bare-`getOrgPg()`-pool exposure as `workItem.lexical` above — this tool's
     // `ctx.tx` also bypasses `withWorkspace`'s ambient bound (`crossWorkspace:
@@ -798,9 +861,12 @@ const sessionTurn: SearchSource = {
              ${lex.rank} AS rank,
              ${p.wantHighlight === false
                ? p.sql`''`
-               : p.sql`ts_headline('english', left(text, 4000),
-                   ${lex.headlineQuery},
-                   ${HEADLINE_OPTS})`} AS highlight
+               : p.sql`CASE WHEN ${lex.literalMatch} AND ${lex.fallbackOnly}
+                       THEN left(text, 4000)
+                       ELSE ts_headline(${lex.headlineConfig}, left(text, 4000),
+                         ${lex.headlineQuery},
+                         ${HEADLINE_OPTS})
+                   END`} AS highlight
         FROM harness_shared.session_turns ${lex.join}
        WHERE (workspace_id = ${p.workspaceId} OR workspace_id = 'default')
          AND (${p.scopeFilter}::text IS NULL OR harness_slug = ${p.scopeFilter})
@@ -989,9 +1055,15 @@ const sessionTurn: SearchSource = {
     if (kinds.length === 0) return new Map();
     const rows = (await p.sql`
       SELECT st.source_kind, st.session_id, st.turn_idx,
-             ts_headline('english', left(st.text, 4000),
-               plainto_tsquery('english', ${p.query}),
-               ${HEADLINE_OPTS}) AS highlight
+             CASE
+               WHEN st.text_tsv @@ plainto_tsquery('english', ${p.query})
+               THEN ts_headline('english', left(st.text, 4000),
+                 plainto_tsquery('english', ${p.query}), ${HEADLINE_OPTS})
+               WHEN st.text_simple_tsv @@ plainto_tsquery('simple', ${p.query})
+               THEN ts_headline('simple', left(st.text, 4000),
+                 plainto_tsquery('simple', ${p.query}), ${HEADLINE_OPTS})
+               ELSE left(st.text, 4000)
+             END AS highlight
         FROM harness_shared.session_turns st
         JOIN unnest(${kinds}::text[], ${sids}::text[], ${idxs}::int[]) AS t(k, s, i)
           ON st.source_kind = t.k AND st.session_id = t.s AND st.turn_idx = t.i

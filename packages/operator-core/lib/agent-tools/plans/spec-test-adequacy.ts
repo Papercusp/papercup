@@ -324,7 +324,10 @@ const HIGH_RISK_BEHAVIOR_CLASSES = new Set<SpecBehaviorClass>([
   'migration-data-integrity',
 ]);
 
-const SUCCESS_OUTCOMES = new Set(['pass', 'passed', 'success', 'succeeded', 'killed']);
+// The mutation probe reports a detected mutant as `caught`; mutation-report
+// storage may call the same result `killed`. Both are successful negative
+// proof, while only the ordinary test outcomes below count as repaired proof.
+const SUCCESS_OUTCOMES = new Set(['pass', 'passed', 'success', 'succeeded', 'killed', 'caught']);
 const REPAIRED_OUTCOMES = new Set(['pass', 'passed', 'success', 'succeeded']);
 const FAILURE_OUTCOMES = new Set(['fail', 'failed', 'error', 'timed-out', 'timeout', 'survived']);
 const EXECUTABLE_EVIDENCE_KINDS = new Set<SpecEvidenceKind>([

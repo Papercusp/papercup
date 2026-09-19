@@ -18,6 +18,7 @@ import {
   deriveHeadSnapshotTimeoutMs,
   findLiveOperatorHoldingHive,
   HEAD_SNAPSHOT_PATH,
+  isRetryableHeadSnapshotOutcome,
   requestLiveOperatorHeadSnapshot,
   waitForLiveOperatorHoldingHive,
 } from './live-head-snapshot-client';
@@ -293,6 +294,69 @@ describe('requestLiveOperatorHeadSnapshot', () => {
       error: 'this harness engine is stopped/closing.',
       transport: false,
     });
+  });
+
+  it('retries an operator-reported SESSION_CLOSED and lands after the holder restarts', async () => {
+    const f = fleet({ ports: [3271], holderPort: 3271 });
+    let realCalls = 0;
+    const fetchImpl = (async (url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      if (body.probeOnly !== true && ++realCalls === 1) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ok: false,
+            booted: true,
+            error: 'SESSION_CLOSED: Cannot append to a closed session',
+          }),
+        };
+      }
+      return await (f.fetchImpl as unknown as (u: string, i: { body: string }) => Promise<unknown>)(url, init);
+    }) as never;
+    let virtualNow = 0;
+
+    const out = await requestLiveOperatorHeadSnapshot({
+      ...base,
+      ...f,
+      fetchImpl,
+      retryDelayMs: 0,
+      nowImpl: () => virtualNow,
+      sleepImpl: async (ms) => {
+        virtualNow += ms;
+      },
+    });
+
+    expect(out).toMatchObject({ kind: 'produced', port: 3271 });
+    expect(realCalls).toBe(2);
+    expect(out.retry).toEqual({ attempts: 2, waitedMs: 0, elapsedMs: 0 });
+  });
+
+  it('keeps ordinary operator refusals non-retryable while recognizing closed-store variants', () => {
+    expect(
+      isRetryableHeadSnapshotOutcome({
+        kind: 'failed',
+        port: 3271,
+        error: 'SESSION_CLOSED: Cannot append to a closed session',
+        transport: false,
+      }),
+    ).toBe(true);
+    expect(
+      isRetryableHeadSnapshotOutcome({
+        kind: 'failed',
+        port: 3271,
+        error: 'Corestore is closed',
+        transport: false,
+      }),
+    ).toBe(true);
+    expect(
+      isRetryableHeadSnapshotOutcome({
+        kind: 'failed',
+        port: 3271,
+        error: 'this harness engine is stopped/closing.',
+        transport: false,
+      }),
+    ).toBe(false);
   });
 
   it('a transport failure on the REAL call is FAILED, not no-holder (the difference is the remedy)', async () => {

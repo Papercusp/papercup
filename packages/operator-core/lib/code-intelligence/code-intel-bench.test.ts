@@ -39,6 +39,8 @@ import {
   KNOWN_COLD_START_EXCEEDANCES,
   median,
   resolveProbeCursor,
+  resolveAstGrepExpectedSite,
+  resolveUniqueAnchorLine,
   type BenchMeasurement,
   probeBudget,
   pollStopDecision,
@@ -140,20 +142,29 @@ describe('bench probes point at real code', () => {
     for (const probe of BENCH_PROBES) {
       const cursor = resolveProbeCursor(probe, REPO_ROOT);
       const at = cursor.lineText.indexOf(probe.symbol);
-      expect(at, `${probe.file}:${probe.line1} lost '${probe.symbol}'`).toBeGreaterThanOrEqual(0);
+      expect(at, `${probe.file}:${cursor.line1} lost '${probe.symbol}'`).toBeGreaterThanOrEqual(0);
       // Strictly inside the token — a boundary cursor is ambiguous to some servers.
       expect(cursor.character).toBeGreaterThanOrEqual(at);
       expect(cursor.character).toBeLessThan(at + probe.symbol.length);
-      expect(cursor.line1).toBe(probe.line1);
+      expect(cursor.line1).toBeGreaterThan(0);
     }
+  });
+
+  it('resolves anchors uniquely and refuses zero or multiple matches', () => {
+    expect(resolveUniqueAnchorLine('before\nneedle here\nafter', 'needle', 'fixture')).toEqual({
+      line1: 2,
+      lineText: 'needle here',
+    });
+    expect(() => resolveUniqueAnchorLine('before\nafter', 'needle', 'missing')).toThrow(/no match/);
+    expect(() => resolveUniqueAnchorLine('needle\nneedle', 'needle', 'ambiguous')).toThrow(/multiple/);
   });
 
   it('THROWS on probe drift rather than scoring the backend wrong', () => {
     const drifted = { ...BENCH_PROBES[0], symbol: 'aSymbolThatIsNotOnThatLine' };
     expect(() => resolveProbeCursor(drifted, REPO_ROOT)).toThrow(/probe drift/);
 
-    const offEnd = { ...BENCH_PROBES[0], line1: 10_000_000 };
-    expect(() => resolveProbeCursor(offEnd, REPO_ROOT)).toThrow(/probe drift/);
+    const missingAnchor = { ...BENCH_PROBES[0], anchor: 'an-anchor-that-is-not-on-disk' };
+    expect(() => resolveProbeCursor(missingAnchor, REPO_ROOT)).toThrow(/anchor drift/);
   });
 });
 
@@ -1302,7 +1313,8 @@ describe('facade-backed acceptance legs (WI-2143023)', () => {
 
   it('ast-grep runs search and rewrite preview against one self-verifying structural pin', async () => {
     const calls: string[] = [];
-    const expected = AST_GREP_BENCH_CASE.expectedSites.map((pinned) => site(pinned.path, pinned.line1));
+    const pinned = resolveAstGrepExpectedSite(REPO_ROOT);
+    const expected = [site(pinned.path, pinned.line1)];
     const report = await runAstGrepFacadeLeg({ repoRoot: REPO_ROOT }, async (op, args) => {
       calls.push(op);
       return facadeAnswer('ast-grep', 'structural-search', args.pattern, expected);
@@ -1316,7 +1328,8 @@ describe('facade-backed acceptance legs (WI-2143023)', () => {
   });
 
   it('ast-grep leg fails closed when a structural answer contains an extra site', async () => {
-    const expected = AST_GREP_BENCH_CASE.expectedSites.map((pinned) => site(pinned.path, pinned.line1));
+    const pinned = resolveAstGrepExpectedSite(REPO_ROOT);
+    const expected = [site(pinned.path, pinned.line1)];
     const report = await runAstGrepFacadeLeg({ repoRoot: REPO_ROOT }, async (_op, args) =>
       facadeAnswer('ast-grep', 'structural-search', args.pattern, [
         ...expected,

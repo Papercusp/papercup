@@ -1116,6 +1116,83 @@ export function sourceShaSeed(doc) {
   return doc?.content_hash || null;
 }
 
+/**
+ * Artifacts that the frozen green-checkpoint candidate owns for this check.
+ *
+ * A candidate run must judge the bytes that were committed to the candidate, not
+ * re-compose against the mutable operator database. Keep this list explicit: a
+ * missing entry is a missing proof surface, not permission to fall back to PG.
+ */
+export const CANDIDATE_ARTIFACTS = [
+  { label: 'CLAUDE.md', path: 'CLAUDE.md' },
+  { label: 'AGENTS.md', path: 'AGENTS.md' },
+  { label: 'claude-md-corpus.generated.md', path: CORPUS_FILE },
+];
+
+/**
+ * Read the exact committed candidate blobs without consulting the live checkout or PG.
+ *
+ * `PAPERCUSP_TEST_RUN_COMMIT` is stamped by the green-checkpoint runner with the
+ * candidate it is judging. `git show <candidate>:<path>` is intentionally used instead
+ * of readFileSync: a repair process can have a mutable working tree around the candidate,
+ * but the gate's subject is the committed artifact. Missing, empty, or unreadable blobs
+ * fail closed so a broken candidate cannot turn the no-DB branch into a false green.
+ */
+export function readCommittedCandidateArtifacts({
+  commit,
+  root = ROOT,
+  runGit = spawnSync,
+} = {}) {
+  const candidate = typeof commit === 'string' ? commit.trim() : '';
+  if (!candidate) {
+    return { ok: false, reason: 'missing-commit', commit: candidate, artifacts: [] };
+  }
+
+  const artifacts = [];
+  for (const artifact of CANDIDATE_ARTIFACTS) {
+    const ref = `${candidate}:${artifact.path}`;
+    let result;
+    try {
+      result = runGit(
+        'git',
+        ['show', '--format=', '--no-ext-diff', '--end-of-options', ref],
+        { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+    } catch (error) {
+      return {
+        ok: false,
+        reason: 'unreadable',
+        commit: candidate,
+        artifact,
+        detail: error instanceof Error ? error.message : String(error),
+        artifacts,
+      };
+    }
+
+    const stdout = typeof result?.stdout === 'string' ? result.stdout : '';
+    const stderr = typeof result?.stderr === 'string' ? result.stderr.trim() : '';
+    if (result?.error || result?.status !== 0 || stdout.length === 0) {
+      return {
+        ok: false,
+        reason: result?.error || result?.status !== 0 ? 'unreadable' : 'empty',
+        commit: candidate,
+        artifact,
+        detail:
+          result?.error?.message ||
+          stderr ||
+          (result?.status === null ? 'git show terminated without an exit status' : `git show exited ${result?.status}`),
+        artifacts,
+      };
+    }
+    artifacts.push({
+      ...artifact,
+      bytes: Buffer.byteLength(stdout, 'utf8'),
+      sha256: sha256(stdout),
+    });
+  }
+  return { ok: true, reason: 'committed-artifacts-readable', commit: candidate, artifacts };
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -1204,6 +1281,38 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const budget = Number.isFinite(budgetOverride) && budgetOverride > 0
     ? budgetOverride
     : projectionBudget();
+
+  // A frozen green-checkpoint candidate is immutable. Comparing its committed
+  // artifacts with live PG is not a consistency check: it compares two different
+  // moments and can flip solely because another agent edited a canonical row after
+  // the candidate was cut. Resolve the exact candidate blobs and stop before the
+  // first connect() call. Write modes are refused rather than degraded because this
+  // branch must never turn a candidate check into a silent no-op mutation.
+  const candidateCommit = process.env.PAPERCUSP_TEST_RUN_COMMIT?.trim() ?? '';
+  if (process.env.GREEN_CHECKPOINT === '1' && candidateCommit) {
+    if (write || writeCorpus || audience || audienceOut) {
+      console.error(
+        '✗ candidate artifact checks are read-only; --write, --write-corpus, and --audience are not allowed in a frozen candidate run.',
+      );
+      process.exit(2);
+    }
+    const candidate = readCommittedCandidateArtifacts({ commit: candidateCommit });
+    console.log(`project-doc-parts: frozen candidate ${candidateCommit} (GREEN_CHECKPOINT=1)`);
+    if (!candidate.ok) {
+      console.error(
+        `✗ candidate artifact check failed: ${candidate.artifact?.path ?? 'candidate commit'} ` +
+          `is ${candidate.reason}${candidate.detail ? ` (${candidate.detail})` : ''}.`,
+      );
+      console.error('  Refusing to consult live Postgres for a frozen candidate.');
+      process.exit(1);
+    }
+    for (const artifact of candidate.artifacts) {
+      console.log(`  ${artifact.path}  ${fmt(artifact.bytes)} bytes — committed ${artifact.sha256.slice(0, 16)}`);
+    }
+    console.log('  ✓ frozen candidate artifacts are readable; no live Postgres read performed.');
+    process.exit(0);
+  }
+
   // The reader's own threshold, kept separate from the budget we enforce so the gap
   // between them is reported rather than assumed. See PROJECTION_BUDGET_CHARS.
   const readerWarnThreshold = memoryWarningThreshold({ contextTokens, charsPerToken });

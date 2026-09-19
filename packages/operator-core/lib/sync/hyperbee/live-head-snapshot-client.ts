@@ -190,6 +190,27 @@ export interface HeadSnapshotRetryLog {
 
 export type LiveHeadSnapshotOutcome = LiveHeadSnapshotProduced | LiveHeadSnapshotNoHolder | LiveHeadSnapshotFailed;
 
+/**
+ * A holder can answer the request and still be in the middle of a restart. The
+ * head-snapshot route deliberately reports its producer error as HTTP 200 with
+ * `ok:false`, so this is not a transport failure even though retrying is the
+ * correct action for the transient closed-session class.
+ */
+export function isRetryableHeadSnapshotOutcome(outcome: LiveHeadSnapshotOutcome): boolean {
+  if (outcome.kind === 'no-holder') return true;
+  if (outcome.kind !== 'failed') return false;
+  if (outcome.transport) return true;
+
+  // Hypercore reports the restart-induced loss as SESSION_CLOSED. Some versions
+  // surface the same condition as a plain "Corestore is closed" message. Keep
+  // this matcher narrow: an ordinary operator refusal such as
+  // "harness engine is stopped/closing" is an actionable answer, not a reason
+  // to spend the whole cut retrying.
+  return /\bSESSION_CLOSED\b/i.test(outcome.error) ||
+    /\bcorestore\b.*\bclosed\b/i.test(outcome.error) ||
+    /\bclosed\b.*\bcorestore\b/i.test(outcome.error);
+}
+
 interface ResponseLike {
   readonly ok: boolean;
   readonly status: number;
@@ -468,7 +489,9 @@ export async function requestLiveOperatorHeadSnapshot(inp: {
       budgetMs = Math.max(budgetMs, headSnapshotRetryBudgetMs(attempt.timeoutMs, delayMs));
     }
     // Only a restart-shaped failure is worth waiting out; a refusal is a real answer.
-    const retryable = outcome.kind === 'no-holder' || (outcome.kind === 'failed' && outcome.transport);
+    // SESSION_CLOSED/Corestore-closed is returned as an HTTP-200 ok:false body by
+    // the holder, so transport === false does not by itself mean "do not retry".
+    const retryable = isRetryableHeadSnapshotOutcome(outcome);
     if (!retryable) {
       return attempts > 1 ? withRetryLog(outcome, { attempts, waitedMs, elapsedMs: now() - startedAt }) : outcome;
     }
