@@ -600,6 +600,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'Doc/metadata citation-drift scan filing findings via captureImprovement — no spawn/dispatch/wake',
   },
+  'system:launch-cost-ceiling': {
+    spend: 'none',
+    why: 'Bounded transcript scan measuring agent launch cost against a ceiling/regression threshold; on a crossing it records a fires-ledger row with wakeAt:null and opens an ADVISORY escalation — no spawn/dispatch/wake. Same shape as frozen-candidate-drift-sweep: the alert can lead a HUMAN or a later lane to act, but nothing this fire does bills a turn directly',
+  },
   'system:durable-escalation-orphan-sweep': {
     spend: 'none',
     why: 'One bounded read of harness_shared.engineer_issues plus arithmetic over each emitter\'s own close-time distribution, filing findings via captureImprovement — no spawn/dispatch/wake. Matches dead-citation-sweep: a filed finding can lead a HUMAN or a later triage lane to act, but nothing this fire does bills a turn directly',
