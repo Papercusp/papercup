@@ -1,9 +1,14 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   parseManagedCarryResponse,
   preCompactDecision,
   runManagedPreCompact,
+  isDirectCliInvocation,
 } from '../precompact-managed-carry.mjs';
 
 const PAYLOAD = {
@@ -28,6 +33,25 @@ function rpc(inner: Record<string, unknown>, isError = false) {
 }
 
 describe('managed Codex PreCompact bridge', () => {
+  it('loads as an installed hook from an unrelated cwd without operator-core resolution', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'managed-carry-hook-cwd-'));
+    try {
+      const out = execFileSync(process.execPath, ['-e', `import(${JSON.stringify(new URL('../precompact-managed-carry.mjs', import.meta.url).href)})`], {
+        cwd,
+        encoding: 'utf8',
+        env: { ...process.env, PAPERCUSP_MCP_URL: '', PAPERCUSP_SID: '' },
+      });
+      expect(out).toBe('');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('uses a basename-pinned direct-entry check for the verbatim installed copy', () => {
+    expect(isDirectCliInvocation(join(homedir(), '.papercusp/hooks/cc/precompact-managed-carry.mjs'))).toBe(true);
+    expect(isDirectCliInvocation('/tmp/other-hook.mjs')).toBe(false);
+  });
+
   it('queues session:request-compaction on the exact signed route and vetoes native compaction', async () => {
     let capturedUrl: RequestInfo | URL | undefined;
     let capturedRequest: RequestInit | undefined;
