@@ -775,8 +775,20 @@ export interface OrientResult {
    *  activated on this session. Re-delivered after compaction with a stable
    *  content watermark and replace-full resync contract. */
   taskToolSchemaPack?: import('./orient-task-schema-pack').TaskToolSchemaPack & {
-    activation: { requested: true; surfaceChanged: boolean | null };
+    activation: { requested: boolean; surfaceChanged: boolean | null };
   };
+}
+
+/**
+ * Claude Code owns its deferred tool surface through ToolSearch. Automatic
+ * orient activation would instead emit tools/list_changed and make Claude
+ * materialize the activated tools' full schemas in its prompt. Keep the
+ * server-side schema pack and tools:invoke fallback available, but leave
+ * activation to clients whose dynamic MCP surface is designed to refresh.
+ * Unknown callers retain the historical activation behavior.
+ */
+export function shouldActivateOrientToolSurface(callerAgent?: string | null): boolean {
+  return callerAgent !== 'claude';
 }
 
 export interface OrientFleetSummary {
@@ -3954,15 +3966,20 @@ export default defineTool({
             ? []
             : undefined,
       });
+      const activationRequested = shouldActivateOrientToolSurface(
+        (ctx as { callerAgent?: string | null }).callerAgent,
+      );
       let surfaceChanged: boolean | null = null;
-      try {
-        surfaceChanged = ctx.activateTools?.(pack.toolNames) ?? null;
-      } catch {
-        surfaceChanged = null;
+      if (activationRequested) {
+        try {
+          surfaceChanged = ctx.activateTools?.(pack.toolNames) ?? null;
+        } catch {
+          surfaceChanged = null;
+        }
       }
       taskToolSchemaPack = {
         ...pack,
-        activation: { requested: true, surfaceChanged },
+        activation: { requested: activationRequested, surfaceChanged },
       };
     } catch {
       /* fail-soft */

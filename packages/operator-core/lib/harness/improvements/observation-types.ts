@@ -733,6 +733,8 @@ export interface ScorecardVetting {
   unanswered?: true;
   /** Why no critique was available — required whenever `unanswered` is set. */
   unansweredReason?: string;
+  /** Server-stamped seat succession when a dead author's vetting seat is inherited. */
+  seat?: AcceptanceSeatSuccession;
 }
 
 /**
@@ -1468,6 +1470,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
     const consultId = typeof vet.consultId === 'string' && vet.consultId.trim() ? vet.consultId.trim() : null;
     const workItemId = typeof vet.workItemId === 'string' && vet.workItemId.trim() ? vet.workItemId.trim() : null;
     if (Boolean(consultId) !== Boolean(workItemId)) {
+      const seat = asAcceptanceSeatSuccession(vet.seat);
       const critics = Array.isArray(vet.critics)
         ? vet.critics.filter((x): x is string => typeof x === 'string' && x.trim() !== '')
         : [];
@@ -1477,6 +1480,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           : null;
       out.vetting = {
         ...(consultId ? { consultId } : { workItemId: workItemId! }),
+        ...(seat ? { seat } : {}),
         ...(typeof vet.rubricRevision === 'number' && Number.isFinite(vet.rubricRevision)
           ? { rubricRevision: vet.rubricRevision }
           : {}),

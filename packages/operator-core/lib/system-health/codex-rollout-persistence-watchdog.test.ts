@@ -31,6 +31,7 @@ import {
   classifyCodexProviderError,
   evaluateCodexRolloutPersistence,
   evaluateCodexProviderFailureRecurrence,
+  providerFailureDisposition,
   readCodexRolloutTail,
   scanCodexProviderFailureTail,
   type CodexRolloutPersistenceSnapshot,
@@ -128,6 +129,13 @@ describe('native Codex provider-error recurrence', () => {
     expect(recurrence).toMatchObject({ consecutiveFailures: 1, threshold: 2, dead: false });
     expect(recurrence.latest?.turnKey).toBe('new-1');
   });
+
+  it('classifies recovery without making the provider observer a lifecycle killer', () => {
+    expect(providerFailureDisposition(classifyCodexProviderError(providerTaskCompleteLine('t-1', 'server_overloaded'))!)).toBe('backoff');
+    expect(providerFailureDisposition(classifyCodexProviderError(providerTaskCompleteLine('t-2', 'unauthorized'))!)).toBe('park');
+    expect(providerFailureDisposition(classifyCodexProviderError(providerTaskCompleteLine('t-3', 'usageLimitExceeded'))!)).toBe('park');
+    expect(providerFailureDisposition(classifyCodexProviderError(providerTaskCompleteLine('t-4', 'context_window_exceeded', 'prompt too long'))!)).toBe('carry_recovery');
+  });
 });
 
 describe('readCodexRolloutTail', () => {
@@ -143,7 +151,7 @@ describe('readCodexRolloutTail', () => {
   });
 });
 
-describe('checkCodexRolloutPersistence provider cleanup', () => {
+describe('checkCodexRolloutPersistence provider preservation', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -156,7 +164,7 @@ describe('checkCodexRolloutPersistence provider cleanup', () => {
     warnSpy.mockRestore();
   });
 
-  it('deduplicates the provider escalation, ends the session, then cleans every owner surface', async () => {
+  it('deduplicates the provider escalation while preserving the session and owner surfaces', async () => {
     const root = await mkdtemp(join(tmpdir(), 'codex-watchdog-runtime-'));
     const previousHome = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
     process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = root;
@@ -190,18 +198,16 @@ describe('checkCodexRolloutPersistence provider cleanup', () => {
       const result = await checkCodexRolloutPersistence(sql as never, { pidAlive: () => true });
       expect(result.providerFailureSessionIds).toEqual(['42']);
       expect(result.providerAlarmed).toEqual(['42']);
-      expect(result.providerEndedSessionIds).toEqual(['42']);
+      expect(result.providerPreservedSessionIds).toEqual(['42']);
+      expect(result.providerEndedSessionIds).toEqual([]);
       expect(result.providerCleanupFailed).toEqual([]);
-      expect(lifecycleMocks.endSession).toHaveBeenCalledWith(42, null, 'reconciler', { throwOnError: true });
-      expect(lifecycleMocks.cancelInboxWake).toHaveBeenCalledWith('owner-42');
-      expect(lifecycleMocks.cancelClaimable).toHaveBeenCalledWith('owner-42');
-      expect(lifecycleMocks.retireLifecycleWatches).toHaveBeenCalledWith(['owner-42']);
-      expect(lifecycleMocks.releaseWorkItems).toHaveBeenCalledWith('owner-42');
+      expect(lifecycleMocks.endSession).not.toHaveBeenCalled();
+      expect(lifecycleMocks.cancelInboxWake).not.toHaveBeenCalled();
+      expect(lifecycleMocks.cancelClaimable).not.toHaveBeenCalled();
+      expect(lifecycleMocks.retireLifecycleWatches).not.toHaveBeenCalled();
+      expect(lifecycleMocks.releaseWorkItems).not.toHaveBeenCalled();
       expect(lifecycleMocks.notifyAttention).toHaveBeenCalledTimes(1);
       expect(warnSpy).toHaveBeenCalledWith('[codex-rollout-watchdog] PROVIDER ALARM: owner-42 (session 42)');
-      expect(lifecycleMocks.endSession.mock.invocationCallOrder[0]).toBeLessThan(
-        lifecycleMocks.cancelInboxWake.mock.invocationCallOrder[0],
-      );
       expect(queries.filter((query) => query.includes('INSERT INTO harness_shared.harness_escalations'))).toHaveLength(1);
     } finally {
       if (previousHome === undefined) delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
@@ -244,9 +250,10 @@ describe('checkCodexRolloutPersistence provider cleanup', () => {
       });
       expect(result.providerFailureSessionIds).toEqual(['44']);
       expect(result.providerAlarmed).toEqual(['44']);
-      expect(result.providerEndedSessionIds).toEqual(['44']);
-      expect(lifecycleMocks.endSession).toHaveBeenCalledWith(44, null, 'reconciler', { throwOnError: true });
-      expect(lifecycleMocks.releaseWorkItems).toHaveBeenCalledWith('owner-44');
+      expect(result.providerPreservedSessionIds).toEqual(['44']);
+      expect(result.providerEndedSessionIds).toEqual([]);
+      expect(lifecycleMocks.endSession).not.toHaveBeenCalled();
+      expect(lifecycleMocks.releaseWorkItems).not.toHaveBeenCalled();
     } finally {
       if (previousHome === undefined) delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
       else process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = previousHome;
@@ -254,7 +261,7 @@ describe('checkCodexRolloutPersistence provider cleanup', () => {
     }
   });
 
-  it('does not release wakes or claims when the authoritative end write fails', async () => {
+  it('never invokes lifecycle cleanup even when provider failures recur', async () => {
     const root = await mkdtemp(join(tmpdir(), 'codex-watchdog-end-failure-'));
     const previousHome = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
     process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = root;
@@ -270,7 +277,6 @@ describe('checkCodexRolloutPersistence provider cleanup', () => {
       ].join('\n') + '\n',
       'utf8',
     );
-    lifecycleMocks.endSession.mockRejectedValueOnce(new Error('database unavailable'));
     try {
       const result = await checkCodexRolloutPersistence((async (strings: TemplateStringsArray): Promise<unknown[]> => {
         const query = strings.join('');
@@ -280,11 +286,9 @@ describe('checkCodexRolloutPersistence provider cleanup', () => {
         return [];
       }) as never, { pidAlive: () => true });
       expect(result.providerFailureSessionIds).toEqual(['43']);
+      expect(result.providerPreservedSessionIds).toEqual(['43']);
       expect(result.providerEndedSessionIds).toEqual([]);
-      expect(lifecycleMocks.endSession).toHaveBeenCalledWith(43, null, 'reconciler', { throwOnError: true });
-      expect(warnSpy).toHaveBeenCalledWith(
-        '[codex-rollout-watchdog] provider session 43 end write failed: database unavailable',
-      );
+      expect(lifecycleMocks.endSession).not.toHaveBeenCalled();
       expect(lifecycleMocks.cancelInboxWake).not.toHaveBeenCalled();
       expect(lifecycleMocks.cancelClaimable).not.toHaveBeenCalled();
       expect(lifecycleMocks.retireLifecycleWatches).not.toHaveBeenCalled();

@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PROMPTS = join(dirname(fileURLToPath(import.meta.url)), '..', 'prompts');
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const RELEASE_SOURCES = [
   'papercusp-su-engineer.tools.md',
   'pot-instances/papercup-pot.su.md',
@@ -73,4 +74,22 @@ describe('SU workspace-global scope guidance', () => {
       expect(prompt).toMatch(/do \*\*not\*\* pass\s+`harness`\s+to it/);
     });
   }
+});
+
+describe('SU two-port staging checkout guidance', () => {
+  it('keeps the canonical guide and engineer playbook honest about :3170', () => {
+    const sources = [
+      readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf8'),
+      readFileSync(join(PROMPTS, 'papercusp-su-engineer.tools.md'), 'utf8'),
+    ];
+
+    for (const source of sources) {
+      expect(source).toContain('separate `papercusp-staging` checkout');
+      expect(source).toContain('pinned to `origin/staging`');
+      expect(source).toContain('uncommitted edit');
+      expect(source).toContain('dev:restart');
+      expect(source).not.toContain(':3170 serves the working tree at current HEAD');
+      expect(source).not.toContain('systemctl --user restart\npapercup-staging-api.service');
+    }
+  });
 });

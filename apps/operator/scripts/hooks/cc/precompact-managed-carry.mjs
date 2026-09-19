@@ -21,7 +21,6 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const MAX_INPUT_BYTES = 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 590_000;
@@ -207,6 +206,18 @@ async function readStdin() {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/**
+ * This file is installed verbatim under ~/.papercusp/hooks/cc and runs from an
+ * arbitrary cwd. It must not import the source-only operator-core workspace
+ * package: Node resolves bare packages from the hook's directory ancestry, not
+ * from the Papercusp checkout, so that import fails with ERR_MODULE_NOT_FOUND
+ * on a normal installed hook. Pin the direct-entry check to this installed
+ * filename instead; it is bundle-safe and has no repository dependency.
+ */
+export function isDirectCliInvocation(entryPath = process.argv[1]) {
+  return typeof entryPath === 'string' && /(?:^|[\\/])precompact-managed-carry\.mjs$/.test(entryPath);
+}
+
 async function main() {
   let payload = null;
   try {
@@ -220,6 +231,6 @@ async function main() {
   process.stdout.write(`${JSON.stringify(await runManagedPreCompact(payload))}\n`);
 }
 
-if (isCliEntry(import.meta.url)) {
+if (isDirectCliInvocation()) {
   await main();
 }

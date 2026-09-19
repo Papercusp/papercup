@@ -32,6 +32,55 @@ describe('containmentForPaths — the completion evidence a gate-red claim requi
     expect(row.containedInJudgedSha).toBe(false);
   });
 
+  it('resolves a file inside a submodule through each ref\'s gitlink pin', () => {
+    const candidatePin = 'b'.repeat(40);
+    const git = {
+      ...probe({ [A]: {}, staging: {} }),
+      submodulePaths: () => ['papercusp-desktop'],
+      gitlinkAt: (_root: string, ref: string) =>
+        ({ [A]: candidatePin, staging: candidatePin })[ref] ?? null,
+      blobAtInSubmodule: (_root: string, _submodule: string, ref: string, path: string) =>
+        ref === candidatePin && path === 'src-tauri/env-sidecars/staging/harness/blueprints/base/prompts/su.md'
+          ? 'nested-blob'
+          : null,
+    } satisfies GitProbe;
+
+    const [row] = containmentForPaths(
+      ['papercusp-desktop/src-tauri/env-sidecars/staging/harness/blueprints/base/prompts/su.md'],
+      A,
+      '/repo',
+      git,
+      'staging',
+    );
+
+    expect(row).toMatchObject({
+      containedInJudgedSha: true,
+      judgedBlob: 'nested-blob',
+      stagingBlob: 'nested-blob',
+    });
+  });
+
+  it('keeps differing submodule blobs a negative containment verdict', () => {
+    const candidatePin = 'b'.repeat(40);
+    const stagingPin = 'c'.repeat(40);
+    const git = {
+      ...probe({ [A]: {}, staging: {} }),
+      submodulePaths: () => ['papercusp-desktop'],
+      gitlinkAt: (_root: string, ref: string) =>
+        ({ [A]: candidatePin, staging: stagingPin })[ref] ?? null,
+      blobAtInSubmodule: (_root: string, _submodule: string, ref: string) =>
+        ref === candidatePin ? 'old-nested-blob' : ref === stagingPin ? 'new-nested-blob' : null,
+    } satisfies GitProbe;
+
+    const [row] = containmentForPaths(['papercusp-desktop/src-tauri/file.ts'], A, '/repo', git, 'staging');
+
+    expect(row).toMatchObject({
+      containedInJudgedSha: false,
+      judgedBlob: 'old-nested-blob',
+      stagingBlob: 'new-nested-blob',
+    });
+  });
+
   it('reports every requested path, in order', () => {
     const git = probe({ [A]: { 'a.ts': '1' }, staging: { 'a.ts': '1', 'b.ts': '2' } });
     const rows = containmentForPaths(['a.ts', 'b.ts'], A, '/repo', git, 'staging');

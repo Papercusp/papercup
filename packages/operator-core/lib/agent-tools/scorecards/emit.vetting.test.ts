@@ -232,6 +232,72 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     expect(captureImprovement).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses vetting from a live non-author instead of taking the author seat', async () => {
+    const resolveAcceptanceSeatSuccession = vi.fn().mockResolvedValue({
+      eligible: false,
+      reason: 'author_still_reachable',
+      authorSessionState: 'live',
+    });
+    const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT, {
+      sameAcceptanceAuthor: async () => false,
+      resolveAcceptanceSeatSuccession: resolveAcceptanceSeatSuccession as never,
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected refusal');
+    expect(res.error).toContain("vetted rubric's author ('su-author')");
+    expect(res.error).toContain('session is still reachable');
+    expect(resolveAcceptanceSeatSuccession).toHaveBeenCalledTimes(1);
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('allows an accountable successor for a dead author and stamps the vetting seat', async () => {
+    const succession = {
+      succeededFrom: 'su-author',
+      authorSessionState: 'ended',
+      basisWorkItemId: 'WI-review-1',
+      basisPlanSlug: 'some-plan-2026-08-17',
+      succeededAt: '2026-09-19T12:00:00.000Z',
+    };
+    const resolveAcceptanceSeatSuccession = vi.fn().mockResolvedValue({ eligible: true, succession });
+    const res = await emitScorecard(
+      vettingArgs() as never,
+      { createdBy: 'su-successor', ctxHarness: 'papercusp' },
+      {
+        sameAcceptanceAuthor: async () => false,
+        resolveAcceptanceSeatSuccession: resolveAcceptanceSeatSuccession as never,
+      },
+    );
+    expect(res).toMatchObject({ ok: true, created: true });
+    const payload = captureImprovement.mock.calls[0][0] as {
+      payloadExtra: { observation: { vetting?: Record<string, unknown> } };
+    };
+    expect(payload.payloadExtra.observation.vetting).toMatchObject({
+      consultId: 'conv-vet-1',
+      seat: succession,
+    });
+  });
+
+  it('refuses a dead-author successor who is not accountable for the subject plan', async () => {
+    const resolveAcceptanceSeatSuccession = vi.fn().mockResolvedValue({
+      eligible: false,
+      reason: 'caller_not_accountable_for_plan',
+      authorSessionState: 'ended',
+    });
+    const res = await emitScorecard(
+      vettingArgs() as never,
+      { createdBy: 'su-unaccountable', ctxHarness: 'papercusp' },
+      {
+        sameAcceptanceAuthor: async () => false,
+        resolveAcceptanceSeatSuccession: resolveAcceptanceSeatSuccession as never,
+      },
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected refusal');
+    expect(res.error).toContain('accountable for the plan');
+    expect(resolveAcceptanceSeatSuccession).toHaveBeenCalledTimes(1);
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it('stamps observation.vetting { consultId, rubricRevision, critiquePosts, critics } + subject when the consult carries critique', async () => {
     const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
     expect(res.ok).toBe(true);

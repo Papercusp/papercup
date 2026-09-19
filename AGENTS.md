@@ -646,18 +646,24 @@ stale, restart the *right* host and re-probe. Detail:
 ⚠ **Your own MCP tool calls execute `:3070` — NOT your edit.** The `papercusp-su`
 client points at `http://127.0.0.1:9071/api/mcp` (`papercup-mcp-proxy.service`),
 which forwards to **`:3070`**, the release checkout. So a landed `operator-core` fix
-is live in your tree, your tests and `:3170`, while the very tool you would call to
-exercise it still runs the RELEASED build until the deploy lands.
+is live in your tree, your tests and (after publication) `:3170`, while the very tool
+you would call to exercise it still runs the RELEASED build until the deploy lands.
 
 Confirm which build an endpoint runs from its **health sha** — never a proxy's cwd or
 boot time, which describe the proxy, not the code it forwards to:
 `for p in 9071 3070 3170; do curl -s 127.0.0.1:$p/api/health; done`
 
-So don't idle for the deploy. `:3170` serves the working tree at current HEAD, so
-exercise the fix through the REAL MCP surface now — `POST
-http://127.0.0.1:3170/api/mcp?superuser=1&client=$PAPERCUSP_SID&workspace=…`, bearer
-from `~/.claude.json` — then run the identical sequence against `:3070` for an A/B
-whose only variable is the build. Worked example:
+⚠ **`:3170` is not the canonical working tree.** The staging operator serves the
+separate `papercusp-staging` checkout pinned to `origin/staging`, so an uncommitted
+edit — or a commit that git-sync has not pushed yet — is invisible there; restarting
+`:3170` cannot make an unpublished edit appear. Use focused tests or a current-build
+instance for unpublished work. After git-sync publishes the candidate, reload the
+staging operator with `dev:restart { target: 'staging', confirm: true, authorize: true,
+reason: 'reload staging after origin/staging advanced' }`, then compare `/api/health`
+with the intended `origin/staging` build before exercising the real MCP surface:
+`POST http://127.0.0.1:3170/api/mcp?superuser=1&client=$PAPERCUSP_SID&workspace=…`.
+Run the identical sequence against `:3070` for an A/B whose only variable is the
+build. Worked example:
 [the :3170-vs-:3070 A/B](/internal/docs/agent-insights/connection-closed-6432-is-an-idle-tx-kill-not-pgbouncer).
 ⚠ Never bind a long-lived session's MCP to `:3170` — it restarts ~200×/day.
 

@@ -23,6 +23,12 @@ export interface GitProbe {
   isAncestor(root: string, ancestor: string, descendant: string): boolean | null;
   /** Blob sha of `path` at `ref`, or null when absent. */
   blobAt(root: string, ref: string, path: string): string | null;
+  /** Repo-relative submodule paths, longest-first is applied by the caller. */
+  submodulePaths?(root: string): string[];
+  /** The gitlink pin for a submodule at a superproject ref, or null when absent/unreadable. */
+  gitlinkAt?(root: string, ref: string, submodule: string): string | null;
+  /** Blob sha inside a submodule commit, or null when absent/unreadable. */
+  blobAtInSubmodule?(root: string, submodule: string, ref: string, path: string): string | null;
 }
 
 const run = (argv: string[], root: string) =>
@@ -48,6 +54,26 @@ export const realGitProbe: GitProbe = {
     const out = (r.stdout ?? '').trim();
     return r.status === 0 && /^[0-9a-f]{40,64}$/.test(out) ? out : null;
   },
+  submodulePaths(root) {
+    const r = run(['config', '--file', '.gitmodules', '--get-regexp', 'path'], root);
+    if (r.status !== 0) return [];
+    return (r.stdout ?? '')
+      .split('\n')
+      .map((line) => /^\S+\s+(.+)$/.exec(line.trim())?.[1]?.trim() ?? '')
+      .filter((path): path is string => path.length > 0)
+      .sort((a, b) => b.length - a.length);
+  },
+  gitlinkAt(root, ref, submodule) {
+    const r = run(['ls-tree', ref, '--', submodule], root);
+    const match = /^160000\s+commit\s+([0-9a-f]{40,64})\b/.exec((r.stdout ?? '').trim());
+    return r.status === 0 && match ? match[1] : null;
+  },
+  blobAtInSubmodule(root, submodule, ref, path) {
+    // `git -C root -C submodule` resolves the second -C relative to the first.
+    const r = run(['-C', submodule, 'rev-parse', '--verify', '--quiet', `${ref}:${path}`], root);
+    const out = (r.stdout ?? '').trim();
+    return r.status === 0 && /^[0-9a-f]{40,64}$/.test(out) ? out : null;
+  },
 };
 
 export interface PathContainment {
@@ -58,13 +84,33 @@ export interface PathContainment {
   stagingBlob: string | null;
 }
 
+function submoduleForPath(path: string, submodules: readonly string[]): string | null {
+  return submodules.find((submodule) => path === submodule || path.startsWith(`${submodule}/`)) ?? null;
+}
+
+/** Resolve a superproject-relative path through its gitlink when it lives in a submodule. */
+function blobAtPath(
+  git: GitProbe,
+  root: string,
+  ref: string,
+  path: string,
+  submodules: readonly string[],
+): string | null {
+  const submodule = submoduleForPath(path, submodules);
+  if (!submodule || !git.gitlinkAt || !git.blobAtInSubmodule) return git.blobAt(root, ref, path);
+  const pin = git.gitlinkAt(root, ref, submodule);
+  if (!pin) return null;
+  return git.blobAtInSubmodule(root, submodule, pin, path.slice(submodule.length + 1));
+}
+
 /**
  * Per-path containment against the sha the gate is actually judging. Equal blobs mean the
  * judged sha already has that path's staging content.
  *
- * NOTE the documented limit: equal blobs prove that PATH is current, not that the
- * candidate is. A submodule-backed subject moves underneath an identical test blob, so a
- * gitlink diff is still required to rule out pure submodule staleness.
+ * A path inside a submodule is resolved through the gitlink each superproject ref pins;
+ * asking the superproject for `<sha>:submodule/file` returns no blob because the tree stores
+ * only the gitlink. Equal nested blobs prove that PATH is current, not that the candidate is
+ * otherwise current, so callers still need the surrounding candidate/ancestry evidence.
  */
 export function containmentForPaths(
   paths: string[],
@@ -73,9 +119,10 @@ export function containmentForPaths(
   git: GitProbe = realGitProbe,
   branch: string = integrationBranch(),
 ): PathContainment[] {
+  const submodules = git.submodulePaths?.(root) ?? [];
   return paths.map((path) => {
-    const judgedBlob = git.blobAt(root, judgedSha, path);
-    const stagingBlob = git.blobAt(root, branch, path);
+    const judgedBlob = blobAtPath(git, root, judgedSha, path, submodules);
+    const stagingBlob = blobAtPath(git, root, branch, path, submodules);
     return {
       path,
       containedInJudgedSha: judgedBlob !== null && judgedBlob === stagingBlob,

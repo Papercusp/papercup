@@ -444,6 +444,32 @@ describe("CloudWorkspacesPage — rail and step routing", () => {
 });
 
 describe("CloudWorkspacesPage — mutation seam", () => {
+  it.each([
+    ["gcp-main", "Production GCP"],
+    ["gcp-secondary", "Selected GCP"],
+  ])("validates the selected same-provider connection %s", async (id, label) => {
+    H.rows = [
+      connectionRow,
+      { ...connectionRow, id: "gcp-secondary", label: "Selected GCP" },
+    ];
+    H.queryDefaults = { step: "connect", connection: id };
+    render(<CloudWorkspacesPage />);
+
+    expect(screen.getByText(label)).toBeTruthy();
+    expect(
+      screen.queryByText(id === "gcp-main" ? "Selected GCP" : "Production GCP"),
+    ).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Validate Google Cloud connection" }),
+    );
+    await waitFor(() =>
+      expect(H.mutate).toHaveBeenCalledWith({
+        action: "validate-connection",
+        connectionId: id,
+      }),
+    );
+  });
+
   it("routes connection and lifecycle actions through the sync mutation seam", async () => {
     H.queryDefaults = { step: "connect" };
     const { unmount } = render(<CloudWorkspacesPage />);

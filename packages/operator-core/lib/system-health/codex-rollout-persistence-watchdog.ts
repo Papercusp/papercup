@@ -13,13 +13,6 @@ import { join } from 'node:path';
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
-import { markAdvSessionEnded } from '../adv-sessions';
-import {
-  cancelClaimableAwaits,
-  cancelInboxWakeAwaits,
-  retireLifecycleBoundWatchesForOwners,
-} from '../events/await/store';
-import { releaseAllWorkItemLeasesForOwner } from '../work-item-lease-release';
 
 const DEFAULT_HISTORY_FRESH_MS = 5 * 60_000;
 const DEFAULT_ROLLOUT_LAG_MS = 15 * 60_000;
@@ -50,6 +43,24 @@ export interface CodexProviderFailureRecurrence {
   dead: boolean;
   latest: CodexProviderError | null;
   failures: CodexProviderError[];
+}
+
+export type CodexProviderFailureDisposition = 'backoff' | 'park' | 'carry_recovery';
+
+/**
+ * Provider failure recurrence is an observation, not a lifecycle authority.
+ * These dispositions tell the owning loop what kind of recovery is appropriate;
+ * none of them ends the tracked adv session or releases its work.
+ */
+export function providerFailureDisposition(error: CodexProviderError): CodexProviderFailureDisposition {
+  const text = `${error.code} ${error.rawCode} ${error.message ?? ''}`.toLowerCase();
+  if (/context|prompt.{0,20}(?:long|too|exceed)|token.{0,20}(?:limit|window)/i.test(text)) {
+    return 'carry_recovery';
+  }
+  if (/auth|unauthor|forbidden|credential|token.{0,20}(?:invalid|expired)|quota|usage|limit/i.test(text)) {
+    return 'park';
+  }
+  return 'backoff';
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -440,6 +451,8 @@ export interface CodexRolloutPersistenceWatchdogResult {
   recovered: string[];
   providerFailureSessionIds: string[];
   providerAlarmed: string[];
+  providerPreservedSessionIds: string[];
+  /** Compatibility field: provider recurrence never ends an adv session. */
   providerEndedSessionIds: string[];
   providerCleanupFailed: string[];
   providerRecovered: string[];
@@ -451,11 +464,6 @@ export interface CodexRolloutPersistenceWatchdogOptions extends CodexRolloutPers
   providerFailureConsecutive?: number;
   providerErrorTailBytes?: number;
   readRolloutTail?: typeof readCodexRolloutTail;
-  endSession?: typeof markAdvSessionEnded;
-  cancelInboxWake?: typeof cancelInboxWakeAwaits;
-  cancelClaimable?: typeof cancelClaimableAwaits;
-  retireLifecycleWatches?: typeof retireLifecycleBoundWatchesForOwners;
-  releaseWorkItems?: typeof releaseAllWorkItemLeasesForOwner;
 }
 
 interface ProviderFailureObservation {
@@ -468,11 +476,13 @@ interface ProviderFailureObservation {
 function providerFailureReason(item: ProviderFailureObservation): string {
   const latest = item.recurrence.latest;
   const retry = latest?.retryAt ? `; retry hint: ${latest.retryAt}` : '';
+  const disposition = latest ? providerFailureDisposition(latest) : 'backoff';
   return (
     `Codex process ${item.snapshot.ownerId} (session ${item.snapshot.sessionId}) has ` +
     `${item.recurrence.consecutiveFailures} consecutive provider failures ` +
-    `(threshold ${item.recurrence.threshold}); latest=${latest?.code ?? 'unknown'}${retry}. ` +
-    'The provider is not accepting turns; ending the tracked session prevents further wakes and releases its lane.'
+    `(threshold ${item.recurrence.threshold}); latest=${latest?.code ?? 'unknown'}${retry}; ` +
+    `disposition=${disposition}. The tracked session and its work are preserved; ` +
+    'the owning loop must back off, park, or queue fresh-context recovery.'
   );
 }
 
@@ -489,39 +499,6 @@ function providerEscalationBody(item: ProviderFailureObservation, nowMs: number)
   });
 }
 
-async function endProviderFailureSession(
-  item: ProviderFailureObservation,
-  opts: CodexRolloutPersistenceWatchdogOptions,
-): Promise<{ ended: boolean; cleanupFailed: boolean }> {
-  try {
-    await (opts.endSession ?? markAdvSessionEnded)(item.advSessionId, null, 'reconciler', {
-      throwOnError: true,
-    });
-  } catch (e) {
-    console.warn(
-      `[codex-rollout-watchdog] provider session ${item.snapshot.sessionId} end write failed: ` +
-        `${e instanceof Error ? e.message : String(e)}`,
-    );
-    return { ended: false, cleanupFailed: false };
-  }
-
-  const ownerId = item.snapshot.ownerId;
-  const effects = await Promise.allSettled([
-    (opts.cancelInboxWake ?? cancelInboxWakeAwaits)(ownerId),
-    (opts.cancelClaimable ?? cancelClaimableAwaits)(ownerId),
-    (opts.retireLifecycleWatches ?? retireLifecycleBoundWatchesForOwners)([ownerId]),
-    (opts.releaseWorkItems ?? releaseAllWorkItemLeasesForOwner)(ownerId),
-  ]);
-  const failed = effects.filter((effect) => effect.status === 'rejected');
-  if (failed.length > 0) {
-    console.warn(
-      `[codex-rollout-watchdog] provider session ${item.snapshot.sessionId} cleanup had ` +
-        `${failed.length} failed effect(s) after ended_at was written`,
-    );
-  }
-  return { ended: true, cleanupFailed: failed.length > 0 };
-}
-
 /** One cross-process-safe watchdog pass. Never throws to its scheduler. */
 export async function checkCodexRolloutPersistence(
   sql: Sql,
@@ -533,6 +510,7 @@ export async function checkCodexRolloutPersistence(
     recovered: [],
     providerFailureSessionIds: [],
     providerAlarmed: [],
+    providerPreservedSessionIds: [],
     providerEndedSessionIds: [],
     providerCleanupFailed: [],
     providerRecovered: [],
@@ -671,11 +649,11 @@ export async function checkCodexRolloutPersistence(
       console.warn(`[codex-rollout-watchdog] PROVIDER ALARM: ${list}`);
     }
 
-    for (const item of providerFailures) {
-      const cleanup = await endProviderFailureSession(item, opts);
-      if (cleanup.ended) out.providerEndedSessionIds.push(item.snapshot.sessionId);
-      if (cleanup.cleanupFailed) out.providerCleanupFailed.push(item.snapshot.sessionId);
-    }
+    // Provider recurrence is observational. The lifecycle-aware loop outcome
+    // handler owns backoff, parking, and carry recovery; this watchdog must not
+    // end the adv row or release wakes/claims merely because the provider is
+    // temporarily unavailable (or because a credential/cap needs repair).
+    out.providerPreservedSessionIds = providerFailures.map((item) => item.snapshot.sessionId);
 
     const alertedRows = await sql<Array<{ phase: string }>>`
       SELECT phase FROM harness_shared.harness_escalations
@@ -731,13 +709,14 @@ export function startCodexRolloutPersistenceWatchdog(
         result.alarmed.length > 0 ||
         result.recovered.length > 0 ||
         result.providerAlarmed.length > 0 ||
+        result.providerPreservedSessionIds.length > 0 ||
         result.providerRecovered.length > 0 ||
         result.providerEndedSessionIds.length > 0
       ) {
         console.warn(
-          `[codex-rollout-watchdog] alarmed=${result.alarmed.length} recovered=${result.recovered.length} ` +
+            `[codex-rollout-watchdog] alarmed=${result.alarmed.length} recovered=${result.recovered.length} ` +
             `providerAlarmed=${result.providerAlarmed.length} providerRecovered=${result.providerRecovered.length} ` +
-            `providerEnded=${result.providerEndedSessionIds.length}`,
+            `providerPreserved=${result.providerPreservedSessionIds.length} providerEnded=${result.providerEndedSessionIds.length}`,
         );
       }
     });

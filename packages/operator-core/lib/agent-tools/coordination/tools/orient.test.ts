@@ -18,6 +18,7 @@ import {
   ORIENT_DEEP_WORK_NOTE,
   ORIENT_CROSS_WORKSPACE_FOLD_TOOL_NAMES,
   ORIENT_FOLD_TOOL_NAMES,
+  shouldActivateOrientToolSurface,
 } from './orient';
 import orientTool from './orient';
 import { FLEET_DELTA_SCHEMA_VERSION, fingerprintFleet } from './fleet-monitor-delta';
@@ -270,6 +271,15 @@ beforeEach(() => {
 });
 
 describe('coord:orient args', () => {
+  it('does not auto-activate the dynamic MCP surface for Claude Code', () => {
+    expect(shouldActivateOrientToolSurface('claude')).toBe(false);
+    expect(shouldActivateOrientToolSurface('codex')).toBe(true);
+    expect(shouldActivateOrientToolSurface('omp')).toBe(true);
+    // In-process and legacy callers retain the pre-policy behavior.
+    expect(shouldActivateOrientToolSurface()).toBe(true);
+    expect(shouldActivateOrientToolSurface(null)).toBe(true);
+  });
+
   it('declares a transport budget above the flat MCP deadline for compound bootstrap work', () => {
     expect((orientTool as { timeoutSec?: number }).timeoutSec).toBe(120);
     expect((orientTool as { timeoutSec?: number }).timeoutSec).toBeGreaterThan(55);
@@ -630,6 +640,85 @@ describe('coord:orient args', () => {
       expect.any(Object),
     );
     expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith(ownerId, 'ws-test', 5);
+  });
+
+  it('applies caller-specific tool-surface activation in the real handler', async () => {
+    const ownerId = 'su-orient-handler-activation-test';
+
+    inProcessCallMock.mockReturnValue(async (name: string) => {
+      if (name === 'fleet:assignments') {
+        return {
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        };
+      }
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      throw new Error(`unexpected sub-call: ${name}`);
+    });
+    getModesMock.mockResolvedValue(null);
+    readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    readGovernorStateSnapshotMock.mockResolvedValue(null);
+    recordOrientDisclosuresMock.mockResolvedValue('unchanged');
+
+    const invoke = async (callerAgent: 'claude' | 'codex', activateTools: ReturnType<typeof vi.fn>) =>
+      (await orientTool.handler(
+        {
+          claimableLimit: 0,
+          inboxLimit: 0,
+          includePlanEvents: false,
+          includeFleetCatchUp: false,
+          includeFleetHealth: false,
+          includeRecipes: false,
+          includePeersKnow: false,
+        } as never,
+        {
+          uiClientId: ownerId,
+          callerAgent,
+          isSuperuser: true,
+          workspaceId: 'ws-test',
+          role: 'su',
+          metadata: vi.fn(),
+          log: vi.fn(),
+          progress: vi.fn(),
+          activateTools,
+        } as never,
+      )) as { data: Record<string, unknown> };
+
+    try {
+      const claudeActivateTools = vi.fn(() => true);
+      const claudeResult = await invoke('claude', claudeActivateTools);
+      expect(claudeActivateTools).not.toHaveBeenCalled();
+      expect(
+        (claudeResult.data.taskToolSchemaPack as { activation: unknown }).activation,
+      ).toEqual({ requested: false, surfaceChanged: null });
+
+      const codexActivateTools = vi.fn(() => true);
+      const codexResult = await invoke('codex', codexActivateTools);
+      expect(codexActivateTools).toHaveBeenCalledTimes(1);
+      expect(
+        (codexResult.data.taskToolSchemaPack as { activation: unknown }).activation,
+      ).toEqual({ requested: true, surfaceChanged: true });
+    } finally {
+      inProcessCallMock.mockReset();
+      getModesMock.mockReset();
+      getModesMock.mockResolvedValue(null);
+      readOwnerPresenceMock.mockReset();
+      readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+      getFlagMock.mockReset();
+      getFlagMock.mockResolvedValue(false);
+      resolvePresenceFleetMock.mockReset();
+      resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+      fetchOrientPipelineMock.mockReset();
+      fetchOrientPipelineMock.mockResolvedValue(null);
+      readGovernorStateSnapshotMock.mockReset();
+      readGovernorStateSnapshotMock.mockResolvedValue(null);
+      recordOrientDisclosuresMock.mockReset();
+      recordOrientDisclosuresMock.mockResolvedValue('unchanged');
+    }
   });
 
   it('keeps recovery in the aggregate fallback when a post-composition fold stalls', async () => {
