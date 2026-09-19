@@ -17,6 +17,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { drainOutboxOnce, startOutboxDrain, type EpochEncryptCapability } from './outbox-drain';
+import type { StageDiagnosticEvent } from './stage-stall-log';
 import type { BootedHarnessHandle, LocalWriteOp } from './boot';
 
 const WS = 'ws_rekey_drain';
@@ -137,6 +138,46 @@ describe('outbox-drain re-key capture-wire (real PG)', () => {
     expect(appends[0]?.value).toEqual({ __rekey: 'CIPHER' });
   });
 
+  it('emits distinct local attempt identities across rows without changing the wire op', async () => {
+    await seedOutbox(db.sql, {
+      table_name: 'harness_features_consolidated',
+      op: 'put',
+      key: 'F-DIAG-A',
+      row: featureRow('F-DIAG-A'),
+    });
+    await seedOutbox(db.sql, {
+      table_name: 'harness_features_consolidated',
+      op: 'put',
+      key: 'F-DIAG-B',
+      row: featureRow('F-DIAG-B'),
+    });
+    const { handle, appends } = makeFakeHandle();
+    const events: StageDiagnosticEvent[] = [];
+    const encryptOp = vi.fn(async (_op: LocalWriteOp) => ({ epoch: 7, value: { __rekey: 'CIPHER' } }));
+
+    await expect(
+      drainOutboxOnce(handle, db.sql, {
+        epochEncrypt: { encryptOp },
+        onDiagnosticEvent: (event) => {
+          events.push(event);
+        },
+      }),
+    ).resolves.toBe(2);
+
+    const starts = events.filter((event) => event.event === 'attempt-start');
+    expect(starts).toHaveLength(2);
+    expect(new Set(starts.map((event) => event.attemptId)).size).toBe(2);
+    expect(new Set(starts.map((event) => event.rowId))).toEqual(new Set(['1', '2']));
+    expect(events.filter((event) => event.event === 'hop-start').map((event) => event.stage)).toEqual(
+      expect.arrayContaining(['epoch-encrypt', 'hypercore-append', 'mark-drained']),
+    );
+    expect(events.filter((event) => event.event === 'attempt-end')).toHaveLength(2);
+    // Diagnostic identity/context is local-only; the federated operation stays the
+    // existing encrypted envelope shape and contains no attempt fields.
+    expect(appends).toHaveLength(2);
+    expect(appends.every((op) => !('attemptId' in op) && !('processInstanceId' in op))).toBe(true);
+  });
+
   it('leaves an admission/key/policy op (pot_settings) PLAINTEXT — capability not called', async () => {
     await seedOutbox(db.sql, {
       table_name: 'pot_settings',
@@ -221,6 +262,93 @@ describe('outbox-drain re-key capture-wire (real PG)', () => {
     const [r] = await db.sql<{ drained_at: number | null }[]>`
       SELECT drained_at FROM harness_shared.substrate_outbox WHERE id = ${id}`;
     expect(r?.drained_at).toBeNull();
+  });
+
+  it.each(['enabled', 'disabled', 'throwing'] as const)(
+    'preserves errors, undrained retry and wire values with a %s observer',
+    async (mode) => {
+      const id = await seedOutbox(db.sql, {
+        table_name: 'harness_features_consolidated',
+        op: 'put',
+        key: 'F-retry',
+        row: featureRow('F-retry'),
+      });
+      const { handle, appends } = makeFakeHandle();
+      const events: StageDiagnosticEvent[] = [];
+      const original = new Error('key unavailable');
+      const encryptOp = vi
+        .fn<EpochEncryptCapability['encryptOp']>()
+        .mockRejectedValueOnce(original)
+        .mockResolvedValue({ epoch: 3, value: { __rekey: 'stable fixture' } });
+      const opts = {
+        epochEncrypt: { encryptOp },
+        diagnosticsEnabled: mode !== 'disabled',
+        onDiagnosticEvent: (event: StageDiagnosticEvent) => {
+          if (mode === 'throwing') throw new Error('observer');
+          events.push(event);
+        },
+      };
+      await expect(drainOutboxOnce(handle, db.sql, opts)).rejects.toBe(original);
+      expect(appends).toEqual([]);
+      expect(
+        (await db.sql`SELECT drained_at FROM harness_shared.substrate_outbox WHERE id=${id}`)[0].drained_at,
+      ).toBeNull();
+      await expect(drainOutboxOnce(handle, db.sql, opts)).resolves.toBe(1);
+      expect(encryptOp).toHaveBeenCalledTimes(2);
+      expect(appends).toHaveLength(1);
+      expect(appends[0]).toMatchObject({ epoch: 3, value: { __rekey: 'stable fixture' } });
+      if (mode === 'enabled') {
+        const starts = events.filter((event) => event.event === 'attempt-start');
+        expect(starts).toHaveLength(2);
+        expect(starts[0].attemptId).not.toBe(starts[1].attemptId);
+        expect(starts[0].rowId).toBe(starts[1].rowId);
+        expect(events.filter((event) => event.event === 'attempt-end').map((event) => event.outcome)).toEqual([
+          'rejected',
+          'fulfilled',
+        ]);
+      } else expect(events).toEqual([]);
+    },
+  );
+
+  it('abandons a timed-out attempt without cancelling its promise or confusing the retry', async () => {
+    await seedOutbox(db.sql, {
+      table_name: 'harness_features_consolidated',
+      op: 'put',
+      key: 'F-late',
+      row: featureRow('F-late'),
+    });
+    const { handle, appends } = makeFakeHandle();
+    const events: StageDiagnosticEvent[] = [];
+    let release!: (value: { epoch: number; value: unknown }) => void;
+    const held = new Promise<{ epoch: number; value: unknown }>((resolve) => {
+      release = resolve;
+    });
+    const encryptOp = vi
+      .fn<EpochEncryptCapability['encryptOp']>()
+      .mockReturnValueOnce(held)
+      .mockResolvedValue({ epoch: 3, value: { __rekey: 'retry' } });
+    const opts = {
+      epochEncrypt: { encryptOp },
+      rowTimeoutMs: 25,
+      onDiagnosticEvent: (event: StageDiagnosticEvent) => {
+        events.push(event);
+      },
+    };
+    try {
+      await expect(drainOutboxOnce(handle, db.sql, opts)).rejects.toMatchObject({ name: 'RowStageTimeoutError' });
+      expect(events.filter((event) => event.event === 'attempt-end').map((event) => event.outcome)).toEqual([
+        'abandoned',
+      ]);
+      await expect(drainOutboxOnce(handle, db.sql, opts)).resolves.toBe(1);
+      const count = events.length;
+      release({ epoch: 2, value: { __rekey: 'late' } });
+      await held;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(events).toHaveLength(count);
+      expect(appends.map((op) => op.value)).toEqual([{ __rekey: 'retry' }]);
+    } finally {
+      release({ epoch: 2, value: { __rekey: 'cleanup' } });
+    }
   });
 
   it('a running drain resolves the refreshed capability on its next pass', async () => {

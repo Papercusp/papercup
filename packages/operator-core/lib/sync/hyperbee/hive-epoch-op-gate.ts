@@ -20,6 +20,8 @@
  * the drain BEFORE `encryptOp` is called — this module never sees a control-plane op.
  */
 import type { EpochKey, HiveEpochCrypto } from './hive-epoch-crypto';
+import { randomUUID } from 'node:crypto';
+import { currentStageAttempt, traceStageAwait, traceStageSync } from './stage-stall-log';
 import type { OpEnvelope } from './op-envelope-types';
 import type { LocalWriteOp } from './boot';
 import type { EpochEncryptCapability } from './outbox-drain';
@@ -57,11 +59,14 @@ export function buildEpochKeyResolver(deps: {
   return async (potId, epoch) => {
     const cacheKey = `${potId}:${epoch}`;
     const cached = keyCache.get(cacheKey);
-    if (cached) return cached;
-    if (ownerCache === undefined) ownerCache = await deps.isOwner();
+    if (cached) {
+      currentStageAttempt()?.cache('key-provider', 'hit');
+      return cached;
+    }
+    if (ownerCache === undefined) ownerCache = await traceStageAwait('owner-check', () => deps.isOwner());
     let key: EpochKey;
     if (!ownerCache) {
-      key = await deps.provider.keyForEpoch(potId, epoch);
+      key = await traceStageAwait('key-provider', () => deps.provider.keyForEpoch(potId, epoch));
     } else {
       // OWNER. Resolve the AUTHORITATIVE distributed key FIRST — the provider chain
       // (federated `hive_epoch_keys` rows / the BUNDLED seed key) — and mint via
@@ -80,7 +85,7 @@ export function buildEpochKeyResolver(deps: {
       // owner/advancer box (no bundled seed, no self-wrapped row) the provider simply
       // misses and we fall through to deriveEpochKey — its own minted key — unchanged.
       try {
-        key = await deps.provider.keyForEpoch(potId, epoch);
+        key = await traceStageAwait('key-provider', () => deps.provider.keyForEpoch(potId, epoch));
       } catch {
         key = await deps.crypto.deriveEpochKey(potId, epoch);
       }
@@ -172,7 +177,7 @@ export function buildEpochEncryptCapability(
   // cache at successful completion (not request start), and share one in-flight
   // read per generation so overlapping drain passes cannot amplify a stalled
   // pool into another epoch-read N+1.
-  let epochLoadInFlight: { generation: number; promise: Promise<number> } | null = null;
+  let epochLoadInFlight: { generation: number; promise: Promise<number>; id: string } | null = null;
   const getCurrentEpochCached = async (): Promise<number> => {
     const now = Date.now();
     // WI-4075: the generation is the IMMEDIATE invalidation signal for a local epoch
@@ -181,12 +186,19 @@ export function buildEpochEncryptCapability(
     // unchanged since it was populated.
     const generation = deps.workspaceId !== undefined ? getEpochGeneration(deps.workspaceId, deps.potId) : 0;
     if (epochCache && now - epochCache.at < EPOCH_CACHE_TTL_MS && epochCache.generation === generation) {
+      currentStageAttempt()?.cache('epoch-load', 'hit');
       return epochCache.epoch;
     }
-    if (epochLoadInFlight?.generation === generation) return epochLoadInFlight.promise;
+    if (epochLoadInFlight?.generation === generation) {
+      const shared = epochLoadInFlight;
+      currentStageAttempt()?.cache('epoch-load', 'shared', shared.id);
+      return traceStageAwait('epoch-load', () => shared.promise);
+    }
 
+    const id = randomUUID();
+    currentStageAttempt()?.cache('epoch-load', 'miss', id);
     const promise = (async () => {
-      const epoch = await deps.getCurrentEpoch();
+      const epoch = await traceStageAwait('epoch-load', () => deps.getCurrentEpoch());
       const completionGeneration =
         deps.workspaceId !== undefined ? getEpochGeneration(deps.workspaceId, deps.potId) : 0;
       if (completionGeneration === generation) {
@@ -194,7 +206,7 @@ export function buildEpochEncryptCapability(
       }
       return epoch;
     })();
-    epochLoadInFlight = { generation, promise };
+    epochLoadInFlight = { generation, promise, id };
     try {
       return await promise;
     } finally {
@@ -211,14 +223,18 @@ export function buildEpochEncryptCapability(
   let rekeyEvidenceLatched = false;
   let rekeyEvidenceCheckedAt = 0;
   const hasRekeyEvidenceCached = async (): Promise<boolean> => {
-    if (rekeyEvidenceLatched) return true;
+    if (rekeyEvidenceLatched) {
+      currentStageAttempt()?.cache('baseline-evidence', 'hit');
+      return true;
+    }
     if (deps.hasRekeyEvidence === undefined) return false;
     const now = Date.now();
     if (rekeyEvidenceCheckedAt !== 0 && now - rekeyEvidenceCheckedAt < EPOCH_CACHE_TTL_MS) {
+      currentStageAttempt()?.cache('baseline-evidence', 'hit');
       return false;
     }
     rekeyEvidenceCheckedAt = now;
-    if (await deps.hasRekeyEvidence()) {
+    if (await traceStageAwait('baseline-evidence', () => deps.hasRekeyEvidence!())) {
       rekeyEvidenceLatched = true;
       return true;
     }
@@ -264,7 +280,8 @@ export function buildEpochEncryptCapability(
       const key = await deps.resolveKey(deps.potId, epoch);
       // OpIdentity (object) — encryptOpPayload derives the opId internally via buildOpAAD.
       const id = { tableTag: op.table, rowKey: op.hbKey, authorPubkey: op.writerPubkey ?? '' };
-      const ct = await encryptOpPayload(deps.crypto, valueToBytes(op.value), { potId: deps.potId, epoch, id }, key);
+      const bytes = traceStageSync(currentStageAttempt(), 'serialize', () => valueToBytes(op.value));
+      const ct = await encryptOpPayload(deps.crypto, bytes, { potId: deps.potId, epoch, id }, key);
       return { epoch, value: encodeCiphertext(ct) };
     },
   };
@@ -345,7 +362,10 @@ export function buildEpochDecryptGate(
         // treated as transient, and is retried next pass WITHOUT the cursor advancing
         // (winner not recorded) until MAX_APPLY_THROWS, mirroring the correct path.
         if (!(e instanceof EpochKeyUnavailableError)) {
-          trace('epoch_resolve_transient', `${where} hive=${deps.potId} rethrow (not a genuine key-absence): ${(e as Error)?.message ?? e}`);
+          trace(
+            'epoch_resolve_transient',
+            `${where} hive=${deps.potId} rethrow (not a genuine key-absence): ${(e as Error)?.message ?? e}`,
+          );
           throw e;
         }
         // key not yet local (remaining member waiting; or removed member forever) → defer.

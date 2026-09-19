@@ -18,6 +18,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveFederatedPotScope } from './federated-pot-scope';
 import { getHiveBySlug } from './hive-store';
+import { traceStageAwait } from './sync/hyperbee/stage-stall-log';
 
 export interface HiveSettingRecord {
   workspaceId: string;
@@ -110,12 +111,17 @@ export async function getHiveSetting(
   sql?: Sql,
 ): Promise<HiveSettingRecord | null> {
   const s = pg(sql);
-  const potScope = await resolveFederatedPotScope(workspaceId, potHomeSlug, { sql });
-  const rows = (await s.unsafe(
-    `SELECT ${COLS} FROM harness_shared.pot_settings
+  const loadScope = () => resolveFederatedPotScope(workspaceId, potHomeSlug, { sql });
+  const potScope = await (settingKey === 'epoch' ? traceStageAwait('scope-query', loadScope) : loadScope());
+  const loadSetting = () =>
+    s.unsafe(
+      `SELECT ${COLS} FROM harness_shared.pot_settings
       WHERE workspace_id = $1 AND harness_slug = $2 AND setting_key = $3 LIMIT 1`,
-    [workspaceId, potScope, settingKey],
-  )) as unknown as HiveSettingDbRow[];
+      [workspaceId, potScope, settingKey],
+    );
+  const rows = (await (settingKey === 'epoch'
+    ? traceStageAwait('epoch-query', loadSetting)
+    : loadSetting())) as unknown as HiveSettingDbRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
 
@@ -189,10 +195,7 @@ export async function setHiveInstancePromptOverride(
   promptMd: string,
   sql?: Sql,
 ): Promise<void> {
-  await setHiveSetting(
-    { workspaceId, potHomeSlug, settingKey: promptOverrideSettingKey(role), value: promptMd },
-    sql,
-  );
+  await setHiveSetting({ workspaceId, potHomeSlug, settingKey: promptOverrideSettingKey(role), value: promptMd }, sql);
 }
 
 /** Delete a Hive instance's prompt override for a role (idempotent). Federates so a
@@ -253,10 +256,7 @@ export async function setReleaseGreenCmdOverride(
   greenCmd: string,
   sql?: Sql,
 ): Promise<void> {
-  await setHiveSetting(
-    { workspaceId, potHomeSlug, settingKey: RELEASE_GREEN_CMD_SETTING_KEY, value: greenCmd },
-    sql,
-  );
+  await setHiveSetting({ workspaceId, potHomeSlug, settingKey: RELEASE_GREEN_CMD_SETTING_KEY, value: greenCmd }, sql);
 }
 
 /** Delete a hive's green-command override (idempotent — reverts to the detected default). */
@@ -308,10 +308,7 @@ export async function setHiveLocalBlueprintConfig(
   value: unknown,
   sql?: Sql,
 ): Promise<void> {
-  await setHiveSetting(
-    { workspaceId, potHomeSlug, settingKey: localBlueprintConfigKey(section), value },
-    sql,
-  );
+  await setHiveSetting({ workspaceId, potHomeSlug, settingKey: localBlueprintConfigKey(section), value }, sql);
 }
 
 /** Delete a Hive instance's structured config delta for a section (idempotent). Federates. */
@@ -357,11 +354,7 @@ export async function listHiveLocalBlueprintConfig(
 export const QUEEN_HOME_PUBKEY_SETTING_KEY = 'queen-home-pubkey';
 
 /** Get the Hive's recorded queen-home device pubkey (null when unset). */
-export async function getQueenHomePubkey(
-  workspaceId: string,
-  potHomeSlug: string,
-  sql?: Sql,
-): Promise<string | null> {
+export async function getQueenHomePubkey(workspaceId: string, potHomeSlug: string, sql?: Sql): Promise<string | null> {
   const rec = await getHiveSetting(workspaceId, potHomeSlug, QUEEN_HOME_PUBKEY_SETTING_KEY, sql);
   if (!rec || rec.value == null) return null;
   const v = typeof rec.value === 'string' ? rec.value : String(rec.value);

@@ -33,6 +33,7 @@
 import type { HiveEpochCrypto, EpochKey, OpAAD } from './hive-epoch-crypto';
 import { keychainLoad, keychainStore } from '../../identity/keychain';
 import { privateKeyFromDer } from '../../identity/ed25519';
+import { currentStageAttempt, traceStageAwait, traceStageSync } from './stage-stall-log';
 
 /** Keychain service namespace for the per-(hive,epoch) symmetric content keys —
  *  distinct from the device/hive identity-key services so they never collide. */
@@ -45,7 +46,7 @@ type Sodium = typeof import('sodium-native');
 let _sodiumP: Promise<Sodium> | null = null;
 function sodium(): Promise<Sodium> {
   return (_sodiumP ??= import('sodium-native').then(
-    (m) => ((m as unknown as { default?: Sodium }).default ?? (m as unknown as Sodium)),
+    (m) => (m as unknown as { default?: Sodium }).default ?? (m as unknown as Sodium),
   ));
 }
 
@@ -64,11 +65,7 @@ function asEpochKey(b: Uint8Array): EpochKey {
  * 4-byte length prefix per field is unambiguous).
  */
 function encodeAAD(ad: OpAAD): Buffer {
-  const parts = [
-    Buffer.from(ad.potId, 'utf8'),
-    Buffer.from(String(ad.epoch), 'utf8'),
-    Buffer.from(ad.opId, 'utf8'),
-  ];
+  const parts = [Buffer.from(ad.potId, 'utf8'), Buffer.from(String(ad.epoch), 'utf8'), Buffer.from(ad.opId, 'utf8')];
   const out: Buffer[] = [];
   for (const p of parts) {
     const len = Buffer.allocUnsafe(4);
@@ -103,7 +100,7 @@ export function createHiveEpochCrypto(opts: HiveEpochCryptoOpts = {}): HiveEpoch
   return {
     async deriveEpochKey(potId: string, epoch: number): Promise<EpochKey> {
       const id = epochKeyId(potId, epoch);
-      const loaded = await keychainLoad(id, EPOCH_KEY_SERVICE);
+      const loaded = await traceStageAwait('keychain', () => keychainLoad(id, EPOCH_KEY_SERVICE));
       if (loaded.kind === 'ok') {
         if (loaded.value.length !== EPOCH_KEY_BYTES) {
           throw new Error(`stored epoch key for ${id} is ${loaded.value.length}B, expected ${EPOCH_KEY_BYTES}`);
@@ -111,10 +108,10 @@ export function createHiveEpochCrypto(opts: HiveEpochCryptoOpts = {}): HiveEpoch
         return asEpochKey(Uint8Array.from(loaded.value));
       }
       // Mint a fresh random key for this epoch (the epoch-advancer path) + persist.
-      const s = await sodium();
+      const s = await traceStageAwait('native-loader', sodium);
       const key = Buffer.allocUnsafe(EPOCH_KEY_BYTES);
       s.randombytes_buf(key);
-      await keychainStore(id, key, EPOCH_KEY_SERVICE);
+      await traceStageAwait('keychain', () => keychainStore(id, key, EPOCH_KEY_SERVICE));
       return asEpochKey(Uint8Array.from(key));
     },
 
@@ -133,8 +130,8 @@ export function createHiveEpochCrypto(opts: HiveEpochCryptoOpts = {}): HiveEpoch
     },
 
     async unwrapEpochKey(blob: Uint8Array, ownDeviceKeychainId: string): Promise<EpochKey> {
-      const s = await sodium();
-      const loaded = await keychainLoad(ownDeviceKeychainId, opts.deviceServiceName);
+      const s = await traceStageAwait('native-loader', sodium);
+      const loaded = await traceStageAwait('keychain', () => keychainLoad(ownDeviceKeychainId, opts.deviceServiceName));
       if (loaded.kind !== 'ok') {
         const why = loaded.error.kind;
         throw new Error(`unwrapEpochKey: device key not found for keychainId (${why})`);
@@ -162,15 +159,17 @@ export function createHiveEpochCrypto(opts: HiveEpochCryptoOpts = {}): HiveEpoch
     },
 
     async encryptOp(payload: Uint8Array, key: EpochKey, ad: OpAAD): Promise<Uint8Array> {
-      const s = await sodium();
-      if (key.length !== EPOCH_KEY_BYTES) throw new Error(`epoch key must be ${EPOCH_KEY_BYTES} bytes`);
-      const nonce = Buffer.allocUnsafe(s.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
-      s.randombytes_buf(nonce);
-      const m = Buffer.from(payload);
-      const c = Buffer.allocUnsafe(m.length + s.crypto_aead_xchacha20poly1305_ietf_ABYTES);
-      s.crypto_aead_xchacha20poly1305_ietf_encrypt(c, m, encodeAAD(ad), null, nonce, Buffer.from(key));
-      // Self-framing: [24-byte nonce][ciphertext+tag].
-      return Uint8Array.from(Buffer.concat([nonce, c]));
+      const s = await traceStageAwait('native-loader', sodium);
+      return traceStageSync(currentStageAttempt(), 'native-encrypt', () => {
+        if (key.length !== EPOCH_KEY_BYTES) throw new Error(`epoch key must be ${EPOCH_KEY_BYTES} bytes`);
+        const nonce = Buffer.allocUnsafe(s.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
+        s.randombytes_buf(nonce);
+        const m = Buffer.from(payload);
+        const c = Buffer.allocUnsafe(m.length + s.crypto_aead_xchacha20poly1305_ietf_ABYTES);
+        s.crypto_aead_xchacha20poly1305_ietf_encrypt(c, m, encodeAAD(ad), null, nonce, Buffer.from(key));
+        // Self-framing: [24-byte nonce][ciphertext+tag].
+        return Uint8Array.from(Buffer.concat([nonce, c]));
+      });
     },
 
     async decryptOp(ciphertext: Uint8Array, key: EpochKey, ad: OpAAD): Promise<Uint8Array> {
