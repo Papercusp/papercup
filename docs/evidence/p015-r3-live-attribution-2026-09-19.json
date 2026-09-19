@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "P-015 R-3 live launch and applied attribution observation",
+  "framework": "operational",
   "plan": "identities-v1-2026-08-30",
   "workItem": "WI-2143764",
   "capturedAt": "2026-09-19T13:44:12.649256Z",
