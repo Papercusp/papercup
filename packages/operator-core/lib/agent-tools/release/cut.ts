@@ -529,6 +529,13 @@ export default defineTool({
       windows: z.boolean().optional().describe('Include the Windows leg (build VM on SSH :2223).'),
       arm64: z.boolean().optional().describe('Include the linux-arm64 cross-compile leg.'),
       root: cutRootArg.optional(),
+      // Keep the read-only preflight compatible with callers that carry the
+      // same release context through every operation. Preflight does not use
+      // these values to choose checks, but rejecting them contradicts the
+      // published union-level accepted-args contract.
+      version: z.string().min(1).optional().describe('Optional release version carried as caller context; preflight is version-agnostic.'),
+      channel: z.enum(['stable', 'beta', 'alpha']).optional().describe('Optional release channel carried as caller context; preflight is channel-agnostic.'),
+      sourceSha: z.string().regex(/^[0-9a-f]{40}$/).optional().describe('Optional exact source commit carried as caller context; preflight is source-agnostic.'),
     }),
     z.object({
       op: z.literal('prepare-tag'),
