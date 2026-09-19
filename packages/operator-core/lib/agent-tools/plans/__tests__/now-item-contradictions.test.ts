@@ -128,6 +128,30 @@ describe('detectNowItemContradictions', () => {
     expect(detectNowItemContradictions(parsed)).toEqual([]);
   });
 
+  it('allows a neutral possessive citation after an explicit terminal completion', () => {
+    const proposed = parsePlan(
+      CURRENT.replace(
+        '**State:** P-001 is done.',
+        "**State:** P-001 IS DONE as of 2026-09-16T17:07Z; of P-001's 5 AUTO-REQ-M-* specs only M-004 and M-102 are item-specific.",
+      ),
+    );
+
+    expect(detectNowItemContradictions(proposed)).toEqual([]);
+  });
+
+  it('still flags a possessive citation that describes remaining terminal work', () => {
+    const proposed = parsePlan(
+      CURRENT.replace(
+        '**State:** P-001 is done.',
+        "**State:** P-001 IS DONE as of 2026-09-16T17:07Z; of P-001's remaining work, fix the item-specific specs.",
+      ),
+    );
+
+    expect(detectNowItemContradictions(proposed)).toEqual([
+      expect.objectContaining({ id: 'P-001', status: 'done' }),
+    ]);
+  });
+
   it('allows a terminal item named only by an explicit do-not-reopen guard', () => {
     const proposed = parsePlan(
       CURRENT
@@ -619,6 +643,18 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
 
     expect(result.value).toEqual({ ok: true });
     expect(result.newBody).toContain('**Next:** Continue with P-002.');
+  });
+
+  it('accepts a structured Now write with a neutral possessive citation after completion', () => {
+    const result = evaluateNowUpdate(
+      CURRENT,
+      "P-001 IS DONE as of 2026-09-16T17:07Z; of P-001's 5 AUTO-REQ-M-* specs only M-004 and M-102 are item-specific.",
+      'Continue with P-002.',
+      SLUG,
+    );
+
+    expect(result.value).toEqual({ ok: true });
+    expect(result.newBody).toContain("of P-001's 5 AUTO-REQ-M-* specs only M-004 and M-102 are item-specific.");
   });
 
   it('accepts a structured Now write with an explicit do-not-reopen terminal guard', () => {

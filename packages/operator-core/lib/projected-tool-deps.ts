@@ -259,7 +259,7 @@ export async function readControlAnchorKernelState(
            LIMIT 1
         ) b
         FULL JOIN (
-          SELECT to_jsonb(s)->'launch_spec' AS launch_spec, s.workspace_id
+          SELECT s.id, to_jsonb(s)->'launch_spec' AS launch_spec, s.workspace_id
             FROM harness_shared.adv_sessions s
            WHERE s.coord_owner_id = ${ownerId} AND s.workspace_id = ${workspaceId}
            ORDER BY (s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC

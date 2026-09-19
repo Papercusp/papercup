@@ -99,7 +99,17 @@ export default defineTool({
       return Response.json({ ok: true, ...identity, booted: false });
     }
     if (body.probeOnly) {
-      return Response.json({ ok: true, ...identity, booted: true, probeOnly: true });
+      // `ownLog.length` is an O(1) in-memory getter. Return the producer's actual
+      // cost driver so the cutter can size its request deadline without reading or
+      // folding the corpus a second time; rowCount is only known after the expensive
+      // snapshot operation and is therefore the wrong preflight signal.
+      return Response.json({
+        ok: true,
+        ...identity,
+        booted: true,
+        probeOnly: true,
+        logLength: handle.ownLog.length,
+      });
     }
 
     const startedAt = Date.now();

@@ -112,6 +112,17 @@ describe('createCodexTimelineParser — real rollout records', () => {
     expect(entry!.text).not.toMatch(/^\[\{/);
   });
 
+  it('mixed text and image blocks retain a marker for the text-less block', () => {
+    expect(blockPayloadText([
+      { type: 'input_text', text: 'Script completed' },
+      { type: 'input_image', detail: 'auto', image_url: 'data:image/png;base64,abc' },
+    ])).toBe('Script completed\n[input_image]');
+    expect(blockPayloadText([
+      { type: 'input_image', detail: 'auto', image_url: 'data:image/png;base64,abc' },
+      { type: 'input_text', text: 'Script completed' },
+    ])).toBe('[input_image]\nScript completed');
+  });
+
   it('custom_tool_call_output also arrives as a bare STRING for a still-running cell', () => {
     // 6 of the 170 outputs in the sampled rollout. The same record type carries
     // two shapes, so a reader that assumed either one alone would blank ~4% or

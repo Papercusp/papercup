@@ -261,7 +261,12 @@ export default defineTool({
           const stagingFirst = stagingFirstBlockerProblem({
             itemId: input.id,
             itemText: `${workItem.title ?? ''}\n${workItem.summary ?? ''}`,
-            blockerText: [input.ref, input.summary, input.evidence, input.nextVerb].filter(Boolean).join('\n'),
+            // The staging-first guard classifies dependency semantics, not the
+            // caller's provenance note. In particular, evidence commonly names
+            // both :3170 and :3070 to say which runtime was measured; feeding
+            // that note into the release-plane matcher turns an unrelated gate
+            // blocker into a false non-final deployment wait.
+            blockerText: [input.ref, input.nextVerb].filter(Boolean).join('\n'),
             kind: input.kind ?? '',
           });
           if (stagingFirst) {

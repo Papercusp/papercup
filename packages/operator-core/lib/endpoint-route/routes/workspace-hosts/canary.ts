@@ -16,6 +16,7 @@ import {
 import { createOperatorWorkspaceHostCredentialMaterialSource } from '../../../workspace-host/credential-material-source';
 import {
   runWorkspaceHostCanary,
+  WorkspaceHostCanaryRunError,
   type WorkspaceHostCanaryRunInput,
   type WorkspaceHostCanaryRunResult,
 } from '../../../workspace-host/canary-runner';
@@ -230,6 +231,9 @@ export function createWorkspaceHostCanaryRoute(
       } catch (error) {
         if (error instanceof WorkspaceHostDestroyEvidenceError) {
           return requestError('destroy evidence rejected', 422, { problems: error.problems });
+        }
+        if (error instanceof WorkspaceHostCanaryRunError) {
+          return requestError('workspace-host canary request rejected', 422, { problems: error.problems });
         }
         if (!phaseStarted) {
           return requestError('workspace-host canary request rejected', 422);

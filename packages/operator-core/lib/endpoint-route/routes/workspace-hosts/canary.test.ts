@@ -7,7 +7,10 @@ import {
   type WorkspaceHostInitializationHostOperations,
 } from '@papercusp/deployment-driver';
 import type { RouteContext } from '../../define-route';
-import type { WorkspaceHostCanaryRunResult } from '../../../workspace-host/canary-runner';
+import {
+  WorkspaceHostCanaryRunError,
+  type WorkspaceHostCanaryRunResult,
+} from '../../../workspace-host/canary-runner';
 import { createWorkspaceHostCanaryRoute, type WorkspaceHostCanaryRouteDependencies } from './canary';
 
 /**
@@ -322,6 +325,22 @@ describe('POST /workspace-hosts/:hostId/canary', () => {
     const failed = await post(runtime.dependencies, requestBody());
     expect(failed.status).toBe(500);
     expect(JSON.stringify(await failed.json())).not.toContain('remote output must not leak');
+  });
+
+  it('returns structured problems for a typed preflight rejection without exposing its message', async () => {
+    const { dependencies, runCanary } = harness();
+    runCanary.mockRejectedValueOnce(
+      new WorkspaceHostCanaryRunError(['agent credential delivery store key is missing']),
+    );
+
+    const response = await post(dependencies, requestBody());
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'workspace-host canary request rejected',
+      problems: ['agent credential delivery store key is missing'],
+    });
   });
 
   it('maps the lane-I fail-closed adapter error to a safe 422 response', async () => {

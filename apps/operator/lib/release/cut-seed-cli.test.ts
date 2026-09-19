@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   parseGitDepth,
+  parseHeadSnapshotTimeoutMs,
   pickGitEncryption,
   assertEpochSealIdentityPresent,
   encodeEpochKeysFile,
@@ -32,6 +33,24 @@ import {
   createFilteredSeedProgressReporter,
   withSeedOutput,
 } from "./cut-seed-cli";
+
+describe('head-snapshot timeout override', () => {
+  it('prefers the explicit CLI value over the environment', () => {
+    expect(parseHeadSnapshotTimeoutMs({ 'head-snapshot-timeout-ms': '123456' }, {
+      PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS: '999999',
+    })).toBe(123456);
+  });
+
+  it('reads the environment when the CLI flag is omitted and preserves derived sizing when both are absent', () => {
+    expect(parseHeadSnapshotTimeoutMs({}, { PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS: '654321' })).toBe(654321);
+    expect(parseHeadSnapshotTimeoutMs({}, {})).toBeUndefined();
+  });
+
+  it('rejects a non-positive or non-integer override', () => {
+    expect(() => parseHeadSnapshotTimeoutMs({ 'head-snapshot-timeout-ms': '0' })).toThrow(/positive integer/);
+    expect(() => parseHeadSnapshotTimeoutMs({ 'head-snapshot-timeout-ms': '1.5' })).toThrow(/positive integer/);
+  });
+});
 import { DRAIN_PASS_TIMEOUT_MS } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
 import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
 
@@ -1185,6 +1204,32 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
         'head-snapshot',
         'open:ro(wait=false)',
       ]);
+    });
+
+    it('forwards an explicit head-snapshot timeout override without disabling the probe-derived default', async () => {
+      const { openStore } = harness({ locked: true });
+      const headSnapshotImpl = vi.fn(async () => ({
+        kind: 'produced' as const,
+        port: 3070,
+        pid: 4070,
+        process: 'operator',
+        appended: true,
+        coversUpTo: 10,
+        chunkCount: 1,
+        rowCount: 2,
+        elapsedMs: 1,
+      }));
+      await openSourceStoreForCut({
+        ...base,
+        sparse: true,
+        openStore,
+        backfillImpl: (async () => ({ enqueued: 0, dropped: 0 })) as never,
+        waitImpl: (async () => ({ undrained: 0, waitedMs: 1 })) as never,
+        findHolderImpl: holderFound,
+        headSnapshotImpl: headSnapshotImpl as never,
+        headSnapshotTimeoutMs: 12_345,
+      });
+      expect(headSnapshotImpl).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 12_345 }));
     });
 
     it('P-019: REFUSES when no process on the box holds the hive — and refuses BEFORE backfill', async () => {

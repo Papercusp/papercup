@@ -44,11 +44,23 @@ export function blockPayloadText(v: unknown): string {
   if (typeof v === 'string') return v;
   if (v == null) return '';
   if (Array.isArray(v)) {
-    const texts = v
-      .filter((p): p is { type?: string; text: string } =>
-        !!p && typeof p === 'object' && typeof (p as { text?: unknown }).text === 'string')
-      .map((p) => p.text);
-    if (texts.length) return texts.join('\n');
+    const blocks = v.map((p) => {
+      if (p && typeof p === 'object' && typeof (p as { text?: unknown }).text === 'string') {
+        return { kind: 'text' as const, value: (p as { text: string }).text };
+      }
+      const type = p && typeof p === 'object' ? (p as { type?: unknown }).type : undefined;
+      return {
+        kind: 'marker' as const,
+        value: typeof type === 'string' ? `[${type}]` : '[structured block]',
+      };
+    });
+    if (blocks.some((block) => block.kind === 'text')) {
+      // A mixed text/image array must retain the text-less blocks too. The
+      // fallback below is still useful for an all-image array, but it is never
+      // reached when even one text block exists. Keep the marker compact so a
+      // data URL cannot bloat the timeline or search corpus.
+      return blocks.map((block) => block.value).join('\n');
+    }
   }
   try {
     return JSON.stringify(v) ?? '';

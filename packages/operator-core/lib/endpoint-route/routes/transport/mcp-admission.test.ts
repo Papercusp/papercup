@@ -43,6 +43,7 @@ import {
   isBoundedSessionsSearchArgs,
   isBoundedWorkItemsListArgs,
   isBoundedWorkItemsSearchArgs,
+  isBoundedWorkItemsCommentArgs,
   isBoundedPlansSearchArgs,
   isBoundedRecipesSearchArgs,
   isBoundedWorkItemsCompleteArgs,
@@ -2014,6 +2015,51 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     });
     expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
     expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('admits a bounded acceptance-BAR approval receipt larger than the ordinary comment reserve', () => {
+    const approval = {
+      schemaVersion: 1,
+      kind: 'acceptance-bar-amendment-approval',
+      rubricRef: 'acceptance-plan',
+      subjectPlan: 'subject-plan',
+      bars: Array.from({ length: 4 }, (_, index) => ({
+        barKey: `R-${index + 1}`,
+        priorBarHash: 'a'.repeat(64),
+        nextBarHash: 'b'.repeat(64),
+      })),
+    };
+    const args = { id: 'EI-23122407516371253', body: JSON.stringify(approval) };
+    expect(args.body.length).toBeGreaterThan(600);
+    expect(isBoundedWorkItemsCommentArgs(args)).toBe(true);
+    expect(classifyMcpBody(toolsCall(47, 'work_items:comment', args))).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(toolsCall(47, 'work_items:comment', args))).toBe('diagnostic');
+  });
+
+  it('keeps arbitrary long comments and malformed approval receipts sheddable', () => {
+    const base = {
+      schemaVersion: 1,
+      kind: 'acceptance-bar-amendment-approval',
+      rubricRef: 'acceptance-plan',
+      subjectPlan: 'subject-plan',
+      bars: [{ barKey: 'R-1', priorBarHash: 'a'.repeat(64), nextBarHash: 'b'.repeat(64) }],
+    };
+    for (const [index, body] of [
+      'x'.repeat(601),
+      JSON.stringify({ ...base, extra: 'x'.repeat(500) }),
+      JSON.stringify({ ...base, bars: Array.from({ length: 33 }, (_, index) => ({
+        barKey: `R-${index + 1}`,
+        priorBarHash: 'a'.repeat(64),
+        nextBarHash: 'b'.repeat(64),
+      })) }),
+      JSON.stringify({ ...base, bars: [{ barKey: 'R-1', priorBarHash: 'not-a-hash', nextBarHash: null }], extra: 'x'.repeat(500) }),
+    ].entries()) {
+      expect(isBoundedWorkItemsCommentArgs({ id: 'EI-1', body }), `case ${index}, body length ${body.length}`).toBe(false);
+      expect(classifyMcpBody(toolsCall(48, 'work_items:comment', { id: 'EI-1', body }))).toEqual({
+        sheddable: true,
+        id: 48,
+      });
+    }
   });
 
   it('keeps bulk, aliases, and enriched work_items:comment writes sheddable under critical pressure', () => {

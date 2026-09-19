@@ -71,6 +71,12 @@ const NOW_PASSED_TEST_EVIDENCE_RE =
 // reaches the later action-oriented occurrence.
 const NOW_TERMINAL_STATUS_ASSERTION_RE =
   /^\s*(?:is|was|were|has\s+been|have\s+been|remains?)\s+(?:already\s+)?(?:done|complete(?:d)?|closed|shipped|dropped|finished|terminal|accepted|landed|merged|resolved)\b/i;
+// A completion assertion can be followed by a neutral, possessive citation of
+// the item's evidence or metadata, e.g. "P-005 IS DONE; of P-005's 5 specs
+// only M-004 is item-specific". The occurrence-based guard below must not
+// mistake that citation for a second live-work claim.
+const NOW_EXPLICIT_TERMINAL_STATUS_RE =
+  /\b(P-\d{3,})\s+(?:is|was|were|has\s+been|have\s+been|remains?)\s+(?:already\s+)?(?:done|complete(?:d)?|closed|shipped|dropped|finished|terminal|accepted|landed|merged|resolved)\b/gi;
 // Completed items are often cited through a measured/reporting result rather
 // than a status verb. This deliberately accepts only a narrow, past-tense
 // reporting vocabulary; future/imperative forms such as `will measure` and
@@ -129,6 +135,9 @@ const NOW_METADATA_STATUS_RE =
 const NOW_ACTION_RE =
   /\b(?:address|audit|claim|close|complete|continue|finish|fix|handle|implement|investigate|pick(?:\s+up)?|reopen|repair|revisit|review|resume|retry|run|start|validate|verify|work)\b/i;
 const NOW_ACTIVE_RE = /\b(?:active|assigned|in\s+progress|ongoing|open|pending|underway)\b/i;
+const NOW_TERMINAL_REFERENCE_LIVE_RE =
+  /\b(?:remaining|unfinished|incomplete|outstanding|left|work|task|action|next|todo|blocked)\b/i;
+const NOW_NEUTRAL_POSSESSIVE_REFERENCE_RE = /^\s*['’]s\b/i;
 // A terminal item can be named in an explicit negative guard, e.g. `do not
 // reopen completed Phone or P-002`. That mention describes what must NOT be
 // resumed, rather than presenting P-002 as current/future work. Keep the
@@ -239,6 +248,44 @@ function isPlanItemRangeReference(text: string, start: number, end: number): boo
   return false;
 }
 
+function affirmativelyClosedIds(nowText: string): Set<string> {
+  const closed = new Set<string>();
+  for (const match of nowText.matchAll(NOW_EXPLICIT_TERMINAL_STATUS_RE)) {
+    const end = (match.index ?? 0) + match[0].length;
+    const boundaries = [
+      nowText.indexOf(';', end),
+      nowText.indexOf('.', end),
+      nowText.indexOf('!', end),
+      nowText.indexOf('?', end),
+      nowText.indexOf('\n', end),
+      nowText.indexOf(':', end),
+    ].filter((position) => position !== -1);
+    const clauseEnd = boundaries.length > 0 ? Math.min(...boundaries) : nowText.length;
+    if (!NOW_NEGATED_OR_FUTURE_RE.test(nowText.slice(end, clauseEnd))) {
+      closed.add(match[1]);
+    }
+  }
+  return closed;
+}
+
+function isNeutralPossessiveReference(
+  id: string,
+  explicitlyClosedIds: Set<string>,
+  before: string,
+  after: string,
+): boolean {
+  if (!explicitlyClosedIds.has(id) || !/\bof\s*$/i.test(before) || !NOW_NEUTRAL_POSSESSIVE_REFERENCE_RE.test(after)) {
+    return false;
+  }
+  const surrounding = `${before.slice(-120)}${after}`;
+  return (
+    !NOW_ACTION_RE.test(surrounding) &&
+    !NOW_ACTIVE_RE.test(surrounding) &&
+    !NOW_NEGATED_OR_FUTURE_RE.test(surrounding) &&
+    !NOW_TERMINAL_REFERENCE_LIVE_RE.test(after)
+  );
+}
+
 function isInsideQuotedFragment(text: string, start: number, end: number): boolean {
   let quote: '"' | "'" | '`' | null = null;
   const isWord = (char: string | undefined) => Boolean(char && /[A-Za-z0-9_]/.test(char));
@@ -279,6 +326,7 @@ export function detectNowItemContradictions(
   if (terminalItems.size === 0) return [];
 
   const contradictions: NowItemContradiction[] = [];
+  const explicitlyClosedIds = affirmativelyClosedIds(nowText);
   for (const match of nowText.matchAll(PLAN_ITEM_REF_RE)) {
     const id = match[0];
     const status = terminalItems.get(id);
@@ -391,6 +439,12 @@ export function detectNowItemContradictions(
       !NOW_ACTIVE_RE.test(before) &&
       !NOW_ACTIVE_RE.test(after);
     const neutralResidueReference = hasNeutralResidueReference(before, after);
+    const neutralPossessiveReference = isNeutralPossessiveReference(
+      id,
+      explicitlyClosedIds,
+      before,
+      after,
+    );
     const neutralPromotionProvenanceReference =
       NOW_PROMOTION_PROVENANCE_REFERENCE_RE.test(clause) &&
       !NOW_ACTION_RE.test(before) &&
@@ -419,6 +473,7 @@ export function detectNowItemContradictions(
       crossLedgerReference ||
       neutralDecisionReference ||
       neutralResidueReference ||
+      neutralPossessiveReference ||
       neutralPromotionProvenanceReference ||
       negativeReopenGuard ||
       explicitForeignPlanReference ||

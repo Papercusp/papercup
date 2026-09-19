@@ -13,7 +13,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const booted = vi.hoisted(() => ({
-  handle: null as null | { produceHeadSnapshotNow: () => Promise<unknown> },
+  handle: null as null | {
+    produceHeadSnapshotNow: () => Promise<unknown>;
+    ownLog: { length: number };
+  },
 }));
 
 // Mock ONLY getBootedHarness, spreading the real module through. A factory that
@@ -59,7 +62,7 @@ describe('POST /internal/substrate/head-snapshot', () => {
   });
 
   it('the HOLDER produces the snapshot and reports what landed', async () => {
-    booted.handle = { produceHeadSnapshotNow: async () => OK_SNAP };
+    booted.handle = { produceHeadSnapshotNow: async () => OK_SNAP, ownLog: { length: 7657919 } };
     const res = await call(post({ workspaceId: 'ws', hive: 'papercusp' }));
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
@@ -75,14 +78,20 @@ describe('POST /internal/substrate/head-snapshot', () => {
   it('probeOnly answers booted:true and APPENDS NOTHING', async () => {
     // The whole reason the cut can refuse before mutating substrate_outbox.
     const produce = vi.fn(async () => OK_SNAP);
-    booted.handle = { produceHeadSnapshotNow: produce };
+    booted.handle = { produceHeadSnapshotNow: produce, ownLog: { length: 7657919 } };
     const res = await call(post({ workspaceId: 'ws', hive: 'papercusp', probeOnly: true }));
-    await expect(res.json()).resolves.toMatchObject({ ok: true, booted: true, probeOnly: true });
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      booted: true,
+      probeOnly: true,
+      logLength: 7657919,
+    });
     expect(produce).not.toHaveBeenCalled();
   });
 
   it('a THROWING producer is a 200 ok:false carrying the cause — never a 5xx', async () => {
     booted.handle = {
+      ownLog: { length: 7657919 },
       produceHeadSnapshotNow: async () => {
         throw new Error('this harness engine is stopped/closing.');
       },
@@ -101,6 +110,7 @@ describe('POST /internal/substrate/head-snapshot', () => {
     // handler only awaited a rejected promise, that would escape as a 500 and the cut
     // would see a transport error instead of the real, named diagnosis.
     booted.handle = {
+      ownLog: { length: 7657919 },
       produceHeadSnapshotNow: (() => {
         throw new Error('no substrate:produceHeadSnapshot RPC verb exists yet');
       }) as never,

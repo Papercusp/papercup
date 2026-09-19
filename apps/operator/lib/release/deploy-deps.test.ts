@@ -9,7 +9,12 @@
  * returns null (a no-op for the reclaim path), never a wrong-but-plausible pid.
  */
 import { describe, it, expect } from 'vitest';
-import { parseDeployOwnerPid, systemdRestartCommand, systemdRestartCommands } from './deploy-deps';
+import {
+  formatMigrationLockWait,
+  parseDeployOwnerPid,
+  systemdRestartCommand,
+  systemdRestartCommands,
+} from './deploy-deps';
 
 describe('parseDeployOwnerPid', () => {
   it('extracts the pid from a well-formed release-deploy owner string', () => {
@@ -80,5 +85,39 @@ describe('systemd restart command planning', () => {
         backgroundSystemdUnit: 'papercup-bg-host.service',
       }).map(({ unit }) => unit),
     ).toEqual(['papercup-dev-api.service', 'papercup-bg-host.service']);
+  });
+});
+
+describe('snapshot advisory-lock progress', () => {
+  it('names the lock, holder, application, state, and measured ages', () => {
+    expect(
+      formatMigrationLockWait(
+        {
+          lockKey: 'papercusp:backup:migration-rendezvous',
+          waitedMs: 125_000,
+          holderPid: 1503379,
+          holderApplicationName: 'pcbackup-workspace',
+          holderState: 'idle',
+          holderQueryStartedAt: '2026-09-19T10:00:00.000Z',
+        },
+        Date.parse('2026-09-19T10:11:38.000Z'),
+      ),
+    ).toBe(
+      '[deploy] ▶ snapshot: waiting on advisory lock papercusp:backup:migration-rendezvous held by ' +
+        'pid 1503379 (pcbackup-workspace, state idle, held 11m38s; waited 2m5s)',
+    );
+  });
+
+  it('keeps a raced-away holder honest instead of inventing identity', () => {
+    expect(
+      formatMigrationLockWait({
+        lockKey: 'papercusp:backup:migration-rendezvous',
+        waitedMs: 1_000,
+        holderPid: null,
+        holderApplicationName: null,
+        holderState: null,
+        holderQueryStartedAt: null,
+      }, 0),
+    ).toContain('unknown holder (unknown application, held unknown age; waited 1s)');
   });
 });

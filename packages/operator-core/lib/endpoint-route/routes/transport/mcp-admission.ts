@@ -414,6 +414,9 @@ const CRITICAL_COORD_SEND_MAX_SUMMARY_CHARS = 600;
 const CRITICAL_COORD_SEND_MAX_BODY_CHARS = 600;
 const CRITICAL_WORK_ITEM_COMMENT_MAX_ID_CHARS = 200;
 const CRITICAL_WORK_ITEM_COMMENT_MAX_BODY_CHARS = 600;
+const CRITICAL_WORK_ITEM_APPROVAL_BODY_MAX_CHARS = 8_192;
+const CRITICAL_WORK_ITEM_APPROVAL_MAX_BARS = 32;
+const CRITICAL_WORK_ITEM_APPROVAL_HASH_RE = /^[a-f0-9]{64}$/;
 const CRITICAL_BASH_OUTPUT_ID_MAX_CHARS = 256;
 const CRITICAL_DECLARE_INTENT_MAX_INTENT_CHARS = 600;
 const CRITICAL_DECLARE_INTENT_MAX_PLAN_CHARS = 200;
@@ -2454,8 +2457,55 @@ function isBoundedWorkItemComment(value: unknown): boolean {
     isRecord(value) &&
     Object.keys(value).length === 2 &&
     isBoundedCriticalText(value.id, CRITICAL_WORK_ITEM_COMMENT_MAX_ID_CHARS, true) &&
-    isBoundedCriticalText(value.body, CRITICAL_WORK_ITEM_COMMENT_MAX_BODY_CHARS)
+    (isBoundedCriticalText(value.body, CRITICAL_WORK_ITEM_COMMENT_MAX_BODY_CHARS) ||
+      isBoundedAcceptanceBarApprovalBody(value.body))
   );
+}
+
+/**
+ * A started acceptance-BAR amendment's reviewer receipt is intentionally posted
+ * verbatim to the work-item thread. A multi-BAR receipt is larger than the
+ * ordinary 600-character critical-pressure comment reserve, but it is still a
+ * bounded, low-entropy recovery write. Admit only the exact preview shape so a
+ * long arbitrary comment cannot turn the reserve into a second bulkhead lane.
+ */
+function isBoundedAcceptanceBarApprovalBody(value: unknown): value is string {
+  if (
+    !isBoundedCriticalText(value, CRITICAL_WORK_ITEM_APPROVAL_BODY_MAX_CHARS) ||
+    value.length <= CRITICAL_WORK_ITEM_COMMENT_MAX_BODY_CHARS
+  ) {
+    return false;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return false;
+  }
+  if (!isRecord(parsed)) return false;
+  const allowed = new Set(['schemaVersion', 'kind', 'rubricRef', 'subjectPlan', 'bars']);
+  if (Object.keys(parsed).some((key) => !allowed.has(key))) return false;
+  if (
+    parsed.schemaVersion !== 1 ||
+    parsed.kind !== 'acceptance-bar-amendment-approval' ||
+    !isBoundedCriticalText(parsed.rubricRef, CRITICAL_WORK_ITEM_COMMENT_MAX_ID_CHARS, true) ||
+    !isBoundedCriticalText(parsed.subjectPlan, CRITICAL_WORK_ITEM_COMMENT_MAX_ID_CHARS, true)
+  ) {
+    return false;
+  }
+  if (!Array.isArray(parsed.bars) || parsed.bars.length < 1 || parsed.bars.length > CRITICAL_WORK_ITEM_APPROVAL_MAX_BARS) {
+    return false;
+  }
+  const keys = new Set<string>();
+  return parsed.bars.every((bar) => {
+    if (!isRecord(bar) || Object.keys(bar).length !== 3) return false;
+    if (!isBoundedCriticalText(bar.barKey, CRITICAL_WORK_ITEM_COMMENT_MAX_ID_CHARS, true)) return false;
+    if (keys.has(bar.barKey)) return false;
+    keys.add(bar.barKey);
+    return [bar.priorBarHash, bar.nextBarHash].every(
+      (hash) => hash === null || (typeof hash === 'string' && CRITICAL_WORK_ITEM_APPROVAL_HASH_RE.test(hash)),
+    ) && (bar.priorBarHash !== null || bar.nextBarHash !== null);
+  });
 }
 
 /**

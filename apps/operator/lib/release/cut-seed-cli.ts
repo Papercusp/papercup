@@ -65,6 +65,10 @@
  *                          head snapshot in the pre-cut refresh so the sparse start is in the reader
  *                          scan window. OPT-IN: requires the shipped reader's SUBSTRATE_LOG_SNAPSHOT
  *                          ON (P-005) — until then the default FULL cut folds from block 0.
+ *   --head-snapshot-timeout-ms <ms>
+ *                          explicit override for the live head-snapshot request deadline
+ *                          (env: PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS). Omit it to derive the
+ *                          deadline from the holder's own-log length.
  *   --reuse-corestore <dir> WI-3232: graft the ALREADY-CUT corestore from an existing seed dir onto this
  *                          (git-only) cut instead of re-snapshotting the live store. No operator quiesce
  *                          needed (git bundles from the checkout, not the store) — the safe way to re-cut
@@ -664,6 +668,8 @@ export async function openSourceStoreForCut(inp: {
   readonly waitImpl?: typeof waitForOperatorDrain;
   /** P-019 seam — ask the live operator for the head snapshot a no-outage sparse cut needs. */
   readonly headSnapshotImpl?: typeof requestLiveOperatorHeadSnapshot;
+  /** Optional explicit override; otherwise the client derives from the holder's own-log length. */
+  readonly headSnapshotTimeoutMs?: number;
   /** P-019 seam — the cheap, side-effect-free "who holds this hive?" discovery. */
   readonly findHolderImpl?: typeof findLiveOperatorHoldingHive;
   /**
@@ -894,6 +900,7 @@ export async function openSourceStoreForCut(inp: {
     const outcome = await (inp.headSnapshotImpl ?? requestLiveOperatorHeadSnapshot)({
       workspaceId: inp.workspaceId!,
       hive: inp.hive,
+      ...(inp.headSnapshotTimeoutMs === undefined ? {} : { timeoutMs: inp.headSnapshotTimeoutMs }),
       warn,
     });
     if (outcome.kind !== 'produced') {
@@ -1258,6 +1265,19 @@ export function parseGitDepth(args: Args): number | undefined {
   return depth;
 }
 
+export const HEAD_SNAPSHOT_TIMEOUT_ENV = 'PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS';
+
+/** Resolve the optional CLI/env override; omission preserves corpus-derived sizing. */
+export function parseHeadSnapshotTimeoutMs(args: Args, env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const raw = str(args, 'head-snapshot-timeout-ms') ?? env[HEAD_SNAPSHOT_TIMEOUT_ENV];
+  if (raw === undefined) return undefined;
+  const timeoutMs = Number(raw);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new Error(`--head-snapshot-timeout-ms must be a positive integer; got ${raw}`);
+  }
+  return timeoutMs;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const root = resolveWorkspaceRoot();
@@ -1269,6 +1289,7 @@ async function main(): Promise<void> {
   // seed is a small offline-cloneable tree snapshot; omit depth for full history.
   const rev = str(args, 'rev') ?? 'HEAD';
   const depth = parseGitDepth(args);
+  const headSnapshotTimeoutMs = parseHeadSnapshotTimeoutMs(args);
   const wantGit = args['no-git'] !== true;
   // WI-3232 --reuse-corestore: graft an existing corestore instead of cutting a fresh
   // one from the live store (no quiesce). Mutually exclusive with cutting a corestore.
@@ -1460,6 +1481,7 @@ async function main(): Promise<void> {
         sparse,
         wantRefresh: args['skip-corestore-refresh'] !== true,
         forceBackfill: args['no-force-backfill'] !== true,
+        ...(headSnapshotTimeoutMs === undefined ? {} : { headSnapshotTimeoutMs }),
         ...(pg ? { pg } : {}),
       });
     // The advisory lock must be acquired before the first Corestore open: a writable

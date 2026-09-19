@@ -28,45 +28,62 @@ export const HEAD_SNAPSHOT_PATH = '/api/internal/substrate/head-snapshot';
 
 // The AbortSignal below owns each request's deadline. Undici otherwise applies
 // its independent five-minute headers timeout, which cuts a healthy long snapshot
-// short even when the caller explicitly grants fifteen minutes.
+// short even when the caller explicitly grants a corpus-sized budget.
 const snapshotDispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
 
 /** Discovery deadline per sibling. A `probeOnly` answer is a memory-map lookup. */
 export const DEFAULT_HEAD_SNAPSHOT_PROBE_TIMEOUT_MS = 1_500;
 
 /**
- * Deadline for the REAL request. Generous on purpose: the holder reads its entire own
- * log before appending, and a cut that gives up early leaves the operator still doing
- * the work while the cut degrades to a full seed — the worst of both. The caller owns
- * this budget because the engine deliberately does not impose one (a merge-pass failure
- * re-services the request on the next pass rather than rejecting), and the server route
- * sets `timeoutSec: null` specifically so it defers to this number instead of racing it.
+ * Fallback deadline for a REAL request whose holder predates the corpus-length probe.
+ * Current holders use {@link deriveHeadSnapshotTimeoutMs}; retaining this generous
+ * fallback keeps a rolling deployment safe while old and new operators coexist.
  *
- * ⚠ THIS IS A FIXED BUDGET GUARDING AN O(corpus) OPERATION, AND THE CORPUS ONLY GROWS —
- * so it crosses its own threshold on a schedule. It already did once, and the failure
- * does NOT present as "too slow": it presents as a total outage with a misleading error
- * ("D-025 holder-without-boot"), pointing at the registry rather than at duration.
- *
- * MEASURED 2026-09-18, the real call in isolation against a healthy holder:
- *   elapsedMs 1,101,530 (18m21s), rowCount 1,416,510, chunkCount 1,044 — HTTP 200.
- * The budget was then 15 min (930,000 ms including retry delays), so the operation
- * needed 1.18x what it was allowed and was killed mid-flight on all four 0.0.21 cut
- * attempts while working correctly the entire time. The old 15 min was sized against
- * 461,475 blocks on 2026-08-03; the corpus had roughly TRIPLED in six weeks.
- *
- * 45 min is ~2.4x the measured need — real headroom, not a fresh guess at the same
- * shape. It is still a guess, and that is the actual defect: the durable fix is to SIZE
- * THIS FROM THE CORPUS (the `probeOnly` pass is already a cheap round-trip to the holder
- * and could return own-log length, letting the client compute a budget). Until that
- * lands, raising this constant only reschedules the outage — do not read it as fixed.
+ * The operation reads the entire own log before appending, so a cut that gives up early
+ * leaves the operator doing work while the cut degrades to a full seed. The route sets
+ * `timeoutSec: null` and the caller owns this deadline.
  */
 export const DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS = 45 * 60_000;
+
+/** Measured healthy scan: 1,101,530ms for 7,657,919 own-log blocks (2026-09-18). */
+export const HEAD_SNAPSHOT_MEASURED_MS_PER_BLOCK = 1_101_530 / 7_657_919;
+
+/** Headroom for machine variance and the append/flush tail after the scan. */
+export const HEAD_SNAPSHOT_TIMEOUT_SAFETY_FACTOR = 2;
+
+/** A small corpus still gets enough time for process/transport variance. */
+export const HEAD_SNAPSHOT_MIN_TIMEOUT_MS = 15 * 60_000;
+
+/** Bound malformed or unexpectedly huge corpus metadata. */
+export const HEAD_SNAPSHOT_MAX_TIMEOUT_MS = 4 * 60 * 60_000;
+
+/**
+ * Derive the real-request deadline from the number of own-log blocks traversed by the
+ * producer. `rowCount` is deliberately not used: it is the deduplicated fold output,
+ * while the producer's read cost is O(ownLog.length). Invalid/missing probe metadata
+ * falls back to the rolling-deploy constant above.
+ */
+export function deriveHeadSnapshotTimeoutMs(logLength: number | null | undefined): number {
+  if (typeof logLength !== 'number' || !Number.isSafeInteger(logLength) || logLength < 0) {
+    return DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS;
+  }
+  const estimated = Math.ceil(logLength * HEAD_SNAPSHOT_MEASURED_MS_PER_BLOCK * HEAD_SNAPSHOT_TIMEOUT_SAFETY_FACTOR);
+  return Math.min(HEAD_SNAPSHOT_MAX_TIMEOUT_MS, Math.max(HEAD_SNAPSHOT_MIN_TIMEOUT_MS, estimated));
+}
 
 /**
  * Gap between attempts. The failure being waited out is a process restart, so polling
  * faster buys nothing and just hammers a booting operator.
  */
 export const DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS = 15_000;
+
+/** Retry budget must be derived from the timeout actually used for the real request. */
+export function headSnapshotRetryBudgetMs(
+  timeoutMs: number,
+  retryDelayMs = DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS,
+): number {
+  return timeoutMs + 2 * retryDelayMs;
+}
 
 /**
  * How long to keep RE-attempting after a holder fails to answer, before giving up.
@@ -78,7 +95,7 @@ export const DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS = 15_000;
  * discovery and clock overhead around that boundary.
  */
 export const DEFAULT_HEAD_SNAPSHOT_RETRY_BUDGET_MS =
-  DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS + 2 * DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS;
+  headSnapshotRetryBudgetMs(DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS);
 
 /**
  * How often an in-flight snapshot asks whether the exact holder is still alive.
@@ -186,6 +203,8 @@ type FetchLike = (
 interface HeadSnapshotReply {
   ok?: unknown;
   booted?: unknown;
+  /** O(1) own-log length returned only by the side-effect-free probe. */
+  logLength?: unknown;
   process?: unknown;
   appended?: unknown;
   coversUpTo?: unknown;
@@ -228,9 +247,15 @@ function isTransportError(r: unknown): r is { __transportError: string } {
   return !!r && typeof r === 'object' && '__transportError' in r;
 }
 
+function parseLogLength(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : undefined;
+}
+
 export interface HiveHolderFound {
   readonly kind: 'holder';
   readonly sibling: SiblingOperator;
+  /** Own-log blocks the producer will traverse; absent on pre-fix holders. */
+  readonly logLength?: number;
 }
 export type FindHiveHolderOutcome = HiveHolderFound | LiveHeadSnapshotNoHolder;
 
@@ -302,7 +327,13 @@ export async function findLiveOperatorHoldingHive(inp: {
         'write lock. Using the lowest port; investigate.',
     );
   }
-  return { kind: 'holder', sibling: holders[0]!.sibling };
+  const holder = holders[0]!;
+  const logLength = !isTransportError(holder.reply) ? parseLogLength(holder.reply.logLength) : undefined;
+  return {
+    kind: 'holder',
+    sibling: holder.sibling,
+    ...(logLength === undefined ? {} : { logLength }),
+  };
 }
 
 /**
@@ -416,8 +447,8 @@ export async function requestLiveOperatorHeadSnapshot(inp: {
   readonly nowImpl?: () => number;
   readonly warn?: (msg: string) => void;
 }): Promise<LiveHeadSnapshotOutcome> {
-  const budgetMs = inp.retryBudgetMs ?? DEFAULT_HEAD_SNAPSHOT_RETRY_BUDGET_MS;
   const delayMs = inp.retryDelayMs ?? DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS;
+  let budgetMs = inp.retryBudgetMs ?? headSnapshotRetryBudgetMs(inp.timeoutMs ?? DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS, delayMs);
   const now = inp.nowImpl ?? Date.now;
   const sleep = inp.sleepImpl ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
@@ -428,7 +459,14 @@ export async function requestLiveOperatorHeadSnapshot(inp: {
 
   for (;;) {
     attempts += 1;
-    const outcome = await attemptHeadSnapshot(inp);
+    const attempt = await attemptHeadSnapshot(inp);
+    const outcome = attempt.outcome;
+    // A probe-derived timeout may be larger than the fallback. Expand the retry
+    // budget from the actual request deadline before deciding whether another
+    // attempt can start; otherwise a timed-out large corpus makes retry dead code.
+    if (inp.retryBudgetMs === undefined) {
+      budgetMs = Math.max(budgetMs, headSnapshotRetryBudgetMs(attempt.timeoutMs, delayMs));
+    }
     // Only a restart-shaped failure is worth waiting out; a refusal is a real answer.
     const retryable = outcome.kind === 'no-holder' || (outcome.kind === 'failed' && outcome.transport);
     if (!retryable) {
@@ -468,6 +506,11 @@ function withRetryLog(o: LiveHeadSnapshotOutcome, retry: HeadSnapshotRetryLog): 
 }
 
 /** ONE discovery + request cycle. The retry policy lives in the caller above. */
+interface HeadSnapshotAttempt {
+  readonly outcome: LiveHeadSnapshotOutcome;
+  readonly timeoutMs: number;
+}
+
 async function attemptHeadSnapshot(inp: {
   readonly workspaceId: string;
   readonly hive: string;
@@ -477,11 +520,17 @@ async function attemptHeadSnapshot(inp: {
   readonly listSiblingsImpl?: typeof listSiblingOperators;
   readonly holderLivenessIntervalMs?: number;
   readonly warn?: (msg: string) => void;
-}): Promise<LiveHeadSnapshotOutcome> {
+}): Promise<HeadSnapshotAttempt> {
   const fetchImpl = (inp.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)) as FetchLike;
   const found = await findLiveOperatorHoldingHive(inp);
-  if (found.kind !== 'holder') return found;
+  if (found.kind !== 'holder') {
+    return {
+      outcome: found,
+      timeoutMs: inp.timeoutMs ?? DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS,
+    };
+  }
   const holder = found.sibling;
+  const timeoutMs = inp.timeoutMs ?? deriveHeadSnapshotTimeoutMs(found.logLength);
 
   // A full snapshot can occupy the holder for minutes. Watch the identity we
   // discovered while the POST is in flight so a dead/replaced holder becomes a
@@ -505,33 +554,42 @@ async function attemptHeadSnapshot(inp: {
       fetchImpl,
       holder,
       { workspaceId: inp.workspaceId, hive: inp.hive },
-      inp.timeoutMs ?? DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS,
+      timeoutMs,
       requestController.signal,
     );
   } finally {
     stopWatching();
   }
   if (isTransportError(reply)) {
-    return { kind: 'failed', port: holder.port, error: reply.__transportError, transport: true };
+    return {
+      outcome: { kind: 'failed', port: holder.port, error: reply.__transportError, transport: true },
+      timeoutMs,
+    };
   }
   if (reply.ok !== true) {
     return {
-      kind: 'failed',
-      port: holder.port,
-      error: typeof reply.error === 'string' ? reply.error : 'operator reported ok:false',
-      transport: false,
+      outcome: {
+        kind: 'failed',
+        port: holder.port,
+        error: typeof reply.error === 'string' ? reply.error : 'operator reported ok:false',
+        transport: false,
+      },
+      timeoutMs,
     };
   }
   return {
-    kind: 'produced',
-    port: holder.port,
-    pid: holder.pid,
-    process: typeof reply.process === 'string' ? reply.process : null,
-    appended: reply.appended === true,
-    coversUpTo: Number(reply.coversUpTo) || 0,
-    chunkCount: Number(reply.chunkCount) || 0,
-    rowCount: Number(reply.rowCount) || 0,
-    elapsedMs: Number(reply.elapsedMs) || 0,
+    outcome: {
+      kind: 'produced',
+      port: holder.port,
+      pid: holder.pid,
+      process: typeof reply.process === 'string' ? reply.process : null,
+      appended: reply.appended === true,
+      coversUpTo: Number(reply.coversUpTo) || 0,
+      chunkCount: Number(reply.chunkCount) || 0,
+      rowCount: Number(reply.rowCount) || 0,
+      elapsedMs: Number(reply.elapsedMs) || 0,
+    },
+    timeoutMs,
   };
 }
 

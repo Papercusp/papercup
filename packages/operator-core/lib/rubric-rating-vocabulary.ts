@@ -51,6 +51,7 @@ const NON_RATING_DIRECTIVE_WORDS = new Set([
   'based',
   'by',
   'from',
+  'instead',
   'limit',
   'of',
   'on',

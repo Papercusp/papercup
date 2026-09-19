@@ -121,6 +121,7 @@ describe('control-anchor kernel resolver (D-030)', () => {
     expect(db.sql).toHaveBeenCalledOnce();
     const [template, ...values] = db.sql.mock.calls[0] as unknown[];
     expect((template as readonly string[]).join(' ')).toContain('workspace_id =');
+    expect((template as readonly string[]).join(' ')).toContain("SELECT s.id, to_jsonb(s)->'launch_spec' AS launch_spec");
     expect(values).toContain('ws-a');
 
     const verdict = await controlAnchorKernelResolver(request());

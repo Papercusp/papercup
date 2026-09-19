@@ -13,6 +13,9 @@ import {
   DEFAULT_HEAD_SNAPSHOT_RETRY_BUDGET_MS,
   DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS,
   DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS,
+  HEAD_SNAPSHOT_MAX_TIMEOUT_MS,
+  HEAD_SNAPSHOT_MIN_TIMEOUT_MS,
+  deriveHeadSnapshotTimeoutMs,
   findLiveOperatorHoldingHive,
   HEAD_SNAPSHOT_PATH,
   requestLiveOperatorHeadSnapshot,
@@ -33,6 +36,7 @@ interface Call {
 function fleet(opts: {
   ports: number[];
   holderPort?: number;
+  logLength?: number;
   dead?: number[];
   staleBuild?: number[];
   snapshotReply?: Record<string, unknown>;
@@ -58,7 +62,16 @@ function fleet(opts: {
     const booted = port === opts.holderPort;
     if (!booted) return { ok: true, status: 200, json: async () => ({ ok: true, booted: false }) };
     if (body.probeOnly === true) {
-      return { ok: true, status: 200, json: async () => ({ ok: true, booted: true, probeOnly: true }) };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          booted: true,
+          probeOnly: true,
+          ...(opts.logLength === undefined ? {} : { logLength: opts.logLength }),
+        }),
+      };
     }
     return {
       ok: true,
@@ -92,6 +105,12 @@ describe('findLiveOperatorHoldingHive', () => {
     expect(f.listSiblingsImpl.sawSelfPort).toBe(-1);
     expect(out.kind).toBe('holder');
     expect(out.kind === 'holder' && out.sibling.port).toBe(3070);
+  });
+
+  it('carries the O(1) own-log length from the probe for timeout sizing', async () => {
+    const f = fleet({ ports: [3271], holderPort: 3271, logLength: 7_657_919 });
+    const out = await findLiveOperatorHoldingHive({ ...base, ...f });
+    expect(out).toMatchObject({ kind: 'holder', logLength: 7_657_919 });
   });
 
   it('is side-effect-free: every discovery call carries probeOnly', async () => {
@@ -660,6 +679,39 @@ describe('retrying across a holder recycle', () => {
 });
 
 describe('budgets', () => {
+  it('derives from own-log blocks, with a floor and ceiling, rather than folded row count', () => {
+    expect(deriveHeadSnapshotTimeoutMs(0)).toBe(HEAD_SNAPSHOT_MIN_TIMEOUT_MS);
+    expect(deriveHeadSnapshotTimeoutMs(7_657_919)).toBeGreaterThan(18 * 60_000);
+    expect(deriveHeadSnapshotTimeoutMs(Number.MAX_SAFE_INTEGER)).toBe(HEAD_SNAPSHOT_MAX_TIMEOUT_MS);
+    expect(deriveHeadSnapshotTimeoutMs(undefined)).toBe(DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS);
+  });
+
+  it('expands the retry budget when a measured corpus needs more than the fallback', async () => {
+    const logLength = 200_000_000;
+    const derivedTimeout = deriveHeadSnapshotTimeoutMs(logLength);
+    expect(derivedTimeout).toBeGreaterThan(DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS);
+    let virtualNow = 0;
+    let realCalls = 0;
+    const f = fleet({ ports: [3271], holderPort: 3271, logLength });
+    const fetchImpl = (async (url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      if (body.probeOnly !== true && ++realCalls === 1) {
+        virtualNow += derivedTimeout;
+        throw new Error('request timed out');
+      }
+      return await (f.fetchImpl as unknown as (u: string, i: { body: string }) => Promise<unknown>)(url, init);
+    }) as never;
+    const out = await requestLiveOperatorHeadSnapshot({
+      ...base,
+      ...f,
+      fetchImpl,
+      nowImpl: () => virtualNow,
+      sleepImpl: async (ms) => { virtualNow += ms; },
+    });
+    expect(out).toMatchObject({ kind: 'produced', port: 3271 });
+    expect(realCalls).toBe(2);
+  });
+
   it('the REAL call gets a far longer deadline than discovery', async () => {
     // Discovery is a memory-map lookup; the real call reads ~461k blocks. A cut that
     // gives up early leaves the operator still doing the work while the cut degrades to

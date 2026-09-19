@@ -69,6 +69,18 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
     expect(instructions).toEqual([]);
   });
 
+  it('ignores ordinary prose using grade instead of a rating directive', () => {
+    const method = 'Guarantee, and what to grade instead: it is STRUCTURAL.';
+
+    expect(extractRubricRatingInstructions('ordinary-prose', 'method', method)).toEqual([]);
+    expect(
+      validateRubricRatingVocabulary(
+        [criterion({ key: 'ordinary-prose', method })],
+        ['healthy', 'degraded', 'broken', 'unknown'],
+      ),
+    ).toMatchObject({ ok: true, instructions: [], violations: [] });
+  });
+
   it('ignores numbered GRADE headings and rate-of noun phrases without hiding a real directive', () => {
     const instructions = extractRubricRatingInstructions(
       'procedure-prose',

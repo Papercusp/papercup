@@ -109,6 +109,24 @@ function recordingOperations(failOn?: string) {
   };
 }
 
+function rotationInput(operations: ReturnType<typeof recordingOperations>) {
+  const current = credentials(1);
+  const next = credentials(2);
+  return {
+    workspaceId: 'workspace-1',
+    hostId: 'host-1',
+    operationId: 'rotate-replay-validation',
+    requestedAt: REQUESTED_AT,
+    deliveryCapabilities: { fileTransfer: true },
+    action: 'rotate' as const,
+    currentCredentialRefs: current.refs,
+    currentDelivery: current.delivery,
+    nextCredentialRefs: next.refs,
+    nextDelivery: next.delivery,
+    operations,
+  };
+}
+
 beforeEach(() => {
   h.receipts.clear();
   vi.clearAllMocks();
@@ -146,6 +164,47 @@ describe('runWorkspaceHostCredentialLifecycle', () => {
     const resumed = recordingOperations();
     await runWorkspaceHostCredentialLifecycle({ ...input, operations: resumed });
     expect(resumed.calls).toEqual([]);
+  });
+
+  it('rejects a replay receipt for a different lifecycle step', async () => {
+    const input = rotationInput(recordingOperations());
+    await runWorkspaceHostCredentialLifecycle(input);
+    const firstKey = h.receipts.keys().next().value;
+    if (typeof firstKey !== 'string') throw new Error('expected a replay receipt');
+    const replayReceipt = h.receipts.get(firstKey) as {
+      stepId: string;
+      status: string;
+      observedAt: string;
+      publicEvidence?: Record<string, unknown>;
+    };
+    h.receipts.set(firstKey, {
+      ...replayReceipt,
+      stepId: `${replayReceipt.stepId}:wrong-step`,
+    });
+
+    await expect(runWorkspaceHostCredentialLifecycle({
+      ...input,
+      operations: recordingOperations(),
+    })).rejects.toThrow(/invalid receipt/);
+  });
+
+  it('rejects a replay receipt that is not succeeded', async () => {
+    const input = rotationInput(recordingOperations());
+    await runWorkspaceHostCredentialLifecycle(input);
+    const firstKey = h.receipts.keys().next().value;
+    if (typeof firstKey !== 'string') throw new Error('expected a replay receipt');
+    const replayReceipt = h.receipts.get(firstKey) as {
+      stepId: string;
+      status: string;
+      observedAt: string;
+      publicEvidence?: Record<string, unknown>;
+    };
+    h.receipts.set(firstKey, { ...replayReceipt, status: 'failed' });
+
+    await expect(runWorkspaceHostCredentialLifecycle({
+      ...input,
+      operations: recordingOperations(),
+    })).rejects.toThrow(/invalid receipt/);
   });
 
   it('calls onPlanned only after validation and leaves no operation row for rejected input', async () => {

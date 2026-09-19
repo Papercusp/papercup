@@ -127,8 +127,8 @@ async function main(): Promise<void> {
         `known: ${BENCH_PROBES.map((p) => p.caseId).join(', ')}`,
     );
   }
-  // resolveProbeCursor re-verifies the pin against the CURRENT tree and throws
-  // on drift, so a stale line number can never be measured as a real result.
+  // resolveProbeCursor re-resolves the unique anchor against the CURRENT tree
+  // and throws on drift, so a stale line number can never be measured as real.
   const cursor = resolveProbeCursor(probe, REPO_ROOT);
 
   const header = {
@@ -136,7 +136,7 @@ async function main(): Promise<void> {
     intent,
     probe: probe.caseId,
     file: probe.file,
-    line1: probe.line1,
+    line1: cursor.line1,
     symbol: probe.symbol,
     // The project the cursor actually resolves into. This is the single most
     // load-bearing line of context for any number below it: a fast cold open
