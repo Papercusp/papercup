@@ -39,6 +39,12 @@ const baseProbe = {
   submodulePrefixes: () => [] as string[],
 };
 
+const batchProbe = {
+  repoRoots: [ROOT],
+  exists: () => true,
+  submodulePrefixes: () => [] as string[],
+};
+
 describe('untouchedPathsInCompletion', () => {
   it('fires on a real file that is clean and last committed before the work began', () => {
     const result = untouchedPathsInCompletion(evidence('packages/real.ts'), SINCE_SEC, baseProbe);
@@ -57,6 +63,59 @@ describe('untouchedPathsInCompletion', () => {
     );
 
     expect(result?.untouched.map((u) => u.path)).toEqual(['packages/stale.ts']);
+  });
+
+  it('uses one batched status and history read per checkout for multiple paths', () => {
+    let dirtyCalls = 0;
+    let historyCalls = 0;
+    let dirtyPaths: readonly string[] = [];
+    let historyPaths: readonly string[] = [];
+
+    const result = untouchedPathsInCompletion(evidence('packages/one.ts', 'packages/two.ts'), SINCE_SEC, {
+      ...batchProbe,
+      isDirtyMany: (_root, paths) => {
+        dirtyCalls += 1;
+        dirtyPaths = paths;
+        return new Map(paths.map((path) => [path, false] as const));
+      },
+      lastCommitAtMany: (_root, paths) => {
+        historyCalls += 1;
+        historyPaths = paths;
+        return new Map(paths.map((path) => [path, OLD_SEC] as const));
+      },
+    });
+
+    expect(result?.untouched.map((entry) => entry.path)).toEqual(['packages/one.ts', 'packages/two.ts']);
+    expect(dirtyCalls).toBe(1);
+    expect(historyCalls).toBe(1);
+    expect(dirtyPaths).toEqual(['packages/one.ts', 'packages/two.ts']);
+    expect(historyPaths).toEqual(['packages/one.ts', 'packages/two.ts']);
+  });
+
+  it('keeps per-path injected seams authoritative over the batch seams', () => {
+    let dirtyCalls = 0;
+    let historyCalls = 0;
+    const result = untouchedPathsInCompletion(evidence('packages/real.ts'), SINCE_SEC, {
+      ...batchProbe,
+      isDirty: () => {
+        dirtyCalls += 1;
+        return false;
+      },
+      lastCommitAt: () => {
+        historyCalls += 1;
+        return OLD_SEC;
+      },
+      isDirtyMany: () => {
+        throw new Error('batch status seam must not replace the per-path seam');
+      },
+      lastCommitAtMany: () => {
+        throw new Error('batch history seam must not replace the per-path seam');
+      },
+    });
+
+    expect(result?.untouched).toHaveLength(1);
+    expect(dirtyCalls).toBe(1);
+    expect(historyCalls).toBe(1);
   });
 
   // ── Proof-of-work route 1: the edit exists but git-sync has not swept it ──────────────

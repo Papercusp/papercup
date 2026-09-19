@@ -131,6 +131,18 @@ export type GitLastCommitProbe = (repoRoot: string, relPath: string) => number |
  */
 export type GitDirtyProbe = (repoRoot: string, relPath: string) => boolean | undefined;
 
+/** Batch form used by the default probes so one checkout costs one git read per signal. */
+export type GitDirtyBatchProbe = (
+  repoRoot: string,
+  relPaths: readonly string[],
+) => ReadonlyMap<string, boolean | undefined>;
+
+/** Batch form used by the default probes so one checkout costs one history read. */
+export type GitLastCommitBatchProbe = (
+  repoRoot: string,
+  relPaths: readonly string[],
+) => ReadonlyMap<string, number | null | undefined>;
+
 export interface UntouchedPathProbe {
   /** Candidate checkout roots. An explicit empty list means "cannot judge", never "guess". */
   repoRoots?: readonly string[];
@@ -138,8 +150,12 @@ export interface UntouchedPathProbe {
   exists?: (abs: string) => boolean;
   /** Is the working tree dirty at this repo-relative path? */
   isDirty?: GitDirtyProbe;
+  /** Batched working-tree read; ignored when the per-path seam above is injected. */
+  isDirtyMany?: GitDirtyBatchProbe;
   /** When was this repo-relative path last committed? */
   lastCommitAt?: GitLastCommitProbe;
+  /** Batched history read; ignored when the per-path seam above is injected. */
+  lastCommitAtMany?: GitLastCommitBatchProbe;
   /** Repo-relative submodule directory prefixes; paths under one are never judged. */
   submodulePrefixes?: (repoRoot: string) => readonly string[];
 }
@@ -150,33 +166,81 @@ export interface UntouchedPathHit {
   lastCommitAt: string;
 }
 
-/** `git status --porcelain -- <path>`: any output means the tree differs from HEAD here. */
-const defaultIsDirty: GitDirtyProbe = (repoRoot, relPath) => {
+function normalizedRepoPath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^\.\/+/, '');
+}
+
+/** One `git status` read for every candidate path in a checkout. */
+const defaultIsDirtyMany: GitDirtyBatchProbe = (repoRoot, relPaths) => {
+  const result = new Map<string, boolean | undefined>();
+  const paths = [...new Set(relPaths)];
+  for (const path of paths) result.set(normalizedRepoPath(path), undefined);
   try {
-    const out = execFileSync('git', ['-C', repoRoot, 'status', '--porcelain', '--', relPath], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 5_000,
-    });
-    return out.trim().length > 0;
+    const out = execFileSync(
+      'git',
+      ['-C', repoRoot, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...paths],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 5_000,
+      },
+    );
+    for (const path of paths) result.set(normalizedRepoPath(path), false);
+    const fields = out.split('\0');
+    for (let index = 0; index < fields.length; index += 1) {
+      const record = fields[index];
+      if (record.length < 4) continue;
+      const status = record.slice(0, 2);
+      const changedPath = record.slice(3);
+      if (changedPath) result.set(normalizedRepoPath(changedPath), true);
+      // Porcelain -z emits the old and new names as adjacent NUL fields for renames/copies.
+      if (/[RC]/.test(status)) {
+        const secondPath = fields[index + 1];
+        if (secondPath) result.set(normalizedRepoPath(secondPath), true);
+        index += 1;
+      }
+    }
   } catch {
-    return undefined; // not a repo, git missing, timeout → cannot judge
+    // not a repo, git missing, timeout → cannot judge every path
   }
+  return result;
 };
 
-/** `git log -1 --format=%ct -- <path>`, mirroring the existing `lastCommitTimes` read. */
-const defaultLastCommitAt: GitLastCommitProbe = (repoRoot, relPath) => {
+/** One `git log` read maps each requested path to its newest touching commit. */
+const defaultLastCommitAtMany: GitLastCommitBatchProbe = (repoRoot, relPaths) => {
+  const result = new Map<string, number | null | undefined>();
+  const paths = [...new Set(relPaths)];
+  for (const path of paths) result.set(normalizedRepoPath(path), null);
+  const marker = '__PAPERCUSP_LAST_COMMIT__';
   try {
-    const out = execFileSync('git', ['-C', repoRoot, 'log', '-1', '--format=%ct', '--', relPath], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 5_000,
-    });
-    const parsed = Number.parseInt(out.trim(), 10);
-    return Number.isFinite(parsed) ? parsed : null;
+    const out = execFileSync(
+      'git',
+      ['-C', repoRoot, 'log', `--pretty=format:${marker}%ct%x00`, '--name-only', '-z', '--', ...paths],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 5_000,
+      },
+    );
+    const requested = new Set(paths.map(normalizedRepoPath));
+    let commitSec: number | undefined;
+    for (const field of out.split('\0')) {
+      const record = field.trim();
+      if (record.startsWith(marker)) {
+        const parsed = Number.parseInt(record.slice(marker.length), 10);
+        commitSec = Number.isFinite(parsed) ? parsed : undefined;
+        continue;
+      }
+      if (commitSec === undefined || !record) continue;
+      const path = normalizedRepoPath(record);
+      if (requested.has(path) && result.get(path) === null) result.set(path, commitSec);
+    }
   } catch {
-    return undefined;
+    // Keep undefined distinct from null: git failure is unknown, while null is a valid
+    // successful answer for a path with no history.
+    for (const path of paths) result.set(normalizedRepoPath(path), undefined);
   }
+  return result;
 };
 
 /** Submodule prefixes parsed from `.gitmodules`. Failure yields [] — see the caller. */
@@ -248,8 +312,8 @@ export function untouchedPathsInCompletion(
   if (repoRoots.length === 0) return undefined;
 
   const exists = probe.exists ?? ((abs: string) => existsSync(abs));
-  const isDirty = probe.isDirty ?? defaultIsDirty;
-  const lastCommitAt = probe.lastCommitAt ?? defaultLastCommitAt;
+  const isDirtyMany = probe.isDirtyMany ?? defaultIsDirtyMany;
+  const lastCommitAtMany = probe.lastCommitAtMany ?? defaultLastCommitAtMany;
   const submodulePrefixes = probe.submodulePrefixes ?? defaultSubmodulePrefixes;
 
   const submodulesByRoot = new Map<string, readonly string[]>();
@@ -264,6 +328,64 @@ export function untouchedPathsInCompletion(
       submodulesByRoot.set(root, prefixes);
     }
     return submodulesByRoot.get(root) ?? [];
+  };
+
+  // Build the batch inputs once. Invalid/escaping paths are excluded before invoking git,
+  // while existence and submodule checks remain in the per-path decision loop below.
+  const batchPathsByRoot = new Map<string, string[]>();
+  for (const raw of declared.slice(0, MAX_UNTOUCHED_PROBES)) {
+    const declaredPath = (raw ?? '').trim();
+    if (
+      !declaredPath ||
+      declaredPath.includes('*') ||
+      declaredPath.includes('?') ||
+      nodePath.isAbsolute(declaredPath)
+    ) {
+      continue;
+    }
+    for (const repoRoot of repoRoots) {
+      let abs: string;
+      try {
+        abs = nodePath.resolve(repoRoot, declaredPath);
+      } catch {
+        continue;
+      }
+      if (abs !== repoRoot && !abs.startsWith(repoRoot + nodePath.sep)) continue;
+      const norm = declaredPath.replace(/\\/g, '/').replace(/^\.\//, '');
+      if (submodulesFor(repoRoot).some((p) => norm === p || norm.startsWith(p.replace(/\/$/, '') + '/'))) {
+        continue;
+      }
+      const paths = batchPathsByRoot.get(repoRoot) ?? [];
+      if (!paths.includes(declaredPath)) paths.push(declaredPath);
+      batchPathsByRoot.set(repoRoot, paths);
+    }
+  }
+
+  const dirtyByRoot = new Map<string, ReadonlyMap<string, boolean | undefined>>();
+  const commitsByRoot = new Map<string, ReadonlyMap<string, number | null | undefined>>();
+  const dirtyAt = (repoRoot: string, path: string): boolean | undefined => {
+    if (probe.isDirty) return probe.isDirty(repoRoot, path);
+    if (!dirtyByRoot.has(repoRoot)) {
+      try {
+        dirtyByRoot.set(repoRoot, isDirtyMany(repoRoot, batchPathsByRoot.get(repoRoot) ?? []));
+      } catch {
+        dirtyByRoot.set(repoRoot, new Map());
+      }
+    }
+    const values = dirtyByRoot.get(repoRoot);
+    return values?.get(normalizedRepoPath(path)) ?? values?.get(path);
+  };
+  const commitAt = (repoRoot: string, path: string): number | null | undefined => {
+    if (probe.lastCommitAt) return probe.lastCommitAt(repoRoot, path);
+    if (!commitsByRoot.has(repoRoot)) {
+      try {
+        commitsByRoot.set(repoRoot, lastCommitAtMany(repoRoot, batchPathsByRoot.get(repoRoot) ?? []));
+      } catch {
+        commitsByRoot.set(repoRoot, new Map());
+      }
+    }
+    const values = commitsByRoot.get(repoRoot);
+    return values?.get(normalizedRepoPath(path)) ?? values?.get(path);
   };
 
   const untouched: UntouchedPathHit[] = [];
@@ -313,7 +435,7 @@ export function untouchedPathsInCompletion(
       // Proof-of-work route 1: the edit is present but not yet swept by git-sync.
       let dirty: boolean | undefined;
       try {
-        dirty = isDirty(repoRoot, declaredPath);
+        dirty = dirtyAt(repoRoot, declaredPath);
       } catch {
         dirty = undefined;
       }
@@ -326,7 +448,7 @@ export function untouchedPathsInCompletion(
       // Proof-of-work route 2: git-sync already swept the edit into a commit.
       let commitSec: number | null | undefined;
       try {
-        commitSec = lastCommitAt(repoRoot, declaredPath);
+        commitSec = commitAt(repoRoot, declaredPath);
       } catch {
         commitSec = undefined;
       }
