@@ -396,6 +396,47 @@ describe('P-002 calibrated counterexamples (local diagnostic proof only)', () =>
   // is injected only at the diagnostic module boundary, while the real gate,
   // settings and crypto path still execute. This proves the oracle detects
   // these named faults; it is not a claim about live runtime causality.
+  it('rejects diagnostic identity entering authenticated bytes at the real crypto seam', async () => {
+    seams.releaseNative();
+    const control = makeGate();
+    const expected = await control.cap.encryptOp(op);
+    const aad = buildOpAAD('diagnostic-pot', 3, {
+      tableTag: op.table,
+      rowKey: op.hbKey,
+      authorPubkey: op.writerPubkey,
+    });
+    for (const faulty of [false, true]) {
+      const { cap, crypto } = makeGate();
+      const { attempt, events } = observation(42);
+      // Wrong implementation at the actual dependency seam, not a modified
+      // result fixture: encrypt with local diagnostic identity in the AAD.
+      // The real native AEAD still executes, with the fixed test nonce above.
+      if (faulty) {
+        const encrypt = crypto.encryptOp.bind(crypto);
+        vi.spyOn(crypto, 'encryptOp').mockImplementation((payload, epochKey, associated) =>
+          encrypt(payload, epochKey, { ...associated, opId: attempt.context.attemptId }),
+        );
+      }
+      const result = await withStageAttempt(attempt, () => cap.encryptOp(op));
+      attempt.finish();
+      const ciphertext = Buffer.from((result!.value as { __rekey: string }).__rekey, 'base64');
+      const unchanged = () => {
+        expect(result, 'diagnostics must preserve authenticated operation bytes').toEqual(expected);
+      };
+      if (faulty) {
+        // An independent decrypt under the original row identity confirms the
+        // mutation really changed authentication, before testing the oracle.
+        await expect(crypto.decryptOp(ciphertext, key as never, aad)).rejects.toThrow();
+        rejectsWrong(unchanged, 'diagnostics must preserve authenticated operation bytes');
+      } else {
+        expect(unchanged).not.toThrow();
+        expect(Buffer.from(await crypto.decryptOp(ciphertext, key as never, aad)).toString())
+          .toBe(JSON.stringify(op.value));
+      }
+      assertPrivate(events);
+    }
+  });
+
   it.each([
     ['collapse-attempts', assertUniqueAttempts, 'retry identities must be distinct'],
     ['sync-as-await', assertNativeBoundary, 'native boundaries must remain synchronous'],
