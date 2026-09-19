@@ -20,7 +20,14 @@ import { checkActiveCheckpointRun } from '../../release-checkpoint-launch';
 import { readCheckpointSerializerAuthority } from '../../release/checkpoint-serializer-authority';
 import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-ownership';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
-import { readRoutineSnap, resolveRoutineSnap, writeRoutineSnap, stableJson, type RoutineSnap } from './routine-snapshot';
+import {
+  isRoutineTargetMissingError,
+  readRoutineSnap,
+  resolveRoutineSnap,
+  writeRoutineSnap,
+  stableJson,
+  type RoutineSnap,
+} from './routine-snapshot';
 import { DEFAULT_RELEASE_PAUSE_TTL_HOURS, resolvePauseExpiryMs } from '../../harness/routines/release-pause-ttl';
 
 /**
@@ -285,13 +292,22 @@ export default defineTool({
       initialSnap = resolved.snapshot;
     }
 
+    // A target may disappear after the control harness captures its authoritative
+    // snapshot but before apply() takes its second read. That is a benign stale
+    // target race, not a retryable mutation failure. Keep this marker separate from
+    // the snapshot itself so an initially missing target still fails normally.
+    let captureCompleted = false;
+    let mutationWriteStarted = false;
     const readSnap = async (): Promise<RoutineSnap> => {
+      let snap: RoutineSnap;
       if (initialSnap !== undefined) {
-        const snap = initialSnap;
+        snap = initialSnap;
         initialSnap = undefined;
-        return snap;
+      } else {
+        snap = await readRoutineSnap(sql, ws, slug, args.name);
       }
-      return readRoutineSnap(sql, ws, slug, args.name);
+      captureCompleted = true;
+      return snap;
     };
     const writeSnap = (snap: RoutineSnap): Promise<void> => writeRoutineSnap(sql, ws, slug, args.name, snap);
 
@@ -301,137 +317,160 @@ export default defineTool({
     // who needs to know it is finite.
     let stampedPauseExpiryMs: number | null = null;
 
-    const outcome = await runControlMutation<RoutineSnap>(
-      {
-        action: 'routines:set',
-        subject: `${slug}/${args.name}`,
-        actor: `role:${ctx.role}`,
-        capturePrev: readSnap,
-        apply: async () => {
-          const prev = await readSnap();
-          const triggerConfig = mergeTriggerConfig(prev, args);
-          let nextIso = prev.nextFireAtIso;
-          if (args.cron !== undefined) {
-            const computed = computeNextFireAt(args.cron, new Date());
-            nextIso = computed ? computed.toISOString() : null;
-          }
-          const payloadTemplate =
-            args.payloadTemplate !== undefined
-              ? deepMergePlain(prev.payloadTemplate, args.payloadTemplate)
-              : prev.payloadTemplate;
-          // EI-18654017982759582: persist WHO/WHY/WHEN at pause time, and clear it on resume
-          // (moved to lastPause for audit history) — so a responder (or a watchdog) never has
-          // to reverse-engineer the pause from tool_invocations telemetry. Other metadata keys
-          // (e.g. gate_health, written by the green-checkpoint tick / stall watchdogs) are
-          // preserved untouched via the spread — only the `pause`/`lastPause` keys are patched.
-          const metadata = { ...prev.metadata };
-          const nextActive = args.active ?? prev.active;
-          if (args.active === false) {
-            const pausedAtMs = Date.now();
-            // gate-verdict-liveness-and-repair-reliability-2026-08-31 P-004: a
-            // RELEASE-GROUP pause is always FINITE. Resolve the group as it will be
-            // AFTER this call (a caller may assign the group in the same mutation),
-            // then stamp the expiry the routines-engine sweep enforces. Null for a
-            // non-release routine and for the D-012/D-013 serializer quiescence hold —
-            // see release-pause-ttl.ts's "ONE EXCLUSION".
-            const nextGroupSlug = args.group !== undefined ? args.group : prev.groupSlug;
-            const expiresAtMs = resolvePauseExpiryMs({
-              groupSlug: nextGroupSlug,
-              pausedAtMs,
-              ttlHours: args.pauseTtlHours ?? null,
-              reason: args.reason ?? null,
-            });
-            stampedPauseExpiryMs = expiresAtMs;
-            metadata.pause = {
-              reason: args.reason,
-              pausedBy: pausedByFrom(ctx, ctx.role),
-              pausedAtMs,
-              // EI-19370236916382521: omit the key entirely rather than storing `undefined` —
-              // a present-but-undefined key would round-trip through JSON.stringify as if it
-              // were never set, which is harmless, but an explicit omission keeps the stored
-              // shape honest (no `reviewBy` key at all on a plain, non-reaffirmed pause).
-              ...(args.reviewBy !== undefined ? { reviewBy: args.reviewBy } : {}),
-              // Same omit-don't-store-null discipline: an absent key means "not
-              // TTL-governed", which is a different claim from "TTL of null".
-              ...(expiresAtMs !== null ? { expiresAtMs } : {}),
+    let outcome: Awaited<ReturnType<typeof runControlMutation<RoutineSnap>>>;
+    try {
+      outcome = await runControlMutation<RoutineSnap>(
+        {
+          action: 'routines:set',
+          subject: `${slug}/${args.name}`,
+          actor: `role:${ctx.role}`,
+          capturePrev: readSnap,
+          apply: async () => {
+            const prev = await readSnap();
+            const triggerConfig = mergeTriggerConfig(prev, args);
+            let nextIso = prev.nextFireAtIso;
+            if (args.cron !== undefined) {
+              const computed = computeNextFireAt(args.cron, new Date());
+              nextIso = computed ? computed.toISOString() : null;
+            }
+            const payloadTemplate =
+              args.payloadTemplate !== undefined
+                ? deepMergePlain(prev.payloadTemplate, args.payloadTemplate)
+                : prev.payloadTemplate;
+            // EI-18654017982759582: persist WHO/WHY/WHEN at pause time, and clear it on resume
+            // (moved to lastPause for audit history) — so a responder (or a watchdog) never has
+            // to reverse-engineer the pause from tool_invocations telemetry. Other metadata keys
+            // (e.g. gate_health, written by the green-checkpoint tick / stall watchdogs) are
+            // preserved untouched via the spread — only the `pause`/`lastPause` keys are patched.
+            const metadata = { ...prev.metadata };
+            const nextActive = args.active ?? prev.active;
+            if (args.active === false) {
+              const pausedAtMs = Date.now();
+              // gate-verdict-liveness-and-repair-reliability-2026-08-31 P-004: a
+              // RELEASE-GROUP pause is always FINITE. Resolve the group as it will be
+              // AFTER this call (a caller may assign the group in the same mutation),
+              // then stamp the expiry the routines-engine sweep enforces. Null for a
+              // non-release routine and for the D-012/D-013 serializer quiescence hold —
+              // see release-pause-ttl.ts's "ONE EXCLUSION".
+              const nextGroupSlug = args.group !== undefined ? args.group : prev.groupSlug;
+              const expiresAtMs = resolvePauseExpiryMs({
+                groupSlug: nextGroupSlug,
+                pausedAtMs,
+                ttlHours: args.pauseTtlHours ?? null,
+                reason: args.reason ?? null,
+              });
+              stampedPauseExpiryMs = expiresAtMs;
+              metadata.pause = {
+                reason: args.reason,
+                pausedBy: pausedByFrom(ctx, ctx.role),
+                pausedAtMs,
+                // EI-19370236916382521: omit the key entirely rather than storing `undefined` —
+                // a present-but-undefined key would round-trip through JSON.stringify as if it
+                // were never set, which is harmless, but an explicit omission keeps the stored
+                // shape honest (no `reviewBy` key at all on a plain, non-reaffirmed pause).
+                ...(args.reviewBy !== undefined ? { reviewBy: args.reviewBy } : {}),
+                // Same omit-don't-store-null discipline: an absent key means "not
+                // TTL-governed", which is a different claim from "TTL of null".
+                ...(expiresAtMs !== null ? { expiresAtMs } : {}),
+              };
+            } else if (args.active === true && prev.metadata.pause) {
+              metadata.lastPause = { ...(prev.metadata.pause as Record<string, unknown>), resumedAtMs: Date.now() };
+              delete metadata.pause;
+            }
+            const next: RoutineSnap = {
+              triggerConfig,
+              payloadTemplate,
+              active: nextActive,
+              nextFireAtIso: nextIso,
+              groupSlug: args.group !== undefined ? args.group : prev.groupSlug,
+              metadata,
             };
-          } else if (args.active === true && prev.metadata.pause) {
-            metadata.lastPause = { ...(prev.metadata.pause as Record<string, unknown>), resumedAtMs: Date.now() };
-            delete metadata.pause;
-          }
-          const next: RoutineSnap = {
-            triggerConfig,
-            payloadTemplate,
-            active: nextActive,
-            nextFireAtIso: nextIso,
-            groupSlug: args.group !== undefined ? args.group : prev.groupSlug,
-            metadata,
-          };
-          await writeSnap(next);
-          return next;
-        },
-        revertTo: (prev) => writeSnap(prev),
-        verify: async (next) => {
-          const cur = await readSnap();
-          const ok =
-            cur.active === next.active &&
-            (args.cron === undefined || (cur.triggerConfig as { cron?: string }).cron === args.cron) &&
-            (args.group === undefined || cur.groupSlug === next.groupSlug) &&
-            // The payload merge must actually be READABLE back, not just written — a silent
-            // no-op write here would leave the caller believing a live knob was retuned.
-            //
-            // Compared via stableJson (order-independent), NOT a raw JSON.stringify: Postgres
-            // jsonb does not preserve JS object insertion order on a round-trip (it reorders by
-            // key length then lexicographically for its binary encoding), so `next` — an
-            // in-memory object with any NEW key appended at the end by deepMergePlain — never
-            // string-equals `cur` — the same object freshly read back from jsonb, reordered — even
-            // when every key/value pair matches. That false mismatch made every additive
-            // payloadTemplate patch (e.g. adding a `model` override) spuriously fail verify and
-            // get auto-reverted (EI-22136767702523358). routineSnapEqual below already solves this
-            // for a whole RoutineSnap; stableJson is its same order-independent primitive, reused
-            // here since this check compares only the payloadTemplate field.
-            (args.payloadTemplate === undefined ||
-              JSON.stringify(stableJson(cur.payloadTemplate)) === JSON.stringify(stableJson(next.payloadTemplate)));
-          return { ok, detail: ok ? undefined : 'routine row did not reflect the change' };
-        },
-        describe: (prev) => ({
-          current: {
-            cron: (prev.triggerConfig as { cron?: string }).cron ?? null,
-            active: prev.active,
-            group: prev.groupSlug,
-            // P-017: include the complete current config when a trigger_config patch is
-            // requested, so a dry-run can prove the interval/cap values it will change.
-            ...(args.triggerConfig !== undefined ? { triggerConfig: prev.triggerConfig } : {}),
-            ...(args.payloadTemplate !== undefined ? { payloadTemplate: prev.payloadTemplate } : {}),
+            mutationWriteStarted = true;
+            await writeSnap(next);
+            return next;
           },
-          proposed: {
-            cron: args.cron ?? ((prev.triggerConfig as { cron?: string }).cron ?? null),
-            active: args.active ?? prev.active,
-            group: args.group !== undefined ? args.group : prev.groupSlug,
-            ...(args.triggerConfig !== undefined
-              ? { triggerConfig: mergeTriggerConfig(prev, args) }
-              : {}),
-            ...(args.payloadTemplate !== undefined
-              ? { payloadTemplate: deepMergePlain(prev.payloadTemplate, args.payloadTemplate) }
-              : {}),
-            // P-004: a dryRun must PREVIEW the auto-resume deadline, not just the flag —
-            // `apply` never runs on a preview, so this is the only place it can appear.
-            ...(args.active === false
-              ? (() => {
-                  const at = resolvePauseExpiryMs({
-                    groupSlug: args.group !== undefined ? args.group : prev.groupSlug,
-                    pausedAtMs: Date.now(),
-                    ttlHours: args.pauseTtlHours ?? null,
-                    reason: args.reason ?? null,
-                  });
-                  return { pauseAutoResumesAt: at !== null ? new Date(at).toISOString() : null };
-                })()
-              : {}),
+          revertTo: (prev) => writeSnap(prev),
+          verify: async (next) => {
+            const cur = await readSnap();
+            const ok =
+              cur.active === next.active &&
+              (args.cron === undefined || (cur.triggerConfig as { cron?: string }).cron === args.cron) &&
+              (args.group === undefined || cur.groupSlug === next.groupSlug) &&
+              // The payload merge must actually be READABLE back, not just written — a silent
+              // no-op write here would leave the caller believing a live knob was retuned.
+              //
+              // Compared via stableJson (order-independent), NOT a raw JSON.stringify: Postgres
+              // jsonb does not preserve JS object insertion order on a round-trip (it reorders by
+              // key length then lexicographically for its binary encoding), so `next` — an
+              // in-memory object with any NEW key appended at the end by deepMergePlain — never
+              // string-equals `cur` — the same object freshly read back from jsonb, reordered — even
+              // when every key/value pair matches. That false mismatch made every additive
+              // payloadTemplate patch (e.g. adding a `model` override) spuriously fail verify and
+              // get auto-reverted (EI-22136767702523358). routineSnapEqual below already solves this
+              // for a whole RoutineSnap; stableJson is its same order-independent primitive, reused
+              // here since this check compares only the payloadTemplate field.
+              (args.payloadTemplate === undefined ||
+                JSON.stringify(stableJson(cur.payloadTemplate)) === JSON.stringify(stableJson(next.payloadTemplate)));
+            return { ok, detail: ok ? undefined : 'routine row did not reflect the change' };
           },
-        }),
-      },
-      { dryRun: args.dryRun },
-    );
+          describe: (prev) => ({
+            current: {
+              cron: (prev.triggerConfig as { cron?: string }).cron ?? null,
+              active: prev.active,
+              group: prev.groupSlug,
+              // P-017: include the complete current config when a trigger_config patch is
+              // requested, so a dry-run can prove the interval/cap values it will change.
+              ...(args.triggerConfig !== undefined ? { triggerConfig: prev.triggerConfig } : {}),
+              ...(args.payloadTemplate !== undefined ? { payloadTemplate: prev.payloadTemplate } : {}),
+            },
+            proposed: {
+              cron: args.cron ?? ((prev.triggerConfig as { cron?: string }).cron ?? null),
+              active: args.active ?? prev.active,
+              group: args.group !== undefined ? args.group : prev.groupSlug,
+              ...(args.triggerConfig !== undefined
+                ? { triggerConfig: mergeTriggerConfig(prev, args) }
+                : {}),
+              ...(args.payloadTemplate !== undefined
+                ? { payloadTemplate: deepMergePlain(prev.payloadTemplate, args.payloadTemplate) }
+                : {}),
+              // P-004: a dryRun must PREVIEW the auto-resume deadline, not just the flag —
+              // `apply` never runs on a preview, so this is the only place it can appear.
+              ...(args.active === false
+                ? (() => {
+                    const at = resolvePauseExpiryMs({
+                      groupSlug: args.group !== undefined ? args.group : prev.groupSlug,
+                      pausedAtMs: Date.now(),
+                      ttlHours: args.pauseTtlHours ?? null,
+                      reason: args.reason ?? null,
+                    });
+                    return { pauseAutoResumesAt: at !== null ? new Date(at).toISOString() : null };
+                  })()
+                : {}),
+            },
+          }),
+        },
+        { dryRun: args.dryRun },
+      );
+    } catch (error) {
+      if (!captureCompleted || mutationWriteStarted || !isRoutineTargetMissingError(error)) throw error;
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              routine: `${slug}/${args.name}`,
+              error: 'stale_target',
+              disposition: 'stale_target',
+              retryable: false,
+              applied: false,
+              message: 'The routine disappeared after its snapshot was captured; no mutation was applied. Refresh routines:list before retrying.',
+            }),
+          },
+        ],
+      };
+    }
 
     // Refresh the owner's automation panes (Blender / Docs) the moment a pause or
     // retune commits — they read `automation.catalog`. Skipped on a dryRun (nothing

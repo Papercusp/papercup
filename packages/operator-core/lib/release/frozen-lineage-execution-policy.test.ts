@@ -553,6 +553,12 @@ describe('frozen lineage carry policy', () => {
   it.each([
     'Run focused unit tests on staging while the repair is admitted separately.',
     'Canonical tree is the shared checkout root on staging.',
+    'Frozen candidate is 09d0c118d5df, 32 commits behind staging.',
+    'The frozen candidate is 32 commits behind origin/staging; repair admission remains the sanctioned route.',
+    'The candidate is 2 commits ahead of staging.',
+    'The candidate is stale vs staging and must be repaired on the frozen lineage.',
+    'The candidate is 4 commits behind staging relative to the last repair head.',
+    'The candidate is compared with staging for staleness only.',
     'Ordinary staging work remains legal — The policy blocks selecting staging as the judged candidate...',
     'Ordinary staging work remains legal: The policy blocks selecting staging as the judged candidate.',
     'The earlier instruction to pin current staging/current HEAD was wrong and is retracted.',
@@ -561,6 +567,7 @@ describe('frozen lineage carry policy', () => {
     'The policy refuses candidate selection from integrationBranch.',
     'The refusal says staging was selected as the judged candidate; this sentence describes the diagnostic, not a directive.',
     'A carry row describing the refusal contains selecting staging as the judged candidate.',
+    'The frozen-candidate lineage guard reads as selecting staging as the judged candidate while explaining the refusal.',
     'The release checkpoint receipt explicitly reported that quiet-cut excluded unrelated newer staging commits and judged repairHead 7968c0cf.',
     'The checkpoint receipt says quiet-cut excluded unrelated newer staging commits; the judged repairHead was 7968c0cf.',
     'current-build verification on staging is available — re-check: curl http://127.0.0.1:3170/api/desktop/version',
@@ -568,6 +575,14 @@ describe('frozen lineage carry policy', () => {
     'staging is available for current-build verification — re-check: curl :3170',
   ])('allows ordinary, negated, or corrective prose: %s', (text) => {
     expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
+  });
+
+  it.each([
+    'Select staging as the judged candidate even though it is 32 commits behind the repair head.',
+    'Run the canonical verification against staging as the judged candidate.',
+    'Pin staging as the candidate for the next verdict.',
+  ])('still detects an explicit selection or execution instruction: %s', (text) => {
+    expect(detectUnsafeFrozenCarryInstruction(text)).toMatchObject({ unsafeSource: 'staging' });
   });
 
   it('fails closed with the exact incident identity and actionable repair route', () => {

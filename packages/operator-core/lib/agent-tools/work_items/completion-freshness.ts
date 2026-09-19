@@ -60,7 +60,12 @@ export function completionSettlementManifest(
 ): CompletionSettlementManifest | undefined {
   const stamp = evidence.treeStamp;
   if (!stamp?.repositoryRoot || !stamp.contentIdentity?.length) return undefined;
-  const contentIdentity = [...stamp.contentIdentity]
+  // Out-of-repo artifacts are already explicitly classified by the server. They
+  // cannot be settled against a repository commit, so keep them in the tree stamp
+  // but omit them from the settlement receipt and its normalized path set.
+  const repoBackedIdentity = stamp.contentIdentity.filter((identity) => identity.outOfRepoArtifact !== true);
+  if (repoBackedIdentity.length === 0) return undefined;
+  const contentIdentity = [...repoBackedIdentity]
     .map((identity) => ({ ...identity, path: identity.path.replaceAll('\\', '/') }))
     .sort((a, b) => a.path.localeCompare(b.path));
   const normalizedPaths = [...new Set(contentIdentity.map(({ path }) => path))];
@@ -412,6 +417,10 @@ export function unprovenContentIdentityPaths(
   stamp: { contentIdentity?: readonly CompletionTreeContentIdentity[] } | undefined | null,
 ): UnprovenContentIdentityRow[] {
   return (stamp?.contentIdentity ?? []).flatMap((entry): UnprovenContentIdentityRow[] => {
+    // An explicit out-of-repo artifact is not a missing repository path. It has no
+    // blob identity by design and must not surface as an unfollowable absent-from-both
+    // warning. Mixed stamps still report every unproven repo-backed entry below.
+    if (entry.outOfRepoArtifact === true) return [];
     // The server could not READ the HEAD side — a different failure with a different
     // remedy, reported by unresolvableContentIdentityPaths. Not ours.
     if (entry.headBlobUnresolvable) return [];
@@ -478,14 +487,12 @@ export function completionTreeContentIdentityMatches(
   // those artifacts, so counting them unproven made UI-verified completions
   // permanently ineligible for `committed` no matter how clean the code side was.
   //
-  // The floor stays conservative in the direction that matters: at least one
-  // REPO-BACKED entry must exist and every repo-backed entry must match. A completion
-  // citing only artifacts therefore still does NOT qualify — absence of provable code
-  // evidence must never mint `committed`.
+  // Every REPO-BACKED entry must match. An all-artifact identity is valid because each
+  // entry is an explicit server classification, not an unresolved repository path;
+  // there is no commit-backed settlement work for such a completion.
   const repoBacked = (identity ?? []).filter((entry) => entry.outOfRepoArtifact !== true);
   return Boolean(
     identity?.length &&
-    repoBacked.length &&
     repoBacked.every(
       (entry) =>
         entry.deletion === true

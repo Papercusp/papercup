@@ -689,7 +689,14 @@ const CARRY_RETRACTION_AFTER =
 // successor. Keep this frame narrow: it requires a diagnostic/reporting subject
 // followed by a reporting verb before the candidate relation.
 const CARRY_DIAGNOSTIC_BEFORE =
-  /\b(?:refusal|refused|diagnostic|description|describ(?:e|es|ed|ing)|report(?:s|ed|ing)?|match(?:es|ed)?|contain(?:s|ed|ing)?|mention(?:s|ed|ing)?|quot(?:e|es|ed|ing)?|explain(?:s|ed|ing)?|error|message|row|prose|text|guard|policy|receipt|checkpoint|run|verdict|note|record|output|log|evidence|result)\b(?:\s+\S+){0,10}\s+(?:say(?:s|ing)?|said|report(?:s|ed|ing)?|match(?:es|ed)?|contain(?:s|ed|ing)?|mention(?:s|ed|ing)?|quot(?:e|es|ed|ing)?|describ(?:e|es|ed|ing)?|explain(?:s|ed|ing)?|flag(?:s|ged|ging)?|reject(?:s|ed|ing)?|refus(?:e|es|ed|ing)?|block(?:s|ed|ing)?)\b/i;
+  /\b(?:refusal|refused|diagnostic|description|describ(?:e|es|ed|ing)|report(?:s|ed|ing)?|match(?:es|ed)?|contain(?:s|ed|ing)?|mention(?:s|ed|ing)?|quot(?:e|es|ed|ing)?|explain(?:s|ed|ing)?|error|message|row|prose|text|guard|policy|receipt|checkpoint|run|verdict|note|record|output|log|evidence|result)\b(?:\s+\S+){0,10}\s+(?:say(?:s|ing)?|said|report(?:s|ed|ing)?|match(?:es|ed)?|contain(?:s|ed|ing)?|mention(?:s|ed|ing)?|quot(?:e|es|ed|ing)?|describ(?:e|es|ed|ing)?|explain(?:s|ed|ing)?|read(?:s|ing)?|flag(?:s|ged|ging)?|reject(?:s|ed|ing)?|refus(?:e|es|ed|ing)?|block(?:s|ed|ing)?)\b/i;
+
+// A candidate's distance from a moving branch is measurement prose, not a
+// selection of that branch. Keep this relation list deliberately narrow: broad
+// comparators such as "against" also occur in execution instructions and must
+// remain governed.
+const CARRY_COMPARATIVE_SOURCE_BEFORE =
+  /\b(?:behind|ahead\s+of|vs\.?|versus|relative\s+to|compared\s+(?:with|to))\s*$/i;
 
 function normalizedCarryClause(clause: string): string {
   return clause
@@ -740,6 +747,9 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
         const nextSourceStart = sourceMatches[sourceMatchIndex + 1]?.index ?? clause.length;
         const throughSource = clause.slice(0, sourceEnd);
         const sourceThroughNext = clause.slice(sourceStart, nextSourceStart);
+        const comparativeSourceRelation = CARRY_COMPARATIVE_SOURCE_BEFORE.test(
+          clause.slice(Math.max(0, sourceStart - 120), sourceStart),
+        );
         // A bare "verification/verdict on staging" is not a candidate
         // selection: it also describes ordinary current-build probes (for
         // example, a carried :3170 availability check). Keep the explicit
@@ -763,7 +773,9 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
           'i',
         ).exec(throughSource);
         const relation = directRelationBefore
-          ? { index: directRelationBefore.index, end: sourceEnd }
+          ? comparativeSourceRelation
+            ? null
+            : { index: directRelationBefore.index, end: sourceEnd }
           : directRelationAfter
             ? { index: sourceStart, end: sourceStart + directRelationAfter[0].length }
             : null;

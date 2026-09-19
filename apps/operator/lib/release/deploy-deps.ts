@@ -35,6 +35,7 @@ import { readLiveReleaseCertification } from '@papercusp/operator-core/lib/relea
 // backup API" and aborts the deploy → rollback (observed 2026-06-05).
 import '@papercusp/operator-core/lib/backup/configure';
 import { workspaceBackupFor } from '@papercusp/backup';
+import type { BackupMigrationLockWaitInfo } from '@papercusp/backup';
 import { toolingRoot, type ReleaseConfig } from './release-config';
 import { VERIFY_RESULT_MARKER } from './verify-release-paths';
 import type { DeployDeps, SnapshotInfo } from './deploy';
@@ -53,6 +54,32 @@ import { fetchServingSha, probeHealth } from './health-probe';
 // broadcasts/telemetry; only the lock-identity `ownerId` needs to be unique.
 const DEPLOY_OWNER = `release-deploy:${process.pid}:${randomUUID()}`;
 const DEFAULT_DRAIN_SEC = 120;
+
+function formatWaitDuration(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return remainder === 0 ? `${minutes}m` : `${minutes}m${remainder}s`;
+}
+
+/** Human-readable progress line for a healthy deploy waiting on backup/migration rendezvous. */
+export function formatMigrationLockWait(
+  info: BackupMigrationLockWaitInfo,
+  nowMs = Date.now(),
+): string {
+  const holder = info.holderPid === null ? 'unknown holder' : `pid ${info.holderPid}`;
+  const application = info.holderApplicationName ?? 'unknown application';
+  const startedAt = info.holderQueryStartedAt ? Date.parse(info.holderQueryStartedAt) : NaN;
+  const held = Number.isFinite(startedAt) && startedAt <= nowMs
+    ? formatWaitDuration(nowMs - startedAt)
+    : 'unknown age';
+  const state = info.holderState ? `, state ${info.holderState}` : '';
+  return (
+    `[deploy] ▶ snapshot: waiting on advisory lock ${info.lockKey} held by ${holder} ` +
+    `(${application}${state}, held ${held}; waited ${formatWaitDuration(info.waitedMs)})`
+  );
+}
 
 export interface SystemdRestartCommand {
   unit: string;
@@ -368,7 +395,15 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
         log('no active workspace — snapshot skipped (rollback will be code-only)');
         return null;
       }
-      const r = await workspaceBackupFor(ws).snapshot('pre-deploy', { op: 'release-deploy', reason });
+      const r = await workspaceBackupFor(ws).snapshot(
+        'pre-deploy',
+        { op: 'release-deploy', reason },
+        {
+          onMigrationLockWaiting: (info) => {
+            log(formatMigrationLockWait(info));
+          },
+        },
+      );
       log(`snapshot ${r.kopiaSnapshotId.slice(0, 12)} (#${r.snapshotId}, ${r.bytesAdded}B)`);
       return { snapshotId: r.snapshotId, kopiaSnapshotId: r.kopiaSnapshotId };
     },

@@ -114,4 +114,9 @@ describe('improvements:learning_loops handler', () => {
     const su = (b.loops as Array<Record<string, unknown>>).find((l) => l.blueprintId === 'su-ideation');
     expect(su).toMatchObject({ status: 'dark-by-design' });
   });
+
+  it('keeps workspace as the public scope key and rejects the harness alias', () => {
+    expect(tool.args.safeParse({ workspace: 'papercusp-workspace' }).success).toBe(true);
+    expect(tool.args.safeParse({ harness: 'papercusp' }).success).toBe(false);
+  });
 });

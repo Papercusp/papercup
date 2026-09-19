@@ -6,6 +6,7 @@
  * with a deterministic failing daemon fixture.
  */
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createCipheriv, createHash, pbkdf2Sync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import { delimiter, join } from 'node:path';
@@ -620,4 +621,73 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
       await rm(fixtureRoot, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it('imports Chrome v11 encrypted cookies from the Linux cookie database', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'verdict-cli-chrome-cookie-import-'));
+    const dataDir = join(fixtureRoot, 'data');
+    const binDir = join(fixtureRoot, 'bin');
+    const cookieDb = join(fixtureRoot, 'Cookies');
+    const hostKey = 'workatastartup.com';
+    const cookieValue = 'fixture-v11-cookie-value';
+    const chromeSecret = 'fixture-chrome-libsecret-password';
+    const key = pbkdf2Sync(Buffer.from(chromeSecret, 'utf8'), Buffer.from('saltysalt'), 1, 16, 'sha1');
+    const cipher = createCipheriv('aes-128-cbc', key, Buffer.alloc(16, 0x20));
+    const encryptedPayload = Buffer.concat([
+      createHash('sha256').update(hostKey, 'utf8').digest(),
+      Buffer.from(cookieValue, 'utf8'),
+    ]);
+    const encryptedValue = Buffer.concat([
+      Buffer.from('v11', 'ascii'),
+      cipher.update(encryptedPayload),
+      cipher.final(),
+    ]).toString('hex');
+
+    await mkdir(binDir, { recursive: true });
+    await writeFile(
+      join(binDir, 'secret-tool'),
+      `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(`${chromeSecret}\n`)});\n`,
+      'utf8',
+    );
+    await chmod(join(binDir, 'secret-tool'), 0o755);
+    await execFileAsync(
+      'sqlite3',
+      [
+        cookieDb,
+        [
+          'CREATE TABLE cookies(name TEXT,value TEXT,encrypted_value BLOB,host_key TEXT,path TEXT,is_secure INTEGER,is_httponly INTEGER);',
+          `INSERT INTO cookies VALUES ('sid', '', X'${encryptedValue}', '${hostKey}', '/', 1, 0);`,
+        ].join(' '),
+      ],
+      { maxBuffer: 32 * 1024 },
+    );
+
+    const env = {
+      ...process.env,
+      PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}`,
+      VERDICT_DATA_DIR: dataDir,
+      VERDICT_CHROME_COOKIE_DB: cookieDb,
+      VERDICT_SESSION: 'chrome-cookie-import',
+      PAPERCUSP_SID: '',
+      CODEX_SESSION_ID: '',
+      VERDICT_START_TIMEOUT_MS: '5000',
+      VERDICT_IDLE_TIMEOUT: '60000',
+    };
+    const run = (command: string, ...args: string[]) =>
+      execFileAsync(
+        process.execPath,
+        [require.resolve('verdict-cli/bin/browse.mjs'), command, ...args],
+        { env, maxBuffer: 32 * 1024, timeout: 15_000 },
+      );
+
+    try {
+      const imported = await run('cookie-import', hostKey);
+      expect(imported.stdout).toContain(`Imported 1 cookies for ${hostKey}`);
+
+      const cookies = await run('cookies', `https://${hostKey}/`);
+      expect(cookies.stdout).toContain(`sid=${cookieValue}`);
+    } finally {
+      await run('stop').catch(() => undefined);
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

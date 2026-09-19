@@ -22,6 +22,7 @@ import {
   backupHost,
   backupStepRunner,
   type BackupMigrationLock,
+  type BackupMigrationLockWaitReporter,
   type BackupIntervalHandle,
 } from './config';
 import { deriveRepoPassword } from './password';
@@ -315,6 +316,8 @@ export class WorkspaceBackup {
     context?: Record<string, unknown>,
     opts?: {
       onStarted?: (snapshotId: number) => void;
+      /** Report a blocking migration-rendezvous wait while a deploy remains healthy. */
+      onMigrationLockWaiting?: BackupMigrationLockWaitReporter;
       /** A scheduler-admitted lock already held on a dedicated session. */
       migrationLock?: BackupMigrationLock;
     },
@@ -357,6 +360,7 @@ export class WorkspaceBackup {
         const callbacks = entry.pendingStartedCallbacks.splice(0);
         for (const callback of callbacks) callback(snapshotId);
       },
+      onMigrationLockWaiting: opts?.onMigrationLockWaiting,
       migrationLock: opts?.migrationLock,
     });
     entry.promise = run.then(
@@ -392,6 +396,8 @@ export class WorkspaceBackup {
        * status instead of the tool call itself blocking on it.
        */
       onStarted?: (snapshotId: number) => void;
+      /** Report a blocking migration-rendezvous wait while a deploy remains healthy. */
+      onMigrationLockWaiting?: BackupMigrationLockWaitReporter;
       /** A scheduler-admitted lock to hold through the complete snapshot. */
       migrationLock?: BackupMigrationLock;
     },
@@ -493,7 +499,11 @@ export class WorkspaceBackup {
       // cross-process admission happened before scheduler state was consumed,
       // and this operation must keep the same session lock through completion.
       if (!migrationLock) {
-        migrationLock = await backupHost().acquireMigrationLock?.();
+        migrationLock = await backupHost().acquireMigrationLock?.(
+          opts?.onMigrationLockWaiting
+            ? { onWaiting: opts.onMigrationLockWaiting }
+            : undefined,
+        );
       }
       await this.ensureRepo();
       const password = await deriveRepoPassword(this.workspaceId);

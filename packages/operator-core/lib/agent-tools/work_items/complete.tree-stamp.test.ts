@@ -169,6 +169,39 @@ describe('completionSettlementManifest', () => {
       }),
     ).toBeUndefined();
   });
+
+  it('omits out-of-repo artifacts from settlement paths while retaining repo-backed proof', () => {
+    const artifact = {
+      path: '/tmp/proof.png',
+      workingTreeBlobSha: null,
+      headBlobSha: null,
+      outOfRepoArtifact: true as const,
+    };
+    const evidence = {
+      filesChanged: ['src/fix.ts', artifact.path],
+      treeStamp: { repositoryRoot: ROOT, headSha: SHA, contentIdentity: [identity, artifact] },
+    };
+
+    expect(completionSettlementManifest(evidence)).toMatchObject({
+      normalizedPaths: ['src/fix.ts'],
+      contentIdentity: [identity],
+    });
+  });
+
+  it('does not create a settlement receipt for an artifact-only completion', () => {
+    expect(
+      completionSettlementManifest({
+        filesChanged: ['/tmp/proof.png'],
+        treeStamp: {
+          repositoryRoot: ROOT,
+          headSha: SHA,
+          contentIdentity: [
+            { path: '/tmp/proof.png', workingTreeBlobSha: null, headBlobSha: null, outOfRepoArtifact: true },
+          ],
+        },
+      }),
+    ).toBeUndefined();
+  });
 });
 
 /** Build a probe over a pretend git dir; also records every path read. */
@@ -713,9 +746,9 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
  * ── HOW THIS PROVES ITSELF ─────────────────────────────────────────────────
  * Both directions, because the failure mode of a fix here is a floor that has been
  * LOOSENED rather than made cross-repo aware. The last two cases are the controls: an
- * implementation that simply ignored unprovable entries would mint `committed` for an
- * artifacts-only close, and one that ignored artifact entries too broadly would excuse
- * a genuine content mismatch. Both must still be refused.
+ * implementation must accept an explicitly classified artifacts-only close, while an
+ * implementation that ignored artifact entries too broadly would excuse a genuine
+ * content mismatch. The latter must still be refused.
  *
  * PURE: every filesystem and git read is injected.
  */
@@ -814,14 +847,14 @@ describe('completionTreeStampForEvidence — multi-repository completions (EI-21
     expect(committedCloseDowngradedForUnprovenContentIdentity('committed', declared, stamp)).toBe(false);
   });
 
-  it('CONTROL: an artifacts-only completion still does NOT qualify as committed', () => {
+  it('allows an artifacts-only completion to qualify as committed', () => {
     const stamp = completionTreeStampForEvidence({ filesChanged: [ARTIFACT] }, [PAPERCUSP], matching);
 
-    // Excluding artifacts from the floor must never mean a close with no provable code
-    // evidence at all can mint the strongest authority.
+    // The explicit out-of-repo classification is the proof for this non-code
+    // deliverable; there is no repository settlement receipt to wait for.
     expect(stamp?.contentIdentity).toEqual([expect.objectContaining({ outOfRepoArtifact: true })]);
-    expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(false);
-    expect(committedCloseDowngradedForUnprovenContentIdentity('committed', [ARTIFACT], stamp)).toBe(true);
+    expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(true);
+    expect(committedCloseDowngradedForUnprovenContentIdentity('committed', [ARTIFACT], stamp)).toBe(false);
   });
 
   it('CONTROL: an artifact citation does not excuse a real content mismatch elsewhere', () => {

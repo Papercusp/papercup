@@ -89,7 +89,7 @@ describe("workspace-host agent verification probes", () => {
     expect(report.allReady).toBe(false);
   });
 
-  it.each([[], ["claude", "claude"], ["unknown"], null, "claude"].map((requestedAgents) => ({ requestedAgents })))(
+  it.each([[], Array(1), ["claude", "claude"], ["unknown"], null, "claude"].map((requestedAgents) => ({ requestedAgents })))(
     "rejects malformed requested-agent coverage before invoking a runtime: %j",
     async ({ requestedAgents }) => {
       const runner = new ScriptedRunner(AUTHENTICATED);

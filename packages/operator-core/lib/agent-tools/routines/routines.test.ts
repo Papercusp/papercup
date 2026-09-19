@@ -1774,6 +1774,30 @@ describe('routines:set', () => {
     expect(b).toMatchObject({ dryRun: true, applied: false });
   });
 
+  it('returns a non-retryable stale_target when the routine disappears after capture and before apply', async () => {
+    const row = { trigger_config: { cron: '0 */10 * * * *' }, active: true, next_fire_at: null };
+    sqlMock.mockResolvedValueOnce([row]); // control harness capturePrev
+    sqlMock.mockResolvedValueOnce([]); // apply's second read sees the deleted row
+
+    const b = body(
+      await setTool.handler(
+        { name: 'git-sync', installSlug: 'papercusp', active: false, reason: 'race regression' } as never,
+        { role: 'operator' } as never,
+      ),
+    );
+
+    expect(b).toEqual({
+      ok: false,
+      routine: 'papercusp/git-sync',
+      error: 'stale_target',
+      disposition: 'stale_target',
+      retryable: false,
+      applied: false,
+      message: expect.stringContaining('disappeared after its snapshot was captured'),
+    });
+    expect(sqlMock.mock.calls.some((call) => call.some((value) => typeof value === 'string' && value.includes('UPDATE harness_shared.routines')))).toBe(false);
+  });
+
   it('dryRun previews trigger_config current and proposed values for an ephemeral interval retune', async () => {
     sqlMock.mockResolvedValue([
       {

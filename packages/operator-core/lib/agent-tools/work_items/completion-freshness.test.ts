@@ -232,6 +232,29 @@ describe('completionTreeContentIdentityMatches — WI-1409142 absent-key hole', 
     expect(completionTreeContentIdentityMatches(identity)).toBe(true);
   });
 
+  it('matches an artifact-only identity because the server classified it as out of repo', () => {
+    expect(
+      completionTreeContentIdentityMatches([
+        { path: '/tmp/proof.png', workingTreeBlobSha: null, headBlobSha: null, outOfRepoArtifact: true },
+      ]),
+    ).toBe(true);
+  });
+
+  it('ignores artifacts only after requiring every repo-backed entry to match', () => {
+    expect(
+      completionTreeContentIdentityMatches([
+        identity[0]!,
+        { path: '/tmp/proof.png', workingTreeBlobSha: null, headBlobSha: null, outOfRepoArtifact: true },
+      ]),
+    ).toBe(true);
+    expect(
+      completionTreeContentIdentityMatches([
+        { path: 'src/fix.ts', workingTreeBlobSha: 'd'.repeat(40), headBlobSha: 'c'.repeat(40) },
+        { path: '/tmp/proof.png', workingTreeBlobSha: null, headBlobSha: null, outOfRepoArtifact: true },
+      ]),
+    ).toBe(false);
+  });
+
   it('still rejects an explicit null, unchanged', () => {
     expect(completionTreeContentIdentityMatches([
       { path: 'src/fix.ts', workingTreeBlobSha: 'c'.repeat(40), headBlobSha: null },
@@ -334,6 +357,16 @@ describe('unprovenContentIdentityPaths (EI-21970667079827352)', () => {
             headBlobSha: null,
             headBlobUnresolvable: 'submodule-not-initialized',
           },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  it('skips explicit out-of-repo artifacts instead of warning absent-from-both', () => {
+    expect(
+      unprovenContentIdentityPaths({
+        contentIdentity: [
+          { path: '/tmp/proof.png', workingTreeBlobSha: null, headBlobSha: null, outOfRepoArtifact: true },
         ],
       }),
     ).toEqual([]);

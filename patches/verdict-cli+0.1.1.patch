@@ -182,10 +182,28 @@ index a3392d2..c83809b 100755
 +  } else { outputError(e.message); }
  }
 diff --git a/node_modules/verdict-cli/src/server.mjs b/node_modules/verdict-cli/src/server.mjs
-index 249847c..b1a1ac7 100644
+index 249847c..97f0329 100644
 --- a/node_modules/verdict-cli/src/server.mjs
 +++ b/node_modules/verdict-cli/src/server.mjs
-@@ -54,6 +54,23 @@ function profilePath(name) {
+@@ -8,8 +8,15 @@ import { createServer } from 'node:http';
+ import { writeFileSync, readFileSync, unlinkSync, existsSync, copyFileSync } from 'node:fs';
+ import { resolve, dirname } from 'node:path';
+ import { fileURLToPath } from 'node:url';
+-import { execSync } from 'node:child_process';
+-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
++import { execFileSync, execSync } from 'node:child_process';
++import {
++  createCipheriv,
++  createDecipheriv,
++  createHash,
++  pbkdf2Sync,
++  randomBytes,
++  scryptSync,
++} from 'node:crypto';
+ import { mkdirSync } from 'node:fs';
+ import { hostname, userInfo } from 'node:os';
+ 
+@@ -54,6 +61,23 @@ function profilePath(name) {
  const { chromium } = await import('playwright');
  
  let browser, context, page;
@@ -209,12 +227,56 @@ index 249847c..b1a1ac7 100644
  let idleTimer;
  const refs = new Map();
  const cursorRefs = new Map();
-@@ -62,6 +79,27 @@ let cursorRefCounter = 0;
+@@ -62,6 +86,71 @@ let cursorRefCounter = 0;
  let lastSnapshot = '';
  let previousSnapshot = '';
  const styleHistory = [];
 +const consoleMessages = [];
 +const networkRequests = [];
++
++const CHROMIUM_KEY_SCHEMA = 'chrome_libsecret_os_crypt_password_v2';
++const CHROMIUM_KEY_SALT = Buffer.from('saltysalt');
++const CHROMIUM_COOKIE_IV = Buffer.alloc(16, 0x20);
++let chromiumV11Key;
++
++function chromiumLinuxV11Key() {
++  if (chromiumV11Key) return chromiumV11Key;
++  const password = execFileSync(
++    'secret-tool',
++    ['lookup', 'xdg:schema', CHROMIUM_KEY_SCHEMA, 'application', 'chrome'],
++    { encoding: 'utf8', timeout: 5000 },
++  ).trimEnd();
++  if (!password) throw new Error('Chrome encryption key not found in the desktop secret store');
++  chromiumV11Key = pbkdf2Sync(Buffer.from(password, 'utf8'), CHROMIUM_KEY_SALT, 1, 16, 'sha1');
++  return chromiumV11Key;
++}
++
++function decryptChromiumCookieValue(value, encryptedValue, hostKey) {
++  if (value) return value;
++  if (!encryptedValue || !hostKey) return '';
++
++  const encrypted = Buffer.from(encryptedValue, 'hex');
++  const prefix = encrypted.subarray(0, 3).toString('ascii');
++  if (prefix !== 'v10' && prefix !== 'v11') return '';
++
++  // Linux Chromium uses PBKDF2(peanuts, saltysalt, 1) for legacy v10 and the
++  // libsecret password for v11. Both use AES-128-CBC with a space IV.
++  const password = prefix === 'v11' ? chromiumLinuxV11Key() : Buffer.from('peanuts', 'utf8');
++  const key = prefix === 'v11'
++    ? password
++    : pbkdf2Sync(password, CHROMIUM_KEY_SALT, 1, 16, 'sha1');
++  const decipher = createDecipheriv('aes-128-cbc', key, CHROMIUM_COOKIE_IV);
++  let decrypted = Buffer.concat([decipher.update(encrypted.subarray(3)), decipher.final()]);
++
++  // Chrome cookie DB version 24 prepends SHA-256(host_key) before encryption.
++  // Strip it only when it matches this row's host, retaining compatibility with
++  // older databases that do not carry the integrity prefix.
++  const domainHash = createHash('sha256').update(hostKey, 'utf8').digest();
++  if (decrypted.subarray(0, domainHash.length).equals(domainHash)) {
++    decrypted = decrypted.subarray(domainHash.length);
++  }
++  return decrypted.toString('utf8');
++}
 +
 +function clearNavigationEvidence() {
 +  consoleMessages.length = 0;
@@ -237,7 +299,7 @@ index 249847c..b1a1ac7 100644
  
  function resetIdle() {
    clearTimeout(idleTimer);
-@@ -102,7 +140,7 @@ function parseAriaSnapshot(snapshot) {
+@@ -102,7 +191,7 @@ function parseAriaSnapshot(snapshot) {
          refCounter++;
          const ref = `@e${refCounter}`;
          const locator = name
@@ -246,7 +308,7 @@ index 249847c..b1a1ac7 100644
            : page.getByRole(role);
          refs.set(ref, { locator, role, name });
          output.push(`${ref} ${line.trim()}`);
-@@ -136,13 +174,14 @@ const commands = {
+@@ -136,13 +225,14 @@ const commands = {
    async goto(args) {
      const url = args[0];
      if (!url) return 'Error: URL required';
@@ -265,7 +327,7 @@ index 249847c..b1a1ac7 100644
    async url() { return page.url(); },
    async title() { return await page.title(); },
  
-@@ -225,7 +264,7 @@ const commands = {
+@@ -225,7 +315,7 @@ const commands = {
    async click(args) {
      const sel = args[0]; if (!sel) return 'Error: selector required';
      await (await resolveRef(sel)).click({ timeout: 5000 });
@@ -274,7 +336,7 @@ index 249847c..b1a1ac7 100644
      return `Clicked ${sel}`;
    },
    async fill(args) {
-@@ -405,6 +444,7 @@ const commands = {
+@@ -405,6 +495,7 @@ const commands = {
      browser = await chromium.launch({ headless: false });
      context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
      page = await context.newPage();
@@ -282,7 +344,7 @@ index 249847c..b1a1ac7 100644
      if (cookies.length) await context.addCookies(cookies);
      if (currentUrl && currentUrl !== 'about:blank') await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
      return `Switched to headed mode. Browser visible.\nURL: ${page.url()}\nComplete manual work, then run: resume`;
-@@ -419,8 +459,6 @@ const commands = {
+@@ -419,8 +510,6 @@ const commands = {
      page = await context.newPage();
      if (cookies.length) await context.addCookies(cookies);
      if (currentUrl && currentUrl !== 'about:blank') { await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}); await page.evaluate((s) => { for (const [k, v] of Object.entries(s.localStorage || {})) localStorage.setItem(k, v); }, storage); }
@@ -291,7 +353,7 @@ index 249847c..b1a1ac7 100644
      return `Resumed headless mode.\nURL: ${page.url()}\nCookies: ${cookies.length}\nUse auth-save <name> to persist.`;
    },
    async 'goto-auth'(args) {
-@@ -430,8 +468,9 @@ const commands = {
+@@ -430,8 +519,9 @@ const commands = {
      if (pi !== -1) { profileName = args[pi + 1]; clean.splice(pi, 2); }
      const url = clean[0]; if (!url) return 'Error: URL required';
      if (profileName) { const r = await commands['auth-load']([profileName]); if (r.startsWith('Error')) return r; }
@@ -302,7 +364,36 @@ index 249847c..b1a1ac7 100644
      const finalUrl = page.url();
      if (finalUrl.includes('/login') || finalUrl.includes('/oauth') || finalUrl.includes('sso.'))
        return `Redirected to login: ${finalUrl}\nSession expired. Run: handoff -> login manually -> resume -> auth-save ${profileName || 'default'}`;
-@@ -467,21 +506,48 @@ const commands = {
+@@ -450,14 +540,24 @@ const commands = {
+   },
+   async 'cookie-import'(args) {
+     const domain = args[0]; if (!domain) return 'Error: domain required';
+-    const cookieDb = resolve(process.env.HOME, process.platform === 'darwin' ? 'Library/Application Support/Google/Chrome/Default/Cookies' : '.config/google-chrome/Default/Cookies');
++    const cookieDb = process.env.VERDICT_CHROME_COOKIE_DB
++      ? resolve(process.env.VERDICT_CHROME_COOKIE_DB)
++      : resolve(process.env.HOME, process.platform === 'darwin' ? 'Library/Application Support/Google/Chrome/Default/Cookies' : '.config/google-chrome/Default/Cookies');
+     if (!existsSync(cookieDb)) return `Chrome cookie DB not found at ${cookieDb}`;
+-    const tmp = '/tmp/verdict-cookies-copy';
++    const tmp = resolve('/tmp', `verdict-cookies-copy-${process.pid}`);
+     copyFileSync(cookieDb, tmp);
+     try {
+-      const raw = execSync(`sqlite3 -json "${tmp}" "SELECT name, value, host_key, path, is_secure, is_httponly FROM cookies WHERE host_key LIKE '%${domain}%'"`, { encoding: 'utf8', timeout: 5000 });
++      const escapedDomain = domain.replaceAll("'", "''");
++      const raw = execSync(`sqlite3 -json "${tmp}" "SELECT name, value, hex(encrypted_value) AS encrypted_value, host_key, path, is_secure, is_httponly FROM cookies WHERE host_key LIKE '%${escapedDomain}%'"`, { encoding: 'utf8', timeout: 5000 });
+       const rows = JSON.parse(raw || '[]');
+-      const cookies = rows.map(r => ({ name: r.name, value: r.value, domain: r.host_key, path: r.path || '/', secure: !!r.is_secure, httpOnly: !!r.is_httponly })).filter(c => c.value);
++      const cookies = rows.map(r => ({
++        name: r.name,
++        value: decryptChromiumCookieValue(r.value, r.encrypted_value, r.host_key),
++        domain: r.host_key,
++        path: r.path || '/',
++        secure: !!r.is_secure,
++        httpOnly: !!r.is_httponly,
++      })).filter(c => c.value);
+       if (!cookies.length) return `No unencrypted cookies for ${domain}. Chrome 80+ encrypts cookies.`;
+       await context.addCookies(cookies);
+       return `Imported ${cookies.length} cookies for ${domain}`;
+@@ -467,21 +567,48 @@ const commands = {
  
    // Tabs
    async tabs() { return context.pages().map((p, i) => `${i}: ${p.url()}${p === page ? ' (active)' : ''}`).join('\n'); },
@@ -359,7 +450,7 @@ index 249847c..b1a1ac7 100644
  
    // Advanced
    async diff(args) {
-@@ -497,24 +563,40 @@ const commands = {
+@@ -497,24 +624,40 @@ const commands = {
    async chain(args) {
      let cmds; try { cmds = JSON.parse(args.join(' ')); } catch { return 'Error: invalid JSON. Use: [["goto","url"],["snapshot","-i"]]'; }
      const results = [];
@@ -408,7 +499,7 @@ index 249847c..b1a1ac7 100644
  const token = crypto.randomUUID();
  const server = createServer(async (req, res) => {
    resetIdle();
-@@ -532,7 +614,9 @@ const server = createServer(async (req, res) => {
+@@ -532,7 +675,9 @@ const server = createServer(async (req, res) => {
    }
  });
  server.listen(port, '127.0.0.1', () => {

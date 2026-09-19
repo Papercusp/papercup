@@ -19,6 +19,31 @@ interface RoutineRow {
   metadata: Record<string, unknown> | null;
 }
 
+/**
+ * A routine that was read authoritatively but disappeared before a follow-up
+ * control mutation could use the snapshot. Callers can distinguish this
+ * reconciliation outcome from an invalid initial target or an unrelated DB
+ * failure without matching an error message.
+ */
+export class RoutineTargetMissingError extends Error {
+  readonly code = 'routine_target_missing' as const;
+
+  constructor(
+    readonly installSlug: string,
+    readonly routineName: string,
+  ) {
+    super(`routine not found: ${installSlug}/${routineName} (use routines:list to see names)`);
+    this.name = 'RoutineTargetMissingError';
+  }
+}
+
+export function isRoutineTargetMissingError(error: unknown): error is RoutineTargetMissingError {
+  return (
+    error instanceof RoutineTargetMissingError ||
+    (isRecord(error) && error.code === 'routine_target_missing')
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -75,7 +100,7 @@ export async function readRoutineSnap(
       FROM harness_shared.routines
      WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug} AND name = ${name}
      LIMIT 1`;
-  if (rows.length === 0) throw new Error(`routine not found: ${installSlug}/${name} (use routines:list to see names)`);
+  if (rows.length === 0) throw new RoutineTargetMissingError(installSlug, name);
   const row = rows[0];
   const nextDate = row.next_fire_at == null ? null : new Date(row.next_fire_at);
   return {
@@ -112,7 +137,7 @@ export async function resolveRoutineSnap(
       snapshot: await readRoutineSnap(sql, workspaceId, defaultInstallSlug, name),
     };
   } catch (error) {
-    if (!(error instanceof Error) || !error.message.startsWith('routine not found:')) throw error;
+    if (!isRoutineTargetMissingError(error)) throw error;
     const candidates = await sql<Array<{ install_slug: string }>>`
       SELECT install_slug
         FROM harness_shared.routines

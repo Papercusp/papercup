@@ -60,7 +60,7 @@ export type WorkspaceHostCanaryAgent =
 export function resolveWorkspaceHostRequestedAgents(value: unknown): readonly WorkspaceHostCanaryAgent[] {
   if (value === undefined) return WORKSPACE_HOST_CANARY_AGENTS;
   if (!Array.isArray(value) || value.length === 0 ||
-      value.some((agent) => !WORKSPACE_HOST_CANARY_AGENTS.includes(agent)) ||
+      Array.from(value).some((agent) => !WORKSPACE_HOST_CANARY_AGENTS.includes(agent)) ||
       new Set(value).size !== value.length) {
     throw new Error("requestedAgents must be a nonempty array of distinct claude, codex, or omp agents");
   }
@@ -884,7 +884,7 @@ export interface ProbeWorkspaceHostAgentsInput {
 }
 
 /**
- * Probe all three agents.
+ * Probe the requested agents, defaulting to all three.
  *
  * Sequential, not parallel: three CLIs racing for the same credential store or keychain is a
  * source of spurious failures, and a probe suite that is flaky is worse than no probe suite —

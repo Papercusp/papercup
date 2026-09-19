@@ -27539,7 +27539,7 @@
           "POST"
         ]
       },
-      "description": "List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` (a deliberate hold, so it is distinguishable from a stall). Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, `limit` to cap rows (count keeps the true total), or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).",
+      "description": "List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` (a deliberate hold, so it is distinguishable from a stall). The acceptance-grading-sweep row also carries `acceptanceBacklog` with the current non-rubric awaiting-acceptance depth and oldest plan timestamp, so a spend pause is distinguishable from an empty queue. Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, `limit` to cap rows (count keeps the true total), or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).",
       "capabilities": [
         "operator:read"
       ],
@@ -27633,7 +27633,7 @@
           "POST"
         ]
       },
-      "description": "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. Use rubrics:propose for standard rubric revisions. For a started BAR meaning change, use dryRun:true, store the returned approval on the work item, send the reviewer a pointer, then apply approvalRef:'thread-post:<id>'. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
+      "description": "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. Use rubrics:propose for standard rubric revisions. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. For a started BAR meaning change, use dryRun:true, store the returned approval on the work item, send the reviewer a pointer, then apply approvalRef:'thread-post:<id>'. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
       "capabilities": [
         "coord:write"
       ],
@@ -27749,7 +27749,7 @@
           "POST"
         ]
       },
-      "description": "Propose/replace a rubric → status \"proposed\". ⚠ Whole-document replace: call rubrics:get first and resubmit all criteria/checks; omissions need dropKeys. Standard criteria require model/method/driftMarkers; acceptance criteria may omit model/method only with a concrete outcome, non-empty driftMarkers falsifier, and at least one structured check. Removing a stored structured check, shrinking method+replication >40%, or losing a REPLICATION DRILL requires allowMethodShrink + shrinkReason.",
+      "description": "Propose/replace a rubric → status \"proposed\". ⚠ Whole-document replace: call rubrics:get first and resubmit all criteria/checks; omissions need dropKeys. Standard criteria require model/method/driftMarkers; acceptance criteria may omit model/method only with a concrete outcome, non-empty driftMarkers falsifier, and at least one structured check. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. Removing a stored structured check, shrinking method+replication >40%, or losing a REPLICATION DRILL requires allowMethodShrink + shrinkReason.",
       "capabilities": [
         "coord:write"
       ],
@@ -27774,7 +27774,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Use for a new/revised rubric (rubrics:get first; resubmit all criteria/checks). Standard criteria need model, method, and driftMarkers. Acceptance criteria are a light profile: use outcome-shaped titles, a non-empty driftMarkers falsifier, traceability to the plan goal/Decisions, regression coverage, and peer non-overlap; include at least one structured check and bind objective outcomes when possible. Each criterion should carry a replication drill; methodRef names the runbook. Stored structured check removal needs allowMethodShrink:true + shrinkReason. See /internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook.",
+        "when": "Use for a new/revised rubric (rubrics:get first; resubmit all criteria/checks). Standard criteria need model, method, and driftMarkers. Acceptance criteria are a light profile: use outcome-shaped titles, a non-empty driftMarkers falsifier, traceability to the plan goal/Decisions, regression coverage, and peer non-overlap; include at least one structured check and bind objective outcomes when possible. Each criterion should carry a replication drill; methodRef names the runbook. Acceptance methods containing native shell steps produce a non-blocking methodLint advisory; use testing:run/testing:runs, plans:audit/cited source, or state:read/recorded artifacts instead. Stored structured check removal needs allowMethodShrink:true + shrinkReason. See /internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook.",
         "notWhen": "One-off finding → free-text observation; activating a proposed rubric → rubrics:ratify. Search first to avoid duplicates.",
         "chaining": "rubrics:search → rubrics:get → rubrics:propose → independent rubrics:ratify. Preserve every structured check; intentional removal needs allowMethodShrink + shrinkReason. Review completeness and replicationSqlCheck; fix gaps first."
       }

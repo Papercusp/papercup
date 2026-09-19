@@ -17,9 +17,27 @@ export type IntervalSnapshotAdmission =
     };
 
 /** Options for acquiring the direct-session migration rendezvous. */
+export interface BackupMigrationLockWaitInfo {
+  /** Stable key used by backup producers and migration appliers. */
+  lockKey: string;
+  /** Milliseconds since this producer observed the lock as busy. */
+  waitedMs: number;
+  /** Point-in-time holder metadata; all fields are nullable when the holder raced away. */
+  holderPid: number | null;
+  holderApplicationName: string | null;
+  holderState: string | null;
+  holderQueryStartedAt: string | null;
+}
+
+export type BackupMigrationLockWaitReporter = (
+  info: BackupMigrationLockWaitInfo,
+) => void | Promise<void>;
+
 export interface BackupMigrationLockOptions {
   /** Return immediately with `undefined` when another producer holds the lock. */
   tryOnly?: boolean;
+  /** Report a blocking wait and repeat while the lock remains held. */
+  onWaiting?: BackupMigrationLockWaitReporter;
 }
 
 /** A held direct-session migration rendezvous for a backup snapshot. */
