@@ -190,6 +190,47 @@ describe('work_items:set_blocker', () => {
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
+  it('ignores release-plane tokens in provenance evidence for an unrelated blocker', async () => {
+    const item = {
+      id: 'EI-23537178579858762-regression',
+      family: 'issue',
+      kind: 'bug',
+      state: 'open',
+      harness: 'papercusp',
+      title: 'Record a peer grading dependency.',
+      summary: 'Wait for the peer grading pass to finish.',
+      payload: {},
+    };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+      ...item,
+      payload: { ...item.payload, ...patch },
+    }));
+
+    const out = await one({
+      id: item.id,
+      kind: 'gate',
+      capability: 'live-dependency',
+      ref: 'work-item:done:WI-10001764',
+      summary: 'The peer grading pass is still pending.',
+      evidence: 'Verified on :3170; deployed :3070 misreports this field.',
+      nextVerb: 'events:await',
+    });
+
+    expect(out).toMatchObject({ ok: true, id: item.id });
+    expect(out.activeBlockers).toEqual([
+      expect.objectContaining({
+        ref: 'work-item:done:WI-10001764',
+        evidence: 'Verified on :3170; deployed :3070 misreports this field.',
+      }),
+    ]);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      item.id,
+      'blocked',
+      expect.objectContaining({ by: 'su-a' }),
+    );
+  });
+
   it('does not let item metadata launder a generic deployed-main blocker', async () => {
     const item = {
       id: 'EI-23090624251629318',
