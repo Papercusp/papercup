@@ -11,6 +11,7 @@ import {
   resolveMcpClientId,
   resolveMcpWorkspace,
   resolveCandidatePorts,
+  isRecoverableAuthorityDenial,
   // @ts-expect-error -- plain .mjs launcher script, no type declarations.
 } from '../../../scripts/mcp-call.mjs';
 
@@ -165,6 +166,16 @@ describe('mcp-call argument parsing', () => {
       candidatePorts: ['3170'],
       pinned: true,
     });
+  });
+
+  it('recognizes only the stale session-authority denial as a canonical fallback signal', () => {
+    const stale = [
+      'authorization_denied: Kernel preflight denied tool "coord:whoami":',
+      'current session authority could not be read; no effect authorized',
+    ].join(' ');
+    expect(isRecoverableAuthorityDenial(stale)).toBe(true);
+    expect(isRecoverableAuthorityDenial('authorization_denied: role is not allowed')).toBe(false);
+    expect(isRecoverableAuthorityDenial('current session authority could not be read')).toBe(false);
   });
 });
 

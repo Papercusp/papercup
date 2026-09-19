@@ -513,6 +513,24 @@ const subs = new PgEntitySubscriptionStore(coordOpts);
 const links = new PgLinkStore(coordOpts);
 const blockingLinks = createBlockingEdgeReader(links);
 
+/** Bound feature-family coord relation writes so an interactive work_items:link
+ * cannot hold the tool open on the unbounded admin pool after terminal work has
+ * already committed (EI-23686882821651126). Work-item blocking edges use their
+ * own serializable seam below and are intentionally not routed here. */
+async function linkFeatureRelationBounded(src: ObjectRef, dst: ObjectRef, rel: string, by?: string): Promise<void> {
+  await boundedOrgTxn(async (tx) => {
+    const txLinks = new PgLinkStore({ ...coordOpts, getSql: () => tx });
+    await txLinks.link(src, dst, rel, { created_by: by, created_ts: nowIso() });
+  });
+}
+
+async function unlinkFeatureRelationBounded(src: ObjectRef, dst: ObjectRef, rel: string): Promise<void> {
+  await boundedOrgTxn(async (tx) => {
+    const txLinks = new PgLinkStore({ ...coordOpts, getSql: () => tx });
+    await txLinks.unlink(src, dst, rel);
+  });
+}
+
 /** The ObjectRef a work-item presents to the coord substrate (per family). */
 export function workItemObjectRef(wi: Pick<WorkItem, 'family' | 'harness' | 'id'>): ObjectRef {
   if (wi.family === 'issue') return { kind: ISSUE_KIND, ref: wi.id };
@@ -9238,7 +9256,7 @@ export async function linkWorkItem(
     if (rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')) {
       await mirrorWorkItemBlockingEdge(src, dst, { createdBy: opts.by, satisfaction: opts.satisfaction });
     } else {
-      await links.link(src, dst, rel, { created_by: opts.by, created_ts: nowIso() });
+      await linkFeatureRelationBounded(src, dst, rel, opts.by);
     }
   }
   if (rel === 'blocks') await syncDerivedBlockerSubscriptions(dst);
@@ -9267,7 +9285,7 @@ export async function unlinkWorkItem(
     if (rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')) {
       await removeMirroredWorkItemBlockingEdge(src, dst);
     } else {
-      await links.unlink(src, dst, rel);
+      await unlinkFeatureRelationBounded(src, dst, rel);
     }
   }
   if (rel === 'blocks') await subs.unsubscribeDerivedForEdge(dst, workItemObjectRef(wi));

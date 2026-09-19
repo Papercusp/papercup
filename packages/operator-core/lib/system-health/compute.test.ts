@@ -570,6 +570,24 @@ describe('computeStalePausedRoutines — stale/unexplained routine pause detecto
     expect(r[0]).toMatchObject({ name: 'scout-cycle', reasonMissing: false, critical: false });
   });
 
+  it('flags an old acceptance-grading pause when its measured queue is non-empty, preserving the backlog depth', () => {
+    const tenDaysMs = 10 * 24 * 60 * 60_000;
+    const r = computeStalePausedRoutines(
+      [{
+        name: 'acceptance-grading-sweep',
+        pausedAtMs: now - tenDaysMs,
+        pauseReason: 'owner paused background LLM spend',
+        backlogDepth: 218,
+      }],
+      now,
+    );
+    expect(r).toEqual([expect.objectContaining({
+      name: 'acceptance-grading-sweep',
+      critical: false,
+      backlogDepth: 218,
+    })]);
+  });
+
   it('flags a reasoned pause on a RELEASE-CRITICAL routine much sooner (the CRITICAL threshold)', () => {
     const criticalMs = 4 * 60 * 60_000;
     const generalMs = 24 * 60 * 60_000;

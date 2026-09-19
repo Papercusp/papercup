@@ -550,13 +550,18 @@ export function evaluateLivenessAlarm(
     const names = critical > 0
       ? (criticalNames.length ? `: ${criticalNames.join(', ')}` : '')
       : (wf?.stalePausedRoutineNames?.length ? `: ${wf.stalePausedRoutineNames.slice(0, 4).join(', ')}` : '');
+    const backlog = (wf?.stalePausedBacklogDepth ?? 0) > 0
+      ? `; downstream acceptance backlog=${wf?.stalePausedBacklogDepth}`
+      : wf?.stalePausedRoutinesUnreadable
+        ? '; downstream acceptance backlog unreadable'
+        : '';
     signals.push({
       key: 'stale-paused-routines',
       severity: critical > 0 ? 'blocker' : 'advisory',
       summary:
         critical > 0
-          ? `${critical} release/deploy-critical routine(s) on a stale/unexplained pause${names} — the deploy pipeline may be silently stopped.`
-          : `${wf?.stalePausedRoutines} routine(s) on a stale/unexplained pause${names} — an unattributed or long-standing pause nobody has re-affirmed.`,
+          ? `${critical} release/deploy-critical routine(s) on a stale/unexplained pause${names}${backlog} — the deploy pipeline may be silently stopped.`
+          : `${wf?.stalePausedRoutines} routine(s) on a stale/unexplained pause${names}${backlog} — an unattributed or long-standing pause nobody has re-affirmed.`,
     });
   }
 

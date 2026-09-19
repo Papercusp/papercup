@@ -521,6 +521,30 @@ describe('routines:list', () => {
     expect(b.routines[0]).toMatchObject({ name: 'git-sync', cron: '0 */10 * * * *', active: true, lastFiredAt: null });
   });
 
+  it('projects the measured acceptance backlog on the paused grading routine', async () => {
+    sqlMock
+      .mockResolvedValueOnce([
+        {
+          install_slug: 'home-harness',
+          name: 'acceptance-grading-sweep',
+          trigger_kind: 'cron',
+          trigger_config: { cron: null },
+          target_role: 'system:acceptance-grading-sweep',
+          active: false,
+          next_fire_at: null,
+          last_fired_at: new Date('2026-09-15T16:04:31.763Z'),
+          group_slug: null,
+          metadata: { pause: { reason: 'owner paused background LLM spend', pausedAtMs: Date.parse('2026-09-15T16:04:03.666Z') } },
+        },
+      ])
+      .mockResolvedValueOnce([{ depth: '218', oldest_plan_updated_at: new Date('2026-08-31T16:37:20.000Z') }]);
+    const b = body(await listTool.handler({ name: 'acceptance-grading-sweep' } as never, { role: 'su' } as never));
+    expect(b.routines[0].acceptanceBacklog).toEqual({
+      depth: 218,
+      oldestPlanUpdatedAt: '2026-08-31T16:37:20.000Z',
+    });
+  });
+
   it('accepts harness as a compatibility alias for installSlug and rejects conflicting filters', async () => {
     expect(listTool.args.safeParse({ harness: 'papercusp' }).success).toBe(true);
     expect(listTool.args.safeParse({ installSlug: 'papercusp', harness: 'papercusp' }).success).toBe(true);

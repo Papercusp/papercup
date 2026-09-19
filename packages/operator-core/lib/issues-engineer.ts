@@ -619,6 +619,27 @@ const links = new PgLinkStore(coordOpts);
 const blockingLinks = createBlockingEdgeReader(links);
 // (topic-subscriber resolution now lives in fanoutForObject's own stores — A6.)
 
+/**
+ * Keep interactive link writes on the bounded admin-pool transaction used by
+ * other issue substrate writes. A bare PgLinkStore uses the migration/admin
+ * pool directly, which intentionally has no statement_timeout; a stalled
+ * duplicate link could outlive the 60s tool handler after terminal completion
+ * already committed (EI-23686882821651126).
+ */
+async function linkIssueRelationBounded(src: ObjectRef, dst: ObjectRef, rel: string, by?: string): Promise<void> {
+  await boundedOrgTxn(async (tx) => {
+    const txLinks = new PgLinkStore({ ...coordOpts, getSql: () => tx });
+    await txLinks.link(src, dst, rel, { created_by: by, created_ts: nowIso() });
+  });
+}
+
+async function unlinkIssueRelationBounded(src: ObjectRef, dst: ObjectRef, rel: string): Promise<void> {
+  await boundedOrgTxn(async (tx) => {
+    const txLinks = new PgLinkStore({ ...coordOpts, getSql: () => tx });
+    await txLinks.unlink(src, dst, rel);
+  });
+}
+
 export function issueRef(id: string): ObjectRef {
   return { kind: ISSUE_KIND, ref: id };
 }
@@ -3869,7 +3890,7 @@ export async function linkIssue(
   } else {
     // Non-work blocks (plan items/events) and every other relation remain on the
     // polymorphic coord_links substrate.
-    await links.link(src, dst, rel, { created_by: by, created_ts: nowIso() });
+    await linkIssueRelationBounded(src, dst, rel, by);
   }
 }
 export async function unlinkIssue(id: string, dst: ObjectRef, rel: string): Promise<void> {
@@ -3877,7 +3898,7 @@ export async function unlinkIssue(id: string, dst: ObjectRef, rel: string): Prom
   if (rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')) {
     await removeMirroredWorkItemBlockingEdge(src, dst);
   } else {
-    await links.unlink(src, dst, rel);
+    await unlinkIssueRelationBounded(src, dst, rel);
   }
 }
 

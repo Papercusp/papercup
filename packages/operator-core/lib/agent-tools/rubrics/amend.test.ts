@@ -14,6 +14,12 @@ vi.mock('../../rubrics', () => ({
   previewAcceptanceBarAmendment: rubricsMocks.previewAcceptanceBarAmendment,
   rubricCompleteness: rubricsMocks.rubricCompleteness,
 }));
+vi.mock('../../rubrics-replication-sql', () => ({
+  validateRubricReplicationSql: vi.fn().mockResolvedValue({ ok: true }),
+}));
+vi.mock('../../detached-imports', () => ({
+  trackDetached: () => Promise.resolve({ notifySyncInvalidate: vi.fn() }),
+}));
 
 import amendTool, { rubricsAmendArgs } from './amend';
 
@@ -179,5 +185,30 @@ describe('rubrics:amend complete acceptance criteria input', () => {
       error: "no rubric 'missing-rubric' — rubrics:list to see refs",
       rubricRef: 'missing-rubric',
     });
+  });
+
+  it('returns a non-blocking methodLint advisory for native-shell acceptance methods', async () => {
+    const method = 'Read /proc/<pid>/environ after using pgrep -f the proxy.';
+    rubricsMocks.rubricCompleteness.mockReturnValue({ complete: true });
+    rubricsMocks.amendRubric.mockResolvedValue({
+      rubricId: 'acceptance-example',
+      kind: 'acceptance',
+      criteria: [{ ...criterion, method }],
+      methodRef: null,
+    });
+
+    const result = await body({
+      rubricRef: 'acceptance-example',
+      criteria: [{ ...criterion, method }],
+      reason: 'Refresh the acceptance procedure.',
+    });
+
+    expect(result.methodLint).toEqual([
+      expect.objectContaining({
+        code: 'acceptance-method-native-shell',
+        criterionKey: 'r-1',
+        markers: ['proc-path', 'pgrep'],
+      }),
+    ]);
   });
 });

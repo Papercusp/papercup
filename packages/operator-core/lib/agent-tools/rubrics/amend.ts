@@ -21,6 +21,7 @@ import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 import { trackDetached } from '../../detached-imports';
 import { requirementCriterionInputSchema, requirementAmendmentSchema } from '../plans/rubric-template';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
+import { lintAcceptanceCriterionMethods } from '../../rubrics-method-lint';
 
 const amendmentCriterionSchema = requirementCriterionInputSchema;
 
@@ -173,7 +174,7 @@ export default defineTool({
   name: 'rubrics:amend',
   profile: 'engineer',
   description:
-    "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. Use rubrics:propose for standard rubric revisions. For a started BAR meaning change, use dryRun:true, store the returned approval on the work item, send the reviewer a pointer, then apply approvalRef:'thread-post:<id>'. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
+    "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. Use rubrics:propose for standard rubric revisions. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. For a started BAR meaning change, use dryRun:true, store the returned approval on the work item, send the reviewer a pointer, then apply approvalRef:'thread-post:<id>'. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
   guidance: {
     when: 'A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.',
     notWhen:
@@ -274,6 +275,8 @@ export default defineTool({
     const completeness = rubricCompleteness(rubric);
     // EI-10514: schema-validate embedded replication-drill SQL against live PG (non-blocking).
     const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
+    const methodLint =
+      rubric.kind === 'acceptance' ? lintAcceptanceCriterionMethods(rubric.criteria) : [];
     // Push-on-write (push-audit 2026-07-26): the Rubrics pane + trend read these.
     void trackDetached(import('../../sync-sse'))
       .then((m) => {
@@ -283,7 +286,7 @@ export default defineTool({
       .catch(() => {});
     return {
       content: [
-        { type: 'text' as const, text: JSON.stringify({ ok: true, rubric, completeness, replicationSqlCheck }) },
+        { type: 'text' as const, text: JSON.stringify({ ok: true, rubric, completeness, replicationSqlCheck, methodLint }) },
       ],
     };
   },

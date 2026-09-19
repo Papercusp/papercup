@@ -641,7 +641,7 @@ export default defineTool({
   name: 'routines:list',
   profile: 'engineer',
   description:
-    'List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` (a deliberate hold, so it is distinguishable from a stall). Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, `limit` to cap rows (count keeps the true total), or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).',
+    'List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` (a deliberate hold, so it is distinguishable from a stall). The acceptance-grading-sweep row also carries `acceptanceBacklog` with the current non-rubric awaiting-acceptance depth and oldest plan timestamp, so a spend pause is distinguishable from an empty queue. Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, `limit` to cap rows (count keeps the true total), or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).',
   capability: 'operator:read',
   guidance: {
     // Arg guidance and the `paused` semantics are deliberately NOT restated here:
@@ -698,8 +698,9 @@ export default defineTool({
     // those are prompt-weight budgeted and this tool is already near the cap
     // (the budget guard refused the first attempt to put it in `when`).
     returns: [
-      'Each row: { installSlug, name, triggerKind, cron, targetRole, active, nextFireAt, lastFiredAt, group, paused, health }.',
+      'Each row: { installSlug, name, triggerKind, cron, targetRole, active, nextFireAt, lastFiredAt, group, paused, acceptanceBacklog, health }.',
       '`paused` — non-null means a DELIBERATE hold, carrying { reason, by, at }. Read it before calling a routine stalled; a bare active:false with paused:null is the one worth investigating.',
+      '`acceptanceBacklog` — on `acceptance-grading-sweep`, { depth, oldestPlanUpdatedAt }; depth counts active non-rubric plans in `awaiting-acceptance`. A paused routine with depth > 0 is not an empty pause; do not re-arm it automatically because grading spends LLM budget.',
       '`health` — the operational half of the routine row, null when the row carries none of it. Carries EVERY `<subsystem>_health` record the row holds, derived from the key name rather than an allowlist, so a new writer is readable the day it ships (`gate_health` on green-checkpoint: the live in-flight-retriage marker, observed candidate and consecutive-red count; `gitnexus_health` on gitnexus-reindex: embeddings coverage, DB utilization, failure streak), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at, the in-flight fire and the cron cadence: degraded means either no completed outcome for more than three scheduled intervals, or one fire in flight longer than that same window. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
       '⚠ git-sync `health.last_status` is DERIVED-OVERRIDDEN, not raw (EI-21807573331912223). When git_sync_freshness is degraded it reads `degraded (derived — see git_sync_freshness; raw: <writer value>)`, because the writer-backed headline reported `synced` on every tick for ~35 minutes while committing nothing — a skipped tick deliberately does not overwrite the last real outcome. The writer value is preserved at `git_sync_freshness.raw_last_status`; the `harness_shared.routines.metadata.last_status` column is untouched.',
       '⚠ `health.origin_freshness` — whether commits are REACHING ORIGIN, which `git_sync_freshness` cannot tell you (EI-22702954391733746): { alerted, cause, tracked_origin_sha, stall_sweeps, integrator_backlog_sweeps, publish_refused_sweeps, publish_backlog_sweeps }, null on a pot the origin watchdog does not judge. Read it as the SEPARATE question it is: `git_sync_freshness` measures whether the LOCAL COMMIT stage ran on schedule, and on a `bridged` pot the member is commit-only BY DESIGN, so `fresh` + `synced` is fully compatible with origin being arbitrarily stale — measured 2026-09-08, this surface read a clean bill for ~8h while origin sat 26 commits behind. When `alerted:true` the `last_status` headline is derived-overridden to say so.',
@@ -776,6 +777,7 @@ export default defineTool({
       lastFiredAt: z.string().nullable().optional(),
       group: z.string().nullable().optional(),
       paused: z.unknown().nullable().optional(),
+      acceptanceBacklog: z.unknown().nullable().optional(),
       health: z.unknown().nullable().optional(),
       plane: z.unknown().optional(),
     })
@@ -825,6 +827,7 @@ export default defineTool({
           // trimmed is the tier an agent sees by default — dropping `paused` here would
           // reinstate the whole bug for every default call.
           paused: r.paused ?? null,
+          acceptanceBacklog: r.acceptanceBacklog ?? null,
           // EI-20503768406496801: the SAME bug as `paused` above, one field over.
           // This allowlist REBUILDS the row, so a field added to the mapper does not
           // arrive here — it is dropped silently, and only on the tier agents actually
@@ -868,6 +871,7 @@ export default defineTool({
           nextFireAt: null,
           group: null,
           paused: null,
+          acceptanceBacklog: null,
           // Keep this notice row the SAME SHAPE as a real row above: a sentinel
           // missing keys its siblings have reads as "this routine has no health"
           // rather than "this is not a routine".
@@ -980,6 +984,20 @@ export default defineTool({
          AND (NOT ${groupFilterActive}::boolean OR (${groupIsNull}::boolean AND group_slug IS NULL) OR group_slug = ${groupVal})
        ORDER BY install_slug, name`;
     const home = operatorHomeHarnessSlug();
+    let acceptanceBacklog: { depth: number; oldestPlanUpdatedAt: string | null } | null = null;
+    if (rows.some((r) => r.name === 'acceptance-grading-sweep')) {
+      const backlog = await sql<Array<{ depth: string; oldest_plan_updated_at: Date | null }>>`
+        SELECT count(*)::text AS depth, min(updated_at) AS oldest_plan_updated_at
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${ws}
+           AND status = 'awaiting-acceptance'
+           AND template IS DISTINCT FROM 'rubric'
+           AND archived = FALSE`;
+      acceptanceBacklog = {
+        depth: Number(backlog[0]?.depth ?? 0),
+        oldestPlanUpdatedAt: iso(backlog[0]?.oldest_plan_updated_at ?? null),
+      };
+    }
     const routines = rows.map((r) => {
       const cron = (r.trigger_config as { cron?: string } | null)?.cron ?? null;
       let health: Record<string, unknown> | null;
@@ -1020,6 +1038,9 @@ export default defineTool({
         lastFiredAt: iso(r.last_fired_at),
         group: r.group_slug,
         paused: pauseOf(r.metadata, r.group_slug),
+        ...(r.name === 'acceptance-grading-sweep' && acceptanceBacklog
+          ? { acceptanceBacklog }
+          : {}),
         health,
       };
       // Only the operator-home row backs the operator pipeline cells. Other installs

@@ -27,6 +27,7 @@ import { normalizeRequirementSections } from '../../requirement-contract';
 import { VALID_PLAN_SLUG } from '../plans/source';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { trackDetached } from '../../detached-imports';
+import { lintAcceptanceCriterionMethods } from '../../rubrics-method-lint';
 
 const driftMarkers = z
   .string()
@@ -363,9 +364,9 @@ export default defineTool({
   name: 'rubrics:propose',
   profile: 'engineer',
   description:
-    'Propose/replace a rubric → status "proposed". ⚠ Whole-document replace: call rubrics:get first and resubmit all criteria/checks; omissions need dropKeys. Standard criteria require model/method/driftMarkers; acceptance criteria may omit model/method only with a concrete outcome, non-empty driftMarkers falsifier, and at least one structured check. Removing a stored structured check, shrinking method+replication >40%, or losing a REPLICATION DRILL requires allowMethodShrink + shrinkReason.',
+    'Propose/replace a rubric → status "proposed". ⚠ Whole-document replace: call rubrics:get first and resubmit all criteria/checks; omissions need dropKeys. Standard criteria require model/method/driftMarkers; acceptance criteria may omit model/method only with a concrete outcome, non-empty driftMarkers falsifier, and at least one structured check. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. Removing a stored structured check, shrinking method+replication >40%, or losing a REPLICATION DRILL requires allowMethodShrink + shrinkReason.',
   guidance: {
-    when: 'Use for a new/revised rubric (rubrics:get first; resubmit all criteria/checks). Standard criteria need model, method, and driftMarkers. Acceptance criteria are a light profile: use outcome-shaped titles, a non-empty driftMarkers falsifier, traceability to the plan goal/Decisions, regression coverage, and peer non-overlap; include at least one structured check and bind objective outcomes when possible. Each criterion should carry a replication drill; methodRef names the runbook. Stored structured check removal needs allowMethodShrink:true + shrinkReason. See /internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook.',
+    when: 'Use for a new/revised rubric (rubrics:get first; resubmit all criteria/checks). Standard criteria need model, method, and driftMarkers. Acceptance criteria are a light profile: use outcome-shaped titles, a non-empty driftMarkers falsifier, traceability to the plan goal/Decisions, regression coverage, and peer non-overlap; include at least one structured check and bind objective outcomes when possible. Each criterion should carry a replication drill; methodRef names the runbook. Acceptance methods containing native shell steps produce a non-blocking methodLint advisory; use testing:run/testing:runs, plans:audit/cited source, or state:read/recorded artifacts instead. Stored structured check removal needs allowMethodShrink:true + shrinkReason. See /internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook.',
     notWhen:
       'One-off finding → free-text observation; activating a proposed rubric → rubrics:ratify. Search first to avoid duplicates.',
     chaining:
@@ -388,6 +389,7 @@ export default defineTool({
       rubric: z.unknown().optional(),
       completeness: z.unknown().optional(),
       replicationSqlCheck: z.unknown().optional(),
+      methodLint: z.unknown().optional(),
       statusOverride: z.unknown().nullable().optional(),
     })
     .passthrough(),
@@ -428,6 +430,8 @@ export default defineTool({
     // EI-10514: schema-validate embedded replication-drill SQL against live PG
     // (non-blocking — see rubrics-replication-sql.ts for why this warns, never rejects).
     const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
+    const methodLint =
+      rubric.kind === 'acceptance' ? lintAcceptanceCriterionMethods(rubric.criteria) : [];
     // EI-21909559308315843 / EI-21909563388028590: an acceptance rubric always activates
     // on propose — the ONE case it doesn't is the deliberate EI-21296891484659125 guard
     // (rubrics.ts) refusing to resurrect an already-retired acceptance rubric via
@@ -471,7 +475,7 @@ export default defineTool({
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, rubric, completeness, replicationSqlCheck, statusOverride }),
+          text: JSON.stringify({ ok: true, rubric, completeness, replicationSqlCheck, methodLint, statusOverride }),
         },
       ],
     };

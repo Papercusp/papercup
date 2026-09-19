@@ -272,7 +272,9 @@ staging_live_client_count() {
 }
 
 # Read a dev:restart JSON result from stdin. Exit 0 only when the coordinated
-# restart actually fired or was verified-coalesced with a recent peer restart.
+# restart actually fired, was verified-coalesced with a recent peer restart, or
+# returned the explicitly supported asynchronous staging-start state. The last
+# case is still followed by this script's exact-source readiness loop below.
 restart_result_is_accepted() {
   node -e '
     let body = "";
@@ -281,7 +283,13 @@ restart_result_is_accepted() {
     process.stdin.on("end", () => {
       try {
         const result = JSON.parse(body);
-        process.exit(result?.ok === true && (result?.restarted === true || result?.coalesced === true) ? 0 : 1);
+        const asyncStarting =
+          result?.ok === true &&
+          result?.restartScheduled === true &&
+          result?.restartObserved === true &&
+          result?.stagingReadiness?.ready === false &&
+          result?.stagingReadiness?.outcome === "starting";
+        process.exit(result?.ok === true && (result?.restarted === true || result?.coalesced === true || asyncStarting) ? 0 : 1);
       } catch {
         process.exit(1);
       }

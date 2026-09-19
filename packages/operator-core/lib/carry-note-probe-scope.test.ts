@@ -111,6 +111,15 @@ describe('describeProbeScope — the bound a probe declares about itself', () =>
     expect(describeProbeScope(recheck)?.label).toBe(label);
   });
 
+  it('unions bounds and scalar observations across top-level commands', () => {
+    const recheck =
+      "journalctl --since '60 min ago' | grep GATE; tail -2 /tmp/send.log; pgrep -cf '[h]n-send-remaining'";
+    expect(describeProbeScope(recheck)).toEqual({
+      label: 'last 60 min + last 2 lines + process count',
+      kind: 'composite',
+    });
+  });
+
   it('returns null for an UNBOUNDED probe — the common, correct answer', () => {
     for (const r of [
       'npm run test:file -- packages/operator-core/lib/x.test.ts',
@@ -168,6 +177,46 @@ describe('detectScopeOverreach — the advisory lint', () => {
     expect(
       detectScopeOverreach([{ ...overreaching, claim: 'the 14:42 run SKIPPED after 165.71s' }]),
     ).toHaveLength(0);
+  });
+
+  it('does NOT flag a zero-process claim when a later command directly returns that count', () => {
+    const recheck =
+      "journalctl --since '60 min ago' | tail -2; jq '.items | length' state.json; pgrep -cf '[h]n-send-remaining'";
+    expect(
+      detectScopeOverreach([
+        {
+          claim: 'ZERO hn-send-remaining processes were running at 21:45Z.',
+          recheck,
+          verified: 'checked',
+        },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('still flags a count claim whose subject is not covered by the scalar observation', () => {
+    const recheck =
+      "journalctl --since '60 min ago' | tail -2; pgrep -cf '[h]n-send-remaining'";
+    expect(
+      detectScopeOverreach([
+        {
+          claim: 'ZERO gate runs produced a verdict today.',
+          recheck,
+          verified: 'checked',
+        },
+      ]),
+    ).toMatchObject([{ quantifier: 'ZERO', probeScope: 'last 60 min + process count' }]);
+  });
+
+  it('does not treat a process count as proof of a universal positive claim', () => {
+    expect(
+      detectScopeOverreach([
+        {
+          claim: 'ALL hn-send-remaining processes were healthy.',
+          recheck: "pgrep -cf '[h]n-send-remaining'",
+          verified: 'checked',
+        },
+      ]),
+    ).toMatchObject([{ quantifier: 'ALL', probeScope: 'process count' }]);
   });
 
   /**

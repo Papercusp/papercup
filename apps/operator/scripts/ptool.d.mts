@@ -464,6 +464,13 @@ export function isTransportFailure(error: any): boolean;
  */
 export function isExplicitHttpConnectFailure(error: any): boolean;
 /**
+ * A reachable staging listener may run an older control-plane build that
+ * cannot read this session's authority. This is a pre-dispatch refusal, so an
+ * unpinned ptool call may safely try the next discovered operator candidate.
+ * Keep the matcher exact: ordinary authorization failures must remain terminal.
+ */
+export function isRecoverableAuthorityDenial(result: any): boolean;
+/**
  * The initial MCP connect only performs the write-free initialize/tools-list
  * handshake. A local resilient MCP proxy can answer that handshake with a 502
  * after an upstream worker accepted the socket but stayed silent; that is a

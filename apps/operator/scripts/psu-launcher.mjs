@@ -3952,6 +3952,10 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   "loop:checkpoint",
   "loop:status",
   "loop:end",
+  // checkpoint:await is the shared release-gate sleep primitive named by
+  // checkpoint-run/trace. Seed it for trimmed Codex sessions because tools:find
+  // cannot guarantee a same-turn direct-wrapper refresh.
+  "checkpoint:await",
   // Event-wait lifecycle (fleet-member-dx-improvements-2026-07-10 P-008): keep the
   // seeded OMP spine aligned with the canonical event sleep/catalog/cancel verbs.
   // (events:emit cut 2026-07-19 in lockstep — 29 calls/14d seeded, no reach demand;

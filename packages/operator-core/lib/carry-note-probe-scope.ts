@@ -88,10 +88,10 @@ export interface ProbeScope {
   /** Short label rendered inline next to the badge, e.g. `last 60 min`. Never
    *  contains `]`, so it can never break the rendered row's round-trip. */
   label: string;
-  /** What kind of bound it is — a time window, a line cut, a row cap, or an
-   *  unexpanded PLACEHOLDER, which bounds the probe to nothing at all because a
-   *  successor cannot run it. */
-  kind: 'time' | 'lines' | 'rows' | 'placeholder';
+  /** What kind of bound or direct observation it is. A composite probe joins
+   *  multiple top-level command observations; an unexpanded PLACEHOLDER bounds
+   *  the probe to nothing because a successor cannot run it. */
+  kind: 'time' | 'lines' | 'rows' | 'placeholder' | 'observation' | 'composite';
 }
 
 /**
@@ -238,8 +238,180 @@ const PLACEHOLDER_PATTERNS: ReadonlyArray<{ re: RegExp; label: (m: RegExpMatchAr
  * contradict a claim that outruns it.
  */
 export function describeProbeScope(recheck: string | null | undefined): ProbeScope | null {
-  const text = (recheck ?? '').trim();
-  if (!text) return null;
+  return analyzeProbeScope(recheck).scope;
+}
+
+/** A shell command that returns a scalar count can directly establish an
+ * absence claim. It is different from a bounded stream: `tail -2` only says
+ * what the last two lines contain, while `pgrep -cf pattern` answers the
+ * current process-count question even when another command in the same probe
+ * is bounded. */
+interface DirectProbeObservation {
+  label: string;
+  subject: 'process' | 'count';
+  terms: string[];
+}
+
+/** Split the top-level commands in a recheck without splitting quoted shell
+ * text. Pipelines stay together: their final output is one observation. */
+function splitProbeCommands(text: string): string[] {
+  const commands: string[] = [];
+  let start = 0;
+  let quote: "'" | '"' | '`' | null = null;
+  let escaped = false;
+
+  const push = (end: number) => {
+    const command = text.slice(start, end).trim();
+    if (command) commands.push(command);
+  };
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === ';' || char === '\n') {
+      push(i);
+      start = i + 1;
+      continue;
+    }
+    if ((char === '&' || char === '|') && text[i + 1] === char) {
+      push(i);
+      start = i + 2;
+      i += 1;
+    }
+  }
+  push(text.length);
+  return commands;
+}
+
+function hasTopLevelPipe(text: string): boolean {
+  let quote: "'" | '"' | '`' | null = null;
+  let escaped = false;
+  for (const char of text) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '|') return true;
+  }
+  return false;
+}
+
+function cleanProbeTerm(term: string): string {
+  return term.replace(/[\[\]()*?^$\\]/g, '').trim().toLowerCase();
+}
+
+function shellWords(text: string): string[] {
+  const words: string[] = [];
+  let word = '';
+  let quote: "'" | '"' | '`' | null = null;
+  let escaped = false;
+  const push = () => {
+    if (word) words.push(word);
+    word = '';
+  };
+
+  for (const char of text) {
+    if (escaped) {
+      word += char;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      else word += char;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) push();
+    else word += char;
+  }
+  if (escaped) word += '\\';
+  push();
+  return words;
+}
+
+/** Find a scalar count in one command. The patterns are intentionally narrow:
+ * this is an advisory detector, so an unknown command remains unclassified
+ * rather than being treated as proof. */
+function directProbeObservation(command: string): DirectProbeObservation | null {
+  const words = shellWords(command);
+  const pgrepIndex = words.findIndex((word) => word.toLowerCase() === 'pgrep');
+  if (pgrepIndex >= 0) {
+    const args = words.slice(pgrepIndex + 1);
+    let count = false;
+    let target: string | undefined;
+    for (const arg of args) {
+      if (arg === '--') {
+        target = args[args.indexOf(arg) + 1];
+        break;
+      }
+      if (!target && arg.startsWith('-')) {
+        count ||= arg === '--count' || /^-[^-]*c/i.test(arg);
+        continue;
+      }
+      if (!target) target = arg;
+    }
+    if (count) {
+      const term = target ? cleanProbeTerm(target) : '';
+      return { label: 'process count', subject: 'process', terms: term ? [term] : [] };
+    }
+  }
+
+  if (/\b(?:jq|yq)\b[^\n;]*\blength\b/i.test(command)) {
+    const field = /\.([A-Za-z][A-Za-z0-9_-]*)\s*\|\s*length/i.exec(command)?.[1];
+    return { label: 'collection length', subject: 'count', terms: field ? [field.toLowerCase()] : [] };
+  }
+
+  if (/\b(?:wc)\s+-l\b/i.test(command)) {
+    return { label: 'line count', subject: 'count', terms: ['line', 'lines'] };
+  }
+
+  if (/\b(?:grep|rg)\b[^\n;|]*\s-[^\s;|]*c[^\s;|]*(?:\s|$)/i.test(command)) {
+    return { label: 'match count', subject: 'count', terms: ['match', 'matches', 'line', 'lines'] };
+  }
+
+  if (/\bcount\s*\(\s*\*\s*\)/i.test(command)) {
+    return { label: 'row count', subject: 'count', terms: ['row', 'rows', 'record', 'records', 'entry', 'entries'] };
+  }
+
+  return null;
+}
+
+function matchProbeScope(text: string): ProbeScope | null {
   for (const [kind, patterns] of [
     // Placeholder first: a probe nobody can RUN outruns every bound it declares.
     ['placeholder', PLACEHOLDER_PATTERNS],
@@ -256,6 +428,47 @@ export function describeProbeScope(recheck: string | null | undefined): ProbeSco
     }
   }
   return null;
+}
+
+interface ProbeScopeAnalysis {
+  scope: ProbeScope | null;
+  directObservations: DirectProbeObservation[];
+}
+
+/** Analyse all top-level commands as one probe. The old implementation found
+ * one regex match in the entire string, so a `tail -2; pgrep -cf ...` probe
+ * inherited the tail's bound even though the later command directly returned
+ * the process count. */
+function analyzeProbeScope(recheck: string | null | undefined): ProbeScopeAnalysis {
+  const text = (recheck ?? '').trim();
+  if (!text) return { scope: null, directObservations: [] };
+
+  const commands = splitProbeCommands(text);
+  const scopes: ProbeScope[] = [];
+  const directObservations: DirectProbeObservation[] = [];
+  for (const command of commands) {
+    const scope = matchProbeScope(command);
+    if (scope?.kind === 'placeholder') return { scope, directObservations: [] };
+    if (scope) scopes.push(scope);
+    // A pipeline's bound and final scalar output describe the same stream, so
+    // keep its historical single-scope rendering. Standalone commands joined
+    // with `;`/`&&`/newlines are the composite-probe case this analysis adds.
+    const direct = hasTopLevelPipe(command) ? null : directProbeObservation(command);
+    if (direct) directObservations.push(direct);
+  }
+
+  const labels = [...scopes.map(({ label }) => label), ...directObservations.map(({ label }) => label)]
+    .filter((label, index, all) => all.indexOf(label) === index);
+  if (labels.length === 0) return { scope: null, directObservations };
+
+  const kind = labels.length > 1
+    ? 'composite'
+    : directObservations.length > 0 && scopes.length === 0
+      ? 'observation'
+      : scopes[0]?.kind ?? 'observation';
+  const combinedLabel = labels.join(' + ');
+  const label = combinedLabel.length > 160 ? `${combinedLabel.slice(0, 157)}…` : combinedLabel;
+  return { scope: { label, kind }, directObservations };
 }
 
 /**
@@ -422,6 +635,24 @@ function findClaimQuantifier(claim: string): RegExpExecArray | null {
   return QUANTIFIER_RE.exec(maskNonAssertiveClaimClauses(claimWithoutDisclaimers));
 }
 
+function directObservationCoversClaim(
+  claim: string,
+  quantifier: string,
+  observation: DirectProbeObservation,
+): boolean {
+  // A scalar count is useful to this lint only for an explicit absence claim.
+  // It cannot prove a universal positive such as "all workers are healthy".
+  if (!/^(?:no|none|nothing|zero)$/i.test(quantifier)) return false;
+  const lowerClaim = claim.toLowerCase();
+  const subjectWords = observation.subject === 'process'
+    ? /\b(?:process(?:es)?|proc(?:esses)?|worker(?:s)?|job(?:s)?|instance(?:s)?|running|alive)\b/i
+    : /\b(?:count|line(?:s)?|match(?:es)?|row(?:s)?|record(?:s)?|entr(?:y|ies)|item(?:s)?|element(?:s)?)\b/i;
+  if (!subjectWords.test(lowerClaim)) return false;
+  const terms = observation.terms.filter((term) => term.length >= 3);
+  if (observation.subject === 'process' && terms.length === 0) return false;
+  return terms.length === 0 || terms.some((term) => lowerClaim.includes(term));
+}
+
 /**
  * ALL-CAPS imperatives and the ⛔/⚠/🚨 markers this fleet writes standing
  * discipline with. A prescriptive row is advice, not a bounded observation, so
@@ -479,7 +710,8 @@ export function detectScopeOverreach(
     if (isPrescriptiveClaim(claim)) continue;
     const q = findClaimQuantifier(claim);
     if (!q) continue;
-    const scope = describeProbeScope(row?.recheck);
+    const analysis = analyzeProbeScope(row?.recheck);
+    const scope = analysis.scope;
     if (!scope) continue;
     // A placeholder recheck is a DIFFERENT defect: not "the probe saw less than
     // the claim covers" but "the probe cannot be run at all". Reporting it here
@@ -487,6 +719,9 @@ export function detectScopeOverreach(
     // `probeScope` where a reader expects an observed bound — so this lint stays
     // exactly as narrow as it was before placeholders became a ProbeScope kind.
     if (scope.kind === 'placeholder') continue;
+    if (analysis.directObservations.some((observation) => directObservationCoversClaim(claim, q[1], observation))) {
+      continue;
+    }
     out.push({
       claim: claim.length > 160 ? `${claim.slice(0, 157)}…` : claim,
       quantifier: q[1],

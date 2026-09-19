@@ -1018,6 +1018,8 @@ export interface StalePausedRoutineInput {
    *  when it matches `opts.currentInstallSlug`. Omit when unknown (falls back to
    *  name-only matching, preserving pre-fix behavior for callers that don't have it yet). */
   installSlug?: string | null;
+  /** Measured downstream work waiting behind this paused routine, when applicable. */
+  backlogDepth?: number | null;
 }
 
 export interface StalePausedRoutine {
@@ -1037,6 +1039,8 @@ export interface StalePausedRoutine {
    *  "this survived the exemption on purpose" from an ordinary in-window row, so the
    *  alarm text can say WHY a 13-day-old pause is still being reported. */
   alwaysOnUnreaffirmed: boolean;
+  /** Present only when the routine has a non-empty measured downstream backlog. */
+  backlogDepth?: number;
 }
 
 /**
@@ -1119,12 +1123,15 @@ export function computeStalePausedRoutines(
     const installKnown = opts.currentInstallSlug != null && r.installSlug != null;
     const installMatches = !installKnown || r.installSlug === opts.currentInstallSlug;
     const critical = isReleaseCriticalNamed && installMatches;
+    const backlogDepth = Math.max(0, r.backlogDepth ?? 0);
+    const hasBacklog = backlogDepth > 0;
+    const backlogField = hasBacklog ? { backlogDepth } : {};
     const reasonMissing = r.pausedAtMs == null || !r.pauseReason;
     const anchorMs = r.pausedAtMs ?? r.updatedAtMs ?? null;
     if (anchorMs == null) {
       // No timestamp readable at all — can't judge decommissioned-vs-paused, so err
       // toward still flagging (the pre-existing, unchanged behavior for this case).
-      out.push({ name: r.name, ageMs: Number.POSITIVE_INFINITY, reasonMissing: true, critical, alwaysOnUnreaffirmed: false });
+      out.push({ name: r.name, ageMs: Number.POSITIVE_INFINITY, reasonMissing: true, critical, alwaysOnUnreaffirmed: false, ...backlogField });
       continue;
     }
     const ageMs = Math.max(0, now - anchorMs);
@@ -1133,10 +1140,10 @@ export function computeStalePausedRoutines(
     // unparseable reviewBy keeps the row reported rather than silently exempting it.
     const alwaysOnUnreaffirmed = alwaysOnNames.has(r.name) && !isReaffirmed(r.pauseReviewBy ?? null, now);
     const decommissioned = ageMs >= decommissionedMs;
-    if (!critical && !alwaysOnUnreaffirmed && decommissioned) continue; // decommissioned, not a live stale-pause signal (critical + unreaffirmed always-on rows are NEVER exempted this way — see doc comment)
+    if (!critical && !alwaysOnUnreaffirmed && !hasBacklog && decommissioned) continue; // decommissioned, not a live stale-pause signal (critical + unreaffirmed always-on rows are NEVER exempted this way — see doc comment)
     const threshold = isReleaseCriticalNamed ? criticalMs : generalMs;
-    if (reasonMissing || ageMs >= threshold) {
-      out.push({ name: r.name, ageMs, reasonMissing, critical, alwaysOnUnreaffirmed: alwaysOnUnreaffirmed && decommissioned });
+    if (reasonMissing || hasBacklog || ageMs >= threshold) {
+      out.push({ name: r.name, ageMs, reasonMissing, critical, alwaysOnUnreaffirmed: alwaysOnUnreaffirmed && decommissioned, ...backlogField });
     }
   }
   // Critical first (the symptom that matters most), then oldest first within each group.
@@ -1163,8 +1170,16 @@ export function computeStalePausedRoutines(
  *      reseed, or belonging to a decommissioned install with a recycled slug) can outvote
  *      every one of its healthy, currently-firing siblings and false-alarm a live pipeline. */
 export async function readStalePausedRoutines(sql: Sql, currentInstallSlug?: string | null, workspaceId?: string | null): Promise<StalePausedRoutine[]> {
-  const rows = await sql<Array<{ name: string; metadata: Record<string, unknown> | null; updated_at: Date | null; install_slug: string | null }>>`
-    SELECT r.name, r.metadata, r.updated_at, r.install_slug
+  const rows = await sql<Array<{ name: string; metadata: Record<string, unknown> | null; updated_at: Date | null; install_slug: string | null; backlog_depth: number | null }>>`
+    SELECT r.name, r.metadata, r.updated_at, r.install_slug,
+           CASE WHEN r.name = 'acceptance-grading-sweep' THEN (
+             SELECT count(*)::int
+               FROM harness_shared.harness_plans p
+              WHERE p.workspace_id = r.workspace_id
+                AND p.status = 'awaiting-acceptance'
+                AND p.template IS DISTINCT FROM 'rubric'
+                AND p.archived = FALSE
+           ) ELSE NULL END AS backlog_depth
       FROM harness_shared.routines r
      WHERE r.active = false
        AND (${workspaceId ?? null}::text IS NULL OR r.workspace_id = ${workspaceId ?? null})
@@ -1187,6 +1202,7 @@ export async function readStalePausedRoutines(sql: Sql, currentInstallSlug?: str
       pauseReviewBy,
       updatedAtMs: r.updated_at ? new Date(r.updated_at).getTime() : null,
       installSlug: r.install_slug,
+      backlogDepth: r.backlog_depth,
     };
   });
   return computeStalePausedRoutines(inputs, Date.now(), { currentInstallSlug });
@@ -1294,6 +1310,11 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     }
     const stalePausedRoutineNames = stalePaused.map((r) => r.name);
     const stalePausedCriticalRoutines = stalePaused.filter((r) => r.critical).length;
+    const stalePausedBacklogDepth = stalePaused.reduce(
+      (total, routine) => total + (routine.backlogDepth ?? 0),
+      0,
+    );
+    const stalePausedBacklogRoutines = stalePaused.filter((routine) => (routine.backlogDepth ?? 0) > 0).length;
     // Auto-eligible-stuck (EI-584): KEYED improvements that ARE auto-eligible but
     // sit at attempts:0 — eligible yet never dispatched (the feed isn't pumping
     // them). EI-14223: split off the KEYLESS human-review backlog (attempts:0 by
@@ -1325,6 +1346,8 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
       deadRoutineCoverage: deadCensus.routineCoverage,
       ...(deadCensus.namesTruncated ? { deadRoutineNamesTruncated: true } : {}),
       stalePausedRoutines: stalePaused.length, stalePausedRoutineNames, stalePausedCriticalRoutines,
+      ...(stalePausedBacklogRoutines > 0 ? { stalePausedBacklogRoutines } : {}),
+      ...(stalePausedBacklogDepth > 0 ? { stalePausedBacklogDepth } : {}),
       ...(stalePausedUnreadable ? { stalePausedRoutinesUnreadable: true } : {}),
       ...(frontierUnreadable ? { frontierUnreadable: true } : {}),
     };
@@ -1335,7 +1358,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
         ? `DEAD ROUTINE(S) ${data.deadRoutines}/${deadCensus.totalInScope}: ${deadRoutineNames.slice(0, 3).join(', ')}${deadCensus.count > 3 ? ', …' : ''}`
         : stalePausedCriticalRoutines > 0
           ? `STALE PAUSE on release-critical routine(s): ${stalePausedRoutineNames.slice(0, 3).join(', ')} — deploy pipeline may be silently stopped`
-          : `${frontier} ready${frontierStuck > 0 ? ` (${frontierStuck} long-stuck/gated)` : ''}, ${frontierBlocked} blocked, ${startedPlans} started plan(s)${autoEligibleStuck > 0 ? `, ${autoEligibleStuck} auto-stuck` : ''}${keylessHumanReviewBacklog > 0 ? `, ${keylessHumanReviewBacklog} keyless human-review` : ''}${stalePaused.length > 0 ? `, ${stalePaused.length} stale-paused routine(s): ${stalePausedRoutineNames.slice(0, 3).join(', ')}` : ''}`,
+          : `${frontier} ready${frontierStuck > 0 ? ` (${frontierStuck} long-stuck/gated)` : ''}, ${frontierBlocked} blocked, ${startedPlans} started plan(s)${autoEligibleStuck > 0 ? `, ${autoEligibleStuck} auto-stuck` : ''}${keylessHumanReviewBacklog > 0 ? `, ${keylessHumanReviewBacklog} keyless human-review` : ''}${stalePaused.length > 0 ? `, ${stalePaused.length} stale-paused routine(s): ${stalePausedRoutineNames.slice(0, 3).join(', ')}` : ''}${stalePausedUnreadable ? ', paused routine/backlog unreadable' : stalePausedBacklogDepth > 0 ? `, paused acceptance backlog ${stalePausedBacklogDepth}` : ''}`,
       data,
       link: { label: 'Work', href: '/adv?tab=harnesses' },
       metrics: [
@@ -1347,6 +1370,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
         m('keyless human-review', keylessHumanReviewBacklog),
         m('dead routines', data.deadRoutines, data.deadRoutines > 0 ? 'crit' : undefined),
         m('stale-paused routines', stalePaused.length, stalePausedCriticalRoutines > 0 ? 'crit' : stalePaused.length > 0 ? 'warn' : undefined),
+        m('paused acceptance backlog', stalePausedUnreadable ? 'unreadable' : stalePausedBacklogDepth, stalePausedBacklogDepth > 0 ? 'warn' : undefined),
       ],
     };
   });

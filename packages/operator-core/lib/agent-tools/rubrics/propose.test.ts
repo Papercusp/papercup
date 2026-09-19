@@ -211,6 +211,45 @@ describe('rubrics:propose args — standard-only watchdog fields', () => {
     );
   });
 
+  it('returns a non-blocking methodLint advisory for native-shell acceptance methods', async () => {
+    const method = 'Run npm run test:file -- packages/operator-core/lib/example.test.ts.';
+    mocks.proposeRubric.mockResolvedValue({
+      ...base,
+      rubricId: 'release-readiness',
+      kind: 'acceptance',
+      subjectPlan: 'release-plan',
+      criteria: [{ ...lightAcceptanceCriterion, method }],
+      description: '',
+      ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
+      methodRef: null,
+      status: 'active',
+      createdBy: null,
+      proposedBy: 'me',
+      ratifiedBy: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    const result = await proposeTool.handler(
+      {
+        ...base,
+        kind: 'acceptance',
+        subjectPlan: 'release-plan',
+        criteria: [{ ...lightAcceptanceCriterion, method }],
+      } as never,
+      {} as never,
+    );
+    const parsed = JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text);
+
+    expect(parsed.methodLint).toEqual([
+      expect.objectContaining({
+        code: 'acceptance-method-native-shell',
+        criterionKey: 'tests',
+        markers: ['npm-run'],
+      }),
+    ]);
+  });
+
   it('accepts an explicitly non-gating acceptance rubric', () => {
     const parsed = rubricsProposeArgs.safeParse({
       ...base,

@@ -313,6 +313,10 @@ export interface WorkFeedHealth {
    *  every agent's "shipped" work into a void, so this drives `crit` rather than
    *  `warn`. Optional; absent ⇒ 0. */
   stalePausedCriticalRoutines?: number;
+  /** Currently stale-paused routines with a measured downstream backlog. */
+  stalePausedBacklogRoutines?: number;
+  /** Measured downstream backlog depth (deduplicated when several routine rows share a workspace queue). */
+  stalePausedBacklogDepth?: number;
   /** EI-19462267124852221: the stale-paused read FAILED this tick (its fail-soft catch
    *  fired), so `stalePausedRoutines: 0` above means "NOT OBSERVED", not "observed zero".
    *  Without this flag the two are indistinguishable, and the liveness alarm's

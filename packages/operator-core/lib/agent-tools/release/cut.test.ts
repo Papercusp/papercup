@@ -285,6 +285,25 @@ describe('release:cut — explicit registered root routing', () => {
     expect(preflightM).toHaveBeenCalledWith({}, { root: desktopRoot });
   });
 
+  it('accepts carried release context on preflight without changing its check selection', async () => {
+    useRegisteredRoot();
+    const args = {
+      op: 'preflight',
+      root: 'isolated',
+      version: '0.0.20',
+      channel: 'alpha',
+      sourceSha,
+      mac: true,
+      windows: true,
+    };
+
+    expect(tool.args.safeParse(args).success).toBe(true);
+    const b = body(await tool.handler(args as never, { role: 'cup' } as never));
+
+    expect(b).toMatchObject({ ok: true, op: 'preflight', root: desktopRoot, rootSelector: 'isolated', worktreeRoot });
+    expect(preflightM).toHaveBeenCalledWith({ mac: true, windows: true }, { root: desktopRoot });
+  });
+
   it('routes run dry-run command construction through the selected desktop root', async () => {
     useRegisteredRoot();
 

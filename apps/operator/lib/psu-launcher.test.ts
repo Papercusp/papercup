@@ -2889,6 +2889,11 @@ describe("OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)", () => {
     expect([...OMP_CORE_MCP_TOOL_NAMES]).toContain("events:cancel");
   });
 
+  it("seeds checkpoint:await so trimmed Codex sessions have a direct release-gate wait wrapper from launch", () => {
+    expect([...CORE_MCP_TOOL_NAMES]).toContain("checkpoint:await");
+    expect([...OMP_CORE_MCP_TOOL_NAMES]).toContain("checkpoint:await");
+  });
+
   it("is identical to the canonical orchestrator CORE_MCP_TOOL_NAMES, order preserved", () => {
     expect([...OMP_CORE_MCP_TOOL_NAMES]).toEqual([...CORE_MCP_TOOL_NAMES]);
   });

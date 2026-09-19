@@ -36,6 +36,8 @@
  * comment for the "reason must literally contain the scope key" trap this
  * avoids by routing through it rather than hand-rolling the LIKE match).
  */
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { claimWatchdogFire, recentWatchdogFires, scopedFireReason } from '../../pot/watchdog';
 import { RESTART_TARGET_UNITS } from '../../agent-tools/dev/restart-target-units';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
@@ -206,6 +208,206 @@ export const RESTART_SAFETY_NOTE =
   'Do NOT reach for `override_git_sync_collision` to force past it: that SIGKILLs a commit after lock acquisition ' +
   'and strands a peer\'s uncommitted work. It is reserved for a host that is genuinely wedged, which a merely ' +
   'busy one is not.';
+
+/**
+ * EI-23577541806415104: the stale-executor alarm is actionable on the one
+ * executor that owns both git-sync and release-trigger. Keep this drain short
+ * and bounded: it waits for an ordinary git-sync fire to finish, while the
+ * restart tool's max_drain_sec:0 still refuses to trample a consequential
+ * exclusive-resource holder. Never add an override flag here — those flags
+ * turn a busy host into a peer-work-destroying restart.
+ */
+export const STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC = 45;
+export const STALE_EXECUTOR_RESTART_COOLDOWN_MS = 13 * 60_000;
+const STALE_EXECUTOR_PTOOL_TIMEOUT_MS = 30_000 + STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC * 1_000;
+const STALE_EXECUTOR_RESTART_PID_WAIT_MS = 30_000;
+const STALE_EXECUTOR_RESTART_PID_POLL_MS = 250;
+
+let staleExecutorRestartInFlight = false;
+let staleExecutorRestartCooldownUntilMs = 0;
+
+type RestartCommandResult = { stdout: string; error?: string };
+type RestartCommand = (
+  command: string,
+  args: string[],
+  options: { stdin: string; timeout: number },
+) => Promise<RestartCommandResult>;
+
+function runRestartCommand(command: string, args: string[], options: { stdin: string; timeout: number }): Promise<RestartCommandResult> {
+  return new Promise((resolve) => {
+    const child = execFile(
+      command,
+      args,
+      { timeout: options.timeout, maxBuffer: 4 * 1024 * 1024 },
+      (error, stdout) => resolve({ stdout: String(stdout ?? ''), error: error?.message }),
+    );
+    child.stdin?.end(options.stdin);
+  });
+}
+
+function parsePtoolJson(stdout: string): Record<string, unknown> | null {
+  const raw = String(stdout ?? '').trim();
+  if (!raw) return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+  } catch {
+    for (const line of raw.split('\n').reverse()) {
+      try {
+        const value: unknown = JSON.parse(line);
+        return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+      } catch {
+        // ptool may be wrapped by a launcher that writes a non-JSON prelude.
+      }
+    }
+    return null;
+  }
+}
+
+async function readBgHostMainPid(run: RestartCommand = runRestartCommand): Promise<number | null> {
+  const result = await run('systemctl', ['--user', 'show', RESTART_TARGET_UNITS['bg-host'], '-p', 'MainPID', '--value'], {
+    stdin: '',
+    timeout: 3_000,
+  });
+  if (result.error) return null;
+  const pid = Number(result.stdout.trim());
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+export interface StaleExecutorGenerationVerification {
+  verified: boolean;
+  beforePid: number | null;
+  observedPid: number | null;
+  code: 'generation_changed' | 'generation_unknown' | 'generation_unchanged' | 'baseline_unknown';
+}
+
+/** Verify that a detached restart actually replaced the bg-host generation. */
+export async function waitForStaleExecutorRestartGeneration(
+  beforePid: unknown,
+  deps: {
+    run?: RestartCommand;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+    waitMs?: number;
+    pollMs?: number;
+  } = {},
+): Promise<StaleExecutorGenerationVerification> {
+  const baseline = Number(beforePid);
+  if (!Number.isInteger(baseline) || baseline <= 0) {
+    return { verified: false, beforePid: null, observedPid: null, code: 'baseline_unknown' };
+  }
+  const run = deps.run ?? runRestartCommand;
+  const now = deps.now ?? Date.now;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const waitMs = Number.isFinite(deps.waitMs) && (deps.waitMs ?? 0) >= 0 ? deps.waitMs! : STALE_EXECUTOR_RESTART_PID_WAIT_MS;
+  const pollMs = Number.isFinite(deps.pollMs) && (deps.pollMs ?? 0) >= 0 ? deps.pollMs! : STALE_EXECUTOR_RESTART_PID_POLL_MS;
+  const startedAt = now();
+  let observedPid: number | null = null;
+  while (now() - startedAt <= waitMs) {
+    observedPid = await readBgHostMainPid(run).catch(() => null);
+    if (observedPid !== null && observedPid !== baseline) {
+      return { verified: true, beforePid: baseline, observedPid, code: 'generation_changed' };
+    }
+    const remaining = waitMs - (now() - startedAt);
+    if (remaining <= 0) break;
+    await sleep(Math.min(pollMs, remaining));
+  }
+  return {
+    verified: false,
+    beforePid: baseline,
+    observedPid,
+    code: observedPid === null ? 'generation_unknown' : 'generation_unchanged',
+  };
+}
+
+export interface StaleExecutorRestartResult {
+  attempted: boolean;
+  restarted: boolean;
+  coalesced: boolean;
+  verified: boolean;
+  code: string;
+  error?: string;
+}
+
+/**
+ * Auto-remediate only the stale, routines-enabled bg-host executor. All
+ * inputs/side effects are injectable so the sweep's recovery path has a real
+ * regression test and cannot silently grow a raw-systemctl escape hatch.
+ */
+export async function restartStaleBgHostExecutor(
+  identity: string,
+  verdict: ExecutorStalenessVerdict,
+  deps: {
+    now?: () => number;
+    run?: RestartCommand;
+    verifyGeneration?: (beforePid: unknown) => Promise<StaleExecutorGenerationVerification>;
+    ptoolScript?: string;
+  } = {},
+): Promise<StaleExecutorRestartResult> {
+  const now = deps.now ?? Date.now;
+  const nowMs = now();
+  const skipped = (code: string): StaleExecutorRestartResult => ({
+    attempted: false,
+    restarted: false,
+    coalesced: false,
+    verified: false,
+    code,
+  });
+  if (identity !== 'port-3271') return skipped('identity_not_bg_host');
+  if (!verdict.stale) return skipped('not_stale');
+  if (staleExecutorRestartInFlight) return skipped('restart_in_flight');
+  if (nowMs < staleExecutorRestartCooldownUntilMs) return skipped('restart_cooldown');
+
+  staleExecutorRestartInFlight = true;
+  try {
+    const run = deps.run ?? runRestartCommand;
+    const ptoolScript =
+      deps.ptoolScript ??
+      process.env.PAPERCUSP_PTOOL_SCRIPT?.trim() ??
+      fileURLToPath(new URL('../../../../../apps/operator/scripts/ptool.mjs', import.meta.url));
+    const beforePid = await readBgHostMainPid(run).catch(() => null);
+    const args = {
+      target: 'bg-host',
+      confirm: true,
+      authorize: true,
+      max_drain_sec: 0,
+      git_sync_drain_sec: STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC,
+      reason: `auto-remediate stale routines-enabled bg-host executor; ${identity}`,
+    };
+    const result = await run(process.execPath, [ptoolScript, 'dev:restart', '--json', '-'], {
+      stdin: JSON.stringify(args),
+      timeout: STALE_EXECUTOR_PTOOL_TIMEOUT_MS,
+    });
+    if (result.error) return { ...skipped('ptool_failed'), attempted: true, error: result.error };
+    const body = parsePtoolJson(result.stdout);
+    if (!body || body.ok !== true) {
+      return { ...skipped(typeof body?.reason === 'string' ? body.reason : 'ptool_result_unknown'), attempted: true };
+    }
+    const coalesced = body.coalesced === true;
+    if (coalesced) {
+      staleExecutorRestartCooldownUntilMs = nowMs + STALE_EXECUTOR_RESTART_COOLDOWN_MS;
+      return { attempted: true, restarted: false, coalesced: true, verified: body.verified === true, code: 'coalesced' };
+    }
+    if (body.restarted !== true) return { ...skipped('no_restart'), attempted: true };
+    const verify =
+      deps.verifyGeneration ??
+      ((pid: unknown) => waitForStaleExecutorRestartGeneration(pid, { run }));
+    const generation = await verify(body.restartedFromPid ?? beforePid);
+    if (!generation.verified) {
+      return { attempted: true, restarted: false, coalesced: false, verified: false, code: 'restart_unverified' };
+    }
+    staleExecutorRestartCooldownUntilMs = nowMs + STALE_EXECUTOR_RESTART_COOLDOWN_MS;
+    return { attempted: true, restarted: true, coalesced: false, verified: true, code: 'restarted' };
+  } catch (error) {
+    return {
+      ...skipped('restart_failed'),
+      attempted: true,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    staleExecutorRestartInFlight = false;
+  }
+}
 
 /**
  * Resolve the user-facing identity and sanctioned remediation for an executor.
@@ -636,6 +838,21 @@ export interface StaleExecutorSweepResult {
   reason: string;
   paged?: boolean;
   recovered?: boolean;
+  restart?: StaleExecutorRestartResult;
+}
+
+export interface StaleExecutorSweepDependencies {
+  /** Injectable probe values keep the sweep's orchestration testable without git or DB. */
+  bootCommit?: string | null;
+  currentCommit?: string | null;
+  bootTimeMs?: number;
+  commitsBehind?: number | null;
+  routineDrift?: RoutineCodeDrift | null;
+  restart?: (identity: string, verdict: ExecutorStalenessVerdict) => Promise<StaleExecutorRestartResult>;
+  recentWatchdogFires?: typeof recentWatchdogFires;
+  claimWatchdogFire?: typeof claimWatchdogFire;
+  raiseExecutorStalenessAlarm?: typeof raiseExecutorStalenessAlarm;
+  clearExecutorStalenessAlarm?: typeof clearExecutorStalenessAlarm;
 }
 
 /**
@@ -648,7 +865,7 @@ export async function staleRoutineExecutorSweep(opts: {
   now?: number;
   workspaceId?: string;
   installSlug?: string;
-}): Promise<StaleExecutorSweepResult> {
+}, deps: StaleExecutorSweepDependencies = {}): Promise<StaleExecutorSweepResult> {
   const thresholdSec = staleExecutorThresholdSec();
   if (thresholdSec <= 0) return { outcome: 'skipped', reason: 'kill switch' };
   const enabled = routinesEnabledHere();
@@ -660,8 +877,11 @@ export async function staleRoutineExecutorSweep(opts: {
   const identity = executorIdentity();
 
   try {
-    const [bootCommit, currentCommit] = await Promise.all([processBootCommitSha(), currentHeadCommit(now)]);
-    const bootTimeMs = processBootTimeMs();
+    const [bootCommit, currentCommit] = await Promise.all([
+      deps.bootCommit !== undefined ? deps.bootCommit : processBootCommitSha(),
+      deps.currentCommit !== undefined ? deps.currentCommit : currentHeadCommit(now),
+    ]);
+    const bootTimeMs = deps.bootTimeMs ?? processBootTimeMs();
     const thresholdMs = thresholdSec * 1_000;
     // Only pay for the drift count once this process is ALREADY past the uptime
     // threshold AND the shas differ. A young process on a moving tree is the
@@ -672,8 +892,12 @@ export async function staleRoutineExecutorSweep(opts: {
     // never disagree about whether they were even measured.
     const [commitsBehind, routineDrift] = driftWorthResolving
       ? await Promise.all([
-          commitsBehindCached(bootCommit!, currentCommit!, now),
-          routineDriftCached(bootCommit!, currentCommit!, now),
+          deps.commitsBehind !== undefined
+            ? deps.commitsBehind
+            : commitsBehindCached(bootCommit!, currentCommit!, now),
+          deps.routineDrift !== undefined
+            ? deps.routineDrift
+            : routineDriftCached(bootCommit!, currentCommit!, now),
         ])
       : [null, null];
     const verdict = evaluateExecutorStaleness({
@@ -688,19 +912,41 @@ export async function staleRoutineExecutorSweep(opts: {
     });
 
     if (!verdict.stale) {
-      const recovered = await clearExecutorStalenessAlarm({ installSlug, identity, now });
+      const clearAlarm = deps.clearExecutorStalenessAlarm ?? clearExecutorStalenessAlarm;
+      const recovered = await clearAlarm({ installSlug, identity, now });
       return { outcome: 'healthy', verdict, reason: verdict.reason, recovered };
     }
 
+    // Remediation is intentionally independent of the alert's one-shot debounce:
+    // an old alert row must not strand a still-frozen executor. The actuator has
+    // its own identity, staleness, in-flight, and cooldown guards.
+    let restart: StaleExecutorRestartResult;
+    try {
+      const restartExecutor = deps.restart ?? restartStaleBgHostExecutor;
+      restart = await restartExecutor(identity, verdict);
+    } catch (error) {
+      restart = {
+        attempted: true,
+        restarted: false,
+        coalesced: false,
+        verified: false,
+        code: 'restart_hook_failed',
+        error: error instanceof Error ? error.message : String(error),
+      };
+      console.warn(`[stale-routine-executor] remediation failed (non-fatal): ${restart.error}`);
+    }
+
     const windowHours = Math.max(1, Math.round(thresholdSec / 3_600));
+    const recentFires = deps.recentWatchdogFires ?? recentWatchdogFires;
     const alreadyFiredRecently =
-      (await recentWatchdogFires(workspaceId, installSlug, windowHours, 'stale-routine-executor', identity)) > 0;
+      (await recentFires(workspaceId, installSlug, windowHours, 'stale-routine-executor', identity)) > 0;
     if (alreadyFiredRecently) {
-      return { outcome: 'skipped', verdict, reason: 'debounced' };
+      return { outcome: 'skipped', verdict, reason: 'debounced', restart };
     }
 
     const reason = scopedFireReason(`stale routine executor: ${verdict.reason}`, identity, 'stale-routine-executor');
-    const claimed = await claimWatchdogFire({
+    const claimFire = deps.claimWatchdogFire ?? claimWatchdogFire;
+    const claimed = await claimFire({
       workspaceId,
       installSlug,
       source: 'stale-routine-executor',
@@ -710,12 +956,13 @@ export async function staleRoutineExecutorSweep(opts: {
       scopeKey: identity,
     });
     if (!claimed) {
-      return { outcome: 'skipped', verdict, reason: 'debounced (raced or backed off)' };
+      return { outcome: 'skipped', verdict, reason: 'debounced (raced or backed off)', restart };
     }
 
-    const paged = await raiseExecutorStalenessAlarm({ workspaceId, installSlug, identity, verdict, now });
+    const raiseAlarm = deps.raiseExecutorStalenessAlarm ?? raiseExecutorStalenessAlarm;
+    const paged = await raiseAlarm({ workspaceId, installSlug, identity, verdict, now });
     console.warn(`[stale-routine-executor] ALERT (${identity}): ${reason}`);
-    return { outcome: 'alerted', verdict, reason, paged };
+    return { outcome: 'alerted', verdict, reason, paged, restart };
   } catch (e) {
     return { outcome: 'error', reason: e instanceof Error ? e.message : String(e) };
   }

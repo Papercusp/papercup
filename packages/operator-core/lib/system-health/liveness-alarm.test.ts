@@ -183,6 +183,26 @@ describe('evaluateLivenessAlarm (pure)', () => {
     expect(sp?.summary).toContain('scout-cycle');
   });
 
+  it('surfaces the measured acceptance backlog behind a stale paused grading routine', () => {
+    const h = mkHealth({
+      panels: {
+        workFeed: {
+          data: {
+            deadRoutines: 0,
+            stalePausedRoutines: 1,
+            stalePausedRoutineNames: ['acceptance-grading-sweep'],
+            stalePausedCriticalRoutines: 0,
+            stalePausedBacklogRoutines: 1,
+            stalePausedBacklogDepth: 218,
+          },
+        },
+      },
+    });
+    const sp = evaluateLivenessAlarm(h, null).find((s) => s.key === 'stale-paused-routines');
+    expect(sp?.severity).toBe('advisory');
+    expect(sp?.summary).toContain('downstream acceptance backlog=218');
+  });
+
   // EI-18718973731535914: `stalePausedRoutineNames` is sorted critical-first, so the
   // top-4 slice used to bleed non-critical names (e.g. a decommissioned routine's
   // repeated rows) into a message framed around release/deploy-critical routines —

@@ -283,6 +283,17 @@ export function resolveCandidatePorts(flags = {}, env = process.env) {
 }
 
 /**
+ * A live staging operator can be reachable but still run an older control-plane
+ * build whose kernel cannot read this session's authority. That response is
+ * recoverable for an unpinned helper call: the canonical :3070 operator is the
+ * shared coordination endpoint and may already accept the same session. Keep
+ * this matcher narrow so ordinary authorization failures remain visible.
+ */
+export function isRecoverableAuthorityDenial(raw) {
+  return /authorization_denied[\s\S]*current session authority could not be read[\s\S]*no effect authorized/i.test(raw);
+}
+
+/**
  * Build the scoped-superuser query for the recovery transport.
  *
  * `mcp-call` promises JSON on stdout (and vmcall.sh validates that contract),
@@ -442,10 +453,13 @@ async function main() {
   };
 
   let res;
+  let raw;
+  let authorityFallback = false;
   const attempts = [];
-  for (const port of candidatePorts) {
+  for (let index = 0; index < candidatePorts.length; index += 1) {
+    const port = candidatePorts[index];
     try {
-      res = await fetchWithConnectionRecovery(`http://localhost:${port}/api/mcp?${qs}`, init, {
+      const candidateRes = await fetchWithConnectionRecovery(`http://localhost:${port}/api/mcp?${qs}`, init, {
         // An explicit pin means the caller deliberately chose this operator
         // and must not be silently routed to another port while it restarts.
         retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
@@ -459,7 +473,22 @@ async function main() {
           }
         },
       });
-      if (!pinned && port !== String(configuredPort)) {
+      const candidateRaw = await candidateRes.text();
+      const hasCanonicalFallback = index < candidatePorts.length - 1;
+      if (!pinned && hasCanonicalFallback && isRecoverableAuthorityDenial(candidateRaw)) {
+        authorityFallback = true;
+        continue;
+      }
+      res = candidateRes;
+      raw = candidateRaw;
+      if (!pinned && port !== String(configuredPort) && authorityFallback) {
+        console.error(
+          `mcp-call: WARNING — PAPERCUSP_HONO_PORT=${configuredPort} answered with a ` +
+            'stale session-authority denial; reached the canonical operator on port ' +
+            `${port} instead. Your environment's port is STALE: export PAPERCUSP_HONO_PORT=${port} ` +
+            '(or unset it), or every other tool deriving its URL from that variable will keep failing.',
+        );
+      } else if (!pinned && port !== String(configuredPort)) {
         console.error(
           `mcp-call: WARNING — nothing was listening on PAPERCUSP_HONO_PORT=${configuredPort}; ` +
             `reached the operator on the canonical port ${port} instead. Your environment's port is ` +
@@ -486,7 +515,6 @@ async function main() {
     );
     process.exit(4);
   }
-  const raw = await res.text();
   if (flags.raw) { process.stdout.write(raw); return; }
   const out = parseSse(raw, REQUEST_ID);
   if (out.error) {

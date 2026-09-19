@@ -419,8 +419,35 @@ describe('sync-staging-checkout.sh coordinated restart result', () => {
   it('accepts only a real restart or a verified coalesce', () => {
     expect(accepted({ ok: true, restarted: true })).toBe(true);
     expect(accepted({ ok: true, restarted: false, coalesced: true, verified: true })).toBe(true);
+    expect(
+      accepted({
+        ok: true,
+        restarted: false,
+        restartScheduled: true,
+        restartObserved: true,
+        stagingReadiness: { ready: false, outcome: 'starting' },
+      }),
+    ).toBe(true);
     expect(accepted({ ok: false, reason: 'restart_withheld' })).toBe(false);
     expect(accepted({ ok: true, restarted: false, coalesced: false })).toBe(false);
+    expect(
+      accepted({
+        ok: true,
+        restarted: false,
+        restartScheduled: true,
+        restartObserved: false,
+        stagingReadiness: { ready: false, outcome: 'starting' },
+      }),
+    ).toBe(false);
+    expect(
+      accepted({
+        ok: true,
+        restarted: false,
+        restartScheduled: true,
+        restartObserved: true,
+        stagingReadiness: { ready: false, outcome: 'failed' },
+      }),
+    ).toBe(false);
     expect(accepted('not-json')).toBe(false);
   });
 });
