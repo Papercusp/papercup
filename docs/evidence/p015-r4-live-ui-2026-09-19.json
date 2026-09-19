@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-015 R-4 identity settings live review and revision diff",
+  "framework": "operational",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-2143764",
+  "capturedAt": "2026-09-19T16:34:48Z",
+  "command": [
+    "scripts/verify-tauri-headless.sh",
+    "tauri-agent-tools eval/check",
+    "tauri-agent-tools click --pid 2143818 .pc-identities__detail .pc-identities__actions button"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-19T16:20:00Z",
+  "finishedAt": "2026-09-19T16:35:06Z",
+  "summary": "A real isolated Tauri shell (bridge PID 2143818, dev port 33700, display :90) passed origin health and loaded /settings/identities. Selecting the built-in su.mode-ideate identity and pointer-clicking Review switch produced the Current agent review state, URL identityTab=agent, a revision diff with applied and selected fields, and a non-disabled Apply identity control. The delivery controls remained disabled as policy-derived indicators. The installed papercusp-engineer path separately returned HTTP 409 because its publisher attestation is missing; that refusal was preserved as residue and was not bypassed.",
+  "assertions": [
+    {
+      "id": "desktop-health",
+      "passed": true,
+      "evidence": "verify-tauri-headless reported apiHealth=200 and rootHtml=200; bridge provenance owner was agent:su-5fe0f2de-a2a8-4019-99cb-85117be748c0:run:1789834474067892588-2047131-9807, PID 2143818, port 33700."
+    },
+    {
+      "id": "identity-route",
+      "passed": true,
+      "evidence": "tauri-agent-tools check passed location.pathname === /settings/identities and the identity panel rendered."
+    },
+    {
+      "id": "pointer-review-switch",
+      "passed": true,
+      "evidence": "After scrolling the Review switch control into the viewport, tauri-agent-tools click --pid 2143818 .pc-identities__detail .pc-identities__actions button activated the rendered control; the page URL gained identityTab=agent and the Switch review fieldset rendered."
+    },
+    {
+      "id": "revision-diff-and-apply-boundary",
+      "passed": true,
+      "evidence": "The rendered Revision diff contained inputs[2].bytes and inputs[2].contentHash applied/selected rows; the Apply identity button was present and enabled for the reviewed change. Delivery radio controls were disabled, confirming delivery is derived from slot policy."
+    },
+    {
+      "id": "installed-attestation-refusal",
+      "passed": true,
+      "evidence": "Selecting installed papercusp-engineer produced POST /api/agent-mcp/identity-management status 409. Direct source inspection identified attestation-missing (publisher attestation absent); the UI did not apply the untrusted identity. The pre-fix response exposed an empty error string and is tracked by EI-23708230039069066."
+    }
+  ],
+  "notProven": [
+    "forced apply failure and retry/rollback",
+    "sync invalidation after a durable apply",
+    "provider-picker boundary",
+    "independent passing R-4 grade",
+    "full R-7 end-to-end evidence chain"
+  ],
+  "sourcePaths": [
+    "apps/operator/app/settings/identities/page.tsx",
+    "packages/operator-core/lib/identity-management.ts",
+    "apps/operator-docs/src/content/docs/testing/agent-e2e.mdx"
+  ],
+  "testRunIds": []
+}
