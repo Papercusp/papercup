@@ -329,7 +329,11 @@ const completionSpec = z
       // EI-39573: publish the same repair shape that the schema-level string refusal returns.
       `A bare STRING is rejected because it cannot carry structured evidence. ${COMPLETION_STRING_REJECTION} ` +
       'Bug/capability-gap terminal closes also require `rootCauseVerification` (its own schema lists the keys).',
-  );
+  )
+  // EI-23318249512516833: the completion record is reused by both single-item
+  // branches and each `items[]` entry. Register it once so tools/list emits one
+  // `$defs` entry and refs rather than copying the full nested record per branch.
+  .meta({ id: 'work-items-completion-record-v1' });
 
 const SPEC_ADEQUACY_CURRENTNESS_GUIDANCE =
   '`specAdequacy.current` entries use `{ planSlug?, specId?, specRevision?, specFingerprint?, evidenceKind, evidenceRef, sourceFingerprint, testFingerprint?, fixtureFingerprint?, rubricFingerprint?, environmentFingerprint? }`; provide one entry for every selected bound evidence ref (`specAdequacy.evidenceRefs` narrows the selection; when omitted, use all bound refs) and every stored fingerprint dimension. `planSlug`, `specId`, `specRevision`, and `specFingerprint` are an all-or-none clause identity; omitted values remain unknown and cannot pass.';

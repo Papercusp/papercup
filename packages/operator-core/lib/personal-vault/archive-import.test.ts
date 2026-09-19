@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import AdmZip from 'adm-zip';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -23,6 +23,30 @@ afterEach(async () => {
 });
 
 describe('Personal Vault archive importers', () => {
+  it('rejects a ZIP declared-size bomb before allocating its claimed output size', () => {
+    // GHSA-7q85-xj36-vmfc: five stored bytes claim a 1.8 GB output. Intercept
+    // large allocations so a dependency regression fails safely in the suite.
+    const bytes = Buffer.from(
+      'UEsDBBQAAAAAAAAAAAAAAAAABQAAAAUAAAABAAAAYWhlbGxvUEsBAhQAFAAAAAAAAAAAAAAAAAAFAAAA4C7DaQEAAAAAAAAAAAAAAAAAAAAAAGFQSwUGAAAAAAEAAQAvAAAAJAAAAAAA',
+      'base64',
+    );
+    const originalAlloc = Buffer.alloc;
+    const oversized: number[] = [];
+    const allocate = vi.spyOn(Buffer, 'alloc').mockImplementation(((size: number, ...args: unknown[]) => {
+      if (size > 1024 * 1024) {
+        oversized.push(size);
+        throw new Error('test blocked unsafe ZIP allocation');
+      }
+      return Reflect.apply(originalAlloc, Buffer, [size, ...args]);
+    }) as typeof Buffer.alloc);
+    try {
+      expect(() => new AdmZip(bytes).getEntries()[0]!.getData()).toThrow();
+      expect(oversized).toEqual([]);
+    } finally {
+      allocate.mockRestore();
+    }
+  });
+
   it('keeps the manifest nonce structurally outside the data-chunk domain', () => {
     expect(() => assertPersonalArchiveDataChunkIndex(0xffff_fffe)).not.toThrow();
     expect(() => assertPersonalArchiveDataChunkIndex(0xffff_ffff)).toThrow(

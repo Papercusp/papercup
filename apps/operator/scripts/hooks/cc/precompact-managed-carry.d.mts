@@ -38,3 +38,12 @@ export function runManagedPreCompact(payload: Record<string, unknown>, options?:
     stopReason: string;
     systemMessage: string;
 }>;
+/**
+ * This file is installed verbatim under ~/.papercusp/hooks/cc and runs from an
+ * arbitrary cwd. It must not import the source-only operator-core workspace
+ * package: Node resolves bare packages from the hook's directory ancestry, not
+ * from the Papercusp checkout, so that import fails with ERR_MODULE_NOT_FOUND
+ * on a normal installed hook. Pin the direct-entry check to this installed
+ * filename instead; it is bundle-safe and has no repository dependency.
+ */
+export function isDirectCliInvocation(entryPath?: string): boolean;

@@ -1079,6 +1079,10 @@ export const messageBodyArg = shapeTaughtArray(
       'work-item and send a pointer.',
   )
   .meta({
+    // EI-23318249512516833: the same body schema is used by the single-message
+    // envelope and every `items[]` entry. A stable registry id makes Zod emit one
+    // `$defs` entry plus refs instead of serializing this large nested contract twice.
+    id: 'coord-send-body-v1',
     // Discovery must retain this conditional, aggregate bound when it drops
     // verbose descriptions. A maxLength on body/text would falsely impose an
     // unconditional or per-section cap. The send validator uses this same

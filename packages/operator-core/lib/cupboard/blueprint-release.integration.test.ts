@@ -48,7 +48,7 @@ async function fixture() {
     githubUserId: 42,
     githubLogin: 'publisher',
     devicePubkey: keypair.pubkeyBase64,
-    sign: async (bytes: Uint8Array) => signWithPrivateKeyDer(keypair.privateKeyDer, bytes),
+    sign: async (bytes: Uint8Array) => signWithPrivateKeyDer(keypair.privateKeyDer, Buffer.from(bytes)),
   };
   const publish = (sourceDir: string, id = 'identity') => prepareBlueprintPublicRelease({
     blueprintFile: join(sourceDir, 'blueprint.yaml'),
