@@ -200,6 +200,7 @@ render() {
   content="${content//'${PHONE_LIVEKIT_API_SECRET}'/$PHONE_LIVEKIT_API_SECRET}"
   content="${content//'${PHONE_LAN_IFACE}'/$LAN_IFACE}"
   content="${content//'${PHONE_WORKER_DIR}'/$WORKER_DIR}"
+  content="${content//'${PHONE_SIDECAR_DIR}'/$SIDECAR_DIR}"
   content="${content//'${PHONE_NODE_BIN}'/$NODE_BIN}"
   # Only a real placeholder counts: ${UPPER_SNAKE}. Prose that merely mentions a
   # dollar-brace must not trip this, or the guard cries wolf on its own comments.

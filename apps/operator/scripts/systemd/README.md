@@ -1331,9 +1331,10 @@ so — until 2026-09-17 — both units existed only as hand-written files in
 watch` after the email sidecar served 16 days of stale code) had to land as an
 unreviewable `<unit>.d/watch.conf` drop-in. Both are now tracked here, installed
 by symlink like every other unit in this directory, with the watcher folded into
-`ExecStart` and the drop-ins retired. The phone sidecar is NOT here: it already
-has a tracked source (`infra/phone-app/systemd/*.tmpl`, rendered by its
-`deploy.sh`) — it just lacks the `tsx watch` behaviour (filed as a follow-up).
+`ExecStart` and the drop-ins retired. The phone sidecar is rendered from its
+tracked source (`infra/phone-app/systemd/*.tmpl`) by `deploy.sh`; its template
+now uses Node's `--watch` mode too, so edits in that out-of-repo checkout restart
+the service without a manual unit restart.
 
 Invariants pinned by `apps/operator/lib/app-sidecar-units.test.ts`: `tsx watch`
 ExecStart · every path `%h`-relative · config from the injected

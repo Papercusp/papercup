@@ -13,7 +13,13 @@
  * Pure over an injected `fetch`, so the route test can stub GitHub and a future
  * host (the GitHub App's push re-scan, P-006) can reuse it verbatim.
  */
-import { canonicalTreeDigest, type TreeDigestEntry } from '@papercusp/artifact-registry';
+import {
+  canonicalTreeDigest,
+  collectIdentityValues,
+  scanIdentityLeaks,
+  type ContentIdentityLeakHit,
+  type TreeDigestEntry,
+} from '@papercusp/artifact-registry';
 import type { ListingKind } from './db.ts';
 
 /** Kinds that install from a `<listing_ref>/` directory through
@@ -55,6 +61,8 @@ export type ContentPinRefusal =
    *  cannot be enumerated, so it cannot be verified — refuse rather than pin a
    *  partial view. */
   | { ok: false; code: 'tree_truncated'; commitSha: string }
+  | { ok: false; code: 'github_blob_unreachable'; commitSha: string; path: string; status: number }
+  | { ok: false; code: 'identity_leak'; commitSha: string; hits: ContentIdentityLeakHit[] }
   | {
       ok: false;
       code: 'listing_ref_too_large';
@@ -81,6 +89,10 @@ interface GitRefResponse {
 interface GitTreeResponse {
   tree?: Array<{ path?: unknown; type?: unknown; sha?: unknown; size?: unknown }>;
   truncated?: unknown;
+}
+interface GitBlobResponse {
+  content?: unknown;
+  encoding?: unknown;
 }
 
 const seg = (s: string) => encodeURIComponent(s);
@@ -132,6 +144,41 @@ export async function pinListingContent(input: PinListingContentInput): Promise<
       byteBudget: PIN_BYTE_BUDGET,
     };
   }
+
+  // P-003: the Worker verifies the bytes it is about to trust, not only the
+  // tree shape. Harvest identity-bearing JSON fields first, then scan every
+  // serialized blob so a copied handle in prose cannot pass by hiding outside
+  // the structured key that revealed it.
+  const packageParts: string[] = [];
+  const identityValues = new Set<string>();
+  for (const entry of entries) {
+    const blobRes = await fetchImpl(`${repo}/git/blobs/${seg(entry.sha)}`, { headers });
+    if (!blobRes.ok) {
+      return { ok: false, code: 'github_blob_unreachable', commitSha, path: entry.path, status: blobRes.status };
+    }
+    const blob = (await blobRes.json()) as GitBlobResponse;
+    if (blob.encoding !== 'base64' || typeof blob.content !== 'string') {
+      return { ok: false, code: 'github_blob_unreachable', commitSha, path: entry.path, status: blobRes.status };
+    }
+    let text: string;
+    try {
+      const binary = atob(blob.content.replace(/\s/g, ''));
+      text = new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
+    } catch {
+      return { ok: false, code: 'github_blob_unreachable', commitSha, path: entry.path, status: blobRes.status };
+    }
+    packageParts.push(`${entry.path}\n${text}`);
+    if (/\.json$/i.test(entry.path)) {
+      try {
+        for (const value of collectIdentityValues(JSON.parse(text))) identityValues.add(value);
+      } catch {
+        // Non-JSON bytes are still scanned for host-shaped leaks below.
+      }
+    }
+  }
+  const leaks = scanIdentityLeaks(packageParts.join('\n'), { knownIdentityValues: [...identityValues], osUser: null });
+  if (leaks.length > 0) return { ok: false, code: 'identity_leak', commitSha, hits: leaks };
+
   const treeDigest = await canonicalTreeDigest(entries);
   return { ok: true, commitSha, treeDigest, fileCount: entries.length, byteCount };
 }
