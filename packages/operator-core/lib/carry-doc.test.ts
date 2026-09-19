@@ -45,10 +45,16 @@ function automaticRecovery(complete = true): AutomaticCompactionRecovery {
       complete,
       memoryEpoch: 23,
       controlGeneration: complete ? 17 : null,
+      controlStateHash: complete ? 'state-hash-17' : null,
       fallback: {
         verb: 'coord:orient',
         args: { afterCompaction: true },
-        when: ['marker-absent', 'marker-incomplete', 'control-generation-mismatch'],
+        when: [
+          'marker-absent',
+          'marker-incomplete',
+          'control-state-mismatch',
+          'legacy-control-generation-mismatch',
+        ],
       },
     },
     recovery: {
@@ -630,6 +636,7 @@ describe('renderCarryDoc (pure)', () => {
     expect(text).toContain('coord:declare-intent { intent, current_plan_slug, items }');
     expect(text).not.toContain('planItems');
     expect(text).toContain('control generation 17');
+    expect(text).toContain('control state hash state-hash-17');
     expect(text).toContain('current plan authority (PRECEDES carried summaries)');
     expect(text).toContain('version=31 contentHash=current-plan-hash');
     expect(text).toContain('D-009 current authority wins');
@@ -714,9 +721,9 @@ describe('renderCarryDoc (pure)', () => {
       // The stamped generation is named inline so the comparison against the
       // turn's CTRL block is mechanical rather than requiring marker parsing.
       expect(text).toContain('Automatic recovery is complete for control generation 17');
-      expect(text).toContain('while ⟦CTRL:…⟧ still reports control generation 17');
+      expect(text).toContain('⟦CTRL:…⟧ still reports the same control state hash state-hash-17');
       // The escape itself must be present and must name the verb to call.
-      expect(text).toContain('reports a DIFFERENT generation');
+      expect(text).toContain('reports a DIFFERENT control state hash');
       expect(text).toContain('this recovery is STALE for it');
       expect(text).toContain('does NOT apply');
       expect(text).toContain('Call `coord:orient { afterCompaction: true }` exactly once');
@@ -744,17 +751,26 @@ describe('renderCarryDoc (pure)', () => {
       expect(text).toContain('Automatic recovery is complete for the stamped control generation');
       expect(text).not.toContain('control generation null');
       // The mismatch escape must survive the degraded-stamp path.
-      expect(text).toContain('reports a DIFFERENT generation');
+      expect(text).toContain('legacy block without a hash, a DIFFERENT generation');
     });
 
     it('gives the judge a stale-generation escape that never names coord:orient', () => {
-      const judge = completeRecoveryInstruction(17, true);
+      const judge = completeRecoveryInstruction(17, true, 'state-hash-17');
       expect(judge).toContain('control generation 17');
-      expect(judge).toContain('reports a DIFFERENT generation');
+      expect(judge).toContain('control state hash state-hash-17');
+      expect(judge).toContain('reports a DIFFERENT control state hash');
       expect(judge).toContain('STALE for it');
       expect(judge).not.toContain('coord:orient');
       expect(judge).not.toContain('coord:declare-intent');
     });
+  });
+
+  it('treats a generation-only carry restart as current when the control state hash matches', () => {
+    const matching = completeRecoveryInstruction(17, false, 'same-state');
+    expect(matching).toContain('same control state hash same-state');
+    expect(matching).toContain('reports a DIFFERENT control state hash');
+    expect(matching).not.toContain('reports a DIFFERENT generation');
+    expect(matching).toContain('legacy block without a hash');
   });
 
   it('renders exactly one orient fallback instruction when the marker is absent or incomplete', () => {

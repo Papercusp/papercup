@@ -720,6 +720,51 @@ describe('applyRubricAmendment (rubrics:amend pure core)', () => {
     expect(normalizeAcceptanceBarCriterion(patched).barHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it('acceptance amendments resolve the displayed barKey as a criterion target alias', () => {
+    const existing = rubric(
+      [
+        crit({
+          key: 'r-1',
+          barKey: 'R-1',
+          model: 'The outcome is true.',
+          role: 'outcome',
+          mandatory: true,
+          requiredScope: ['tree'],
+          evidencePlane: 'tree',
+          passRatings: ['healthy'],
+        }),
+      ],
+      { kind: 'acceptance', subjectPlan: 'subject-plan' },
+    );
+
+    const prose = applyRubricAmendment(existing, {
+      rubricId: existing.rubricId,
+      criterion: { key: 'R-1', field: 'method', mode: 'append', text: 'Also inspect the retry log.' },
+    });
+    expect(prose.criteria[0]?.method).toContain('Also inspect the retry log.');
+
+    const requirement = applyRubricAmendment(existing, {
+      rubricId: existing.rubricId,
+      requirement: { key: 'R-1', acceptance: { condition: 'The corrected outcome is true.' } },
+    });
+    expect(requirement.criteria[0]?.model).toBe('The corrected outcome is true.');
+
+    const classified = applyRubricAmendment(existing, {
+      rubricId: existing.rubricId,
+      criterionClass: { key: 'R-1', class: 'violatable' },
+    });
+    expect(classified.criteria[0]?.criterionClass).toBe('violatable');
+
+    const replanned = applyRubricAmendment(existing, {
+      rubricId: existing.rubricId,
+      criterionEvidencePlane: { key: 'R-1', evidencePlane: 'deployed' },
+    });
+    expect(replanned.criteria[0]).toMatchObject({
+      evidencePlane: 'deployed',
+      requiredScope: ['deployed'],
+    });
+  });
+
   it('re-derives the evidence-plane requiredScope token without dropping other scope entries', () => {
     const existing = rubric(
       [

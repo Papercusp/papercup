@@ -247,6 +247,30 @@ describe('gateRedCompletionClaimVerdict (P-022)', () => {
     expect(v.detail).toContain('gate-red condition item');
   });
 
+  it('allows an administrative duplicate/drop settlement of the condition item without asserting green', () => {
+    const v = gateRedCompletionClaimVerdict(
+      { summary: 'superseded by the canonical live owner' },
+      { gateRedConditionItem: true, administrativeSettlement: true, marker: withLedger([]) },
+    );
+    expect(v).toMatchObject({
+      refuse: false,
+      reason: 'no-relevant-paths',
+      candidate: marker.candidate,
+      judgedSha: marker.repairHead,
+    });
+  });
+
+  it('does not let an administrative settlement suppress an explicit gate-red progress claim', () => {
+    const v = gateRedCompletionClaimVerdict(
+      { summary: 'Fixed 2 gate reds', filesChanged: ['a/failing.test.ts'] },
+      { gateRedConditionItem: true, administrativeSettlement: true, marker: withLedger([]) },
+    );
+    expect(v.refuse).toBe(true);
+    if (!v.refuse) throw new Error('unreachable');
+    expect(v.reason).toBe('unadmitted-paths');
+    expect(v.unadmittedPaths).toEqual(['a/failing.test.ts']);
+  });
+
   it('the gate-red CONDITION item closes once every leg is admitted or green', () => {
     const done = legs.map((l, i) => ({ ...l, status: i === 0 ? ('green' as const) : ('admitted' as const) }));
     const v = gateRedCompletionClaimVerdict({ summary: 'closing the streak item' }, { gateRedConditionItem: true, marker: withLedger(['lib/x.ts'], done) });

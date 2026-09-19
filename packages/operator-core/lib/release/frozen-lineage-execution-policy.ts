@@ -689,7 +689,7 @@ const CARRY_RETRACTION_AFTER =
 // successor. Keep this frame narrow: it requires a diagnostic/reporting subject
 // followed by a reporting verb before the candidate relation.
 const CARRY_DIAGNOSTIC_BEFORE =
-  /\b(?:refusal|refused|diagnostic|description|describ(?:e|es|ed|ing)|report(?:s|ed|ing)?|match(?:es|ed)?|contain(?:s|ed|ing)?|mention(?:s|ed|ing)?|quot(?:e|es|ed|ing)?|explain(?:s|ed|ing)?|error|message|row|prose|text|guard|policy)\b(?:\s+\S+){0,10}\s+(?:say(?:s|ing)?|said|report(?:s|ed|ing)?|match(?:es|ed)?|contain(?:s|ed|ing)?|mention(?:s|ed|ing)?|quot(?:e|es|ed|ing)?|describ(?:e|es|ed|ing)?|explain(?:s|ed|ing)?|flag(?:s|ged|ging)?|reject(?:s|ed|ing)?|refus(?:e|es|ed|ing)?|block(?:s|ed|ing)?)\b/i;
+  /\b(?:refusal|refused|diagnostic|description|describ(?:e|es|ed|ing)|report(?:s|ed|ing)?|match(?:es|ed)?|contain(?:s|ed|ing)?|mention(?:s|ed|ing)?|quot(?:e|es|ed|ing)?|explain(?:s|ed|ing)?|error|message|row|prose|text|guard|policy|receipt|checkpoint|run|verdict|note|record|output|log|evidence|result)\b(?:\s+\S+){0,10}\s+(?:say(?:s|ing)?|said|report(?:s|ed|ing)?|match(?:es|ed)?|contain(?:s|ed|ing)?|mention(?:s|ed|ing)?|quot(?:e|es|ed|ing)?|describ(?:e|es|ed|ing)?|explain(?:s|ed|ing)?|flag(?:s|ged|ging)?|reject(?:s|ed|ing)?|refus(?:e|es|ed|ing)?|block(?:s|ed|ing)?)\b/i;
 
 function normalizedCarryClause(clause: string): string {
   return clause

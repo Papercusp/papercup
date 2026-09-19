@@ -9,7 +9,8 @@
 //   that seam is called. Rewriting a returned or persisted output PROPERTY can change its
 //   runtime value while keeping the object shape and types identical. Every test in another
 //   workspace that asserts on the call COUNT/ORDER or changed output value —
-//   `toHaveBeenCalledTimes`, `callCount`, `.mock.calls`, `expect(x).not.toHaveBeenCalled()`,
+//   `toHaveBeenCalledTimes`, `callCount`, `.mock.calls`, exact `invocations.map(...).toEqual([...])`,
+//   `expect(x).not.toHaveBeenCalled()`,
 //   direct property reads, object matchers, `toHaveProperty`, or `assert.*` — is instantly
 //   stranded, in files your change never touched.
 //
@@ -69,7 +70,7 @@
 //     usually CORRECT. This names the trigger and the command; it never renders a verdict.
 //     Do NOT delete or loosen a downstream count assertion to silence it — that assertion
 //     is load-bearing; if the new count is right, UPDATE it to the new count.
-//   - REUSES the detector: `increasedSeams`, `repoForPath` and `submodulePaths` are
+//   - REUSES the detector: `increasedSeams`, `changedSeamControlFlow`, `repoForPath` and `submodulePaths` are
 //     dynamically imported from the repo resolved off the edited file's own path. The hook
 //     is INSTALLED to ~/.papercusp/hooks/cc/, detached from any repo, so a static import is
 //     impossible — but re-implementing the seam counting (a TS-AST walk) or the submodule
@@ -187,12 +188,16 @@ export function formatNudge(relPath, seamsOrTriggers, { baseSha = null, submodul
   // Keep the old `(relPath, seams, opts)` shape for installed hooks and third-party callers;
   // the detector's value-aware form passes `{ seams, values }` as the second argument.
   const seams = Array.isArray(seamsOrTriggers) ? seamsOrTriggers : seamsOrTriggers?.seams ?? [];
+  const controlFlow = Array.isArray(seamsOrTriggers) ? [] : seamsOrTriggers?.controlFlow ?? [];
   const values = Array.isArray(seamsOrTriggers) ? [] : seamsOrTriggers?.values ?? [];
   const hasCallTriggers = seams.length > 0;
+  const hasControlFlowTriggers = controlFlow.length > 0;
   const hasValueTriggers = values.length > 0;
   const lines = [
-    hasCallTriggers && hasValueTriggers
+    (hasCallTriggers || hasControlFlowTriggers) && hasValueTriggers
       ? '⚠ BEHAVIOURAL STRAND RISK — a seam call count and an output value changed; downstream assertions may be stale.'
+      : hasControlFlowTriggers
+        ? '⚠ CONTROL-FLOW STRAND RISK — a dependency call’s invocation eligibility changed; downstream invocation assertions may be stale.'
       : hasValueTriggers
         ? '⚠ OUTPUT-VALUE STRAND — you may have just changed a downstream runtime value contract you cannot see.'
         : '⚠ SEAM CALL-COUNT INCREASE — you may have just stranded call-count assertions you cannot see.',
@@ -201,11 +206,15 @@ export function formatNudge(relPath, seamsOrTriggers, { baseSha = null, submodul
   for (const s of seams) {
     lines.push(`    • ${s.seam}  (called ${s.before}× → ${s.after}×)`);
   }
-  if (hasCallTriggers) {
+  for (const change of controlFlow) {
+    lines.push(`    • ${change.seam} in ${change.function}  (control-flow eligibility changed)`);
+  }
+  if (hasCallTriggers || hasControlFlowTriggers) {
     lines.push(
       '',
-      '  Every test in ANOTHER workspace asserting on this seam’s call count or order just went',
-      '  stale — toHaveBeenCalledTimes, callCount, .mock.calls, not.toHaveBeenCalled.',
+      '  Every test in ANOTHER workspace asserting on this dependency call’s count or exact',
+      '  invocation sequence may now be stale — toHaveBeenCalledTimes, callCount, .mock.calls,',
+      '  invocations.map(...).toEqual([...]), or not.toHaveBeenCalled.',
     );
   }
   if (hasValueTriggers) {
@@ -251,7 +260,7 @@ export function formatNudge(relPath, seamsOrTriggers, { baseSha = null, submodul
     '  `--wide` runs the full reachable band if the narrowed one looks wrong.',
     '',
   );
-  if (hasCallTriggers) {
+  if (hasCallTriggers || hasControlFlowTriggers) {
     lines.push(
       '  Adding a call is usually CORRECT — this is a prompt to verify, not a verdict. If a',
       '  downstream count assertion now fails, UPDATE it to the new count; do not delete or',
@@ -317,11 +326,14 @@ export async function nudgeFor(filePath, deps = {}) {
   if (beforeText === afterText) return null;
 
   const seams = detector.increasedSeams(beforeText, afterText, relPath) ?? [];
+  const controlFlow = typeof detector.changedSeamControlFlow === 'function'
+    ? detector.changedSeamControlFlow(beforeText, afterText, relPath) ?? []
+    : [];
   const values = typeof detector.diffOutputValues === 'function'
     ? detector.diffOutputValues(beforeText, afterText, relPath) ?? []
     : [];
-  if (!seams.length && !values.length) return null;
-  return formatNudge(relPath, { seams, values }, { baseSha, submodule });
+  if (!seams.length && !controlFlow.length && !values.length) return null;
+  return formatNudge(relPath, { seams, controlFlow, values }, { baseSha, submodule });
 }
 
 /**
@@ -416,6 +428,7 @@ async function selfTest() {
   const SEAMS = [{ seam: 'deps.emit', before: 1, after: 3 }];
   const fakeDetector = (calls = null) => ({
     increasedSeams: (before, after) => (before === after ? [] : SEAMS),
+    changedSeamControlFlow: () => [],
     diffOutputValues: () => [],
     submodulePaths: () => ['libs/generic/search'],
     repoForPath: (file, subs) => {

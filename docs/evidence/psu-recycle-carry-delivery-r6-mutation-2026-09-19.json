@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Cold RECYCLE carry delivery revision-6 mutation guard",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--fake-destructive",
+    "--file",
+    "apps/operator/scripts/psu-pty-host.mjs",
+    "--mutate",
+    "s|if \\(!turnStartProof\\.persisted\\)|if (false)|g",
+    "--test",
+    "PROBE_SCRIPT={} npm run test:file -- apps/operator/lib/psu-pty-host-carry-delivery-guard.integration.test.ts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-19T14:17:06.024Z",
+  "finishedAt": "2026-09-19T14:20:59.073Z",
+  "summary": "Copy-out mutation changed the persisted native-turn proof guard to an always-false branch. The unmutated guard passed, the mutant was caught, parse validation succeeded, and the tracked source was byte-identical afterward at HEAD dc386cd955a7a5c96724989f4a20cc7c6e093117.",
+  "assertions": [
+    {
+      "id": "unmutated-baseline-green",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT reported baseline_exit=0 after the tracked-source and unmutated-copy guards passed."
+    },
+    {
+      "id": "mutant-caught",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught guard_exit=1."
+    },
+    {
+      "id": "mutant-parse-valid",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT reported mutant_parse=ok."
+    },
+    {
+      "id": "tracked-source-preserved",
+      "passed": true,
+      "evidence": "mutation-probe reported tree integrity VERIFIED; apps/operator/scripts/psu-pty-host.mjs remained byte-identical after the copy-out run."
+    },
+    {
+      "id": "named-test-provenance-clean",
+      "passed": true,
+      "evidence": "The baseline, unmutated-copy, and mutant runs reported HEAD dc386cd955 with the named integration test clean; source SHA-256 27f2ee03b9667de3fcb5a87bf2efa9810c5ac8e533f936b68246ca3071cc1d98 and test SHA-256 b0988e0be63a2f11e761b9c24dfb4f0c8bdac9b743fb407f3f62f8922c0c4f30 were measured after completion."
+    }
+  ]
+}

@@ -39,10 +39,16 @@ function automaticRecovery(complete = true): AutomaticCompactionRecovery {
       complete,
       memoryEpoch: 23,
       controlGeneration: complete ? 17 : null,
+      controlStateHash: complete ? 'state-hash-19' : null,
       fallback: {
         verb: 'coord:orient',
         args: { afterCompaction: true },
-        when: ['marker-absent', 'marker-incomplete', 'control-generation-mismatch'],
+        when: [
+          'marker-absent',
+          'marker-incomplete',
+          'control-state-mismatch',
+          'legacy-control-generation-mismatch',
+        ],
       },
     },
     recovery: {
@@ -119,14 +125,27 @@ function doc(automatic: AutomaticCompactionRecovery | null): CarryDoc {
   };
 }
 
-function orientCallsRequired(rendered: string, latestControlGeneration = 17): 0 | 1 {
+function orientCallsRequired(
+  rendered: string,
+  latestControlGeneration = 17,
+  latestControlStateHash: string | null | undefined = 'state-hash-19',
+): 0 | 1 {
   const line = rendered.split(/\r?\n/).find((candidate) => candidate.startsWith('⟦post-compaction-recovery⟧ '));
   if (!line) return 1;
   const marker = JSON.parse(line.slice(line.indexOf('{'))) as {
     complete?: boolean;
     controlGeneration?: number | null;
+    controlStateHash?: string | null;
   };
-  return marker.complete && marker.controlGeneration === latestControlGeneration ? 0 : 1;
+  if (!marker.complete) return 1;
+  // New CTRL blocks carry the semantic hash. A generation-only activation
+  // churn must not force a re-orient when that hash is unchanged.
+  if (latestControlStateHash != null) {
+    return marker.controlStateHash === latestControlStateHash ? 0 : 1;
+  }
+  // Legacy CTRL blocks have no hash, so retain the conservative generation
+  // fallback for that compatibility path.
+  return marker.controlGeneration === latestControlGeneration ? 0 : 1;
 }
 
 function fallbackInstructionCount(rendered: string): number {
@@ -174,6 +193,7 @@ describe('automatic post-compaction recovery — Claude/Codex/OMP parity', () =>
       expect(text, client).toContain('"schemaVersion":"post-compaction-recovery-v1"');
       expect(text, client).toContain('"memoryEpoch":23');
       expect(text, client).toContain('"controlGeneration":17');
+      expect(text, client).toContain('"controlStateHash":"state-hash-19"');
       expect(text, client).toContain('Do NOT call coord:orient');
       expect(text, client).toContain('coord:declare-intent { intent, current_plan_slug, items }');
     }
@@ -203,17 +223,23 @@ describe('automatic post-compaction recovery — Claude/Codex/OMP parity', () =>
     }
   });
 
-  it('an incomplete marker or later control generation also resolves to one fallback, never two', async () => {
+  it('an incomplete marker or changed control state resolves to one fallback, never two', async () => {
     const incomplete = await renderAcrossClients(doc(automaticRecovery(false)));
     for (const [client, text] of Object.entries(incomplete)) {
       expect(orientCallsRequired(text), client).toBe(1);
       expect(fallbackInstructionCount(text), client).toBe(1);
     }
 
-    const current = await renderAcrossClients(doc(automaticRecovery()));
-    for (const [client, text] of Object.entries(current)) {
-      expect(orientCallsRequired(text, 18), client).toBe(1);
-      expect(text, client).toContain('generation-mismatched');
+    const activationChurn = await renderAcrossClients(doc(automaticRecovery()));
+    for (const [client, text] of Object.entries(activationChurn)) {
+      expect(orientCallsRequired(text, 18, 'state-hash-19'), client).toBe(0);
+      expect(text, client).toContain('controlStateHash');
+    }
+
+    const changedState = await renderAcrossClients(doc(automaticRecovery()));
+    for (const [client, text] of Object.entries(changedState)) {
+      expect(orientCallsRequired(text, 18, 'state-hash-20'), client).toBe(1);
+      expect(text, client).toContain('content-mismatched');
     }
   });
 });

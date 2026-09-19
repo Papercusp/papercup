@@ -105,6 +105,24 @@ describe('work_items:set_blocker', () => {
     ).toThrow(/shorthand for capability 'credential'.*physical-device/);
   });
 
+  it('requires an explicit trigger kind when live-dependency is the capability', () => {
+    expect(() =>
+      parse({
+        id: 'WI-1',
+        kind: 'live-dependency',
+        ref: 'deploy:ready:staging',
+      }),
+    ).toThrow();
+    expect(() =>
+      parse({
+        id: 'WI-1',
+        kind: 'event',
+        capability: 'live-dependency',
+        ref: 'deploy:ready:staging',
+      }),
+    ).not.toThrow();
+  });
+
   it('persists an event blocker, parks the item, and returns the push-based await key', async () => {
     const item = {
       id: 'WI-1',

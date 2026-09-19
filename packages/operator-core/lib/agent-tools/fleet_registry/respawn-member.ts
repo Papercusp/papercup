@@ -970,9 +970,9 @@ async function preflightSavedModel(opts: {
 export default defineTool({
   name: 'fleet:respawn-member',
   description:
-    "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / carry / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader, an Overwatch pane, or the owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec (a new identity, the fleet's claim lane inherited). `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `claimKinds` is not settable here.",
+    "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / carry / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader, an Overwatch pane, or the owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec (a new identity, the fleet's claim lane inherited). When no boot-baked override is supplied, it respawns the member with the canonical saved launch profile unchanged. `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `claimKinds` is not settable here.",
   guidance: {
-    when: 'Move a member to a different model/effort/account/carry/context-size/agent/role — anything fixed at launch. It kills the old session and relaunches a replacement in the same fleet.',
+    when: 'Move a member to a different model/effort/account/carry/context-size/agent/role — anything fixed at launch — or recover it with the same saved profile. It kills the old session and relaunches a replacement in the same fleet.',
     notWhen:
       'For a RUNTIME tweak with no respawn (compaction limit, claim lane, a next-wake brief) — fleet:reconfigure-member. To seed claimKinds — fleet:launch-on-plan. To stand the whole fleet down — fleet:wind-down. To just kill (no replacement) — fleet:kill.',
     chaining: ROUTING_LADDER,
@@ -1049,27 +1049,16 @@ export default defineTool({
         .max(300)
         .optional()
         .describe(`Seconds to wait for a cooperative unmanaged-session drain before refusing the replacement launch (default ${DEFAULT_DRAIN_VERIFY_SEC}); unlike verifySec, this safety check cannot be skipped.`),
-    })
-    .refine(
-      (a) =>
-        a.model != null ||
-        a.effort != null ||
-        a.account != null ||
-        a.carry != null ||
-        a.contextSize != null ||
-        a.agent != null ||
-        a.compactionLimit != null ||
-        a.role != null ||
-        a.headless != null,
-      { message: 'pass at least one boot-baked setting to change (model/effort/account/carry/contextSize/agent/compactionLimit/role/headless); for a runtime-only change use fleet:reconfigure-member' },
-    ),
+    }),
   async handler(args, ctx) {
-    // Defense-in-depth (zod refine covers the MCP path): a respawn must change ≥1 boot-baked field.
+    // An empty delta is an intentional recovery operation: resolveSavedFleetLaunchSpec below
+    // preserves the canonical profile and relaunches an identical replacement. Non-empty deltas
+    // remain fail-closed against that profile and are audited by the resolver.
+    // An empty delta is an intentional recovery operation: resolveSavedFleetLaunchSpec below
+    // preserves the canonical profile and relaunches an identical replacement. Non-empty deltas
+    // remain fail-closed against that profile and are audited by the resolver.
     const changed = { model: args.model, effort: args.effort, account: args.account, carry: args.carry, contextSize: args.contextSize, agent: args.agent, compactionLimit: args.compactionLimit, role: args.role, headless: args.headless };
     const changedFields = Object.entries(changed).filter(([, v]) => v != null).map(([k]) => k);
-    if (changedFields.length === 0) {
-      return json({ ok: false, error: 'nothing_to_respawn', message: 'pass at least one boot-baked setting to change; for a runtime-only change use fleet:reconfigure-member' }, true);
-    }
 
     const target = await resolveFleetMemberTarget(ctx, args.member, args.fleet);
     if (!target.ok) {
@@ -1257,7 +1246,7 @@ export default defineTool({
     //    kill fails we do NOT launch a replacement — otherwise two members race the same lane.
     const kill = killOutcome(
       await killTool.handler(
-        { owner: memberOwnerId, reason: args.reason ?? `fleet:respawn-member (${changedFields.join(',')})`, close_terminal: true } as never,
+        { owner: memberOwnerId, reason: args.reason ?? `fleet:respawn-member (${changedFields.join(',') || 'saved profile'})`, close_terminal: true } as never,
         ctx,
       ),
     );
@@ -1432,7 +1421,7 @@ export default defineTool({
     //    nothing omitted can now fall through to a system default.
     const brief =
       savedLaunchSpec.effective.member.brief ??
-      `You were respawned into fleet '${slug}' with new settings (${changedFields.join(', ')}). Resume your role: if you are a self-pulling fleet member, pull work via scheduler:get_next, then verify + complete with evidence.`;
+      `You were respawned into fleet '${slug}' ${changedFields.length > 0 ? `with new settings (${changedFields.join(', ')})` : 'with the canonical saved launch profile'}. Resume your role: if you are a self-pulling fleet member, pull work via scheduler:get_next, then verify + complete with evidence.`;
     const spec: MemberSpec = {
       ...savedLaunchSpec.effective.member,
       ...(respawnRole !== undefined ? { role: respawnRole } : {}),

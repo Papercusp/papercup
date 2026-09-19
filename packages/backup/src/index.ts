@@ -26,6 +26,8 @@ export {
   type BackupIntervalScheduler,
   type BackupMigrationLock,
   type BackupMigrationLockOptions,
+  type BackupMigrationLockWaitInfo,
+  type BackupMigrationLockWaitReporter,
   type IntervalSnapshotAdmission,
 } from './config';
 export {

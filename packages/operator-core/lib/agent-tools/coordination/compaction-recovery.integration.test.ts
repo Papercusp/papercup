@@ -13,7 +13,10 @@ import {
 } from '../plans/__tests__/_pg-tool-fixture';
 
 const controlRead = vi.hoisted(() => vi.fn());
-vi.mock('./control-anchor', () => ({ buildAndPersistControlAnchor: controlRead }));
+vi.mock('./control-anchor', () => ({
+  buildAndPersistControlAnchor: controlRead,
+  controlStateHash: vi.fn(() => 'control-state-hash'),
+}));
 vi.mock('../../search/self-session', () => ({ resolveSelfSession: vi.fn(async () => null) }));
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: vi.fn(async () => null) }));
 vi.mock('../../memory/session-epoch-ledger', () => ({ currentSessionEpoch: vi.fn(async () => 7) }));

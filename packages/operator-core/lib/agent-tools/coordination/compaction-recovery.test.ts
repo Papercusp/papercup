@@ -28,6 +28,7 @@ vi.mock('./control-anchor', () => ({
   buildAndPersistControlAnchor: vi.fn(async () => {
     throw new Error('not exercised by this test');
   }),
+  controlStateHash: vi.fn(() => 'control-state-hash'),
 }));
 vi.mock('../../memory/session-epoch-ledger', () => ({
   currentSessionEpoch: vi.fn(async () => 23),
@@ -223,8 +224,9 @@ describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-
     expect(MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION).toContain(
       'coord:declare-intent { intent, current_plan_slug, items }',
     );
+    expect(MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION).toContain('content-mismatched');
     expect(MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION).toContain(
-      'exactly once only when the marker is absent, incomplete, generation-mismatched',
+      'legacy marker/CTRL pair has no stateHash and its generation mismatches',
     );
     expect(MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION).not.toContain('planItems');
   });
@@ -261,10 +263,16 @@ describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-
       complete: true,
       memoryEpoch: 23,
       controlGeneration: 17,
+      controlStateHash: expect.any(String),
       fallback: {
         verb: 'coord:orient',
         args: { afterCompaction: true },
-        when: ['marker-absent', 'marker-incomplete', 'control-generation-mismatch'],
+        when: [
+          'marker-absent',
+          'marker-incomplete',
+          'control-state-mismatch',
+          'legacy-control-generation-mismatch',
+        ],
       },
     });
     expect(delivery.recovery.control).toEqual(CONTROL);
@@ -286,6 +294,7 @@ describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-
       items: [{ id: 'P-017', status: 'wip', missing: false }],
       specs: [{ specId: 'SPEC-P-017', revision: 4, contentHash: 'spec-hash-4' }],
     });
+    expect(delivery.marker.controlStateHash).toBeTruthy();
   });
 
   it('keeps the marker incomplete when the control-scoped plan is absent in that harness', async () => {
@@ -358,7 +367,8 @@ describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-
     expect(delivery.marker.fallback.when).toEqual([
       'marker-absent',
       'marker-incomplete',
-      'control-generation-mismatch',
+      'control-state-mismatch',
+      'legacy-control-generation-mismatch',
     ]);
   });
 });

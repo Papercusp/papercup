@@ -22,6 +22,7 @@ import { describe, expect, it } from 'vitest';
 import {
   seamCallCounts,
   increasedSeams,
+  changedSeamControlFlow,
   collectOutputPropertyValues,
   diffOutputValues,
   hasValueAssertion,
@@ -47,6 +48,24 @@ const SHARED_LIB_AFTER = `
     // The added call — correct engine behaviour, and the whole trap.
     const graded = await source.lexical({ ...params, lexicalMode: 'coverage-graded' });
     return graded;
+  }
+`;
+
+const CONTROL_FLOW_BEFORE = `
+  export async function run(input) {
+    for (const spec of input.specs) {
+      const evidence = await probe({ runner: input.runner, spec });
+      if (evidence.ready) break;
+    }
+  }
+`;
+const CONTROL_FLOW_AFTER = `
+  export async function run(input) {
+    for (const spec of input.specs) {
+      const evidence = await probe({ runner: input.runner, spec });
+      if (!spec.satisfiesReadiness) continue;
+      if (evidence.ready) break;
+    }
   }
 `;
 
@@ -143,6 +162,24 @@ describe('the trigger: a seam gained call sites', () => {
     `;
     expect(seamCallCounts(src, 'x.ts').size).toBe(0);
   });
+
+  it('reports a dependency-bearing call whose control-flow eligibility changed without adding a call site', () => {
+    const rows = changedSeamControlFlow(CONTROL_FLOW_BEFORE, CONTROL_FLOW_AFTER, 'probe.ts');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      function: 'run',
+      seam: 'probe()',
+      reason: 'control-flow-changed',
+    });
+  });
+
+  it('stays silent when control flow changes but the dependency call count also changes', () => {
+    const after = CONTROL_FLOW_AFTER.replace(
+      'const evidence = await probe({ runner: input.runner, spec });',
+      'const evidence = await probe({ runner: input.runner, spec });\n      await probe({ runner: input.runner, spec });',
+    );
+    expect(changedSeamControlFlow(CONTROL_FLOW_BEFORE, after, 'probe.ts')).toEqual([]);
+  });
 });
 
 describe('the downstream assertion — anchored on the PROPERTY, not one spelling', () => {
@@ -162,6 +199,10 @@ describe('the downstream assertion — anchored on the PROPERTY, not one spellin
     ['invocation order', 'expect(a.mock.invocationCallOrder[0]).toBeLessThan(b.mock.invocationCallOrder[0]);'],
     ['sinon callCount', 'expect(searchDocs.callCount).toBe(1);'],
     ['negated — the count must stay 0', 'expect(searchDocs).not.toHaveBeenCalled();'],
+    [
+      'exact invocation sequence from a mapped call log',
+      'expect(invocations.map((invocation) => invocation.command)).toEqual(["claude", "codex"]);',
+    ],
   ])('detects the count/order property written as %s', (_label, line) => {
     expect(hasCountOrOrderAssertion(line)).toBe(true);
   });
@@ -174,6 +215,10 @@ describe('the downstream assertion — anchored on the PROPERTY, not one spellin
 
   it('does NOT flag an ordinary value assertion', () => {
     expect(hasCountOrOrderAssertion('expect(result.hits).toHaveLength(3);')).toBe(false);
+  });
+
+  it('does NOT flag an ordinary result sequence assertion as an invocation log', () => {
+    expect(hasCountOrOrderAssertion('expect(results.map((result) => result.id)).toEqual(["a"]);')).toBe(false);
   });
 
   it('does NOT flag a count assertion that exists only in a COMMENT', () => {

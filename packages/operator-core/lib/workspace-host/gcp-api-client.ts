@@ -939,13 +939,28 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
         `labels.${GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId} = ${workspaceLabel}`,
     );
     const base = this.projectBase(projectId);
-    const instancesUrl = `${base}/aggregated/instances?filter=${filter}&maxResults=500&fields=items/*/instances(name,selfLink,labels)`;
-    const disksUrl = `${base}/aggregated/disks?filter=${filter}&maxResults=500&fields=items/*/disks(name,selfLink,labels)`;
-    const snapshotsUrl = `${base}/global/snapshots?filter=${filter}&maxResults=500&fields=items(name,selfLink,labels)`;
+    const instancesUrl = `${base}/aggregated/instances?filter=${filter}&maxResults=500&fields=nextPageToken,items/*/instances(name,selfLink,labels)`;
+    const disksUrl = `${base}/aggregated/disks?filter=${filter}&maxResults=500&fields=nextPageToken,items/*/disks(name,selfLink,labels)`;
+    const snapshotsUrl = `${base}/global/snapshots?filter=${filter}&maxResults=500&fields=nextPageToken,items(name,selfLink,labels)`;
+    // Completeness is a teardown safety claim. Preserve the cursor in the field mask and exhaust
+    // each collection, including empty intermediate pages, before making that claim.
+    const readPages = async <T>(initialUrl: string): Promise<T[]> => {
+      const url = new URL(initialUrl);
+      const pages: T[] = [];
+      const seen = new Set<string>();
+      for (;;) {
+        const page = await this.request<T & { nextPageToken?: string }>(url.toString());
+        pages.push(page);
+        if (!page.nextPageToken) return pages;
+        if (seen.has(page.nextPageToken)) throw new Error('gcp_inventory_pagination_cycle');
+        seen.add(page.nextPageToken);
+        url.searchParams.set('pageToken', page.nextPageToken);
+      }
+    };
     const [instances, disks, snapshots] = await Promise.all([
-      this.request<{ items?: Record<string, { instances?: RawResource[] }> }>(instancesUrl),
-      this.request<{ items?: Record<string, { disks?: RawResource[] }> }>(disksUrl),
-      this.request<{ items?: RawResource[] }>(snapshotsUrl),
+      readPages<{ items?: Record<string, { instances?: RawResource[] }> }>(instancesUrl),
+      readPages<{ items?: Record<string, { disks?: RawResource[] }> }>(disksUrl),
+      readPages<{ items?: RawResource[] }>(snapshotsUrl),
     ]);
     const observedAt = this.now();
     const observed: GcpWorkspaceHostInventorySnapshot['observed'][number][] = [];
@@ -967,9 +982,9 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
         }
       }
     };
-    addListed('vm', instances.items, 'instances');
-    addListed('disk', disks.items, 'disks');
-    for (const raw of snapshots.items ?? []) {
+    for (const page of instances) addListed('vm', page.items, 'instances');
+    for (const page of disks) addListed('disk', page.items, 'disks');
+    for (const raw of snapshots.flatMap((page) => page.items ?? [])) {
       const item = observedResource(raw, observedAt);
       observed.push({
         resource: { target: 'gcp', kind: 'snapshot', providerId: item.name, parentProviderId: projectId },

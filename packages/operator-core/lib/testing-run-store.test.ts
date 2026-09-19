@@ -538,6 +538,44 @@ describe('durable detached snapshot lifecycle', () => {
     }
   });
 
+  it('retries initial snapshot persistence after the foreground durability budget expires', async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+      let releaseRetry!: () => void;
+      let retrySettled = false;
+      const sql = vi.fn(async () => {
+        attempts += 1;
+        if (attempts === 1) return new Promise<unknown[]>(() => {});
+        if (attempts === 2) {
+          return new Promise<unknown[]>((resolve) => {
+            releaseRetry = () => {
+              retrySettled = true;
+              resolve([]);
+            };
+          });
+        }
+        return [];
+      }) as unknown as Sql;
+
+      const pending = store.startRunDurable(req(), sql);
+      await vi.advanceTimersByTimeAsync(store.DETACHED_RUN_DURABILITY_RESPONSE_BUDGET_MS + 1);
+      const result = await pending;
+
+      // The child-first response contract remains intact even while the
+      // background retry is waiting on a recovered database attempt.
+      expect(result.durable).toBe(false);
+      expect(attempts).toBe(2);
+      expect(retrySettled).toBe(false);
+
+      releaseRetry();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(retrySettled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps the active snapshot readable after the local worker state is gone', async () => {
     let durableRow: Record<string, unknown> | null = null;
     const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {

@@ -3525,7 +3525,13 @@ async function completeOne(
     } catch {
       /* identity read is advisory — the prose matcher below still decides */
     }
-    const gateRedVerdict = gateRedCompletionClaimVerdict(completionEvidenceForGate, { gateRedConditionItem });
+    const gateRedVerdict = gateRedCompletionClaimVerdict(completionEvidenceForGate, {
+      gateRedConditionItem,
+      // A duplicate or explicit drop/discard settles an administrative condition item; it
+      // does not assert that the frozen gate is green. The helper still checks any explicit
+      // gate-progress prose claim carried by the same completion.
+      administrativeSettlement: isAbandonedClose,
+    });
     if (gateRedVerdict.refuse) {
       refuseGate(`refusing to complete ${it.id}: ${gateRedVerdict.detail}`, {
         gateRedClaimRefusal: {

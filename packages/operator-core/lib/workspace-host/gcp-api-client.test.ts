@@ -919,6 +919,12 @@ describe('ADC-backed GCP workspace-host API client', () => {
     };
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
+      if (/\/(?:aggregated\/(?:instances|disks)|global\/snapshots)\?/.test(url)) {
+        const parsed = new URL(url);
+        expect(parsed.searchParams.get('fields')).toContain('nextPageToken');
+        if (!parsed.searchParams.has('pageToken')) return json({ nextPageToken: 'remaining-resources' });
+        expect(parsed.searchParams.get('pageToken')).toBe('remaining-resources');
+      }
       if (url.includes('/aggregated/instances?')) {
         return json({ items: { [`zones/${ZONE}`]: { instances: [{ name: 'pc-host-vm', labels: managedLabels }] } } });
       }
@@ -974,6 +980,9 @@ describe('ADC-backed GCP workspace-host API client', () => {
     });
 
     expect(inventory.complete).toBe(true);
+    expect(vi.mocked(fetchImpl).mock.calls.filter(([input]) =>
+      /\/(?:aggregated\/(?:instances|disks)|global\/snapshots)\?/.test(String(input)),
+    )).toHaveLength(6);
     expect(inventory.inventoryEvidence.map(({ kind }) => kind)).toEqual([
       'vm',
       'disk',
@@ -998,6 +1007,24 @@ describe('ADC-backed GCP workspace-host API client', () => {
         orphanGraceMs: 60_000,
       }),
     ).toMatchObject({ inventoryComplete: true, clean: true, untracked: [], missing: [], labelMismatches: [] });
+  });
+
+  it.each(['instances', 'disks', 'snapshots'])('rejects a repeated inventory cursor for %s rather than claiming completeness', async (collection) => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith(`/${collection}`)) return json({ nextPageToken: 'cycle' });
+      if (url.pathname.includes('/aggregated/') || url.pathname.endsWith('/snapshots')) return json({});
+      return json({ error: { code: 404 } }, 404);
+    }) as typeof fetch;
+    await expect(makeClient(fetchImpl).inventoryManagedResources({
+      projectId: PROJECT,
+      region: REGION,
+      workspaceId: 'workspace-1',
+      deterministicNames: {
+        networks: ['pc-host-net'], subnetworks: ['pc-host-subnet'], firewalls: ['pc-host-iap'],
+        routers: ['pc-host-router'], nats: [{ routerName: 'pc-host-router', name: 'pc-host-nat' }],
+      },
+    })).rejects.toThrow('gcp_inventory_pagination_cycle');
   });
 
   it('wires the explicit ADC production composition without changing injected-client fail-closed construction', async () => {

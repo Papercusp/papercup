@@ -41,6 +41,7 @@ import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { createWorkItem, setWorkItemState, type CreateWorkItemInput } from '../work-items';
 import { claimConditionKey, findConditionKeyHolder, releaseStaleConditionKeys } from './condition-bridge';
+import { linkWorkItemToCondition } from './condition-object';
 
 /** Lifecycle actor for the lost-race stand-down close (see CONDITION_BRIDGE_ACTOR
  *  for why an anonymous terminal transition is refused by the completion gate). */
@@ -213,7 +214,15 @@ export async function settleConditionClaim(
 ): Promise<ConditionClaimSettlement> {
   const key = conditionKey.trim();
   const won = await claimConditionKey(itemId, key, input.workspaceId);
-  if (won) return { won: true };
+  if (won) {
+    // The condition_key column is the current singleton owner; the about→event
+    // link is the append-only history and the resolver's ownership surface. Keep
+    // both writes in this shared fresh-claim seam so the module and tool paths
+    // cannot create an invisible owner. A link failure must not undo a successful
+    // unique claim, matching the bridge's best-effort history write.
+    await linkWorkItemToCondition(itemId, key, { harness: input.harness }).catch(() => undefined);
+    return { won: true };
+  }
 
   // A peer won the race: refresh THEIR row with this reading, settle ours.
   const winner = await findConditionKeyHolder(key, { workspaceId: input.workspaceId });

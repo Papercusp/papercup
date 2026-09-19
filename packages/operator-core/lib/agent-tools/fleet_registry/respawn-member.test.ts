@@ -433,6 +433,10 @@ describe('fleet:respawn-member (P-008)', () => {
     expect(tool.args.safeParse({ member: MEMBER, carry: 'cold' }).success).toBe(true);
   });
 
+  it('accepts an identical saved-profile respawn without an explicit boot-baked override', () => {
+    expect(tool.args.safeParse({ member: MEMBER, reason: 'replace stale canary', verifySec: 0 }).success).toBe(true);
+  });
+
   it('accepts and honors an explicit per-call harness context for legacy recovery', async () => {
     getPresence.mockResolvedValueOnce(null);
     getSessionBrief.mockResolvedValueOnce(null);
@@ -1089,12 +1093,38 @@ describe('fleet:respawn-member (P-008)', () => {
     expect(killHandler).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses when no boot-baked setting is passed (nothing to respawn)', async () => {
-    const res = await tool.handler({ member: MEMBER, brief: 'hi' } as never, {} as never);
+  it('reuses the canonical saved profile when no boot-baked setting is passed', async () => {
+    const res = await tool.handler(
+      { member: MEMBER, reason: 'replace stale canary', idempotencyKey: 'same-profile', verifySec: 0 } as never,
+      {} as never,
+    );
     const p = parse(res);
-    expect(p).toMatchObject({ ok: false, error: 'nothing_to_respawn' });
-    expect(resolveFleetMemberTarget).not.toHaveBeenCalled();
-    expect(killHandler).not.toHaveBeenCalled();
+    expect(p).toMatchObject({
+      ok: true,
+      fleet: SLUG,
+      oldMember: MEMBER,
+      changed: [],
+      verification: 'skipped',
+    });
+    expect(resolveFleetMemberTarget).toHaveBeenCalled();
+    expect(killHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: MEMBER, reason: 'replace stale canary' }),
+      expect.anything(),
+    );
+    expect(launchHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        __respawnOwnerId: expect.stringMatching(/^su-respawn-/),
+        members: [expect.objectContaining({
+          agent: 'codex',
+          model: 'gpt-5.6-sol',
+          effort: 'xhigh',
+          account: 'default',
+          carry: 'warm',
+          headless: true,
+        })],
+      }),
+      expect.anything(),
+    );
   });
 
   it('propagates a member-target authorization refusal', async () => {

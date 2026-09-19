@@ -124,6 +124,17 @@ const CALL_LOG_ACCESS_RE = /\.mock\.(?:calls|lastCall|invocationCallOrder)\b/;
 /** `expect(x).not.toHaveBeenCalled()` is a call-COUNT assertion (count must stay 0). */
 const NEGATED_CALLED_RE = /\.not\s*(?:\.\w+\s*)*\.to(?:Have)?[Bb]eenCalled\s*\(/;
 
+/**
+ * Exact invocation-sequence assertions are the hand-rolled form of a call-count/order
+ * assertion. The historical miss used `expect(invocations.map(...)).toEqual([...])`: the
+ * injected call site stayed at one, but a changed `break`/`continue` path made the sequence
+ * two entries long. Keep the receiver vocabulary focused on call/execution logs; treating every
+ * `results.map(...).toEqual([...])` as a call-count assertion would flood the blast radius with
+ * ordinary result-order tests and train readers to ignore the useful warning.
+ */
+const INVOCATION_SEQUENCE_ASSERTION_RE =
+  /\b(?:invocations?|call(?:s|Log|Records?)|mockCalls|executions?|requests?)\s*\.\s*map\s*\([\s\S]*?\)\s*\.\s*(?:toEqual|toStrictEqual)\s*\(\s*\[/;
+
 function git(args, { cwd = ROOT, allowFail = false } = {}) {
   try {
     return execFileSync('git', args, {
@@ -380,6 +391,234 @@ export function increasedSeams(beforeText, afterText, fileName = 'file.ts') {
     if (count > was) rows.push({ seam: key, before: was, after: count });
   }
   rows.sort((a, b) => b.after - b.before - (a.after - a.before) || a.seam.localeCompare(b.seam));
+  return rows;
+}
+
+// ── the semantic trigger: a dependency-bearing call's control-flow path changed ─────────
+
+/**
+ * The control-flow tokens that matter to an injected call's invocation multiplicity. This is
+ * deliberately a small AST summary, not a second execution engine: a dependency call inside
+ * a function whose break/continue/return/throw/branch structure changed is a prompt to inspect
+ * downstream invocation-sequence assertions. The guard is advisory, so naming a few extra
+ * tests is safer than trying to prove path equivalence statically.
+ */
+function controlFlowToken(node, sourceFile, fileName) {
+  if (ts.isIfStatement(node)) {
+    const condition = normalisedExpressionText(node.expression, sourceFile, fileName);
+    return `if:${condition}${node.elseStatement ? ':else' : ''}`;
+  }
+  if (ts.isForStatement(node)) {
+    return `for:${node.condition ? normalisedExpressionText(node.condition, sourceFile, fileName) : '<none>'}`;
+  }
+  if (ts.isForInStatement(node)) return 'for-in';
+  if (ts.isForOfStatement(node)) return 'for-of';
+  if (ts.isWhileStatement(node)) {
+    return `while:${normalisedExpressionText(node.expression, sourceFile, fileName)}`;
+  }
+  if (ts.isDoStatement(node)) {
+    return `do-while:${normalisedExpressionText(node.expression, sourceFile, fileName)}`;
+  }
+  if (ts.isSwitchStatement(node)) {
+    return `switch:${normalisedExpressionText(node.expression, sourceFile, fileName)}`;
+  }
+  if (ts.isCaseClause(node)) return `case:${normalisedExpressionText(node.expression, sourceFile, fileName)}`;
+  if (ts.isDefaultClause(node)) return 'default';
+  if (ts.isBreakStatement(node)) return `break:${node.label?.text ?? ''}`;
+  if (ts.isContinueStatement(node)) return `continue:${node.label?.text ?? ''}`;
+  if (ts.isReturnStatement(node)) return `return:${node.expression ? 'value' : 'void'}`;
+  if (ts.isThrowStatement(node)) return 'throw';
+  if (ts.isCatchClause(node)) return 'catch';
+  return null;
+}
+
+function callableIdentity(node, sourceFile, anonymousOrdinal) {
+  if (node.name) return node.name.getText(sourceFile);
+  const parent = node.parent;
+  if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
+    return parent.name.text;
+  }
+  if (ts.isPropertyAssignment(parent)) {
+    const name = propertyNameText(parent.name);
+    if (name) return name;
+  }
+  return `<anonymous:${anonymousOrdinal}>`;
+}
+
+/**
+ * Summarise each function that calls an injected collaborator. Nested functions are recorded
+ * independently; a captured outer parameter is still a seam in the nested function, while
+ * control-flow tokens from the nested body do not contaminate the outer function's identity.
+ */
+export function seamControlFlowRecords(text, fileName = 'file.ts') {
+  let source;
+  try {
+    source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  } catch {
+    return [];
+  }
+
+  const bindingScopes = [];
+  const functionStack = [];
+  const records = [];
+  let anonymousOrdinal = 0;
+  const lookupBinding = (name) => {
+    for (let index = bindingScopes.length - 1; index >= 0; index -= 1) {
+      const binding = bindingScopes[index].get(name);
+      if (binding) return binding;
+    }
+    return null;
+  };
+  const collectParamBindings = (node, into) => {
+    for (const param of node.parameters ?? []) {
+      const bind = param.name;
+      if (ts.isIdentifier(bind)) into.set(bind.text, bind.text);
+      else if (ts.isObjectBindingPattern(bind) || ts.isArrayBindingPattern(bind)) {
+        for (const el of bind.elements) {
+          if (ts.isBindingElement(el) && ts.isIdentifier(el.name)) {
+            const property = el.propertyName && ts.isIdentifier(el.propertyName) ? el.propertyName.text : el.name.text;
+            into.set(el.name.text, property);
+          }
+        }
+      }
+    }
+  };
+  const expressionPath = (node) => {
+    if (!node) return null;
+    if (ts.isIdentifier(node)) return lookupBinding(node.text);
+    if (ts.isPropertyAccessExpression(node)) {
+      const base = expressionPath(node.expression);
+      return base ? `${base}.${node.name.text}` : null;
+    }
+    if (ts.isElementAccessExpression(node)) {
+      const base = expressionPath(node.expression);
+      const index = node.argumentExpression;
+      if (!base) return null;
+      if (ts.isStringLiteral(index) || ts.isNumericLiteral(index)) return `${base}[${index.text}]`;
+      return `${base}[*]`;
+    }
+    if (ts.isNonNullExpression(node) || ts.isParenthesizedExpression(node)) return expressionPath(node.expression);
+    return null;
+  };
+  const firstDependencyPath = (node) => {
+    const direct = expressionPath(node);
+    if (direct) return direct;
+    let found = null;
+    const visit = (current) => {
+      if (found) return;
+      const path = expressionPath(current);
+      if (path) {
+        found = path;
+        return;
+      }
+      ts.forEachChild(current, visit);
+    };
+    visit(node);
+    return found;
+  };
+  const bindPattern = (pattern, basePath, into) => {
+    if (ts.isIdentifier(pattern)) {
+      into.set(pattern.text, basePath);
+      return;
+    }
+    if (ts.isObjectBindingPattern(pattern)) {
+      for (const el of pattern.elements) {
+        if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
+        const property = el.propertyName && ts.isIdentifier(el.propertyName) ? el.propertyName.text : el.name.text;
+        bindPattern(el.name, `${basePath}.${property}`, into);
+      }
+    }
+  };
+  const calleeLabel = (callee, sourceFile) => {
+    if (ts.isIdentifier(callee)) return callee.text;
+    if (ts.isPropertyAccessExpression(callee)) return callee.name.text;
+    return callee.getText(sourceFile);
+  };
+  const seamKeyFor = (callee) => {
+    const path = expressionPath(callee);
+    return path ? `${path}()` : null;
+  };
+  const visit = (node) => {
+    const isFunctionLike =
+      ts.isFunctionDeclaration(node) ||
+      ts.isFunctionExpression(node) ||
+      ts.isArrowFunction(node) ||
+      ts.isMethodDeclaration(node) ||
+      ts.isConstructorDeclaration(node);
+    if (isFunctionLike) {
+      const bindings = new Map();
+      for (const param of node.parameters ?? []) {
+        const bind = param.name;
+        if (ts.isIdentifier(bind)) bindings.set(bind.text, bind.text);
+        else if (ts.isObjectBindingPattern(bind) || ts.isArrayBindingPattern(bind)) {
+          collectParamBindings({ parameters: [param] }, bindings);
+        }
+      }
+      bindingScopes.push(bindings);
+      const record = {
+        function: callableIdentity(node, source, anonymousOrdinal++),
+        seams: [],
+        controlFlow: [],
+      };
+      records.push(record);
+      functionStack.push(record);
+    }
+
+    const current = functionStack.at(-1);
+    if (current) {
+      const token = controlFlowToken(node, source, fileName);
+      if (token) current.controlFlow.push(token);
+      if (ts.isVariableDeclaration(node) && node.initializer) {
+        const basePath = expressionPath(node.initializer);
+        if (basePath) bindPattern(node.name, basePath, bindingScopes.at(-1));
+      }
+      if (ts.isCallExpression(node)) {
+        const seam = seamKeyFor(node.expression) ??
+          (node.arguments.some((argument) => firstDependencyPath(argument))
+            ? `${calleeLabel(node.expression, source)}()`
+            : null);
+        if (seam) current.seams.push(seam);
+      }
+    }
+
+    ts.forEachChild(node, visit);
+    if (isFunctionLike) {
+      functionStack.pop();
+      bindingScopes.pop();
+    }
+  };
+  ts.forEachChild(source, visit);
+  return records.filter((record) => record.seams.length > 0);
+}
+
+/**
+ * Functions where the dependency call count stayed stable but its control-flow summary did
+ * not. This catches a call whose loop eligibility changed (the WI-10001694 shape) without
+ * claiming that every arbitrary edit to a function is a strand trigger.
+ */
+export function changedSeamControlFlow(beforeText, afterText, fileName = 'file.ts') {
+  const before = seamControlFlowRecords(beforeText, fileName);
+  const after = seamControlFlowRecords(afterText, fileName);
+  const beforeByFunction = new Map(before.map((record) => [record.function, record]));
+  const rows = [];
+  for (const record of after) {
+    const prior = beforeByFunction.get(record.function);
+    if (!prior || prior.controlFlow.join('\u0000') === record.controlFlow.join('\u0000')) continue;
+    const beforeCounts = new Map();
+    for (const seam of prior.seams) beforeCounts.set(seam, (beforeCounts.get(seam) ?? 0) + 1);
+    const afterCounts = new Map();
+    for (const seam of record.seams) afterCounts.set(seam, (afterCounts.get(seam) ?? 0) + 1);
+    for (const [seam, count] of afterCounts) {
+      if (count !== (beforeCounts.get(seam) ?? 0)) continue;
+      rows.push({
+        function: record.function,
+        seam,
+        before: prior.controlFlow,
+        after: record.controlFlow,
+        reason: 'control-flow-changed',
+      });
+    }
+  }
   return rows;
 }
 
@@ -770,17 +1009,19 @@ export const hasOutputValueAssertion = hasValueAssertion;
 /**
  * Does this test file contain an assertion whose truth depends on a call COUNT or ORDER?
  *
- * Three independent forms, because each is a real spelling in this tree and a detector
+ * Four independent forms, because each is a real spelling in this tree and a detector
  * that knew only the first would be exactly the form-blind guard the commissioning item
- * warns against: a count/order MATCHER name, a direct read of the call LOG, and a negated
- * "was never called" (an assertion that the count stays 0).
+ * warns against: a count/order MATCHER name, a direct read of the call LOG, a negated
+ * "was never called" (an assertion that the count stays 0), and an exact sequence assertion
+ * over a mapped invocation log.
  */
 export function hasCountOrOrderAssertion(text) {
   const stripped = stripCommentsOnly(String(text)) || String(text);
   return (
     COUNT_ORDER_MATCHER_RE.test(stripped) ||
     CALL_LOG_ACCESS_RE.test(stripped) ||
-    NEGATED_CALLED_RE.test(stripped)
+    NEGATED_CALLED_RE.test(stripped) ||
+    INVOCATION_SEQUENCE_ASSERTION_RE.test(stripped)
   );
 }
 
@@ -854,7 +1095,7 @@ export function reverseReachable({ seeds, files, readFile, byDir, byEntryDir }) 
 export function seamMemberNames(triggers) {
   const names = new Set();
   for (const t of triggers) {
-    for (const s of t.seams ?? []) {
+    for (const s of [...(t.seams ?? []), ...(t.controlFlow ?? [])]) {
       const member = s.seam.includes('.') ? s.seam.slice(s.seam.indexOf('.') + 1) : s.seam.replace(/\(\)$/, '');
       if (member && /^[A-Za-z_$][\w$]*$/.test(member)) names.add(member);
     }
@@ -896,10 +1137,15 @@ function formatFindings({
 }) {
   const lines = [];
   const hasCallTriggers = triggers.some((t) => (t.seams ?? []).length > 0);
+  const hasControlFlowTriggers = triggers.some((t) => (t.controlFlow ?? []).length > 0);
   const hasValueTriggers = triggers.some((t) => (t.values ?? []).length > 0);
   lines.push(
-    hasCallTriggers && hasValueTriggers
-      ? '⚠ BEHAVIOURAL STRAND RISK — a shared seam gained call sites and a writer output value changed.'
+    (hasCallTriggers || hasControlFlowTriggers) && hasValueTriggers
+      ? '⚠ BEHAVIOURAL STRAND RISK — a shared seam invocation contract and a writer output value changed.'
+      : hasCallTriggers && hasControlFlowTriggers
+        ? '⚠ BEHAVIOURAL STRAND RISK — a shared seam gained call sites and its invocation eligibility changed.'
+        : hasControlFlowTriggers
+          ? '⚠ CONTROL-FLOW STRAND RISK — a dependency call’s invocation eligibility changed.'
       : hasValueTriggers
         ? '⚠ OUTPUT-VALUE STRAND RISK — a writer changed a persisted output value.'
         : '⚠ BEHAVIOURAL STRAND RISK — a shared seam gained call sites.',
@@ -910,19 +1156,20 @@ function formatFindings({
     for (const s of t.seams ?? []) {
       lines.push(`    seam ${s.seam}: ${s.before} call site(s) -> ${s.after}`);
     }
+    for (const change of t.controlFlow ?? []) {
+      lines.push(`    control-flow ${change.seam} in ${change.function}: dependency invocation eligibility changed`);
+    }
     for (const v of t.values ?? []) {
       lines.push(`    output ${v.property}: ${v.before} -> ${v.after}`);
     }
   }
   lines.push('');
-  if (hasCallTriggers) {
+  if (hasCallTriggers || hasControlFlowTriggers) {
     lines.push(
-      'A downstream test in ANOTHER workspace that mocks this seam and asserts on how many',
+      'A downstream test in ANOTHER workspace that mocks this seam and asserts on its call count,',
+      'exact invocation sequence, or invocation eligibility may now be stale. `test:affected` cannot select',
     );
-    lines.push(
-      'times it was called is now stale. `test:affected` cannot select those files (it maps',
-    );
-    lines.push('changed paths to workspaces) and `tsc` cannot see them (a stale count is well-typed).');
+    lines.push('those files (it maps changed paths to workspaces) and `tsc` cannot see this runtime contract.');
   }
   if (hasValueTriggers) {
     lines.push(
@@ -1050,8 +1297,11 @@ function main() {
       continue;
     }
     const seams = increasedSeams(beforeText, afterText, file);
+    const controlFlow = changedSeamControlFlow(beforeText, afterText, file);
     const values = diffOutputValues(beforeText, afterText, file);
-    if (seams.length > 0 || values.length > 0) triggers.push({ file, seams, values });
+    if (seams.length > 0 || controlFlow.length > 0 || values.length > 0) {
+      triggers.push({ file, seams, controlFlow, values });
+    }
   }
 
   const baseNote =

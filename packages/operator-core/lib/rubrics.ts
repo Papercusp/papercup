@@ -3062,7 +3062,7 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     : stored.criteria;
   if (input.requirement) {
     const patch = input.requirement;
-    const target = criteria.find((criterion) => criterion.key === patch.key);
+    const target = findAmendmentCriterion(criteria, patch.key);
     if (stored.kind !== 'acceptance' || !target) {
       throw new Error('invalid_args: requirement amendment requires an existing acceptance criterion');
     }
@@ -3090,11 +3090,11 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
         : {}),
       ...(verification ?? {}),
     };
-    criteria = criteria.map((criterion) => (criterion.key === patch.key ? next : criterion));
+    criteria = criteria.map((criterion) => (criterion.key === target.key ? next : criterion));
   }
   if (input.criterion) {
     const { key, field, mode, text } = input.criterion;
-    const target = stored.criteria.find((c) => c.key === key);
+    const target = findAmendmentCriterion(stored.criteria, key);
     if (!target) {
       throw new Error(
         `amendRubric: rubric '${input.rubricId}' has no criterion '${key}' — keys: ${stored.criteria
@@ -3105,7 +3105,7 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     const current = target[field] ?? '';
     const next = mode === 'append' ? (current ? `${current}\n\n${text}` : text) : text;
     criteria = stored.criteria.map((c) => {
-      if (c.key !== key) return c;
+      if (c.key !== target.key) return c;
       if (stored.kind === 'acceptance' && field === 'model') {
         // `bar` and `barHash` are read/projection aliases, not independent
         // authoring fields. A stored acceptance criterion carries both aliases,
@@ -3121,7 +3121,7 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
   }
   if (input.criterionClass) {
     const { key, class: cls } = input.criterionClass;
-    const target = criteria.find((c) => c.key === key);
+    const target = findAmendmentCriterion(criteria, key);
     if (!target) {
       throw new Error(
         `amendRubric: rubric '${input.rubricId}' has no criterion '${key}' — keys: ${criteria
@@ -3138,14 +3138,15 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
           'so the edit gets a fresh ratification',
       );
     }
-    criteria = criteria.map((c) => (c.key === key ? { ...c, criterionClass: cls } : c));
+    criteria = criteria.map((c) => (c.key === target.key ? { ...c, criterionClass: cls } : c));
   }
 
   if (input.criterionEvidencePlane) {
     const { key, evidencePlane } = input.criterionEvidencePlane;
+    const target = findAmendmentCriterion(criteria, key);
     if (
       stored.kind !== 'acceptance' ||
-      !criteria.some((criterion) => criterion.key === key) ||
+      !target ||
       !['tree', 'deployed', 'live'].includes(evidencePlane)
     ) {
       throw new Error(
@@ -3153,7 +3154,7 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
       );
     }
     criteria = criteria.map((criterion) => {
-      if (criterion.key !== key) return criterion;
+      if (criterion.key !== target.key) return criterion;
       const requiredScope = criterion.requiredScope?.map((scope) =>
         isAcceptanceEvidencePlane(scope) ? evidencePlane : scope,
       );
@@ -3206,6 +3207,19 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     ...(input.shrinkReason !== undefined ? { shrinkReason: input.shrinkReason } : {}),
     ...(input.checkPathRoot !== undefined ? { checkPathRoot: input.checkPathRoot } : {}),
   };
+}
+
+/**
+ * Acceptance rubrics expose a human-facing BAR identity (`barKey`, e.g. `R-1`)
+ * alongside the stored criterion identity (`key`, e.g. `r-1`). Amendments accept
+ * either identity, while standard rubrics continue to match only their key.
+ */
+function findAmendmentCriterion(
+  criteria: ReadonlyArray<ProposeRubricCriterion>,
+  requestedKey: string,
+): ProposeRubricCriterion | undefined {
+  const key = requestedKey.trim();
+  return criteria.find((criterion) => criterion.key === key) ?? criteria.find((criterion) => criterion.barKey === key);
 }
 
 interface AcceptanceAmendmentPlanRow {

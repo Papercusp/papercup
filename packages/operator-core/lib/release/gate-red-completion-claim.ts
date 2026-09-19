@@ -200,6 +200,13 @@ export interface GateRedClaimVerdictOptions {
    * manifest leg must read admitted or green regardless of what the prose says.
    */
   gateRedConditionItem?: boolean;
+  /**
+   * The close is an administrative settlement (a duplicate or explicit drop/discard), not a
+   * claim that the gate is green. This only exempts the condition-item-wide assertion; an
+   * explicit prose claim with declared failing paths still goes through the normal lineage
+   * check below.
+   */
+  administrativeSettlement?: boolean;
   /** Injected for tests; omitted means "read the real marker". */
   marker?: FrozenRepairEditMarker | null;
 }
@@ -225,6 +232,7 @@ export function gateRedCompletionClaimVerdict(
   try {
     const prosaicClaim = looksLikeGateRedFixClaim(evidence);
     const conditionItem = opts.gateRedConditionItem === true;
+    const administrativeSettlement = opts.administrativeSettlement === true;
     if (!prosaicClaim && !conditionItem) return { refuse: false, reason: 'no-claim' };
 
     const marker = 'marker' in opts ? opts.marker : readFrozenRepairMarker();
@@ -248,9 +256,11 @@ export function gateRedCompletionClaimVerdict(
       `No completion record or state transition was written.`;
 
     // Closing the gate-red condition item asserts the WHOLE gate is green: every leg must
-    // read admitted or green at the judged lineage. A pre-P-021 marker (no legs) falls
-    // through to the path check below.
-    if (conditionItem && redLegs.length > 0) {
+    // read admitted or green at the judged lineage. An administrative duplicate/drop
+    // settlement does not make that assertion, so it falls through to the ordinary prose
+    // claim check below (which still refuses an explicit gate-green claim). A pre-P-021
+    // marker (no legs) also falls through to the path check below.
+    if (conditionItem && !administrativeSettlement && redLegs.length > 0) {
       const pathless = redLegs.filter((l) => l.subjectPaths.length === 0);
       const paths = [...new Set(redLegs.flatMap((l) => l.subjectPaths))].sort();
       return {

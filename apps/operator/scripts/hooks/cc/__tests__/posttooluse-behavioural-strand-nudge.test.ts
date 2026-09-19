@@ -32,9 +32,11 @@ const HOOK = resolve(__dirname, '../posttooluse-behavioural-strand-nudge.mjs');
 const DETECTOR = resolve(ROOT, 'scripts/check-behavioural-strands.mjs');
 
 type Seam = { seam: string; before: number; after: number };
+type ControlFlow = { seam: string; function: string; reason: string };
 type OutputValue = { property: string; before: string; after: string; reason?: string };
 type Detector = {
   increasedSeams: (before: string, after: string, file?: string) => Seam[];
+  changedSeamControlFlow: (before: string, after: string, file?: string) => ControlFlow[];
   diffOutputValues: (before: string, after: string, file?: string) => OutputValue[];
   repoForPath: (rel: string, subs: string[]) => { submodule: string | null; cwd: string; relPath: string };
   submodulePaths: () => string[];
@@ -44,7 +46,7 @@ type Hook = {
   isCandidateFile: (p: string) => boolean;
   formatNudge: (
     rel: string,
-    seamsOrTriggers: Seam[] | { seams?: Seam[]; values?: OutputValue[] },
+    seamsOrTriggers: Seam[] | { seams?: Seam[]; controlFlow?: ControlFlow[]; values?: OutputValue[] },
     opts?: { baseSha?: string | null; submodule?: string | null },
   ) => string;
   isDirectCliInvocation: (entryPath?: string) => boolean;
@@ -59,6 +61,23 @@ const ONE_CALL = 'export function run(source){ return source.lexical(); }';
 const TWO_CALLS = 'export function run(source){ source.lexical(); return source.lexical(); }';
 /** Same file, edited, but the seam count is unchanged — the calibration control. */
 const ONE_CALL_EDITED = 'export function run(source){ /* comment */ return source.lexical(); }';
+const CONTROL_FLOW_BEFORE = `
+  export async function run(input) {
+    for (const spec of input.specs) {
+      const evidence = await probe({ runner: input.runner, spec });
+      if (evidence.ready) break;
+    }
+  }
+`;
+const CONTROL_FLOW_AFTER = `
+  export async function run(input) {
+    for (const spec of input.specs) {
+      const evidence = await probe({ runner: input.runner, spec });
+      if (!spec.satisfiesReadiness) continue;
+      if (evidence.ready) break;
+    }
+  }
+`;
 const OUTPUT_BEFORE = 'export function write(rollup){ return { spentCents: rollup.potCents }; }';
 const OUTPUT_AFTER = 'export function write(rollup){ return { spentCents: rollup.pot.samples > 0 ? rollup.potCents : null }; }';
 
@@ -119,6 +138,17 @@ describe('behavioural-strand nudge — fires on the real trap', () => {
     const abs = resolve(ROOT, 'packages/operator-core/lib/x.ts');
     const { deps } = await depsFor(abs, ONE_CALL, ONE_CALL_EDITED);
     expect(await hook.nudgeFor(abs, deps)).toBeNull();
+  });
+
+  it('FIRES when control-flow changes a dependency call’s invocation eligibility without adding a call site', async () => {
+    const hook = await loadHook();
+    const abs = resolve(ROOT, 'packages/operator-core/lib/x.ts');
+    const { deps } = await depsFor(abs, CONTROL_FLOW_BEFORE, CONTROL_FLOW_AFTER);
+    const out = await hook.nudgeFor(abs, deps);
+    expect(out).not.toBeNull();
+    expect(out).toContain('CONTROL-FLOW STRAND RISK');
+    expect(out).toContain('probe()');
+    expect(out).toContain('invocation eligibility changed');
   });
 
   it('produces nothing when the file is byte-identical to its base', async () => {

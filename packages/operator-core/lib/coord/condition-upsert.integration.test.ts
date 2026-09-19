@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
@@ -96,6 +96,7 @@ vi.mock('../modes/goal-context', async (importOriginal) => {
 
 // Imported AFTER the mocks are registered (vi.mock is hoisted).
 const { upsertConditionWorkItem, CONDITION_UPSERT_MARKER } = await import('./condition-upsert');
+const { findConditionObject } = await import('./condition-object');
 const { setWorkItemState } = await import('../work-items');
 const { createOneWorkItem } = await import('../agent-tools/work_items/_create-core');
 
@@ -143,8 +144,34 @@ beforeAll(async () => {
       ADD COLUMN IF NOT EXISTS assignee_rank integer,
       ADD COLUMN IF NOT EXISTS rank_writer text,
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz`);
-  // THE SUBJECT: condition_key + the partial unique index from the REAL migration.
-  await applyMigrationForTest(db.sql, resolve(SQL_DIR, '741-work-items-condition-key-singleton.sql'));
+  // The condition upsert's self-heal path reaches event_awaits through the
+  // shared work-item lifecycle writer. Keep this fixture's declared migration
+  // set complete for that runtime table, including later additive columns.
+  await applyMigrationsForTest(
+    db.sql,
+    [
+      '163-await-event-subscriptions.sql',
+      '175-watch-floor-coalesce-cols.sql',
+      '387-event-wake-delivery-source.sql',
+      '533-add-event-awaits-payload-filter.sql',
+      '541-predicate-watches.sql',
+      '550-event-awaits-announce-scope.sql',
+      '569-event-awaits-policy-allow-announce.sql',
+      '599-event-announcement-generation.sql',
+      '741-work-items-condition-key-singleton.sql',
+      '777-work-items-embedding-recipe-discriminator.sql',
+      '825-verified-wait-producer-health.sql',
+      '871-lifecycle-bound-watches.sql',
+      '925-fleet-leader-watch-suppression.sql',
+      '953-event-announcement-logical-gate.sql',
+      '1110-work-items-admission-flags-generated-columns.sql',
+      '1135-work-items-epoch-ms-timestamp-guard.sql',
+    ],
+    {
+      label: 'condition-upsert.integration',
+      runtimeTables: ['harness_shared.event_awaits'],
+    },
+  );
 }, 120_000);
 
 afterAll(async () => {
@@ -170,6 +197,7 @@ describe('upsertConditionWorkItem — the WI-39594 acceptance', () => {
     expect(open[0].title).toBe('reading 2: leg A failed (t2)'); // newest reading wins
     expect(open[0].occurrences).toBe(2);
     expect(await holdersOf(KEY)).toEqual([first.id]);
+    expect((await findConditionObject(KEY, { harnessSlug: H })).workItem).toBe(first.id);
   });
 
   it('CONCURRENT filers: the unique index serializes to one open owner; losers settle themselves', async () => {
@@ -208,6 +236,7 @@ describe('upsertConditionWorkItem — the WI-39594 acceptance', () => {
     const open = await openItemsFor(KEY);
     expect(open).toHaveLength(1);
     expect(open[0].feature_id).toBe(second.id);
+    expect((await findConditionObject(KEY, { harnessSlug: H })).workItem).toBe(second.id);
   });
 });
 
@@ -253,6 +282,7 @@ describe('createOneWorkItem { conditionKey } — the WI-39604 tool-path leg', ()
     expect(open[0].feature_id).toBe(first.workItem.id);
     expect(open[0].title).toBe('live-federation-gate RED: from-repo failed (t2)'); // newest legs+stamp win
     expect(open[0].occurrences).toBe(2);
+    expect((await findConditionObject(KEY, { harnessSlug: H })).workItem).toBe(first.workItem.id);
   });
 
   it('a tool-core create JOINS a row minted by upsertConditionWorkItem — one key, either filer', async () => {

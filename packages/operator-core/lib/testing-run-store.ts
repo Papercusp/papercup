@@ -124,6 +124,15 @@ const OUTPUT_CAP_BYTES = 16 * 1024;
 const EVICTION_MS = 60 * 60 * 1000;
 const SNAPSHOT_PERSIST_TIMEOUT_MS = 1_000;
 const TEST_RUN_PERSIST_TIMEOUT_MS = 1_000;
+/**
+ * A bounded snapshot query may lose its local race while the underlying pool
+ * attempt is still settling. Retry the idempotent run-id upsert a few times so
+ * a transient acquire/connection stall does not turn an otherwise recoverable
+ * detached run into a permanently local-only run. These delays are deliberately
+ * short and finite: persistence must heal after a brief pool stall without
+ * becoming a retry storm during a real outage.
+ */
+export const DETACHED_RUN_DURABILITY_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
 /** Keep the optional post-run ID lookup from holding a pool/backend indefinitely. */
 export const TEST_RUN_ID_READBACK_TIMEOUT_MS = 3_000;
 const TEST_RUN_ID_READBACK_ACQUIRE_TIMEOUT_MS = 1_000;
@@ -320,6 +329,45 @@ export async function persistRunSnapshot(snapshot: RunSnapshot, sqlOverride?: Sq
   }
   const rows = await boundedSnapshotQuery<unknown[]>(query);
   return rows !== null;
+}
+
+function waitForSnapshotPersistenceRetry(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, delayMs);
+    // A recovery retry must not keep an otherwise idle operator alive by itself.
+    timer.unref?.();
+  });
+}
+
+/**
+ * Keep an initial detached snapshot write retryable after its response race.
+ *
+ * `boundedSnapshotQuery` intentionally races the caller's wait; postgres-js
+ * does not cancel the losing query, so a timeout only means that this attempt
+ * did not settle in time. The run-id upsert is idempotent, allowing a bounded
+ * retry sequence to catch a pool that recovers shortly after the first attempt.
+ * The caller can still race this promise against its foreground response
+ * budget, while this function supplies the settlement/durability guard after
+ * that budget expires.
+ */
+export async function persistRunSnapshotWithRetry(
+  snapshot: RunSnapshot,
+  sqlOverride?: SqlLike,
+): Promise<boolean> {
+  for (let attempt = 0; ; attempt++) {
+    let persisted = false;
+    try {
+      persisted = await persistRunSnapshot(snapshot, sqlOverride);
+    } catch {
+      // Keep the retry path fail-soft just like the single-attempt writer.
+      persisted = false;
+    }
+    if (persisted) return true;
+
+    const delayMs = DETACHED_RUN_DURABILITY_RETRY_DELAYS_MS[attempt];
+    if (delayMs === undefined) return false;
+    await waitForSnapshotPersistenceRetry(delayMs);
+  }
 }
 
 async function prunePersistedRunSnapshots(sqlOverride?: SqlLike): Promise<void> {
@@ -904,7 +952,7 @@ export async function startRunDurable(
 ): Promise<{ snapshot: RunSnapshot; durable: boolean }> {
   const prepared = prepareRun(req);
   const snapshot = launchPreparedRun(prepared, { persistInitialSnapshot: false });
-  const persistence = persistRunSnapshot(snapshot, sqlOverride).catch(() => false);
+  const persistence = persistRunSnapshotWithRetry(snapshot, sqlOverride);
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<boolean>((resolve) => {
     deadlineTimer = setTimeout(() => resolve(false), DETACHED_RUN_DURABILITY_RESPONSE_BUDGET_MS);
