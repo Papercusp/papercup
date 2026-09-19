@@ -998,9 +998,16 @@ export function projectAcceptanceBarContractSnapshot(
       if (adequacyState === 'undeclared') addCode('bar_snapshot_proof_depth_missing');
       else if (adequacyState !== 'pass') addCode('bar_snapshot_proof_inadequate');
     }
-    if (gradingState === 'missing' || gradingState === 'truncated') addCode('bar_snapshot_grading_missing');
-    if (gradingState === 'stale') addCode('bar_snapshot_grading_stale');
-    if (gradingState === 'not-pass') addCode('bar_snapshot_grading_not_pass');
+    // Disclosure criteria remain visible in the grading trace, but they do not
+    // satisfy (or block) the ship floor. Requiring a pass-equivalent rating for a
+    // non-mandatory disclosure is impossible when its authored passRatings is
+    // deliberately empty, and contradicts the BAR validator's rule that only
+    // mandatory outcomes carry the acceptance floor.
+    const gatesShipping = criterion.role === 'outcome' && criterion.mandatory === true;
+    if (gatesShipping && (gradingState === 'missing' || gradingState === 'truncated'))
+      addCode('bar_snapshot_grading_missing');
+    if (gatesShipping && gradingState === 'stale') addCode('bar_snapshot_grading_stale');
+    if (gatesShipping && gradingState === 'not-pass') addCode('bar_snapshot_grading_not_pass');
 
     bars.push({
       barKey,
