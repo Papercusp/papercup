@@ -60,7 +60,7 @@ export const isIdentityFieldName = (key: string): boolean => IDENTITY_KEYS.has(n
 /**
  * Harvest identity-bearing scalar values from parsed JSON-shaped package data.
  * The Worker feeds these literals back into scanIdentityLeaks so an account
- * handle is caught even when it has no email/home/session-id shape.
+ * handle is caught even when it has no email, home-directory, or session-identifier shape.
  */
 export function collectIdentityValues(value: unknown): string[] {
   const found = new Set<string>();
