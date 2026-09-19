@@ -1623,6 +1623,66 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       await pane.stop().catch(() => {});
     }
   });
+
+  test('PUI-SESSION-LIFECYCLE: session browser keeps isolated history addressable and supports rename/archive', async () => {
+    const sourceId = `pui-session-source-${randomUUID()}`;
+    const siblingId = `pui-session-sibling-${randomUUID()}`;
+    await seedAgentChat({
+      id: sourceId,
+      title: 'P8 source',
+      runtimeClass: 'legacy-owned-loop',
+      transcript: [
+        { role: 'user', content: 'source history', ts: '2026-09-13T10:10:00Z' },
+        { role: 'assistant', content: 'source answer', ts: '2026-09-13T10:10:01Z' },
+      ],
+      createdAt: 1_000,
+      updatedAt: 1_000,
+    });
+    await seedAgentChat({
+      id: siblingId,
+      title: 'P8 sibling',
+      runtimeClass: 'su-session',
+      transcript: [
+        { role: 'user', content: 'sibling history', ts: '2026-09-13T10:11:00Z' },
+        { role: 'assistant', content: 'sibling answer', ts: '2026-09-13T10:11:01Z' },
+      ],
+      createdAt: 2_000,
+      updatedAt: 2_000,
+    });
+    await ingestSeededAgentChats();
+    await putViewState('Sessions');
+
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await pane.waitFor('sessions', { timeoutMs: 40_000 });
+      await pane.waitFor('P8 source', { timeoutMs: 40_000 });
+      await pane.waitFor('P8 sibling', { timeoutMs: 40_000 });
+
+      // Search is server-backed and selection remains scoped to the exact
+      // agent-chat identity, not a similarly-labelled native history row.
+      pane.write('/P8 source');
+      pane.enter();
+      await pane.waitFor('P8 source', { timeoutMs: 20_000 });
+      pane.write('e');
+      pane.write('P8 renamed');
+      pane.enter();
+      await pane.waitFor('Renamed session to P8 renamed', { timeoutMs: 30_000 });
+
+      pane.write('d');
+      pane.write('y');
+      await pane.waitFor('Archived session (history remains recoverable)', { timeoutMs: 30_000 });
+
+      const [stored] = await db.adminSql<Array<{ id: string; title: string; archived_at: string | null }>>`
+        SELECT id, title, archived_at
+          FROM harness_shared.agent_chats_consolidated
+         WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND id = ${sourceId}`;
+      expect(stored).toMatchObject({ id: sourceId, title: 'P8 renamed' });
+      expect(stored.archived_at).toBeTruthy();
+      expect(pane.screen()).not.toContain('sibling history');
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  });
 });
 
 describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary, real PTY/operator/PG)', () => {
