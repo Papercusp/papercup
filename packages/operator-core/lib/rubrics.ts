@@ -3303,6 +3303,57 @@ function decisionHasAmendmentKey(body: string, key: string): boolean {
   return parsePlan(body).decisions.some((decision) => decision.body.split('\n').includes(`Amendment-Id: ${key}`));
 }
 
+/**
+ * Reconcile an explicit replay token before taking either acceptance-BAR advisory
+ * lock. A caller may retry after the original request committed but before its
+ * response arrived; the transaction-local replay check below cannot help when a
+ * still-running original transaction owns the lock and the retry reaches 55P03
+ * first. The subject decision is written in the same transaction as the rubric,
+ * so observing it is durable evidence that the amendment committed.
+ */
+async function readAcceptanceBarAmendmentReplay(
+  input: AmendRubricInput,
+  subjectScope: { workspaceId: string; harnessSlug: string },
+  subjectPlan: string,
+  preview: boolean,
+): Promise<AcceptanceAmendmentResult | null> {
+  const idempotencyKey = input.idempotencyKey?.trim();
+  if (preview || !idempotencyKey) return null;
+  const { sql } = getOrgPg();
+  const [subjectRow] = await sql<Array<{ content: string; version: number | string }>>`
+    SELECT content, version
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${subjectScope.workspaceId}
+       AND harness_slug = ${subjectScope.harnessSlug}
+       AND plan_slug = ${subjectPlan}
+     LIMIT 1`;
+  if (!subjectRow) return null;
+  const replay = parsePlan(subjectRow.content).decisions.find((decision) =>
+    decision.body.split('\n').includes(`Amendment-Id: ${idempotencyKey}`),
+  );
+  if (!replay) return null;
+  if (!replay.body.split('\n').includes(`Request-Hash: ${amendmentRequestHash(input)}`)) {
+    throw new Error('acceptance_bar_amendment_replay_conflict');
+  }
+  // Re-read the rubric after the decision is observed. The two rows commit
+  // atomically, and this avoids returning the pre-amendment snapshot fetched
+  // only for routing above when the original request committed between reads.
+  const rubric = await getRubric(input.rubricId);
+  if (!rubric || rubric.kind !== 'acceptance' || !rubric.barSetHash) return null;
+  return {
+    rubric,
+    decisionId: replay.id,
+    rubricRevision: Number(rubric.revision),
+    subjectPlanRevision: Number(subjectRow.version),
+    barSetHash: rubric.barSetHash,
+    changedBars: [],
+    reboundContracts: 0,
+    invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
+    idempotencyKey,
+    replayed: true,
+  };
+}
+
 function amendmentRequestHash(input: AmendRubricInput): string {
   return hashPlanContent(
     JSON.stringify([
@@ -3558,6 +3609,13 @@ async function amendAcceptanceBarRubric(
     subjectPlanHint,
     rubricHint?.subjectHarnessSlug,
   );
+  const preLockReplay = await readAcceptanceBarAmendmentReplay(
+    input,
+    subjectScope,
+    subjectPlanHint,
+    preview,
+  );
+  if (preLockReplay) return preLockReplay;
   const txResult = await withAcceptanceBarAmendmentTransaction(
     {
       plans: [
@@ -3918,6 +3976,10 @@ async function amendAcceptanceBarRubric(
         ...(approval
           ? [
               `Approved-By: ${approval.approvedBy}`,
+              ...(approval.certifies ? [`Certifies: ${approval.certifies}`] : []),
+              ...(approval.doesNotCertify?.length
+                ? [`Does-Not-Certify: ${approval.doesNotCertify.join(', ')}`]
+                : []),
               `Approval-Ref: ${approval.approvalRef}`,
               `Approved-At: ${approval.approvedAt}`,
             ]
