@@ -23,6 +23,7 @@ import type { OrgTestDb } from '../test/_org-test-db';
 import { runWithWorkspace } from './workspace-als';
 import { activeWorkspaceId } from './workspace-registry';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
+import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './agent-tools/plans/plan-lock-key';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 
@@ -2418,7 +2419,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
     await expect(rubrics.amendRubric({ ...amendment, approvalRef: 'fixture:outside-approval' })).rejects.toThrow(
       'acceptance_bar_approval_required',
     );
-    const approvalRef = await postApproval(amendment);
+    const approvalRef = await postApproval(amendment, 'outside-reviewer', {
+      certifies: 'all changed BAR hashes were checked against source',
+      doesNotCertify: ['runtime deployment', 'unrelated plan items'],
+    });
     await expect(rubrics.amendRubric({ ...amendment, approvalRef, approvedBy: 'spoofed-reviewer' })).rejects.toThrow(
       'acceptance_bar_approval_author_mismatch',
     );
@@ -2436,6 +2440,19 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(current!.criteria[1]!.barHash).toBe(before!.criteria[1]!.barHash);
     const replayed = await rubrics.amendRubric(accepted);
     expect(replayed!.barSetHash).toBe(current!.barSetHash);
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(current!.revision);
+    // Hold both advisory locks in another transaction. An exact retry must
+    // reconcile from the committed subject decision before attempting either
+    // lock; otherwise this reproduces the incident's 55P03 response.
+    const replayedWhileLocksHeld = await db.adminSql.begin(async (tx) => {
+      for (const planSlug of [seeded.rubricSlug, seeded.subject].sort()) {
+        await tx`SELECT pg_advisory_xact_lock(
+          hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}),
+          hashtext(${planAdvisoryLockKey(seeded.workspaceId, 'papercusp', planSlug)}))`;
+      }
+      return rubrics.amendRubric(accepted);
+    });
+    expect(replayedWhileLocksHeld!.barSetHash).toBe(current!.barSetHash);
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(current!.revision);
     await expect(
       rubrics.amendRubric({ ...accepted, reason: 'Reuse the token for a different request.' }),
@@ -2456,6 +2473,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
         AND harness_slug='papercusp' AND plan_slug=${subject}`;
     expect(Number(subjectBeforeFailure.acceptance_bar_rubric_revision)).toBe(current!.revision);
     expect(subjectBeforeFailure.content).toContain('Approved-By: outside-reviewer');
+    expect(subjectBeforeFailure.content).toContain('Certifies: all changed BAR hashes were checked against source');
+    expect(subjectBeforeFailure.content).toContain('Does-Not-Certify: runtime deployment, unrelated plan items');
     expect(subjectBeforeFailure.content).not.toContain('Approved-At: 2000-01-01');
     const nextAmendment = {
       ...amendment,
@@ -2686,16 +2705,21 @@ describe('template_data persistence boundary — the set-template-data door', ()
     ]);
   });
 
-  async function postApproval(input: Parameters<typeof rubrics.amendRubric>[0], author = 'outside-reviewer') {
+  async function postApproval(
+    input: Parameters<typeof rubrics.amendRubric>[0],
+    author = 'outside-reviewer',
+    receiptFields: { certifies?: string; doesNotCertify?: string[] } = {},
+  ) {
     const preview = await rubrics.previewAcceptanceBarAmendment(input);
     expect(preview).not.toBeNull();
+    const receipt = { ...preview!.approval, ...receiptFields };
     const workspaceId = activeWorkspaceId();
     const thread = `approval-${preview!.approval.subjectPlan}`;
     await db.adminSql`INSERT INTO harness_shared.coord_threads (workspace_id,thread_id,parent_kind,parent_ref)
       VALUES (${workspaceId},${thread},'plan',${preview!.approval.subjectPlan}) ON CONFLICT DO NOTHING`;
     const [post] = await db.adminSql`INSERT INTO harness_shared.coord_thread_posts
       (workspace_id,thread_id,author_id,body) VALUES
-      (${workspaceId},${thread},${author},${JSON.stringify(preview!.approval)}) RETURNING id`;
+      (${workspaceId},${thread},${author},${JSON.stringify(receipt)}) RETURNING id`;
     return `thread-post:${post.id}`;
   }
 

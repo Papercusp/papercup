@@ -2,9 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
   parseProcStat,
   parseProcDirectoryFd,
+  parseCpuPressureSomeAvg60,
   classifyThreadCpu,
   isConfirmedHostIoWait,
   isLikelySyncSubprocessBlock,
+  isConfirmedCpuStarvation,
   USER_HZ,
 } from './proc-thread-cpu';
 
@@ -58,6 +60,26 @@ describe('parseProcDirectoryFd', () => {
     ['217 0x19 0x1', null],
   ])('returns null instead of inventing a directory fd (%s, %s)', (raw, wchan) => {
     expect(parseProcDirectoryFd(raw, wchan)).toBeNull();
+  });
+});
+
+describe('parseCpuPressureSomeAvg60', () => {
+  it('parses the kernel CPU PSI some avg60 percentage', () => {
+    expect(
+      parseCpuPressureSomeAvg60(
+        'some avg10=96.00 avg60=85.25 avg300=42.00 total=12345\n',
+      ),
+    ).toBe(85.25);
+  });
+
+  it.each([
+    '',
+    'full avg10=0.00 avg60=0.00 avg300=0.00 total=0',
+    'some avg10=1.00 avg300=2.00 total=3',
+    'some avg10=1.00 avg60=NaN avg300=2.00 total=3',
+    'some avg10=1.00 avg60=101.00 avg300=2.00 total=3',
+  ])('returns null for unknown or invalid pressure (%s)', (raw) => {
+    expect(parseCpuPressureSomeAvg60(raw)).toBeNull();
   });
 });
 
@@ -249,5 +271,39 @@ describe('isLikelySyncSubprocessBlock', () => {
     expect(naiveCpuOnly(MEASURED_BG_HOST_KILL)).toBe(true);
     expect(isLikelySyncSubprocessBlock(hostIoWait)).toBe(false);
     expect(isLikelySyncSubprocessBlock(MEASURED_BG_HOST_KILL)).toBe(true);
+  });
+});
+
+describe('isConfirmedCpuStarvation', () => {
+  const measuredStarvation = {
+    cpuKind: 'spinning' as const,
+    state: 'R',
+    cpuMs: 15_800,
+    cores: 0.99,
+    wchan: null,
+    cpuPsiSome60: 85,
+  };
+
+  it('recognizes the measured high-CPU host-starvation signature', () => {
+    expect(isConfirmedCpuStarvation(measuredStarvation)).toBe(true);
+  });
+
+  it.each([
+    { ...measuredStarvation, cpuPsiSome60: 84.99 },
+    { ...measuredStarvation, cpuPsiSome60: null },
+    { ...measuredStarvation, cpuKind: 'partial' as const },
+    { ...measuredStarvation, state: 'S' },
+    { ...measuredStarvation, cores: 1.51 },
+  ])('requires every conservative discriminator (%o)', (activity) => {
+    expect(isConfirmedCpuStarvation(activity)).toBe(false);
+  });
+
+  it('keeps an idle-host synchronous spin killable', () => {
+    expect(
+      isConfirmedCpuStarvation({
+        ...measuredStarvation,
+        cpuPsiSome60: 0.5,
+      }),
+    ).toBe(false);
   });
 });

@@ -33,6 +33,9 @@
  */
 export const USER_HZ = 100;
 
+/** Linux CPU PSI `some avg60` level at which host starvation is critical. */
+export const CPU_PSI_CRITICAL_AVG60 = 85;
+
 /** One parsed `/proc/<pid>/stat` (or `/proc/<pid>/task/<tid>/stat`) reading. */
 export interface ProcStatSample {
   /** Scheduler state letter: R runnable, S sleeping, D uninterruptible, Z zombie. */
@@ -87,6 +90,21 @@ export function parseProcDirectoryFd(raw: string, wchan: string | null): number 
 }
 
 /**
+ * Parse the CPU-pressure `some avg60` percentage from `/proc/pressure/cpu`.
+ *
+ * PSI is a percentage of wall time in which at least one runnable task waited
+ * for CPU. Missing, malformed, or out-of-range values are UNKNOWN (`null`),
+ * never zero: the sentinel must not turn an unreadable pressure file into a
+ * reason to suppress a real wedge kill.
+ */
+export function parseCpuPressureSomeAvg60(raw: string): number | null {
+  const line = raw.split('\n').find((candidate) => /^\s*some\s/.test(candidate));
+  if (!line) return null;
+  const value = Number(/\bavg60=([0-9]+(?:\.[0-9]+)?)(?:\s|$)/.exec(line)?.[1] ?? NaN);
+  return Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
+}
+
+/**
  * What a thread was doing across a sampling window.
  *
  * - `spinning`  — burning CPU. For a blocked event loop this means a synchronous
@@ -124,10 +142,14 @@ export interface ThreadCpuVerdict {
  * interpret `/proc`.
  */
 export interface MainThreadActivity {
+  /** CPU verdict produced by `classifyThreadCpu` for this sample window. */
+  cpuKind?: ThreadCpuKind;
   state: string | null;
   cpuMs: number | null;
   cores: number | null;
   wchan: string | null;
+  /** Host CPU PSI `some avg60`, or null when the pressure read was unknown. */
+  cpuPsiSome60?: number | null;
 }
 
 /**
@@ -207,6 +229,33 @@ export function isLikelySyncSubprocessBlock(activity: MainThreadActivity): boole
     activity.cpuMs === 0 &&
     activity.cores === 0 &&
     Boolean(wchan && LOOP_POLL_WCHAN_RE.test(wchan))
+  );
+}
+
+/**
+ * Decide whether a spinning main thread is being starved by the host CPU.
+ *
+ * This is intentionally narrower than "high CPU": a genuine synchronous JS
+ * spin must remain killable on a quiet host. Suppression requires the measured
+ * per-thread verdict, a runnable main thread, and critical host PSI. Any
+ * missing/invalid PSI or impossible multi-core reading falls through to the
+ * normal sentinel action.
+ */
+export function isConfirmedCpuStarvation(
+  activity: MainThreadActivity,
+  criticalPsi = CPU_PSI_CRITICAL_AVG60,
+): boolean {
+  const psi = activity.cpuPsiSome60;
+  return (
+    activity.cpuKind === 'spinning' &&
+    activity.state === 'R' &&
+    activity.cores != null &&
+    activity.cores <= 1.5 &&
+    psi != null &&
+    Number.isFinite(psi) &&
+    Number.isFinite(criticalPsi) &&
+    criticalPsi > 0 &&
+    psi >= criticalPsi
   );
 }
 

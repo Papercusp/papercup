@@ -58,6 +58,25 @@ export function isStructuredPayloadArg(arg: string): boolean;
  */
 export function getOperationalArgv(argv: string[]): string[];
 /**
+ * Is this the transient-service client that capability:bash launched for the
+ * CURRENT command?
+ *
+ * A confined capability:bash payload runs in a transient service, while the
+ * `systemd-run --pipe --wait` client remains a sibling of that payload from
+ * the payload's point of view. Its command string therefore contains the
+ * proc-guard pattern and defeats ancestor exclusion. The task marker is set by
+ * the capability:bash handler after caller env input is applied, so matching
+ * the exact current task id plus the managed unit/slice and service-only
+ * `--pipe --wait` shape is the narrow identity boundary. PAPERCUSP_SID alone
+ * is intentionally not used: every process in the same agent session may
+ * carry it, including a real target that must remain visible.
+ *
+ * @param {string[]} argv
+ * @param {string | null | undefined} taskId
+ * @returns {boolean}
+ */
+export function isCapabilityBashSystemdRunWrapper(argv: string[], taskId: string | null | undefined): boolean;
+/**
  * Match a literal command sequence at argv-token boundaries.
  *
  * The first sequence token is compared by basename, so an installed binary
@@ -208,7 +227,7 @@ export function walkProcessTree(rootPid: number, opts?: {
  * still matches.
  *
  * @param {string} pattern - A RegExp source, matched against operational argv.
- * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
+ * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[]; capabilityBashTaskId?: string | null }} [opts]
  * Agent identity is read from PAPERCUSP_SID so a live agent whose owner id is
  * absent from argv is not reported absent. For the known `green-checkpoint`
  * workload, checkpoint-cgroup identity is also accepted so argv-blind
@@ -222,6 +241,7 @@ export function matchExternalProcesses(pattern: string, opts?: {
     argvSequence?: string[];
     interpreterBasenames?: string[];
     commandBasenames?: string[];
+    capabilityBashTaskId?: string | null;
 }): ProcRow[];
 /**
  * Return both the liveness-safe matches and the raw-argv matches for audit.
@@ -231,7 +251,7 @@ export function matchExternalProcesses(pattern: string, opts?: {
  * audit what was ignored — nothing is silently dropped.
  *
  * @param {string} pattern - A RegExp source.
- * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
+ * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[]; capabilityBashTaskId?: string | null }} [opts]
  * `identityMatches` includes PAPERCUSP_SID owner matches and checkpoint-cgroup
  * matches. Gate markers are diagnostic evidence only; they are not sufficient
  * without the checkpoint cgroup. The owner id itself is retained only in the
@@ -245,6 +265,7 @@ export function matchExternalProcessesDetailed(pattern: string, opts?: {
     argvSequence?: string[];
     interpreterBasenames?: string[];
     commandBasenames?: string[];
+    capabilityBashTaskId?: string | null;
 }): {
     matches: ProcRow[];
     fullMatches: ProcRow[];

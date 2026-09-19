@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   decideLoopSentinelAction,
   initialLoopSentinelState,
@@ -111,6 +113,16 @@ describe('decideLoopSentinelAction — a turning loop is never touched', () => {
     const { actions } = run(s, seq);
     expect(actions.some((a) => a.kind === 'kill')).toBe(false);
     expect(actions.filter((a) => a.kind === 'warn')).toHaveLength(4);
+  });
+});
+
+describe('event-loop-sentinel worker starvation wiring', () => {
+  it('reads CPU PSI in the worker and keeps unknown PSI on the normal kill path', () => {
+    const source = readFileSync(resolve(__dirname, 'event-loop-sentinel.worker.ts'), 'utf8');
+    expect(source).toContain("readFileSync('/proc/pressure/cpu', 'utf8')");
+    expect(source).toContain('parseCpuPressureSomeAvg60');
+    expect(source).toContain('isConfirmedCpuStarvation(activity)');
+    expect(source).toContain('mainThreadCpuPsiSome60');
   });
 });
 

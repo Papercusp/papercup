@@ -53,8 +53,10 @@ import { writeSync, readFileSync, readlinkSync } from 'node:fs';
 // @ts-ignore — the plain-node Worker requires an explicit .ts specifier; apps/operator does not enable allowImportingTsExtensions.
 import {
   classifyThreadCpu,
+  isConfirmedCpuStarvation,
   isConfirmedHostIoWait,
   isLikelySyncSubprocessBlock,
+  parseCpuPressureSomeAvg60,
   parseProcDirectoryFd,
   parseProcStat,
   type MainThreadActivity,
@@ -172,6 +174,14 @@ function readMainThreadWchan(): string | null {
   }
 }
 
+function readCpuPressureSomeAvg60(): number | null {
+  try {
+    return parseCpuPressureSomeAvg60(readFileSync('/proc/pressure/cpu', 'utf8'));
+  } catch {
+    return null; // non-Linux, unavailable procfs, or a transient read race
+  }
+}
+
 /**
  * Attribute an `iterate_dir` block to the actual directory being enumerated.
  *
@@ -256,6 +266,7 @@ function mainThreadActivity(): MainThreadActivitySnapshot {
     elapsedMs: healthyCpu ? Date.now() - healthyCpu.atMs : 0,
   });
   const wchan = readMainThreadWchan();
+  const cpuPsiSome60 = readCpuPressureSomeAvg60();
   const out: Record<string, string | number | boolean> = {
     mainThreadActivity: verdict.kind,
     mainThreadState: now?.state ?? 'unknown',
@@ -264,12 +275,15 @@ function mainThreadActivity(): MainThreadActivitySnapshot {
   if (verdict.cores != null) out.mainThreadCores = Number(verdict.cores.toFixed(2));
   if (verdict.suspectWrongSubject) out.suspectWrongSubject = true;
   if (wchan) out.mainThreadWchan = wchan;
+  if (cpuPsiSome60 != null) out.mainThreadCpuPsiSome60 = cpuPsiSome60;
   Object.assign(out, readMainThreadDirectoryWait(wchan));
   const activity: MainThreadActivity = {
+    cpuKind: verdict.kind,
     state: now?.state ?? null,
     cpuMs: verdict.cpuMs,
     cores: verdict.cores,
     wchan,
+    cpuPsiSome60,
   };
   // Complete the PARKED branch. `parked` + `ep_poll` is where an idle loop also
   // sits, so the bare label reads as "healthy" — but the caller only asks once
@@ -293,6 +307,8 @@ let warnedThisStall = false;
 let reportedThisStall = false;
 /** Host-I/O suppression is also one log per contiguous stall. */
 let hostIoWaitReportedThisStall = false;
+/** Host-CPU suppression is also one log per contiguous stall. */
+let cpuStarvationReportedThisStall = false;
 let acted = false;
 
 const timer = setInterval(() => {
@@ -325,6 +341,7 @@ const timer = setInterval(() => {
       warnedThisStall = false;
       reportedThisStall = false;
       hostIoWaitReportedThisStall = false;
+      cpuStarvationReportedThisStall = false;
       // Re-baseline the CPU reading while the loop is demonstrably healthy, so a
       // later stall differences against the last GOOD sample. Taken here rather
       // than at stall-detection time because by then the window has already
@@ -385,6 +402,28 @@ const timer = setInterval(() => {
           pid,
           reason: 'main thread is in confirmed uninterruptible storage wait; continue watching without restarting the host',
           hostIoWait: true,
+          ...activity.fields,
+          ...lastKnownLag(),
+        });
+        return;
+      }
+
+      // A runnable main thread consuming a real core while the host's PSI says
+      // runnable work is critically starved is an ambient CPU incident, not a
+      // self-contained event-loop wedge. Restarting here feeds the same CPU
+      // pressure and can create a self-sustaining restart loop. Unknown or
+      // sub-critical PSI intentionally falls through to the normal kill path.
+      if (isConfirmedCpuStarvation(activity)) {
+        if (cpuStarvationReportedThisStall) return;
+        cpuStarvationReportedThisStall = true;
+        emit('main event loop WEDGED — host CPU starvation, NOT killing', {
+          stalenessMs: action.stalenessMs,
+          consecutiveStale: action.consecutiveStale,
+          wedgeAfterMs: thresholds.wedgeAfterMs,
+          mode,
+          pid,
+          reason: 'main thread is spinning while CPU PSI reports critical runnable-task starvation; continue watching without restarting the host',
+          hostCpuStarvation: true,
           ...activity.fields,
           ...lastKnownLag(),
         });

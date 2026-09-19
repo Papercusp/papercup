@@ -7,6 +7,7 @@ import { recordCurrentSessionIdentityActivation } from './session-identity-attri
 
 const here = dirname(fileURLToPath(import.meta.url));
 const migration = resolve(here, '../../../libs/papercusp/libs/db/sql/1149-session-identity-activation-spans.sql');
+const carryMigration = resolve(here, '../../../libs/papercusp/libs/db/sql/1177-identity-usage-carry-correlation.sql');
 const WS = 'identity-activation-test';
 const OWNER = 'su-identity-test';
 const SPEC_A = 'a'.repeat(64);
@@ -38,8 +39,13 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.session_archives (
       adv_session_id bigint, session_id text NOT NULL
     );
+    CREATE TABLE harness_shared.session_turns (
+      workspace_id text NOT NULL, source_kind text NOT NULL,
+      session_id text NOT NULL, owner text
+    );
   `);
   await applyMigrationForTest(db.sql, migration);
+  await applyMigrationForTest(db.sql, carryMigration);
 }, 90_000);
 
 afterAll(async () => db?.cleanup());
@@ -85,7 +91,13 @@ describe('P-009 activation span views', () => {
       (13,${WS},${OWNER},'2026-09-09T00:05:30Z')`;
     await db.sql`INSERT INTO harness_shared.agent_usage_samples VALUES
       (21,${WS},'native-old',${ms('2026-09-09T00:03:30Z')}),
-      (22,${WS},'native-a',${ms('2026-09-09T00:06:30Z')})`;
+      (22,${WS},'native-a',${ms('2026-09-09T00:06:30Z')}),
+      (23,${WS},'native-carry-successor',${ms('2026-09-09T00:03:45Z')})`;
+    // A carry respawn rewrites adv_sessions.session_id in place. The existing
+    // session_turns index retains the successor native id and its owner, which
+    // is the only safe bridge for this intermediate sample.
+    await db.sql`INSERT INTO harness_shared.session_turns VALUES
+      (${WS},'codex','native-carry-successor',${OWNER})`;
 
     const tools = await db.sql<Array<{ id: string; identity_state_revision: string; identity_stack_refs: string[] }>>`
       SELECT id::text, identity_state_revision, identity_stack_refs
@@ -102,6 +114,7 @@ describe('P-009 activation span views', () => {
     expect(usage).toEqual([
       { id: '21', identity_transition_id: 'a' },
       { id: '22', identity_transition_id: 'restart' },
+      { id: '23', identity_transition_id: 'a' },
     ]);
 
     const layers = await db.sql<Array<{ layer_ref: string; active_until: Date }>>`
@@ -124,6 +137,51 @@ describe('P-009 activation span views', () => {
       source: 'control' as const, revision, sql: db.sql };
     await expect(recordCurrentSessionIdentityActivation(input)).resolves.toBe('inserted');
     await expect(recordCurrentSessionIdentityActivation(input)).resolves.toBe('replayed');
+  });
+
+  it('preserves intermediate carry usage after reanchor without widening owner, workspace or applied-time attribution', async () => {
+    const owner = 'su-carry-attribution';
+    await db.sql`INSERT INTO harness_shared.adv_sessions VALUES
+      (90,${WS},${owner},'carry-middle','2026-09-10T00:00:00Z',NULL)`;
+    // As in a real carry, host acceptance predates native registration: the
+    // receipt still names the preceding native id, on the same stable adv row.
+    await db.sql`INSERT INTO harness_shared.session_identity_activation_events
+      (workspace_id,owner_id,actor_id,principal_id,session_id,adv_session_id,native_session_id,
+       transition_id,control_generation,phase,source,specification_revision,state_revision,stack_refs,recorded_at)
+      VALUES
+      (${WS},${owner},${owner},'principal-carry','logical-carry',90,'carry-before',
+       'carry-applied',90,'applied','control',${SPEC_A},'carry-state','["domain:researcher"]','2026-09-10T00:01:00Z'),
+      (${WS},${owner},${owner},'principal-carry','logical-carry',90,'carry-before',
+       'carry-pending',91,'desired','control',${SPEC_B},'pending-state','["domain:writer"]','2026-09-10T00:02:00Z'),
+      (${WS},${owner},${owner},'principal-carry','logical-carry',90,'carry-middle',
+       'carry-revoked',92,'applied','control',${SPEC_B},'revoked-state','[]','2026-09-10T00:04:00Z')`;
+    await db.sql`INSERT INTO harness_shared.session_turns VALUES
+      ('default','codex','carry-middle',${owner}),
+      ('default','codex','carry-middle',NULL),
+      ('foreign-workspace','codex','carry-foreign',${owner}),
+      ('default','agent_chat','carry-chat',${owner}),
+      ('default','codex','carry-ambiguous',${owner}),
+      ('default','codex','carry-ambiguous','another-owner')`;
+    await db.sql`INSERT INTO harness_shared.agent_usage_samples VALUES
+      (901,${WS},'carry-middle',${ms('2026-09-10T00:03:00Z')}),
+      (902,${WS},'carry-middle',${ms('2026-09-10T00:00:30Z')}),
+      (903,${WS},'carry-middle',${ms('2026-09-10T00:04:00Z')}),
+      (904,${WS},'carry-foreign',${ms('2026-09-10T00:03:00Z')}),
+      (905,${WS},'carry-chat',${ms('2026-09-10T00:03:00Z')}),
+      (906,${WS},'carry-ambiguous',${ms('2026-09-10T00:03:00Z')}),
+      (907,'foreign-workspace','carry-middle',${ms('2026-09-10T00:03:00Z')})`;
+    const read = () => db.sql`
+      SELECT id::text, identity_transition_id, identity_owner_id
+        FROM harness_shared.agent_usage_samples_identity_attribution WHERE id >= 901 ORDER BY id`;
+    const expected = [
+      { id: '901', identity_transition_id: 'carry-applied', identity_owner_id: owner },
+      { id: '902', identity_transition_id: null, identity_owner_id: null },
+      { id: '903', identity_transition_id: 'carry-revoked', identity_owner_id: owner },
+      ...['904', '905', '906', '907'].map((id) => ({ id, identity_transition_id: null, identity_owner_id: null })),
+    ];
+    expect(await read()).toEqual(expected);
+    await db.sql`UPDATE harness_shared.adv_sessions SET session_id='carry-after' WHERE id=90`;
+    expect(await read()).toEqual(expected);
   });
 
   it('rolls back applied state and watermark when the event insert fails', async () => {
