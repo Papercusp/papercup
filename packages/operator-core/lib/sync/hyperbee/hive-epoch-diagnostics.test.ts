@@ -573,8 +573,9 @@ describe('P-002 selector-driven red controls', () => {
     const shared = buildEpochEncryptCapability(deps);
     const first = observation(32);
     const second = observation(33);
-    const a = withStageAttempt(first.attempt, () => (redControlSelected() ? buildEpochEncryptCapability(deps) : shared).encryptOp(op));
-    const b = withStageAttempt(second.attempt, () => (redControlSelected() ? buildEpochEncryptCapability(deps) : shared).encryptOp(op));
+    const faulty = buildEpochEncryptCapability(deps);
+    const a = withStageAttempt(first.attempt, () => faulty.encryptOp(op));
+    const b = withStageAttempt(second.attempt, () => (redControlSelected() ? faulty : shared).encryptOp(op));
     await vi.waitFor(() => expect(getCurrentEpoch).toHaveBeenCalledTimes(2));
     held.resolve(3);
     await Promise.all([a, b]);
