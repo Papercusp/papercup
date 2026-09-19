@@ -287,10 +287,11 @@ function executionBarCodes(bar: AcceptanceBarTrace, phase: AcceptanceBarLifecycl
     if (bar.evidencePlane !== 'tree' && !bar.proof.evidencePlanes.some((plane) => token(plane) === bar.evidencePlane)) {
       addCode(codes, 'bar_snapshot_evidence_plane_unmet');
     }
-    if (bar.grading.state === 'missing' || bar.grading.state === 'truncated')
+    const gatesShipping = bar.role === 'outcome' && bar.mandatory === true;
+    if (gatesShipping && (bar.grading.state === 'missing' || bar.grading.state === 'truncated'))
       addCode(codes, 'bar_snapshot_grading_missing');
-    if (bar.grading.state === 'stale') addCode(codes, 'bar_snapshot_grading_stale');
-    if (bar.grading.state === 'not-pass') addCode(codes, 'bar_snapshot_grading_not_pass');
+    if (gatesShipping && bar.grading.state === 'stale') addCode(codes, 'bar_snapshot_grading_stale');
+    if (gatesShipping && bar.grading.state === 'not-pass') addCode(codes, 'bar_snapshot_grading_not_pass');
   }
   return codes;
 }

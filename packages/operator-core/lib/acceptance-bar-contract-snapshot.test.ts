@@ -397,6 +397,50 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       supersedes: 'SC-GRADE', scorecardId: 'SC-AUTHOR', state: 'accepted' });
   });
 
+  it('keeps a non-mandatory disclosure visible without making its rating a ship blocker', () => {
+    const input = provedFixture(2);
+    const rubric = input.rubrics.rows[0]!;
+    const disclosure = rubric.criteria[1]!;
+    disclosure.role = 'disclosure';
+    disclosure.mandatory = false;
+    disclosure.passRatings = [];
+    disclosure.coversBarKeys = ['R-1'];
+    disclosure.barHash = computeAcceptanceBarHash(disclosure);
+    const barSetHash = computeAcceptanceBarSetHash(rubric.criteria);
+    rubric.barSetHash = barSetHash;
+    input.planRows.rows[0]!.barSetHash = barSetHash;
+    input.clauses.rows.forEach((clause, index) => {
+      clause.sourceBar!.barHash = rubric.criteria[index]!.barHash!;
+      clause.sourceBar!.barSetHash = barSetHash;
+    });
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    const disclosureBar = snapshot.bars.find((bar) => bar.barKey === 'R-2')!;
+
+    expect(disclosureBar).toMatchObject({
+      role: 'disclosure',
+      mandatory: false,
+      passRatings: [],
+      grading: { state: 'not-pass', rating: 'healthy' },
+    });
+    expect(disclosureBar.readiness.codes).not.toContain('bar_snapshot_grading_not_pass');
+    expect(snapshot.readiness.codes).not.toContain('bar_snapshot_grading_not_pass');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes)
+      .not.toContain('bar_snapshot_grading_not_pass');
+  });
+
+  it('CONTROL: a mandatory outcome with a non-pass rating still blocks shipment', () => {
+    const input = provedFixture(1);
+    const independent = input.scorecards.rows.find((card) => card.issueId === 'SC-GRADE')!;
+    independent.ratings['r-1'] = { rating: 'degraded', evidence: 'The outcome is not yet satisfied.' };
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.grading).toMatchObject({ state: 'not-pass', rating: 'degraded' });
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_grading_not_pass');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').satisfied).toBe(false);
+  });
+
   it('keeps historical contracts visible without letting them invalidate a current discharge', () => {
     const input = fixture(1);
     const prior = { ...input.workContracts.rows[0]! };
