@@ -329,7 +329,10 @@ export const isRedactedUser = (user) =>
  *  extension — so this costs the check nothing.) */
 const isFileInHome = (seg) => /\.[A-Za-z0-9]{1,5}$/.test(seg);
 
-const HOME_PATH = /\/(home|Users)\/([A-Za-z0-9._-]+)(?=[/'"`\s\\)\]:,;]|$)/g;
+// A slash inside a word or relative path is not an absolute home root. Keep
+// delimiters (including file-URL slashes) eligible without consuming them, so
+// redaction preserves the surrounding text and the capture groups stay stable.
+const HOME_PATH = /(?<![A-Za-z0-9._-])\/(home|Users)\/([A-Za-z0-9._-]+)(?=[/'"`\s\\)\]:,;]|$)/g;
 
 /** A home path ending a SENTENCE swallows the full stop: `/home/jdoe.` captures the
  *  user as "jdoe." — which then matches no placeholder and no real user, and reports a

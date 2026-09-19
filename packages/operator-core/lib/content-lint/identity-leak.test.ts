@@ -70,6 +70,19 @@ describe('findIdentityLeakError', () => {
     ).resolves.toBeNull();
   });
 
+  it('does not interpret slash-separated prose or relative paths as absolute home paths', async () => {
+    for (const text of ['email/home/session-id shape', 'fixtures/home/somedev/data', 'nested/Users/somedev/file']) {
+      await expect(findIdentityLeakError('scanner.ts', text, REPO_ROOT)).resolves.toBeNull();
+    }
+  });
+
+  it('still rejects absolute home paths in assignments, quotes, and file URLs', async () => {
+    const home = ['', 'home', 'somedev', 'file'].join('/');
+    for (const text of [home, `HOME=${home}`, `"${home}"`, `file://${home}`, `(${home})`]) {
+      await expect(findIdentityLeakError('scanner.ts', text, REPO_ROOT)).resolves.toContain('hardcoded home path');
+    }
+  });
+
   it('does not throw on empty or binary input', async () => {
     // Escaped, never raw: a literal control byte here would red lint:no-control-bytes,
     // a green-checkpoint leg. The runtime string is byte-identical either way.
