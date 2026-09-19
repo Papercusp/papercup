@@ -103,6 +103,9 @@ export interface ConversationRow {
    *  attribution existed, or federated from a peer running older code — the
    *  open path requires it, so a live writer cannot leave it unset. */
   producer: string | null;
+  /** Validated lane provenance; NULL is intentional for legacy/unscoped rows. */
+  plan_slug?: string | null;
+  work_item_id?: string | null;
   /** The replacement conversation when this ask was retracted. */
   superseded_by: string | null;
   /** ISO-8601. */
@@ -124,6 +127,9 @@ export interface CreateConversationInput {
    *  tool it is, and a default here is what would silently re-open the
    *  attribution gap this column closes (EI-21462599108204160). */
   producer: ConversationProducer;
+  /** Internal, validated lane provenance; never a public tool argument. */
+  plan_slug?: string | null;
+  work_item_id?: string | null;
   /** ISO-8601 create time (host clock). */
   created_ts: string;
 }
@@ -190,6 +196,8 @@ interface ConversationRowDb {
   capture_target: string | null;
   promoted_issue_id: string | null;
   producer: string | null;
+  plan_slug: string | null;
+  work_item_id: string | null;
   superseded_by: string | null;
   created_at: unknown;
   updated_at: unknown;
@@ -212,6 +220,8 @@ function toRow(r: ConversationRowDb): ConversationRow {
     capture_target: r.capture_target,
     promoted_issue_id: r.promoted_issue_id,
     producer: r.producer,
+    plan_slug: r.plan_slug,
+    work_item_id: r.work_item_id,
     superseded_by: r.superseded_by,
     created_ts: tsToIso(r.created_at),
     updated_ts: tsToIso(r.updated_at),
@@ -221,7 +231,7 @@ function toRow(r: ConversationRowDb): ConversationRow {
 }
 
 const SELECT_COLS = `id, kind, scope, harness_slug, asker_id, title, body, state,
-  accepted_answer, accepted_post_id, capture_target, promoted_issue_id, producer, superseded_by,
+  accepted_answer, accepted_post_id, capture_target, promoted_issue_id, producer, plan_slug, work_item_id, superseded_by,
   created_at, updated_at, resolved_at, superseded_at`;
 
 export interface SupersedeStoreResult {
@@ -259,9 +269,10 @@ export class PgConversationStore {
     const sql = this.opts.getSql();
     await sql`
       INSERT INTO harness_shared.coord_conversations
-        (workspace_id, id, kind, scope, harness_slug, asker_id, title, body, producer, created_at, updated_at)
+        (workspace_id, id, kind, scope, harness_slug, asker_id, title, body, producer, plan_slug, work_item_id, created_at, updated_at)
       VALUES (${this.ws}, ${input.id}, ${input.kind}, ${input.scope}, ${input.harness_slug ?? null},
-              ${input.asker_id}, ${input.title ?? null}, ${input.body}, ${input.producer}, ${input.created_ts}, ${input.created_ts})
+              ${input.asker_id}, ${input.title ?? null}, ${input.body}, ${input.producer},
+              ${input.plan_slug ?? null}, ${input.work_item_id ?? null}, ${input.created_ts}, ${input.created_ts})
       ON CONFLICT (workspace_id, id) DO NOTHING`;
     const row = await this.get(input.id);
     if (!row) throw new Error(`coord_conversations: failed to read back conversation ${input.id}`);
@@ -381,10 +392,11 @@ export class PgConversationStore {
 
       await tx`
         INSERT INTO harness_shared.coord_conversations
-          (workspace_id, id, kind, scope, harness_slug, asker_id, title, body, created_at, updated_at)
+          (workspace_id, id, kind, scope, harness_slug, asker_id, title, body, producer, plan_slug, work_item_id, created_at, updated_at)
         VALUES (${this.ws}, ${replacement.id}, ${replacement.kind}, ${replacement.scope},
                 ${replacement.harness_slug ?? null}, ${replacement.asker_id},
-                ${replacement.title ?? null}, ${replacement.body},
+                ${replacement.title ?? null}, ${replacement.body}, ${replacement.producer},
+                ${replacement.plan_slug ?? null}, ${replacement.work_item_id ?? null},
                 ${replacement.created_ts}, ${replacement.created_ts})`;
       await tx`
         UPDATE harness_shared.coord_conversations
@@ -559,6 +571,8 @@ export async function ensureConversationsTable(sql: Sql): Promise<void> {
       capture_target   text,
       promoted_issue_id text,
       producer         text,
+      plan_slug        text,
+      work_item_id     text,
       superseded_by text,
       created_at       timestamptz NOT NULL DEFAULT now(),
       updated_at       timestamptz NOT NULL DEFAULT now(),
@@ -577,7 +591,9 @@ export async function ensureConversationsTable(sql: Sql): Promise<void> {
     ALTER TABLE harness_shared.coord_conversations
       ADD COLUMN IF NOT EXISTS superseded_by text,
       ADD COLUMN IF NOT EXISTS superseded_at timestamptz,
-      ADD COLUMN IF NOT EXISTS producer text`;
+      ADD COLUMN IF NOT EXISTS producer text,
+      ADD COLUMN IF NOT EXISTS plan_slug text,
+      ADD COLUMN IF NOT EXISTS work_item_id text`;
   await sql`ALTER TABLE harness_shared.coord_conversations DROP CONSTRAINT IF EXISTS coord_conversations_state_check`;
   await sql`
     ALTER TABLE harness_shared.coord_conversations

@@ -2065,6 +2065,17 @@ export function isExplicitHttpConnectFailure(error) {
 }
 
 /**
+ * A reachable staging listener may run an older control-plane build that
+ * cannot read this session's authority. This is a pre-dispatch refusal, so an
+ * unpinned ptool call may safely try the next discovered operator candidate.
+ * Keep the matcher exact: ordinary authorization failures must remain terminal.
+ */
+export function isRecoverableAuthorityDenial(result) {
+  const text = typeof result === 'string' ? result : JSON.stringify(result ?? '');
+  return /authorization_denied[\s\S]*current session authority could not be read[\s\S]*no effect authorized/i.test(text);
+}
+
+/**
  * The initial MCP connect only performs the write-free initialize/tools-list
  * handshake. A local resilient MCP proxy can answer that handshake with a 502
  * after an upstream worker accepted the socket but stayed silent; that is a
@@ -3037,14 +3048,20 @@ async function main() {
   const scope = { workspace, harness, tokenFile: args.tokenFile, transport: args.transport };
   const retryOptions = ptoolConnectionRetryOptions(args, process.env);
   const rediscover = Object.keys(retryOptions).length === 0 ? discoverOperatorUrl : null;
-  const connectOperator = async () => {
-    const connected = await connectWithOperatorCandidates(connect, operatorCandidates, scope, {
+  const connectOperator = async ({ preferredIndex = 0 } = {}) => {
+    const candidates = preferredIndex > 0
+      ? [
+        ...operatorCandidates.slice(preferredIndex),
+        ...operatorCandidates.slice(0, preferredIndex),
+      ]
+      : operatorCandidates;
+    const connected = await connectWithOperatorCandidates(connect, candidates, scope, {
       ...retryOptions,
       rediscover,
-      primaryAttemptOptions: operatorCandidates.length > 1 ? { maxAttempts: 1 } : {},
+      primaryAttemptOptions: candidates.length > 1 ? { maxAttempts: 1 } : {},
       onRebase: (freshBase) => {
         operatorUrl = freshBase;
-        operatorCandidates[0] = freshBase;
+        candidates[0] = freshBase;
       },
       onFallback: (fallbackBase) => {
         console.error(
@@ -3152,7 +3169,7 @@ async function main() {
     // exact key needed to replay the completed server result.
     const idempotencyKey = args.idempotencyKey || randomUUID();
     try {
-      const recovered = await callToolWithReplayRecovery(
+      let recovered = await callToolWithReplayRecovery(
         client,
         buildCallToolParams(toolName, callArgs, {
           outputSchema: tool.outputSchema,
@@ -3165,6 +3182,24 @@ async function main() {
           reconnect: () => connectOperator(),
         },
       );
+      if (isRecoverableAuthorityDenial(recovered.result) && !args.url && operatorCandidates.length > 1) {
+        console.error(
+          `ptool: ${operatorUrl} rejected the session authority before dispatch; ` +
+            'retrying the same call on the canonical operator candidate.',
+        );
+        await closeClientQuietly(recovered.client);
+        recovered = await callToolWithReplayRecovery(
+          await connectOperator({ preferredIndex: 1 }),
+          buildCallToolParams(toolName, callArgs, {
+            outputSchema: tool.outputSchema,
+            idempotencyKey,
+          }),
+          {
+            timeoutMs: timeoutForTool(toolName, callArgs),
+            reconnect: () => connectOperator(),
+          },
+        );
+      }
       client = recovered.client;
       result = recovered.result;
     } catch (error) {

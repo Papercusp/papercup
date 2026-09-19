@@ -29,6 +29,7 @@ import {
   formatToolCatalogBypass,
   formatToolCatalogFailure,
   isLoopPressureShed,
+  isRecoverableAuthorityDenial,
   isValidCodeRunReplayProof,
   isTransportFailure,
   printResult,
@@ -1577,6 +1578,21 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
       { primaryAttemptOptions: { maxAttempts: 1 }, sleep: async () => {} },
     )).rejects.toBe(authError);
     expect(connectOnce).toHaveBeenCalledTimes(1);
+  });
+
+  it('recognizes only the stale session-authority denial as a pre-dispatch fallback signal', () => {
+    const stale = {
+      isError: true,
+      content: [{
+        type: 'text',
+        text: 'authorization_denied: Kernel preflight denied tool "coord:whoami": current session authority could not be read; no effect authorized',
+      }],
+    };
+    expect(isRecoverableAuthorityDenial(stale)).toBe(true);
+    expect(isRecoverableAuthorityDenial({
+      isError: true,
+      content: [{ type: 'text', text: 'authorization_denied: role is not allowed' }],
+    })).toBe(false);
   });
 
   it('EI-22697016277102033 caps direct local attempts but preserves the resilient proxy window', async () => {

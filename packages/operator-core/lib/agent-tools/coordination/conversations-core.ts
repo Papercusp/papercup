@@ -177,6 +177,9 @@ export interface OpenConversationInput {
    * answered, so it could only ever describe UNANSWERED asks.
    */
   producer: ConversationProducer;
+  /** Internal lane provenance resolved from live coordination state. */
+  plan_slug?: string | null;
+  work_item_id?: string | null;
   title?: string;
   topics?: string[];
   scope?: ConversationScope;
@@ -311,6 +314,8 @@ export async function openConversationCore(
     title: input.title ?? null,
     body: input.body,
     producer: input.producer,
+    plan_slug: input.plan_slug ?? null,
+    work_item_id: input.work_item_id ?? null,
     created_ts: now,
   });
   return materializeOpenedConversation(deps, identity, input, conversation);
@@ -320,6 +325,9 @@ export async function openConversationCore(
 
 export interface SupersedeConversationInput {
   conversation_id: string;
+  /** Internal lane provenance; public tools never accept these fields directly. */
+  plan_slug?: string | null;
+  work_item_id?: string | null;
   replacement: {
     body: string;
     title?: string;
@@ -362,7 +370,12 @@ export async function supersedeConversationCore(
   // owner gate and cancelled its answer await.
   const ownerQuestion =
     old.kind === 'question' && (old.producer === 'coord:ask-owner' || old.producer == null);
-  if (ownerQuestion && old.asker_id !== identity.ownerId) return { error: 'not_owner' };
+  const recoveredOwnerMatchesLane = Boolean(
+    old.plan_slug && old.work_item_id &&
+    input.plan_slug?.trim() === old.plan_slug &&
+    input.work_item_id?.trim() === old.work_item_id,
+  );
+  if (ownerQuestion && old.asker_id !== identity.ownerId && !recoveredOwnerMatchesLane) return { error: 'not_owner' };
   if (!input.replacement.body.trim()) return { error: 'invalid_replacement' };
 
   const now = deps.nowIso();
@@ -383,6 +396,8 @@ export async function supersedeConversationCore(
     title: input.replacement.title ?? old.title,
     body: input.replacement.body,
     producer: replacementProducer,
+    plan_slug: old.plan_slug ?? input.plan_slug ?? null,
+    work_item_id: old.work_item_id ?? input.work_item_id ?? null,
     created_ts: now,
   };
   const swapped = await deps.conversations.supersede(old.id, replacementInput, { now_ts: now });

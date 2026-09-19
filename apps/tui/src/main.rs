@@ -6542,7 +6542,10 @@ async fn refetch_pinned(client: &OperatorClient, tx: &UnboundedSender<Event>, pi
                     });
                 }
             }
-            if let Ok(activity) = client.activity_recent(None, 200).await {
+            if let Ok(activity) = client
+                .activity_recent(None, FLEET_ACTIVITY_BACKFILL_LIMIT)
+                .await
+            {
                 let _ = tx.send(Event::ActivitySeed(activity));
             }
             if let Ok(todos) = client.activity_recent(Some("todos"), 50).await {
@@ -6769,6 +6772,14 @@ fn pane_fetches_attention(pinned: Option<app::Tab>) -> bool {
 /// surface several times over; the later full-list refetch (500 rows) is the
 /// reconciliation pass, never the first paint.
 pub(crate) const FIRST_PAINT_WORK_ITEMS_LIMIT: u32 = 100;
+
+// Keep the raw activity backfill below the MCP result-door budget. A 200-row
+// fleet snapshot was measured at 128–145 KB on the shared staging host, where
+// repeated refetches also saturated the Hono event loop and delayed unrelated
+// reads (including plans:get) past their client deadline. Live activity still
+// arrives through SSE, so the backfill is only a recent seed, not a complete
+// history read.
+pub(crate) const FLEET_ACTIVITY_BACKFILL_LIMIT: u32 = 25;
 
 /// The first-paint snapshot source — the real client, or a test double. The
 /// seam exists so the latency/shape guards in `tests` exercise the ACTUAL
@@ -7053,7 +7064,10 @@ async fn refetch_all(
             });
         }
     }
-    match client.activity_recent(None, 200).await {
+    match client
+        .activity_recent(None, FLEET_ACTIVITY_BACKFILL_LIMIT)
+        .await
+    {
         Ok(a) => {
             let _ = tx.send(Event::ActivitySeed(a));
         }
@@ -7413,6 +7427,15 @@ mod tests {
         assert!(
             matches!(&event, Some(Event::WorkItems { result: Ok(rows) }) if rows.len() == 3),
             "expected the bounded snapshot event with 3 rows"
+        );
+    }
+
+    #[test]
+    fn fleet_activity_backfill_stays_below_result_door_budget() {
+        assert!(
+            (1..=25).contains(&FLEET_ACTIVITY_BACKFILL_LIMIT),
+            "fleet activity seed must remain a small bounded snapshot, got {}",
+            FLEET_ACTIVITY_BACKFILL_LIMIT
         );
     }
 

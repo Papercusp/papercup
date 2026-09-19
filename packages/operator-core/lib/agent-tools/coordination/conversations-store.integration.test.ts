@@ -21,7 +21,7 @@ const WS = 'ws-conv';
 let rootSql: postgres.Sql;
 const store = () => new PgConversationStore({ getSql: () => rootSql, ensureSchema: async () => {}, workspaceId: WS } as never);
 const mk = (id: string, over: Record<string, unknown> = {}) =>
-  ({ id, kind: 'question', scope: 'harness', harness_slug: 'web', asker_id: 'u1', title: 't', body: 'b', created_ts: '2026-01-01T00:00:00Z', ...over }) as never;
+  ({ id, kind: 'question', scope: 'harness', harness_slug: 'web', asker_id: 'u1', title: 't', body: 'b', producer: 'test', created_ts: '2026-01-01T00:00:00Z', ...over }) as never;
 
 beforeAll(async () => {
   const adminUri = await getTestPg();
@@ -99,6 +99,11 @@ describe('PgConversationStore (PG)', () => {
     expect(row).toMatchObject({ id: 'c1', title: 'first', state: 'open' });
     await store().create(mk('c1', { title: 'SECOND' })); // same id → no-op
     expect((await store().get('c1'))!.title).toBe('first'); // original preserved
+  });
+
+  it('round-trips recovered-owner lane provenance', async () => {
+    const row = await store().create(mk('c-prov', { producer: 'coord:ask-owner', plan_slug: 'plan-a', work_item_id: 'WI-a' }));
+    expect(row).toMatchObject({ plan_slug: 'plan-a', work_item_id: 'WI-a' });
   });
 
   it('setState sets resolved_at when resolving, and CLEARS it on any other state', async () => {

@@ -41,6 +41,27 @@ function selectController(rows: readonly SiblingManagedTimers[]): SiblingManaged
   );
 }
 
+/** Keep discovery failures distinguishable from a mutation whose response was lost. */
+function controllerUnavailable(
+  reason: 'discovery-failed' | 'no-controller',
+  rows: readonly SiblingManagedTimers[] = [],
+): Response {
+  const candidates = rows.slice(0, 8).map((row) => ({
+    port: row.port,
+    pid: row.pid,
+    role: row.process === 'bg-host' || row.process === 'operator' ? row.process : 'unknown',
+    reachable: row.ok,
+    direct: !row.label.includes('(primary via :'),
+    elapsedMs: row.elapsedMs,
+  }));
+  return Response.json({
+    ok: false,
+    error: 'workspace-host background controller unavailable',
+    outcome: 'not-dispatched',
+    controllerDiscovery: { reason, candidates, omittedCandidates: rows.length - candidates.length },
+  }, { status: 503 });
+}
+
 /**
  * Request-only operator hosts (:3170 and clustered request workers) do not launch
  * DBOS. Discover the live background host through the existing per-port IPC
@@ -62,9 +83,16 @@ export async function forwardWorkspaceHostRequest(
         timeoutMs: DEFAULT_SIBLING_PROBE_TIMEOUT_MS,
         budgetMs: DEFAULT_SIBLING_FANOUT_BUDGET_MS,
       }));
-  const rows = await collectControllers().catch(() => []);
+  let rows: readonly SiblingManagedTimers[];
+  try {
+    rows = await collectControllers();
+  } catch {
+    // Exceptions and probe error strings may carry private paths or credentials. Retain the
+    // closed reason and public candidate metadata, never raw exception/provider bodies.
+    return controllerUnavailable('discovery-failed');
+  }
   const controller = selectController(rows);
-  if (!controller) return null;
+  if (!controller) return controllerUnavailable('no-controller', rows);
 
   // Both callers validate an object before forwarding. Choose the operation ID
   // here, before crossing the transport boundary, so a lost response cannot also
@@ -96,7 +124,7 @@ export async function forwardWorkspaceHostRequest(
   } catch {
     // The controller waits for the durable workflow's result, which can outlive
     // this transport deadline. Once dispatched, a timeout or lost response says
-    // nothing about acceptance. Reserve null for discovery/bypass; otherwise the
+    // nothing about acceptance. Reserve null for local-controller bypass; otherwise the
     // route reports an unavailable executor even while its mutation is running.
     return Response.json(
       {

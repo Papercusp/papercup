@@ -1079,6 +1079,32 @@ describe('getFeedbackCore — prior non-helpful responders on a re-ask (EI-22180
   });
 });
 
+describe('getFeedbackCore — exclusion boundary', () => {
+  it('does not leak an explicitly excluded dead owner into no_live_responder candidates', async () => {
+    const excludedOwner = 'su-explicitly-excluded-dead';
+    const remainingDeadOwner = 'su-remaining-dead';
+    const routed = routeOf([
+      cand(excludedOwner, { liveness: 'ended' }),
+      cand(remainingDeadOwner, { liveness: 'ended' }),
+    ]);
+    const { deps, routeCalls, reached } = makeDeps(routed);
+
+    const result = asOk(
+      await getFeedbackCore(
+        { ...baseReq, question: 'explicit exclusion must not leak into fallback candidates', excludeOwners: [excludedOwner] },
+        deps,
+      ),
+    );
+
+    expect(routeCalls[0]?.excludeOwners).toEqual([excludedOwner]);
+    expect(result.reason).toBe('no_live_responder');
+    expect(result.responder).toBeNull();
+    expect(result.remaining_candidates.map((candidate) => candidate.ownerId)).toEqual([remainingDeadOwner]);
+    expect(result.remaining_candidates.map((candidate) => candidate.ownerId)).not.toContain(excludedOwner);
+    expect(reached).toHaveLength(0);
+  });
+});
+
 describe('getFeedbackCore — min/max selection (consult-min-max-and-rubric-vetting D-001/D-002/D-003)', () => {
   /** The persisted selection block of a consult_state.routing snapshot. */
   const selectionOf = (routing: unknown) =>

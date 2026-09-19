@@ -30,6 +30,36 @@ import { captureResolvedAnswer } from './answer-capture';
 import { PgConversationStore, reparentThread } from './conversations-store';
 import { createIssue } from '../../issues-engineer';
 import { currentRequestWorkspaceId, runWithWorkspaceIfConcrete } from '../../workspace-als';
+import { getActiveClaimForOwner } from '../../work-item-claims';
+import { getPresence } from './presence';
+
+/**
+ * Resolve the caller's lane provenance from live coordination state. A plan
+ * slug in presence alone is not enough: pair it with the caller's live
+ * work-item claim. Issue-family work items do not always carry source_plan_slug,
+ * so the live lane pair—not a second, lossy work-item projection—is the
+ * authoritative provenance here. Missing/stale data returns no provenance,
+ * preserving the legacy owner-only authorization rather than widening it on a
+ * guess.
+ */
+async function resolveConversationLaneProvenance(identity: AgentIdentity): Promise<{
+  plan_slug?: string;
+  work_item_id?: string;
+}> {
+  const workspaceId = identity.workspaceId?.trim();
+  if (!workspaceId || workspaceId === '*') return {};
+  try {
+    const [claim, presence] = await Promise.all([
+      getActiveClaimForOwner(workspaceId, identity.ownerId),
+      getPresence(identity.ownerId),
+    ]);
+    const planSlug = presence?.currentPlanSlug?.trim();
+    if (!claim || !planSlug) return {};
+    return { plan_slug: planSlug, work_item_id: claim.workItemId };
+  } catch {
+    return {};
+  }
+}
 
 /**
  * EI-1534: scope conversations (and their thread/tags/subs) to the request's
@@ -243,8 +273,9 @@ async function armQuestionInterest(
 }
 
 export async function openConversation(identity: AgentIdentity, input: OpenConversationInput): Promise<OpenConversationResult> {
+  const provenance = await resolveConversationLaneProvenance(identity);
   const opened = await withConversationsIdentityScope(identity, input.harness_slug, () =>
-    openConversationCore(deps, identity, input),
+    openConversationCore(deps, identity, { ...input, ...provenance }),
   );
   if (opened.conversation.kind === 'question') {
     opened.interestWatch = await armQuestionInterest(identity.ownerId, opened.conversation.id);
@@ -379,8 +410,9 @@ export async function supersedeConversation(
   | { error: 'already_terminal' }
   | { error: 'invalid_replacement' }
 > {
+  const provenance = await resolveConversationLaneProvenance(identity);
   const result = await withConversationsIdentityScope(identity, undefined, () =>
-    supersedeConversationCore(deps, identity, input),
+    supersedeConversationCore(deps, identity, { ...input, ...provenance }),
   );
   if (!('error' in result)) {
     try {

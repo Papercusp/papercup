@@ -858,12 +858,33 @@ export async function getFeedbackCore(
     question: req.question,
     ...(excludeOwners.length ? { excludeOwners } : {}),
   });
+  // The production router applies these exclusions in SQL, but the core also
+  // accepts alternate route implementations (for example a degraded or test
+  // seam). Enforce the participant boundary here as well so a stale route
+  // cannot select or expose an explicitly excluded owner in any result path.
+  const explicitlyExcluded = new Set([...(req.excludeOwners ?? []), req.requesterId]);
+  // Keep automatically derived lineage exclusions in the pool until the
+  // structural cycle check below. That check is an intentional fail-closed
+  // guard for a route implementation that violates the lineage contract;
+  // silently filtering the owner first would turn the same violation into a
+  // misleading ordinary no-route result.
+  const cycleCheckOwners = new Set(lineageOwners.filter((owner) => !explicitlyExcluded.has(owner)));
+  const excludedFromCandidacy = new Set(
+    [...excludeOwners, req.requesterId].filter((owner) => !cycleCheckOwners.has(owner)),
+  );
+  route.qualified = route.qualified.filter((candidate) => !excludedFromCandidacy.has(candidate.ownerId));
+  route.snapshot.candidates = route.snapshot.candidates.filter(
+    (candidate) => !excludedFromCandidacy.has(candidate.ownerId),
+  );
   if (req.cascade) {
     route.snapshot.cascade = req.cascade;
     // Exclude from the ENTIRE persisted pool, including refill/revival inputs.
-    const excluded = new Set([...excludeOwners, req.requesterId]);
-    route.qualified = route.qualified.filter((c) => !excluded.has(c.ownerId));
-    route.snapshot.candidates = route.snapshot.candidates.filter((c) => !excluded.has(c.ownerId));
+    // The core-level filter above already enforces this for every route; this
+    // branch retains the cascade-specific intent as an explicit invariant.
+    route.qualified = route.qualified.filter((c) => !excludedFromCandidacy.has(c.ownerId));
+    route.snapshot.candidates = route.snapshot.candidates.filter(
+      (c) => !excludedFromCandidacy.has(c.ownerId),
+    );
   }
 
   // The real router labels every lexical fallback candidate. Preserve that
@@ -1032,7 +1053,7 @@ export async function getFeedbackCore(
   const policyBounds = req.policy ? selectionPolicy(req.policy) : null;
   const minResponders = Math.max(0, req.minResponders ?? policyBounds?.min ?? DEFAULT_MIN_RESPONDERS);
   const maxResponders = Math.max(1, req.maxResponders ?? policyBounds?.max ?? DEFAULT_MAX_RESPONDERS);
-  const selected = selectResponders({
+  let selected = selectResponders({
     qualified: route.qualified,
     allCandidates: route.snapshot.candidates,
     min: minResponders,
@@ -1062,6 +1083,14 @@ export async function getFeedbackCore(
       lineage: lineageOwners,
       hint: "The resolved responder is already in this consult's lineage (A→B→A, D-005) — a cycle is refused. Re-call excluding them, or proceed on your own judgment.",
     };
+  }
+  if (cycleCheckOwners.size > 0) {
+    selected = selected.filter(({ candidate }) => !cycleCheckOwners.has(candidate.ownerId));
+    route.qualified = route.qualified.filter((candidate) => !cycleCheckOwners.has(candidate.ownerId));
+    route.snapshot.candidates = route.snapshot.candidates.filter(
+      (candidate) => !cycleCheckOwners.has(candidate.ownerId),
+    );
+    route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, selected);
   }
   // 3b) WI-39852 revival leg [owner 2026-08-18: respawn-and-consult beats
   //     retrieval-only]: a DEAD above-floor expert beats a live below-floor

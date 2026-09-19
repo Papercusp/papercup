@@ -120,6 +120,8 @@ class InMemoryConversationStore implements ConversationStoreLike {
       // Carried through like PG does — a fake that dropped it would make every
       // attribution assertion below vacuously pass (EI-21462599108204160).
       producer: input.producer,
+      plan_slug: input.plan_slug ?? null,
+      work_item_id: input.work_item_id ?? null,
       superseded_by: null,
       created_ts: input.created_ts,
       updated_ts: input.created_ts,
@@ -391,6 +393,46 @@ describe('supersedeConversationCore', () => {
       superseded_by: null,
     });
     expect(await store.list({ state: 'open' })).toHaveLength(1);
+  });
+
+  it('allows a recovered owner to retract only a question from the same validated plan lane', async () => {
+    const old = await openConversationCore(deps, ident('original-asker'), {
+      kind: 'question',
+      producer: 'coord:ask-owner',
+      plan_slug: 'plan-a',
+      work_item_id: 'WI-a',
+      body: 'Which reviewer should handle this plan lane?',
+    });
+
+    const result = await supersedeConversationCore(deps, ident('recovered-owner'), {
+      conversation_id: old.conversation.id,
+      plan_slug: 'plan-a',
+      work_item_id: 'WI-a',
+      replacement: { body: 'Which reviewer should handle the recovered plan lane?' },
+    });
+
+    expect(result).not.toHaveProperty('error');
+    expect((await store.get(old.conversation.id))?.state).toBe('superseded');
+  });
+
+  it('rejects a recovered owner whose plan or work-item provenance does not match', async () => {
+    const old = await openConversationCore(deps, ident('original-asker'), {
+      kind: 'question',
+      producer: 'coord:ask-owner',
+      plan_slug: 'plan-a',
+      work_item_id: 'WI-a',
+      body: 'Which reviewer should handle this plan lane?',
+    });
+
+    const result = await supersedeConversationCore(deps, ident('unrelated-recovered-owner'), {
+      conversation_id: old.conversation.id,
+      plan_slug: 'plan-b',
+      work_item_id: 'WI-b',
+      replacement: { body: 'Unrelated correction' },
+    });
+
+    expect(result).toEqual({ error: 'not_owner' });
+    expect((await store.get(old.conversation.id))?.state).toBe('open');
   });
 
   it('retires the old gate, points to an open replacement, and notifies old subscribers', async () => {
