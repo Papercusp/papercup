@@ -1330,6 +1330,13 @@ async fn run<B: Backend>(
         if restoring_view && app.tab == app::Tab::Network && app.pinned.is_none() {
             tokio::spawn(fetch_network_board(tx.clone()));
         }
+        if restoring_view && app.tab == app::Tab::Sessions && app.pinned.is_none() {
+            tokio::spawn(fetch_session_browser(
+                app.harness.clone(),
+                String::new(),
+                tx.clone(),
+            ));
+        }
         // Per-bee wake-pane lifecycle (owner ask 2026-06-11): an Owner-scoped
         // wake-pane exits once its bee is gone AND its queue is drained — the
         // pane was opened close-on-exit, so it leaves the dock stack on its own.
@@ -1596,8 +1603,8 @@ async fn run<B: Backend>(
                     tokio::spawn(fetch_session_switcher(query, tx.clone()));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                Action::FetchSessionBrowser { query } => {
-                    tokio::spawn(fetch_session_browser(query, tx.clone()));
+                Action::FetchSessionBrowser { harness, query } => {
+                    tokio::spawn(fetch_session_browser(harness, query, tx.clone()));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
                 Action::ResolveSessionTranscript {
@@ -4438,7 +4445,7 @@ async fn fetch_context_projection(
 async fn fetch_session_switcher(query: String, tx: UnboundedSender<Event>) {
     let result = match OperatorClient::from_discovery().await {
         Ok(client) => client
-            .session_switcher_rows(&query)
+            .session_switcher_rows(None, &query)
             .await
             .map_err(|error| error.to_string()),
         Err(error) => Err(error.to_string()),
@@ -4446,10 +4453,10 @@ async fn fetch_session_switcher(query: String, tx: UnboundedSender<Event>) {
     let _ = tx.send(Event::SessionSwitcher { query, result });
 }
 
-async fn fetch_session_browser(query: String, tx: UnboundedSender<Event>) {
+async fn fetch_session_browser(harness: String, query: String, tx: UnboundedSender<Event>) {
     let result = match OperatorClient::from_discovery().await {
         Ok(client) => client
-            .session_switcher_rows(&query)
+            .session_switcher_rows(Some(&harness), &query)
             .await
             .map_err(|error| error.to_string()),
         Err(error) => Err(error.to_string()),

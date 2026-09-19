@@ -93,6 +93,7 @@ pub enum Action {
     /// Refresh the Sessions destination from the same merged roster + indexed
     /// transcript model as the global switcher.
     FetchSessionBrowser {
+        harness: String,
         query: String,
     },
     /// Resolve one selected roster row against its exact indexed session id.
@@ -7501,6 +7502,7 @@ impl App {
     fn refetch_session_browser(&mut self) -> Action {
         self.session_browser.loading = true;
         Action::FetchSessionBrowser {
+            harness: self.harness.clone(),
             query: self.session_browser.query.clone(),
         }
     }
@@ -19159,7 +19161,7 @@ mod tests {
                     assert_eq!(kind, "all");
                     assert!(a.conversations_loading);
                 }
-                ("sessions", Action::FetchSessionBrowser { query }) => {
+                ("sessions", Action::FetchSessionBrowser { query, .. }) => {
                     assert!(query.is_empty());
                     assert!(a.session_browser.loading);
                 }
