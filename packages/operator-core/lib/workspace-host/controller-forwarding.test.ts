@@ -70,7 +70,46 @@ describe('workspace-host controller forwarding', () => {
       },
     );
 
-    expect(response).toBeNull();
+    expect(response?.status).toBe(503);
+    await expect(response?.json()).resolves.toMatchObject({ outcome: 'not-dispatched' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('reports empty discovery separately from a discovery failure without dispatching', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    for (const [collectControllers, reason] of [
+      [async () => [], 'no-controller'],
+      [async () => { throw new Error('private-token-canary'); }, 'discovery-failed'],
+    ] as const) {
+      const response = await forwardWorkspaceHostRequest('/api/workspace-hosts/action', { action: 'stop', workspaceId: 'host-1' }, {
+        isRequestOnly: () => true, collectControllers, fetchImpl,
+      });
+      expect(response?.status).toBe(503);
+      const body = await response!.json();
+      expect(body).toMatchObject({
+        outcome: 'not-dispatched',
+        controllerDiscovery: { reason, candidates: [], omittedCandidates: 0 },
+      });
+      expect(JSON.stringify(body)).not.toContain('private-token-canary');
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('bounds unreachable-candidate diagnostics while preserving omitted coverage', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const candidates = Array.from({ length: 10 }, (_, i) => row({
+      port: 3271 + i, ok: false, elapsedMs: 1200, error: 'private-token-canary',
+    }));
+    const response = await forwardWorkspaceHostRequest('/api/workspace-hosts/action', { action: 'stop', workspaceId: 'host-1' }, {
+      isRequestOnly: () => true, collectControllers: async () => candidates, fetchImpl,
+    });
+    expect(response?.status).toBe(503);
+    const body = await response!.json();
+    expect(body.controllerDiscovery.reason).toBe('no-controller');
+    expect(body.controllerDiscovery.candidates).toHaveLength(8);
+    expect(body.controllerDiscovery.omittedCandidates).toBe(2);
+    expect(body.controllerDiscovery.candidates[0]).toEqual({ port: 3271, pid: 4271, role: 'bg-host', reachable: false, direct: true, elapsedMs: 1200 });
+    expect(JSON.stringify(body)).not.toContain('private-token-canary');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
