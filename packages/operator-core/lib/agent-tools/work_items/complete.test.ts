@@ -5715,6 +5715,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
 
     it('publishes completion.status as optional while retaining the runtime done default', () => {
       const json = z.toJSONSchema(complete.args as never) as {
+        $defs?: Record<string, JsonSchemaNode>;
         anyOf?: Array<{ properties?: Record<string, { required?: string[] }> }>;
         oneOf?: Array<{ properties?: Record<string, { required?: string[] }> }>;
       };
@@ -5738,6 +5739,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
 
     it('documents the live evidence requirements in both published branches', () => {
       const json = z.toJSONSchema(complete.args as never) as {
+        $defs?: Record<string, JsonSchemaNode>;
         anyOf?: Array<{ properties?: Record<string, { description?: string }> }>;
         oneOf?: Array<{ properties?: Record<string, { description?: string }> }>;
       };
@@ -5817,6 +5819,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       const description = (complete as { description?: string }).description ?? '';
       const when = (complete as { guidance?: { when?: string } }).guidance?.when ?? '';
       const json = z.toJSONSchema(complete.args as never) as {
+        $defs?: Record<string, JsonSchemaNode>;
         anyOf?: Array<{ properties?: { completion?: unknown } }>;
         oneOf?: Array<{ properties?: { completion?: unknown } }>;
       };

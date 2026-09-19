@@ -29,11 +29,14 @@ interface ReviewManifest {
   };
 }
 
-const manifestPath = [
+const foundManifestPath = [
   resolve(process.cwd(), 'lib/interview-prep-evidence/servicenow-staff-ml-manual-review.json'),
   resolve(process.cwd(), 'packages/operator-core/lib/interview-prep-evidence/servicenow-staff-ml-manual-review.json'),
 ].find(existsSync);
-if (!manifestPath) throw new Error('servicenow_staff_ml_review_manifest_not_found');
+if (!foundManifestPath) throw new Error('servicenow_staff_ml_review_manifest_not_found');
+// Re-bind as a definitely-string const: the module-level guard above does not narrow the
+// captured union inside the nested function bodies that use it.
+const manifestPath: string = foundManifestPath;
 const manifestRaw = readFileSync(manifestPath, 'utf8');
 const manifest = JSON.parse(manifestRaw) as ReviewManifest;
 const resolveEvidencePath = (path: string): string => (isAbsolute(path) ? path : resolve(homedir(), path));

@@ -25,7 +25,11 @@ const h = vi.hoisted(() => ({
     markDeliveryParked: vi.fn(async () => {}),
     markDeliveryDropped: vi.fn(async () => {}),
     markDeliveryFailed: vi.fn(async () => 'retrying' as const),
-    reopenDeliveredAfterResumeDeath: vi.fn(async () => 'retrying' as const),
+    // Production returns the full 'retrying' | 'dead' | 'ignored' union; `as const` pinned the
+    // mock to the first literal, so a legitimate 'dead' outcome could not be staged.
+    reopenDeliveredAfterResumeDeath: vi.fn(
+      async (): Promise<'retrying' | 'dead' | 'ignored'> => 'retrying',
+    ),
     markDeliveryDeferred: vi.fn(async () => {}),
     recoverStuckDeliveries: vi.fn(async () => 0),
     claimDueVerifiedAwaits: vi.fn(async (): Promise<AwaitRow[]> => []),

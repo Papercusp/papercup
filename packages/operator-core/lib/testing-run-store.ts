@@ -25,7 +25,11 @@ import { randomUUID } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
 import { isAbsolute, relative as pathRelative, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
-import { parseTestRunExecutionDetails, type TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import {
+  TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
+  parseTestRunExecutionDetails,
+  type TestRunExecutionDetails,
+} from '@papercusp/test-config/execution-details';
 import { resolveGitContext } from './testing-branch-resolve';
 import { captureWorktreeSnapshot, computeWorktreeDirty, type WorktreeGitSnapshot } from './testing-worktree';
 import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
@@ -626,6 +630,8 @@ export interface DetachedReportArtifact {
   failureDetailsPath?: string;
   /** Worktree root used to relativize file names from the report. */
   root: string;
+  /** The actual selector passed to Vitest, not inferred from skipped totals. */
+  testNamePattern?: string | null;
   /** Concrete tenant scope for the operator-side ledger write, when available. */
   scope?: {
     harnessSlug: string;
@@ -800,6 +806,8 @@ async function persistDetachedReportArtifacts(
             source: 'local',
             commit: after.commit,
             worktreeDirty: computeWorktreeDirty(artifact.worktreeBefore, after),
+            root: artifact.root,
+            testNamePattern: artifact.testNamePattern ?? null,
           });
         }
       } catch {
@@ -1132,6 +1140,8 @@ export interface HarnessTestFileRow {
   startedAt: Date;
   finishedAt: Date;
   outputTail: string | null;
+  /** Exact completed assertion counts when the source report exposed them. */
+  execution?: Pick<TestRunExecutionDetails, 'passed' | 'failed' | 'skipped' | 'collectionFailed'>;
 }
 
 /** Minimal shape of the jest-compatible vitest `--reporter=json` output. */
@@ -1149,6 +1159,33 @@ interface VitestJsonFile {
   endTime?: number;
   message?: string;
   assertionResults?: VitestJsonAssertion[];
+}
+
+function countVitestAssertions(assertions: VitestJsonAssertion[]): HarnessTestFileRow['execution'] | undefined {
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const assertion of assertions) {
+    if (!assertion || typeof assertion !== 'object') return undefined;
+    switch (assertion.status) {
+      case 'passed': passed += 1; break;
+      case 'failed': failed += 1; break;
+      // Vitest's completed JSON reporter calls filtered-out tests "pending".
+      case 'skipped':
+      case 'pending':
+      case 'todo':
+        skipped += 1;
+        break;
+      default:
+        return undefined;
+    }
+  }
+  return {
+    passed,
+    failed,
+    skipped,
+    collectionFailed: false,
+  };
 }
 
 function relToRootPosix(absPath: string, rootAbs: string): string {
@@ -1172,26 +1209,33 @@ export function parseVitestJsonForHarnessRows(jsonText: string, rootAbs: string)
   } catch {
     return [];
   }
-  const files = Array.isArray(parsed.testResults) ? parsed.testResults : [];
+  const files = Array.isArray(parsed?.testResults) ? parsed.testResults : [];
   const rows: HarnessTestFileRow[] = [];
   for (const f of files) {
     if (!f || typeof f.name !== 'string' || f.name.length === 0) continue;
     const filePath = relToRootPosix(f.name, rootAbs);
 
     const asserts = Array.isArray(f.assertionResults) ? f.assertionResults : [];
+    const execution = Array.isArray(f.assertionResults)
+      && (f.status === 'passed' || f.status === 'failed' || f.status === 'skipped'
+        || f.status === 'pending' || f.status === 'todo')
+      ? countVitestAssertions(asserts) : undefined;
     let status: HarnessTestFileRow['status'];
     if (f.status === 'failed') {
       status = 'fail';
     } else if (f.status === 'passed') {
       // A file vitest marks "passed" whose every test was skipped/todo is a
       // skip row, not a pass — surface that distinctly in the history chip.
-      const hasReal = asserts.some((a) => a.status !== 'skipped' && a.status !== 'pending' && a.status !== 'todo');
+      const hasReal = asserts.some((a) => a?.status !== 'skipped' && a?.status !== 'pending' && a?.status !== 'todo');
       status = asserts.length > 0 && !hasReal ? 'skip' : 'pass';
     } else if (f.status === 'skipped' || f.status === 'pending' || f.status === 'todo') {
       status = 'skip';
     } else {
       // Unknown / never-finished (e.g. an import-time crash) → error.
       status = 'error';
+    }
+    if (execution && f.status === 'failed' && execution.failed === 0) {
+      execution.collectionFailed = true;
     }
 
     const start = typeof f.startTime === 'number' ? f.startTime : null;
@@ -1205,13 +1249,13 @@ export function parseVitestJsonForHarnessRows(jsonText: string, rootAbs: string)
     const msgs: string[] = [];
     if (typeof f.message === 'string' && f.message.trim()) msgs.push(f.message.trim());
     for (const a of asserts) {
-      if (a.status === 'failed' && Array.isArray(a.failureMessages)) {
+      if (a?.status === 'failed' && Array.isArray(a.failureMessages)) {
         for (const m of a.failureMessages) if (typeof m === 'string') msgs.push(m);
       }
     }
     if (msgs.length > 0) outputTail = msgs.join('\n').slice(-4000);
 
-    rows.push({ filePath, status, durationMs, startedAt, finishedAt, outputTail });
+    rows.push({ filePath, status, durationMs, startedAt, finishedAt, outputTail, ...(execution ? { execution } : {}) });
   }
   return rows;
 }
@@ -1718,8 +1762,15 @@ export interface PersistHarnessTestRunsParams {
    *  wasn't provably stable start-to-finish (see computeWorktreeDirty) — the stamped
    *  `commit` can't be trusted as the code that actually ran. Defaults to false ONLY
    *  for callers that never had the hazard (an isolated-checkout run); a caller that
-   *  ran against the shared tree should always pass this explicitly. */
+   *  ran against the shared tree should always pass this explicitly. New callers
+   *  supplying `root` for measured execution details default to true. */
   worktreeDirty?: boolean;
+  /** Checkout root used to create versioned execution_details for recovery. */
+  root?: string;
+  /** Explicit name filter used by the measured run, if any. */
+  testNamePattern?: string | null;
+  /** Test-config mutation phase, if any. */
+  mutationPhase?: string | null;
   /** Test seam: inject a fake sql client. Defaults to getOrgPg().sql. */
   sql?: SqlLike;
 }
@@ -2020,7 +2071,7 @@ async function persistHarnessTestRunsInternal(
   const source = params.source ?? 'admin-ui';
   const branch = params.branch ?? null;
   const commit = params.commit ?? null;
-  const worktreeDirty = params.worktreeDirty ?? false;
+  const worktreeDirty = params.worktreeDirty ?? Boolean(params.root);
   // Captured ONCE for the whole persist call (the run's persist moment), not
   // per-file-row — the lag gauge already windows/averages, and a re-sample per
   // row would be noise without adding signal.
@@ -2034,13 +2085,31 @@ async function persistHarnessTestRunsInternal(
       sql = getOrgPg().sql as unknown as SqlLike;
     }
     for (const row of rows) {
+      // Reuse the reporter's strict versioned contract. Legacy status-only
+      // records and malformed measurements stay NULL, never invented proof.
+      const executionDetails = params.root && row.execution
+        ? parseTestRunExecutionDetails({
+            schemaVersion: TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
+            root: params.root,
+            filePath: row.filePath,
+            runGroupId,
+            workspaceId,
+            harnessSlug,
+            testNamePattern: params.testNamePattern ?? null,
+            ...row.execution,
+            mutationPhase: params.mutationPhase ?? null,
+            commitSha: commit,
+            worktreeDirty,
+          })
+        : undefined;
       const insert = Promise.resolve(
         sql`
           INSERT INTO harness_shared.test_runs
-            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty)
+            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty, execution_details)
           VALUES
             (${row.filePath}, ${row.framework ?? 'vitest'}, ${row.status}, ${row.durationMs}, ${row.startedAt},
-             ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty})
+             ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty},
+             ${executionDetails ? JSON.stringify(executionDetails) : null})
           RETURNING id
         `,
       );

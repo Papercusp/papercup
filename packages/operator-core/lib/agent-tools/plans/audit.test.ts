@@ -396,7 +396,12 @@ describe('plans:audit D-008 writer contract', () => {
       expect.objectContaining({ code: 'citation_blob_sha_conflict' }),
     ]));
     expect(mockRecord).toHaveBeenCalledTimes(1);
-    expect(mockRecord.mock.calls[0]?.[0].items).toEqual(expect.arrayContaining([
+    // RecordAuditInput is a union; `items` lives on the completion arm, which is what this
+    // path records (the activation arm carries `activation` instead).
+    const recordedAudit = mockRecord.mock.calls[0]?.[0] as
+      | import('../../plan-audits').RecordCompletionAuditInput
+      | undefined;
+    expect(recordedAudit?.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ itemId: 'P-002', carriedFrom: 4, auditedSha: 'old-head' }),
       expect.objectContaining({ itemId: 'P-003', auditedSha: null }),
       expect.objectContaining({ itemId: 'P-005', carriedFrom: 4, auditedSha: 'old-head' }),

@@ -30,8 +30,15 @@ import type { BackupMigrationLockWaitInfo } from '@papercusp/backup';
 
 const h = vi.hoisted(() => ({
   configureBackup: vi.fn(),
+  // Pin the return to the real ManagedHandle ({ stop(): void }). Without it the default
+  // `{ stop: vi.fn() }` infers `{ stop: Mock<Procedure> }`, so a per-test mockImplementation
+  // returning a plain `stop: () => clearInterval(timer)` is rejected.
   managedSetInterval: vi.fn(
-    (_name: string, _intervalMs: number, _callback: () => void | Promise<void>) => ({ stop: vi.fn() }),
+    (
+      _name: string,
+      _intervalMs: number,
+      _callback: () => void | Promise<void>,
+    ): import('@papercusp/scheduled-registry').ManagedHandle => ({ stop: vi.fn() }),
   ),
   readQualificationAdmission: vi.fn(),
   readCheckpointSerializerAuthority: vi.fn(),

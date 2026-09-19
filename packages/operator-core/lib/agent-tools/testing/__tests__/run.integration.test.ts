@@ -1186,11 +1186,13 @@ describe('testing:run (integration)', () => {
       workspaceId: 'papercusp-workspace',
       harnessSlug: 'papercusp',
       timeoutMs: 900_000,
+      testNamePattern: 'selected proof',
     });
 
     const artifact = request.detachedReportArtifacts?.[0];
     expect(artifact).toMatchObject({
       root: REPO_ROOT,
+      testNamePattern: 'selected proof',
       scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
     });
     expect(artifact?.reportPath).toContain('papercusp-testing-run-detached-');
@@ -1200,6 +1202,7 @@ describe('testing:run (integration)', () => {
       '--',
       '--reporter=json',
       `--outputFile=${artifact?.reportPath}`,
+      '--testNamePattern=selected proof',
     ]);
     expect(request.args.some((arg) => arg.includes('admin-test-runs-reporter'))).toBe(false);
   });

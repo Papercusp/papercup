@@ -302,6 +302,7 @@ describe('task lifecycle handlers', () => {
               reportPath,
               failureDetailsPath,
               root: '/tmp',
+              testNamePattern: 'suite > works',
               scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
             },
           ],
@@ -326,6 +327,22 @@ describe('task lifecycle handlers', () => {
       expect(values[8]).toBe('local');
       expect(values[11]).toBe('papercusp');
       expect(values[12]).toBe('papercusp-workspace');
+      const executionDetails = JSON.parse(String(values.at(-1)));
+      expect(executionDetails).toMatchObject({
+        schemaVersion: 1,
+        root: '/tmp',
+        filePath: 'packages/external/example.test.ts',
+        runGroupId: snapshot.runId,
+        workspaceId: 'papercusp-workspace',
+        harnessSlug: 'papercusp',
+        testNamePattern: 'suite > works',
+        passed: 0,
+        failed: 1,
+        skipped: 0,
+        collectionFailed: false,
+        commitSha: 'detached-sha',
+        worktreeDirty: false,
+      });
       const snapshotCalls = persistSqlMock.mock.calls.filter((call) =>
         call[0]?.join(' ').includes('INSERT INTO harness_shared.testing_run_snapshots'),
       );
@@ -462,8 +479,8 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
       runGroupId: 'g1',
       sql: fakeSql,
     });
-    // Last positional value in the INSERT template is worktree_dirty (schema order).
-    expect(capturedValues.at(-1)).toBe(false);
+    // worktree_dirty precedes the optional execution_details payload.
+    expect(capturedValues.at(-2)).toBe(false);
   });
 
   it('carries worktree_dirty:true through to the insert when the caller marks the run dirty', async () => {
@@ -480,7 +497,7 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
       worktreeDirty: true,
       sql: fakeSql,
     });
-    expect(capturedValues.at(-1)).toBe(true);
+    expect(capturedValues.at(-2)).toBe(true);
   });
 });
 

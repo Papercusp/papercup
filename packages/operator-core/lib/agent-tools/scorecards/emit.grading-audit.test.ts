@@ -486,7 +486,11 @@ describe('scorecards:emit grading audit path (P-013)', () => {
   });
 
   it('refuses an auditor in the graded card author lineage, not only the exact author', async () => {
-    const lineageRelated = vi.fn(async (first: string | null, second: string | null) => {
+    const lineageRelated = vi.fn(async (
+      first: string | null | undefined,
+      second: string | null | undefined,
+      _opts?: import('../../acceptance-author-identity').AcceptanceAuthorIdentityOpts,
+    ) => {
       return first === 'su-grader-author' && second === 'su-grader-descendant';
     });
     const res = await emitScorecard(

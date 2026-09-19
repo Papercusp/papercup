@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { prepareTestEvidence, finishTestEvidence, recoverTestEvidence, testEvidenceOutcome, testEvidenceSchema } from './evidence';
 import type { TestFilesCoreResult } from './run';
+import { parseVitestJsonForHarnessRows, persistHarnessTestRuns } from '../../testing-run-store';
 
 /**
  * The SUCCESS member of the result union. Every helper below builds a run that COMPLETED, and
@@ -199,6 +200,27 @@ describe('test-time evidence continuity', () => {
     const { bundle } = await pendingRecovery(measured);
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
     expect(bundle.verificationFingerprint).toBeTruthy();
+  });
+  it.each([
+    ['selected proof', 'pass'],
+    [null, 'skip'],
+  ])('recovers JSON-ingested evidence with its actual name selector %j', async (testNamePattern, outcome) => {
+    const rows = parseVitestJsonForHarnessRows(JSON.stringify({ testResults: [{
+      name: `${scope.root}/${binding.testPath}`, status: 'passed',
+      assertionResults: [{ status: 'passed' }, { status: 'pending' }],
+    }] }), scope.root);
+    let executionDetails: unknown;
+    await persistHarnessTestRuns({
+      root: scope.root, harnessSlug: scope.harnessSlug, workspaceId: scope.workspaceId,
+      runGroupId: detached, rows, testNamePattern, commit: 'tested-sha', worktreeDirty: false,
+      sql: async (strings, ...values) => {
+        expect(strings.join(' ')).toContain('execution_details');
+        executionDetails = JSON.parse(String(values.at(-1)));
+        return [{ id: 42 }];
+      },
+    });
+    const { bundle } = await pendingRecovery(executionDetails);
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome, testRunId: 42 });
   });
   it.each([
     [{ skipped: 1 }, 'pass', 'skip'],

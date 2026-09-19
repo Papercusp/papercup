@@ -285,6 +285,7 @@ export function buildDetachedTestRunRequest(opts: {
             {
               reportPath,
               root: opts.root,
+              testNamePattern: opts.testNamePattern ?? null,
               ...(opts.harnessSlug && opts.harnessSlug !== '*' && opts.workspaceId && opts.workspaceId !== '*'
                 ? { scope: { harnessSlug: opts.harnessSlug, workspaceId: opts.workspaceId } }
                 : {}),
@@ -329,6 +330,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
     detachedReportArtifacts.push({
       reportPath,
       root,
+      testNamePattern: opts.testNamePattern ?? null,
       ...(opts.harnessSlug && opts.harnessSlug !== '*' && opts.workspaceId && opts.workspaceId !== '*'
         ? { scope: { harnessSlug: opts.harnessSlug, workspaceId: opts.workspaceId } }
         : {}),
@@ -2849,6 +2851,8 @@ export async function runTestFilesCore(opts: {
         source: 'local',
         commit: ledgerWorktreeAfter.commit,
         worktreeDirty: computeWorktreeDirty(ledgerWorktreeBefore, ledgerWorktreeAfter),
+        root,
+        testNamePattern: opts.testNamePattern ?? null,
       });
     }
 

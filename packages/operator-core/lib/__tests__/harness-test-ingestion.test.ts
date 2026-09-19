@@ -57,6 +57,12 @@ describe('parseVitestJsonForHarnessRows', () => {
     expect(rows[0].startedAt.getTime()).toBe(1000);
     expect(rows[0].finishedAt.getTime()).toBe(1350);
     expect(rows[0].outputTail).toBeNull();
+    expect(rows[0].execution).toEqual({
+      passed: 2,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+    });
   });
 
   it('maps a failed file to fail + captures the failure tail', () => {
@@ -127,6 +133,31 @@ describe('parseVitestJsonForHarnessRows', () => {
     expect(rows.map((r) => r.filePath)).toEqual(['a.test.ts', 'nested/b.test.ts']);
     expect(rows.map((r) => r.status)).toEqual(['pass', 'fail']);
   });
+
+  it('measures pending/todo as exclusions without inventing executed cases', () => {
+    const [row] = parseVitestJsonForHarnessRows(report([{
+      name: `${ROOT}/selected.test.ts`, status: 'passed',
+      assertionResults: [{ status: 'passed' }, { status: 'pending' }, { status: 'todo' }, { status: 'skipped' }],
+    }]), ROOT);
+    expect(row.execution).toEqual({ passed: 1, failed: 0, skipped: 3, collectionFailed: false });
+  });
+
+  it.each([undefined, null, [{ status: 'running' }], [null]])(
+    'does not turn missing or malformed assertions into complete measurements: %j',
+    (assertionResults) => {
+      const [row] = parseVitestJsonForHarnessRows(report([{
+        name: `${ROOT}/unknown.test.ts`, status: 'passed', assertionResults,
+      }]), ROOT);
+      expect(row.execution).toBeUndefined();
+    },
+  );
+
+  it('retains a collection failure with no executed assertions', () => {
+    const [row] = parseVitestJsonForHarnessRows(report([{
+      name: `${ROOT}/broken.test.ts`, status: 'failed', assertionResults: [],
+    }]), ROOT);
+    expect(row.execution).toEqual({ passed: 0, failed: 0, skipped: 0, collectionFailed: true });
+  });
 });
 
 /** Records every tagged-template insert's bound values. */
@@ -188,6 +219,53 @@ describe('persistHarnessTestRuns', () => {
     expect(first[12]).toBe('ws-42'); // workspace_id
     expect(first[13]).toBe(42.3); // loop_lag_p95_ms
     expect(typeof first[14]).toBe('number'); // rss_mb — real process.memoryUsage(), not mocked
+    expect(first[15]).toBe(false); // worktree_dirty
+    expect(first[16]).toBeNull(); // no root/execution metadata on legacy callers
+  });
+
+  it('persists versioned execution details when detached JSON evidence supplies a root', async () => {
+    const { sql, calls } = makeRecordingSql();
+    await persistHarnessTestRuns({
+      harnessSlug: 'my-hive',
+      workspaceId: 'ws-42',
+      rows: [{
+        ...sampleRows[0],
+        execution: { passed: 1, failed: 0, skipped: 35, collectionFailed: false },
+      }],
+      runGroupId: 'h-123',
+      commit: 'abc123',
+      worktreeDirty: false,
+      root: '/work/harness-repo',
+      testNamePattern: 'PUI-USAGE',
+      sql,
+    });
+    expect(JSON.parse(String(calls[0][16]))).toEqual({
+      schemaVersion: 1,
+      root: '/work/harness-repo',
+      filePath: 'src/foo.test.ts',
+      runGroupId: 'h-123',
+      workspaceId: 'ws-42',
+      harnessSlug: 'my-hive',
+      testNamePattern: 'PUI-USAGE',
+      passed: 1,
+      failed: 0,
+      skipped: 35,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: 'abc123',
+      worktreeDirty: false,
+    });
+  });
+
+  it('does not assert a clean worktree when a measured caller omitted provenance', async () => {
+    const { sql, calls } = makeRecordingSql();
+    await persistHarnessTestRuns({
+      harnessSlug: 'h', workspaceId: 'w', runGroupId: 'g', root: ROOT,
+      rows: [{ ...sampleRows[0], execution: { passed: 1, failed: 0, skipped: 0, collectionFailed: false } }],
+      sql,
+    });
+    expect(calls[0][15]).toBe(true);
+    expect(JSON.parse(String(calls[0][16]))).toMatchObject({ commitSha: null, worktreeDirty: true });
   });
 
   it('EI-4940: loop_lag_p95_ms is null when no monitor is running (absence of signal, not a claim of calm)', async () => {
