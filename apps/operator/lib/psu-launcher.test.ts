@@ -164,6 +164,8 @@ import {
   announceAdoptedCarryRespawn,
   reportSessionRespawned,
   reportSessionPortDelivery,
+  reportSessionPortLaunchFailure,
+  sessionPortLaunchAbortError,
   tryRematerializeFromArchive,
   isClaudeConfigDirLaunchReady,
   ensureInteractiveConfigViaOperator,
@@ -258,6 +260,7 @@ import {
   sessionPortTargetAccount,
   sessionPortRequestBody,
   sessionPortTargetArgs,
+  launchSessionPort,
   formatSessionPortInspection,
   sessionPortUpgradeError,
   SESSION_PORT_PROTOCOL_VERSION,
@@ -5332,7 +5335,7 @@ describe("psu-launcher arg parsing", () => {
     expect(resume).toContain("await preflightCodexAutoPool(");
 
     const port = section("async function launchSessionPort(", "async function launchResolvedResume(");
-    expect(port).toContain("await launchFreshSu(");
+    expect(port).toContain("await launchFreshSuImpl(");
     const fresh = section("async function launchFreshSu(", null);
     expect(fresh).toContain("await preflightCodexAutoPool(");
 
@@ -6945,47 +6948,68 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     });
   });
 
-  it("keeps a Claude-to-Codex configured default identical from preview through bootstrap", () => {
-    // Owner reproduction, 2026-09-05: the picker deliberately selected the
-    // Codex backend default, but resolveResumeTarget left the prepared row's
-    // target_model NULL. bootstrap-su independently resolved that NULL to the
-    // managed Codex default and then rejected its own preparation as a target
-    // mismatch. Exercise the whole launcher-side contract in one assertion so
-    // selection/request/bootstrap helpers cannot drift while passing separately.
-    const target = resolveResumeTarget(
-      source,
-      { picker: true },
-      { targetAgent: "codex", modelSpec: null },
-    );
-    const request = sessionPortRequestBody(source, target, {}, {});
-    const targetArgs = sessionPortTargetArgs(
-      source,
-      target,
-      {},
-      { picker: true, addDir: [], passthrough: [] },
-      { token: `22222222-2222-4222-8222-222222222222.${"a".repeat(64)}` },
-    );
-    const bootstrap = freshSuBootstrapBody(
-      {
-        agent: target.targetAgent,
-        workspace: source.workspaceId,
-        harness: null,
-        plan: source.planSlug,
+  it.each([
+    {
+      name: "configured default",
+      args: { picker: true },
+      selected: { targetAgent: "codex", modelSpec: null },
+      expectedModel: "gpt-5.6-sol:xhigh",
+      expectedSource: "configured-default",
+    },
+    {
+      name: "provider-prefixed explicit model",
+      args: {
+        picker: false,
+        agent: "codex",
+        model: "openai/gpt-5.6-sol:xhigh",
+        modelSource: "explicit",
       },
-      targetArgs,
-    );
+      selected: {},
+      expectedModel: "gpt-5.6-sol:xhigh",
+      expectedSource: "explicit",
+    },
+  ])(
+    "keeps a Claude-to-Codex $name identical from preview through bootstrap",
+    ({ args, selected, expectedModel, expectedSource }) => {
+      // Owner reproduction, 2026-09-05: the picker deliberately selected the
+      // Codex backend default, but resolveResumeTarget left the prepared row's
+      // target_model NULL. bootstrap-su independently resolved that NULL to the
+      // managed Codex default and then rejected its own preparation as a target
+      // mismatch. The provider-prefixed spelling is the second drift-prone form:
+      // it must be canonicalized once and stay byte-identical after that. Exercise
+      // the whole launcher-side contract in one table so selection/request/
+      // bootstrap helpers cannot drift while passing separately.
+      const target = resolveResumeTarget(source, args, selected);
+      const request = sessionPortRequestBody(source, target, {}, args);
+      const targetArgs = sessionPortTargetArgs(
+        source,
+        target,
+        {},
+        { ...args, addDir: [], passthrough: [] },
+        { token: `22222222-2222-4222-8222-222222222222.${"a".repeat(64)}` },
+      );
+      const bootstrap = freshSuBootstrapBody(
+        {
+          agent: target.targetAgent,
+          workspace: source.workspaceId,
+          harness: null,
+          plan: source.planSlug,
+        },
+        targetArgs,
+      );
 
-    expect(target).toMatchObject({
-      operation: "port",
-      targetAgent: "codex",
-      modelSpec: "gpt-5.6-sol:xhigh",
-      modelSource: "configured-default",
-    });
-    expect(request.targetModel).toBe(target.modelSpec);
-    expect(bootstrap.model).toBe(request.targetModel);
-    expect(bootstrap.model_source).toBe("configured-default");
-    expect(bootstrap.session_port_token).toBe(targetArgs.sessionPortToken);
-  });
+      expect(target).toMatchObject({
+        operation: "port",
+        targetAgent: "codex",
+        modelSpec: expectedModel,
+        modelSource: expectedSource,
+      });
+      expect(request.targetModel).toBe(target.modelSpec);
+      expect(bootstrap.model).toBe(request.targetModel);
+      expect(bootstrap.model_source).toBe(expectedSource);
+      expect(bootstrap.session_port_token).toBe(targetArgs.sessionPortToken);
+    },
+  );
 
   it("requires an explicit OMP backend for its open model vocabulary", () => {
     expect(
@@ -7040,7 +7064,14 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       targetAccount: "acct-openai",
       contextSize: "trimmed",
       launchContext: "/brief.md",
+      currentInstruction: null,
     });
+    expect(
+      sessionPortRequestBody(source, target, { id: "acct-openai" }, {
+        picker: false,
+        kickoffPromptText: "continue\r\nnow",
+      }).currentInstruction,
+    ).toBe("continue\r\nnow");
     expect(() =>
       sessionPortRequestBody({ ...source, coordOwnerId: null }, target, {}, {}),
     ).toThrow(/coordination identity/);
@@ -7111,11 +7142,17 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
           sha256: "a".repeat(64),
         },
         target: { backend: "codex", model: "sol", availableInputTokens: 1000 },
-        fullHistoryEstimatedTokens: 2000,
+        fullHistoryEstimatedTokens: 1800,
+        fullPayloadEstimatedTokens: 2000,
+        tokenEstimator: "utf8-byte-upper-bound-v1",
         requiresSummary: true,
         stats: {
           redactions: 2,
+          omittedThinkingBlocks: 1,
+          omittedSignatureBlocks: 1,
           omittedAttachments: 1,
+          textAttachments: 2,
+          truncatedAttachments: 1,
           unsupportedBlocks: 3,
           sidechainRecords: 4,
         },
@@ -7165,6 +7202,137 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       protocolVersion: 1,
       transformVersion: 1,
     });
+  });
+
+  it("token-finalizes a prepared port when target bootstrap never minted a row", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            port: {
+              id: "22222222-2222-4222-8222-222222222222",
+              status: "prepared",
+              targetAdvSessionId: null,
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            status: "failed",
+            targetAdvSessionId: null,
+            artifactDeleted: true,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+    const result = await reportSessionPortLaunchFailure(
+      {
+        protocolVersion: 1,
+        transformVersion: 3,
+        workspace: "papercusp-workspace",
+        portId: "22222222-2222-4222-8222-222222222222",
+        token: `22222222-2222-4222-8222-222222222222.${"a".repeat(64)}`,
+      },
+      new Error("prepared target does not match bootstrap target"),
+      { fetchImpl, operatorUrl: "http://operator", token: "token" },
+    );
+    expect(result).toMatchObject({
+      status: "failed",
+      targetAdvSessionId: null,
+      artifactDeleted: true,
+    });
+    const disposition = JSON.parse(fetchImpl.mock.calls[1][1].body);
+    expect(disposition).toMatchObject({
+      protocolVersion: 1,
+      transformVersion: 3,
+      status: "failed",
+      portId: "22222222-2222-4222-8222-222222222222",
+      preparationToken: `22222222-2222-4222-8222-222222222222.${"a".repeat(64)}`,
+    });
+    expect(disposition).not.toHaveProperty("targetAdvSessionId");
+    expect(disposition.error).toMatch(/target bootstrap\/spawn failed.*does not match/s);
+  });
+
+  it("finalizes a post-prepare bootstrap failure before surfacing its stage and cause", async () => {
+    const target = resolveResumeTarget(
+      source,
+      { picker: true },
+      { targetAgent: "codex", modelSpec: null },
+    );
+    const sessionPortApiImpl = vi
+      .fn()
+      .mockResolvedValueOnce({
+        inspection: { source: { sha256: "a".repeat(64) } },
+      })
+      .mockResolvedValueOnce({
+        portId: "22222222-2222-4222-8222-222222222222",
+        token: `22222222-2222-4222-8222-222222222222.${"a".repeat(64)}`,
+        fidelity: "full",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      });
+    const launchFailure = new Error(
+      "prepared target codex/default does not match bootstrap codex/gpt-5.6-sol:xhigh",
+    );
+    const reportLaunchFailureImpl = vi.fn(async () => ({
+      status: "failed",
+      artifactDeleted: true,
+    }));
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        launchSessionPort(
+          source,
+          target,
+          {},
+          { picker: false, addDir: [], passthrough: [] },
+          {
+            sessionPortApiImpl,
+            launchFreshSuImpl: vi.fn(async () => {
+              throw launchFailure;
+            }),
+            reportLaunchFailureImpl,
+          },
+        ),
+      ).rejects.toThrow(/was finalized failed.*prepared target codex\/default/s);
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(reportLaunchFailureImpl).toHaveBeenCalledWith(
+      expect.objectContaining({
+        portId: "22222222-2222-4222-8222-222222222222",
+        protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+        transformVersion: SESSION_PORT_TRANSFORM_VERSION,
+        workspace: "papercusp-workspace",
+      }),
+      launchFailure,
+    );
+  });
+
+  it("converts only session-port preflight exits into finalizable exceptions", () => {
+    expect(
+      sessionPortLaunchAbortError(
+        { sessionPortToken: "opaque" },
+        new Error("persona missing"),
+        "launch preflight",
+      ),
+    ).toMatchObject({
+      message:
+        "session-port target launch preflight failed after preparation: persona missing",
+      cause: expect.any(Error),
+    });
+    expect(
+      sessionPortLaunchAbortError(
+        { sessionPortToken: null },
+        new Error("ordinary launch"),
+        "launch preflight",
+      ),
+    ).toBeNull();
   });
 });
 
