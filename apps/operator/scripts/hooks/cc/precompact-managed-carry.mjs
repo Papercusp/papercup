@@ -68,6 +68,18 @@ export function parseManagedCarryResponse(rawText) {
   if (Object.prototype.hasOwnProperty.call(result, 'ok')) {
     return { ok: true, inner: result, isError: result.isError === true };
   }
+  // MCP clients may negotiate an object result in `structuredContent` instead
+  // of a JSON text content block. Keep this bridge tolerant of either valid
+  // result representation; the request below still pins JSON text so older
+  // result doors do not silently return compact/TOON to this JSON parser.
+  const structured = result.structuredContent;
+  if (structured && typeof structured === 'object' && !Array.isArray(structured)) {
+    return { ok: true, inner: structured, isError: result.isError === true };
+  }
+  if (typeof structured === 'string') {
+    const inner = parseJsonObject(structured);
+    if (inner) return { ok: true, inner, isError: result.isError === true };
+  }
   for (const part of result.content ?? []) {
     if (part?.type !== 'text' || typeof part.text !== 'string') continue;
     const inner = parseJsonObject(part.text);
@@ -172,7 +184,13 @@ export async function runManagedPreCompact(payload, options = {}) {
     jsonrpc: '2.0',
     id: 1,
     method: 'tools/call',
-    params: { name: 'session:request-compaction', arguments: {} },
+    // Raw MCP callers must negotiate JSON explicitly. The result door defaults
+    // to compact/TOON for eligible tools, which is not parseable by this hook.
+    params: {
+      name: 'session:request-compaction',
+      arguments: {},
+      _meta: { format: 'json' },
+    },
   });
   try {
     const response = await fetchImpl(mcpUrl, {
