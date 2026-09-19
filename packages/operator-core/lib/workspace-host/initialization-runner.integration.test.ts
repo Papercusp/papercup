@@ -294,6 +294,26 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
     expect(operation.request.credentialAdmissions[0].verification.agents.codex).toBeUndefined();
   });
 
+  it('enriches a durable transport-discovery row with exact credential admission evidence', async () => {
+    const ws = freshWs();
+    const hostId = await seedHost(ws);
+    const operationId = `async_${randomBytes(4).toString('hex')}`;
+    const { beginWorkspaceHostOperation } = await import('./observability-store');
+    await beginWorkspaceHostOperation({
+      workspaceId: ws, hostId, operationId, action: 'initialize', status: 'running',
+      request: { phase: 'transport-discovery' },
+    });
+    await runWorkspaceHostInitialization(runInput(ws, hostId, recordingAdapter(), operationId));
+    const [operation] = await db.adminSql`
+      SELECT status, request FROM harness_shared.workspace_host_operations
+       WHERE workspace_id = ${ws} AND id = ${operationId}
+    `;
+    expect(operation.status).toBe('succeeded');
+    expect(operation.request.credentialAdmissions).toHaveLength(1);
+    expect(operation.request.steps.at(-1).kind).toBe('verify-initialization');
+    expect(operation.request).not.toHaveProperty('phase');
+  });
+
   it('rejects failed exact-generation admission before creating an operation row', async () => {
     const ws = freshWs();
     const hostId = await seedHost(ws);

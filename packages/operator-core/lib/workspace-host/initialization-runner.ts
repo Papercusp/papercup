@@ -215,6 +215,16 @@ export async function runWorkspaceHostInitialization(
   let completedSteps = 0;
 
   try {
+    // The durable workflow may already have recorded transport discovery. Enrich that same row
+    // with the exact credential admission evidence instead of losing it to INSERT ON CONFLICT.
+    await updateWorkspaceHostOperation({
+      workspaceId: input.workspaceId,
+      operationId,
+      status: 'running',
+      percent: 0,
+      message: `Initializing workspace host (${totalSteps} steps)`,
+      request: { ...persistedRequest },
+    });
     // Everything after beginWorkspaceHostOperation is inside the same failure boundary. Adapter
     // capability validation and replay-store setup can fail synchronously; if either does, the
     // operation row must become a durable failed operation rather than an apparently live 0%

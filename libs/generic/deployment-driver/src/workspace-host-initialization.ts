@@ -354,7 +354,7 @@ function canonicalInitializationJson(value: unknown, path: string): string {
 
 /** Stable identity for replay collision detection, independent of object key order. */
 export function workspaceHostInitializationStepFingerprint(
-  step: WorkspaceHostInitializationStep,
+  step: Omit<WorkspaceHostInitializationStep, 'kind'> & { kind: WorkspaceHostInitializationStepKind | 'install-desktop-pack' },
 ): string {
   assertWorkspaceHostSecretIsolation(step, "workspaceHost.initialization.step");
   return createHash("sha256")
