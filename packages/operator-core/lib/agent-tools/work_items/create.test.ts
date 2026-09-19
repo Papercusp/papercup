@@ -13,6 +13,10 @@ const fleetAdmission = vi.hoisted(() => ({
   admit: vi.fn(async () => fleetAdmission.decision),
   notify: vi.fn(),
 }));
+const workScope = vi.hoisted(() => ({
+  decision: { allowed: true, reason: 'no-policy' } as any,
+  gate: vi.fn(async () => workScope.decision),
+}));
 const modeState = vi.hoisted(() => ({
   rows: [] as Array<{ mode: string; setAt: string }>,
 }));
@@ -38,6 +42,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   notifyFleetScopeRefusal: fleetAdmission.notify,
   fleetScopeLeaderRemedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
 }));
+vi.mock('../../work-scope-policy', () => ({ gateWorkScope: workScope.gate }));
 // Create-time dedup port (P-009) — mock so this handler test stays hermetic
 // (the memory-pools leg is pinned in memory/claim-port.test.ts).
 vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
@@ -127,6 +132,7 @@ beforeEach(() => {
       : { ok: true, allowed: true, flow, value: await persist(flow) };
   });
   fleetAdmission.decision = { allowed: true, scoped: false };
+  workScope.decision = { allowed: true, reason: 'no-policy' };
   createM.mockImplementation(async (spec) => okCore(spec.title));
 });
 
@@ -652,6 +658,57 @@ describe('work_items:create handler (keyed-array)', () => {
     const b = await body({ items: [{ kind: 'bug', title: 'ok' }, { kind: 'bug', title: 'dup' }] });
     expect(b.counts).toEqual({ ok: 1, failed: 1 });
     expect(b.results[1]).toMatchObject({ ok: false, title: 'dup', error: 'duplicate_mirror', existing: { id: 'WI-9' } });
+  });
+});
+
+describe('out-of-scope create+assign (workspace policy)', () => {
+  it('files the finding pending and unassigned without creating a claim', async () => {
+    workScope.decision = {
+      allowed: false,
+      code: 'scope_denied',
+      harness: 'sb-devboard-hive',
+      allowHarnesses: ['papercusp'],
+      message: "scope_denied: harness 'sb-devboard-hive' is outside the workspace work-scope policy",
+    };
+
+    const b = await body({ kind: 'bug', title: 'workspace-outside', harness: 'sb-devboard-hive', assign_to: 'bee-7' });
+
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      workScopeDowngrade: expect.stringContaining('FILED UNASSIGNED'),
+    });
+    expect(createM).toHaveBeenCalledOnce();
+    expect(createM.mock.calls[0][0]).toMatchObject({
+      title: 'workspace-outside',
+      harness: 'sb-devboard-hive',
+      assign_to: undefined,
+      payload: {
+        workScopeDowngrade: {
+          requestedAssignee: 'bee-7',
+          reportedBy: 'me',
+          harness: 'sb-devboard-hive',
+          code: 'scope_denied',
+        },
+      },
+    });
+    expect(createM.mock.calls[0][0]).not.toHaveProperty('admissionBypass');
+    expect(fleetAdmission.admit).not.toHaveBeenCalled();
+  });
+
+  it('passes the create harness and implementing plan to the workspace gate', async () => {
+    await body({
+      kind: 'change',
+      title: 'planned assignment',
+      harness: 'sb-devboard-hive',
+      assign_to: 'bee-7',
+      plan_item: { slug: 'outside-plan', item: 'P-001' },
+    });
+
+    expect(workScope.gate).toHaveBeenCalledWith('work_items:create', {
+      harness: 'sb-devboard-hive',
+      plan: 'outside-plan',
+      actor: 'me',
+    });
   });
 });
 

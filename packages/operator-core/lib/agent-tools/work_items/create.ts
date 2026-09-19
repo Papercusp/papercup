@@ -52,6 +52,7 @@ import { withDrainBugAdmission } from './drain-flow';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveGoalContext } from '../../modes/goal-context';
+import { gateWorkScope } from '../../work-scope-policy';
 
 /**
  * Inline typed-link spec (WI-3956) — one edge written from the NEW work-item to a
@@ -453,7 +454,43 @@ export default defineTool({
         // when the ownership does not. Applies to `fleet_winding_down` too: a paused
         // fleet's member must not acquire NEW work, but recording a finding is not
         // acquiring work.
+        let workScopeDowngrade: Record<string, never> | { workScopeDowngrade: string } = {};
         let fleetScopeDowngrade: Record<string, never> | { fleetScopeDowngrade: string } = {};
+        if (spec.assign_to) {
+          // workspace-work-scope-policy-2026-09-04 D-002/P-006: filing is allowed,
+          // but an explicit assignment is a hand-out of work and must not create a
+          // claim outside the workspace allow-list. Keep the finding durable and
+          // pending, then let a later in-scope claim adopt it when policy permits.
+          const workScope = await gateWorkScope('work_items:create', {
+            harness: spec.harness ?? createCtx.harnessSlug,
+            plan: spec.targetPlanItem?.slug ?? null,
+            actor: ident.ownerId,
+          });
+          if (!workScope.allowed) {
+            const requestedAssignee = spec.assign_to;
+            spec.payload = {
+              ...(typeof spec.payload === 'object' && spec.payload !== null ? spec.payload : {}),
+              workScopeDowngrade: {
+                requestedAssignee,
+                reportedBy: ident.ownerId,
+                harness: workScope.harness,
+                code: workScope.code,
+                at: new Date().toISOString(),
+              },
+            };
+            // Do not set admissionBypass here: D-002 requires out-of-scope work to
+            // remain pending/parked. The assignment is removed before persistence,
+            // so no out-of-scope claim can be minted.
+            spec.assign_to = undefined;
+            workScopeDowngrade = {
+              workScopeDowngrade:
+                `FILED UNASSIGNED — the item exists on the ledger, but the requested ` +
+                `assignment was refused by the workspace work-scope policy: ${workScope.message} ` +
+                `No out-of-scope claim was created; the item remains pending until an ` +
+                `allowed harness/exception can claim it.`,
+            };
+          }
+        }
         if (spec.assign_to) {
           const admission = await admitSubjectForFleetTarget({
             target: spec.assign_to,
@@ -672,6 +709,7 @@ export default defineTool({
           ...planItemBlockerNudge,
           // EI-18784357226895330: filed, but the requested self-assignment was refused
           // by the fleet lane — the caller must see this on an ok:true result.
+          ...workScopeDowngrade,
           ...fleetScopeDowngrade,
           // work-queue-admission-and-bulk-dedup-2026-08-24 P-002 (item d): the P-008
           // soft-band advisory `similarOpen` NO LONGER comes back on a successful

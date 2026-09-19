@@ -24,6 +24,9 @@ import {
 } from '@papercusp/backup/application-names';
 
 const systemdDir = fileURLToPath(new URL('../../../apps/operator/scripts/systemd/', import.meta.url));
+const backupHealthCheckPath = fileURLToPath(
+  new URL('../../../apps/operator/scripts/papercup-backup-health-check.sh', import.meta.url),
+);
 // Defaults to the real script, so every run here and on the gate is unchanged. The
 // override exists so falsifiability can be proven WITHOUT mutating the shared tree:
 // `scripts/mutation-probe.sh` copies this file out, mutates the copy, and passes its
@@ -102,6 +105,17 @@ afterEach(() => {
 });
 
 describe('Kopia global backup guard', () => {
+  it('keeps the default staleness override below the primary freshness alarm', () => {
+    const guardSource = readFileSync(guard, 'utf8');
+    const healthCheckSource = readFileSync(backupHealthCheckPath, 'utf8');
+    const maxDefer = guardSource.match(/KOPIA_BACKUP_MAX_DEFER_SEC:-([0-9]+)/)?.[1];
+    const maxAgeHours = healthCheckSource.match(/BACKUP_MAX_AGE_H:-([0-9]+)/)?.[1];
+
+    expect(maxDefer).toBeDefined();
+    expect(maxAgeHours).toBeDefined();
+    expect(Number(maxDefer)).toBeLessThan(Number(maxAgeHours) * 60 * 60);
+  });
+
   it('uses one host-global default lock namespace instead of an effective-UID runtime', () => {
     const source = readFileSync(guard, 'utf8');
 
@@ -809,12 +823,13 @@ describe('Kopia managed entrypoint contract', () => {
 
   it('admits a scheduled cycle once pressure has deferred it past the staleness deadline', () => {
     const { dir, env } = fixture(23.84);
-    seedDeadlineBase(dir, 'stale', 25_200);
+    seedDeadlineBase(dir, 'stale', 3_700);
     const marker = join(dir, 'ran');
     const result = run(['--mode', 'scheduled', '--label', 'stale', '--', 'touch', marker], env);
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('result=admitted-despite-pressure reason=memory-pressure');
+    expect(result.stdout).toContain('max_defer_sec=3600');
     expect(result.stdout).toContain('result=finished mode=scheduled rc=0');
     expect(existsSync(marker)).toBe(true);
   });

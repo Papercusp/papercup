@@ -87,7 +87,9 @@ is_number "$stop_grace" || { echo "invalid KOPIA_BACKUP_STOP_GRACE_SEC=$stop_gra
 # regardless of pressure -- bounded, because the unit that runs this pins
 # MemoryMax/MemorySwapMax and Kopia to --parallel=1, so an admitted run is
 # capped by its cgroup rather than free to consume the host.
-max_defer="${KOPIA_BACKUP_MAX_DEFER_SEC:-21600}"
+# Keep the override ahead of the primary six-hour freshness alarm. Pressure may
+# defer a cycle, but it must not defer every cycle until the alarm fires.
+max_defer="${KOPIA_BACKUP_MAX_DEFER_SEC:-3600}"
 # A scheduled cycle that did not run is retryable, not successful. EX_TEMPFAIL
 # makes the skipped work visible in systemd's recorded exit status while the
 # scheduled units' SuccessExitStatus=75 keeps expected retries out of OnFailure;
