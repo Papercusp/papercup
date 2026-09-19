@@ -122,8 +122,9 @@ export async function applyMigrationForTest(sql: postgres.Sql, filePath: string)
  * the rot fails loudly and names itself instead of surfacing as a column error.
  *
  * ── How completeness is decided (and why not the obvious way) ───────────────
- * Everything is derived FROM THE LIST — there is no second registry to keep in
- * sync, which is what makes this unable to fall behind in turn:
+ * Everything is derived FROM THE LIST (plus the explicit `runtimeTables`
+ * contract) — there is no second registry to keep in sync, which is what makes
+ * this unable to fall behind in turn:
  *   1. parse the listed files for the tables they structurally CREATE/ALTER;
  *   2. scan sql/ for HIGHER-numbered migrations touching those same tables;
  *   3. throw naming the missing file(s) and the table that made each relevant.
@@ -140,7 +141,11 @@ export async function applyMigrationForTest(sql: postgres.Sql, filePath: string)
  *    in the fixture's own table set. A WIDE migration (488-federated-rls-backstop
  *    touches agent_facts plus 3 unrelated tables) cannot be applied by a fixture
  *    that only builds agent_facts, so demanding it would be an error nobody can
- *    fix. Those are reported separately as advisory context, never as a failure.
+ *    fix. Those are reported separately as advisory context, never as a failure,
+ *    UNLESS the migration structurally touches an explicitly declared
+ *    `runtimeTables` entry. Runtime tables are a stronger contract: their
+ *    creating migration and every later structural migration must be declared,
+ *    even when a later migration is wide.
  *
  * A third case the table-overlap heuristic cannot see at all (EI found via
  * WI-35535): a migration can touch ONLY the fixture's declared table by name
@@ -232,6 +237,8 @@ export interface MigrationListAudit {
   objects: string[];
   /** Runtime-used tables whose first creating migration is not declared. */
   runtimeMissing: { table: string; migration: string | null }[];
+  /** Runtime-used tables with a later structural migration missing from the list. */
+  runtimeStale: { table: string; migration: string }[];
 }
 
 /**
@@ -311,12 +318,26 @@ export function auditMigrationList(
     if (allTouched === allOverlapping) missing.push(entry);
     else wider.push(entry);
   }
-  const runtimeMissing = [...new Set([...runtimeTables].map((table) => table.trim().toLowerCase()))]
-    .sort()
+  const runtimeTableNames = [...new Set(
+    [...runtimeTables].map((table) => table.trim().toLowerCase()),
+  )].sort();
+  const orderedMigrations = [...byFile].sort(
+    (a, b) => (migrationNumber(a[0]) ?? 0) - (migrationNumber(b[0]) ?? 0),
+  );
+  const runtimeMissing = runtimeTableNames
     .flatMap((table) => {
       const migration = creatingMigration.get(table) ?? null;
       return migration && declaredSet.has(migration) ? [] : [{ table, migration }];
     });
+  const runtimeStale = runtimeTableNames.flatMap((table) => {
+    const tableWatermark = watermark.get(table) ?? 0;
+    return orderedMigrations.flatMap(([file, touched]) => {
+      const n = migrationNumber(file);
+      return !declaredSet.has(file) && n !== null && n > tableWatermark && touched.tables.has(table)
+        ? [{ table, migration: file }]
+        : [];
+    });
+  });
 
   return {
     missing,
@@ -324,6 +345,7 @@ export function auditMigrationList(
     tables: [...tables].sort(),
     objects: [...objects].sort(),
     runtimeMissing,
+    runtimeStale,
   };
 }
 
@@ -374,6 +396,16 @@ export function formatStaleMigrationList(audit: MigrationListAudit, label: strin
       ),
     );
   }
+  if (audit.runtimeStale.length) {
+    lines.push(
+      ``,
+      `Runtime-used tables have later structural migrations missing from this list —`,
+      `declare them even when they also touch tables outside this fixture:`,
+      ...audit.runtimeStale.map(
+        (m) => `  ! '${m.migration}'   (extends runtime-used table '${m.table}')`,
+      ),
+    );
+  }
   if (audit.wider.length) {
     lines.push(
       ``,
@@ -416,7 +448,7 @@ export interface KnownInapplicableMigration {
  * `knownInapplicable` acknowledges specific later migrations the audit would
  * otherwise demand, that this fixture structurally cannot apply (see the
  * header block above) — each entry is subtracted from the audit's `missing`
- * set before it decides whether to throw. This is narrower than `audit:
+ * and runtime-stale sets before it decides whether to throw. This is narrower than `audit:
  * false`: every OTHER migration the audit finds is still enforced, so a
  * genuinely-missed, actually-applicable gap still fails loudly. Prefer this
  * over widening the fixture's DDL to satisfy an inapplicable prescription —
@@ -429,8 +461,9 @@ export async function applyMigrationsForTest(
     label?: string;
     audit?: boolean;
     knownInapplicable?: KnownInapplicableMigration[];
-    /** Schema-qualified tables the runtime path writes or reads. Their first
-     * creating migration must be present in `declared`. */
+    /** Schema-qualified tables the runtime path writes or reads. Their creating
+     * migration and every later structural migration must be present in
+     * `declared`. */
     runtimeTables?: Iterable<string>;
   } = {},
 ): Promise<void> {
@@ -438,9 +471,13 @@ export async function applyMigrationsForTest(
     const audit = auditMigrationList(declared, readAllMigrations(), opts.runtimeTables);
     const acknowledged = new Set((opts.knownInapplicable ?? []).map((k) => k.file));
     const stillMissing = audit.missing.filter((m) => !acknowledged.has(m.file));
-    if (stillMissing.length || audit.runtimeMissing.length) {
+    const stillRuntimeStale = audit.runtimeStale.filter((m) => !acknowledged.has(m.migration));
+    if (stillMissing.length || audit.runtimeMissing.length || stillRuntimeStale.length) {
       throw new Error(
-        formatStaleMigrationList({ ...audit, missing: stillMissing }, opts.label ?? 'applyMigrationsForTest'),
+        formatStaleMigrationList(
+          { ...audit, missing: stillMissing, runtimeStale: stillRuntimeStale },
+          opts.label ?? 'applyMigrationsForTest',
+        ),
       );
     }
   }
