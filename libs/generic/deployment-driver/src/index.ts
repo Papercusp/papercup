@@ -515,6 +515,7 @@ export {
   applyWorkspaceHostAgentRuntimePath,
   probeWorkspaceHostAgentVerification,
   probeWorkspaceHostAgents,
+  resolveWorkspaceHostRequestedAgents,
 } from "./workspace-host-agent-authentication";
 export type {
   WorkspaceHostRemoteInitializerRequest,

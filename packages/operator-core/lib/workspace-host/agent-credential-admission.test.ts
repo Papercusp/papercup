@@ -183,6 +183,29 @@ class BundleAwareRunner implements WorkspaceHostAgentProbeRunner {
 }
 
 describe('workspace-host exact-generation agent credential admission', () => {
+  it('admits only requested agents and rejects reuse of scoped evidence for the default all-agent request', async () => {
+    const runner = new BundleAwareRunner();
+    const input = {
+      credentialRef: { kind: 'agent' as const, ref: AGENT_REF },
+      delivery: DELIVERY,
+      materialSource: source(bundle('revoked'), []),
+      requestedAgents: ['claude', 'omp'] as const,
+    };
+    const evidence = await verifyWorkspaceHostAgentCredentialAdmission(input, {
+      runner, probes: PROBES, now: NOW, environment: { PATH: '/usr/bin:/bin' },
+    });
+    expect(runner.observed).toEqual({ claude: 'healthy', omp: 'healthy' });
+    expect(evidence.verification).toMatchObject({ requestedAgents: ['claude', 'omp'], allReady: false, admissible: true });
+    expect(evidence.verification.agents.codex).toBeUndefined();
+    expect(() => assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence, input)).not.toThrow();
+    expect(() => assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence, {
+      credentialRef: input.credentialRef, delivery: DELIVERY,
+    })).toThrow(/requestedAgents/);
+    expect(() => assertWorkspaceHostAgentCredentialAdmissionEvidence({
+      ...evidence, verification: { ...evidence.verification, allReady: true },
+    })).toThrow(/coverage/);
+  });
+
   it('authenticates the exact stored bundle in an isolated home and returns public binding evidence', async () => {
     const seen: WorkspaceHostCredentialMaterialRequest[] = [];
     const runner = new BundleAwareRunner();

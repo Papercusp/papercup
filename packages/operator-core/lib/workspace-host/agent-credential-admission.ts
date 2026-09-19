@@ -23,6 +23,7 @@ import {
   parseWorkspaceHostAgentHomeBundle,
   parseWorkspaceHostCredentialReference,
   probeWorkspaceHostAgentVerification,
+  resolveWorkspaceHostRequestedAgents,
   workspaceHostAgentHomeDirectories,
   workspaceHostAgentHomeOmpModelsPath,
   workspaceHostAgentHomePaths,
@@ -50,6 +51,7 @@ export interface WorkspaceHostAgentCredentialAdmissionInput {
   readonly credentialRef: AgentCredentialRef;
   readonly delivery: WorkspaceHostCredentialDelivery;
   readonly materialSource: WorkspaceHostCredentialMaterialSource;
+  readonly requestedAgents?: readonly WorkspaceHostCanaryAgent[];
 }
 
 export interface WorkspaceHostAgentCredentialAdmissionEvidence {
@@ -72,6 +74,8 @@ export interface WorkspaceHostAgentCredentialAdmissionEvidence {
      * predicate. Do not widen it.
      */
     readonly allReady: boolean;
+    /** Explicit coverage; excluded agents are neither authenticated nor reported ready. */
+    readonly requestedAgents?: readonly WorkspaceHostCanaryAgent[];
     readonly agents: Readonly<Partial<Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentVerificationEvidence>>>;
     /** Agents whose bundle member is intentionally null and therefore has no credential to authenticate. */
     readonly credentialFreeAgents: readonly WorkspaceHostCanaryAgent[];
@@ -206,7 +210,7 @@ function isReadyAgentVerificationEvidence(
 /** Validate a receipt before a caller persists or reuses it as an admission decision. */
 export function assertWorkspaceHostAgentCredentialAdmissionEvidence(
   evidence: unknown,
-  expected?: Pick<WorkspaceHostAgentCredentialAdmissionInput, 'credentialRef' | 'delivery'>,
+  expected?: Pick<WorkspaceHostAgentCredentialAdmissionInput, 'credentialRef' | 'delivery' | 'requestedAgents'>,
 ): asserts evidence is WorkspaceHostAgentCredentialAdmissionEvidence {
   if (!isRecord(evidence) || !isRecord(evidence.binding) || !isRecord(evidence.verification)) {
     throw new Error('workspace-host agent credential admission evidence is incomplete or not ready');
@@ -234,13 +238,20 @@ export function assertWorkspaceHostAgentCredentialAdmissionEvidence(
   }
 
   const credentialFreeAgents = verification.credentialFreeAgents;
+  const requestedAgents = resolveWorkspaceHostRequestedAgents(verification.requestedAgents);
+  if (expected && JSON.stringify(resolveWorkspaceHostRequestedAgents(expected.requestedAgents)) !== JSON.stringify(requestedAgents)) {
+    throw new Error('workspace-host agent credential admission requestedAgents does not match the requested binding');
+  }
   const credentialFreeSet = new Set(credentialFreeAgents);
   const unfundedAgents = verification.unfundedAgents as readonly unknown[];
   const unfundedSet = new Set(unfundedAgents);
   if (
     credentialFreeSet.size !== credentialFreeAgents.length ||
     credentialFreeAgents.some((agent) => !isWorkspaceHostCanaryAgent(agent) || agent !== 'omp') ||
-    Object.keys(verification.agents).some((agent) => !isWorkspaceHostCanaryAgent(agent)) ||
+    Object.keys(verification.agents).some((agent) => !requestedAgents.includes(agent as WorkspaceHostCanaryAgent)) ||
+    credentialFreeAgents.some((agent) => !requestedAgents.includes(agent as WorkspaceHostCanaryAgent)) ||
+    unfundedAgents.some((agent) => !requestedAgents.includes(agent as WorkspaceHostCanaryAgent)) ||
+    (requestedAgents.length < WORKSPACE_HOST_CANARY_AGENTS.length && verification.allReady !== false) ||
     unfundedSet.size !== unfundedAgents.length ||
     unfundedAgents.some((agent) => !isWorkspaceHostCanaryAgent(agent)) ||
     // An agent cannot be both "has no credential to authenticate" and "authenticated but unfunded".
@@ -253,7 +264,7 @@ export function assertWorkspaceHostAgentCredentialAdmissionEvidence(
   }
 
   const reportObservedAt = Date.parse(verification.observedAt as string);
-  for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
+  for (const agent of requestedAgents) {
     const agentEvidence = verification.agents[agent];
     if (credentialFreeSet.has(agent)) {
       if (agentEvidence !== undefined) {
@@ -349,6 +360,7 @@ export async function verifyWorkspaceHostAgentCredentialAdmission(
   input: WorkspaceHostAgentCredentialAdmissionInput,
   dependencies: WorkspaceHostAgentCredentialAdmissionDependencies = {},
 ): Promise<WorkspaceHostAgentCredentialAdmissionEvidence> {
+  const requestedAgents = resolveWorkspaceHostRequestedAgents(input.requestedAgents);
   const parsed = parseWorkspaceHostCredentialReference(input.credentialRef.ref, 'agent');
   if (!Number.isSafeInteger(input.delivery.generation) || input.delivery.generation < 1) {
     throw new Error('workspace-host agent credential generation must be a positive safe integer');
@@ -374,7 +386,7 @@ export async function verifyWorkspaceHostAgentCredentialAdmission(
     const environment = probeEnvironment(temporary, dependencies.environment);
     const agents: Partial<Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentVerificationEvidence>> = {};
     const credentialFreeAgents: WorkspaceHostCanaryAgent[] = [];
-    for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
+    for (const agent of requestedAgents) {
       if (agent === 'omp' && bundle.files.omp === null) {
         credentialFreeAgents.push(agent);
         continue;
@@ -402,7 +414,7 @@ export async function verifyWorkspaceHostAgentCredentialAdmission(
       }
     }
     const observedAt = now().toISOString();
-    const unfundedAgents = WORKSPACE_HOST_CANARY_AGENTS.filter(
+    const unfundedAgents = requestedAgents.filter(
       (agent) =>
         !credentialFreeAgents.includes(agent) &&
         agents[agent]?.ready !== true &&
@@ -411,13 +423,14 @@ export async function verifyWorkspaceHostAgentCredentialAdmission(
     const verification = {
       contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
       observedAt,
+      ...(input.requestedAgents !== undefined ? { requestedAgents } : {}),
       allReady: WORKSPACE_HOST_CANARY_AGENTS.every(
         (agent) => credentialFreeAgents.includes(agent) || agents[agent]?.ready === true,
       ),
       agents,
       credentialFreeAgents,
       unfundedAgents,
-      admissible: WORKSPACE_HOST_CANARY_AGENTS.every(
+      admissible: requestedAgents.every(
         (agent) =>
           credentialFreeAgents.includes(agent) || agents[agent]?.ready === true || unfundedAgents.includes(agent),
       ),

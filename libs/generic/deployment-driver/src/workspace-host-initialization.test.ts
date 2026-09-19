@@ -79,6 +79,15 @@ function request(
 }
 
 describe("planWorkspaceHostInitialization", () => {
+  it("persists requested-agent coverage in the replay fingerprint and rejects empty coverage", () => {
+    const scoped = planWorkspaceHostInitialization(request({ requestedAgents: ["omp", "claude"] }));
+    const verify = scoped.steps.at(-1)!;
+    const full = planWorkspaceHostInitialization(request()).steps.at(-1)!;
+    expect(verify.input.requestedAgents).toEqual(["claude", "omp"]);
+    expect(workspaceHostInitializationStepFingerprint(verify)).not.toBe(workspaceHostInitializationStepFingerprint(full));
+    expect(() => planWorkspaceHostInitialization(request({ requestedAgents: [] }))).toThrow(/requestedAgents/);
+  });
+
   it("creates an empty workspace and binds three distinct runtime channels after bootstrap", () => {
     const first = planWorkspaceHostInitialization(request());
     const replay = planWorkspaceHostInitialization(request());

@@ -3,7 +3,7 @@
  *
  * WHAT WAS MISSING. The controller already knows how to reach a workspace host: it opens one
  * non-interactive OpenSSH invocation over an IAP tunnel and writes
- * `{"protocolVersion":"papercusp-gcp-iap-initialization-v2","step":<step>}` to the remote
+ * `{"protocolVersion":"papercusp-gcp-iap-initialization-v3","step":<step>}` to the remote
  * program's stdin, expecting `{protocolVersion, stepId, status:"succeeded", observedAt,
  * publicEvidence?}` back on stdout. That remote program did not exist anywhere in the tree — the
  * protocol string matched only the controller-side command builder — so every initialization step
@@ -36,6 +36,8 @@ import {
 } from "./workspace-host-initialization";
 import {
   WORKSPACE_HOST_CANARY_AGENTS,
+  resolveWorkspaceHostRequestedAgents,
+  type WorkspaceHostCanaryAgent,
   type WorkspaceHostAgentVerificationReport,
 } from "./workspace-host-agent-authentication";
 import {
@@ -51,7 +53,7 @@ import { assertWorkspaceHostSecretIsolation } from "./workspace-host-test-harnes
  * shows up against a real host.
  */
 export const WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION =
-  "papercusp-gcp-iap-initialization-v2";
+  "papercusp-gcp-iap-initialization-v3";
 
 /**
  * Every step kind this initializer can execute: the six INITIALIZATION kinds plus the four
@@ -220,8 +222,8 @@ export interface WorkspaceHostRemoteInitializerHost {
   importWorkspace(
     input: WorkspaceHostImportWorkspaceInput,
   ): Promise<WorkspaceHostRemoteStepEvidence>;
-  /** Probe the three agents. Called by the verify step; must be non-interactive. */
-  probeAgentVerification(): Promise<WorkspaceHostAgentVerificationReport>;
+  /** Probe the requested agents. Omission retains all-three coverage. */
+  probeAgentVerification(requestedAgents?: readonly WorkspaceHostCanaryAgent[]): Promise<WorkspaceHostAgentVerificationReport>;
   /** Confirm the private clone landed, for the verify step's repository evidence. */
   describeClonedRepository(input?: {
     readonly destination: string;
@@ -521,6 +523,7 @@ export async function executeWorkspaceHostRemoteInitializerStep(
       break;
     }
     case "verify-initialization": {
+      const requestedAgents = resolveWorkspaceHostRequestedAgents(input.requestedAgents);
       const sourceKind = requireString(
         input.sourceKind,
         "step.input.sourceKind",
@@ -561,10 +564,17 @@ export async function executeWorkspaceHostRemoteInitializerStep(
           "step.input.repository is allowed only for a git source",
         );
       }
-      const report = await deps.host.probeAgentVerification();
+      const report = await deps.host.probeAgentVerification(
+        input.requestedAgents !== undefined ? requestedAgents : undefined,
+      );
+      const reportedAgents = resolveWorkspaceHostRequestedAgents(report.requestedAgents);
+      if (JSON.stringify(reportedAgents) !== JSON.stringify(requestedAgents) ||
+          Object.keys(report.agents).some((agent) => !requestedAgents.includes(agent as WorkspaceHostCanaryAgent))) {
+        throw new Error("agent verification requestedAgents coverage does not match initialization");
+      }
       const repository =
         await deps.host.describeClonedRepository(repositoryInput);
-      const failed = WORKSPACE_HOST_CANARY_AGENTS.filter(
+      const failed = requestedAgents.filter(
         (agent) => !report.agents[agent]?.ready,
       );
       // The verify step is the last gate before the controller records a successful
@@ -591,6 +601,8 @@ export async function executeWorkspaceHostRemoteInitializerStep(
         requiredChannels,
         repository,
         agents: report.agents,
+        ...(input.requestedAgents !== undefined ? { requestedAgents } : {}),
+        allReady: WORKSPACE_HOST_CANARY_AGENTS.every((agent) => report.agents[agent]?.ready === true),
         agentContractVersion: report.contractVersion,
       };
       break;
@@ -801,7 +813,7 @@ export function buildWorkspaceHostInitializationCanaryEvidence(
       agent,
       {
         ready: true,
-        verificationKind: input.agents.agents[agent].verificationKind,
+        verificationKind: input.agents.agents[agent]!.verificationKind,
       } as const,
     ]),
   ) as WorkspaceHostInitializationCanaryEvidence["agents"];

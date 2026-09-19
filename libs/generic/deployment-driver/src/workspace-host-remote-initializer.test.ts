@@ -115,7 +115,7 @@ function agentReport(
     contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
     observedAt: NOW,
     allReady: WORKSPACE_HOST_CANARY_AGENTS.every(
-      (agent) => agents[agent].ready,
+      (agent) => agents[agent]?.ready === true,
     ),
     agents,
   };
@@ -160,8 +160,8 @@ class RecordingHost implements WorkspaceHostRemoteInitializerHost {
   importWorkspace(input: unknown) {
     return this.record("importWorkspace", input);
   }
-  probeAgentVerification(): Promise<WorkspaceHostAgentVerificationReport> {
-    this.calls.push({ op: "probeAgentVerification", input: undefined });
+  probeAgentVerification(requestedAgents?: readonly WorkspaceHostCanaryAgent[]): Promise<WorkspaceHostAgentVerificationReport> {
+    this.calls.push({ op: "probeAgentVerification", input: requestedAgents });
     return Promise.resolve(this.options.agents ?? agentReport());
   }
   describeClonedRepository(input?: {
@@ -439,7 +439,7 @@ describe("parseWorkspaceHostRemoteInitializerRequest", () => {
         step: step("create-workspace"),
       }),
     ).toThrow(
-      /unsupported protocol version 'papercusp-gcp-iap-initialization-v1'.*v2/s,
+      /unsupported protocol version 'papercusp-gcp-iap-initialization-v1'.*v3/s,
     );
   });
 
@@ -961,6 +961,43 @@ describe("executeWorkspaceHostRemoteInitializerStep", () => {
   });
 
   describe("verify-initialization", () => {
+    it("passes explicit coverage to the host and records excluded agents as unverified", async () => {
+      const requestedAgents = ["claude", "omp"] as const;
+      const host = new RecordingHost({ agents: {
+        ...agentReport(), requestedAgents, allReady: false,
+        agents: { claude: agentEvidence("claude", true), omp: agentEvidence("omp", true) },
+      } });
+      const response = await executeWorkspaceHostRemoteInitializerStep(
+        parseWorkspaceHostRemoteInitializerRequest(request("verify-initialization", {
+          sourceKind: "empty", requiredChannels: ["agent"], requestedAgents,
+        })), makeDeps({ host }),
+      );
+      expect(host.calls).toContainEqual({ op: "probeAgentVerification", input: requestedAgents });
+      expect(response.publicEvidence).toMatchObject({ requestedAgents, allReady: false });
+      expect((response.publicEvidence?.agents as Record<string, unknown>).codex).toBeUndefined();
+    });
+
+    it("rejects a host report that did not honor requested-agent coverage", async () => {
+      await expect(executeWorkspaceHostRemoteInitializerStep(
+        parseWorkspaceHostRemoteInitializerRequest(request("verify-initialization", {
+          sourceKind: "empty", requiredChannels: ["agent"], requestedAgents: ["claude", "omp"],
+        })), makeDeps(),
+      )).rejects.toThrow(/coverage/);
+    });
+
+    it("rejects empty coverage before probing and refuses the pre-selection wire protocol", async () => {
+      const host = new RecordingHost();
+      await expect(executeWorkspaceHostRemoteInitializerStep(
+        parseWorkspaceHostRemoteInitializerRequest(request("verify-initialization", {
+          sourceKind: "empty", requiredChannels: ["agent"], requestedAgents: [],
+        })), makeDeps({ host }),
+      )).rejects.toThrow(/requestedAgents/);
+      expect(host.calls).toEqual([]);
+      expect(() => parseWorkspaceHostRemoteInitializerRequest({
+        ...request("verify-initialization"), protocolVersion: "papercusp-gcp-iap-initialization-v2",
+      })).toThrow(/unsupported protocol version/);
+    });
+
     it("publishes the agent report and repository observation as evidence", async () => {
       const deps = makeDeps();
       const response = await executeWorkspaceHostRemoteInitializerStep(

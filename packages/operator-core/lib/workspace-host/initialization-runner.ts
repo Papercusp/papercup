@@ -69,6 +69,7 @@ export interface WorkspaceHostInitializationRunInput {
   source: WorkspaceHostInitializationSource;
   credentialRefs: WorkspaceHostCredentialRefs;
   credentialDelivery: WorkspaceHostCredentialDeliverySet;
+  requestedAgents?: WorkspaceHostInitializationRequest['requestedAgents'];
   /** Exact controller-side source shared with the host delivery adapter. */
   credentialMaterialSource: WorkspaceHostCredentialMaterialSource;
   /**
@@ -146,6 +147,7 @@ export async function runWorkspaceHostInitialization(
     source: input.source,
     credentialRefs: input.credentialRefs,
     credentialDelivery: input.credentialDelivery,
+    ...(input.requestedAgents !== undefined ? { requestedAgents: input.requestedAgents } : {}),
     deliveryCapabilities: input.deliveryCapabilities,
     ...(input.publicMetadata ? { publicMetadata: input.publicMetadata } : {}),
   };
@@ -161,12 +163,14 @@ export async function runWorkspaceHostInitialization(
           credentialRef: agentCredentialRef,
           delivery: agentDelivery,
           materialSource: input.credentialMaterialSource,
+          requestedAgents: input.requestedAgents,
         })
       : undefined;
   if (credentialAdmission && agentCredentialRef && agentDelivery) {
     assertWorkspaceHostAgentCredentialAdmissionEvidence(credentialAdmission, {
       credentialRef: agentCredentialRef,
       delivery: agentDelivery,
+      requestedAgents: input.requestedAgents,
     });
   }
   for (const evidence of input.additionalCredentialAdmissions ?? []) {

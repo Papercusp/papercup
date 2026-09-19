@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 
 import { assertWorkspaceHostSecretIsolation } from "./workspace-host-test-harness";
-import type { WorkspaceHostAgentVerificationKind } from "./workspace-host-agent-authentication";
+import {
+  resolveWorkspaceHostRequestedAgents,
+  type WorkspaceHostAgentVerificationKind,
+  type WorkspaceHostCanaryAgent,
+} from "./workspace-host-agent-authentication";
 import type {
   AgentCredentialRef,
   CloudCredentialRef,
@@ -140,6 +144,8 @@ export interface WorkspaceHostInitializationRequest {
   source: WorkspaceHostInitializationSource;
   credentialRefs: WorkspaceHostCredentialRefs;
   credentialDelivery: WorkspaceHostCredentialDeliverySet;
+  /** Agents to initialize and verify; omission retains all-three coverage. */
+  requestedAgents?: readonly WorkspaceHostCanaryAgent[];
   /** The executing provider's declared transport features; gates the delivery-bearing channels. */
   deliveryCapabilities: WorkspaceHostDeliveryCapabilities;
   /** Persistable labels only. */
@@ -842,6 +848,9 @@ export function planWorkspaceHostInitialization(
   steps.push(
     initStep(request, "verify", "verify-initialization", bindingStepIds, {
       sourceKind: request.source.kind,
+      ...(request.requestedAgents !== undefined
+        ? { requestedAgents: resolveWorkspaceHostRequestedAgents(request.requestedAgents) }
+        : {}),
       requiredChannels: credentialBindings.map((binding) => binding.channel),
       ...(request.source.kind === "git"
         ? {

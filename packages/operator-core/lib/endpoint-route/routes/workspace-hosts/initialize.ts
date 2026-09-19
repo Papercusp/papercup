@@ -30,6 +30,7 @@
  * the audit route already exports with redaction applied.
  */
 import { defineTool } from '@papercusp/agent-mcp';
+import { resolveWorkspaceHostRequestedAgents } from '@papercusp/deployment-driver';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import {
   UnsupportedWorkspaceHostInitializationTargetError,
@@ -49,6 +50,7 @@ interface InitializeBody {
   credentialDelivery?: unknown;
   publicMetadata?: unknown;
   operationId?: unknown;
+  requestedAgents?: unknown;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -89,6 +91,13 @@ export default defineTool({
     }
     if (body.publicMetadata !== undefined && !isRecord(body.publicMetadata)) {
       return Response.json({ ok: false, error: 'publicMetadata must be an object' }, { status: 400 });
+    }
+
+    let requestedAgents;
+    try {
+      requestedAgents = body.requestedAgents === undefined ? undefined : resolveWorkspaceHostRequestedAgents(body.requestedAgents);
+    } catch (error) {
+      return Response.json({ ok: false, error: 'initialization request rejected', detail: (error as Error).message }, { status: 422 });
     }
 
     const workspaceId = activeWorkspaceId();
@@ -145,6 +154,7 @@ export default defineTool({
         source: body.source as never,
         credentialRefs: body.credentialRefs as never,
         credentialDelivery: body.credentialDelivery as never,
+        ...(requestedAgents !== undefined ? { requestedAgents } : {}),
         credentialMaterialSource,
         ...(body.operationId ? { operationId: body.operationId } : {}),
         ...(body.publicMetadata ? { publicMetadata: body.publicMetadata as Record<string, unknown> } : {}),

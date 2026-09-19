@@ -1051,9 +1051,10 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
    * disclosure policy. A second implementation here would be a second set of those rules to keep
    * in sync, and the one that drifted would be the one nobody was reading.
    */
-  async probeAgentVerification(): Promise<WorkspaceHostAgentVerificationReport> {
+  async probeAgentVerification(requestedAgents?: readonly WorkspaceHostCanaryAgent[]): Promise<WorkspaceHostAgentVerificationReport> {
     return await probeWorkspaceHostAgents({
       runner: this.agentProbeRunner,
+      requestedAgents,
       now: this.now,
       // D-259 Defect 2. Without this the probe execs a BARE NAME against `agentProbePath`, whose
       // first entry is the release bin — so it measured a psu wrapper, which does not implement

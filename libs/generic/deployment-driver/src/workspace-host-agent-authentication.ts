@@ -56,6 +56,18 @@ export const WORKSPACE_HOST_CANARY_AGENTS = ["claude", "codex", "omp"] as const;
 export type WorkspaceHostCanaryAgent =
   (typeof WORKSPACE_HOST_CANARY_AGENTS)[number];
 
+/** Validate coverage before any credential read or runtime invocation. Omission means all agents. */
+export function resolveWorkspaceHostRequestedAgents(value: unknown): readonly WorkspaceHostCanaryAgent[] {
+  if (value === undefined) return WORKSPACE_HOST_CANARY_AGENTS;
+  if (!Array.isArray(value) || value.length === 0 ||
+      value.some((agent) => !WORKSPACE_HOST_CANARY_AGENTS.includes(agent)) ||
+      new Set(value).size !== value.length) {
+    throw new Error("requestedAgents must be a nonempty array of distinct claude, codex, or omp agents");
+  }
+  // Canonical order makes immutable scope/replay comparisons independent of caller ordering.
+  return WORKSPACE_HOST_CANARY_AGENTS.filter((agent) => value.includes(agent));
+}
+
 /**
  * `authenticated-account` proves WHO the credential belongs to by making the CLI name a subject.
  * The two inference kinds prove the credential WORKS by making the agent do work and return a
@@ -784,8 +796,10 @@ export interface WorkspaceHostAgentVerificationReport {
   readonly contractVersion: typeof WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION;
   readonly observedAt: string;
   readonly allReady: boolean;
+  /** Explicit coverage; omitted on legacy/default all-agent reports. Excluded agents have no evidence. */
+  readonly requestedAgents?: readonly WorkspaceHostCanaryAgent[];
   readonly agents: Readonly<
-    Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentVerificationEvidence>
+    Partial<Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentVerificationEvidence>>
   >;
 }
 
@@ -844,6 +858,7 @@ export function applyWorkspaceHostAgentRuntimePath(
 
 export interface ProbeWorkspaceHostAgentsInput {
   readonly runner: WorkspaceHostAgentProbeRunner;
+  readonly requestedAgents?: readonly WorkspaceHostCanaryAgent[];
   readonly probes?: Partial<
     Record<
       WorkspaceHostCanaryAgent,
@@ -878,11 +893,12 @@ export interface ProbeWorkspaceHostAgentsInput {
 export async function probeWorkspaceHostAgents(
   input: ProbeWorkspaceHostAgentsInput,
 ): Promise<WorkspaceHostAgentVerificationReport> {
+  const requestedAgents = resolveWorkspaceHostRequestedAgents(input.requestedAgents);
   const now = input.now ?? (() => new Date());
   const agents: Partial<
     Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentVerificationEvidence>
   > = {};
-  for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
+  for (const agent of requestedAgents) {
     const specs =
       input.probes?.[agent] ??
       DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES[agent];
@@ -957,17 +973,14 @@ export async function probeWorkspaceHostAgents(
     );
     agents[agent] = merged;
   }
-  const complete = agents as Record<
-    WorkspaceHostCanaryAgent,
-    WorkspaceHostAgentVerificationEvidence
-  >;
   const report: WorkspaceHostAgentVerificationReport = {
     contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
     observedAt: now().toISOString(),
     allReady: WORKSPACE_HOST_CANARY_AGENTS.every(
-      (agent) => complete[agent].ready,
+      (agent) => agents[agent]?.ready === true,
     ),
-    agents: complete,
+    ...(input.requestedAgents !== undefined ? { requestedAgents } : {}),
+    agents,
   };
   assertWorkspaceHostSecretIsolation(
     report,

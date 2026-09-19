@@ -32,6 +32,7 @@ import type {
 } from '@papercusp/deployment-driver';
 import {
   WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
+  resolveWorkspaceHostRequestedAgents,
   workspaceHostCredentialReferenceDigest,
 } from '@papercusp/deployment-driver';
 import type { WorkspaceHostCredentialRefs } from '@papercusp/deployment-driver';
@@ -105,12 +106,9 @@ function admissionEvidence(
   const verification: WorkspaceHostAgentVerificationReport = {
     contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
     observedAt,
-    allReady: true,
-    agents: {
-      claude: agentEvidence('claude'),
-      codex: agentEvidence('codex'),
-      omp: agentEvidence('omp'),
-    },
+    allReady: resolveWorkspaceHostRequestedAgents(input.requestedAgents).length === 3,
+    ...(input.requestedAgents !== undefined ? { requestedAgents: input.requestedAgents } : {}),
+    agents: Object.fromEntries(resolveWorkspaceHostRequestedAgents(input.requestedAgents).map((agent) => [agent, agentEvidence(agent)])),
   };
   return {
     contractVersion: WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
@@ -273,6 +271,27 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
     });
     expect(result.credentialAdmission).toEqual(operation.request?.credentialAdmissions[0]);
     expect(result.credentialAdmissions).toEqual(operation.request?.credentialAdmissions);
+  });
+
+  it('persists the same explicit agent coverage in admission and the remote verify step', async () => {
+    const ws = freshWs();
+    const hostId = await seedHost(ws);
+    const requestedAgents = ['claude', 'omp'] as const;
+    const seen: WorkspaceHostAgentCredentialAdmissionInput[] = [];
+    const result = await runWorkspaceHostInitialization({
+      ...runInput(ws, hostId, recordingAdapter()), requestedAgents,
+    }, { verifyAgentCredentialAdmission: async (input) => {
+      seen.push(input);
+      return admissionEvidence(input);
+    } });
+    expect(seen[0].requestedAgents).toEqual(requestedAgents);
+    const [operation] = await db.adminSql`
+      SELECT request FROM harness_shared.workspace_host_operations
+       WHERE workspace_id = ${ws} AND id = ${result.operationId}
+    `;
+    expect(operation.request.steps.at(-1).input.requestedAgents).toEqual(requestedAgents);
+    expect(operation.request.credentialAdmissions[0].verification).toMatchObject({ requestedAgents, allReady: false });
+    expect(operation.request.credentialAdmissions[0].verification.agents.codex).toBeUndefined();
   });
 
   it('rejects failed exact-generation admission before creating an operation row', async () => {

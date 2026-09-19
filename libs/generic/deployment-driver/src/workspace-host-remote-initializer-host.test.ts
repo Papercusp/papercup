@@ -789,6 +789,23 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent credential consumer
 });
 
 describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment", () => {
+  it("does not invoke an excluded runtime through the production host adapter", async () => {
+    const invocations: WorkspaceHostAgentProbeInvocation[] = [];
+    const host = createProductionWorkspaceHostRemoteInitializerDeps({
+      system: new RecordingSystem(), workspaceRoot: "/workspaces", credentialMaterialRoot: MATERIAL_ROOT,
+      agentProbeRunner: { async run(invocation) {
+        invocations.push(invocation);
+        return { exitCode: 1, stdout: "" };
+      } }, now: () => NOW,
+    }).host;
+    const report = await host.probeAgentVerification(["claude", "omp"]);
+    expect(invocations.some((entry) => entry.command === "codex")).toBe(false);
+    expect(invocations.map((entry) => entry.command)).toEqual(["claude", "omp", "omp"]);
+    expect(report.requestedAgents).toEqual(["claude", "omp"]);
+    expect(report.agents.codex).toBeUndefined();
+    expect(report.allReady).toBe(false);
+  });
+
   it("runs the probes as the AGENT identity with only explicit variables, never the SSH login and never ambient controller credentials (D-248)", async () => {
     const invocations: WorkspaceHostAgentProbeInvocation[] = [];
     const runner: WorkspaceHostAgentProbeRunner = {

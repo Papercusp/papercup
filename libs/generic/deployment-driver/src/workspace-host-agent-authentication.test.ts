@@ -78,6 +78,26 @@ const AUTHENTICATED = {
 } satisfies Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentProbeOutcome>;
 
 describe("workspace-host agent verification probes", () => {
+  it("probes only explicitly requested agents without claiming all-agent readiness", async () => {
+    const runner = new ScriptedRunner(AUTHENTICATED);
+    const report = await probeWorkspaceHostAgents({ runner, now: NOW, requestedAgents: ["claude", "omp"] });
+    expect(runner.invocations.map((entry) => entry.command)).toEqual(["claude", "omp"]);
+    expect(report.requestedAgents).toEqual(["claude", "omp"]);
+    expect(Object.keys(report.agents)).toEqual(["claude", "omp"]);
+    expect(report.agents.claude?.ready).toBe(true);
+    expect(report.agents.omp?.ready).toBe(true);
+    expect(report.allReady).toBe(false);
+  });
+
+  it.each([[], ["claude", "claude"], ["unknown"], null, "claude"].map((requestedAgents) => ({ requestedAgents })))(
+    "rejects malformed requested-agent coverage before invoking a runtime: %j",
+    async ({ requestedAgents }) => {
+      const runner = new ScriptedRunner(AUTHENTICATED);
+      await expect(probeWorkspaceHostAgents({ runner, requestedAgents: requestedAgents as never })).rejects.toThrow(/requestedAgents/);
+      expect(runner.invocations).toEqual([]);
+    },
+  );
+
   it("uses a real account or inference verb for every agent, never a version check", () => {
     for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
       for (const spec of DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES[
@@ -244,7 +264,7 @@ describe("workspace-host agent verification probes", () => {
         WORKSPACE_HOST_OMP_LOCAL_INFERENCE_MARKER,
       ),
     });
-    expect(report.agents.omp.subject).toBeUndefined();
+    expect(report.agents.omp?.subject).toBeUndefined();
     expect(invocations.filter((entry) => entry.command === "omp")).toHaveLength(
       2,
     );
@@ -347,8 +367,8 @@ describe("workspace-host agent verification probes", () => {
       now: NOW,
     });
     expect(degraded.allReady).toBe(false);
-    expect(degraded.agents.codex.ready).toBe(false);
-    expect(degraded.agents.claude.ready).toBe(true);
+    expect(degraded.agents.codex?.ready).toBe(false);
+    expect(degraded.agents.claude?.ready).toBe(true);
   });
 
   it("refuses a probe spec whose declared agent does not match its slot", async () => {
@@ -684,18 +704,18 @@ describe("attested vendor runtime paths (D-259 Defect 2)", () => {
     });
     const report = await probeWorkspaceHostAgents({ runner: forged, now: NOW });
 
-    expect(report.agents.codex.ready).toBe(false);
+    expect(report.agents.codex?.ready).toBe(false);
     expect(report.allReady).toBe(false);
     // It must fail as the INFERENCE probe, not the account one — proof that live-inference
     // actually ran rather than being short-circuited into never executing.
-    expect(report.agents.codex.verificationKind).toBe("live-inference");
+    expect(report.agents.codex?.verificationKind).toBe("live-inference");
     // The forged subject is still recorded, and recorded as SELF-REPORTED. This is the half that
     // makes keeping the probe safe: identity survives for diagnosis without ever implying it was
     // verified, and it must never land in `subject` (publishable) or set `ready`.
-    expect(report.agents.codex.selfReportedSubjectDigest).toBe(
+    expect(report.agents.codex?.selfReportedSubjectDigest).toBe(
       workspaceHostAgentSubjectDigest("attacker@example.invalid"),
     );
-    expect(report.agents.codex.subject).toBeUndefined();
+    expect(report.agents.codex?.subject).toBeUndefined();
   });
 
   it("records the account subject as self-reported even on a codex that IS ready", () => {
@@ -760,8 +780,8 @@ describe("attested vendor runtime paths (D-259 Defect 2)", () => {
       "codex",
       VENDOR.omp,
     ]);
-    expect(report.agents.codex.ready).toBe(false);
-    expect(report.agents.codex.failure).toBe("non-zero-exit");
+    expect(report.agents.codex?.ready).toBe(false);
+    expect(report.agents.codex?.failure).toBe("non-zero-exit");
     expect(report.allReady).toBe(false);
   });
 
