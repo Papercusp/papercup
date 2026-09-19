@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "agent-launch-context-cost R-7 live measurement",
+  "framework": "operational",
+  "command": ["npm", "run", "measure:launch-cost", "--", "--since", "2026-09-08"],
+  "exitCode": 0,
+  "startedAt": "2026-09-19T18:35:00.000Z",
+  "finishedAt": "2026-09-19T18:35:04.000Z",
+  "summary": "Committed launch-cost instrument completed successfully: 1,369 files scanned, 883 measured, 486 skipped; overall median 270,878 input tokens, so the <120,000 target remains not met.",
+  "assertions": [
+    {
+      "id": "instrument-completed",
+      "passed": true,
+      "evidence": "measure-launch-cost completed with exit 0 and emitted the full scan/skip census plus per-day and overall statistics."
+    },
+    {
+      "id": "target-miss-recorded",
+      "passed": true,
+      "evidence": "Overall median was 270,878 input tokens versus the predeclared <120,000 target; the miss is recorded honestly rather than treated as a pass."
+    }
+  ]
+}
