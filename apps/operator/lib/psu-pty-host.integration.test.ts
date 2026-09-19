@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
@@ -51,6 +51,15 @@ function fakeIo() {
     },
   };
 }
+
+describe('managed-pty integration evidence isolation', () => {
+  it('redirects host lifecycle evidence away from the live operator corpus', () => {
+    const liveDir = join(homedir(), '.papercusp', 'psu-pty');
+    expect(process.env.PAPERCUSP_PSU_PTY_DIR).toBeTruthy();
+    expect(PSU_PTY_DIR).toBe(process.env.PAPERCUSP_PSU_PTY_DIR);
+    expect(PSU_PTY_DIR).not.toBe(liveDir);
+  });
+});
 
 describe('Codex resumed and forked quota history (EI-22609012864215464, EI-22800121604015331)', () => {
   it.each([
@@ -1395,6 +1404,7 @@ describe('carry-respawn STALENESS guard — a message held too long by the busy 
         // aging past the 50ms stale cap during that wait.
         await envelopeInject(sock, {
           mode: 'carry-respawn',
+          ownerId,
           data: 'CARRIED',
           systemPromptAddendum: 'stale carry test',
         });

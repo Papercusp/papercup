@@ -29,6 +29,7 @@ export default defineVitestConfig({
   // layer is where this actually produces rows: it is the layer with a reachable Postgres, so
   // a flush lands instead of disabling the sink.
   setupFiles: [
+    resolve(__dirname, 'vitest-shims/psu-pty-temp-dir.ts'),
     resolve(__dirname, '../../packages/operator-core/lib/coverage-census/attribution/setup-vitest.ts'),
   ],
 });

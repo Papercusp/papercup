@@ -260,7 +260,11 @@ export function shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty }) {
 
 /** The discovery dir. Owner-only (0700). Shared contract with the read side
  *  (operator-core psu-pty-discovery.ts). */
-export const PSU_PTY_DIR = join(homedir(), '.papercusp', 'psu-pty');
+// Integration tests and disposable probes must never write lifecycle evidence
+// into the operator's live corpus. Production keeps the home-directory default;
+// PAPERCUSP_PSU_PTY_DIR is an explicit, process-scoped override for isolated
+// test/probe hosts.
+export const PSU_PTY_DIR = process.env.PAPERCUSP_PSU_PTY_DIR || join(homedir(), '.papercusp', 'psu-pty');
 
 /** How long the host waits for the user's input line to go idle before writing
  *  an injected turn into the pty (P-013 mid-keystroke safety). A burst of typing

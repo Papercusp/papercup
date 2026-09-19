@@ -80,7 +80,13 @@ describe('PgReplayStore — cell lifecycle', () => {
       costUsd: 0.01,
     });
     const [row] = await listReplayRuns(sql, { workspaceId: WS, batteryId: 'bat-1' });
-    expect(row).toMatchObject({ status: 'scored', composite: 8.7, judgeRationale: 'fixed root cause', rubricHash: 'abc123' });
+    expect(row).toMatchObject({
+      status: 'scored',
+      composite: 8.7,
+      judgeRationale: 'fixed root cause',
+      rubricHash: 'abc123',
+      elapsedMs: 1200,
+    });
     expect(row.costUsd).toBeCloseTo(0.06, 10);
     expect((row.divergence as { replayed?: boolean }).replayed).toBe(true);
   });

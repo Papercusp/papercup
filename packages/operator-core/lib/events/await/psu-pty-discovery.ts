@@ -35,7 +35,9 @@ import net from 'node:net';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 
 /** Shared with psu-pty-host.mjs PSU_PTY_DIR. */
-export const PSU_PTY_DIR = join(homedir(), '.papercusp', 'psu-pty');
+// Keep discovery aligned with the host writer, while allowing integration tests
+// and disposable probes to redirect both sides away from the live corpus.
+export const PSU_PTY_DIR = process.env.PAPERCUSP_PSU_PTY_DIR || join(homedir(), '.papercusp', 'psu-pty');
 
 /** Shared wire ceiling with psu-pty-host.mjs. Enforce it before opening a
  * socket as well as host-side so an accidental giant wake fails cheaply and
