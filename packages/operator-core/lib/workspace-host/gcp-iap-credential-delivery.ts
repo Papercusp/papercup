@@ -31,6 +31,7 @@ import type {
   WorkspaceHostInitializationHostOperations,
   WorkspaceHostInitializationStep,
   WorkspaceHostInitializationSupportedStepKind,
+  WorkspaceHostRemoteInitializerStep,
 } from '@papercusp/deployment-driver';
 
 import {
@@ -335,6 +336,7 @@ export class GcpIapDeliveringWorkspaceHostInitializationOperations
 
   async execute(step: WorkspaceHostInitializationStep): Promise<WorkspaceHostInitializationHostOperationResult>;
   async execute(step: WorkspaceHostCredentialLifecycleStep): Promise<WorkspaceHostInitializationHostOperationResult>;
+  async execute(step: WorkspaceHostRemoteInitializerStep): Promise<WorkspaceHostInitializationHostOperationResult>;
   async execute(
     step: GcpIapWorkspaceHostInitializationStep,
   ): Promise<WorkspaceHostInitializationHostOperationResult> {

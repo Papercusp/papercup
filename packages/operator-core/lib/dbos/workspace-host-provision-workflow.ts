@@ -6,13 +6,16 @@
  * different operation ids from mutating the same resource graph concurrently.
  */
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import {
   resolveWorkspaceHostProvider,
   workspaceHostWorkflowKeys,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostProviderConnection,
+  type WorkspaceHostInitializationRequest,
 } from '@papercusp/deployment-driver';
+import { executeAdmittedWorkspaceHostInitialization, executeAdmittedWorkspaceHostDesktopPack, type WorkspaceHostDesktopPackRequest } from '../workspace-host/initialization-admission';
 import {
   runWorkspaceHostDestroy,
   runWorkspaceHostProvisioning,
@@ -84,11 +87,17 @@ type WorkspaceHostLifecycleWorkflowInput = StartWorkspaceHostLifecycleInput & {
 type WorkspaceHostWorkflowInput =
   | WorkspaceHostProvisioningWorkflowInput
   | WorkspaceHostDestroyWorkflowInput
-  | WorkspaceHostLifecycleWorkflowInput;
+  | WorkspaceHostLifecycleWorkflowInput
+  | (WorkspaceHostInitializationRequest & { action: 'initialize' })
+  | WorkspaceHostDesktopPackRequest;
+
+type WorkspaceHostWorkflowResult = WorkspaceHostProvisioningResult | {
+  status: 'succeeded'; operationId: string; hostId: string;
+};
 
 export type WorkspaceHostProvisioningExecutor = (
   input: WorkspaceHostWorkflowInput,
-) => Promise<WorkspaceHostProvisioningResult | WorkspaceHostDestroyResult>;
+) => Promise<WorkspaceHostWorkflowResult>;
 
 interface WorkflowHooks {
   executor?: WorkspaceHostProvisioningExecutor;
@@ -128,7 +137,7 @@ const FENCE_RETRY_BASE_MS = 2_000;
 
 async function executeToleratingControllerFence(
   input: WorkspaceHostWorkflowInput,
-): Promise<WorkspaceHostProvisioningResult> {
+): Promise<WorkspaceHostWorkflowResult> {
   for (let attempt = 1; ; attempt += 1) {
     try {
       return await execute(input);
@@ -144,9 +153,11 @@ async function executeToleratingControllerFence(
   }
 }
 
-async function execute(input: WorkspaceHostWorkflowInput): Promise<WorkspaceHostProvisioningResult> {
+async function execute(input: WorkspaceHostWorkflowInput): Promise<WorkspaceHostWorkflowResult> {
   const injected = hooks().executor;
   if (injected) return injected(input);
+  if (input.action === 'initialize') return executeAdmittedWorkspaceHostInitialization(input);
+  if (input.action === 'install-desktop-pack') return executeAdmittedWorkspaceHostDesktopPack(input);
   const provider = resolveWorkspaceHostProvider(input.connection);
   if (input.action === 'destroy') {
     return runWorkspaceHostDestroy({ ...input, provider });
@@ -162,7 +173,7 @@ async function execute(input: WorkspaceHostWorkflowInput): Promise<WorkspaceHost
 
 async function workspaceHostProvisioningWorkflowImpl(
   input: WorkspaceHostWorkflowInput,
-): Promise<WorkspaceHostProvisioningResult> {
+): Promise<WorkspaceHostWorkflowResult> {
   try {
     for (let turn = 0; turn < MAX_WORKFLOW_TURNS; turn += 1) {
       const result = await DBOS.runStep(() => executeToleratingControllerFence(input), {
@@ -278,7 +289,7 @@ export async function startWorkspaceHostProvisioningWorkflow(
       queueName: workspaceHostProvisioningQueue.name,
       enqueueOptions: { deduplicationID: keys.deduplicationId },
     })(workflowInput);
-    return await handle.getResult();
+    return (await handle.getResult()) as WorkspaceHostProvisioningResult;
   } catch (error) {
     if (isWorkspaceHostProvisioningDedupConflict(error)) {
       throw new WorkspaceHostProvisioningConflictError(input.desired.hostId);
@@ -331,5 +342,44 @@ export async function startWorkspaceHostLifecycleWorkflow(
       throw new WorkspaceHostProvisioningConflictError(input.hostId);
     }
     throw rehydrateWorkspaceHostProvisioningError(error);
+  }
+}
+
+export class WorkspaceHostOperationIdentityConflictError extends Error {
+  constructor() {
+    super('Workspace-host operation ID is already bound to a different request');
+    this.name = 'WorkspaceHostOperationIdentityConflictError';
+  }
+}
+
+/** Return once DBOS has durably enqueued, never await the remote result at an HTTP boundary. */
+export async function startWorkspaceHostInitializationWorkflow(request: WorkspaceHostInitializationRequest) {
+  return startWorkspaceHostRemoteOperation({ ...request, action: 'initialize' });
+}
+
+export async function startWorkspaceHostDesktopPackWorkflow(request: WorkspaceHostDesktopPackRequest) {
+  return startWorkspaceHostRemoteOperation(request);
+}
+
+async function startWorkspaceHostRemoteOperation(input: (WorkspaceHostInitializationRequest & { action: 'initialize' }) | WorkspaceHostDesktopPackRequest) {
+  const keys = workspaceHostWorkflowKeys(input);
+  try {
+    const handle = await DBOS.startWorkflow(workspaceHostProvisioningWorkflow, {
+      workflowID: keys.workflowId,
+      queueName: workspaceHostProvisioningQueue.name,
+      enqueueOptions: { deduplicationID: keys.deduplicationId },
+    })(input);
+    // DBOS binds the first input to an ID. A retry may change only its admission timestamp.
+    const [stored] = await handle.getWorkflowInputs<[WorkspaceHostWorkflowInput]>();
+    const { requestedAt: _requestedAt, ...identity } = input;
+    if (stored.action !== 'initialize' && stored.action !== 'install-desktop-pack') throw new WorkspaceHostOperationIdentityConflictError();
+    const { requestedAt: _storedRequestedAt, ...storedIdentity } = stored;
+    if (!isDeepStrictEqual(identity, storedIdentity)) throw new WorkspaceHostOperationIdentityConflictError();
+    return { operationId: input.operationId, hostId: input.hostId, status: 'accepted' as const };
+  } catch (error) {
+    if (isWorkspaceHostProvisioningDedupConflict(error)) {
+      throw new WorkspaceHostProvisioningConflictError(input.hostId);
+    }
+    throw error;
   }
 }

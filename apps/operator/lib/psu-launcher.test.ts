@@ -6945,6 +6945,48 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     });
   });
 
+  it("keeps a Claude-to-Codex configured default identical from preview through bootstrap", () => {
+    // Owner reproduction, 2026-09-05: the picker deliberately selected the
+    // Codex backend default, but resolveResumeTarget left the prepared row's
+    // target_model NULL. bootstrap-su independently resolved that NULL to the
+    // managed Codex default and then rejected its own preparation as a target
+    // mismatch. Exercise the whole launcher-side contract in one assertion so
+    // selection/request/bootstrap helpers cannot drift while passing separately.
+    const target = resolveResumeTarget(
+      source,
+      { picker: true },
+      { targetAgent: "codex", modelSpec: null },
+    );
+    const request = sessionPortRequestBody(source, target, {}, {});
+    const targetArgs = sessionPortTargetArgs(
+      source,
+      target,
+      {},
+      { picker: true, addDir: [], passthrough: [] },
+      { token: `22222222-2222-4222-8222-222222222222.${"a".repeat(64)}` },
+    );
+    const bootstrap = freshSuBootstrapBody(
+      {
+        agent: target.targetAgent,
+        workspace: source.workspaceId,
+        harness: null,
+        plan: source.planSlug,
+      },
+      targetArgs,
+    );
+
+    expect(target).toMatchObject({
+      operation: "port",
+      targetAgent: "codex",
+      modelSpec: "gpt-5.6-sol:xhigh",
+      modelSource: "configured-default",
+    });
+    expect(request.targetModel).toBe(target.modelSpec);
+    expect(bootstrap.model).toBe(request.targetModel);
+    expect(bootstrap.model_source).toBe("configured-default");
+    expect(bootstrap.session_port_token).toBe(targetArgs.sessionPortToken);
+  });
+
   it("requires an explicit OMP backend for its open model vocabulary", () => {
     expect(
       resolveResumeTarget(source, { agent: "omp", model: "local/qwen3:high" }),

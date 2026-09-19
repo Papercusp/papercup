@@ -30,6 +30,8 @@ import {
   type DesktopCapabilities,
 } from '../../desktop/desktop-session-registry';
 import { killTask } from '../../task-manager/control';
+import { existsSync } from 'node:fs';
+import { provisionWorkspaceDesktop, WORKSPACE_DESKTOP_SOCKET } from '../../desktop/workspace-desktop-session';
 
 type Provisioner = (opts?: ProvisionOptions) => Promise<SandboxDesktop>;
 
@@ -46,13 +48,16 @@ type Provisioner = (opts?: ProvisionOptions) => Promise<SandboxDesktop>;
  */
 const sessionIds = new Map<string, string>();
 
-let provisionImpl: Provisioner = realProvision;
+const defaultProvision: Provisioner = (opts) => existsSync(WORKSPACE_DESKTOP_SOCKET)
+  ? provisionWorkspaceDesktop(opts)
+  : realProvision(opts);
+let provisionImpl: Provisioner = defaultProvision;
 /** Test seam — swap the provisioner so the lifecycle tests need no live X. */
 export function __setProvisionerForTests(next: Provisioner): void {
   provisionImpl = next;
 }
 export function __resetProvisioner(): void {
-  provisionImpl = realProvision;
+  provisionImpl = defaultProvision;
 }
 
 const leases = new Map<string, SandboxDesktop>();
@@ -62,7 +67,8 @@ const inflight = new Map<string, Promise<SandboxDesktop>>();
 /** Provision (or return the existing) sandbox desktop for a hive. Idempotent + race-safe. */
 export async function ensureHiveDesktop(potSlug: string, opts?: ProvisionOptions): Promise<SandboxDesktop> {
   const existing = leases.get(potSlug);
-  if (existing) return existing;
+  if (existing && existing.isAlive?.() !== false) return existing;
+  if (existing) await releaseHiveDesktop(potSlug);
   const pending = inflight.get(potSlug);
   if (pending) return pending;
 
@@ -156,7 +162,7 @@ async function recordLeaseInRegistry(potSlug: string, desktop: SandboxDesktop): 
     const session = await registerDesktopSession({
       workspaceId: activeWorkspaceId(),
       harnessSlug: potSlug,
-      kind: 'xvfb-local',
+      kind: desktop.xServer === 'kasmvnc' ? 'kasmvnc' : 'xvfb-local',
       scope: 'pot',
       scopeRef: potSlug,
       display: desktop.display,
@@ -274,7 +280,10 @@ export function hiveDesktopSessionId(potSlug: string): string | undefined {
  */
 export function leasedDesktopBySessionId(desktopSessionId: string): SandboxDesktop | undefined {
   for (const [potSlug, sessionId] of sessionIds) {
-    if (sessionId === desktopSessionId) return leases.get(potSlug);
+    if (sessionId === desktopSessionId) {
+      const desktop = leases.get(potSlug);
+      return desktop?.isAlive?.() === false ? undefined : desktop;
+    }
   }
   return undefined;
 }

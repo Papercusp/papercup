@@ -529,7 +529,7 @@ export function resolveWorkspaceHostInitializationOperations(
   desired: WorkspaceHostDesiredSpec,
   controller: WorkspaceHostInitializationControllerProfile,
   credentialMaterialSource?: WorkspaceHostCredentialMaterialSource,
-): WorkspaceHostInitializationHostOperations {
+): GcpIapDeliveringWorkspaceHostInitializationOperations {
   if (desired.target !== GCP_WORKSPACE_HOST_TARGET) {
     throw new UnsupportedWorkspaceHostInitializationTargetError(String(desired.target));
   }
@@ -746,7 +746,7 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
   input: ResolveOperationsForHostInput,
 ): Promise<{
   desired: WorkspaceHostDesiredSpec;
-  operations: WorkspaceHostInitializationHostOperations;
+  operations: GcpIapDeliveringWorkspaceHostInitializationOperations;
   deliveryCapabilities: WorkspaceHostDeliveryCapabilities;
 }> {
   const read = input.readDesiredSpec ?? readWorkspaceHostDesiredSpec;

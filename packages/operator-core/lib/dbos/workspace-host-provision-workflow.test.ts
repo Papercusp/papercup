@@ -11,6 +11,9 @@ import {
 const control = vi.hoisted(() => ({
   dedupConflict: false,
   resultError: null as unknown,
+  storedInput: null as unknown,
+  getResult: vi.fn(),
+  runInitialization: vi.fn(),
   startOptions: null as null | Record<string, unknown>,
   stepOptions: null as null | Record<string, unknown>,
   /**
@@ -26,6 +29,10 @@ const control = vi.hoisted(() => ({
   runDestroy: vi.fn(),
   runProvisioning: vi.fn(),
   recordTerminalFailure: vi.fn(async (_input: unknown) => true),
+}));
+
+vi.mock('../workspace-host/initialization-admission', () => ({
+  executeAdmittedWorkspaceHostInitialization: control.runInitialization,
 }));
 
 vi.mock('../workspace-host/provisioning-runner', async (importOriginal) => {
@@ -71,7 +78,11 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
             return Promise.reject(Object.assign(new Error('duplicate'), { dbosErrorCode: 28 }));
           }
           return Promise.resolve({
-            getResult: () => (control.resultError === null ? workflow(input) : Promise.reject(control.resultError)),
+            getWorkflowInputs: async () => [control.storedInput ?? input],
+            getResult: () => {
+              control.getResult();
+              return control.resultError === null ? workflow(input) : Promise.reject(control.resultError);
+            },
           });
         },
     },
@@ -82,6 +93,9 @@ import {
   setWorkspaceHostProvisioningExecutor,
   startWorkspaceHostDestroyWorkflow,
   startWorkspaceHostProvisioningWorkflow,
+  startWorkspaceHostInitializationWorkflow,
+  workspaceHostProvisioningWorkflow,
+  WorkspaceHostOperationIdentityConflictError,
   WorkspaceHostProvisioningConflictError,
 } from './workspace-host-provision-workflow';
 import {
@@ -126,6 +140,9 @@ const plan = {
 beforeEach(() => {
   control.dedupConflict = false;
   control.resultError = null;
+  control.storedInput = null;
+  control.getResult.mockClear();
+  control.runInitialization.mockReset();
   control.startOptions = null;
   control.stepOptions = null;
   control.stepOptionsByName = {};
@@ -143,6 +160,44 @@ afterEach(() => {
 });
 
 describe('workspace-host provisioning DBOS admission', () => {
+  const initialization = {
+    contractVersion: 'papercusp-workspace-host-initialization-v1' as const,
+    workspaceId: 'ws-1', hostId: 'host-1', operationId: 'init-1',
+    requestedAt: '2026-09-19T00:00:00Z', source: { kind: 'empty' as const },
+    credentialRefs: { cloudCredentialRef: { kind: 'cloud' as const, ref: 'cloud-resolver:v1' } },
+    credentialDelivery: { cloud: { kind: 'provider-identity' as const, generation: 1, audience: 'host-1', revocationRef: 'revoke-cloud-1' } },
+    deliveryCapabilities: { fileTransfer: true },
+  };
+
+  it('returns durable initialization acceptance without waiting for remote execution', async () => {
+    control.resultError = new Error('getResult must not be called');
+    expect(await startWorkspaceHostInitializationWorkflow(initialization)).toMatchObject({ status: 'accepted', operationId: 'init-1' });
+    expect(control.getResult).not.toHaveBeenCalled();
+    expect(control.runInitialization).not.toHaveBeenCalled();
+    expect(control.startOptions).toMatchObject({
+      workflowID: 'workspace-host:ws-1:host-1:operation:init-1', queueName: 'workspace-host-provision',
+      enqueueOptions: { deduplicationID: 'workspace-host:ws-1:host-1' },
+    });
+  });
+
+  it('reuses the original request on retry and refuses materially different inputs', async () => {
+    control.storedInput = { ...initialization, action: 'initialize', requestedAt: '2026-09-18T00:00:00Z' };
+    await expect(startWorkspaceHostInitializationWorkflow(initialization)).resolves.toMatchObject({ status: 'accepted' });
+    await expect(startWorkspaceHostInitializationWorkflow({ ...initialization, requestedAgents: ['omp'] })).rejects.toBeInstanceOf(WorkspaceHostOperationIdentityConflictError);
+    control.storedInput = { ...input, action: 'provision' };
+    await expect(startWorkspaceHostInitializationWorkflow(initialization)).rejects.toBeInstanceOf(WorkspaceHostOperationIdentityConflictError);
+  });
+
+  it('shares host exclusion with provision/destroy and records failures before remote readiness', async () => {
+    control.dedupConflict = true;
+    await expect(startWorkspaceHostInitializationWorkflow(initialization)).rejects.toBeInstanceOf(WorkspaceHostProvisioningConflictError);
+    control.dedupConflict = false;
+    const failure = new Error('host key discovery failed');
+    control.runInitialization.mockRejectedValueOnce(failure);
+    await expect(workspaceHostProvisioningWorkflow({ ...initialization, action: 'initialize' })).rejects.toBe(failure);
+    expect(control.recordTerminalFailure).toHaveBeenCalledWith(expect.objectContaining({ operationId: 'init-1', error: failure }));
+  });
+
   it('is registered by bootstrap before DBOS.launch so crash recovery can bind it', () => {
     const source = readFileSync(new URL('./bootstrap.ts', import.meta.url), 'utf8');
     const registration = source.indexOf("await import('./workspace-host-provision-workflow')");

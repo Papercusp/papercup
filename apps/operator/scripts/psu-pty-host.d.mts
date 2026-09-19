@@ -871,8 +871,23 @@ export function makeCarryRearmController({ acquireInject, waitIdle, waitAtPrompt
  * `lastInputAt` is the same signal makeIdleGate defers on).
  *
  * Pure (injectable clock/sleep + getters); exported for tests.
+ * @param {object} [opts]
+ * @param {() => number} [opts.lastOutputAt]
+ * @param {(data: string) => void} [opts.writeCr]
+ * @param {() => number} [opts.lastInputAt]
+ * @param {() => boolean} [opts.isQuotaBlocked]
+ * @param {number} [opts.quietMs]
+ * @param {number} [opts.pollMs]
+ * @param {number} [opts.polls]
+ * @param {number} [opts.maxResubmits]
+ * @param {() => number} [opts.now]
+ * @param {(ms: number) => Promise<void>} [opts.sleep]
+ * @param {(resubmits: number) => void} [opts.onResubmit]
+ * @param {(details: {polls: number, resubmits: number, outputObservedAfterResubmit: boolean}) => void} [opts.onExhausted]
  */
 export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuotaBlocked, quietMs, pollMs, polls, maxResubmits, now, sleep, onResubmit, onExhausted, }?: {
+    lastOutputAt?: (() => number) | undefined;
+    writeCr?: ((data: string) => void) | undefined;
     lastInputAt?: (() => number) | undefined;
     isQuotaBlocked?: (() => boolean) | undefined;
     quietMs?: number | undefined;
@@ -880,9 +895,13 @@ export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuota
     polls?: number | undefined;
     maxResubmits?: number | undefined;
     now?: (() => number) | undefined;
-    sleep?: ((ms: any) => Promise<any>) | undefined;
-    onResubmit?: (() => void) | undefined;
-    onExhausted?: (() => void) | undefined;
+    sleep?: ((ms: number) => Promise<void>) | undefined;
+    onResubmit?: ((resubmits: number) => void) | undefined;
+    onExhausted?: ((details: {
+        polls: number;
+        resubmits: number;
+        outputObservedAfterResubmit: boolean;
+    }) => void) | undefined;
 }): {
     /** Poll for the verify window; resubmit a bare CR at each quiet observation.
      *  Returns { polls, resubmits, aborted, exhausted } (aborted = 'human-input' | 'quota-blocked' | null;

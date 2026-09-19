@@ -742,8 +742,11 @@ export async function updateWorkspaceHostOperation(input: {
   percent: number;
   message: string;
   error?: unknown;
+  /** Validated public request, enriched when asynchronous admission finishes credential checks. */
+  request?: Readonly<Record<string, unknown>>;
   controllerAuthority?: WorkspaceHostControllerAuthority;
 }): Promise<void> {
+  if (input.request !== undefined) assertWorkspaceHostSecretIsolation(input.request, 'workspaceHost.operation.request');
   const percent = Math.max(0, Math.min(100, Math.round(input.percent)));
   await withWorkspace(input.workspaceId, async (tx) => {
     const operations = await tx<Array<{ host_id: string }>>`
@@ -767,6 +770,7 @@ export async function updateWorkspaceHostOperation(input: {
           percent = ${percent},
           message = ${redactWorkspaceHostText(input.message)},
           error = ${input.error === undefined ? null : tx.json(json(input.error) as never)},
+          request = CASE WHEN ${input.request !== undefined} THEN ${input.request === undefined ? null : tx.json(json(input.request) as never)}::jsonb ELSE request END,
           started_at = CASE WHEN ${input.status} = 'running' THEN coalesce(started_at, now()) ELSE started_at END,
           finished_at = CASE WHEN ${input.status} IN ('succeeded', 'failed') THEN now() ELSE NULL END,
           updated_at = now()

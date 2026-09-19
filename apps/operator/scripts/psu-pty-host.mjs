@@ -2472,6 +2472,19 @@ export function makeCarryRearmController({
  * `lastInputAt` is the same signal makeIdleGate defers on).
  *
  * Pure (injectable clock/sleep + getters); exported for tests.
+ * @param {object} [opts]
+ * @param {() => number} [opts.lastOutputAt]
+ * @param {(data: string) => void} [opts.writeCr]
+ * @param {() => number} [opts.lastInputAt]
+ * @param {() => boolean} [opts.isQuotaBlocked]
+ * @param {number} [opts.quietMs]
+ * @param {number} [opts.pollMs]
+ * @param {number} [opts.polls]
+ * @param {number} [opts.maxResubmits]
+ * @param {() => number} [opts.now]
+ * @param {(ms: number) => Promise<void>} [opts.sleep]
+ * @param {(resubmits: number) => void} [opts.onResubmit]
+ * @param {(details: {polls: number, resubmits: number, outputObservedAfterResubmit: boolean}) => void} [opts.onExhausted]
  */
 export function makeSubmitVerifier({
   lastOutputAt,

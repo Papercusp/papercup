@@ -30,7 +30,9 @@ import type { BackupMigrationLockWaitInfo } from '@papercusp/backup';
 
 const h = vi.hoisted(() => ({
   configureBackup: vi.fn(),
-  managedSetInterval: vi.fn(() => ({ stop: vi.fn() })),
+  managedSetInterval: vi.fn(
+    (_name: string, _intervalMs: number, _callback: () => void | Promise<void>) => ({ stop: vi.fn() }),
+  ),
   readQualificationAdmission: vi.fn(),
   readCheckpointSerializerAuthority: vi.fn(),
 }));
@@ -69,7 +71,9 @@ beforeEach(() => {
     status: 'none',
     reason: 'routine-not-found',
   });
-  h.managedSetInterval.mockReset().mockImplementation(() => ({ stop: vi.fn() }));
+  h.managedSetInterval
+    .mockReset()
+    .mockImplementation((_name: string, _intervalMs: number, _callback: () => void | Promise<void>) => ({ stop: vi.fn() }));
   pg.postgres.mockReset().mockImplementation(() => pg.client);
   pg.client.mockReset().mockResolvedValue([]);
   pg.client.end.mockReset().mockResolvedValue(undefined);
@@ -214,7 +218,7 @@ describe('backup host binding — lazy host seams (WI-40369)', () => {
 
   it('reports the holder immediately and periodically while a blocking acquire waits', async () => {
     vi.useFakeTimers();
-    h.managedSetInterval.mockImplementation((_name, intervalMs, callback) => {
+    h.managedSetInterval.mockImplementation((_name: string, intervalMs: number, callback: () => void | Promise<void>) => {
       const timer = setInterval(() => void callback(), intervalMs);
       return { stop: () => clearInterval(timer) };
     });

@@ -12,7 +12,17 @@ const fleetAdmission = vi.hoisted(() => ({
   notify: vi.fn(),
 }));
 const workScope = vi.hoisted(() => ({
-  gate: vi.fn(async () => ({ allowed: true, reason: 'no-policy' })),
+  // Typed against the real gateWorkScope seam: the mock must accept the (site, subject)
+  // it is called with, and may return either an allow (reason) or a deny (error) verdict.
+  gate: vi.fn(
+    async (
+      _site: string,
+      _subject: import('../../work-scope-policy').WorkScopeSubject,
+    ): Promise<{ allowed: boolean; reason?: string; error?: string }> => ({
+      allowed: true,
+      reason: 'no-policy',
+    }),
+  ),
   refusal: vi.fn((verdict: unknown, extra?: Record<string, unknown>) => ({
     ok: false,
     ...(verdict as Record<string, unknown>),

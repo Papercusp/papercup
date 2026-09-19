@@ -97,6 +97,7 @@ function admissionEvidence(
   input: WorkspaceHostAgentCredentialAdmissionInput,
 ): WorkspaceHostAgentCredentialAdmissionEvidence {
   const verification = agentReport();
+  if (!verification.agents.omp) throw new Error('Admission fixture requires OMP evidence');
   const agents = {
     ...verification.agents,
     // Admission authenticates a present stored OMP credential; local inference is reserved for
