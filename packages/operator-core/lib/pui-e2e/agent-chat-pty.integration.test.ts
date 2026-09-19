@@ -792,8 +792,24 @@ async function seedAgentChat(input: SeedAgentChat): Promise<void> {
 
 /** Publish seeded Agent Chat transcript rows through the real sessions index. */
 async function ingestSeededAgentChats(): Promise<void> {
-  const { runSessionIngestOnce } = await import('../search/session-ingest');
-  await runSessionIngestOnce();
+  const { FILE_ADAPTERS, runSessionIngestOnce } = await import('../search/session-ingest');
+  // Runtime home overrides protect the writers, not this indexer's homedir-
+  // based readers. Keep the production sweep/SQL intact, but bind its file
+  // inputs to this fixture so it never ingests the developer's real history.
+  const roots = FILE_ADAPTERS.map((adapter) => {
+    const root = path.join(home, 'indexed-native-history', adapter.sourceKind);
+    mkdirSync(root, { recursive: true });
+    return vi.spyOn(adapter, 'roots').mockReturnValue([{ root, dirDepth: 0 }]);
+  });
+  try {
+    const stats = await runSessionIngestOnce();
+    expect(stats.skipped).toBeUndefined();
+    expect(stats.errors, JSON.stringify(stats)).toBe(0);
+    expect(stats.filesScanned, 'fixture must not scan host-native sessions').toBe(0);
+    expect(stats.chatsIngested, 'both seeded two-turn chats must be indexed').toBe(4);
+  } finally {
+    for (const root of roots) root.mockRestore();
+  }
 }
 
 async function waitForPersistedChat(
@@ -1624,35 +1640,53 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
     }
   });
 
-  test('PUI-SESSION-LIFECYCLE: session browser keeps isolated history addressable and supports rename/archive', async () => {
+  test('PUI-SESSION-LIFECYCLE: session browser keeps isolated history addressable and supports rename/archive', async ({ onTestFailed }) => {
     const sourceId = `pui-session-source-${randomUUID()}`;
     const siblingId = `pui-session-sibling-${randomUUID()}`;
+    const now = Date.now();
+    let stage = 'seed-source';
+    let pane: PuiPane | undefined;
+    onTestFailed(() => {
+      console.info('PUI_SESSION_LIFECYCLE_FAILURE', JSON.stringify({
+        stage, sourceId, siblingId, ...(pane?.failureEvidence() ?? {}),
+      }));
+    });
     await seedAgentChat({
       id: sourceId,
       title: 'P8 source',
       runtimeClass: 'legacy-owned-loop',
       transcript: [
-        { role: 'user', content: 'source history', ts: '2026-09-13T10:10:00Z' },
-        { role: 'assistant', content: 'source answer', ts: '2026-09-13T10:10:01Z' },
+        { role: 'user', content: 'source history', ts: new Date(now - 3_000).toISOString() },
+        { role: 'assistant', content: 'source answer', ts: new Date(now - 2_000).toISOString() },
       ],
-      createdAt: 1_000,
-      updatedAt: 1_000,
+      createdAt: now - 2_000,
+      updatedAt: now - 2_000,
     });
+    stage = 'seed-sibling';
     await seedAgentChat({
       id: siblingId,
       title: 'P8 sibling',
       runtimeClass: 'su-session',
       transcript: [
-        { role: 'user', content: 'sibling history', ts: '2026-09-13T10:11:00Z' },
-        { role: 'assistant', content: 'sibling answer', ts: '2026-09-13T10:11:01Z' },
+        { role: 'user', content: 'sibling history', ts: new Date(now - 1_000).toISOString() },
+        { role: 'assistant', content: 'sibling answer', ts: new Date(now).toISOString() },
       ],
-      createdAt: 2_000,
-      updatedAt: 2_000,
+      createdAt: now,
+      updatedAt: now,
     });
+    stage = 'index-chats';
     await ingestSeededAgentChats();
+    const indexed = await db.adminSql<Array<{ session_id: string; text: string }>>`
+      SELECT session_id, text FROM harness_shared.session_turns
+       WHERE workspace_id = ${WORKSPACE} AND source_kind = 'agent_chat'
+       ORDER BY session_id, turn_idx`;
+    expect(indexed).toHaveLength(4);
+    expect(new Set(indexed.map((row) => row.session_id))).toEqual(new Set([sourceId, siblingId]));
+    stage = 'save-view';
     await putViewState('Sessions');
 
-    const pane = new PuiPane(bin, operatorPort, home);
+    stage = 'open-sessions';
+    pane = new PuiPane(bin, operatorPort, home);
     try {
       await pane.waitFor('sessions', { timeoutMs: 40_000 });
       await pane.waitFor('P8 source', { timeoutMs: 40_000 });
@@ -1660,14 +1694,19 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
 
       // Search is server-backed and selection remains scoped to the exact
       // agent-chat identity, not a similarly-labelled native history row.
+      stage = 'search-source';
       pane.write('/P8 source');
       pane.enter();
       await pane.waitFor('P8 source', { timeoutMs: 20_000 });
+      await pane.waitForGone('P8 sibling', { timeoutMs: 20_000 });
+      stage = 'rename-source';
       pane.write('e');
+      await pane.waitFor('Rename');
       pane.write('P8 renamed');
       pane.enter();
       await pane.waitFor('Renamed session to P8 renamed', { timeoutMs: 30_000 });
 
+      stage = 'archive-source';
       pane.write('d');
       pane.write('y');
       await pane.waitFor('Archived session (history remains recoverable)', { timeoutMs: 30_000 });
@@ -1679,6 +1718,9 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       expect(stored).toMatchObject({ id: sourceId, title: 'P8 renamed' });
       expect(stored.archived_at).toBeTruthy();
       expect(pane.screen()).not.toContain('sibling history');
+      console.info('PUI_SESSION_LIFECYCLE_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, stored, indexed, frame: pane.screen(),
+      }));
     } finally {
       await pane.stop().catch(() => {});
     }
