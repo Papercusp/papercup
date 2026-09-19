@@ -35,7 +35,7 @@ const SELF_IDENTIFYING_SECRET_RE =
   /\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,})\b/g;
 const KEY_DIRECTED_SECRET_RE = new RegExp(
   [
-    String.raw`(?:(?:secret|token|password|passwd|pwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|bearer|credential)s?|(?:[A-Za-z_][A-Za-z0-9_-]*_)?(?:access[_-]?key(?:[_-]?id)?|secret[_-]?access[_-]?key|database[_-]?url)["'\s]*[:=]\s*["']?[^\s"',;&)}\]]{8,}`,
+    String.raw`(?:(?:secret|token|password|passwd|pwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|bearer|credential)s?|(?:[A-Za-z_][A-Za-z0-9_-]*_)?(?:access[_-]?key(?:[_-]?id)?|secret[_-]?access[_-]?key|database[_-]?url))["'\s]*[:=]\s*["']?[^\s"',;&)}\]]{8,}`,
     String.raw`(?:authorization|proxy-authorization)["'\s]*[:=]\s*["']?(?:bearer|basic|token)\s+[^\s"',;&)}\]]{8,}`,
     String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----`,
   ].join('|'),
