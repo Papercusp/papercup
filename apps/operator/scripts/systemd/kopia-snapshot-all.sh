@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # Run pre-snapshot DB hook ONCE per cycle, then snapshot every registered source.
 set -uo pipefail
+script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=kopia-cache-bootstrap.sh
+source "$script_dir/kopia-cache-bootstrap.sh"
 LOG_DIR="${KOPIA_SNAPSHOT_LOG_DIR:-$HOME/.cache/kopia}"
 PID_FILE="$LOG_DIR/snapshot-all.kopia.pid"
 PROC_ROOT="${KOPIA_SNAPSHOT_PROC_ROOT:-/proc}"
 SUDO_BIN="${KOPIA_SNAPSHOT_SUDO:-/usr/bin/sudo}"
 KILL_BIN="${KOPIA_SNAPSHOT_KILL:-/usr/bin/kill}"
 KOPIA_BIN="${KOPIA_SNAPSHOT_BIN:-/usr/bin/kopia}"
-mkdir -p "$LOG_DIR"
+if ! ensure_kopia_cache_dir "$LOG_DIR"; then
+  echo "FATAL: unable to bootstrap Kopia snapshot log directory: $LOG_DIR" >&2
+  exit 1
+fi
 
 # A user manager cannot reliably kill a root-owned sudo child after oomd tears
 # down the user unit. Validate the exact PID and command before cleanup; never
@@ -50,7 +56,6 @@ fi
 # outer service already enters the same guard; KOPIA_BACKUP_GUARD_ACTIVE avoids
 # recursively reacquiring it. Scheduled mode skips on overlap or unsafe PSI.
 if [ "${KOPIA_BACKUP_GUARD_ACTIVE:-0}" != 1 ]; then
-  script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
   guard="${KOPIA_BACKUP_GUARD_BIN:-$script_dir/kopia-backup-guard.sh}"
   exec "$guard" --mode scheduled --label hot -- "$0" "$@"
 fi

@@ -44,7 +44,15 @@
 # BOTH directions. Run it after touching fail().
 set -uo pipefail
 
-LOG="$HOME/.cache/kopia/healthcheck.log"
+script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=kopia-cache-bootstrap.sh
+source "$script_dir/kopia-cache-bootstrap.sh"
+LOG_DIR="${KOPIA_HEALTHCHECK_LOG_DIR:-$HOME/.cache/kopia}"
+if ! ensure_kopia_cache_dir "$LOG_DIR"; then
+  echo "FATAL: unable to bootstrap Kopia healthcheck log directory: $LOG_DIR" >&2
+  exit 1
+fi
+LOG="$LOG_DIR/healthcheck.log"
 # WI-2145150: follow the SAME env seam papercusp-db-backup.sh:60 uses, so this
 # assertion measures the tree the backup actually writes. Hardcoding it here meant
 # a relocated dump left the freshness check pointed at a directory nothing updates.
@@ -131,8 +139,6 @@ if [ -z "$ALARM_SUPPRESSED" ] && [ -z "${BACKUP_ALERT_FORCE:-}" ] \
    && [ "$MAX_DUMP_AGE_S" -lt "$MIN_SANE_DUMP_AGE_S" ] 2>/dev/null; then
   ALARM_SUPPRESSED="MAX_DUMP_AGE_S=${MAX_DUMP_AGE_S}s is below the ${MIN_SANE_DUMP_AGE_S}s sanity floor — no hourly backup has that bar; treating as a TEST run"
 fi
-
-mkdir -p "$(dirname "$LOG")"
 
 now=$(date +%s)
 

@@ -1144,6 +1144,7 @@ for f in papercusp-db-backup.timer papercusp-db-backup.service papercusp-db-back
 done
 mkdir -p ~/.config/kopia
 ln -sf "$(pwd)/kopia-backup-guard.sh" ~/.config/kopia/kopia-backup-guard.sh
+ln -sf "$(pwd)/kopia-cache-bootstrap.sh" ~/.config/kopia/kopia-cache-bootstrap.sh
 ln -sf "$(pwd)/kopia-snapshot-all.sh" ~/.config/kopia/snapshot-all.sh
 ln -sf "$(pwd)/kopia-home-snapshot.sh" ~/.config/kopia/home-snapshot.sh
 ln -sf "$(pwd)/kopia-healthcheck.sh" ~/.config/kopia/healthcheck.sh
@@ -1154,8 +1155,11 @@ systemctl --user enable --now papercusp-db-backup.timer kopia-snapshots.timer \
 ```
 
 You must still recreate `~/.config/kopia/db-backup.sh` and `backup-alert.sh` on a new machine;
-those two scripts are not version-controlled. The Kopia snapshot, home/VM, healthcheck, global
-guard, and supported protected/manual entrypoints are restored by the symlinks above.
+those two scripts are not version-controlled. The Kopia snapshot, home/VM, healthcheck, shared
+cache bootstrap, global guard, and supported protected/manual entrypoints are restored by the
+symlinks above. The cache bootstrap creates a missing target behind an existing `~/.cache/kopia`
+symlink without unlinking or replacing that symlink, and fails closed when the target is not a
+writable directory.
 
 ## Manual/protected snapshot
 

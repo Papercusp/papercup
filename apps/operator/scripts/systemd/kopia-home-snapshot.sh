@@ -16,6 +16,9 @@
 
 set -uo pipefail
 
+script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=kopia-cache-bootstrap.sh
+source "$script_dir/kopia-cache-bootstrap.sh"
 HOME_SRC="$HOME"
 # windows-vm REMOVED [owner 2026-09-16]: 23 daily snapshots of a
 # LIVE 247GB image (98.7->247GB in one month) bought a crash-consistent copy that may
@@ -30,7 +33,10 @@ PROC_ROOT="${KOPIA_HOME_SNAPSHOT_PROC_ROOT:-/proc}"
 SUDO_BIN="${KOPIA_HOME_SNAPSHOT_SUDO:-/usr/bin/sudo}"
 KILL_BIN="${KOPIA_HOME_SNAPSHOT_KILL:-/usr/bin/kill}"
 KOPIA_BIN="${KOPIA_HOME_SNAPSHOT_BIN:-/usr/bin/kopia}"
-mkdir -p "$LOG_DIR"
+if ! ensure_kopia_cache_dir "$LOG_DIR"; then
+  echo "FATAL: unable to bootstrap Kopia home-snapshot log directory: $LOG_DIR" >&2
+  exit 1
+fi
 LOG="$LOG_DIR/home-snapshot.log"
 
 # systemd's user manager cannot reliably kill a root-owned sudo child when it
@@ -77,7 +83,6 @@ fi
 # entrypoints. The service enters it first; this self-wrap protects direct runs.
 # Cleanup stays above this block so ExecStopPost can never wait on backup work.
 if [ "${KOPIA_BACKUP_GUARD_ACTIVE:-0}" != 1 ]; then
-  script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
   guard="${KOPIA_BACKUP_GUARD_BIN:-$script_dir/kopia-backup-guard.sh}"
   exec "$guard" --mode wait --label daily-home-vm -- "$0" "$@"
 fi

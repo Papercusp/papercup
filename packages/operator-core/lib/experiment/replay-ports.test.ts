@@ -28,4 +28,16 @@ describe('experimentReplayRunner — model-per-arm (P-063)', () => {
     await runner(input(variant({ systemOverlay: 'be terse' })));
     expect(llmCallMock.mock.calls.at(-1)![0].model).toBe('claude-sonnet-4-6');
   });
+
+  it('forwards the live pricing adapter result unchanged into the replay handle', async () => {
+    llmCallMock.mockResolvedValueOnce({ text: 'priced continuation', costUsd: 0.37, inputTokens: 321, outputTokens: 44 });
+    const runner = experimentReplayRunner('claude-sonnet-4-6');
+    await expect(runner(input(variant({ model: 'claude-opus-4-8' })))).resolves.toEqual({
+      outputText: 'priced continuation',
+      costUsd: 0.37,
+      inputTokens: 321,
+      outputTokens: 44,
+      replayed: true,
+    });
+  });
 });

@@ -185,6 +185,24 @@ describe('runReplayBattery — synthetic case', () => {
     for (const o of result.outcomes) expect(o.divergence).toBeNull();
     expect(result.comparison).not.toBeNull();
   });
+
+  it('persists the runner cost and measured replay elapsed time at the finish writer seam', async () => {
+    const events: StoreEvent[] = [];
+    const clock = [1000, 1125, 1125, 1125];
+    const result = await runReplayBattery(config({ cases: [syntheticCase], variants: [candidate] }), {
+      runner: fakeRunner([]),
+      llmCall: fakeJudge,
+      store: memoryStore(events),
+      now: () => clock.shift() ?? 1125,
+    });
+
+    expect(result.outcomes[0]).toMatchObject({ status: 'scored', runUsd: 0.05 });
+    const finish = events.find((e) => e.kind === 'finish');
+    expect(finish?.payload).toMatchObject({ costUsd: 0.05, elapsedMs: 125 });
+    // A zero-cost/zero-duration writer would hide a real replay's measured spend or latency.
+    expect((finish?.payload as { costUsd: number }).costUsd).toBeGreaterThan(0);
+    expect((finish?.payload as { elapsedMs: number }).elapsedMs).toBeGreaterThan(0);
+  });
 });
 
 describe('runReplayBattery — budget cutoff', () => {
