@@ -266,6 +266,27 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
   });
 
+  it('allows descriptive frozen-candidate staleness comparisons against staging', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+    setWorkItemCheckpoint.mockImplementation(async (_ref: unknown, stored: string | null | undefined) => stored);
+
+    const result = await one({
+      id: 'WI-7',
+      checkpoint: 'Frozen candidate is 09d0c118d5df, 32 commits behind staging.',
+    });
+
+    expect(result).toMatchObject({ ok: true, id: 'WI-7' });
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
+  });
+
   it('allows a metadata-only patch when the stale instruction exists only in the locked prior', async () => {
     const stale = 'Then pin whatever staging resolves to at that instant, still never a quoted sha.';
     readFrozenRepairMarker.mockReturnValue({
