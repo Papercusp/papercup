@@ -1701,7 +1701,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       await pane.waitForGone('P8 sibling', { timeoutMs: 20_000 });
       stage = 'rename-source';
       pane.write('e');
-      await pane.waitFor('Rename');
+      await pane.waitFor('RENAME');
       pane.write('P8 renamed');
       pane.enter();
       await pane.waitFor('Renamed session to P8 renamed', { timeoutMs: 30_000 });
