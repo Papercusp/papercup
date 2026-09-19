@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { test } from 'vitest';
+import { DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS } from '@papercusp/deployment-driver';
 
 import type {
   TaskReleaseJournal,
@@ -23,6 +24,7 @@ const {
   request,
   runJournaledMutation,
   parseArgs,
+  hashAndPlan,
 } = publisher;
 
 const execFileAsync = promisify(execFile);
@@ -48,6 +50,26 @@ test('the CLI help path is side-effect-free and does not require --dir or creden
   assert.doesNotMatch(result.stdout, /PUBLISH_VERDICT=/);
   assert.doesNotMatch(result.stderr, /gh auth token|credential/i);
 });
+
+for (const loader of [[], ['--import', 'tsx']]) {
+  test(`the real CLI rejects an incomplete signed-bundle candidate with loader ${loader.join(' ') || 'native Node'}`, async () => {
+    const missing = DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.install;
+    const fixture = await publicationFixture({ omitEntry: missing });
+    try {
+      await assert.rejects(execFileAsync(process.execPath, [
+        ...loader, PUBLISHER_SCRIPT.pathname,
+        '--dir', fixture.dir, '--plan-only', '--base', 'http://127.0.0.1:1',
+      ], { encoding: 'utf8' }), (error: Error & { stderr?: string }) => {
+        assert.match(error.stderr ?? '', /bundle cannot bootstrap/);
+        assert.ok(error.stderr?.includes(missing));
+        assert.doesNotMatch(error.stderr ?? '', /gh auth token|ECONNREFUSED|does not provide an export|Cannot find module/);
+        return true;
+      });
+    } finally {
+      await rm(fixture.dir, { recursive: true, force: true });
+    }
+  });
+}
 
 function sha256(value: string | Buffer) {
   return createHash('sha256').update(value).digest('hex');
@@ -148,9 +170,38 @@ function createLedger(overrides: Partial<TaskReleaseJournal> = {}) {
   };
 }
 
-async function publicationFixture() {
+async function publicationFixture(options: {
+  omitEntry?: string;
+  nonExecutableEntry?: string;
+  symlinkEntry?: string;
+  duplicateEntry?: string;
+  invalidArchive?: boolean;
+  largePayload?: boolean;
+} = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'publisher-journal-'));
-  const bundle = Buffer.from('workspace-host-bundle');
+  const payload = join(dir, 'payload');
+  await mkdir(join(payload, 'bin'), { recursive: true });
+  await Promise.all(Object.values(DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS).map(async (path) => {
+    if (path === options.omitEntry) return;
+    if (path === options.symlinkEntry) {
+      await symlink('missing-runtime', join(payload, path));
+      return;
+    }
+    await writeFile(join(payload, path), '#!/bin/sh\nexit 0\n', {
+      mode: path === options.nonExecutableEntry ? 0o644 : 0o755,
+    });
+  }));
+  if (options.largePayload) {
+    // Incompressible bytes cross the publisher's real 32 MiB part boundary.
+    await writeFile(join(payload, 'runtime.bin'), randomBytes(33 * 1024 * 1024));
+  }
+  const bundlePath = join(dir, 'server.tgz');
+  await execFileAsync('tar', [
+    '-czf', bundlePath, '-C', payload, '.',
+    ...(options.duplicateEntry ? [`./${options.duplicateEntry}`] : []),
+  ]);
+  if (options.invalidArchive) await writeFile(bundlePath, 'not a gzip archive');
+  const bundle = await readFile(bundlePath);
   const signature = Buffer.from('trusted minisign signature');
   const bundleSha256 = sha256(bundle);
   const manifest = {
@@ -176,6 +227,73 @@ async function publicationFixture() {
     writeFile(join(dir, 'manifest.json'), JSON.stringify(manifest)),
   ]);
   return { dir, bundle, bundleSha256, signature, manifest };
+}
+
+test('archive verification preserves whole-file and multipart digests across compressed part boundaries', async () => {
+  const fixture = await publicationFixture({ largePayload: true });
+  try {
+    const plan = await hashAndPlan(join(fixture.dir, 'server.tgz'));
+    assert.equal(plan.sha256, fixture.bundleSha256);
+    assert.equal(plan.size, fixture.bundle.length);
+    assert.equal(plan.parts.length, 2);
+    let offset = 0;
+    for (const part of plan.parts) {
+      assert.equal(part.sha256, sha256(fixture.bundle.subarray(offset, offset + part.sizeBytes)));
+      offset += part.sizeBytes;
+    }
+    assert.equal(offset, fixture.bundle.length);
+  } finally {
+    await rm(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+// WI-10001865: digest/signature agreement alone let an incomplete r32 bundle
+// publish successfully and then fail at phase:install-runtime on a real VM.
+// Exercise the real publication boundary with valid manifests over bad archives.
+for (const entrypoint of Object.values(DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS)) {
+  for (const defect of ['omitEntry', 'nonExecutableEntry'] as const) {
+    test(`publication refuses ${defect} ${entrypoint} before any provider request`, async () => {
+      const fixture = await publicationFixture({ [defect]: entrypoint });
+      const ledger = createLedger();
+      let requests = 0;
+      try {
+        await assert.rejects(publishWorkspaceHostArtifacts({
+          dir: fixture.dir, base: 'https://cupboard.example.test', token: 'fixture-token',
+          taskId: TASK_ID, operationId: OPERATION_ID, planOnly: false,
+        }, {
+          ledger, env: {}, log: () => {},
+          fetch: async () => { requests += 1; throw new Error('unexpected provider request'); },
+        }), (error: Error) => error.message.includes(entrypoint)
+          && error.message.includes('bundle cannot bootstrap'));
+        assert.equal(requests, 0);
+        assert.equal(ledger.task.detail.release.receipts.length, 0);
+      } finally {
+        await rm(fixture.dir, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+for (const options of [
+  { symlinkEntry: DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.node },
+  { duplicateEntry: DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.install },
+  { invalidArchive: true },
+]) {
+  test(`publication refuses ambiguous or malformed archive ${JSON.stringify(options)}`, async () => {
+    const fixture = await publicationFixture(options);
+    let requests = 0;
+    try {
+      await assert.rejects(publishWorkspaceHostArtifacts({
+        dir: fixture.dir, base: 'https://cupboard.example.test', token: 'fixture-token', planOnly: true,
+      }, {
+        env: {}, log: () => {},
+        fetch: async () => { requests += 1; throw new Error('unexpected provider request'); },
+      }), /bundle cannot bootstrap|incorrect header check/);
+      assert.equal(requests, 0);
+    } finally {
+      await rm(fixture.dir, { recursive: true, force: true });
+    }
+  });
 }
 
 function json(value: unknown, status = 200) {

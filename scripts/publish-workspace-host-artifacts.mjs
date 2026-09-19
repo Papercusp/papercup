@@ -35,11 +35,19 @@ import { createHash } from 'node:crypto';
 import { open, stat, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { createGunzip } from 'node:zlib';
+import { tsImport } from 'tsx/esm/api';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import {
+import * as releaseJournalModule from './lib/release-task-journal.ts';
+
+// tsx treats this root's .ts helpers as CommonJS; native Node type stripping
+// exposes them as ESM. Preserve both supported CLI invocation paths.
+const {
   releaseStageInputHash,
   releaseStageRequestIdentity,
-} from './lib/release-task-journal.ts';
+} = releaseJournalModule.default ?? releaseJournalModule;
 
 export { releaseStageInputHash, releaseStageRequestIdentity };
 
@@ -177,11 +185,36 @@ export function formatRequestError(stage, url, error) {
 }
 
 /**
- * ONE streaming pass computes the whole-file digest AND every part digest.
+ * ONE streaming pass computes the whole-file digest AND every part digest,
+ * and checks the bootstrap executables in those same archive bytes.
  * Reading the file twice would let a concurrent writer produce a plan that
  * disagrees with the bytes actually uploaded.
  */
-async function hashAndPlan(path) {
+export async function hashAndPlan(path) {
+  // Keep CLI --help side-effect-free. The bootstrap contract, not a second
+  // hand-written list or the manifest's claimed profile, owns this inventory.
+  const [{ default: tar }, { DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS }] = await Promise.all([
+    import('tar-stream'),
+    tsImport('@papercusp/deployment-driver', import.meta.url),
+  ]);
+  const required = new Set(Object.values(DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS));
+  const seen = new Set();
+  const failures = new Set();
+  const archive = tar.extract();
+  archive.on('entry', (header, stream, next) => {
+    const name = header.name.replace(/^(\.\/)+/, '');
+    if (required.has(name)) {
+      if (seen.has(name)) failures.add(`${name}: duplicate archive entry`);
+      seen.add(name);
+      // These are the actual executable release programs. A link or directory
+      // with the right name does not prove an executable will exist on the VM.
+      if (header.type !== 'file' || header.size <= 0 || (header.mode & 0o111) === 0) {
+        failures.add(`${name}: expected a non-empty executable regular file`);
+      }
+    }
+    stream.on('end', next);
+    stream.resume();
+  });
   const { size } = await stat(path);
   if (size === 0) throw new Error(`${path} is empty`);
   const partCount = Math.ceil(size / PART_BYTES);
@@ -196,24 +229,39 @@ async function hashAndPlan(path) {
   const parts = [];
   const fh = await open(path, 'r');
   try {
-    const buf = Buffer.allocUnsafe(PART_BYTES);
-    for (let partNumber = 1; partNumber <= partCount; partNumber += 1) {
-      const offset = (partNumber - 1) * PART_BYTES;
-      const want = Math.min(PART_BYTES, size - offset);
-      const { bytesRead } = await fh.read(buf, 0, want, offset);
-      if (bytesRead !== want) {
-        throw new Error(`short read at part ${partNumber}: ${bytesRead} != ${want}`);
+    async function* compressedParts() {
+      for (let partNumber = 1; partNumber <= partCount; partNumber += 1) {
+        const offset = (partNumber - 1) * PART_BYTES;
+        const want = Math.min(PART_BYTES, size - offset);
+        // Each yielded buffer belongs to the pipeline until consumed; reusing
+        // one scratch buffer would let gunzip observe the next part's bytes.
+        const buf = Buffer.allocUnsafe(want);
+        const { bytesRead } = await fh.read(buf, 0, want, offset);
+        if (bytesRead !== want) {
+          throw new Error(`short read at part ${partNumber}: ${bytesRead} != ${want}`);
+        }
+        whole.update(buf);
+        parts.push({
+          partNumber,
+          sha256: createHash('sha256').update(buf).digest('hex'),
+          sizeBytes: want,
+        });
+        yield buf;
       }
-      const slice = buf.subarray(0, want);
-      whole.update(slice);
-      parts.push({
-        partNumber,
-        sha256: createHash('sha256').update(slice).digest('hex'),
-        sizeBytes: want,
-      });
     }
+    await pipeline(
+      Readable.from(compressedParts(), { objectMode: false, highWaterMark: 64 * 1024 }),
+      createGunzip(),
+      archive,
+    );
   } finally {
     await fh.close();
+  }
+  for (const name of required) {
+    if (!seen.has(name)) failures.add(`${name}: missing executable release entrypoint`);
+  }
+  if (failures.size > 0) {
+    throw new Error(`workspace-host bundle cannot bootstrap: ${[...failures].join('; ')}`);
   }
   return { size, sha256: whole.digest('hex'), parts };
 }
@@ -652,7 +700,7 @@ export async function publishWorkspaceHostArtifacts(args, injected = {}) {
   const ctx = args.planOnly ? null : releaseContext(args, deps);
   const bundlePath = join(args.dir, 'server.tgz');
 
-  log('=== [1/6] hash bundle + build part plan ===');
+  log('=== [1/6] verify bootstrap executables + hash bundle + build part plan ===');
   const plan = await hashAndPlan(bundlePath);
   log(`  bundle sha256 ${plan.sha256}`);
   log(`  bytes ${plan.size}  parts ${plan.parts.length} x ${PART_BYTES}B`);

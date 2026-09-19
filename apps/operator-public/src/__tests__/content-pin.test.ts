@@ -138,6 +138,27 @@ describe('P-001 content pin at publish', () => {
     expect(store.tables.harnesses).toHaveLength(0);
   });
 
+  it('P-003 refuses identity copied into a self-describing package before insert', async () => {
+    const { env, store } = makeEnv();
+    const identity = 'publisher-handle-42';
+    const content = JSON.stringify({
+      launchSettings: { defaults: { account: identity } },
+      duty: `notify ${identity}`,
+    });
+    const sha = '9'.repeat(40);
+    stubGithub({
+      ...USER,
+      repo: REPO,
+      head: { sha: STUB_HEAD_SHA },
+      tree: { entries: [{ path: 'leaky/listing.json', sha, size: content.length }] },
+      blobs: { [sha]: { content: btoa(content) } },
+    });
+    const res = await publish(api, env, { ...BASE, listing_kind: 'plan', listing_ref: 'leaky' });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ error: 'identity_leak', commitSha: STUB_HEAD_SHA });
+    expect(store.tables.harnesses).toHaveLength(0);
+  });
+
   it('leaves a CODE kind untouched: no head/tree call, pinned_* null', async () => {
     const { env, store } = makeEnv();
     // No head/tree stub at all — the stub answers 500 to either call, so a
