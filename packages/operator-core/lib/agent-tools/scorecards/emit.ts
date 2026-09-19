@@ -1038,6 +1038,9 @@ export async function emitScorecard(
     /** EI-21917534129987791: liveness probe backing the author-rebind recovery
      *  hint on the "acceptance must be recorded by the author" refusal. */
     resolveAuthorSessionState?: (ownerId: string, opts: { workspaceId?: string }) => Promise<SessionState | null>;
+    /** Injectable seam for vetting-seat authorization; production uses the
+     * fail-closed shared acceptance-seat resolver. */
+    resolveAcceptanceSeatSuccession?: typeof resolveAcceptanceSeatSuccession;
     /** Test seam for the bounded post-write pending-audit dispatcher. */
     dispatchPendingGradingAudits?: typeof dispatchPendingGradingAudits;
     closeSourceAuditConsults?: typeof closeSourceAuditConsults;
@@ -1557,6 +1560,7 @@ export async function emitScorecard(
     // link here would be a booby trap (same posture as the acceptance-kind link
     // guards in proposeRubric).
     let vetting: ScorecardVetting | undefined;
+    let vettingSeatSuccession: AcceptanceSeatSuccession | undefined;
     let vettedSubjectPlan: string | null = null;
     // WI-41477: two alternate recording channels, one predicate. The consult channel
     // is the router-assigned get_feedback flow; the work-item channel is where a
@@ -1634,6 +1638,42 @@ export async function emitScorecard(
         }
       }
       vettedSubjectPlan = vettedRubric.subjectPlan ?? null;
+      // WI-10001614: vetting is author-owned evidence too. A caller may emit
+      // it as the vetted rubric's author, or inherit that seat only after the
+      // author is confirmed non-live and the caller is accountable for the
+      // subject plan. Stamp a successor so readers can distinguish the narrow
+      // seat transfer from an author-authored attestation.
+      const vettedRubricAuthor = vettedRubric.createdBy ?? vettedRubric.proposedBy ?? null;
+      const sameVettedRubricAuthor = deps.sameAcceptanceAuthor ?? isAcceptanceAuthorIdentity;
+      const vettingWorkspace = vettedRubric.workspaceId || input.workspaceId || activeWorkspaceId();
+      const vettingAuthorIdentity = await sameVettedRubricAuthor(vettedRubricAuthor, input.createdBy, {
+        workspaceId: vettingWorkspace,
+      });
+      if (!vettingAuthorIdentity) {
+        const resolveAuthorSessionState = deps.resolveAuthorSessionState ?? defaultResolveAuthorSessionState;
+        const resolveSeat = deps.resolveAcceptanceSeatSuccession ?? resolveAcceptanceSeatSuccession;
+        const seat = await resolveSeat({
+          authorId: vettedRubricAuthor,
+          callerId: input.createdBy,
+          subjectPlan: vettedRubric.subjectPlan ?? null,
+          workspaceId: vettingWorkspace,
+          harness: input.ctxHarness ?? null,
+          resolveAuthorSessionState,
+        });
+        if (!seat.eligible) {
+          return {
+            ok: false as const,
+            error:
+              `vetting must be emitted by the vetted rubric's author ('${vettedRubricAuthor ?? 'unknown'}'), ` +
+              `not '${input.createdBy}'` +
+              acceptanceSeatRefusalHint(seat, vettedRubricAuthor, vettedRubric.subjectPlan ?? null, {
+                workspaceId: vettingWorkspace,
+                harness: input.ctxHarness ?? null,
+              }),
+          };
+        }
+        vettingSeatSuccession = seat.succession;
+      }
       if (args.vettingWorkItem) {
         // Mirror of the consult predicate below, clause for clause: the consult path
         // excludes the emitter and the consult REQUESTER; here the analogous
@@ -1667,6 +1707,7 @@ export async function emitScorecard(
         const criteriaHash = await getRubricCriteriaHash(subjectRef);
         vetting = {
           workItemId: args.vettingWorkItem,
+          ...(vettingSeatSuccession ? { seat: vettingSeatSuccession } : {}),
           ...(rubricRevision != null ? { rubricRevision } : {}),
           ...(criteriaHash != null ? { criteriaHash } : {}),
           critiquePosts: critique.critiquePosts,
@@ -1742,6 +1783,7 @@ export async function emitScorecard(
       const criteriaHash = await getRubricCriteriaHash(subjectRef);
       vetting = {
         consultId: args.vettingConsult,
+        ...(vettingSeatSuccession ? { seat: vettingSeatSuccession } : {}),
         ...(rubricRevision != null ? { rubricRevision } : {}),
         ...(criteriaHash != null ? { criteriaHash } : {}),
         critiquePosts: critique.critiquePosts,
