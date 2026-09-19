@@ -151,6 +151,9 @@ class RecordingHost implements WorkspaceHostRemoteInitializerHost {
   createWorkspace(input: unknown) {
     return this.record("createWorkspace", input);
   }
+  installDesktopPack(input: { hostId: string }) {
+    return this.record("installDesktopPack", input);
+  }
   cloneRepository(input: unknown) {
     return this.record("cloneRepository", input);
   }
@@ -314,6 +317,7 @@ function lifecycleDelivery(generation = 1): WorkspaceHostCredentialDeliverySet {
 
 /** Valid `input` for each of the six step kinds — the table every dispatch test walks. */
 const STEP_INPUTS: Record<string, Record<string, unknown>> = {
+  "install-desktop-pack": { hostId: "byoc-canary-01" },
   "create-workspace": { workspaceId: "ws-1", hostId: "byoc-canary-01" },
   "clone-repository": {
     repositoryUrl: "https://github.com/Papercusp/papercusp-byoc-canary.git",
@@ -371,6 +375,41 @@ function step(
 function request(kind: string, input?: Record<string, unknown>, id?: string) {
   return { protocolVersion: PROTOCOL, step: step(kind, input, id) };
 }
+
+describe("optional desktop pack wire admission", () => {
+  it("dispatches the fixed installer through the ordinary JSON protocol", async () => {
+    const deps = makeDeps();
+    const result = JSON.parse(await handleWorkspaceHostRemoteInitializerPayload(
+      JSON.stringify(request("install-desktop-pack")), deps,
+    ));
+    expect(result.status).toBe("succeeded");
+    expect(deps.host.calls).toEqual([{ op: "installDesktopPack", input: { hostId: "byoc-canary-01" } }]);
+  });
+
+  it.each(["script", "artifact", "isolation"])("refuses caller-controlled %s before touching the host", async (key) => {
+    const deps = makeDeps();
+    await expect(handleWorkspaceHostRemoteInitializerPayload(JSON.stringify(request(
+      "install-desktop-pack", { hostId: "host-1", [key]: "untrusted" },
+    )), deps)).rejects.toThrow(/accepts only/);
+    expect(deps.host.calls).toEqual([]);
+  });
+
+  it("rejects a prior protocol before any host operation", async () => {
+    const deps = makeDeps();
+    await expect(handleWorkspaceHostRemoteInitializerPayload(JSON.stringify({
+      ...request("install-desktop-pack"), protocolVersion: "papercusp-gcp-iap-initialization-v3",
+    }), deps)).rejects.toThrow(/unsupported protocol version/);
+    expect(deps.host.calls).toEqual([]);
+  });
+
+  it("rejects a host label that cannot be safely represented in the pack attestation", async () => {
+    const deps = makeDeps();
+    await expect(handleWorkspaceHostRemoteInitializerPayload(JSON.stringify(request(
+      "install-desktop-pack", { hostId: 'bad"host' },
+    )), deps)).rejects.toThrow(/invalid desktop-pack hostId/);
+    expect(deps.host.calls).toEqual([]);
+  });
+});
 
 function makeDeps(
   options: {
@@ -439,7 +478,7 @@ describe("parseWorkspaceHostRemoteInitializerRequest", () => {
         step: step("create-workspace"),
       }),
     ).toThrow(
-      /unsupported protocol version 'papercusp-gcp-iap-initialization-v1'.*v3/s,
+      /unsupported protocol version 'papercusp-gcp-iap-initialization-v1'.*v4/s,
     );
   });
 

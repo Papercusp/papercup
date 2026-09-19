@@ -1119,7 +1119,7 @@ describe('buildWorkspaceHostBootstrap', () => {
     );
 
     expect(conduit).toContain(
-      "papercusp-remote-initializer --protocol-version papercusp-gcp-iap-initialization-v3 --json-stdin",
+      "papercusp-remote-initializer --protocol-version papercusp-gcp-iap-initialization-v4 --json-stdin",
     );
     expect(conduit).toContain(
       "papercusp-deliver-material --protocol-version papercusp-workspace-host-credential-delivery-v1 --json-stdin",

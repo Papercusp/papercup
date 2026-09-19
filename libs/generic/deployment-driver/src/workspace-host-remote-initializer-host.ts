@@ -32,6 +32,12 @@
 import { execFile } from "node:child_process";
 import { chmod, lstat, mkdir, rm, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import {
+  buildWorkspaceHostDesktopPackScript,
+  parseWorkspaceHostDesktopPackAttestation,
+  PINNED_KASMVNC_ARTIFACT,
+  WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION,
+} from "./workspace-host-desktop-pack";
 
 import {
   NodeWorkspaceHostAgentProbeRunner,
@@ -787,6 +793,31 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
       );
     }
     return result;
+  }
+
+  async installDesktopPack(input: { hostId: string }): Promise<WorkspaceHostRemoteStepEvidence> {
+    if (!/^[a-z0-9][a-z0-9._-]{0,127}$/i.test(input.hostId)) {
+      throw new WorkspaceHostOperationError("installDesktopPack", 1, "invalid desktop-pack hostId");
+    }
+    const { script } = buildWorkspaceHostDesktopPackScript({
+      contractVersion: WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION,
+      action: "install",
+      hostId: input.hostId,
+    });
+    const result = await this.require("installDesktopPack", {
+      command: "/bin/bash",
+      args: ["-c", script],
+    });
+    const attestation = parseWorkspaceHostDesktopPackAttestation(result.stdout);
+    if (
+      attestation.hostId !== input.hostId ||
+      attestation.action !== "install" ||
+      attestation.kasmvnc?.version !== PINNED_KASMVNC_ARTIFACT.version ||
+      attestation.kasmvnc?.sha256 !== PINNED_KASMVNC_ARTIFACT.debSha256
+    ) {
+      throw new WorkspaceHostOperationError("installDesktopPack", 1, "desktop pack attestation identity mismatch");
+    }
+    return { ...attestation };
   }
 
   async createWorkspace(

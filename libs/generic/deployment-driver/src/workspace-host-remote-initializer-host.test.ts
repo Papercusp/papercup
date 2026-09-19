@@ -3,7 +3,13 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import {
+  PINNED_KASMVNC_ARTIFACT,
+  WORKSPACE_HOST_DESKTOP_PACK_ATTESTATION_PREFIX,
+  WORKSPACE_HOST_DESKTOP_PACK_CHECKS,
+  WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION,
+} from "./workspace-host-desktop-pack";
 
 import {
   WorkspaceHostOperationError,
@@ -204,6 +210,56 @@ function fixture() {
   });
   return { system, deps };
 }
+
+describe("ProductionWorkspaceHostRemoteInitializerHost optional desktop pack", () => {
+  function attestation() {
+    return {
+      contractVersion: WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION,
+      hostId: "host-1", action: "install", ubuntuVersion: "24.04",
+      observedAt: NOW.toISOString(), status: "healthy",
+      kasmvnc: { version: PINNED_KASMVNC_ARTIFACT.version, sha256: PINNED_KASMVNC_ARTIFACT.debSha256 },
+      checks: WORKSPACE_HOST_DESKTOP_PACK_CHECKS.map((name) => ({ name, ok: true })),
+    };
+  }
+
+  it("runs the maintained pinned installer and returns only its attestation", async () => {
+    const { system, deps } = fixture();
+    const proof = attestation();
+    const run = vi.spyOn(system, "run").mockResolvedValue({
+      exitCode: 0, stderr: "", stdout: `apt output\n${WORKSPACE_HOST_DESKTOP_PACK_ATTESTATION_PREFIX}${JSON.stringify(proof)}\n`,
+    });
+    expect(await deps.host.installDesktopPack!({ hostId: "host-1" })).toEqual(proof);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0][0].command).toBe("/bin/bash");
+    const script = run.mock.calls[0][0].args[1];
+    expect(script).toContain(PINNED_KASMVNC_ARTIFACT.debSha256);
+    expect(script).toContain("DESKTOP_USER='papercusp-desktop'");
+    expect(script).toContain("interface: 127.0.0.1");
+  });
+
+  it("does not turn an installer exit into successful evidence", async () => {
+    const { system, deps } = fixture();
+    vi.spyOn(system, "run").mockResolvedValue({ exitCode: 7, stdout: "", stderr: "package installation failed" });
+    await expect(deps.host.installDesktopPack!({ hostId: "host-1" })).rejects.toThrow(/package installation failed/);
+  });
+
+  it("refuses exit zero without the required install attestation", async () => {
+    const { deps } = fixture();
+    await expect(deps.host.installDesktopPack!({ hostId: "host-1" })).rejects.toThrow(/no attestation/);
+  });
+
+  it.each(["host", "artifact", "checks"])("rejects incorrect %s evidence", async (change) => {
+    const { system, deps } = fixture();
+    const proof = attestation();
+    if (change === "host") proof.hostId = "different-host";
+    if (change === "artifact") proof.kasmvnc.sha256 = "0".repeat(64);
+    if (change === "checks") proof.checks.pop();
+    vi.spyOn(system, "run").mockResolvedValue({
+      exitCode: 0, stderr: "", stdout: `${WORKSPACE_HOST_DESKTOP_PACK_ATTESTATION_PREFIX}${JSON.stringify(proof)}`,
+    });
+    await expect(deps.host.installDesktopPack!({ hostId: "host-1" })).rejects.toThrow(/identity mismatch|missing checks/);
+  });
+});
 
 describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials", () => {
   it.each(

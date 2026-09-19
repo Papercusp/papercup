@@ -3,7 +3,7 @@
  *
  * WHAT WAS MISSING. The controller already knows how to reach a workspace host: it opens one
  * non-interactive OpenSSH invocation over an IAP tunnel and writes
- * `{"protocolVersion":"papercusp-gcp-iap-initialization-v3","step":<step>}` to the remote
+ * `{"protocolVersion":"papercusp-gcp-iap-initialization-v4","step":<step>}` to the remote
  * program's stdin, expecting `{protocolVersion, stepId, status:"succeeded", observedAt,
  * publicEvidence?}` back on stdout. That remote program did not exist anywhere in the tree — the
  * protocol string matched only the controller-side command builder — so every initialization step
@@ -53,7 +53,7 @@ import { assertWorkspaceHostSecretIsolation } from "./workspace-host-test-harnes
  * shows up against a real host.
  */
 export const WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION =
-  "papercusp-gcp-iap-initialization-v3";
+  "papercusp-gcp-iap-initialization-v4";
 
 /**
  * Every step kind this initializer can execute: the six INITIALIZATION kinds plus the four
@@ -78,6 +78,7 @@ export const WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION =
 export const WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS = [
   ...WORKSPACE_HOST_INITIALIZATION_STEP_KINDS,
   ...WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS,
+  "install-desktop-pack",
 ] as const;
 export type WorkspaceHostRemoteInitializerStepKind =
   (typeof WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS)[number];
@@ -210,6 +211,8 @@ export interface WorkspaceHostVerifyInitializationInput {
  * of its inputs and can be tested exhaustively without a VM.
  */
 export interface WorkspaceHostRemoteInitializerHost {
+  /** Optional post-provision pack; never part of ordinary headless initialization. */
+  installDesktopPack?(input: { hostId: string }): Promise<WorkspaceHostRemoteStepEvidence>;
   createWorkspace(
     input: WorkspaceHostCreateWorkspaceInput,
   ): Promise<WorkspaceHostRemoteStepEvidence>;
@@ -405,6 +408,24 @@ export async function executeWorkspaceHostRemoteInitializerStep(
 
   let publicEvidence: WorkspaceHostRemoteStepEvidence;
   switch (step.kind) {
+    case "install-desktop-pack": {
+      // This crosses the existing privileged conduit. The caller selects ONLY the host,
+      // never a script, download URL, checksum, or Unix account for root to execute.
+      if (Object.keys(input).some((key) => key !== "hostId")) {
+        throw new WorkspaceHostRemoteInitializerProtocolError(
+          "install-desktop-pack accepts only step.input.hostId",
+        );
+      }
+      const hostId = requireString(input.hostId, "step.input.hostId");
+      if (!/^[a-z0-9][a-z0-9._-]{0,127}$/i.test(hostId)) {
+        throw new WorkspaceHostRemoteInitializerProtocolError("invalid desktop-pack hostId");
+      }
+      if (!deps.host.installDesktopPack) {
+        throw new UnsupportedWorkspaceHostInitializationStepKindError(step.kind);
+      }
+      publicEvidence = await deps.host.installDesktopPack({ hostId });
+      break;
+    }
     case "create-workspace": {
       publicEvidence = await deps.host.createWorkspace({
         workspaceId: requireString(input.workspaceId, "step.input.workspaceId"),
