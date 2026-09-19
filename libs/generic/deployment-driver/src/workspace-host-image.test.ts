@@ -8,6 +8,7 @@ import {
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
+  WORKSPACE_HOST_DESKTOP_SESSION_ENTRYPOINT,
   buildWorkspaceHostBuildManifest,
   deriveWorkspaceHostCanonicalArtifactUrls,
 } from "./workspace-host-build-manifest";
@@ -72,6 +73,12 @@ function artifact(
       templateSha256: "d".repeat(64),
     },
     materials: [
+      {
+        path: WORKSPACE_HOST_DESKTOP_SESSION_ENTRYPOINT,
+        sha256: "8".repeat(64),
+        sizeBytes: 2048,
+        executable: true,
+      },
       {
         path: "dist/papercusp-server.tgz",
         sha256: RELEASE_DIGEST,

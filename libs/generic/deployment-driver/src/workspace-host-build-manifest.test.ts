@@ -14,6 +14,7 @@ import {
   verifyWorkspaceHostReleaseProvenance,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
+  WORKSPACE_HOST_DESKTOP_SESSION_ENTRYPOINT,
   WORKSPACE_HOST_PUI_COMPANION_PATH,
   WORKSPACE_HOST_PUI_ENTRYPOINT,
   WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
@@ -87,6 +88,7 @@ describe("workspace-host build manifest", () => {
     expect(required.map(({ path }) => path)).toEqual([
       WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
       WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
+      WORKSPACE_HOST_DESKTOP_SESSION_ENTRYPOINT,
       WORKSPACE_HOST_PUI_ENTRYPOINT,
       WORKSPACE_HOST_PUI_COMPANION_PATH,
       WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
@@ -349,6 +351,12 @@ describe("workspace-host release provenance", () => {
       ...base,
       materials: [
         ...base.materials,
+        {
+          path: WORKSPACE_HOST_DESKTOP_SESSION_ENTRYPOINT,
+          sha256: SHA_B,
+          sizeBytes: 512,
+          executable: true,
+        },
         {
           path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
           sha256: SHA_C,

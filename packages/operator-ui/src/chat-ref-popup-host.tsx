@@ -29,7 +29,7 @@
  * shell root. `null` is the right fallback — the component renders nothing
  * until a param is set, and the popups inside it carry their own skeletons.
  */
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 
 const LazyChatRefPopupHost = lazy(
   () => import('../../../apps/operator/app/_components/chat/ChatRefPopupHost'),
@@ -51,6 +51,15 @@ export interface ChatRefPopupHostProps {
  * through `@papercusp/sync`).
  */
 export function ChatRefPopupHost({ fallbackHarnessSlug }: ChatRefPopupHostProps = {}) {
+  /* The lazy popup can resolve during the server render but still be pending
+     on the first browser render. Rendering it in that window makes the server
+     emit the popup's live-region section while the client emits Suspense's
+     null fallback, which is a root hydration mismatch (React #418). Keep the
+     host absent for the shared server/first-client render and reveal it after
+     mount; the popup is only meaningful after browser URL state exists anyway. */
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
   return (
     <Suspense fallback={null}>
       <LazyChatRefPopupHost fallbackHarnessSlug={fallbackHarnessSlug} />

@@ -533,6 +533,9 @@ export const WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT =
 export const WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT =
   "bin/papercusp-deliver-material";
 
+/** Inert until the optional desktop pack installs its socket-activated service. */
+export const WORKSPACE_HOST_DESKTOP_SESSION_ENTRYPOINT = "bin/papercusp-desktop-session.cjs";
+
 /** Bundle-relative PUI generation installed and attested as one immutable release unit. */
 export const WORKSPACE_HOST_PUI_ENTRYPOINT = "bin/pui";
 export const WORKSPACE_HOST_PUI_COMPANION_PATH = "pui-companion.wasm";
@@ -553,6 +556,7 @@ export const WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS: readonly WorkspaceHostRe
   [
     { path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT, executable: true },
     { path: WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT, executable: true },
+    { path: WORKSPACE_HOST_DESKTOP_SESSION_ENTRYPOINT, executable: true },
     { path: WORKSPACE_HOST_PUI_ENTRYPOINT, executable: true },
     { path: WORKSPACE_HOST_PUI_COMPANION_PATH },
     { path: WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH },

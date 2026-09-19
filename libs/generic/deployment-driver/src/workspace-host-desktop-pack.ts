@@ -28,6 +28,7 @@
  *    would inherit them. The desktop user owns nothing but desktops.
  */
 import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harness';
+import { WORKSPACE_HOST_DESKTOP_SESSION_ENTRYPOINT } from './workspace-host-build-manifest';
 import {
   DEFAULT_WORKSPACE_HOST_AGENT_USER,
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
@@ -136,7 +137,7 @@ export const WORKSPACE_HOST_DESKTOP_PACK_APT = {
   /** The driver layer D-021 keeps X-bound: xdotool input, `import` capture. */
   driver: ['xdotool', 'imagemagick', 'x11-utils'],
   /** D-015/D-016 per-app confinement. */
-  sandbox: ['bubblewrap'],
+  sandbox: ['bubblewrap', 'nftables'],
 } as const;
 
 export const WORKSPACE_HOST_DESKTOP_PACK_PHASES = [
@@ -145,6 +146,7 @@ export const WORKSPACE_HOST_DESKTOP_PACK_PHASES = [
   'install-kasmvnc',
   'harden-listener',
   'create-desktop-identity',
+  'install-desktop-runtime',
   'attest-pack',
 ] as const;
 export type WorkspaceHostDesktopPackPhase =
@@ -167,6 +169,9 @@ export const WORKSPACE_HOST_DESKTOP_PACK_CHECKS = [
   'x-stack',
   'a11y-stack',
   'gl-stack',
+  'desktop-runtime',
+  'desktop-socket',
+  'desktop-egress-isolation',
 ] as const;
 export type WorkspaceHostDesktopPackCheckName =
   (typeof WORKSPACE_HOST_DESKTOP_PACK_CHECKS)[number];
@@ -211,6 +216,21 @@ export interface WorkspaceHostDesktopPackAttestation {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** UID-scoped OUTPUT rules; do not touch the host's existing ingress firewall. */
+export function buildWorkspaceDesktopEgressRules(uid: number | '$DESKTOP_UID'): string {
+  if (uid !== '$DESKTOP_UID' && (!Number.isSafeInteger(uid) || uid <= 0)) throw new Error('desktop egress requires a non-root uid');
+  return `add table inet papercusp_desktop
+add chain inet papercusp_desktop output { type filter hook output priority -10; policy accept; }
+flush chain inet papercusp_desktop output
+add rule inet papercusp_desktop output meta skuid ${uid} ct direction reply accept
+add rule inet papercusp_desktop output meta skuid ${uid} ip daddr 127.0.0.53 meta l4proto { tcp, udp } th dport 53 accept
+add rule inet papercusp_desktop output meta skuid ${uid} ip daddr 169.254.169.254 meta l4proto { tcp, udp } th dport 53 accept
+add rule inet papercusp_desktop output meta skuid ${uid} fib daddr type local reject
+add rule inet papercusp_desktop output meta skuid ${uid} ip daddr 169.254.0.0/16 reject
+add rule inet papercusp_desktop output meta skuid ${uid} ip6 daddr { fe80::/10, fc00::/7 } reject
+`;
 }
 
 function assertPublicHttps(url: string, label: string): void {
@@ -280,6 +300,13 @@ export function buildWorkspaceHostDesktopPackScript(
         'would make a sandbox escape a credential compromise — which is the exact bleed this ' +
         'pack exists to prevent.',
     );
+  }
+
+  for (const user of [desktopUser, desktopGroup, workspaceUser, serviceUser, agentUser]) {
+    if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(user)) throw new Error('Desktop pack requires valid Unix account names');
+  }
+  if (desktopUser !== DEFAULT_WORKSPACE_HOST_DESKTOP_USER || desktopGroup !== DEFAULT_WORKSPACE_HOST_DESKTOP_GROUP) {
+    throw new Error('Desktop runtime requires the fixed papercusp-desktop identity');
   }
 
   const apt = [
@@ -408,6 +435,85 @@ for protected_user in "$WORKSPACE_USER" "$AGENT_USER"; do
   fi
 done
 phase create-desktop-identity
+
+# ── install-desktop-runtime ────────────────────────────────────────────────────────
+# Copy ONLY the self-contained worker and interpreter. Never grant desktop access to
+# the service/agent homes, their groups, or the rest of the immutable runtime tree.
+DESKTOP_LIB=/usr/local/lib/papercusp-desktop
+install -d -o root -g root -m 0755 "$DESKTOP_LIB"
+install -o root -g root -m 0755 ${shellQuote(`${WORKSPACE_HOST_RUNTIME_ROOT}/current/bin/node`)} "$DESKTOP_LIB/node"
+install -o root -g root -m 0755 ${shellQuote(`${WORKSPACE_HOST_RUNTIME_ROOT}/current/${WORKSPACE_HOST_DESKTOP_SESSION_ENTRYPOINT}`)} "$DESKTOP_LIB/session.cjs"
+runuser -u "$DESKTOP_USER" -- env -i HOME="$DESKTOP_ROOT" PATH=/usr/bin:/bin \\
+  "$DESKTOP_LIB/node" "$DESKTOP_LIB/session.cjs" --check || fail desktop-runtime
+
+# Loopback HTTP is privileged operator authority. UID/home isolation alone is
+# insufficient when desktop apps can call it. Keep DNS and viewer REPLIES, while
+# refusing desktop-origin connections to local services and metadata endpoints.
+DESKTOP_UID="$(id -u "$DESKTOP_USER")"
+install -d -o root -g root -m 0755 /etc/papercusp
+cat > /etc/papercusp/desktop-egress.nft <<NFT
+${buildWorkspaceDesktopEgressRules('$DESKTOP_UID')}NFT
+chmod 0644 /etc/papercusp/desktop-egress.nft
+nft -f /etc/papercusp/desktop-egress.nft || fail desktop-egress-isolation
+nft list chain inet papercusp_desktop output >/dev/null || fail desktop-egress-isolation
+
+cat > /etc/systemd/system/papercusp-desktop.socket <<UNIT
+[Unit]
+Description=Papercusp isolated desktop session admission
+After=papercusp-workspace.service
+Requires=papercusp-workspace.service
+[Socket]
+ListenStream=/run/papercusp-desktop/session.sock
+SocketUser=root
+SocketGroup=$SERVICE_USER
+SocketMode=0660
+DirectoryMode=0755
+Accept=yes
+MaxConnections=64
+RemoveOnStop=yes
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat > /etc/systemd/system/papercusp-desktop@.service <<UNIT
+[Unit]
+Description=Papercusp isolated desktop session
+After=papercusp-workspace.service
+BindsTo=papercusp-workspace.service
+JoinsNamespaceOf=papercusp-workspace.service
+[Service]
+Type=exec
+User=$DESKTOP_USER
+Group=$DESKTOP_GROUP
+WorkingDirectory=$DESKTOP_ROOT
+Environment=HOME=$DESKTOP_ROOT
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=LANG=C.UTF-8
+# Reapply the fixed root-owned rules before ANY worker, including after a reboot.
+ExecStartPre=+/usr/sbin/nft -f /etc/papercusp/desktop-egress.nft
+ExecStart=$DESKTOP_LIB/node $DESKTOP_LIB/session.cjs --stdio
+StandardInput=socket
+StandardOutput=inherit
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=$DESKTOP_ROOT
+InaccessiblePaths=${WORKSPACE_HOST_STATE_ROOT} /srv/papercusp/workspaces
+RestrictSUIDSGID=true
+LockPersonality=true
+UMask=0077
+KillMode=control-group
+TimeoutStopSec=5s
+UNIT
+chmod 0644 /etc/systemd/system/papercusp-desktop.socket /etc/systemd/system/papercusp-desktop@.service
+systemd-analyze verify /etc/systemd/system/papercusp-desktop.socket /etc/systemd/system/papercusp-desktop@.service
+systemctl daemon-reload
+systemctl enable --now papercusp-desktop.socket
+systemctl is-active --quiet papercusp-desktop.socket || fail desktop-socket
+[ -S /run/papercusp-desktop/session.sock ] || fail desktop-socket
+[ "$(stat -c %a /run/papercusp-desktop/session.sock)" = 660 ] || fail desktop-socket
+phase install-desktop-runtime
 
 # ── attest-pack ─────────────────────────────────────────────────────────────────────
 command -v openbox   >/dev/null 2>&1 || fail x-stack
