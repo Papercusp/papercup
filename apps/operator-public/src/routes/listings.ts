@@ -47,6 +47,7 @@ import {
   parseListingCursor,
   REVIEW_POLICY_KINDS,
   setHarnessClaim,
+  supersedeHarnessListing,
   summarizePublicHarnesses,
   type ListingKind,
   type ListingVisibility,
@@ -757,13 +758,47 @@ function registerListingEndpoints(
     // Publisher-permission signal (item 2): same trust signal for every kind.
     const publisher_permission = derivePublisherPermission(repoMeta.permissions);
 
+    // Content pin before dedup: a new default-branch SHA is a new listing
+    // version, while an exact SHA remains an idempotent retry (P-004).
+    let pin: ContentPin | null = null;
+    if (isSelfDescribingKind(kind)) {
+      if (typeof repoMeta.default_branch !== 'string' || repoMeta.default_branch === '') {
+        return c.json({ error: 'github_repo_unreachable', reason: 'no_default_branch' }, 400);
+      }
+      const pinned = await pinListingContent({
+        token: extractBearer(c.req.raw),
+        owner: body.github_owner,
+        name: body.github_name,
+        defaultBranch: repoMeta.default_branch,
+        listingRef: body.listing_ref as string,
+      });
+      if (!pinned.ok) {
+        if (pinned.code === 'github_tree_unreachable') {
+          return c.json({ error: pinned.code, step: pinned.step, status: pinned.status }, 400);
+        }
+        if (pinned.code === 'github_blob_unreachable') {
+          return c.json({ error: pinned.code, path: pinned.path, status: pinned.status }, 400);
+        }
+        if (pinned.code === 'identity_leak') {
+          return c.json({ error: pinned.code, commitSha: pinned.commitSha, hits: pinned.hits }, 422);
+        }
+        const { ok: _ok, code, ...detail } = pinned;
+        return c.json({ error: code, ...detail }, 422);
+      }
+      pin = pinned;
+    }
+
     // Dedup. Harness → one active listing per repo. Non-harness → one active
     // listing per (repo, kind, listing_ref). A dedup hit returns the existing
     // listing rather than minting a second.
     const existing =
       kind === 'harness'
         ? await getHarnessByGithubRepoId(c.env.DB, body.github_repository_id)
-        : await getActiveListingByRefs(c.env.DB, body.github_repository_id, kind, body.listing_ref as string);
+        : await getActiveListingByRefs(c.env.DB, body.github_repository_id, kind, body.listing_ref as string, pin?.commitSha);
+    const priorVersion =
+      kind !== 'harness' && pin != null && existing == null
+        ? await getActiveListingByRefs(c.env.DB, body.github_repository_id, kind, body.listing_ref as string)
+        : existing;
     if (existing && !existing.unlisted_at) {
       await audit(c.env.DB, now, 'publish_dedup', {
         listing_kind: kind,
@@ -926,30 +961,6 @@ function registerListingEndpoints(
     // with the publisher's own token, so what the installer (P-002) verifies is
     // what the Worker saw — never what the client reported. Code kinds pin
     // through the release gate instead (Phase 4) and are untouched here.
-    let pin: ContentPin | null = null;
-    if (isSelfDescribingKind(kind)) {
-      if (typeof repoMeta.default_branch !== 'string' || repoMeta.default_branch === '') {
-        return c.json({ error: 'github_repo_unreachable', reason: 'no_default_branch' }, 400);
-      }
-      const pinned = await pinListingContent({
-        token: extractBearer(c.req.raw),
-        owner: body.github_owner,
-        name: body.github_name,
-        defaultBranch: repoMeta.default_branch,
-        listingRef: body.listing_ref as string,
-      });
-      if (!pinned.ok) {
-        if (pinned.code === 'github_tree_unreachable') {
-          return c.json({ error: pinned.code, step: pinned.step, status: pinned.status }, 400);
-        }
-        // The package itself is unpinnable (absent, truncated, over budget):
-        // a named refusal, never a laundered publish (D-005).
-        const { ok: _ok, code, ...detail } = pinned;
-        return c.json({ error: code, ...detail }, 422);
-      }
-      pin = pinned;
-    }
-
     const id = uuidv4();
     await insertHarness(c.env.DB, {
       id,
@@ -1011,6 +1022,9 @@ function registerListingEndpoints(
       pinned_at: pin ? now : null,
       created_at: now,
     });
+    if (priorVersion && pin != null && priorVersion.pinned_commit_sha !== pin.commitSha) {
+      await supersedeHarnessListing(c.env.DB, priorVersion.id, id, 'superseded_by_new_content_pin', now);
+    }
     await audit(c.env.DB, now, 'published', {
       id,
       listing_kind: kind,

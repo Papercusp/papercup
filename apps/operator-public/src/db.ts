@@ -883,15 +883,24 @@ export async function getActiveListingByRefs(
   github_repository_id: number,
   listing_kind: ListingKind,
   listing_ref: string,
+  pinned_commit_sha?: string | null,
 ): Promise<HarnessRow | null> {
+  const pinPredicate = pinned_commit_sha === undefined
+    ? ''
+    : pinned_commit_sha === null
+      ? 'AND pinned_commit_sha IS NULL'
+      : 'AND pinned_commit_sha = ?';
+  const binds: unknown[] = [github_repository_id, listing_kind, listing_ref];
+  if (pinned_commit_sha != null) binds.push(pinned_commit_sha);
   const row = await db
     .prepare(
       `SELECT * FROM harnesses
          WHERE github_repository_id = ? AND listing_kind = ? AND listing_ref = ?
            AND unlisted_at IS NULL
+           ${pinPredicate}
          LIMIT 1`,
     )
-    .bind(github_repository_id, listing_kind, listing_ref)
+    .bind(...binds)
     .first<HarnessRow>();
   return row ?? null;
 }
@@ -906,6 +915,25 @@ export async function markHarnessUnlisted(
   await db
     .prepare(`UPDATE harnesses SET unlisted_at = ?, unlisted_reason = ?, updated_at = ? WHERE id = ?`)
     .bind(now_ms, reason, now_ms, id)
+    .run();
+}
+
+/** Retire the prior active version before inserting a changed pinned version. */
+export async function supersedeHarnessListing(
+  db: D1Database,
+  oldId: string,
+  successorId: string,
+  reason: string,
+  now_ms: number,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE harnesses
+          SET superseded_by = ?, claim_status = 'superseded', unlisted_at = ?,
+              unlisted_reason = ?, updated_at = ?
+        WHERE id = ? AND unlisted_at IS NULL`,
+    )
+    .bind(successorId, now_ms, reason, now_ms, oldId)
     .run();
 }
 

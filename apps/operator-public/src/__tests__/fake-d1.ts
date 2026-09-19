@@ -330,6 +330,19 @@ export class FakeStore {
       }
       return 0;
     }
+    if (upper.startsWith('UPDATE HARNESSES') && upper.includes("CLAIM_STATUS = 'SUPERSEDED'")) {
+      const [successor, unlisted_at, reason, updated_at, id] = binds;
+      const row = this.tables.harnesses.find((r) => r.id === id && r.unlisted_at == null);
+      if (!row) return 0;
+      Object.assign(row, {
+        superseded_by: successor,
+        claim_status: 'superseded',
+        unlisted_at,
+        unlisted_reason: reason,
+        updated_at,
+      });
+      return 1;
+    }
     if (upper.startsWith('UPDATE HARNESSES') && upper.includes('SET UNLISTED_AT')) {
       const [unlisted_at, unlisted_reason, updated_at, id] = binds;
       const row = this.tables.harnesses.find((r) => r.id === id);
@@ -466,13 +479,15 @@ export class FakeStore {
     // getActiveListingByRefs: repo + kind + listing_ref (must precede the
     // harness-repo branch since both start with GITHUB_REPOSITORY_ID).
     if (upper.includes('AND LISTING_REF =')) {
-      const [repoId, kind, ref] = binds;
+      const [repoId, kind, ref, pin] = binds;
       const row = this.tables.harnesses.find(
         (r) =>
           r.github_repository_id === repoId &&
           r.listing_kind === kind &&
           r.listing_ref === ref &&
-          r.unlisted_at == null,
+          r.unlisted_at == null &&
+          (!upper.includes('PINNED_COMMIT_SHA') ||
+            (upper.includes('PINNED_COMMIT_SHA IS NULL') ? r.pinned_commit_sha == null : r.pinned_commit_sha === pin)),
       );
       return row ? [row] : [];
     }
@@ -908,6 +923,8 @@ export interface GhStub {
   head?: { sha: string } | { error: number };
   /** `GET git/trees/<sha>?recursive=1` — the tree the Worker digests (P-001). */
   tree?: { entries: GhStubTreeEntry[]; truncated?: boolean } | { error: number };
+  /** `GET git/blobs/<sha>` — bytes scanned by P-003. */
+  blobs?: Record<string, { content: string } | { error: number }>;
 }
 
 /** A well-formed 40-hex head sha for stubs — `'a'.repeat(40)` and friends. */
@@ -954,6 +971,15 @@ export function stubGithub(stub: GhStub): void {
         return new Response(JSON.stringify(body), { status: 200 });
       }
       return new Response('tree not stubbed', { status: 500 });
+    }
+    if (u.includes('/git/blobs/')) {
+      const sha = u.slice(u.lastIndexOf('/') + 1);
+      const configured = stub.blobs?.[sha];
+      if (configured && 'error' in configured) return new Response('', { status: configured.error });
+      if (configured) return new Response(JSON.stringify({ encoding: 'base64', content: configured.content }), { status: 200 });
+      // Existing P-001 tests predate P-003 and only care about tree digesting;
+      // an empty JSON object is a deterministic clean blob for those fixtures.
+      return new Response(JSON.stringify({ encoding: 'base64', content: btoa('{}') }), { status: 200 });
     }
     if (u.includes('/repos/')) {
       if (stub.repo && 'error' in stub.repo) return new Response('', { status: stub.repo.error });

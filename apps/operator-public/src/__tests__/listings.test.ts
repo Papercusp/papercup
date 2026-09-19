@@ -226,6 +226,39 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     void a;
   });
 
+  it('P-004 creates a new version when a self-describing ref moves to a new SHA', async () => {
+    const { env, store } = makeEnv();
+    const first = 'a'.repeat(40);
+    const second = 'b'.repeat(40);
+    const body = { ...BLUEPRINT_BASE, github_repository_id: 8, listing_kind: 'plan', listing_ref: 'quality-plan' };
+    stubGithub({
+      user: { id: 5, login: 'pub' },
+      repo: { id: 8, private: false, permissions: { admin: true }, default_branch: 'main' },
+      head: { sha: first },
+      tree: { entries: stubTreeFor('quality-plan') },
+    });
+    const a = await publish(api, env, body);
+    expect(a.status).toBe(200);
+    stubGithub({
+      user: { id: 5, login: 'pub' },
+      repo: { id: 8, private: false, permissions: { admin: true }, default_branch: 'main' },
+      head: { sha: second },
+      tree: { entries: stubTreeFor('quality-plan') },
+    });
+    const b = await publish(api, env, body);
+    expect(b.status).toBe(200);
+    expect((await b.json() as { dedup?: boolean }).dedup).not.toBe(true);
+    expect(store.tables.harnesses).toHaveLength(2);
+    expect(store.tables.harnesses.map((row) => row.pinned_commit_sha)).toEqual(expect.arrayContaining([first, second]));
+    expect(store.tables.harnesses.find((row) => row.pinned_commit_sha === first)).toMatchObject({
+      claim_status: 'superseded',
+      unlisted_reason: 'superseded_by_new_content_pin',
+    });
+    const exactRetry = await publish(api, env, body);
+    expect((await exactRetry.json() as { dedup?: boolean }).dedup).toBe(true);
+    expect(store.tables.harnesses).toHaveLength(2);
+  });
+
   it('POST /listings plugin publishes (install kind)', async () => {
     const { env, store } = makeEnv();
     stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 9, private: false } });
