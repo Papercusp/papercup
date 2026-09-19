@@ -186,6 +186,14 @@ describe('the provider', () => {
     expect(plans).toEqual([{ markdown: '# a', filePath: 'docs/plans/a.md', updatedAt: null }]);
   });
 
+  it('control: an empty live Postgres result never falls back to a stale snapshot artifact', async () => {
+    const { source, calls } = sourceWith([[]]);
+
+    await expect(source.provider.loadPlans()).resolves.toEqual([]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.text).toContain('FROM harness_shared.harness_plans');
+  });
+
   it('drops a plan row with empty markdown rather than emitting an unparseable plan', async () => {
     const { source } = sourceWith([[
       { plan_slug: 'a', content: '', updated_at: null },
