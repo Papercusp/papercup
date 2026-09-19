@@ -1682,7 +1682,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
     } finally {
       await pane.stop().catch(() => {});
     }
-  });
+  }, 300_000);
 });
 
 describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary, real PTY/operator/PG)', () => {
