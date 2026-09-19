@@ -35,15 +35,57 @@ describe('adaptClaudeJsonl', () => {
     expect(out.turns[1].blocks).toContainEqual({
       type: 'tool_narrative',
       event: 'call',
+      relationId: 'tool-1',
       name: 'Read',
       content: '{"file_path":"/workspace/example.ts"}',
     });
     expect(out.turns[2].blocks).toContainEqual({
       type: 'tool_narrative',
       event: 'result',
+      relationId: 'tool-1',
       name: 'prior tool',
       content: 'export const answer = 42;',
       isError: false,
+    });
+  });
+
+  it('drops foreign thinking/signatures while preserving text attachments and local inert tool links', () => {
+    const jsonl = [
+      JSON.stringify({
+        type: 'assistant', uuid: 'a1', parentUuid: null,
+        message: { role: 'assistant', content: [
+          { type: 'thinking', thinking: 'private chain', signature: 'provider-signature' },
+          { type: 'tool_use', id: 'provider-call-id', name: 'Read', input: { path: '/tmp/a' } },
+        ] },
+      }),
+      JSON.stringify({
+        type: 'user', uuid: 'u2', parentUuid: 'a1',
+        message: { role: 'user', content: [
+          { type: 'tool_result', tool_use_id: 'provider-call-id', content: 'result' },
+          { type: 'document', name: 'notes.txt', source: { type: 'text', media_type: 'text/plain', data: 'portable notes' } },
+          { type: 'attachment', content: 'QUJDREVGRw==' },
+        ] },
+      }),
+    ].join('\n');
+    const out = adaptClaudeJsonl(jsonl);
+    const serialized = JSON.stringify(out.turns);
+    expect(serialized).not.toContain('private chain');
+    expect(serialized).not.toContain('provider-signature');
+    expect(serialized).not.toContain('provider-call-id');
+    expect(out.turns[0].blocks).toContainEqual(expect.objectContaining({
+      type: 'tool_narrative', event: 'call', relationId: 'tool-1',
+    }));
+    expect(out.turns[1].blocks).toContainEqual(expect.objectContaining({
+      type: 'tool_narrative', event: 'result', relationId: 'tool-1',
+    }));
+    expect(out.turns[1].blocks).toContainEqual(expect.objectContaining({
+      type: 'text_attachment', name: 'notes.txt', text: 'portable notes', truncated: false,
+    }));
+    expect(out.stats).toMatchObject({
+      omittedThinkingBlocks: 1,
+      omittedSignatureBlocks: 1,
+      textAttachments: 1,
+      omittedAttachments: 1,
     });
   });
 
@@ -61,5 +103,19 @@ describe('adaptClaudeJsonl', () => {
   it('fails closed when a format drift leaves no material dialogue', () => {
     expect(() => adaptClaudeJsonl(JSON.stringify({ type: 'progress', uuid: 'p1', message: { content: null } })))
       .toThrow(/format drift/);
+  });
+
+  it('rejects ambiguous duplicate ids and cyclic active graphs', () => {
+    const duplicate = [
+      JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null, message: { role: 'user', content: 'one' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'u1', parentUuid: null, message: { role: 'assistant', content: 'two' } }),
+    ].join('\n');
+    expect(() => adaptClaudeJsonl(duplicate)).toThrow(/duplicate uuid/);
+
+    const cycle = [
+      JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: 'a1', message: { role: 'user', content: 'one' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a1', parentUuid: 'u1', message: { role: 'assistant', content: 'two' } }),
+    ].join('\n');
+    expect(() => adaptClaudeJsonl(cycle)).toThrow(/cycle detected/);
   });
 });

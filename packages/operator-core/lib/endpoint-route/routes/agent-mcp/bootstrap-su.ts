@@ -1867,10 +1867,11 @@ export const bootstrapSu = defineTool({
           error: 'session ports continue the source coordination identity; new fleet/seat/auto/mode authority cannot be requested at the port boundary',
         }, 409);
       }
-      const [artifact, store, budgetModule] = await Promise.all([
+      const [artifact, store, budgetModule, renderer] = await Promise.all([
         import('../../../session-port/artifact'),
         import('../../../session-port/store'),
         import('../../../model-context-budget.mjs'),
+        import('../../../session-port/render'),
       ]);
       const parsed = artifact.parsePortToken(portToken);
       if (!parsed) return jsonRes({ status: 'error', error: 'invalid session-port preparation token' }, 401);
@@ -1901,7 +1902,7 @@ export const bootstrapSu = defineTool({
       } catch (error) {
         return jsonRes({ status: 'error', error: error instanceof Error ? error.message : String(error) }, 401);
       }
-      if (!seed.includes(`[PAPERCUSP SESSION PORT CHECKSUM ${row.renderedHash}]`)) {
+      if (!renderer.verifySessionPortSeed(seed, row.renderedHash)) {
         return jsonRes({ status: 'error', error: 'session-port artifact marker/hash mismatch' }, 409);
       }
       const previewBudget = budgetModule.buildContextBudget({

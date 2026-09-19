@@ -19,13 +19,60 @@ const textOf = (value: unknown): string => {
 
 export const CLAUDE_SESSION_PORT_ADAPTER_VERSION = 1;
 const MAX_TOOL_NARRATIVE_CHARS = 16_000;
+const MAX_TEXT_ATTACHMENT_BYTES = 64 * 1024;
 
-const boundedText = (value: unknown): string => {
+function truncateUtf8(text: string, maxBytes: number): { text: string; truncated: boolean; originalBytes: number } {
+  const originalBytes = Buffer.byteLength(text, 'utf8');
+  if (originalBytes <= maxBytes) return { text, truncated: false, originalBytes };
+  let bytes = 0;
+  let end = 0;
+  for (const char of text) {
+    const charBytes = Buffer.byteLength(char, 'utf8');
+    if (bytes + charBytes > maxBytes) break;
+    bytes += charBytes;
+    end += char.length;
+  }
+  return { text: text.slice(0, end), truncated: true, originalBytes };
+}
+
+const boundedText = (value: unknown): { text: string; truncated: boolean } => {
   const text = textOf(value);
-  return text.length <= MAX_TOOL_NARRATIVE_CHARS
-    ? text
-    : `${text.slice(0, MAX_TOOL_NARRATIVE_CHARS)}\n[tool narrative truncated]`;
+  if (text.length <= MAX_TOOL_NARRATIVE_CHARS) return { text, truncated: false };
+  return {
+    text: `${text.slice(0, MAX_TOOL_NARRATIVE_CHARS)}\n[tool narrative truncated]`,
+    truncated: true,
+  };
 };
+
+type ToolRelations = { next: number; sourceToLocal: Map<string, string> };
+
+function textAttachment(value: Json): {
+  text: string;
+  name: string | null;
+  mediaType: string | null;
+} | null {
+  const source = value?.source && typeof value.source === 'object' ? value.source : null;
+  const mediaTypeRaw = value?.media_type ?? value?.mime_type ?? source?.media_type ?? source?.mime_type;
+  const mediaType = typeof mediaTypeRaw === 'string' && mediaTypeRaw.trim() ? mediaTypeRaw.trim() : null;
+  const sourceType = String(source?.type ?? '').toLowerCase();
+  const textualMedia = mediaType != null && /^(?:text\/|application\/(?:json|xml|javascript|x-yaml))/i.test(mediaType);
+  const explicitTextField = typeof value?.text === 'string';
+  const candidate =
+    typeof value?.text === 'string' ? value.text
+      : typeof value?.content === 'string' ? value.content
+        : source && typeof source.data === 'string' && ['text', 'plain_text'].includes(sourceType) ? source.data
+          : null;
+  if (
+    candidate == null ||
+    (!explicitTextField && !textualMedia && !['text', 'plain_text'].includes(sourceType))
+  ) return null;
+  const nameRaw = value?.name ?? value?.file_name ?? value?.filename ?? source?.name;
+  return {
+    text: candidate,
+    name: typeof nameRaw === 'string' && nameRaw.trim() ? nameRaw.trim() : null,
+    mediaType,
+  };
+}
 
 function roleOf(record: Json): PortableRole {
   const role = String(record?.message?.role ?? record?.role ?? record?.type ?? '').toLowerCase();
@@ -35,7 +82,11 @@ function roleOf(record: Json): PortableRole {
   return 'user';
 }
 
-function blocksOf(record: Json, stats: ClaudeAdaptResult['stats']): PortableBlock[] {
+function blocksOf(
+  record: Json,
+  stats: ClaudeAdaptResult['stats'],
+  relations: ToolRelations,
+): PortableBlock[] {
   const content = record?.message?.content ?? record?.content;
   const values = Array.isArray(content) ? content : content == null ? [] : [content];
   const blocks: PortableBlock[] = [];
@@ -45,29 +96,64 @@ function blocksOf(record: Json, stats: ClaudeAdaptResult['stats']): PortableBloc
       continue;
     }
     const kind = String(value?.type ?? 'unknown');
-    if (kind === 'text' || kind === 'thinking' || kind === 'summary') {
-      const text = textOf(value.text ?? value.thinking ?? value.summary);
+    if (kind === 'text' || kind === 'summary') {
+      const text = textOf(value.text ?? value.summary);
       if (text) blocks.push({ type: 'text', text });
+      if (value?.signature != null) stats.omittedSignatureBlocks++;
+    } else if (kind === 'thinking' || kind === 'redacted_thinking') {
+      stats.omittedThinkingBlocks++;
+      if (value?.signature != null) stats.omittedSignatureBlocks++;
+      blocks.push({ type: 'omission', reason: 'provider-thinking', sourceType: kind });
+    } else if (kind === 'signature') {
+      stats.omittedSignatureBlocks++;
+      blocks.push({ type: 'omission', reason: 'provider-signature', sourceType: kind });
     } else if (kind === 'tool_use') {
       stats.toolCalls++;
+      const sourceId = typeof value.id === 'string' && value.id ? value.id : null;
+      const relationId = `tool-${++relations.next}`;
+      if (sourceId) relations.sourceToLocal.set(sourceId, relationId);
+      const content = boundedText(value.input ?? null);
+      if (content.truncated) stats.truncatedToolNarratives++;
       blocks.push({
         type: 'tool_narrative',
         event: 'call',
+        relationId,
         name: String(value.name ?? 'unknown'),
-        content: boundedText(value.input ?? null),
+        content: content.text,
       });
     } else if (kind === 'tool_result') {
       stats.toolResults++;
+      const sourceId = typeof value.tool_use_id === 'string' ? value.tool_use_id : null;
+      const relationId = sourceId ? relations.sourceToLocal.get(sourceId) ?? null : null;
+      if (!relationId) stats.unlinkedToolResults++;
+      const content = boundedText(value.content);
+      if (content.truncated) stats.truncatedToolNarratives++;
       blocks.push({
         type: 'tool_narrative',
         event: 'result',
+        relationId,
         name: 'prior tool',
-        content: boundedText(value.content),
+        content: content.text,
         isError: value.is_error === true || value.isError === true,
       });
-    } else if (kind === 'image' || kind === 'document' || kind === 'attachment') {
-      stats.omittedAttachments++;
-      blocks.push({ type: 'omission', reason: 'binary-attachment', sourceType: kind });
+    } else if (kind === 'image' || kind === 'document' || kind === 'attachment' || kind === 'file') {
+      const attachment = kind === 'image' ? null : textAttachment(value);
+      if (attachment) {
+        const bounded = truncateUtf8(attachment.text, MAX_TEXT_ATTACHMENT_BYTES);
+        stats.textAttachments++;
+        if (bounded.truncated) stats.truncatedAttachments++;
+        blocks.push({
+          type: 'text_attachment',
+          name: attachment.name,
+          mediaType: attachment.mediaType,
+          text: bounded.text,
+          originalBytes: bounded.originalBytes,
+          truncated: bounded.truncated,
+        });
+      } else {
+        stats.omittedAttachments++;
+        blocks.push({ type: 'omission', reason: 'binary-attachment', sourceType: kind });
+      }
     } else {
       stats.unsupportedBlocks++;
       blocks.push({ type: 'omission', reason: 'unsupported-content', sourceType: kind });
@@ -92,7 +178,13 @@ export function adaptClaudeJsonl(jsonl: string): ClaudeAdaptResult {
     compactedAncestors: 0,
     toolCalls: 0,
     toolResults: 0,
+    unlinkedToolResults: 0,
+    truncatedToolNarratives: 0,
     omittedAttachments: 0,
+    textAttachments: 0,
+    truncatedAttachments: 0,
+    omittedThinkingBlocks: 0,
+    omittedSignatureBlocks: 0,
     unsupportedBlocks: 0,
     syntheticRecords: 0,
     redactions: 0,
@@ -115,7 +207,11 @@ export function adaptClaudeJsonl(jsonl: string): ClaudeAdaptResult {
 
   const nodes = new Map<string, Json & { __line: number }>();
   for (const record of records) {
-    if (record.uuid) nodes.set(String(record.uuid), record);
+    if (record.uuid) {
+      const id = String(record.uuid);
+      if (nodes.has(id)) throw new Error(`ambiguous Claude transcript graph: duplicate uuid ${id}`);
+      nodes.set(id, record);
+    }
   }
   const candidates = records.filter(
     (record) =>
@@ -130,8 +226,7 @@ export function adaptClaudeJsonl(jsonl: string): ClaudeAdaptResult {
   while (cursor?.uuid) {
     const id = String(cursor.uuid);
     if (visited.has(id)) {
-      warnings.push(`cycle detected at ${id}; path truncated`);
-      break;
+      throw new Error(`unrecoverable Claude transcript graph: cycle detected at ${id}`);
     }
     visited.add(id);
     reversed.push(cursor);
@@ -166,18 +261,25 @@ export function adaptClaudeJsonl(jsonl: string): ClaudeAdaptResult {
     return true;
   });
   stats.activePathRecords = material.length;
+  const relations: ToolRelations = { next: 0, sourceToLocal: new Map() };
   const turns: PortableTurn[] = material.map((record) => ({
     id: String(record.uuid),
     parentId: record.parentUuid == null ? null : String(record.parentUuid),
     role: roleOf(record),
     timestamp: typeof record.timestamp === 'string' ? record.timestamp : null,
-    blocks: blocksOf(record, stats),
+    blocks: blocksOf(record, stats, relations),
     ...(record.isCompactSummary === true ? { compactSummary: true } : {}),
   }));
 
   if (stats.malformedRecords) warnings.push(`${stats.malformedRecords} malformed JSONL record(s) omitted`);
   if (stats.sidechainRecords) warnings.push(`${stats.sidechainRecords} sidechain record(s) excluded from the active path`);
   if (stats.omittedAttachments) warnings.push(`${stats.omittedAttachments} binary attachment(s) represented as omissions`);
+  if (stats.textAttachments) warnings.push(`${stats.textAttachments} text attachment(s) preserved as inert text`);
+  if (stats.truncatedAttachments) warnings.push(`${stats.truncatedAttachments} text attachment(s) truncated with byte disclosure`);
+  if (stats.truncatedToolNarratives) warnings.push(`${stats.truncatedToolNarratives} tool narrative(s) truncated with an inline marker`);
+  if (stats.omittedThinkingBlocks) warnings.push(`${stats.omittedThinkingBlocks} provider thinking block(s) omitted`);
+  if (stats.omittedSignatureBlocks) warnings.push(`${stats.omittedSignatureBlocks} provider signature block(s) omitted`);
+  if (stats.unlinkedToolResults) warnings.push(`${stats.unlinkedToolResults} tool result(s) lacked a local call relationship`);
   if (stats.unsupportedBlocks) warnings.push(`${stats.unsupportedBlocks} unsupported content block(s) represented as omissions`);
   if (stats.syntheticRecords) warnings.push(`${stats.syntheticRecords} synthetic bookkeeping record(s) excluded`);
   const contentRecords = material.length;

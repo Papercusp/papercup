@@ -2792,6 +2792,17 @@ export function reportSessionPortDelivery(sessionPort: any, proof: any, { fetchI
     token?: null | undefined;
     timeoutMs?: number | undefined;
 }): Promise<any>;
+/** Finalize any failure after /prepare, whether bootstrap never minted a target
+ * row (`prepared`) or local launch setup failed after bootstrap (`pending`). The
+ * status read is authoritative: it chooses the token-authenticated no-target
+ * disposition or the existing target-bound delivery disposition without
+ * guessing how far the failed launch progressed. */
+export function reportSessionPortLaunchFailure(prepared: any, failure: any, { fetchImpl, operatorUrl, token, timeoutMs, }?: {
+    fetchImpl?: typeof fetch | undefined;
+    operatorUrl?: any;
+    token?: null | undefined;
+    timeoutMs?: number | undefined;
+}): Promise<any>;
 /** EI-8868/EI-8877: strip inherited `npm run`-lifecycle env pollution before it
  *  reaches an agent child. This box's long-lived gnome-terminal-server (every
  *  terminal window is forked from ONE persistent daemon, inheriting whatever
@@ -3421,6 +3432,7 @@ export function sessionPortRequestBody(source: any, target: any, account: any, a
     targetAccount: any;
     contextSize: any;
     launchContext: any;
+    currentInstruction: any;
 };
 export function formatSessionPortInspection(result: any): any[];
 /** WI-3859 F4: the archive-at-death lifecycle DELETES an ended session's
@@ -3572,6 +3584,11 @@ export function ensureCodexHomeViaOperator(owner: any, codexHome: any, advSessio
  * to the identity they already use. Bootstrap independently checks the prepared
  * port's server-recorded source owner before it accepts these args. */
 export function sessionPortTargetArgs(source: any, target: any, account: any, args: any, prepared: any): any;
+export function launchSessionPort(source: any, target: any, account: any, args: any, { sessionPortApiImpl, launchFreshSuImpl, reportLaunchFailureImpl, }?: {
+    sessionPortApiImpl?: typeof sessionPortApi | undefined;
+    launchFreshSuImpl?: typeof launchFreshSu | undefined;
+    reportLaunchFailureImpl?: typeof reportSessionPortLaunchFailure | undefined;
+}): Promise<void>;
 /** True when an --agent value can't back a role session (claude/omp/codex can). */
 export function agentInvalidForRole(agent: any): boolean;
 /** which/where <bin> → absolute path or null — the exact gate for psu's bare-name
@@ -3607,6 +3624,15 @@ export function detectBackendBin(agent: any): {
  * onboarding shell), so the nudge names both.
  */
 export function setupReminderLines(stage: any): string[] | null;
+/**
+ * POST bootstrap-su + exec the raw backend — the fresh-SU launch tail shared
+ * by the plain `psu` flow. The retired `psu --brain` path is rejected before
+ * it reaches this launcher.
+ */
+/** Preserve ordinary fresh-launch exit semantics, but turn a session-port
+ * preflight refusal into an exception so launchSessionPort can finalize the
+ * already-prepared row before the process exits. */
+export function sessionPortLaunchAbortError(args: any, failure: any, stage: any): Error | null;
 export const AGENTS: string[];
 /** The caller/origin marker used when PUI invokes the real PSU picker. */
 export const PUI_TUI_ORIGIN: "pui";
@@ -4183,7 +4209,7 @@ export const RESUME_EFFORT_MENU: {
     value: string;
 }[];
 export const SESSION_PORT_PROTOCOL_VERSION: 1;
-export const SESSION_PORT_TRANSFORM_VERSION: 2;
+export const SESSION_PORT_TRANSFORM_VERSION: 3;
 export namespace AGENT_LABELS {
     let claude: string;
     let codex: string;
@@ -4354,4 +4380,8 @@ import { fireSessionCompactedEvent } from "./psu-pty-host.mjs";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 /** Numeric pid entries under `/proc`. Exported for tests via the injectable. */
 declare function defaultListProcPids(): number[];
+declare function sessionPortApi(path: any, opts: any): Promise<any>;
+declare function launchFreshSu(selections: any, args: any, { brain }?: {
+    brain?: boolean | undefined;
+}): Promise<void>;
 export {};

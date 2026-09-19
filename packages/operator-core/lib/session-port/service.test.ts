@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -12,6 +12,7 @@ import {
   publicSessionPortInspection,
 } from './service';
 import type { StableSource } from './source';
+import { verifySessionPortSeed } from './render';
 
 const row: AdvSessionRow = {
   id: 41,
@@ -127,8 +128,9 @@ describe('session-port preparation service', () => {
       sourceRow: row,
       stableSource: source('token sk-ant-abcdefghijklmnop and \u001b[31mred'),
       target,
+      currentInstruction: `continue\r\nwith API_KEY=${'z'.repeat(24)}`,
     });
-    expect(inspection.stats.redactions).toBe(1);
+    expect(inspection.stats.redactions).toBe(2);
     expect(inspection.stats.controlBytesRemoved).toBeGreaterThan(0);
     expect(publicSessionPortInspection(inspection)).not.toHaveProperty('internal');
 
@@ -151,8 +153,16 @@ describe('session-port preparation service', () => {
       createPrepared,
     });
     expect(out.summary.hashes.source).toBe(inspection.source.sha256);
+    expect(out.summary.budget).toMatchObject({
+      estimator: 'utf8-byte-upper-bound-v1',
+      availableInputTokens: target.availableInputTokens,
+    });
     expect(JSON.stringify(out.summary)).not.toContain('sk-ant-');
     const persisted = createPrepared.mock.calls[0][0];
+    const seed = readFileSync(persisted.artifactPath, 'utf8');
+    expect(seed).toContain('continue\nwith API_KEY=[redacted]');
+    expect(seed).not.toContain('z'.repeat(24));
+    expect(verifySessionPortSeed(seed, persisted.renderedHash)).toBe(true);
     expect(inspection.disclosure.authorityCarried).toBe(true);
     expect(persisted.metadata.sourceCoordOwnerId).toBe('su-source');
     expect(persisted.metadata).not.toHaveProperty('contract');
@@ -190,8 +200,14 @@ describe('session-port preparation service', () => {
           },
           target,
           fidelity: 'full',
-          versions: { adapter: 1, transform: 2, renderer: 1, summaryPrompt: null },
+          versions: { adapter: 1, transform: 3, renderer: 2, summaryPrompt: null },
           hashes: { source: inspection.source.sha256, normalized: inspection.internal.normalizedHash, rendered: 'b'.repeat(64) },
+          budget: {
+            estimator: 'utf8-byte-upper-bound-v1',
+            availableInputTokens: target.availableInputTokens,
+            finalPayloadEstimatedTokens: 100,
+            summarizerOutputBudgetTokens: null,
+          },
           stats: inspection.stats,
           summary: null,
           warnings: [],
@@ -221,5 +237,85 @@ describe('session-port preparation service', () => {
       expectedSourceHash: 'different',
       tokenKey: 'key',
     })).rejects.toThrow(/changed/);
+  });
+
+  it('binds currentInstruction into normalized identity and rejects an oversized complete payload honestly', async () => {
+    const a = inspectAcquiredSessionPort({
+      sourceRow: row,
+      stableSource: source('history'),
+      target,
+      currentInstruction: 'continue A',
+    });
+    const b = inspectAcquiredSessionPort({
+      sourceRow: row,
+      stableSource: source('history'),
+      target,
+      currentInstruction: 'continue B',
+    });
+    expect(a.internal.normalizedHash).not.toBe(b.internal.normalizedHash);
+    expect(deriveSessionPortIdempotencyKey(a)).not.toBe(deriveSessionPortIdempotencyKey(b));
+
+    const tinyTarget = { ...target, availableInputTokens: 64 };
+    const oversized = inspectAcquiredSessionPort({
+      sourceRow: row,
+      stableSource: source('history'),
+      target: tinyTarget,
+      currentInstruction: 'x'.repeat(1_000),
+    });
+    expect(oversized.requiresSummary).toBe(true);
+    await expect(prepareInspectedSessionPort({
+      inspection: oversized,
+      expectedSourceHash: oversized.source.sha256,
+      tokenKey: 'key',
+      findExisting: async () => null,
+    })).rejects.toThrow(/no summarizer/);
+  });
+
+  it('redacts secrets before a bounded summarizer receives any historical bytes', async () => {
+    const secret = `sk-${'q'.repeat(32)}`;
+    const records = [
+      { type: 'user', uuid: 'u1', parentUuid: null, message: { role: 'user', content: `old secret ${secret} ${'word '.repeat(1_000)}` } },
+      { type: 'assistant', uuid: 'a1', parentUuid: 'u1', message: { role: 'assistant', content: 'old answer' } },
+      { type: 'user', uuid: 'u2', parentUuid: 'a1', message: { role: 'user', content: 'recent request' } },
+      { type: 'assistant', uuid: 'a2', parentUuid: 'u2', message: { role: 'assistant', content: 'recent answer' } },
+    ];
+    const bytes = Buffer.from(`${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+    const inspection = inspectAcquiredSessionPort({
+      sourceRow: row,
+      stableSource: {
+        bytes,
+        sha256: 'd'.repeat(64),
+        highWaterBytes: bytes.length,
+        completeBytes: bytes.length,
+        source: 'live-jsonl',
+        relpath: null,
+      },
+      target: { ...target, availableInputTokens: 2_000 },
+    });
+    expect(inspection.requiresSummary).toBe(true);
+    const summarizer = vi.fn(async ({ text }: { text: string }) => {
+      expect(text).not.toContain(secret);
+      expect(text).toContain('[redacted]');
+      return { text: 'Older work was summarized safely.', model: 'summary-model', provider: 'gateway' };
+    });
+    await expect(prepareInspectedSessionPort({
+      inspection,
+      expectedSourceHash: inspection.source.sha256,
+      tokenKey: 'key',
+      artifactRoot: mkdtempSync(join(tmpdir(), 'port-summary-')),
+      summarizer,
+      findExisting: async () => null,
+      createPrepared: async (input: any) => ({
+        ...input,
+        status: 'prepared',
+        targetAdvSessionId: null,
+        error: null,
+        preparedAt: '2026-07-14T00:00:00.000Z',
+        pendingAt: null,
+        deliveredAt: null,
+        failedAt: null,
+      }),
+    })).resolves.toMatchObject({ summary: { fidelity: 'summary-tail' } });
+    expect(summarizer).toHaveBeenCalledTimes(1);
   });
 });

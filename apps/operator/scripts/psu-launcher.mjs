@@ -9950,6 +9950,124 @@ export async function reportSessionPortDelivery(
   );
 }
 
+/** Finalize any failure after /prepare, whether bootstrap never minted a target
+ * row (`prepared`) or local launch setup failed after bootstrap (`pending`). The
+ * status read is authoritative: it chooses the token-authenticated no-target
+ * disposition or the existing target-bound delivery disposition without
+ * guessing how far the failed launch progressed. */
+export async function reportSessionPortLaunchFailure(
+  prepared,
+  failure,
+  {
+    fetchImpl = fetch,
+    operatorUrl = OPERATOR_URL,
+    token = null,
+    timeoutMs = 10_000,
+  } = {},
+) {
+  if (!prepared?.portId || !prepared?.token) {
+    throw new Error("prepared session-port failure is missing port/token identity");
+  }
+  const tok = token ?? readToken();
+  const headers = {
+    "content-type": "application/json",
+    ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+  };
+  const query = new URLSearchParams({ id: prepared.portId });
+  if (prepared.workspace) query.set("workspace", prepared.workspace);
+  const readStatus = async () => {
+    const response = await fetchImpl(
+      `${operatorUrl}/api/adv/sessions/port/status?${query}`,
+      {
+        method: "GET",
+        signal: AbortSignal.timeout(timeoutMs),
+        headers,
+      },
+    );
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.ok || !body.port) {
+      throw new Error(
+        `could not read session-port ${prepared.portId} after launch failure` +
+          (body?.error ? `: ${body.error}` : ""),
+      );
+    }
+    return body;
+  };
+  const failureMessage =
+    `target bootstrap/spawn failed after preparation: ${failure?.message ?? String(failure)}`.slice(
+      0,
+      1000,
+    );
+  let current = await readStatus();
+  if (current.port.status === "failed") return current;
+  if (
+    current.port.status === "pending" &&
+    Number.isSafeInteger(Number(current.port.targetAdvSessionId)) &&
+    Number(current.port.targetAdvSessionId) > 0
+  ) {
+    return reportSessionPortDelivery(
+      {
+        protocolVersion: prepared.protocolVersion,
+        transformVersion: prepared.transformVersion,
+        workspace: prepared.workspace,
+        portId: prepared.portId,
+        targetAdvSessionId: Number(current.port.targetAdvSessionId),
+      },
+      {
+        persisted: false,
+        renderedHash: current.port.renderedHash,
+        error: failureMessage,
+      },
+      { fetchImpl, operatorUrl, token: tok, timeoutMs },
+    );
+  }
+  if (
+    current.port.status === "prepared" &&
+    current.port.targetAdvSessionId == null
+  ) {
+    let responseBody = null;
+    try {
+      const response = await fetchImpl(
+        operatorUrl + "/api/adv/sessions/port/delivery",
+        {
+          method: "POST",
+          signal: AbortSignal.timeout(timeoutMs),
+          headers,
+          body: JSON.stringify({
+            protocolVersion: prepared.protocolVersion,
+            transformVersion: prepared.transformVersion,
+            workspace: prepared.workspace,
+            portId: prepared.portId,
+            status: "failed",
+            preparationToken: prepared.token,
+            error: failureMessage,
+          }),
+        },
+      );
+      responseBody = await response.json().catch(() => null);
+      if (response.ok && responseBody?.ok && responseBody.status === "failed") {
+        return responseBody;
+      }
+    } catch {
+      /* reconcile below — the server may have committed before the response was lost */
+    }
+    current = await readStatus();
+    if (
+      current.port.status === "failed" &&
+      current.port.targetAdvSessionId == null
+    ) {
+      return current;
+    }
+    throw new Error(
+      `operator did not acknowledge prepared session port ${prepared.portId} as failed` +
+        (responseBody?.error ? `: ${responseBody.error}` : ""),
+    );
+  }
+  throw new Error(
+    `session port ${prepared.portId} cannot be failed from ${current.port.status}`,
+  );
+}
+
 /** EI-8868/EI-8877: strip inherited `npm run`-lifecycle env pollution before it
  *  reaches an agent child. This box's long-lived gnome-terminal-server (every
  *  terminal window is forked from ONE persistent daemon, inheriting whatever
@@ -12675,7 +12793,7 @@ export function resumeSessionLineageLabel(session) {
 }
 
 export const SESSION_PORT_PROTOCOL_VERSION = 1;
-export const SESSION_PORT_TRANSFORM_VERSION = 2;
+export const SESSION_PORT_TRANSFORM_VERSION = 3;
 
 export function sessionPortUpgradeError(error) {
   const status = Number(error?.status ?? 0);
@@ -12847,6 +12965,7 @@ export function sessionPortRequestBody(source, target, account, args = {}) {
     targetAccount: sessionPortTargetAccount(account),
     contextSize: args.contextSize ?? null,
     launchContext: args.launchContext ?? null,
+    currentInstruction: resumeKickoffText(args),
   };
 }
 
@@ -12857,8 +12976,8 @@ export function formatSessionPortInspection(result) {
   return [
     `psu: cross-backend port preview — Claude session #${i.source?.advSessionId} → ${i.target?.backend}/${i.target?.model ?? "default"}`,
     `psu: source snapshot — ${i.source?.snapshotKind}, ${i.source?.completeBytes ?? "?"} bytes, sha256 ${String(i.source?.sha256 ?? "").slice(0, 12)}…`,
-    `psu: fidelity — ${i.requiresSummary ? "summary + recent tail (target budget requires summarization)" : "full active-path history"}; estimated ${i.fullHistoryEstimatedTokens ?? "?"} tokens / ${i.target?.availableInputTokens ?? "?"} available`,
-    `psu: sanitization — ${s.redactions ?? 0} secret redaction(s), ${s.omittedAttachments ?? 0} attachment omission(s), ${s.unsupportedBlocks ?? 0} unsupported block(s), ${s.sidechainRecords ?? 0} sidechain record(s) excluded`,
+    `psu: fidelity — ${i.requiresSummary ? "summary + recent tail (target budget requires summarization)" : "full active-path history"}; complete payload upper bound ${i.fullPayloadEstimatedTokens ?? i.fullHistoryEstimatedTokens ?? "?"} tokens / ${i.target?.availableInputTokens ?? "?"} available (${i.tokenEstimator ?? "unspecified estimator"})`,
+    `psu: sanitization — ${s.redactions ?? 0} secret redaction(s), ${s.omittedThinkingBlocks ?? 0} thinking block(s) omitted, ${s.omittedSignatureBlocks ?? 0} signature block(s) omitted, ${s.omittedAttachments ?? 0} binary attachment omission(s), ${s.textAttachments ?? 0} text attachment(s) preserved, ${s.truncatedAttachments ?? 0} attachment truncation(s), ${s.unsupportedBlocks ?? 0} unsupported block(s), ${s.sidechainRecords ?? 0} sidechain record(s) excluded`,
     `psu: egress — target ${i.disclosure?.targetEgress ?? "unknown"}${i.disclosure?.summarizerEgress ? `; summarizer ${i.disclosure.summarizerEgress}` : "; no summarizer egress"}`,
     "psu: continuity — creates a NEW native target session while preserving the source coordination identity; fleet/loop/claims/modes/awaits/locks continue on the target.",
     ...(Array.isArray(i.warnings)
@@ -13478,13 +13597,23 @@ export function sessionPortTargetArgs(source, target, account, args, prepared) {
   };
 }
 
-async function launchSessionPort(source, target, account, args) {
+export async function launchSessionPort(
+  source,
+  target,
+  account,
+  args,
+  {
+    sessionPortApiImpl = sessionPortApi,
+    launchFreshSuImpl = launchFreshSu,
+    reportLaunchFailureImpl = reportSessionPortLaunchFailure,
+  } = {},
+) {
   if (source.role != null)
     throw new Error(
       "session-port protocol v1 requires a plain tracked SU source",
     );
   const request = sessionPortRequestBody(source, target, account, args);
-  const inspected = await sessionPortApi("/api/adv/sessions/port/inspect", {
+  const inspected = await sessionPortApiImpl("/api/adv/sessions/port/inspect", {
     method: "POST",
     body: JSON.stringify(request),
   });
@@ -13503,12 +13632,11 @@ async function launchSessionPort(source, target, account, args) {
       return;
     }
   }
-  const prepared = await sessionPortApi("/api/adv/sessions/port/prepare", {
+  const prepared = await sessionPortApiImpl("/api/adv/sessions/port/prepare", {
     method: "POST",
     body: JSON.stringify({
       ...request,
       expectedSourceHash: inspected.inspection.source.sha256,
-      currentInstruction: resumeKickoffText(args),
     }),
   });
   console.error(
@@ -13521,15 +13649,42 @@ async function launchSessionPort(source, target, account, args) {
     args,
     prepared,
   );
-  await launchFreshSu(
-    {
-      agent: target.targetAgent,
-      workspace: source.workspaceId,
-      harness: null,
-      plan: source.planSlug ?? null,
-    },
-    targetArgs,
-  );
+  try {
+    await launchFreshSuImpl(
+      {
+        agent: target.targetAgent,
+        workspace: source.workspaceId,
+        harness: null,
+        plan: source.planSlug ?? null,
+      },
+      targetArgs,
+    );
+  } catch (error) {
+    let disposition;
+    try {
+      disposition = await reportLaunchFailureImpl(
+        {
+          ...prepared,
+          protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+          transformVersion: SESSION_PORT_TRANSFORM_VERSION,
+          workspace: source.workspaceId,
+        },
+        error,
+      );
+    } catch (finalizationError) {
+      throw new Error(
+        `psu: session-port target bootstrap/spawn failed after preparation ${prepared.portId}: ` +
+          `${error?.message ?? error}. Automatic failure finalization was not acknowledged: ` +
+          `${finalizationError?.message ?? finalizationError}. The prepared artifact expires at ${prepared.expiresAt}.`,
+        { cause: error },
+      );
+    }
+    throw new Error(
+      `psu: session-port target bootstrap/spawn failed after preparation ${prepared.portId} and was finalized ` +
+        `${disposition?.status ?? disposition?.port?.status ?? "failed"}: ${error?.message ?? error}`,
+      { cause: error },
+    );
+  }
 }
 
 async function launchResolvedResume(source, args, { tracked }) {
@@ -14696,6 +14851,19 @@ async function fetchSetupStageSoft({
  * by the plain `psu` flow. The retired `psu --brain` path is rejected before
  * it reaches this launcher.
  */
+/** Preserve ordinary fresh-launch exit semantics, but turn a session-port
+ * preflight refusal into an exception so launchSessionPort can finalize the
+ * already-prepared row before the process exits. */
+export function sessionPortLaunchAbortError(args, failure, stage) {
+  if (!args?.sessionPortToken) return null;
+  const cause =
+    failure instanceof Error ? failure : new Error(String(failure ?? "unknown failure"));
+  return new Error(
+    `session-port target ${stage} failed after preparation: ${cause.message}`,
+    { cause },
+  );
+}
+
 async function launchFreshSu(selections, args, { brain = false } = {}) {
   if (
     !(await preflightCodexAutoPool({
@@ -14703,8 +14871,15 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       model: args.model,
       account: args.account,
     }))
-  )
+  ) {
+    const portFailure = sessionPortLaunchAbortError(
+      args,
+      "target account preflight refused the selected route",
+      "account preflight",
+    );
+    if (portFailure) throw portFailure;
     process.exit(WALLED_POOL_REFUSAL_EXIT);
+  }
   const bootstrapIdempotencyKey = randomUUID();
   if (
     selections.agent === "codex" &&
@@ -14744,12 +14919,18 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     codexHome: res.codexHome,
   });
   if (codexAuthPreflight.checked && !codexAuthPreflight.ready) {
-    console.error(
+    const message =
       "psu: refusing headless Codex launch on the default system account — " +
         `${codexAuthPreflight.reason}. ` +
         "Authenticate with `codex` first, or choose `--account=auto` / a Codex pool account; " +
-        "a headless launch cannot complete an interactive sign-in.",
+        "a headless launch cannot complete an interactive sign-in.";
+    console.error(message);
+    const portFailure = sessionPortLaunchAbortError(
+      args,
+      message,
+      "credential preflight",
     );
+    if (portFailure) throw portFailure;
     process.exit(1);
   }
 
@@ -14793,6 +14974,12 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     });
   } catch (e) {
     console.error(e?.message ?? String(e));
+    const portFailure = sessionPortLaunchAbortError(
+      args,
+      e,
+      "launch preflight",
+    );
+    if (portFailure) throw portFailure;
     process.exit(1);
   }
   const { bin, args: baseArgs } = suLaunchArgs(res.agent, {

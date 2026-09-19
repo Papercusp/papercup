@@ -286,6 +286,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
       availableInputTokens: budget.availableInputTokens,
       contextSize,
     },
+    currentInstruction: typeof body.currentInstruction === 'string' ? body.currentInstruction : null,
   });
   return {
     inspection,
@@ -1770,13 +1771,22 @@ const sessionPortPrepare = defineTool({
       if (!tokenKey) return json({ ok: false, error: 'server session-port token key is unavailable' }, 503);
       const gatewayPort = Number(process.env.PAPERCUSP_GATEWAY_PORT ?? 8788);
       const summarizer = resolved.inspection.requiresSummary
-        ? async ({ text, signal }: { text: string; signal: AbortSignal }) => {
+        ? async ({
+            text,
+            maxOutputTokens,
+            signal,
+          }: {
+            text: string;
+            maxOutputTokens: number;
+            signal: AbortSignal;
+          }) => {
             const response = await fetch(`http://127.0.0.1:${gatewayPort}/maintenance/summarize`, {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({
                 systemPrompt: resolved.service.SESSION_PORT_SUMMARIZER_SYSTEM_PROMPT,
                 prompt: text,
+                maxTokens: maxOutputTokens,
               }),
               signal,
             });
@@ -1797,7 +1807,6 @@ const sessionPortPrepare = defineTool({
         expectedSourceHash,
         tokenKey,
         summarizer,
-        currentInstruction: typeof parsed.currentInstruction === 'string' ? parsed.currentInstruction : null,
       });
       await recordSessionPortTelemetry({
         ...telemetryFromInspection(
@@ -1879,6 +1888,7 @@ const sessionPortDelivery = defineTool({
       portId?: unknown;
       targetAdvSessionId?: unknown;
       status?: unknown;
+      preparationToken?: unknown;
       proof?: unknown;
       error?: unknown;
     };
@@ -1887,9 +1897,8 @@ const sessionPortDelivery = defineTool({
     const protocolError = sessionPortProtocolError(body.protocolVersion, body.transformVersion);
     if (protocolError) return protocolError;
     const portId = typeof body.portId === 'string' ? body.portId : '';
-    const targetAdvSessionId = Number(body.targetAdvSessionId);
-    if (!/^[0-9a-f-]{36}$/i.test(portId) || !Number.isSafeInteger(targetAdvSessionId) || targetAdvSessionId <= 0) {
-      return json({ ok: false, error: 'valid portId and targetAdvSessionId required' }, 400);
+    if (!/^[0-9a-f-]{36}$/i.test(portId)) {
+      return json({ ok: false, error: 'valid portId required' }, 400);
     }
     const [{ activeWorkspaceId }, store, artifact] = await Promise.all([
       import('../../../workspace-registry'),
@@ -1898,7 +1907,67 @@ const sessionPortDelivery = defineTool({
     ]);
     const workspaceId = typeof body.workspace === 'string' && body.workspace.trim() ? body.workspace.trim() : activeWorkspaceId();
     const current = await store.getSessionPort(portId, workspaceId);
-    if (!current || current.targetAdvSessionId !== targetAdvSessionId) {
+    if (!current) return json({ ok: false, error: 'session port not found' }, 404);
+
+    // A launcher can fail after /prepare but before bootstrap has minted a target
+    // adv_sessions row (the exact September 5 default-model mismatch). Reuse this
+    // disposition route instead of leaving a prepared row + 0600 seed stranded
+    // until TTL. With no target identity to bind, the opaque preparation token is
+    // the authority: verify both its embedded port id and its stored secret hash.
+    // A replay after a lost response is idempotent and retries artifact deletion.
+    if (
+      body.status === 'failed' &&
+      current.targetAdvSessionId == null &&
+      (current.status === 'prepared' || current.status === 'failed')
+    ) {
+      const preparationToken = typeof body.preparationToken === 'string'
+        ? body.preparationToken.trim()
+        : '';
+      const parsedToken = artifact.parsePortToken(preparationToken);
+      if (
+        parsedToken?.portId !== portId ||
+        !artifact.verifyPortToken(preparationToken, current.tokenHash)
+      ) {
+        return json({ ok: false, error: 'valid preparationToken for this port is required' }, 401);
+      }
+      const message = typeof body.error === 'string' && body.error.trim()
+        ? body.error.trim().slice(0, 1000)
+        : 'target bootstrap/spawn failed after preparation';
+      const port = current.status === 'prepared'
+        ? await store.transitionSessionPort(portId, workspaceId, 'failed', { error: message })
+        : current;
+      const artifactDeleted = await artifact.deleteSessionPortArtifact(current.artifactPath);
+      if (current.status === 'prepared') {
+        await recordSessionPortTelemetry({
+          workspaceId,
+          stage: 'failed',
+          portId,
+          sourceAdvSessionId: current.sourceAdvSessionId,
+          targetAdvSessionId: null,
+          sourceBackend: current.sourceBackend,
+          targetBackend: current.targetBackend,
+          targetModel: current.targetModel,
+          protocolVersion: current.protocolVersion,
+          sourceHash: current.sourceHash,
+          renderedHash: current.renderedHash,
+          persistenceLatencyMs: Math.max(0, Date.now() - Date.parse(current.preparedAt)),
+          cleanupOutcome: artifactDeleted ? 'deleted' : 'already-absent',
+          failureClass: classifySessionPortFailure(message),
+        });
+      }
+      return json({
+        ok: true,
+        status: port.status,
+        targetAdvSessionId: null,
+        artifactDeleted,
+      });
+    }
+
+    const targetAdvSessionId = Number(body.targetAdvSessionId);
+    if (!Number.isSafeInteger(targetAdvSessionId) || targetAdvSessionId <= 0) {
+      return json({ ok: false, error: 'valid targetAdvSessionId required' }, 400);
+    }
+    if (current.targetAdvSessionId !== targetAdvSessionId) {
       return json({ ok: false, error: 'pending session port/target mismatch' }, 409);
     }
     if (body.status === 'delivered') {

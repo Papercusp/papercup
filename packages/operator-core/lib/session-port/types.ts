@@ -1,6 +1,7 @@
 export const SESSION_PORT_SCHEMA = 'papercusp.session-port/v1' as const;
 export const SESSION_PORT_PROTOCOL_VERSION = 1 as const;
-export const SESSION_PORT_TRANSFORM_VERSION = 2 as const;
+export const SESSION_PORT_TRANSFORM_VERSION = 3 as const;
+export const SESSION_PORT_TOKEN_ESTIMATOR = 'utf8-byte-upper-bound-v1' as const;
 
 export type SessionBackend = 'claude' | 'codex' | 'omp';
 export type PortableRole = 'user' | 'assistant' | 'system' | 'tool';
@@ -15,19 +16,37 @@ export interface PortableToolNarrativeBlock {
    * object and carries no source-provider call id. */
   type: 'tool_narrative';
   event: 'call' | 'result';
+  /** Adapter-local relationship id shared by one historical call and its
+   * result. Source-provider call ids never cross the port boundary. */
+  relationId: string | null;
   name: string;
   content: string;
   isError?: boolean;
 }
 
+export interface PortableTextAttachmentBlock {
+  type: 'text_attachment';
+  name: string | null;
+  mediaType: string | null;
+  text: string;
+  originalBytes: number;
+  truncated: boolean;
+}
+
 export interface PortableOmissionBlock {
   type: 'omission';
-  reason: 'binary-attachment' | 'unsupported-content' | 'redacted';
+  reason:
+    | 'binary-attachment'
+    | 'unsupported-content'
+    | 'provider-thinking'
+    | 'provider-signature'
+    | 'redacted';
   sourceType: string;
 }
 
 export type PortableBlock =
   | PortableTextBlock
+  | PortableTextAttachmentBlock
   | PortableToolNarrativeBlock
   | PortableOmissionBlock;
 
@@ -83,6 +102,12 @@ export interface PortableSessionPort {
     normalized: string;
     rendered: string;
   };
+  budget: {
+    estimator: typeof SESSION_PORT_TOKEN_ESTIMATOR;
+    availableInputTokens: number;
+    finalPayloadEstimatedTokens: number;
+    summarizerOutputBudgetTokens: number | null;
+  };
   portedFrom: {
     backend: SessionBackend;
     advSessionId: number;
@@ -97,7 +122,13 @@ export interface PortableSessionPort {
     compactedAncestors: number;
     toolCalls: number;
     toolResults: number;
+    unlinkedToolResults: number;
+    truncatedToolNarratives: number;
     omittedAttachments: number;
+    textAttachments: number;
+    truncatedAttachments: number;
+    omittedThinkingBlocks: number;
+    omittedSignatureBlocks: number;
     unsupportedBlocks: number;
     syntheticRecords: number;
     redactions: number;
@@ -110,6 +141,8 @@ export interface PortableSessionPort {
     costUsd: number;
     chunks: number;
     promptVersion: number;
+    outputBudgetTokens: number;
+    maxOutputTokensPerChunk: number;
   };
   warnings: string[];
 }
@@ -124,6 +157,7 @@ export interface SessionPortContractSummary {
   fidelity: PortableSessionPort['fidelity'];
   versions: PortableSessionPort['versions'];
   hashes: PortableSessionPort['hashes'];
+  budget: PortableSessionPort['budget'];
   stats: PortableSessionPort['stats'];
   summary: PortableSessionPort['summary'];
   warnings: string[];

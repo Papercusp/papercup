@@ -8,11 +8,13 @@ import {
   writeSessionPortArtifact,
 } from './artifact';
 import {
+  estimatePortableTokens,
   fitPortableTurns,
   SESSION_PORT_SUMMARY_PROMPT_VERSION,
   type SessionPortSummarizer,
 } from './fit';
 import {
+  canonicalizeSessionPortCurrentInstruction,
   renderPortableTurns,
   renderSessionPortSeed,
   SESSION_PORT_RENDERER_VERSION,
@@ -32,6 +34,7 @@ import {
 import {
   SESSION_PORT_PROTOCOL_VERSION,
   SESSION_PORT_SCHEMA,
+  SESSION_PORT_TOKEN_ESTIMATOR,
   SESSION_PORT_TRANSFORM_VERSION,
   type PortableBlock,
   type PortableSessionPort,
@@ -68,6 +71,8 @@ export interface SessionPortInspection {
   };
   target: SessionPortTarget;
   fullHistoryEstimatedTokens: number;
+  fullPayloadEstimatedTokens: number;
+  tokenEstimator: typeof SESSION_PORT_TOKEN_ESTIMATOR;
   requiresSummary: boolean;
   stats: PortableSessionPort['stats'];
   warnings: string[];
@@ -85,6 +90,7 @@ export interface SessionPortInspection {
     turns: PortableTurn[];
     activeLeafId: string | null;
     compactSummaryIds: string[];
+    currentInstruction: string | null;
     normalizedHash: string;
   };
 }
@@ -99,13 +105,29 @@ const stableJson = (value: unknown): string => {
 };
 
 const sha256 = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
-const estimateTokens = (value: string): number => Math.ceil(Buffer.byteLength(value, 'utf8') / 3.7);
+const BUDGET_PORT_ID = '00000000-0000-4000-8000-000000000000';
 
 function sanitizeBlock(block: PortableBlock): { block: PortableBlock; redactions: number; controls: number; delimiters: number } {
   if (block.type === 'omission') return { block, redactions: 0, controls: 0, delimiters: 0 };
   if (block.type === 'text') {
     const safe = sanitizePortableText(block.text);
     return { block: { ...block, text: safe.text }, redactions: safe.redactions, controls: safe.controlBytesRemoved, delimiters: safe.delimiterEscapes };
+  }
+  if (block.type === 'text_attachment') {
+    const name = sanitizePortableText(block.name);
+    const mediaType = sanitizePortableText(block.mediaType);
+    const text = sanitizePortableText(block.text);
+    return {
+      block: {
+        ...block,
+        name: block.name == null ? null : name.text,
+        mediaType: block.mediaType == null ? null : mediaType.text,
+        text: text.text,
+      },
+      redactions: name.redactions + mediaType.redactions + text.redactions,
+      controls: name.controlBytesRemoved + mediaType.controlBytesRemoved + text.controlBytesRemoved,
+      delimiters: name.delimiterEscapes + mediaType.delimiterEscapes + text.delimiterEscapes,
+    };
   }
   const name = sanitizePortableText(block.name);
   const content = sanitizePortableText(block.content);
@@ -194,6 +216,7 @@ export function inspectAcquiredSessionPort(input: {
   stableSource: StableSource;
   target: SessionPortTarget;
   summarizerProvider?: string | null;
+  currentInstruction?: string | null;
 }): SessionPortInspection {
   const { sourceRow, stableSource, target } = input;
   if (sourceRow.agent !== 'claude' || sourceRow.role != null || !sourceRow.sessionId || !sourceRow.cwd) {
@@ -204,13 +227,22 @@ export function inspectAcquiredSessionPort(input: {
   }
   const adapted = adaptClaudeJsonl(stableSource.bytes.toString('utf8'));
   const safe = sanitizePortableTurns(adapted.turns);
+  const currentInstruction = canonicalizeSessionPortCurrentInstruction(input.currentInstruction);
   const rendered = renderPortableTurns(safe.turns);
-  const fullHistoryEstimatedTokens = estimateTokens(rendered.text);
+  const fullHistoryEstimatedTokens = estimatePortableTokens(rendered.text);
+  const fullPayloadEstimatedTokens = estimatePortableTokens(renderSessionPortSeed({
+    portId: BUDGET_PORT_ID,
+    sourceBackend: 'claude',
+    targetBackend: target.backend,
+    fidelity: 'full',
+    transcript: rendered.text,
+    currentInstruction: currentInstruction.present ? currentInstruction.text : null,
+  }).seed);
   const stats: PortableSessionPort['stats'] = {
     ...adapted.stats,
-    redactions: safe.redactions,
-    controlBytesRemoved: safe.controlBytesRemoved,
-    delimiterEscapes: safe.delimiterEscapes,
+    redactions: safe.redactions + currentInstruction.redactions,
+    controlBytesRemoved: safe.controlBytesRemoved + currentInstruction.controlBytesRemoved,
+    delimiterEscapes: safe.delimiterEscapes + currentInstruction.delimiterEscapes,
   };
   return {
     protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
@@ -228,7 +260,9 @@ export function inspectAcquiredSessionPort(input: {
     },
     target,
     fullHistoryEstimatedTokens,
-    requiresSummary: fullHistoryEstimatedTokens > target.availableInputTokens,
+    fullPayloadEstimatedTokens,
+    tokenEstimator: SESSION_PORT_TOKEN_ESTIMATOR,
+    requiresSummary: fullPayloadEstimatedTokens > target.availableInputTokens,
     stats,
     warnings: adapted.warnings,
     disclosure: {
@@ -236,7 +270,7 @@ export function inspectAcquiredSessionPort(input: {
       sourceUntouched: true,
       authorityCarried: true,
       targetEgress: `${target.provider}/${target.account}`,
-      summarizerEgress: fullHistoryEstimatedTokens > target.availableInputTokens
+      summarizerEgress: fullPayloadEstimatedTokens > target.availableInputTokens
         ? (input.summarizerProvider ?? 'papercusp inference gateway')
         : null,
     },
@@ -246,7 +280,11 @@ export function inspectAcquiredSessionPort(input: {
       turns: safe.turns,
       activeLeafId: adapted.activeLeafId,
       compactSummaryIds: safe.turns.filter((turn) => turn.compactSummary).map((turn) => turn.id),
-      normalizedHash: sha256(stableJson(safe.turns)),
+      currentInstruction: currentInstruction.present ? currentInstruction.text : null,
+      normalizedHash: sha256(stableJson({
+        turns: safe.turns,
+        currentInstruction: currentInstruction.present ? currentInstruction.text : null,
+      })),
     },
   };
 }
@@ -259,6 +297,7 @@ export function publicSessionPortInspection(inspection: SessionPortInspection): 
 export function deriveSessionPortIdempotencyKey(inspection: SessionPortInspection): string {
   return sha256(stableJson({
     source: inspection.source.sha256,
+    normalized: inspection.internal.normalizedHash,
     sourceAdvSessionId: inspection.source.advSessionId,
     target: inspection.target,
     protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
@@ -282,6 +321,7 @@ export function summarizePortableSessionPort(contract: PortableSessionPort): Ses
     fidelity: contract.fidelity,
     versions: contract.versions,
     hashes: contract.hashes,
+    budget: contract.budget,
     stats: contract.stats,
     summary: contract.summary,
     warnings: contract.warnings,
@@ -293,7 +333,6 @@ export async function prepareInspectedSessionPort(input: {
   expectedSourceHash: string;
   tokenKey: string;
   summarizer?: SessionPortSummarizer | null;
-  currentInstruction?: string | null;
   artifactRoot?: string;
   findExisting?: typeof findSessionPortByIdempotency;
   createPrepared?: typeof createPreparedSessionPort;
@@ -315,7 +354,11 @@ export async function prepareInspectedSessionPort(input: {
     }
     const secret = createHmac('sha256', input.tokenKey).update(`${existing.id}:${idempotencyKey}`).digest('hex');
     const summary = existing.metadata.summary as SessionPortContractSummary | undefined;
-    if (!summary || summary.protocolVersion !== SESSION_PORT_PROTOCOL_VERSION) {
+    if (
+      !summary ||
+      summary.protocolVersion !== SESSION_PORT_PROTOCOL_VERSION ||
+      summary.versions.transform !== SESSION_PORT_TRANSFORM_VERSION
+    ) {
       throw new Error('existing idempotent session port predates the content-free metadata contract; expire it and inspect again');
     }
     return {
@@ -330,6 +373,14 @@ export async function prepareInspectedSessionPort(input: {
     turns: inspection.internal.turns,
     availableTokens: inspection.target.availableInputTokens,
     summarizer: input.summarizer,
+    renderPayload: (transcript, fidelity) => renderSessionPortSeed({
+      portId: BUDGET_PORT_ID,
+      sourceBackend: 'claude',
+      targetBackend: inspection.target.backend,
+      fidelity,
+      transcript,
+      currentInstruction: inspection.internal.currentInstruction,
+    }).seed,
   });
   const portId = randomUUID();
   const rendered = renderSessionPortSeed({
@@ -338,8 +389,12 @@ export async function prepareInspectedSessionPort(input: {
     targetBackend: inspection.target.backend,
     fidelity: fitted.fidelity,
     transcript: fitted.transcript,
-    currentInstruction: input.currentInstruction,
+    currentInstruction: inspection.internal.currentInstruction,
   });
+  const finalPayloadEstimatedTokens = estimatePortableTokens(rendered.seed);
+  if (finalPayloadEstimatedTokens !== fitted.estimatedTokens) {
+    throw new Error(`session-port payload fit changed during final rendering (${finalPayloadEstimatedTokens} != ${fitted.estimatedTokens})`);
+  }
   const sourceRow = inspection.internal.sourceRow;
   const contract: PortableSessionPort = {
     schema: SESSION_PORT_SCHEMA,
@@ -376,13 +431,22 @@ export async function prepareInspectedSessionPort(input: {
       normalized: inspection.internal.normalizedHash,
       rendered: rendered.hash,
     },
+    budget: {
+      estimator: fitted.tokenEstimator,
+      availableInputTokens: inspection.target.availableInputTokens,
+      finalPayloadEstimatedTokens,
+      summarizerOutputBudgetTokens: fitted.summary?.outputBudgetTokens ?? null,
+    },
     portedFrom: {
       backend: 'claude',
       advSessionId: sourceRow.id,
       nativeSessionId: sourceRow.sessionId!,
     },
     turns: inspection.internal.turns,
-    stats: inspection.stats,
+    stats: {
+      ...inspection.stats,
+      redactions: inspection.stats.redactions + fitted.summaryOutputRedactions,
+    },
     summary: fitted.summary ?? null,
     warnings: inspection.warnings,
   };
@@ -414,7 +478,7 @@ export async function prepareInspectedSessionPort(input: {
         summary,
         disclosure: inspection.disclosure,
         sourceCoordOwnerId: sourceRow.coordOwnerId,
-        estimatedTokens: fitted.estimatedTokens,
+        estimatedTokens: finalPayloadEstimatedTokens,
         artifactBytes: Buffer.byteLength(rendered.seed, 'utf8'),
       },
       expiresAt: artifact.expiresAt,
