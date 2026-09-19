@@ -138,6 +138,11 @@ describe('testing:run selector arbitration', () => {
   it('still accepts each selector on its own at the schema level', () => {
     expect(runTool.args.safeParse({ files: ['a.test.ts'] }).success).toBe(true);
     expect(runTool.args.safeParse({ changedPaths: ['src/a.ts'] }).success).toBe(true);
+    expect(runTool.args.safeParse({
+      files: ['a.test.ts'],
+      harness: 'papercusp',
+      recheckReason: 'revalidate after an environment repair',
+    }).success).toBe(true);
     // Empty arrays stay rejected by the schema — an empty selector is the same
     // measure-nothing hazard wearing a different hat.
     expect(runTool.args.safeParse({ files: [] }).success).toBe(false);

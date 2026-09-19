@@ -11,6 +11,14 @@ const fleetAdmission = vi.hoisted(() => ({
   decision: { allowed: true, scoped: false } as any,
   notify: vi.fn(),
 }));
+const workScope = vi.hoisted(() => ({
+  gate: vi.fn(async () => ({ allowed: true, reason: 'no-policy' })),
+  refusal: vi.fn((verdict: unknown, extra?: Record<string, unknown>) => ({
+    ok: false,
+    ...(verdict as Record<string, unknown>),
+    ...extra,
+  })),
+}));
 const premisePort = vi.hoisted(() => ({ get: vi.fn() }));
 const forceGuard = vi.hoisted(() => ({
   verdict: { allowed: true, basis: 'holder-session-ended', holderLiveness: { live: false } } as any,
@@ -50,6 +58,10 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   fleetScopeLeaderRemedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
   renderFleetDependencyEscape: vi.fn((escape: { dependency: { id: string } }) =>
     `DEPENDENCY ESCAPE: ${escape.dependency.id}`),
+}));
+vi.mock('../../work-scope-policy', () => ({
+  gateWorkScope: workScope.gate,
+  workScopeRefusal: workScope.refusal,
 }));
 // Claim-time recall port (P-008) is exercised in its own memory/claim-port.test.ts;
 // mock it here so the handler test stays a hermetic unit (no real memory backend).
@@ -92,6 +104,8 @@ beforeEach(() => {
   identity.workspaceId = 'ws-1';
   forceGuard.verdict = { allowed: true, basis: 'holder-session-ended', holderLiveness: { live: false } };
   fleetAdmission.decision = { allowed: true, scoped: false };
+  workScope.gate.mockResolvedValue({ allowed: true, reason: 'no-policy' });
+  workScope.refusal.mockClear();
   claimM.mockImplementation(async (id: string) => ({ id, assignee: 'me' }) as never);
   // claim.ts pre-reads the item for the checked cross-holder CAS path; ordinary tests use a
   // zero-row read so the claimWorkItem mock remains the source of the result.
@@ -257,6 +271,35 @@ describe('work_items:claim handler (keyed-array)', () => {
     // notified with — not just a bare refusal reason, so a member acting on an
     // explicit leader directive knows the scheduler:set_claim_spec fix exists.
     expect(b.results[0].hint).toMatch(/remedy: scheduler:set_claim_spec/);
+  });
+
+  it('passes persisted plan provenance to the work-scope gate for exact plan exceptions', async () => {
+    workScope.gate.mockImplementation(async (_site, subject) =>
+      subject.plan === 'portal-session-search-parity-2026-09-14'
+        ? { allowed: true, reason: 'exception' }
+        : { allowed: false, error: 'scope_denied' },
+    );
+    getM.mockResolvedValue({
+      id: 'WI-PLAN-EXCEPTION',
+      harness: 'sidestage',
+      sourcePlanSlug: 'portal-session-search-parity-2026-09-14',
+      sourcePlanItemIds: ['P-002'],
+      payload: null,
+    } as never);
+
+    const b = await body({ id: 'WI-PLAN-EXCEPTION', harness: 'sidestage' });
+
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-PLAN-EXCEPTION' });
+    expect(workScope.gate).toHaveBeenCalledWith('work_items:claim', {
+      harness: 'sidestage',
+      plan: 'portal-session-search-parity-2026-09-14',
+      workItem: 'WI-PLAN-EXCEPTION',
+      actor: 'me',
+    });
+    expect(claimM).toHaveBeenCalledWith('WI-PLAN-EXCEPTION', 'me', {
+      harness: 'sidestage',
+      fromHolder: identity.ownerId,
+    });
   });
 
   it('returns the typed dependency escape produced by the refusal seam', async () => {

@@ -339,13 +339,40 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       return null;
     }
   })();
+  // Read the canonical row before the workspace-scope gate. Exact plan exceptions
+  // are keyed by the item's persisted source_plan_slug, not by the caller's optional
+  // harness argument. Keeping this read distinct from a missing row also preserves
+  // the force/CAS guard's fail-closed unreadable behavior below.
+  const preClaim = await lookupWorkItem(it.id, it.harness);
+  if (preClaim.status === 'unreadable') {
+    return {
+      ok: false,
+      id: it.id,
+      error: 'work_item_unreadable',
+      hint:
+        `${it.id} could not be read, so its current claim state is UNKNOWN — the read failed (${preClaim.error}). ` +
+        'Refusing the claim rather than make a holder/force decision from an unreadable row. This is a READ FAILURE, not a missing item: retry, ' +
+        'and if it persists check database health (dev:pg_health) rather than the item.',
+    };
+  }
+  const preClaimItem = preClaim.status === 'found' ? preClaim.item : null;
+  const claimScopeHarness = preClaimItem?.harness ?? it.harness;
+  const claimScopePlan =
+    typeof preClaimItem?.sourcePlanSlug === 'string' && preClaimItem.sourcePlanSlug.trim()
+      ? preClaimItem.sourcePlanSlug.trim()
+      : undefined;
   // workspace-work-scope-policy-2026-09-04 P-006: an item homed outside the workspace
   // work-scope policy is refused for EVERY claimant (solo or fleet) before fleet admission
   // runs. The item is untouched — held, never deleted; the denial lands on the policy
   // ledger. No policy ⇒ one cached read, byte-identical behaviour.
   {
     const { gateWorkScope, workScopeRefusal } = await import('../../work-scope-policy');
-    const scope = await gateWorkScope('work_items:claim', { harness: it.harness, workItem: it.id, actor: claimer });
+    const scope = await gateWorkScope('work_items:claim', {
+      harness: claimScopeHarness,
+      plan: claimScopePlan,
+      workItem: it.id,
+      actor: claimer,
+    });
     if (!scope.allowed) return workScopeRefusal(scope, { id: it.id });
   }
   const admission = await admitWorkItemForFleetTarget({
@@ -394,22 +421,10 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     admission.scoped ? admission.legacyFleetScopeDowngradeAdmission : undefined;
   // D-008: readiness/lifecycle floors, including claim-hold, gate self-select only. A named
   // by-id claim is the deliberate operator override, so do not apply a claim-hold refusal here.
-  // Keep this pre-read for the separate checked cross-holder takeover below: force:true must
-  // compare against the exact holder it read before claimWorkItem's CAS. WI-6746 still requires
-  // the read to fail closed rather than turning an unreadable holder into an apparent vacancy.
-  const preClaim = await lookupWorkItem(it.id, it.harness);
-  if (preClaim.status === 'unreadable') {
-    return {
-      ok: false,
-      id: it.id,
-      error: 'work_item_unreadable',
-      hint:
-        `${it.id} could not be read, so its current claim state is UNKNOWN — the read failed (${preClaim.error}). ` +
-        'Refusing the claim rather than make a holder/force decision from an unreadable row. This is a READ FAILURE, not a missing item: retry, ' +
-        'and if it persists check database health (dev:pg_health) rather than the item.',
-    };
-  }
-  const preClaimItem = preClaim.status === 'found' ? preClaim.item : null;
+  // Reuse the pre-read above for the separate checked cross-holder takeover below: force:true
+  // must compare against the exact holder it read before claimWorkItem's CAS. WI-6746 still
+  // requires the read to fail closed rather than turning an unreadable holder into an apparent
+  // vacancy.
   // EI-20417350647749715: `force:true` is a checked cross-holder takeover, not a
   // bypass of claimWorkItem's compare-and-claim. Reuse the release force guard's
   // liveness/authority decision, then pass the exact holder into the UPDATE as an
