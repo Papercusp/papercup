@@ -2109,12 +2109,18 @@ export function shapeMutationEcho<T extends OrchestrationRunResult | Record<stri
 const FACADE_HELP_NAMESPACE_SUGGESTIONS = 3;
 
 /**
+ * Cap on how many closest-VERB full signatures buildFacadeHelp renders per referenced namespace
+ * (EI-23783922587988483). A namespace with at most this many verbs is still rendered whole.
+ */
+const FACADE_HELP_VERB_SIGNATURES = 6;
+
+/**
  * P-007: turn a parse-check failure into a self-service fix. From the unknown `ns.verb` (or
  * `ns:verb`) refs the script used, render the typed `tools.ns.verb(args)` signatures for the
- * namespaces that DO exist in the caller's facade (fix a verb/arg typo), and — only when a referenced
- * namespace doesn't exist at all — surface the closest-matching known namespaces so the agent can
- * pick the right one. Same scoping/generators as code:tools, so the agent never needs to call
- * code:tools first.
+ * CLOSEST VERBS in the namespaces that DO exist in the caller's facade (fix a verb/arg typo), and
+ * — only when a referenced namespace doesn't exist at all — surface the closest-matching known
+ * namespaces so the agent can pick the right one. Same scoping/generators as code:tools, so the
+ * agent never needs to call code:tools first.
  *
  * EI-7677: this used to spill the ENTIRE allowed namespace index (every ns × verb — observed
  * ~15k tokens for a superuser's full facade) whenever a script referenced even ONE unknown
@@ -2124,6 +2130,15 @@ const FACADE_HELP_NAMESPACE_SUGGESTIONS = 3;
  * helper `fuzzyEnum` already uses for arg-value typos, and surface only the top
  * `FACADE_HELP_NAMESPACE_SUGGESTIONS` — with an explicit pointer to `code:tools {}` for the rare
  * case the agent genuinely needs to browse the full catalog.
+ *
+ * EI-23783922587988483: EI-7677 bounded only the unknown-NAMESPACE branch. The unknown-VERB
+ * branch — a KNOWN namespace with one mistyped verb, which is the far more common shape — kept
+ * rendering every verb's full signature for that whole namespace: measured 67,864 chars for one
+ * bad `work_items` ref, which overflows the per-result cap, spills to a scratch file, and costs
+ * MORE context than the failed call would have. Both branches are bounded the same way now, via
+ * the same helper: the closest `FACADE_HELP_VERB_SIGNATURES` verbs get full signatures, and the
+ * namespace's COMPLETE verb list rides along by NAME in `namespaces`, so the bound never HIDES a
+ * verb — it only defers that verb's arg TYPES to `code:tools { namespaces:[…] }`.
  */
 export function buildFacadeHelp(
   unknownRefs: readonly string[],
@@ -2158,22 +2173,66 @@ export function buildFacadeHelp(
   }
 
   const referencedNs = new Set<string>();
+  /** ns → the unknown VERB spellings the script used there (EI-23783922587988483 ranks against these). */
+  const referencedVerbs = new Map<string, Set<string>>();
   for (const ref of unknownRefs) {
     const ci = ref.indexOf(':');
     const di = ref.indexOf('.');
     const sep = ci >= 0 ? ci : di; // tools.call('ns:verb') → colon; tools.ns.verb → dot
     const rawNs = sep > 0 ? ref.slice(0, sep) : ref;
-    referencedNs.add(namespaceAliases.get(rawNs) ?? rawNs);
+    const ns = namespaceAliases.get(rawNs) ?? rawNs;
+    referencedNs.add(ns);
+    const verb = sep > 0 ? ref.slice(sep + 1) : '';
+    if (verb) {
+      const bucket = referencedVerbs.get(ns) ?? new Set<string>();
+      bucket.add(verb);
+      referencedVerbs.set(ns, bucket);
+    }
   }
 
   const present = [...referencedNs].filter((ns) => known.has(ns));
   const missing = [...referencedNs].filter((ns) => !known.has(ns));
-  const signatures = present.length ? generateToolFacadeTypes(all, { allowed, namespaces: present }) : undefined;
+  // EI-23783922587988483: render FULL signatures only for the verbs closest to the ones the script
+  // actually typed. Rendering the whole namespace measured 67,864 chars for one bad `work_items`
+  // ref — it overflows the per-result cap and spills, costing more context than the failed call.
+  // Ranking is on a flattened spelling so a snake_case ref ranks against camelCase verbs.
+  const flatten = (s: string) => s.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const signatureNames: string[] = [];
+  const partiallyRendered: string[] = [];
+  for (const ns of present) {
+    const entry = byNs.get(ns);
+    if (!entry) continue;
+    const typed = [...(referencedVerbs.get(ns) ?? [])];
+    // A bare `tools.ns` ref has no verb to rank against, and a small namespace is already cheap —
+    // both keep rendering whole, which is what every pre-EI-23783922587988483 caller expects.
+    if (!typed.length || entry.verbs.length <= FACADE_HELP_VERB_SIGNATURES) {
+      signatureNames.push(...entry.toolNames);
+      continue;
+    }
+    partiallyRendered.push(ns);
+    const byFlat = new Map(entry.verbs.map((v, i) => [flatten(v), i]));
+    const picked = new Set<number>();
+    for (const verb of typed) {
+      for (const close of nearestByLevenshtein(flatten(verb), [...byFlat.keys()], {
+        k: FACADE_HELP_VERB_SIGNATURES,
+        maxRatio: 1,
+      })) {
+        const i = byFlat.get(close);
+        if (i !== undefined) picked.add(i);
+      }
+    }
+    for (const i of [...picked].slice(0, FACADE_HELP_VERB_SIGNATURES)) {
+      signatureNames.push(entry.toolNames[i]!);
+    }
+  }
+  const signatures = signatureNames.length
+    ? generateToolFacadeTypes(all, { allowed, names: signatureNames })
+    : undefined;
 
   // Rank every known namespace by closeness to each missing ref; keep only the closest
   // FACADE_HELP_NAMESPACE_SUGGESTIONS overall (maxRatio:1 ⇒ always returns the top-k rather than
   // an empty set on a wildly-wrong name — a few "not quite it" suggestions still beat nothing).
-  let namespaces: ReturnType<typeof listFacadeNamespaces> | undefined;
+  const indexEntries: ReturnType<typeof listFacadeNamespaces> = [];
   if (missing.length && known.size) {
     const suggested = new Set<string>();
     for (const m of missing) {
@@ -2181,16 +2240,32 @@ export function buildFacadeHelp(
         suggested.add(s);
       }
     }
-    namespaces = [...suggested]
-      .slice(0, FACADE_HELP_NAMESPACE_SUGGESTIONS)
-      .map((ns) => byNs.get(ns)!)
-      .sort((a, b) => a.ns.localeCompare(b.ns));
+    indexEntries.push(
+      ...[...suggested]
+        .slice(0, FACADE_HELP_NAMESPACE_SUGGESTIONS)
+        .map((ns) => byNs.get(ns)!)
+        .sort((a, b) => a.ns.localeCompare(b.ns)),
+    );
   }
+  // A partially-rendered namespace contributes its COMPLETE verb list by name, so the signature
+  // bound above never HIDES a verb — it only defers that verb's arg TYPES to code:tools.
+  for (const ns of partiallyRendered) {
+    const entry = byNs.get(ns);
+    if (entry && !indexEntries.some((e) => e.ns === ns)) indexEntries.push(entry);
+  }
+  const namespaces = indexEntries.length ? indexEntries : undefined;
 
   const note =
     'code:run accepts a script directly — no code:tools pre-call required. These refs were not in ' +
     'your allowed facade; fix the tools.ns.verb name/args and re-run. ' +
-    (signatures ? 'Typed signatures for the namespaces you referenced are in `signatures`. ' : '') +
+    (signatures
+      ? partiallyRendered.length
+        ? 'Typed signatures for the verbs CLOSEST to the ones you named are in `signatures` — not ' +
+          `the whole of ${partiallyRendered.join(', ')}, which would cost more context than the ` +
+          'failed call did. Every verb in those namespaces is listed by NAME in `namespaces`; for ' +
+          `their full arg types call code:tools { namespaces: ${JSON.stringify(partiallyRendered)} }. `
+        : 'Typed signatures for the namespaces you referenced are in `signatures`. '
+      : '') +
     (missing.length
       ? `Unknown namespace(s): ${missing.join(', ')} — the closest matches (with their verbs) are in ` +
         '`namespaces`; if none fit, call code:tools {} for the full catalog.'

@@ -1380,6 +1380,77 @@ describe('code:run → inline facade help on unknown refs (P-007)', () => {
       expect(help.namespaces).toBeUndefined();
     },
   );
+
+  // EI-23783922587988483: EI-7677 bounded the unknown-NAMESPACE branch but left the unknown-VERB
+  // branch (the far more common shape) rendering every signature in the namespace — measured 67,864
+  // chars for ONE bad `work_items` ref, which overflows the per-result cap, spills to a scratch
+  // file, and costs MORE context than the failed call would have.
+  const wiTool = (name: string, desc: string) => ({
+    expose: { mcp: { name } },
+    description: desc,
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  });
+  const numberedVerb = (i: number) => `work_items:verb_${String(i).padStart(2, '0')}`;
+  /** Count rendered `verb(args): Promise<…>` lines — doc-comment lines cannot match. */
+  const renderedSignatureCount = (signatures: string | undefined) =>
+    (signatures ?? '').match(/^\s{4}\w+\(/gm)?.length ?? 0;
+
+  it('bounds the closest-VERB signatures for a KNOWN namespace instead of dumping it whole', () => {
+    const names = [...Array.from({ length: 20 }, (_, i) => numberedVerb(i)), 'work_items:zzz_completely_unrelated'];
+    const tools = names.map((n) => wiTool(n, `Desc ${n}`)) as never;
+    const help = buildFacadeHelp(['work_items.verb_3'], tools, new Set(names));
+
+    // only the closest handful get FULL signatures — the whole namespace would be 21
+    const rendered = renderedSignatureCount(help.signatures);
+    expect(rendered).toBeGreaterThan(0);
+    expect(rendered).toBeLessThanOrEqual(6);
+    expect(rendered).toBeLessThan(names.length);
+
+    // the bound DEFERS arg types; it never HIDES a verb — every one is still named in `namespaces`
+    expect(help.signatures).not.toContain('zzzCompletelyUnrelated(');
+    const entry = help.namespaces?.find((e) => e.ns === 'workItems');
+    expect(entry).toBeDefined();
+    expect(entry!.verbs).toHaveLength(names.length);
+    expect(entry!.verbs).toContain('zzzCompletelyUnrelated');
+
+    // …and the note names the escape hatch that still yields the full dump on demand
+    expect(help.note).toContain('CLOSEST');
+    expect(help.note).toContain('code:tools { namespaces: ["workItems"] }');
+  });
+
+  it('still renders a SMALL known namespace whole (the bound is conditional, not blanket)', () => {
+    const names = [0, 1, 2].map(numberedVerb);
+    const tools = names.map((n) => wiTool(n, `Desc ${n}`)) as never;
+    const help = buildFacadeHelp(['work_items.verb_99'], tools, new Set(names));
+
+    expect(renderedSignatureCount(help.signatures)).toBe(names.length);
+    expect(help.note).toContain('Typed signatures for the namespaces you referenced');
+    expect(help.namespaces).toBeUndefined();
+  });
+
+  it('keeps ONE bad ref against the REAL catalog far below the unbounded whole-namespace dump', () => {
+    const all = listAllProjectedTools();
+    const byNs = new Map<string, string[]>();
+    for (const t of all) {
+      const name = t.expose?.mcp?.name;
+      if (!name?.includes(':')) continue;
+      byNs.set(name.split(':')[0]!, [...(byNs.get(name.split(':')[0]!) ?? []), name]);
+    }
+    const biggest = [...byNs.entries()].sort((a, b) => b[1].length - a[1].length)[0];
+    expect(biggest).toBeDefined();
+    const [biggestNs, names] = biggest!;
+    // calibration: a namespace at or under the cap would make the comparison below prove nothing
+    expect(names.length).toBeGreaterThan(6);
+
+    // A BARE `ns` ref has no verb to rank against, so it takes the render-whole path by design —
+    // that makes it the unbounded CONTROL, measured in this same context (no threshold to rot).
+    const whole = buildFacadeHelp([biggestNs], all, new Set(names));
+    const bounded = buildFacadeHelp([`${biggestNs}.definitely_not_a_real_verb`], all, new Set(names));
+
+    expect(renderedSignatureCount(whole.signatures)).toBeGreaterThan(6);
+    expect(renderedSignatureCount(bounded.signatures)).toBeLessThanOrEqual(6);
+    expect((bounded.signatures ?? '').length).toBeLessThan((whole.signatures ?? '').length / 2);
+  });
 });
 
 /**
