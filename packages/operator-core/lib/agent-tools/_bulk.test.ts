@@ -32,6 +32,7 @@ describe('_bulk', () => {
 
   it('runBulk treats a returned {ok:false} as a failure (not only throws)', async () => {
     const env = await runBulk(['a'], async (id) => ({ ok: false as const, id, error: 'nope' }));
+    expect(env.ok).toBe(false);
     expect(env.counts).toEqual({ ok: 0, failed: 1 });
     expect(env.results[0]).toMatchObject({ ok: false, id: 'a', error: 'nope' });
   });
@@ -45,6 +46,7 @@ describe('_bulk', () => {
       },
       { keyOf: (id) => ({ id }) },
     );
+    expect(env.ok).toBe(false);
     expect(env.counts).toEqual({ ok: 2, failed: 1 });
     expect(env.results.map((r) => r.ok)).toEqual([true, false, true]);
     expect(env.results[1]).toEqual({ ok: false, id: 'boom', error: 'kaboom' });
@@ -73,5 +75,63 @@ describe('_bulk', () => {
   it('empty input → empty envelope', async () => {
     const env = await runBulk([], async () => ({ ok: true as const }));
     expect(env).toEqual({ ok: true, results: [], counts: { ok: 0, failed: 0 } });
+  });
+});
+
+/**
+ * The envelope's `ok` is DERIVED from its items — EI-23737206446729041.
+ *
+ * This envelope used to hard-code `ok: true` ("the batch ran") while computing `failed`
+ * one line above and discarding it, so a partial failure was reported as a truthy result.
+ * The measured cost: a `coord:send` carrying an owner report returned envelope `ok:true`
+ * with `results[0].ok === false`; the caller branched on the envelope, recorded the report
+ * as SENT, and the report did not exist.
+ *
+ * Why the ENVELOPE and not per-item reading is the rail: `ok` is the field every caller
+ * branches on, so the obvious `if (res.ok)` has to be correct on its own. Guidance saying
+ * "read the per-item verdict" makes correctness a thing each call site must REMEMBER, and a
+ * `projection.pick` that omits the error field can hide the per-item truth entirely from the
+ * context-constrained caller most likely to project. Per the derived-truth ladder, the
+ * envelope is a second copy of a truth the items already own: DERIVE it, never restate it.
+ */
+describe('_bulk envelope ok is the conjunction of results[].ok', () => {
+  const cases = [
+    { name: 'all succeed → ok:true', flags: [true, true, true], expected: true },
+    { name: 'one fails among many → ok:false', flags: [true, false, true], expected: false },
+    { name: 'all fail → ok:false', flags: [false, false], expected: false },
+    { name: 'single failure → ok:false', flags: [false], expected: false },
+    { name: 'single success → ok:true', flags: [true], expected: true },
+  ] as const;
+
+  for (const { name, flags, expected } of cases) {
+    it(name, async () => {
+      const env = await runBulk([...flags], async (ok, i) => ({ ok, id: `i${i}` }));
+      expect(env.ok).toBe(expected);
+      // The invariant, stated independently of the table: truthy envelope ⟺ zero failures.
+      expect(env.ok).toBe(env.counts.failed === 0);
+    });
+  }
+
+  it('an empty batch is vacuously ok (no item failed)', async () => {
+    const env = await runBulk([], async () => ({ ok: true as const }));
+    expect(env.ok).toBe(true);
+    expect(env.counts.failed).toBe(0);
+  });
+
+  it('REGRESSION: ok:true can never coexist with a failed item, however the failure arose', async () => {
+    // Both failure channels at once — a returned {ok:false} AND a thrown error.
+    const env = await runBulk(
+      ['fine', 'returns-false', 'throws'],
+      async (id) => {
+        if (id === 'throws') throw new Error('kaboom');
+        return { ok: id !== 'returns-false', id };
+      },
+      { keyOf: (id) => ({ id }) },
+    );
+
+    const anyItemFailed = env.results.some((r) => !r.ok);
+    expect(anyItemFailed).toBe(true);
+    expect(env.ok).toBe(false);
+    expect(env.counts).toEqual({ ok: 1, failed: 2 });
   });
 });

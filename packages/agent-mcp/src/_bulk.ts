@@ -15,14 +15,25 @@
  *           call is just n=1 of the bulk call (`id:"X"` ≡ `ids:["X"]`). Use
  *           `mergeIds(args.id, args.ids)` for the id list; heterogeneous
  *           per-item fields ride `items:[{ id, ...fields }]`.
- *   OUTPUT  `{ ok:true, results:[{ ok, <key>, …|error }], counts:{ ok, failed } }`.
+ *   OUTPUT  `{ ok, results:[{ ok, <key>, …|error }], counts:{ ok, failed } }`.
  *           Each result SELF-DESCRIBES its correlation key (id/slug) — the agent
  *           reads the key, NEVER the array index. This is robust to reordering,
  *           partial failure, and result-truncation in a way positional
  *           (`result[i] ↔ input[i]`) results are not — LLMs mis-count indices.
  *   FAILURE one bad item NEVER throws: a thrown error (or a returned
- *           `{ ok:false }`) becomes that item's result; top-level `ok:true`
- *           means "the batch ran", `counts.failed` tells the truth.
+ *           `{ ok:false }`) becomes that item's result, and the batch runs to
+ *           completion. The envelope's `ok` is the CONJUNCTION of the items'
+ *           (⟺ `counts.failed === 0`), so a partial failure is never truthy and
+ *           the obvious `if (res.ok)` is correct without extra reading.
+ *
+ *           ⚠ `ok` does NOT mean "the batch ran" — it used to (EI-23737206446729041),
+ *           and that cost a `coord:send` owner report which returned envelope
+ *           `ok:true` over `results[0].ok === false`; the caller branched on the
+ *           envelope, recorded the report as SENT, and it did not exist. "The batch
+ *           ran" is not a fact a caller needs a field for: a THROWN call is the only
+ *           way it did not, and that is already an error. Distinguish TOTAL from
+ *           PARTIAL failure with `counts` (`counts.ok > 0 && counts.failed > 0`),
+ *           which carries it without a third truthiness state for `ok` to hold.
  *
  * Why an array-of-records and not a keyed map `{ "WI-1": res }`: models emit
  * arrays of uniform records far more reliably than dynamic-key objects, the
@@ -72,7 +83,12 @@ export interface BulkItemResult {
 }
 
 export interface BulkEnvelope<R extends BulkItemResult = BulkItemResult> {
-  ok: true;
+  /**
+   * DERIVED: `counts.failed === 0`, i.e. the conjunction of `results[].ok`. Deliberately
+   * `boolean` and not the literal `true` it once was — a type that cannot express failure
+   * is what let the producer return a truthy envelope over a failed item.
+   */
+  ok: boolean;
   results: R[];
   counts: { ok: number; failed: number };
 }
@@ -100,7 +116,10 @@ export interface BulkEnvelope<R extends BulkItemResult = BulkItemResult> {
  */
 export function bulkEnvelopeSchema<T extends z.ZodTypeAny>(item?: T) {
   return z.object({
-    ok: z.literal(true),
+    // Mirrors BulkEnvelope.ok: DERIVED (`counts.failed === 0`), so a partial failure is
+    // representable here. A `z.literal(true)` would also publish an outputJsonSchema that
+    // promises every consumer a truthiness the producer cannot honour.
+    ok: z.boolean(),
     results: z.array(
       item ??
         z
@@ -124,7 +143,9 @@ export function bulkEnvelopeSchema<T extends z.ZodTypeAny>(item?: T) {
  * worker pool with `maxConcurrency`. `op` returns the
  * self-describing result (it embeds the item's key). A thrown error becomes
  * `{ ok:false, ...keyOf(item), error }` so even a crash self-describes its key.
- * Returns the house envelope `{ ok, results, counts }`.
+ * Returns the house envelope `{ ok, results, counts }`, whose `ok` is DERIVED from
+ * the collected items (`counts.failed === 0`) — never throwing on one bad item is
+ * about not ABORTING the batch, not about reporting it as a success.
  *
  * The serial default matches work_items:batch and avoids hammering the PG pool.
  * Opt-in concurrency remains bounded, and completion order never leaks into
@@ -173,7 +194,10 @@ export async function runBulk<I, R extends BulkItemResult>(
 
   const ok = results.filter((result) => result.ok).length;
   const failed = results.length - ok;
-  return { ok: true, results, counts: { ok, failed } };
+  // The envelope's ok is DERIVED from the items, never restated: an empty batch is
+  // vacuously ok, and a single failure makes the whole envelope falsy so that the
+  // obvious `if (env.ok)` at 130+ call sites is correct without per-item reading.
+  return { ok: failed === 0, results, counts: { ok, failed } };
 }
 
 /**

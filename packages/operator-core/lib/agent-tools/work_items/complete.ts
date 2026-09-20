@@ -4933,7 +4933,7 @@ export default defineTool({
       'coord:send (a note/question that is not a completion)',
       'improvements:capture (file the friction the reflect step surfaced)',
       `Finish is idempotent: after a timeout, re-check with work_items:get or retry the same completion. ${TERMINAL_CLOSE_RECOVERY_HINT}`,
-      'For batches, inspect each result and counts.failed; top-level ok only means the batch ran.',
+      'For batches, top-level ok is FALSE if any item failed (it is derived from results[].ok); inspect counts.failed and each result to see which.',
     ],
   },
   capability: 'work_items:write',
@@ -5242,21 +5242,20 @@ export default defineTool({
           },
         ];
     const env = await runBulk(list, (it) => completeOne(it, completionIdent, ctx), { keyOf: (it) => ({ id: it.id }) });
-    // EI-14676: the generic bulk contract's top-level `ok` means "the batch ran" (see
-    // _bulk.ts) — correct for an explicit N-item `items:[…]` batch, where partial failure
-    // across items is expected and `counts.failed` is the right signal to check. But the
-    // single-item shorthand ({ id, completion }) is how the overwhelming majority of callers
-    // use this tool, and to them there is no "batch": there is exactly one completion that
-    // either converged or it didn't. Reporting a structurally-hardcoded `ok:true` there, while
-    // the ONE item's own `ok` is false (a state write that failed to land, a close-intent state
-    // that landed non-terminal, or a finish leg — plan-status/claim-release/checkpoint-clear —
-    // that didn't converge), is exactly how an agent can read the envelope, see `ok:true`, and
-    // write a "TERMINAL — do not re-open" checkpoint off a call that never actually closed the
-    // item (EI-14676: WI-5218 stayed state:'open'/terminalOwner:null while the completing agent
-    // believed, and recorded, that it had converged). So for the single-item form the
-    // caller-visible top-level `ok` IS the item's own `ok` — impossible to miss without opening
-    // `results[0]`. The explicit-batch form keeps the standard bulk semantics unchanged.
-    const result = isBulkForm || env.results.length !== 1 ? env : { ...env, ok: env.results[0].ok };
-    return bulkContent(result);
+    // EI-14676 asked that a non-convergent completion be "impossible to miss": the
+    // caller-visible `ok` must be false at the TOP level, not just buried per-item, so an
+    // agent cannot read `ok:true` and write a "TERMINAL — do not re-open" checkpoint off a
+    // call that never closed the item (WI-5218 stayed state:'open'/terminalOwner:null while
+    // the completing agent believed, and recorded, that it had converged).
+    //
+    // That used to need a LOCAL override here, because the shared bulk envelope hard-coded
+    // `ok:true` ("the batch ran") — so this tool could only rescue its single-item form and
+    // had to leave the explicit `items:[…]` batch reporting a truthy envelope over a failed
+    // item. EI-23737206446729041 fixed that at the contract instead: `runBulk` now DERIVES
+    // the envelope's `ok` from `results[].ok` for every bulk tool. The single-item form is
+    // just the n=1 case of that conjunction, so the override is redundant and removing it
+    // keeps ONE definition of the rule rather than a general one plus a local restatement
+    // that could drift from it.
+    return bulkContent(env);
   },
 });

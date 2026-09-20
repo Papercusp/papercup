@@ -713,7 +713,15 @@ describe('work_items:complete (keyed-array)', () => {
     expect(out.results[0].ok).toBe(false);
   });
 
-  it('EI-14676: explicit items:[…] batch keeps envelope-level `ok:true` ("the batch ran") even with a partial failure', async () => {
+  // EI-23737206446729041 (completing EI-14676): this case used to assert the OPPOSITE — that an
+  // explicit items:[…] batch kept envelope `ok:true` over a failed item, on the reasoning that
+  // `ok` meant "the batch ran". That is the defect EI-14676 asked to remove ("the caller-visible
+  // `ok` must be false at the TOP level, not just buried per-item"); it was only ever rescued for
+  // the single-item form, leaving the batch form truthy over a failure. runBulk now derives the
+  // envelope's ok from results[].ok, so the batch form reports it too. The test's INTENT — a
+  // partial failure must be detectable without opening results[] — is unchanged and now actually
+  // holds for both forms.
+  it('EI-14676: an explicit items:[…] batch reports envelope `ok:false` when any item fails', async () => {
     getWorkItem.mockImplementation(async (id: string) => (id === 'F-404' ? null : { ...item, id }));
     const out = await env({
       items: [
@@ -721,8 +729,22 @@ describe('work_items:complete (keyed-array)', () => {
         { id: 'F-404', completion: { summary: 'b' } },
       ],
     });
-    expect(out.ok).toBe(true); // batch semantics unchanged — check counts.failed / per-item ok
+    expect(out.ok).toBe(false); // derived from results[].ok — never truthy over a failed item
     expect(out.counts).toEqual({ ok: 1, failed: 1 });
+    // counts still carries the PARTIAL-vs-TOTAL distinction the boolean cannot.
+    expect(out.counts.ok).toBeGreaterThan(0);
+  });
+
+  it('EI-23737206446729041: an all-succeeding batch is still envelope `ok:true`', async () => {
+    getWorkItem.mockImplementation(async (id: string) => ({ ...item, id }));
+    const out = await env({
+      items: [
+        { id: 'F-1', completion: { summary: 'a' } },
+        { id: 'F-2', completion: { summary: 'b' } },
+      ],
+    });
+    expect(out.ok).toBe(true);
+    expect(out.counts).toEqual({ ok: 2, failed: 0 });
   });
 
   it('records + returns the completion WITHOUT changing state when `state` omitted', async () => {
