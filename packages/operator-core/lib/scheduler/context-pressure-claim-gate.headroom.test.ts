@@ -15,9 +15,26 @@
  */
 import { describe, it, expect } from 'vitest';
 import { decideContextPressureGate, raisingLimitWouldClear } from './context-pressure-claim-gate';
+import type { ContextPressureRecoveryResolution } from '../agent-tools/coordination/context-pressure';
 
 /** The measured reproduction from the filing. 362523/825000 ≈ 44% — below any band. */
 const FILED = { contextTokens: 362523, softLimit: 250000, selfSetCeiling: 825000 };
+
+// Fully-shaped fixtures: ContextPressureRecoveryResolution requires all four fields, and vitest
+// never typechecks — an earlier draft used `{ path: 'cold-loop', carryNoteVerified: true }`, which
+// ran green and failed `lint:tsc` with TS2739. Annotating them is what keeps that caught here.
+const COLD_LOOP: ContextPressureRecoveryResolution = {
+  path: 'cold-loop',
+  selfCompactionAvailable: false,
+  carryNoteVerified: true,
+  reason: 'active-cold-loop',
+};
+const WARM_LOOP: ContextPressureRecoveryResolution = {
+  path: 'warm-loop',
+  selfCompactionAvailable: false,
+  carryNoteVerified: null,
+  reason: 'active-warm-loop',
+};
 
 function refusal(input: Parameters<typeof decideContextPressureGate>[0]) {
   const d = decideContextPressureGate(input);
@@ -75,7 +92,7 @@ describe('the gate prescribes raising the limit when that provably clears the br
     const d = refusal({
       bucket: 'critical',
       headroom: FILED,
-      recovery: { path: 'cold-loop', carryNoteVerified: true },
+      recovery: COLD_LOOP,
     });
     expect(d.diagnosis.suggestedLimit).toBe(825000);
     expect(d.diagnosis.remedy).toMatch(/raise/i);
@@ -90,7 +107,7 @@ describe('the gate prescribes raising the limit when that provably clears the br
   });
 
   it('takes precedence over warm-loop too', () => {
-    const d = refusal({ bucket: 'critical', headroom: FILED, recovery: { path: 'warm-loop' } });
+    const d = refusal({ bucket: 'critical', headroom: FILED, recovery: WARM_LOOP });
     expect(d.diagnosis.suggestedLimit).toBe(825000);
     expect(d.error).not.toMatch(/session:request-compaction/);
   });
@@ -114,7 +131,7 @@ describe('legacy behaviour is preserved wherever raising is not provably the fix
     const d = refusal({
       bucket: 'critical',
       headroom: { ...FILED, softLimit: 825000 },
-      recovery: { path: 'cold-loop', carryNoteVerified: true },
+      recovery: COLD_LOOP,
     });
     // The error embeds the remedy TEXT ("the armed COLD loop is the fresh-context boundary"),
     // while 'cold-loop' with the hyphen is the LABEL — assert each where it actually lives.
