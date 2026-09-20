@@ -1034,13 +1034,38 @@ function makeResolveFleetLiveness(
  * `confirm` is hard-wired false on purpose: the question is "would this be
  * REFUSED?", never "could it be FORCED?".
  */
-async function resolveGoalPinWritability(
+export interface GoalPinWritabilityProbe {
+  preview: (
+    spec: ClaimSpec,
+    opts: { workspaceId: string; harness: string | null },
+  ) => Promise<{ matched: number; pool: number }>;
+  guard: (input: {
+    matched: number;
+    pool: number;
+    previousMatched: number | null;
+    previousSource: 'authored' | 'default';
+    confirm: boolean;
+    filter?: FilterNode;
+    previousFilter?: FilterNode;
+  }) => { refuse: boolean };
+}
+
+export async function resolveGoalPinWritability(
   incumbentSpec: unknown,
   goalId: string,
   workspaceId: string,
+  probe?: GoalPinWritabilityProbe,
 ): Promise<DrainFleetSpecScope> {
   try {
-    const { previewSpecPoolEffect, evaluateCollapseGuard } = await import('../scheduler/spec-pool-preview');
+    const impl: GoalPinWritabilityProbe =
+      probe ??
+      (await (async () => {
+        const m = await import('../scheduler/spec-pool-preview');
+        return {
+          preview: (spec, opts) => m.previewSpecPoolEffect(spec, opts),
+          guard: (input) => m.evaluateCollapseGuard(input),
+        } satisfies GoalPinWritabilityProbe;
+      })());
     const authored = !!incumbentSpec && typeof incumbentSpec === 'object';
     const incumbent = (authored ? incumbentSpec : DEFAULT_CLAIM_SPEC) as ClaimSpec;
     const remedy = goalPinnedRemedySpec(incumbent, goalId);
@@ -1048,9 +1073,9 @@ async function resolveGoalPinWritability(
     // so the basis is the whole workspace (harness:null) under the neutral floors
     // previewSpecPoolEffect documents.
     const countScope = { workspaceId, harness: null };
-    const candidate = await previewSpecPoolEffect(remedy, countScope);
-    const previousMatched = authored ? (await previewSpecPoolEffect(incumbent, countScope)).matched : null;
-    const verdict = evaluateCollapseGuard({
+    const candidate = await impl.preview(remedy, countScope);
+    const previousMatched = authored ? (await impl.preview(incumbent, countScope)).matched : null;
+    const verdict = impl.guard({
       matched: candidate.matched,
       pool: candidate.pool,
       previousMatched,

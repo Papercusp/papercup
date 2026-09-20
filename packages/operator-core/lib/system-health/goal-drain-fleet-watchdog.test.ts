@@ -13,6 +13,8 @@ import {
   decideGoalDrainFleetRelaunch,
   goalDrainRelaunchEligibility,
   goalPinnedRemedySpec,
+  resolveGoalPinWritability,
+  type GoalPinWritabilityProbe,
   parseGoalDrainRespawnLedger,
   claimSpecIsPlanScoped,
   classifyGoalDrainFleet,
@@ -225,6 +227,204 @@ describe('classifyGoalDrainFleet', () => {
       NOW,
     );
     expect(alert).toMatchObject({ reason: 'drain-fleet-dead' });
+  });
+
+  it('an ALIVE fleet whose goal cohort is STARVED suppresses — the remedy would be refused', () => {
+    const alert = classifyGoalDrainFleet(
+      makeGoal({ drainFleet: 'drain-1' }),
+      [makeHolder()],
+      verdicts(makeVerdict('su-a', 'live')),
+      fleets({ [fleetKey('ws', 'drain-1')]: 'alive' }),
+      scopes({ 'g-1': 'goal-cohort-starved' }),
+      NOW,
+    );
+    expect(alert).toBeNull();
+  });
+});
+
+/**
+ * EI-23748092951882673 — the D-005 obligation and the scheduler's starvation
+ * guard must never be armed against each other.
+ *
+ * The measured conflict: the watchdog demanded a `goal`-pinned lane; writing one
+ * collapsed the claimable match 4430 -> 13 of 4444; `evaluateCollapseGuard`
+ * correctly refused it; and the only documented way past the refusal was
+ * `confirmCollapse:true`, which would actually starve the fleet. An agent that
+ * OBEYED the alarm was steered into the damaging action.
+ *
+ * These tests pin the invariant that resolves it: THE WATCHDOG MUST NOT DEMAND A
+ * WRITE THE SCHEDULER WOULD REFUSE. They compose the real remedy builder with
+ * the real guard — no mock of either — so the two cannot drift apart silently.
+ */
+describe('goalPinnedRemedySpec — obligation and scheduler guard share one oracle', () => {
+  const kindOnly: ClaimSpec = {
+    ...DEFAULT_CLAIM_SPEC,
+    view: { filter: { field: 'kind', op: 'in', value: ['bug', 'change'] } as FilterNode },
+  };
+
+  it('builds a spec the D-005 predicate itself accepts — the remedy satisfies the alarm', () => {
+    expect(claimSpecIsGoalScoped(goalPinnedRemedySpec(DEFAULT_CLAIM_SPEC, 'g-1'), 'g-1')).toBe(true);
+    expect(claimSpecIsGoalScoped(goalPinnedRemedySpec(kindOnly, 'g-1'), 'g-1')).toBe(true);
+  });
+
+  it('preserves the incumbent narrowing instead of discarding the lane', () => {
+    expect(JSON.stringify(goalPinnedRemedySpec(kindOnly, 'g-1').view.filter)).toContain('"kind"');
+  });
+
+  it('pins POSITIVELY and specifically — it does not satisfy a different goal', () => {
+    expect(claimSpecIsGoalScoped(goalPinnedRemedySpec(kindOnly, 'g-1'), 'g-2')).toBe(false);
+  });
+
+  it('the scheduler REFUSES the remedy at the measured incident numbers (4430 -> 13 of 4444)', () => {
+    const remedy = goalPinnedRemedySpec(kindOnly, 'g-1');
+    const verdict = evaluateCollapseGuard({
+      matched: 13,
+      pool: 4444,
+      previousMatched: 4430,
+      previousSource: 'authored',
+      confirm: false,
+      filter: remedy.view.filter,
+      previousFilter: kindOnly.view.filter,
+    });
+    expect(verdict.refuse).toBe(true);
+    // ...so the watchdog MUST read that pair as 'goal-cohort-starved', and
+    // classifying it must yield NO alert. An alert here is precisely the bug:
+    // it steers the reader toward confirmCollapse:true, which starves the fleet.
+    expect(
+      classifyGoalDrainFleet(
+        makeGoal({ drainFleet: 'drain-1' }),
+        [makeHolder()],
+        verdicts(makeVerdict('su-a', 'live')),
+        fleets({ [fleetKey('ws', 'drain-1')]: 'alive' }),
+        scopes({ 'g-1': 'goal-cohort-starved' }),
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
+  // POSITIVE CONTROL: the fix must NOT silence D-005 wholesale. A goal whose
+  // cohort is genuinely populated still gets its obligation, because there the
+  // pinned write lands. Without this, "suppress everything" would also pass.
+  it('a POPULATED goal cohort is still an obligation — the guard accepts, so the alarm fires', () => {
+    const remedy = goalPinnedRemedySpec(kindOnly, 'g-1');
+    const verdict = evaluateCollapseGuard({
+      matched: 900, // well above max(ABS_FLOOR, ceil(4430 * RATIO)) = 222
+      pool: 4444,
+      previousMatched: 4430,
+      previousSource: 'authored',
+      confirm: false,
+      filter: remedy.view.filter,
+      previousFilter: kindOnly.view.filter,
+    });
+    expect(verdict.refuse).toBe(false);
+    expect(
+      classifyGoalDrainFleet(
+        makeGoal({ drainFleet: 'drain-1' }),
+        [makeHolder()],
+        verdicts(makeVerdict('su-a', 'live')),
+        fleets({ [fleetKey('ws', 'drain-1')]: 'alive' }),
+        scopes({ 'g-1': 'not-goal-scoped' }),
+        NOW,
+      ),
+    ).toMatchObject({ reason: 'drain-fleet-not-goal-scoped' });
+  });
+});
+
+/**
+ * The probe that decides whether to alarm. These use the REAL
+ * `evaluateCollapseGuard` with faked COUNTS, so the thresholds under test are the
+ * scheduler's own — a change to RATIO/ABS_FLOOR moves these tests, which is the
+ * point: the watchdog's demand is defined by the guard, not by a second copy of it.
+ */
+describe('resolveGoalPinWritability — only alarm when the remedy is a legal write', () => {
+  const kindOnly: ClaimSpec = {
+    ...DEFAULT_CLAIM_SPEC,
+    view: { filter: { field: 'kind', op: 'in', value: ['bug', 'change'] } as FilterNode },
+  };
+  type GuardInput = Parameters<GoalPinWritabilityProbe['guard']>[0];
+
+  /** `counts` is the preview queue in call order: [candidate(remedy), previous(incumbent)]. */
+  function probe(counts: Array<{ matched: number; pool: number }>, spy?: { calls: GuardInput[] }): GoalPinWritabilityProbe {
+    const queue = [...counts];
+    return {
+      preview: async () => queue.shift() ?? { matched: 0, pool: 0 },
+      guard: (input) => {
+        spy?.calls.push(input);
+        return evaluateCollapseGuard(input);
+      },
+    };
+  }
+
+  it('STARVED: an authored pot-wide lane whose pin collapses the pool does NOT alarm', async () => {
+    await expect(
+      resolveGoalPinWritability(kindOnly, 'g-1', 'ws', probe([
+        { matched: 13, pool: 4444 },
+        { matched: 4430, pool: 4444 },
+      ])),
+    ).resolves.toBe('goal-cohort-starved');
+  });
+
+  it('OBLIGATION: an authored lane whose pin keeps a real cohort still alarms', async () => {
+    await expect(
+      resolveGoalPinWritability(kindOnly, 'g-1', 'ws', probe([
+        { matched: 900, pool: 4444 },
+        { matched: 4430, pool: 4444 },
+      ])),
+    ).resolves.toBe('not-goal-scoped');
+  });
+
+  it('NO stored spec: measures against DEFAULT and reports previousSource "default"', async () => {
+    const spy = { calls: [] as GuardInput[] };
+    await expect(
+      resolveGoalPinWritability(null, 'g-1', 'ws', probe([{ matched: 40, pool: 4444 }], spy)),
+    ).resolves.toBe('not-goal-scoped');
+    expect(spy.calls[0]).toMatchObject({ previousSource: 'default', previousMatched: null });
+  });
+
+  it('an EMPTY goal cohort with no stored spec is starved, not an obligation', async () => {
+    await expect(
+      resolveGoalPinWritability(null, 'g-1', 'ws', probe([{ matched: 0, pool: 4444 }])),
+    ).resolves.toBe('goal-cohort-starved');
+  });
+
+  // ANTI-FOOTGUN. confirmCollapse:true is the override whose USE is the documented
+  // harm in EI-23748092951882673. The watchdog asks "would this be REFUSED?", and
+  // must never ask "could it be FORCED?" — a true here re-arms the original trap.
+  it('NEVER asks the guard to ignore the collapse — confirm is always false', async () => {
+    const spy = { calls: [] as GuardInput[] };
+    await resolveGoalPinWritability(kindOnly, 'g-1', 'ws', probe([
+      { matched: 13, pool: 4444 },
+      { matched: 4430, pool: 4444 },
+    ], spy));
+    expect(spy.calls).toHaveLength(1);
+    expect(spy.calls[0].confirm).toBe(false);
+  });
+
+  it('a DEGRADED probe is unknown and suppresses — never a false obligation', async () => {
+    await expect(
+      resolveGoalPinWritability(kindOnly, 'g-1', 'ws', {
+        preview: async () => {
+          throw new Error('pg down');
+        },
+        guard: () => {
+          throw new Error('unreachable');
+        },
+      }),
+    ).resolves.toBe('unknown');
+  });
+
+  it('measures the PINNED remedy against the INCUMBENT — not the same spec twice', async () => {
+    const seen: ClaimSpec[] = [];
+    await resolveGoalPinWritability(kindOnly, 'g-1', 'ws', {
+      preview: async (spec) => {
+        seen.push(spec);
+        return { matched: 900, pool: 4444 };
+      },
+      guard: (i) => evaluateCollapseGuard(i),
+    });
+    expect(seen).toHaveLength(2);
+    expect(claimSpecIsGoalScoped(seen[0], 'g-1')).toBe(true); // candidate IS the pinned remedy
+    expect(claimSpecIsGoalScoped(seen[1], 'g-1')).toBe(false); // previous is the incumbent lane
   });
 });
 

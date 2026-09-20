@@ -2403,10 +2403,32 @@ export async function readClaimSpecDelta(
       specUsesRankTerm(proposed.spec ?? DEFAULT_CLAIM_SPEC, 'dependency_unlock_score');
     const dependencyUnlockScore = explainDependencyUnlock ? dependencyUnlockScoreSql(client) : client`NULL::integer`;
     const table = 'claim_spec_delta_snapshot';
+    // EI-23748103923712230: the snapshot below drops the observation lane BEFORE materializing.
+    // Without that floor the temp table holds every union-matching row at FULL payload width
+    // (the `SELECT c.*` is load-bearing — see the note under `sided`), so a broad proposed
+    // filter — exactly the widening preview this tool exists to serve — overflows the 8MB
+    // `temp_buffers` default and PostgreSQL raises its own `no empty local buffer available`
+    // (localbuf.c). Measured on the live papercusp lane: both sides narrow SUCCEEDS; flipping
+    // ONLY the proposed filter to one matching ~every row FAILS; and a narrow call on the SAME
+    // pooled backend immediately after still succeeds — so this is input-size-driven, NOT an
+    // accumulating or poisoned backend.
+    //
+    // Reading the already-projected `ok_observation` column (issueClaimCandidateSubquery
+    // decorates it) rather than pushing the floor down is deliberate twice over:
+    // `filterPushdown` hardcodes `spec_match` to TRUE, which would silently make
+    // currentClaimable / retained / newlyExcluded count every row as matching the stored spec;
+    // and calling observationLaneExclusionSql here would need the `wi` alias, which the outer
+    // scope does not have.
+    //
+    // Output is unchanged BY CONSTRUCTION: `ok_observation` is ANDed into
+    // ALL_ISSUE_CLAIM_FLOORS_PASS, which BOTH in_current and in_proposed require, so a row
+    // failing it is false on both sides and can reach no count and neither row list. Unlike the
+    // claim_candidate_snapshot path above, this path measures nothing over the pre-floor
+    // population, so there is no laneScopedPopulation-style count to restore.
     await client`
       CREATE TEMP TABLE ${client.unsafe(table)} ON COMMIT DROP AS
       SELECT c.*, (${proposedMatch}) AS proposed_match FROM (${sub}) c
-      WHERE ${candidateMatch}
+      WHERE (${candidateMatch}) AND c.ok_observation
     `;
 
     // in_current / in_proposed are the FULL claimability predicate per side: that side's

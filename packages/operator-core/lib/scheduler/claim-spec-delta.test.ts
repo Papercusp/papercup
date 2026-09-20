@@ -124,6 +124,29 @@ describe('readClaimSpecDelta — both sides in ONE snapshot (P-005)', () => {
     expect(creates[0]).toContain('ON COMMIT DROP');
   });
 
+  it('excludes the observation lane from the snapshot it materializes (EI-23748103923712230)', async () => {
+    const pool = makePool();
+    await readClaimSpecDelta(CURRENT, PROPOSED, { ...OPTS, client: pool.client }, READ);
+    const create = pool.queries.find((q) => q.includes('CREATE TEMP TABLE'))!;
+    // The snapshot projects `SELECT c.*` — every base column, including the full payload jsonb —
+    // so its ROW COUNT is what decides whether it fits in the 8MB `temp_buffers` default. A
+    // WIDENING revision makes `candidateMatch` a broad union over the whole corpus, and without
+    // this floor the materialization exhausts local buffers: PG raises its own
+    // `no empty local buffer available` and the preview dies. Measured on the live papercusp
+    // lane — both sides narrow succeeds, flipping ONLY the proposed filter broad fails, and a
+    // narrow call on the SAME backend straight after still succeeds (input-size-driven).
+    //
+    // Assert the WHERE STRUCTURE, not merely that the text mentions the column: the structural
+    // form is what pins the floor as ANDed onto the union predicate. (The rationale lives in a
+    // JS comment above the statement rather than a SQL one on purpose — a backtick inside the
+    // template literal terminates it, and the SQL comment would also land in this log.)
+    expect(create).toMatch(/WHERE\s+\(\?\)\s+AND\s+c\.ok_observation/);
+    // It must be ANDed with the union, never replace it. Restricting the candidate population
+    // to one side is the EI-20414245235902773 regression: proposed-only rows then never reach
+    // the `proposed_match` projection and a widening revision reports 0 newly admitted.
+    expect(create).toContain('FROM (?) c');
+  });
+
   it('reads counts and BOTH row lists off that one materialization', async () => {
     const pool = makePool();
     await readClaimSpecDelta(CURRENT, PROPOSED, { ...OPTS, client: pool.client }, READ);
