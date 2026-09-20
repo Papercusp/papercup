@@ -11,17 +11,12 @@ import {
   setPgDiagnosticContextResolver,
   type PgResultDiagnosticCorrelation,
 } from '@papercusp/db-org';
-import { currentStageAttempt } from '../sync/hyperbee/stage-stall-log';
+import { currentStageDiagnosticContext } from '../sync/hyperbee/stage-stall-log';
 
-setPgDiagnosticContextResolver((): PgResultDiagnosticCorrelation | null => {
-  const attempt = currentStageAttempt();
-  if (!attempt) return null;
-  const active = attempt.snapshot().activeHops;
-  const hop = active.length > 0 ? active[active.length - 1] : undefined;
-  return {
-    ...attempt.context,
-    hopId: hop?.hopId ?? null,
-    stage: hop?.stage ?? null,
-    boundary: hop?.boundary ?? null,
-  };
-});
+export function installDbDiagnosticCorrelationWiring(): void {
+  setPgDiagnosticContextResolver((): PgResultDiagnosticCorrelation | null => {
+    return currentStageDiagnosticContext();
+  });
+}
+
+installDbDiagnosticCorrelationWiring();

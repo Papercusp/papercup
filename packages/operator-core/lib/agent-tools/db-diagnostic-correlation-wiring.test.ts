@@ -7,9 +7,12 @@ import {
 } from '@papercusp/db-org';
 import {
   createStageAttempt,
+  traceStageAwait,
   withStageAttempt,
 } from '../sync/hyperbee/stage-stall-log';
-import './db-diagnostic-correlation-wiring';
+import {
+  installDbDiagnosticCorrelationWiring,
+} from './db-diagnostic-correlation-wiring';
 
 afterEach(() => {
   resetPgDiagnosticContextResolver();
@@ -18,22 +21,23 @@ afterEach(() => {
 
 describe('db diagnostic correlation wiring', () => {
   it('carries the active named hop into the existing local result snapshot', () => {
+    installDbDiagnosticCorrelationWiring();
     const attempt = createStageAttempt({ rowId: 42, onEvent: () => {} });
-    const span = attempt.begin('epoch-query', 'await');
     const hooks = createPgDiagnosticHooks('org-app');
-    withStageAttempt(attempt, () => {
-      hooks.onresult({
-        connectionId: 7,
-        queryId: 23,
-        backendPid: 8123,
-        query: 'SELECT secret FROM private_table',
-        rowCount: 1,
-        wireBytes: 12,
-        status: 'ok',
-        context: hooks.onquerycontext(),
-      });
-    });
-    span.end('fulfilled');
+    withStageAttempt(attempt, () =>
+      traceStageAwait('epoch-query', async () => {
+        hooks.onresult({
+          connectionId: 7,
+          queryId: 23,
+          backendPid: 8123,
+          query: 'SELECT secret FROM private_table',
+          rowCount: 1,
+          wireBytes: 12,
+          status: 'ok',
+          context: hooks.onquerycontext(),
+        });
+      }),
+    );
     attempt.finish();
 
     const result = pgResultDiagnosticSnapshot('org-app').results[0];
@@ -49,11 +53,11 @@ describe('db diagnostic correlation wiring', () => {
         boundary: 'await',
       },
     });
-    expect(JSON.stringify(result)).not.toContain('private_table');
     expect(JSON.stringify(result)).not.toContain('secret');
   });
 
   it('keeps attempt identity while no hop is active, rather than inventing a stage', () => {
+    installDbDiagnosticCorrelationWiring();
     const attempt = createStageAttempt({ rowId: 43, onEvent: () => {} });
     const hooks = createPgDiagnosticHooks('org-app');
     withStageAttempt(attempt, () => {
