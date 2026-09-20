@@ -23,6 +23,15 @@ vi.mock('../pot/started', () => ({
 const { wakeMug } = vi.hoisted(() => ({ wakeMug: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../pot/placement-watchdog', () => ({ resolveMugOwner: vi.fn(), wakeMug }));
 vi.mock('../pot/watchdog', () => ({ recentWatchdogFires: vi.fn(), recordFire: vi.fn() }));
+// Only the coverage probe is faked; every other ungraded-scope export stays real, so a
+// default of 0 leaves the pre-existing suites reading exactly as they did before.
+const { outsideScopes } = vi.hoisted(() => ({
+  outsideScopes: vi.fn<(...args: never[]) => Promise<number>>(),
+}));
+vi.mock('./ungraded-scope', async (orig) => ({
+  ...(await orig<typeof import('./ungraded-scope')>()),
+  countActionableUngradedOutsideScopes: outsideScopes,
+}));
 
 import { listBlenderMaintenanceScopes, listBlenderMaintenanceWorkspaceIds } from '../pot/started';
 import {
@@ -51,6 +60,7 @@ afterEach(() => {
   dbRows.current = [];
   vi.mocked(listBlenderMaintenanceScopes).mockReset();
   vi.mocked(listBlenderMaintenanceWorkspaceIds).mockReset().mockReturnValue([]);
+  outsideScopes.mockReset().mockResolvedValue(0);
 });
 
 function filing(ideaId: string, ageDays: number, origin = 'su-ideate'): UngradedCandidate {
@@ -254,6 +264,89 @@ describe('ungradedFilingsSweep observability', () => {
     ]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('scope registry unavailable'));
     warn.mockRestore();
+  });
+});
+
+/**
+ * WI-10002098 — the DETECTOR half of EI-23811029152367526.
+ *
+ * That item re-homed ONE stranded partition; these guard the CLASS, i.e. that something
+ * still notices the next one. The defect was that the coverage probe's only call site sat
+ * inside `if (scopes.length === 0)`, so it answered "did we have anything to look at?"
+ * and never "is there backlog nobody can reach?". Those differ exactly when coverage is
+ * PARTIAL — the common case, and the one that happened: 249 workspace-global `scout` rows
+ * unreachable for a month while every registered partition graded normally and current.
+ *
+ * A coverage check that only fires at ZERO coverage is a liveness check, so the assertions
+ * below are deliberately falsifiable in BOTH directions — re-gating the probe fails the
+ * first, and a probe that cries wolf on a healthy workspace fails the third.
+ */
+describe('coverage is checked on every tick, not only at zero coverage (WI-10002098)', () => {
+  const twoScopes = [
+    { workspaceId: 'ws-1', installSlug: 'papercusp' },
+    { workspaceId: 'ws-1', installSlug: 'portal' },
+  ];
+  const at = SU_IDEATE_UNGRADED_EPOCH_MS + 30 * DAY;
+
+  it('REGRESSION: probes coverage even when scopes WERE evaluated', async () => {
+    vi.mocked(listBlenderMaintenanceScopes).mockResolvedValueOnce(twoScopes);
+    dbRows.current = [];
+
+    await ungradedFilingsSweep({ now: at });
+
+    // The entire defect in one assertion: pre-fix, this path never called the probe.
+    // Once per WORKSPACE, not once per scope — both fixtures share `ws-1`.
+    expect(outsideScopes).toHaveBeenCalledTimes(1);
+    expect(outsideScopes).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ workspaceId: 'ws-1', harnessSlugs: ['papercusp', 'portal'] }),
+    );
+  });
+
+  it('reports stale backlog no registered scope can reach', async () => {
+    vi.mocked(listBlenderMaintenanceScopes).mockResolvedValueOnce(twoScopes);
+    dbRows.current = [];
+    outsideScopes.mockResolvedValue(249);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await ungradedFilingsSweep({ now: at });
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        workspaceId: 'ws-1',
+        origin: '*',
+        outcome: 'error',
+        eligibleBacklogCount: 249,
+        evaluatedScopeCount: 2,
+      }),
+    ]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('not reachable'));
+    warn.mockRestore();
+  });
+
+  // The direction that decides whether this guard SURVIVES. A coverage alarm that fires
+  // on a healthy workspace is deleted within the week, taking the real detector with it.
+  it('stays silent when every stale filing is reachable', async () => {
+    vi.mocked(listBlenderMaintenanceScopes).mockResolvedValueOnce(twoScopes);
+    dbRows.current = [];
+    outsideScopes.mockResolvedValue(0);
+
+    expect(await ungradedFilingsSweep({ now: at })).toEqual([]);
+  });
+
+  it('a probe that THREW is surfaced, never read as fully covered', async () => {
+    vi.mocked(listBlenderMaintenanceScopes).mockResolvedValueOnce(twoScopes);
+    dbRows.current = [];
+    outsideScopes.mockRejectedValue(new Error('probe exploded'));
+
+    const result = await ungradedFilingsSweep({ now: at });
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        outcome: 'error',
+        reason: expect.stringContaining('probe exploded'),
+      }),
+    ]);
   });
 });
 
