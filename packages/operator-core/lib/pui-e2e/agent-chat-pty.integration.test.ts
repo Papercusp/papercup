@@ -1677,15 +1677,23 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
     await putViewState('Sessions');
     pane = new PuiPane(bin, operatorPort, home);
     try {
-      stage = 'open-legacy-history';
+      stage = 'compose-before-continuation';
       await pane.waitFor('P8 legacy source', { timeoutMs: 40_000 });
+      await openComposer(pane, false);
+      pane.write(draft);
+      await pane.waitFor(draft.trim());
+      pane.escape();
+      pane.write('s');
+      await pane.waitFor('e rename · d archive · K continue/fork');
+
+      stage = 'open-legacy-history';
       pane.write('/P8 legacy source');
       pane.enter();
       await pane.waitForGone('P8 other history');
 
       stage = 'continue';
       pane.write('K');
-      await pane.waitFor('Message — Enter send', { timeoutMs: 60_000 });
+      await pane.waitFor('SU session · ready', { timeoutMs: 60_000 });
       await pane.waitFor('P8 legacy answer');
       const [successor] = await db.adminSql<Array<{
         id: string; su_runtime_class: string; continued_from_chat_id: string;
@@ -1706,8 +1714,11 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       expect(nativeTerminalLaunch).not.toHaveBeenCalled();
 
       stage = 'preserve-text-on-successor';
+      // No retyping: the draft entered before navigating to Sessions must
+      // survive the linked continuation and reach only its new successor.
       pane.write('i');
-      pane.write(draft);
+      await pane.waitFor('Message — Enter send', { timeoutMs: 60_000 });
+      await pane.waitFor(draft.trim());
       pane.enter();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
       const saved = await waitForSavedTurn(draft);
@@ -1725,6 +1736,59 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       await pane.stop().catch(() => {});
     }
   }, 180_000);
+
+  test('AUTO-BAR-R-07-P-008: conversation stays primary and preserves the draft across compact resize', async () => {
+    await putViewState('Plans');
+    const draft = `P8 compact draft ${randomUUID()}`;
+    const pane = new PuiPane(bin, operatorPort, home, { cols: 150, rows: 44 });
+    try {
+      await openComposer(pane, false);
+      await pane.waitFor('┌ Agent Chat');
+      pane.write(draft);
+      await pane.waitFor(draft);
+
+      // 100x22 is the contract's compact band (80–159 columns, 20–23 rows):
+      // Agent Chat remains the primary surface and the active draft is not
+      // replaced by unrelated global activity or clipped into a dead end.
+      pane.resize(100, 22);
+      await pane.waitFor('┌ Agent Chat');
+      await pane.waitFor(draft);
+      await pane.waitFor('Message — Enter send');
+      expect(pane.screen()).not.toContain('Terminal too small');
+
+      pane.resize(150, 44);
+      await pane.waitFor('┌ Agent Chat');
+      await pane.waitFor(draft);
+      console.info('PUI_R07_COMPACT_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, draft, normal: '150x44', compact: '100x22',
+        frame: pane.screen(),
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  }, 120_000);
+
+  test('PUI-COMMANDS: help and the command palette discover and execute a harmless extension', async () => {
+    await putViewState('Plans');
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await pane.waitFor('?:help', { timeoutMs: 40_000 });
+      pane.write('?');
+      await pane.waitFor('command palette');
+      await pane.waitFor(':theme');
+      pane.escape();
+      pane.write(':');
+      await pane.waitFor('Command (Esc closes)');
+      pane.write('tutorial');
+      pane.enter();
+      await pane.waitFor('Welcome to pui — the Papercusp workbench');
+      console.info('PUI_COMMANDS_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, command: ':tutorial', frame: pane.screen(),
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  }, 120_000);
 
   test('PUI-SESSION-LIFECYCLE: session browser keeps isolated history addressable and supports rename/archive', async ({ onTestFailed }) => {
     const sourceId = `pui-session-source-${randomUUID()}`;
