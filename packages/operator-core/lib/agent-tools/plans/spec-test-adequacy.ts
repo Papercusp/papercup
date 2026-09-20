@@ -1025,15 +1025,19 @@ export function evaluateSpecTestAdequacy(input: {
   now?: Date;
 }): SpecTestAdequacyResult {
   const { clause, classRef } = input;
-  const exactEvidence = activeSpecEvidence(
-    input.evidence.filter(
-      (row) =>
-        row.planSlug === clause.planSlug &&
-        row.specId === clause.specId &&
-        row.specRevision === clause.revision &&
-        row.specFingerprint === clause.contentHash,
-    ),
+  // WI-10002082: keep the pre-projection selector match addressable. A binding can satisfy every
+  // clause selector and still be dropped by `activeSpecEvidence` (it carries no test-execution
+  // identity, or a later attempt superseded it). Without this population the falsifiability refusal
+  // below reports a FALSE ABSENCE — "no binding is bound" — while a live, fingerprint-matching
+  // binding sits in the table, which drives binders to stack redundant re-bindings on one clause.
+  const exactSelectorMatches = input.evidence.filter(
+    (row) =>
+      row.planSlug === clause.planSlug &&
+      row.specId === clause.specId &&
+      row.specRevision === clause.revision &&
+      row.specFingerprint === clause.contentHash,
   );
+  const exactEvidence = activeSpecEvidence(exactSelectorMatches);
   const currentEvidence = exactEvidence.filter(
     (row) =>
       row.currentness.overall === 'current' ||
@@ -1152,13 +1156,32 @@ export function evaluateSpecTestAdequacy(input: {
   const mutationInCohortNotExecutable = exactMutationOrCounterexample.filter(
     (row) => evidence.includes(row) && !isSuccessfulExecutableEvidence(row),
   );
+  // A binding that matches every clause selector can still be removed by the `activeSpecEvidence`
+  // read projection, and a removed row reaches NONE of the populations above — so the refusal falls
+  // through to "no binding is bound", a false absence that reads as "you bound nothing" while a
+  // selector-matching binding exists in the table. That wording drives binders to stack redundant
+  // re-bindings on one clause instead of repairing the row they already have.
+  //
+  // The projection removes a row by exactly two routes (`activeSpecEvidence` returns
+  // `latest.filter((row) => !superseded.has(row))`): `latestLogicalEvidence` keeps only the newest
+  // row per plan/spec/revision/kind/ref, and attempt-supersession drops an older structured attempt.
+  // A row with no `details.testExecution.binding` has a null identity, is never a supersession
+  // candidate, and is therefore always RETAINED — so absence here is never evidence about
+  // test-execution identity, and this message must not claim it is.
+  const mutationDroppedByProjection = exactSelectorMatches.filter(
+    (row) =>
+      (row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
+      !exactEvidence.includes(row),
+  );
   const attestedFalsifiableOnly = evidence.filter((row) => detailsOf(row).falsifiable === true);
   const unboundMutationReason =
     mutationInCohortNotExecutable.length > 0
       ? `${mutationInCohortNotExecutable.length} mutation or counterexample binding(s) are in the current grading cohort for ${clauseIdentity(clause)} but do not qualify as successful executable evidence (${summarizeExecutableEvidenceGaps(mutationInCohortNotExecutable)}).`
       : mutationOutsideCohort.length > 0
         ? `${mutationOutsideCohort.length} mutation or counterexample binding(s) exist in the exact clause population but are outside the current grading cohort for ${clauseIdentity(clause)}.`
-        : `no mutation or counterexample binding is bound for ${clauseIdentity(clause)}.`;
+        : mutationDroppedByProjection.length > 0
+          ? `${mutationDroppedByProjection.length} mutation or counterexample binding(s) match the exact clause population for ${clauseIdentity(clause)} but were superseded within the graded evidence projection (a newer binding for the same plan/spec/revision/kind/ref, or a later attempt for the same registered proof), so they carry no grade.`
+          : `no mutation or counterexample binding is bound for ${clauseIdentity(clause)}.`;
   ratings.falsifiability =
     boundMutationOrCounterexample.length > 0
       ? {
@@ -1186,7 +1209,11 @@ export function evaluateSpecTestAdequacy(input: {
             unknown:
               exactMutationOrCounterexample.length > 0
                 ? `A mutation or counterexample binding exists in the exact clause population, but no current-cohort binding demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`
-                : `No bound evidence demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`,
+                : mutationDroppedByProjection.length > 0
+                  ? // Never report a bare absence while a selector-matching binding exists — it
+                    // sends binders to re-bind against a row that is already there.
+                    `${mutationDroppedByProjection.length} mutation or counterexample binding(s) match the exact clause population but were superseded within the graded evidence projection (a newer binding for the same plan/spec/revision/kind/ref, or a later attempt for the same registered proof), so no graded binding demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`
+                  : `No bound evidence demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`,
           });
 
   let layerRating: AdequacyRatingEntry;
