@@ -20,6 +20,7 @@
  */
 import type postgres from 'postgres';
 import { getDatatype, upsertDatatype, type DatatypeRow } from '../datatype-registry-store';
+import type { TypedPropertyDefinition } from '../typed-properties';
 
 /** The datatype ref the work-on-everything `worklist` property declares (P-025). */
 export const PLAN_REF_LIST_DATATYPE = 'plan-ref-list';
@@ -72,4 +73,53 @@ export async function ensurePlanRefListDatatype(
     createdBy: 'goal-package-seed',
   });
   return { created: true };
+}
+
+/** The property name the placement gate reads as canonical on EVERY goal. */
+export const CANONICAL_WORKLIST_PROPERTY = 'worklist';
+
+/**
+ * The canonical `worklist` declaration. Matches, byte for byte, what the
+ * bundled work-on-everything package already writes (verified against the
+ * live rows: `{ datatype: 'plan-ref-list', default: [], editable_by: 'both' }`)
+ * so an ad-hoc goal and a packaged goal are indistinguishable to every reader.
+ */
+export function canonicalWorklistDeclaration(): TypedPropertyDefinition {
+  return { datatype: PLAN_REF_LIST_DATATYPE, default: [], editable_by: 'both' };
+}
+
+/**
+ * Seed the canonical `worklist` declaration onto a goal's property_schema at
+ * CREATION. PURE — no database, no I/O, so every goal-creation door can call
+ * it unconditionally without taking a dependency on the registry.
+ *
+ * Why every goal and not just packaged ones: `worklist` is not an optional
+ * package flourish — `goal-launch-settings.ts` reads
+ * `g.properties->'worklist'->'value'` as THE canonical placement worklist for
+ * any goal, unconditionally. A system gate that treats a property as universal
+ * must not be able to disagree with the schema that declares it. Before this,
+ * a goal created ad hoc got `property_schema = '{}'` (insertGoalRow COALESCEs
+ * a missing schema to an empty object), so `goals:set-property` refused
+ * `unknown_property: worklist` and the goal could never populate the worklist
+ * the gate then reported as "empty" — a closed loop with no tool-reachable exit.
+ *
+ * The OTHER half — the `plan-ref-list` row in the workspace's datatype registry
+ * — is ensured lazily at the write door (`ensurePlanRefListDatatype`), where
+ * the datatype is actually resolved to validate a value. Deliberately NOT done
+ * here: binding four creation doors to a registry round-trip buys nothing at a
+ * moment when no value is being validated, and a declaration that fails to
+ * land because an unrelated registry read failed is strictly worse than one
+ * that lands and is validated on first use.
+ *
+ * Non-destructive: a caller that declared `worklist` itself keeps its own
+ * declaration untouched, mirroring `ensurePlanRefListDatatype`'s
+ * insert-if-absent contract.
+ */
+export function withCanonicalWorklistDeclaration(
+  propertySchema: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const declared = { ...(propertySchema ?? {}) };
+  if (Object.prototype.hasOwnProperty.call(declared, CANONICAL_WORKLIST_PROPERTY)) return declared;
+  declared[CANONICAL_WORKLIST_PROPERTY] = canonicalWorklistDeclaration();
+  return declared;
 }

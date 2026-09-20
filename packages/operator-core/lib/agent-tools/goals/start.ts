@@ -36,6 +36,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { TripwireSchema, deleteGoalRow, goalId, insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { validatePropertySchemaDeclaration } from '../../typed-properties-db';
+import { withCanonicalWorklistDeclaration } from '../../goals/package-property-datatypes';
 import { applyGoalBlockedBy, readGoalReadiness, replaceGoalBlockedBy } from '@papercusp/agent-mcp/goal-deps';
 import { STANDING_GOAL_KILL_POLARITY, killCriterionProblem } from '../../goals/kill-criterion';
 import { evaluateGoalStartInputs } from '../../goals/goal-io-validation';
@@ -590,6 +591,13 @@ export default defineTool({
     // PRE-PIN the agent's coord identity so the mode stamp below can name it
     // before it exists. Same minting `/api/adv/launch-su` does.
     const ownerId = `su-${randomUUID()}`;
+
+    // Seed the canonical `worklist` declaration so an ad-hoc goal is
+    // indistinguishable from a packaged one to the placement gate, which reads
+    // `properties->'worklist'->'value'` on EVERY goal. Without this the row
+    // lands with property_schema '{}' and `goals:set-property` refuses
+    // `unknown_property: worklist` forever (EI-23745110935212173).
+    const seededPropertySchema = withCanonicalWorklistDeclaration(args.propertySchema ?? null);
 
     // ── 1. the goal row ───────────────────────────────────────────────────
     try {

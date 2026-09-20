@@ -62,7 +62,7 @@ import { runPackageConstructor, type PackageConstructorResult } from './package-
 import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
 import { GOAL_HOLDER_DEFAULTS } from '../goal-launch-settings-shared';
 import { evaluateGoalStartInputs } from './goal-io-validation';
-import { ensurePlanRefListDatatype } from './package-property-datatypes';
+import { ensurePlanRefListDatatype, withCanonicalWorklistDeclaration } from './package-property-datatypes';
 import { validatePropertySchemaDeclaration } from '../typed-properties-db';
 import { startGoalById } from './start-goal-by-id';
 import { drainFleetAutoMintEnabled, mintDrainFleetForGoal } from './drain-fleet-mint';
@@ -363,6 +363,15 @@ export const DEFAULT_DEPS: StartGoalFromPackageDeps = {
        WHERE id = ${stub.id} AND workspace_id = ${workspaceId}`;
   },
   mintRow: async (sql, { workspaceId, id, installSlug, content, inputs, metadata }) => {
+    // Every minted goal declares the canonical `worklist` (EI-23745110935212173):
+    // a package that declares no properties would otherwise land with
+    // property_schema '{}' and could never have a worklist written to it.
+    // Non-destructive — a package declaring `worklist` keeps its own.
+    const seededPropertySchema = await seedCanonicalGoalPropertySchema(
+      sql,
+      workspaceId,
+      content.propertySchema,
+    );
     await insertGoalRow(sql as unknown as GoalSqlTag, {
       id,
       installSlug,
@@ -378,7 +387,7 @@ export const DEFAULT_DEPS: StartGoalFromPackageDeps = {
       inputSchema: content.inputSchema,
       inputs,
       outputSchema: content.outputSchema,
-      propertySchema: content.propertySchema,
+      propertySchema: seededPropertySchema,
       status: 'active',
       metadata,
     });

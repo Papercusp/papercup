@@ -33,6 +33,7 @@ import {
   replaceGoalBlockedBy,
 } from '@papercusp/agent-mcp/goal-deps';
 import { killCriterionProblem } from './kill-criterion';
+import { withCanonicalWorklistDeclaration } from './package-property-datatypes';
 import {
   drainFleetAutoMintEnabled,
   mintDrainFleetForGoal,
@@ -139,11 +140,20 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
   const ownerId = `su-${randomUUID()}`;
   const launchedBy = input.launchedBy ?? 'scout-goal-rail';
 
+  // Seed the canonical `worklist` declaration for the same reason
+  // `goals:start` does: the placement gate reads
+  // `properties->'worklist'->'value'` on EVERY goal, so a goal minted here
+  // with property_schema '{}' could never have a worklist written to it
+  // through any tool. This rail needs it MORE than the tool door, because
+  // there is no owner in the loop to notice the dead end and work around it.
+  const seededPropertySchema = withCanonicalWorklistDeclaration(null);
+
   // ── 1. the goal row ─────────────────────────────────────────────────────
   await insertGoalRow(sql, {
     id,
     installSlug,
     workspaceId,
+    propertySchema: seededPropertySchema,
     title: input.title,
     body: input.body ?? null,
     budgetCents: input.budgetCents,

@@ -156,6 +156,14 @@ async function defaultGoalStubSeeder({
     if (problem) return { seeded: false, reason: `killCriterion invalid: ${problem}` };
   }
 
+  // EVERY goal carries the canonical `worklist` declaration — including a
+  // package that declares no properties of its own, which would otherwise land
+  // with property_schema '{}' and hit the same dead end as an ad-hoc goal (the
+  // gate above only runs when the package declared something). Non-destructive:
+  // a package that declares `worklist` itself keeps its own declaration.
+  const { withCanonicalWorklistDeclaration } = await import('../goals/package-property-datatypes');
+  const seededPropertySchema = withCanonicalWorklistDeclaration(pkg.propertySchema ?? null);
+
   const id = goalId(pkg.title);
   await insertGoalRow(sql, {
     id,
@@ -173,7 +181,7 @@ async function defaultGoalStubSeeder({
     // `inputs` deliberately NOT written: per-instance provenance (P-021),
     // resolved at start time, never shipped in a package.
     outputSchema: pkg.outputSchema,
-    propertySchema: pkg.propertySchema,
+    propertySchema: seededPropertySchema,
     status: 'paused',
     metadata: stampGoalPause(
       { installedFrom: 'cupboard', goalPackageRef: ref, packageVersion: pkg.version },
