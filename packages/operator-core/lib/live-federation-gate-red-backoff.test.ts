@@ -134,12 +134,14 @@ describe('live-federation gate: a RED backs off instead of re-running the full h
 
   it('clears last-red on every non-red outcome (green, starvation, and all build-contention skips)', () => {
     // Otherwise the longer red TTL keeps governing after the state has moved on.
-    // 5 clear sites: the GREEN stamp, the starvation downgrade, the build-lock skip,
-    // the dependency-generation skip added by WI-40905, and — since
-    // EI-21266997625575412 — the build-SOURCE-lock skip (an active source edit overlapped
-    // the build error: the same non-red-outcome shape as build-lock contention).
+    // 6 clear sites: the GREEN stamp, the starvation downgrade, the build-lock skip,
+    // the dependency-generation skip added by WI-40905, the build-SOURCE-lock skip added
+    // by EI-21266997625575412 (an active source edit overlapped the build error), and —
+    // since WI-10000053 — the disk-CAPACITY skip (the staging preflight refused admission
+    // with rc28 before any compilation, so the window measured nothing). All share the
+    // same non-red-outcome shape as build-lock contention.
     const clears = gate.match(/rm -f[^\n]*last-red/g) ?? [];
-    expect(clears).toHaveLength(5);
+    expect(clears).toHaveLength(6);
     const green = extractLine(/^\s*echo "\$\(now_s\)" >"\$STATE_DIR\/last-green"[^\n]*$/m, 'the GREEN stamp line');
     expect(green, 'the GREEN path must clear the red backoff').toContain('last-red');
 
