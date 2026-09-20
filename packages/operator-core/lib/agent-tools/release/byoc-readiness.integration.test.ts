@@ -1,7 +1,9 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
-import { evaluateByocReadiness, readByocReleaseSubject } from './byoc-readiness';
+import { evaluateByocReadiness, readByocReadiness, readByocReleaseSubject } from './byoc-readiness';
+import { releaseStageInputHash } from '../../../../../scripts/lib/release-task-journal';
 
 let db: FreshPgDb;
 const subject = { workspaceId: 'byoc-exact-subject', workItemId: 'WI-acceptance', taskId: 'selected-old-task' };
@@ -71,5 +73,50 @@ describe('BYOC acceptance exact task-ledger selection', () => {
       WHERE task_id = ${subject.taskId}
     `;
     await expect(readByocReleaseSubject(subject, db.sql)).resolves.toBeNull();
+  });
+
+  it('binds and probes only the selected journal publication; a later unknown or wrong scope cannot borrow it', async () => {
+    const publication = {
+      bundleSha256: 'a'.repeat(64),
+      manifestSha256: createHash('sha256').update('{}').digest('hex'),
+    };
+    const receipts = [
+      { sequence: 0, operationId: emptyJournal.operationId, requestIdentity: 'build-req', stage: 'release.build.linux',
+        state: 'committed', inputHash: 'b'.repeat(64), evidenceRefs: ['build:fixture'], recordedAt: '2026-09-20T00:00:00Z' },
+      { sequence: 1, operationId: emptyJournal.operationId, requestIdentity: 'publish-req', stage: 'publish.finalize',
+        state: 'committed', inputHash: releaseStageInputHash(publication),
+        evidenceRefs: [`provider:finalization:${publication.manifestSha256}`], recordedAt: '2026-09-20T00:00:01Z' },
+    ];
+    const journal = {
+      ...emptyJournal, source: { sha: '1'.repeat(40) },
+      artifactIdentity: { bundleSha256: publication.bundleSha256 },
+      currentStage: 'publish.finalize', currentState: 'committed', cursor: receipts.length, receipts,
+    };
+    await insert(subject.taskId, { journal });
+    await expect(readByocReleaseSubject(subject, db.sql)).resolves.toMatchObject({
+      publicationInput: { ...publication, taskId: subject.taskId, operationId: journal.operationId },
+    });
+    const fetcher = vi.fn(async () => new Response('{}'));
+    // A real SQL-selected journal reaches the real probe: the invalid fetched bytes cannot pass.
+    await expect(readByocReadiness({ ...subject, bar: 'R-4' }, db.sql, fetcher)).resolves.toMatchObject({
+      verdict: 'fail', failedMilestones: expect.arrayContaining(['publication:manifest:incomplete']),
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+    fetcher.mockClear();
+    await readByocReadiness({ ...subject, workspaceId: 'foreign', bar: 'R-4' }, db.sql, fetcher);
+    await readByocReadiness({ ...subject, workItemId: 'foreign', bar: 'R-4' }, db.sql, fetcher);
+    expect(fetcher).not.toHaveBeenCalled();
+    await db.sql`
+      UPDATE harness_shared.task_ledger
+         SET detail = jsonb_build_object('release', ${JSON.stringify({
+           ...journal, cursor: 3, currentState: 'unknown',
+           receipts: [...receipts, { ...receipts[1], sequence: 2, state: 'unknown' }],
+         })}::text::jsonb)
+       WHERE task_id = ${subject.taskId}
+    `;
+    await expect(readByocReadiness({ ...subject, bar: 'R-4' }, db.sql, fetcher)).resolves.toMatchObject({
+      verdict: 'unknown', unverifiedEvidence: expect.arrayContaining(['public-bytes', 'signature']),
+    });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });
