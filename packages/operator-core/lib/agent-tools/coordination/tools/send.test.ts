@@ -1400,8 +1400,53 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
     expect(b.results[0].dispatchAdvisory).toBeUndefined();
   });
 
-  it('names the non-holder when a multi-recipient action includes the current holder', async () => {
+  // EI-23785816111021036 — this case previously ASSERTED the false alarm (it expected
+  // recipientsNotHolding:['bee-2']). A message to [holder, observer] naming an item the
+  // holder already holds is the ordinary fan-out shape, so the old existential
+  // quantifier fired the alarm on healthy routing. The advisory's subject is PHANTOM
+  // ROUTING (EI-21824246903447871) — nobody addressed able to act — so a holder in the
+  // audience means QUIET.
+  it('stays quiet when a multi-recipient action includes the current holder', async () => {
     getWorkItemM.mockResolvedValueOnce({ id: 'WI-872411', state: 'open', assignee: 'bee-1' });
+
+    const b = await body({
+      to: ['bee-1', 'bee-2'],
+      summary: 'Please coordinate WI-872411',
+      expects: 'action',
+      body: actionBody,
+    });
+
+    expect(b.results[0].dispatchAdvisory).toBeUndefined();
+  });
+
+  // The FILED reproduction: per-recipient asks, each item held by its own addressee.
+  // The old quantifier flagged BOTH recipients and emitted a note that contradicted the
+  // `assignments` block in the very same object. Keyed by id, not call order, so a
+  // change in ref-detection order cannot silently turn this green.
+  it('stays quiet when each recipient holds the item addressed to them', async () => {
+    getWorkItemM.mockImplementation(async (id: string) =>
+      id === 'EI-23761345516273342'
+        ? { id, state: 'open', assignee: 'bee-1' }
+        : { id, state: 'open', assignee: 'bee-2' },
+    );
+
+    const b = await body({
+      to: ['bee-1', 'bee-2'],
+      summary: 'EI-23761345516273342 for one of you, WI-10002063 for the other',
+      expects: 'action',
+      body: actionBody,
+    });
+
+    expect(getWorkItemM).toHaveBeenCalled();
+    expect(b.results[0].dispatchAdvisory).toBeUndefined();
+  });
+
+  // The TRUE POSITIVE must survive the narrowing: an item held by someone who is not
+  // addressed at all still leaves nobody in the audience who can act on it. Without
+  // this case the two quiet assertions above would also pass against an advisory that
+  // had been disabled outright.
+  it('still warns when the holder is not among the recipients', async () => {
+    getWorkItemM.mockResolvedValueOnce({ id: 'WI-872411', state: 'open', assignee: 'bee-9' });
 
     const b = await body({
       to: ['bee-1', 'bee-2'],
@@ -1412,9 +1457,10 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
 
     expect(b.results[0].dispatchAdvisory).toMatchObject({
       workItemIds: ['WI-872411'],
-      recipientsNotHolding: ['bee-2'],
-      assignments: [{ workItemId: 'WI-872411', assignee: 'bee-1' }],
+      recipientsNotHolding: ['bee-1', 'bee-2'],
+      assignments: [{ workItemId: 'WI-872411', assignee: 'bee-9' }],
     });
+    expect(b.results[0].dispatchAdvisory.note).toMatch(/NONE of the recipient\(s\)/);
   });
 
   it('stays quiet for terminal work-items such as completed scorecard subjects', async () => {
