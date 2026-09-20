@@ -241,9 +241,19 @@ export function makeWorkItemAdmissionFailOpenAction(overrides: Partial<Admission
       .map(([harness, ids]) => `${harness}=${ids.length}`)
       .sort()
       .join(',');
+    // Rows the work-scope policy deliberately held back. Logged even though the hold is
+    // correct: without it, a policy-held harness and a harness nothing is watching look
+    // identical in the only admission mechanism that currently runs.
+    const heldEntries = Object.entries(result.heldByScope ?? {}).filter(([, count]) => count > 0);
+    const heldByScope = heldEntries
+      .map(([harness, count]) => `${harness}=${count}`)
+      .sort()
+      .join(',');
+    const heldTotal = heldEntries.reduce((sum, [, count]) => sum + count, 0);
     deps.log(
       `${ctx.installSlug}: run=${result.runId} scope=${result.scope} ` +
         `auto-promoted=${result.autoPromoted.length}${byHarness ? ` [${byHarness}]` : ''} ` +
+        `held-by-scope=${heldTotal}${heldByScope ? ` [${heldByScope}]` : ''} ` +
         `liveness=${result.liveness.stale ? 'STALE' : 'healthy'} (${result.liveness.reason})`,
     );
   };

@@ -158,6 +158,7 @@ describe('work-item admission routine actions', () => {
       runId: 'f-prod',
       autoPromoted: [],
       autoPromotedByHarness: {},
+      heldByScope: {},
       scope: 'workspace',
       liveness: {
         stale: false,
@@ -188,6 +189,7 @@ describe('work-item admission routine actions', () => {
       runId: 'f1',
       autoPromoted: ['WI-1'],
       autoPromotedByHarness: { papercusp: ['WI-1'] },
+      heldByScope: {},
       scope: 'workspace' as const,
       liveness: {
         stale: true,
@@ -211,5 +213,76 @@ describe('work-item admission routine actions', () => {
       log: vi.fn(),
     })(ctx);
     expect(alarm).not.toHaveBeenCalled();
+  });
+
+  // OBSERVABILITY GUARD. The work-scope policy deliberately holds an out-of-scope harness's
+  // pending rows, and that hold is CORRECT. What was not correct is that it happened in
+  // total silence: the fail-open dropped those rows with a bare SQL predicate that wrote
+  // nothing, while the sibling promoter path recorded a `held` decision on the policy ledger.
+  // Measured 2026-09-20 the ledger read `{ held: 0, denied: 371 }` while `sb-devboard-hive`
+  // held a pending row for 36.4h — so "held by policy" and "no backstop is watching this
+  // harness" were indistinguishable from outside, and EI-23776069366479860 was filed against
+  // the wrong cause with a remediation that had already shipped on 2026-08-28.
+  it('names every scope-held harness in the tick log, and reports zero when none was held', async () => {
+    const base = {
+      runId: 'f-held',
+      autoPromoted: [],
+      autoPromotedByHarness: {},
+      scope: 'workspace' as const,
+      liveness: {
+        stale: false,
+        reason: 'healthy',
+        active: true,
+        routineExists: true,
+        lastSuccessAtMs: 1,
+        ageMs: 1,
+        thresholdMs: 90,
+      },
+    };
+    const heldByScope = { 'sb-devboard-hive': 3, email: 2 };
+    const log = vi.fn();
+    await makeWorkItemAdmissionFailOpenAction({
+      run: async () => ({ ...base, heldByScope }),
+      alarm: vi.fn(async () => undefined),
+      invalidate: vi.fn(async () => undefined),
+      log,
+    })(ctx);
+
+    const line = log.mock.calls[0]![0] as string;
+    // DERIVED from the fixture, never a hand-listed spelling: adding a harness to heldByScope
+    // must force this assertion to cover it, so the guard cannot rot into checking one name.
+    for (const [harness, count] of Object.entries(heldByScope)) {
+      expect(line).toContain(`${harness}=${count}`);
+    }
+    const total = Object.values(heldByScope).reduce((sum, n) => sum + n, 0);
+    expect(line).toContain(`held-by-scope=${total}`);
+
+    // CALIBRATION CONTROL. Without this, a log line that unconditionally printed every known
+    // harness would satisfy the assertions above while reporting nothing real. A zero tick
+    // must still SAY zero — silence is the defect, so an absent field is not an acceptable
+    // way to express "nothing held".
+    const quietLog = vi.fn();
+    await makeWorkItemAdmissionFailOpenAction({
+      run: async () => ({ ...base, heldByScope: {} }),
+      alarm: vi.fn(async () => undefined),
+      invalidate: vi.fn(async () => undefined),
+      log: quietLog,
+    })(ctx);
+    const quietLine = quietLog.mock.calls[0]![0] as string;
+    expect(quietLine).toContain('held-by-scope=0');
+    expect(quietLine).not.toContain('sb-devboard-hive');
+
+    // A harness that is in scope contributes nothing, so a zero count is never rendered as a
+    // held harness — otherwise the line would cry wolf on every healthy tick.
+    const zeroLog = vi.fn();
+    await makeWorkItemAdmissionFailOpenAction({
+      run: async () => ({ ...base, heldByScope: { papercusp: 0 } }),
+      alarm: vi.fn(async () => undefined),
+      invalidate: vi.fn(async () => undefined),
+      log: zeroLog,
+    })(ctx);
+    const zeroLine = zeroLog.mock.calls[0]![0] as string;
+    expect(zeroLine).toContain('held-by-scope=0');
+    expect(zeroLine).not.toContain('papercusp=0');
   });
 });

@@ -376,6 +376,27 @@ export interface FailOpenRunResult {
   autoPromoted: string[];
   /** Rescued ids grouped by the harness they belong to — the whole point of a workspace sweep. */
   autoPromotedByHarness: Record<string, string[]>;
+  /**
+   * Over-age pending rows this tick deliberately did NOT admit, because their harness sits
+   * outside the workspace work-scope policy, counted per harness. `{}` whenever no policy is
+   * enforced (the overwhelmingly common case).
+   *
+   * The HOLD itself is correct and intended (workspace-work-scope-policy-2026-09-04 P-006):
+   * an out-of-scope harness's rows stay `pending`, never deleted, reversible the moment the
+   * policy widens. Its SILENCE was the defect. The promoter path records a `held` decision on
+   * the policy ledger, but the fail-open dropped those rows with a bare SQL predicate that
+   * wrote nothing — no ledger entry, no log line, no field here — and the promoter has been
+   * inactive since 2026-09-15, so the only admission mechanism still running was the
+   * unobservable one.
+   *
+   * Measured 2026-09-20: policy ledger counts were `{ held: 0, denied: 371 }` while
+   * `sb-devboard-hive` held a pending row for 36.4h. With no signal saying "held by policy",
+   * the visible state was indistinguishable from a missing backstop — which is how
+   * EI-23776069366479860 came to be filed against the wrong cause (an uninstalled per-harness
+   * routine, when the guard had in fact been workspace-wide since 2026-08-28) with a
+   * remediation that was already implemented and would have changed nothing.
+   */
+  heldByScope: Record<string, number>;
   scope: AdmissionFailOpenScope;
   liveness: PromoterLiveness;
   reviewDebt?: AdmissionReviewDebt;
@@ -4876,9 +4897,15 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     // admits an out-of-scope harness's rows either — they stay `pending`, reversible the
     // moment the policy widens. No policy ⇒ no predicate (byte-identical SQL).
     const scopeTerms = workScopeSqlTerms();
-    const scopePredicate = scopeTerms
-      ? sql`AND (harness_slug = ANY(${scopeTerms.exact}::text[]) OR harness_slug LIKE ANY(${scopeTerms.likePrefixes.map((p) => `${p}%`)}::text[]))`
-      : sql``;
+    // ONE expression, used twice: the admit path takes it, the held-census below takes its
+    // negation. Writing the negation out by hand would make the two sets a pair of
+    // independently-editable copies of the same truth, which is exactly how an admitted row
+    // and a reported-held row could drift into double-counting — or, worse, into a row that
+    // is neither admitted nor reported and so disappears again.
+    const scopeMatch = scopeTerms
+      ? sql`(harness_slug = ANY(${scopeTerms.exact}::text[]) OR harness_slug LIKE ANY(${scopeTerms.likePrefixes.map((p) => `${p}%`)}::text[]))`
+      : null;
+    const scopePredicate = scopeMatch ? sql`AND ${scopeMatch}` : sql``;
     // The workspace_id predicate is NEVER dropped: a workspace sweep widens across harnesses
     // inside one tenant, never across tenants.
     const rows = await sql<Array<{ feature_id: string; harness_slug: string }>>`
@@ -4923,6 +4950,43 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     const autoPromotedByHarness: Record<string, string[]> = {};
     for (const row of rows) (autoPromotedByHarness[row.harness_slug] ??= []).push(row.feature_id);
     for (const ids of Object.values(autoPromotedByHarness)) ids.sort();
+
+    // The scope exclusion above is deliberate, but it used to be SILENT: an out-of-scope
+    // harness's over-age rows simply never appeared here, so "held by policy" and "no backstop
+    // exists" produced byte-identical observable state. Measure what the predicate held back,
+    // using the SAME WHERE with the scope term NEGATED, so the two are exhaustive by
+    // construction and a row can never fall into neither bucket. No policy ⇒ no extra query.
+    const heldByScope: Record<string, number> = {};
+    if (scopeMatch) {
+      const heldRows = await sql<Array<{ harness_slug: string; held: number }>>`
+        SELECT harness_slug, count(*)::int AS held
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${opts.workspaceId}
+           ${scope === 'workspace' ? sql`` : sql`AND harness_slug = ${opts.harnessSlug}`}
+           AND NOT ${scopeMatch}
+           AND admission = 'pending'
+           AND created_ts < ${cutoffMs}
+         GROUP BY 1
+         ORDER BY 1`;
+      for (const row of heldRows) heldByScope[row.harness_slug] = Number(row.held) || 0;
+      // Once per harness per process, mirroring the promoter path, so a many-harness tick
+      // cannot flood the ledger ring while still making the first occurrence announce itself.
+      for (const [harness, count] of Object.entries(heldByScope)) {
+        const throttleKey = `fail-open:${harness}`;
+        if (scopeHeldHarnessesNoted.has(throttleKey)) continue;
+        scopeHeldHarnessesNoted.add(throttleKey);
+        await recordWorkScopeDecision({
+          site: 'admission-fail-open',
+          verdict: 'held',
+          harness,
+          actor: FAIL_OPEN_ACTOR,
+          note:
+            `${count} over-age pending work-item(s) NOT admitted — harness outside the workspace ` +
+            `work-scope policy. They stay pending (never deleted) until the policy widens; this ` +
+            `is a deliberate hold, not a missing backstop.`,
+        });
+      }
+    }
     const liveness = await readPromoterLiveness(sql, opts.workspaceId, opts.harnessSlug, now(), staleMinutes);
     const reviewHealth = await readWorkItemAdmissionQueueHealth({ workspaceId: opts.workspaceId, sql });
     const reviewDebt = reviewHealth.reviewDebt ?? {
@@ -4957,10 +5021,14 @@ export async function runWorkItemAdmissionFailOpen(opts: {
         liveness,
         promotedToFirstClaim,
         autoPromotedByHarness,
+        // Durable beside autoPromotedByHarness on purpose: the rows a tick DECLINED to admit
+        // are exactly what no surface recorded before, so the ledger could not answer "was
+        // this harness held, or was nothing ever watching it?" after the fact.
+        heldByScope,
         reviewDebt,
       },
     });
-    return { runId, autoPromoted, autoPromotedByHarness, scope, liveness, reviewDebt };
+    return { runId, autoPromoted, autoPromotedByHarness, heldByScope, scope, liveness, reviewDebt };
   } catch (error) {
     await failRun(sql, runId, 'fail-open', error, Math.max(0, now() - startedAt));
     throw error;
