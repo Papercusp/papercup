@@ -1433,9 +1433,9 @@ export function planAcceptanceRepairAction(
   };
   const ship = {
     name: 'plans:set-plan-status',
-    // The gate also serves legacy ready/active plans. Do not invent a CAS
-    // precondition for a status this observation does not carry.
-    args: { ...scope, status: 'shipped', ...proof },
+    // P-024/D-021: acceptance-ready is a shipment transition, not shipment
+    // itself; preserve the carried lifecycle CAS in the executable route.
+    args: { ...scope, status: 'shipped', expectedCurrent: 'awaiting-acceptance', ...proof },
   };
   const instruction = verdict.message ?? 'Read the current scoped acceptance gate before choosing a repair.';
   if (verdict.satisfied) {

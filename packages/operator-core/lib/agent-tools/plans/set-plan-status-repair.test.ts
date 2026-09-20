@@ -75,7 +75,12 @@ describe('plans:set-plan-status structured acceptance repair routes (P-026)', ()
         kind: 'independent-grading',
         nextVerb: {
           name: 'plans:set-plan-status',
-          args: { slug: 'plan-a', harness: 'papercusp', status: 'shipped' },
+          args: {
+            slug: 'plan-a',
+            harness: 'papercusp',
+            status: 'shipped',
+            expectedCurrent: 'awaiting-acceptance',
+          },
         },
       });
     },
@@ -125,7 +130,10 @@ describe('plans:set-plan-status structured acceptance repair routes (P-026)', ()
   it('routes a satisfied gate to shipment and an already-shipped plan to terminal', () => {
     expect(planAcceptanceRepairAction('plan-a', { satisfied: true })).toMatchObject({
       kind: 'shipment',
-      nextVerb: { name: 'plans:set-plan-status', args: { slug: 'plan-a', status: 'shipped' } },
+      nextVerb: {
+        name: 'plans:set-plan-status',
+        args: { slug: 'plan-a', status: 'shipped', expectedCurrent: 'awaiting-acceptance' },
+      },
     });
     expect(planAcceptanceRepairAction('plan-a', { satisfied: true, skipped: 'already-shipped' })).toEqual({
       kind: 'terminal',
