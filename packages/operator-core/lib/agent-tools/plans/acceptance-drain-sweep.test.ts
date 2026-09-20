@@ -134,6 +134,21 @@ describe('selectAcceptanceDrainCandidates', () => {
 });
 
 describe('runAcceptanceDrainSweepOnce — P-023 lifecycle characterization', () => {
+  it('evaluates a newborn pending carry instead of deduping away its first gate read', async () => {
+    M.list.mockResolvedValue([row({ planSlug: 'newborn' })]);
+    M.sql.mockResolvedValue([{ ref: `${WS}/papercusp/newborn`, gate_observation: 'pending' }]);
+    M.ensure.mockResolvedValue({
+      outcome: 'already-open', id: 'WI-CARRY', ref: `${WS}/papercusp/newborn`,
+    });
+
+    const result = await runAcceptanceDrainSweepOnce({ workspaceId: WS });
+    expect(M.evaluate).toHaveBeenCalledExactlyOnceWith('newborn');
+    expect(M.ensure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      planSlug: 'newborn', code: 'acceptance_unaudited',
+    }));
+    expect(result).toMatchObject({ alreadyFiled: 0, filed: [], errors: [] });
+  });
+
   it('reproduces the drained-but-unshipped sink: an open filing suppresses gate re-evaluation', async () => {
     M.list.mockResolvedValue([row({ planSlug: 'already-filed' })]);
     M.sql.mockResolvedValue([{ ref: `${WS}/papercusp/already-filed` }]);
