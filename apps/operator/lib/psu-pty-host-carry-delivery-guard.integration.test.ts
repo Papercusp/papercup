@@ -63,15 +63,18 @@ function fakeIo() {
   };
 }
 
-function injectEnvelope(socketPath: string, envelope: Record<string, unknown>): Promise<void> {
-  return new Promise((resolveInject) => {
+function injectEnvelope(socketPath: string, envelope: Record<string, unknown>): Promise<{ ok: boolean; reason: string }> {
+  return new Promise((resolveInject, reject) => {
+    let response = '';
     const connection = net.connect(socketPath, () => {
       connection.write(JSON.stringify({ v: 1, ...envelope }));
       connection.end();
     });
-    connection.on('data', () => {});
-    connection.on('error', () => resolveInject());
-    connection.on('close', () => resolveInject());
+    connection.on('data', (chunk) => { response += chunk.toString(); });
+    connection.on('error', reject);
+    connection.on('close', () => {
+      try { resolveInject(JSON.parse(response)); } catch (error) { reject(error); }
+    });
   });
 }
 
@@ -88,6 +91,75 @@ function injectRaw(socketPath: string, data: string): Promise<void> {
 }
 
 describe('carry-respawn native-turn delivery authority', () => {
+  it.each(['direct', 'rearmed'] as const)(
+    '%s: a failed carry remains retryable under its exact delivery id',
+    async (route) => {
+      const ownerId = `su-carry-id-${route}-${process.pid}-${Math.floor(performance.now())}`;
+      const socketPath = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+      const childCode = [
+        "process.stdin.setRawMode(true);process.stdin.on('data',d=>{if(d.includes(4))process.exit(0);});",
+        "process.stdout.write('READY\\n');",
+        route === 'rearmed'
+          ? "const busy=setInterval(()=>process.stdout.write('.'),10);setTimeout(()=>clearInterval(busy),400);"
+          : '',
+        'setTimeout(()=>process.exit(0),5000);',
+      ].join('');
+      let mints = 0;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '70',
+          PAPERCUSP_PSU_PTY_REARM_CAP_MS: '70',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        mintCarryRespawnArgs: () => { mints += 1; throw new Error('test carry argv unavailable'); },
+        onExit: () => {},
+      });
+      try {
+        const readyDeadline = Date.now() + 2000;
+        while (!captured().includes('READY') && Date.now() < readyDeadline) await sleep(10);
+        expect(captured()).toContain('READY');
+        const envelope = {
+          mode: 'carry-respawn',
+          ownerId,
+          deliveryId: `carry-failed-${route}`,
+          data: 'resume the saved work',
+          systemPromptAddendum: 'saved state',
+        };
+        expect(await injectEnvelope(socketPath, envelope)).toMatchObject({ ok: true, reason: 'accepted' });
+        const failedDeadline = Date.now() + 2500;
+        while (mints === 0 && Date.now() < failedDeadline) await sleep(10);
+        expect(mints).toBe(1);
+        const events = readFileSync(eventLog, 'utf8');
+        expect(events).toContain('"reason":"argv-build-failed"');
+        if (route === 'rearmed') expect(events).toContain('"kind":"respawn-rearm-queued"');
+        // Wait for the asynchronous re-arm to reach its terminal outcome, then
+        // retry the SAME id. A pending retry must remain deduped; a terminal
+        // failure must clear the id so the durable sender can try again.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(await injectEnvelope(socketPath, envelope)).toMatchObject({ ok: true, reason: 'accepted' });
+        const retryDeadline = Date.now() + 1000;
+        while (mints < 2 && Date.now() < retryDeadline) await sleep(10);
+        expect(mints).toBe(2);
+      } finally {
+        if (existsSync(socketPath)) await injectRaw(socketPath, '\x04');
+        await done;
+        if (existsSync(eventLog)) unlinkSync(eventLog);
+      }
+    },
+    10_000,
+  );
+
   it('keeps every non-success submit-verifier verdict distinguishable from delivery', () => {
     expect(submitVerificationFailureReason({ exhausted: true, aborted: null })).toBe(
       'submit-verification-exhausted',
