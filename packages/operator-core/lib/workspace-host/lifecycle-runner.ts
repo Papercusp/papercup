@@ -643,7 +643,7 @@ export async function runWorkspaceHostLifecycle(
       image: input.desired!.image.id,
       diskGiB: input.desired!.data.volumeGiB,
       network: 'restored',
-      desiredState: 'provisioning',
+      desiredState: 'running',
       observedState: 'provisioning',
       desiredSpec: input.desired!,
       hostGeneration: replacement.hostGeneration,

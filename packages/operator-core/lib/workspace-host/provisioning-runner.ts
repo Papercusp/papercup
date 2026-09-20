@@ -975,7 +975,9 @@ export async function runWorkspaceHostProvisioning(
       image: input.desired.image.id,
       diskGiB: input.desired.data.volumeGiB,
       network: networkLabel(input.desired),
-      desiredState: 'provisioning',
+      // Provisioning is the current observation, not the requested steady state.
+      // Keeping it as intent falsely reports running → provisioning after success.
+      desiredState: 'running',
       observedState: 'provisioning',
       desiredSpec: input.desired,
       hostGeneration: 1,

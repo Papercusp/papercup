@@ -462,6 +462,8 @@ describe('runWorkspaceHostLifecycle', () => {
       expect.objectContaining({
         workspaceId: 'workspace-1',
         id: 'host-restored',
+        desiredState: 'running',
+        observedState: 'provisioning',
         hostGeneration: 2,
         desiredRevision: 2,
         observedRevision: 1,

@@ -214,6 +214,48 @@ describe('runWorkspaceHostProvisioning', () => {
     expect(calls.at(-2)).toBe('operation:succeeded');
   });
 
+  it.each(['running', 'stopped'] as const)(
+    'persists running intent before mutation and preserves the actual %s observation',
+    async (observedState) => {
+      const { store } = storeHarness();
+      const { provider, apply, observe } = providerHarness([planStep('create-instance')]);
+      let admission: Parameters<WorkspaceHostProvisioningStore['upsertHost']>[0] | undefined;
+      apply.mockImplementation(async () => {
+        admission = vi.mocked(store.upsertHost).mock.calls[0]?.[0];
+        return {
+          operationId: 'op-1',
+          stepId: 'create-instance',
+          state: 'applied',
+          observedAt: '2026-08-25T00:00:05Z',
+          resource: { target: 'gcp', kind: 'vm', providerId: 'provider-vm' },
+        };
+      });
+      observe.mockImplementation(async (host) => ({
+        host,
+        state: observedState,
+        resources: host.resources,
+        observedAt: '2026-08-25T00:00:10Z',
+        drift: [],
+      }));
+
+      const result = await runWorkspaceHostProvisioning(runInput(provider, store));
+
+      expect(result.status).toBe('succeeded');
+      expect(admission).toMatchObject({
+        desiredState: 'running',
+        observedState: 'provisioning',
+        observedRevision: 0,
+      });
+      expect(store.recordObservation).toHaveBeenCalledWith(
+        'ws-1', expect.objectContaining({ state: observedState }), expect.anything(),
+      );
+      // Intent is not rewritten from observation: a stopped VM must still drift,
+      // while a running VM must no longer falsely drift back to provisioning.
+      expect(store.upsertHost).toHaveBeenCalledOnce();
+      expect(vi.mocked(store.upsertHost).mock.calls[0]![0].desiredState).toBe('running');
+    },
+  );
+
   it('passes the desired revision through the provider request and persisted plan identity', async () => {
     const { store } = storeHarness();
     const { provider, apply } = providerHarness([planStep('create-network')]);
