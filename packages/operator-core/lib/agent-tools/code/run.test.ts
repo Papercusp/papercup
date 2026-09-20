@@ -85,6 +85,7 @@ import codeRunTool, {
   annotatePublicCodeRunStatus,
   bindInnerDispatch,
   buildFacadeHelp,
+  FACADE_HELP_VERB_SIGNATURES,
   shapeCodeRunSimilarRecipes,
   shapeFieldMissHelp,
   isRecipeCaptureEligible,
@@ -1403,7 +1404,7 @@ describe('code:run → inline facade help on unknown refs (P-007)', () => {
     // only the closest handful get FULL signatures — the whole namespace would be 21
     const rendered = renderedSignatureCount(help.signatures);
     expect(rendered).toBeGreaterThan(0);
-    expect(rendered).toBeLessThanOrEqual(6);
+    expect(rendered).toBeLessThanOrEqual(FACADE_HELP_VERB_SIGNATURES);
     expect(rendered).toBeLessThan(names.length);
 
     // the bound DEFERS arg types; it never HIDES a verb — every one is still named in `namespaces`
@@ -1439,17 +1440,29 @@ describe('code:run → inline facade help on unknown refs (P-007)', () => {
     const biggest = [...byNs.entries()].sort((a, b) => b[1].length - a[1].length)[0];
     expect(biggest).toBeDefined();
     const [biggestNs, names] = biggest!;
-    // calibration: a namespace at or under the cap would make the comparison below prove nothing
-    expect(names.length).toBeGreaterThan(6);
 
     // A BARE `ns` ref has no verb to rank against, so it takes the render-whole path by design —
-    // that makes it the unbounded CONTROL, measured in this same context (no threshold to rot).
+    // that makes it the unbounded CONTROL, measured here against real schemas.
     const whole = buildFacadeHelp([biggestNs], all, new Set(names));
     const bounded = buildFacadeHelp([`${biggestNs}.definitely_not_a_real_verb`], all, new Set(names));
+    expect(renderedSignatureCount(whole.signatures)).toBe(names.length);
 
-    expect(renderedSignatureCount(whole.signatures)).toBeGreaterThan(6);
-    expect(renderedSignatureCount(bounded.signatures)).toBeLessThanOrEqual(6);
-    expect((bounded.signatures ?? '').length).toBeLessThan((whole.signatures ?? '').length / 2);
+    // MEASURED SCOPE — this in-process catalog's LARGEST namespace is small (8 verbs when written),
+    // because only the tools reachable from the imported barrel are registered here; the live
+    // surface's `work_items` is several times larger and is where the 67,864 chars were measured.
+    // So assert the CONDITIONAL contract and let the synthetic 21-verb case above own the
+    // large-namespace proof, rather than pretend this context exercises it.
+    // Whether bounding fired is READ FROM THE CONTROL, not from a re-encoded threshold — a
+    // hand-copied constant here would silently drift from buildFacadeHelp's own.
+    if (renderedSignatureCount(bounded.signatures) < names.length) {
+      expect(renderedSignatureCount(bounded.signatures)).toBeLessThanOrEqual(FACADE_HELP_VERB_SIGNATURES);
+      expect((bounded.signatures ?? '').length).toBeLessThan((whole.signatures ?? '').length);
+      // the complete verb list must ride along, so the bound defers types without hiding a verb
+      expect(bounded.namespaces?.length).toBeGreaterThan(0);
+    } else {
+      expect(renderedSignatureCount(bounded.signatures)).toBe(names.length);
+      expect(bounded.namespaces).toBeUndefined();
+    }
   });
 });
 

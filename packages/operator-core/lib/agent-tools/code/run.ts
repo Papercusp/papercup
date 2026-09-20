@@ -2110,9 +2110,17 @@ const FACADE_HELP_NAMESPACE_SUGGESTIONS = 3;
 
 /**
  * Cap on how many closest-VERB full signatures buildFacadeHelp renders per referenced namespace
- * (EI-23783922587988483). A namespace with at most this many verbs is still rendered whole.
+ * (EI-23783922587988483). A namespace with at most 2× this many verbs is still rendered whole —
+ * see the threshold comment in buildFacadeHelp for the measurement behind that factor.
+ *
+ * Deliberately the SAME 3 as FACADE_HELP_NAMESPACE_SUGGESTIONS: this is the "did you mean" set for
+ * a mistyped verb, and the sibling branch already settled that 3 candidates beat both 1 (too easy
+ * to miss the intended verb) and a dump. It is also what keeps the reply INSIDE the per-result
+ * budget: measured against the 30 heaviest real schemas, a cap of 6 still rendered 10,952 chars of
+ * signatures (the closest verbs are not the average ones), which spills exactly like the bug being
+ * fixed. Exported so the tests pin the contract instead of re-encoding the number.
  */
-const FACADE_HELP_VERB_SIGNATURES = 6;
+export const FACADE_HELP_VERB_SIGNATURES = 3;
 
 /**
  * P-007: turn a parse-check failure into a self-service fix. From the unknown `ns.verb` (or
@@ -2205,7 +2213,11 @@ export function buildFacadeHelp(
     const typed = [...(referencedVerbs.get(ns) ?? [])];
     // A bare `tools.ns` ref has no verb to rank against, and a small namespace is already cheap —
     // both keep rendering whole, which is what every pre-EI-23783922587988483 caller expects.
-    if (!typed.length || entry.verbs.length <= FACADE_HELP_VERB_SIGNATURES) {
+    // The threshold is 2× the cap because bounding is NOT free: the complete verb-name index built
+    // below costs bytes back, so an 8-verb namespace bounded to 6 measured only a 48% net win.
+    // Bound only where it clearly pays — the namespace that produced the 67,864-char dump is far
+    // larger than this threshold, and a marginal namespace is better rendered whole.
+    if (!typed.length || entry.verbs.length <= FACADE_HELP_VERB_SIGNATURES * 2) {
       signatureNames.push(...entry.toolNames);
       continue;
     }
