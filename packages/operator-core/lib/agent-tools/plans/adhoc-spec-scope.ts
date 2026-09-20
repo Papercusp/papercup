@@ -41,6 +41,31 @@ const ADHOC_ITEM_ID_SHAPE = /^P-[0-9]{3,}$/;
 export const ADHOC_WORK_ITEM_SPEC_SCOPE = 'adhoc-work-item-specs';
 
 /**
+ * The `planItemId` an ad-hoc clause should be authored under: this work-item's own number,
+ * relabelled `P-NNN`.
+ *
+ * `plans:set-specs` REQUIRES `planItemId` even for a planless item, and nothing in the arg
+ * schema says what a caller with no plan should pass — so the value was being invented.
+ * Measured 2026-09-20 over the whole ad-hoc scope, 4 of 12 real clauses carried an
+ * arbitrary bucket (`P-001` twice, `P-305`, `P-232120`) while 8 used the item's own number.
+ * That split is why this is DERIVED here rather than written into prose as a convention:
+ * advice that an agent has to instantiate by hand is advice that gets instantiated
+ * differently by each agent.
+ *
+ * The label is only the scope's internal bucket — per-item identity lives in `spec_id`
+ * namespacing and `work_item_spec_revision_edges.work_item_id` — so the properties that
+ * actually matter are that it is DETERMINISTIC per item and accepted by the database.
+ * Returns null when the id yields nothing `plan_spec_clause_revisions_plan_item_id_check`
+ * would accept (a short fixture id like `EI-1` → `P-1`), so a caller building advice on
+ * this can never name a value the write would then reject.
+ */
+export function adhocPlanItemIdFor(workItemId: string | null | undefined): string | null {
+  const digits = workItemId?.trim().replace(/^[A-Za-z]+-/, '') ?? '';
+  const label = `P-${digits}`;
+  return ADHOC_ITEM_ID_SHAPE.test(label) ? label : null;
+}
+
+/**
  * Body written when the scope row is first materialised.
  *
  * Deliberately a real, self-explaining plan body rather than an empty string: this row DOES

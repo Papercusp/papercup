@@ -31,7 +31,7 @@ import { enforcementEligibility, type EnforcementEligibility } from './spec-enfo
 import { listPlanStatuses } from './plan-status-read';
 import type { WorkItemSpecRevisionEdge } from './spec-evidence-store';
 import { listWorkItemSpecRevisionEdges } from './spec-evidence-store';
-import { ADHOC_WORK_ITEM_SPEC_SCOPE } from './adhoc-spec-scope';
+import { ADHOC_WORK_ITEM_SPEC_SCOPE, adhocPlanItemIdFor } from './adhoc-spec-scope';
 
 /** The clause lifecycle states that carry an enforceable promise (D-012). */
 export const ENFORCEABLE_LIFECYCLE_STATUSES = ['accepted', 'active'] as const;
@@ -301,11 +301,20 @@ export async function resolveWorkItemBehaviorContract(
   }
 
   const resolved = enforceable.length > 0;
+  // `plans:set-specs` requires a `planItemId` that an ad-hoc caller has no plan to take one
+  // from, and naming only the arg to OMIT (`slug`) left the required one to be guessed. The
+  // advice is rendered per item, so it states the EXACT literal rather than a convention the
+  // reader has to instantiate — see `adhocPlanItemIdFor`, which validates against the same
+  // shape the database CHECK enforces so this can never suggest a rejected value.
+  const adhocPlanItemId = adhocPlanItemIdFor(workItem.id);
+  const adhocPlanItemArg = adhocPlanItemId
+    ? `passing \`planItemId: '${adhocPlanItemId}'\``
+    : 'passing the required `planItemId` (shape `P-` followed by at least 3 digits)';
   const missingClauseRemedy = stamp
     ? `link one with plans:bind-spec-evidence, or promote a new clause with plans:set-specs.`
     : `This item has no source plan. Use the harness ad-hoc scope \`${ADHOC_WORK_ITEM_SPEC_SCOPE}\`: ` +
-      `author an item-local clause with plans:set-specs while omitting \`slug\`, then bind this ` +
-      `work item and its proof with plans:bind-spec-evidence while also omitting \`slug\`.`;
+      `author an item-local clause with plans:set-specs while omitting \`slug\` and ${adhocPlanItemArg}, ` +
+      `then bind this work item and its proof with plans:bind-spec-evidence while also omitting \`slug\`.`;
   return {
     workItemId: workItem.id,
     groups,

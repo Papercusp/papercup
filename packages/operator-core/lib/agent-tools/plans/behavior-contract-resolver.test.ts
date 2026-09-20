@@ -185,6 +185,29 @@ describe('resolveWorkItemBehaviorContract — impact reporting', () => {
     expect(out.impact.report).toContain('Reported, not enforced');
   });
 
+  // EI-23787801255099066: the ad-hoc advice named only the argument to OMIT (`slug`) and
+  // stayed silent on `planItemId`, which `plans:set-specs` REQUIRES and which a planless
+  // caller has no plan to take one from. Naming it is what makes the advice followable.
+  it('names the planItemId plans:set-specs requires, as a literal derived from the item', async () => {
+    const out = await resolveWorkItemBehaviorContract(
+      { id: 'EI-23787801255099066', kind: 'bug', harness: 'papercup' },
+      readers(),
+    );
+    expect(out.impact.report).toContain("planItemId: 'P-23787801255099066'");
+    // Still the advice it was before — naming the new argument must not drop the old one.
+    expect(out.impact.report).toContain('omitting `slug`');
+  });
+
+  it('falls back to the required SHAPE rather than naming a planItemId the write would reject', async () => {
+    // `EI-1` derives `P-1`, which fails `plan_spec_clause_revisions_plan_item_id_check`
+    // (`^P-[0-9]{3,}$`). The advice must still NAME the argument without inventing a value
+    // the very next call would refuse — advice that is confidently wrong is worse than
+    // advice that is merely incomplete.
+    const out = await resolveWorkItemBehaviorContract({ id: 'EI-1', kind: 'bug', harness: 'papercup' }, readers());
+    expect(out.impact.report).toContain('planItemId');
+    expect(out.impact.report).not.toMatch(/planItemId: 'P-\d/);
+  });
+
   it.each([['task'], ['feature'], [undefined]])('does not require impact resolution for kind=%s', async (kind) => {
     const out = await resolveWorkItemBehaviorContract({ id: 'EI-1', kind, harness: 'papercup' }, readers());
     expect(out.impact).toMatchObject({ required: false, report: null, reason: 'non-behavior-changing' });
