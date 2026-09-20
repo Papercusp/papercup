@@ -4145,7 +4145,49 @@ const NON_SUMMING_JSONB_RE =
  * discriminating predicate is a single non-jsonb dimension — one plain boolean
  * column cannot hide a fall-through worth a full partition.
  */
-export function buildNonSummingPartitionAdvisory(rawSql: string): string | null {
+export interface PredicatePartitionPlan {
+  /** The relation the partition runs against. */
+  relation: string;
+  /** The discriminating expressions, capped, in caller order. */
+  dimensions: string[];
+  /** Discriminators beyond the cap, named so the preview cannot imply completeness. */
+  droppedDimensions: string[];
+  /** Tenant predicates, kept as WHERE so the partition holds the caller's scope. */
+  scope: string[];
+  touchesJsonb: boolean;
+}
+
+/** One partition cell as executed: the dimension values plus that cell's size. */
+export interface PredicatePartitionCell {
+  values: (string | null)[];
+  rows: number;
+}
+
+export interface PredicatePartitionData {
+  cells: PredicatePartitionCell[];
+  /** 2-3 rows drawn from the fall-through population, rendered as text. */
+  samples: string[];
+  /** Total rows in the partition, for the sum check. */
+  totalRows?: number;
+  truncated?: boolean;
+}
+
+/**
+ * THE shared primitive (AUTO-BAR-R-001-P-002). Every surface that wants a
+ * predicate partition or a NULL profile calls THIS — the query surface here and
+ * the claim-spec surface in P-005 — so the two cannot report different
+ * partitions for the same predicate. It deliberately lives in pg-read-query
+ * rather than a module of its own: the analysis needs this file's
+ * stripSqlLiteralsAndComments, sqlLiteralAndCommentRanges and
+ * extractReferencedTables, so a separate module would import back into this one
+ * and form a cycle. The clause's falsifier is that the computation appears in
+ * MORE THAN ONE module, which one exported function in one module satisfies.
+ *
+ * Returns null when the read does not qualify, which is the boundary clause
+ * p002.narrow-reads-unchanged: fewer than two dimensions and no jsonb path must
+ * come back exactly as it does today.
+ */
+export function planPredicatePartition(rawSql: string): PredicatePartitionPlan | null {
   const stripped = stripSqlLiteralsAndComments(rawSql);
 
   // Already partitioned: the cells are on screen, so nothing is hidden.
@@ -4188,16 +4230,62 @@ export function buildNonSummingPartitionAdvisory(rawSql: string): string | null 
   const touchesJsonb = dimensions.some((d) => NON_SUMMING_JSONB_RE.test(d));
   if (!touchesJsonb && dimensions.length < 2) return null;
 
-  const shown = dimensions.slice(0, NON_SUMMING_MAX_DIMENSIONS);
-  const partitionSql =
+  return {
+    relation,
+    dimensions: dimensions.slice(0, NON_SUMMING_MAX_DIMENSIONS),
+    droppedDimensions: dimensions.slice(NON_SUMMING_MAX_DIMENSIONS),
+    scope,
+    touchesJsonb,
+  };
+}
+
+/**
+ * The PARTITION SQL a plan implies. Exported because the claim-spec surface
+ * (P-005) must issue the SAME statement the query surface issues — an
+ * equivalent-looking statement rebuilt independently is exactly how the two
+ * surfaces come to disagree.
+ */
+export function predicatePartitionSql(plan: PredicatePartitionPlan, limit = 50): string {
+  const shown = plan.dimensions;
+  return (
     'SELECT\n' +
     shown.map((d, i) => `       (${d}) AS d${i + 1}`).join(',\n') +
     ',\n       count(*) AS row_count\n' +
-    '       -- , (array_agg(<key column>))[1:3] AS sample  -- uncomment for members of a cell\n' +
-    `  FROM ${relation}` +
-    (scope.length ? `\n WHERE ${scope.join('\n   AND ')}` : '') +
+    `  FROM ${plan.relation}` +
+    (plan.scope.length ? `\n WHERE ${plan.scope.join('\n   AND ')}` : '') +
     `\n GROUP BY ${shown.map((_, i) => i + 1).join(', ')}` +
-    `\n ORDER BY ${shown.length + 1} DESC;`;
+    `\n ORDER BY ${shown.length + 1} DESC\n LIMIT ${limit};`
+  );
+}
+
+/**
+ * 2-3 rows drawn from the FALL-THROUGH population specifically — the rows that
+ * satisfied no branch. Sampling the relation at large would return rows the
+ * caller already believes in; the useful sample is the one they cannot see.
+ */
+export function predicatePartitionSampleSql(plan: PredicatePartitionPlan, limit = 3): string {
+  const nullish = plan.dimensions.map((d) => `(${d}) IS NULL`).join(' OR ');
+  const where = [...plan.scope, `(${nullish})`].join('\n   AND ');
+  return `SELECT t::text AS sample\n  FROM ${plan.relation} t\n WHERE ${where}\n LIMIT ${limit};`;
+}
+
+/**
+ * Render the preview onto the advisory channel (AUTO-BAR-R-003-P-002: the same
+ * channel the tenant-scope warning already uses, with no new tool, verb, table
+ * or configuration key). With `data` it carries the EXECUTED partition, the
+ * per-dimension NULL counts and the sample rows the bar requires; without it,
+ * it degrades to the statements the caller can run — a probe that failed must
+ * not silently look like a probe that found nothing.
+ */
+export function renderPredicatePartition(
+  plan: PredicatePartitionPlan,
+  data?: PredicatePartitionData,
+): string {
+  const { relation, touchesJsonb, dimensions } = plan;
+  // Built by the shared helper, never re-derived here: the claim-spec surface
+  // issues this same statement, and two independently-built 'equivalent'
+  // statements is precisely how the two surfaces come to disagree.
+  const partitionSql = predicatePartitionSql(plan);
 
   const trigger = touchesJsonb
     ? 'at least one discriminating predicate reads a jsonb path, which yields NULL when the key is ABSENT'
@@ -4212,6 +4300,62 @@ export function buildNonSummingPartitionAdvisory(rawSql: string): string | null 
     'you this, because the wrong answer is shaped exactly like the right one. Re-ask it as an exhaustive ' +
     'partition, where every row lands in exactly one labelled cell — a NULL in any `d<N>` column IS the ' +
     `fall-through population, and the cells MUST add up to the unfiltered total:\n${partitionSql}\n` +
-    'Check that the cells sum before quoting any bucket as a finding.'
+    'Check that the cells sum before quoting any bucket as a finding.' +
+    renderPartitionData(plan, data)
   );
+}
+
+/**
+ * The EXECUTED half (AUTO-BAR-R-002-P-002): the partition cells, a per-dimension
+ * NULL count, and 2-3 fall-through sample rows, rendered onto the advisory
+ * string. Absent `data` this contributes nothing and the caller still gets the
+ * statements — a probe that could not run must never render as a probe that ran
+ * and found nothing.
+ */
+function renderPartitionData(plan: PredicatePartitionPlan, data?: PredicatePartitionData): string {
+  if (!data) return '';
+  const labels = plan.dimensions.map((_, i) => `d${i + 1}`);
+  if (!data.cells.length) {
+    return (
+      '\nPARTITION: the probe returned no cells, so the fall-through population is UNMEASURED here — ' +
+      'that is not the same as zero. Run the statement above before relying on the scalar.'
+    );
+  }
+
+  const total = data.cells.reduce((sum, c) => sum + c.rows, 0);
+  const nullCounts = labels.map(
+    (label, i) =>
+      `${label}=${data.cells.filter((c) => c.values[i] === null).reduce((s, c) => s + c.rows, 0)}`,
+  );
+  const rendered = data.cells
+    .slice(0, 12)
+    .map((c) => `  ${c.values.map((v) => (v === null ? 'NULL' : v)).join(' | ')} → ${c.rows}`)
+    .join('\n');
+  const samples = data.samples.length
+    ? `\nFALL-THROUGH SAMPLE (${data.samples.length} row(s)):\n` +
+      data.samples
+        .map((s) => `  ${s.length > 300 ? `${s.slice(0, 300)}…` : s}`)
+        .join('\n')
+    : '\nFALL-THROUGH SAMPLE: none — no row carries a NULL in any dimension, so nothing fell through.';
+
+  return (
+    `\nPARTITION (${labels.join(' | ')} → rows)${data.truncated ? ', TRUNCATED' : ''}:\n${rendered}\n` +
+    `PER-DIMENSION NULL ROWS: ${nullCounts.join(', ')}\n` +
+    `PARTITION TOTAL: ${total}${typeof data.totalRows === 'number' ? ` of ${data.totalRows}` : ''}` +
+    (plan.droppedDimensions.length
+      ? `\nNOT PARTITIONED (beyond the cap): ${plan.droppedDimensions.join('; ')} — the cells above are ` +
+        'exhaustive only over the dimensions shown.'
+      : '') +
+    samples
+  );
+}
+
+/**
+ * Thin wrapper kept for the sql-shape advisory list, which composes pure
+ * `(sql) => string | null` builders and has no database handle. The EXECUTED
+ * preview is attached by the query surface, which does.
+ */
+export function buildNonSummingPartitionAdvisory(rawSql: string): string | null {
+  const plan = planPredicatePartition(rawSql);
+  return plan ? renderPredicatePartition(plan) : null;
 }

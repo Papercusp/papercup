@@ -192,6 +192,13 @@ export const resetAcquireRegistryForTest = stub('resetAcquireRegistryForTest');
 export const resetBuildStampResolver = stub('resetBuildStampResolver');
 export const setBuildStampResolver = stub('setBuildStampResolver');
 export const stampedTag = stub('stampedTag');
+// 2026-09-20: pg diagnostic-correlation names operator-core newly binds from
+// @papercusp/db-org (db-diagnostic-correlation-wiring.ts, dev/pg_health.test.ts).
+export const PgResultDiagnosticCorrelation = stub('PgResultDiagnosticCorrelation');
+export const capturePgDiagnosticContext = stub('capturePgDiagnosticContext');
+export const createPgDiagnosticHooks = stub('createPgDiagnosticHooks');
+export const resetPgDiagnosticContextResolver = stub('resetPgDiagnosticContextResolver');
+export const setPgDiagnosticContextResolver = stub('setPgDiagnosticContextResolver');
 
 export default new Proxy(
   {},
