@@ -48,6 +48,10 @@ import './server-vintage-wiring';
 // provenance and a corrected message stops being re-filed by agents whose host still
 // runs the pre-fix bytes. See db-diagnostic-stamp-wiring.ts.
 import './db-diagnostic-stamp-wiring';
+// Wire db-org's optional local result correlation to the existing named-hop
+// AsyncLocalStorage. The channel is local-only and remains disabled until this
+// host-side registration is imported.
+import './db-diagnostic-correlation-wiring';
 
 // Wire tooldef's ambient-dispatch-arg-keys seam to `PROJECTION_ARG` —
 // EI-22174225494240206: without this, an `Unrecognized key` hint's "accepts ONLY"
