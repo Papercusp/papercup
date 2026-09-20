@@ -535,6 +535,7 @@ import './release/trace';
 import './dev/why';
 // coord-lifecycle-automation-2026-06-04 D-006 — the re-runnable corpus categorizer
 import './dev/coord_categorize';
+import './dev/advisory_bet_signal';
 import './dev/dogfood_substrate_status';
 import './dev/ipc_echo';
 import './dev/state_counter';
