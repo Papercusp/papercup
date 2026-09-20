@@ -22,11 +22,10 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import {
-  ALLOWLIST,
-  declaresDist,
-  findOffenders,
-} from '../../../scripts/check-tracked-src-entry-dist.mjs';
+// @ts-expect-error — .mjs guard script, no type declarations by design (as with sibling guards)
+import { ALLOWLIST, declaresDist, findOffenders } from '../../../scripts/check-tracked-src-entry-dist.mjs';
+
+type Offender = { repo: string; dir: string; paths: string[] };
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -86,7 +85,7 @@ describe('check-tracked-src-entry-dist findOffenders', () => {
       ],
       allowlist: new Set(),
     });
-    expect(offenders.map((o) => o.dir)).toEqual(['packages/a', 'packages/b']);
+    expect(offenders.map((o: Offender) => o.dir)).toEqual(['packages/a', 'packages/b']);
   });
 
   it('spans submodules — the real second instance was invisible to a superproject-only scan', () => {
