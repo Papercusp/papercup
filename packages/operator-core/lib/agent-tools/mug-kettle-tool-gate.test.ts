@@ -108,6 +108,19 @@ vi.mock('../scout/corpus-digest-deps', () => ({
 }));
 
 import { refuseIfMugKettleRetired, MUG_KETTLE_RETIRED_ERROR } from './_mug-kettle-gate';
+// The POPULATION now lives in a real module so prose surfaces can derive from it instead
+// of hand-copying it (WI-10002068). This file keeps the test-only wiring and joins by name.
+import {
+  MUG_KETTLE_VERBS,
+  DELETED_TOOL_GROUP_DIRS,
+  gatedVerbs,
+  excludedVerbs,
+  deletedVerbs,
+  type MugKettleVerb,
+} from './_mug-kettle-gate-population';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** Parse a tool result's single JSON text block. */
 function parse(result: unknown): Record<string, unknown> {
@@ -234,21 +247,69 @@ describe('P-010 tool gate: the shared refusal', () => {
  * `agent-tools/overwatch/` NOR an `agent-tools/cup/` directory for a future row
  * to live in. `cup:spawn` was the last `cup:*` verb, so that namespace is gone.
  */
-const GATED: Array<{ name: string; load: () => Promise<{ default: unknown }>; args: Record<string, unknown> }> = [
-  // D-017 actuators — the refusal is harm-prevention.
-  { name: 'pot:start', load: () => import('./pot/start'), args: { harness: 'papercusp' } },
-  { name: 'pot:wake', load: () => import('./pot/wake'), args: { harness: 'papercusp', reason: 't' } },
-  // (kettle:start, kettle:declare-wake and cup:spawn retired here by P-059 — see
-  // the note above this list. kettle:pause retired from EXCLUDED for the same
-  // reason. cup:spawn's retirement emptied the `cup/` tool group entirely.)
-  // D-048 tier surfaces. set-steering is the one true actuator of the four (it
-  // writes, then requestUrgentPotWake); the rest are reads whose zero-valued
-  // answers would misreport a retired tier as a healthy idle one.
-  { name: 'pot:set-steering', load: () => import('./pot/set_steering'), args: { pot: 'papercusp', pauseNewWork: true } },
-  { name: 'pot:declare-wake', load: () => import('./pot/declare_wake'), args: { harness: 'papercusp', inSeconds: 60 } },
-  // (pot:survey retired here by P-059/D-080 — see the note above this list.)
-  { name: 'pot:mug_efficiency', load: () => import('./pot/mug_efficiency'), args: { harness: 'papercusp' } },
-];
+/**
+ * TEST-ONLY WIRING: how to drive each surviving verb's handler. The names, dispositions and
+ * rationales are NOT here — they live in `_mug-kettle-gate-population.ts` so prose can be
+ * pinned to them (WI-10002068). This map supplies only what a test needs and a doc cannot
+ * use: the dynamic import thunk and a handler fixture.
+ *
+ * Every `gated` and `excluded` row in the population MUST appear here, and nothing else may.
+ * Both directions are asserted below — a missing entry would silently shrink `describe.each`
+ * and pass vacuously, which is the exact failure D-080 exists to prevent.
+ *
+ * (Deleted verbs are absent by construction: there is no module left to import. Their
+ * removal is verified as a directory fact instead — see the DELETED suite.)
+ */
+const WIRING: Record<
+  string,
+  { load: () => Promise<{ default: unknown }>; args: Record<string, unknown> }
+> = {
+  'pot:start': { load: () => import('./pot/start'), args: { harness: 'papercusp' } },
+  'pot:wake': { load: () => import('./pot/wake'), args: { harness: 'papercusp', reason: 't' } },
+  'pot:set-steering': {
+    load: () => import('./pot/set_steering'),
+    args: { pot: 'papercusp', pauseNewWork: true },
+  },
+  'pot:declare-wake': {
+    load: () => import('./pot/declare_wake'),
+    args: { harness: 'papercusp', inSeconds: 60 },
+  },
+  'pot:mug_efficiency': {
+    load: () => import('./pot/mug_efficiency'),
+    args: { harness: 'papercusp' },
+  },
+  'pot:pause': { load: () => import('./pot/pause'), args: { harness: 'papercusp' } },
+  'curation:state-of-pot': { load: () => import('./curation/state-of-pot'), args: {} },
+  'pot:list': { load: () => import('./pot/list'), args: {} },
+  'pot:dissolve': {
+    load: () => import('./pot/dissolve'),
+    args: { harness: 'papercusp', confirm: true },
+  },
+  'pot:status': { load: () => import('./pot/status'), args: { harness: 'papercusp' } },
+};
+
+/**
+ * Joined rows. THROWS rather than skipping when wiring is missing: a silently dropped row
+ * would shrink the suite to a green that proves less than it did yesterday, and a loud
+ * collection failure naming the verb is strictly better than that.
+ */
+type WiredVerb = MugKettleVerb & {
+  load: () => Promise<{ default: unknown }>;
+  args: Record<string, unknown>;
+};
+const withWiring = (verbs: readonly MugKettleVerb[]): WiredVerb[] =>
+  verbs.map((v) => {
+    const wired = WIRING[v.name];
+    if (!wired) {
+      throw new Error(
+        `mug-kettle-tool-gate: no test wiring for '${v.name}' (disposition '${v.disposition}'). ` +
+          `Add it to WIRING, or move the row to 'deleted' in _mug-kettle-gate-population.ts.`,
+      );
+    }
+    return { ...v, ...wired };
+  });
+
+const GATED: WiredVerb[] = withWiring(gatedVerbs());
 
 /**
  * ANTI-VACUITY (D-080). `describe.each([])` registers NO tests and passes
@@ -265,6 +326,57 @@ const GATED: Array<{ name: string; load: () => Promise<{ default: unknown }>; ar
  */
 it('D-080: the GATED population is non-empty (a drained list would pass vacuously)', () => {
   expect(GATED.length).toBeGreaterThan(0);
+});
+
+/**
+ * POPULATION INTEGRITY (WI-10002068). Moving the names into a shared module makes them
+ * derivable by prose — and creates exactly one new way to be wrong: the population and this
+ * file's wiring drifting apart. These assertions close that, in BOTH directions, so the
+ * extraction cannot trade a documentation drift for a test drift.
+ */
+describe('population <-> wiring integrity', () => {
+  const live = [...gatedVerbs(), ...excludedVerbs()].map((v) => v.name).sort();
+
+  it('every live verb has test wiring, and nothing is wired that is not live', () => {
+    // Both directions matter and they fail differently: a MISSING entry shrinks
+    // describe.each toward a vacuous green (withWiring throws first, by design), while an
+    // EXTRA entry means a verb was retired in the population but still driven here.
+    expect(Object.keys(WIRING).sort()).toEqual(live);
+  });
+
+  it('no DELETED verb is still wired (a deleted tool has no module to import)', () => {
+    const wiredButDeleted = deletedVerbs()
+      .map((v) => v.name)
+      .filter((name) => name in WIRING);
+    expect(wiredButDeleted).toEqual([]);
+  });
+
+  it('every row carries a rationale and no name appears twice', () => {
+    // `why` is load-bearing for prose derivation, so an empty one is a silent gap in the
+    // thing this module exists to publish.
+    expect(MUG_KETTLE_VERBS.filter((v) => v.why.trim() === '').map((v) => v.name)).toEqual([]);
+    const names = MUG_KETTLE_VERBS.map((v) => v.name);
+    expect(names.length).toBe(new Set(names).size);
+  });
+
+  it('the DELETED tool-group directories are really gone', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+
+    // POSITIVE CONTROL on the instrument, first. Every absence below is measured with
+    // existsSync against `here`; if that base path were wrong, EVERY directory would read
+    // as absent and this suite would pass while proving nothing — the classic false
+    // negative from a broken instrument rather than a true empty result.
+    expect(
+      existsSync(join(here, 'pot')),
+      'instrument check: the surviving pot/ group must be found from this base path',
+    ).toBe(true);
+
+    for (const dir of DELETED_TOOL_GROUP_DIRS) {
+      expect(existsSync(join(here, dir)), `${dir}/ was deleted by P-059 and must stay gone`).toBe(
+        false,
+      );
+    }
+  });
 });
 
 describe.each(GATED)('P-010 tool gate: $name', ({ name, load, args }) => {
@@ -316,54 +428,7 @@ describe.each(GATED)('P-010 tool gate: $name', ({ name, load, args }) => {
  * `agent-tools/{pot,cup,overwatch,curation}` wholesale, and each tool below
  * would have been taken out by that.
  */
-const EXCLUDED: Array<{ name: string; why: string; load: () => Promise<{ default: unknown }>; args: Record<string, unknown> }> = [
-  {
-    name: 'pot:pause',
-    why: 'a STOPPER — refusing a stop is never the safe direction, and it is how a tier gets stranded running when the flag flips ON→OFF',
-    load: () => import('./pot/pause'),
-    args: { harness: 'papercusp' },
-  },
-  // (kettle:pause sat HERE as a STOPPER, excluded for the same reason as
-  // pot:pause. It RETIRED with the rest of `agent-tools/overwatch/` in P-059,
-  // and a retired tool cannot be a stopper for a tier that no longer runs — the
-  // exclusion asserted a live refusal-direction, which is now vacuous.
-  // pot:pause below is unaffected: the pot substrate survives per D-003.)
-  {
-    name: 'curation:state-of-pot',
-    why: "Scout's own corpus-synthesis step; D-001 keeps Scout INTACT, and the census found ZERO curation entry points",
-    load: () => import('./curation/state-of-pot'),
-    args: {},
-  },
-  {
-    name: 'pot:list',
-    why: 'the pot-as-CONTAINER surface — a Pot is a harness container and a federation peer, not only a Mug host (D-003 one layer up)',
-    load: () => import('./pot/list'),
-    args: {},
-  },
-  {
-    name: 'pot:dissolve',
-    why:
-      'D-048 ruled it CONTAINER-KEEP. Its own guidance is "Permanently tearing down a local pot — stop the Mug, ' +
-      'cancel its cups, deregister it": it is a STOPPER, and D-017 is explicit that refusing a stop is never the ' +
-      'safe direction. Gating it is how a tier gets stranded RUNNING with no way to wind it down after ON→OFF. ' +
-      'It sits in the same `pot:*` namespace as four tools this file DOES gate, so it is exactly the entry a ' +
-      'namespace-shaped or name-shaped pass would sweep up by mistake',
-    load: () => import('./pot/dissolve'),
-    args: { harness: 'papercusp', confirm: true },
-  },
-  {
-    name: 'pot:status',
-    why:
-      'D-048 ruled it TIER but explicitly left its gating OPTIONAL ("read-only … not harm-prevention"), and D-049 ' +
-      'settles the option as NO. Two independent reasons: it falls outside _mug-kettle-gate.ts\'s own stated scope ' +
-      '(ACTUATORS ONLY — a tool that INITIATES or SUSTAINS tier work), and it is a DIAGNOSTIC used to verify the ' +
-      'tier is wound down. Gating the read that confirms the retirement worked removes evidence for P-030/P-031 ' +
-      'to close on. Unlike pot:mug_efficiency it reports declaration STATE, not a zero-valued metric, so it cannot ' +
-      'misreport a retired tier as a healthy idle one — the reason the other reads are gated does not apply here',
-    load: () => import('./pot/status'),
-    args: { harness: 'papercusp' },
-  },
-];
+const EXCLUDED: WiredVerb[] = withWiring(excludedVerbs());
 
 describe.each(EXCLUDED)('P-010 exclusion: $name stays reachable', ({ load, args, why }) => {
   it(`is NOT gated (${why})`, async () => {
