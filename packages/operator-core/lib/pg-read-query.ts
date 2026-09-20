@@ -3009,7 +3009,7 @@ export function buildJsonTextSearchAdvisory(rawSql: string): string | null {
  * predicate already guards this (`agent-tools/_harness-scope.ts` and ~15 sibling sites); this
  * advisory builder was the one that hadn't.
  */
-function realScopeValue(v?: string | null): string | undefined {
+export function realScopeValue(v?: string | null): string | undefined {
   return v && v !== '*' ? v : undefined;
 }
 
