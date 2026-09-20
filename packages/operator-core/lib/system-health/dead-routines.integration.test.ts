@@ -216,7 +216,12 @@ describe('readDeadRoutines — census integrity under a WIDE freeze (EI-20045691
     await insertRoutine({ id: 'git-sync-healthy-2', name: 'git-sync', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
 
     const census = await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1');
-    expect(census.routineCoverage).toEqual({ 'git-sync': { overdue: 2, active: 4 } });
+    // WI-10002084 added the per-install leg. These fixtures all insert under install_slug
+    // 'web', so the release install genuinely has no row here and the honest reading is
+    // 'absent' (NOT 'live' — see the release-install describe below for why that distinction
+    // is load-bearing). Kept as an exact toEqual on purpose: that exactness is what made THIS
+    // assertion catch the new field in the first place, and what will catch the next one.
+    expect(census.routineCoverage).toEqual({ 'git-sync': { overdue: 2, active: 4, homeInstall: 'absent' } });
   });
 });
 
