@@ -2750,18 +2750,65 @@ export interface FrozenQueueForReconcile {
   candidate?: string | null;
   frozenCandidate?: string | null;
   phase?: string | null;
+  /**
+   * WI-10002104 — the queue's MOVABLE repair head. Required to answer `judgingSha` at all
+   * during the phases below; OPTIONAL on the structural type so existing two-field fixtures
+   * do not strand (the `lint:required-field-strands` trap CLAUDE.md names). The real caller
+   * passes `snap.gate.repairQueue`, whose `repairHead` is non-optional, so production reads
+   * supply it with no call-site change.
+   */
+  repairHead?: string | null;
 }
+
+/**
+ * WI-10002104 — the phases in which the gate resumes the queue's MOVABLE `repairHead`
+ * rather than its immutable frozen candidate.
+ *
+ * ⚠ This is NOT a convention; it mirrors `decideFrozenCandidateRepairQueue`
+ * (`./release/frozen-candidate-repair-queue`), which is the authority on what the next run
+ * actually materializes:
+ *   - `'ready-to-verify'`  → `{ kind: 'verify-repair',  candidate: queue.repairHead, runSuite: true }`
+ *   - `'ready-to-promote'` → `{ kind: 'promote-repair', candidate: queue.repairHead }`
+ *   - `'ready-to-test'`    → `{ kind: 'test-candidate', candidate: queue.candidate }`
+ *   - `'awaiting-fixer'`   → dispatch/wait, `runSuite: false` — renders NO suite verdict, so
+ *                            the frozen candidate the recorded red was computed on stands.
+ *   - `'blocked'`          → excluded entirely below.
+ * `git-pipeline-position.judging-sha-tracks-gate-policy.test.ts` pins this set against that
+ * policy by CALLING it for every phase, so a phase added there — or one that changes which
+ * sha it resumes — fails the build instead of silently making this cell lie again.
+ */
+export const REPAIR_HEAD_RESUMING_PHASES = ['ready-to-verify', 'ready-to-promote'] as const;
 
 /**
  * The sha a frozen repair queue pins, or null when the queue is absent or no longer the
  * gate's subject. `'blocked'` (attempts / wall-clock exhausted) is excluded on purpose: a
  * blocked queue is awaiting retire or escape, so "the next run resumes this candidate" no
  * longer holds and the probe is the honest fallback.
+ *
+ * ⚠ WI-10002104 — "the sha this queue pins" is PHASE-DEPENDENT, and answering it with the
+ * frozen candidate unconditionally inverted the one error this cell exists to prevent. Once
+ * a fix is admitted the phase becomes `ready-to-verify` and the gate materializes
+ * `repairHead` (measured: a live run logged `release checkout ready … detached
+ * e6360c1ba375…`, the repairHead, while this function returned frozen candidate 6234b578…).
+ * Because `reconcileGateCandidates` is deliberately called BEFORE blob containment, a wrong
+ * sha here does not merely mis-name the headline — `judgingContainsPath` is then measured
+ * against the abandoned candidate too, so the headline and its own falsifier agree and the
+ * caller is told `judging-without-current-path`: "do not read this run's verdict as a
+ * judgement on your change", stamped `authoritative: true`, about a run judging exactly
+ * that change. That is the corroborating-pair failure the call site's comment warns of.
  */
 export function frozenQueueCandidate(queue: FrozenQueueForReconcile | null | undefined): string | null {
   if (!queue) return null;
   if (queue.phase === 'blocked') return null;
-  const sha = queue.frozenCandidate ?? queue.candidate ?? null;
+  const resumesRepairHead = (REPAIR_HEAD_RESUMING_PHASES as readonly string[]).includes(queue.phase ?? '');
+  /**
+   * The `??` chain still falls back to the frozen candidate when a caller's fixture carries
+   * no `repairHead`: a phase-appropriate best answer beats returning null and degrading the
+   * whole read to the checkout-head probe.
+   */
+  const sha = resumesRepairHead
+    ? (queue.repairHead ?? queue.frozenCandidate ?? queue.candidate ?? null)
+    : (queue.frozenCandidate ?? queue.candidate ?? null);
   return typeof sha === 'string' && sha.length > 0 ? sha : null;
 }
 
