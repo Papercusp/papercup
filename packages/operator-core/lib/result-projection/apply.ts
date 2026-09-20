@@ -506,6 +506,105 @@ export function applyPick(body: unknown, paths: string[]): { picked: unknown; un
 }
 
 /**
+ * WI-10002073 — the projection ROOT is not uniform across tools, and nothing in
+ * a tool's schema or description announces which root it uses: `plans:get`
+ * answers under `results[]`, `plans:get-spec-evidence` under `evidence[]`,
+ * `work_items:get` under `results[].workItem`, and some tools answer at a bare
+ * ARRAY root. So a `pick` path that is correct for one tool silently matches
+ * nothing on another, and the only recovery is a second round-trip — per tool,
+ * per agent, forever.
+ *
+ * The dispatch layer already holds the answer: it is the same knowledge the
+ * no-match guard uses to enumerate the body's real keys. This turns that
+ * knowledge into a REPAIR, under the two teeth EI-20720054720826414 already
+ * established for the array-root case:
+ *   1. only a path that MISSED is ever rewritten, so a working path is never
+ *      reinterpreted; and
+ *   2. a rewrite is applied only when it PROVABLY matches THIS body.
+ * Plus a third that the object-root case needs and the array-root case did not:
+ * when SEVERAL candidate spellings would match, NONE is applied. A leaf name
+ * alone cannot say which one the caller meant, and guessing would trade a loud
+ * miss for a silent wrong read — the one outcome worse than the round-trip.
+ * The candidates are NAMED instead, which still removes the blind retry.
+ */
+const MAX_REPAIR_CANDIDATES = 24;
+
+/** Keys of the first plain-object row whose value is itself a plain object. */
+function nestedRowKeys(rows: readonly unknown[]): string[] {
+  const row = rows.find(isPlainObject);
+  if (!row) return [];
+  return Object.keys(row).filter((key) => isPlainObject(row[key]));
+}
+
+/**
+ * Strip a leading envelope segment (`key[]` or `[]`) from a pick path, leaving
+ * the part that addresses a row. `results[].workItem.state` → `workItem.state`;
+ * `[].id` → `id`; a bare `id` is already a tail and is returned unchanged.
+ */
+export function pickPathTail(path: string): string {
+  const keyed = /^[A-Za-z0-9_$]+\[\]\.(.+)$/.exec(path);
+  if (keyed) return keyed[1];
+  const bare = /^\[\]\.(.+)$/.exec(path);
+  if (bare) return bare[1];
+  return path;
+}
+
+/**
+ * Re-root spellings worth TESTING for a path that missed. Generation is cheap
+ * and deliberately over-broad; correctness comes from the caller proving each
+ * candidate against the real body, never from this list being right.
+ */
+export function pickRepairCandidates(body: unknown, path: string): string[] {
+  const out: string[] = [];
+  const push = (candidate: string): void => {
+    if (candidate !== path && !out.includes(candidate)) out.push(candidate);
+  };
+
+  if (Array.isArray(body)) {
+    // The original array-root case: a bare key addresses an object root.
+    if (!path.startsWith('[')) push(`[].${path}`);
+    return out.slice(0, MAX_REPAIR_CANDIDATES);
+  }
+  if (!isPlainObject(body)) return out;
+
+  // A keyed envelope: the caller's path may name the wrong envelope key, omit
+  // it entirely, or stop one level short of where the row actually nests.
+  const tail = pickPathTail(path);
+  for (const [key, value] of Object.entries(body)) {
+    if (Array.isArray(value)) {
+      push(`${key}[].${tail}`);
+      for (const nested of nestedRowKeys(value)) push(`${key}[].${nested}.${tail}`);
+    } else if (isPlainObject(value)) {
+      push(`${key}.${tail}`);
+    }
+  }
+  return out.slice(0, MAX_REPAIR_CANDIDATES);
+}
+
+/**
+ * Classify each missed path as repairable (exactly one candidate provably
+ * matches) or ambiguous (several do). A path with no matching candidate is in
+ * neither map and stays a loud miss.
+ */
+export function proposePickRepairs(
+  body: unknown,
+  missed: readonly string[],
+  alreadySelected: readonly string[],
+): { repairs: Map<string, string>; ambiguous: Map<string, string[]> } {
+  const repairs = new Map<string, string>();
+  const ambiguous = new Map<string, string[]>();
+  for (const path of missed) {
+    const matching = pickRepairCandidates(body, path).filter(
+      (candidate) =>
+        !alreadySelected.includes(candidate) && applyPick(body, [candidate]).unmatched.length === 0,
+    );
+    if (matching.length === 1) repairs.set(path, matching[0]);
+    else if (matching.length > 1) ambiguous.set(path, matching);
+  }
+  return { repairs, ambiguous };
+}
+
+/**
  * Return the outcome paths that are present in a write result.  The paths are
  * discovered from the actual envelope rather than blindly appended: not every
  * write uses the keyed-array contract, and a successful bulk row normally has
@@ -762,24 +861,22 @@ export function applyResultProjection<T extends ProjectableResult>(
         let pickRun = applyPick(json.parsed, pickPaths);
         let effectivePick = spec.pick;
         let requestedUnmatched = pickRun.unmatched.filter((path) => !implicitWritePaths.includes(path));
-        // EI-20720054720826414: a bare `key` path addresses an OBJECT root, so on
-        // an ARRAY-root body it can never match — and it is the single most
-        // common miss (the playbook's own pick examples were object-root only).
-        // When the `[].key` spelling PROVABLY matches, apply that selection
-        // instead of failing open into the full promoted body (which is larger
-        // than the un-projected default and then spills). Only paths that missed
-        // are rewritten, and only when the rewrite is verified to match, so a
-        // working path is never reinterpreted and a genuine miss still misses.
-        if (requestedUnmatched.length > 0 && Array.isArray(json.parsed)) {
-          const repairs = new Map<string, string>();
-          for (const missed of requestedUnmatched) {
-            if (missed.startsWith('[')) continue;
-            const candidate = `[].${missed}`;
-            if (effectivePick.includes(candidate)) continue;
-            if (applyPick(json.parsed, [candidate]).unmatched.length === 0) {
-              repairs.set(missed, candidate);
-            }
-          }
+        // EI-20720054720826414 (array root) + WI-10002073 (keyed-envelope root):
+        // the root a pick path must address is NOT uniform across tools and no
+        // schema announces it, so a path correct for one tool silently matches
+        // nothing on another. When exactly one re-rooted spelling PROVABLY
+        // matches, apply it instead of failing open into the full promoted body
+        // (which is larger than the un-projected default and then spills). Only
+        // paths that missed are rewritten, and only when the rewrite is verified
+        // to match, so a working path is never reinterpreted and a genuine miss
+        // still misses.
+        let ambiguityHint = '';
+        if (requestedUnmatched.length > 0) {
+          const { repairs, ambiguous } = proposePickRepairs(
+            json.parsed,
+            requestedUnmatched,
+            effectivePick,
+          );
           if (repairs.size > 0) {
             effectivePick = effectivePick.map((p) => repairs.get(p) ?? p);
             pickRun = applyPick(json.parsed, [...effectivePick, ...implicitWritePaths]);
@@ -788,12 +885,25 @@ export function applyResultProjection<T extends ProjectableResult>(
             // is exactly what the body below contains — but say so, so the
             // corrected spelling is learned rather than silently absorbed.
             note(
-              `pick path(s) auto-adjusted for this array-root body: ` +
+              `pick path(s) auto-adjusted for this ` +
+                `${Array.isArray(json.parsed) ? 'array-root' : 'keyed-envelope'} body: ` +
                 [...repairs].map(([from, to]) => `${from} → ${to}`).join(', ') +
-                ` — a bare key addresses an object root; use \`[].key\` on an array. ` +
+                (Array.isArray(json.parsed)
+                  ? ` — a bare key addresses an object root; use \`[].key\` on an array. `
+                  : ` — the projection ROOT differs per tool, so a path correct for one tool can ` +
+                    `address a key this body does not use. `) +
                 `The adjusted selection is applied below.`,
               false,
             );
+          }
+          if (ambiguous.size > 0) {
+            // Several spellings match, so auto-adjusting would be a guess — and a
+            // wrong guess here is a SILENT wrong read, strictly worse than the
+            // miss. Name them instead: the retry is still one call, not a probe.
+            ambiguityHint =
+              ` Candidate spelling(s) that WOULD match this body: ` +
+              [...ambiguous].map(([from, tos]) => `${from} → ${tos.join(' | ')}`).join('; ') +
+              ` — more than one matches, so none was applied; name the one you meant.`;
           }
         }
         const { picked, unmatched } = pickRun;
@@ -801,7 +911,8 @@ export function applyResultProjection<T extends ProjectableResult>(
         if (requestedUnmatched.length === effectivePick.length) {
           note(
             `pick matched NOTHING (${requestedUnmatched.join(', ')}) — body left unprojected rather than ` +
-              `returning an empty object. The body is ${describeBodyShape(json.parsed)}.`,
+              `returning an empty object. The body is ${describeBodyShape(json.parsed)}.` +
+              ambiguityHint,
           );
         } else {
           if (requestedUnmatched.length > 0) {
@@ -812,7 +923,8 @@ export function applyResultProjection<T extends ProjectableResult>(
             note(
               `pick path(s) matched nothing: ${requestedUnmatched.join(', ')} — those field(s) are ABSENT ` +
                 `from the body below, which is otherwise a normal-looking result. ` +
-                `The body is ${describeBodyShape(json.parsed)}.`,
+                `The body is ${describeBodyShape(json.parsed)}.` +
+                ambiguityHint,
             );
           }
           if (implicitRetained.length > 0) {
