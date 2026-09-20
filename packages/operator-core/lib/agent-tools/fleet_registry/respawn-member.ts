@@ -596,8 +596,10 @@ async function readMemberSessionState(ownerId: string): Promise<string | null> {
 }
 
 /** fleet:kill returns the bulk envelope `{ data: { ok, results, counts } }` — success is
- * zero failed items (top-level `ok` only means the batch ran). A structured not_found for the
- * already-resolved fleet member is the idempotent already-dead precondition, not a hard failure. */
+ * zero failed items, which the envelope's own derived `ok` now also reports. This reads
+ * `counts.failed` directly because it must then distinguish WHICH failure it saw: a
+ * structured not_found for the already-resolved fleet member is the idempotent already-dead
+ * precondition, not a hard failure, and a boolean cannot carry that. */
 function killOutcome(res: unknown): { ok: boolean; alreadyGone: boolean; unmanaged: boolean; data: Record<string, unknown> } {
   const data = ((res as { data?: unknown }).data ?? {}) as Record<string, unknown>;
   const counts = data.counts as { failed?: number } | undefined;
