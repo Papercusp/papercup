@@ -700,3 +700,140 @@ describe('P-007: a missing prewarmed dependency generation is a typed STANDING p
     expect(unusable.summary).toMatch(/failing closed is correct/i);
   });
 });
+
+describe('WI-10002039: an UNAUTHORIZED promotion push is a typed STANDING access fault, not an anonymous crash', () => {
+  // Verbatim from the run's own log, 2026-09-20T10:26:45Z (hello-world-3). Quoted rather than
+  // paraphrased for the reason the P-007 block above quotes its own: the discriminator matches
+  // real producer output, so a fixture that drifts from it silently stops testing the real path.
+  const REAL_PUSH_403_DETAIL =
+    'Error: green-checkpoint push failed: green candidate 6653fb41543d was NOT published to ' +
+    // Path generalised to /repo (as the P-007 fixture above does): a hardcoded home directory in
+    // shipped source reds the identity-lint leg and freezes `main` for the whole fleet.
+    'origin/main; local main remains at d554832e80f1. git -C ' +
+    '/repo/.papercusp-workspaces/clones/hello-world-3 push origin ' +
+    '6653fb41543dd412a319ab8c392db6eaa0967ae5:refs/heads/main exited 128: remote: Permission to ' +
+    'octocat/Hello-World.git denied to papercupai.\n' +
+    "fatal: unable to access 'https://github.com/octocat/Hello-World.git/': The requested URL " +
+    'returned error: 403';
+
+  const classify = () =>
+    buildTerminalFailureCheckpointResult({
+      candidate: '6653fb41543d',
+      error: new Error(REAL_PUSH_403_DETAIL),
+      runId: 'run-push-403',
+    });
+
+  it('classifies the refusal as its own typed reason rather than the unknown-crash bucket', () => {
+    const r = classify();
+    expect(r).toMatchObject({
+      advanced: false,
+      candidate: '6653fb41543d',
+      from: null,
+      green: null,
+      reason: 'promotion-unauthorized',
+      runId: 'run-push-403',
+    });
+    // MEASURED cause ⇒ it must not carry the unknown-crash evidence flag.
+    expect(r.crashed).toBeUndefined();
+  });
+
+  it('names the remote and the remedy, so the summary alone is actionable', () => {
+    const summary = classify().summary ?? '';
+    // The operator learns WHICH remote refused without digging through a stack trace.
+    expect(summary).toContain('https://github.com/octocat/Hello-World.git/');
+    // It must say the suite is NOT what failed — triaging this candidate's files is wasted work.
+    expect(summary).toMatch(/not a code red/i);
+    expect(summary).toMatch(/do not triage/i);
+    // It must say the condition PERSISTS, and name a remedy a human can actually execute.
+    expect(summary).toMatch(/does NOT self-clear/i);
+    expect(summary).toMatch(/write access|repoint origin|stop scheduling/i);
+    // The invariant must be restated, so nobody "fixes" this by letting the ref advance.
+    expect(summary).toMatch(/refusing to advance is CORRECT/i);
+  });
+
+  it('⭐ THE DEFECT: advised as a STANDING condition — never "nothing is blocking a re-fire"', () => {
+    const r = classify();
+    // A reader must be able to see it at all…
+    expect(isRecordedInconclusiveStatus(r.reason)).toBe(true);
+    // …and be told the truth about re-firing. This is the whole fix: as 'error' it inherited the
+    // TRANSIENT lever, which invited a re-fire into a 403 that refuses every re-fire identically.
+    expect(classifyGateAbort(r.reason)).toBe('standing-condition');
+    expect(gateAbortLever(r.reason)).not.toMatch(/nothing is blocking a re-fire/i);
+  });
+
+  it('counts as a no-verdict — never a fabricated red, never silent', () => {
+    const r = classify();
+    // It must never reach classifyGateStallStatus's trailing `return 'red'`: a red here would
+    // name NO failing test and would dispatch a release-fixer at a phantom file list.
+    expect(classifyGateStallStatus(r.reason, false)).toBe('no-verdict');
+    expect(classifyGateStallStatus(r.reason, false)).not.toBe('red');
+    // …and not 'noop' either: the condition is standing, so repeated aborts must keep counting
+    // toward the existing consecutiveNoVerdict escalation. The fix changes the NAME, not the volume.
+    expect(classifyGateStallStatus(r.reason, false)).not.toBe('noop');
+    // No verdict about the code, in either direction.
+    expect(r.green).toBeNull();
+  });
+
+  it.each([
+    ['401 credential rejection', 'The requested URL returned error: 401'],
+    ['git credential helper failure', 'fatal: Authentication failed for https://example.com/x.git'],
+    ['no credential available', 'fatal: could not read Username for https://example.com: terminal prompts disabled'],
+  ])('recognises the other authorization shapes: %s', (_label, tail) => {
+    const r = buildTerminalFailureCheckpointResult({
+      candidate: '6653fb41543d',
+      error: new Error(
+        'green-checkpoint push failed: green candidate 6653fb41543d was NOT published to ' +
+          `origin/main. git push origin 6653fb41543d:refs/heads/main exited 128: ${tail}`,
+      ),
+      runId: 'run-auth-shape',
+    });
+    expect(r.reason).toBe('promotion-unauthorized');
+    expect(classifyGateAbort(r.reason)).toBe('standing-condition');
+  });
+
+  /**
+   * NEGATIVE CONTROL — the discriminator must DISCRIMINATE.
+   *
+   * Without this, the block above passes just as happily against a rule that typed EVERY push
+   * failure as unauthorized, which would be a real regression: a non-fast-forward or a network
+   * blip is TRANSIENT, genuinely does clear, and must keep its existing handling. A guard that
+   * cannot fail is not a guard, and this is the cheapest honest way to prove this one can.
+   */
+  it.each([
+    // A push that failed for a NON-authorization reason. These keep their existing handling:
+    // a non-fast-forward or a resolver blip is transient and genuinely does clear.
+    [
+      'a non-fast-forward push',
+      'green-checkpoint push failed: green candidate 6653fb41543d was NOT published to origin/main. ' +
+        'git push origin 6653fb41543d:refs/heads/main exited 128: ' +
+        '! [rejected] main -> main (non-fast-forward)',
+    ],
+    [
+      'a network failure during push',
+      'green-checkpoint push failed: green candidate 6653fb41543d was NOT published to origin/main. ' +
+        'git push origin 6653fb41543d:refs/heads/main exited 128: ' +
+        'fatal: unable to access: Could not resolve host: github.com',
+    ],
+    [
+      'a missing repository',
+      'green-checkpoint push failed: green candidate 6653fb41543d was NOT published to origin/main. ' +
+        'git push origin 6653fb41543d:refs/heads/main exited 128: ' +
+        "fatal: repository 'https://example.com/nope.git/' not found",
+    ],
+    // A 401/403 that is NOT the promotion push. The discriminator is deliberately anchored on the
+    // push wrapper (a string only `pushGreenCandidateOrThrow` emits), so an authorization failure
+    // somewhere else in the run must NOT be reported as "this gate can never promote".
+    [
+      'a 403 outside the push path entirely',
+      'Error: setup-release failed: fetching the release manifest: ' +
+        "unable to access 'https://example.com/manifest.json': The requested URL returned error: 403",
+    ],
+  ])('does NOT claim %s as an authorization fault', (_label, detail) => {
+    const r = buildTerminalFailureCheckpointResult({
+      candidate: '6653fb41543d',
+      error: new Error(detail),
+      runId: 'run-negative-control',
+    });
+    expect(r.reason).not.toBe('promotion-unauthorized');
+  });
+});

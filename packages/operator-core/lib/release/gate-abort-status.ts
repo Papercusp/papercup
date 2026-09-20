@@ -76,6 +76,12 @@ export const RECORDED_INCONCLUSIVE_STATUSES = [
   // P-006: sibling of the above on the same exit-74 contract — the selected generation exists but
   // is corrupt, superseded mid-validation, or gone. Also standing: it does not self-repair.
   'dependency-generation-unusable',
+  // WI-10002039: the suite verdict was reached and the promotion push was then refused as
+  // UNAUTHORIZED (HTTP 401/403). Recorded for the same reason as its neighbours — so a reader is
+  // advised about a NAMED access problem instead of reading an anonymous crash. Before it had its
+  // own status it arrived as 'error' and inherited the TRANSIENT lever, which told every reader
+  // that "nothing is blocking a re-fire" about a refusal that blocks every re-fire permanently.
+  'promotion-unauthorized',
 ] as const;
 
 export type RecordedInconclusiveStatus = (typeof RECORDED_INCONCLUSIVE_STATUSES)[number];
@@ -153,6 +159,23 @@ const KIND_BY_STATUS: Record<RecordedInconclusiveStatus, Exclude<GateAbortKind, 
    * is repaired, so "nothing is blocking a re-fire" would be false here too.
    */
   'dependency-generation-unusable': 'standing-condition',
+  /**
+   * WI-10002039 — 'standing-condition', and this classification IS the fix.
+   *
+   * An unauthorized promotion push is the most standing condition in this table: a missing
+   * dependency generation clears when a producer publishes it, a migration clears when it
+   * applies, but a remote that refuses the pushing identity refuses it on every future tick
+   * until a HUMAN changes the access. Nothing in the pipeline can clear it.
+   *
+   * ⚠ Do NOT collapse this back into 'error'/'transient'. That was its behaviour before this
+   * entry existed, and the transient lever's words are the exact inverse of the truth here —
+   * "nothing is blocking a re-fire, so release:checkpoint-run once you know what stopped it".
+   * Measured 2026-09-20: 550 runs across 15 days took that path, each one inviting a re-fire
+   * into an identical 403. This is the same mis-advice the module header opens with, in its
+   * second direction: there, generic standing-condition advice was applied to a recorded
+   * transient; here, transient advice was inherited by a permanent blocker.
+   */
+  'promotion-unauthorized': 'standing-condition',
 };
 
 export function classifyGateAbort(status: string): GateAbortKind {

@@ -2009,6 +2009,58 @@ export function buildTerminalFailureCheckpointResult(opts: {
     };
   }
 
+  // WI-10002039: the promotion push was refused for AUTHORIZATION reasons.
+  //
+  // ⚠ EVIDENCE QUALITY, stated because this file's own rule is "classify on the CODE, not the
+  // message strings". That rule is followed where a writer HAS an exit-code contract
+  // (dependency-generation.sh reserves 74/75). git has none: `git push` exits 128 for a refused
+  // remote, a bad ref, a missing repo and a dozen unrelated faults alike, so the exit code cannot
+  // separate them and prose is the only signal available.
+  //
+  // So match the narrowest STABLE prose: the HTTP status line GIT ITSELF formats from the remote
+  // helper ("The requested URL returned error: 403"), plus git's own credential-failure strings.
+  // Deliberately NOT the remote's message ("Permission to octocat/Hello-World.git denied to
+  // papercupai") — that is GitHub's hand-written prose, differs per forge, and is exactly the
+  // drifting text the ladder warns about. The forge-specific line is still carried in `summary`
+  // as detail; it is just never the discriminator.
+  const pushRefusedByRemote = detail.includes("push failed") || detail.includes("push origin");
+  const pushUnauthorized =
+    pushRefusedByRemote &&
+    (/returned error: 40[13]/.test(detail) ||
+      detail.includes("Authentication failed") ||
+      detail.includes("could not read Username") ||
+      detail.includes("terminal prompts disabled"));
+
+  if (pushUnauthorized) {
+    // Name the remote, because the remedy is about THAT url and a reader should not have to dig
+    // it out of a stack trace — the omission that made this read as an anonymous crash 550 times.
+    const remote =
+      /unable to access '([^']+)'/.exec(detail)?.[1] ??
+      /push\s+(\S+)\s+[0-9a-f]{7,40}:/.exec(detail)?.[1] ??
+      null;
+    return {
+      advanced: false,
+      candidate: opts.candidate,
+      from: null,
+      green: null,
+      reason: "promotion-unauthorized",
+      runId: opts.runId,
+      summary:
+        "green-checkpoint reached a SUITE VERDICT and was then refused the promotion push: the " +
+        `remote${remote ? ` ${remote}` : ""} rejected it as UNAUTHORIZED (HTTP 401/403 — no write ` +
+        "access, or no usable credential). Refusing to advance is CORRECT and must not change: a " +
+        "candidate that cannot be published must never move the local release ref, or the gate " +
+        "emits a deployable verdict for a sha nobody else can fetch.\n" +
+        "⚠ This is NOT a code red and NOT a crash — do not triage this candidate's files; the " +
+        "suite is not what failed. It also does NOT self-clear: every re-fire is refused " +
+        "identically until the ACCESS changes, so re-running the gate here buys nothing.\n" +
+        "REMEDY (one of): grant the pushing identity write access to the remote; repoint origin at " +
+        "a repository the fleet can write to; or stop scheduling a promotion gate for this harness " +
+        "at all — a checkout of a third-party repo can never promote, and scheduling one produces " +
+        `an unresolvable abort on every tick. ${detail}`,
+    };
+  }
+
   if (!materializationDeferred && !dependencySnapshotChanged)
     return buildCrashCheckpointResult(opts);
 

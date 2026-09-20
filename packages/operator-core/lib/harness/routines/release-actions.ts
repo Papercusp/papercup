@@ -3004,6 +3004,22 @@ export function classifyGateStallStatus(
   // another hourly fire. Count it as WEDGED (never as a code red) so repeated aborts trigger the
   // existing consecutiveNoVerdict escalation while preserving the prior real verdict.
   if (status === 'disk-headroom') return 'no-verdict';
+  // WI-10002039: 'promotion-unauthorized' — the suite verdict was reached, then the promotion push
+  // was refused as UNAUTHORIZED (HTTP 401/403). It joins 'disk-headroom' on the SAME reasoning
+  // stated directly above: a standing breach that does not self-clear by waiting for another fire
+  // must keep COUNTING, so repeated aborts still reach the consecutiveNoVerdict escalation.
+  //
+  // The point of the new status is the NAME and the LEVER, never the volume. It previously landed
+  // here as 'error', which is also 'no-verdict' — so loudness is deliberately UNCHANGED by this
+  // line, and nothing downstream gets quieter. What changes is that gate-abort-status can now
+  // classify it 'standing-condition' instead of inheriting 'error's 'transient' lever, which told
+  // readers a permanent 403 did not block a re-fire.
+  //
+  // ⚠ This line is load-bearing in the other direction too: a reason ABSENT from this function
+  // falls through to the trailing `return 'red'` and banks a code red carrying NO failing test —
+  // the contentless red that drives the held-gate alarm and dispatches a release-fixer at a
+  // phantom file list. Removing it does not make the gate quieter; it makes it LIE.
+  if (status === 'promotion-unauthorized') return 'no-verdict';
   /**
    * EI-21462211894072863 — 'error' is a NON-VERDICT that must still be COUNTED, which is why it
    * gets its own class instead of joining either neighbour.
