@@ -3352,6 +3352,10 @@ export function mintCarryRespawnArgs(
   if (normalizedAgent === "codex") {
     const targetHome = String(codexHome ?? "").trim();
     if (!targetHome) throw new Error("Codex carry-respawn requires CODEX_HOME");
+    // A long-lived PTY host can outlive the per-session home repair/archiver.
+    // If AGENTS.md was removed, keep the carry contract terminally deliverable
+    // by recreating the home and layering this checkpoint onto an empty base.
+    mkdirSync(targetHome, { recursive: true, mode: 0o700 });
     const agentsPath = join(targetHome, "AGENTS.md");
     const basePath = join(targetHome, ".papercusp-carry-base-AGENTS.md");
 
@@ -3363,7 +3367,9 @@ export function mintCarryRespawnArgs(
     // strip the managed tail before preserving either source as the base.
     const baseExists = existsSync(basePath);
     const baseSourcePath = baseExists ? basePath : agentsPath;
-    const sourceBaseText = readFileSync(baseSourcePath, "utf8");
+    const sourceBaseText = existsSync(baseSourcePath)
+      ? readFileSync(baseSourcePath, "utf8")
+      : "";
     const baseText = stripManagedCarrySection(sourceBaseText);
     if (!baseExists || baseText !== sourceBaseText) {
       writeFileSync(basePath, baseText, { mode: 0o600 });
@@ -10879,6 +10885,12 @@ export function runWrapper(options) {
                 configDir: env.CLAUDE_CONFIG_DIR || null,
               }),
           }),
+        ensureCodexHome: () =>
+          ensureCodexHomeViaOperator(
+            ownerId,
+            env.CODEX_HOME || null,
+            env.PAPERCUSP_ADV_SESSION_ID || advSessionId || null,
+          ),
         // stale-prompt-render-in-live-sessions-2026-08-02 P-002: a respawn must
         // re-render the base persona instead of inheriting the predecessor's file,
         // or every prompt fix stops at the session's FIRST launch. Injected like the
@@ -13440,6 +13452,10 @@ export async function ensureInteractiveConfigViaOperator(
 export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
   try {
     if (!codexHome) return false;
+    // AGENTS.md is this session's behavioral spine. A home with valid MCP/hooks
+    // but no prompt is not launch-ready and must be rematerialized before a
+    // resume or deterministic carry successor starts.
+    if (!readFileSync(join(codexHome, "AGENTS.md"), "utf8").trim()) return false;
     const text = readFileSync(join(codexHome, "config.toml"), "utf8"); // throws when absent
     if (!text.includes("[mcp_servers.papercusp-su]")) return false;
     if (!expectedOwner) return true;
