@@ -126,8 +126,15 @@ apps/papercusp-docs/.astro/
 # Adding a rule here is only HALF the fix: a tracked path is never ignored, so the
 # rule goes inert unless the path is also untracked (`git rm -r --cached <path>`).
 # Guard against the next one: `npm run lint:no-tracked-src-entry-dist`.
-packages/tooldef/dist/
-packages/tooldef-http/dist/
+#
+# ⚠ ONLY superproject paths belong in this block. `packages/tooldef/dist/` and
+# `packages/tooldef-http/dist/` used to be listed here and were DEAD rules by
+# 2026-09-20: both packages had moved to submodules (libs/generic/tooldef,
+# libs/generic/tooldef-http) and neither `packages/` path existed any more. Worse
+# than useless — a reader grepping this file saw "tooldef-http/dist is ignored" and
+# moved on while libs/generic/tooldef-http/dist/ sat committed. A superproject rule
+# cannot reach inside a submodule even when the path IS right, so those rules live
+# in each submodule's own .gitignore (same reach gap as WI-4419 / EI-22201289307647151).
 packages/tooldef-mcp/dist/
 packages/agent-mcp/dist/
 
