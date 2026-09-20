@@ -39,6 +39,7 @@ import {
   buildExecutedPartitionAdvisory,
   buildSchemaColumnRedirect,
   buildTenantScopeAdvisory,
+  realScopeValue,
   buildDerivedColumnRedirect,
   buildToolRoutingAdvisory,
   buildJsonbPathRedirect,
@@ -684,6 +685,26 @@ export default defineTool({
       };
     }
 
+    // WI-10002044: ONE NORMALIZED scope for both recordAdvisoryFiresDetached
+    // calls below. It is hoisted this high because one call sits inside the try
+    // and the other inside its catch, so no binding declared inside the try can
+    // serve both.
+    //
+    // NORMALIZED, not merely hoisted — and that distinction is the whole bug.
+    // The tenantScope below may pass the raw sentinel because
+    // buildTenantScopeAdvisory normalizes its own scope args; that vouching is
+    // SPECIFIC TO THAT CALLEE and does not extend here. recordAdvisoryFires
+    // does NOT normalize: it writes `opts.harnessSlug ?? null` straight into the
+    // NOT-NULL harness_slug column. Every su/operator-scope call sets
+    // ctx.harnessSlug = '*' (_harness-scope.ts), so passing the raw sentinel
+    // records a phantom harness '*' that pools cross-tenant fires — precisely
+    // the failure recordAdvisoryFires' own doc comment refuses to commit for
+    // workspaceId, one column over.
+    const advisoryFireScope = {
+      workspaceId: ctx.workspaceId,
+      harnessSlug: realScopeValue(ctx.harnessSlug),
+    };
+
     try {
       // EI-20200627264509977: scope-check BEFORE executing. The old advisory was
       // attached after pgReadQuery had already returned the potentially
@@ -774,8 +795,7 @@ export default defineTool({
       // WI-10002035 (P-003): never awaited and never throws — the caller is
       // already holding their query result.
       recordAdvisoryFiresDetached({
-        workspaceId: ctx.workspaceId,
-        harnessSlug: ctx.harnessSlug,
+        ...advisoryFireScope,
         fires: firesForDelivery(labelDeliveredAdvisories(deliveredAdvisories), 'success'),
       });
       return {
@@ -865,8 +885,7 @@ export default defineTool({
       // differs here (routing only, no result-derived advisories), hence the
       // explicit label list.
       recordAdvisoryFiresDetached({
-        workspaceId: ctx.workspaceId,
-        harnessSlug: ctx.harnessSlug,
+        ...advisoryFireScope,
         fires: firesForDelivery(
           labelDeliveredAdvisories(deliveredErrorAdvisories, ERROR_PATH_ADVISORY_LABELS),
           'error',
