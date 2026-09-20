@@ -49,7 +49,11 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { upsertConditionWorkItem } from '../../coord/condition-upsert';
+import type { TransactionSql } from 'postgres';
+import {
+  upsertConditionWorkItem,
+  upsertConditionWorkItemInTransaction,
+} from '../../coord/condition-upsert';
 
 /**
  * Work-item statuses that mean an existing filing is still outstanding.
@@ -132,6 +136,78 @@ export function acceptanceDrainFilingBody(
   );
 }
 
+export function acceptanceDrainCarryBody(planSlug: string): string {
+  return (
+    `Plan \`${planSlug}\` has entered \`awaiting-acceptance\`: implementation is terminal, ` +
+    `but shipment still requires the canonical acceptance gate. The gate observation is ` +
+    `pending; re-read \`plans:get { slug:'${planSlug}', shipReadiness: true }\` and continue ` +
+    `the acceptance ceremony. This item owns the handoff and remains open until the plan ` +
+    `ships or reaches an explicit terminal not-to-ship disposition.`
+  );
+}
+
+/**
+ * Commit the acceptance accountability handoff in the SAME transaction as the
+ * plan's transition into `awaiting-acceptance`. This is a pending observation,
+ * not a fabricated gate refusal; the next sweep refreshes the same keyed row
+ * with canonical refusal/evidence or observes readiness.
+ */
+export async function ensureAcceptanceDrainCarryInTransaction(
+  tx: TransactionSql,
+  input: Pick<AcceptanceDrainFilingInput, 'workspaceId' | 'harnessSlug' | 'planSlug'> & {
+    accountableOwnerId?: string | null;
+  },
+): Promise<AcceptanceDrainFilingResult & { outcome: 'created' | 'already-open' }> {
+  const ref = acceptanceDrainPlanRef(input);
+  // Reuse pre-key filers too. This predicate is the existing payload identity;
+  // locking the row prevents a concurrent claim from being overwritten.
+  const open = await tx<{ feature_id: string; harness_slug: string }[]>`
+    SELECT feature_id, harness_slug FROM harness_shared.work_items
+     WHERE workspace_id = ${input.workspaceId}
+       AND payload->>'acceptanceDrainPlan' = ${ref}
+       AND status = ANY(${ACCEPTANCE_DRAIN_NON_TERMINAL_STATUSES})
+     ORDER BY created_ts, feature_id
+     LIMIT 1 FOR UPDATE
+  `;
+  if (open[0]) {
+    if (input.accountableOwnerId) {
+      await tx`
+        UPDATE harness_shared.work_items
+           SET taken_by = ${input.accountableOwnerId}, taken_at = clock_timestamp(),
+               expires_at = clock_timestamp() + INTERVAL '7 days'
+         WHERE workspace_id = ${input.workspaceId}
+           AND harness_slug = ${open[0].harness_slug}
+           AND feature_id = ${open[0].feature_id} AND taken_by IS NULL
+      `;
+    }
+    return { outcome: 'already-open', id: open[0].feature_id, ref };
+  }
+  const res = await upsertConditionWorkItemInTransaction(
+    tx,
+    `acceptance-drain:${input.harnessSlug}/${input.planSlug}`,
+    {
+      kind: 'task',
+      harness: input.harnessSlug,
+      workspaceId: input.workspaceId,
+      createdBy: 'system:acceptance-drain',
+      assignee: input.accountableOwnerId ?? undefined,
+      title: `Carry plan '${input.planSlug}' through acceptance/shipment`,
+      summary: acceptanceDrainCarryBody(input.planSlug),
+      payload: {
+        acceptanceDrainPlan: ref,
+        planSlug: input.planSlug,
+        blockerCode: null,
+        gateObservation: 'pending',
+      },
+    },
+  );
+  return {
+    outcome: res.created ? 'created' : 'already-open',
+    id: res.id,
+    ref,
+  };
+}
+
 /**
  * File the acceptance-drain work item for a plan, unless one is already open.
  *
@@ -150,13 +226,39 @@ export async function ensureAcceptanceDrainFiling(
     // filing rather than letting a keyed sibling join it. Cheap, and it also
     // covers any row filed before this condition key existed.
     const open = (await sql`
-      SELECT 1
+      SELECT feature_id, harness_slug, payload->>'gateObservation' AS gate_observation
         FROM harness_shared.work_items
-       WHERE payload->>'acceptanceDrainPlan' = ${ref}
+       WHERE workspace_id = ${input.workspaceId}
+         AND payload->>'acceptanceDrainPlan' = ${ref}
          AND status = ANY(${ACCEPTANCE_DRAIN_NON_TERMINAL_STATUSES})
        LIMIT 1
-    `) as unknown as unknown[];
-    if (open.length > 0) return { outcome: 'already-open', id: null, ref };
+    `) as unknown as Array<{ feature_id: string; harness_slug: string; gate_observation?: string | null }>;
+    if (open.length > 0) {
+      const incumbent = open[0]!;
+      // P-025 creates a pending carry row inside the drain transaction. The
+      // first canonical gate read must replace that placeholder in-place;
+      // treating it as an ordinary dedupe hit would recreate the old sink.
+      if (incumbent.gate_observation === 'pending') {
+        await sql`
+          UPDATE harness_shared.work_items
+             SET title = ${`Unstick plan '${input.planSlug}' from awaiting-acceptance — blocked on ${input.code}`},
+                 summary = ${acceptanceDrainFilingBody(input.planSlug, input.code, input.message)},
+                 updated_ts = (EXTRACT(EPOCH FROM now()) * 1000)::bigint,
+                 payload = COALESCE(payload, '{}'::jsonb) ||
+                   jsonb_build_object('blockerCode', ${input.code}::text, 'gateObservation', 'blocked')
+           WHERE feature_id = ${incumbent.feature_id}
+             AND workspace_id = ${input.workspaceId}
+             AND harness_slug = ${incumbent.harness_slug}
+             AND status = ANY(${ACCEPTANCE_DRAIN_NON_TERMINAL_STATUSES})
+             AND payload->>'gateObservation' = 'pending'
+        `;
+      }
+      return {
+        outcome: 'already-open',
+        id: incumbent.gate_observation === 'pending' ? incumbent.feature_id : null,
+        ref,
+      };
+    }
 
     // The read above is check-then-act and therefore RACED; the upsert claims the
     // unique condition-key index so a concurrent double-file resolves to ONE open

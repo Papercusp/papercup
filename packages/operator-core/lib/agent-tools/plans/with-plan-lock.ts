@@ -176,7 +176,7 @@ export interface OutputSchemaPatch {
   schema: Record<string, unknown> | null;
 }
 
-export interface WithPlanLockOpts {
+export interface WithPlanLockOpts<T = unknown> {
   /** Plan slug (the PG key + the advisory lock key). */
   slug: string;
   /** One-line description of the mutation, surfaced to busy callers. */
@@ -220,6 +220,18 @@ export interface WithPlanLockOpts {
     writtenBody: string,
     scope: { workspaceId: string; harnessSlug: string },
     writtenTemplateData: unknown,
+  ) => Promise<void>;
+  /**
+   * Strict post-mutation hook that runs BEFORE the transaction commits. Unlike
+   * `afterWrite`, a failure rolls back the plan body and the coupled write.
+   * This is the seam for durable ownership handoffs whose second record must
+   * never outlive the plan transition it explains.
+   */
+  inTransaction?: (
+    tx: TransactionSql,
+    writtenBody: string,
+    scope: { workspaceId: string; harnessSlug: string },
+    value: T,
   ) => Promise<void>;
 }
 
@@ -306,7 +318,7 @@ export type WithPlanLockResult<T> = AppliedResult<T> | BusyError;
  */
 export async function withPlanLock<T>(
   _ctx: unknown,
-  opts: WithPlanLockOpts,
+  opts: WithPlanLockOpts<T>,
   mutator: (
     current: string | null,
     meta: PlanWriteMeta | null,
@@ -779,6 +791,15 @@ export async function withPlanLock<T>(
     // query this after the transaction, because another writer could commit a
     // newer structured revision before the audit row is appended.
     const writtenTemplateData = writesTemplateData ? templateData!.data : cur?.template_data ?? null;
+
+    if (writtenBody !== null && opts.inTransaction) {
+      await opts.inTransaction(
+        tx as unknown as TransactionSql,
+        writtenBody,
+        { workspaceId, harnessSlug },
+        value,
+      );
+    }
 
     // Strict revision capture is deliberately inside the same transaction as
     // the plan upsert. A failure here rejects the withWorkspace callback and

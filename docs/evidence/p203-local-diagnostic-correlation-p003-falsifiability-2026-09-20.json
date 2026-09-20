@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-003 falsifiability mutation probe: pool identity",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--file",
+    "libs/papercusp/libs/db/src/acquire-registry.ts",
+    "--mutate",
+    "s/poolInstanceId: randomUUID\\(\\)/poolInstanceId: null/",
+    "--test",
+    "P003_ACQUIRE_REGISTRY_SRC={} npm run test:file -- libs/papercusp/libs/db/src/postgres-result-diagnostics.test.ts -t \"keeps distinct pool identities in the production factory\"",
+    "--expect",
+    "caught"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-20T04:29:40Z",
+  "finishedAt": "2026-09-20T04:29:52Z",
+  "summary": "Copy-out mutation probe caught the pool identity mutant. Baseline passed; mutant loaded and failed the independent behavioral assertion; probe reported MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked; tree integrity was verified byte-identical afterward.",
+  "assertions": [
+    {
+      "id": "baseline-green",
+      "passed": true,
+      "evidence": "Canonical testing:run 3db02ca1-582d-4d26-ae8f-039b1f22e28e passed all 15 tests in postgres-result-diagnostics.test.ts before this probe."
+    },
+    {
+      "id": "mutation-applied",
+      "passed": true,
+      "evidence": "The copy-out mutation changed poolInstanceId: randomUUID() to poolInstanceId: null in the isolated acquire-registry copy."
+    },
+    {
+      "id": "mutant-caught",
+      "passed": true,
+      "evidence": "The mutated run failed the distinct pool identities assertion; probe exited with expected caught verdict."
+    },
+    {
+      "id": "tree-restored",
+      "passed": true,
+      "evidence": "mutation-probe reported tree integrity VERIFIED for acquire-registry.ts."
+    }
+  ]
+}

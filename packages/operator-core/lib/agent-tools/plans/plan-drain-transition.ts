@@ -56,6 +56,7 @@
 import { derivePlanLifecycle, derivePlanStatusTransition, parsePlan } from '@papercusp/plan-parser';
 import { flipPlanFrontmatterStatus } from './set-plan-status';
 import { withPlanLock } from './with-plan-lock';
+import { ensureAcceptanceDrainCarryInTransaction } from './acceptance-drain-filing';
 
 /** Why a transition did not happen — every non-applied outcome is named, so a
  *  caller never has to read "false" and guess which of five reasons it was. */
@@ -85,6 +86,49 @@ export interface PlanDrainTransitionResult {
   /** The evidence sentence from the pure decision, for logs and history. */
   reason?: string;
   skipped?: PlanDrainTransitionSkip;
+  acceptanceCarry?: {
+    outcome: 'created' | 'already-open';
+    id: string | null;
+  };
+}
+
+export interface PlanDrainTransitionOptions {
+  /** Driver to receive the acceptance accountability task in the same tx. */
+  accountableOwnerId?: string | null;
+}
+
+/** Shared locked-body decision for direct item writes and the reaction/backstop. */
+export function planDrainTransitionMutation(current: string | null): {
+  newBody: string | null;
+  value: PlanDrainTransitionResult;
+} {
+  if (current === null) {
+    return { newBody: null, value: { applied: false, skipped: 'not_found' } };
+  }
+  const parsed = parsePlan(current);
+  const transition = derivePlanStatusTransition(
+    parsed.frontmatter.status,
+    derivePlanLifecycle(parsed.items),
+  );
+  if (transition === null) {
+    return { newBody: null, value: { applied: false, skipped: 'no_transition_warranted' } };
+  }
+  const flip = flipPlanFrontmatterStatus(current, transition.to, transition.from);
+  if (flip.newBody === null) {
+    return {
+      newBody: null,
+      value: { applied: false, skipped: flip.code ?? 'no_transition_warranted' },
+    };
+  }
+  return {
+    newBody: flip.newBody,
+    value: {
+      applied: true,
+      from: transition.from,
+      to: transition.to,
+      reason: transition.reason,
+    },
+  };
 }
 
 /**
@@ -100,6 +144,7 @@ export interface PlanDrainTransitionResult {
 export async function applyPlanDrainTransition(
   planSlug: string,
   harnessSlug: string | null,
+  options: PlanDrainTransitionOptions = {},
 ): Promise<PlanDrainTransitionResult> {
   const locked = await withPlanLock<PlanDrainTransitionResult>(
     null as never,
@@ -107,41 +152,20 @@ export async function applyPlanDrainTransition(
       slug: planSlug,
       intent: 'plan-drain-transition: reconcile plan status against a drained item graph',
       ...(harnessSlug ? { harnessSlug } : {}),
+      inTransaction: async (tx, writtenBody, scope, value) => {
+        if (value.applied && value.to === 'awaiting-acceptance' &&
+            parsePlan(writtenBody).frontmatter.template !== 'rubric') {
+          const carry = await ensureAcceptanceDrainCarryInTransaction(tx, {
+            workspaceId: scope.workspaceId,
+            harnessSlug: scope.harnessSlug,
+            planSlug,
+            accountableOwnerId: options.accountableOwnerId,
+          });
+          value.acceptanceCarry = { outcome: carry.outcome, id: carry.id };
+        }
+      },
     },
-    async (current) => {
-      if (current === null) {
-        return { newBody: null, value: { applied: false, skipped: 'not_found' } };
-      }
-
-      const parsed = parsePlan(current);
-      const derived = derivePlanLifecycle(parsed.items);
-      const transition = derivePlanStatusTransition(parsed.frontmatter.status, derived);
-      if (transition === null) {
-        return { newBody: null, value: { applied: false, skipped: 'no_transition_warranted' } };
-      }
-
-      // `expectedCurrent` is redundant under the lock and passed anyway: it
-      // makes the write assert the premise it was decided on, so a future
-      // refactor that moves the parse outside the lock fails loudly here
-      // instead of silently writing against stale bytes.
-      const flip = flipPlanFrontmatterStatus(current, transition.to, transition.from);
-      if (flip.newBody === null) {
-        return {
-          newBody: null,
-          value: { applied: false, skipped: flip.code ?? 'no_transition_warranted' },
-        };
-      }
-
-      return {
-        newBody: flip.newBody,
-        value: {
-          applied: true,
-          from: transition.from,
-          to: transition.to,
-          reason: transition.reason,
-        },
-      };
-    },
+    async (current) => planDrainTransitionMutation(current),
   );
 
   return locked.kind === 'applied' ? locked.value : { applied: false, skipped: 'busy' };

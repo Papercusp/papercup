@@ -67,6 +67,8 @@ import {
   type CompletionVerificationEvidence,
 } from '../../coord-lifecycle/records';
 import { typeEvidenceGapInCompletion } from '../type-evidence-gap';
+import { ensureAcceptanceDrainCarryInTransaction } from './acceptance-drain-filing';
+import { planDrainTransitionMutation } from './plan-drain-transition';
 
 // Most-permissive (owner directive 2026-06-25): open to every role; the capability envelope is the
 // real backstop. Was [...SU_ROLES, 'bee'].
@@ -260,6 +262,7 @@ type SetStatusValue =
       /** WI-1830: computed inside the lock (race-safe) — this →done flip left the plan with
        *  zero open items, so the fleet's lane drained. False for every non-→done flip. */
       drainedPlan: boolean;
+      acceptanceCarry?: { outcome: 'created' | 'already-open'; id: string | null };
       /** memory-delivery-unification-2026-07-12 P-008: the item's text, captured
        *  inside the lock ONLY on a real →wip edge, so the claim-time recall port
        *  can query it without a second read. Undefined on every other flip. */
@@ -1326,6 +1329,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   }
 
   const rev = planRevisionCapture(ctx as PlanRevisionCtx, it.slug, it.rationale, harnessSlug ? { harnessSlug } : {});
+  let carryRequired = false;
   const result = await withPlanLock<SetStatusValue>(
     ctx as never,
     {
@@ -1333,6 +1337,18 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       intent: `plans:set-status ${it.itemId} → ${it.status}`,
       ...(harnessSlug ? { harnessSlug } : {}),
       afterWrite: rev.afterWrite,
+      inTransaction: async (tx, _writtenBody, scope, value) => {
+        if (value.ok && carryRequired) {
+          const carry = await ensureAcceptanceDrainCarryInTransaction(tx, {
+            workspaceId: scope.workspaceId,
+            harnessSlug: scope.harnessSlug,
+            planSlug: it.slug,
+            accountableOwnerId: agentId && !agentId.ownerId.startsWith('system:') &&
+              !isEphemeralMcpCallIdentity(agentId.ownerId) ? agentId.ownerId : null,
+          });
+          value.acceptanceCarry = { outcome: carry.outcome, id: carry.id };
+        }
+      },
     },
     async (current): Promise<{ newBody: string | null; value: SetStatusValue }> => {
       if (current === null) {
@@ -1435,7 +1451,16 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       // needs-human push gate uses the same value, but callers also rely on
       // this response field for routine and terminal status updates.
       const importance = itemImportance(current, it.itemId);
-      const finalBody = bumpUpdatedDate(newBody);
+      let finalBody = bumpUpdatedDate(newBody);
+      // Preserve accountability BEFORE releasing the implementation claim. The
+      // same parser-owned transition serves direct writes and the backstop;
+      // final item + lifecycle + carry filing commit together or not at all.
+      if (isTerminalStatus(it.status) !== (oldStatus !== null && isTerminalStatus(oldStatus))) {
+        const drain = planDrainTransitionMutation(finalBody);
+        if (drain.newBody !== null) finalBody = drain.newBody;
+        carryRequired = drain.value.to === 'awaiting-acceptance' &&
+          parsePlan(finalBody).frontmatter.template !== 'rubric';
+      }
       // WI-1830: on a real →done edge, does this flip leave the plan with zero open
       // (non-terminal) items? Computed here, INSIDE the lock, off the just-written body so
       // it is race-safe against concurrent flips (the plan lock serializes writes). The

@@ -39,9 +39,12 @@
  */
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import type { TransactionSql } from 'postgres';
 import { createWorkItem, setWorkItemState, type CreateWorkItemInput } from '../work-items';
 import { claimConditionKey, findConditionKeyHolder, releaseStaleConditionKeys } from './condition-bridge';
 import { linkWorkItemToCondition } from './condition-object';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { neutralizeToolCallTags, sanitizePersistedText } from '../text-safety';
 
 /** Lifecycle actor for the lost-race stand-down close (see CONDITION_BRIDGE_ACTOR
  *  for why an anonymous terminal transition is refused by the completion gate). */
@@ -283,5 +286,103 @@ export async function upsertConditionWorkItem(
     id: settled.winnerId ?? item.id,
     created: false,
     ...(settled.duplicateLeftOpen ? { duplicateLeftOpen: settled.duplicateLeftOpen } : {}),
+  };
+}
+
+/**
+ * Transaction-bound condition filing for a caller that is already inside the
+ * transaction whose state makes the condition actionable.
+ *
+ * This is intentionally a narrow SQL seam rather than a second general
+ * `createWorkItem` implementation. The acceptance-drain handoff must commit
+ * the plan's `awaiting-acceptance` transition and its accountable task
+ * together, while `createWorkItem` currently owns its own transaction. The
+ * ordinary upsert above remains the reusable retrying path for sweeps.
+ *
+ * The partial unique index is the final race guard. A terminal stale holder is
+ * released in this same transaction before the upsert, so an old settled row
+ * cannot wedge a newly-drained plan. Any error escapes to the caller and rolls
+ * back the enclosing transaction; callers must not turn that into a
+ * post-commit notification.
+ */
+export async function upsertConditionWorkItemInTransaction(
+  tx: TransactionSql,
+  conditionKey: string,
+  input: Pick<
+    CreateWorkItemInput,
+    'kind' | 'title' | 'summary' | 'harness' | 'workspaceId' | 'createdBy' | 'payload' | 'assignee'
+  >,
+): Promise<ConditionUpsertResult> {
+  const key = conditionKey.trim();
+  if (!key) throw new Error('upsertConditionWorkItemInTransaction: empty conditionKey');
+  if (input.kind !== 'task') {
+    throw new Error(`upsertConditionWorkItemInTransaction: unsupported kind '${input.kind}'`);
+  }
+  const workspaceId = input.workspaceId?.trim();
+  const harnessSlug = input.harness?.trim();
+  if (!workspaceId || !harnessSlug) {
+    throw new Error('upsertConditionWorkItemInTransaction: workspaceId and harness are required');
+  }
+
+  await tx`
+    UPDATE harness_shared.work_items
+       SET condition_key = NULL
+     WHERE workspace_id = ${workspaceId}
+       AND condition_key = ${key}
+       AND status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
+  `;
+
+  const payload = {
+    ...((input.payload as Record<string, unknown> | undefined) ?? {}),
+    [CONDITION_UPSERT_MARKER]: {
+      conditionKey: key,
+      occurrences: 1,
+      lastSeenAt: new Date().toISOString(),
+    },
+    _ei: {
+      scope: `harness:${harnessSlug}`,
+      source: 'engineer',
+      created_by: input.createdBy ?? null,
+      signal_origin: 'organic',
+    },
+  };
+  const title = sanitizePersistedText(neutralizeToolCallTags(input.title));
+  const summary = sanitizePersistedText(neutralizeToolCallTags(input.summary ?? ''));
+  const assignee = input.assignee?.trim() || null;
+  const rows = await tx<{ feature_id: string; inserted: boolean }[]>`
+    INSERT INTO harness_shared.work_items (
+      workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
+      origin, ts, created_ts, updated_ts, payload, condition_key, taken_by, taken_at, expires_at
+    )
+    VALUES (
+      ${workspaceId}, ${harnessSlug}, harness_shared.next_work_item_id(),
+      ${title}, ${summary}, 'open', 'task', 'local',
+      (extract(epoch FROM clock_timestamp()) * 1000)::bigint,
+      (extract(epoch FROM clock_timestamp()) * 1000)::bigint,
+      (extract(epoch FROM clock_timestamp()) * 1000)::bigint,
+      ${JSON.stringify(payload)}::text::jsonb, ${key},
+      ${assignee},
+      CASE WHEN ${assignee}::text IS NULL THEN NULL ELSE clock_timestamp() END,
+      CASE WHEN ${assignee}::text IS NULL THEN NULL ELSE clock_timestamp() + INTERVAL '7 days' END
+    )
+    ON CONFLICT (workspace_id, harness_slug, condition_key)
+      WHERE condition_key IS NOT NULL
+    DO UPDATE SET
+      -- A replay of the handoff must not overwrite a later gate observation,
+      -- completion evidence or a peer's in-flight content/claim.
+      taken_by = COALESCE(harness_shared.work_items.taken_by, EXCLUDED.taken_by),
+      taken_at = CASE WHEN harness_shared.work_items.taken_by IS NULL
+        THEN EXCLUDED.taken_at ELSE harness_shared.work_items.taken_at END,
+      expires_at = CASE WHEN harness_shared.work_items.taken_by IS NULL
+        THEN EXCLUDED.expires_at ELSE harness_shared.work_items.expires_at END
+    WHERE NOT (harness_shared.work_items.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+    RETURNING feature_id, (xmax = 0) AS inserted
+  `;
+  const row = rows[0];
+  if (!row?.feature_id) throw new Error(`condition upsert returned no row for '${key}'`);
+  return {
+    conditionKey: key,
+    id: row.feature_id,
+    created: row.inserted,
   };
 }

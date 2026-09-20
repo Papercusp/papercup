@@ -185,12 +185,18 @@ export async function runAcceptanceDrainSweepOnce(
   try {
     const { sql } = getOrgPg();
     const existing = (await sql`
-      SELECT payload->>'acceptanceDrainPlan' AS ref
+      SELECT payload->>'acceptanceDrainPlan' AS ref,
+             payload->>'gateObservation' AS gate_observation
         FROM harness_shared.work_items
        WHERE payload->>'acceptanceDrainPlan' IS NOT NULL
          AND status = ANY(${ACCEPTANCE_DRAIN_NON_TERMINAL_STATUSES})
-    `) as unknown as { ref: string | null }[];
-    for (const e of existing) if (e.ref) alreadyFiledRefs.add(e.ref);
+    `) as unknown as { ref: string | null; gate_observation?: string | null }[];
+    // A P-025 carry row is an ownership handoff, not a completed gate
+    // observation. Let the first sweep evaluate it and replace the placeholder
+    // in-place; only a known blocker suppresses duplicate filing.
+    for (const e of existing) {
+      if (e.ref && e.gate_observation !== 'pending') alreadyFiledRefs.add(e.ref);
+    }
   } catch (err) {
     return empty(
       `acceptance-drain sweep: dedupe read failed: ${(err as Error).message}`,
