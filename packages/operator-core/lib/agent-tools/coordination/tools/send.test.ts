@@ -2159,6 +2159,34 @@ describe('coord:send optimistic-wake guidance after Mug/Kettle retirement', () =
  * one that would carry the traffic, so a gate enforced only on items[] would not be a
  * gate — it would just relocate.
  */
+type JsonSchemaish = {
+  properties?: Record<string, { description?: string; $ref?: string } | undefined>;
+  $defs?: Record<string, { description?: string } | undefined>;
+};
+
+/**
+ * Read an arg's PUBLISHED description from the tool's JSON schema, following a `$ref`.
+ *
+ * Reading `properties.<arg>.description` directly is the obvious form and it is wrong
+ * here: EI-23318249512516833 gave `messageBodyArg` a registry id (`.meta({ id:
+ * 'coord-send-body-v1' })`) so the large nested body contract serializes ONCE into
+ * `$defs` and is referenced. Zod then emits `properties.body` as a bare `{ $ref }` with
+ * NO sibling `description` — so the direct read returns '' for a description that is
+ * very much published (measured: 0 chars at the property site, 919 in `$defs`), and
+ * every `toContain` below starts asserting against an empty string. That is a guard
+ * failing for a reason unrelated to the contract it guards. Resolve the ref instead,
+ * so a future id added to ANY arg cannot silently blank its own guard.
+ */
+function publishedArgDescription(schema: JsonSchemaish, arg: string): string {
+  const prop = schema.properties?.[arg];
+  if (!prop) return '';
+  if (typeof prop.description === 'string' && prop.description) return prop.description;
+  if (typeof prop.$ref === 'string') {
+    return schema.$defs?.[prop.$ref.replace(/^#\/\$defs\//, '')]?.description ?? '';
+  }
+  return '';
+}
+
 describe('coord:send structured-body gate (owner directive 2026-07-28 — the string body is refused)', () => {
   const sections = [{ text: 'the substance', forYouBecause: { relation: 'owns' as const, note: 'yours' } }];
 
@@ -2168,10 +2196,10 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
     expect(primaryGuidance).toContain('{ goalRef');
     expect(primaryGuidance).toMatch(/goal REF rather than prose|goal REF, never prose/i);
 
-    const schema = z.toJSONSchema(tool.args) as {
-      properties?: { why?: { description?: string } };
-    };
-    expect(schema.properties?.why?.description ?? '').toMatch(/goal REF not prose/i);
+    // Same ref-following read as `body` above: `why` is inline today, but reading the
+    // property site directly is exactly the form that went vacuous when `body` gained an id.
+    const schema = z.toJSONSchema(tool.args) as JsonSchemaish;
+    expect(publishedArgDescription(schema, 'why')).toMatch(/goal REF not prose/i);
   });
 
   it('publishes the directed forYouBecause requirement in primary coord:send guidance', () => {
@@ -2204,15 +2232,23 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
   });
 
   it('publishes the exact authored entry shapes in the body guidance', () => {
-    const schema = z.toJSONSchema(tool.args) as {
-      properties?: { body?: { description?: string } };
-    };
-    const bodyDescription = schema.properties?.body?.description ?? '';
+    const bodyDescription = publishedArgDescription(z.toJSONSchema(tool.args) as JsonSchemaish, 'body');
     expect(bodyDescription).toContain('premises: ["WI-1234#completion"]');
     expect(bodyDescription).toContain('youMayNotKnow: [{ ref:');
     expect(bodyDescription).toContain('provenance: "authored"');
     expect(bodyDescription).toContain('couldNotDetermine: [{ what:');
     expect(bodyDescription).toContain('note: "optional detail"');
+  });
+
+  // RECURRENCE GUARD for the defect the test above hit: an arg schema that gains a
+  // registry id is hoisted into `$defs`, leaving the property site a bare `$ref`, and a
+  // guard reading the property site then asserts against ''. The assertions above would
+  // fail for a reason that has nothing to do with the contract they exist to protect.
+  // This pins the invariant that actually matters: the description IS published and
+  // substantive, wherever the serializer chose to put it.
+  it('publishes a non-empty body description whether it is inline or hoisted into $defs', () => {
+    const schema = z.toJSONSchema(tool.args) as JsonSchemaish;
+    expect(publishedArgDescription(schema, 'body').length).toBeGreaterThan(100);
   });
 
   it('REFUSES a plain-string body, and the refusal TEACHES the array shape', () => {
