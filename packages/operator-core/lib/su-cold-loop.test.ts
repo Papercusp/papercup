@@ -458,6 +458,49 @@ describe('renderColdWakeInjection — the cold-wake injected text (P-002 produce
       expect(out).toContain('last written');
     });
 
+    // EI-23796602281828820: the banner used to open "you completed a turn at [<lastTurnAt>]", which
+    // names the latest turn BOUNDARY rather than the work. Those differ — the boundary is routinely
+    // an errored/bounced turn while the licensing tool calls sit earlier in the window — and a reader
+    // who checked the cited turn, found an API error, and concluded the detector was broken filed
+    // that misreading as a defect. The banner must cite the COUNT, which is the actual evidence.
+    describe('the banner cites its evidence, and never asserts an unverified case', () => {
+      const turnAt = noteAt + 37 * 60_000;
+
+      it('states the tool-call count as the evidence when the count is known', () => {
+        const out = renderColdWakeInjection('note', undefined, 51, noteAt, turnAt, 12);
+        expect(out).toContain('UN-CHECKPOINTED WORK EXISTS');
+        expect(out).toContain('12 agent tool call(s) ran AFTER this note was written');
+        expect(out).not.toContain('UNVERIFIED');
+      });
+
+      // NEGATIVE CONTROL: without this, a render that simply stopped emitting the banner would
+      // satisfy every `not.toContain` above and below.
+      it('still downgrades to the bounced-fire note when the count is a confirmed zero', () => {
+        const out = renderColdWakeInjection('note', undefined, 51, noteAt, turnAt, 0);
+        expect(out).toContain('bounced fire');
+        expect(out).not.toContain('UN-CHECKPOINTED WORK EXISTS');
+      });
+
+      // Evidence-unavailable still WARNS (reading a failed query as zero would silently suppress a
+      // real warning) but must not borrow the confident wording of a measured case.
+      it('labels the case UNVERIFIED when the evidence query did not return', () => {
+        for (const missing of [undefined, null]) {
+          const out = renderColdWakeInjection('note', undefined, 51, noteAt, turnAt, missing);
+          expect(out).toContain('UN-CHECKPOINTED WORK EXISTS'); // still warns
+          expect(out).toContain('UNVERIFIED');
+          expect(out).toContain('did NOT return');
+          expect(out).not.toContain('agent tool call(s) ran AFTER'); // claims no count it does not have
+        }
+      });
+
+      // The specific misreading that produced the filing: judging the warning by the last turn's text.
+      it('warns that the cited turn stamp may itself be an errored turn', () => {
+        const out = renderColdWakeInjection('note', undefined, 51, noteAt, turnAt, 12);
+        expect(out).toContain('latest turn BOUNDARY');
+        expect(out).toContain('do not dismiss this warning because the last turn looks like a failure');
+      });
+    });
+
     it('stays silent for the mechanical same-turn tail (checkpoint, then the turn ends)', () => {
       // The writing turn necessarily completes AFTER the note; a bare `>` would fire on
       // every cold wake and train the reader to skip the warning entirely.

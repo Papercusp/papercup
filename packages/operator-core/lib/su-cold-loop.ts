@@ -350,6 +350,24 @@ export function renderColdWakeInjection(
   // must NOT be read as zero, or a query failure would silently suppress a real warning).
   const hasEvidence = typeof agentToolCallsSinceNote === 'number' && Number.isFinite(agentToolCallsSinceNote);
   const confirmedNoWork = hasEvidence && agentToolCallsSinceNote! <= 0;
+  // EI-23796602281828820 — CITE THE EVIDENCE, and never state an unverified case as a fact.
+  //
+  // The banner used to open "you completed a turn at [<lastTurnAt>]", which names the latest turn
+  // BOUNDARY — not the work. Those differ: `lastTurnAt` is routinely an errored/bounced turn while
+  // the tool calls that actually licensed the warning sit EARLIER in the window. A reader who
+  // checks the cited turn, finds an API error, and concludes the detector is broken is reading the
+  // banner exactly as written. That misreading was filed as a defect (measured: the window's real
+  // work was plans:get / dev:pg_query / improvements:capture / work_items:comment at 15:14-15:20,
+  // while the cited turn at 15:33 was a 502). So state the COUNT, which is the actual evidence.
+  //
+  // The `null` case is a genuinely different epistemic state and must not borrow the confident
+  // wording. Evidence-unavailable still WARNS — deliberately, since reading a failed query as zero
+  // would silently suppress a real warning — but it is labelled UNVERIFIED rather than asserted.
+  const evidencedWork = hasEvidence && agentToolCallsSinceNote! > 0;
+  const evidenceClause = evidencedWork
+    ? `${agentToolCallsSinceNote} agent tool call(s) ran AFTER this note was written.`
+    : 'a turn completed after this note was written, but the tool-call evidence query did NOT return, ' +
+      'so whether any work actually happened is UNVERIFIED — treat this as a prompt to check, not as proof.';
   const staleWorkLine =
     postNoteMs >= COLD_NOTE_POST_TURN_FLOOR_MS
       ? confirmedNoWork
@@ -357,12 +375,16 @@ export function renderColdWakeInjection(
           `~${coldNoteAge(postNoteMs)} after this note was written — but it made ZERO agent tool calls. ` +
           'That shape is a usage-wall / withheld-delivery bounce (the model emitted refusal text and the ' +
           'turn ended), not un-checkpointed work — the note above is CURRENT. No recovery hunt needed.'
-        : `⚠⚠ UN-CHECKPOINTED WORK EXISTS: you completed a turn at [${coldNoteStamp(lastTurnAtMs!)}] — ` +
-          `~${coldNoteAge(postNoteMs)} AFTER this note was written. The note is refreshed ONLY by ` +
+        : `⚠⚠ UN-CHECKPOINTED WORK EXISTS: ${evidenceClause} The most recent turn completed at ` +
+          `[${coldNoteStamp(lastTurnAtMs!)}] — ~${coldNoteAge(postNoteMs)} AFTER this note was written. ` +
+          'The note is refreshed ONLY by ' +
           'loop:checkpoint, so it does NOT describe that work, and its "Next action" may ALREADY BE DONE ' +
           'or have been superseded by it. Before executing that action, VERIFY IT IS STILL NEEDED against ' +
           'live state — read the code/work-item it names and check whether the thing already exists. ' +
-          'Re-implementing finished work is the specific failure this warns about. Recover what you did with ' +
+          'Re-implementing finished work is the specific failure this warns about. ⚠ That turn STAMP is only ' +
+          'the latest turn BOUNDARY, and may itself be an errored/bounced turn while the real work sits EARLIER ' +
+          'in the window — so do not dismiss this warning because the last turn looks like a failure. ' +
+          'Recover what you did with ' +
           "sessions:timeline { owner:'self', since:'<the note write-time above>' }."
       : null;
   const transientExecLine = transientExecHandleWarning(note);
