@@ -1202,6 +1202,68 @@ describe('P-005-request-settlement-regressions: deriveContinuation (pure, P-010)
     }
   });
 
+  // ── WI-10002032: a bounded tail's `truncated` flag is not evidence ──────────
+  //
+  // readVerbatimTail sets it mechanically (`start > 0 || out.length > maxTurns`) from a
+  // 256 KiB byte window over transcripts that measure ~2.8 MB here, so it is a CONSTANT
+  // for every real session rather than a measurement. Fed to gateOpenOwnerQuestion's
+  // history-uncertain branch that became a permanent, unfalsifiable alarm on
+  // agent-launched sessions which never had an owner at all. The durable ledger can
+  // answer what the byte window cannot.
+  it('clears a truncated history ONLY when the ledger proves this owner never received owner speech', () => {
+    const cont = deriveContinuation([{
+      speaker: 'user',
+      text: '',
+      ts: null,
+      requestHistoryStatus: 'truncated',
+      provenance: { verdict: 'agent-injected', origin: 'wake-pump' },
+    }], true, true, { ownerSpeechCensus: 'none' });
+    expect(cont).toEqual({
+      lastOwnerMessage: null,
+      answered: true,
+      deliberate: true,
+      selfRequested: true,
+    });
+    expect(cont).not.toHaveProperty('requestHistoryStatus');
+    expect(gateOpenOwnerQuestion(cont)).toEqual({ crossesOpenOwnerMessage: false });
+  });
+
+  // The safety direction, and the reason the census has THREE states rather than a
+  // boolean: 'unknown' is what an unreachable or not-yet-ingested ledger returns. If it
+  // collapsed into 'none', ingestion lag would silently suppress a REAL owner question
+  // — the one failure this fix must not introduce. `undefined` covers every existing
+  // caller that passes no census at all.
+  it('keeps a truncated history uncertain for every census value other than none', () => {
+    for (const ownerSpeechCensus of ['unknown', 'some', undefined] as const) {
+      const cont = deriveContinuation([{
+        speaker: 'user',
+        text: '',
+        ts: null,
+        requestHistoryStatus: 'truncated',
+        provenance: { verdict: 'agent-injected', origin: 'wake-pump' },
+      }], true, true, { ownerSpeechCensus });
+      expect(cont).toMatchObject({ answered: false, requestHistoryStatus: 'truncated' });
+      expect(gateOpenOwnerQuestion(cont)).toMatchObject({
+        crossesOpenOwnerMessage: true,
+        basis: 'history-uncertain',
+        historyStatus: 'truncated',
+      });
+    }
+  });
+
+  // A census of `none` must never override an owner question the tail can SEE. The
+  // pending-request branch is checked first and is unaffected by the census.
+  it('never lets the census clear a known-unanswered owner request', () => {
+    const cont = deriveContinuation([ownerTurn('do the thing'), wake('loop wake — continue')], true, true, {
+      ownerSpeechCensus: 'none',
+    });
+    expect(cont.answered).toBe(false);
+    expect(gateOpenOwnerQuestion(cont)).toMatchObject({
+      crossesOpenOwnerMessage: true,
+      basis: 'known-unanswered',
+    });
+  });
+
   it('selfRequested defaults to the deliberate flag (historical meaning preserved) and can be overridden false', () => {
     expect(deriveContinuation([model('a')], true).selfRequested).toBe(true);
     expect(deriveContinuation([model('a')], true, false).selfRequested).toBe(false);

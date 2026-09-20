@@ -329,6 +329,11 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
   finalTurnInFlight?: boolean;
   // Test seams — each defaults to the real reader (or a best-effort empty leg).
   buildCarryBriefFn?: (ownerId: string, opts: BuildCarryBriefOpts) => Promise<CarryBrief>;
+  /** Injectable owner-speech census (default {@link censusOwnerSpeech}). Consulted
+   *  ONLY when the tail reader reports a bounded history, to resolve a `truncated`
+   *  flag the tail itself cannot (WI-10002032). Any failure degrades to `unknown`,
+   *  which is exactly the prior conservative behaviour. */
+  ownerSpeechCensusFn?: (ownerId: string) => Promise<OwnerSpeechCensus>;
   buildAutomaticRecoveryFn?: (
     ownerId: string,
     workspaceId: string,
@@ -640,6 +645,14 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
 
   const getTail = opts.getTailFn ? () => opts.getTailFn!(ownerId) : () => defaultGetTail(opts);
   const tail = (await getTail().catch(() => [] as CarryDocTailTurn[])).slice(-CARRY_DOC_MAX_TAIL_TURNS);
+  // Consult the ledger ONLY when the tail reader actually reports a bounded history: a
+  // complete tail already answers the question on its own, so an unconditional census
+  // would be a per-carry-doc query for nothing (WI-10002032). Double fail-soft — the
+  // reader returns 'unknown' on its own errors, and a rejection here degrades the same
+  // way, so neither path can suppress a genuine owner question.
+  const ownerSpeechCensus: OwnerSpeechCensus | undefined = tail.some((turn) => turn.requestHistoryStatus)
+    ? await (opts.ownerSpeechCensusFn ?? censusOwnerSpeech)(ownerId).catch(() => 'unknown' as const)
+    : undefined;
   const retractedContinuationRefs = detectRetractedContinuationRefs(tail);
   const roleSafety = inspectCarryRoleSafety(
     opts.role,
@@ -673,7 +686,7 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
       tail,
       opts.boundaryDeliberate ?? false,
       opts.boundarySelfRequested,
-      { finalTurnInFlight: opts.finalTurnInFlight },
+      { finalTurnInFlight: opts.finalTurnInFlight, ownerSpeechCensus },
     ),
     ...(retractedContinuationRefs.length > 0 ? { retractedContinuationRefs } : {}),
     roleSafety,
@@ -759,6 +772,81 @@ function isOwnerSpeechVerdict(verdict: string | null | undefined): boolean {
  * a wake-pump or self-compaction turn is recorded as a user turn yet is
  * agent-injected, NOT the owner (the WI-3532 manufactured-directive class). Pure.
  */
+/** Has this owner EVER received owner speech, per the durable turn-provenance
+ *  ledger — the question a byte-bounded transcript tail cannot answer. `unknown` is
+ *  a real third state (no ledger coverage yet), never a synonym for `none`. */
+export type OwnerSpeechCensus = 'none' | 'some' | 'unknown';
+
+/**
+ * Resolve a TRUNCATED/UNREADABLE history flag against the owner-speech census.
+ *
+ * WHY THIS EXISTS (WI-10002032). `requestHistoryStatus` is set mechanically by
+ * `readVerbatimTail`: `truncated = start > 0 || out.length > maxTurns`. That reader
+ * takes a 256 KiB byte window (`TAIL_READ_BYTES`) and keeps 8 turns
+ * ({@link CARRY_DOC_MAX_TAIL_TURNS}), while a real session transcript here measures
+ * ~2.8 MB — more than 10x the window. So `start > 0` holds for essentially every real
+ * session and the flag is a CONSTANT, not a measurement.
+ *
+ * Fed into {@link gateOpenOwnerQuestion}'s `history-uncertain` branch, that constant
+ * became a permanent, unfalsifiable alarm: every deliberate compaction of any
+ * long-running session without owner speech in its last 8 turns reported an open owner
+ * question. Measured 2026-09-20 across two agent-launched owners (su-56d0a9bd,
+ * su-6aab097a): 155 user turns between them, ALL agent-injected or machine-surface,
+ * ZERO owner-typed and ZERO owner-dialog — against a positive control of 1,196
+ * owner-typed turns corpus-wide through the same table, so those zeros are real. Both
+ * carried "answered/no-demand is UNKNOWN" across consecutive respawns, spending
+ * successor attention on an answer that was never owed. An alarm that cannot be
+ * cleared is indistinguishable from no alarm: it trains its reader to ignore it, and
+ * that is the failure that matters.
+ *
+ * The uncertainty IS resolvable — just not from the file. Only a census of `none`
+ * clears the flag; `unknown` and `some` both preserve the prior conservative behaviour
+ * exactly, so a reader outage can never suppress a genuine owner question.
+ */
+function resolveTruncatedHistory(
+  status: 'truncated' | 'unreadable' | undefined,
+  census: OwnerSpeechCensus | undefined,
+): 'truncated' | 'unreadable' | undefined {
+  if (!status) return undefined;
+  return census === 'none' ? undefined : status;
+}
+
+/**
+ * Census this owner's speech from `harness_shared.session_turns`, which is
+ * owner-scoped across the whole carry-respawn chain and is NOT bounded by the tail
+ * reader's byte window.
+ *
+ * Fail-soft in the SAFE direction, and the distinction is load-bearing: zero
+ * owner-speech rows among rows that EXIST is `none` (trustworthy), while zero rows at
+ * all is `unknown` — a session whose turns are not yet ingested has an empty ledger,
+ * and reading that as `none` would suppress a real owner question during ingestion
+ * lag. A throwing reader is `unknown` for the same reason.
+ *
+ * Deliberately NOT workspace-scoped: file-backed claude/omp/codex transcripts are
+ * stored under the host-global `workspace_id='default'` sentinel while agent_chat rows
+ * keep their real tenant id, so filtering by workspace returns a plausible,
+ * catastrophically incomplete slice. The owner id is globally unique, which is the
+ * correct and complete predicate here.
+ */
+export async function censusOwnerSpeech(ownerId: string): Promise<OwnerSpeechCensus> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const sql = getOrgPg().sql;
+    const rows = await sql<Array<{ owner_turns: string; user_turns: string }>>`
+      SELECT count(*) FILTER (WHERE turn_origin_verdict IN ('owner-typed', 'owner-dialog'))::text
+               AS owner_turns,
+             count(*)::text AS user_turns
+        FROM harness_shared.session_turns
+       WHERE owner = ${ownerId}
+         AND speaker = 'user'`;
+    const row = rows[0];
+    if (!row || Number(row.user_turns) === 0) return 'unknown';
+    return Number(row.owner_turns) > 0 ? 'some' : 'none';
+  } catch {
+    return 'unknown';
+  }
+}
+
 export function deriveContinuation(
   tail: ReadonlyArray<CarryDocTailTurn>,
   boundaryDeliberate: boolean,
@@ -768,6 +856,11 @@ export function deriveContinuation(
      *  executing right now — knowledge no tail can contain (see the in-flight
      *  credit below). Default false: a plain historical read is unchanged. */
     finalTurnInFlight?: boolean;
+    /** Whether this owner has EVER received owner speech, from the durable ledger
+     *  ({@link censusOwnerSpeech}). Resolves a bounded tail's `truncated` flag, which
+     *  the tail itself cannot. Omitted ⇒ the prior conservative behaviour, unchanged.
+     *  See {@link resolveTruncatedHistory}. */
+    ownerSpeechCensus?: OwnerSpeechCensus;
   } = {},
 ): CarryDocContinuation {
   // A cut can only have been self-requested if it was also clean/deliberate.
@@ -840,13 +933,19 @@ export function deriveContinuation(
     }
   }
 
+  // A bounded tail cannot see the history it excluded; the ledger can. Only a census
+  // of `none` clears the flag — `unknown`/`some`/absent keep the conservative reading.
+  const historyStatus = resolveTruncatedHistory(requestHistoryStatus, opts.ownerSpeechCensus);
+
   if (requests.length === 0) {
     // A COMPLETE tail with no owner turn is vacuously answered. A truncated or
-    // unreadable tail is explicitly UNKNOWN — never silently "no demand".
+    // unreadable tail is UNKNOWN — never silently "no demand" — UNLESS the durable
+    // ledger proves this owner has never received owner speech at all, in which case
+    // there is no hidden question for the truncation to be hiding (WI-10002032).
     return {
       lastOwnerMessage: null,
-      answered: requestHistoryStatus == null,
-      ...(requestHistoryStatus ? { requestHistoryStatus } : {}),
+      answered: historyStatus == null,
+      ...(historyStatus ? { requestHistoryStatus: historyStatus } : {}),
       deliberate: boundaryDeliberate,
       selfRequested,
     };
