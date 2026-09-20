@@ -134,21 +134,45 @@ describe('P-005 current identity grants at the common kernel seat', () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
-  it('still fails closed on an advanced state revision that is unacknowledged or changes the specification', async () => {
-    const f = fixture();
-    const applied = { ...f.applied, stateRevision: 'state-b' };
-    // Not yet acknowledged by the host: the receipt must still match exactly.
-    for (const status of ['desired', 'prepared', 'failed'] as const) {
-      expect(await checkIdentityGrantKernel(f.request, { activation: { applied, status } }, f.record, async () => f.policy))
-        .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });
-    }
-    // Acknowledged, but the current artifact is a different (broader) specification.
+  it('still fails closed on a broadening, whatever phase the pending activation is in', async () => {
+    // The conjunct that enforces fail-closed is SPECIFICATION equality, not the
+    // activation status. A pending broadening carries a different
+    // specificationRevision, so it must be refused in EVERY phase — including
+    // 'applied', which is the only phase this previously covered.
     const narrow = fixture({ requires: [] });
     const broad = fixture();
-    expect(await checkIdentityGrantKernel(
-      f.request, { activation: { applied: { ...narrow.applied, stateRevision: 'state-b' }, status: 'applied' as const } },
-      broad.record, async () => broad.policy,
-    )).toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });
+    for (const status of ['desired', 'prepared', 'failed', 'applied'] as const) {
+      expect(await checkIdentityGrantKernel(
+        broad.request, { activation: { applied: { ...narrow.applied, stateRevision: 'state-b' }, status } },
+        broad.record, async () => broad.policy,
+      )).toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });
+    }
+  });
+
+  // WI-10002005: a pending activation is a request about FUTURE authority and
+  // must never retract authority the host already acknowledged. `applied` is
+  // written only by acknowledgement, so a non-null `applied` is acknowledged
+  // truth by construction; `status` describes the in-flight transition, not the
+  // validity of that receipt. Conflating the two produced a TOTAL, self-sealing
+  // denial: a 'relaunch-with-carry' stack mutation makes turn-start skip both
+  // markControlTransitionPrepared and acknowledgeControlTransition, leaving
+  // prepared:null/status:'desired' with no throw and no failure record, while
+  // acknowledgeControlTransition's WHERE clause requires prepared = desired — so
+  // the row can never converge and every tool is refused for the life of the
+  // session, including the coord:orient recovery door.
+  it('does not retract acknowledged authority while an activation is pending', async () => {
+    const f = fixture();
+    const applied = { ...f.applied, stateRevision: 'state-b' };
+    for (const status of ['desired', 'prepared', 'failed'] as const) {
+      const read = vi.fn(async () => f.policy);
+      expect(await checkIdentityGrantKernel(
+        f.request,
+        // prepared:null is the exact shape the requiresFreshContext branch leaves behind.
+        { activation: { applied, prepared: null, status }, policyRevision: 'control:2' },
+        f.record, read,
+      )).toMatchObject({ decision: 'allow', revisionSource: 'applied' });
+      expect(read).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('applies a pending narrowing immediately without attributing it as applied', async () => {
@@ -172,13 +196,25 @@ describe('P-005 current identity grants at the common kernel seat', () => {
     const read = vi.fn(async () => f.policy);
     for (const record of [
       null,
-      { ...f.record, stateRevision: 'wrong' },
+      // Tampering that rewrites the SPECIFICATION is caught independently of any
+      // activation phase, by the replay/record specificationRevision comparison.
       { ...f.record, specificationArtifact: { ...f.artifact, configuration: {} } },
       { ...f.record, workspaceId: 'other' },
     ]) {
       expect(await checkIdentityGrantKernel(f.request, f.state, record, read)).toMatchObject({ decision: 'deny' });
     }
     expect(read).not.toHaveBeenCalled();
+
+    // A record whose STATE revision alone disagrees is NOT refused, and must not
+    // be: EI-23431478594488191's fallback exists precisely because a control-only
+    // state advance can never be carried by a receipt. It is gated on
+    // specification equality, so the authority granted is byte-identical to the
+    // acknowledged one — a mismatch here is not a broadening and never was
+    // load-bearing for tamper resistance. Asserting deny here only ever held
+    // because this fixture's state carries no `status` field (WI-10002005).
+    expect(await checkIdentityGrantKernel(
+      f.request, f.state, { ...f.record, stateRevision: 'wrong' }, async () => f.policy,
+    )).toMatchObject({ decision: 'allow', revisionSource: 'applied' });
     expect(await checkIdentityGrantKernel(f.request, f.state, f.record, async () => { throw new Error('offline'); }))
       .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'policy-unavailable' } } });
   });

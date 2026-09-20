@@ -258,13 +258,32 @@ export async function checkIdentityGrantKernel(
   // session would be denied every tool for the rest of its life
   // (EI-23431478594488191). The immutable specification — and therefore
   // configuration.grants — is unchanged in that case, so the record's current
-  // artifact IS the applied specification. Accept it only when the host has
-  // ACKNOWLEDGED the activation as applied AND the specification revisions
-  // agree; a desired/prepared/failed activation is unacknowledged and a
-  // differing specification is a broadening — both still fail closed.
+  // artifact IS the applied specification.
+  //
+  // WI-10002005: this deliberately does NOT require the pending activation to
+  // have reached status 'applied'. A pending activation is a request about the
+  // session's FUTURE authority; it must never RETRACT authority the host has
+  // already acknowledged. Requiring 'applied' here did exactly that, and the
+  // resulting denial is total and self-sealing: a `relaunch-with-carry` stack
+  // mutation makes turn-start skip both markControlTransitionPrepared and
+  // acknowledgeControlTransition (stack-binding-channel.ts sets
+  // requiresFreshContext), leaving prepared:null/status:'desired' with no
+  // throw and no failure record, and acknowledgeControlTransition's own WHERE
+  // clause requires prepared = desired — so the row can never converge and
+  // EVERY tool is refused for the life of the session, including the
+  // coord:orient recovery door.
+  //
+  // The conjunct that actually enforces fail-closed is the specification
+  // equality below, NOT the status: configuration.grants is a property of the
+  // immutable specification, so a pending BROADENING necessarily carries a
+  // different specificationRevision and still falls through to denial. What is
+  // admitted here is only the case where the record's current specification is
+  // byte-identical to the one already acknowledged in `applied` — i.e. where
+  // granting changes nothing about the authority in force. Narrowing is
+  // likewise unaffected: the loop below intersects `artifact` with `current`,
+  // so any reduction expressed in the current specification still binds.
   if (
     !artifact && current && applied &&
-    state.activation?.status === 'applied' &&
     current.specificationRevision === applied.specificationRevision
   ) {
     artifact = current;
