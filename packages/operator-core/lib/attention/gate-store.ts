@@ -17,7 +17,30 @@ import type { TransactionSql } from 'postgres';
 export type GateClient = 'claude' | 'omp' | 'codex';
 export type GateKind = 'ask' | 'permission_wait';
 export type GateSource = 'watcher' | 'hook';
-export type GateClosedReason = 'tool_result_observed' | 'hook_cleared';
+/**
+ * Terminal reasons, split by what they REQUIRE to be written (WI-10002067).
+ *
+ * The first two are SESSION-DEPENDENT: both are written only by machinery that
+ * needs the asking session alive to observe something (the watcher seeing a
+ * tool_result; the hook/bulk path clearing a ref). For most of migration 619's
+ * life those were the ONLY two members, which meant a gate whose asker had died
+ * could not reach a terminal state by any code path that existed — 241 of them
+ * had accumulated by 2026-09-20, the oldest open since 2026-07-17.
+ *
+ * The last two are SESSION-INDEPENDENT and exist to close that hole: they are
+ * written by a sweep that needs nothing from the asking session. Adding them is
+ * the root-cause fix, not a cleanup convenience.
+ */
+export type GateClosedReason =
+  | 'tool_result_observed'
+  | 'hook_cleared'
+  | 'asker_gone'
+  | 'default_applied';
+
+/** The subset of {@link GateClosedReason} that a sweep may write without the
+ *  asking session participating. Exported so a caller cannot widen the sweep to
+ *  a session-dependent reason by passing a bare string. */
+export type SessionIndependentCloseReason = Extract<GateClosedReason, 'asker_gone' | 'default_applied'>;
 
 export interface PendingGateRow {
   id: string;
@@ -35,6 +58,11 @@ export interface PendingGateRow {
   opened_at: string;
   closed_at: string | null;
   closed_reason: GateClosedReason | null;
+  /** Deadline the asker declared; past it the gate self-resolves rather than
+   *  depending on the asking session surviving (WI-10002067). */
+  decide_by: string | null;
+  /** Disposition to apply when {@link decide_by} passes unanswered. */
+  default_if_unanswered: unknown | null;
   created_at: string;
 }
 
@@ -50,6 +78,16 @@ export interface OpenGateInput {
   source: GateSource;
   rawRef?: string | null;
   harnessSlug?: string | null;
+  /**
+   * Deadline for this ask, declared by the ASKER (WI-10002067). Rides the exact
+   * route `question`/`options` already prove: the agent does not write this row
+   * itself — an observer (hook ingest or the transcript watcher) extracts the
+   * field from the agent's ask and persists it here. No new seam.
+   */
+  decideBy?: Date | string | null;
+  /** Disposition to apply when {@link decideBy} passes unanswered. Omit (or
+   *  null) with a decideBy set to mean "expire it, with no default to apply". */
+  defaultIfUnanswered?: unknown;
 }
 
 export type OpenGateOutcome = 'opened' | 'already_open';
