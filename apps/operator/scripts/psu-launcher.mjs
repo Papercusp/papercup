@@ -3339,14 +3339,36 @@ export function mintCarryRespawnArgs(
   const rotated = mintRecycleArgs(args, { mintId, agent, personaFile, model });
   const dir = join(home, ".papercusp", "launch-context");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const key = String(ownerId || rotated.nativeId || "unknown")
-    .replace(/[^a-zA-Z0-9._-]/g, "_")
-    .slice(0, 200);
+  const sanitizeCarrySegment = (value) =>
+    String(value ?? "")
+      .replace(/[^a-zA-Z0-9._-]/g, "_")
+      .slice(0, 200);
+  const key = sanitizeCarrySegment(ownerId || rotated.nativeId || "unknown");
+  // WI-10002026: this file is the DELIVERY SLOT the successor reads BY PATH at
+  // boot (--append-system-prompt-file below). Keying it on ownerId ALONE made it
+  // a single mutable slot that every respawn of that owner overwrites in place,
+  // so one cut's document and another cut's successor can meet — the reported
+  // symptom is a successor handed the PREVIOUS generation's document, silently
+  // discarding an intervening session's turns while the embedded recovery marker
+  // still asserted complete:true. `rotated.nativeId` is freshly minted per
+  // respawn (mintRecycleArgs above), so binding it into the NAME makes a cut's
+  // document unreachable by any other cut's successor: the class is removed
+  // structurally instead of detected after the fact. Aged renders are reaped by
+  // runLaunchContextGc (mtime + live-render evidence, name-agnostic), so the
+  // per-cut names do not accumulate.
+  const cutId = sanitizeCarrySegment(rotated.nativeId);
   const launchContextPath = join(
     dir,
-    `carry-${key || rotated.nativeId || "unknown"}.md`,
+    cutId ? `carry-${key}-${cutId}.md` : `carry-${key || "unknown"}.md`,
   );
-  writeFileSync(launchContextPath, `${text}\n`, { mode: 0o600 });
+  // ATOMIC (tmp + rename) — matching the Codex branch below and the host's own
+  // meta write (psu-pty-host.mjs, WI-3455). A plain in-place writeFileSync
+  // TRUNCATES first, so a successor booting mid-write reads a truncated carry
+  // document, which presents as a short-but-valid one rather than as a failure.
+  const carryTmp = `${launchContextPath}.${process.pid}.carry.tmp`;
+  writeFileSync(carryTmp, `${text}\n`, { mode: 0o600 });
+  chmodSync(carryTmp, 0o600);
+  renameSync(carryTmp, launchContextPath);
   chmodSync(launchContextPath, 0o600);
 
   if (normalizedAgent === "codex") {
