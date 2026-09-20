@@ -377,6 +377,47 @@ const IMAGE_TOKEN_COST = 1600;
  *  over-count rather than risking an under-count that would cause a real context death. */
 const TOOL_USE_RESULT_KEY = ',"toolUseResult":';
 
+/** EI-23747373965813124 (the WHOLE-LINE analogue of WI-3176 / EI-12848): Claude Code
+ *  writes a `"type":"prompt_snapshot"` JSONL line per turn holding the ENTIRE assembled
+ *  prompt. Every token in it is already counted by the ordinary message lines it
+ *  snapshots, so at bytes/4 it double-counts the whole context once per turn — and
+ *  because it scales with SYSTEM-PROMPT size rather than with work done, the inflation
+ *  is a FIXED per-turn constant. Measured on a live su transcript: 3 snapshots =
+ *  1,890,243 of 2,350,316 bytes (80.4% of the file), driving gauge deltas of +213,592
+ *  and +214,759 tokens across two consecutive turns whose real payloads were ~5KB and
+ *  ~180KB respectively — near-identical jumps, i.e. not content-proportional at all. A
+ *  session at a real ~115k read 578,187 (231% of a 250k limit) and was force-compacted
+ *  twice on the fabricated number. Unlike toolUseResult this is not a trailing key but
+ *  a whole out-of-context LINE, so the entire line is discounted. Matching the raw byte
+ *  form is unambiguous for the same reason as COMPACT_BOUNDARY_MARKER (EI-6410): a line
+ *  that merely MENTIONS the key inside string content carries it escaped
+ *  (\"type\":\"prompt_snapshot\") and cannot match. */
+const PROMPT_SNAPSHOT_MARKER = '"type":"prompt_snapshot"';
+
+/**
+ * Byte ranges `[start, end)` of the COMPLETE prompt_snapshot lines in `visible`.
+ * Complete-only (both delimiters settled inside the slice) mirrors
+ * `toolUseResultExcessIn`: a line clipped by the boundary-scan cap keeps full weight
+ * so the estimate errs toward over-counting, never under.
+ */
+function promptSnapshotRangesIn(visible: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  let from = 0;
+  for (;;) {
+    const hit = visible.indexOf(PROMPT_SNAPSHOT_MARKER, from);
+    if (hit === -1) break;
+    const start = visible.lastIndexOf('\n', hit) + 1; // 0 when the slice starts mid-file
+    const nl = visible.indexOf('\n', hit);
+    if (nl === -1) break; // trailing partial line — leave it at full weight
+    from = nl + 1;
+    // Several markers on one line must discount that line exactly once.
+    const prev = ranges[ranges.length - 1];
+    if (prev && prev[0] === start) continue;
+    ranges.push([start, nl]);
+  }
+  return ranges;
+}
+
 /**
  * Sum the out-of-context `toolUseResult` byte excess over a settled latin1 slice
  * (complete lines only — each matched key's end-of-line newline must lie within
@@ -384,12 +425,20 @@ const TOOL_USE_RESULT_KEY = ',"toolUseResult":';
  * so they stay accounted for solely by the image path (IMAGE_PAYLOAD_RE) — no
  * double-discount, and the existing image handling is left byte-identical.
  */
-function toolUseResultExcessIn(visible: string): number {
+function toolUseResultExcessIn(visible: string, skip?: (i: number) => boolean): number {
   let excess = 0;
   let from = 0;
   for (;;) {
     const key = visible.indexOf(TOOL_USE_RESULT_KEY, from);
     if (key === -1) break;
+    // EI-23747373965813124: a hit inside a prompt_snapshot line is already discounted
+    // with that whole line; discounting it again would UNDER-count.
+    if (skip?.(key)) {
+      const skipNl = visible.indexOf('\n', key);
+      if (skipNl === -1) break;
+      from = skipNl + 1;
+      continue;
+    }
     const start = key + 1; // discount from the key's opening quote (drop the separator comma)
     const nl = visible.indexOf('\n', start);
     const end = nl === -1 ? visible.length : nl;
@@ -446,13 +495,24 @@ export function tokensFromFileSize(pathStr: string): number | null {
       // outside the scan cap, only the buffered tail is discountable — the
       // unseen head keeps full weight (estimate stays conservative).
       const visible = buf.toString('latin1', idx === -1 ? 0 : idx);
+      // EI-23747373965813124: discount whole prompt_snapshot lines, and exclude them
+      // from the image/toolUseResult scans so no byte is discounted twice — a double
+      // discount UNDER-counts, the one direction that risks a real context death.
+      const snapRanges = promptSnapshotRangesIn(visible);
+      let snapshotExcess = 0;
+      for (const [s, e] of snapRanges) snapshotExcess += e - s;
+      const inSnapshot = (i: number) => snapRanges.some(([s, e]) => i >= s && i < e);
       let imageExcess = 0;
       for (const m of visible.matchAll(IMAGE_PAYLOAD_RE)) {
+        if (inSnapshot(m.index ?? 0)) continue;
         imageExcess += m[0].length - IMAGE_TOKEN_COST * 4;
       }
       // EI-12848: also drop the out-of-context toolUseResult double-write.
-      const tureExcess = toolUseResultExcessIn(visible);
-      return Math.max(0, Math.floor((sinceBytes - imageExcess - tureExcess) / 4));
+      const tureExcess = toolUseResultExcessIn(visible, snapRanges.length ? inSnapshot : undefined);
+      return Math.max(
+        0,
+        Math.floor((sinceBytes - imageExcess - tureExcess - snapshotExcess) / 4),
+      );
     } finally {
       fs.closeSync(fd);
     }
