@@ -2866,6 +2866,37 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(preview!.approval.bars[0]!.priorBarHash).toBe(before!.criteria[0]!.barHash);
     expect(preview!.approval.bars[0]!.nextBarHash).not.toBe(before!.criteria[0]!.barHash);
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision);
+    // EI-23806582233421348: the independence verdict must be reachable from the PREVIEW,
+    // so an ineligible reviewer is discovered before a review wake is spent on them.
+    // The two screens below are a CONTROL PAIR and both halves are load-bearing: an
+    // implementation that always answered `eligible:false` would satisfy the first
+    // assertion alone, and the apply calls immediately after independently confirm that
+    // each screen predicted the right outcome for the same two identities.
+    const ineligibleScreen = await rubrics.previewAcceptanceBarAmendment({
+      ...amendment,
+      approvedBy: 'amendment-actor',
+    });
+    expect(ineligibleScreen!.implementers).toContain('amendment-actor');
+    expect(ineligibleScreen!.approverEligibility).toEqual({
+      approvedBy: 'amendment-actor',
+      eligible: false,
+      relatedImplementer: 'amendment-actor',
+    });
+    const eligibleScreen = await rubrics.previewAcceptanceBarAmendment({
+      ...amendment,
+      approvedBy: 'outside-reviewer',
+    });
+    expect(eligibleScreen!.implementers).not.toContain('outside-reviewer');
+    expect(eligibleScreen!.approverEligibility).toEqual({
+      approvedBy: 'outside-reviewer',
+      eligible: true,
+      relatedImplementer: null,
+    });
+    // Naming no approver asks no eligibility question, so none is answered — but the
+    // independence population is still published for a caller screening candidates.
+    const unscreened = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(unscreened!.approverEligibility).toBeUndefined();
+    expect(unscreened!.implementers).toContain('amendment-actor');
     await expect(
       rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment, 'amendment-actor') }),
     ).rejects.toThrow('acceptance_bar_approval_in_implementer_lineage');

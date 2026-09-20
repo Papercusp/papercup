@@ -3299,6 +3299,29 @@ export interface AcceptanceBarAmendmentPreview {
   reboundWorkItemIds: string[];
   cohortDisposition: { cohort: string | null; adoptionEpoch: number | null; action: 'preserve' };
   nextRepair: { code: string; action: string };
+  /**
+   * The independence population a prospective approver must stay OUTSIDE of, so a
+   * caller can screen several candidates from one preview instead of one failed
+   * apply per candidate. Present whenever approval is required (EI-23806582233421348).
+   */
+  implementers?: string[];
+  /**
+   * Independence verdict for `input.approvedBy`, evaluated with the SAME predicate the
+   * apply path uses (`areAcceptanceLineageRelated` against every implementer identity).
+   *
+   * WHY THIS IS ON THE PREVIEW. The lineage predicate used to fire only at apply, after a
+   * reviewer had already been routed to and had already spent a full review wake on an
+   * approval that was structurally void from the moment they were picked. Everything
+   * upstream — including dryRun, which emitted the approval artifact — reported success,
+   * so both agents were told repeatedly that the protocol was on track. Measured
+   * 2026-09-20 on plan frontier-remediation-work-on-everything-60d3a8-2026-09-20: 8 of 45
+   * live agents were ineligible, so a blind pick was ~1-in-6 to be void, and one was.
+   *
+   * Reported rather than thrown: a preview is non-mutating and its job is to predict the
+   * apply, not to pre-empt it. The read that backs it is deliberately allowed to throw,
+   * because silently shrinking an independence population is a fail-open gate.
+   */
+  approverEligibility?: { approvedBy: string; eligible: boolean; relatedImplementer: string | null };
 }
 
 function amendmentFaultStage(input: AmendRubricInput): AmendRubricInput['faultInjection'] | undefined {
@@ -3934,6 +3957,49 @@ async function amendAcceptanceBarRubric(
           : [];
         if (open.length > 1000) throw new Error('acceptance_bar_amendment_preview_work_truncated');
         const missingMethod = nextCriteria.some((criterion) => criterion.mandatory && !criterion.method?.trim());
+        // EI-23806582233421348: surface the independence population and, when the caller
+        // names a prospective approver, the same lineage verdict the apply path will
+        // reach — so an ineligible reviewer is discovered BEFORE their wake is spent.
+        // Gated on the approval-required condition so previews that change no BAR are
+        // unaffected; the reads below are exactly the ones apply already performs.
+        let previewImplementers: string[] | undefined;
+        let approverEligibility: AcceptanceBarAmendmentPreview['approverEligibility'];
+        if (changedBars.length > 0) {
+          previewImplementers = [
+            ...new Set([
+              actorId,
+              stored.createdBy,
+              subjectRow.owner,
+              ...(await resolvePlanImplementerIdentities(subjectPlanHint, {
+                sql: tx as never,
+                workspaceId: subjectScope.workspaceId,
+              })),
+            ]),
+          ]
+            .map((identity) => (identity ?? '').trim())
+            .filter(Boolean)
+            .sort();
+          const prospectiveApprover = (input.approvedBy ?? '').trim();
+          if (prospectiveApprover) {
+            let relatedImplementer: string | null = null;
+            for (const implementer of previewImplementers) {
+              if (
+                await areAcceptanceLineageRelated(prospectiveApprover, implementer, {
+                  sql: tx as never,
+                  workspaceId: subjectScope.workspaceId,
+                })
+              ) {
+                relatedImplementer = implementer;
+                break;
+              }
+            }
+            approverEligibility = {
+              approvedBy: prospectiveApprover,
+              eligible: relatedImplementer === null,
+              relatedImplementer,
+            };
+          }
+        }
         return {
           rubric: stored,
           decisionId: '',
@@ -3968,6 +4034,8 @@ async function amendAcceptanceBarRubric(
               adoptionEpoch: snapshot.plan?.adoptionEpoch ?? null,
               action: 'preserve' as const,
             },
+            ...(previewImplementers ? { implementers: previewImplementers } : {}),
+            ...(approverEligibility ? { approverEligibility } : {}),
             nextRepair: missingMethod
               ? {
                   code: 'bar_snapshot_method_missing',
