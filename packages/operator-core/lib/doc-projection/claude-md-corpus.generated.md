@@ -2059,15 +2059,36 @@ the first line of the next call is free insurance — never assume.
 subshell so your own cwd never moves — `( cd packages/<pkg> && <cmd> )` — or, when a
 later call must run a ROOT script, re-anchor first:
 ```bash
-cd "$(git rev-parse --show-superproject-working-tree 2>/dev/null)" 2>/dev/null ||
-  cd "$(git rev-parse --show-toplevel)" || exit 1
+root="$(git rev-parse --show-superproject-working-tree 2>/dev/null)"
+[ -n "$root" ] || root="$(git rev-parse --show-toplevel)"
+cd "$root" || exit 1
 ```
 `--show-superproject-working-tree` prints the superproject path from inside a submodule
-but prints an empty string (with exit status 0) from the superproject itself, so the first
-`cd` is intentionally allowed to fail and the fallback handles the root case. The
-non-empty-aware fallback matters: `git rev-parse --show-superproject-working-tree ||
-git rev-parse --show-toplevel` can return an empty path without invoking the fallback.
-This re-anchor removes the `Missing script` misdirection above at its source.
+but prints an EMPTY STRING with EXIT STATUS 0 from the superproject itself — so the
+fallback must be driven by the emptiness of the VALUE, never by an exit status and never
+by a failed `cd`.
+
+⛔ **Do NOT collapse this into the `cd A || cd B` one-liner — it is a silent no-op in
+exactly the case it looks like it handles** (WI-10002083, measured 2026-09-20; it is also
+what the older `cd "$(git rev-parse --show-toplevel)"` form was replaced with after
+EI-22406679198158577, so this is the second bug in this same two-line recipe):
+
+```bash
+cd "$(git rev-parse --show-superproject-working-tree 2>/dev/null)" 2>/dev/null ||
+  cd "$(git rev-parse --show-toplevel)" || exit 1        # ⛔ BROKEN
+```
+
+From the superproject root the substitution is empty, so the first command is `cd ""` —
+and **bash treats `cd ""` as a SUCCESSFUL no-op**, not an error. The `||` never fires,
+`--show-toplevel` is never consulted, and the shell stays wherever it already was while
+reporting nothing. The same trap applies to the value form `git rev-parse A || git
+rev-parse B`, which can return an empty path without invoking its fallback.
+
+That silence is the damage. This re-anchor exists to remove the `Missing script`
+misdirection above at its source; a re-anchor that fails silently converts that
+loud-but-misread failure into NO signal, so you proceed believing you are at the root.
+If you use the one-liner anyway, `pwd` immediately after is the only thing that will
+tell you it did nothing.
 
 
 ## Scratch probes: name the file `.mts`, not `.ts`
