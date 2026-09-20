@@ -4019,6 +4019,146 @@ describe('the EXECUTED partition probe (WI-10002034 — AUTO-BAR-R-002-P-002)', 
       0,
     );
   });
+
+  /**
+   * FALSIFIABILITY (R-002). Every assertion above watches a CORRECT
+   * implementation render the preview, which cannot show the suite would go RED
+   * against a wrong one — a guard that has never failed is a guard nobody has
+   * tested. R-002's falsifier names the wrong behaviour exactly: "a qualifying
+   * count returns the scalar alone, with no partition, no NULL counts and no
+   * sample rows". So the check is factored into a PURE detector and pointed at a
+   * deliberately-wrong, permanently-resident scalar-only control. The control is
+   * ordinary data, so nothing is ever written to the shared tree (no temp file,
+   * no sweep race).
+   */
+  const REQUIRED_PREVIEW_PARTS = [
+    { id: 'partition', probe: /PARTITION \(/ },
+    { id: 'null-counts', probe: /PER-DIMENSION NULL ROWS:/ },
+    { id: 'samples', probe: /FALL-THROUGH SAMPLE \(/ },
+  ] as const;
+
+  function missingPreviewParts(advisory: string | null | undefined): string[] {
+    const text = advisory ?? '';
+    return REQUIRED_PREVIEW_PARTS.filter((part) => !part.probe.test(text)).map((part) => part.id);
+  }
+
+  it('calibration — the REAL advisory for a qualifying read is missing NO preview part', async () => {
+    const { client } = fakeClient(
+      route({
+        cells: [
+          { d1: true, row_count: 2 },
+          { d1: null, row_count: 94 },
+        ],
+        total: [{ total: 96 }],
+        samples: [{ sample: 'brief-a' }],
+      }),
+    );
+    const advisory = await buildExecutedPartitionAdvisory(MEASURED, { client });
+    // Calibration guard: an empty rendering would make BOTH this case and the
+    // CONTROL below pass for the wrong reason — the detector would be reporting
+    // on nothing at all.
+    expect(advisory, 'calibration needs a real rendering, not an empty advisory').toBeTruthy();
+    expect(missingPreviewParts(advisory)).toEqual([]);
+  });
+
+  it('CONTROL — a scalar-only rendering is CAUGHT (this is what makes R-002 falsifiable)', () => {
+    // Verbatim the falsifier's wrong behaviour: the scalar, and nothing beside it.
+    const scalarOnly = 'count: 96';
+    // Guard the guard: if this fixture ever stopped looking like a real scalar
+    // rendering, the control would pass VACUOUSLY — a green that proves nothing,
+    // which is the exact failure a control exists to rule out.
+    expect(scalarOnly, 'the control must carry the scalar it is accused of returning alone').toMatch(
+      /\d/,
+    );
+    expect(
+      missingPreviewParts(scalarOnly),
+      'the detector must FLAG every absent preview part, not tolerate a bare scalar',
+    ).toEqual(['partition', 'null-counts', 'samples']);
+  });
+});
+
+describe('AUTO-BAR-R-003-P-002 — the preview rides the EXISTING advisory channel', () => {
+  /**
+   * R-003's falsifier: "a new tool, verb, table or configuration key must be
+   * added or configured before the preview appears." The clause is satisfied
+   * today because the partition preview is bound to a LOCAL and merged into the
+   * same `advisory` payload that already carries the tenant-scope warning — it
+   * never becomes a result key of its own. A fork that attached it to a new
+   * top-level key is precisely the falsifier, so that is the control.
+   *
+   * The detector takes the source as DATA rather than scanning the tree, so the
+   * fixture cannot SELF-MATCH the way a tree-scanning guard does (the trap the
+   * R-001 control below documents, and the same family as `pgrep -f` matching
+   * its own argv).
+   */
+  const DECLARED_RESULT_KEYS = [
+    'mode',
+    'rowCount',
+    'truncated',
+    'fields',
+    'elapsedMs',
+    'rows',
+    'advisory',
+    'positiveControl',
+    'absence',
+  ];
+  const PREVIEW_VALUE = /(?:build)?[eE]xecutedPartitionAdvisory/;
+
+  /** Object-literal keys whose value is the partition preview. */
+  function previewResultKeys(source: string): string[] {
+    const keyed = /(\w+)\s*:\s*[^,\n}]*(?:build)?[eE]xecutedPartitionAdvisory/g;
+    const found = new Set<string>();
+    for (const match of source.matchAll(keyed)) found.add(match[1]);
+    return [...found].sort();
+  }
+
+  function undeclaredPreviewKeys(source: string): string[] {
+    return previewResultKeys(source).filter((key) => !DECLARED_RESULT_KEYS.includes(key));
+  }
+
+  const callerSource = (): string =>
+    readFileSync(
+      join(
+        execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim(),
+        'packages/operator-core/lib/agent-tools/dev/pg_query.ts',
+      ),
+      'utf8',
+    );
+
+  it('calibration — the real caller introduces NO new result key for the preview', () => {
+    const source = callerSource();
+    // Positive control: an absence claim is only meaningful if the detector was
+    // actually pointed at the partition code. A source that never mentions the
+    // builder would yield [] for the wrong reason.
+    expect(
+      PREVIEW_VALUE.test(source),
+      'the caller must actually reach the partition advisory for this to measure anything',
+    ).toBe(true);
+    expect(undeclaredPreviewKeys(source)).toEqual([]);
+  });
+
+  it('CONTROL — a new top-level result key is CAUGHT (this is what makes R-003 falsifiable)', () => {
+    const forked = [
+      'return {',
+      '  mode,',
+      '  rows,',
+      '  advisory: tenantScopeAdvisory,',
+      '  // Deliberately wrong: a NEW result key, so the preview only reaches the',
+      '  // agent once the caller adds a surface that did not exist before.',
+      '  partitionPreview: executedPartitionAdvisory,',
+      '};',
+    ].join('\n');
+    // Guard the guard: the fixture must genuinely be key-shaped, or the control
+    // would feed the detector something it cannot match and pass VACUOUSLY.
+    expect(
+      previewResultKeys(forked),
+      'the forked fixture must genuinely attach the preview to a result key',
+    ).toContain('partitionPreview');
+    expect(
+      undeclaredPreviewKeys(forked),
+      'the detector must FLAG a brand-new delivery key, not tolerate it',
+    ).toEqual(['partitionPreview']);
+  });
 });
 
 describe('AUTO-BAR-R-001-P-002 — ONE partition primitive, never two implementations (D-001)', () => {
