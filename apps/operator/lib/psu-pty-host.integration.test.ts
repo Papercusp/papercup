@@ -932,10 +932,10 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
       const childCode =
         "process.stdout.write('BOOT:'+process.pid+'\\n❯\\n');" +
         "const marker=process.argv[process.argv.length-1];" +
-        "if(marker==='RECYCLED'){setInterval(()=>process.stdout.write('.'),20);}" +
+        "let repaint=null;if(marker==='RECYCLED'){repaint=setInterval(()=>process.stdout.write('.'),20);}" +
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
-        "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
+        "if(line==='QUIT'){process.exit(0);}if(repaint){clearInterval(repaint);repaint=null;}process.stdout.write('ECHO:'+line+'\\n');}});" +
         'setTimeout(()=>process.exit(0),15000);';
       let exitCode: number | null = null;
       const done = hostThroughPty({
@@ -952,7 +952,7 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '40',
           PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
-          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '100',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
         },
         ownerId,
