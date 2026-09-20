@@ -421,6 +421,26 @@ export async function specTestAdequacyCompletionGate(
   }
 
   if (!input.attestation) {
+    // WI-10002066 (decided 2026-09-20 on measurement): a PURE non-automated clause
+    // (behaviorClass 'non-automated', no requiredTestLayers, no mutationRequired) is
+    // deliberately NOT refused at this door. It is named in `exempted` and enforced at the
+    // SHIP door, where `bar_snapshot_proof_missing` fires outside the `automatedProofRequired`
+    // branch and so applies to every behaviour class.
+    //
+    // Do NOT "close the gap" by refusing item completion while such a clause has no bound
+    // evidence. The clause is by construction unsatisfiable by automated proof, so the only
+    // move that clears such a refusal is a hand-written attestation with no verifier attached
+    // — the fabrication pressure EI-23396502901266480 was filed to stop. The ship door demands
+    // the same attestation at the one door that HAS a verifier (grading + vetting + author
+    // verdict). This is enforcement sited at the reader, not enforcement skipped.
+    //
+    // The blast-radius argument is separately false and should not be revived as the reason:
+    // measured 2026-09-20, the entire active population was 6 clauses across 3 plans (2 live,
+    // 4 in a superseded plan), all at zero bound evidence. Smallness is not why this declines
+    // — the missing verifier is.
+    //
+    // A manual clause that genuinely should not gate has an existing home: lifecycle_status
+    // 'exempt' (40 clauses already use it). Reach for that, not a new clause state.
     const potentiallyTestRequiring = clauses.filter(
       (clause) =>
         clause.behaviorClass !== 'non-automated' || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
