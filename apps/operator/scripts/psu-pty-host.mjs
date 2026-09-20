@@ -2275,6 +2275,10 @@ export function makeCarryRearmController({
   // known, yield to the host's timers/input events instead of spinning only
   // through immediately-resolved promise microtasks.
   yieldAfterDefer = () => new Promise((resolve) => setImmediate(resolve)),
+  // The detached re-arm owns the eventual delivery-id settlement after the
+  // first busy-gate attempt returns. The host wires this to its dedup table;
+  // unit callers can omit it.
+  onSettlement = (_messages, _outcome) => {},
   // EI-18109211232286833: (msg) => boolean — re-checked right before this
   // retry finally recycles, since the whole point of the retry is that a LOT
   // of wall-clock time (the first busy-gate wait + this re-arm's) may have
@@ -2308,12 +2312,26 @@ export function makeCarryRearmController({
   // second request-compaction arriving mid-re-poll SUPERSEDES the payload
   // instead of being terminally dropped (see schedule() below).
   const latest = new Map();
+  const pendingMessages = new Map();
+  const keyFor = (msg) => {
+    const drillId = String(msg?.drillId || '');
+    return drillId || NON_DRILL_REARM_KEY;
+  };
+  const settle = (key, outcome) => {
+    const messages = [...(pendingMessages.get(key) ?? [])];
+    onSettlement(messages, outcome);
+  };
   return {
     /** Live count of carry-respawns either awaiting their first delivery
      *  attempt's outcome OR a re-armed retry (diagnostics/tests, and the input
      *  to shouldDeferWakeForPendingRespawn). */
     pendingCount() {
       return pending.size + inFlight.size;
+    },
+    /** Whether a message is still owned by the detached re-arm loop. */
+    isPendingMessage(msg) {
+      const key = keyFor(msg);
+      return pendingMessages.get(key)?.has(msg) === true;
     },
     /** EI-18681914950138372: call the MOMENT a carry-respawn control message is
      *  accepted by the host, before it enters its own busy-gate wait — marks it
@@ -2358,10 +2376,12 @@ export function makeCarryRearmController({
         // so the in-flight re-poll ADOPTS it. A DRILL still dedupes terminally:
         // a drill is a one-shot test whose whole point is that single shot.
         if (isDrill) return 'duplicate';
+        pendingMessages.get(key)?.add(msg);
         latest.set(key, msg);
         return 'superseded';
       }
       pending.add(key);
+      pendingMessages.set(key, new Set([msg]));
       latest.set(key, msg);
       const queuedKind = isDrill ? 'carry-drill-rearm-queued' : 'respawn-rearm-queued';
       const droppedKind = isDrill ? 'carry-drill-carry-dropped' : 'respawn-carry-dropped';
@@ -2399,6 +2419,7 @@ export function makeCarryRearmController({
             ...extra, rearmed: true, reason: 'superseded',
             observedMaxQuietMs, attempts: attemptsMade,
           });
+          settle(key, { delivered: false, reason: 'superseded' });
           return true;
         };
         try {
@@ -2468,13 +2489,15 @@ export function makeCarryRearmController({
                     observedMaxQuietMs,
                     attempts: attemptsMade,
                   });
+                  settle(key, { delivered: false, reason: 'carry-stale' });
                   return;
                 }
-                await recycle(deliver.data, {
+                const result = await recycle(deliver.data, {
                   systemPromptAddendum: deliver.systemPromptAddendum ?? '',
                   drillId,
                   sessionClass: deliver.sessionClass ?? '',
                 });
+                settle(key, result ?? { delivered: false, reason: 'recycle-outcome-unavailable' });
                 return;
               }
             } finally {
@@ -2498,6 +2521,7 @@ export function makeCarryRearmController({
                 observedMaxQuietMs,
                 attempts: attemptsMade,
               });
+              settle(key, { delivered: false, reason: 'carry-stale' });
               return;
             }
           }
@@ -2507,6 +2531,7 @@ export function makeCarryRearmController({
             ...extra, rearmed: true, reason: deferReason,
             observedMaxQuietMs, attempts: attemptsMade,
           });
+          settle(key, { delivered: false, reason: deferReason });
         } catch (error) {
           emitEvent(droppedKind, {
             ...extra,
@@ -2514,9 +2539,11 @@ export function makeCarryRearmController({
             reason: 'rearm-error',
             detail: String(error?.message ?? error).slice(0, 200),
           });
+          settle(key, { delivered: false, reason: 'rearm-error' });
         } finally {
           pending.delete(key);
           latest.delete(key);
+          pendingMessages.delete(key);
         }
       })();
       return 'queued';
@@ -6401,6 +6428,14 @@ export function hostThroughPty(o) {
       appendHostEvent(ownerId, kind, extra);
       appendSharedDrillLedgerEvent(ownerId, kind, extra);
     },
+    onSettlement: (messages, outcome) => {
+      for (const message of messages) {
+        const deliveryId = message?.deliveryId;
+        if (!deliveryId) continue;
+        if (outcome?.delivered) deliveryDedup.markCompleted(deliveryId);
+        else deliveryDedup.clearPending(deliveryId);
+      }
+    },
     capMs: carryRearmCapMs,
     // Age expiry is drill-only. A newer child supersedes production carries
     // too, and must retire their pending wake suppression without another cut.
@@ -6901,6 +6936,7 @@ export function hostThroughPty(o) {
                     };
                 appendHostEvent(ownerId, dropKind, dropExtra);
                 appendSharedDrillLedgerEvent(ownerId, dropKind, dropExtra);
+                return { ok: false, reason: 'carry-rearm-duplicate' };
               }
             }
             // P-001a: clear the coalesce slot on defer — wakes folded into this
@@ -7079,36 +7115,24 @@ export function hostThroughPty(o) {
                   reason: `quota-recovery-${recovery?.reason ?? "failed"}`,
                 };
           }
-          // EI-18679050054551625 / WI-5872 follow-up: recycleChild() is a
-          // multi-second operation by construction (kill the current child,
-          // wait for it to die, respawn, wait for the fresh child's own
-          // startup + busy period, then carry-inject once IT settles — the
-          // sibling clean-boundary tests below deliberately budget 3+ seconds
-          // for it to land). Awaiting it here before acking meant the ACK
-          // protocol's round-trip routinely exceeded injectIntoHost()'s
-          // default 2000ms client timeout, so a perfectly-accepted recycle
-          // was reported back to the caller as `ok:false`. The busy-gate
-          // above already made the accept/defer decision (a still-busy agent
-          // took the 'deferred-busy-gate' return above and never reaches
-          // here) — from this point recycleChild() proceeding is not in
-          // question, so ack "delivered" now and let the kill+respawn+carry
-          // run as a background continuation, same pattern as the turn/reset
-          // verify-in-background fix just below. The inject mutex stays held
-          // (deferMutexRelease) until that continuation actually finishes, so
-          // a following gated inject still can't interleave mid-recycle.
-          deferMutexRelease = true;
-          const releaseAfterRecycle = releaseInject;
-          void recycleChild(msg.data, {
+          // The socket ACK already went out before runGatedDelivery() started,
+          // so waiting here no longer risks the caller's short ACK timeout.
+          // Keep the delivery id pending until recycleChild() proves the fresh
+          // epoch's carry turn, then let the settlement below mark it completed
+          // (or clear it for a durable retry). Returning "delivered" before this
+          // promise settles permanently deduped failed carries and made a
+          // transient argv/spawn/native-proof failure look successful.
+          const recycleResult = await recycleChild(msg.data, {
             systemPromptAddendum:
               msg.mode === "carry-respawn" ? msg.systemPromptAddendum : "",
             drillId: msg.mode === "carry-respawn" ? msg.drillId : "",
             sessionClass: msg.mode === "carry-respawn" ? msg.sessionClass : "",
-          })
-            .catch(() => {})
-            .finally(() => {
-              if (releaseAfterRecycle) releaseAfterRecycle();
-            });
-          return { ok: true, reason: "delivered" };
+          });
+          if (recycleResult?.delivered) return { ok: true, reason: "delivered" };
+          return {
+            ok: false,
+            reason: recycleResult?.reason ?? "recycle-failed",
+          };
         }
         // COMPACT — RETIRED (P-022, 2026-07-18): native compaction is removed
         // fleet-wide; carry-respawn above is the only context cut, and every
@@ -7332,7 +7356,7 @@ export function hostThroughPty(o) {
             ) {
               // carryRearm.schedule() owns a live retry outside this promise; keep
               // the ID pending so a client retry cannot race that re-arm.
-              deliveryDedup.markPending(deliveryId);
+              if (carryRearm.isPendingMessage(msg)) deliveryDedup.markPending(deliveryId);
             } else {
               deliveryDedup.clearPending(deliveryId);
             }

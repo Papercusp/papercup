@@ -826,7 +826,7 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, }?: {
         started: boolean;
     }>;
 };
-export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, emitEvent, capMs, maxProductionAttempts, yieldAfterDefer, isStale, isSuperseded, }: {
+export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, emitEvent, capMs, maxProductionAttempts, yieldAfterDefer, onSettlement, isStale, isSuperseded, }: {
     acquireInject: any;
     waitIdle?: (() => Promise<{
         deferred: boolean;
@@ -843,6 +843,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
     capMs?: number | undefined;
     maxProductionAttempts?: number | undefined;
     yieldAfterDefer?: (() => Promise<any>) | undefined;
+    onSettlement?: ((_messages: any, _outcome: any) => void) | undefined;
     isStale?: (() => boolean) | undefined;
     isSuperseded?: ((_msg: any) => boolean) | undefined;
 }): {
@@ -850,6 +851,8 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
      *  attempt's outcome OR a re-armed retry (diagnostics/tests, and the input
      *  to shouldDeferWakeForPendingRespawn). */
     pendingCount(): number;
+    /** Whether a message is still owned by the detached re-arm loop. */
+    isPendingMessage(msg: any): boolean;
     /** EI-18681914950138372: call the MOMENT a carry-respawn control message is
      *  accepted by the host, before it enters its own busy-gate wait — marks it
      *  in-flight so a wake arriving during that wait is correctly deferred. */

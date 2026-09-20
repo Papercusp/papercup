@@ -114,10 +114,22 @@ apps/operator-docs/src/content/docs/preview/
 apps/papercusp-docs/dist/
 apps/papercusp-docs/.astro/
 
-# tooldef family — src-as-entry; `build` (tsc) emits dist/ but nothing consumes it
+# src-as-entry packages — `build` (tsc) emits dist/, but package.json "exports"
+# routes every subpath to ./src/*, so nothing ever consumes the emitted dist/.
+#
+# Tracking it is worse than useless. The copy goes stale and starts CONTRADICTING
+# src: agent-mcp/dist/_bulk.js sat 13 days behind and kept teaching the hard-coded
+# `ok: true` envelope that src/_bulk.ts had already replaced with `ok: failed === 0`
+# — the exact false-success contract that removal was meant to retire (WI-10002064).
+# A grep or an agent reading the tracked artifact gets re-taught the removed rule.
+#
+# Adding a rule here is only HALF the fix: a tracked path is never ignored, so the
+# rule goes inert unless the path is also untracked (`git rm -r --cached <path>`).
+# Guard against the next one: `npm run lint:no-tracked-src-entry-dist`.
 packages/tooldef/dist/
 packages/tooldef-http/dist/
 packages/tooldef-mcp/dist/
+packages/agent-mcp/dist/
 
 # Per-spawn MCP config written into a harness cwd by console-launch /
 # bootstrap-role (SU + role sessions). For the `papercup` harness that cwd IS
