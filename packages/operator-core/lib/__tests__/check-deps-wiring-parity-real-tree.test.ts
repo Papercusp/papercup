@@ -79,4 +79,57 @@ describe('lint:deps-wiring-parity over the real tree (blocking wiring)', () => {
       expect(stdout).toContain('prune from FAIL_BASELINE');
     }
   });
+
+  /**
+   * The concatenated-key regression (WI-10002020). FAIL_BASELINE records ONE ROW PER
+   * SEAM, but a finding carries the whole SET of seams a site omits. While the match
+   * key was `${interface}|${file}|${missing.join(',')}` a row could only match a
+   * finding omitting EXACTLY that one seam — so the day an unrelated seam
+   * (`inTransaction`) was added to `WithPlanLockOpts`, every single-seam row stopped
+   * matching at once, and the SAME divergence was reported twice, contradictorily:
+   * NEW (rc=1, blocking the fleet gate) and STALE (prune it) in one run.
+   *
+   * The `plans/*` sites below each omit TWO seams that are baselined SEPARATELY, so
+   * they are precisely the shape the old key could not match. Reverting BASELINE_SEAMS
+   * to a seam-SET key turns all of them back into NEW findings and fails here.
+   */
+  it('matches single-seam baseline rows against a MULTI-seam finding (the concatenated-key regression)', () => {
+    const scope = [
+      'packages/operator-core/lib/agent-tools/plans/start.ts',
+      'packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts',
+      'packages/operator-core/lib/agent-tools/plans/plan-drain-transition.ts',
+      'packages/operator-core/lib/agent-tools/plans/add-decision.ts',
+    ].join(',');
+    const { stdout, exitCode } = runGuard(['--fail', `--files=${scope}`]);
+
+    // CALIBRATION — this only tests anything while the scan still contains a site
+    // omitting TWO OR MORE seams. If the tree loses that shape the assertion below
+    // would pass for the wrong reason, so fail as UN-CALIBRATED instead.
+    let maxSeamsAtOneSite = 0;
+    let seamsHere = 0;
+    for (const line of stdout.split('\n')) {
+      if (line.includes('constructs `')) {
+        maxSeamsAtOneSite = Math.max(maxSeamsAtOneSite, seamsHere);
+        seamsHere = 0;
+      } else if (line.includes('missing seam')) {
+        seamsHere += 1;
+      }
+    }
+    maxSeamsAtOneSite = Math.max(maxSeamsAtOneSite, seamsHere);
+    expect(
+      maxSeamsAtOneSite,
+      `no multi-seam construction site left in scope — this guard is no longer calibrated ` +
+        `and cannot detect the concatenated-key regression:\n${stdout}`,
+    ).toBeGreaterThanOrEqual(2);
+
+    const tally = /\((\d+) new, (\d+) baselined\)/.exec(stdout);
+    expect(tally, `no "(N new, M baselined)" tally in:\n${stdout}`).not.toBeNull();
+    expect(
+      Number(tally![1]),
+      `single-seam baseline rows stopped matching a multi-seam finding — the match key ` +
+        `is a function of the seam SET again:\n${stdout}`,
+    ).toBe(0);
+    expect(Number(tally![2])).toBeGreaterThanOrEqual(4);
+    expect(exitCode, stdout).toBe(0);
+  });
 });
