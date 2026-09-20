@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 896,
+  "count": 897,
   "tools": [
     {
       "name": "ablation:report",
@@ -26648,6 +26648,37 @@
       }
     },
     {
+      "name": "release:byoc_readiness",
+      "http": {
+        "path": "/api/agent-tools/release/byoc_readiness",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read computed BYOC acceptance readiness for one BAR from the canonical task-ledger release journal. This is a live, read-only evidence projection for typed scorecard probes; it never accepts caller-supplied snapshots.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "release-fixer"
+      ],
+      "guidance": {
+        "when": "At grading time for BYOC R-4, R-5, or R-6, after the maintained release driver has recorded receipts.",
+        "notWhen": "To mutate a release, replace a live journey, or treat a missing receipt as success.",
+        "chaining": "release:byoc_readiness { bar:\"R-4\"|\"R-5\"|\"R-6\", workItemId } → verdict:\"pass\" is the only healthy reading; unknown/fail are not shippable."
+      }
+    },
+    {
       "name": "release:checkpoint-cancel",
       "http": {
         "path": "/api/agent-tools/release/checkpoint-cancel",
@@ -27749,7 +27780,7 @@
           "POST"
         ]
       },
-      "description": "Propose/replace a rubric → status \"proposed\". ⚠ Whole-document replace: call rubrics:get first and resubmit all criteria/checks; omissions need dropKeys. Standard criteria require model/method/driftMarkers; acceptance criteria may omit model/method only with a concrete outcome, non-empty driftMarkers falsifier, and at least one structured check. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. Removing a stored structured check, shrinking method+replication >40%, or losing a REPLICATION DRILL requires allowMethodShrink + shrinkReason.",
+      "description": "Propose/replace a rubric → status \"proposed\". ⚠ Whole-document replace: rubrics:get first and resubmit every criterion/check; omissions need dropKeys. Standard criteria require model/method/driftMarkers; acceptance criteria may omit model/method only with a concrete outcome, a non-empty driftMarkers falsifier, and ≥1 structured check. Removing a stored check, shrinking method+replication >40%, or dropping a replication drill requires allowMethodShrink + shrinkReason.",
       "capabilities": [
         "coord:write"
       ],
@@ -27774,9 +27805,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Use for a new/revised rubric (rubrics:get first; resubmit all criteria/checks). Standard criteria need model, method, and driftMarkers. Acceptance criteria are a light profile: use outcome-shaped titles, a non-empty driftMarkers falsifier, traceability to the plan goal/Decisions, regression coverage, and peer non-overlap; include at least one structured check and bind objective outcomes when possible. Each criterion should carry a replication drill; methodRef names the runbook. Acceptance methods containing native shell steps produce a non-blocking methodLint advisory; use testing:run/testing:runs, plans:audit/cited source, or state:read/recorded artifacts instead. Stored structured check removal needs allowMethodShrink:true + shrinkReason. See /internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook.",
+        "when": "Use for a new or revised rubric. Acceptance criteria are a light profile: outcome-shaped titles, a driftMarkers falsifier, traceability to the plan goal/Decisions, regression coverage, peer non-overlap; bind objective outcomes where possible and give each criterion a replication drill (methodRef names the runbook). Judges cannot run a shell, so acceptance methods prescribing native shell steps get a non-blocking methodLint advisory — use testing:run, plans:audit, or state:read instead. Full profile: /internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook.",
         "notWhen": "One-off finding → free-text observation; activating a proposed rubric → rubrics:ratify. Search first to avoid duplicates.",
-        "chaining": "rubrics:search → rubrics:get → rubrics:propose → independent rubrics:ratify. Preserve every structured check; intentional removal needs allowMethodShrink + shrinkReason. Review completeness and replicationSqlCheck; fix gaps first."
+        "chaining": "rubrics:search → rubrics:get → rubrics:propose → independent rubrics:ratify. Review completeness and replicationSqlCheck; fix gaps before ratifying."
       }
     },
     {

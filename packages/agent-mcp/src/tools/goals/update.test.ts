@@ -919,6 +919,80 @@ describe('goals:update — per-goal launch settings', () => {
     ).toBe(false);
   });
 
+  /**
+   * WI-10002016 — the DROP GUARD.
+   *
+   * `launchSettings` REPLACES the document, so a partial patch deletes every
+   * sibling key. On a live goal a `{ maxAgents }` patch silently disarmed
+   * `holder.onLoss:'respawn'` (goal continuity) and `defaults.account:'auto'`
+   * (inference-gateway routing); it was recoverable only because audit_log keeps
+   * the full `before`.
+   *
+   * NOTE the shared fixture has `launch_settings: null`, which is exactly why
+   * every test above passes without ever meeting this guard. These populate it on
+   * purpose — without that the guard would be shipped untested, which is how the
+   * original defect shipped.
+   */
+  const POPULATED = {
+    holder: { requireLive: true, onLoss: 'respawn' },
+    defaults: { model: 'sonnet' },
+    maxAgents: 4,
+    maxPerFleet: 2,
+  };
+
+  it('REFUSES a partial patch that would delete sibling keys, and names them', async () => {
+    existingRow = { ...existingRow!, launch_settings: POPULATED };
+    const res = (await tool.handler(
+      tool.args.parse({ id: 'g1', launchSettings: { maxAgents: 6 } }) as never,
+      CTX() as never,
+    )) as { degraded?: boolean; degradedReasons?: string[] };
+    // The destructive write must not have reached the column at all.
+    expect(settingsWrite()).toBeUndefined();
+    expect(res.degraded).toBe(true);
+    const why = res.degradedReasons?.join(' ') ?? '';
+    expect(why).toContain('launch settings NOT saved');
+    // Exactly the three unsent keys — `maxAgents` was supplied, so it is not a drop.
+    expect(why).toContain('would DELETE 3 ');
+    for (const key of ['holder', 'defaults', 'maxPerFleet']) expect(why).toContain(key);
+  });
+
+  it('allows the same patch once the dropped keys are confirmed', async () => {
+    existingRow = { ...existingRow!, launch_settings: POPULATED };
+    await tool.handler(
+      tool.args.parse({
+        id: 'g1',
+        launchSettings: { maxAgents: 6 },
+        confirmDropLaunchSettingsKeys: ['holder', 'defaults', 'maxPerFleet'],
+      }) as never,
+      CTX() as never,
+    );
+    expect(JSON.parse(settingsWrite()!.params[0] as string)).toEqual({ maxAgents: 6 });
+  });
+
+  it('allows a full re-send, which drops nothing', async () => {
+    existingRow = { ...existingRow!, launch_settings: POPULATED };
+    await tool.handler(
+      tool.args.parse({ id: 'g1', launchSettings: { ...POPULATED, maxAgents: 6 } }) as never,
+      CTX() as never,
+    );
+    expect(JSON.parse(settingsWrite()!.params[0] as string)).toMatchObject({
+      maxAgents: 6,
+      maxPerFleet: 2,
+      holder: { onLoss: 'respawn' },
+    });
+  });
+
+  it('still clears the whole document on an explicit null — that intent is unambiguous', async () => {
+    // The guard deliberately does NOT cover null: nobody types null while meaning
+    // "patch one field", and null is the documented way to clear the document.
+    existingRow = { ...existingRow!, launch_settings: POPULATED };
+    await tool.handler(
+      tool.args.parse({ id: 'g1', launchSettings: null }) as never,
+      CTX() as never,
+    );
+    expect(settingsWrite()!.params[0]).toBeNull();
+  });
+
   it('reports a failed settings write as degraded instead of returning a clean ok', async () => {
     // The handler gets a document the arg schema would have refused, which is
     // reachable when a caller invokes the handler directly. It must NOT come

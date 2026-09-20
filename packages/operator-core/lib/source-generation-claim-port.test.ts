@@ -85,6 +85,23 @@ describe('claim-time source-generation measurement (EI-22283949842250645)', () =
     expect(signal).toEqual({ kind: 'paths-moved', paths: ['packages/a.ts'] });
   });
 
+  /**
+   * FALSIFIABILITY CONTROL, kept permanently rather than proven by a one-off tree
+   * mutation. Same path, same single commit, same fixture as the pair above — the
+   * ONLY difference is whether the envelope carries `observedAt`. Without it the
+   * range is unbounded and that predating commit is reported as movement, which is
+   * precisely the pre-fix behaviour and the defect. If someone removes the time
+   * bound, the pair above goes green again and THIS test is what still fails.
+   */
+  it('CONTROL: the same predating commit IS reported as moved once the time bound is gone', async () => {
+    const signal = await getClaimTimeSourceGenerationSignal({
+      payload: { ...envelope({ observedAt: undefined }), paths: ['packages/a.ts'] },
+      repoRoot: REPO,
+      git: gitWithCommitAt('2026-09-02T12:00:00.000Z'),
+    });
+    expect(signal).toEqual({ kind: 'paths-moved', paths: ['packages/a.ts'] });
+  });
+
   it('leaves the range unbounded when observedAt is absent or unparseable', async () => {
     const seen: string[][] = [];
     const git = async (args: string[]) => {

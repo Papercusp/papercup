@@ -29,6 +29,7 @@ import {
   declareGoalHolderPolicy,
   goalHolderPolicySchema,
   goalLaunchSettingsSchema,
+  readGoalLaunchSettings,
   writeGoalLaunchSettings,
 } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { SU_WRITE_ROLES } from '../../role-config';
@@ -165,7 +166,18 @@ const goalUpdateArgs = z.object({
       'per-goal launch ceilings + profile ({ maxAgents, maxPerFleet, defaults, roles }) — the numbers every launch for this goal is checked against. ' +
         `Each ceiling takes a number, or "${UNLIMITED_CEILING}" for no ceiling at all; OMITTING one applies the system default ` +
         `(${GOAL_LAUNCH_DEFAULTS.maxAgents} agents / ${GOAL_LAUNCH_DEFAULTS.maxPerFleet} per fleet), which is NOT the same as unlimited. ` +
-        'Pass null to clear the whole document back to those defaults; omit to leave untouched.',
+        'Pass null to clear the whole document back to those defaults; omit to leave untouched. ' +
+        'A partial patch REPLACES the document and is REFUSED if it would delete existing keys — see confirmDropLaunchSettingsKeys.',
+    ),
+  confirmDropLaunchSettingsKeys: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'WI-10002016 — names the existing top-level launchSettings keys that a REPLACING write is allowed to delete. ' +
+        'Because launchSettings replaces the whole document, a partial patch like { maxAgents: 6 } deletes every sibling key; ' +
+        'that silently disarmed holder.onLoss respawn and defaults.account routing on a live goal. Such a write is now refused ' +
+        'and names the exact keys it would drop — pass them here to confirm the deletion is intended. ' +
+        'To change one field WITHOUT touching the rest, re-send the existing keys alongside it; for holder policy use the `holder` arg, which merges.',
     ),
   reason: z
     .string()
@@ -644,8 +656,53 @@ const goalUpdateTool = defineTool({
        omitted-vs-explicitly-null distinction `parentId` and `tripwires` make. */
     let launchSettingsError: string | null = null;
     if (args.launchSettings !== undefined) {
-      const w = await writeGoalLaunchSettings(args.id, args.launchSettings, tx);
-      if (!w.ok) launchSettingsError = `launch settings NOT saved: ${w.error ?? 'unknown error'}`;
+      /* DROP GUARD (WI-10002016). This write REPLACES the document — correct when
+         the owner is editing it AS a document, destructive when it is a partial
+         patch. A steward raising `{ maxAgents }` deleted `holder.onLoss:'respawn'`
+         and `defaults.account:'auto'` on a live goal with no way to notice; it was
+         recoverable only because audit_log keeps the full `before`.
+
+         Guarding the DOOR rather than changing the writer is deliberate. Replace is
+         the documented semantic and the only way to CLEAR a key, so merging by
+         default would remove a capability and silently change every existing caller.
+         Reading the goal first cannot save the caller either: `goals:get` may return
+         this document projection-truncated, so a careful read-modify-write still
+         loses the keys it never saw. Only the write side knows the whole document.
+
+         Only an OBJECT is guarded. An explicit `null` remains an unambiguous "clear
+         the whole document" — nobody types null meaning "patch one field", which is
+         precisely the accident this catches.
+
+         Same shape as `loop:checkpoint`'s row-eviction refusal: name the exact keys
+         that would go, and make the caller confirm them. */
+      const dropped: string[] = [];
+      if (args.launchSettings !== null) {
+        const current = await readGoalLaunchSettings(args.id, tx);
+        // An unparseable stored document is NOT treated as empty: reporting
+        // "nothing to drop" about keys we merely failed to read is the same
+        // false-clean verdict the guard exists to prevent.
+        if (current.error) {
+          launchSettingsError = `launch settings NOT saved: the existing document could not be read, so the keys this write would delete are unknown (${current.error})`;
+        } else {
+          const nextKeys = new Set(Object.keys(args.launchSettings));
+          const confirmed = new Set(args.confirmDropLaunchSettingsKeys ?? []);
+          for (const key of Object.keys(current.settings ?? {})) {
+            if (!nextKeys.has(key) && !confirmed.has(key)) dropped.push(key);
+          }
+        }
+      }
+      if (!launchSettingsError && dropped.length > 0) {
+        launchSettingsError =
+          `launch settings NOT saved: this write REPLACES the document and would DELETE ${dropped.length} ` +
+          `existing top-level key(s): ${dropped.map((k) => `\`${k}\``).join(', ')}. ` +
+          'Re-send those keys to keep them, or pass ' +
+          `confirmDropLaunchSettingsKeys: [${dropped.map((k) => `'${k}'`).join(', ')}] to delete them on purpose. ` +
+          'To set holder policy without touching the rest, use the `holder` arg, which merges.';
+      }
+      if (!launchSettingsError) {
+        const w = await writeGoalLaunchSettings(args.id, args.launchSettings, tx);
+        if (!w.ok) launchSettingsError = `launch settings NOT saved: ${w.error ?? 'unknown error'}`;
+      }
     }
 
     /* HOLDER POLICY (goal-live-holder-guarantee-2026-08-18 P-003). Its own arg
