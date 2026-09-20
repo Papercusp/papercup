@@ -300,11 +300,26 @@ export class PgPresenceStore implements PresenceStore {
     // Omitted provenance is a derived repair: update the value while preserving
     // whether a prior runtime write was explicit. A supplied boolean is an
     // authoritative seed/override provenance transition.
+    //
+    // EI-23739064535335014: a derived repair must ALSO leave an explicitly-chosen
+    // VALUE alone, not just the provenance flag. Without the guard below, a
+    // default-derived write (a model-default seed, a watchdog recompute) overwrote a
+    // limit the agent had just set via config:set-compaction-limit while preserving
+    // compaction_limit_explicit=true — leaving a row that LIES: it claims the agent
+    // chose the number while holding the default. Observed live: an agent set 600000,
+    // got ok:true, and one cadence tick later the gauge denominator and the compaction
+    // watchdog were both back on 250000 with explicit still true — so the session was
+    // force-compacted against a limit it had explicitly raised, losing its context for
+    // no work. An explicit choice now wins until the agent changes it or an
+    // authoritative write supplies provenance (either branch below still sets both).
+    // `IS NOT TRUE` (not `= false`) so a NULL/never-set provenance still accepts the
+    // derived write.
     if (opts.explicit === undefined) {
       await sql`
         UPDATE harness_shared.coord_presence
            SET compaction_limit = ${limit}
          WHERE owner_id = ${ownerId}
+           AND compaction_limit_explicit IS NOT TRUE
       `;
     } else {
       await sql`
