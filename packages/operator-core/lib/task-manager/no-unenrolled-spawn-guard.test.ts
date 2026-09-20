@@ -180,7 +180,8 @@ export function status(live: { branch: string | null; head: string | null }) {
   /**
    * TRIGGER (3) — the self-daemonizing child (WI-41108).
    *
-   * The real-world source is `dbus-daemon --fork` in desktop/a11y-bus.ts, which leaked to
+   * The real-world source is `dbus-daemon --fork` in desktop/a11y-bus-core.ts (it lived in
+   * desktop/a11y-bus.ts until the 6ec387d053 split moved it), which leaked to
    * 115 host-wide processes while this guard read the tree as clean. Each case below is
    * asserted DISCRIMINATING against LITERAL_TEXT_PREDICATE: a trigger that fired on
    * everything would pass the positive cases too, so the control is what gives them force.
@@ -262,8 +263,13 @@ export function run() {
      * trigger STILL FIRES separates them, which the old KNOWN_DEFECTS assertion
      * could not do.
      */
-    describe('the motivating site (desktop/a11y-bus.ts) after enrolment', () => {
-      const a11y = 'packages/operator-core/lib/desktop/a11y-bus.ts';
+    describe('the motivating site (desktop/a11y-bus-core.ts) after enrolment', () => {
+      // NOTE (2026-09-20): commit 6ec387d053 SPLIT the original a11y-bus.ts into a
+      // 9-line enrolment shim (a11y-bus.ts, which now spawns nothing) plus this core
+      // module, which carries the real `dbus-daemon --fork`. The site under test is
+      // wherever the SPAWN lives, so it moved here with it. Pointing at the shim made
+      // both assertions below fail for a reason that had nothing to do with the guard.
+      const a11y = 'packages/operator-core/lib/desktop/a11y-bus-core.ts';
       const source = readFileSync(join(REPO_ROOT, a11y), 'utf8');
 
       it('earned neither exemption — it is in no map at all', () => {
@@ -274,7 +280,17 @@ export function run() {
       it('STILL fires trigger (3) — the detector did not go quiet', () => {
         // If this goes false, the file cleared because the guard stopped seeing
         // `--fork`, not because anything was fixed.
-        expect(spawnTriggers(a11y, source).selfDaemonizing).toBe(true);
+        //
+        // CALIBRATION: it can ALSO go false because the spawn was refactored into
+        // another module again (exactly what 6ec387d053 did). Those two causes need
+        // different fixes — a guard repair vs. re-pointing this describe block — so
+        // say which one this is instead of leaving a bare `expected false to be true`.
+        expect(
+          spawnTriggers(a11y, source).selfDaemonizing,
+          `${a11y} no longer self-daemonizes. Either the detector regressed (fix the ` +
+            `guard), or the \`--fork\` spawn moved to another module (re-point this ` +
+            `describe block at wherever it went — grep the tree for "--fork").`,
+        ).toBe(true);
       });
 
       it('is not reported, because it enrols', () => {
