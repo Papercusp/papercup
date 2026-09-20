@@ -19,6 +19,7 @@
  * POSITIVE into a silent false NEGATIVE on dropping a database. The split is per CALL SITE, not
  * per guard: see `stripCommentsOnly`'s doc for the case where one guard needs both.
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -525,6 +526,184 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
     ];
     const regressed = migrated.filter((f) => measurePopulation().includes(f));
     expect(regressed, 'These were migrated to the shared stripper and must not re-declare one.').toEqual([]);
+  });
+});
+
+/**
+ * WI-10002074 — THE POPULATION WAS ITSELF THE BLIND SPOT.
+ *
+ * Everything above ratchets `scripts/*.mjs` and nothing else, because `ALL_SCRIPTS()` is a
+ * `readdirSync(SCRIPTS_DIR)`. But nothing about the phantom-offender class is specific to a
+ * `.mjs` under `scripts/` — `classifyMasking` never looks at a path, only at source text. A
+ * tree-scanning guard written as a VITEST FILE carries the identical defect and was
+ * structurally outside the detector that owns its class.
+ *
+ * That is not hypothetical, and the sizes are the argument (measured 2026-09-20):
+ *   scripts/*.mjs      255 files ->  13 hand-rolled   <- the watched population
+ *   tracked *.test.ts 7896 files ->  30 hand-rolled   <- the blind spot, ~2.3x larger
+ * The trigger (EI-23769743489199449) was exactly one of these: a source-scanning guard in
+ * `pg-read-query.test.ts` whose control fixture self-matched. It was fixed by hand because
+ * no ratchet could see it.
+ *
+ * ⚠⚠ THE MASK IS PER CALL SITE, AND GETTING IT WRONG SILENTLY EMPTIES THE POPULATION.
+ * The first cut of this block masked with `stripCommentsAndStrings` throughout and measured
+ * ZERO offenders — which read as "nothing to ratchet, ship it". It was a TAUTOLOGICAL zero:
+ * `SCANS_CODE_FILES` detects a guard by a QUOTED extension (`'.ts'`), and the strings variant
+ * empties string CONTENTS, so that predicate can never match under it. The detector would have
+ * been 100% inert while looking green. Hence two views of every file, each matched by what it
+ * is actually able to see:
+ *   - comments-only  -> the SCANNER predicates, whose quarry legitimately lives in a string.
+ *   - +strings       -> `definesPrivateStripper`, whose quarry is a code-form definition and
+ *                       NEVER a string literal.
+ * The strings view is also what cures the self-match: THIS FILE quotes hand-rolled strippers
+ * as deliberately-wrong control fixtures (see the probe controls below), and under a
+ * comments-only mask it flags ITSELF — the very class it exists to detect, one level up.
+ *
+ * The naive-regex `includes()` arms of `classifyMasking` are deliberately NOT reused here.
+ * They are sound only for a `.mjs` guard, where containing `\/\*[\s\S]*?\*\/` as text MEANS
+ * hand-rolling it; across test files they were measured to mint 24 false positives on files
+ * holding that regex as fixture data. Definition-anchored only, per WI-37801's reasoning.
+ */
+describe('tree-scanning guards written as .test.ts are IN the ratchet (WI-10002074)', () => {
+  const REPO_ROOT = join(SCRIPTS_DIR, '..');
+
+  /** Cheap superset gate: masking only ever REMOVES text, so a file with no stripper-ish token
+   *  in its raw source cannot define one after masking. Skips ~99% of 7.9k files (4.8s -> ~1s). */
+  const MIGHT_DEFINE_STRIPPER = /strip|mask|blank|scrub|elide|redact/;
+
+  const trackedTests = (): string[] =>
+    execFileSync('git', ['ls-files', '*.test.ts'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+    })
+      .split('\n')
+      .filter(Boolean);
+
+  const isTreeScanningGuard = (commentsOnlyView: string): boolean =>
+    SCANS_CODE_FILES.test(commentsOnlyView) &&
+    TEXT_MATCHES.test(commentsOnlyView) &&
+    READS_FILES.test(commentsOnlyView);
+
+  const measureTestPopulation = (): string[] => {
+    const found: string[] = [];
+    for (const rel of trackedTests()) {
+      let raw: string;
+      try {
+        raw = readFileSync(join(REPO_ROOT, rel), 'utf8');
+      } catch {
+        continue; // tracked but absent (mid-sweep deletion) is not this guard's business
+      }
+      if (!MIGHT_DEFINE_STRIPPER.test(raw)) continue;
+      if (!isTreeScanningGuard(stripCommentsOnly(raw, rel))) continue;
+      if (!definesPrivateStripper(stripCommentsAndStrings(raw, rel))) continue;
+      found.push(rel);
+    }
+    return found.sort();
+  };
+
+  /**
+   * SHRINK-ONLY, exactly like the scripts/ baseline above. These 30 are pre-existing debt
+   * measured at adoption; the ratchet exists to stop the 31st, not to force a 30-file
+   * migration in one change. Remove an entry when its file imports the shared stripper.
+   */
+  const TEST_BASELINE = new Set([
+    'apps/operator-vite/src/__tests__/no-server-leak-in-client-graph.test.ts',
+    'apps/operator-vite/src/lib/operator-core-client-boundary.test.ts',
+    'apps/operator/app/_lints/design-primitives.test.ts',
+    'apps/operator/app/_lints/popper-stacking.test.ts',
+    'apps/operator/lib/chat-actions/ctx-wiring.test.ts',
+    'packages/operator-core/lib/__tests__/affected-tests-passing-verdict-cache.test.ts',
+    'packages/operator-core/lib/__tests__/not-checked-non-gating-mirror.test.ts',
+    'packages/operator-core/lib/agent-tools/capability/base-dir.test.ts',
+    'packages/operator-core/lib/agent-tools/coordination/dispatch-intervention-reachable.test.ts',
+    'packages/operator-core/lib/agent-tools/tool-tree-root.test.ts',
+    'packages/operator-core/lib/agent-tools/work_items/swallowed-work-item-read-guard.test.ts',
+    'packages/operator-core/lib/chat-protocol-nodenext-export-extensions.test.ts',
+    // holder-context.test.ts:452 `export function stripComments(src: string)` — the clearest
+    // instance in the corpus, and an EXPORTED one, so its blindness is reachable by importers.
+    'packages/operator-core/lib/coord/holder-context.test.ts',
+    'packages/operator-core/lib/deployment/account-pool-write-path.test.ts',
+    'packages/operator-core/lib/desktop-acl-command-sync.test.ts',
+    'packages/operator-core/lib/doc-claims/identity-recovery-door.test.ts',
+    'packages/operator-core/lib/doc-claims/system-closer-identity-registration.test.ts',
+    'packages/operator-core/lib/execute-action-dispatch-contract.test.ts',
+    'packages/operator-core/lib/goal-launch-resolver-coverage.test.ts',
+    'packages/operator-core/lib/harness/improvements/recursion-safety-invariants.test.ts',
+    'packages/operator-core/lib/inference-gateway/egress-pool-resolution.test.ts',
+    'packages/operator-core/lib/pg-stat-activity-role-visibility-guard.test.ts',
+    'packages/operator-core/lib/release/green-stall-watchdog-presence-columns.test.ts',
+    'packages/operator-core/lib/search/search-engine-mock-completeness.test.ts',
+    'packages/operator-core/lib/sync-interest-single-contract.test.ts',
+    'packages/operator-core/lib/sync-resolver/no-embedding-in-list-projection.test.ts',
+    'packages/operator-core/lib/sync-resolver/workspace-filter-coverage.test.ts',
+    'packages/operator-core/lib/sync/hyperbee/projections/__tests__/lww-guard-registry-lint.test.ts',
+    'packages/operator-core/lib/work-item-born-claimable.test.ts',
+    'packages/operator-core/lib/workspace-reg-current-guard.test.ts',
+  ]);
+
+  it('no NEW .test.ts tree-scanning guard hand-rolls its own comment stripper', () => {
+    const added = measureTestPopulation().filter((f) => !TEST_BASELINE.has(f));
+    expect(
+      added,
+      'These tree-scanning guards hand-roll a comment stripper instead of importing ' +
+        'scripts/lib/strip-comments-and-strings.mjs. Being a .test.ts rather than a scripts/*.mjs ' +
+        'does not change the defect (EI-23769743489199449) — it only used to hide it.',
+    ).toEqual([]);
+  });
+
+  it('the baseline does not carry entries that are already migrated (it must stay honest)', () => {
+    const population = measureTestPopulation();
+    const stale = [...TEST_BASELINE].filter((f) => !population.includes(f));
+    expect(stale, 'Already-migrated test guards still listed in TEST_BASELINE — remove them.').toEqual([]);
+  });
+
+  // ---- falsifiability: controls that must keep answering both ways (never tree mutation) ----
+
+  it('CATCHES a hand-rolled stripper in a .test.ts-shaped guard (positive control)', () => {
+    const offender = [
+      "const files = ['a.ts', 'b.ts'];",
+      'const src = readFileSync(files[0], "utf8");',
+      'function stripComments(s) { return s.replace(/x/g, ""); }',
+      'if (src.includes("token")) throw new Error("boom");',
+    ].join('\n');
+    expect(isTreeScanningGuard(stripCommentsOnly(offender, 'control.test.ts'))).toBe(true);
+    expect(definesPrivateStripper(stripCommentsAndStrings(offender, 'control.test.ts'))).toBe(true);
+  });
+
+  it('PASSES a guard that imports the shared stripper instead (negative control)', () => {
+    const migrated = [
+      "import { stripCommentsAndStrings } from '../scripts/lib/strip-comments-and-strings.mjs';",
+      "const files = ['a.ts'];",
+      'const src = stripCommentsAndStrings(readFileSync(files[0], "utf8"), files[0]);',
+      'if (src.includes("token")) throw new Error("boom");',
+    ].join('\n');
+    expect(definesPrivateStripper(stripCommentsAndStrings(migrated, 'ok.test.ts'))).toBe(false);
+  });
+
+  /**
+   * THE SELF-MATCH THAT THE STRINGS VIEW EXISTS TO CURE. This file quotes hand-rolled
+   * strippers as fixtures; under a comments-only view it reports ITSELF as an offender.
+   * Both directions are asserted so a future "simplification" back to one mask fails here
+   * rather than silently re-minting a phantom offender against the guard-of-guards.
+   */
+  it('does NOT flag a stripper that appears only inside a STRING (the phantom this class is about)', () => {
+    const quotedOnly = [
+      "const files = ['a.ts'];",
+      'const src = readFileSync(files[0], "utf8");',
+      'const BAD_FIXTURE = "const stripComments = (s) => s.replace(/x/g, \'\')";',
+      'if (src.includes(BAD_FIXTURE)) throw new Error("boom");',
+    ].join('\n');
+    // comments-only view still sees the quoted fixture: this is the false positive.
+    expect(definesPrivateStripper(stripCommentsOnly(quotedOnly, 'phantom.test.ts'))).toBe(true);
+    // +strings view does not: this is the cure, and why the split is load-bearing.
+    expect(definesPrivateStripper(stripCommentsAndStrings(quotedOnly, 'phantom.test.ts'))).toBe(false);
+  });
+
+  it('this very file is NOT in its own population (the guard-of-guards must not self-match)', () => {
+    expect(measureTestPopulation()).not.toContain(
+      'packages/operator-core/lib/guard-string-literal-blindness.test.ts',
+    );
   });
 });
 
