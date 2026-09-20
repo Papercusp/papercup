@@ -57,9 +57,15 @@ documenter → curator — and humans approve at gates. **The `pot` blueprint is
 NO spine. Don't apply coding-spine roles to a pot —
 [pot-vs-coding-blueprint](/internal/docs/agent-insights/pot-vs-coding-blueprint).**
 ⚠ That blueprint's original dispatcher — a **Mug** placing ranked work onto generic
-`cup`s — is **RETIRED** permanently (the gate flag was DELETED): `cup:spawn`
-REFUSES, so a pot no longer places work on its own. A **FLEET** is the fan-out
-(`fleet:launch-on-plan`); the shared pot substrate itself survives ungated (D-003).
+`cup`s — is **RETIRED** permanently (the gate flag was DELETED, and `cup:spawn`
+was deleted outright with it), so a pot no longer places work on its own. A
+**FLEET** is the fan-out (`fleet:launch-on-plan`); the shared pot substrate itself
+survives ungated (D-003). Which verb sits on which side is NOT for prose to
+remember — it is generated from the gate's own rows:
+
+<!-- GENERATED mug-kettle-verb-dispositions — DO NOT HAND-EDIT. Derived from packages/operator-core/lib/agent-tools/_mug-kettle-gate-population.ts; pinned by packages/operator-core/lib/doc-claims/mug-kettle-verb-dispositions.test.ts -->
+`curation:state-of-pot`, `pot:dissolve`, `pot:list`, `pot:pause` and `pot:status` still WORK — never refuse them. `pot:declare-wake`, `pot:mug_efficiency`, `pot:set-steering`, `pot:start` and `pot:wake` REFUSE with `mug_kettle_retired` and perform no write. `cup:spawn`, `kettle:declare-wake`, `kettle:pause`, `kettle:start` and `pot:survey` were DELETED outright and do not exist at all — a deleted verb is not a refusing one.
+<!-- /GENERATED mug-kettle-verb-dispositions -->
 **Hand work to fleet members through the hybrid claim-spec dispatch
 (`hybrid-cup-scheduler-work-stealing`), never by micro-dispatching items.** When you hand
 off, author a per-member **claim SPEC** (`scheduler:set_claim_spec` — a
@@ -431,10 +437,11 @@ wakes spinning). Arm it as the LAST thing before you end your turn. *(Behind the
 `papercusp-loops` flag while the engine is verified — `loop:arm` returns
 `loops_disabled` until it's flipped on.)* This replaces `/loop` for su/interactive
 loops ONLY — it is **NOT** the autonomous Blender loop, which is a separate
-system (`pot:declare-wake`); never `loop:arm` from an
+system; never `loop:arm` from an
 autonomous-fleet agent. ⚠ The mug/cup/kettle half of that loop is **RETIRED**
-permanently (the gate flag was DELETED): `kettle:declare-wake` REFUSES, while
-`pot:declare-wake` survives ungated (D-003 keeps the shared pot substrate).
+permanently (the gate flag was DELETED), so `kettle:declare-wake` was deleted
+outright and `pot:declare-wake` REFUSES — the `pot/wake` MODULE survives (D-003
+keeps the shared pot substrate), which is not the same thing as its verb working.
 
 **Then CLOSE YOURSELF — `session:end` (WI-6638).** Ending your loop does not end your
 session: the CLI returns to its prompt and sits there, holding a real process and an
