@@ -36,6 +36,7 @@ import {
   buildUnusedCteAdvisory,
   buildPopulationNarrowingAdvisory,
   buildNonSummingPartitionAdvisory,
+  buildExecutedPartitionAdvisory,
   buildSchemaColumnRedirect,
   buildTenantScopeAdvisory,
   buildDerivedColumnRedirect,
@@ -49,6 +50,15 @@ import {
   PG_READ_QUERY_HARD_MAX_ROWS,
   PgReadQueryTimeoutError,
 } from '../../pg-read-query';
+// WI-10002035 (P-003): labelled advisory fire telemetry. Kept separate from the
+// pg-read-query block above because nothing here participates in COMPOSING an
+// advisory — it only records which ones were delivered.
+import {
+  ERROR_PATH_ADVISORY_LABELS,
+  firesForDelivery,
+  labelDeliveredAdvisories,
+  recordAdvisoryFiresDetached,
+} from '../../pg-query-advisory/fires';
 
 /**
  * The ENVELOPE DISCRIMINATOR (P-011, fleet-friction-remediation-2026-08-21).
@@ -615,6 +625,10 @@ export default defineTool({
     // composition: a correctness warning must never be pushed down the line
     // by a routing hint.
     const toolRoutingAdvisory = advisoryOf(() => buildToolRoutingAdvisory(sql));
+    // Named rather than inlined so the success path can substitute its EXECUTED
+    // counterpart into the same precedence slot by identity, instead of by an
+    // index that silently retargets the next time this list is reordered.
+    const nonSummingPartitionAdvisory = advisoryOf(() => buildNonSummingPartitionAdvisory(sql));
     // The sql-derived advisories in their established precedence order, shared
     // VERBATIM by the success payload and the error payload so the two can
     // never drift into telling the same caller different things about the same
@@ -635,7 +649,10 @@ export default defineTool({
       // The sibling of populationNarrowing above: that one warns a ZERO cannot
       // establish an empty population, this one warns a NON-zero scalar may be
       // missing rows that fell through every branch via three-valued logic.
-      advisoryOf(() => buildNonSummingPartitionAdvisory(sql)),
+      // This is the STATEMENTS-ONLY form, which is all the error path can
+      // offer; the success path substitutes the EXECUTED one into this same
+      // slot below, so the precedence order is identical either way.
+      nonSummingPartitionAdvisory,
       splitEvidenceAdvisory,
       nativeToolAdvisory,
       agentActivityAdvisory,
@@ -726,16 +743,41 @@ export default defineTool({
             ? '⚠ absence unverified: positiveControlSql also returned 0 rows, so the instrument/scope has not been shown capable of finding a known-positive row.'
             : '⚠ absence unverified: rowCount is 0 and no positiveControlSql was run. Re-run with a known-positive SELECT through the same table/scope/instrument before treating this as evidence of absence.'
           : null;
-      const advisory =
-        [
-          ...sqlShapeAdvisories,
-          tenantAdvisory,
-          positiveControlTenantAdvisory,
-          positiveControlAdvisory,
-          toolRoutingAdvisory,
-        ]
-          .filter(Boolean)
-          .join(' ') || null;
+      // The EXECUTED partition (WI-10002034): the caller's scalar came back, so
+      // the connection that answered it can also answer the partition behind
+      // it, the per-dimension NULL counts and 2-3 fall-through rows. Only the
+      // success path can do this — the error path has no result to stand
+      // beside — so it substitutes into the pure advisory's slot rather than
+      // appending, keeping one partition warning rather than two. It fails
+      // open to the statements-only string it replaces.
+      const executedPartitionAdvisory =
+        nonSummingPartitionAdvisory !== null
+          ? await buildExecutedPartitionAdvisory(sql).catch(() => null)
+          : null;
+      // Hoisted out of the join so P-003's fire telemetry reads the
+      // POST-SUBSTITUTION values. Counting before the map would record the
+      // partition advisory as fired while carrying the statements-only text the
+      // caller never saw — the fire count would be right and the payload it
+      // correlates to would be wrong. (WI-10002034's holder, coord 08:04Z.)
+      const deliveredAdvisories: (string | null)[] = [
+        ...sqlShapeAdvisories.map((entry) =>
+          entry !== null && entry === nonSummingPartitionAdvisory
+            ? (executedPartitionAdvisory ?? entry)
+            : entry,
+        ),
+        tenantAdvisory,
+        positiveControlTenantAdvisory,
+        positiveControlAdvisory,
+        toolRoutingAdvisory,
+      ];
+      const advisory = deliveredAdvisories.filter(Boolean).join(' ') || null;
+      // WI-10002035 (P-003): never awaited and never throws — the caller is
+      // already holding their query result.
+      recordAdvisoryFiresDetached({
+        workspaceId: ctx.workspaceId,
+        harnessSlug: ctx.harnessSlug,
+        fires: firesForDelivery(labelDeliveredAdvisories(deliveredAdvisories), 'success'),
+      });
       return {
         content: [
           {
@@ -810,9 +852,26 @@ export default defineTool({
       // the reader has already scrolled past, and burying the fix under the
       // most voluminous-looking part of the payload is the failure this whole
       // error path exists to avoid.
-      const errorAdvisory =
-        [...sqlShapeAdvisories, toolRoutingAdvisory].filter(Boolean).join(' ') || null;
+      const deliveredErrorAdvisories: (string | null)[] = [
+        ...sqlShapeAdvisories,
+        toolRoutingAdvisory,
+      ];
+      const errorAdvisory = deliveredErrorAdvisories.filter(Boolean).join(' ') || null;
       if (errorAdvisory) payload.advisory = errorAdvisory;
+      // WI-10002035 (P-003): a failed query still DELIVERS its shape advisories
+      // — a query's shape is no less true for having failed to run, per the
+      // comment above. Counting only the success path would undercount exactly
+      // the shape-derived advisories this plan is trying to measure. The tail
+      // differs here (routing only, no result-derived advisories), hence the
+      // explicit label list.
+      recordAdvisoryFiresDetached({
+        workspaceId: ctx.workspaceId,
+        harnessSlug: ctx.harnessSlug,
+        fires: firesForDelivery(
+          labelDeliveredAdvisories(deliveredErrorAdvisories, ERROR_PATH_ADVISORY_LABELS),
+          'error',
+        ),
+      });
       // P-005(a): a 42703 (undefined_column) carries the referenced tables'
       // CANONICAL column lists so the retry takes one round trip, not a
       // guessing loop (a fresh post-compaction context has no query memory).

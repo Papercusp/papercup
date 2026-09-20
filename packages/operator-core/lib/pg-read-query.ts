@@ -4359,3 +4359,110 @@ export function buildNonSummingPartitionAdvisory(rawSql: string): string | null 
   const plan = planPredicatePartition(rawSql);
   return plan ? renderPredicatePartition(plan) : null;
 }
+
+/** Default cap on rendered partition cells; one more is fetched to detect truncation. */
+export const PREDICATE_PARTITION_CELL_LIMIT = 50;
+/** The probe rides the caller's own read; keep it short enough to never dominate it. */
+export const PREDICATE_PARTITION_TIMEOUT_MS = 5_000;
+
+/**
+ * The UNFILTERED total the partition cells must add up to — the relation under
+ * the caller's scope and nothing else. Built here beside the other two
+ * statements for the reason named on {@link predicatePartitionSql}: the sum
+ * check is only meaningful if the total and the cells come from the same
+ * scope, and two independently-built "equivalent" statements is exactly how
+ * they come to disagree.
+ */
+export function predicatePartitionTotalSql(plan: PredicatePartitionPlan): string {
+  return (
+    `SELECT count(*) AS total\n  FROM ${plan.relation}` +
+    (plan.scope.length ? `\n WHERE ${plan.scope.join('\n   AND ')}` : '') +
+    ';'
+  );
+}
+
+/**
+ * The EXECUTED half (AUTO-BAR-R-002-P-002). Issues the statements
+ * {@link renderPredicatePartition} would otherwise only SUGGEST — the
+ * exhaustive partition, the unfiltered total, and a fall-through sample —
+ * through the same bounded read transaction the rest of this surface uses, so
+ * the caller gets the cells, the per-dimension NULL counts and 2-3 sample rows
+ * ALONGSIDE their scalar instead of homework.
+ *
+ * FAILS OPEN to `undefined`, and that is load-bearing rather than defensive: a
+ * probe that could not run must degrade to the statements-only rendering, NOT
+ * to a rendering that reports no cells. `renderPartitionData` keeps those two
+ * cases textually distinct because an empty-cells rendering reads as "nothing
+ * fell through" — the exact false negative this advisory exists to prevent,
+ * reintroduced by its own fix.
+ */
+export async function executePredicatePartition(
+  plan: PredicatePartitionPlan,
+  opts: { client?: OrgSql; timeoutMs?: number; cellLimit?: number; sampleLimit?: number } = {},
+): Promise<PredicatePartitionData | undefined> {
+  const cellLimit = Math.max(1, Math.trunc(opts.cellLimit ?? PREDICATE_PARTITION_CELL_LIMIT));
+  const sampleLimit = Math.max(1, Math.trunc(opts.sampleLimit ?? 3));
+  try {
+    return await boundedPgReadTxn(
+      async (tx) => {
+        // cellLimit + 1: a partition sitting exactly ON the cap must report as
+        // TRUNCATED rather than as exhaustive, or the sum check the advisory
+        // asks the reader to run silently becomes unsatisfiable.
+        const cellRows = (await tx.unsafe(
+          predicatePartitionSql(plan, cellLimit + 1),
+        )) as unknown as Record<string, unknown>[];
+        const truncated = cellRows.length > cellLimit;
+        const cells: PredicatePartitionCell[] = (truncated ? cellRows.slice(0, cellLimit) : cellRows).map(
+          (row) => ({
+            values: plan.dimensions.map((_, i) => {
+              const value = row[`d${i + 1}`];
+              return value === null || value === undefined ? null : String(value);
+            }),
+            rows: Number(row.row_count ?? 0),
+          }),
+        );
+
+        const totalRow = (await tx.unsafe(
+          predicatePartitionTotalSql(plan),
+        )) as unknown as Record<string, unknown>[];
+        const rawTotal = totalRow[0]?.total;
+        const totalRows = rawTotal === null || rawTotal === undefined ? undefined : Number(rawTotal);
+
+        const sampleRows = (await tx.unsafe(
+          predicatePartitionSampleSql(plan, sampleLimit),
+        )) as unknown as Record<string, unknown>[];
+        const samples = sampleRows.map((row) => String(row.sample ?? ''));
+
+        return {
+          cells,
+          samples,
+          ...(typeof totalRows === 'number' && Number.isFinite(totalRows) ? { totalRows } : {}),
+          ...(truncated ? { truncated } : {}),
+        } satisfies PredicatePartitionData;
+      },
+      {
+        ...(opts.client ? { client: opts.client } : {}),
+        timeoutMs: opts.timeoutMs ?? PREDICATE_PARTITION_TIMEOUT_MS,
+      },
+    );
+  } catch {
+    // Deliberately swallowed: see the fail-open note above. The caller renders
+    // the statements, which is strictly more useful than an error about a
+    // probe the caller never asked for.
+    return undefined;
+  }
+}
+
+/**
+ * The one call the query surface makes: plan, probe, render. Returns null when
+ * the read does not qualify (the p002.narrow-reads-unchanged boundary), and the
+ * statements-only string when the probe could not run.
+ */
+export async function buildExecutedPartitionAdvisory(
+  rawSql: string,
+  opts: { client?: OrgSql; timeoutMs?: number } = {},
+): Promise<string | null> {
+  const plan = planPredicatePartition(rawSql);
+  if (!plan) return null;
+  return renderPredicatePartition(plan, await executePredicatePartition(plan, opts));
+}
