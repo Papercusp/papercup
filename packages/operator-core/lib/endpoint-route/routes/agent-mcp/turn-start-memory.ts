@@ -219,8 +219,41 @@ const turnStartMemory = defineTool({
               'stack transition render failed',
             ).catch(() => undefined);
           }
+          // WI-10002021: `requiresFreshContext` means "a successor host must carry this
+          // before it is acknowledged" — a WAIT, not a permanent veto. But nothing ends
+          // the wait on its own: `stackBefore` is rewritten ONLY when the control STATE
+          // next changes (control-anchor's ON CONFLICT clause), never by acknowledgement.
+          // So the successor recomputes the identical stackBefore→state.stack diff, gets
+          // `relaunch-with-carry` again, skips prepare+ack again, and `applied` never
+          // converges to the specification the session is actually running.
+          // identity-grants-port then reads current !== applied and denies
+          // 'stale-artifact' for EVERY tool for the life of the session — including the
+          // coord:orient recovery door. That is the half WI-10002005 did not cover.
+          //
+          // The wait is genuinely over the moment THIS session's own launch record
+          // carries the desired specification: the relaunch already happened and we are
+          // the successor. Acknowledging a specification the session is demonstrably
+          // running is fail-closed — an unreadable, absent, or non-matching launch
+          // record keeps waiting, exactly as before.
+          let awaitingRelaunch = stackRequiresFreshContext;
+          if (stackRequiresFreshContext && activationRevision) {
+            try {
+              const { readSuLaunchSpecByOwner } = await import('../../../adv-sessions');
+              const launched = (await readSuLaunchSpecByOwner(owner)) as
+                { specificationRevision?: unknown } | null;
+              const revision = launched?.specificationRevision;
+              if (
+                typeof revision === 'string' &&
+                revision === activationRevision.specificationRevision
+              ) {
+                awaitingRelaunch = false;
+              }
+            } catch {
+              /* never acknowledge on an unreadable launch record — keep waiting */
+            }
+          }
           let activationPrepared = true;
-          if (stackRendered && !stackRequiresFreshContext && activationRevision) {
+          if (stackRendered && !awaitingRelaunch && activationRevision) {
             activationPrepared = await markControlTransitionPrepared(
               owner,
               workspaceId,
@@ -230,7 +263,7 @@ const turnStartMemory = defineTool({
           }
           if (
             stackRendered &&
-            !stackRequiresFreshContext &&
+            !awaitingRelaunch &&
             activationPrepared &&
             Number.isSafeInteger(transition.generation)
           ) {
