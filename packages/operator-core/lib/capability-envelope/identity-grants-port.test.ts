@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileAgentSpecification, type ResolvedCapabilityProviderInput } from '@papercusp/orchestrator/blueprint';
 import type { KernelEnforcementRequest } from '@papercusp/agent-mcp';
-import { appliedIdentityArtifact, checkIdentityGrantKernel, readIdentityGrantPolicy, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
+import { appliedIdentityArtifact, checkIdentityGrantKernel, IDENTITY_BREAK_GLASS, readIdentityGrantPolicy, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
 import { carryIdentityReceiptForControlActivation, type SuLaunchSpecRecord } from '../su-persona-render';
 
@@ -274,6 +274,66 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       expect(await checkIdentityGrantKernel(f.request, state as never, record, read), label)
         .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });
     }
+  });
+
+  // EI-23745120264597384 — the RECOVERY-REACHABILITY invariant, enforced
+  // structurally instead of by enumerating shapes.
+  //
+  // The self-sealing class is not "a gate denies too much". It is "a gate denies
+  // the very verb documented to clear the state it is denying for", which leaves
+  // the session stuck in exactly the condition it has a cure for. The previous
+  // guard was a hand-written list of shapes, and a list only covers the paths
+  // someone already thought of: `denial(failure.cause, …)` on the envelope path
+  // sat unguarded while every test here passed, even though
+  // IdentityGrantFailure['cause'] spans BOTH break-glass causes — so a producer
+  // returning one there would brick a session for its entire life, undetected.
+  //
+  // Asserting on the SOURCE is what closes the class rather than the instance: a
+  // denial site added later fails here the moment it bypasses the contract.
+  it('INVARIANT: every denial routes through the break-glass chokepoint', async () => {
+    const { readFileSync } = await import('node:fs');
+    // Overridable so this guard's own falsifiability can be proven against a
+    // COPY outside the tree, instead of mutating this shared checkout — where
+    // git-sync sweeps every few minutes and can commit the mutant while the
+    // probe is legitimately still running.
+    const override = process.env.IDENTITY_GRANTS_PORT_SOURCE;
+    const source = readFileSync(
+      override ? new URL(`file://${override}`) : new URL('./identity-grants-port.ts', import.meta.url),
+      'utf8',
+    );
+
+    const callSites = source.split('\n')
+      .filter((line) => /\bdenial\(/.test(line))
+      .filter((line) => !/^\s*\*/.test(line))          // prose inside a doc comment
+      .filter((line) => !/^function denial\(/.test(line)) // the definition itself
+      .map((line) => line.trim());
+
+    expect(callSites).toEqual(['return denial(cause, classRef, toolName, policyRevision);']);
+
+    // ...and that sole call must live INSIDE the chokepoint, not in some later
+    // function that merely happens to spell the same statement.
+    const chokepoint = source.slice(source.indexOf('function denyUnlessRecoveryDoor('));
+    expect(chokepoint).toContain('return denial(cause, classRef, toolName, policyRevision);');
+  });
+
+  // The companion half, and the one that keeps this a DOOR rather than a hole.
+  // A cause that is a statement about AUTHORITY (rather than about identity
+  // resolution) must keep denying the recovery verb — otherwise "never deny the
+  // recovery door" silently becomes "coord:orient is ungated". Without this,
+  // widening IDENTITY_BREAK_GLASS.causes to the whole union would still pass.
+  it('still denies the recovery verb for a cause outside the break-glass set', async () => {
+    const f = fixture();
+    const read = vi.fn(async () => f.policy);
+    // coord:orient is absent from the fixture policy's ceiling, so this reaches
+    // an authority denial, which is deliberately NOT a break-glass cause.
+    const result = await checkIdentityGrantKernel(
+      { ...f.request, toolName: 'coord:orient' }, f.state as never, f.record, read,
+    );
+    expect(result).toMatchObject({ decision: 'deny' });
+    const cause = (result as { obligations?: { capabilityUnsatisfied?: { cause?: string } } })
+      .obligations?.capabilityUnsatisfied?.cause;
+    expect(cause).toBeTruthy();
+    expect(IDENTITY_BREAK_GLASS.causes).not.toContain(cause);
   });
 
   it('keeps verified grantless artifacts and legacy sessions unchanged without policy I/O', async () => {
