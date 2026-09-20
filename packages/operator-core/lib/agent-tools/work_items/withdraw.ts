@@ -40,6 +40,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { getWorkItem, setWorkItemState, releaseWorkItem, isSettledWorkItemState } from '../../work-items';
+import { resolveAdoptedName } from '../../plan-items/agent-names';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
 
 /** The stable prefix that marks a terminal row as a RETRACTION rather than an ordinary drop. */
@@ -85,6 +86,14 @@ export default defineTool({
     const ids = mergeIds(args.id, args.ids);
     const reason = args.reason.trim();
 
+    // Holder matching mirrors complete.ts: an agent may hold work under an ADOPTED name
+    // rather than its raw ownerId, so comparing ownerId alone would refuse a legitimate
+    // self-withdrawal. Resolved ONCE per call (it is per-caller, not per-item) and
+    // fail-soft — an unresolvable name must not block a withdrawal.
+    const adoptedName = ident.workspaceId
+      ? await resolveAdoptedName(ident.workspaceId, ident.ownerId).catch(() => null)
+      : null;
+
     const env = await runBulk(
       ids,
       async (id) => {
@@ -100,7 +109,7 @@ export default defineTool({
         // A live peer's claim is theirs. Mirrors the assignee-mismatch refusal in
         // complete.ts: withdrawing work someone else is actively holding destroys their lane.
         const holder = existing.assignee ?? null;
-        const callerHolds = !holder || holder === ident.ownerId || holder === ident.adoptedName;
+        const callerHolds = !holder || holder === ident.ownerId || (!!adoptedName && holder === adoptedName);
         if (!callerHolds && !args.force) {
           return {
             ok: false as const,

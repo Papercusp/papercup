@@ -35,7 +35,10 @@ vi.mock('../../work-items', () => ({
   isSettledWorkItemState: (s: string | null | undefined) => !!s && SETTLED.includes(s),
 }));
 vi.mock('../coordination/identity', () => ({
-  resolveAgentIdentity: () => ({ ownerId: 'probe' }),
+  resolveAgentIdentity: () => ({ ownerId: 'probe', workspaceId: 'ws-1' }),
+}));
+vi.mock('../../plan-items/agent-names', () => ({
+  resolveAdoptedName: vi.fn(async () => null),
 }));
 
 import { getWorkItem, setWorkItemState, releaseWorkItem } from '../../work-items';
