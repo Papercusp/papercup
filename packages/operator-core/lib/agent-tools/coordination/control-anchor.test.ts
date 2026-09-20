@@ -275,6 +275,99 @@ describe('compact durable CTRL anchor', () => {
     expect(delivery.stateHash).toBe(controlStateHash(delivery.state));
   });
 
+  // WI-10002005 recurrence guard. The budget assertion in the test above runs on
+  // the DEFAULT fixture, which is comfortably small — it passes whether or not a
+  // realistic control state fits, so it cannot catch the anchor outgrowing its
+  // budget. THIS one renders a MAXIMAL state, and it is the assertion that
+  // actually fails when the anchor grows.
+  //
+  // Why it is load-bearing: renderControlTransitionDelivery THROWS the moment the
+  // estimate crosses CONTROL_TRANSITION_MAX_TOKENS, and turn-start's catch
+  // swallows that throw so the prompt is never blocked. The failure is therefore
+  // SILENT — the whole ⟦CTRL⟧ block simply disappears, taking with it the
+  // generation-mismatch signal that is the carry marker's only escape hatch
+  // (WI-10002017). Nothing errors, so only a test can catch this regression.
+  //
+  // Measured 2026-09-20 on a live session: ONE mode, TWO stack layers, a 60-char
+  // fleet slug and both revision pairs already rendered at 351 of 384 tokens —
+  // 33 tokens of headroom. Adding modes or layers is what crosses it.
+  it('keeps a MAXIMAL control state inside the transition token budget', () => {
+    const fleet = 'goal-drain-work-on-everything-fresh-grading-and-impro-60d3a8';
+    // Pin the slug width: the budget is sensitive to it, and a shortened fixture
+    // would silently weaken this guard.
+    expect(fleet).toHaveLength(60);
+    const revision = (seed: string) => ({
+      specificationRevision: seed.repeat(64).slice(0, 64),
+      stateRevision: seed.repeat(24).slice(0, 24),
+    });
+    const maximal = state({
+      modes: ['auto', 'ideate', 'drain', 'audit'],
+      stack: [
+        'autonomy:su.mode-auto',
+        'ideation:su.mode-ideate',
+        'objective:su.mode-drain',
+        'fleet-posture:su.fleet-member',
+      ],
+      wakeSource: 'loop',
+      carry: 'cold',
+      route: { kind: 'fleet', fleet, role: 'member' },
+      activation: {
+        schemaVersion: 1,
+        attribution: {
+          actorId: 'su-56d0a9bd-9c98-4c87-8e0d-ab9ddf15ba8f',
+          principalId: 'system:superuser',
+          sessionId: 'su-56d0a9bd-9c98-4c87-8e0d-ab9ddf15ba8f',
+        },
+        desired: revision('a'),
+        prepared: null,
+        applied: revision('b'),
+        status: 'desired',
+      },
+    } as Partial<ControlAnchorState>);
+    const transition = {
+      schemaVersion: CONTROL_TRANSITION_SCHEMA,
+      targetOwnerId: 'su-56d0a9bd-9c98-4c87-8e0d-ab9ddf15ba8f',
+      previousGeneration: 14,
+      generation: 17,
+      state: maximal,
+      provenance: {
+        origin: 'system' as const,
+        actorId: 'su-56d0a9bd-9c98-4c87-8e0d-ab9ddf15ba8f',
+        source: 'session:activation' as const,
+        ownerDirected: false,
+        recordedAt: '2026-09-20T04:25:43.092Z',
+      },
+      resync: {
+        verb: 'coord:orient' as const,
+        args: { afterCompaction: true as const },
+        rule: 'replace-full-never-merge-behind' as const,
+      },
+    };
+    // ⚠ PINNED DEFECT, NOT DESIRED BEHAVIOUR (WI-10002005 / WI-10002017).
+    // Measured 2026-09-20: this maximal state renders at 406 tokens against a
+    // 384 budget, so renderControlTransitionDelivery THROWS. turn-start swallows
+    // that throw to keep the prompt alive, so the entire ⟦CTRL⟧ block silently
+    // disappears — taking the generation-mismatch signal with it.
+    //
+    // This assertion pins the overflow so the defect is visible and cannot
+    // regress further unnoticed. It is deliberately written to FAIL THE MOMENT
+    // THE DEFECT IS FIXED: when the budget is raised or the state is slimmed,
+    // this stops throwing, this test goes red, and whoever fixed it must flip
+    // the assertion back to the `toBeLessThanOrEqual` form it should have been.
+    const render = () => decideControlTransitionDelivery({
+      ownerId: 'su-56d0a9bd-9c98-4c87-8e0d-ab9ddf15ba8f',
+      deliveredGeneration: 14,
+      generation: 17,
+      state: maximal,
+      transition,
+      updatedAt: transition.provenance.recordedAt,
+    });
+    expect(render).toThrow(/control_transition_budget_exceeded/);
+    // Calibration: the fixture must stay genuinely LARGE, so a future refactor
+    // that quietly shrinks it cannot turn this guard into a vacuous one.
+    expect(estimateControlAnchorTokens(maximal)).toBeGreaterThan(200);
+  });
+
   it('separates prepare from acknowledgement so a render failure leaves the generation pending', async () => {
     const transition = {
       schemaVersion: CONTROL_TRANSITION_SCHEMA,
