@@ -63,7 +63,11 @@ import { detectUnderReadFromSource } from '../../activation-under-read';
 import { assertSourceSpan } from '../../activation-source-span';
 import { setSpecClause } from './spec-clauses-store';
 import { getPlanRow } from './source';
-import { validateAcceptanceBarSource } from '../../acceptance-bar-seed';
+import {
+  MAX_BAR_PROJECTION_EDGES,
+  unexpectedAcceptanceBarProjectionIds,
+  validateAcceptanceBarSource,
+} from '../../acceptance-bar-seed';
 import { parsePlan } from './parser';
 import { stagingFirstActivationProblems } from './staging-first-activation-guard';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
@@ -601,6 +605,62 @@ export default defineTool({
               message:
                 `${barSource.problems.length} BAR seed problem(s): ` +
                 `${barSource.problems.map((problem) => problem.detail).join('; ')}`,
+            } };
+          }
+          const projectionIdentities = await sql<Array<{
+            spec_id: string;
+            source_bar_key: string | null;
+            lifecycle_status: 'draft' | 'active' | 'accepted' | 'superseded';
+          }>>`
+            SELECT c.spec_id, r.source_bar_key, r.lifecycle_status
+              FROM harness_shared.plan_spec_clauses c
+              JOIN harness_shared.plan_spec_clause_revisions r
+                ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
+               AND r.plan_slug = c.plan_slug AND r.spec_id = c.spec_id
+               AND r.revision = c.current_revision
+             WHERE c.workspace_id = ${workspaceId}
+               AND c.harness_slug = ${harnessSlug ?? ''}
+               AND c.plan_slug = ${args.slug}
+               AND c.spec_id ~ '^AUTO-BAR-R-[0-9]+-P-[0-9]{3,}$'
+             ORDER BY c.spec_id
+             LIMIT ${MAX_BAR_PROJECTION_EDGES + 1}`;
+          if (projectionIdentities.length > MAX_BAR_PROJECTION_EDGES) {
+            return { data: {
+              ok: false as const,
+              slug: args.slug,
+              phase: 'activation' as const,
+              dryRun: true as const,
+              preview: true as const,
+              error: 'bar_projection_set_too_large' as const,
+              problems: [{
+                code: 'bar_projection_set_too_large' as const,
+                detail: `existing projection identity read exceeded ${MAX_BAR_PROJECTION_EDGES}; refusing a truncated comparison`,
+              }],
+              message: `1 BAR seed problem(s): existing projection identity read exceeded ${MAX_BAR_PROJECTION_EDGES}; refusing a truncated comparison`,
+            } };
+          }
+          const expectedProjectionIds = new Set(
+            barSource.mappings.flatMap((mapping) =>
+              mapping.planItemIds.map((planItemId) => `AUTO-BAR-${mapping.barKey}-${planItemId}`),
+            ),
+          );
+          const unexpected = unexpectedAcceptanceBarProjectionIds(
+            expectedProjectionIds,
+            projectionIdentities,
+          );
+          if (unexpected.length > 0) {
+            return { data: {
+              ok: false as const,
+              slug: args.slug,
+              phase: 'activation' as const,
+              dryRun: true as const,
+              preview: true as const,
+              error: 'bar_projection_conflict' as const,
+              problems: [{
+                code: 'bar_projection_conflict' as const,
+                detail: `stored BAR projection(s) are outside the exact current map: ${unexpected.join(', ')}`,
+              }],
+              message: `1 BAR seed problem(s): stored BAR projection(s) are outside the exact current map: ${unexpected.join(', ')}`,
             } };
           }
         }

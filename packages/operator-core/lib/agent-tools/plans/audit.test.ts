@@ -928,7 +928,47 @@ describe('plans:audit phase:activation', () => {
     // Calibration control: without this, the refusal above would also pass against a
     // check that simply refused whenever the epoch is set.
     resolvePlanContent(barPlanWithDesign);
-    mockOrgSql.mockResolvedValue([{ acceptance_bar_epoch: '1' }]);
+    mockOrgSql
+      .mockResolvedValueOnce([{ acceptance_bar_epoch: '1' }])
+      .mockResolvedValueOnce([]);
+
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, phase: 'activation', dryRun: true, preview: true });
+  });
+
+  it('previews the writer projection conflict for a live generated identity outside the current map', async () => {
+    resolvePlanContent(barPlanWithDesign);
+    mockOrgSql
+      .mockResolvedValueOnce([{ acceptance_bar_epoch: '1' }])
+      .mockResolvedValueOnce([{
+        spec_id: 'AUTO-BAR-R-9-P-999',
+        source_bar_key: 'R-9',
+        lifecycle_status: 'active',
+      }]);
+
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      dryRun: true,
+      preview: true,
+      error: 'bar_projection_conflict',
+    });
+    expect(result.message).toContain('AUTO-BAR-R-9-P-999');
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a superseded unpinned generated identity as a live preview conflict', async () => {
+    resolvePlanContent(barPlanWithDesign);
+    mockOrgSql
+      .mockResolvedValueOnce([{ acceptance_bar_epoch: '1' }])
+      .mockResolvedValueOnce([{
+        spec_id: 'AUTO-BAR-R-9-P-999',
+        source_bar_key: null,
+        lifecycle_status: 'superseded',
+      }]);
 
     const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
 

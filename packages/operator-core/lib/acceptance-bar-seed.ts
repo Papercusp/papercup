@@ -462,6 +462,35 @@ export function validateAcceptanceBarSource(planContent: string):
   return { ok: true, bars: requirements.bars, mappings: mappings.mappings };
 }
 
+export interface AcceptanceBarProjectionIdentity {
+  spec_id: string;
+  source_bar_key: string | null;
+  lifecycle_status: SpecClauseWrite['lifecycleStatus'];
+}
+
+/**
+ * Return generated projection identities that still compete with the exact
+ * current Requirements map.
+ *
+ * A generated identity whose CURRENT revision is explicitly superseded and no
+ * longer carries a source BAR pin is history, not a live projection. Reviewed
+ * remaps use exactly that shape before creating the replacement mapping. Keep
+ * every other off-map generated identity fail-loud: draft/active/accepted rows,
+ * and even superseded rows that retain a source pin, can still affect lifecycle
+ * readers and therefore remain real collisions.
+ */
+export function unexpectedAcceptanceBarProjectionIds(
+  expectedProjectionIds: ReadonlySet<string>,
+  identities: readonly AcceptanceBarProjectionIdentity[],
+): string[] {
+  return identities
+    .filter((row) =>
+      !(row.lifecycle_status === 'superseded' && row.source_bar_key === null) &&
+      !expectedProjectionIds.has(row.spec_id),
+    )
+    .map((row) => row.spec_id);
+}
+
 export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): AcceptanceBarSeedBuildResult {
   const source = validateAcceptanceBarSource(input.planContent);
   if (!source.ok) return refusal(source.problems);
@@ -964,6 +993,8 @@ export async function seedAcceptanceBarsInTransaction(
        -- A suffixed atomic clause is additive even if it starts with AUTO-BAR-.
        -- A prefix census mistakes that authored clause for a removed map edge.
        -- Keep exact generated identities in the census even when out of map.
+       -- The pure classifier below distinguishes a deliberately retired
+       -- (superseded + unpinned) identity from a still-live collision.
        -- Reviewed plan-specific clauses may carry the same sourceBar pin so their proof
        -- stays tied to the governing requirement; they are additive contracts,
        -- not stale seed projections to replace or reject on a re-audit.
@@ -977,15 +1008,13 @@ export async function seedAcceptanceBarsInTransaction(
     }]) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>);
   }
   const expectedProjectionIds = new Set(built.projections.map((projection) => projection.specId));
-  const unexpected = identities.filter(
-    (row) => !expectedProjectionIds.has(row.spec_id),
-  );
+  const unexpected = unexpectedAcceptanceBarProjectionIds(expectedProjectionIds, identities);
   if (unexpected.length > 0) {
     throw new AcceptanceBarSeedAbort(refusal([{
       code: 'bar_projection_conflict',
       detail:
         `stored BAR projection(s) are outside the exact current map: ` +
-        unexpected.map((row) => row.spec_id).join(', '),
+        unexpected.join(', '),
     }]) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>);
   }
   const identityBySpec = new Map(identities.map((row) => [row.spec_id, row]));
