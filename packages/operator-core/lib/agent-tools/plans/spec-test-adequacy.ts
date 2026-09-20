@@ -46,6 +46,24 @@ export const ADEQUACY_CRITERIA = [
 export type AdequacyCriterion = (typeof ADEQUACY_CRITERIA)[number];
 export type AdequacyRating = 'pass' | 'fail' | 'unknown' | 'waived' | 'not-applicable';
 
+/**
+ * The adequacy criteria that can only ever be satisfied by EXECUTABLE proof: a
+ * ledger-backed test run, a mutation/counterexample row, or a repo-files
+ * measurement. When `requiredProofFloor` exempts a clause (returns 'none'),
+ * these are the criteria that exemption must ALSO reach — grading non-code work
+ * against them demands an artifact that cannot exist for it, at any effort.
+ *
+ * Kept immediately beside ADEQUACY_CRITERIA so the two lists are read and
+ * edited together: a new criterion that needs a ledger row or a repo file
+ * belongs in both, and one that can be satisfied by an honest attestation
+ * belongs only in the first.
+ */
+export const EXECUTABLE_PROOF_CRITERIA = [
+  'falsifiability',
+  'execution-integrity',
+  'freshness',
+] as const satisfies readonly AdequacyCriterion[];
+
 export interface AdequacyRatingEntry {
   rating: AdequacyRating;
   evidence: string;
@@ -1549,6 +1567,39 @@ export function evaluateSpecTestAdequacy(input: {
 
   const risk = riskFloorRating(clause, classRef, evidence, input.now ?? new Date(), input.harness, input.workItemKind);
   ratings['plan-class-risk-floor'] = risk.rating;
+
+  // EI-23793489732627099: the non-code exemption reached ONLY plan-class-risk-floor.
+  // requiredProofFloor's own doc comment promises that "executable test-proof floors
+  // do not apply to a task", but the promise was kept at the floor and nowhere else,
+  // so a clause describing non-code work (a triage-to-disposition item, a
+  // measurement/investigation item) could never reach an all-pass verdict by ANY
+  // route — binding, re-kind, re-class, or the l4 waiver, which is itself consumed
+  // inside riskFloorRating and so cleared only the floor too. Each criterion below
+  // structurally demands an artifact non-code work cannot produce: falsifiability
+  // needs a ledger-backed mutation/counterexample row, execution-integrity needs a
+  // ledger testRunId or coverage row, and freshness needs a details.currentMeasurement
+  // whose kind is the literal 'repo-files'. The clause sat in wouldBlock forever and
+  // blocked plan ship with no reachable repair.
+  //
+  // Only 'unknown' is downgraded, and that boundary is the whole safety argument:
+  // 'unknown' means "this cannot be established", which for non-code work is
+  // structural and expected. A 'fail' means the bound evidence positively reports
+  // something bad — falsifiable=false, a failed outcome, a stale binding — which is
+  // real information about real evidence and must keep blocking, exemption or not.
+  if (risk.floor === 'none') {
+    for (const criterion of EXECUTABLE_PROOF_CRITERIA) {
+      const current = ratings[criterion];
+      if (current.rating !== 'unknown') continue;
+      ratings[criterion] = {
+        rating: 'not-applicable',
+        evidence:
+          `${clauseIdentity(clause)} carries no executable proof floor (requiredProofFloor='none'), so ` +
+          `${criterion} is not applicable to it: the criterion can only be satisfied by ledger- or ` +
+          `repo-backed executable proof that non-code work cannot produce. Rated 'unknown' before the ` +
+          `exemption was applied — ${current.evidence}`,
+      };
+    }
+  }
 
   // A DISCLOSURE IS NOT A MITIGATION. Before this criterion existed, an author
   // could record a known hole in the proof on the binding and still collect a

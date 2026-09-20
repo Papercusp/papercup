@@ -1710,6 +1710,162 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
   });
 });
 
+// EI-23793489732627099 — the non-code exemption used to reach ONLY plan-class-risk-floor.
+//
+// How this survived is worth recording, because the guard that should have caught it
+// existed and passed: 'does not assign an executable proof floor to the canonical
+// non-code task kind' asserts `requiredProofFloor === 'none'` and the single
+// plan-class-risk-floor rating, then stops. That is exactly the half that WORKED. The
+// promise a reader takes from its name — that non-code work is not blocked by executable
+// proof — was never asserted, and the verdict it implies was 'unknown' the whole time.
+// So these tests assert the END-TO-END verdict, which is the thing that was actually
+// broken and the only assertion that could have failed.
+describe('non-code clauses can reach an all-pass verdict (EI-23793489732627099)', () => {
+  /** The most complete binding NON-CODE work can honestly produce: no ledger run, no coverage row. */
+  function operationalEvidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForAdequacy {
+    return evidence({
+      evidenceKind: 'operational',
+      evidenceRef: 'work-item:WI-10002010',
+      coverageEvidenceRef: null,
+      testRunId: null,
+      fingerprints: {
+        sourceFingerprint: 'git:abc',
+        testFingerprint: null,
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      details: {
+        adequacy: {
+          fixtureCalibrated: true,
+          falsifiable: true,
+          pathReachable: true,
+          oracleIndependent: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'passed',
+          targeted: true,
+        },
+      },
+      ...over,
+    });
+  }
+
+  /** A clause describing non-code work: no required test layer, not automatable. */
+  const nonCodeClause = clause({
+    behavior: 'Every deferred filing reaches a recorded disposition.',
+    behaviorClass: 'non-automated',
+    requiredTestLayers: [],
+    requiredEvidence: ['recorded disposition'],
+  });
+
+  it('reaches verdict pass with honest operational evidence and nothing ledger-backed', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: nonCodeClause,
+      evidence: [operationalEvidence()],
+      classRef: 'plan-class-bugfix',
+      workItemKind: 'task',
+    });
+
+    expect(result.requiredProofFloor).toBe('none');
+    // The assertion the original guard was missing.
+    expect(result.verdict).toBe('pass');
+    expect(result.wouldBlock).toEqual([]);
+    expect(result.ratings.falsifiability.rating).toBe('not-applicable');
+    expect(result.ratings['execution-integrity'].rating).toBe('not-applicable');
+    // The exemption must SAY it applied, so a reader is never left guessing why a
+    // criterion that normally demands a ledger row came back clean.
+    expect(result.ratings.falsifiability.evidence).toContain("requiredProofFloor='none'");
+  });
+
+  // The safety boundary, and the reason this is scoped to 'unknown' alone. 'unknown'
+  // means the criterion could not be ESTABLISHED, which for non-code work is structural.
+  // 'fail' means bound evidence positively reports something bad — that is real
+  // information about real evidence, and no exemption may grade it away.
+  it('still blocks when bound evidence positively reports failure, exemption or not', () => {
+    const contradicted = operationalEvidence({
+      details: {
+        adequacy: {
+          fixtureCalibrated: true,
+          falsifiable: false,
+          pathReachable: true,
+          oracleIndependent: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'passed',
+          targeted: true,
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: nonCodeClause,
+      evidence: [contradicted],
+      classRef: 'plan-class-bugfix',
+      workItemKind: 'task',
+    });
+
+    expect(result.requiredProofFloor).toBe('none');
+    expect(result.ratings.falsifiability.rating).toBe('fail');
+    expect(result.wouldBlock).toContain('falsifiability');
+    expect(result.verdict).toBe('fail');
+  });
+
+  it('still blocks a stale binding, which is a fail rather than an unestablished unknown', () => {
+    const stale = operationalEvidence({
+      currentness: {
+        comparisonSupplied: true,
+        provenance: 'server-measured',
+        overall: 'stale',
+        dimensions: {
+          spec: 'current',
+          source: 'stale',
+          test: 'current',
+          fixture: 'current',
+          rubric: 'current',
+          environment: 'current',
+          coverageEvidence: 'current',
+          testRun: 'current',
+        },
+        staleReasons: ['source moved since observation'],
+        unknownReasons: [],
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: nonCodeClause,
+      evidence: [stale],
+      classRef: 'plan-class-bugfix',
+      workItemKind: 'task',
+    });
+
+    expect(result.requiredProofFloor).toBe('none');
+    expect(result.ratings.freshness.rating).toBe('fail');
+    expect(result.wouldBlock).toContain('freshness');
+  });
+
+  // NEGATIVE CONTROL. Without this, every assertion above is satisfiable by an
+  // evaluator that simply stopped grading executable proof for everyone — which would
+  // be a far worse bug than the one being fixed, and would look identical from the
+  // passing tests alone.
+  it('does NOT exempt code work: an executable floor still demands ledger-backed proof', () => {
+    const codeClause = clause({ behaviorClass: 'happy-path', requiredTestLayers: ['integration'] });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: codeClause,
+      evidence: [operationalEvidence()],
+      classRef: 'plan-class-feature-ship',
+      workItemKind: 'change',
+    });
+
+    expect(result.requiredProofFloor).not.toBe('none');
+    expect(result.ratings['execution-integrity'].rating).not.toBe('not-applicable');
+    expect(result.verdict).not.toBe('pass');
+  });
+});
+
 // EI-23499682118230306 recurrence guard — the SAME drift class as EI-13292, one pair up.
 // `ADEQUACY_CRITERIA` (what the evaluator RATES) and rubrics/spec-test-adequacy/rubric.json
 // (what the rubric DECLARES) are two copies of one list, and they silently diverged: the
