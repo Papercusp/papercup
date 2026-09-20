@@ -152,6 +152,31 @@ describe('routines:list', () => {
       missed_intervals: 3,
       raw_last_status: 'synced',
       in_flight: null,
+      // WI-10002019 — kept EXHAUSTIVE on purpose: this is the one assertion that pins the
+      // whole returned contract, so a field added or renamed here has to be declared
+      // rather than silently absorbed by a toMatchObject.
+      scheduler: {
+        status: 'not-firing',
+        last_completed_at: '2026-08-27T17:50:00.000Z',
+        age_ms: 10 * 60_000,
+        cadence_ms: 3 * 60_000,
+        stale_after_ms: 9 * 60_000,
+        missed_intervals: 3,
+        stalled_behind_in_flight_fire: false,
+      },
+      execution: {
+        status: 'unknown',
+        phase: null,
+        started_at: null,
+        age_ms: null,
+        last_progress_at: null,
+        progress_age_ms: null,
+        holds_exclusive_locks: [],
+        locks_reported: false,
+      },
+      safe_to_restart: false,
+      safe_to_restart_reason:
+        'This row carries no git_sync_activity marker, so whether a fire is in flight is UNMEASURED — reported unsafe by default, because a wrong "safe" destroys in-flight work irrecoverably while a wrong "unsafe" only declines a restart.',
       warning:
         'No completed git-sync outcome for more than 3 scheduled intervals; the raw last_status may describe an older successful tick.',
     });
@@ -389,6 +414,45 @@ describe('routines:list', () => {
         execution: { status: 'in-flight' },
         safe_to_restart: false,
       });
+    });
+
+    // PERMANENT NEGATIVE CONTROL — tier-2 falsifiability, no tree mutation and so no
+    // sweep race. It models the PRE-FIX READER, who had only the composed scalar and
+    // read 'degraded' as "this routine is stalled, restart it". Kept in the file for
+    // good: if anyone re-derives safe_to_restart from `status` (or from the scheduler
+    // leg), the control and the real subject converge and this test goes red. The
+    // calibration is built in — the control must produce the SAME verdict on both rows,
+    // which is what proves it is faithful rather than trivially always-true.
+    it('CONTROL: the composed scalar cannot tell a live fire from a stalled scheduler; the execution leg can', () => {
+      cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+      const preFixReaderWouldRestart = (verdict: Record<string, unknown>): boolean =>
+        verdict.status === 'degraded';
+
+      const liveFire = deriveGitSyncFreshness(
+        {
+          ...staleClock,
+          git_sync_activity: { active: true, started_at: NOW - 5 * 60_000, updated_at: NOW - 30_000 },
+        },
+        '0 */3 * * * *',
+        true,
+        NOW,
+      );
+      const stalledScheduler = deriveGitSyncFreshness(
+        { ...staleClock, git_sync_activity: { active: false, completed_at: NOW - 30 * 60_000 } },
+        '0 */3 * * * *',
+        true,
+        NOW,
+      );
+
+      // The defect, reproduced: one verdict, both rows, and on the first row it is the
+      // action that drops the exclusive lock mid-write.
+      expect(preFixReaderWouldRestart(liveFire)).toBe(true);
+      expect(preFixReaderWouldRestart(stalledScheduler)).toBe(true);
+      expect(liveFire.status).toBe(stalledScheduler.status);
+
+      // The fix: the rows separate, and it is the destructive one that is refused.
+      expect(liveFire.safe_to_restart).toBe(false);
+      expect(stalledScheduler.safe_to_restart).toBe(true);
     });
   });
 
