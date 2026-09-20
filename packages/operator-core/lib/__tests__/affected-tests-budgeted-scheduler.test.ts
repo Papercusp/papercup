@@ -604,6 +604,160 @@ describe('resolveWorkerMemoryMb', () => {
       }),
     ).toBe(8192);
   });
+
+  // WI-10002092, a RECURRENCE of EI-23242580927683488 (closed as a stale-runtime report with no
+  // source edit; reproduced six days later with byte-identical numbers). `--max-old-space-size` is
+  // a heap CEILING, not a reservation. The bare `Math.max` above read an agent shell's ambient
+  // 128 GiB ceiling as a 128 GiB-per-worker DEMAND, so `resolveMemoryBudgetMb` refused before
+  // launch inside every ~6 GiB agent task cgroup and `test:affected` ran ZERO tasks.
+  describe('an inherited heap ceiling is not a per-worker reservation (WI-10002092)', () => {
+    // The exact reproduction: TASK_BUDGET_REFUSAL kind=memory limit=6144 reserve=1536 required=131072.
+    const AGENT_NODE_OPTIONS = '--max-old-space-size=131072 --expose-gc';
+    const AGENT_CGROUP_MB = 6144;
+    const AGENT_CGROUP_BUDGET_MB = 4608; // floor(6144 * (1 - MEMORY_RESERVE_FRACTION))
+
+    it('disregards a ceiling the task cgroup could never pay for, leaving the estimate to size the token', () => {
+      expect(
+        resolveWorkerMemoryMb({
+          nodeOptions: AGENT_NODE_OPTIONS,
+          fallback: 1024,
+          taskCgroupMemoryMaxMb: AGENT_CGROUP_MB,
+        }),
+      ).toBe(1024);
+    });
+
+    it('announces each disregarded candidate rather than silently changing admitted concurrency', () => {
+      const notices: string[] = [];
+      resolveWorkerMemoryMb({
+        nodeOptions: AGENT_NODE_OPTIONS,
+        fallback: 1024,
+        taskCgroupMemoryMaxMb: AGENT_CGROUP_MB,
+        onNotice: (line) => notices.push(line),
+      });
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain('131072MB');
+      expect(notices[0]).toContain(`${AGENT_CGROUP_BUDGET_MB}MB`);
+      expect(notices[0]).toContain('not a per-worker reservation');
+    });
+
+    it('keeps an explicit AFFECTED_WORKER_MEMORY_MB authoritative when the ambient ceiling is disregarded', () => {
+      expect(
+        resolveWorkerMemoryMb({
+          affectedWorkerMemoryMb: '2048',
+          nodeOptions: AGENT_NODE_OPTIONS,
+          fallback: 1024,
+          taskCgroupMemoryMaxMb: AGENT_CGROUP_MB,
+        }),
+      ).toBe(2048);
+    });
+
+    // The property the pre-fix docstring defended, now asserted WITH an envelope in play: a
+    // deliberate sizing that fits is still credible and must still raise the token.
+    it('credits a ceiling that fits the envelope, so the gate 4 GiB fork pin still raises the token', () => {
+      expect(
+        resolveWorkerMemoryMb({
+          nodeOptions: '--expose-gc --max-old-space-size=4096',
+          fallback: 1024,
+          taskCgroupMemoryMaxMb: AGENT_CGROUP_MB,
+        }),
+      ).toBe(4096);
+    });
+
+    it('draws the credibility line at exactly what one task can pay for', () => {
+      expect(
+        resolveWorkerMemoryMb({
+          nodeOptions: `--max-old-space-size=${AGENT_CGROUP_BUDGET_MB}`,
+          fallback: 1024,
+          taskCgroupMemoryMaxMb: AGENT_CGROUP_MB,
+        }),
+      ).toBe(AGENT_CGROUP_BUDGET_MB);
+      expect(
+        resolveWorkerMemoryMb({
+          nodeOptions: `--max-old-space-size=${AGENT_CGROUP_BUDGET_MB + 1}`,
+          fallback: 1024,
+          taskCgroupMemoryMaxMb: AGENT_CGROUP_MB,
+        }),
+      ).toBe(1024);
+    });
+
+    it('leaves the prior behaviour exact when the cgroup is unbounded or unreadable', () => {
+      // readTaskCgroupMemoryMaxMb yields null for `max`/unreadable. With no envelope there is
+      // nothing to judge credibility against, so every candidate still stands.
+      for (const envelope of [undefined, null, ''] as const) {
+        expect(
+          resolveWorkerMemoryMb({
+            nodeOptions: AGENT_NODE_OPTIONS,
+            fallback: 1024,
+            taskCgroupMemoryMaxMb: envelope,
+          }),
+        ).toBe(131072);
+      }
+    });
+
+    it('validates a nonsensical reserve fraction instead of silently disarming the credibility test', () => {
+      expect(() =>
+        resolveWorkerMemoryMb({
+          nodeOptions: AGENT_NODE_OPTIONS,
+          fallback: 1024,
+          taskCgroupMemoryMaxMb: AGENT_CGROUP_MB,
+          cgroupReserveFraction: 1,
+        }),
+      ).toThrow(/cgroupReserveFraction must be in \[0, 1\)/);
+    });
+
+    // Both rails together — this pair IS the reported symptom and its boundary.
+    it('reaches a live budget for the agent-shell case instead of refusing before launch', () => {
+      const workerMemoryMb = resolveWorkerMemoryMb({
+        nodeOptions: AGENT_NODE_OPTIONS,
+        fallback: 1024,
+        taskCgroupMemoryMaxMb: AGENT_CGROUP_MB,
+      });
+      const budgetMb = resolveMemoryBudgetMb({
+        memAvailableMb: 200_000,
+        taskCgroupMemoryMaxMb: AGENT_CGROUP_MB,
+        workerBudget: 4,
+        workerMemoryMb,
+      });
+      expect(budgetMb).toBe(4096);
+      expect(Math.floor(budgetMb / workerMemoryMb)).toBe(4);
+    });
+
+    it('still refuses when the cgroup cannot pay for even one ESTIMATED worker', () => {
+      // The refusal is not removed — only stopped from firing on a number that was never a
+      // requirement. A genuinely too-small cgroup is exactly what it was built to catch.
+      const workerMemoryMb = resolveWorkerMemoryMb({
+        nodeOptions: AGENT_NODE_OPTIONS,
+        fallback: 1024,
+        taskCgroupMemoryMaxMb: 1024,
+      });
+      expect(workerMemoryMb).toBe(1024);
+      expect(() =>
+        resolveMemoryBudgetMb({
+          memAvailableMb: 200_000,
+          taskCgroupMemoryMaxMb: 1024,
+          workerBudget: 4,
+          workerMemoryMb,
+        }),
+      ).toThrow(/refusing before launch/);
+    });
+
+    it('wires the envelope into the real call site, read BEFORE the token is sized', () => {
+      const tokenAt = AFFECTED_TESTS_SRC.indexOf(
+        'const SCHEDULER_WORKER_MEMORY_MB = resolveWorkerMemoryMb({',
+      );
+      const envelopeAt = AFFECTED_TESTS_SRC.indexOf(
+        'const TASK_CGROUP_MEMORY_MAX_MB = readTaskCgroupMemoryMaxMb()',
+      );
+      expect(tokenAt).toBeGreaterThan(-1);
+      expect(envelopeAt).toBeGreaterThan(-1);
+      // Move the read back below the token and the credibility test is disarmed at the one call
+      // site that actually suffers the bug, while every unit case above still passes.
+      expect(envelopeAt).toBeLessThan(tokenAt);
+      const call = AFFECTED_TESTS_SRC.slice(tokenAt, tokenAt + 900);
+      expect(call).toContain('taskCgroupMemoryMaxMb: TASK_CGROUP_MEMORY_MAX_MB');
+      expect(call).toContain('onNotice:');
+    });
+  });
 });
 
 describe('resolveMemoryBudgetMb', () => {

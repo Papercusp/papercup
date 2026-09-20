@@ -393,17 +393,47 @@ export function resolveGlobalWorkerBudget({
 }
 
 /**
- * Size one scheduler memory token from the largest credible per-worker ceiling.
+ * Size one scheduler memory token from the largest CREDIBLE per-worker ceiling.
  *
  * The child inherits NODE_OPTIONS, so a V8 old-space pin is part of its possible footprint even
  * when AFFECTED_WORKER_MEMORY_MB is unset. Treat the explicit estimate and the inherited heap as
  * lower bounds rather than alternatives: an override may add native/RSS headroom, but it must not
  * make a 4 GiB heap look like a 1 GiB worker to the global admission budget.
+ *
+ * WI-10002092 (a RECURRENCE of EI-23242580927683488, which was closed as a stale-runtime report
+ * with no source edit): "credible" is the load-bearing word, and a bare `Math.max` over every
+ * inherited heap made it a lie. `--max-old-space-size` is a heap CEILING — the most V8 may grow
+ * to before it OOMs — never a reservation. Agent shells here carry an ambient
+ * `--max-old-space-size=131072` (128 GiB) for the ordinary reason anyone sets one: to avoid
+ * spurious OOMs. Read as a per-worker DEMAND it made {@link resolveMemoryBudgetMb} refuse before
+ * launch in every ~6 GiB agent task cgroup, so `test:affected` — the command CLAUDE.md prescribes
+ * after every edit — ran ZERO tasks for every agent invoking it from its own shell.
+ *
+ * The discriminator is whether the envelope could ever pay for the number. A ceiling that FITS is
+ * a credible deliberate sizing and still raises the token, so the gate's 4 GiB fork pin is
+ * honoured exactly as before. A ceiling the envelope could never satisfy is not a claim about
+ * footprint at all — no admission decision could meet it — so it carries no information and is
+ * DISREGARDED, leaving the explicit estimate (or the caller's fallback) to size the token. The
+ * honest refusal survives for the case it was actually built for: a cgroup too small to pay for
+ * even one estimated worker still throws in {@link resolveMemoryBudgetMb}.
+ *
+ * Pass `taskCgroupMemoryMaxMb` to arm the credibility test. Omit it — or pass the `null` that
+ * {@link readTaskCgroupMemoryMaxMb} returns for an unbounded/unreadable cgroup — and there is no
+ * envelope to judge against, so every heap candidate stands and the prior behaviour is exact.
+ * `cgroupReserveFraction` deliberately shares {@link MEMORY_RESERVE_FRACTION} and the reserve
+ * arithmetic with `resolveMemoryBudgetMb`: the two rails must agree on what one task can pay for,
+ * or this function credits a ceiling the admission check then refuses.
+ *
+ * Disregarding a candidate can only ever LOWER the resolved token, never widen it — the same
+ * one-directional property `resolveMemoryBudgetMb` claims for itself.
  */
 export function resolveWorkerMemoryMb({
   affectedWorkerMemoryMb,
   nodeOptions,
   fallback,
+  taskCgroupMemoryMaxMb,
+  cgroupReserveFraction = MEMORY_RESERVE_FRACTION,
+  onNotice,
 }) {
   const candidates = [positiveInteger(fallback, "fallback")];
   if (affectedWorkerMemoryMb != null && affectedWorkerMemoryMb !== "") {
@@ -411,12 +441,35 @@ export function resolveWorkerMemoryMb({
       positiveInteger(affectedWorkerMemoryMb, "AFFECTED_WORKER_MEMORY_MB"),
     );
   }
+  // Validated even when no cgroup is supplied: silently ignoring a nonsensical fraction is what
+  // lets a caller believe a credibility test is armed when it is not.
+  if (!(cgroupReserveFraction >= 0 && cgroupReserveFraction < 1)) {
+    throw new Error(
+      `cgroupReserveFraction must be in [0, 1); received ${String(cgroupReserveFraction)}`,
+    );
+  }
+  const credibleCeilingMb =
+    taskCgroupMemoryMaxMb == null || taskCgroupMemoryMaxMb === ""
+      ? null
+      : Math.floor(
+          nonNegativeInteger(taskCgroupMemoryMaxMb, "taskCgroupMemoryMaxMb") *
+            (1 - cgroupReserveFraction),
+        );
   const heapPattern =
     /(?:^|\s)--max[-_]old[-_]space[-_]size(?:=|\s+)(\d+)(?=\s|$)/g;
   for (const match of String(nodeOptions ?? "").matchAll(heapPattern)) {
-    candidates.push(
-      positiveInteger(match[1], "NODE_OPTIONS max-old-space-size"),
-    );
+    const heapMb = positiveInteger(match[1], "NODE_OPTIONS max-old-space-size");
+    if (credibleCeilingMb != null && heapMb > credibleCeilingMb) {
+      // Announced, never silent: a disregarded candidate changes the admitted concurrency, and an
+      // unexplained change there is indistinguishable from the budget rail being broken again.
+      onNotice?.(
+        `NODE_OPTIONS --max-old-space-size=${heapMb}MB exceeds the ${credibleCeilingMb}MB this ` +
+          `task cgroup can pay for (memory.max=${taskCgroupMemoryMaxMb}MB); treating it as a ` +
+          `heap ceiling, not a per-worker reservation (WI-10002092)`,
+      );
+      continue;
+    }
+    candidates.push(heapMb);
   }
   return Math.max(...candidates);
 }

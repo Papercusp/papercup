@@ -165,10 +165,19 @@ export function resolveGlobalWorkerBudget(input: {
   fallback: number | string;
 }): number;
 
+/**
+ * WI-10002092: `taskCgroupMemoryMaxMb` arms the credibility test that stops an inherited
+ * `--max-old-space-size` heap CEILING being read as a per-worker RESERVATION. Omit it (or pass
+ * the `null` an unbounded/unreadable cgroup yields) and every heap candidate stands, which is the
+ * pre-fix behaviour. `onNotice` reports each disregarded candidate.
+ */
 export function resolveWorkerMemoryMb(input: {
   affectedWorkerMemoryMb?: number | string;
   nodeOptions?: string;
   fallback: number | string;
+  taskCgroupMemoryMaxMb?: number | string | null;
+  cgroupReserveFraction?: number;
+  onNotice?: (line: string) => void;
 }): number;
 
 /**

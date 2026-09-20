@@ -379,6 +379,13 @@ export const RESOURCE_GOVERNOR_SCANNER_PATH =
   "scripts/check-resource-governor-enforcement.mjs";
 export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
   {
+    path: "scripts/check-tracked-src-entry-dist.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/check-tracked-src-entry-dist.mjs: this is a BUILD-TIME tracked-tree guard (WI-10002064 — a src-as-entry package tracking its own unreachable dist/, whose stale _bulk.js re-teaches a removed contract), not a runtime lane. Its only start is a single `execFileSync('git', args, { cwd, encoding, maxBuffer })` helper used to enumerate tracked paths; each call is synchronous, bounded by an explicit maxBuffer, awaited to completion before the next, and resolves to one captured stdout string with nothing retained between calls — so it adds no residency and no independent resident queue. Routing it through Governor.admit would be a category error: the governor admits contended RUNTIME capacity, whereas this process is a lint invoked by the release gate and by developers, and gating it would make the guard unrunnable in exactly the pressured conditions where a wrong tracked dist/ is most likely to ship. Same shape as the git-plumbing bypasses already reviewed for green-checkpoint-gen-check-self-heal.ts.",
+  },
+  {
     path: "packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
