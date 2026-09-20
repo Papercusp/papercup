@@ -667,6 +667,15 @@ async function startDbosOnce(): Promise<void> {
     // is fail-closed and a refusal would otherwise render as clean.
     const { startInstalledHookDriftWatchdog } = await import('../system-health/installed-hook-drift-watchdog');
     startInstalledHookDriftWatchdog();
+    // WI-10002060: alarm when a live session's identity activation cannot be
+    // reconciled with its launch record, which makes the kernel refuse EVERY
+    // tool. The denial is SELF-SEALING — a wedged session cannot file its own
+    // bug, because filing one is a tool call — so the finding has to be raised
+    // from outside the failure domain, which is what this sweep is for. Hourly,
+    // and fail-closed: a failed read, or a scan that matched zero rows it should
+    // have matched, escalates as NOT MEASURED rather than rendering as clean.
+    const { startWedgedIdentityActivationWatchdog } = await import('../system-health/wedged-identity-activation-watchdog');
+    startWedgedIdentityActivationWatchdog();
     // EI-21491088289861649: alarm when a search caller's query-embed p99
     // breaches THAT caller's own budget. The sibling above sees only leg
     // OUTCOMES, so a slow-but-succeeding embed (measured: 1.92s cold vs ~1ms
