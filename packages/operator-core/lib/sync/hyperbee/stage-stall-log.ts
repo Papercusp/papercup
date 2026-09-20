@@ -43,31 +43,27 @@
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { pinModuleState } from '@papercusp/module-singleton';
+import {
+  pgDiagnosticIdentity,
+  PG_DIAGNOSTIC_STAGES,
+  type PgResultDiagnosticCorrelation,
+} from '@papercusp/db-org/acquire-registry';
 
-const processIdentity = pinModuleState('operator-core.stage-stall-log.identity', () => ({
-  id: randomUUID(),
-}));
 const attemptContext = pinModuleState(
   'operator-core.stage-stall-log.context',
   () => new AsyncLocalStorage<StageAttempt>(),
 );
+const hopContext = pinModuleState('operator-core.stage-stall-log.hop-context', () =>
+  new AsyncLocalStorage<{
+    attempt: StageAttempt;
+    hopId: number;
+    stage: StageDiagnosticName;
+    boundary: StageBoundary;
+  }>(),
+);
 
 // These are source-defined operation names, never row values, SQL, or error text.
-const diagnosticStages = [
-  'scope-query',
-  'epoch-query',
-  'epoch-load',
-  'baseline-evidence',
-  'owner-check',
-  'key-provider',
-  'keychain',
-  'native-loader',
-  'serialize',
-  'native-encrypt',
-  'epoch-encrypt',
-  'hypercore-append',
-  'mark-drained',
-] as const;
+const diagnosticStages = PG_DIAGNOSTIC_STAGES;
 export type StageDiagnosticName = (typeof diagnosticStages)[number];
 type StageBoundary = 'await' | 'sync';
 type StageOutcome = 'fulfilled' | 'rejected' | 'expired' | 'abandoned';
@@ -95,6 +91,7 @@ export interface StageDiagnosticEvent extends StageAttemptContext {
 }
 
 interface StageSpan {
+  readonly hopId: number | null;
   end(outcome: 'fulfilled' | 'rejected'): void;
   stalled(thresholdMs: number): void;
 }
@@ -112,7 +109,7 @@ export interface StageAttempt {
   }>;
 }
 
-const NO_STAGE_SPAN: StageSpan = Object.freeze({ end() {}, stalled() {} });
+const NO_STAGE_SPAN: StageSpan = Object.freeze({ hopId: null, end() {}, stalled() {} });
 const MAX_ACTIVE_HOPS = 64;
 
 /** Local, opt-in observation only. No operation/envelope is retained or modified.
@@ -126,11 +123,9 @@ export function createStageAttempt(options: {
   enabled?: boolean;
   maxAgeMs?: number;
 }): StageAttempt {
-  const buildSha = process.env.PAPERCUSP_BUILD_SHA ?? '';
   const rowId = String(options.rowId);
   const context: StageAttemptContext = Object.freeze({
-    processInstanceId: processIdentity.id,
-    buildSha: /^[a-f0-9]{7,64}$/i.test(buildSha) ? buildSha : null,
+    ...pgDiagnosticIdentity(),
     rowId: /^\d{1,30}$/.test(rowId) ? rowId : null,
     attemptId: randomUUID(),
   });
@@ -220,6 +215,7 @@ export function createStageAttempt(options: {
       active.set(hopId, hop);
       emit('hop-start', hopId, stage, boundary, null, hop.startedAt);
       return {
+        hopId,
         end(outcome) {
           if (status !== 'active' || !active.delete(hopId)) return;
           emit('hop-end', hopId, stage, boundary, outcome, hop.startedAt);
@@ -259,11 +255,31 @@ export function currentStageAttempt(): StageAttempt | undefined {
   return attemptContext.getStore();
 }
 
+/** Never guess a hop from a shared active-hop list: parallel branches overlap. */
+export function currentStageDiagnosticContext(): PgResultDiagnosticCorrelation | null {
+  const attempt = currentStageAttempt();
+  if (!attempt) return null;
+  const snapshot = attempt.snapshot();
+  if (snapshot.status !== 'active') return null;
+  const hop = hopContext.getStore();
+  const observed = hop?.attempt === attempt &&
+    snapshot.activeHops.some((active) => active.hopId === hop.hopId);
+  return {
+    ...attempt.context,
+    hopId: observed ? hop.hopId : null,
+    stage: observed ? hop.stage : null,
+    boundary: observed ? hop.boundary : null,
+  };
+}
+
 /** Invoke the actual dependency only after recording its await boundary. */
 export async function traceStageAwait<T>(stage: StageDiagnosticName, run: () => PromiseLike<T>): Promise<T> {
-  const span = currentStageAttempt()?.begin(stage, 'await');
+  const attempt = currentStageAttempt();
+  const span = attempt?.begin(stage, 'await');
   try {
-    const value = await run();
+    const value = await (attempt && span?.hopId
+      ? hopContext.run({ attempt, hopId: span.hopId, stage, boundary: 'await' }, async () => await run())
+      : run());
     span?.end('fulfilled');
     return value;
   } catch (error) {
@@ -276,7 +292,9 @@ export async function traceStageAwait<T>(stage: StageDiagnosticName, run: () => 
 export function traceStageSync<T>(attempt: StageAttempt | undefined, stage: StageDiagnosticName, run: () => T): T {
   const span = attempt?.begin(stage, 'sync');
   try {
-    const value = run();
+    const value = attempt && span?.hopId
+      ? withStageAttempt(attempt, () => hopContext.run({ attempt, hopId: span.hopId!, stage, boundary: 'sync' }, run))
+      : run();
     span?.end('fulfilled');
     return value;
   } catch (error) {

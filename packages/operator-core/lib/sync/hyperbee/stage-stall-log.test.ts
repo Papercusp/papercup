@@ -10,6 +10,7 @@
  * still resolves normally after logging).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { setBuildStampResolver, resetBuildStampResolver } from '../../../../../libs/papercusp/libs/db/src/build-stamp';
 import {
   createStageAttempt,
   logIfStageStalls,
@@ -24,6 +25,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.useRealTimers();
+  resetBuildStampResolver();
 });
 
 describe('logIfStageStalls — named-hop pipeline observability (P-012)', () => {
@@ -273,6 +275,8 @@ describe('logIfStageStalls — named-hop pipeline observability (P-012)', () => 
     expect(attempt.snapshot().activeHops).toEqual([]);
     attempt.finish();
     vi.stubEnv('PAPERCUSP_BUILD_SHA', 'aabbccddee11');
+    expect(createStageAttempt({ rowId: 1 }).context.buildSha).toBeNull();
+    setBuildStampResolver(() => 'aabbccddee11');
     expect(createStageAttempt({ rowId: 1 }).context.buildSha).toBe('aabbccddee11');
   });
 
