@@ -167,6 +167,7 @@ function portfolio(worklist: GoalPortfolioBrief['worklist'], degradedReasons: st
     budget: {
       budgetCents: 10_000,
       spentCents: 2_500,
+      unmeasuredPricedSpend: false,
       spentCentsAt: '2026-09-05T19:55:00.000Z',
       spentCentsSource: 'goal-pots-rollup',
       budgetWindowSec: null,
@@ -190,6 +191,7 @@ function launch(overrides: Partial<GoalLaunchResolution> = {}): GoalLaunchResolu
     budget: {
       budgetCents: 10_000,
       spentCents: 2_500,
+      unmeasuredPricedSpend: false,
       spentCentsAt: '2026-09-05T19:55:00.000Z',
       spentCentsSource: 'goal-pots-rollup',
     },
@@ -398,6 +400,7 @@ describe('plan placement preserves canonical launch evidence', () => {
             budget: {
               budgetCents: 10_000,
               spentCents: null,
+              unmeasuredPricedSpend: false,
               spentCentsAt: null,
               spentCentsSource: null,
             },

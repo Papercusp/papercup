@@ -1160,6 +1160,7 @@ const GOAL_PORTFOLIO: GoalPortfolioBrief = {
   budget: {
     budgetCents: null,
     spentCents: null,
+    unmeasuredPricedSpend: false,
     spentCentsAt: null,
     spentCentsSource: null,
     budgetWindowSec: null,

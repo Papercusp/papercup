@@ -58,7 +58,13 @@ export function s33PlacementInput(c: S33Case, effected = false): PlanPlacementPr
   const launch: GoalLaunchResolution = {
     goalId: GOAL, settings: null, goalBrief: null, effective: { carry: 'warm' },
     ceilings: { maxAgents: 10, maxPerFleet: 5 }, headcount: { total: 1, fleet: 0 },
-    budget: { budgetCents: 10000, spentCents: 100, spentCentsAt: NOW, spentCentsSource: 'goal-pots-rollup' },
+    budget: {
+      budgetCents: 10000,
+      spentCents: 100,
+      unmeasuredPricedSpend: false,
+      spentCentsAt: NOW,
+      spentCentsSource: 'goal-pots-rollup',
+    },
     refusal: null, degraded: false, degradedReasons: [],
   };
   const portfolio: GoalPortfolioBrief = {

@@ -77,6 +77,8 @@ import {
   goalHolderPolicyProblem,
   resolveGoalHolderPolicy,
   GOAL_HOLDER_ON_LOSS,
+  REFUSAL_SCOPES,
+  hasUnmeasuredPricedSpend,
   type GoalLaunchSettings,
 } from './goal-launch-settings';
 import { GOAL_KICKOFF_REQUIRED_READS } from './goals/kickoff-evidence';
@@ -95,6 +97,8 @@ interface MockOpts {
     {
       budget_cents?: number | string | null;
       spent_cents?: unknown;
+      /** WI-10002052: the diagnostic breakdown the unmeasurable-spend gate reads. */
+      spent_cents_breakdown?: unknown;
       spent_cents_at?: string | null;
       spent_cents_source?: string | null;
     }
@@ -196,6 +200,7 @@ function mockSql(opts: MockOpts = {}): Sql {
           launch_settings: opts.settings?.[goalId] ?? null,
           budget_cents: b?.budget_cents ?? null,
           spent_cents: b?.spent_cents ?? null,
+          spent_cents_breakdown: b?.spent_cents_breakdown ?? null,
           spent_cents_at: b?.spent_cents_at ?? null,
           spent_cents_source: b?.spent_cents_source ?? null,
         },
@@ -699,7 +704,15 @@ describe('readGoalLaunchSettings', () => {
       // declared resolves an all-null truth, not an absent one.
       // P-004: the provenance marker rides along with the cents so the ceiling
       // refusal can name the population its number measured.
-      budget: { budgetCents: null, spentCents: null, spentCentsAt: null, spentCentsSource: null },
+      budget: {
+        budgetCents: null,
+        spentCents: null,
+        // WI-10002052: nothing declared and nothing ticked — no unmeasured spend
+        // to flag, which is what keeps this goal on the fail-open path.
+        unmeasuredPricedSpend: false,
+        spentCentsAt: null,
+        spentCentsSource: null,
+      },
       brief: {
         title: 'Goal g1',
         body: null,
@@ -1074,6 +1087,8 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     budget: {
       budgetCents: 5_000,
       spentCents: 1_250,
+      // Measured, so nothing unmeasured to flag (WI-10002052).
+      unmeasuredPricedSpend: false,
       spentCentsAt: '2026-08-28T02:00:00Z',
       // The ordinary case: a rollup-written figure, so it carries the marker.
       spentCentsSource: 'goal-pots-rollup',
@@ -1820,6 +1835,8 @@ describe('P-006: the budget launch gate', () => {
     budget: {
       budget_cents?: number | string | null;
       spent_cents?: unknown;
+      /** WI-10002052: the diagnostic breakdown the unmeasurable-spend gate reads. */
+      spent_cents_breakdown?: unknown;
       spent_cents_at?: string | null;
       spent_cents_source?: string | null;
     },
@@ -1880,6 +1897,9 @@ describe('P-006: the budget launch gate', () => {
     expect(r.budget).toEqual({
       budgetCents: 5000,
       spentCents: 4999,
+      // WI-10002052: the pot leg MEASURED, so the unmeasured-spend signal is
+      // false by construction and cannot soften this measured reading.
+      unmeasuredPricedSpend: false,
       spentCentsAt: null,
       spentCentsSource: 'goal-pots-rollup',
     });
@@ -1895,6 +1915,97 @@ describe('P-006: the budget launch gate', () => {
     });
     expect(r.refusal?.reason).toBe('goal_budget_exceeded');
     expect(r.refusal?.limit).toBe(7000);
+  });
+
+  // ── WI-10002052 / plan decision D-004: an unmeasurable ceiling must not fail OPEN ──
+  //
+  // `spentCents: null` carries TWO populations that used to share one fail-open
+  // branch: a goal never ticked (harmless — nothing is being let past a ceiling),
+  // and a POT-LESS goal whose spend is real but invisible to goalSpend()'s INNER
+  // JOIN on goal_pots. For the second, failing open means the ceiling never binds
+  // once, ever. These tests pin the split.
+  //
+  // Shape mirrors a real pot-less goal measured on 2026-09-20: priced, goal-tagged
+  // session spend with no pot leg to measure it.
+  const PRICED_BUT_UNMEASURED = { sessionCents: 42042, sessionSamples: 193 };
+
+  it('REFUSES a pot-less goal whose priced spend the pot leg could not measure', async () => {
+    const r = await launchWithBudget({
+      budget_cents: 50000,
+      spent_cents: null,
+      spent_cents_breakdown: PRICED_BUT_UNMEASURED,
+    });
+    expect(r.refusal).not.toBeNull();
+    expect(r.refusal!.reason).toBe('goal_budget_unmeasurable');
+    expect(r.refusal!.limit).toBe(50000);
+    // The point of the whole change: it refuses WITHOUT asserting a spend figure.
+    expect(r.refusal!.current).toBeNull();
+    expect(r.refusal!.currentScope).toBe(REFUSAL_SCOPES.BUDGET_UNMEASURABLE);
+    // Refused, not "reported unenforced and admitted anyway".
+    expect(r.degraded).toBe(false);
+  });
+
+  it('does not leak the diagnostic session cents into the refusal (D-004 clause 3)', async () => {
+    const r = await launchWithBudget({
+      budget_cents: 50000,
+      spent_cents: null,
+      spent_cents_breakdown: PRICED_BUT_UNMEASURED,
+    });
+    // 42042 is the SESSION leg, which its writer marks diagnostic-only and
+    // forbids as a terminal-control input. Its appearance anywhere in the
+    // refusal would mean the gate had started controlling on it.
+    expect(r.refusal!.message).not.toContain('42042');
+    expect(r.refusal!.current).toBeNull();
+  });
+
+  it('forecloses the forbidden mitigation instead of inviting it (D-004 clause 2)', async () => {
+    const r = await launchWithBudget({
+      budget_cents: 50000,
+      spent_cents: null,
+      spent_cents_breakdown: PRICED_BUT_UNMEASURED,
+    });
+    // "No pots" reads as "attach a pot" to anyone acting on this refusal, and
+    // that fabricates measurability rather than repairing anything.
+    expect(r.refusal!.message).toContain('Do NOT attach a pot');
+  });
+
+  it('PRESERVES fail-open for a goal that has simply never been ticked', async () => {
+    // The other population, unchanged: no breakdown, no evidence of spend.
+    const r = await launchWithBudget({ budget_cents: 50000, spent_cents: null });
+    expect(r.refusal).toBeNull();
+    expect(r.degraded).toBe(true);
+  });
+
+  it('opens a distinctly-deduped owner escalation, so the refusal is never silent', async () => {
+    await launchWithBudget({
+      budget_cents: 50000,
+      spent_cents: null,
+      spent_cents_breakdown: PRICED_BUT_UNMEASURED,
+    });
+    await vi.waitFor(() => expect(escalated.calls.length).toBe(1));
+    const call = escalated.calls[0]!;
+    expect(String(call.summary)).toContain('UNMEASURABLE');
+    // A separate dedup kind from 'goal-budget-exceeded': different problem,
+    // different levers. Sharing one card would let the first hide the second.
+    expect((call.meta as Record<string, unknown>).dedupKind).toBe('goal-budget-unmeasurable');
+  });
+
+  it('CONTROL (falsifiability): a MEASURED pot leg suppresses the signal entirely', () => {
+    // This is what makes the change strictly additive: the signal can only ever
+    // ADD a refusal where the gate previously failed open, never soften or
+    // override a measured one. A mutant that dropped the spentCents guard would
+    // fail here while every other test above still passed.
+    expect(hasUnmeasuredPricedSpend(PRICED_BUT_UNMEASURED, 4999)).toBe(false);
+    expect(hasUnmeasuredPricedSpend(PRICED_BUT_UNMEASURED, 0)).toBe(false);
+    expect(hasUnmeasuredPricedSpend(PRICED_BUT_UNMEASURED, null)).toBe(true);
+  });
+
+  it('requires BOTH priced cents and samples — neither alone is evidence of spend', () => {
+    expect(hasUnmeasuredPricedSpend({ sessionCents: 0, sessionSamples: 193 }, null)).toBe(false);
+    expect(hasUnmeasuredPricedSpend({ sessionCents: 42042, sessionSamples: 0 }, null)).toBe(false);
+    expect(hasUnmeasuredPricedSpend(null, null)).toBe(false);
+    expect(hasUnmeasuredPricedSpend('not-an-object', null)).toBe(false);
+    expect(hasUnmeasuredPricedSpend([], null)).toBe(false);
   });
 
   it('D-003: a declared budget with NO snapshot degrades — never guesses, never refuses', async () => {
@@ -1936,6 +2047,9 @@ describe('P-006: the budget launch gate', () => {
     expect(r.budget).toEqual({
       budgetCents: null,
       spentCents: 9999,
+      // WI-10002052: measured, so no unmeasured spend to flag — and with no
+      // ceiling declared the gate has nothing to enforce either way.
+      unmeasuredPricedSpend: false,
       spentCentsAt: null,
       spentCentsSource: null,
     });

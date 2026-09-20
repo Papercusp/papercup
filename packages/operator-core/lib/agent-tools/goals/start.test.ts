@@ -592,6 +592,7 @@ describe('the kickoff brief', () => {
     budget: {
       budgetCents: null,
       spentCents: null,
+      unmeasuredPricedSpend: false,
       spentCentsAt: null,
       spentCentsSource: null,
       budgetWindowSec: null,

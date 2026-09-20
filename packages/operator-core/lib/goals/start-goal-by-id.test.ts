@@ -162,6 +162,7 @@ function portfolioBrief(): GoalPortfolioBrief {
     budget: {
       budgetCents: 80000,
       spentCents: 0,
+      unmeasuredPricedSpend: false,
       spentCentsAt: null,
       spentCentsSource: null,
       budgetWindowSec: null,

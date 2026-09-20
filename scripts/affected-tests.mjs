@@ -1710,10 +1710,21 @@ const NON_WORKSPACE_PATH_ROUTES = [
 //
 // Adding one is a deliberate act: the cost is paid by every agent on every edit,
 // so it is only worth it for an invariant that is genuinely repo-wide AND whose
-// violation is expensive to discover late. Two existing repo-wide invariants do
-// NOT belong here because they already have repo-root lint legs of their own
-// (lint:no-raw-setinterval, lint:no-unenrolled-spawn) — that contrast is the
-// argument for this list, not against it.
+// violation is expensive to discover late. lint:no-raw-setinterval does NOT belong
+// here because it genuinely has a blocking leg of its own (8 references in
+// apps/operator/lib/release/green-checkpoint.ts, and it passes today) — that
+// contrast is the argument for this list, not against it.
+//
+// ⚠ CORRECTED 2026-09-20 (WI-10002061): this sentence used to make the SAME claim
+// for lint:no-unenrolled-spawn. That half was FALSE, and it survived review because
+// the claim is true of the guard named beside it. Measured: no-unenrolled-spawn has
+// an npm script but ZERO references in green-checkpoint.ts, so no blocking path runs
+// its TREE SCAN — it exits 1 on two real offenders right now. It nevertheless reads
+// as covered, because check-lint-guard-reachability.mjs credits the `test` category
+// from no-unenrolled-spawn-guard.test.ts, which exercises only the PREDICATE against
+// synthetic fixtures and never enumerates tracked files. Do NOT add it to this list
+// while it is RED: resolve the offenders first, or the entry lands a new red leg for
+// every agent on every edit.
 // MIRRORS `SOURCE_ROOTS` / `SCHEMA_FILE_REL` in scripts/check-partial-index-alignment.mjs.
 // Deliberately COPIED rather than imported: this router is the entry point for every
 // agent's test loop, and the guard mechanism above is documented to fail OPEN — a static
