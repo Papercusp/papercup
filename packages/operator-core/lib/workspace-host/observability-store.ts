@@ -1052,8 +1052,26 @@ export async function recordWorkspaceHostObservation(
       control?.controllerAuthority,
     );
     await tx`
-      UPDATE harness_shared.workspace_hosts
-      SET observed_state = ${observation.state},
+      UPDATE harness_shared.workspace_hosts AS host
+      SET desired_state = CASE
+            -- Older provision/restore writers stored the transitional observed state as
+            -- intent. Repair only through that still-current operation, never by copying
+            -- the observed state (a stopped VM still has running provision intent).
+            WHEN host.desired_state = 'provisioning' AND EXISTS (
+              SELECT 1 FROM harness_shared.workspace_host_operations AS operation
+              WHERE operation.workspace_id = host.workspace_id
+                AND operation.host_id = host.id
+                AND operation.id = ${control?.operationId ?? null}
+                AND operation.action IN ('provision', 'restore')
+                AND operation.desired_revision = host.desired_revision
+                AND operation.controller_id = ${control?.controllerAuthority.controllerId ?? null}
+                AND operation.controller_fence = ${control?.controllerAuthority.fence ?? null}
+                AND operation.controller_id = host.controller_id
+                AND operation.controller_fence = host.controller_fence
+            ) THEN 'running'
+            ELSE host.desired_state
+          END,
+          observed_state = ${observation.state},
           observed_at = ${observation.observedAt},
           version_drift = ${tx.json(json(observation.drift) as never)},
           observed_revision = CASE
@@ -1071,6 +1089,7 @@ export async function recordWorkspaceHostObservation(
       WHERE workspace_id = ${workspaceId} AND id = ${observation.host.hostId}
     `;
   });
+  await pushControl();
 }
 
 export async function recordWorkspaceHostHealth(

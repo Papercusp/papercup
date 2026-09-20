@@ -296,6 +296,111 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
     expect(host).toEqual({ desired_revision: 2, observed_revision: 2 });
   });
 
+  it.each([
+    ['provision', 'running'],
+    ['provision', 'stopped'],
+    ['restore', 'running'],
+    ['restore', 'stopped'],
+  ] as const)('repairs legacy provisioning intent through a current %s observation of %s', async (action, state) => {
+    const workspaceId = freshWorkspace();
+    const connectionId = await seedConnection(workspaceId);
+    const hostId = 'host-legacy-intent';
+    const authority = { controllerId: 'controller-a', fence: 1 };
+    await upsertWorkspaceHost({
+      ...hostInput(workspaceId, connectionId, hostId),
+      desiredState: 'provisioning',
+      observedState: 'provisioning',
+      controllerAuthority: authority,
+    });
+    await beginWorkspaceHostOperation({
+      workspaceId, hostId, operationId: 'operation-legacy', action,
+      ...(action === 'provision' ? { desiredRevision: 1 } : {}),
+      controllerAuthority: authority,
+    });
+    const observation = {
+      host: { hostId, target: 'gcp' as const, resources: [] },
+      state, resources: [], observedAt: '2026-09-20T00:00:00.000Z', drift: [],
+    };
+    const control = { operationId: 'operation-legacy', controllerAuthority: authority };
+    await recordWorkspaceHostObservation(workspaceId, observation, control);
+    // Re-observation is idempotent; it must not invent a new desired revision.
+    await recordWorkspaceHostObservation(workspaceId, observation, control);
+    const rows = await db.adminSql`
+      SELECT desired_state, observed_state, desired_revision, observed_revision
+      FROM harness_shared.workspace_hosts WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+    `;
+    const revision = action === 'provision' ? 1 : 2;
+    expect(rows[0]).toEqual({
+      desired_state: 'running', observed_state: state,
+      desired_revision: revision, observed_revision: revision,
+    });
+  });
+
+  it.each([false, true])('does not infer desired intent from an observation without provisioning authority (controlled=%s)', async (controlled) => {
+    const workspaceId = freshWorkspace();
+    const connectionId = await seedConnection(workspaceId);
+    const hostId = 'host-no-provision-authority';
+    const authority = { controllerId: 'controller-a', fence: 1 };
+    await upsertWorkspaceHost({
+      ...hostInput(workspaceId, connectionId, hostId),
+      desiredState: 'provisioning', controllerAuthority: authority,
+    });
+    await beginWorkspaceHostOperation({
+      workspaceId, hostId, operationId: 'operation-restart', action: 'restart',
+      controllerAuthority: authority,
+    });
+    await recordWorkspaceHostObservation(workspaceId, {
+      host: { hostId, target: 'gcp', resources: [] },
+      state: 'running', resources: [], observedAt: '2026-09-20T00:00:00.000Z', drift: [],
+    }, controlled ? { operationId: 'operation-restart', controllerAuthority: authority } : undefined);
+    const rows = await db.adminSql`
+      SELECT desired_state FROM harness_shared.workspace_hosts
+      WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+    `;
+    expect(rows[0]?.desired_state).toBe('provisioning');
+  });
+
+  it('refuses stale and cross-workspace legacy repair and preserves a newer destroy intent', async () => {
+    const workspaceId = freshWorkspace();
+    const connectionId = await seedConnection(workspaceId);
+    const hostId = 'host-newer-intent';
+    const authority = { controllerId: 'controller-a', fence: 1 };
+    await upsertWorkspaceHost({
+      ...hostInput(workspaceId, connectionId, hostId),
+      desiredState: 'provisioning', controllerAuthority: authority,
+    });
+    await beginWorkspaceHostOperation({
+      workspaceId, hostId, operationId: 'operation-provision', action: 'provision',
+      desiredRevision: 1, controllerAuthority: authority,
+    });
+    const observation = {
+      host: { hostId, target: 'gcp' as const, resources: [] },
+      state: 'running' as const, resources: [], observedAt: '2026-09-20T00:00:00.000Z', drift: [],
+    };
+    const control = { operationId: 'operation-provision', controllerAuthority: authority };
+    await expect(recordWorkspaceHostObservation(freshWorkspace(), observation, control))
+      .rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+    // The SAME controller can supersede its provision operation. Fence alone is insufficient.
+    await beginWorkspaceHostOperation({
+      workspaceId, hostId, operationId: 'operation-destroy', action: 'destroy',
+      controllerAuthority: authority,
+    });
+    await updateWorkspaceHostLifecycleState({
+      workspaceId, hostId, state: 'destroying', operationId: 'operation-destroy',
+      controllerAuthority: authority,
+    });
+    await expect(recordWorkspaceHostObservation(workspaceId, observation, control))
+      .rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+    await recordWorkspaceHostObservation(workspaceId, observation, {
+      operationId: 'operation-destroy', controllerAuthority: authority,
+    });
+    const rows = await db.adminSql`
+      SELECT desired_state FROM harness_shared.workspace_hosts
+      WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+    `;
+    expect(rows[0]?.desired_state).toBe('destroying');
+  });
+
   it('persists replacement Hosts separately while preserving stable Workspace/data identity', async () => {
     const workspaceId = freshWorkspace();
     const connectionId = await seedConnection(workspaceId);

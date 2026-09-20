@@ -181,6 +181,10 @@ describe('OpenSSH ControlMaster planning', () => {
     });
     expect(command.command).toBe('ssh');
     expect(command.args).toContain('ControlMaster=yes');
+    // ControlPersist backgrounds a separate master: the process adapter would then
+    // observe a successful parent exit and lose both liveness and stop ownership.
+    expect(command.args).toContain('ControlPersist=no');
+    expect(command.args).toContain('ForkAfterAuthentication=no');
     expect(command.args).toContain('ControlPath=/tmp/papercusp-host-1.sock');
     expect(command.args).toContain('ExitOnForwardFailure=yes');
     expect(command.args).toContain('127.0.0.1:45123:127.0.0.1:3070');
@@ -236,6 +240,33 @@ describe('OpenSSH ControlMaster planning', () => {
     ).toThrow('at most 100 bytes');
   });
 
+  it('uses the controller trust store with strict host-key verification', () => {
+    const command = buildOpenSshControlMasterCommand({
+      target: 'papercusp-workspace@host-1',
+      controlPath: '/tmp/control.sock',
+      localPort: 45123,
+      knownHostsFile: '/home/alice/controller state/known_hosts',
+      hostKeyAlias: 'gcp-project-zone-host-1',
+      identityFile: '/home/alice/controller/id_ed25519',
+    });
+    expect(command.args).toContain('StrictHostKeyChecking=yes');
+    expect(command.args).toContain('UserKnownHostsFile="/home/alice/controller state/known_hosts"');
+    expect(command.args).toContain('GlobalKnownHostsFile=none');
+    expect(command.args).toContain('UpdateHostKeys=no');
+    expect(command.args).toContain('HostKeyAlias=gcp-project-zone-host-1');
+    expect(() => buildOpenSshControlMasterCommand({
+      target: 'host', controlPath: '/tmp/control.sock', localPort: 45123,
+      knownHostsFile: '/verified/known_hosts', extraArgs: ['-o', 'UserKnownHostsFile=/dev/null'],
+    })).toThrow("manager-owned OpenSSH option 'userknownhostsfile'");
+  });
+
+  it.each(['relative/known_hosts', '/tmp/known\nhosts', '/tmp/%h', '/tmp/${HOME}'])
+    ('refuses a controller trust-store path that is relative or contains expansion: %s', (knownHostsFile) => {
+      expect(() => buildOpenSshControlMasterCommand({
+        target: 'host', controlPath: '/tmp/control.sock', localPort: 45123, knownHostsFile,
+      })).toThrow(/known_hosts/);
+    });
+
   it('rejects provider arguments that can override forwarding, host identity, or the destination', () => {
     const base = { target: 'host', controlPath: '/tmp/control.sock', localPort: 45123 };
     expect(() => buildOpenSshControlMasterCommand({ ...base, extraArgs: ['-L0.0.0.0:8080:host:80'] })).toThrow(
@@ -249,6 +280,12 @@ describe('OpenSSH ControlMaster planning', () => {
     );
     expect(() => buildOpenSshControlMasterCommand({ ...base, extraArgs: ['-p2222'] })).toThrow(
       "manager-owned OpenSSH flag '-p'",
+    );
+    expect(() => buildOpenSshControlMasterCommand({ ...base, extraArgs: ['-f'] })).toThrow(
+      "manager-owned OpenSSH flag '-f'",
+    );
+    expect(() => buildOpenSshControlMasterCommand({ ...base, extraArgs: ['-oForkAfterAuthentication=yes'] })).toThrow(
+      "manager-owned OpenSSH option 'forkafterauthentication'",
     );
     expect(() => buildOpenSshControlMasterCommand({ ...base, certificateFile: '/tmp/aadcert.pub' })).toThrow(
       'requires an explicit identity file',

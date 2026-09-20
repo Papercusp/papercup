@@ -1,5 +1,6 @@
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { createServer, type AddressInfo, type Server } from 'node:net';
+import { isAbsolute } from 'node:path';
 
 import type { WorkspaceHostTransportProfile } from '@papercusp/deployment-driver';
 
@@ -13,7 +14,7 @@ const DEFAULT_STARTUP_PROBE_ATTEMPTS = 5;
 const DEFAULT_STARTUP_PROBE_DELAY_MS = 250;
 const DEFAULT_PORT_ATTEMPTS = 3;
 const MAX_OPENSSH_CONTROL_PATH_BYTES = 100;
-const MANAGER_OWNED_OPENSSH_FLAGS = ['-F', '-L', '-R', '-D', '-W', '-S', '-i', '-p'] as const;
+const MANAGER_OWNED_OPENSSH_FLAGS = ['-F', '-L', '-R', '-D', '-W', '-S', '-i', '-p', '-f'] as const;
 const MANAGER_OWNED_OPENSSH_OPTIONS = new Set([
   'batchmode',
   'certificatefile',
@@ -28,6 +29,7 @@ const MANAGER_OWNED_OPENSSH_OPTIONS = new Set([
   'forwardagent',
   'forwardx11',
   'forwardx11trusted',
+  'forkafterauthentication',
   'gatewayports',
   'globalknownhostsfile',
   'hostkeyalias',
@@ -148,12 +150,13 @@ export interface OpenSshControlMasterSpec {
   hostKeyAlias?: string;
   /** Explicit private key selected by the provider connection profile. */
   identityFile?: string;
+  /** Controller-owned, pre-enrolled trust store. Omission retains the user's OpenSSH policy. */
+  knownHostsFile?: string;
   /** Short-lived OpenSSH certificate paired with identityFile. */
   certificateFile?: string;
   controlPath: string;
   localPort: number;
   remoteOperatorPort?: number;
-  controlPersistSeconds?: number;
   connectTimeoutSeconds?: number;
   serverAliveIntervalSeconds?: number;
   serverAliveCountMax?: number;
@@ -255,7 +258,6 @@ export function buildOpenSshControlMasterCommand(spec: OpenSshControlMasterSpec)
   }
   const localPort = requirePort(spec.localPort, 'local tunnel port');
   const remotePort = requirePort(spec.remoteOperatorPort ?? DEFAULT_REMOTE_OPERATOR_PORT, 'remote operator port');
-  const controlPersist = requirePort(spec.controlPersistSeconds ?? 60, 'ControlPersist seconds');
   const connectTimeout = requirePort(spec.connectTimeoutSeconds ?? 10, 'ConnectTimeout seconds');
   const aliveInterval = requirePort(spec.serverAliveIntervalSeconds ?? 15, 'ServerAliveInterval seconds');
   const aliveCount = requirePort(spec.serverAliveCountMax ?? 3, 'ServerAliveCountMax');
@@ -283,6 +285,19 @@ export function buildOpenSshControlMasterCommand(spec: OpenSshControlMasterSpec)
       ]
     : [];
   const hostKeyArgs = hostKeyAlias ? ['-o', `HostKeyAlias=${hostKeyAlias}`] : [];
+  const knownHostsFile = spec.knownHostsFile === undefined
+    ? undefined : requireArg(spec.knownHostsFile, 'OpenSSH known_hosts file');
+  if (knownHostsFile !== undefined && (!isAbsolute(knownHostsFile) || /[%$]/.test(knownHostsFile))) {
+    throw new Error('OpenSSH known_hosts file must be absolute and contain no OpenSSH expansions');
+  }
+  // OpenSSH parses -o values again; quote a path with spaces as one file. A pinned
+  // controller connection trusts only this store and cannot add keys on its own.
+  const trustStoreArgs = knownHostsFile === undefined ? [] : [
+    '-o', 'StrictHostKeyChecking=yes',
+    '-o', `UserKnownHostsFile="${knownHostsFile.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`,
+    '-o', 'GlobalKnownHostsFile=none',
+    '-o', 'UpdateHostKeys=no',
+  ];
 
   return {
     command: requireArg(spec.executable ?? 'ssh', 'OpenSSH executable'),
@@ -295,7 +310,11 @@ export function buildOpenSshControlMasterCommand(spec: OpenSshControlMasterSpec)
       '-o',
       'ControlMaster=yes',
       '-o',
-      `ControlPersist=${controlPersist}`,
+      // The manager owns this foreground master. ControlPersist forks a detached
+      // child, making isRunning()/stop() observe and kill the wrong process.
+      'ControlPersist=no',
+      '-o',
+      'ForkAfterAuthentication=no',
       '-o',
       `ControlPath=${controlPath}`,
       '-o',
@@ -308,6 +327,7 @@ export function buildOpenSshControlMasterCommand(spec: OpenSshControlMasterSpec)
       `ServerAliveCountMax=${aliveCount}`,
       ...portArgs,
       ...hostKeyArgs,
+      ...trustStoreArgs,
       ...identityArgs,
       '-L',
       `${LOOPBACK_HOST}:${localPort}:${LOOPBACK_HOST}:${remotePort}`,
