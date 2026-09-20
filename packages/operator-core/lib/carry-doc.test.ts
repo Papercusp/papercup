@@ -229,6 +229,61 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
     expect(judgeDoc.identity.role).toBe('judge');
   });
 
+  // WI-10002058. Every caller of buildCarryDoc is a context-wipe producer, and the
+  // ⟦CTRL:…⟧ block that would correct a stale marker only fires when the control
+  // generation exceeds an owner-scoped, advance-only delivery watermark. The wipe
+  // destroys the context that was "told" but leaves the watermark high, so the
+  // block stays silent and its silence reads as agreement with a marker stamped at
+  // BUILD time. Re-arming against this document's own stamp is what makes silence
+  // mean "still current" instead of "nobody checked".
+  it('re-arms the control witness against the stamp the document actually carries', async () => {
+    const rearms: Array<[string, string, number]> = [];
+    const doc = await buildCarryDoc('su-1', {
+      ...base,
+      armControlWitnessFn: async (ownerId, workspaceId, stampedGeneration) => {
+        rearms.push([ownerId, workspaceId, stampedGeneration]);
+        return { rearmed: true };
+      },
+    });
+
+    // The stamp handed to the re-arm must be the SAME generation the delivered
+    // marker claims. A re-arm against any other value re-arms for a document
+    // nobody is reading.
+    expect(rearms).toEqual([['su-1', 'ws-1', 17]]);
+    expect(doc.automaticRecovery?.marker.controlGeneration).toBe(17);
+  });
+
+  it('skips the re-arm when the marker carries no stamp to re-arm against', async () => {
+    const rearms: number[] = [];
+    await buildCarryDoc('su-1', {
+      ...base,
+      buildAutomaticRecoveryFn: async () => automaticRecovery(false),
+      armControlWitnessFn: async (_o, _w, stampedGeneration) => {
+        rearms.push(stampedGeneration);
+        return null;
+      },
+    });
+
+    // An incomplete marker already routes the successor through the orient
+    // fallback, and there is no generation to roll back to. Re-arming to a
+    // guessed value would be worse than not re-arming.
+    expect(rearms).toEqual([]);
+  });
+
+  it('still produces a document when the re-arm fails', async () => {
+    const doc = await buildCarryDoc('su-1', {
+      ...base,
+      armControlWitnessFn: async () => {
+        throw new Error('session_briefs unreachable');
+      },
+    });
+
+    // A failed re-arm costs the automatic correction — the pre-existing
+    // behaviour — never the carry document the successor boots on.
+    expect(doc.identity.ownerId).toBe('su-1');
+    expect(doc.automaticRecovery?.marker.complete).toBe(true);
+  });
+
   it('records role-infeasible mutating carry references without changing the live text', async () => {
     const projectedTools = [
       projectedTool('work_items:complete', { agentRoles: ['worker'] }),

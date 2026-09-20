@@ -826,6 +826,62 @@ export async function acknowledgeControlTransition(
   return rows.length > 0;
 }
 
+/**
+ * WI-10002058: re-arm the ⟦CTRL:…⟧ escape hatch across a CONTEXT WIPE.
+ *
+ * `control_delivered_generation` is a watermark over an OWNER, but the thing
+ * that actually holds delivered state is a CONTEXT. Every other writer advances
+ * it with `GREATEST(...)`, so it is monotonically non-decreasing — and nothing
+ * lowered it when a carry-respawn destroyed the context that had been told.
+ * {@link preparePendingControlTransition} then finds
+ * `control_generation > control_delivered_generation` false and emits NO block,
+ * while the carry document the successor actually reads carries a BUILD-TIME
+ * stamp that may already be generations behind.
+ *
+ * That is how the carry marker's only escape hatch (WI-10002017) comes to be
+ * disarmed at precisely the boundary it exists to serve: the successor is handed
+ * `complete:true` for a stale generation, and no live channel can contradict it.
+ * The two mechanisms answer different questions — the block says "changed since
+ * you were last told", the marker says "true when this document was built" — so
+ * SILENCE FROM THE BLOCK IS NOT AGREEMENT WITH THE MARKER unless the baselines
+ * are the same. This makes them the same.
+ *
+ * Lowering the watermark to the generation the outgoing document is STAMPED with
+ * restores the equivalence:
+ *   - state unchanged since the stamp → still not greater → no block, correctly.
+ *   - state moved past the stamp      → greater           → full-resync, armed.
+ *
+ * `LEAST(...)` is the deliberate mirror of the `GREATEST(...)` advance: it can
+ * only ever lower, is idempotent, and cannot skip a delivery. If a respawn is
+ * requested but never happens, the whole cost is one redundant — and
+ * authoritative — full-resync block. That is the same asymmetry
+ * {@link renderControlTransitionDelivery} already documents: a few dozen extra
+ * tokens harm nothing, while blinding the session is total.
+ */
+export async function rearmControlWitnessForContextWipe(
+  ownerId: string,
+  workspaceId: string,
+  stampedGeneration: number,
+  sql: Sql = getOrgPg().sql,
+): Promise<{ rearmed: boolean; deliveredGeneration: number | null }> {
+  if (!Number.isInteger(stampedGeneration) || stampedGeneration < 0) {
+    return { rearmed: false, deliveredGeneration: null };
+  }
+  const rows = await sql<Array<{ control_delivered_generation: number | string }>>`
+    UPDATE harness_shared.session_briefs
+       SET control_delivered_generation = LEAST(control_delivered_generation, ${stampedGeneration})
+     WHERE owner_id = ${ownerId}
+       AND workspace_id = ${workspaceId}
+       AND control_delivered_generation > ${stampedGeneration}
+    RETURNING control_delivered_generation
+  `;
+  const row = rows[0];
+  return {
+    rearmed: Boolean(row),
+    deliveredGeneration: row ? Number(row.control_delivered_generation) : null,
+  };
+}
+
 export function renderControlTransitionContext(delivery: ControlTransitionDelivery): string {
   // Recompute for legacy callers/tests that still pass a persisted transition
   // without the additive hash field. The live renderer always emits it.

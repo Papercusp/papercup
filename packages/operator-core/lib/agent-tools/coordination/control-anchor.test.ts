@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
-import { deriveClaimScope } from './control-anchor';
+import { deriveClaimScope, rearmControlWitnessForContextWipe } from './control-anchor';
 import {
   CONTROL_ANCHOR_MAX_TOKENS,
   CONTROL_TRANSITION_MAX_TOKENS,
@@ -683,5 +684,166 @@ describe('deriveClaimScope — an agent must not lose its own lane to a lapsed l
       items: [],
       lapsed: [],
     });
+  });
+});
+
+describe('control-witness re-arm across a context wipe (WI-10002058)', () => {
+  it('rolls the delivery watermark down to the stamp the outgoing document carries', async () => {
+    const { sql, calls } = sqlReturning([{ control_delivered_generation: 67 }]);
+
+    const result = await rearmControlWitnessForContextWipe('su-1', 'ws-1', 67, sql);
+
+    expect(result).toEqual({ rearmed: true, deliveredGeneration: 67 });
+    const [call] = calls;
+    // Bound to THIS owner/workspace and THIS document's stamp, in statement order:
+    // the SET target first, then owner, workspace, and the threshold the WHERE
+    // compares against. A re-arm bound to anything else re-arms for a document
+    // nobody is about to read. The SET value and the threshold must be the SAME
+    // stamp — a mismatch would lower the watermark past the document it describes.
+    expect(call.values).toEqual([67, 'su-1', 'ws-1', 67]);
+    // Lower-only. GREATEST here would silently make the whole fix a no-op while
+    // still passing any test that merely asserts "a statement was emitted".
+    expect(call.statement).toContain('LEAST(control_delivered_generation');
+    expect(call.statement).not.toContain('GREATEST');
+  });
+
+  it('reports not-rearmed when the watermark was already at or below the stamp', async () => {
+    const { sql } = sqlReturning<{ control_delivered_generation: number }>([]);
+
+    // The WHERE clause filters it out server-side; zero rows is the healthy
+    // steady state (nothing was delivered past this stamp), not a failure.
+    expect(await rearmControlWitnessForContextWipe('su-1', 'ws-1', 67, sql)).toEqual({
+      rearmed: false,
+      deliveredGeneration: null,
+    });
+  });
+
+  it('refuses a non-integer or negative stamp without touching the row', async () => {
+    const { sql, calls } = sqlReturning([{ control_delivered_generation: 0 }]);
+
+    for (const bad of [Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY]) {
+      expect(await rearmControlWitnessForContextWipe('su-1', 'ws-1', bad, sql)).toEqual({
+        rearmed: false,
+        deliveredGeneration: null,
+      });
+    }
+    // A garbage stamp must never reach the UPDATE: LEAST(watermark, NaN) would be
+    // an unbounded rollback, re-delivering the anchor on every turn forever.
+    expect(calls).toEqual([]);
+  });
+
+  it('arms the escape hatch: a watermark behind the live generation yields a full-resync', () => {
+    // The point of the rollback. Once the watermark sits at the document's stamp,
+    // a control state that has since moved forces the ⟦CTRL:…⟧ block that
+    // contradicts the stale marker — the correction that silence used to suppress.
+    const delivery = decideControlTransitionDelivery({
+      ownerId: 'su-1',
+      deliveredGeneration: 67,
+      generation: 69,
+      state: state(),
+      transition: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+
+    expect(delivery.kind).toBe('full-resync');
+    expect(delivery.generation).toBe(69);
+    expect(delivery.previousGeneration).toBe(67);
+  });
+
+  it('stays quiet when the stamp is still current — the re-arm must not re-deliver forever', () => {
+    // Calibration for the assertion above: if EVERY watermark produced a resync,
+    // the test before this one would pass no matter how the rollback behaved.
+    const decision = decideControlTransitionDelivery({
+      ownerId: 'su-1',
+      deliveredGeneration: 69,
+      generation: 69,
+      state: state(),
+      transition: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+
+    expect(decision.previousGeneration).toBe(69);
+    expect(decision.generation).toBe(69);
+  });
+});
+
+describe('every control_delivered_generation writer is classified (WI-10002058)', () => {
+  /** Classify one `SET control_delivered_generation = …` expression by the only
+   *  property that matters: which DIRECTION it can move the watermark. */
+  function classifyWatermarkWrites(source: string): Array<{
+    kind: 'advance' | 'rollback' | 'unclassified';
+    enclosing: string;
+    expression: string;
+  }> {
+    const out: Array<{
+      kind: 'advance' | 'rollback' | 'unclassified';
+      enclosing: string;
+      expression: string;
+    }> = [];
+    const write = /SET\s+control_delivered_generation\s*=\s*([^\n]*)/g;
+    for (let m = write.exec(source); m; m = write.exec(source)) {
+      const expression = m[1].trim();
+      const kind = /^GREATEST\s*\(/.test(expression)
+        ? 'advance'
+        : /^LEAST\s*\(/.test(expression)
+          ? 'rollback'
+          : 'unclassified';
+      // Backwards walk to the enclosing declaration, so a new writer is attributed
+      // to the function that actually performs it rather than hand-listed here.
+      const preceding = source.slice(0, m.index);
+      const decls = [...preceding.matchAll(/export\s+(?:async\s+)?function\s+(\w+)/g)];
+      out.push({ kind, enclosing: decls.at(-1)?.[1] ?? '<module>', expression });
+    }
+    return out;
+  }
+
+  it('detects direction and enclosing function, and can actually fail', () => {
+    // The control. Without it a rename of the column makes every assertion below
+    // range over an empty set and pass while asserting nothing at all.
+    const fixture = [
+      'export async function advances() {',
+      '  SET control_delivered_generation = GREATEST(control_delivered_generation, 5)',
+      '}',
+      'export async function rollsBack() {',
+      '  SET control_delivered_generation = LEAST(control_delivered_generation, 5)',
+      '}',
+      'export async function smuggled() {',
+      '  SET control_delivered_generation = 5',
+      '}',
+    ].join('\n');
+
+    expect(classifyWatermarkWrites(fixture)).toEqual([
+      {
+        kind: 'advance',
+        enclosing: 'advances',
+        expression: 'GREATEST(control_delivered_generation, 5)',
+      },
+      {
+        kind: 'rollback',
+        enclosing: 'rollsBack',
+        expression: 'LEAST(control_delivered_generation, 5)',
+      },
+      { kind: 'unclassified', enclosing: 'smuggled', expression: '5' },
+    ]);
+  });
+
+  it('has exactly one rollback, and it is the designated context-wipe re-arm', () => {
+    const source = readFileSync(new URL('./control-anchor.ts', import.meta.url), 'utf8');
+    const writes = classifyWatermarkWrites(source);
+
+    // Calibration: the advance path must still be found. Zero writes would make
+    // the two assertions below vacuously true.
+    expect(writes.filter((w) => w.kind === 'advance').length).toBeGreaterThan(0);
+
+    // A new writer must declare its direction. An unclassified one can move the
+    // watermark either way, which is exactly the ambiguity that disarmed the
+    // escape hatch in the first place.
+    expect(writes.filter((w) => w.kind === 'unclassified')).toEqual([]);
+
+    // Exactly one place may lower the watermark. A second rollback site elsewhere
+    // would re-deliver the anchor on paths that never wiped a context.
+    expect(writes.filter((w) => w.kind === 'rollback').map((w) => w.enclosing)).toEqual([
+      'rearmControlWitnessForContextWipe',
+    ]);
   });
 });

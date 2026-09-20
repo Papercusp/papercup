@@ -334,6 +334,14 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
     workspaceId: string,
     opts: { sessionHarness?: string | null; heldItems?: CarryBrief['heldItems'] },
   ) => Promise<AutomaticCompactionRecovery>;
+  /** Test seam for the WI-10002058 control-witness re-arm. Defaults to the real
+   *  watermark rollback; override to observe it, or to suppress it on a caller
+   *  that builds a document WITHOUT wiping the context. */
+  armControlWitnessFn?: (
+    ownerId: string,
+    workspaceId: string,
+    stampedGeneration: number,
+  ) => Promise<unknown>;
   getModesFn?: (workspaceId: string, ownerId: string) => Promise<CarryDocMode[]>;
   getPlanItemsFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocPlanItem[]>;
   getAsksFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocAsk[]>;
@@ -341,6 +349,22 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
   getBackgroundTasksFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocBackgroundTask[]>;
   /** Test seam for the live projected-tool catalog used by role-feasibility checks. */
   projectedToolsFn?: () => readonly ProjectedTool[];
+}
+
+/** WI-10002058: roll the control-delivery watermark back to this document's
+ *  stamp, so the successor's first turn re-delivers a ⟦CTRL:…⟧ block iff the
+ *  control state moved past what the document says. Best-effort by design — a
+ *  failed re-arm must never cost the caller its carry document; it only costs
+ *  the automatic correction, which is the pre-existing behaviour. */
+async function defaultArmControlWitness(
+  ownerId: string,
+  workspaceId: string,
+  stampedGeneration: number,
+): Promise<unknown> {
+  const { rearmControlWitnessForContextWipe } = await import(
+    './agent-tools/coordination/control-anchor'
+  );
+  return rearmControlWitnessForContextWipe(ownerId, workspaceId, stampedGeneration);
 }
 
 /** Read active modes → the AUTO/owner-directed provenance the successor needs.
@@ -568,6 +592,31 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
     sessionHarness: callerHarness,
     heldItems: brief.heldItems,
   }).catch(() => null);
+
+  // WI-10002058: this document is stamped at BUILD time, and every caller of
+  // buildCarryDoc is a context-wipe producer — the context that was told the
+  // current control generation is about to stop existing. The ⟦CTRL:…⟧ block
+  // that would correct a stale marker only fires on
+  // `control_generation > control_delivered_generation`, and that watermark is
+  // owner-scoped and advance-only, so it survives the wipe still reading
+  // "delivered". Silence from the block would then read as agreement with a
+  // marker that may already be generations behind — the successor is told
+  // `complete:true` and instructed against `coord:orient`, the one verb that
+  // repairs it, with nothing able to contradict either.
+  //
+  // Rolling the watermark back to THIS document's stamp makes the block's
+  // baseline and the marker's baseline the same, so the successor's first turn
+  // re-delivers a full-resync exactly when the state moved past what this
+  // document says — and stays quiet, correctly, when it did not. The
+  // do-not-re-fetch instruction rendered beside a complete marker depends on
+  // this invariant for its truth; remove the re-arm and that instruction goes
+  // back to being a hope rather than a guarantee.
+  const armControlWitness = opts.armControlWitnessFn ?? defaultArmControlWitness;
+  if (typeof automaticRecovery?.marker.controlGeneration === 'number') {
+    await armControlWitness(ownerId, ws, automaticRecovery.marker.controlGeneration).catch(
+      () => {},
+    );
+  }
 
   const getModes = opts.getModesFn ?? defaultGetModes;
   const modes = await getModes(ws, ownerId).catch(() => [] as CarryDocMode[]);
