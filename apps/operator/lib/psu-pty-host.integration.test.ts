@@ -2089,7 +2089,7 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
       expect(events).toContainEqual(expect.objectContaining({
         kind: 'respawn-carry-fresh-epoch-retry',
-        reason: 'never-settled',
+        reason: 'no-startup-ready-marker-last-resort-failed',
         attempt: 1,
         maxRetries: 1,
       }));
