@@ -30,7 +30,13 @@ import {
   PORTFOLIO_CREATE_TOOLS,
   PORTFOLIO_PLACE_TOOLS,
 } from './portfolio-acts';
-import { envelopeHasCompleteGoalOwnerReport } from '../goal-owner-report';
+import {
+  diagnoseGoalOwnerReportEnvelope,
+  GOAL_OWNER_REPORT_DIAGNOSIS_RANK,
+  GOAL_OWNER_REPORT_HEADING_LIST,
+  GOAL_OWNER_REPORT_HEADINGS,
+  type GoalOwnerReportEnvelopeDiagnosis,
+} from '../goal-owner-report';
 
 export const GOAL_KICKOFF_REQUIRED_READS = ['goals:list', 'pot:list', 'plans:list', 'search:semantic'] as const;
 
@@ -73,8 +79,25 @@ export interface GoalKickoffEvidence {
   killCriterion: string | null;
   reads: Partial<Record<GoalKickoffRead, string>>;
   ownerReportAt: string | null;
+  /**
+   * Why the owner-report leg is unsatisfied, when it was actually evaluated.
+   *
+   * `null` means the leg was never reached (reads still missing, no GOAL row,
+   * or a degraded ledger) — never "nothing was sent". `candidates: 0` is the
+   * honest "no owner-facing message exists in this window"; a non-zero count
+   * with a `closest` reason is the case a bare `missing:['owner-report']` used
+   * to render indistinguishable from it (EI-23742424491420721).
+   */
+  ownerReportDiagnosis: GoalKickoffOwnerReportDiagnosis | null;
   missing: GoalKickoffMissingLeg[];
   degradedReason: string | null;
+}
+
+export interface GoalKickoffOwnerReportDiagnosis {
+  /** Owner-facing messages found in this window AFTER the last required read. */
+  candidates: number;
+  /** The closest any of them came to satisfying the contract; null when none exist. */
+  closest: GoalOwnerReportEnvelopeDiagnosis | null;
 }
 
 export interface ReadGoalKickoffEvidenceArgs {
@@ -111,6 +134,7 @@ function base(args: ReadGoalKickoffEvidenceArgs): GoalKickoffEvidence {
     killCriterion: null,
     reads: {},
     ownerReportAt: null,
+    ownerReportDiagnosis: null,
     missing: [],
     degradedReason: null,
   };
@@ -219,9 +243,29 @@ export async function readGoalKickoffEvidence(args: ReadGoalKickoffEvidenceArgs)
        LIMIT 256
     `) as unknown as Array<Record<string, unknown>>;
 
-    const reportRow = reportRows.find((row) => envelopeHasCompleteGoalOwnerReport(row.body, out.goalId!));
+    // Diagnose every candidate in one pass. The verdict and the explanation
+    // come from the same call, so a refusal can never claim a reason the gate
+    // did not actually apply.
+    let closest: GoalOwnerReportEnvelopeDiagnosis | null = null;
+    let reportRow: Record<string, unknown> | undefined;
+    for (const row of reportRows) {
+      const diagnosis = diagnoseGoalOwnerReportEnvelope(row.body, out.goalId!);
+      if (diagnosis.kind === 'complete') {
+        reportRow = row;
+        closest = diagnosis;
+        break;
+      }
+      if (
+        !closest ||
+        GOAL_OWNER_REPORT_DIAGNOSIS_RANK[diagnosis.kind] > GOAL_OWNER_REPORT_DIAGNOSIS_RANK[closest.kind]
+      ) {
+        closest = diagnosis;
+      }
+    }
+
     out.ownerReportAt = reportRow ? iso(reportRow.ts) : null;
     if (!out.ownerReportAt) {
+      out.ownerReportDiagnosis = { candidates: reportRows.length, closest: reportRows.length ? closest : null };
       out.missing = ['owner-report'];
       return out;
     }
@@ -235,11 +279,60 @@ export async function readGoalKickoffEvidence(args: ReadGoalKickoffEvidenceArgs)
   }
 }
 
+/**
+ * Turn the owner-report verdict into a repair an agent can act on.
+ *
+ * `missing:['owner-report']` alone reads as "you have not sent an owner report"
+ * even when the truth is "you sent four, and all four parsed as non-attempts".
+ * That ambiguity cost a GOAL holder ~90 minutes and produced a confidently
+ * WRONG durable conclusion — that the send CHANNEL was at fault — which then
+ * outlived the session (EI-23742424491420721). Name the schema instead.
+ */
+function explainOwnerReport(diagnosis: GoalKickoffOwnerReportDiagnosis | null): string {
+  if (!diagnosis) return '';
+  const { candidates, closest } = diagnosis;
+  if (candidates === 0 || !closest) {
+    return ' No owner-facing message was found in this window at all after the last required read.';
+  }
+  const one = candidates === 1;
+  const found = one
+    ? "1 owner-facing message was delivered in this window, but it did not register as this goal's report:"
+    : `${candidates} owner-facing messages were delivered in this window, but none registered as this goal's report:`;
+  switch (closest.kind) {
+    case 'not-attempted':
+      return (
+        ` ${found} ${one ? 'it carried none of the four required headings, so it was never a report ATTEMPT.' : 'not one carried any of the four required headings, so none was even a report ATTEMPT.'}` +
+        ` The channel was right and the report SHAPE was wrong — re-send the same content with ${GOAL_OWNER_REPORT_HEADING_LIST} as body-section headings.` +
+        ' Naming the goal id in prose does not substitute for them.'
+      );
+    case 'incomplete':
+      return (
+        ` ${found} the closest attempted the report but left the contract unmet —` +
+        ` missing: ${closest.missing.join(', ') || 'none'};` +
+        ` empty: ${closest.empty.join(', ') || 'none'};` +
+        ` duplicate: ${closest.duplicate.join(', ') || 'none'}.`
+      );
+    case 'wrong-goal':
+      return (
+        ` ${found} the closest carried a COMPLETE report, but for ${closest.stampedGoalId ? `goal ${closest.stampedGoalId}` : 'a subject it never named'} rather than this one.` +
+        ' Re-send it while this goal is the active GOAL subject.'
+      );
+    case 'unstamped-complete':
+      return (
+        ` ${found} the closest parsed complete but carries no server-authored goalOwnerReport stamp, so nothing vouches for its subject` +
+        ' (GOAL-subject validation was unavailable at send time). Re-send it now that the subject is readable.'
+      );
+    default:
+      return ` ${found} none was a readable report envelope.`;
+  }
+}
+
 export function goalKickoffRefusalPayload(toolName: string, evidence: GoalKickoffEvidence) {
   const missing = evidence.missing.length ? evidence.missing : ['evidence-unavailable'];
   const standingNote = evidence.standing
     ? ' This is a standing goal: no kill criterion is required; the gate checks only the four reads and the report.'
     : '';
+  const ownerReportNote = missing.includes('owner-report') ? explainOwnerReport(evidence.ownerReportDiagnosis) : '';
   return {
     ok: false,
     error: 'goal_kickoff_incomplete',
@@ -247,14 +340,17 @@ export function goalKickoffRefusalPayload(toolName: string, evidence: GoalKickof
     goalId: evidence.goalId,
     windowStartedAt: evidence.windowStartedAt,
     missing,
+    requiredOwnerReportHeadings: GOAL_OWNER_REPORT_HEADINGS,
     observed: {
       reads: evidence.reads,
       ownerReportAt: evidence.ownerReportAt,
+      ownerReport: evidence.ownerReportDiagnosis,
     },
     ...(evidence.degradedReason ? { degradedReason: evidence.degradedReason } : {}),
     message:
       `GOAL kickoff incomplete for ${evidence.goalId ?? 'an unattributed GOAL holder'}; ${toolName} was refused before portfolio mutation/placement. ` +
-      `In the current GOAL window, successfully run goals:list, pot:list, plans:list, and search:semantic on the goal's terms; then send an owner-facing report AFTER those reads (coord:send to ["human"] or coord:escalate) that names the exact goal id. ` +
-      `Missing: ${missing.join(', ')}.${standingNote}`,
+      `In the current GOAL window, successfully run goals:list, pot:list, plans:list, and search:semantic on the goal's terms; then send an owner-facing report AFTER those reads (coord:send to ["human"] or coord:escalate) carrying all four required headings — ${GOAL_OWNER_REPORT_HEADING_LIST} — each present exactly once and non-empty (explicit \`none\` or \`unknown (<source>)\` is a valid value). ` +
+      `A plain status message that merely names the goal id is NOT a report and will be delivered without registering. ` +
+      `Missing: ${missing.join(', ')}.${standingNote}${ownerReportNote}`,
   };
 }

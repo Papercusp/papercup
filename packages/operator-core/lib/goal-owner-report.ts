@@ -13,6 +13,23 @@ export const GOAL_OWNER_REPORT_FIELD = 'goalOwnerReport' as const;
 export const GOAL_OWNER_REPORT_FIELDS = ['moved', 'cost', 'ownerWalled', 'killed'] as const;
 export type GoalOwnerReportField = (typeof GOAL_OWNER_REPORT_FIELDS)[number];
 
+/**
+ * The heading an author actually types for each field. Refusals quote these, so
+ * they must round-trip through {@link parseGoalOwnerReport} rather than being a
+ * second hand-maintained spelling of the contract; a guard test pins that.
+ */
+export const GOAL_OWNER_REPORT_HEADINGS: Readonly<Record<GoalOwnerReportField, string>> = Object.freeze({
+  moved: 'MOVED',
+  cost: 'COST',
+  ownerWalled: 'OWNER-WALLED',
+  killed: 'KILLED',
+});
+
+/** Human-facing rendering of the whole contract, e.g. "MOVED / COST / OWNER-WALLED / KILLED". */
+export const GOAL_OWNER_REPORT_HEADING_LIST = GOAL_OWNER_REPORT_FIELDS.map(
+  (field) => GOAL_OWNER_REPORT_HEADINGS[field],
+).join(' / ');
+
 export interface GoalOwnerReportStamp {
   schemaVersion: typeof GOAL_OWNER_REPORT_SCHEMA_VERSION;
   goalId: string;
@@ -187,15 +204,79 @@ export function isGoalOwnerReportStamp(value: unknown, goalId?: string): value i
 }
 
 /**
- * Canonical evidence predicate for stored coord envelopes. Modern evidence is
- * the server-authored stamp. Legacy evidence must contain all four labeled
- * values AND name the exact goal in its body; this preserves the old subject
- * rule without letting a wrong-goal report clear a new window.
+ * Why a stored envelope did or did not register as this goal's owner report.
+ *
+ * A bare "no report" verdict is indistinguishable from "you sent four, and all
+ * four parsed as non-attempts" — the failure this type exists to end
+ * (EI-23742424491420721). Readers that refuse on the evidence quote the reason,
+ * so the reason must be computed by the same pass that decides.
+ */
+export type GoalOwnerReportEnvelopeDiagnosis =
+  /** Registers as this goal's report. */
+  | { kind: 'complete' }
+  /** Not an object envelope at all; nothing to parse. */
+  | { kind: 'unreadable-envelope' }
+  /** A complete report, but vouched for another subject (or naming no goal). */
+  | { kind: 'wrong-goal'; stampedGoalId: string | null }
+  /** Parses complete but carries no server stamp, so nothing vouches for the subject. */
+  | { kind: 'unstamped-complete' }
+  /** At least one heading was used, but the four-element contract is unmet. */
+  | {
+      kind: 'incomplete';
+      missing: GoalOwnerReportField[];
+      empty: GoalOwnerReportField[];
+      duplicate: GoalOwnerReportField[];
+    }
+  /** Carried none of the four headings: delivered prose, never a report attempt. */
+  | { kind: 'not-attempted' };
+
+/** Higher means "got closer to satisfying the contract"; used to pick what to explain. */
+export const GOAL_OWNER_REPORT_DIAGNOSIS_RANK: Readonly<Record<GoalOwnerReportEnvelopeDiagnosis['kind'], number>> =
+  Object.freeze({
+    complete: 5,
+    'unstamped-complete': 4,
+    'wrong-goal': 3,
+    incomplete: 2,
+    'not-attempted': 1,
+    'unreadable-envelope': 0,
+  });
+
+/**
+ * Canonical evidence reader for stored coord envelopes. Modern evidence is the
+ * server-authored stamp. Legacy evidence must contain all four labeled values
+ * AND name the exact goal in its body; this preserves the old subject rule
+ * without letting a wrong-goal report clear a new window.
+ *
+ * This returns the REASON as well as the verdict so a refusal can name the
+ * schema instead of emitting a bare token.
+ */
+export function diagnoseGoalOwnerReportEnvelope(envelope: unknown, goalId: string): GoalOwnerReportEnvelopeDiagnosis {
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return { kind: 'unreadable-envelope' };
+  const record = envelope as Record<string, unknown>;
+
+  const stamp = record[GOAL_OWNER_REPORT_FIELD];
+  if (isGoalOwnerReportStamp(stamp, goalId)) return { kind: 'complete' };
+  // A well-formed stamp for a DIFFERENT subject is a complete report aimed
+  // elsewhere — a materially different repair from "your report was malformed".
+  if (isGoalOwnerReportStamp(stamp)) return { kind: 'wrong-goal', stampedGoalId: stamp.goalId };
+
+  // No usable stamp. Parse the body in whatever shape it was stored: a modern
+  // coord:send persists an array of sections, a legacy write a flat string.
+  const parsed = parseGoalOwnerReport(record.body as GoalOwnerReportTextInput);
+  if (!parsed.attempted) return { kind: 'not-attempted' };
+  if (!parsed.complete) {
+    return { kind: 'incomplete', missing: parsed.missing, empty: parsed.empty, duplicate: parsed.duplicate };
+  }
+  if (typeof record.body === 'string') {
+    return record.body.includes(goalId) ? { kind: 'complete' } : { kind: 'wrong-goal', stampedGoalId: null };
+  }
+  return { kind: 'unstamped-complete' };
+}
+
+/**
+ * Boolean face of {@link diagnoseGoalOwnerReportEnvelope}. Deriving it from the
+ * one pass keeps the verdict and the explanation from ever disagreeing.
  */
 export function envelopeHasCompleteGoalOwnerReport(envelope: unknown, goalId: string): boolean {
-  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return false;
-  const record = envelope as Record<string, unknown>;
-  if (isGoalOwnerReportStamp(record[GOAL_OWNER_REPORT_FIELD], goalId)) return true;
-  if (typeof record.body !== 'string' || !record.body.includes(goalId)) return false;
-  return parseGoalOwnerReport(record.body).complete;
+  return diagnoseGoalOwnerReportEnvelope(envelope, goalId).kind === 'complete';
 }

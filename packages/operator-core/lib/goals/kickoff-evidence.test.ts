@@ -184,6 +184,8 @@ describe('GOAL kickoff required-leg gate', () => {
       reportEnvelope: { body: `Status for ${GOAL}: still working.` },
     });
     expect(ping.evidence).toMatchObject({ complete: false, missing: ['owner-report'] });
+    // The refusal must be able to say WHICH of the two it was.
+    expect(ping.evidence.ownerReportDiagnosis).toEqual({ candidates: 1, closest: { kind: 'not-attempted' } });
 
     const partial = await read({
       reads: completeReads(),
@@ -191,6 +193,10 @@ describe('GOAL kickoff required-leg gate', () => {
       reportEnvelope: { body: `Goal ${GOAL}\nMOVED: P-001\nCOST: 1c\nOWNER-WALLED: none` },
     });
     expect(partial.evidence).toMatchObject({ complete: false, missing: ['owner-report'] });
+    expect(partial.evidence.ownerReportDiagnosis).toEqual({
+      candidates: 1,
+      closest: { kind: 'incomplete', missing: ['killed'], empty: [], duplicate: [] },
+    });
   });
 
   it('compatibility control: accepts a complete legacy four-label body naming the exact goal', async () => {
@@ -243,6 +249,135 @@ describe('GOAL kickoff required-leg gate', () => {
     expect(refusal.error).toBe('goal_kickoff_incomplete');
     expect(refusal.message).toContain('goals:list, pot:list, plans:list, and search:semantic');
     expect(refusal.message).toContain('no kill criterion is required');
+  });
+
+  /**
+   * EI-23742424491420721 — `missing:['owner-report']` read as "you have not
+   * sent one" while the truth was "you sent four, and all four parsed as
+   * non-attempts". Four delivered-but-rejected reports, a carry-respawn and
+   * ~90 minutes later it also produced a WRONG durable conclusion (that the
+   * coord:send CHANNEL was at fault). The refusal must name the schema.
+   */
+  describe('the owner-report refusal names the schema it actually requires', () => {
+    it('always states the four required headings and that naming the goal id is not enough', async () => {
+      const { evidence } = await read({ reads: completeReads(), reportAt: null });
+      const refusal = goalKickoffRefusalPayload('plans:start', evidence);
+
+      for (const heading of ['MOVED', 'COST', 'OWNER-WALLED', 'KILLED']) {
+        expect(refusal.message).toContain(heading);
+      }
+      expect(refusal.message).toContain('exactly once and non-empty');
+      // The precise sentence that contradicts the wrong conclusion the bare
+      // token invited. Without it, "names the exact goal id" reads as the whole
+      // contract — which is what sent four correct-channel reports into a loop.
+      expect(refusal.message).toContain('merely names the goal id is NOT a report');
+      expect(refusal.requiredOwnerReportHeadings).toEqual({
+        moved: 'MOVED',
+        cost: 'COST',
+        ownerWalled: 'OWNER-WALLED',
+        killed: 'KILLED',
+      });
+    });
+
+    it('says "none was sent" only when none was actually sent', async () => {
+      const { evidence } = await read({ reads: completeReads(), reportAt: null });
+      expect(evidence.ownerReportDiagnosis).toEqual({ candidates: 0, closest: null });
+
+      const refusal = goalKickoffRefusalPayload('plans:start', evidence);
+      expect(refusal.message).toContain('No owner-facing message was found in this window');
+      expect(refusal.observed.ownerReport).toEqual({ candidates: 0, closest: null });
+    });
+
+    it('reports a DELIVERED non-attempt as a shape failure, not as an absent report', async () => {
+      const { evidence } = await read({
+        reads: completeReads(),
+        reportAt: '2026-08-29T21:42:00.000Z',
+        reportEnvelope: { body: `Status for ${GOAL}: still working, three items advanced.` },
+      });
+      const refusal = goalKickoffRefusalPayload('fleet:launch-on-plan', evidence);
+
+      expect(refusal.message).toContain('1 owner-facing message was delivered in this window');
+      expect(refusal.message).toContain('report ATTEMPT');
+      expect(refusal.message).toContain('The channel was right and the report SHAPE was wrong');
+      // It must NOT claim nothing was sent — that is the false reading.
+      expect(refusal.message).not.toContain('No owner-facing message was found');
+      expect(refusal.observed.ownerReport).toEqual({ candidates: 1, closest: { kind: 'not-attempted' } });
+    });
+
+    it('names the specific unmet fields when the report was attempted', async () => {
+      const { evidence } = await read({
+        reads: completeReads(),
+        reportAt: '2026-08-29T21:42:00.000Z',
+        reportEnvelope: { body: `Goal ${GOAL}\nMOVED: P-001\nCOST: 1c\nOWNER-WALLED: none` },
+      });
+      const refusal = goalKickoffRefusalPayload('fleet:launch-on-plan', evidence);
+
+      expect(refusal.message).toContain('missing: killed');
+      expect(refusal.message).toContain('empty: none');
+      expect(refusal.message).toContain('duplicate: none');
+    });
+
+    it('distinguishes a complete report stamped for another goal', async () => {
+      const { evidence } = await read({
+        reads: completeReads(),
+        reportAt: '2026-08-29T21:42:00.000Z',
+        reportGoalId: 'some-other-goal',
+      });
+      const refusal = goalKickoffRefusalPayload('fleet:launch-on-plan', evidence);
+
+      expect(refusal.message).toContain('carried a COMPLETE report, but for goal some-other-goal');
+      expect(refusal.observed.ownerReport).toEqual({
+        candidates: 1,
+        closest: { kind: 'wrong-goal', stampedGoalId: 'some-other-goal' },
+      });
+    });
+
+    it('leaves the diagnosis null when the report leg was never evaluated', async () => {
+      // Reads still missing: the report could not have been valid yet, so
+      // claiming anything about owner-facing traffic would be manufactured.
+      const { evidence } = await read({ reads: { 'goals:list': '2026-08-29T21:41:00.000Z' } });
+      expect(evidence.missing).toContain('owner-report');
+      expect(evidence.ownerReportDiagnosis).toBeNull();
+
+      const refusal = goalKickoffRefusalPayload('plans:start', evidence);
+      expect(refusal.message).not.toContain('No owner-facing message was found');
+      expect(refusal.message).not.toContain('owner-facing message was delivered');
+      // The schema itself is still stated — it is the contract, not a diagnosis.
+      expect(refusal.message).toContain('MOVED / COST / OWNER-WALLED / KILLED');
+    });
+
+    it('reads as English for one candidate and for many', async () => {
+      // The reported case was FOUR delivered reports, so the plural branch is
+      // the one an agent actually hits; it is also the one a singular-only
+      // fixture cannot reach.
+      const { evidence } = await read({
+        reads: completeReads(),
+        reportAt: '2026-08-29T21:42:00.000Z',
+        reportEnvelope: { body: `Status for ${GOAL}.` },
+      });
+      const plural = goalKickoffRefusalPayload('fleet:launch-on-plan', {
+        ...evidence,
+        ownerReportDiagnosis: { candidates: 4, closest: { kind: 'not-attempted' } },
+      });
+
+      expect(plural.message).toContain("4 owner-facing messages were delivered in this window, but none registered");
+      expect(plural.message).toContain('report ATTEMPT');
+      // Regression guard: the plural branch once read "but none did not
+      // register", a double negative that inverts the sentence's meaning.
+      expect(plural.message).not.toContain('none did not register');
+
+      const singular = goalKickoffRefusalPayload('fleet:launch-on-plan', evidence);
+      expect(singular.message).toContain('1 owner-facing message was delivered in this window, but it did not register');
+      expect(singular.message).not.toContain('messages were delivered');
+    });
+
+    it('stays silent about owner-report when that leg is not what failed', async () => {
+      const { evidence } = await read({ evidenceError: 'telemetry unavailable' });
+      const refusal = goalKickoffRefusalPayload('plans:start', evidence);
+      expect(refusal.missing).toEqual(['evidence-unavailable']);
+      expect(refusal.message).not.toContain('owner-facing message was delivered');
+      expect(refusal.message).not.toContain('No owner-facing message was found');
+    });
   });
 });
 

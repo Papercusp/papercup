@@ -218,9 +218,16 @@ function lexicalSql(
       join: sql`, q`,
       coverage: sql`1`,
       literalMatch,
+      // EI-23737056070911495: these arms must key off `literalMatch` as well as
+      // `simpleTsv`. They used to collapse to the english-only form whenever
+      // `simpleTsv` was absent, which silently DISCARDED the literal-substring
+      // fallback even when the caller supplied `literalText` — so a caller that
+      // dropped only the simple vector lost literal recall too. `literalMatch` is
+      // already `FALSE` when `literalText` is absent, so these degrade correctly
+      // for callers (e.g. engineer_issues) that pass neither.
       fallbackOnly: simpleTsv
         ? sql`NOT (${tsv} @@ q.andq) AND NOT (${simpleTsv} @@ q.simpleq)`
-        : sql`FALSE`,
+        : sql`NOT (${tsv} @@ q.andq) AND ${literalMatch}`,
       rank: simpleTsv
         ? sql`CASE WHEN ${tsv} @@ q.andq
                    THEN ts_rank_cd(${tsv}, q.andq)
@@ -233,7 +240,7 @@ function lexicalSql(
         ? sql`(${tsv} @@ q.andq
                OR ((${simpleTsv} @@ q.simpleq OR ${literalMatch})
                    AND NOT (${tsv} @@ q.andq)))`
-        : sql`${tsv} @@ q.andq`,
+        : sql`(${tsv} @@ q.andq OR ${literalMatch})`,
       headlineQuery: simpleTsv
         ? sql`CASE WHEN ${tsv} @@ q.andq THEN q.andq ELSE q.simpleq END`
         : sql`q.andq`,
@@ -840,11 +847,29 @@ const sessionTurn: SearchSource = {
     // P-017 / D-062: `lex` supplies the term-combination fragments. Without
     // `lexicalMode: 'coverage-graded'` this is byte-identical to the pre-P-017
     // query — `coverage` is the constant 1, so the ordering is `rank DESC`.
+    // EI-23737056070911495: `text_simple_tsv` is added ONLY by migration 1163,
+    // which is deliberately parked as `.DRAFT` and therefore NEVER applied — the
+    // live DB has no such column (verified: 42703 `column "text_simple_tsv" does
+    // not exist`). Naming it here reds `lint:migration-forward-compat`, which is
+    // gate-blocking, and would fault any query that reached the column.
+    //
+    // It stays decoupled rather than armed because migration 1163 adds a
+    // `GENERATED ALWAYS ... STORED` tsvector to harness_shared.session_turns
+    // (13 GB / ~1.37M rows). A stored generated column forces a FULL TABLE
+    // REWRITE under ACCESS EXCLUSIVE on the hot session-ingest table, and the
+    // migration runner wraps every file in BEGIN/COMMIT, so the GIN index cannot
+    // be built with CREATE INDEX CONCURRENTLY either.
+    //
+    // `simpleTsv` is optional by construction (see lexicalSql) and the
+    // engineer_issues source at ~line 670 already runs without it, so passing
+    // `undefined` is the supported degradation: literal-token recall falls back
+    // to the bounded `literalText` substring match below. RE-ARM ORDER if this is
+    // ever revisited: apply migration 1163 FIRST, then restore this argument.
     const lex = lexicalSql(
       p,
       p.sql`text_tsv`,
       p.sql`harness_shared.session_turns`,
-      p.sql`text_simple_tsv`,
+      undefined,
       p.sql`text`,
     );
     // EI-21924046411702156: see LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS. Same
@@ -1059,9 +1084,6 @@ const sessionTurn: SearchSource = {
                WHEN st.text_tsv @@ plainto_tsquery('english', ${p.query})
                THEN ts_headline('english', left(st.text, 4000),
                  plainto_tsquery('english', ${p.query}), ${HEADLINE_OPTS})
-               WHEN st.text_simple_tsv @@ plainto_tsquery('simple', ${p.query})
-               THEN ts_headline('simple', left(st.text, 4000),
-                 plainto_tsquery('simple', ${p.query}), ${HEADLINE_OPTS})
                ELSE left(st.text, 4000)
              END AS highlight
         FROM harness_shared.session_turns st

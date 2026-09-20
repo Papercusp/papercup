@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  GOAL_OWNER_REPORT_DIAGNOSIS_RANK,
   GOAL_OWNER_REPORT_FIELD,
+  GOAL_OWNER_REPORT_FIELDS,
+  GOAL_OWNER_REPORT_HEADING_LIST,
+  GOAL_OWNER_REPORT_HEADINGS,
   GOAL_OWNER_REPORT_SCHEMA_VERSION,
+  diagnoseGoalOwnerReportEnvelope,
   envelopeHasCompleteGoalOwnerReport,
   isGoalOwnerReportStamp,
   parseGoalOwnerReport,
   stampGoalOwnerReport,
+  type GoalOwnerReportEnvelopeDiagnosis,
 } from './goal-owner-report';
 
 const GOAL = 'work-on-everything-070565';
@@ -93,5 +99,157 @@ describe('goal owner report evidence', () => {
     expect(
       envelopeHasCompleteGoalOwnerReport({ [GOAL_OWNER_REPORT_FIELD]: { ...stamp, goalId: 'wrong-goal' } }, GOAL),
     ).toBe(false);
+  });
+});
+
+/**
+ * EI-23742424491420721 — a bare "no owner report" verdict is indistinguishable
+ * from "four were delivered and all four parsed as non-attempts". The reader
+ * must return WHY, and the boolean face must be derived from that same pass so
+ * the two can never disagree.
+ */
+describe('diagnoseGoalOwnerReportEnvelope', () => {
+  const stamp = {
+    schemaVersion: GOAL_OWNER_REPORT_SCHEMA_VERSION,
+    goalId: GOAL,
+    moved: 'P-006 advanced',
+    cost: 'unknown (rollup unavailable)',
+    ownerWalled: 'none',
+    killed: 'none',
+  };
+
+  it('separates a delivered non-attempt from a genuinely absent report', () => {
+    // The exact shape that cost ~90 minutes: an owner-facing ping naming the
+    // goal id verbatim. It is DELIVERED, and it is not a report attempt.
+    expect(diagnoseGoalOwnerReportEnvelope({ body: `Status for ${GOAL}: still working.` }, GOAL)).toEqual({
+      kind: 'not-attempted',
+    });
+    // Modern sends persist an array of sections, not a flat string.
+    expect(
+      diagnoseGoalOwnerReportEnvelope({ body: [{ text: `Progress on ${GOAL}: three items advanced.` }] }, GOAL),
+    ).toEqual({ kind: 'not-attempted' });
+  });
+
+  it('names the specific unmet fields when the report was attempted', () => {
+    expect(
+      diagnoseGoalOwnerReportEnvelope({ body: `Goal ${GOAL}\nMOVED: P-006\nCOST: 3c\nOWNER-WALLED: none` }, GOAL),
+    ).toEqual({ kind: 'incomplete', missing: ['killed'], empty: [], duplicate: [] });
+
+    expect(
+      diagnoseGoalOwnerReportEnvelope(
+        { body: [{ text: 'MOVED: P-006' }, { text: 'MOVED: again' }, { text: 'COST:' }] },
+        GOAL,
+      ),
+    ).toEqual({
+      // A duplicated heading still reports its first value, so `moved` is
+      // duplicate-but-not-empty; the bare `COST:` heading is the empty one.
+      kind: 'incomplete',
+      missing: ['ownerWalled', 'killed'],
+      empty: ['cost'],
+      duplicate: ['moved'],
+    });
+  });
+
+  it('distinguishes a complete report aimed at another subject from a malformed one', () => {
+    expect(diagnoseGoalOwnerReportEnvelope({ [GOAL_OWNER_REPORT_FIELD]: { ...stamp, goalId: 'other-goal' } }, GOAL))
+      .toEqual({ kind: 'wrong-goal', stampedGoalId: 'other-goal' });
+
+    // Legacy flat body: complete four labels, but never names this goal.
+    expect(
+      diagnoseGoalOwnerReportEnvelope(
+        { body: 'MOVED: P-006\nCOST: 3c\nOWNER-WALLED: none\nKILLED: none' },
+        GOAL,
+      ),
+    ).toEqual({ kind: 'wrong-goal', stampedGoalId: null });
+  });
+
+  it('flags a complete structured report that carries no server stamp', () => {
+    // coord:send could not resolve the GOAL subject, so nothing vouches for it.
+    expect(
+      diagnoseGoalOwnerReportEnvelope(
+        {
+          body: [
+            { text: 'MOVED: P-006 advanced' },
+            { text: 'COST: 3c' },
+            { text: 'OWNER-WALLED: none' },
+            { text: 'KILLED: none' },
+          ],
+        },
+        GOAL,
+      ),
+    ).toEqual({ kind: 'unstamped-complete' });
+  });
+
+  it('accepts the two shapes that really do register, and rejects a non-envelope', () => {
+    expect(diagnoseGoalOwnerReportEnvelope({ [GOAL_OWNER_REPORT_FIELD]: stamp }, GOAL)).toEqual({ kind: 'complete' });
+    expect(
+      diagnoseGoalOwnerReportEnvelope(
+        { body: `Goal ${GOAL}\nMOVED: P-006\nCOST: 3c\nOWNER-WALLED: none\nKILLED: none` },
+        GOAL,
+      ),
+    ).toEqual({ kind: 'complete' });
+    expect(diagnoseGoalOwnerReportEnvelope(null, GOAL)).toEqual({ kind: 'unreadable-envelope' });
+    expect(diagnoseGoalOwnerReportEnvelope(['not', 'an', 'envelope'], GOAL)).toEqual({ kind: 'unreadable-envelope' });
+  });
+
+  it('keeps the boolean predicate exactly equal to a complete diagnosis', () => {
+    const envelopes: unknown[] = [
+      { [GOAL_OWNER_REPORT_FIELD]: stamp },
+      { [GOAL_OWNER_REPORT_FIELD]: { ...stamp, goalId: 'other-goal' } },
+      { body: `Goal ${GOAL}\nMOVED: a\nCOST: b\nOWNER-WALLED: c\nKILLED: d` },
+      { body: 'MOVED: a\nCOST: b\nOWNER-WALLED: c\nKILLED: d' },
+      { body: `Status for ${GOAL}: still working.` },
+      { body: [{ text: 'MOVED: a' }, { text: 'COST: b' }, { text: 'OWNER-WALLED: c' }, { text: 'KILLED: d' }] },
+      { body: null },
+      null,
+      [],
+    ];
+    for (const envelope of envelopes) {
+      expect(envelopeHasCompleteGoalOwnerReport(envelope, GOAL)).toBe(
+        diagnoseGoalOwnerReportEnvelope(envelope, GOAL).kind === 'complete',
+      );
+    }
+  });
+
+  it('ranks every diagnosis kind so the closest candidate can be chosen', () => {
+    const kinds: GoalOwnerReportEnvelopeDiagnosis['kind'][] = [
+      'complete',
+      'unstamped-complete',
+      'wrong-goal',
+      'incomplete',
+      'not-attempted',
+      'unreadable-envelope',
+    ];
+    for (const kind of kinds) {
+      expect(typeof GOAL_OWNER_REPORT_DIAGNOSIS_RANK[kind]).toBe('number');
+    }
+    // A complete report must outrank every partial one, or the gate would
+    // explain a worse candidate than the one it actually evaluated.
+    expect(GOAL_OWNER_REPORT_DIAGNOSIS_RANK.complete).toBeGreaterThan(
+      Math.max(...kinds.filter((k) => k !== 'complete').map((k) => GOAL_OWNER_REPORT_DIAGNOSIS_RANK[k])),
+    );
+    expect(GOAL_OWNER_REPORT_DIAGNOSIS_RANK['not-attempted']).toBeGreaterThan(
+      GOAL_OWNER_REPORT_DIAGNOSIS_RANK['unreadable-envelope'],
+    );
+  });
+});
+
+/**
+ * The headings a refusal quotes must be the headings the parser accepts — not
+ * a second hand-maintained spelling that can drift out from under it.
+ */
+describe('GOAL_OWNER_REPORT_HEADINGS', () => {
+  it('round-trips every advertised heading back through the parser', () => {
+    for (const field of GOAL_OWNER_REPORT_FIELDS) {
+      const heading = GOAL_OWNER_REPORT_HEADINGS[field];
+      const parsed = parseGoalOwnerReport(`${heading}: a value`);
+      expect(parsed.attempted).toBe(true);
+      expect(parsed.fields[field]).toBe('a value');
+    }
+  });
+
+  it('advertises exactly the four contract fields, in contract order', () => {
+    expect(Object.keys(GOAL_OWNER_REPORT_HEADINGS)).toEqual([...GOAL_OWNER_REPORT_FIELDS]);
+    expect(GOAL_OWNER_REPORT_HEADING_LIST).toBe('MOVED / COST / OWNER-WALLED / KILLED');
   });
 });
