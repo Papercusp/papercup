@@ -86,6 +86,97 @@ export function appliedIdentityArtifact(
   return artifact.specificationRevision === revision.specificationRevision ? artifact : null;
 }
 
+/**
+ * The verdict `checkIdentityGrantKernel` reaches about a launch record, as a
+ * value instead of a control-flow side effect.
+ *
+ * WI-10002060 — WHY THIS IS EXTRACTED. A standing sweep has to find sessions
+ * this gate would wedge, and the obvious way to write one is a jsonb predicate
+ * comparing `control_state->activation->applied` with `launch_spec`. Every
+ * attempt at that has been wrong IN BOTH DIRECTIONS, because the gate's
+ * question is not a revision comparison:
+ *   - `appliedIdentityArtifact` above searches `record` AND `record
+ *     .identityHistory` for a receipt matching BOTH revisions, so a record
+ *     whose top-level revision differs can still resolve. SQL that compares
+ *     only the top level over-reports it as wedged.
+ *   - the `current`-fallback below admits a case no jsonb predicate expresses
+ *     at all.
+ * So the detector imports THIS, and the gate below is its only other caller.
+ * Keep it that way: a second paraphrase of this decision is the defect.
+ */
+export type IdentityArtifactResolution =
+  | {
+      kind: 'stale-artifact';
+      reason: 'replay-failed' | 'record-revision-mismatch' | 'receipt-missing' | 'grants-asymmetric';
+    }
+  | { kind: 'ungoverned' }
+  | { kind: 'governed'; artifact: ResolvedAgentSpecification; current: ResolvedAgentSpecification };
+
+export function resolveIdentityArtifact(
+  record: Record<string, unknown>,
+  applied: KernelExecutionRevision | null | undefined,
+): IdentityArtifactResolution {
+  let artifact: ResolvedAgentSpecification | null;
+  let current: ResolvedAgentSpecification | null;
+  try {
+    artifact = appliedIdentityArtifact(record, applied);
+    current = record.specificationArtifact ? replayAgentSpecification(record.specificationArtifact) : null;
+    if (current && current.specificationRevision !== record.specificationRevision) {
+      return { kind: 'stale-artifact', reason: 'record-revision-mismatch' };
+    }
+  } catch {
+    return { kind: 'stale-artifact', reason: 'replay-failed' };
+  }
+  // A control-only activation (e.g. re-registering an already-active mode)
+  // advances the applied STATE revision without re-rendering the launch
+  // artifact, so no receipt can ever carry the new stateRevision and the
+  // session would be denied every tool for the rest of its life
+  // (EI-23431478594488191). The immutable specification — and therefore
+  // configuration.grants — is unchanged in that case, so the record's current
+  // artifact IS the applied specification.
+  //
+  // WI-10002005: this deliberately does NOT require the pending activation to
+  // have reached status 'applied'. A pending activation is a request about the
+  // session's FUTURE authority; it must never RETRACT authority the host has
+  // already acknowledged. Requiring 'applied' here did exactly that, and the
+  // resulting denial is total and self-sealing: a `relaunch-with-carry` stack
+  // mutation makes turn-start skip both markControlTransitionPrepared and
+  // acknowledgeControlTransition (stack-binding-channel.ts sets
+  // requiresFreshContext), leaving prepared:null/status:'desired' with no
+  // throw and no failure record, and acknowledgeControlTransition's own WHERE
+  // clause requires prepared = desired — so the row can never converge and
+  // EVERY tool is refused for the life of the session, including the
+  // coord:orient recovery door.
+  //
+  // The conjunct that actually enforces fail-closed is the specification
+  // equality below, NOT the status: configuration.grants is a property of the
+  // immutable specification, so a pending BROADENING necessarily carries a
+  // different specificationRevision and still falls through to denial. What is
+  // admitted here is only the case where the record's current specification is
+  // byte-identical to the one already acknowledged in `applied` — i.e. where
+  // granting changes nothing about the authority in force. Narrowing is
+  // likewise unaffected: the caller intersects `artifact` with `current`,
+  // so any reduction expressed in the current specification still binds.
+  if (
+    !artifact && current && applied &&
+    current.specificationRevision === applied.specificationRevision
+  ) {
+    artifact = current;
+  }
+  if (!artifact) {
+    return applied || current?.configuration.grants
+      ? { kind: 'stale-artifact', reason: 'receipt-missing' }
+      : { kind: 'ungoverned' };
+  }
+  if (!artifact.configuration.grants && !current?.configuration.grants) return { kind: 'ungoverned' };
+  // A removal or a new narrowing cannot wait for successful prompt delivery.
+  // Never let a prepared broadening supply authority missing from the receipt.
+  if (!artifact.configuration.grants || !current?.configuration.grants) {
+    return { kind: 'stale-artifact', reason: 'grants-asymmetric' };
+  }
+  return { kind: 'governed', artifact, current };
+}
+
 /** Reads existing stores; missing or failed policy reads must reach the caller. */
 export const readIdentityGrantPolicy: PolicyReader = async (input) => {
   const registry = await readOperatorState<HarnessRegistry>('harness_registry', input.workspaceId, { fresh: true });
@@ -380,63 +471,13 @@ export async function checkIdentityGrantKernel(
     }
     return applied ? staleArtifact(request) : null;
   }
-  let artifact: ResolvedAgentSpecification | null;
-  let current: ResolvedAgentSpecification | null;
-  try {
-    artifact = appliedIdentityArtifact(record, applied);
-    current = record.specificationArtifact ? replayAgentSpecification(record.specificationArtifact) : null;
-    if (current && current.specificationRevision !== record.specificationRevision) {
-      return staleArtifact(request);
-    }
-  } catch {
-    return staleArtifact(request);
-  }
-  // A control-only activation (e.g. re-registering an already-active mode)
-  // advances the applied STATE revision without re-rendering the launch
-  // artifact, so no receipt can ever carry the new stateRevision and the
-  // session would be denied every tool for the rest of its life
-  // (EI-23431478594488191). The immutable specification — and therefore
-  // configuration.grants — is unchanged in that case, so the record's current
-  // artifact IS the applied specification.
-  //
-  // WI-10002005: this deliberately does NOT require the pending activation to
-  // have reached status 'applied'. A pending activation is a request about the
-  // session's FUTURE authority; it must never RETRACT authority the host has
-  // already acknowledged. Requiring 'applied' here did exactly that, and the
-  // resulting denial is total and self-sealing: a `relaunch-with-carry` stack
-  // mutation makes turn-start skip both markControlTransitionPrepared and
-  // acknowledgeControlTransition (stack-binding-channel.ts sets
-  // requiresFreshContext), leaving prepared:null/status:'desired' with no
-  // throw and no failure record, and acknowledgeControlTransition's own WHERE
-  // clause requires prepared = desired — so the row can never converge and
-  // EVERY tool is refused for the life of the session, including the
-  // coord:orient recovery door.
-  //
-  // The conjunct that actually enforces fail-closed is the specification
-  // equality below, NOT the status: configuration.grants is a property of the
-  // immutable specification, so a pending BROADENING necessarily carries a
-  // different specificationRevision and still falls through to denial. What is
-  // admitted here is only the case where the record's current specification is
-  // byte-identical to the one already acknowledged in `applied` — i.e. where
-  // granting changes nothing about the authority in force. Narrowing is
-  // likewise unaffected: the loop below intersects `artifact` with `current`,
-  // so any reduction expressed in the current specification still binds.
-  if (
-    !artifact && current && applied &&
-    current.specificationRevision === applied.specificationRevision
-  ) {
-    artifact = current;
-  }
-  if (!artifact) {
-    return applied || current?.configuration.grants
-      ? staleArtifact(request) : null;
-  }
-  if (!artifact.configuration.grants && !current?.configuration.grants) return null;
-  // A removal or a new narrowing cannot wait for successful prompt delivery.
-  // Never let a prepared broadening supply authority missing from the receipt.
-  if (!artifact.configuration.grants || !current?.configuration.grants) {
-    return staleArtifact(request);
-  }
+  // The decision itself lives in `resolveIdentityArtifact` (above) so the
+  // WI-10002060 sweep can ask the same question instead of paraphrasing it.
+  // This call site is behaviour-identical to the body it replaced.
+  const resolution = resolveIdentityArtifact(record, applied);
+  if (resolution.kind === 'stale-artifact') return staleArtifact(request);
+  if (resolution.kind === 'ungoverned') return null;
+  const { artifact, current } = resolution;
   const workspaceId = request.ctx.workspaceId ?? request.ctx.principal?.workspaceId;
   if (record.workspaceId !== workspaceId ||
       typeof record.harnessSlug !== 'string' || !record.harnessSlug) {
