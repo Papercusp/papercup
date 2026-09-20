@@ -631,6 +631,116 @@ except Exception:
 # as if it created an OS schedule. Strip quoted spans BEFORE matching: quoted
 # content can only ever REMOVE a would-be separator, so every genuine (unquoted)
 # `crontab -e`/`batch < f`/`&& crontab`/`sudo crontab` deny is preserved.
+def _cmd_subst_end(s, i):
+    # s[i:i+2] == '$(' — index just PAST the matching ')', or -1 when unbalanced.
+    # Skips quoted spans so a ')' inside a quoted argument cannot close the
+    # substitution, and recurses through nested substitutions via _dq_end.
+    n, depth, j = len(s), 0, i + 1
+    while j < n:
+        c = s[j]
+        if c == '\\':
+            j += 2
+            continue
+        if c == "'":
+            k = s.find("'", j + 1)
+            if k == -1:
+                return -1
+            j = k + 1
+            continue
+        if c == '"':
+            k = _dq_end(s, j)
+            if k == -1:
+                return -1
+            j = k + 1
+            continue
+        if c == '`':
+            k = s.find('`', j + 1)
+            if k == -1:
+                return -1
+            j = k + 1
+            continue
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0:
+                return j + 1
+        j += 1
+    return -1
+
+
+def _dq_end(s, i):
+    # s[i] == '"' — index of the quote that actually CLOSES this span, or -1.
+    #
+    # EI-23804564629952456. A command substitution RESTARTS shell quoting, so a
+    # `"` inside `$( )` or backticks does NOT close the enclosing double-quoted
+    # string. A flat scanner that stops at the first `"` therefore picks the
+    # wrong terminator and INVERTS the quoted/unquoted classification for the
+    # rest of the span: genuinely-quoted text is exposed to every matcher while
+    # genuinely-live shell text is blanked. Measured, one root cause, both
+    # directions — a false POSITIVE (`echo "n=$(psql -c "SELECT … > now() …")"`
+    # denied as a redirect to a file named `now`) and a false NEGATIVE (a real
+    # `> <tree path>` inside `$( )` inside `"…"` hidden from the shell-write
+    # guard, while the same redirect in a BARE `$( )` is caught).
+    #
+    # An unbalanced `$(` or an unpaired backtick falls through to ordinary
+    # character handling rather than bailing, so a malformed command degrades to
+    # the previous behaviour instead of dropping the rest of the input.
+    n, j = len(s), i + 1
+    while j < n:
+        c = s[j]
+        if c == '\\':
+            j += 2
+            continue
+        if c == '"':
+            return j
+        if c == '$' and j + 1 < n and s[j + 1] == '(':
+            k = _cmd_subst_end(s, j)
+            if k != -1:
+                j = k
+                continue
+        elif c == '`':
+            k = s.find('`', j + 1)
+            if k != -1:
+                j = k + 1
+                continue
+        j += 1
+    return -1
+
+
+def _blank_except_substitutions(inner, preserve_expansions):
+    # The body of a double-quoted span is inert DATA — except for its command
+    # substitutions, which the shell EXECUTES. Blank the data (as before) and
+    # normalize the live code recursively, so `"…$(cat a > tree/b)…"` stays
+    # scannable while `"…$(psql -c "SELECT … > now()")…"` does not expose the
+    # SQL operator. Returns a single space when the span holds no substitution,
+    # so the overwhelmingly common case emits byte-identical output to before.
+    parts, k, m, found = [], 0, len(inner), False
+    while k < m:
+        ch = inner[k]
+        if ch == '\\':
+            k += 2
+            continue
+        if ch == '$' and k + 1 < m and inner[k + 1] == '(':
+            e = _cmd_subst_end(inner, k)
+            if e != -1:
+                parts.append(_strip_quotes_and_comments(inner[k + 2:e - 1], preserve_expansions))
+                found = True
+                k = e
+                continue
+        elif ch == '`':
+            e = inner.find('`', k + 1)
+            if e != -1:
+                parts.append(_strip_quotes_and_comments(inner[k + 1:e], preserve_expansions))
+                found = True
+                k = e + 1
+                continue
+        k += 1
+    if not found:
+        return ' '
+    return ' ' + ' '.join(parts) + ' '
+
+
 def _strip_quotes_and_comments(s, preserve_expansions=False):
     # THE shared normalizer for every scanner in this file: removes quoted spans
     # AND `#`-to-end-of-line comments in ONE quote-aware pass.
@@ -703,21 +813,17 @@ def _strip_quotes_and_comments(s, preserve_expansions=False):
             i = j + 1
             continue
         if c == '"':
-            j = i + 1
-            while j < n:
-                if s[j] == '\\':
-                    j += 2
-                    continue
-                if s[j] == '"':
-                    break
-                j += 1
-            if j >= n:
+            # _dq_end, not a flat scan to the next `"`: a command substitution
+            # restarts quoting, so its inner quotes must not close this span
+            # (EI-23804564629952456 — see _dq_end for both failure directions).
+            j = _dq_end(s, i)
+            if j == -1:
                 break
             inner = s[i + 1:j]
             if preserve_expansions and _quoted_expansion_only.fullmatch(inner):
                 out.append(' ' + inner + ' ')
             else:
-                out.append(' ')
+                out.append(_blank_except_substitutions(inner, preserve_expansions))
             i = j + 1
             continue
         out.append(c)

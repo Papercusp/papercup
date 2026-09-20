@@ -3987,6 +3987,138 @@ describe('shell-write guard: `#` comments are not shell syntax (EI-1938544851643
   });
 });
 
+/**
+ * THE THIRD QUOTE-PARITY BREAK — EI-23804564629952456. Same family as the `#`
+ * comment break above, different source, and the one the filed report got
+ * wrong in a way worth pinning.
+ *
+ * A command substitution RESTARTS shell quoting: inside `"…$(cmd "arg")…"`, the
+ * quotes around `arg` open a FRESH string, they do not close the outer one. The
+ * normalizer scanned flatly to the next `"`, so it picked the wrong terminator
+ * and INVERTED the quoted/unquoted classification for the rest of the span —
+ * quoted data exposed to every matcher, live shell text blanked.
+ *
+ * WHAT THE REPORT GOT WRONG, and why these tests are shaped the way they are.
+ * The report's stated mechanism was "the SQL lived inside a double-quoted
+ * `psql -c "…"` argument, so quote-stripping exposes its `>`", and its stated
+ * repro was that bare command. Driven against the real hook that command
+ * ALLOWS — plain quoted spans have been blanked correctly all along — so the
+ * mechanism is disproven and the repro does not reproduce. The trigger is
+ * specifically the NESTED form: the `$( )` must sit inside an outer
+ * double-quoted string. The first two tests pin that distinction, because a
+ * fix aimed at the reported mechanism would change nothing at all.
+ *
+ * THE DIRECTION THE REPORT MISSED. The same inversion also hides a REAL
+ * `> <tree path>` written inside `$( )` inside `"…"`, while the identical
+ * redirect in a BARE `$( )` is caught — a silent hole in the one guard that
+ * keeps raw shell writes out of the shared tree, and the far more expensive
+ * half. Both directions are one root cause and are fixed together by treating
+ * a substitution as a nested context and normalizing its interior.
+ *
+ * Backticks are the same construct with older syntax and broke identically;
+ * a fix verified on `$( )` alone would have left half the hole open, so both
+ * spellings are covered.
+ */
+describe('command-substitution quote-parity break — CLASS recurrence guard (EI-23804564629952456)', () => {
+  const SQL = "SELECT count(*) FROM t WHERE closed_at > now() - interval '15 minutes'";
+
+  it('allows the filed repro: a SQL `>` inside $( ) nested in a double-quoted string', () => {
+    expectAllow(
+      runGate(bashCmd(`echo "closed=$(psql -Atc "${SQL}")"`, { cwd: CANON }), CANON_ENV),
+    );
+  });
+
+  it('allows the backtick spelling of the same nesting', () => {
+    expectAllow(
+      runGate(bashCmd(`echo "closed=\`psql -Atc "${SQL}"\`"`, { cwd: CANON }), CANON_ENV),
+    );
+  });
+
+  /**
+   * NEGATIVE CONTROL for the report's own claim. If this ever starts failing,
+   * the guard has regressed into the mechanism the report described — and the
+   * two tests above would no longer be measuring the nesting at all.
+   */
+  it("allows the report's stated repro, which never reproduced (mechanism control)", () => {
+    expectAllow(runGate(bashCmd(`psql -Atc "${SQL}"`, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('allows a SQL `>` in $( ) that is NOT inside a double-quoted string', () => {
+    expectAllow(runGate(bashCmd(`f=$(psql -Atc "${SQL}")`, { cwd: CANON }), CANON_ENV));
+  });
+
+  /**
+   * THE FALSE NEGATIVE — the expensive twin, and the half the report never
+   * found. A real tree write inside a substitution inside double quotes was
+   * ALLOWED before this fix.
+   */
+  it('still denies a real tree redirect inside $( ) nested in a double-quoted string', () => {
+    const reason = denyReason(
+      runGate(
+        bashCmd('echo "out=$(cat foo > apps/operator/generated.ts)"', { cwd: CANON }),
+        CANON_ENV,
+      ),
+    );
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+
+  it('still denies a real tree redirect inside backticks nested in a double-quoted string', () => {
+    const reason = denyReason(
+      runGate(
+        bashCmd('echo "out=`cat foo > apps/operator/generated.ts`"', { cwd: CANON }),
+        CANON_ENV,
+      ),
+    );
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+
+  /**
+   * CALIBRATION. The same redirect in a bare substitution was always caught;
+   * if this ever fails the suite is broken rather than the nesting fixed, so
+   * the two denials above cannot pass vacuously.
+   */
+  it('still denies a real tree redirect inside a bare $( )', () => {
+    const reason = denyReason(
+      runGate(bashCmd('echo out=$(cat foo > apps/operator/generated.ts)', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+
+  /**
+   * The plain quoted span must still be inert. Widening the normalizer to
+   * recurse into substitutions must not start surfacing ordinary quoted prose,
+   * which is the false-positive class this whole normalizer exists to prevent.
+   */
+  it('still treats an ordinary quoted `>` as inert data', () => {
+    expectAllow(runGate(bashCmd('echo "a > b" && ls', { cwd: CANON }), CANON_ENV));
+  });
+
+  it('still denies a real redirect that follows a nested substitution', () => {
+    const reason = denyReason(
+      runGate(
+        bashCmd('echo "n=$(wc -l < in.txt)" > apps/operator/generated.ts', { cwd: CANON }),
+        CANON_ENV,
+      ),
+    );
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+
+  /**
+   * An unbalanced `$(` and an unpaired backtick must degrade to the previous
+   * behaviour rather than dropping the rest of the input — dropping would be a
+   * silent ALLOW, which is the direction that costs.
+   */
+  it('still denies a real tree redirect after an unbalanced `$(`', () => {
+    const reason = denyReason(
+      runGate(
+        bashCmd('echo "cost me $(a" ; cat foo > apps/operator/generated.ts', { cwd: CANON }),
+        CANON_ENV,
+      ),
+    );
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+});
+
 describe('shell-write file-target guard (EI-18664655909328670)', () => {
   const expectShellWriteDeny = (out: { stdout: string; status: number | null }) => {
     const reason = denyReason(out);
