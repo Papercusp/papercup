@@ -22,6 +22,11 @@ import {
   buildUnusedCteAdvisory,
   buildPopulationNarrowingAdvisory,
   buildNonSummingPartitionAdvisory,
+  buildExecutedPartitionAdvisory,
+  executePredicatePartition,
+  predicatePartitionTotalSql,
+  planPredicatePartition,
+  PREDICATE_PARTITION_CELL_LIMIT,
   buildClaimabilityAdvisory,
   buildBacklogFlowAdvisory,
   buildCorpusNamespaceAdvisory,
@@ -3861,5 +3866,154 @@ describe('buildNonSummingPartitionAdvisory (WI-10002034 — the scalar whose buc
       ),
       'a row read shows its own rows; only a SCALAR can hide the fall-through',
     ).toBeNull();
+  });
+});
+
+describe('the EXECUTED partition probe (WI-10002034 — AUTO-BAR-R-002-P-002)', () => {
+  // The ratified acceptance bar names the falsifier directly: "A qualifying count
+  // returns the scalar alone, with no partition, no NULL counts and no sample
+  // rows." Emitting the partition SQL as TEXT does not satisfy it — these cases
+  // pin the half that actually RUNS those statements and returns their results.
+  const MEASURED = [
+    'SELECT count(*) AS total,',
+    "       count(*) FILTER (WHERE control_state->'activation'->>'status' <> 'applied') AS bricked",
+    '  FROM harness_shared.session_briefs',
+    " WHERE workspace_id = 'papercusp-workspace'",
+  ].join('\n');
+
+  type ProbeClient = NonNullable<Parameters<typeof executePredicatePartition>[1]>['client'];
+  type FakeRow = Record<string, unknown>;
+
+  /**
+   * boundedPgReadTxn calls `sql.begin(cb)`, and INSIDE the transaction issues
+   * `tx.unsafe('SET TRANSACTION READ ONLY')`, a tagged-template `set_config`,
+   * and `tx.unsafe(SET_LOCAL_UTC)` before the callback ever runs.
+   * EI-21372563569490957: doubles that model only a tag function fail with
+   * `sql.begin is not a function`, so this one models begin, the tag AND unsafe.
+   * The SET preamble is swallowed rather than routed so `ran` holds exactly the
+   * probe's own statements — which is what makes the no-probe case below
+   * assertable instead of merely plausible.
+   */
+  function fakeClient(route: (sql: string) => FakeRow[]): { client: ProbeClient; ran: string[] } {
+    const ran: string[] = [];
+    const tx = Object.assign((..._args: unknown[]) => Promise.resolve([] as FakeRow[]), {
+      unsafe: (text: string) => {
+        if (/^\s*SET\b/i.test(text)) return Promise.resolve([] as FakeRow[]);
+        ran.push(text);
+        return Promise.resolve(route(text));
+      },
+    });
+    const sql = Object.assign((..._args: unknown[]) => Promise.resolve([] as FakeRow[]), {
+      begin: (cb: (t: unknown) => Promise<unknown>) => cb(tx),
+    });
+    return { client: sql as unknown as ProbeClient, ran };
+  }
+
+  /** Dispatch on each statement's OWN alias, so a mis-routed probe is visible. */
+  const route =
+    (parts: { cells?: FakeRow[]; total?: FakeRow[]; samples?: FakeRow[] }) =>
+    (text: string): FakeRow[] => {
+      if (/AS row_count/i.test(text)) return parts.cells ?? [];
+      if (/AS total/i.test(text)) return parts.total ?? [];
+      return parts.samples ?? [];
+    };
+
+  it('asks for the UNFILTERED total under the same scope — never the caller’s FILTERs', () => {
+    const plan = planPredicatePartition(MEASURED)!;
+    const sql = predicatePartitionTotalSql(plan);
+    expect(sql).toContain('count(*) AS total');
+    expect(sql).toContain('FROM harness_shared.session_briefs');
+    expect(sql).toContain("WHERE workspace_id = 'papercusp-workspace'");
+    // A total that inherited a bucket FILTER cannot be the denominator the cells
+    // must sum to — and that arithmetic is the entire point of the advisory.
+    expect(sql, 'the denominator must not inherit a bucket predicate').not.toContain('FILTER');
+  });
+
+  it('returns cells, per-dimension NULL rows and sample rows ALONGSIDE the scalar', async () => {
+    const { client } = fakeClient(
+      route({
+        // The measured shape: 2 healthy, 94 fell through every FILTER because an
+        // absent jsonb path is NULL and NULL fails every comparison.
+        cells: [
+          { d1: true, row_count: 2 },
+          { d1: null, row_count: 94 },
+        ],
+        total: [{ total: 96 }],
+        samples: [{ sample: 'brief-a' }, { sample: 'brief-b' }],
+      }),
+    );
+    const advisory = (await buildExecutedPartitionAdvisory(MEASURED, { client }))!;
+    expect(advisory).toContain('PARTITION (d1 → rows)');
+    expect(advisory).toContain('NULL → 94');
+    expect(advisory).toContain('PER-DIMENSION NULL ROWS: d1=94');
+    expect(advisory).toContain('PARTITION TOTAL: 96 of 96');
+    expect(advisory).toContain('FALL-THROUGH SAMPLE (2 row(s))');
+    expect(advisory).toContain('brief-a');
+  });
+
+  it('FAILS OPEN to the statements when the probe cannot run — never to an empty partition', async () => {
+    const { client } = fakeClient(() => {
+      throw new Error('relation "harness_shared.session_briefs" does not exist');
+    });
+    const advisory = (await buildExecutedPartitionAdvisory(MEASURED, { client }))!;
+    // Byte-identical to the statements-only rendering: a probe that could not run
+    // must degrade to homework, NOT to a rendering that reports no fall-through.
+    expect(advisory).toBe(buildNonSummingPartitionAdvisory(MEASURED));
+    expect(advisory).toContain('buckets may not sum');
+    expect(advisory).not.toContain('PARTITION (d1');
+  });
+
+  it('an empty partition reads as UNMEASURED — textually distinct from a failed probe', async () => {
+    const { client } = fakeClient(route({ cells: [], total: [{ total: 0 }], samples: [] }));
+    const advisory = (await buildExecutedPartitionAdvisory(MEASURED, { client }))!;
+    // "no cells" and "the probe never ran" mean opposite things. Collapsing them
+    // reintroduces, through this fix, the exact false negative it exists to stop.
+    expect(advisory).toContain('UNMEASURED');
+    expect(advisory).not.toBe(buildNonSummingPartitionAdvisory(MEASURED));
+  });
+
+  it('reports TRUNCATED past the cap and renders no more than the cap', async () => {
+    const overCap = Array.from({ length: PREDICATE_PARTITION_CELL_LIMIT + 1 }, (_, i) => ({
+      d1: `v${i}`,
+      row_count: 1,
+    }));
+    const { client } = fakeClient(route({ cells: overCap, total: [{ total: 999 }], samples: [] }));
+    const data = (await executePredicatePartition(planPredicatePartition(MEASURED)!, { client }))!;
+    expect(data.truncated).toBe(true);
+    expect(data.cells).toHaveLength(PREDICATE_PARTITION_CELL_LIMIT);
+  });
+
+  it('a partition sitting exactly ON the cap is exhaustive, not truncated', async () => {
+    // The cellLimit + 1 fetch exists for this boundary: reporting an exhaustive
+    // partition as truncated makes the sum check unsatisfiable, and reporting a
+    // truncated one as exhaustive makes it silently wrong.
+    const { client } = fakeClient(
+      route({
+        cells: [
+          { d1: 'a', row_count: 1 },
+          { d1: 'b', row_count: 2 },
+        ],
+        total: [{ total: 3 }],
+        samples: [],
+      }),
+    );
+    const data = (await executePredicatePartition(planPredicatePartition(MEASURED)!, {
+      client,
+      cellLimit: 2,
+    }))!;
+    expect(data.truncated).toBeUndefined();
+    expect(data.cells).toHaveLength(2);
+  });
+
+  it('leaves a non-qualifying read alone — no advisory, and no probe paid for', async () => {
+    const { client, ran } = fakeClient(route({}));
+    const advisory = await buildExecutedPartitionAdvisory(
+      "SELECT id, title FROM harness_shared.work_items WHERE workspace_id = 'papercusp-workspace' LIMIT 5",
+      { client },
+    );
+    expect(advisory).toBeNull();
+    expect(ran, 'the narrow-reads-unchanged boundary must cost a narrow read nothing').toHaveLength(
+      0,
+    );
   });
 });
