@@ -46,9 +46,20 @@ import {
 
 export const CONTROL_ANCHOR_SCHEMA = 'ctrl-v1' as const;
 export const CONTROL_TRANSITION_SCHEMA = 'ctrl-transition-v1' as const;
-/** D-008: duplication is allowed only under a measured, enforced budget. */
-export const CONTROL_ANCHOR_MAX_TOKENS = 384;
-export const CONTROL_TRANSITION_MAX_TOKENS = 384;
+/**
+ * D-008: duplication is allowed only under a measured, enforced budget.
+ *
+ * WI-10002024: the ceiling is ENFORCED AT BUILD TIME by the guard tests, not by
+ * throwing at render time. An overflow at runtime is MARKED (`budget.overBudget`)
+ * and still delivered — see `renderControlTransitionDelivery` for why that is the
+ * only safe direction.
+ *
+ * 512 (was 384): a live session measured 351/384 with ONE mode and TWO stack
+ * layers — 33 tokens of headroom — and a maximal state measured 406. P-021 adds
+ * mode-axis stack layers, which grows exactly the field that overflows.
+ */
+export const CONTROL_ANCHOR_MAX_TOKENS = 512;
+export const CONTROL_TRANSITION_MAX_TOKENS = 512;
 const MAX_SCOPE_ITEMS = 12;
 const MAX_ID_CHARS = 120;
 const CONTROL_ANCHOR_REFRESH_TIMEOUT_MS = 20_000;
@@ -132,7 +143,15 @@ export interface ControlAnchor {
     args: { afterCompaction: true };
     rule: 'replace-full-never-merge-behind';
   };
-  budget: { estimatedTokens: number; maxTokens: number };
+  budget: {
+    estimatedTokens: number;
+    maxTokens: number;
+    /**
+     * WI-10002024: set when the render exceeded `maxTokens`. The block is still
+     * delivered — an overflow is REPORTED, never enforced by deletion.
+     */
+    overBudget?: true;
+  };
 }
 
 export type ControlTransitionOrigin = 'owner' | 'agent' | 'system';
@@ -177,7 +196,15 @@ export interface ControlTransitionDelivery extends ControlTransition {
     | 'schema-mismatch'
     | 'generation-mismatch'
     | 'owner-mismatch';
-  budget: { estimatedTokens: number; maxTokens: number };
+  budget: {
+    estimatedTokens: number;
+    maxTokens: number;
+    /**
+     * WI-10002024: set when the render exceeded `maxTokens`. The block is still
+     * delivered — an overflow is REPORTED, never enforced by deletion.
+     */
+    overBudget?: true;
+  };
 }
 
 interface PersistedControlAnchor {
@@ -384,12 +411,33 @@ export function renderControlTransitionDelivery(
     ...base,
     budget: { estimatedTokens, maxTokens: CONTROL_TRANSITION_MAX_TOKENS },
   });
-  if (estimatedTokens > CONTROL_TRANSITION_MAX_TOKENS) {
-    throw new Error(
-      `control_transition_budget_exceeded: ${estimatedTokens} > ${CONTROL_TRANSITION_MAX_TOKENS} tokens`,
-    );
-  }
-  return { ...base, budget: { estimatedTokens, maxTokens: CONTROL_TRANSITION_MAX_TOKENS } };
+  // WI-10002024: MARK an overflow; never throw it away.
+  //
+  // A throw here does not surface the overflow to anyone — `turn-start-memory`'s
+  // controlPromise swallows it to keep the prompt alive, so the failure is SILENT
+  // and total: the entire ⟦CTRL⟧ block disappears, taking the authority state and
+  // the generation-mismatch signal with it. That signal is the carry marker's only
+  // escape hatch (WI-10002017), and losing it is what bricked a session's whole
+  // tool surface in WI-10002005.
+  //
+  // The costs are asymmetric and one-directional: a few dozen tokens over budget
+  // harms nothing, while deleting the block blinds the session. So the guard must
+  // never be able to cost more than the thing it is rationing.
+  //
+  // This does NOT make the block unbounded. Size is capped by construction in
+  // `normalizeControlAnchorState` (MAX_SCOPE_ITEMS, MAX_ID_CHARS) — that cap, not
+  // this branch, is what actually keeps the render small. The ceiling itself is
+  // enforced at BUILD time by the guard tests, where a failure informs a developer
+  // who can act on it instead of blinding an agent who cannot.
+  const overBudget = estimatedTokens > CONTROL_TRANSITION_MAX_TOKENS;
+  return {
+    ...base,
+    budget: {
+      estimatedTokens,
+      maxTokens: CONTROL_TRANSITION_MAX_TOKENS,
+      ...(overBudget ? { overBudget: true as const } : {}),
+    },
+  };
 }
 
 /** Pure ordering decision. Never returns a generation-behind transition. */
@@ -477,14 +525,18 @@ export function renderControlAnchor(input: {
     ...base,
     budget: { estimatedTokens, maxTokens: CONTROL_ANCHOR_MAX_TOKENS },
   });
-  if (estimatedTokens > CONTROL_ANCHOR_MAX_TOKENS) {
-    throw new Error(
-      `control_anchor_budget_exceeded: ${estimatedTokens} > ${CONTROL_ANCHOR_MAX_TOKENS} tokens`,
-    );
-  }
+  // WI-10002024: mark, never throw — full rationale on the transition renderer
+  // above. The anchor is the steady-state block `coord:orient` hands back, so
+  // destroying it on overflow blinds the agent to its own authority at exactly the
+  // moment that authority is most complex.
+  const overBudget = estimatedTokens > CONTROL_ANCHOR_MAX_TOKENS;
   return {
     ...base,
-    budget: { estimatedTokens, maxTokens: CONTROL_ANCHOR_MAX_TOKENS },
+    budget: {
+      estimatedTokens,
+      maxTokens: CONTROL_ANCHOR_MAX_TOKENS,
+      ...(overBudget ? { overBudget: true as const } : {}),
+    },
   };
 }
 

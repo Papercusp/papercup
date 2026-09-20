@@ -285,3 +285,65 @@ export async function fetchContextPressureReadings(
   }
   return out;
 }
+
+/**
+ * IO seam (EI-23744538757758407): the three facts `raisingLimitWouldClear` needs for ONE owner —
+ * its cached estimate, the soft limit that estimate was bucketed against, and the ceiling
+ * `config:set-compaction-limit` would actually ACCEPT for it.
+ *
+ * Structurally compatible with `ContextPressureHeadroom` in
+ * `scheduler/context-pressure-claim-gate.ts` and deliberately NOT importing it: that gate is PURE
+ * by contract (no PG, no clock) and importing this module, so naming its type here would close an
+ * import cycle. TypeScript's structural typing checks the compatibility at each call site.
+ *
+ * ⚠ NO `{ fleetMember }` ON THE CEILING — THIS IS LOAD-BEARING, NOT AN OVERSIGHT.
+ * The SELF-set path (`agent-tools/config/set-compaction-limit.ts`) computes its cap as
+ * `selfSetCeilingForWindow(window)` with NO role option, so a fleet member's real self-set ceiling
+ * is the un-capped one; only the CROSS-SESSION path passes `{ fleetMember }` (a 250k cap). If we
+ * passed it here we would hand a wedged member a `suggestedLimit` that the very tool our remedy
+ * names would then refuse with `limit_exceeds_cap` — advice that fails on contact, which is
+ * precisely the defect class this fix exists to remove. Mirror the SELF path, never the other one.
+ *
+ * Fails SOFT: any unreadable leg yields nulls, and the predicate treats unknown as "do not
+ * assert", so the remedy falls back to the legacy recovery-path wording rather than guessing.
+ */
+export async function resolveContextPressureHeadroom(ownerId: string): Promise<{
+  contextTokens: number | null;
+  softLimit: number | null;
+  selfSetCeiling: number | null;
+}> {
+  const unknown = { contextTokens: null, softLimit: null, selfSetCeiling: null };
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ context_tokens: number | null; compaction_limit: number | null }[]>`
+      SELECT context_tokens, compaction_limit
+        FROM harness_shared.coord_presence
+       WHERE owner_id = ${ownerId}
+       LIMIT 1
+    `;
+    const row = rows[0];
+    if (row == null) return unknown;
+
+    const { estimateContextWindowForOwner, resolveModelSpecForOwner } = await import(
+      '../../compaction-usage'
+    );
+    const { selfSetCeilingForSpec, selfSetCeilingForWindow } = await import(
+      '../../agent-config-constants'
+    );
+    // Same precedence as the self-set tool: a MEASURED window beats a spec inference, because a
+    // CLI can apply a smaller window than the spec implies and we would otherwise suggest a limit
+    // that is above the session's real ceiling.
+    const measuredWindow = await estimateContextWindowForOwner(ownerId).catch(() => null);
+    const spec = measuredWindow == null ? await resolveModelSpecForOwner(ownerId).catch(() => null) : null;
+    const selfSetCeiling =
+      measuredWindow != null ? selfSetCeilingForWindow(measuredWindow) : selfSetCeilingForSpec(spec);
+
+    return {
+      contextTokens: row.context_tokens,
+      softLimit: row.compaction_limit,
+      selfSetCeiling: Number.isFinite(selfSetCeiling) ? selfSetCeiling : null,
+    };
+  } catch {
+    return unknown;
+  }
+}

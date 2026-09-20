@@ -69,7 +69,11 @@ import {
   fleetLeaderUnavailableRefusal,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
-import { fetchContextPressure, resolveContextPressureRecoveryPath } from '../coordination/context-pressure';
+import {
+  fetchContextPressure,
+  resolveContextPressureRecoveryPath,
+  resolveContextPressureHeadroom,
+} from '../coordination/context-pressure';
 import { decideContextPressureGate, contextCriticalRefusalResult } from '../../scheduler/context-pressure-claim-gate';
 import type { ContextPressureBucket } from '../coordination/context-pressure';
 import { autoBenchContextCriticalCaller as autoBenchContextCriticalCallerCore } from '../../fleet/context-critical-bench';
@@ -1349,16 +1353,28 @@ export default defineTool({
               .then((m) => m.get(ident.ownerId) ?? null)
               .catch(() => null)
           : null;
-        const contextRecovery =
+        // EI-23744538757758407: headroom answers what `recovery` cannot — whether this caller's
+        // soft limit is SATISFIABLE at all. A session whose fixed per-turn baseline already
+        // exceeds it can never clear the band by compacting (a fresh context boots at the same
+        // baseline), so it must be told to raise the limit instead of to discard its work.
+        //
+        // PARALLEL, and still inside the ONE shared budget this closure owns: the block comment
+        // above forbids both hoisting these awaits out and giving them a second budget, so this
+        // adds a concurrent leg rather than a sequential hop. Both fire only when already refusing.
+        const [contextRecovery, contextHeadroom] =
           contextBucket === 'critical' && rawArgs.ignoreContextPressure !== true
-            ? await resolveContextPressureRecoveryPath(ident.ownerId, ident.workspaceId).catch(() => null)
-            : null;
+            ? await Promise.all([
+                resolveContextPressureRecoveryPath(ident.ownerId, ident.workspaceId).catch(() => null),
+                resolveContextPressureHeadroom(ident.ownerId).catch(() => null),
+              ])
+            : [null, null];
         const contextGate = decideContextPressureGate({
           bucket: contextBucket,
           override: rawArgs.ignoreContextPressure === true,
           enabled: gateEnabled,
           overrideArg: 'ignoreContextPressure',
           recovery: contextRecovery,
+          headroom: contextHeadroom,
         });
         if (contextGate.refuse) {
           // P-009: the auto-bench is deliberately NOT armed here. This closure is the

@@ -31,6 +31,7 @@ import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
 import {
   fetchContextPressure,
   resolveContextPressureRecoveryPath,
+  resolveContextPressureHeadroom,
 } from '../coordination/context-pressure';
 import { decideContextPressureGate, contextCriticalRefusalResult } from '../../scheduler/context-pressure-claim-gate';
 import { decideGoalStewardGate, goalStewardRefusalResult } from '../../scheduler/goal-steward-claim-gate';
@@ -136,16 +137,24 @@ export default defineTool({
             .then((m) => m.get(ident.ownerId) ?? null)
             .catch(() => null)
         : null;
-      const recovery =
-        bucket === 'critical' && args.ignoreContextPressure !== true
-          ? await resolveContextPressureRecoveryPath(ident.ownerId, ident.workspaceId).catch(() => null)
-          : null;
+      // EI-23744538757758407: both remedy reads fire ONLY on the refusal path, and in PARALLEL.
+      // Headroom answers a question `recovery` cannot — whether this caller's limit is even
+      // SATISFIABLE — so that a session whose fixed baseline already exceeds its soft limit is
+      // told to raise the limit rather than to compact, which provably cannot clear it.
+      const contextRefusing = bucket === 'critical' && args.ignoreContextPressure !== true;
+      const [recovery, headroom] = contextRefusing
+        ? await Promise.all([
+            resolveContextPressureRecoveryPath(ident.ownerId, ident.workspaceId).catch(() => null),
+            resolveContextPressureHeadroom(ident.ownerId).catch(() => null),
+          ])
+        : [null, null];
       const gate = decideContextPressureGate({
         bucket,
         override: args.ignoreContextPressure === true,
         enabled: gateEnabled,
         overrideArg: 'ignoreContextPressure',
         recovery,
+        headroom,
       });
       if (gate.refuse) {
         return {

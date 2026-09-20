@@ -43,6 +43,11 @@ vi.mock('../coordination/context-pressure', () => ({
     return m;
   }),
   resolveContextPressureRecoveryPath: vi.fn(async () => null),
+  // EI-23744538757758407: the refusal path now reads headroom alongside the recovery path, so a
+  // factory omitting this throws "No export is defined on the mock" instead of exercising the
+  // gate. null is a valid reading — the predicate treats unknown as "do not assert", which keeps
+  // these WI-5940 cases asserting the ORIGINAL compaction wording.
+  resolveContextPressureHeadroom: vi.fn(async () => null),
 }));
 
 vi.mock('../coordination/identity', () => ({

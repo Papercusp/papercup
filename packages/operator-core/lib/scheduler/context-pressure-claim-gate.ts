@@ -50,6 +50,10 @@ import type {
   ContextPressureBucket,
   ContextPressureRecoveryResolution,
 } from '../agent-tools/coordination/context-pressure';
+// VALUE import (not just types): the headroom predicate below re-derives the SAME bucket this
+// gate refused on, against a different denominator. Reusing the real band thresholds is what
+// keeps "raising the limit would clear it" from drifting away from the gauge it speaks about.
+import { deriveContextPressure } from '../agent-tools/coordination/context-pressure';
 
 /** Typed verdict code, named by the filing so a reader can grep the item from the wire. */
 export const CONTEXT_CRITICAL_REFUSAL_CODE = 'claim_refused_context_critical';
@@ -83,10 +87,16 @@ export type ContextPressureGateDecision =
         remedy: string;
         overrideArg: string;
         recoveryPath: ContextPressureRecoveryResolution['path'] | null;
+        /**
+         * Non-null ⇒ `config:set-compaction-limit { limit: suggestedLimit }` PROVABLY clears
+         * this refusal, and the remedy above says so instead of naming a fresh-context path
+         * that cannot. Machine-readable so a caller can act without parsing the prose.
+         */
+        suggestedLimit: number | null;
       };
     };
 
-function contextPressureRemedy(
+function remedyForRecoveryPath(
   recovery: ContextPressureRecoveryResolution | null | undefined,
 ): { label: string; text: string } {
   switch (recovery?.path) {
@@ -134,6 +144,96 @@ function contextPressureRemedy(
 }
 
 /**
+ * The session-shaped facts needed to answer ONE question the recovery-path switch above cannot:
+ * would raising this session's soft limit clear the critical band outright?
+ *
+ * `selfSetCeiling` is the model-derived ceiling `config:set-compaction-limit` would ACCEPT for
+ * this session (`selfSetCeilingForWindow` / `selfSetCeilingForSpec`), not the seeded default —
+ * the two are deliberately different numbers, and it is the gap between them that this predicate
+ * is about.
+ */
+export type ContextPressureHeadroom = {
+  /** The caller's cached context estimate, in tokens — the numerator the bucket was derived from. */
+  contextTokens: number | null | undefined;
+  /** The soft compaction limit that bucket was derived AGAINST. */
+  softLimit: number | null | undefined;
+  /** The ceiling this session is permitted to self-set up to. */
+  selfSetCeiling: number | null | undefined;
+};
+
+/**
+ * PURE. Is "raise the soft limit" a move that PROVABLY clears this refusal?
+ *
+ * WHY THIS EXISTS (EI-23744538757758407). Every remedy in the switch above discards context to
+ * get back under a FIXED limit: self-compaction, a cold-loop settle, a fresh-context wake. All of
+ * them assume the limit is SATISFIABLE — that a fresh context boots below it. On a large-window
+ * model whose fixed per-turn baseline (kernel + playbook + client overlay + spliced project guide
+ * + wire schemas, re-injected every turn) already EXCEEDS a low seeded limit, that assumption is
+ * false: a fresh context boots at the same baseline, is refused again, and the session livelocks
+ * on a remedy that cannot possibly work. Observed instance: a brand-new Opus-5-1M fleet member
+ * seeded at the 250k member cap booted at ~362k (145%) and was refused on its FIRST pull, having
+ * made three read-only calls. Compaction was not merely unhelpful there, it was arithmetically
+ * incapable — and the refusal named it anyway, because the remedy is selected purely by which
+ * recovery PATH is available and never by whether that path can clear the breach.
+ *
+ * Raising the limit is the move that actually works, and unlike every other remedy it costs
+ * nothing and preserves in-flight state. So it is asserted ONLY when arithmetically provable:
+ * re-derive the same bucket against the ceiling, reusing the real band thresholds rather than
+ * restating them, so this can never drift from the gauge it speaks about.
+ */
+export function raisingLimitWouldClear(headroom: ContextPressureHeadroom | null | undefined): {
+  clears: boolean;
+  suggestedLimit: number | null;
+} {
+  const miss = { clears: false, suggestedLimit: null } as const;
+  const contextTokens = headroom?.contextTokens ?? null;
+  const softLimit = headroom?.softLimit ?? null;
+  const ceiling = headroom?.selfSetCeiling ?? null;
+  // Absent facts are UNKNOWN, never an assertion: omitting headroom preserves legacy wording.
+  if (contextTokens == null || softLimit == null || ceiling == null) return miss;
+  if (!Number.isFinite(contextTokens) || !Number.isFinite(softLimit) || !Number.isFinite(ceiling)) {
+    return miss;
+  }
+  // No headroom to raise INTO ⇒ the limit is not the thing standing in the way, and telling a
+  // session at its ceiling to raise it would be exactly the same class of useless advice this
+  // predicate exists to stop emitting.
+  if (ceiling <= softLimit) return miss;
+  // Deliberately NOT staleness-checked: the gate already refused on this very estimate, so asking
+  // what it implies against a different denominator is strictly arithmetic. Passing no timestamp
+  // is what keeps this from degrading a reading the caller has already accepted into `null`.
+  if (deriveContextPressure(contextTokens, ceiling) === 'critical') return miss;
+  return { clears: true, suggestedLimit: ceiling };
+}
+
+/**
+ * The remedy, with the headroom check taking PRECEDENCE over every recovery path.
+ *
+ * That precedence is the whole fix and it is not an optimisation: each path in the switch buys a
+ * FRESH CONTEXT, and none of them lowers the fixed baseline a fresh context boots at. When the
+ * limit itself is what is breached, discarding the session's in-flight work cannot clear it — so
+ * a cold-loop settle is just as incapable here as self-compaction, and must not be offered first.
+ */
+function contextPressureRemedy(
+  recovery: ContextPressureRecoveryResolution | null | undefined,
+  headroom?: ContextPressureHeadroom | null,
+): { label: string; text: string; suggestedLimit: number | null } {
+  const raise = raisingLimitWouldClear(headroom);
+  if (raise.clears) {
+    return {
+      label: 'raise the soft compaction limit, then re-pull',
+      suggestedLimit: raise.suggestedLimit,
+      text:
+        `raise your soft compaction limit — config:set-compaction-limit { limit: ${raise.suggestedLimit} } — ` +
+        'then re-pull WITHOUT compacting. Your fixed per-turn baseline already exceeds your current ' +
+        'limit, so compaction cannot clear this and neither can any other fresh-context wake: a fresh ' +
+        'context boots at the same baseline and is refused again. Raising the limit is within your ' +
+        'model-derived ceiling, costs nothing, and keeps your in-flight state.',
+    };
+  }
+  return { ...remedyForRecoveryPath(recovery), suggestedLimit: null };
+}
+
+/**
  * The refusal text. Shaped like `concurrencyBlockedRefusal`: cause first, explicit
  * "the lane was NOT evaluated" disclaimer, then the remedy — and it names the override so a
  * caller holding a contradicting live gauge is never left without a move.
@@ -141,8 +241,9 @@ function contextPressureRemedy(
 function contextCriticalRefusalMessage(
   overrideArg: string,
   recovery: ContextPressureRecoveryResolution | null | undefined,
+  headroom?: ContextPressureHeadroom | null,
 ): string {
-  const remedy = contextPressureRemedy(recovery);
+  const remedy = contextPressureRemedy(recovery, headroom);
   return (
     'context pressure CRITICAL: your cached context estimate is at/above the critical band, and an ' +
     'agent that compacts mid-task carries in-flight state worst — so no item was served. ' +
@@ -170,6 +271,12 @@ export function decideContextPressureGate(input: {
   overrideArg?: string;
   /** Optional async-derived remedy facts; omitted preserves the legacy wording. */
   recovery?: ContextPressureRecoveryResolution | null;
+  /**
+   * Optional session headroom (estimate / soft limit / self-set ceiling). Omitted preserves the
+   * legacy wording exactly; supplied, it lets the remedy name the ONE move that can clear a
+   * breach caused by an unsatisfiable limit rather than an over-full session.
+   */
+  headroom?: ContextPressureHeadroom | null;
 }): ContextPressureGateDecision {
   const bucket = input.bucket ?? null;
   const overrideArg = input.overrideArg ?? 'ignoreContextPressure';
@@ -179,19 +286,23 @@ export function decideContextPressureGate(input: {
   if (bucket == null) return { refuse: false, reason: 'pressure-unknown', bucket: null };
   if (bucket === 'ok') return { refuse: false, reason: 'pressure-ok', bucket };
   if (bucket === 'high') return { refuse: false, reason: 'pressure-high', bucket };
+  // Computed ONCE: the prose remedy and the machine-readable diagnosis must never disagree about
+  // which move is being prescribed — deriving them from two separate calls is how they drift.
+  const remedy = contextPressureRemedy(input.recovery, input.headroom);
   return {
     refuse: true,
     reason: 'pressure-critical',
     bucket: 'critical',
     code: CONTEXT_CRITICAL_REFUSAL_CODE,
-    error: contextCriticalRefusalMessage(overrideArg, input.recovery),
+    error: contextCriticalRefusalMessage(overrideArg, input.recovery, input.headroom),
     diagnosis: {
       contextPressureBlocked: true,
       contextPressure: 'critical',
       laneEvaluated: false,
-      remedy: contextPressureRemedy(input.recovery).label,
+      remedy: remedy.label,
       overrideArg,
       recoveryPath: input.recovery?.path ?? null,
+      suggestedLimit: remedy.suggestedLimit,
     },
   };
 }
