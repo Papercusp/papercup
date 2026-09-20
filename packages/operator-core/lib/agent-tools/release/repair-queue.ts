@@ -110,8 +110,21 @@ const argsSchema = z.preprocess(
     // The read branch has no arguments. Treat an omitted op on an otherwise
     // empty object as the read operation, while leaving malformed branch
     // payloads subject to the discriminated-union requirements below.
-    if (value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) {
-      return { op: 'get' };
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      const record = value as Record<string, unknown>;
+      if (Object.keys(record).length === 0) {
+        return { op: 'get' };
+      }
+      // `status` is the read verb across the sibling release:* family —
+      // `release:deploy { op: 'status' }` is the documented read for the very
+      // same intent — so agents reach for it here and get an invalid_input
+      // refusal naming an enum with no `status` in it. Measured 3x in 24h from
+      // 2 distinct agents. Accept it as an alias for the read branch rather
+      // than leaving the family's naming split. The result `op` echoes the
+      // normalized `get`, so downstream readers see one canonical value.
+      if (record.op === 'status') {
+        return { ...record, op: 'get' };
+      }
     }
     return value;
   },

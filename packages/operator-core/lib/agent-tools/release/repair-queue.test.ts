@@ -246,6 +246,18 @@ describe('release:repair-queue', () => {
     expect(omittedOp.success && omittedOp.data).toEqual({ op: 'get' });
     expect(tool.args.safeParse({ op: 'admit' }).success).toBe(false);
     expect(tool.args.safeParse({ op: 'retire' }).success).toBe(false);
+    // `status` is the read verb across the sibling release:* family —
+    // `release:deploy { op: 'status' }` is the documented read for the same
+    // intent — so agents reach for it here too (measured 3x in 24h from 2
+    // distinct agents). It aliases onto the read branch rather than leaving the
+    // family's naming split, and must NORMALIZE so the parsed op is `get`.
+    const statusAlias = tool.args.safeParse({ op: 'status' });
+    expect(statusAlias.success).toBe(true);
+    expect((statusAlias as { data: { op: string } }).data.op).toBe('get');
+    // Falsifiability control: a neighbouring unknown op must STILL be refused,
+    // so the assertions above cannot pass merely because the schema went
+    // permissive. If this line ever goes green, the alias is over-broad.
+    expect(tool.args.safeParse({ op: 'state' }).success).toBe(false);
     expect(tool.effectForCall?.({} as never)).toBe('read');
     expect(tool.effectForCall?.({ op: 'admit', confirm: false } as never)).toBe('read');
     expect(tool.effectForCall?.({ op: 'admit', confirm: true } as never)).toBe('write');
