@@ -16,6 +16,7 @@ import {
   evaluateGateVerdictFreshness,
   GATE_FIRE_INTERVAL_MS,
   reconcileGateVerdictFreshnessWithCheckpointRun,
+  reconcileGateVerdictFreshnessWithRepairQueue,
 } from './gate-verdict-freshness';
 // EI-20571364274022293: the reasonCode's whole contract is what this correction does with it, so
 // the two are asserted together rather than each against its own private idea of the other.
@@ -45,7 +46,13 @@ describe('evaluateGateVerdictFreshness', () => {
     const v = evaluateGateVerdictFreshness(LIVE_INCIDENT);
     expect(v.stale).toBe(true);
     expect(v.reason).toMatch(/without producing a new one/);
-    expect(v.reason).toMatch(/SKIPPED/);
+    // WI-10002059: this assertion used to be `toMatch(/SKIPPED/)`, pinning rule 2's claim that
+    // the runs were being SKIPPED on the run-lock. That cause is NOT measured here — a converging
+    // frozen repair queue produces identical timestamps — and asserting it sent readers to cancel
+    // or force-fire a HEALTHY gate, destroying a real ~55min suite. Rule 2 now reports what it
+    // OBSERVED and enumerates the candidate causes; the disambiguation lives in the reconcilers.
+    expect(v.reason).toMatch(/CAUSE is not measured here/);
+    expect(v.reason).not.toMatch(/being SKIPPED \(run-lock contention\)/);
     // EI-13714: writer-starvation is UNVERIFIED, not proof of green — callers must not treat it
     // the same as a pin-advance (see the pin-advance case below + git-pipeline-stats.ts).
     expect(v.reasonCode).toBe('writer-starved');
@@ -515,6 +522,122 @@ describe('evaluateGateVerdictFreshness', () => {
       expect(
         reconcileGateVerdictFreshnessWithCheckpointRun(stronger, { active: true, activeSource: 'run-lock' }),
       ).toEqual(stronger);
+    });
+  });
+
+  // WI-10002059. Rule 2 fires on a purely TEMPORAL observation ("fired since the last verdict")
+  // and used to ASSERT run-lock contention — a mechanism it never measured. A converging frozen
+  // repair queue produces the identical timestamps while the gate is HEALTHY, and the two demand
+  // OPPOSITE responses (triage the lock vs. leave it alone), so blaming contention actively
+  // misdirects: cancelling a healthy run destroys a real ~55min suite.
+  describe('reconcileGateVerdictFreshnessWithRepairQueue — convergence is not contention', () => {
+    const writerStarved = evaluateGateVerdictFreshness(LIVE_INCIDENT);
+
+    it('is writer-starved to begin with, and never asserts the run-lock as the measured cause', () => {
+      // Guards the rule-2 prose itself: the bug was a confident causal claim, so the absence of
+      // that claim is the thing worth pinning, not merely the presence of the new one.
+      expect(writerStarved.reasonCode).toBe('writer-starved');
+      expect(writerStarved.reason).not.toMatch(/being SKIPPED \(run-lock contention\)/);
+      expect(writerStarved.reason).toMatch(/CAUSE is not measured here/);
+    });
+
+    it('reclassifies on the gate\'s OWN recorded disposition (direct evidence)', () => {
+      const out = reconcileGateVerdictFreshnessWithRepairQueue(writerStarved, {
+        status: 'repair-in-progress',
+        phase: 'ready-to-verify',
+      });
+
+      expect(out.stale).toBe(true);
+      expect(out.reasonCode).toBe('repair-converging');
+      expect(out.reason).toMatch(/NOT being skipped on the run-lock/);
+      expect(out.reason).toMatch(/recorded 'repair-in-progress'/);
+      expect(out.reason).toMatch(/do NOT release:checkpoint-cancel/i);
+      // The staleness itself must survive: convergence explains the missing verdict, it does not
+      // prove the red is wrong. Reporting green here would be the opposite error.
+      expect(out.stale).toBe(true);
+    });
+
+    it('reclassifies on structural phase evidence when no disposition was recorded', () => {
+      const out = reconcileGateVerdictFreshnessWithRepairQueue(writerStarved, {
+        status: null,
+        phase: 'awaiting-fixer',
+      });
+      expect(out.reasonCode).toBe('repair-converging');
+      expect(out.reason).toMatch(/phase 'awaiting-fixer'/);
+    });
+
+    it.each([
+      ['no queue at all', null],
+      ['a BLOCKED queue, which is not converging', { status: null, phase: 'blocked' as const }],
+      ['a queue whose recorded status is unrelated', { status: 'run-lock', phase: null }],
+    ])('preserves writer-starved for %s', (_label, reading) => {
+      expect(reconcileGateVerdictFreshnessWithRepairQueue(writerStarved, reading)).toEqual(writerStarved);
+    });
+
+    it('PRECEDENCE: a live run still wins — run-in-flight is not downgraded to repair-converging', () => {
+      // Composition order is load-bearing at the call site: "wait for THIS run" is more immediate
+      // and more actionable than the standing convergence that run happens to sit inside.
+      const inFlight = reconcileGateVerdictFreshnessWithCheckpointRun(writerStarved, {
+        active: true,
+        activeSource: 'run-lock',
+      });
+      expect(inFlight.reasonCode).toBe('run-in-flight');
+      expect(
+        reconcileGateVerdictFreshnessWithRepairQueue(inFlight, {
+          status: 'repair-in-progress',
+          phase: 'ready-to-verify',
+        }),
+      ).toEqual(inFlight);
+    });
+
+    it('preserves a stronger freshness rule even while a queue converges', () => {
+      const stronger = evaluateGateVerdictFreshness({
+        ...LIVE_INCIDENT,
+        observedAtMs: Date.now() - 60_000,
+        inFlightRetriage: {
+          fromCandidate: LIVE_INCIDENT.observedFromPin,
+          refiringCandidate: '221dc407abcd',
+          refireAttempt: 1,
+          maxRefires: 2,
+          failingFiles: ['a.test.ts'],
+          observedAtMs: Date.now(),
+        },
+      });
+      expect(stronger.reasonCode).toBe('refire-in-flight');
+      expect(
+        reconcileGateVerdictFreshnessWithRepairQueue(stronger, {
+          status: 'repair-in-progress',
+          phase: 'ready-to-verify',
+        }),
+      ).toEqual(stronger);
+    });
+
+    // PERMANENT WRONG-IMPLEMENTATION CONTROL. Keep this here: it is what proves the guard above
+    // can actually fail. The naive rule the system shipped — "fired without a verdict ⇒ run-lock
+    // contention" — is expressed directly and asserted to DIVERGE from the real one on the exact
+    // input that was measured in production. If these two ever stop diverging, the distinction
+    // has been lost and every reader is being misdirected again.
+    it('DIVERGES from the naive "fired-without-verdict ⇒ contention" rule', () => {
+      const naiveContentionVerdict = (f: typeof writerStarved) => ({
+        ...f,
+        reason: 'its runs are being SKIPPED (run-lock contention), so this red is unverified',
+        reasonCode: 'writer-starved' as const,
+      });
+
+      const convergingQueue = { status: 'repair-in-progress' as const, phase: 'ready-to-verify' as const };
+      const real = reconcileGateVerdictFreshnessWithRepairQueue(writerStarved, convergingQueue);
+      const naive = naiveContentionVerdict(writerStarved);
+
+      expect(real.reasonCode).not.toBe(naive.reasonCode);
+      expect(real.reason).not.toBe(naive.reason);
+      expect(naive.reason).toMatch(/run-lock contention/);
+      expect(real.reason).not.toMatch(/being SKIPPED \(run-lock contention\)/);
+
+      // Calibration: on an input where the two SHOULD agree (no queue), they must agree — else
+      // this control would "pass" against an implementation that simply never matches anything.
+      expect(reconcileGateVerdictFreshnessWithRepairQueue(writerStarved, null).reasonCode).toBe(
+        naive.reasonCode,
+      );
     });
   });
 });

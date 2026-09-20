@@ -97,6 +97,9 @@
  */
 
 import { describeRefireBudget, type StoredInFlightRetriage } from './in-flight-retriage';
+// `import type` only — erased at compile time, so reusing the queue's own phase union here
+// cannot create a runtime cycle, and the union is not re-declared (derived-truth ladder).
+import type { FrozenCandidateRepairPhase } from './frozen-candidate-repair-queue';
 
 /** One green-checkpoint fire interval. The routine is hourly; the 1.5× slack below keeps a fire
  *  that lands a little late from reading as a starved writer. */
@@ -198,6 +201,17 @@ export interface GateVerdictFreshness {
    *                          pin had advanced ~2h BEFORE the first red and the writer — unable to
    *                          resolve the pin — had frozen `lastFrom` at a pre-incident value).
    *   - 'writer-starved'   — no new evidence either way; the true colour is genuinely unknown.
+   *                          ⚠ This code means ONLY "fired without a new verdict". It does NOT
+   *                          establish WHY, and must never be rendered as a claim about the
+   *                          run-lock (see `reconcileGateVerdictFreshnessWithRepairQueue`).
+   *   - 'repair-converging' — the fires produced no verdict because a frozen repair queue is
+   *                          CONVERGING: those runs execute to completion and return
+   *                          `{green:null, reason:'repair-in-progress'}`, which is never banked
+   *                          as a verdict, so the staleness clock cannot reset. The gate is
+   *                          HEALTHY. Like 'writer-starved' the true colour is unknown, but the
+   *                          correct response is the opposite of contention triage: let the
+   *                          queue converge. Cancelling or force-firing here destroys a real
+   *                          ~55min suite and makes the qualification terminal code-inconclusive.
    *   - 'retriage-proven'  — this verdict's own named failures are proven not to reproduce at a
    *                          newer tip, but that is not a full-suite green proof.
    *   - 'refire-in-flight' — a stale-candidate auto-refire for this exact red is running RIGHT
@@ -216,6 +230,7 @@ export interface GateVerdictFreshness {
     | 'pin-advance-unordered'
     | 'writer-starved'
     | 'run-in-flight'
+    | 'repair-converging'
     | 'retriage-proven'
     | 'refire-in-flight'
     | 'candidate-fossil'
@@ -266,6 +281,81 @@ export function reconcileGateVerdictFreshnessWithCheckpointRun(
       `${measuredActive.activeSource === 'run-lock' ? 'via the run lock' : 'via gate authority environment + cgroup'}), so its verdict is pending — do NOT fire release:checkpoint-run or fix ` +
       `the named tests while it runs; wait for this active run's verdict`,
     reasonCode: 'run-in-flight',
+  };
+}
+
+/**
+ * The frozen-repair-queue reading that may refine a freshness verdict. Structural on purpose: the
+ * phase is the only field this judgement needs, and a narrow shape keeps the pure evaluator from
+ * depending on the queue module's full row.
+ */
+export interface FrozenRepairConvergenceReading {
+  /**
+   * The gate's OWN recorded disposition for the last completed run
+   * (`gate.inconclusive.status`). This is the strongest evidence available: it is a direct
+   * measurement of why no verdict was banked, not an inference from surrounding state.
+   */
+  status?: 'repair-in-progress' | 'repair-staging-mismatch' | (string & {}) | null;
+  /**
+   * Structural corroboration: a frozen queue exists and is in a converging phase. Used when no
+   * recorded disposition is available, and to name the phase in the message.
+   */
+  phase?: FrozenCandidateRepairPhase | null;
+}
+
+/** The recorded dispositions that mean "this run completed but banked no verdict, by design". */
+const REPAIR_NON_VERDICT_STATUSES = new Set(['repair-in-progress', 'repair-staging-mismatch']);
+
+/**
+ * PURE: distinguish a CONVERGING frozen repair queue from true writer starvation.
+ *
+ * Rule 2 fires on a purely TEMPORAL observation — the routine fired since the last verdict — and
+ * that observation has several causes demanding OPPOSITE actions. Two are already separated: a run
+ * executing right now becomes `run-in-flight` via {@link reconcileGateVerdictFreshnessWithCheckpointRun}.
+ * This reconciler separates the third: while freeze-and-converge holds a frozen candidate, every
+ * run executes to completion and returns `{green:null, reason:'repair-in-progress'}`, which is
+ * never banked as a verdict — so `observedAt` stays frozen while `last_fired_at` advances, exactly
+ * like a skipped fire, and the reading defaults to blaming the run-lock.
+ *
+ * That default is not merely vague, it is INVERTED: it sends readers to cancel or force-fire a
+ * healthy gate. Measured 2026-09-20 (WI-10002059) — the run judged a repair head, self-refired when
+ * an admission advanced it mid-run, judged the new head, and ended `reason:'repair-in-progress'`.
+ *
+ * Applied AFTER the checkpoint-run reconciler so a live run still wins: an in-flight run is the
+ * more immediate truth ("wait for this run") than the standing convergence it happens to sit in.
+ *
+ * `'blocked'` is deliberately NOT treated as converging — a blocked queue is not making progress,
+ * so it keeps the original reading rather than being reassured about.
+ */
+export function reconcileGateVerdictFreshnessWithRepairQueue(
+  freshness: GateVerdictFreshness,
+  queue: FrozenRepairConvergenceReading | null | undefined,
+): GateVerdictFreshness {
+  if (freshness.reasonCode !== 'writer-starved' || !queue) return freshness;
+
+  // Direct evidence: the gate itself recorded WHY the last completed run banked no verdict.
+  const recorded = typeof queue.status === 'string' && REPAIR_NON_VERDICT_STATUSES.has(queue.status);
+  // Structural evidence: a frozen queue exists in a phase that is actively converging. 'blocked'
+  // is excluded on purpose — a blocked queue is NOT making progress, so reassuring a reader that
+  // "the gate is healthy" would trade one wrong conclusion for another.
+  const converging = queue.phase != null && queue.phase !== 'blocked';
+  if (!recorded && !converging) return freshness;
+
+  const evidence = recorded
+    ? `the gate recorded '${queue.status}' for its last completed run`
+    : `a frozen repair queue is converging (phase '${queue.phase}')`;
+
+  return {
+    ...freshness,
+    reason:
+      `the green-checkpoint has fired since this verdict without producing a new one, but its runs are ` +
+      `NOT being skipped on the run-lock: ${evidence}. A converging run executes to COMPLETION and then ` +
+      `returns 'repair-in-progress', which is never banked as a verdict — so the staleness clock cannot ` +
+      `reset and this red stays unverified while the gate is HEALTHY. Do NOT release:checkpoint-cancel and ` +
+      `do NOT force a run to "unwedge" it: cancelling destroys a real ~55min suite and makes the ` +
+      `qualification terminal code-inconclusive. Let the queue converge, or land a fix onto the frozen ` +
+      `lineage with release:repair-queue { op:'admit', paths:[…] }`,
+    reasonCode: 'repair-converging',
   };
 }
 
@@ -425,8 +515,11 @@ export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): 
     return {
       stale: true,
       reason:
-        `the green-checkpoint has fired since this verdict without producing a new one (last verdict ${hrs}h before the last fire) — ` +
-        `its runs are being SKIPPED (run-lock contention), so this red is unverified`,
+        `the green-checkpoint has fired since this verdict without producing a new one (last verdict ${hrs}h before the last fire), ` +
+        `so this red is unverified. The CAUSE is not measured here: a fire produces no verdict when it is ` +
+        `skipped on the run-lock, when a run is still executing, AND when a frozen repair queue is converging ` +
+        `(those runs complete but return 'repair-in-progress', which is never banked). Establish which before ` +
+        `acting — they demand opposite responses, and cancelling a healthy run destroys a real ~55min suite`,
       reasonCode: 'writer-starved',
       candidateAgeMs,
     };

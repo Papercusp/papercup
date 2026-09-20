@@ -61,7 +61,11 @@ import {
 } from './release/in-flight-retriage';
 import { gateAbortLever, gateAbortRefireClause, gateAbortVintage } from './release/gate-abort-status';
 import { formatIdleAge } from './format/relative-time';
-import { reconcileGateVerdictFreshnessWithCheckpointRun } from './release/gate-verdict-freshness';
+import {
+  reconcileGateVerdictFreshnessWithCheckpointRun,
+  reconcileGateVerdictFreshnessWithRepairQueue,
+  type GateVerdictFreshness,
+} from './release/gate-verdict-freshness';
 import { dispatchedSweepMatcher } from './routines-dispatch-derivation';
 import { readGateOwnership, type CellOwnership } from './coord/gate-ownership';
 import { readGateCandidateFailures, type GateCandidateFailures } from './gate-candidate-failures';
@@ -1437,15 +1441,14 @@ export interface PipelinePosition {
      *  `'pin-advance-unordered'` (EI-20571364274022293: the pin moved, but possibly BEFORE this
      *  red streak began) — prove only that the cached red is UNVERIFIED, not that the gate is
      *  green. Null when `verdictStale` is false. */
-    verdictStaleReasonCode:
-      | 'pin-advance'
-      | 'pin-advance-unordered'
-      | 'writer-starved'
-      | 'run-in-flight'
-      | 'retriage-proven'
-      | 'refire-in-flight'
-      | 'candidate-fossil'
-      | null;
+    /**
+     * DERIVED from the evaluator that produces it, never re-declared (derived-truth ladder).
+     * This was a hand-copied duplicate of the union and silently went stale the moment a new
+     * reason code was added (WI-10002059 added 'repair-converging'), stranding the assignment
+     * below with a TS2322 whose text elides the offending member behind "...22 more...".
+     * `git-pipeline-stats.ts` already sourced it this way; both now share one definition.
+     */
+    verdictStaleReasonCode: GateVerdictFreshness['reasonCode'];
     /** EI-19325520469216548: how stale the judged candidate was at verdict time, in ms — present
      *  even when it falls short of the 'candidate-fossil' threshold (the routine ~4min quiet-cut
      *  lag is normal). Null when unmeasured. */
@@ -5693,14 +5696,25 @@ export async function gitPipelinePosition(
   // long-running suite those timestamps necessarily look writer-starved until the run completes.
   // Reconcile that one ambiguous classification with the LIVE run-lock measurement, while
   // preserving cache-only/unknown liveness and every stronger freshness rule.
-  const gateFreshness = reconcileGateVerdictFreshnessWithCheckpointRun(
+  // WI-10002059: a THIRD cause of "fired without a verdict" that rule 2 blamed on the run-lock.
+  // While freeze-and-converge holds a frozen candidate, runs execute to COMPLETION and return
+  // 'repair-in-progress', which is never banked — so the timestamps look identical to a skipped
+  // fire while the gate is healthy. Applied AFTER the run-lock reconciler so a live run still
+  // wins: "wait for this run" is more immediate than the convergence it sits inside.
+  const gateFreshness = reconcileGateVerdictFreshnessWithRepairQueue(
+    reconcileGateVerdictFreshnessWithCheckpointRun(
+      {
+        stale: snap.gate.verdictStale,
+        reason: snap.gate.verdictStaleReason,
+        reasonCode: snap.gate.verdictStaleReasonCode ?? null,
+        candidateAgeMs: snap.gate.candidateAgeMs,
+      },
+      checkpointRunInFlight,
+    ),
     {
-      stale: snap.gate.verdictStale,
-      reason: snap.gate.verdictStaleReason,
-      reasonCode: snap.gate.verdictStaleReasonCode ?? null,
-      candidateAgeMs: snap.gate.candidateAgeMs,
+      status: snap.gate.inconclusive?.status ?? null,
+      phase: snap.gate.repairQueue?.phase ?? null,
     },
-    checkpointRunInFlight,
   );
   // P-005: ONE reading, used both by ownerBrief below and verdictProvenance later.
   // Hoisting the local avoids either composer re-reading deploy state or the two
