@@ -1113,8 +1113,29 @@ export function formatDeadRoutinesSummary(wf: {
     gitSyncCoverage != null &&
     gitSyncCoverage.active > 0 &&
     gitSyncCoverage.overdue * 2 > gitSyncCoverage.active;
+  // WI-10002084 — LICENSE THE SHARED-TREE SENTENCE ON THE SHARED TREE'S OWN ROW.
+  //
+  // `gitSyncHasStrictMajority` is a ratio over EVERY git-sync row in the workspace, and those
+  // rows belong to ~67 installs (library submodules, toy pots — `hello-world`, `spoon-knife`,
+  // `papercusp/libs/generic/*`) that have nothing to do with the canonical shared checkout.
+  // A sentence about the shared tree cannot be licensed by a population that is mostly not
+  // the shared tree, so consult the release install's OWN row (`releaseInstallSlug()`).
+  //
+  // REFUTATION-ONLY, for the same reason as the commit-evidence guard below: a measured-current
+  // home row may WITHHOLD the strong claim, but nothing here may manufacture one the ratio did
+  // not already license. That makes `'absent'` deliberately NON-refuting — it is an UNMEASURED
+  // leg, not a healthy one, so it leaves the inference exactly as it stood and a genuine engine
+  // freeze still pages at full severity.
+  const gitSyncHomeInstall = gitSyncCoverage?.homeInstall;
+  const homeInstallCurrent = gitSyncHomeInstall === 'live';
+  const homeInstallNote =
+    gitSyncHomeInstall === 'overdue'
+      ? ", including the shared tree's own"
+      : gitSyncHomeInstall === 'live'
+        ? ", but not the shared tree's own"
+        : '';
   const gitSyncCoverageNote = gitSyncCoverage
-    ? ` (${gitSyncCoverage.overdue} of ${gitSyncCoverage.active} active rows overdue)`
+    ? ` (${gitSyncCoverage.overdue} of ${gitSyncCoverage.active} active rows overdue${homeInstallNote})`
     : '';
   // EI-23794126226234520 — REFUTATION-ONLY use of direct commit evidence.
   //
@@ -1137,9 +1158,11 @@ export function formatDeadRoutinesSummary(wf: {
       : null;
   const commitsObservedRecently = syncAgoMs !== null && syncAgoMs <= syncWindowMs;
   const syncAgoNote = syncAgoMs !== null ? `${Math.round(syncAgoMs / 1000)}s ago` : 'recently';
-  const consequence = critical.includes('git-sync') && gitSyncHasStrictMajority && !commitsObservedRecently
+  const consequence = critical.includes('git-sync') && gitSyncHasStrictMajority && !commitsObservedRecently && !homeInstallCurrent
     ? ` git-sync is among them${gitSyncCoverageNote}, so NOTHING in the shared tree is being committed — the release gate ` +
       'will keep re-judging a candidate that structurally cannot contain anyone\'s fix.'
+    : critical.includes('git-sync') && gitSyncHasStrictMajority && homeInstallCurrent
+      ? ` Fleet-blocking: git-sync${gitSyncCoverageNote}; the shared tree's own git-sync row is on schedule, so this is not a fleet-wide commit outage.`
     : critical.includes('git-sync') && gitSyncHasStrictMajority
       ? ` Fleet-blocking: git-sync${gitSyncCoverageNote}; a successful sync ${syncAgoNote} directly contradicts a fleet-wide commit outage.`
     : critical.includes('git-sync')

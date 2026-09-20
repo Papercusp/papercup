@@ -238,6 +238,23 @@ export interface WorkItemsHealth {
 export interface DeadRoutineNameCoverage {
   overdue: number;
   active: number;
+  /**
+   * WI-10002084 — the state of the RELEASE install's OWN row for this routine, i.e. the
+   * install that owns the canonical shared checkout ({@link releaseInstallSlug}).
+   *
+   * `overdue` / `active` above are a ratio across EVERY install in the workspace, and most
+   * of them are library submodules and toy pots (`hello-world`, `spoon-knife`,
+   * `papercusp/libs/generic/*` — 67 git-sync rows across 67 installs, measured
+   * 2026-09-20) that have nothing to do with the shared tree. A sentence about the shared
+   * tree therefore cannot be licensed by that ratio; it has to be licensed by this row.
+   *
+   * THREE-VALUED ON PURPOSE. `'absent'` is not a variant of `'live'`: it means the release
+   * install has no active row for this routine at all, so the per-install question was
+   * NOT MEASURED. Collapsing it into a boolean is what lets an unmeasured leg read as a
+   * measured one — see the consumer in `formatDeadRoutinesSummary` for which way that
+   * ambiguity is allowed to resolve.
+   */
+  homeInstall?: 'overdue' | 'live' | 'absent';
 }
 
 /** Work-feed flow. */

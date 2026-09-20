@@ -727,16 +727,25 @@ export function countStuckFrontier(rows: ReadonlyArray<{ ageDays?: number; title
  * exclusion therefore matches claimDueRoutine's own PURE-loop definition
  * (`isLoop && !hasRecurrence`).
  */
-export async function readDeadRoutines(sql: Sql, overdueMs: number, workspaceId: string): Promise<DeadRoutineCensus> {
+export async function readDeadRoutines(
+  sql: Sql,
+  overdueMs: number,
+  workspaceId: string,
+  homeInstallSlug: string = releaseInstallSlug(),
+): Promise<DeadRoutineCensus> {
   const rows = await sql<Array<{
     name: string;
     overdue_total: number;
     scope_total: number;
     overdue_name_total: number;
     active_name_total: number;
+    home_active_total: number;
+    home_overdue_total: number;
   }>>`
     WITH scope AS (
-      SELECT name, next_fire_at FROM harness_shared.routines
+      SELECT name, install_slug, next_fire_at,
+             (next_fire_at < now() - make_interval(secs => ${overdueMs / 1000})) AS is_overdue
+        FROM harness_shared.routines
        WHERE active = true AND next_fire_at IS NOT NULL
          AND workspace_id = ${workspaceId}
          AND NOT ( reschedule_interval_sec IS NOT NULL
@@ -744,20 +753,27 @@ export async function readDeadRoutines(sql: Sql, overdueMs: number, workspaceId:
                    AND NOT jsonb_exists(trigger_config, 'rrule') )
     )
     , scope_counts AS (
-      SELECT name, count(*)::int AS active_name_total
+      SELECT name,
+             count(*)::int AS active_name_total,
+             count(*) FILTER (WHERE install_slug = ${homeInstallSlug})::int
+               AS home_active_total,
+             count(*) FILTER (WHERE install_slug = ${homeInstallSlug} AND is_overdue)::int
+               AS home_overdue_total
         FROM scope
        GROUP BY name
     )
     , overdue AS (
       SELECT name, next_fire_at
         FROM scope
-       WHERE next_fire_at < now() - make_interval(secs => ${overdueMs / 1000})
+       WHERE is_overdue
     )
     SELECT overdue.name,
            count(*) OVER ()::int AS overdue_total,
            (SELECT count(*)::int FROM scope) AS scope_total,
            count(*) OVER (PARTITION BY overdue.name)::int AS overdue_name_total,
-           scope_counts.active_name_total
+           scope_counts.active_name_total,
+           scope_counts.home_active_total,
+           scope_counts.home_overdue_total
       FROM overdue
       JOIN scope_counts ON scope_counts.name = overdue.name
      ORDER BY overdue.next_fire_at ASC
@@ -778,7 +794,15 @@ export async function readDeadRoutines(sql: Sql, overdueMs: number, workspaceId:
   }
   const routineCoverage: Record<string, DeadRoutineNameCoverage> = {};
   for (const row of rows) {
-    routineCoverage[row.name] = { overdue: row.overdue_name_total, active: row.active_name_total };
+    // WI-10002084 — `home_active_total === 0` is NOT "the home install is fine": it means the
+    // release install has no active row for this routine, so its state was never measured.
+    // It gets its own variant so a consumer cannot read an unmeasured leg as a measured one.
+    routineCoverage[row.name] = {
+      overdue: row.overdue_name_total,
+      active: row.active_name_total,
+      homeInstall:
+        row.home_active_total === 0 ? 'absent' : row.home_overdue_total > 0 ? 'overdue' : 'live',
+    };
   }
   return summarizeDeadRoutines(rows.map((r) => r.name), {
     count: rows[0].overdue_total,
