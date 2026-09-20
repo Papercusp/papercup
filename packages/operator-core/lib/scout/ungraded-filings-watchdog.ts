@@ -76,6 +76,7 @@ import {
   DEFAULT_UNGRADED_EPOCH_POLICY,
   SU_IDEATE_UNGRADED_EPOCH_MS,
   countActionableUngradedOlderThan,
+  countActionableUngradedOutsideScopes,
   epochMsForOrigin,
   groupFilingsByOrigin,
   readActionableUngradedFilings,
@@ -443,6 +444,56 @@ export async function ungradedFilingsSweep(opts: { now?: number } = {}): Promise
           eligibleBacklogCount: 0,
           staleCount: 0,
           reason: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+    // WI-10002098: the coverage probe runs on EVERY tick, NOT only when there are no
+    // scopes at all. Gated on `scopes.length === 0` it could only ever catch TOTAL
+    // blindness, so a PARTIAL miss was undetectable by construction — which is how 249
+    // workspace-global `scout` rows sat unreachable for a month while every registered
+    // partition graded normally and current (EI-23811029152367526). Zero alarms fired,
+    // because `scopes.length` was never 0.
+    for (const workspaceId of Array.from(new Set(scopes.map((s) => s.workspaceId)))) {
+      const harnessSlugs = scopes
+        .filter((s) => s.workspaceId === workspaceId)
+        .map(({ installSlug }) => installSlug);
+      try {
+        const uncovered = await countActionableUngradedOutsideScopes(sql, {
+          workspaceId,
+          harnessSlugs,
+          policy,
+          staleBeforeMs: now - thresholdMs,
+        });
+        if (uncovered === 0) continue;
+        const reason =
+          `${uncovered} eligible stale ungraded filing(s) in ${workspaceId} are not reachable ` +
+          `by any of its ${harnessSlugs.length} registered Blender scope(s) — no grader can see them`;
+        console.warn(`[ungraded-filings] ALERT: ${reason}`);
+        results.push({
+          workspaceId,
+          installSlug: '*',
+          origin: '*',
+          outcome: 'error',
+          evaluatedWorkspaceCount,
+          evaluatedScopeCount,
+          eligibleBacklogCount: uncovered,
+          staleCount: uncovered,
+          reason,
+        });
+      } catch (e) {
+        // A probe that THREW must never read as "fully covered". Collapsing a failed
+        // measurement into silence is the same defect one layer up: it is exactly how a
+        // coverage gap stays invisible while the sweep reports a healthy tick.
+        results.push({
+          workspaceId,
+          installSlug: '*',
+          origin: '*',
+          outcome: 'error',
+          evaluatedWorkspaceCount,
+          evaluatedScopeCount,
+          eligibleBacklogCount: 0,
+          staleCount: 0,
+          reason: `coverage probe failed: ${e instanceof Error ? e.message : String(e)}`,
         });
       }
     }

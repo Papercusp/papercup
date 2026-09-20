@@ -450,6 +450,85 @@ export async function countActionableUngradedOlderThan(
   return Math.max(0, Number(rows[0]?.c ?? 0));
 }
 
+/**
+ * Count actionable stale filings that NO registered scope can reach (WI-10002098).
+ *
+ * The sibling probe above answers "is there eligible backlog at all?" and the sweep
+ * gated it on `scopes.length === 0` — so it could only ever catch TOTAL blindness. The
+ * failure that actually happened was PARTIAL: grading ran normally and current for every
+ * registered partition while 249 `scout` rows under the workspace-global grain sat
+ * unreachable for a month (EI-23811029152367526). `scopes.length` was never 0, so nothing
+ * fired. A coverage check that only fires at ZERO coverage is a liveness check.
+ *
+ * Two properties make this safe to run on EVERY tick, which is the point — a coverage
+ * alarm that cries wolf on a healthy workspace is one that gets deleted:
+ *
+ *  1. It is the SAME population as `readActionableUngradedFilings`, minus the rows that
+ *     function's own scope predicate would reach — derived by calling the very same
+ *     `workspaceGlobalScopeFor` helper rather than restating its rules. So "covered"
+ *     cannot drift from what the sweep actually reads; a fully-covered workspace returns
+ *     exactly 0 by construction, not by tuning.
+ *  2. It counts in SQL and is UNCAPPED. Deriving coverage by counting rows returned from
+ *     `readActionableUngradedFilings` would compare against a `limitPerOrigin` FLOOR, so
+ *     any scope holding more than the cap would manufacture phantom uncovered backlog on
+ *     a perfectly healthy tick.
+ *
+ * With `harnessSlugs: []` nothing is reachable, so this degenerates exactly to
+ * `countActionableUngradedOlderThan` — the zero-scope case stays consistent by
+ * construction instead of by a second hand-maintained branch.
+ */
+export async function countActionableUngradedOutsideScopes(
+  sql: Sql,
+  args: {
+    workspaceId: string;
+    harnessSlugs: string[];
+    policy: UngradedEpochPolicy;
+    staleBeforeMs: number;
+  },
+): Promise<number> {
+  const { workspaceId, harnessSlugs, policy, staleBeforeMs } = args;
+  const floors = JSON.stringify(policy.byOrigin);
+  const fallback = policy.fallbackMs;
+  const reach = JSON.stringify(
+    harnessSlugs.map((slug) => {
+      const scope = workspaceGlobalScopeFor(workspaceId, slug);
+      return {
+        slug,
+        absorbs: scope.absorbsWorkspaceGlobal,
+        labels: scope.labels,
+        like_pattern: scope.likePattern,
+      };
+    }),
+  );
+  const rows = await sql<{ c: number | string | null }[]>`
+    WITH reach AS (
+      SELECT slug, absorbs, labels, like_pattern
+        FROM jsonb_to_recordset(${reach}::jsonb)
+          AS s(slug text, absorbs boolean, labels jsonb, like_pattern text)
+    ), scoped AS (
+      SELECT harness_slug, origin, routed_at,
+             coalesce((${floors}::jsonb ->> origin)::bigint, ${fallback}::bigint) AS epoch_ms
+        FROM harness_shared.scout_routed_ideas
+       WHERE workspace_id = ${workspaceId}
+         AND origin <> ${SHADOW_VARIANT_ORIGIN}
+         AND human_grade IS NULL
+         AND (outcome IS NULL OR outcome = 'pending')
+    )
+    SELECT count(*)::int AS c
+      FROM scoped r
+     WHERE r.routed_at >= r.epoch_ms
+       AND r.routed_at <= ${staleBeforeMs}
+       AND NOT EXISTS (
+         SELECT 1
+           FROM reach s
+          WHERE r.harness_slug = s.slug
+             OR (s.absorbs
+                 AND (r.harness_slug IN (SELECT jsonb_array_elements_text(s.labels))
+                      OR r.harness_slug LIKE s.like_pattern))
+       )`;
+  return Math.max(0, Number(rows[0]?.c ?? 0));
+}
+
 /** What `watchdog:status` reports about the nudge rail's pending/eligible backlog. */
 export interface UngradedEligibility {
   /** Actionable ungraded rows in this scope, any age. */
