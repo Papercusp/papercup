@@ -114,7 +114,9 @@ describe('flags:get (bulk keyed-array, P-006)', () => {
   it('an unknown key fails ONLY that item with a clear message — never a bare zod enum rejection (EI-1168)', async () => {
     const { default: tool } = await import('../get');
     const b = parseEnvelope(await tool.handler({ key: 'papercusp-totally-made-up-flag' }, MAKE_CTX()) as never);
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: false, key: 'papercusp-totally-made-up-flag' });
     expect(b.results[0].error).toMatch(/unknown flag key/i);
@@ -181,7 +183,9 @@ describe('flags:set (bulk keyed-array, P-006)', () => {
     setFlag.mockResolvedValue({ ok: false, reason: 'posthog_error' });
     const { default: tool } = await import('../set');
     const b = parseEnvelope(await tool.handler({ key: KEY, enabled: true, reason: 'enable for release' }, MAKE_CTX()) as never);
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: false, key: KEY, error: 'posthog_error' });
     expect(publishFlagChange).not.toHaveBeenCalled();
@@ -215,7 +219,8 @@ describe('flags:set (bulk keyed-array, P-006)', () => {
         MAKE_CTX(),
       ) as never,
     );
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    expect(b.ok).toBe(false);
     if (k0 !== k1) {
       // Distinct keys: k0 succeeds, k1 fails only itself.
       expect(b.counts).toEqual({ ok: 1, failed: 1 });
@@ -238,7 +243,9 @@ describe('flags:set (bulk keyed-array, P-006)', () => {
     const b = parseEnvelope(
       await tool.handler({ key: 'papercusp-totally-made-up-flag', enabled: true, reason: 'testing EI-1168' }, MAKE_CTX()) as never,
     );
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: false, key: 'papercusp-totally-made-up-flag' });
     expect(b.results[0].error).toMatch(/unknown flag key/i);

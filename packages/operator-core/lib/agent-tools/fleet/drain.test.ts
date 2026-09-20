@@ -109,7 +109,9 @@ describe('fleet:drain (P-051 / D-006; bulk keyed-array P-006)', () => {
       return { msg_id: `m-${msg.to[0]}`, ts: 'now', to: msg.to };
     });
     const b = await env({ bee_ids: ['s-bee-1', 's-bee-bad', 's-bee-2'] });
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 2, failed: 1 });
     expect(b.results.map((r) => [r.bee_id, r.ok])).toEqual([
       ['s-bee-1', true],
@@ -168,7 +170,9 @@ describe('fleet:drain (P-051 / D-006; bulk keyed-array P-006)', () => {
 
   it('a mixed batch drains the bees and refuses ONLY the responsive session', async () => {
     const b = await env({ bee_ids: ['s-bee-1', 'su-leader', 's-bee-2'] });
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 2, failed: 1 });
     expect(b.results.map((r) => [r.bee_id, r.ok])).toEqual([
       ['s-bee-1', true],

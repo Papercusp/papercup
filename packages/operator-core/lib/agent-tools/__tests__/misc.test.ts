@@ -270,7 +270,9 @@ describe('wiki:backlinks (bulk keyed-array)', () => {
       counts: { ok: number; failed: number };
       results: Array<{ ok: boolean; target: string; error?: string }>;
     };
-    expect(payload.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(payload.ok).toBe(false);
     expect(payload.counts).toEqual({ ok: 1, failed: 1 });
     expect(payload.results[1]).toMatchObject({ ok: false, target: 'bad', error: 'scan-failed' });
   });

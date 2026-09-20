@@ -647,8 +647,11 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     getRecipeMock.mockResolvedValue(null);
     const res = await findTool('recipes:run').fn({ id: 'nope' }, mkCtx('worker'));
     const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
-    // The BATCH ran (top-level ok:true); the missing recipe is that item's failure.
-    expect(payload.ok).toBe(true);
+    // EI-23737206446729041: the envelope's `ok` is DERIVED from its items, so this single
+    // per-item failure makes the TOP-LEVEL ok false as well. The per-item detail below is
+    // unchanged — what the derivation buys is that a caller checking only the envelope can no
+    // longer read a wholly-failed batch as success.
+    expect(payload.ok).toBe(false);
     expect(payload.counts).toEqual({ ok: 0, failed: 1 });
     expect(payload.results[0]).toMatchObject({ ok: false, id: 'nope', error: 'not_found' });
     expect(runOrchestrationMock).not.toHaveBeenCalled();
@@ -675,7 +678,10 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     );
     const res = await findTool('recipes:run').fn({ ids: ['r1', 'gone', 'r2'] }, mkCtx('worker'));
     const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
-    expect(payload.ok).toBe(true);
+    // EI-23737206446729041: per-item isolation is what this test proves and it is INTACT — r1 and
+    // r2 still ran and still succeeded. The envelope's `ok` is now derived from the items, so the
+    // one failure among them is also reported at the top level rather than being hidden there.
+    expect(payload.ok).toBe(false);
     expect(payload.counts).toEqual({ ok: 2, failed: 1 });
     expect(payload.results.map((r: { id: string; ok: boolean }) => [r.id, r.ok])).toEqual([
       ['r1', true],

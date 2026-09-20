@@ -100,7 +100,9 @@ describe('harness_docs:retire tool', () => {
       return rec({ docId, source: 'generated' });
     });
     const env = envelope(await callTool({ items: [{ docId: 'good.md' }, { docId: 'bad.md' }] }));
-    expect(env.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(env.ok).toBe(false);
     expect(env.counts).toEqual({ ok: 1, failed: 1 });
     expect(env.results[1]).toMatchObject({ ok: false, docId: 'bad.md', error: 'boom' });
   });

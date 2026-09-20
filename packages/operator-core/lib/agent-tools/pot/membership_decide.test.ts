@@ -91,7 +91,9 @@ describe('pot:membership_decide handler (bulk keyed-array, P-006)', () => {
         { githubUserId: 99, decision: 'approve' },
       ],
     });
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 1, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: true, githubUserId: 42 });
     expect(b.results[1]).toMatchObject({ ok: false, githubUserId: 99, code: 'no_pending' });

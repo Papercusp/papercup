@@ -147,7 +147,9 @@ describe('fleet:supervise tool — result projection + bulk envelope (Gap 11 / P
 
     const b = env(await (superviseTool as any).handler({ spawn_ids: ['s-a', 'boom', 's-b'] }, CTX));
 
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 2, failed: 1 });
     expect(b.results.map((r: any) => [r.spawn_id, r.ok])).toEqual([
       ['s-a', true],

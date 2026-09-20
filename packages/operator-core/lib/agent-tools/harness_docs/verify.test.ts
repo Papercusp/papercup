@@ -59,7 +59,9 @@ describe('harness_docs:verify handler (bulk keyed-array)', () => {
       (docId === 'missing.md' ? { ok: false, error: 'unknown_doc' } : { ok: true, verifiedSha: 'sha' }) as never,
     );
     const b = await envelope({ docIds: ['ok.md', 'missing.md'] });
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 1, failed: 1 });
     expect(b.results[1]).toMatchObject({ ok: false, docId: 'missing.md', error: 'unknown_doc' });
   });

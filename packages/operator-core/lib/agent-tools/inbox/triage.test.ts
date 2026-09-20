@@ -95,7 +95,9 @@ describe('inbox:triage handler (bulk keyed-array, P-006)', () => {
         { itemId: 'c:3', action: 'confirm' },
       ],
     });
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 2, failed: 1 });
     expect(b.results.map((r) => [r.itemId, r.ok])).toEqual([
       ['a:1', true],

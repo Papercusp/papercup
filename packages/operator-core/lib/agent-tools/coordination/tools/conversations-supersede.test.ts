@@ -57,7 +57,7 @@ describe('conversations:supersede handler', () => {
       id: 'conv-old',
       replacement: { body: 'corrected question' },
     });
-    expect(result).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(result).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(result.results[0]).toMatchObject({ ok: false, id: 'conv-old', error: 'already_superseded' });
   });
 

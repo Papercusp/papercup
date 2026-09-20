@@ -72,7 +72,7 @@ describe('plan_items:claim handler (bulk keyed-array, flag OFF)', () => {
         : ({ status: 'claimed', claim: { itemId: opts.itemId, owner: 'sess-A' }, mode: 'availability', viaAssignment: false } as never),
     );
     const b = await body({ plan: 'p1', itemIds: ['P-001', 'P-REF'] });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: true, item: 'P-001' });
     expect(b.results[1]).toMatchObject({ ok: false, plan: 'p1', item: 'P-REF' });
     expect(b.results[1].result.status).toBe('refused');
@@ -130,7 +130,7 @@ describe('plan_items:claim refuses the mcp-call.mjs auto-generated fallback iden
     )) as { data: any };
     const b = out.data;
 
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 2 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 2 } });
     expect(b.results[0]).toMatchObject({ ok: false, plan: 'p1', item: 'P-001' });
     expect(b.results[0].result).toMatchObject({ status: 'refused', reason: 'ephemeral_mcp_call_identity' });
     expect(b.results[0].result.hint).toMatch(/mcp-call\.mjs/);

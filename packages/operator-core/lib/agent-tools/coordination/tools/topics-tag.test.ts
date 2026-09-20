@@ -86,7 +86,10 @@ describe('topics:tag handler (bulk)', () => {
       {} as never,
     )) as Out;
     const b = body(out);
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: the ENVELOPE's `ok` is DERIVED from items, so failed>0 => ok:false.
+    // The per-item assertion below stays true — that contrast is the point: per-item isolation is
+    // preserved, and only the top-level summary changed.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 1, failed: 1 });
     const byRef = Object.fromEntries(b.results.map((r: { object: { ref: string } }) => [r.object.ref, r]));
     expect(byRef['F-ok'].ok).toBe(true);

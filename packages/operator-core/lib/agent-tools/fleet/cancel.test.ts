@@ -170,7 +170,9 @@ describe('fleet:cancel — bulk envelope + processes_aborted aggregation (Gap 10
 
     const b = env(await (cancelTool as any).handler({ spawn_ids: ['root-a', 'boom', 'root-b'] }, CTX));
 
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 2, failed: 1 });
     expect(b.results.map((r: any) => [r.spawn_id, r.ok])).toEqual([
       ['root-a', true],
@@ -193,7 +195,8 @@ describe('fleet:cancel — bulk envelope + processes_aborted aggregation (Gap 10
 
     const b = env(await (cancelTool as any).handler({ spawn_ids: ['su-omp-hook-session', 'real-spawn'] }, CTX));
 
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 1, failed: 1 });
     expect(b.results.map((r: any) => [r.spawn_id, r.ok])).toEqual([
       ['su-omp-hook-session', false],

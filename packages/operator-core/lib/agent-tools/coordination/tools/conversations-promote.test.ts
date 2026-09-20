@@ -28,7 +28,7 @@ describe('conversations:promote handler (bulk keyed-array)', () => {
   it('maps a store error to a per-item { ok:false, error }', async () => {
     promoteM.mockResolvedValue({ error: 'not_found' } as never);
     const b = await body({ id: 'c1' });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'c1', error: 'not_found' });
   });
 
@@ -57,7 +57,7 @@ describe('conversations:promote handler (bulk keyed-array)', () => {
         : ({ conversation: { id: opts.conversation_id, state: 'promoted' }, issue: { id: 'EI-1' }, thread_reparented: true, delivered: 1 } as never),
     );
     const b = await body({ ids: ['c1', 'c2'], severity: 'minor' });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'c1', issue: { id: 'EI-1' } });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'c2', error: 'not_found' });
     expect(promoteM.mock.calls[1]![1]).toMatchObject({ conversation_id: 'c2', severity: 'minor' });
