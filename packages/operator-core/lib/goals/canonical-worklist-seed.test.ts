@@ -16,62 +16,51 @@ import {
   CANONICAL_WORKLIST_PROPERTY,
   PLAN_REF_LIST_DATATYPE,
   canonicalWorklistDeclaration,
-  seedCanonicalGoalPropertySchema,
-  type EnsurePlanRefListDeps,
+  withCanonicalWorklistDeclaration,
 } from './package-property-datatypes';
 
-const SQL = {} as never;
-
-function stubDeps(existing: boolean): { deps: EnsurePlanRefListDeps; upserts: string[] } {
-  const upserts: string[] = [];
-  const deps = {
-    get: async () => (existing ? ({ id: PLAN_REF_LIST_DATATYPE } as never) : null),
-    upsert: (async (_sql: unknown, row: { id: string }) => {
-      upserts.push(row.id);
-    }) as unknown as EnsurePlanRefListDeps['upsert'],
-  } as EnsurePlanRefListDeps;
-  return { deps, upserts };
-}
-
-describe('seedCanonicalGoalPropertySchema', () => {
-  it('declares `worklist` on a goal that declared nothing — the ad-hoc path', async () => {
-    const { deps } = stubDeps(true);
-    const out = await seedCanonicalGoalPropertySchema(SQL, 'ws-1', null, deps);
-    expect(out[CANONICAL_WORKLIST_PROPERTY]).toEqual({
+describe('withCanonicalWorklistDeclaration', () => {
+  it('declares `worklist` on a goal that declared nothing — the ad-hoc path', () => {
+    expect(withCanonicalWorklistDeclaration(null)[CANONICAL_WORKLIST_PROPERTY]).toEqual({
       datatype: PLAN_REF_LIST_DATATYPE,
       default: [],
       editable_by: 'both',
     });
   });
 
-  it('matches the declaration packaged goals already carry', async () => {
-    const { deps } = stubDeps(true);
-    const out = await seedCanonicalGoalPropertySchema(SQL, 'ws-1', undefined, deps);
-    expect(out[CANONICAL_WORKLIST_PROPERTY]).toEqual(canonicalWorklistDeclaration());
+  it('matches the declaration packaged goals already carry', () => {
+    // Verified against the live rows for work-on-everything-ca7af8/500998/
+    // ad52b8/813959/b83643 — all five identical. An ad-hoc goal and a packaged
+    // goal must be indistinguishable to every reader of property_schema.
+    expect(withCanonicalWorklistDeclaration(undefined)[CANONICAL_WORKLIST_PROPERTY]).toEqual(
+      canonicalWorklistDeclaration(),
+    );
   });
 
-  it('ensures the plan-ref-list datatype exists when it declares the property', async () => {
-    const { deps, upserts } = stubDeps(false);
-    await seedCanonicalGoalPropertySchema(SQL, 'ws-1', null, deps);
-    // Without the registry row, validatePropertySchemaDeclaration would refuse
-    // the very declaration we just wrote.
-    expect(upserts).toEqual([PLAN_REF_LIST_DATATYPE]);
+  it('declares the datatype that ensurePlanRefListDatatype actually registers', () => {
+    // If these two drift, the declaration lands but no value can ever be
+    // validated against it — the failure would surface only at set-property.
+    expect(canonicalWorklistDeclaration().datatype).toBe(PLAN_REF_LIST_DATATYPE);
   });
 
-  it('never overwrites a caller-supplied worklist declaration', async () => {
-    const { deps, upserts } = stubDeps(false);
+  it('never overwrites a caller-supplied worklist declaration', () => {
     const mine = { datatype: 'my-own-type', default: ['plan:a'], editable_by: 'owner' as const };
-    const out = await seedCanonicalGoalPropertySchema(SQL, 'ws-1', { worklist: mine }, deps);
-    expect(out[CANONICAL_WORKLIST_PROPERTY]).toEqual(mine);
-    expect(upserts).toEqual([]);
+    expect(withCanonicalWorklistDeclaration({ worklist: mine })[CANONICAL_WORKLIST_PROPERTY]).toEqual(
+      mine,
+    );
   });
 
-  it('preserves unrelated declarations and does not mutate the caller object', async () => {
-    const { deps } = stubDeps(true);
+  it('preserves unrelated declarations and does not mutate the caller object', () => {
     const input = { budget_note: { datatype: 'text', editable_by: 'owner' as const } };
-    const out = await seedCanonicalGoalPropertySchema(SQL, 'ws-1', input, deps);
+    const out = withCanonicalWorklistDeclaration(input);
     expect(out.budget_note).toEqual(input.budget_note);
     expect(Object.keys(input)).toEqual(['budget_note']);
+  });
+
+  it('is pure — no database handle is required to declare the property', () => {
+    // Deliberate: binding four goal-creation doors to a registry round-trip
+    // buys nothing at a moment when no value is being validated.
+    expect(withCanonicalWorklistDeclaration.length).toBe(1);
   });
 });
 
@@ -90,20 +79,29 @@ function tsFilesUnder(root: string): string[] {
   return out;
 }
 
+const goalRowWriters = (libRoot: string): string[] =>
+  tsFilesUnder(libRoot).filter((f) => readFileSync(f, 'utf8').includes('insertGoalRow('));
+
 describe('every goal-row writer seeds the canonical worklist declaration', () => {
-  it('has at least one writer (positive control — a zero-match scan proves nothing)', () => {
+  it('finds the known writers (positive control — a zero-match scan proves nothing)', () => {
     const libRoot = join(__dirname, '..');
-    const writers = tsFilesUnder(libRoot).filter((f) =>
-      readFileSync(f, 'utf8').includes('insertGoalRow('),
+    const writers = goalRowWriters(libRoot).map((f) => f.slice(libRoot.length + 1));
+    // This census caught the door the original report missed. If it ever
+    // returns fewer than these, the scan broke — not the tree.
+    expect(writers.sort()).toEqual(
+      [
+        'agent-tools/goals/start.ts',
+        'cupboard/install-goal-io.ts',
+        'goals/goal-auto-start.ts',
+        'goals/start-from-package.ts',
+      ].sort(),
     );
-    expect(writers.length).toBeGreaterThan(0);
   });
 
-  it('routes every writer through seedCanonicalGoalPropertySchema', () => {
+  it('routes every writer through withCanonicalWorklistDeclaration', () => {
     const libRoot = join(__dirname, '..');
-    const offenders = tsFilesUnder(libRoot)
-      .filter((f) => readFileSync(f, 'utf8').includes('insertGoalRow('))
-      .filter((f) => !readFileSync(f, 'utf8').includes('seedCanonicalGoalPropertySchema'))
+    const offenders = goalRowWriters(libRoot)
+      .filter((f) => !readFileSync(f, 'utf8').includes('withCanonicalWorklistDeclaration'))
       .map((f) => f.slice(libRoot.length + 1));
     // A new goal-creation door that skips the seed reintroduces
     // EI-23745110935212173 silently: the row is valid, the gate just reports
