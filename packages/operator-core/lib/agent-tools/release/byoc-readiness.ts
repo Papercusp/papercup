@@ -6,17 +6,26 @@
  * Until the source observation joins are implemented this reader reports the
  * unresolved proof obligations and can never return a positive verdict.
  */
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import type { Sql } from 'postgres';
+import {
+  deriveWorkspaceHostCanonicalArtifactUrls,
+} from '@papercusp/deployment-driver';
 import { taskReleaseJournalFromDetail } from '../../task-manager/store';
 import {
   projectByocReleaseCarry,
   type ByocReleaseCarrySnapshot,
   type ByocReleaseMilestoneKey,
 } from '../../byoc-release-carry';
+import {
+  workspaceHostPublicationManifestFailures,
+  type WorkspaceHostPublicationManifest,
+  type WorkspaceHostPublicationManifestInput,
+} from '../../workspace-host/publication-manifest';
 
 export type ByocAcceptanceBar = 'R-4' | 'R-5' | 'R-6';
 export type ByocReadinessVerdict = 'pass' | 'fail' | 'unknown';
@@ -39,6 +48,145 @@ const UNJOINED_EVIDENCE: Record<ByocAcceptanceBar, readonly string[]> = {
   'R-5': ['clean-gcp-controller', 'claude-execution', 'omp-execution', 'credentials', 'acl', 'data', 'customer-desktop'],
   'R-6': ['five-live-journeys', '24h-soak', 'budget', 'billing', 'destroy', 'provider-absence', 'eight-kind-residue'],
 };
+
+export interface ByocPublicationProbeInput {
+  bundleSha256: string;
+  manifestSha256: string;
+}
+
+export interface ByocPublicationProbeResult {
+  verdict: 'pass' | 'fail' | 'unknown';
+  missing: string[];
+  failed: string[];
+  evidenceRefs: string[];
+}
+
+interface PublicationProbeResponse {
+  ok: boolean;
+  status: number;
+  headers: { get(name: string): string | null };
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+interface PublicationProbeFetcher {
+  (input: string, init?: { method?: string }): Promise<PublicationProbeResponse>;
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function headerSize(response: PublicationProbeResponse, label: string): number | null {
+  const raw = response.headers.get('content-length');
+  const size = raw === null ? Number.NaN : Number(raw);
+  return Number.isSafeInteger(size) && size > 0 ? size : null;
+}
+
+/**
+ * Independently read the immutable public publication named by the selected release receipt.
+ * The task journal contributes only the expected digest; public bytes and descriptors come from
+ * the consumer-facing artifact origin. A manifest's own `files` object is not trusted until its
+ * bytes, bundle HEAD and signature HEAD all agree.
+ */
+export async function probeByocPublication(
+  input: ByocPublicationProbeInput,
+  fetcher: PublicationProbeFetcher = globalThis.fetch as unknown as PublicationProbeFetcher,
+): Promise<ByocPublicationProbeResult> {
+  const missing: string[] = [];
+  const failed: string[] = [];
+  const refs: string[] = [];
+  let urls: ReturnType<typeof deriveWorkspaceHostCanonicalArtifactUrls>;
+  try {
+    urls = deriveWorkspaceHostCanonicalArtifactUrls(input.bundleSha256);
+  } catch (error) {
+    return {
+      verdict: 'fail',
+      missing,
+      failed: [`publication-url:${error instanceof Error ? error.message : String(error)}`],
+      evidenceRefs: refs,
+    };
+  }
+
+  const manifestResponse = await fetcher(urls.manifestUrl, { method: 'GET' }).catch((error) => null);
+  if (!manifestResponse || !manifestResponse.ok) {
+    missing.push('public-manifest');
+    return { verdict: 'unknown', missing, failed, evidenceRefs: refs };
+  }
+  const manifestBytes = new Uint8Array(await manifestResponse.arrayBuffer());
+  const observedManifestSha = sha256(manifestBytes);
+  if (observedManifestSha !== input.manifestSha256) {
+    failed.push('manifest-archive-digest:mismatch');
+  } else {
+    refs.push(`publication:manifest:${observedManifestSha}`);
+  }
+
+  let manifest: WorkspaceHostPublicationManifest | null = null;
+  try {
+    manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as WorkspaceHostPublicationManifest;
+  } catch {
+    failed.push('manifest:invalid-json');
+  }
+
+  const [bundleResponse, signatureResponse] = await Promise.all([
+    fetcher(urls.bundleUrl, { method: 'GET' }).catch(() => null),
+    fetcher(urls.signatureUrl, { method: 'HEAD' }).catch(() => null),
+  ]);
+  let bundlePayload: Uint8Array | null = null;
+  if (bundleResponse?.ok) {
+    try {
+      bundlePayload = new Uint8Array(await bundleResponse.arrayBuffer());
+    } catch {
+      failed.push('public-bytes:unreadable');
+    }
+  }
+  const bundleBytes = bundlePayload?.byteLength ?? null;
+  const signatureBytes = signatureResponse && signatureResponse.ok ? headerSize(signatureResponse, 'signature') : null;
+  if (bundleBytes === null) missing.push('public-bytes');
+  if (signatureBytes === null) missing.push('signature');
+
+  if (
+    manifest === null ||
+    !manifest.files ||
+    typeof manifest.files !== 'object' ||
+    !manifest.files.bundle ||
+    !manifest.files.signature ||
+    !manifest.trustReport ||
+    !Array.isArray(manifest.trustReport.failures)
+  ) {
+    failed.push('manifest:incomplete');
+  } else if (bundleBytes !== null && signatureBytes !== null) {
+    const publicationInput: WorkspaceHostPublicationManifestInput = {
+      artifact: manifest.artifact,
+      trustReport: manifest.trustReport,
+      bundle: { sha256: input.bundleSha256, bytes: bundleBytes },
+      signature: {
+        sha256: manifest.files.signature.sha256,
+        bytes: signatureBytes,
+      },
+    };
+    const failures = workspaceHostPublicationManifestFailures(publicationInput);
+    failed.push(...failures.map(({ code }) => `publication:${code}`));
+    if (manifest.files.bundle.sha256 !== input.bundleSha256 || manifest.artifact.release.bundleSha256 !== input.bundleSha256) {
+      failed.push('public-bytes:digest-mismatch');
+    }
+    if (bundlePayload && sha256(bundlePayload) !== input.bundleSha256) {
+      failed.push('public-bytes:content-digest-mismatch');
+    }
+    if (manifest.files.bundle.sizeBytes !== bundleBytes) failed.push('public-bytes:size-mismatch');
+    refs.push(`publication:bundle:${input.bundleSha256}:${bundleBytes}`);
+    refs.push(`publication:signature:${manifest.files.signature.sha256}:${signatureBytes}`);
+  }
+
+  // The public HEAD/manifest joins do not inspect archive members. Keep this explicit rather
+  // than treating a manifest's executable=true declarations as proof of executable bytes.
+  missing.push('executable-identity');
+  return {
+    verdict: failed.length > 0 ? 'fail' : missing.length > 0 ? 'unknown' : 'pass',
+    missing: [...new Set(missing)],
+    failed: [...new Set(failed)],
+    evidenceRefs: [...new Set(refs)],
+  };
+}
 
 function nonEmptyObject(value: unknown): boolean {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0);

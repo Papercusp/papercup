@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import tool, {
+  probeByocPublication,
   evaluateByocReadiness,
   readByocReleaseSubject,
 } from './byoc-readiness';
@@ -58,6 +59,60 @@ function snapshot(
 }
 
 describe('release:byoc_readiness', () => {
+  it('does not treat receipt references or manifest declarations as executable archive proof', async () => {
+    const bundleSha256 = 'a'.repeat(64);
+    const manifestSha256 = 'b'.repeat(64);
+    const manifest = JSON.stringify({
+      schemaVersion: 1,
+      kind: 'papercusp-workspace-host-release',
+      artifact: { release: { bundleSha256 } },
+      files: {
+        bundle: { sha256: bundleSha256, sizeBytes: 10 },
+        signature: { sha256: 'c'.repeat(64), sizeBytes: 5 },
+      },
+      trustReport: {},
+    });
+    const fetcher = vi.fn(async (url: string, init?: { method?: string }) => {
+      if (init?.method === 'GET' && url.endsWith('/manifest.json')) {
+        return {
+          ok: true, status: 200,
+          headers: { get: () => String(manifest.length) },
+          arrayBuffer: async () => new TextEncoder().encode(manifest).buffer,
+        };
+      }
+      if (init?.method === 'GET') {
+        return {
+          ok: true, status: 200,
+          headers: { get: () => '10' },
+          arrayBuffer: async () => new Uint8Array(10).buffer,
+        };
+      }
+      return {
+        ok: true, status: 200,
+        headers: { get: (name: string) => name === 'content-length' ? (url.endsWith('server.tgz') ? '10' : '5') : null },
+        arrayBuffer: async () => new ArrayBuffer(0),
+      };
+    });
+    const result = await probeByocPublication({ bundleSha256, manifestSha256 }, fetcher);
+    expect(result.verdict).toBe('fail');
+    expect(result.missing).toContain('executable-identity');
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it('fails closed when the public manifest digest differs from the receipt identity', async () => {
+    const result = await probeByocPublication(
+      { bundleSha256: 'a'.repeat(64), manifestSha256: 'b'.repeat(64) },
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => '1' },
+        arrayBuffer: async () => new TextEncoder().encode('{}').buffer,
+      })),
+    );
+    expect(result.verdict).toBe('fail');
+    expect(result.failed).toContain('manifest-archive-digest:mismatch');
+  });
+
   it('cannot pass any BAR from committed receipts and evidence reference strings alone', () => {
     expect(evaluateByocReadiness('R-4', 'WI-10001532', [snapshot()], '2026-09-20T00:00:00.000Z')).toMatchObject({
       verdict: 'unknown',
