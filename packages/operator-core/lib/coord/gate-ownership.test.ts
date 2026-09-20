@@ -496,6 +496,74 @@ describe('readGateOwnership', () => {
     expect(own.workItem).toBe('WI-2');
   });
 
+  // REGRESSION GUARD. Measured live 2026-09-20: `green-stall:papercusp` was open and
+  // linked to WI-10001932 while `state:read { cell:'gate.greenCheckpoint.ownership' }`
+  // answered `unowned` — whose safeAction is "File the owning work-item and claim it
+  // before starting", i.e. it recruits a SECOND fixer onto an already-owned incident.
+  //
+  // ⚠ WHY THE THREE TESTS ABOVE DID NOT CATCH IT — read this before simplifying the
+  // fixture. Each of them injects a map that OMITS the key it means to be absent. The
+  // REAL `findConditionObjects` never does that: it `out.set(k, ...)` for EVERY
+  // requested key in all three of its branches, so a key with no linked rows still
+  // arrives as a `no-object` object with `workItem: null`. `objs.has(redStreakKey)`
+  // was therefore ALWAYS true in production and the stall branch was dead code —
+  // a defect invisible to every mock that is more forgiving than the real collaborator.
+  //
+  // So this fixture deliberately supplies BOTH keys, with the absent condition in its
+  // true production shape. That is the whole point of the test; a version that drops
+  // the red-streak entry silently stops guarding anything and rejoins the trio above.
+  it('projects the OPEN stall owner when the red-streak key resolves to a no-object entry (production map shape)', async () => {
+    const own = await readGateOwnership({
+      harness: 'papercusp',
+      findConditionObjects: (async () =>
+        new Map([
+          [
+            'green-stall:papercusp',
+            mkObj({
+              conditionKey: 'green-stall:papercusp',
+              workItem: 'WI-10001932',
+              claimState: 'held',
+              takenBy: 'su-ce04d24c',
+            }),
+          ],
+          // present-but-empty, exactly as the real finder returns an unopened condition
+          [
+            'gate-red-streak:papercusp',
+            mkObj({ conditionKey: 'gate-red-streak:papercusp', workItem: null, claimState: 'no-object' }),
+          ],
+        ])) as never,
+      resolveSessionStates: oracle('live'),
+    });
+    expect(own.eventKey).toBe('green-stall:papercusp');
+    expect(own.workItem).toBe('WI-10001932');
+    expect(own.claimState).toBe('held');
+    // the assessment peers branch on: a held incident must NOT read as unowned, because
+    // `unowned` is what tells the next agent to file a duplicate.
+    expect(own.assessment).not.toBe('unowned');
+
+    // FALSIFIABILITY CONTROL, kept permanently rather than proven by mutating the shared
+    // tree (a mutation probe here would race git-sync's sweep). This is the exact
+    // predicate the resolver used before the fix. Against the SAME production-shaped
+    // fixture it selects the red-streak key — so the assertions above are discriminating,
+    // not vacuous, and a revert to map-membership is guaranteed to fail this test rather
+    // than pass it quietly.
+    const legacyPick = (stall: string, red: string, objs: ReadonlyMap<string, ConditionObject>) =>
+      objs.has(red) ? red : stall;
+    const productionShaped = new Map<string, ConditionObject>([
+      ['green-stall:papercusp', mkObj({ conditionKey: 'green-stall:papercusp', workItem: 'WI-10001932' })],
+      [
+        'gate-red-streak:papercusp',
+        mkObj({ conditionKey: 'gate-red-streak:papercusp', workItem: null, claimState: 'no-object' }),
+      ],
+    ]);
+    expect(legacyPick('green-stall:papercusp', 'gate-red-streak:papercusp', productionShaped)).toBe(
+      'gate-red-streak:papercusp',
+    );
+    expect(own.eventKey).not.toBe(
+      legacyPick('green-stall:papercusp', 'gate-red-streak:papercusp', productionShaped),
+    );
+  });
+
   it('returns no-object, keyed by the stall key, when NEITHER key resolves to anything', async () => {
     const own = await readGateOwnership({
       harness: 'papercusp',

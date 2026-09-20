@@ -478,12 +478,33 @@ export function shouldStandDownForLivePeer(own: CellOwnership, callerOwnerId: st
  * directly via `findConditionObjects`; this cell stays intentionally
  * single-valued rather than growing a merge shape nothing consumes.
  */
+/**
+ * Pick which of the two gate conditions this single-valued cell reports, preferring
+ * the red-streak incident when it is genuinely open (D-002(b)).
+ *
+ * ⚠ MAP PRESENCE IS NOT OPENNESS — this is the whole reason the function exists in
+ * this shape. `findConditionObjects` sets an entry for EVERY requested key: a key
+ * with no linked rows still comes back as a `no-object` ConditionObject with
+ * `workItem: null`, in all three of its branches (pg-fast-path, the catch, and the
+ * normal path). So `objs.has(redStreakKey)` was ALWAYS true in production, the
+ * red-streak key ALWAYS won, and the `stallKey` branch was unreachable dead code.
+ *
+ * Consequence, measured live 2026-09-20: `green-stall:papercusp` was open and
+ * linked to WI-10001932 while this cell answered `unowned` — whose stated safeAction
+ * is "File the owning work-item and claim it before starting." That recruits a NEW
+ * fixer onto an incident that already had an owner, which is the duplicate-filing
+ * this cell exists to prevent.
+ *
+ * The sibling tests did not catch it because each injects a map that OMITS the key
+ * it means to be absent — a shape the real finder never produces, i.e. a mock more
+ * forgiving than reality. Read openness off the OBJECT, never off map membership.
+ */
 function pickGateConditionKey(
   stallKey: string,
   redStreakKey: string,
   objs: ReadonlyMap<string, ConditionObject>,
 ): string {
-  return objs.has(redStreakKey) ? redStreakKey : stallKey;
+  return objs.get(redStreakKey)?.workItem != null ? redStreakKey : stallKey;
 }
 
 /**
