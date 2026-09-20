@@ -435,12 +435,13 @@ export default defineTool({
           if (!gate.satisfied) {
             const acceptanceGrader = await launchAcceptanceGraderForGate(slug, gate, ctx, harnessSlug);
             return {
+              // Keep canonical BAR attribution, grading identity, and the safe
+              // repair route. A hand-picked code/message subset loses the very
+              // context that distinguishes a contract defect from a read fault.
+              ...gate,
               ok: false as const,
               slug,
               error: gate.code ?? 'acceptance_gate_failed',
-              message: gate.message,
-              buildProvenance: gate.buildProvenance,
-              ...(gate.rubricId ? { rubricId: gate.rubricId } : {}),
               ...(acceptanceGrader ? { acceptanceGrader } : {}),
             };
           }
