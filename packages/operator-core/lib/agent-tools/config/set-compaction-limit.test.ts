@@ -10,16 +10,26 @@
  * so "raise it for wide-context work" (this verb's stated purpose) silently clamped
  * back to 400k on the fleet's default spec. Seeding is unchanged at 400k.
  *
- * Run: cd packages/operator-core && npx vitest run lib/agent-tools/config/set-compaction-limit.test.ts
+ * The self-set ceiling also has a FLEET-ROLE dimension (WI-10002013): a fleet MEMBER
+ * is capped at the role cap its leader governs, while a leader/solo session gets the
+ * full 825k. Until this was threaded through, `fleetMember` was omitted at both the
+ * cap and the spec-clamp call, so `roleCap` resolved to POSITIVE_INFINITY for members
+ * and an over-cap request returned ok:true and PERSISTED { explicit: true } — then was
+ * silently rewritten to the role cap later by compaction-compliance-watchdog. The
+ * FALSE SUCCESS is the defect under test here; the ceiling itself is deliberate policy.
+ *
+ * Run: testing:run { files: ['packages/operator-core/lib/agent-tools/config/set-compaction-limit.test.ts'] }
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP } from '../../agent-config-constants';
 
-const { setLimitMock, getPresenceMock, specMock, windowMock } = vi.hoisted(() => ({
+const { setLimitMock, getPresenceMock, specMock, windowMock, fleetMock } = vi.hoisted(() => ({
   // Args typed so `.mock.calls.at(-1)?.[1]` (the echo in beforeEach) typechecks.
   setLimitMock: vi.fn(async (_owner: string, _limit: number) => {}),
   getPresenceMock: vi.fn(),
   specMock: vi.fn(),
   windowMock: vi.fn(),
+  fleetMock: vi.fn(),
 }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-test' }),
@@ -27,6 +37,9 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('../coordination/presence', () => ({
   setCompactionLimit: setLimitMock,
   getPresence: getPresenceMock,
+}));
+vi.mock('../coordination/presence-fleet', () => ({
+  fetchPresenceFleet: fleetMock,
 }));
 vi.mock('../../compaction-usage', () => ({
   resolveModelSpecForOwner: specMock,
@@ -43,9 +56,19 @@ type ToolOut = { data: Record<string, unknown> };
  */
 const SELF_SET_1M_CEILING = 825_000;
 
+/** presence-fleet map for the CALLER themself, shaped as `fetchPresenceFleet` returns it. */
+function selfFleetMap(fleetSlug: string | null, fleetRole: string | null) {
+  return new Map(fleetSlug ? [['su-test', { fleetSlug, fleetRole }]] : []);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   windowMock.mockResolvedValue(null);
+  // Default: a FLEETLESS session (no row for the caller) ⇒ fleetMember false ⇒ the
+  // leader/solo ceiling. Mocked explicitly rather than left to the real module: the
+  // production call is `.catch(() => new Map())`, so an unmocked seam would land on
+  // the same branch only by THROWING, which makes a green run prove nothing.
+  fleetMock.mockResolvedValue(new Map());
   getPresenceMock.mockImplementation(async () => ({
     compactionLimit: setLimitMock.mock.calls.at(-1)?.[1] ?? null,
   }));
@@ -93,5 +116,59 @@ describe('config:set-compaction-limit runtime validation', () => {
     expect(out.data.ok).toBe(true);
     expect(out.data.clamped).toBeUndefined();
     expect(out.data.compactionLimit).toBe(700_000);
+  });
+});
+
+/**
+ * WI-10002013 — the caller's OWN fleet role must reach the self-set ceiling.
+ *
+ * These three cases are a MIRROR SET and only mean something together: the member
+ * case alone would also pass if the verb rejected 700k for everybody, so the leader
+ * and fleetless cases are what prove the refusal is role-derived rather than a blanket
+ * lowering of the ceiling. Before `fleetMember` was threaded through, the member case
+ * returned ok:true and wrote the value — that is the exact assertion that flips.
+ */
+describe('config:set-compaction-limit fleet-role ceiling (WI-10002013)', () => {
+  const OVER_MEMBER_CAP = 700_000;
+
+  it('a fleet MEMBER self-raising above the member cap is refused WITHOUT a write', async () => {
+    specMock.mockResolvedValue('opus[1m]:high');
+    fleetMock.mockResolvedValue(selfFleetMap('rocket', 'member'));
+
+    const out = (await tool.handler({ limit: OVER_MEMBER_CAP }, {} as never)) as ToolOut;
+
+    // The no-write half is the point: the pre-fix bug was not a wrong number in the
+    // response, it was ok:true PLUS a persisted { explicit: true } value the watchdog
+    // then quietly rewrote. A refusal that still wrote would reproduce the defect.
+    expect(setLimitMock).not.toHaveBeenCalled();
+    expect(out.data).toMatchObject({
+      ok: false,
+      error: 'limit_exceeds_cap',
+      requested: OVER_MEMBER_CAP,
+      cap: COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
+    });
+    expect(out.data.compactionLimit).toBeUndefined();
+  });
+
+  it('a fleet LEADER at the same value still succeeds (the cap is role-derived, not a blanket lowering)', async () => {
+    specMock.mockResolvedValue('opus[1m]:high');
+    fleetMock.mockResolvedValue(selfFleetMap('rocket', 'leader'));
+
+    const out = (await tool.handler({ limit: OVER_MEMBER_CAP }, {} as never)) as ToolOut;
+
+    expect(setLimitMock).toHaveBeenCalledWith('su-test', OVER_MEMBER_CAP, { explicit: true });
+    expect(out.data.ok).toBe(true);
+    expect(out.data.compactionLimit).toBe(OVER_MEMBER_CAP);
+  });
+
+  it('a FLEETLESS session at the same value still succeeds (no fleet row ⇒ not a member)', async () => {
+    specMock.mockResolvedValue('opus[1m]:high');
+    fleetMock.mockResolvedValue(new Map()); // explicit: the caller has no presence-fleet row
+
+    const out = (await tool.handler({ limit: OVER_MEMBER_CAP }, {} as never)) as ToolOut;
+
+    expect(setLimitMock).toHaveBeenCalledWith('su-test', OVER_MEMBER_CAP, { explicit: true });
+    expect(out.data.ok).toBe(true);
+    expect(out.data.compactionLimit).toBe(OVER_MEMBER_CAP);
   });
 });

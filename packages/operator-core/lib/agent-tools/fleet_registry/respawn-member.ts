@@ -972,7 +972,7 @@ export default defineTool({
   description:
     "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / carry / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader, an Overwatch pane, or the owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec (a new identity, the fleet's claim lane inherited). When no boot-baked override is supplied, it respawns the member with the canonical saved launch profile unchanged. `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `claimKinds` is not settable here.",
   guidance: {
-    when: 'Move a member to a different model/effort/account/carry/context-size/agent/role — anything fixed at launch — or recover it with the same saved profile. It kills the old session and relaunches a replacement in the same fleet.',
+    when: 'Move a member to a different model/effort/account/carry/context-size/agent/role — anything fixed at launch — or recover it with the same saved profile.',
     notWhen:
       'For a RUNTIME tweak with no respawn (compaction limit, claim lane, a next-wake brief) — fleet:reconfigure-member. To seed claimKinds — fleet:launch-on-plan. To stand the whole fleet down — fleet:wind-down. To just kill (no replacement) — fleet:kill.',
     chaining: ROUTING_LADDER,

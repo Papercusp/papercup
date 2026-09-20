@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 897,
+  "count": 896,
   "tools": [
     {
       "name": "ablation:report",
@@ -12619,7 +12619,7 @@
         "curator"
       ],
       "guidance": {
-        "when": "Move a member to a different model/effort/account/carry/context-size/agent/role — anything fixed at launch — or recover it with the same saved profile. It kills the old session and relaunches a replacement in the same fleet.",
+        "when": "Move a member to a different model/effort/account/carry/context-size/agent/role — anything fixed at launch — or recover it with the same saved profile.",
         "notWhen": "For a RUNTIME tweak with no respawn (compaction limit, claim lane, a next-wake brief) — fleet:reconfigure-member. To seed claimKinds — fleet:launch-on-plan. To stand the whole fleet down — fleet:wind-down. To just kill (no replacement) — fleet:kill.",
         "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
       }
@@ -26648,37 +26648,6 @@
       }
     },
     {
-      "name": "release:byoc_readiness",
-      "http": {
-        "path": "/api/agent-tools/release/byoc_readiness",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Read computed BYOC acceptance readiness for one BAR from the canonical task-ledger release journal. This is a live, read-only evidence projection for typed scorecard probes; it never accepts caller-supplied snapshots.",
-      "capabilities": [
-        "intel:read"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "mug",
-        "documenter",
-        "curator",
-        "release-fixer"
-      ],
-      "guidance": {
-        "when": "At grading time for BYOC R-4, R-5, or R-6, after the maintained release driver has recorded receipts.",
-        "notWhen": "To mutate a release, replace a live journey, or treat a missing receipt as success.",
-        "chaining": "release:byoc_readiness { bar:\"R-4\"|\"R-5\"|\"R-6\", workItemId } → verdict:\"pass\" is the only healthy reading; unknown/fail are not shippable."
-      }
-    },
-    {
       "name": "release:checkpoint-cancel",
       "http": {
         "path": "/api/agent-tools/release/checkpoint-cancel",
@@ -27591,7 +27560,7 @@
       "guidance": {
         "when": "See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule). Before calling a routine stalled, read `paused` and `health` — see returns.",
         "notWhen": "To CHANGE a routine, use routines:set. For a harness blueprint autoloop, use autoloop:status. To manage group metadata or bulk pause/resume a group, use routines:group-set (also routines:list { rollup:true } for the group view).",
-        "chaining": "routines:set to retune or pause a routine you find here (use its exact name + installSlug). The routines:list compatibility alias is harness; routines:list { rollup:true } returns group metadata + review-due status."
+        "chaining": "routines:set to retune or pause a routine you find here (use its exact name + installSlug). The routines:list compatibility alias is harness."
       }
     },
     {
@@ -33418,7 +33387,7 @@
           "POST"
         ]
       },
-      "description": "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. For compatibility, capability shorthands such as kind:'credential' normalize to kind:'human', capability:'credential'. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history.",
+      "description": "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. Capability shorthands (kind:'credential') normalize to kind:'human', capability:'credential'. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history.",
       "capabilities": [
         "work_items:write"
       ],
@@ -33443,8 +33412,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Work cannot proceed until a named event fires, a gate changes, runtime/external state becomes ready, or a human capability becomes available. Always pass capability when you know it; omitted legacy rows infer live-dependency, human rows product-decision. Use a stable ref and name the concrete nextVerb when one exists.",
-        "notWhen": "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source, blocked item as target), preserving the dependency graph. A vague concern with no actual stop condition is a comment, not a blocker. Do not use a main/:3070/green-checkpoint blocker to pause ordinary implementation; staging/current-build is the acceptance plane. Only final shipment or a named deployed-only property may wait on the release plane.",
+        "when": "Work cannot proceed until a named event fires, a gate changes, runtime/external state becomes ready, or a human capability becomes available. Omitted legacy rows infer live-dependency, human rows product-decision. Use a stable ref and name the concrete nextVerb when one exists.",
+        "notWhen": "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source). A vague concern with no actual stop condition is a comment, not a blocker. Do not block ordinary implementation on main/:3070/green-checkpoint — staging/current-build is the acceptance plane; only final shipment or a named deployed-only property waits on the release plane.",
         "chaining": "work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call may omit ref when the item has one matching active blocker; pass ref (and kind when reused) if the request is ambiguous."
       }
     },

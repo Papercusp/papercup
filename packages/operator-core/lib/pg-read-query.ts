@@ -3999,3 +3999,193 @@ export async function listRelations(
     kind: RELATION_KIND[r.relkind] ?? r.relkind,
   }));
 }
+
+/** Index-preserving mask: literal/comment characters become spaces so structural
+ * scanning cannot be steered by a paren, AND or WHERE that lives inside a string,
+ * while every offset still addresses the SAME character in the raw SQL. That is
+ * what lets the emitted partition be sliced VERBATIM from the caller's text —
+ * a jsonb key IS a string literal, so a stripped copy would erase it (the lesson
+ * buildSilentNullPathAdvisory records). */
+function maskSqlNoise(sql: string): string {
+  const chars = sql.split('');
+  for (const [from, to] of sqlLiteralAndCommentRanges(sql)) {
+    for (let k = from; k < to && k < chars.length; k++) chars[k] = ' ';
+  }
+  return chars.join('');
+}
+
+/** Paren depth BEFORE each index, so top-level structure is one lookup. */
+function sqlDepthPrefix(masked: string): Int32Array {
+  const depth = new Int32Array(masked.length + 1);
+  let cur = 0;
+  for (let k = 0; k < masked.length; k++) {
+    if (masked[k] === '(') cur++;
+    else if (masked[k] === ')') cur--;
+    depth[k + 1] = cur;
+  }
+  return depth;
+}
+
+/** Every `FILTER (WHERE …)` predicate, sliced from the raw SQL. */
+function extractFilterPredicates(rawSql: string, masked: string): string[] {
+  const out: string[] = [];
+  const re = /\bfilter\s*\(/gi;
+  for (let m = re.exec(masked); m; m = re.exec(masked)) {
+    const open = m.index + m[0].length - 1;
+    let depth = 0;
+    let close = -1;
+    for (let k = open; k < masked.length; k++) {
+      if (masked[k] === '(') depth++;
+      else if (masked[k] === ')') {
+        depth--;
+        if (depth === 0) {
+          close = k;
+          break;
+        }
+      }
+    }
+    if (close < 0) continue;
+    out.push(
+      rawSql
+        .slice(open + 1, close)
+        .replace(/^\s*where\b/i, '')
+        .trim(),
+    );
+  }
+  return out;
+}
+
+/** Top-level conjuncts of the FIRST WHERE clause, sliced from the raw SQL.
+ *
+ * The WHERE is located at whatever depth it actually sits at rather than only
+ * at depth 0, because `SELECT EXISTS (SELECT 1 FROM t WHERE …)` — one of the two
+ * shapes this advisory exists for — carries its predicates one paren deep. The
+ * clause ends at the first sibling clause keyword or as soon as depth drops
+ * BELOW the WHERE's own, which is the subquery's closing paren. */
+function extractWhereConjuncts(rawSql: string, masked: string): string[] {
+  const depth = sqlDepthPrefix(masked);
+  const whereRe = /\bwhere\b/gi;
+  const whereAt = whereRe.exec(masked);
+  if (!whereAt) return [];
+  const base = depth[whereAt.index]!;
+  const start = whereAt.index + whereAt[0].length;
+
+  let end = masked.length;
+  for (let k = start; k < masked.length; k++) {
+    if (depth[k]! < base) {
+      end = k;
+      break;
+    }
+  }
+  const tailRe = /\b(group\s+by|order\s+by|having|limit|offset|fetch|window|union|intersect|except)\b/gi;
+  tailRe.lastIndex = start;
+  for (let m = tailRe.exec(masked); m && m.index < end; m = tailRe.exec(masked)) {
+    if (depth[m.index] === base) {
+      end = m.index;
+      break;
+    }
+  }
+
+  const out: string[] = [];
+  let last = start;
+  const splitRe = /\b(?:and|or)\b/gi;
+  splitRe.lastIndex = start;
+  for (let m = splitRe.exec(masked); m && m.index < end; m = splitRe.exec(masked)) {
+    if (depth[m.index] !== base) continue;
+    out.push(rawSql.slice(last, m.index));
+    last = m.index + m[0].length;
+  }
+  out.push(rawSql.slice(last, end));
+  return out.map((s) => s.trim()).filter(Boolean);
+}
+
+const NON_SUMMING_MAX_DIMENSIONS = 3;
+/** Scope predicates are carried into the generated WHERE instead of becoming
+ * dimensions — partitioning BY the tenant would both change the question and
+ * make the suggested query trip `tenant_scope_required`. */
+const NON_SUMMING_SCOPE_RE = /\b(workspace_id|harness_slug|hive_slug|pot_slug)\b/i;
+const NON_SUMMING_JSONB_RE =
+  /->>?|#>>?|\bjsonb_typeof\s*\(|\bjsonb_exists\s*\(|\bjsonb_path_exists\s*\(/i;
+
+/**
+ * Flag a SCALAR aggregate whose buckets cannot be shown to SUM
+ * (WI-10002034, EI-23761509275982493).
+ *
+ * The measured failure: a census written as three `count(*) FILTER (WHERE …)`
+ * expressions returned total 96 / bricked 0 / healthy 2. Those DO NOT SUM — 94
+ * rows fell through every FILTER via three-valued logic, because a jsonb path
+ * that is ABSENT yields NULL and NULL fails every comparison, `<>` included.
+ * The output was a perfectly well-formed row of numbers, so it read as a
+ * finding rather than as a broken instrument, and the conclusion drawn from it
+ * INVERTED once the same question was re-asked as an exhaustive `GROUP BY`
+ * where every row lands in exactly one labelled cell.
+ *
+ * That is the entire signature of this defect: the wrong answer is shaped
+ * exactly like the right one, so it cannot be caught by reading the result. It
+ * has to be caught at the moment the query runs — which is what this is for.
+ *
+ * Deliberately CONSERVATIVE, because a false positive on a correct census is
+ * what would train callers to skim past the seam's other advisories. It stays
+ * silent when the caller already partitioned (`GROUP BY` present, so the cells
+ * are on screen), when no scalar aggregate is present, and when the
+ * discriminating predicate is a single non-jsonb dimension — one plain boolean
+ * column cannot hide a fall-through worth a full partition.
+ */
+export function buildNonSummingPartitionAdvisory(rawSql: string): string | null {
+  const stripped = stripSqlLiteralsAndComments(rawSql);
+
+  // Already partitioned: the cells are on screen, so nothing is hidden.
+  if (/\bgroup\s+by\b/i.test(stripped)) return null;
+  if (!/\bcount\s*\(/i.test(stripped) && !/\bexists\s*\(/i.test(stripped)) return null;
+
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.length) return null;
+  const relation = tables[0]!;
+
+  const masked = maskSqlNoise(rawSql);
+  const filters = extractFilterPredicates(rawSql, masked);
+  // FILTER buckets ARE the caller's dimensions when present; the surrounding
+  // WHERE is then a shared scope rather than a discriminator.
+  const predicates = filters.length ? filters : extractWhereConjuncts(rawSql, masked);
+  if (!predicates.length) return null;
+
+  const scope: string[] = [];
+  const dimensions: string[] = [];
+  for (const predicate of predicates) {
+    const text = predicate.replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    const bucket = NON_SUMMING_SCOPE_RE.test(text) ? scope : dimensions;
+    if (!bucket.includes(text)) bucket.push(text);
+  }
+  if (!dimensions.length) return null;
+
+  const touchesJsonb = dimensions.some((d) => NON_SUMMING_JSONB_RE.test(d));
+  if (!touchesJsonb && dimensions.length < 2) return null;
+
+  const shown = dimensions.slice(0, NON_SUMMING_MAX_DIMENSIONS);
+  const partitionSql =
+    'SELECT\n' +
+    shown.map((d, i) => `       (${d}) AS d${i + 1}`).join(',\n') +
+    ',\n       count(*) AS rows\n' +
+    '       -- , (array_agg(<key column>))[1:3] AS sample  -- uncomment for members of a cell\n' +
+    `  FROM ${relation}` +
+    (scope.length ? `\n WHERE ${scope.join('\n   AND ')}` : '') +
+    `\n GROUP BY ${shown.map((_, i) => i + 1).join(', ')}` +
+    `\n ORDER BY ${shown.length + 1} DESC;`;
+
+  const trigger = touchesJsonb
+    ? 'at least one discriminating predicate reads a jsonb path, which yields NULL when the key is ABSENT'
+    : `this query discriminates on ${dimensions.length} independent dimensions`;
+
+  return (
+    `⚠ buckets may not sum: this returns a SCALAR over ${relation}, and ${trigger}. ` +
+    'A NULL operand makes a comparison UNKNOWN rather than false, so such a row satisfies NO branch — ' +
+    'it is silently absent from every bucket AND from the filtered total, while the numbers still come ' +
+    'back well-formed (WI-10002034: a measured census reported 96/0/2 while 94 rows fell through every ' +
+    'FILTER, and re-asking it as an exhaustive partition INVERTED the conclusion). A scalar cannot show ' +
+    'you this, because the wrong answer is shaped exactly like the right one. Re-ask it as an exhaustive ' +
+    'partition, where every row lands in exactly one labelled cell — a NULL in any `d<N>` column IS the ' +
+    `fall-through population, and the cells MUST add up to the unfiltered total:\n${partitionSql}\n` +
+    'Check that the cells sum before quoting any bucket as a finding.'
+  );
+}

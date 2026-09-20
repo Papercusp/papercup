@@ -407,6 +407,66 @@ export function deriveGitSyncFreshness(
           ? 'degraded'
           : 'fresh';
 
+  // WI-10002019 — the COMPOSITION defect, and the reason the two legs below exist.
+  // `status` above answers "is this routine healthy?" and deliberately reads
+  // 'degraded' for two incidents whose remedies are OPPOSITE: a scheduler that is
+  // not firing (restarting the operator is harmless, and is often the fix) and a
+  // fire that is LIVE right now (restarting destroys its in-flight work and drops
+  // the exclusive git-sync lock mid-write). The dangerous overlap is not
+  // hypothetical — it is the 2026-08-29 incident recorded above: a long fire
+  // freezes `last_synced_at`, so the SCHEDULER leg reads stale precisely BECAUSE
+  // the EXECUTION leg is busy, and the single scalar then indicates exactly the
+  // action that causes the damage. Decompose the verdict and answer the
+  // destructive question directly rather than leaving every reader to infer it.
+  const executionStatus: 'idle' | 'in-flight' | 'stuck' | 'unknown' =
+    activity === null ? 'unknown' : !inFlightActive ? 'idle' : inFlightStuck ? 'stuck' : 'in-flight';
+
+  const schedulerStatus: 'firing' | 'not-firing' | 'inactive' | 'unknown' = !active
+    ? 'inactive'
+    : ageMs === null || staleAfterMs === null
+      ? 'unknown'
+      : ageMs > staleAfterMs
+        ? 'not-firing'
+        : 'firing';
+
+  const executionLive = executionStatus === 'in-flight' || executionStatus === 'stuck';
+
+  // The whole point of splitting the legs: say out loud when the scheduler leg's
+  // staleness is EXPLAINED by a live fire rather than by a stalled engine.
+  const stalledBehindInFlightFire = schedulerStatus === 'not-firing' && executionLive;
+
+  // Locks are reported only if a writer names them; `[]` must never be readable as
+  // "holds no locks" when nobody measured. Deliberately NOT inferred from
+  // `active:true` — the lock a fire holds is a fact a writer owns, not one this
+  // read-time derivation may assert on its behalf.
+  const locksRaw = Array.isArray(activity?.locks) ? (activity.locks as unknown[]) : null;
+  const holdsExclusiveLocks = locksRaw
+    ? locksRaw.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+
+  // HARD INVARIANT (WI-10002019): a live fire makes a restart destructive HOWEVER
+  // stale the scheduler leg looks, so this is derived from the execution leg ALONE
+  // and never from `status` or the scheduler leg. 'unknown' is deliberately unsafe:
+  // a false "safe" destroys a peer's in-flight work irrecoverably, while a false
+  // "unsafe" only declines a restart. The asymmetry decides the default.
+  const safeToRestart = executionStatus === 'idle';
+
+  // Computed once and shared by the roll-up and the scheduler leg, so the two can
+  // never drift into disagreeing about the same quantity.
+  const missedIntervals =
+    ageMs !== null && cadenceMs && cadenceMs > 0 ? Math.floor(ageMs / cadenceMs) : null;
+
+  const mins = (ms: number | null): string => (ms === null ? 'an unknown duration' : `${Math.round(ms / 60_000)}m`);
+
+  const safeToRestartReason =
+    executionStatus === 'idle'
+      ? 'No git-sync fire is in flight (the activity marker reports active:false), so a restart cannot interrupt one.'
+      : executionStatus === 'unknown'
+        ? 'This row carries no git_sync_activity marker, so whether a fire is in flight is UNMEASURED — reported unsafe by default, because a wrong "safe" destroys in-flight work irrecoverably while a wrong "unsafe" only declines a restart.'
+        : executionStatus === 'stuck'
+          ? `A git-sync fire has been in flight for ${mins(inFlightAgeMs)} with no recorded progress for ${mins(inFlightProgressAgeMs)}. There is a LIVE process holding the exclusive git-sync lock — inspect it (processes:list) rather than restarting blind; a restart drops that lock mid-write.`
+          : `A git-sync fire has been in flight for ${mins(inFlightAgeMs)} and is still recording progress. Restarting would drop the exclusive git-sync lock mid-write and destroy its uncommitted work.`;
+
   return {
     status,
     measured_at: isoAt(nowMs),
@@ -414,8 +474,32 @@ export function deriveGitSyncFreshness(
     age_ms: ageMs,
     cadence_ms: cadenceMs,
     stale_after_ms: staleAfterMs,
-    missed_intervals: ageMs !== null && cadenceMs && cadenceMs > 0 ? Math.floor(ageMs / cadenceMs) : null,
+    missed_intervals: missedIntervals,
     raw_last_status: typeof metadata?.last_status === 'string' ? metadata.last_status : null,
+    // WI-10002019 — the two INDEPENDENT legs that `status` composes, plus the direct
+    // answer to the one question whose wrong answer is destructive. Read
+    // `safe_to_restart`, never `status`, before restarting or killing git-sync.
+    scheduler: {
+      status: schedulerStatus,
+      last_completed_at: isoAt(lastSyncedAtMs),
+      age_ms: ageMs,
+      cadence_ms: cadenceMs,
+      stale_after_ms: staleAfterMs,
+      missed_intervals: missedIntervals,
+      stalled_behind_in_flight_fire: stalledBehindInFlightFire,
+    },
+    execution: {
+      status: executionStatus,
+      phase: inFlightPhase,
+      started_at: isoAt(inFlightStartedAtMs),
+      age_ms: inFlightAgeMs,
+      last_progress_at: isoAt(inFlightLastProgressAtMs),
+      progress_age_ms: inFlightProgressAgeMs,
+      holds_exclusive_locks: holdsExclusiveLocks,
+      locks_reported: locksRaw !== null,
+    },
+    safe_to_restart: safeToRestart,
+    safe_to_restart_reason: safeToRestartReason,
     in_flight: activity
       ? {
           active: inFlightActive,
@@ -432,13 +516,24 @@ export function deriveGitSyncFreshness(
       status !== 'degraded'
         ? null
         : inFlightStuck
-        ? `A git-sync fire has been in flight for ${Math.round(inFlightAgeMs! / 60_000)}m` +
+        ? `A git-sync fire has been in flight for ${mins(inFlightAgeMs)}` +
             `${inFlightPhase ? ` (phase '${inFlightPhase}')` : ''}; its last recorded progress was ` +
-            `${Math.round(inFlightProgressAgeMs! / 60_000)}m ago. Scheduled ticks skip while it holds ` +
+            `${mins(inFlightProgressAgeMs)} ago. Scheduled ticks skip while it holds ` +
             'the git-sync lock, so nothing is being committed and the raw last_status still describes ' +
-            'the tick before it.'
-          : `No completed git-sync outcome for more than ${GIT_SYNC_FRESHNESS_INTERVALS} scheduled intervals; ` +
-            'the raw last_status may describe an older successful tick.',
+            'the tick before it. There IS a live process holding that lock: inspect it before any ' +
+            'restart (safe_to_restart is false).'
+          : executionStatus === 'in-flight'
+            ? // WI-10002019: the stale completed-outcome clock is EXPLAINED by a live fire.
+              // The generic "nothing has completed" wording below reads as a dead scheduler
+              // and points a reader straight at the one action that destroys the live fire.
+              `No completed git-sync outcome for more than ${GIT_SYNC_FRESHNESS_INTERVALS} scheduled intervals, ` +
+              `but a fire IS in flight (${mins(inFlightAgeMs)}` +
+              `${inFlightPhase ? `, phase '${inFlightPhase}'` : ''}) and is still recording progress. ` +
+              'The stale clock is explained by that live fire, NOT by a stalled scheduler: do not restart ' +
+              'or kill git-sync (safe_to_restart is false — a restart drops the exclusive git-sync lock ' +
+              'mid-write and destroys its uncommitted work).'
+            : `No completed git-sync outcome for more than ${GIT_SYNC_FRESHNESS_INTERVALS} scheduled intervals; ` +
+              'the raw last_status may describe an older successful tick.',
   };
 }
 
@@ -650,7 +745,7 @@ export default defineTool({
     // budgeted while `returns` is free — which is what put this tool 184 over the cap.
     when: 'See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule). Before calling a routine stalled, read `paused` and `health` — see returns.',
     notWhen: 'To CHANGE a routine, use routines:set. For a harness blueprint autoloop, use autoloop:status. To manage group metadata or bulk pause/resume a group, use routines:group-set (also routines:list { rollup:true } for the group view).',
-    chaining: 'routines:set to retune or pause a routine you find here (use its exact name + installSlug). The routines:list compatibility alias is harness; routines:list { rollup:true } returns group metadata + review-due status.',
+    chaining: 'routines:set to retune or pause a routine you find here (use its exact name + installSlug). The routines:list compatibility alias is harness.',
     // EI-20206183390542424 (+ its independent re-filing EI-22367587259064593 three
     // weeks later). Measured in harness_shared.tool_invocations: 13 calls from 11
     // DISTINCT agents passed `workspace` and got a bare unrecognized-key rejection.
@@ -706,6 +801,8 @@ export default defineTool({
       '⚠ `health.origin_freshness` — whether commits are REACHING ORIGIN, which `git_sync_freshness` cannot tell you (EI-22702954391733746): { alerted, cause, tracked_origin_sha, stall_sweeps, integrator_backlog_sweeps, publish_refused_sweeps, publish_backlog_sweeps }, null on a pot the origin watchdog does not judge. Read it as the SEPARATE question it is: `git_sync_freshness` measures whether the LOCAL COMMIT stage ran on schedule, and on a `bridged` pot the member is commit-only BY DESIGN, so `fresh` + `synced` is fully compatible with origin being arbitrarily stale — measured 2026-09-08, this surface read a clean bill for ~8h while origin sat 26 commits behind. When `alerted:true` the `last_status` headline is derived-overridden to say so.',
       '⚠ `health.git_sync_exclusions` — what the last completed sweep LEFT OUT (EI-21900560691158244/WI-2141747): { skip_reason, skipped_at, skipped_count, skipped_sample, oversized_count, oversized_sample, bulk_excluded_count, bulk_excluded_sample, +_truncated markers, sweep_at, sweep_age_ms, sweep_stale, warning }. `oversized_*` is only the per-file blob guard; `bulk_excluded_*` is the cumulative commit-size guard and has a different remedy. Counts are true totals; samples are bounded. `sweep_stale:true` (including legacy rows with no stamp, or a degraded git-sync freshness verdict) suppresses byte-exclusion action advice until a fresh completed sweep is measured. Always present on a git-sync row, so zero counts are measurements, not missing fields.',
       '`health.git_sync_freshness.in_flight` — the wedged-fire decomposition: { active, phase, started_at, age_ms, long_running_age_ms, last_progress_at, progress_age_ms, stuck }, null when the row carries no git_sync_activity. `age_ms`/`long_running_age_ms` measure total fire duration; `progress_age_ms` measures time since the writer heartbeat. `stuck:true` means progress has been absent for longer than three scheduled intervals, which is a DIFFERENT incident from ticks being skipped (there is a live process to look at) even though both read `degraded`. Legacy active markers without a progress timestamp fall back to started_at.',
+      '⛔ `health.git_sync_freshness.safe_to_restart` IS THE RESTART/KILL DECISION — never `status` (WI-10002019). `status:\'degraded\'` COMPOSES two legs whose remedies are opposite, so it indicates the destructive action in exactly the case that must not take it: a long fire freezes `last_synced_at`, so `scheduler.status` reads `not-firing` BECAUSE `execution.status` is `in-flight`, and a restart then drops the exclusive git-sync lock mid-write and destroys the sweep\'s uncommitted work. The legs are independent — `scheduler` { status: firing|not-firing|inactive|unknown, last_completed_at, age_ms, cadence_ms, stale_after_ms, missed_intervals, stalled_behind_in_flight_fire } and `execution` { status: idle|in-flight|stuck|unknown, phase, started_at, age_ms, last_progress_at, progress_age_ms, holds_exclusive_locks, locks_reported }. `stalled_behind_in_flight_fire:true` is the giveaway that a stale scheduler leg is EXPLAINED by a live fire rather than by a stalled engine.',
+      '`health.git_sync_freshness.safe_to_restart` is derived from the EXECUTION leg ALONE and is true only for a provably idle one; `execution.status:\'unknown\'` (the row carries no git_sync_activity marker) reports UNSAFE on purpose, because a wrong "safe" destroys in-flight work irrecoverably while a wrong "unsafe" only declines a restart. `safe_to_restart_reason` names which case you are in, and `holds_exclusive_locks` is writer-reported only — `locks_reported:false` means UNMEASURED, never "holds no locks".',
       '`health.gate_health.readAttestation` — read-time provenance for the cached verdict: snapshotObservedAt, snapshotAge/snapshotAgeMs, the judged candidate, candidateCommittedAt, candidateAgeAtObservationMs, and commitsBehindTip. The raw gate-health fields remain unchanged; null attestation fields mean the older writer did not provide that evidence.',
       '`health.gate_health.failingTestsAttestation` — candidate-bound provenance for the raw `failingTests` array: the terminal-verdict candidate, the live in-flight candidate (when the run published one), `staleAgainstInFlight`, and a warning when the arrays belong to a prior candidate. A null stale marker means the comparison was unavailable; never read it as false.',
       'THIS IS THE GATE-HEALTH READ: `health.gate_health` is what 112 agents were hand-writing `SELECT metadata->\'gate_health\' FROM harness_shared.routines` for. No raw SQL needed. For the deploy-position question ("is my change live, what is blocking it") use dev:pipeline_position instead — different question.',

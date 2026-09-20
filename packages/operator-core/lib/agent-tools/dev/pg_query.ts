@@ -35,6 +35,7 @@ import {
   buildJsonbTypeofNegationAdvisory,
   buildUnusedCteAdvisory,
   buildPopulationNarrowingAdvisory,
+  buildNonSummingPartitionAdvisory,
   buildSchemaColumnRedirect,
   buildTenantScopeAdvisory,
   buildDerivedColumnRedirect,
@@ -631,6 +632,10 @@ export default defineTool({
       jsonbTypeofAdvisory,
       unusedCteAdvisory,
       populationNarrowingAdvisory,
+      // The sibling of populationNarrowing above: that one warns a ZERO cannot
+      // establish an empty population, this one warns a NON-zero scalar may be
+      // missing rows that fell through every branch via three-valued logic.
+      advisoryOf(() => buildNonSummingPartitionAdvisory(sql)),
       splitEvidenceAdvisory,
       nativeToolAdvisory,
       agentActivityAdvisory,

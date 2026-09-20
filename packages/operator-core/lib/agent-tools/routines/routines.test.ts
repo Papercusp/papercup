@@ -195,8 +195,12 @@ describe('routines:list', () => {
     expect(verdict.warning).toBe(
       "A git-sync fire has been in flight for 34m (phase 'local-sync'); its last recorded progress was 34m ago. " +
         'Scheduled ticks skip while it holds the git-sync lock, so nothing is being committed and the raw last_status ' +
-        'still describes the tick before it.',
+        'still describes the tick before it. There IS a live process holding that lock: inspect it before any ' +
+        'restart (safe_to_restart is false).',
     );
+    // WI-10002019: a wedged fire is still a LIVE fire holding the exclusive lock, so the
+    // destructive action stays contraindicated even though this row needs intervention.
+    expect(verdict).toMatchObject({ execution: { status: 'stuck' }, safe_to_restart: false });
   });
 
   it('does not mark a long-running local-sync fire stuck while the writer heartbeat shows recent progress', () => {
@@ -243,6 +247,149 @@ describe('routines:list', () => {
         now,
       ),
     ).toMatchObject({ status: 'fresh', in_flight: null, warning: null });
+  });
+
+  // WI-10002019 — the COMPOSITION defect. These two rows are deliberately a PAIR: they
+  // carry the SAME `status:'degraded'` roll-up and the OPPOSITE correct action. That is
+  // the whole bug — a reader deciding "can I restart git-sync?" from the composed scalar
+  // gets the destructive answer on the row where it destroys a live sweep. Keeping both
+  // halves makes the guard falsifiable in both directions: deriving safe_to_restart from
+  // `status` (or from the scheduler leg) breaks the IDLE row, and dropping the execution
+  // check breaks the IN-FLIGHT row. A single-row test would pass under either mutation.
+  describe('WI-10002019: scheduler and execution legs are independent, and safe_to_restart follows execution alone', () => {
+    const NOW = Date.parse('2026-08-29T16:58:00.000Z');
+    const staleClock = { last_status: 'synced', last_synced_at: NOW - 30 * 60_000 };
+
+    it('a STALE scheduler clock with a LIVE advancing fire is NOT safe to restart, however stale the clock looks', () => {
+      cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+      const verdict = deriveGitSyncFreshness(
+        {
+          ...staleClock,
+          // Advancing: progress 30s ago against a 9-minute window, so NOT stuck. The
+          // completed-outcome clock is stale precisely BECAUSE this fire holds the lock.
+          git_sync_activity: {
+            active: true,
+            phase: 'local-sync',
+            started_at: NOW - 5 * 60_000,
+            updated_at: NOW - 30_000,
+          },
+        },
+        '0 */3 * * * *',
+        true,
+        NOW,
+      );
+      expect(verdict).toMatchObject({
+        status: 'degraded',
+        scheduler: { status: 'not-firing', stalled_behind_in_flight_fire: true },
+        execution: { status: 'in-flight', phase: 'local-sync', age_ms: 5 * 60_000 },
+        safe_to_restart: false,
+      });
+      // Asserted by phrase rather than by the whole string: the load-bearing property is
+      // that the misleading "nothing has completed" wording is GONE and the live fire is
+      // named, not the exact prose. An exact-match assertion here strands on any reword.
+      const warning = String(verdict.warning);
+      expect(warning).toContain('a fire IS in flight');
+      expect(warning).toContain('do not restart');
+      expect(warning).not.toContain('the raw last_status may describe an older successful tick');
+    });
+
+    it('CALIBRATION: the same stale clock with NO fire running reads the same degraded status but IS safe to restart', () => {
+      cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+      const verdict = deriveGitSyncFreshness(
+        {
+          ...staleClock,
+          git_sync_activity: {
+            active: false,
+            phase: 'complete',
+            started_at: NOW - 31 * 60_000,
+            completed_at: NOW - 30 * 60_000,
+          },
+        },
+        '0 */3 * * * *',
+        true,
+        NOW,
+      );
+      expect(verdict).toMatchObject({
+        // Identical roll-up to the row above — which is exactly why the roll-up cannot
+        // be the restart decision.
+        status: 'degraded',
+        scheduler: { status: 'not-firing', stalled_behind_in_flight_fire: false },
+        execution: { status: 'idle' },
+        safe_to_restart: true,
+      });
+      // Here the generic wording is CORRECT: the scheduler really has stopped.
+      expect(String(verdict.warning)).toContain('the raw last_status may describe an older successful tick');
+    });
+
+    it('an UNMEASURED execution leg (no activity marker) reports unsafe, because a wrong "safe" is the irrecoverable one', () => {
+      cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+      const verdict = deriveGitSyncFreshness(staleClock, '0 */3 * * * *', true, NOW);
+      expect(verdict).toMatchObject({
+        execution: { status: 'unknown', holds_exclusive_locks: [], locks_reported: false },
+        safe_to_restart: false,
+      });
+      expect(String(verdict.safe_to_restart_reason)).toContain('UNMEASURED');
+    });
+
+    it('reports writer-named locks, and distinguishes "none reported" from "reported none"', () => {
+      cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+      const withLocks = deriveGitSyncFreshness(
+        {
+          ...staleClock,
+          git_sync_activity: {
+            active: true,
+            started_at: NOW - 60_000,
+            updated_at: NOW - 10_000,
+            locks: ['git-sync:papercusp', 'workspace:papercusp', 7],
+          },
+        },
+        '0 */3 * * * *',
+        true,
+        NOW,
+      );
+      // The non-string entry is dropped rather than stringified — a lock name this
+      // derivation cannot vouch for must not appear as one.
+      expect(withLocks).toMatchObject({
+        execution: {
+          status: 'in-flight',
+          holds_exclusive_locks: ['git-sync:papercusp', 'workspace:papercusp'],
+          locks_reported: true,
+        },
+        safe_to_restart: false,
+      });
+
+      const withoutLocks = deriveGitSyncFreshness(
+        { ...staleClock, git_sync_activity: { active: true, started_at: NOW - 60_000, updated_at: NOW - 10_000 } },
+        '0 */3 * * * *',
+        true,
+        NOW,
+      );
+      // Same empty array, opposite meaning — which is why locks_reported exists.
+      expect(withoutLocks).toMatchObject({
+        execution: { holds_exclusive_locks: [], locks_reported: false },
+      });
+    });
+
+    it('a paused routine reports an inactive scheduler leg without claiming its execution leg is idle', () => {
+      cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+      const verdict = deriveGitSyncFreshness(
+        {
+          ...staleClock,
+          git_sync_activity: { active: true, started_at: NOW - 60_000, updated_at: NOW - 10_000 },
+        },
+        '0 */3 * * * *',
+        false,
+        NOW,
+      );
+      // Pausing the SCHEDULER does not stop a fire already running, so the execution
+      // leg — and therefore the restart verdict — is unaffected by the active flag.
+      expect(verdict).toMatchObject({
+        status: 'inactive',
+        scheduler: { status: 'inactive' },
+        execution: { status: 'in-flight' },
+        safe_to_restart: false,
+      });
+    });
   });
 
   it('does not convict a fire that is in flight but still INSIDE the stale window, nor a completed one', () => {
