@@ -379,6 +379,13 @@ export const RESOURCE_GOVERNOR_SCANNER_PATH =
   "scripts/check-resource-governor-enforcement.mjs";
 export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
   {
+    path: "packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts: `runRestartCommand` execFiles the ptool CLI (`dev:restart --json -`) to auto-remediate a STALE routines-enabled bg-host executor. The start is bounded and awaited under an explicit timeout with a 4MB maxBuffer, writes its argument payload to stdin and closes it immediately, and resolves to a single {stdout, error} receipt; nothing is retained between calls, so it adds no residency and no independent resident queue. It must remain runnable while productive capacity is pressured because it is the recovery lever for an executor that has ALREADY stopped making progress — gating it on admission would queue the restart behind the very wedged capacity the restart exists to free. The restart it invokes is itself the governed dev:restart chokepoint, which owns drain/coalescing and its own authorize+reason audit trail.",
+  },
+  {
     path: "apps/operator/lib/release/green-checkpoint-gen-check-self-heal.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -1694,11 +1701,11 @@ export const BYPASS_REGISTRY = new Map([
     },
   ],
   [
-    "packages/operator-core/lib/agent-tools/computer/desktop-provisioner.ts::resource-start-outside-admission",
+    "packages/operator-core/lib/agent-tools/computer/desktop-provisioner-core.ts::resource-start-outside-admission",
     {
       disposition: "bypass",
       reason:
-        "xdpyinfo -display — X display liveness probe; the provisioning start it guards is governed separately",
+        "xdpyinfo -display — X display liveness probe (spawnSync, stdio ignored, reads only the exit status); the provisioning start it guards is governed separately. Path repointed 2026-09-20: desktop-provisioner.ts was split on 2026-09-19 (6ec387d053) and is now a 1.7KB shim that only injects managedSpawn; the probe itself moved to desktop-provisioner-core.ts, so the old row went finding-absent while the new path carried an unreviewed finding",
     },
   ],
   [
