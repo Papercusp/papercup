@@ -296,47 +296,9 @@ export async function synchronizeAcceptanceBarRevision(
        AND plan_slug = ${subjectPlan} FOR UPDATE`;
   if (!subjects.length) throw new Error('acceptance_bar_revision_subject_missing');
   const subject = subjects[0]!;
-  let clauses = await sql<
-    Array<{
-      spec_id: string;
-      source_val_id: string | null;
-      current_revision: number | string;
-      source_bar_key: string;
-      source_bar_hash: string;
-      plan_item_id: string;
-      behavior: string;
-      behavior_class: SpecClauseWrite['behaviorClass'];
-      falsifier: SpecClauseWrite['falsifier'];
-      required_evidence: string[];
-      required_test_layers: string[];
-      mutation_required: boolean;
-      lifecycle_status: SpecClauseWrite['lifecycleStatus'];
-      supersedes_spec_id: string | null;
-      supersedes_revision: number | null;
-      exemption: Record<string, unknown> | null;
-    }>
-  >`
-    SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key, r.source_bar_hash,
-           r.plan_item_id, r.behavior, r.behavior_class, r.falsifier, r.required_evidence, r.required_test_layers,
-           r.mutation_required, r.lifecycle_status, r.supersedes_spec_id,
-           r.supersedes_revision, r.exemption
-      FROM harness_shared.plan_spec_clauses c
-      JOIN harness_shared.plan_spec_clause_revisions r
-        ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
-       AND r.plan_slug = c.plan_slug AND r.spec_id = c.spec_id AND r.revision = c.current_revision
-     WHERE c.workspace_id = ${args.workspaceId} AND c.harness_slug = ${args.harnessSlug}
-       AND c.plan_slug = ${subjectPlan} AND r.source_bar_key IS NOT NULL
-     ORDER BY c.spec_id LIMIT 1001`;
-  if (clauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
   const { acceptanceBarBehaviorClass, parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
   const { computeAcceptanceBarHash } = await import('./rubrics');
   const byKey = new Map(data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
-  const revisions = new Map<string, number>();
-  // The subject plan is the canonical discharge map. Diff every desired
-  // (BAR, plan-item) edge, not merely whether a BAR has any clause: an existing
-  // BAR may expand from one implementing item to several during an as-built
-  // amendment. Treating that BAR as already present made preview report the
-  // expanded mapping while apply silently left the new edges unprojected.
   const requirements = parseRequirementBars(subject.content);
   if (!requirements.ok) {
     throw new Error(
@@ -349,12 +311,73 @@ export async function synchronizeAcceptanceBarRevision(
       `acceptance_bar_revision_mapping_invalid:${mappings.problems.map((problem) => problem.code).join(',')}`,
     );
   }
+  // A clause this amendment owns is identified by its stored bar linkage OR by the canonical
+  // AUTO-BAR identity its mapping implies. Identity alone is load-bearing: a clause write that
+  // omits `sourceBar` writes NULL source_bar_key on the new current revision (the store carries
+  // no provenance forward), which made the clause invisible to this query. The mapping then read
+  // as unprojected and the first pass tried to CREATE it at expectedRevision 0 against a row that
+  // already existed -- an unrecoverable conflict on every retry, because the one operation that
+  // would restore the linkage was the one that could no longer see it (EI-23816909807579931).
+  const barKeyBySpecId = new Map<string, string>();
+  for (const mapping of mappings.mappings) {
+    if (byKey.get(mapping.barKey)?.role === 'disclosure') continue;
+    for (const planItemId of mapping.planItemIds) {
+      barKeyBySpecId.set(`AUTO-BAR-${mapping.barKey}-${planItemId}`, mapping.barKey);
+    }
+  }
+  const ownedSpecIds = [...barKeyBySpecId.keys()];
+  type ProjectedClause = {
+    spec_id: string;
+    source_val_id: string | null;
+    current_revision: number | string;
+    source_bar_key: string | null;
+    source_bar_hash: string | null;
+    plan_item_id: string;
+    behavior: string;
+    behavior_class: SpecClauseWrite['behaviorClass'];
+    falsifier: SpecClauseWrite['falsifier'];
+    required_evidence: string[];
+    required_test_layers: string[];
+    mutation_required: boolean;
+    lifecycle_status: SpecClauseWrite['lifecycleStatus'];
+    supersedes_spec_id: string | null;
+    supersedes_revision: number | null;
+    exemption: Record<string, unknown> | null;
+  };
+  const loadClauses = async (): Promise<ProjectedClause[]> => {
+    const rows = await sql<ProjectedClause[]>`
+      SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key, r.source_bar_hash,
+             r.plan_item_id, r.behavior, r.behavior_class, r.falsifier, r.required_evidence, r.required_test_layers,
+             r.mutation_required, r.lifecycle_status, r.supersedes_spec_id,
+             r.supersedes_revision, r.exemption
+        FROM harness_shared.plan_spec_clauses c
+        JOIN harness_shared.plan_spec_clause_revisions r
+          ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
+         AND r.plan_slug = c.plan_slug AND r.spec_id = c.spec_id AND r.revision = c.current_revision
+       WHERE c.workspace_id = ${args.workspaceId} AND c.harness_slug = ${args.harnessSlug}
+         AND c.plan_slug = ${subjectPlan}
+         AND (r.source_bar_key IS NOT NULL OR c.spec_id = ANY(${ownedSpecIds}::text[]))
+       ORDER BY c.spec_id LIMIT 1001`;
+    if (rows.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
+    return rows;
+  };
+  let clauses = await loadClauses();
+  // The stored linkage when present, else the canonical identity. A clause matching neither is
+  // hand-authored and not ours to touch, so it keeps failing `unmapped` exactly as before.
+  const barKeyOf = (clause: ProjectedClause): string | null =>
+    clause.source_bar_key ?? barKeyBySpecId.get(clause.spec_id) ?? null;
+  const revisions = new Map<string, number>();
+  // The subject plan is the canonical discharge map. Diff every desired
+  // (BAR, plan-item) edge, not merely whether a BAR has any clause: an existing
+  // BAR may expand from one implementing item to several during an as-built
+  // amendment. Treating that BAR as already present made preview report the
+  // expanded mapping while apply silently left the new edges unprojected.
   const missingMappings = mappings.mappings.flatMap((mapping) => {
     const criterion = byKey.get(mapping.barKey);
     if (!criterion || criterion.role === 'disclosure') return [];
     return mapping.planItemIds
       .filter((planItemId) => !clauses.some(
-        (clause) => clause.source_bar_key === mapping.barKey && clause.plan_item_id === planItemId,
+        (clause) => barKeyOf(clause) === mapping.barKey && clause.plan_item_id === planItemId,
       ))
       .map((planItemId) => ({ criterion, barKey: mapping.barKey, planItemId }));
   });
@@ -392,34 +415,29 @@ export async function synchronizeAcceptanceBarRevision(
       if (result.status === 'created' || result.status === 'revised' || result.status === 'unchanged') {
         revisions.set(specId, result.revision);
       } else {
-        throw new Error(`acceptance_bar_revision_projection_conflict:${specId}:${result.status}`);
+        // The expected/actual pair is already on the conflict result; discarding it left a bare
+        // `:conflict` that cannot distinguish a stale CAS from a create against an existing row.
+        throw new Error(
+          `acceptance_bar_revision_projection_conflict:${specId}:${result.status}`
+          + (result.status === 'conflict'
+            ? `:expected=${result.expectedRevision}:actual=${result.actualRevision}` : ''),
+        );
       }
     }
-    clauses = await sql<typeof clauses>`
-      SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key, r.source_bar_hash,
-             r.plan_item_id, r.behavior, r.behavior_class, r.falsifier, r.required_evidence, r.required_test_layers,
-             r.mutation_required, r.lifecycle_status, r.supersedes_spec_id,
-             r.supersedes_revision, r.exemption
-        FROM harness_shared.plan_spec_clauses c
-        JOIN harness_shared.plan_spec_clause_revisions r
-          ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
-         AND r.plan_slug = c.plan_slug AND r.spec_id = c.spec_id AND r.revision = c.current_revision
-       WHERE c.workspace_id = ${args.workspaceId} AND c.harness_slug = ${args.harnessSlug}
-         AND c.plan_slug = ${subjectPlan} AND r.source_bar_key IS NOT NULL
-       ORDER BY c.spec_id LIMIT 1001`;
-    if (clauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
+    clauses = await loadClauses();
   }
   if (mappings.mappings.some((mapping) => {
     const criterion = byKey.get(mapping.barKey);
     return criterion?.role !== 'disclosure' && mapping.planItemIds.some((planItemId) =>
-      !clauses.some((clause) => clause.source_bar_key === mapping.barKey && clause.plan_item_id === planItemId));
+      !clauses.some((clause) => barKeyOf(clause) === mapping.barKey && clause.plan_item_id === planItemId));
   })) {
     throw new Error('acceptance_bar_revision_mapping_missing');
   }
   for (const clause of clauses) {
     if (revisions.has(clause.spec_id)) continue;
-    const criterion = byKey.get(clause.source_bar_key);
-    if (!criterion?.barHash || !criterion.evidencePlane || !data.barSetHash) {
+    const effectiveBarKey = barKeyOf(clause);
+    const criterion = effectiveBarKey ? byKey.get(effectiveBarKey) : undefined;
+    if (!effectiveBarKey || !criterion?.barHash || !criterion.evidencePlane || !data.barSetHash) {
       throw new Error(`acceptance_bar_revision_projection_unmapped:${clause.spec_id}`);
     }
     // METHOD and test-layer changes do not replace an author's atomic behavior.
@@ -428,7 +446,7 @@ export async function synchronizeAcceptanceBarRevision(
     // Comparing whole hashes alone erased reviewed scenarios and causal pairs
     // whenever an approved amendment changed proof depth (EI-22755746610403259).
     const unchangedBar = clause.source_bar_hash === criterion.barHash;
-    const prior = previousByKey.get(clause.source_bar_key);
+    const prior = previousByKey.get(effectiveBarKey);
     const layersOnly = !unchangedBar && prior?.barHash === clause.source_bar_hash &&
       computeAcceptanceBarHash({ ...criterion, requiredTestLayers: prior.requiredTestLayers }) === clause.source_bar_hash;
     const preserveRefinements = unchangedBar || layersOnly;
@@ -454,14 +472,18 @@ export async function synchronizeAcceptanceBarRevision(
       supersedes: clause.supersedes_spec_id && clause.supersedes_revision
         ? { specId: clause.supersedes_spec_id, revision: clause.supersedes_revision } : null,
       falsifier: preserveRefinements ? clause.falsifier : { observation: criterion.driftMarkers! },
-      acceptanceRef: `${args.rubricSlug}@${args.rubricRevision}:${clause.source_bar_key}`,
-      sourceBar: { barKey: clause.source_bar_key, barHash: criterion.barHash,
+      acceptanceRef: `${args.rubricSlug}@${args.rubricRevision}:${effectiveBarKey}`,
+      sourceBar: { barKey: effectiveBarKey, barHash: criterion.barHash,
         barSetHash: data.barSetHash, rubricSlug: args.rubricSlug,
         rubricRevision: args.rubricRevision, evidencePlane: criterion.evidencePlane },
       actorId: args.actorId,
     }, { executor: sql, workspaceId: args.workspaceId, harnessSlug: args.harnessSlug });
     if (result.status !== 'created' && result.status !== 'revised' && result.status !== 'unchanged') {
-      throw new Error(`acceptance_bar_revision_projection_conflict:${clause.spec_id}:${result.status}`);
+      throw new Error(
+        `acceptance_bar_revision_projection_conflict:${clause.spec_id}:${result.status}`
+        + (result.status === 'conflict'
+          ? `:expected=${result.expectedRevision}:actual=${result.actualRevision}` : ''),
+      );
     }
     revisions.set(clause.spec_id, result.revision);
   }
