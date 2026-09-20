@@ -29,6 +29,70 @@ const SESSION_PORT_ARTIFACT = renderSessionPortSeed({
   fidelity: 'full',
   transcript: 'ported history',
 });
+const SESSION_PORT_ID = '22222222-2222-4222-8222-222222222222';
+const EMPTY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+const sessionPortRow = (overrides: Record<string, unknown> = {}) => ({
+  id: SESSION_PORT_ID,
+  workspaceId: 'default',
+  idempotencyKey: 'logical-request-hash',
+  retryOfPortId: null,
+  protocolVersion: 2,
+  status: 'prepared',
+  sourceAdvSessionId: 9,
+  targetAdvSessionId: null,
+  sourceBackend: 'claude',
+  targetBackend: 'codex',
+  targetModel: 'gpt-5.5',
+  tokenHash: 'token-hash',
+  artifactPath: '/managed/222.seed.md',
+  expiresAt: '2099-01-01T00:00:00.000Z',
+  sourceHash: 'source-hash',
+  normalizedHash: 'normalized-hash',
+  renderedHash: SESSION_PORT_ARTIFACT.hash,
+  preparedAt: '2026-07-14T00:00:00.000Z',
+  pendingAt: null,
+  deliveredAt: null,
+  failedAt: null,
+  error: null,
+  metadata: {
+    sourceCoordOwnerId: 'su-source-owner',
+    estimatedTokens: 10,
+    summary: {
+      protocolVersion: 2,
+      source: {
+        backend: 'claude',
+        workspaceId: 'default',
+        advSessionId: 9,
+        nativeSessionId: 'source-native',
+        cwd: '/workspace',
+        harnessSlug: null,
+        planSlug: null,
+        snapshot: {
+          kind: 'live-jsonl',
+          highWaterBytes: 1,
+          completeBytes: 1,
+          sha256: 'source-hash',
+          archiveRelpath: null,
+        },
+      },
+      target: {
+        backend: 'codex',
+        provider: 'openai',
+        model: 'gpt-5.5',
+        account: 'default',
+        contextWindow: 200_000,
+        availableInputTokens: 100_000,
+        contextSize: 'trimmed',
+        launchContextHash: EMPTY_SHA256,
+      },
+      fidelity: 'full',
+      versions: { transform: 3, summaryPrompt: null },
+      stats: { omittedAttachments: 0, unsupportedBlocks: 0, redactions: 0 },
+      summary: null,
+    },
+  },
+  ...overrides,
+});
 
 const recordAdvSessionMock = vi.fn(async (_opts: unknown) => 42 as number | null);
 const buildLaunchSpecMock = vi.fn(async (_input: any) => ({
@@ -83,7 +147,22 @@ const claimAgentLaunchMock = vi.fn(
 const recordAgentLaunchResultMock = vi.fn(async (_opts: unknown) => undefined);
 const releaseAgentLaunchClaimMock = vi.fn(async (_opts: unknown) => true);
 const getSessionPortMock = vi.fn(async (_id: string, _workspaceId: string) => null as any);
-const transitionSessionPortMock = vi.fn(async (_id: string, _ws: string, _to: string, _fields: unknown) => ({ status: 'pending' }));
+const reserveSessionPortTargetMock = vi.fn(async (input: any) => ({
+  status: 'reserved' as const,
+  targetAdvSessionId: 42,
+  port: sessionPortRow({
+    id: input.portId,
+    workspaceId: input.workspaceId,
+    status: 'pending',
+    targetAdvSessionId: 42,
+  }),
+}));
+const readSessionPortBootstrapDispositionMock = vi.fn(async (_input: unknown) => ({
+  status: 'in_progress' as const,
+  targetAdvSessionId: 42,
+}));
+const recordSessionPortBootstrapReceiptMock = vi.fn(async (_input: unknown) => undefined);
+const failSessionPortTargetReservationMock = vi.fn(async (_input: unknown) => true);
 const readSessionPortArtifactMock = vi.fn(async (_port: unknown) => SESSION_PORT_ARTIFACT.seed);
 const recordSessionPortTelemetryMock = vi.fn(async (_event: unknown) => true);
 
@@ -153,16 +232,22 @@ vi.mock('../../agent-tools/coordination/control-anchor', () => ({
 vi.mock('../../session-port/store', () => ({
   assertSessionPortStorageReady: vi.fn(async () => undefined),
   getSessionPort: (...a: unknown[]) => getSessionPortMock(...(a as [any, any])),
-  transitionSessionPort: (...a: unknown[]) => transitionSessionPortMock(...(a as [any, any, any, any])),
+  sessionPortBootstrapLedgerKey: (portId: string) => `bootstrap-su:session-port:${portId}`,
+  reserveSessionPortTarget: (...a: unknown[]) => reserveSessionPortTargetMock(...(a as [any])),
+  readSessionPortBootstrapDisposition: (...a: unknown[]) => readSessionPortBootstrapDispositionMock(...(a as [any])),
+  recordSessionPortBootstrapReceipt: (...a: unknown[]) => recordSessionPortBootstrapReceiptMock(...(a as [any])),
+  failSessionPortTargetReservation: (...a: unknown[]) => failSessionPortTargetReservationMock(...(a as [any])),
 }));
 vi.mock('../../session-port/telemetry', () => ({
   recordSessionPortTelemetry: (...a: unknown[]) => recordSessionPortTelemetryMock(...(a as [any])),
 }));
 vi.mock('../../session-port/artifact', () => ({
-  parsePortToken: (token: string) => token.startsWith('22222222-2222-4222-8222-222222222222.')
-    ? { portId: '22222222-2222-4222-8222-222222222222', secret: token.split('.')[1] }
-    : null,
+  parsePortToken: (token: string) =>
+    token.startsWith('22222222-2222-4222-8222-222222222222.')
+      ? { portId: '22222222-2222-4222-8222-222222222222', secret: token.split('.')[1] }
+      : null,
   readSessionPortArtifact: (...a: unknown[]) => readSessionPortArtifactMock(...(a as [any])),
+  verifyPortToken: () => true,
 }));
 // launch-wakeability: the route arms the standing inbox-wake at launch (right after
 // recordAdvSession) so the session is parked/wakeable before its first turn. Mock it
@@ -473,6 +558,10 @@ beforeEach(() => {
   releaseAgentLaunchClaimMock.mockReset().mockResolvedValue(true);
   recordAdvSessionMock.mockResolvedValue(42);
   getSessionPortMock.mockResolvedValue(null);
+  reserveSessionPortTargetMock.mockClear();
+  readSessionPortBootstrapDispositionMock.mockClear();
+  recordSessionPortBootstrapReceiptMock.mockClear();
+  failSessionPortTargetReservationMock.mockClear();
   // P-002 brain-brief defaults: one started hive + a brief string. Tests that
   // exercise the no-brief / no-hive branches override per-call.
   listStartedHivesMock.mockResolvedValue([{ workspaceId: 'default', installSlug: 'papercup' }]);
@@ -749,40 +838,13 @@ describe('bootstrap-su', () => {
   });
 
   it('claims a prepared port as a fresh pending target and returns only the managed kickoff file', async () => {
-    getSessionPortMock.mockResolvedValueOnce({
-      id: '22222222-2222-4222-8222-222222222222',
-      workspaceId: 'default',
-      protocolVersion: 1,
-      status: 'prepared',
-      sourceAdvSessionId: 9,
-      sourceBackend: 'claude',
-      targetBackend: 'codex',
-      targetModel: 'gpt-5.5',
-      tokenHash: 'token-hash',
-      artifactPath: '/managed/222.seed.md',
-      expiresAt: '2099-01-01T00:00:00.000Z',
-      sourceHash: 'source-hash',
-      normalizedHash: 'normalized-hash',
-      renderedHash: SESSION_PORT_ARTIFACT.hash,
-      preparedAt: '2026-07-14T00:00:00.000Z',
-      metadata: {
-        sourceCoordOwnerId: 'su-source-owner',
-        estimatedTokens: 10,
-        summary: {
-          protocolVersion: 1,
-          target: { account: 'default', provider: 'openai' },
-          fidelity: 'full',
-          versions: { transform: 3, summaryPrompt: null },
-          stats: { omittedAttachments: 0, unsupportedBlocks: 0, redactions: 0 },
-          summary: null,
-        },
-      },
-    });
+    getSessionPortMock.mockResolvedValueOnce(sessionPortRow());
     const res = await callPost({
       agent: 'codex',
       model: 'gpt-5.5',
       owner_id: 'su-source-owner',
-      session_port_protocol: 1,
+      bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+      session_port_protocol: 2,
       session_port_transform_version: 3,
       session_port_token: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
     });
@@ -791,25 +853,27 @@ describe('bootstrap-su', () => {
     expect(body.kickoffPrompt).toBeNull();
     expect(body.sessionPortKickoffFile).toBe('/managed/222.seed.md');
     expect(body).not.toHaveProperty('sessionPortSeed');
-    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(expect.objectContaining({
-      sessionKey: '22222222-2222-4222-8222-222222222222',
-    }));
-    expect(rekeyCodexHomeMock).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', 42);
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: 42,
+      }),
+    );
     expect(body.codexHome).toMatch(/su-codex-homes\/session-42$/);
     expect(body.promptFile).toBe(`${body.codexHome}/AGENTS.md`);
     expect(body.envelopeEnv.CODEX_HOME).toBe(body.codexHome);
-    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({
-      agent: 'codex',
-      coordOwnerId: 'su-source-owner',
-      portId: '22222222-2222-4222-8222-222222222222',
-      portSourceAdvSessionId: 9,
-      portStatus: 'pending',
-    }));
-    expect(transitionSessionPortMock).toHaveBeenCalledWith(
-      '22222222-2222-4222-8222-222222222222',
-      'default',
-      'pending',
-      expect.objectContaining({ targetAdvSessionId: 42 }),
+    expect(reserveSessionPortTargetMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        portId: SESSION_PORT_ID,
+        workspaceId: 'default',
+        target: expect.objectContaining({ agent: 'codex', coordOwnerId: 'su-source-owner' }),
+      }),
+    );
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    expect(recordSessionPortBootstrapReceiptMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        portId: SESSION_PORT_ID,
+        targetAdvSessionId: 42,
+      }),
     );
     expect(recordSessionPortTelemetryMock).toHaveBeenCalledWith(expect.objectContaining({
       stage: 'pending',
@@ -818,33 +882,41 @@ describe('bootstrap-su', () => {
     }));
   });
 
-  it('rejects an artifact whose semantic payload changed while its receipt stayed the same', async () => {
-    getSessionPortMock.mockResolvedValueOnce({
-      id: '22222222-2222-4222-8222-222222222222',
-      workspaceId: 'default',
-      protocolVersion: 1,
-      status: 'prepared',
-      sourceAdvSessionId: 9,
-      sourceBackend: 'claude',
-      targetBackend: 'codex',
-      targetModel: 'gpt-5.5',
-      tokenHash: 'token-hash',
-      artifactPath: '/managed/222.seed.md',
-      expiresAt: '2099-01-01T00:00:00.000Z',
-      sourceHash: 'source-hash',
-      normalizedHash: 'normalized-hash',
-      renderedHash: SESSION_PORT_ARTIFACT.hash,
-      preparedAt: '2026-07-14T00:00:00.000Z',
-      metadata: {
-        sourceCoordOwnerId: 'su-source-owner',
-        estimatedTokens: 10,
-        summary: {
-          protocolVersion: 1,
-          target: { account: 'default', provider: 'openai' },
-          versions: { transform: 3 },
-        },
+  it('replays the committed bootstrap receipt before rejecting an already-pending attempt', async () => {
+    getSessionPortMock.mockResolvedValueOnce(sessionPortRow({ status: 'pending', targetAdvSessionId: 42 }));
+    readSessionPortBootstrapDispositionMock.mockResolvedValueOnce({
+      status: 'replay',
+      targetAdvSessionId: 42,
+      receipt: {
+        status: 'ok',
+        sessionId: 42,
+        agent: 'codex',
+        workspaceId: 'default',
+        cwd: '/workspace',
       },
+    } as any);
+
+    const res = await callPost({
+      agent: 'codex',
+      model: 'gpt-5.5',
+      account: 'default',
+      context_size: 'trimmed',
+      owner_id: 'su-source-owner',
+      bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+      session_port_protocol: 2,
+      session_port_transform_version: 3,
+      session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}`,
+      cwd: '/workspace',
     });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'ok', sessionId: 42, bootstrapDeduped: true });
+    expect(reserveSessionPortTargetMock).not.toHaveBeenCalled();
+    expect(writeSuCodexHomeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an artifact whose semantic payload changed while its receipt stayed the same', async () => {
+    getSessionPortMock.mockResolvedValueOnce(sessionPortRow());
     readSessionPortArtifactMock.mockResolvedValueOnce(
       SESSION_PORT_ARTIFACT.seed.replace('ported history', 'tampered history'),
     );
@@ -852,7 +924,8 @@ describe('bootstrap-su', () => {
       agent: 'codex',
       model: 'gpt-5.5',
       owner_id: 'su-source-owner',
-      session_port_protocol: 1,
+      bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+      session_port_protocol: 2,
       session_port_transform_version: 3,
       session_port_token: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
     });
@@ -862,34 +935,13 @@ describe('bootstrap-su', () => {
   });
 
   it('refuses a session-port target that does not continue the source coordination identity', async () => {
-    getSessionPortMock.mockResolvedValueOnce({
-      id: '22222222-2222-4222-8222-222222222222',
-      workspaceId: 'default',
-      protocolVersion: 1,
-      status: 'prepared',
-      sourceAdvSessionId: 9,
-      sourceBackend: 'claude',
-      targetBackend: 'codex',
-      targetModel: 'gpt-5.5',
-      tokenHash: 'token-hash',
-      artifactPath: '/managed/222.seed.md',
-      expiresAt: '2099-01-01T00:00:00.000Z',
-      renderedHash: SESSION_PORT_ARTIFACT.hash,
-      metadata: {
-        sourceCoordOwnerId: 'su-source-owner',
-        estimatedTokens: 10,
-        summary: {
-          protocolVersion: 1,
-          target: { account: 'default', provider: 'openai' },
-          versions: { transform: 3 },
-        },
-      },
-    });
+    getSessionPortMock.mockResolvedValueOnce(sessionPortRow());
     const res = await callPost({
       agent: 'codex',
       model: 'gpt-5.5',
       owner_id: 'su-different-owner',
-      session_port_protocol: 1,
+      bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+      session_port_protocol: 2,
       session_port_transform_version: 3,
       session_port_token: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
     });

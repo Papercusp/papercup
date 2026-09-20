@@ -53,6 +53,7 @@ export interface SessionPortTarget {
   contextWindow: number;
   availableInputTokens: number;
   contextSize: 'full' | 'trimmed' | 'steward' | null;
+  launchContextHash: string;
 }
 
 export interface SessionPortInspection {
@@ -307,6 +308,23 @@ export function deriveSessionPortIdempotencyKey(inspection: SessionPortInspectio
   }));
 }
 
+/** Immutable material request identity used by the target bootstrap. This is
+ * intentionally separate from the logical preparation fingerprint: the port
+ * UUID names one attempt, while this hash proves a replay is the exact request
+ * that won that attempt's target reservation. */
+export function deriveSessionPortBootstrapRequestHash(input: {
+  portId: string;
+  logicalRequestHash: string;
+  workspaceId: string;
+  sourceAdvSessionId: number;
+  ownerId: string;
+  target: SessionPortTarget;
+  cwd: string;
+  planSlug: string | null;
+}): string {
+  return sha256(stableJson(input));
+}
+
 export function summarizePortableSessionPort(contract: PortableSessionPort): SessionPortContractSummary {
   return {
     protocolVersion: contract.protocolVersion,
@@ -315,6 +333,9 @@ export function summarizePortableSessionPort(contract: PortableSessionPort): Ses
       workspaceId: contract.source.workspaceId,
       advSessionId: contract.source.advSessionId,
       nativeSessionId: contract.source.nativeSessionId,
+      cwd: contract.source.cwd,
+      harnessSlug: contract.source.harnessSlug,
+      planSlug: contract.source.planSlug,
       snapshot: contract.source.snapshot,
     },
     target: contract.target,
@@ -348,10 +369,11 @@ export async function prepareInspectedSessionPort(input: {
   const idempotencyKey = deriveSessionPortIdempotencyKey(inspection);
   const findExisting = input.findExisting ?? findSessionPortByIdempotency;
   const existing = await findExisting(inspection.source.workspaceId, idempotencyKey);
-  if (existing) {
-    if (existing.status === 'failed' || existing.status === 'expired') {
-      throw new Error(`existing idempotent session port is ${existing.status}: ${existing.error ?? 'retry requires a new source snapshot/target'}`);
-    }
+  const existingExpiredByClock =
+    existing != null &&
+    (existing.status === 'prepared' || existing.status === 'pending') &&
+    Date.parse(existing.expiresAt) <= Date.now();
+  if (existing && existing.status !== 'failed' && existing.status !== 'expired' && !existingExpiredByClock) {
     const secret = createHmac('sha256', input.tokenKey).update(`${existing.id}:${idempotencyKey}`).digest('hex');
     const summary = existing.metadata.summary as SessionPortContractSummary | undefined;
     if (
@@ -359,7 +381,9 @@ export async function prepareInspectedSessionPort(input: {
       summary.protocolVersion !== SESSION_PORT_PROTOCOL_VERSION ||
       summary.versions.transform !== SESSION_PORT_TRANSFORM_VERSION
     ) {
-      throw new Error('existing idempotent session port predates the content-free metadata contract; expire it and inspect again');
+      throw new Error(
+        'existing idempotent session port predates the content-free metadata contract; expire it and inspect again',
+      );
     }
     return {
       port: existing,
@@ -464,6 +488,7 @@ export async function prepareInspectedSessionPort(input: {
       id: portId,
       workspaceId: sourceRow.workspaceId,
       idempotencyKey,
+      retryOfPortId: existing?.id ?? null,
       protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
       sourceAdvSessionId: sourceRow.id,
       sourceBackend: 'claude',

@@ -4208,7 +4208,7 @@ export const RESUME_EFFORT_MENU: {
     name: string;
     value: string;
 }[];
-export const SESSION_PORT_PROTOCOL_VERSION: 1;
+export const SESSION_PORT_PROTOCOL_VERSION: 2;
 export const SESSION_PORT_TRANSFORM_VERSION: 3;
 export namespace AGENT_LABELS {
     let claude: string;

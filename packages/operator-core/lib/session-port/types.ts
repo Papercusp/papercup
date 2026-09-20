@@ -1,5 +1,5 @@
 export const SESSION_PORT_SCHEMA = 'papercusp.session-port/v1' as const;
-export const SESSION_PORT_PROTOCOL_VERSION = 1 as const;
+export const SESSION_PORT_PROTOCOL_VERSION = 2 as const;
 export const SESSION_PORT_TRANSFORM_VERSION = 3 as const;
 export const SESSION_PORT_TOKEN_ESTIMATOR = 'utf8-byte-upper-bound-v1' as const;
 
@@ -89,6 +89,10 @@ export interface PortableSessionPort {
     contextWindow: number;
     availableInputTokens: number;
     contextSize: 'full' | 'trimmed' | 'steward' | null;
+    /** Digest of the resolved launch-context bytes. The path itself is not an
+     * identity: changing the file behind a stable path must create a new logical
+     * request, while moving byte-identical context must not. */
+    launchContextHash: string;
   };
   fidelity: 'full' | 'summary-tail';
   versions: {
@@ -152,7 +156,10 @@ export interface PortableSessionPort {
  * artifact and must never be copied into session_ports.metadata. */
 export interface SessionPortContractSummary {
   protocolVersion: typeof SESSION_PORT_PROTOCOL_VERSION;
-  source: Pick<PortableSessionPort['source'], 'backend' | 'workspaceId' | 'advSessionId' | 'nativeSessionId' | 'snapshot'>;
+  source: Pick<
+    PortableSessionPort['source'],
+    'backend' | 'workspaceId' | 'advSessionId' | 'nativeSessionId' | 'cwd' | 'harnessSlug' | 'planSlug' | 'snapshot'
+  >;
   target: PortableSessionPort['target'];
   fidelity: PortableSessionPort['fidelity'];
   versions: PortableSessionPort['versions'];

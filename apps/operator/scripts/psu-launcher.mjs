@@ -12298,6 +12298,7 @@ export function freshSuBootstrapBody(
   args,
   { brain = false, bootstrapIdempotencyKey = null } = {},
 ) {
+  bootstrapIdempotencyKey ||= args.bootstrapIdempotencyKey || null;
   const launchMode = launchModeFromArgs(args);
   const codexSelection =
     selections.agent === "codex"
@@ -12792,7 +12793,7 @@ export function resumeSessionLineageLabel(session) {
   return `ported from #${Number(session.portSourceAdvSessionId)}${status === "delivered" ? "" : ` (${status})`}`;
 }
 
-export const SESSION_PORT_PROTOCOL_VERSION = 1;
+export const SESSION_PORT_PROTOCOL_VERSION = 2;
 export const SESSION_PORT_TRANSFORM_VERSION = 3;
 
 export function sessionPortUpgradeError(error) {
@@ -13567,6 +13568,10 @@ export async function ensureCodexHomeViaOperator(
  * to the identity they already use. Bootstrap independently checks the prepared
  * port's server-recorded source owner before it accepts these args. */
 export function sessionPortTargetArgs(source, target, account, args, prepared) {
+  const portId =
+    prepared.portId || String(prepared.token || "").split(".", 1)[0];
+  if (!portId)
+    throw new Error("prepared session port is missing its attempt id");
   return {
     ...args,
     picker: false,
@@ -13592,6 +13597,7 @@ export function sessionPortTargetArgs(source, target, account, args, prepared) {
     sessionPortProtocol: SESSION_PORT_PROTOCOL_VERSION,
     sessionPortTransformVersion: SESSION_PORT_TRANSFORM_VERSION,
     sessionPortToken: prepared.token,
+    bootstrapIdempotencyKey: `session-port:${portId}`,
     sessionPortSourceAdvSessionId: Number(source.id),
     sessionPortSourceCwd: source.cwd,
   };
@@ -14880,7 +14886,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     if (portFailure) throw portFailure;
     process.exit(WALLED_POOL_REFUSAL_EXIT);
   }
-  const bootstrapIdempotencyKey = randomUUID();
+  const bootstrapIdempotencyKey = args.bootstrapIdempotencyKey || randomUUID();
   if (
     selections.agent === "codex" &&
     accountRoutingMode(args.account) === "default"

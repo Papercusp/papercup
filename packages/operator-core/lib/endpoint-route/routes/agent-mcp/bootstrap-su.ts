@@ -21,7 +21,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../workspace-registry';
 import { buildConsoleEnvelope } from '../../../console-launcher';
@@ -86,7 +86,7 @@ import {
   type LaunchMode,
 } from '../../../agent-launch-core';
 import { resolveRemoteSeatInventory } from '../../../agent-tools/plans/remote-seat-inventory';
-import { rekeyCodexHome, writeSuCodexHome } from '../../../role-codex-home';
+import { writeSuCodexHome } from '../../../role-codex-home';
 // EI-11366: the real liveness check wired into writeSuCodexHome's identity-
 // split collision guard — is there a LIVE psu-pty host process for a sid that
 // previously owned the CODEX_HOME directory we're about to rebuild?
@@ -1848,6 +1848,7 @@ export const bootstrapSu = defineTool({
     let sessionPortContext: {
       row: import('../../../session-port/store').SessionPortRow;
       seed: string;
+      requestHash: string;
     } | null = null;
     const portToken = body.session_port_token?.trim() || null;
     const portProtocol = body.session_port_protocol;
@@ -1867,29 +1868,121 @@ export const bootstrapSu = defineTool({
           error: 'session ports continue the source coordination identity; new fleet/seat/auto/mode authority cannot be requested at the port boundary',
         }, 409);
       }
-      const [artifact, store, budgetModule, renderer] = await Promise.all([
+      const [artifact, store, budgetModule, renderer, service] = await Promise.all([
         import('../../../session-port/artifact'),
         import('../../../session-port/store'),
         import('../../../model-context-budget.mjs'),
         import('../../../session-port/render'),
+        import('../../../session-port/service'),
       ]);
       const parsed = artifact.parsePortToken(portToken);
       if (!parsed) return jsonRes({ status: 'error', error: 'invalid session-port preparation token' }, 401);
       const row = await store.getSessionPort(parsed.portId, workspace);
       if (!row) return jsonRes({ status: 'error', error: 'session-port preparation not found in this workspace' }, 404);
+      if (bootstrapLedgerKey !== store.sessionPortBootstrapLedgerKey(row.id)) {
+        return jsonRes(
+          {
+            status: 'error',
+            error: `session-port protocol ${SESSION_PORT_PROTOCOL_VERSION} requires bootstrap_idempotency_key=session-port:${row.id}`,
+          },
+          409,
+        );
+      }
       const summary = row.metadata.summary as SessionPortContractSummary | undefined;
       if (
         row.protocolVersion !== SESSION_PORT_PROTOCOL_VERSION ||
-        summary?.versions.transform !== SESSION_PORT_TRANSFORM_VERSION ||
-        row.status !== 'prepared'
+        summary?.versions.transform !== SESSION_PORT_TRANSFORM_VERSION
       ) {
-        return jsonRes({ status: 'error', error: `session port is ${row.status} or version-skewed; refusing a duplicate target` }, 409);
+        return jsonRes(
+          {
+            status: 'error',
+            error: 'session port is version-skewed; prepare again with the current launcher/operator',
+          },
+          409,
+        );
       }
       if (row.targetBackend !== agent || (row.targetModel ?? null) !== (model ?? null)) {
         return jsonRes({
           status: 'error',
           error: `prepared target ${row.targetBackend}/${row.targetModel ?? 'default'} does not match bootstrap ${agent}/${model ?? 'default'}`,
         }, 409);
+      }
+      const expectedAccount = typeof summary?.target?.account === 'string' ? summary.target.account : 'default';
+      const requestedAccount = body.account?.trim() || 'default';
+      const launchContextHash = createHash('sha256').update(launchContextText).digest('hex');
+      if (
+        requestedAccount !== expectedAccount ||
+        summary?.target?.contextSize !== contextSize ||
+        summary?.target?.launchContextHash !== launchContextHash ||
+        summary?.source?.cwd !== cwd ||
+        (summary?.source?.planSlug ?? null) !== planSlug
+      ) {
+        return jsonRes(
+          {
+            status: 'error',
+            error:
+              'session-port bootstrap inputs differ from the immutable prepared request; inspect and prepare again',
+          },
+          409,
+        );
+      }
+      const sourceCoordOwnerId =
+        typeof row.metadata.sourceCoordOwnerId === 'string' ? row.metadata.sourceCoordOwnerId.trim() : '';
+      const requestedOwnerId = body.owner_id?.trim() || '';
+      if (!sourceCoordOwnerId || requestedOwnerId !== sourceCoordOwnerId) {
+        return jsonRes(
+          {
+            status: 'error',
+            error: sourceCoordOwnerId
+              ? `session port must continue source coordination identity ${sourceCoordOwnerId}; got ${requestedOwnerId || 'none'}`
+              : 'prepared session port is missing its source coordination identity; inspect again with the current launcher/operator',
+          },
+          409,
+        );
+      }
+      const requestHash = service.deriveSessionPortBootstrapRequestHash({
+        portId: row.id,
+        logicalRequestHash: row.idempotencyKey,
+        workspaceId: workspace,
+        sourceAdvSessionId: row.sourceAdvSessionId,
+        ownerId: sourceCoordOwnerId,
+        target: {
+          ...summary.target,
+          backend: row.targetBackend === 'omp' ? 'omp' : 'codex',
+        },
+        cwd,
+        planSlug,
+      });
+      if (row.status !== 'prepared') {
+        if (!artifact.verifyPortToken(portToken, row.tokenHash)) {
+          return jsonRes({ status: 'error', error: 'invalid session-port preparation token' }, 401);
+        }
+        const disposition = await store.readSessionPortBootstrapDisposition({
+          portId: row.id,
+          workspaceId: workspace,
+          requestHash,
+        });
+        if (disposition.status === 'replay') {
+          return jsonRes({ ...disposition.receipt, bootstrapDeduped: true });
+        }
+        if (disposition.status === 'terminal') {
+          return jsonRes(
+            {
+              status: 'error',
+              error: `session-port attempt is ${disposition.port.status}; prepare again to create a linked retry`,
+            },
+            409,
+          );
+        }
+        return jsonRes(
+          {
+            status: 'error',
+            error: 'bootstrap_in_progress',
+            detail: `session-port target ${disposition.targetAdvSessionId} is reserved; retry the exact request`,
+            retryAfterSec: 1,
+          },
+          409,
+        );
       }
       let seed: string;
       try {
@@ -1922,7 +2015,7 @@ export const bootstrapSu = defineTool({
           error: `prepared session port no longer fits the target launch budget (${estimatedTokens} > ${previewBudget.availableInputTokens}); inspect again`,
         }, 409);
       }
-      sessionPortContext = { row, seed };
+      sessionPortContext = { row, seed, requestHash };
     }
 
     // WI-41363: claim before the first session/fleet/account write. A replay
@@ -1938,7 +2031,7 @@ export const bootstrapSu = defineTool({
     // partial row is terminal. Keep the exact row id outside the inner try so
     // finally can close it before releasing the replay claim.
     let incompleteBootstrapSessionId: number | null = null;
-    if (bootstrapLedgerKey) {
+    if (bootstrapLedgerKey && !sessionPortContext) {
       const claim = await claimAgentLaunch({
         workspaceId: workspace,
         idempotencyKey: bootstrapLedgerKey,
@@ -1981,7 +2074,8 @@ export const bootstrapSu = defineTool({
     let adoptableStartingRowId: number | null = null;
     const requestedSid = body.owner_id?.trim() || null;
     if (sessionPortContext) {
-      const sourceCoordOwnerId = typeof sessionPortContext.row.metadata.sourceCoordOwnerId === 'string'
+        const sourceCoordOwnerId =
+          typeof sessionPortContext.row.metadata.sourceCoordOwnerId === 'string'
         ? sessionPortContext.row.metadata.sourceCoordOwnerId.trim()
         : '';
       if (!sourceCoordOwnerId || requestedSid !== sourceCoordOwnerId) {
@@ -1999,7 +2093,10 @@ export const bootstrapSu = defineTool({
     if (requestedSid != null) {
       if (!/^su-[A-Za-z0-9][A-Za-z0-9._-]{5,118}$/.test(requestedSid)) {
         return jsonRes(
-          { status: 'error', error: `owner_id must match su-<slug> (6-119 chars of [A-Za-z0-9._-]); got ${requestedSid.slice(0, 40)}` },
+          {
+            status: 'error',
+            error: `owner_id must match su-<slug> (6-119 chars of [A-Za-z0-9._-]); got ${requestedSid.slice(0, 40)}`,
+          },
           400,
         );
       }
@@ -2012,9 +2109,7 @@ export const bootstrapSu = defineTool({
       // idempotent (fills only the missing ended_at, never overwrites a terminal
       // tuple), so a repaired ghost simply drops out of the query.
       await repairStaleAdvSessionTerminalMarkers(requestedSid);
-      const live = await sql<
-        Array<{ id: string; display: string | null; has_session: boolean; launched: boolean }>
-      >`
+        const live = await sql<Array<{ id: string; display: string | null; has_session: boolean; launched: boolean }>>`
         SELECT id::text, display, (session_id IS NOT NULL) AS has_session,
                (launched_at IS NOT NULL) AS launched
           FROM harness_shared.adv_sessions
@@ -2047,10 +2142,7 @@ export const bootstrapSu = defineTool({
       // this route starts one pre-pinned owner at a time. The read is fail-soft:
       // an oracle failure is indistinguishable from an unknown verdict here and
       // must keep the binding blocking, never authorise a reclaim.
-      const oracleSessionState = await resolveSessionStates(
-        [{ ownerId: requestedSid }],
-        { hydratePerId: true },
-      )
+        const oracleSessionState = await resolveSessionStates([{ ownerId: requestedSid }], { hydratePerId: true })
         .then((verdicts) => verdicts.get(requestedSid)?.sessionState)
         .catch(() => undefined);
       // Only the oracle's confirmed terminal states may reclaim. In particular,
@@ -2134,10 +2226,13 @@ export const bootstrapSu = defineTool({
       const expectedAccount = typeof summary?.target?.account === 'string' ? summary.target.account : 'default';
       const actualAccount = accountPin.accountId ?? (accountPin.gatewayAuto ? 'auto' : 'default');
       if (actualAccount !== expectedAccount) {
-        return jsonRes({
+          return jsonRes(
+            {
           status: 'error',
           error: `prepared target account ${expectedAccount} did not resolve exactly at bootstrap (got ${actualAccount}); no fallback allowed`,
-        }, 409);
+            },
+            409,
+          );
       }
     }
 
@@ -2231,10 +2326,63 @@ export const bootstrapSu = defineTool({
       }
     }
 
-    // Ordinary launches retain their byte-identical record-first identity/path
-    // (`session-<adv id>`). Only a port delays its pending target row until all
-    // fallible artifact/budget checks finish, keying interim files by port id.
+      // Every identity-bearing path must use the FINAL adv_sessions id. A port
+      // therefore reserves its hidden target row and binds prepared -> pending in
+      // one transaction before any prompt/home file is materialized.
     let sessionId: number | null = null;
+      if (sessionPortContext) {
+        const store = await import('../../../session-port/store');
+        const reservation = await store.reserveSessionPortTarget({
+          portId: sessionPortContext.row.id,
+          workspaceId: workspace,
+          requestHash: sessionPortContext.requestHash,
+          target: {
+            planSlug,
+            agent,
+            mode: agent === 'omp' ? 'omp' : 'console',
+            cwd,
+            label: body.label?.trim() || null,
+            coordOwnerId: sid,
+            nativeSessionId,
+            launchArgv,
+            portMetadata: {
+              protocolVersion: sessionPortContext.row.protocolVersion,
+              sourceBackend: sessionPortContext.row.sourceBackend,
+              targetBackend: sessionPortContext.row.targetBackend,
+              targetModel: sessionPortContext.row.targetModel,
+              sourceHash: sessionPortContext.row.sourceHash,
+              normalizedHash: sessionPortContext.row.normalizedHash,
+              renderedHash: sessionPortContext.row.renderedHash,
+            },
+          },
+        });
+        if (reservation.status === 'replay') {
+          return jsonRes({ ...reservation.receipt, bootstrapDeduped: true });
+        }
+        if (reservation.status === 'in_progress') {
+          return jsonRes(
+            {
+              status: 'error',
+              error: 'bootstrap_in_progress',
+              detail: `session-port target ${reservation.targetAdvSessionId} is reserved; retry the exact request`,
+              retryAfterSec: 1,
+            },
+            409,
+          );
+        }
+        if (reservation.status === 'terminal') {
+          return jsonRes(
+            {
+              status: 'error',
+              error: `session-port attempt is ${reservation.port.status}; prepare again to create a linked retry`,
+            },
+            409,
+          );
+        }
+        sessionPortContext.row = reservation.port;
+        sessionId = reservation.targetAdvSessionId;
+        incompleteBootstrapSessionId = sessionId;
+      }
     if (!sessionPortContext && adoptableStartingRowId != null) {
       // WI-37743: COMPLETE our launcher's starting row instead of inserting a
       // second one beside it. Best-effort by design — if the row was stamped
@@ -2276,7 +2424,7 @@ export const bootstrapSu = defineTool({
         source: 'bootstrap',
       });
     }
-    const sessionKey = sessionPortContext?.row.id ?? sessionId ?? `t-${randomUUID()}`;
+      const sessionKey = sessionId ?? `t-${randomUUID()}`;
 
     // WI-1343's in-memory setPendingFleet placement used to live here; replaced by the
     // durable membership-fact stamp above (WI-1893 — the map was per-cluster-worker and
@@ -2330,9 +2478,7 @@ export const bootstrapSu = defineTool({
           ? { subject: null }
           : {}),
       ...(body.mode_instructions !== undefined ? { instructions: body.mode_instructions } : {}),
-      ...(body.mode_owner_directed !== undefined
-        ? { ownerDirected: launchMode?.ownerDirected === true }
-        : {}),
+      ...(body.mode_owner_directed !== undefined ? { ownerDirected: launchMode?.ownerDirected === true } : {}),
       reason: drainMode
         ? 'fleet launch: --mode=drain (DRAIN implies AUTO)'
         : fleetPin.fleetSlug
@@ -2760,63 +2906,29 @@ export const bootstrapSu = defineTool({
     if (sessionPortContext) {
       const estimatedTokens = Number(sessionPortContext.row.metadata.estimatedTokens ?? NaN);
       if (!Number.isFinite(estimatedTokens) || estimatedTokens > contextBudget.availableInputTokens) {
-        return jsonRes({
+          return jsonRes(
+            {
           status: 'error',
           error: `session-port fit changed at bootstrap (${estimatedTokens} > ${contextBudget.availableInputTokens}); inspect again`,
-        }, 409);
+            },
+            409,
+          );
       }
     }
 
-    // Record only after launch artifact + budget checks are green. A port row
-    // is pending and hidden from resumable lists until native persistence proof.
+      // The port target row was reserved before any identity-bearing file write.
+      // It stays hidden while pending; this stage only binds known tasks and emits
+      // the lifecycle projection for the already-immutable target id.
     if (sessionPortContext) {
-      sessionId = await recordAdvSession({
-        planSlug,
-        agent,
-        workspaceId: workspace,
-        mode: agent === 'omp' ? 'omp' : 'console',
-        cwd,
-        label: body.label?.trim() || null,
-        coordOwnerId: sid,
-        sessionId: nativeSessionId,
-        launchArgv,
-        portId: sessionPortContext.row.id,
-        portSourceAdvSessionId: sessionPortContext.row.sourceAdvSessionId,
-        portStatus: 'pending',
-        portMetadata: {
-          protocolVersion: sessionPortContext.row.protocolVersion,
-          sourceBackend: sessionPortContext.row.sourceBackend,
-          targetBackend: sessionPortContext.row.targetBackend,
-          targetModel: sessionPortContext.row.targetModel,
-          sourceHash: sessionPortContext.row.sourceHash,
-          normalizedHash: sessionPortContext.row.normalizedHash,
-          renderedHash: sessionPortContext.row.renderedHash,
-        },
-      });
       if (sessionId == null) {
         return jsonRes({ status: 'error', error: 'could not persist the pending session-port target row' }, 503);
       }
-      incompleteBootstrapSessionId = sessionId;
       await bindKnownAgentSessionTasks({
         workspaceId: workspace,
         coordOwnerId: sid,
         sessionId: nativeSessionId,
         source: 'session-port',
       });
-      try {
-        // Artifact preparation intentionally precedes the target row, so Codex
-        // initially uses the port UUID as a collision-free temporary key. Native
-        // resume derives CODEX_HOME from the recorded adv id; move the prepared
-        // home atomically before exposing the target as pending.
-        if (agent === 'codex' && codexHome) {
-          codexHome = rekeyCodexHome(sessionKey, sessionId);
-          promptFile = join(codexHome, 'AGENTS.md');
-        }
-        const { transitionSessionPort } = await import('../../../session-port/store');
-        await transitionSessionPort(sessionPortContext.row.id, workspace, 'pending', {
-          targetAdvSessionId: sessionId,
-          metadata: { targetCoordOwnerId: sid, targetNativeSessionId: nativeSessionId },
-        });
         const summary = sessionPortContext.row.metadata.summary as SessionPortContractSummary;
         await recordSessionPortTelemetry({
           workspaceId: workspace,
@@ -2841,17 +2953,6 @@ export const bootstrapSu = defineTool({
           estimatedTokens: Number(sessionPortContext.row.metadata.estimatedTokens ?? null),
           protocolVersion: sessionPortContext.row.protocolVersion,
         });
-      } catch (error) {
-        // NOT 'self', and NOT exit 1: this is the OPERATOR closing the row because its own
-        // handler threw — nothing observed the session's exit, so a fabricated status would
-        // be indistinguishable from an observed failure (the fabrication adv-sessions.ts
-        // refuses in reconcileDeadTerminalLaunches). The error is reported in the response.
-        await markAdvSessionEnded(sessionId, null, 'cleanup').catch(() => undefined);
-        return jsonRes({
-          status: 'error',
-          error: `session-port target claim raced or failed: ${error instanceof Error ? error.message : String(error)}`,
-        }, 409);
-      }
     }
 
     // EI-21005277510954647: bootstrap is the first point that simultaneously
@@ -2933,10 +3034,13 @@ export const bootstrapSu = defineTool({
           source: 'launch',
         });
       } catch (error) {
-        return jsonRes({
+          return jsonRes(
+            {
           status: 'error',
           error: `session identity activation receipt was not persisted: ${error instanceof Error ? error.message : String(error)}`,
-        }, 500);
+            },
+            500,
+          );
       }
     }
 
@@ -3031,16 +3135,27 @@ export const bootstrapSu = defineTool({
       kickoffPrompt,
       contextBudget,
       sessionPortKickoffFile: sessionPortContext?.row.artifactPath ?? null,
-      sessionPort: sessionPortContext ? {
-        protocolVersion: sessionPortContext.row.protocolVersion,
-        transformVersion: SESSION_PORT_TRANSFORM_VERSION,
-        portId: sessionPortContext.row.id,
-        sourceAdvSessionId: sessionPortContext.row.sourceAdvSessionId,
-        renderedHash: sessionPortContext.row.renderedHash,
-        status: 'pending',
-      } : null,
+      sessionPort: sessionPortContext
+        ? {
+            protocolVersion: sessionPortContext.row.protocolVersion,
+            transformVersion: SESSION_PORT_TRANSFORM_VERSION,
+            portId: sessionPortContext.row.id,
+            sourceAdvSessionId: sessionPortContext.row.sourceAdvSessionId,
+            renderedHash: sessionPortContext.row.renderedHash,
+            status: 'pending',
+          }
+        : null,
     };
-    if (bootstrapLedgerKey) {
+    if (sessionPortContext && sessionId != null) {
+      const store = await import('../../../session-port/store');
+      await store.recordSessionPortBootstrapReceipt({
+        portId: sessionPortContext.row.id,
+        workspaceId: workspace,
+        requestHash: sessionPortContext.requestHash,
+        targetAdvSessionId: sessionId,
+        receipt: result as unknown as Record<string, unknown>,
+      });
+    } else if (bootstrapLedgerKey) {
       await recordAgentLaunchResult({
         workspaceId: workspace,
         idempotencyKey: bootstrapLedgerKey,
@@ -3060,6 +3175,28 @@ export const bootstrapSu = defineTool({
       // stays fail-closed as bootstrap_in_progress instead of racing a ghost.
       // Completed launches retain the row permanently (up to the shared ledger
       // TTL) so a lost response cannot duplicate them.
+      if (sessionPortContext && !bootstrapCompleted && incompleteBootstrapSessionId != null) {
+        try {
+          const store = await import('../../../session-port/store');
+          const failed = await store.failSessionPortTargetReservation({
+            portId: sessionPortContext.row.id,
+            workspaceId: workspace,
+            requestHash: sessionPortContext.requestHash,
+            targetAdvSessionId: incompleteBootstrapSessionId,
+            error: 'session-port bootstrap failed before its replay receipt committed',
+          });
+          if (!failed) {
+            console.warn(
+              `[bootstrap-su] session-port target ${incompleteBootstrapSessionId} could not be terminalized; retaining its pending reservation`,
+            );
+          }
+        } catch (e) {
+          console.warn(
+            `[bootstrap-su] session-port target ${incompleteBootstrapSessionId} failure finalization failed: ${(e as Error)?.message ?? e}`,
+          );
+        }
+        incompleteBootstrapSessionId = null;
+      }
       if (bootstrapClaimWon && !bootstrapCompleted) {
         let partialRowTerminal = true;
         if (incompleteBootstrapSessionId != null) {

@@ -64,6 +64,7 @@ const target = {
   contextWindow: 200_000,
   availableInputTokens: 40_000,
   contextSize: 'trimmed' as const,
+  launchContextHash: '0'.repeat(64),
 };
 
 describe('tracked Claude source acquisition', () => {
@@ -179,7 +180,7 @@ describe('session-port preparation service', () => {
       id: '22222222-2222-4222-8222-222222222222',
       workspaceId: 'ws',
       idempotencyKey: deriveSessionPortIdempotencyKey(inspection),
-      protocolVersion: 1,
+      protocolVersion: 2,
       sourceAdvSessionId: 41,
       targetAdvSessionId: null,
       sourceBackend: 'claude',
@@ -193,15 +194,31 @@ describe('session-port preparation service', () => {
       artifactPath: '/managed/path',
       metadata: {
         summary: {
-          protocolVersion: 1,
+          protocolVersion: 2,
           source: {
-            backend: 'claude', workspaceId: 'ws', advSessionId: 41, nativeSessionId: row.sessionId,
-            snapshot: { kind: 'live-jsonl', highWaterBytes: 1, completeBytes: 1, sha256: inspection.source.sha256, archiveRelpath: null },
+            backend: 'claude',
+            workspaceId: 'ws',
+            advSessionId: 41,
+            nativeSessionId: row.sessionId,
+            cwd: '/workspace',
+            harnessSlug: null,
+            planSlug: 'plan-a',
+            snapshot: {
+              kind: 'live-jsonl',
+              highWaterBytes: 1,
+              completeBytes: 1,
+              sha256: inspection.source.sha256,
+              archiveRelpath: null,
+            },
           },
           target,
           fidelity: 'full',
           versions: { adapter: 1, transform: 3, renderer: 2, summaryPrompt: null },
-          hashes: { source: inspection.source.sha256, normalized: inspection.internal.normalizedHash, rendered: 'b'.repeat(64) },
+          hashes: {
+            source: inspection.source.sha256,
+            normalized: inspection.internal.normalizedHash,
+            rendered: 'b'.repeat(64),
+          },
           budget: {
             estimator: 'utf8-byte-upper-bound-v1',
             availableInputTokens: target.availableInputTokens,
@@ -230,6 +247,60 @@ describe('session-port preparation service', () => {
     expect(a.token).toBe(b.token);
   });
 
+  it('creates a linked new attempt after the prior semantic request failed', async () => {
+    const inspection = inspectAcquiredSessionPort({ sourceRow: row, stableSource: source('history'), target });
+    const failed: SessionPortRow = {
+      id: '11111111-1111-4111-8111-111111111111',
+      workspaceId: 'ws',
+      idempotencyKey: deriveSessionPortIdempotencyKey(inspection),
+      retryOfPortId: null,
+      protocolVersion: 2,
+      sourceAdvSessionId: 41,
+      targetAdvSessionId: 99,
+      sourceBackend: 'claude',
+      targetBackend: 'codex',
+      targetModel: 'gpt-5.5',
+      status: 'failed',
+      sourceHash: inspection.source.sha256,
+      normalizedHash: inspection.internal.normalizedHash,
+      renderedHash: 'b'.repeat(64),
+      tokenHash: 'c'.repeat(64),
+      artifactPath: '/expired/attempt',
+      metadata: {},
+      error: 'bootstrap failed',
+      preparedAt: '2026-07-14T00:00:00.000Z',
+      pendingAt: '2026-07-14T00:00:01.000Z',
+      deliveredAt: null,
+      failedAt: '2026-07-14T00:00:02.000Z',
+      expiresAt: '2026-07-14T00:15:00.000Z',
+    };
+    const createPrepared = vi.fn(
+      async (input: any): Promise<SessionPortRow> => ({
+        ...input,
+        status: 'prepared',
+        targetAdvSessionId: null,
+        error: null,
+        preparedAt: '2026-07-14T00:01:00.000Z',
+        pendingAt: null,
+        deliveredAt: null,
+        failedAt: null,
+      }),
+    );
+
+    const retried = await prepareInspectedSessionPort({
+      inspection,
+      expectedSourceHash: inspection.source.sha256,
+      tokenKey: 'server-only-key',
+      artifactRoot: mkdtempSync(join(tmpdir(), 'port-retry-')),
+      findExisting: async () => failed,
+      createPrepared,
+    });
+
+    expect(retried.reused).toBe(false);
+    expect(retried.port.id).not.toBe(failed.id);
+    expect(createPrepared).toHaveBeenCalledWith(expect.objectContaining({ retryOfPortId: failed.id }));
+  });
+
   it('fails when the live snapshot changed after inspection', async () => {
     const inspection = inspectAcquiredSessionPort({ sourceRow: row, stableSource: source('history'), target });
     await expect(prepareInspectedSessionPort({
@@ -254,6 +325,13 @@ describe('session-port preparation service', () => {
     });
     expect(a.internal.normalizedHash).not.toBe(b.internal.normalizedHash);
     expect(deriveSessionPortIdempotencyKey(a)).not.toBe(deriveSessionPortIdempotencyKey(b));
+    const contextChanged = inspectAcquiredSessionPort({
+      sourceRow: row,
+      stableSource: source('history'),
+      target: { ...target, launchContextHash: '1'.repeat(64) },
+      currentInstruction: 'continue A',
+    });
+    expect(deriveSessionPortIdempotencyKey(a)).not.toBe(deriveSessionPortIdempotencyKey(contextChanged));
 
     const tinyTarget = { ...target, availableInputTokens: 64 };
     const oversized = inspectAcquiredSessionPort({

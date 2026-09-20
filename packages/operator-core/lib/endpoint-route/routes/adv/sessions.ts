@@ -12,6 +12,7 @@
  */
 
 import os from 'node:os';
+import { createHash } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import type { SearchFilters, RecencyRank, MatchProvenance } from '@papercusp/search';
 import { createQueryEmbedderWarmup } from '../../../search/query-embedder-warmup';
@@ -285,6 +286,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
       contextWindow: budget.window,
       availableInputTokens: budget.availableInputTokens,
       contextSize,
+      launchContextHash: createHash('sha256').update(launchContextText).digest('hex'),
     },
     currentInstruction: typeof body.currentInstruction === 'string' ? body.currentInstruction : null,
   });
@@ -1822,8 +1824,11 @@ const sessionPortPrepare = defineTool({
       return json({
         ok: true,
         portId: prepared.port.id,
+        attemptId: prepared.port.id,
         token: prepared.token,
         reused: prepared.reused,
+        retryOfPortId: prepared.port.retryOfPortId,
+        targetAdvSessionId: prepared.port.targetAdvSessionId,
         expiresAt: prepared.port.expiresAt,
         status: prepared.port.status,
         fidelity: prepared.summary.fidelity,
