@@ -8761,6 +8761,48 @@ export function summarizeSuiteOutput(fullOutput: string): string {
   );
 }
 
+/** De-noise ONE gate LEG's output for the persisted `outputTail`.
+ *
+ *  Same shape and same reason as `summarizeSuiteOutput` above, but the leg path needs
+ *  its OWN signal set: that one's markers are vitest-shaped (`FAIL`, `×`, `Test Files`)
+ *  and never match a LINT leg.
+ *
+ *  WI-10002075, measured 2026-09-20: three `lint:tsc*` legs held the frozen repair queue
+ *  red for a day while every persisted artifact retained the words "the named file(s)"
+ *  and none of the NAMES. A per-file tsc BASELINE gate always ENDS with its generic
+ *  trailer ("Fix the new errors in the named file(s). The baseline only ratchets
+ *  DOWN..."), so a plain `.slice(-300)` keeps the advice and discards the evidence — the
+ *  per-file rows (`path/to/x.ts: 12 > 11 (+1)`) and `error TSxxxx` lines sit ABOVE the
+ *  window. Successive fixers then had to re-derive the failure from diffs.
+ *
+ *  The digest LEADS so a caller that later truncates from the FRONT keeps the file
+ *  names; the raw tail still follows, because a wedge, an npm resolution failure or a
+ *  runner crash surfaces there and nowhere else. */
+export function summarizeLegOutput(fullOutput: string, budget = 1200): string {
+  const lines = stripAnsi(fullOutput)
+    .split("\n")
+    .filter((l) => !/^npm error/.test(l));
+
+  const isSignal = (l: string): boolean =>
+    // per-file baseline regression row: `path/to/file.ts: 12 > 11 (+1)`
+    /\.[cm]?[jt]sx?:\s*\d+\s*>\s*\d+/.test(l) ||
+    // raw tsc diagnostics, in either `error TS1234:` or `file(line,col):` form
+    /\berror TS\d{3,5}\b/.test(l) ||
+    /\.[cm]?[jt]sx?\(\d+,\d+\):/.test(l) ||
+    // the gate scripts' own verdict lines
+    /\bLINT_TSC_RESULT\b/.test(l) ||
+    /\bstatus=(?:regressed|partial)\b/.test(l) ||
+    /^\s*FAIL\s+\S/.test(l);
+
+  const digest = lines.filter(isSignal).slice(0, 25);
+  // No recognizable diagnostic (a wedge, a crash, a missing script): the tail is the
+  // ONLY evidence there is, so it keeps the whole budget — same fallback as the suite.
+  if (digest.length === 0) return lines.join("\n").slice(-budget);
+  return `${digest.join("\n")}\n\n--- tail ---\n${lines
+    .join("\n")
+    .slice(-Math.floor(budget / 3))}`.slice(0, budget);
+}
+
 export interface CheckpointOpts {
   /** Override the candidate (default: integration-branch HEAD). */
   candidate?: string;
@@ -14143,7 +14185,11 @@ export async function measureRepairTickLegs(
       id: gateId,
       status: worst,
       durationMs: Math.max(0, now() - startedAt),
-      ...(tails.length ? { outputTail: tails.join(" | ").slice(-500) } : {}),
+      // WI-10002075: take the FRONT, not the tail. Each leg's tail is now digest-first
+      // (summarizeLegOutput), so truncating from the end would discard exactly the file
+      // names the digest was built to preserve — and with several legs joined, it dropped
+      // every leg but the last.
+      ...(tails.length ? { outputTail: tails.join(" | ").slice(0, 3000) } : {}),
     });
   }
   const failingSignatures = legs
@@ -19229,7 +19275,9 @@ export function realCheckpointDeps(
             });
             return {
               code: r.code,
-              tail: (r.stderr || r.stdout).slice(-300),
+              // WI-10002075: digest-first, never a blind tail — a red lint leg's last
+              // 300 chars are its generic trailer, not the files it named.
+              tail: summarizeLegOutput(r.stderr || r.stdout),
             };
           },
           scriptAvailability: (script) =>
@@ -19260,7 +19308,8 @@ export function realCheckpointDeps(
             allowNonZero: true,
             ...rescueTaskWatchdogOptions(script, env),
           });
-          return { code: r.code, tail: (r.stderr || r.stdout).slice(-300) };
+          // WI-10002075: see the repair-tick seam above — same digest-first capture.
+          return { code: r.code, tail: summarizeLegOutput(r.stderr || r.stdout) };
         },
         log: (line) => console.log(line),
       });
