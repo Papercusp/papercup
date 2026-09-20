@@ -10,7 +10,7 @@ import { EventEmitter } from 'node:events';
 // spread — only `spawn` is stubbed, so this execFileSync is the real one
 // (used to prove one-liners parse/execute under actual bash).
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import * as nodePty from '@lydell/node-pty';
@@ -519,6 +519,50 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
 
       expect(r.status).toBe('ok');
       expect(readFileSync(join(cwd, '.mcp.json'), 'utf8')).toBe(mcpJsonContents);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  // EI-23765667869335651. A SIGNED door (role-launch-spec's signSpawnParams stamps
+  // `sig=`) authenticates as exactly ONE agent. A superuser session supplies no
+  // --mcp-config, so claude AUTO-DISCOVERS `<cwd>/.mcp.json` — a signed door left in
+  // a shared checkout therefore becomes a second `papercusp` door on every su session
+  // in that tree, answering as the ROLE. Post-compaction that returns the role's
+  // control state (modes:[], loop inactive), which reads as "autonomy revoked".
+  //
+  // This is the SILENCE arm; the unsigned test above is the complementary WRITE arm,
+  // so reverting the guard kills this test and an always-fire guard kills that one.
+  it('does NOT write a signed single-agent MCP config into a shared cwd, but still launches', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'papercup-headless-signed-mcp-'));
+    const signed = JSON.stringify({
+      mcpServers: {
+        papercusp: {
+          type: 'http',
+          url:
+            'http://127.0.0.1:9071/api/mcp?harness=papercusp&role=judge&run=1-judge' +
+            '&spawn=dffe6c9a-d34b-4e9d-bbb4-869208b1bb25' +
+            '&client=role-352387e3-9bea-432a-ac8c-a89397cecf54&exp=0&sig=qa2yRLkb2_06_sBmZQHZ',
+        },
+      },
+    });
+    spawnMock.mockImplementation(() => fakeChild(7778));
+
+    try {
+      const r = await spawnHeadless({
+        envelope: { ...envelope, cwd, mcpJsonContents: signed },
+        label: 'hl',
+        logDir: null,
+        writeMcpJson: true,
+        bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+        ...noSystemdRun,
+      });
+
+      // The leak is refused...
+      expect(existsSync(join(cwd, '.mcp.json'))).toBe(false);
+      // ...and skipping is non-fatal: the role reaches its door via an explicit
+      // --mcp-config <sessionMcpDir>/.mcp.json, so the cwd copy was redundant.
+      expect(r.status).toBe('ok');
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

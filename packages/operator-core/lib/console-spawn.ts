@@ -253,8 +253,51 @@ function shellEscape(s: string): string {
  * no-window agent gets the same MCP auto-discovery contract as a terminal
  * agent. Callers that run arbitrary commands keep the default opt-out.
  */
+/**
+ * Does this `.mcp.json` body carry a SIGNED, single-agent spawn capability?
+ *
+ * `role-launch-spec.ts` signs a role's MCP URL with `signSpawnParams`, which
+ * stamps `sig=` (alongside `run=` / `spawn=` / `client=role-…`) into the query.
+ * That URL authenticates as exactly ONE agent and is non-repudiable, so it must
+ * never be materialized where another session can discover it.
+ *
+ * `sig=` is the exact discriminator, and it cannot fire on the legitimate cwd
+ * writers: the superuser console door (`buildSuperuserMcpUrl`) is unsigned and
+ * carries its bearer in `headers`, and the user-level door templates its client
+ * as `${PAPERCUSP_SID}`, resolved per session.
+ */
+function isSignedSingleAgentMcpConfig(contents: string): boolean {
+  return /[?&]sig=[^&"'\s]+/.test(contents);
+}
+
 function writeMcpJsonFile(envelope: ConsoleEnvelope, enabled: boolean): string | null {
   if (!enabled || !envelope.mcpJsonContents) return null;
+
+  // EI-23765667869335651: a signed single-agent door must NOT be written into a
+  // shared checkout. `bootstrap-role.ts` already enforces this for its own write
+  // ("a role launch must never materialize a signed, single-agent config in
+  // spec.cwd"); this is that same invariant at the SHARED writer, so no current
+  // or future caller can reintroduce the leak by passing writeMcpJson:true.
+  //
+  // WHY IT MATTERS: a superuser session supplies NO `--mcp-config`
+  // (desktop-install/claude-integration.ts), so claude AUTO-DISCOVERS
+  // `<cwd>/.mcp.json`. A signed role door left at the repo root therefore becomes
+  // a second `papercusp` door on every su session in that tree, and calls through
+  // it answer as the ROLE — a post-compaction coord:orient returns that role's
+  // control state (modes:[], loop inactive), which reads as "your autonomy was
+  // revoked" and invites a silent halt.
+  //
+  // Skipping is safe: a role session is pointed at its own copy via an explicit
+  // `--mcp-config <sessionMcpDir>/.mcp.json`, so the cwd copy is redundant for
+  // the role it belongs to and harmful to every other session in the checkout.
+  if (isSignedSingleAgentMcpConfig(envelope.mcpJsonContents)) {
+    console.warn(
+      `[console-spawn] refusing to write a signed single-agent .mcp.json into ${envelope.cwd} — ` +
+        `it would be auto-discovered by every session in that checkout. A signed door belongs in a ` +
+        `per-session dir passed via --mcp-config (see bootstrap-role.ts).`,
+    );
+    return null;
+  }
 
   try {
     const mcpPath = join(envelope.cwd, '.mcp.json');
