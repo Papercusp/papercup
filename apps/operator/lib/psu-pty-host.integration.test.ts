@@ -29,6 +29,7 @@ import {
   leadingTurnOriginMarker,
   tagSessionPortTurn,
   startupOutputReady,
+  freshChildPromptReady,
   killPtyProcessTree,
   handoffPathFor,
   MAX_CONTROL_PAYLOAD_BYTES,
@@ -223,6 +224,13 @@ describe('session-port managed seed + native persistence helpers', () => {
     // content — present only once the editable input line exists.
     expect(startupOutputReady('codex', '\x1b[38;5;244m100\x1b[0m% context left')).toBe(true);
     expect(startupOutputReady('codex', ' 62%  context left ')).toBe(true);
+  });
+
+  it('recognizes a Claude composer glyph while rejecting startup noise and recovery-menu rows', () => {
+    expect(freshChildPromptReady('claude', '\x1b[2J spinner / loading')).toBe(false);
+    expect(freshChildPromptReady('claude', '❯ 1. Resume from summary')).toBe(false);
+    expect(freshChildPromptReady('claude', '\x1b[2K\n❯\n')).toBe(true);
+    expect(freshChildPromptReady('codex', '\n❯\n')).toBe(false);
   });
 
   it('auto-advances the headless Claude theme and Security notes prompts exactly once', async () => {
@@ -913,6 +921,75 @@ describe('hostThroughPty real round-trip', () => {
 });
 
 describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same host (su-cold-auto-mode P-004b)', () => {
+  it(
+    'uses the Claude composer glyph to deliver a carry while the fresh TUI keeps repainting',
+    async () => {
+      const ownerId = `su-recycle-claude-ready-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n❯\\n');" +
+        "const marker=process.argv[process.argv.length-1];" +
+        "if(marker==='RECYCLED'){setInterval(()=>process.stdout.write('.'),20);}" +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+        "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
+        'setTimeout(()=>process.exit(0),15000);';
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode, 'INITIAL'],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'claude',
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '40',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        mintCarryRespawnArgs: (args: string[]) => ({ args: args.slice(0, -1).concat('RECYCLED'), nativeId: null }),
+        onExit: (code: number) => { exitCode = code; },
+      });
+
+      try {
+        await sleep(600);
+        expect(captured()).toContain('BOOT:');
+        await envelopeInject(sock, {
+          mode: 'carry-respawn',
+          data: 'CARRIED',
+          systemPromptAddendum: 'deterministic carry',
+          drillId: 'claude-ready',
+          sessionClass: 'claude-su',
+        });
+        const deadline = Date.now() + 5_000;
+        while (!captured().includes('ECHO:CARRIED') && Date.now() < deadline) await sleep(25);
+        expect(captured()).toContain('ECHO:CARRIED');
+        const events = readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+        expect(events.filter((event) => event.kind === 'busy-gate-expired' && event.mode === 'carry-respawn')).toEqual([]);
+        expect(JSON.parse(readFileSync(meta, 'utf8')).carryDropCount ?? 0).toBe(0);
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        await done;
+        if (existsSync(eventLog)) unlinkSync(eventLog);
+      }
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    20_000,
+  );
+
   it(
     'replaces the child process, keeps the host (socket/meta) alive, and opens the fresh process on the carry-note',
     async () => {
