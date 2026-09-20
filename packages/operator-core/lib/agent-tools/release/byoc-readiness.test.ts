@@ -355,6 +355,46 @@ describe('release:byoc_readiness', () => {
     expect(result.failed).toContain(`publication:${key === 'sourceSha' ? 'source' : 'version'}-identity-mismatch`);
   });
 
+  it.each([
+    ['substituted key', { signingPublicKey: 'different public signing key' }, 'signature:key-pin-mismatch'],
+    ['lost newline', { signingPublicKey: `${PUBLICATION_SIGNING_KEY}\n` }, 'signature:key-pin-mismatch'],
+    ['malformed digest', { signingKeySha256: 'not-a-digest' }, 'signature:key-pin-mismatch'],
+    ['absent digest', { signingKeySha256: undefined }, 'signature:key-pin-mismatch'],
+    ['non-string key', { signingPublicKey: { key: PUBLICATION_SIGNING_KEY } }, 'signature:invalid-signing-key'],
+    ['empty key', { signingPublicKey: ' \n' }, 'signature:invalid-signing-key'],
+  ])('rejects a %s before fetching bundle bytes', async (_label, override, failure) => {
+    const fixture = publicationFixture();
+    const body = JSON.stringify({
+      ...fixture.manifest,
+      artifact: {
+        ...fixture.manifest.artifact,
+        release: { ...fixture.manifest.artifact.release, ...override },
+      },
+    });
+    // Pin the modified manifest itself: rejection must come from measuring the
+    // key bytes, not from an unrelated manifest-content digest mismatch.
+    const fetcher = vi.fn(async () => new Response(body));
+    const result = await probeByocPublication({
+      ...fixture.input,
+      manifestSha256: createHash('sha256').update(body).digest('hex'),
+    }, fetcher);
+    expect(result.verdict).toBe('fail');
+    expect(result.failed).toEqual([failure]);
+    expect(result.verified).toEqual([]);
+    expect(result.missing).toContain('signature');
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(fixture.urls.manifestUrl, expect.any(Object));
+  });
+
+  it('measures the matching public-key pin without certifying the signature', async () => {
+    const fixture = publicationFixture();
+    const result = await probeByocPublication(fixture.input, fixture.fetcher);
+    expect(result.failed).toEqual([]);
+    expect(result.evidenceRefs).toContain(`publication:signing-key:${PUBLICATION_SIGNING_KEY_SHA256}`);
+    expect(result.missing).toContain('signature');
+    expect(result.verified).not.toContain('signature');
+    expect(result.verdict).toBe('unknown');
+  });
+
   it('leaves public-byte obligations unresolved on a failed manifest fetch', async () => {
     const fixture = publicationFixture();
     const result = await probeByocPublication(fixture.input, async () => new Response(null, { status: 404 }));

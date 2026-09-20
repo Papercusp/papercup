@@ -259,6 +259,26 @@ export async function probeByocPublication(
   }
   if (failed.length > 0) return result();
 
+  // The bootstrap pins the exact public-key file bytes, not a trimmed key or a
+  // digest copied from the trust report. Check that same identity before fetching
+  // the large bundle. This is a prerequisite, NOT signature verification: even a
+  // perfectly matching key pin cannot discharge the `signature` obligation.
+  const signingPublicKey = manifest.artifact.release.signingPublicKey;
+  const signingKeySha256 = manifest.artifact.release.signingKeySha256;
+  if (typeof signingPublicKey !== 'string' || signingPublicKey.trim().length === 0) {
+    failed.push('signature:invalid-signing-key');
+    return result();
+  }
+  if (
+    typeof signingKeySha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(signingKeySha256) ||
+    sha256(new TextEncoder().encode(signingPublicKey)) !== signingKeySha256
+  ) {
+    failed.push('signature:key-pin-mismatch');
+    return result();
+  }
+  refs.push(`publication:signing-key:${signingKeySha256}`);
+
   const fetchObject = async (url: string, maxBytes: number, label: string) => {
     try {
       const response = await fetcher(url, requestInit());
