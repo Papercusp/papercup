@@ -129,6 +129,49 @@ describe('WI-10002078 — production carry re-arms cannot outlive their child ep
     });
   });
 
+  it('yields between unbounded production retries while owner input remains staged', async () => {
+    const yieldAfterDefer = vi.fn(async () => {});
+    const h = harness();
+    const controller = makeCarryRearmController({
+      acquireInject: () => h.mutex.acquire(),
+      hasPendingOwnerInput: () => true,
+      waitAtPrompt: vi.fn(async () => ({ deferred: false })),
+      recycle: h.recycle,
+      emitEvent: (kind, extra) => h.events.push({ kind, ...extra }),
+      maxProductionAttempts: 2,
+      yieldAfterDefer,
+    });
+    controller.schedule(carry());
+    await drain();
+    expect(yieldAfterDefer).toHaveBeenCalled();
+    expect(h.recycle).not.toHaveBeenCalled();
+    expect(h.events.at(-1)).toMatchObject({
+      kind: 'respawn-carry-dropped',
+      reason: 'owner-input-cap',
+    });
+  });
+
+  it('waits for owner input to clear before retrying the carry', async () => {
+    let pending = true;
+    const h = harness();
+    const controller = makeCarryRearmController({
+      acquireInject: () => h.mutex.acquire(),
+      hasPendingOwnerInput: () => pending,
+      waitForOwnerInputClear: async () => {
+        pending = false;
+        return { deferred: false };
+      },
+      waitAtPrompt: vi.fn(async () => ({ deferred: false })),
+      recycle: h.recycle,
+      emitEvent: (kind, extra) => h.events.push({ kind, ...extra }),
+      maxProductionAttempts: 2,
+    });
+    controller.schedule(carry());
+    await drain();
+    expect(h.recycle).toHaveBeenCalledTimes(1);
+    expect(h.events.filter((event) => event.kind === 'respawn-carry-dropped')).toEqual([]);
+  });
+
   it('does not clear another accepted first attempt when one same-owner attempt finishes', () => {
     const h = harness();
     const first = carry(10);
