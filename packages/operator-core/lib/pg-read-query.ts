@@ -4064,15 +4064,29 @@ function extractFilterPredicates(rawSql: string, masked: string): string[] {
  * BELOW the WHERE's own, which is the subquery's closing paren. */
 function extractWhereConjuncts(rawSql: string, masked: string): string[] {
   const depth = sqlDepthPrefix(masked);
+  // Prefer the SHALLOWEST `where`, not the lexically first one. In a census the
+  // first `where` token belongs to a `FILTER (WHERE …)` bucket one paren deep,
+  // while the clause carrying the query's shared scope sits at depth 0 and
+  // LATER — taking the first would read a bucket as the scope and emit an
+  // UNSCOPED partition, which would then trip `tenant_scope_required`. The same
+  // rule still selects the only WHERE in `SELECT EXISTS (SELECT 1 … WHERE …)`.
   const whereRe = /\bwhere\b/gi;
-  const whereAt = whereRe.exec(masked);
+  let whereAt: { index: number; length: number } | null = null;
+  for (let m = whereRe.exec(masked); m; m = whereRe.exec(masked)) {
+    if (!whereAt || depth[m.index]! < depth[whereAt.index]!) {
+      whereAt = { index: m.index, length: m[0].length };
+    }
+  }
   if (!whereAt) return [];
   const base = depth[whereAt.index]!;
-  const start = whereAt.index + whereAt[0].length;
+  const start = whereAt.index + whereAt.length;
 
   let end = masked.length;
   for (let k = start; k < masked.length; k++) {
-    if (depth[k]! < base) {
+    // depth[k + 1] is the depth AFTER consuming char k, so the first index at
+    // which it drops below `base` IS the closing paren — end there, not one
+    // past it, or the sliced predicate carries a stray `)`.
+    if (depth[k + 1]! < base) {
       end = k;
       break;
     }
@@ -4144,18 +4158,30 @@ export function buildNonSummingPartitionAdvisory(rawSql: string): string | null 
 
   const masked = maskSqlNoise(rawSql);
   const filters = extractFilterPredicates(rawSql, masked);
+  const whereConjuncts = extractWhereConjuncts(rawSql, masked);
   // FILTER buckets ARE the caller's dimensions when present; the surrounding
   // WHERE is then a shared scope rather than a discriminator.
-  const predicates = filters.length ? filters : extractWhereConjuncts(rawSql, masked);
+  const predicates = filters.length ? filters : whereConjuncts;
   if (!predicates.length) return null;
 
   const scope: string[] = [];
   const dimensions: string[] = [];
+  const addScope = (text: string): void => {
+    if (text && !scope.includes(text)) scope.push(text);
+  };
   for (const predicate of predicates) {
     const text = predicate.replace(/\s+/g, ' ').trim();
     if (!text) continue;
-    const bucket = NON_SUMMING_SCOPE_RE.test(text) ? scope : dimensions;
-    if (!bucket.includes(text)) bucket.push(text);
+    if (NON_SUMMING_SCOPE_RE.test(text)) addScope(text);
+    else if (!dimensions.includes(text)) dimensions.push(text);
+  }
+  // When FILTER buckets supplied the dimensions the WHERE was never consulted,
+  // so its scope predicates would be dropped from the suggested partition.
+  if (filters.length) {
+    for (const predicate of whereConjuncts) {
+      const text = predicate.replace(/\s+/g, ' ').trim();
+      if (NON_SUMMING_SCOPE_RE.test(text)) addScope(text);
+    }
   }
   if (!dimensions.length) return null;
 
@@ -4166,7 +4192,7 @@ export function buildNonSummingPartitionAdvisory(rawSql: string): string | null 
   const partitionSql =
     'SELECT\n' +
     shown.map((d, i) => `       (${d}) AS d${i + 1}`).join(',\n') +
-    ',\n       count(*) AS rows\n' +
+    ',\n       count(*) AS row_count\n' +
     '       -- , (array_agg(<key column>))[1:3] AS sample  -- uncomment for members of a cell\n' +
     `  FROM ${relation}` +
     (scope.length ? `\n WHERE ${scope.join('\n   AND ')}` : '') +

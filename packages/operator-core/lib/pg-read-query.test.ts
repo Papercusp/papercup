@@ -21,6 +21,7 @@ import {
   buildJsonbTypeofNegationAdvisory,
   buildUnusedCteAdvisory,
   buildPopulationNarrowingAdvisory,
+  buildNonSummingPartitionAdvisory,
   buildClaimabilityAdvisory,
   buildBacklogFlowAdvisory,
   buildCorpusNamespaceAdvisory,
@@ -3743,6 +3744,122 @@ describe('personalVaultRefusal — the Personal Vault fence (WI-10001796)', () =
     expect(
       personalVaultRefusal('SELECT personal_documents_id FROM harness_shared.some_table'),
       'the trailing word boundary must not fire on personal_documents_id',
+    ).toBeNull();
+  });
+});
+
+describe('buildNonSummingPartitionAdvisory (WI-10002034 — the scalar whose buckets do not sum)', () => {
+  // The measured case. This exact shape returned total 96 / bricked 0 / healthy 2,
+  // which DOES NOT SUM: 94 rows fell through every FILTER, because an ABSENT jsonb
+  // path is NULL and NULL fails every comparison, `<>` included.
+  const MEASURED = [
+    'SELECT count(*) AS total,',
+    "       count(*) FILTER (WHERE control_state->'activation'->>'status' <> 'applied') AS bricked,",
+    "       count(*) FILTER (WHERE control_state->'activation'->'applied'->>'specificationRevision'",
+    "                            = control_state->'activation'->'desired'->>'specificationRevision') AS healthy",
+    '  FROM harness_shared.session_briefs',
+    " WHERE workspace_id = 'papercusp-workspace'",
+  ].join('\n');
+
+  it('fires on the measured non-summing census', () => {
+    const advisory = buildNonSummingPartitionAdvisory(MEASURED);
+    expect(advisory).toBeTruthy();
+    expect(advisory).toContain('buckets may not sum');
+    expect(advisory).toContain('harness_shared.session_briefs');
+  });
+
+  it("partitions by the caller's OWN bucket expressions, jsonb key preserved verbatim", () => {
+    const advisory = buildNonSummingPartitionAdvisory(MEASURED)!;
+    // A stripped copy of the SQL would have ERASED the jsonb key, because the key
+    // IS a string literal. That is the whole reason the parse runs on an
+    // index-preserving mask while the emitted text is sliced from the raw SQL.
+    expect(advisory).toContain("(control_state->'activation'->>'status' <> 'applied') AS d1");
+    expect(advisory).toContain('count(*) AS row_count');
+    expect(advisory).toContain('GROUP BY 1, 2');
+  });
+
+  it("carries the query's tenant scope into the partition instead of making it a dimension", () => {
+    const advisory = buildNonSummingPartitionAdvisory(MEASURED)!;
+    // Partitioning BY the tenant would change the question AND leave the suggested
+    // query unscoped, which dev:pg_query itself refuses with tenant_scope_required.
+    // The shared scope sits at depth 0 and LATER than the FILTER buckets' own
+    // `WHERE`s, so this also pins the shallowest-WHERE selection rule.
+    expect(advisory).toContain("WHERE workspace_id = 'papercusp-workspace'");
+    expect(advisory).not.toContain("(workspace_id = 'papercusp-workspace') AS d");
+  });
+
+  it('fires on an EXISTS whose predicate sits one paren deep, without a stray paren', () => {
+    const advisory = buildNonSummingPartitionAdvisory(
+      "SELECT EXISTS (SELECT 1 FROM harness_shared.work_items WHERE payload->>'lane' <> 'observation')",
+    );
+    expect(advisory).toBeTruthy();
+    expect(advisory).toContain("(payload->>'lane' <> 'observation') AS d1");
+    expect(advisory, 'the subquery close paren must not ride along into the dimension').not.toContain(
+      "'observation')) AS d1",
+    );
+  });
+
+  it('fires on two independent non-jsonb dimensions', () => {
+    expect(
+      buildNonSummingPartitionAdvisory(
+        "SELECT count(*) FROM harness_shared.work_items WHERE status <> 'done' AND assignee <> 'me'",
+      ),
+    ).toBeTruthy();
+  });
+
+  it('is not steered by an AND or a paren inside a string literal', () => {
+    const advisory = buildNonSummingPartitionAdvisory(
+      "SELECT count(*) FROM harness_shared.work_items WHERE title <> 'a and b (c)' AND status <> 'done'",
+    );
+    expect(advisory).toBeTruthy();
+    expect(advisory).toContain("(title <> 'a and b (c)') AS d1");
+    expect(advisory).toContain("(status <> 'done') AS d2");
+  });
+
+  it('caps the emitted partition at three dimensions so the advisory stays readable', () => {
+    const advisory = buildNonSummingPartitionAdvisory(
+      'SELECT count(*) FROM harness_shared.work_items ' +
+        "WHERE a <> '1' AND b <> '2' AND c <> '3' AND d <> '4'",
+    )!;
+    expect(advisory).toContain('AS d3');
+    expect(advisory).not.toContain('AS d4');
+  });
+
+  // ---- controls: the shapes that MUST stay silent. A detector that fires on a
+  // correct census is what trains callers to skim past the whole advisory seam.
+
+  it('stays silent when the caller already partitioned', () => {
+    expect(
+      buildNonSummingPartitionAdvisory(
+        "SELECT status, count(*) FROM harness_shared.work_items WHERE payload->>'lane' <> 'x' GROUP BY 1",
+      ),
+      'a GROUP BY already puts every cell on screen, so nothing is hidden',
+    ).toBeNull();
+  });
+
+  it('stays silent on a single non-jsonb dimension', () => {
+    expect(
+      buildNonSummingPartitionAdvisory(
+        "SELECT count(*) FROM harness_shared.work_items WHERE status = 'open'",
+      ),
+      'one plain column cannot hide a fall-through worth a full partition',
+    ).toBeNull();
+  });
+
+  it('stays silent when the query scopes but never discriminates', () => {
+    expect(
+      buildNonSummingPartitionAdvisory(
+        "SELECT count(*) FROM harness_shared.work_items WHERE workspace_id = 'papercusp-workspace'",
+      ),
+    ).toBeNull();
+  });
+
+  it('stays silent on a non-aggregate row read', () => {
+    expect(
+      buildNonSummingPartitionAdvisory(
+        "SELECT id FROM harness_shared.work_items WHERE payload->>'lane' <> 'x' AND status = 'open'",
+      ),
+      'a row read shows its own rows; only a SCALAR can hide the fall-through',
     ).toBeNull();
   });
 });
