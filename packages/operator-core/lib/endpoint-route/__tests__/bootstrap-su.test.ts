@@ -157,10 +157,20 @@ const reserveSessionPortTargetMock = vi.fn(async (input: any) => ({
     targetAdvSessionId: 42,
   }),
 }));
-const readSessionPortBootstrapDispositionMock = vi.fn(async (_input: unknown) => ({
-  status: 'in_progress' as const,
-  targetAdvSessionId: 42,
-}));
+/** The fields this handler path actually reads off a bootstrap disposition. Declared
+ * explicitly so a fixture below is checked against it instead of being cast past the
+ * type system — the real `SessionPortBootstrapDisposition` additionally carries `port`,
+ * which this route never reads, so the double deliberately narrows rather than inventing
+ * a fake row. */
+type BootstrapDispositionDouble =
+  | { status: 'in_progress'; targetAdvSessionId: number }
+  | { status: 'replay'; targetAdvSessionId: number; receipt: Record<string, unknown> };
+const readSessionPortBootstrapDispositionMock = vi.fn(
+  async (_input: unknown): Promise<BootstrapDispositionDouble> => ({
+    status: 'in_progress',
+    targetAdvSessionId: 42,
+  }),
+);
 const recordSessionPortBootstrapReceiptMock = vi.fn(async (_input: unknown) => undefined);
 const failSessionPortTargetReservationMock = vi.fn(async (_input: unknown) => true);
 const readSessionPortArtifactMock = vi.fn(async (_port: unknown) => SESSION_PORT_ARTIFACT.seed);
@@ -894,7 +904,7 @@ describe('bootstrap-su', () => {
         workspaceId: 'default',
         cwd: '/workspace',
       },
-    } as any);
+    });
 
     const res = await callPost({
       agent: 'codex',

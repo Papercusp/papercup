@@ -254,7 +254,7 @@ describe('substitution verdict fold (P-015)', () => {
   });
 
   it('keeps the deny for an install in the canonical file-lock tree', async () => {
-    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
+    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as CheckVerdict);
     rowsM.mockResolvedValue([dependencyRow]);
 
     const out = body((await tool.handler(
