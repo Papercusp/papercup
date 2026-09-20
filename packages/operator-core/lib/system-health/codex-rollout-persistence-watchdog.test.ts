@@ -19,7 +19,7 @@ vi.mock('../adv-sessions', async (importOriginal) => ({
 vi.mock('../events/await/store', () => ({
   cancelInboxWakeAwaits: lifecycleMocks.cancelInboxWake,
   cancelClaimableAwaits: lifecycleMocks.cancelClaimable,
-  retireLifecycleBoundWatchesForOwners: lifecycleMocks.retireLifecycleWatches,
+  retireWatchesForReapedOwners: lifecycleMocks.retireLifecycleWatches,
 }));
 vi.mock('../work-item-lease-release', () => ({
   releaseAllWorkItemLeasesForOwner: lifecycleMocks.releaseWorkItems,

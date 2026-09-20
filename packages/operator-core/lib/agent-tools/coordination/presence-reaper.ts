@@ -121,12 +121,18 @@ export async function reapEndedPresenceRows(
     return { reaped: 0, ownerIds: [], skipped: rows.length, boundWatchesRetired: 0 };
   }
 
-  // P-013 / D-003: retire machinery-authored watches BEFORE deleting the
-  // presence rows. If cleanup fails the presence row remains for the next
+  // P-013 / D-003: retire the reaped owners' pending watches BEFORE deleting
+  // the presence rows. If cleanup fails the presence row remains for the next
   // scheduled retry; deleting first would erase the only lifecycle edge and
-  // strand the watches forever. Manual awaits have bound_to=NULL and survive.
-  const { retireLifecycleBoundWatchesForOwners } = await import('../../events/await/store');
-  const retired = await retireLifecycleBoundWatchesForOwners(toReap);
+  // strand the watches forever.
+  //
+  // WI-10002094: this sweep used to skip manual awaits (bound_to=NULL), which
+  // left them stranded permanently precisely BECAUSE deleting the presence row
+  // removes the only edge that could ever reach them again. `toReap` is already
+  // TTL-expired AND non-wakeable, so retiring them here is safe. Declared gates
+  // (policy='announce') are still preserved by the store.
+  const { retireWatchesForReapedOwners } = await import('../../events/await/store');
+  const retired = await retireWatchesForReapedOwners(toReap);
 
   const { sql } = getOrgPg();
   const deleted = await sql<{ owner_id: string }[]>`

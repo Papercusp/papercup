@@ -523,8 +523,32 @@ export async function retireLifecycleBoundWatches(
   });
 }
 
-/** Presence-reap inverse: retire only machinery-authored rows for dead owners. */
-export async function retireLifecycleBoundWatchesForOwners(
+/**
+ * Presence-reap inverse: retire a confirmed-dead owner's pending watches.
+ *
+ * WI-10002094: this used to require `bound_to IS NOT NULL`, i.e. it retired
+ * only machinery-authored awaits and left every MANUAL `events:await`
+ * registration (which carries bound_to=NULL) behind forever. Nothing else
+ * retires them, so they accumulated without bound — 370 retirable orphans
+ * across 249 dead sessions, the oldest from 2026-07-13, when measured.
+ *
+ * The caller's edge is what licenses the wider sweep: `reapEndedPresenceRows`
+ * passes only owners that are past the presence TTL *and* non-wakeable, i.e.
+ * confirmed dead. A pending await owned by such a session can never usefully
+ * fire again, so its provenance (machinery vs manual) is irrelevant to whether
+ * it should be retired. Binding provenance describes WHO armed a watch, never
+ * whether its owner is still alive.
+ *
+ * `policy <> 'announce'` stays, and is the load-bearing exclusion: a declared
+ * gate is durable coordination state whose custody transfers to a successor,
+ * so it must outlive its announcer. 33 of the measured orphans were announce
+ * rows — retiring them would have destroyed live gate custody.
+ *
+ * predicate_watches intentionally keeps the `bound_to IS NOT NULL` filter: it
+ * had zero active rows at measurement, so there is no evidence of the same
+ * leak there and no way to test a widening.
+ */
+export async function retireWatchesForReapedOwners(
   ownerIds: readonly string[],
 ): Promise<LifecycleRetirementResult> {
   const owners = [...new Set(ownerIds.map((id) => id.trim()).filter(Boolean))];
@@ -534,7 +558,6 @@ export async function retireLifecycleBoundWatchesForOwners(
       UPDATE harness_shared.event_awaits
          SET cancelled_at = now()
        WHERE subscriber_id = ANY(${owners}::text[])
-         AND bound_to IS NOT NULL
          -- A declared gate is durable coordination state, not an
          -- owner-scoped await.  Do not cancel it when the announcer is
          -- reaped; successor custody is resolved from the declaration.

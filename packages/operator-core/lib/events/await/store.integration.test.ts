@@ -48,7 +48,7 @@ const {
   listFiredAnnouncements,
   insertDeliveries,
   retireLifecycleBoundWatches,
-  retireLifecycleBoundWatchesForOwners,
+  retireWatchesForReapedOwners,
   listActiveAwaits,
   listLifecycleBoundAwaits,
   listActiveAwaitsForKey,
@@ -275,11 +275,14 @@ describe('await-event store (PG)', () => {
     expect((await listActiveAwaits('leader-a')).map((row) => row.id)).toEqual([manual.id]);
     expect((await listActiveAwaits('leader-b')).map((row) => row.id)).toEqual([sibling.id]);
 
-    await expect(retireLifecycleBoundWatchesForOwners(['leader-b'])).resolves.toEqual({
+    await expect(retireWatchesForReapedOwners(['leader-b'])).resolves.toEqual({
       awaits: 1,
       predicateWatches: 1,
     });
     expect(await listActiveAwaits('leader-b')).toEqual([]);
+    // leader-a's MANUAL await is untouched here only because this sweep was
+    // scoped to leader-b — not because manual awaits are exempt (WI-10002094).
+    expect((await listActiveAwaits('leader-a')).map((row) => row.id)).toEqual([manual.id]);
   });
 
   it('registerAwait persists a one-shot watch; listActiveAwaits reads it back', async () => {
@@ -445,7 +448,7 @@ describe('await-event store (PG)', () => {
       boundTo: binding,
     });
 
-    await expect(retireLifecycleBoundWatchesForOwners([owner])).resolves.toEqual({
+    await expect(retireWatchesForReapedOwners([owner])).resolves.toEqual({
       awaits: 1,
       predicateWatches: 0,
     });
@@ -471,6 +474,54 @@ describe('await-event store (PG)', () => {
       },
     ]);
     expect((await findAnnouncementsForKey(eventKey)).map((row) => row.id)).toEqual([announcement.id]);
+  });
+
+  // WI-10002094 recurrence guard. A MANUAL `events:await` registration carries
+  // bound_to=NULL. The reaper used to require bound_to IS NOT NULL, so these
+  // survived their owner's death forever and accumulated without bound (370
+  // retirable orphans over 249 dead sessions when measured). The presence row
+  // is deleted right after this sweep, so it is the LAST edge that can ever
+  // reach them — anything skipped here is stranded permanently.
+  //
+  // If this fails with the manual await still active, the bound_to filter has
+  // been reintroduced on the event_awaits leg.
+  it('retires a reaped owner\'s MANUAL (bound_to=NULL) await while preserving its declared gate', async () => {
+    const owner = 'reaped-manual-owner';
+    const manual = await registerAwait({
+      subscriberId: owner,
+      eventKey: 'manual:stranded-on-death',
+      once: false,
+    });
+    const gate = await registerAnnouncement({
+      subscriberId: owner,
+      eventKey: 'gate:survives-owner-reap',
+      scopeKind: 'global',
+    });
+    // Calibration: without this the assertions below could pass vacuously on a
+    // fixture that never had an unbound await in the first place. Note
+    // listActiveAwaits surfaces only 'wake' rows — the announce gate is
+    // discovered through findAnnouncementsForKey, not here.
+    expect(manual.boundTo).toBeNull();
+    expect((await listActiveAwaits(owner)).map((r) => r.id)).toEqual([manual.id]);
+
+    await expect(retireWatchesForReapedOwners([owner])).resolves.toEqual({
+      awaits: 1,
+      predicateWatches: 0,
+    });
+
+    // The manual await is gone; the declared gate is NOT (custody transfers to
+    // a successor, so it must outlive its announcer).
+    expect(await listActiveAwaits(owner)).toEqual([]);
+    expect((await findAnnouncementsForKey('gate:survives-owner-reap')).map((r) => r.id)).toEqual([
+      gate.id,
+    ]);
+    const stored = await rootSql`
+      SELECT policy, cancelled_at FROM harness_shared.event_awaits
+       WHERE id IN (${manual.id}, ${gate.id}) ORDER BY id`;
+    expect(stored).toEqual([
+      { policy: 'wake', cancelled_at: expect.anything() },
+      { policy: 'announce', cancelled_at: null },
+    ]);
   });
 
   it('retires only the unfired announcement, preserves its waiter, and removes it from discovery', async () => {
