@@ -2983,10 +2983,14 @@ export default defineTool({
               .slice(0, 3)
               .join(', ');
             return (
-              `coord:send persisted ${bodyTruncated.length} message${bodyTruncated.length === 1 ? '' : 's'} ` +
-              `whose default inbox body is incomplete (${details}). ` +
-              `bodyDeliveredChars < bodyAuthoredChars: top-level ok:true confirms batch execution, not full-body ` +
-              `visibility. Read results[].bodyReadRef with coord:read or shorten the load-bearing ask.`
+              `coord:send FAILED the full-body contract for ${bodyTruncated.length} ` +
+              `message${bodyTruncated.length === 1 ? '' : 's'} (${details}): bodyDeliveredChars < ` +
+              `bodyAuthoredChars, so the default inbox body is incomplete. This is why the envelope ` +
+              `reports ok:false — the rows WERE persisted and the FULL text is durable, but a lossy ` +
+              `send never reports ok:true, because the recipient acting on the clipped text is ` +
+              `indistinguishable from one acting on all of it. Either shorten the load-bearing ask ` +
+              `below the cap so every character is delivered, or point the recipient at ` +
+              `results[].bodyReadRef with coord:read and re-send deliberately.`
             );
           })()
         : undefined;
@@ -3017,9 +3021,26 @@ export default defineTool({
             );
           })()
         : undefined;
+    // P-001 / spec-coord-send-no-silent-body-truncation@3: a lossy body is a HARD
+    // verdict, not a note printed beside ok:true. The predicate above ALREADY detects
+    // the condition and both counts are already in hand at send time, so this
+    // escalates the existing signal rather than adding a second measurement.
+    //
+    // Why ok:false even though the rows persisted: the durable coord row keeps the
+    // full text, but the SENDER's contract is about what the recipient will read, and
+    // a recipient acting on a clipped ask is indistinguishable from one acting on all
+    // of it. A caller that checks only top-level `ok` must therefore never see `true`
+    // for a shortened body. `bodyDeliveryLossy` is the machine-readable flag; the
+    // warning names both counts, and results[].bodyReadRef still addresses the full text.
+    //
+    // Note the predicate is `bodyTruncated` (definitely over bodyDeliveryCap), NOT
+    // `bodyMayBeTruncated` (the smaller crowded-page cap, which is conditional on how
+    // busy the reader's page happens to be). Only a certain loss fails the send.
     const warnedEnv = {
       ...env,
-      ...(bodyDeliveryWarning ? { bodyDeliveryWarning } : {}),
+      ...(bodyDeliveryWarning
+        ? { ok: false, bodyDeliveryLossy: true, bodyDeliveryWarning }
+        : {}),
       ...(authorityClaimWarning ? { authorityClaimWarning } : {}),
     };
     const failed = env.results.filter((result) => !result.ok);

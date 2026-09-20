@@ -354,9 +354,44 @@ describe('coord:send handler (bulk keyed-array)', () => {
       bodyCrowdedPageCap: 300,
       bodyReadRef: { msg_id: 'm1' },
     });
+    // P-001 / spec-coord-send-no-silent-body-truncation@3: the ENVELOPE must fail.
+    // The per-message result above stays ok:true — that row really was persisted —
+    // but a caller reading only the top-level `ok` must never see `true` for a send
+    // whose body was shortened. This assertion is the whole point of the item: the
+    // condition was ALREADY detected before the fix and merely reported beside ok:true.
+    expect(b.ok).toBe(false);
+    expect(b.bodyDeliveryLossy).toBe(true);
+    // The verdict must NAME BOTH COUNTS, so the sender can see how much was lost
+    // without a second call.
     expect(b.bodyDeliveryWarning).toMatch(/bodyDeliveredChars < bodyAuthoredChars/i);
     expect(b.bodyDeliveryWarning).toMatch(/m1 \(600\/2260 chars visible\)/i);
+    expect(b.bodyDeliveryWarning).toMatch(/ok:false/i);
     expect(b.bodyDeliveryWarning).toMatch(/coord:read/i);
+  });
+
+  it('P-001: a >600-char body is STORED complete — ok:false reports a lossy default READ, never a lossy write', async () => {
+    // The spec's named regression guard. These are two DIFFERENT properties and the
+    // fix must not conflate them: the durable coord row keeps every authored
+    // character (so coord:read can always recover the full text), while
+    // bodyDeliveredChars describes what a DEFAULT inbox read would surface. If a
+    // future change ever "fixed" the ok:false by clipping at persistence instead,
+    // this assertion is what fails.
+    const longBody = 'y'.repeat(1_500);
+    const b = await body({
+      to: ['bee-1'],
+      summary: 'long FYI',
+      expects: 'none',
+      body: [{ text: longBody, forYouBecause: { relation: 'other', note: 'the recipient owns the next step' } }],
+    });
+
+    expect(b.ok).toBe(false);
+    expect(b.results[0]).toMatchObject({ ok: true, bodyAuthoredChars: 1_500, bodyDeliveredChars: 600 });
+
+    // The recipient's STORED body retains the authored text in full.
+    expect(sendM).toHaveBeenCalledTimes(1);
+    const storedBody = (sendM.mock.calls[0][1] as { body?: string }).body ?? '';
+    expect(storedBody).toContain(longBody);
+    expect(storedBody.length).toBeGreaterThanOrEqual(1_500);
   });
 
   it('EI-21826596284846555: refuses an over-cap load-bearing body before persistence', async () => {
@@ -395,6 +430,11 @@ describe('coord:send handler (bulk keyed-array)', () => {
     });
     expect(b.results[0].bodyReadRef).toBeUndefined();
     expect(b.bodyDeliveryWarning).toBeUndefined();
+    // P-001 control: a body that fits stays a clean ok:true. Without this the
+    // ok:false assertions above would also pass if the send had been broken
+    // outright, so this is what makes them evidence rather than coincidence.
+    expect(b.ok).toBe(true);
+    expect(b.bodyDeliveryLossy).toBeUndefined();
   });
 
   it('one message to MANY recipients stays the single form (to:[…])', async () => {
