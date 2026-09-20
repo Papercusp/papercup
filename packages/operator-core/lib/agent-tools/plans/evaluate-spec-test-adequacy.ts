@@ -124,8 +124,12 @@ export default defineTool({
       specRevision: args.specRevision,
       specFingerprint: args.specFingerprint,
       replaySnapshot: args.replaySnapshot === true,
+      // The replay path skips server measurement, so `current` here is entirely
+      // caller-supplied. Record it as a replayed snapshot rather than claiming the
+      // server measured it — otherwise any caller passing replaySnapshot:true plus
+      // self-authored fingerprints mints a 'server-measured' freshness verdict.
       ...(args.replaySnapshot === true && current !== undefined
-        ? { currentProvenance: 'server-measured' as const }
+        ? { currentProvenance: 'replayed-snapshot' as const }
         : {}),
       evidenceRefs: args.evidenceRefs,
       current,

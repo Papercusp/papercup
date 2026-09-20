@@ -86,6 +86,50 @@ describe('repo-backed server measurement', () => {
 });
 
 describe('classifySpecEvidenceCurrentness exact current comparisons', () => {
+  // RECURRENCE GUARD (EI-23761345516273342). The replay path performs no server
+  // measurement, so its whole `current` tuple is caller-supplied. If a replayed
+  // tuple can ever again classify as `overall:'current'` with server-grade
+  // provenance, any caller can mint a passing freshness verdict from fingerprints
+  // it authored itself — which is the defect this guard exists to catch.
+  //
+  // Calibration: the sibling test above feeds the IDENTICAL row + tuple with
+  // provenance 'server-measured' and correctly gets `overall:'current'`. That
+  // pairing is what makes this assertion falsifiable rather than vacuous: only the
+  // provenance differs, so a regression that stops distinguishing them fails here.
+  it('never lets a replayed snapshot reach overall:current — it is not an independent measurement', () => {
+    const currentness = classifySpecEvidenceCurrentness(
+      {
+        spec_is_current: true,
+        source_fingerprint: 'git:one',
+        test_fingerprint: 'sha256:test',
+        fixture_fingerprint: null,
+        rubric_fingerprint: null,
+        environment_fingerprint: null,
+        coverage_evidence_ref: null,
+        coverage_evidence_present: false,
+        test_run_id: null,
+        test_run_present: false,
+      },
+      {
+        // Every dimension matches the stored row, so nothing is stale. Under the
+        // pre-fix behaviour this combination returned `current`/`server-measured`.
+        evidenceKind: 'test',
+        evidenceRef: 'vitest:one',
+        sourceFingerprint: 'git:one',
+        testFingerprint: 'sha256:test',
+      },
+      { provenance: 'replayed-snapshot' },
+    );
+
+    expect(currentness.overall).not.toBe('current');
+    expect(currentness).toMatchObject({
+      overall: 'unknown',
+      provenance: 'replayed-snapshot',
+      staleReasons: [],
+    });
+    expect(currentness.unknownReasons).toContain('current-fingerprints-replayed-not-independently-measured');
+  });
+
   it('treats a complete byte-identical server-measured fingerprint set as current', () => {
     const currentness = classifySpecEvidenceCurrentness(
       {

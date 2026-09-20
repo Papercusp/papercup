@@ -360,7 +360,14 @@ export async function evaluatePlanSpecQualityGate(
         message:
           `Plan '${input.planSlug}' has an exact terminal ${SPEC_QUALITY_RUBRIC_REF} scorecard ` +
           `(${failedAudit.issueId}) for exact specSetHash ${evaluation.specSetHash}, but its ` +
-          'independent P-013 grading-integrity audit FAILED it, so it cannot satisfy this gate. Re-run ' +
+          'independent P-013 grading-integrity audit FAILED it, so it cannot satisfy this gate. ' +
+          // WI-10002063 (sibling of the spec-test-adequacy defect): telling an agent to "repair
+          // whatever the audit flagged" while handing back only the GRADED card's id leaves the
+          // findings unreachable — the graded card does not contain them, the AUDIT card does.
+          (failedAudit.gradingAudit?.auditIssueId
+            ? `Read the audit card ${failedAudit.gradingAudit.auditIssueId} for the findings. Then re-run `
+            : '(No audit card id was recorded on the graded card, so the findings are not directly ' +
+              'reachable from here.) Re-run ') +
           `plans:evaluate-spec-quality { slug:'${input.planSlug}', classRef:'${evaluation.classRef}' }, ` +
           'repair whatever the audit flagged, then emit a fresh scorecard through scorecards:emit for a new ' +
           'grading-integrity audit.',

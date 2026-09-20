@@ -250,7 +250,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     );
   });
 
-  it('marks a pinned replay snapshot as server-measured when forwarding its current tuple', async () => {
+  it('marks a pinned replay snapshot as replayed-snapshot, never server-measured, when forwarding its current tuple', async () => {
     const current = [
       {
         evidenceKind: 'test',
@@ -282,7 +282,9 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
         specFingerprint: 'sha256:spec-001',
         replaySnapshot: true,
         current,
-        currentProvenance: 'server-measured',
+        // The replay path performs NO server measurement, so the forwarded tuple is
+        // caller-supplied. It must be labelled as a replay, never as server proof.
+        currentProvenance: 'replayed-snapshot',
       }),
     );
   });
