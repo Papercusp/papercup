@@ -32,7 +32,7 @@ function harness({
   waitIdle?: () => Promise<Boundary>;
 } = {}) {
   const events: { kind: string; reason?: string }[] = [];
-  const recycle = vi.fn(async () => {});
+  const recycle = vi.fn(async (_data: string, _opts: Record<string, unknown>) => {});
   const mutex = makeInjectMutex();
   let epochStartedAt = 0;
   const options = {
