@@ -1369,6 +1369,26 @@ export interface CheckpointResult {
      *  carry it, and every reader's classification table keys on the full status set. */
     | "repair-staging-mismatch"
     | "disk-headroom"
+    /** WI-10002039: the suite verdict was REACHED, and the promotion push was then refused by the
+     *  remote for AUTHORIZATION reasons (HTTP 401/403 — no write access, or no usable credential).
+     *
+     *  Its own token because it is a NAMED, PERMANENT misconfiguration, and every other reading of
+     *  it is actively wrong. Before this existed it arrived as `buildCrashCheckpointResult`'s
+     *  anonymous `'error'`, which classifies 'transient' in `gate-abort-status` — so the lever a
+     *  reader was handed said "nothing is blocking a re-fire" about a 403 that refuses every
+     *  re-fire identically, forever. Measured 2026-09-20: 550 of 7,247 recorded checkpoint runs on
+     *  this box (7.6%), ~65/day since 2026-09-05, every one of them a clone whose origin the fleet
+     *  can never push to.
+     *
+     *  `green: null` and the 'no-verdict' class are PRESERVED, deliberately. The run rendered no
+     *  PROMOTION verdict, the condition does not self-clear, and `disk-headroom` — the other
+     *  standing pre-promotion breach — is counted for exactly that reason. This changes what the
+     *  gate SAYS, never how loud it is: same counter, correct name, correct remedy.
+     *
+     *  ⚠ Must stay listed in `classifyGateStallStatus`. A reason absent from it falls through to
+     *  the trailing `return 'red'` and fabricates a contentless red naming no failing test — the
+     *  drift that froze `main` for 6 days as 'candidate-fossil'. */
+    | "promotion-unauthorized"
     /** An external managed signal stopped the run before it could render a suite verdict. */
     | "cancelled"
     /** EI-20767792192323374: the run's own module cache vanished mid-suite, so its failures
