@@ -2265,11 +2265,16 @@ export function makeCarryRearmController({
   acquireInject, // () => Promise<release()>  — the host's gated-inject mutex
   waitIdle = /** @type {null | (() => Promise<{ deferred: boolean, reason?: string } | void>)} */ (null),
   hasPendingOwnerInput = () => false,
+  waitForOwnerInputClear = /** @type {null | (() => Promise<{ deferred: boolean, reason?: string } | void>)} */ (null),
   waitAtPrompt, // (capMs?) => Promise<{ deferred }>
   recycle, // (data, { systemPromptAddendum, drillId, sessionClass }) => Promise<void>
   emitEvent, // (kind, extra) => void — writes BOTH the per-owner host log + shared ledger
   capMs = TURN_INJECT_BUSY_CAP_MS * 2,
   maxProductionAttempts = Number.POSITIVE_INFINITY,
+  // Production retries are unbounded. When staged owner input is already
+  // known, yield to the host's timers/input events instead of spinning only
+  // through immediately-resolved promise microtasks.
+  yieldAfterDefer = () => new Promise((resolve) => setImmediate(resolve)),
   // EI-18109211232286833: (msg) => boolean — re-checked right before this
   // retry finally recycles, since the whole point of the retry is that a LOT
   // of wall-clock time (the first busy-gate wait + this re-arm's) may have
@@ -2414,18 +2419,29 @@ export function makeCarryRearmController({
                 if (dropSuperseded(latest.get(key) ?? current)) return;
                 if (idle?.deferred) {
                   deferReason = idle.reason || 'owner-input-cap';
+                  await yieldAfterDefer();
                   continue;
                 }
               }
               if (hasPendingOwnerInput()) {
-                deferReason = 'owner-input-cap';
-                continue;
+                const clear = waitForOwnerInputClear ? await waitForOwnerInputClear() : null;
+                if (dropSuperseded(latest.get(key) ?? current)) return;
+                if (clear?.deferred || hasPendingOwnerInput()) {
+                  deferReason = clear?.reason || 'owner-input-cap';
+                  await yieldAfterDefer();
+                  continue;
+                }
+                deferReason = 'busy-gate-expired';
               }
               const atPrompt = await waitAtPrompt(capMs, current);
               if (dropSuperseded(latest.get(key) ?? current)) return;
               // The owner may have started composing during the prompt wait.
               if (hasPendingOwnerInput()) {
+                // Re-enter through the composer wait AND a fresh prompt check.
+                // Enter may have started a new owner turn: the prompt proof we
+                // observed before that input is no longer a safe cut boundary.
                 deferReason = 'owner-input-cap';
+                await yieldAfterDefer();
                 continue;
               }
               deferred = !!atPrompt.deferred;
@@ -6375,6 +6391,7 @@ export function hostThroughPty(o) {
     acquireInject: () => injectMutex.acquire(),
     waitIdle: bridgeTty ? () => idleGate.waitIdle() : null,
     hasPendingOwnerInput: () => ownerComposerGate.hasPending(),
+    waitForOwnerInputClear: bridgeTty ? () => ownerComposerGate.waitClear() : null,
     waitAtPrompt: (cap, msg) => agentBusyGate.waitAtPrompt(cap, () => codexCarryTurnCompleted({
       agent: env.PAPERCUSP_AGENT, env, transcriptPath: msg?.sourceTranscriptPath,
       receivedAtMs: msg?.receivedAtMs,

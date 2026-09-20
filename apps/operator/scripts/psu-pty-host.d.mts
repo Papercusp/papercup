@@ -826,18 +826,23 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, }?: {
         started: boolean;
     }>;
 };
-export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitAtPrompt, recycle, emitEvent, capMs, maxProductionAttempts, isStale, isSuperseded, }: {
+export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, emitEvent, capMs, maxProductionAttempts, yieldAfterDefer, isStale, isSuperseded, }: {
     acquireInject: any;
     waitIdle?: (() => Promise<{
         deferred: boolean;
         reason?: string;
     } | void>) | null | undefined;
     hasPendingOwnerInput?: (() => boolean) | undefined;
+    waitForOwnerInputClear?: (() => Promise<{
+        deferred: boolean;
+        reason?: string;
+    } | void>) | null | undefined;
     waitAtPrompt: any;
     recycle: any;
     emitEvent: any;
     capMs?: number | undefined;
     maxProductionAttempts?: number | undefined;
+    yieldAfterDefer?: (() => Promise<any>) | undefined;
     isStale?: (() => boolean) | undefined;
     isSuperseded?: ((_msg: any) => boolean) | undefined;
 }): {
