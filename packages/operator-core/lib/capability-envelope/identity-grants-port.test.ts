@@ -231,6 +231,51 @@ describe('P-005 current identity grants at the common kernel seat', () => {
     expect(read).not.toHaveBeenCalled();
   });
 
+  // WI-10002028: the recovery door must not ride the failure domain it recovers.
+  // `stale-artifact` does not say "this session lacks authority for coord:orient";
+  // it says "we cannot establish WHICH specification is in force". Denying the
+  // resync verb on that basis is self-sealing: coord:orient({afterCompaction:true})
+  // is the only caller of acknowledgeControlTransition (orient.ts), so it is the
+  // one verb that can converge the activation — and the preflight was holding it
+  // shut. The live consequence was a session bricked for its entire life, with
+  // BOTH documented toolless fallbacks denied (scripts/mcp-call.mjs reaches the
+  // same server-side preflight, so changing client/port/transport cannot help),
+  // recoverable only by an undocumented sudo psql UPDATE.
+  //
+  // Opening it is not a widening: the door already opens with NO launch record at
+  // all (the test above), which is strictly LESS identity evidence than a record
+  // that replays but whose `applied` pointer is unresolved. Anyone able to tamper
+  // a record into this state could equally delete it and take the weaker door, so
+  // gating on artifact integrity protected nothing and bricked honest sessions.
+  // Authority is unchanged either way: `applied:false` confers no grants.
+  it('keeps the coord:orient recovery door open for every stale-artifact shape', async () => {
+    const f = fixture();
+    const stranded = fixture({ requires: [] });
+    // Each entry is a distinct shape that reaches a `stale-artifact` denial.
+    const shapes: Array<[string, unknown, unknown]> = [
+      // `applied` names a specification no receipt in the record can produce —
+      // the exact residue of a relaunch-with-carry (applied stuck on the PREVIOUS
+      // session's revision while the successor runs a new one).
+      ['unresolvable applied receipt', { activation: { applied: stranded.applied } }, f.record],
+      // Artifact tampering: the replayed specification disagrees with the record.
+      ['tampered artifact', f.state, { ...f.record, specificationArtifact: { ...f.artifact, configuration: {} } }],
+      // A record that is absent without being flagged as explicitly missing.
+      ['absent record', f.state, null],
+    ];
+
+    for (const [label, state, record] of shapes) {
+      const read = vi.fn(async () => f.policy);
+      expect(await checkIdentityGrantKernel(
+        { ...f.request, toolName: 'coord:orient' }, state as never, record, read,
+      ), label).toMatchObject({ decision: 'allow', code: 'identity-recovery', applied: false });
+
+      // Calibration: the SAME shape must still fail closed for an ordinary tool.
+      // Without this, a blanket allow would pass the assertion above.
+      expect(await checkIdentityGrantKernel(f.request, state as never, record, read), label)
+        .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });
+    }
+  });
+
   it('keeps verified grantless artifacts and legacy sessions unchanged without policy I/O', async () => {
     const f = fixture();
     const artifact = compileAgentSpecification({

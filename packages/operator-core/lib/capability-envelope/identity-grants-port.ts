@@ -211,6 +211,52 @@ function denial(
   };
 }
 
+/**
+ * The identity plane's resync verb. `coord:orient({ afterCompaction: true })` is
+ * the only caller of acknowledgeControlTransition (agent-tools/coordination/
+ * tools/orient.ts), so it is the one verb that can converge a stranded
+ * activation from inside the session that is stranded.
+ */
+const IDENTITY_RECOVERY_TOOL = 'coord:orient';
+
+/**
+ * WI-10002028: of every cause this port can raise, `stale-artifact` is the one
+ * that is NOT a statement about the session's authority — it says the identity
+ * plane cannot establish WHICH specification is in force. Refusing
+ * {@link IDENTITY_RECOVERY_TOOL} on that basis makes the failure self-sealing:
+ * every tool is denied, including the door the CTRL block's own `resync`
+ * contract names, and BOTH documented toolless fallbacks reach this same
+ * server-side preflight (scripts/mcp-call.mjs is a different transport, not a
+ * different gate), so changing client, port or transport cannot open it.
+ * Recovery then required an out-of-band sudo psql write.
+ *
+ * A recovery door must not ride the failure domain it recovers. This is not a
+ * widening: the no-launch-record door above already admits the same verb on
+ * strictly LESS identity evidence, so anyone able to corrupt a record into this
+ * state could instead delete it and take the weaker door — gating on artifact
+ * integrity protected nothing while bricking honest sessions. `applied: false`
+ * confers no grants, so nothing reachable through this door can escalate, and
+ * every other cause (outside-ceiling, policy-unavailable, a real capability
+ * failure) still denies normally.
+ */
+function staleArtifact(
+  request: KernelEnforcementRequest,
+  toolName: string = request.toolName,
+  policyRevision?: string | null,
+): KernelEnforcementResult {
+  if (request.toolName === IDENTITY_RECOVERY_TOOL || toolName === IDENTITY_RECOVERY_TOOL) {
+    return {
+      decision: 'allow',
+      availability: 'available',
+      applied: false,
+      code: 'identity-recovery',
+      reason: `identity artifact is unresolved; ${IDENTITY_RECOVERY_TOOL} is the recovery door`,
+      ...(policyRevision !== undefined && policyRevision !== null ? { policyRevision } : {}),
+    };
+  }
+  return denial('stale-artifact', null, toolName, policyRevision);
+}
+
 export async function checkIdentityGrantKernel(
   request: KernelEnforcementRequest,
   state: IdentityGrantKernelState,
@@ -239,7 +285,7 @@ export async function checkIdentityGrantKernel(
       }
       return denial('no-launch-record', null, request.toolName, state.policyRevision);
     }
-    return applied ? denial('stale-artifact', null, request.toolName) : null;
+    return applied ? staleArtifact(request) : null;
   }
   let artifact: ResolvedAgentSpecification | null;
   let current: ResolvedAgentSpecification | null;
@@ -247,10 +293,10 @@ export async function checkIdentityGrantKernel(
     artifact = appliedIdentityArtifact(record, applied);
     current = record.specificationArtifact ? replayAgentSpecification(record.specificationArtifact) : null;
     if (current && current.specificationRevision !== record.specificationRevision) {
-      return denial('stale-artifact', null, request.toolName);
+      return staleArtifact(request);
     }
   } catch {
-    return denial('stale-artifact', null, request.toolName);
+    return staleArtifact(request);
   }
   // A control-only activation (e.g. re-registering an already-active mode)
   // advances the applied STATE revision without re-rendering the launch
@@ -290,13 +336,13 @@ export async function checkIdentityGrantKernel(
   }
   if (!artifact) {
     return applied || current?.configuration.grants
-      ? denial('stale-artifact', null, request.toolName) : null;
+      ? staleArtifact(request) : null;
   }
   if (!artifact.configuration.grants && !current?.configuration.grants) return null;
   // A removal or a new narrowing cannot wait for successful prompt delivery.
   // Never let a prepared broadening supply authority missing from the receipt.
   if (!artifact.configuration.grants || !current?.configuration.grants) {
-    return denial('stale-artifact', null, request.toolName);
+    return staleArtifact(request);
   }
   const workspaceId = request.ctx.workspaceId ?? request.ctx.principal?.workspaceId;
   if (record.workspaceId !== workspaceId ||
@@ -321,7 +367,7 @@ export async function checkIdentityGrantKernel(
     const envelope = resolveIdentityGrantEnvelope({
       specification, appliedSpecificationRevision: specification.specificationRevision, ...policy,
     });
-    if (!envelope.applied) return denial('stale-artifact', null, toolName, policy.policyRevision);
+    if (!envelope.applied) return staleArtifact(request, toolName, policy.policyRevision);
     const failure = envelope.failures[0];
     if (failure) return denial(failure.cause, failure.classRef, toolName, policy.policyRevision);
     if (!envelope.allowedTools.includes(toolName)) {
