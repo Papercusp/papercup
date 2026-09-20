@@ -1,5 +1,5 @@
 diff --git a/node_modules/postgres/cf/src/connection.js b/node_modules/postgres/cf/src/connection.js
-index 8e79170..072598e 100644
+index 8e79170..eb17dce 100644
 --- a/node_modules/postgres/cf/src/connection.js
 +++ b/node_modules/postgres/cf/src/connection.js
 @@ -88,6 +88,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
@@ -10,7 +10,7 @@ index 8e79170..072598e 100644
      , closedTime = 0
      , remaining = 0
      , hostIndex = 0
-@@ -242,7 +243,17 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -242,7 +243,20 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
        ? statements[q.signature]
        : { string, types, name: q.prepare ? statementId + statementCount++ : '' }
  
@@ -24,12 +24,15 @@ index 8e79170..072598e 100644
 +      rowCount: 0,
 +      wireBytes: 0
 +    }
++    if (!('context' in q.resultDiagnostic) && typeof options.onquerycontext === 'function') {
++      try { q.resultDiagnostic.context = options.onquerycontext() } catch (_) { q.resultDiagnostic.context = undefined }
++    }
 +
 +    typeof options.debug === 'function' && options.debug(id, string, parameters, types, q.resultDiagnostic.queryId)
    }
  
    function write(x, fn) {
-@@ -254,6 +265,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -254,6 +268,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
    }
  
    function nextWrite(fn) {
@@ -52,7 +55,7 @@ index 8e79170..072598e 100644
      const x = socket.write(chunk, fn)
      nextWriteTimer !== null && clearImmediate(nextWriteTimer)
      chunk = nextWriteTimer = null
-@@ -426,7 +453,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -426,7 +456,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      if (stream || query || initial || sent.length)
        error(Errors.connection('CONNECTION_DESTROYED', options))
  
@@ -62,7 +65,7 @@ index 8e79170..072598e 100644
      if (socket) {
        socket.removeListener('data', data)
        socket.removeListener('connect', connected)
-@@ -439,7 +468,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -439,7 +471,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      incoming = Buffer.alloc(0)
      remaining = 0
      incomings = null
@@ -77,7 +80,7 @@ index 8e79170..072598e 100644
      socket.removeListener('data', data)
      socket.removeListener('connect', connected)
      idleTimer.cancel()
-@@ -497,6 +533,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -497,6 +536,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      let column
      let value
  
@@ -89,7 +92,7 @@ index 8e79170..072598e 100644
      const row = query.isRaw ? new Array(query.statement.columns.length) : {}
      for (let i = 0; i < query.statement.columns.length; i++) {
        column = query.statement.columns[i]
-@@ -534,15 +575,40 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -534,15 +578,41 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      }
    }
  
@@ -110,7 +113,8 @@ index 8e79170..072598e 100644
 +        wireBytes: diagnostic.wireBytes,
 +        elapsedMs: Math.max(0, performance.now() - diagnostic.startedAt),
 +        status: error ? 'error' : 'ok',
-+        errorCode: error && typeof error.code === 'string' ? error.code : null
++        errorCode: error && typeof error.code === 'string' ? error.code : null,
++        context: diagnostic.context
 +      })
 +    } catch (_) {
 +      // Diagnostics must never affect query success or failure.
@@ -133,19 +137,20 @@ index 8e79170..072598e 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/cf/src/index.js b/node_modules/postgres/cf/src/index.js
-index ffbe7ae..e55599a 100644
+index ffbe7ae..ae9b565 100644
 --- a/node_modules/postgres/cf/src/index.js
 +++ b/node_modules/postgres/cf/src/index.js
-@@ -491,6 +491,7 @@ function parseOptions(a, b) {
+@@ -491,6 +491,8 @@ function parseOptions(a, b) {
      target_session_attrs: tsa(o, url, env),
      onnotice        : o.onnotice,
      onnotify        : o.onnotify,
++    onquerycontext  : o.onquerycontext,
 +    onresult        : o.onresult,
      onclose         : o.onclose,
      onparameter     : o.onparameter,
      socket          : o.socket,
 diff --git a/node_modules/postgres/cjs/src/connection.js b/node_modules/postgres/cjs/src/connection.js
-index 07f6716..bc08af8 100644
+index 07f6716..4b197fc 100644
 --- a/node_modules/postgres/cjs/src/connection.js
 +++ b/node_modules/postgres/cjs/src/connection.js
 @@ -86,6 +86,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
@@ -156,7 +161,7 @@ index 07f6716..bc08af8 100644
      , closedTime = 0
      , remaining = 0
      , hostIndex = 0
-@@ -240,7 +241,17 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -240,7 +241,20 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
        ? statements[q.signature]
        : { string, types, name: q.prepare ? statementId + statementCount++ : '' }
  
@@ -170,12 +175,15 @@ index 07f6716..bc08af8 100644
 +      rowCount: 0,
 +      wireBytes: 0
 +    }
++    if (!('context' in q.resultDiagnostic) && typeof options.onquerycontext === 'function') {
++      try { q.resultDiagnostic.context = options.onquerycontext() } catch (_) { q.resultDiagnostic.context = undefined }
++    }
 +
 +    typeof options.debug === 'function' && options.debug(id, string, parameters, types, q.resultDiagnostic.queryId)
    }
  
    function write(x, fn) {
-@@ -252,6 +263,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -252,6 +266,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
    }
  
    function nextWrite(fn) {
@@ -198,7 +206,7 @@ index 07f6716..bc08af8 100644
      const x = socket.write(chunk, fn)
      nextWriteTimer !== null && clearImmediate(nextWriteTimer)
      chunk = nextWriteTimer = null
-@@ -424,7 +451,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -424,7 +454,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      if (stream || query || initial || sent.length)
        error(Errors.connection('CONNECTION_DESTROYED', options))
  
@@ -208,7 +216,7 @@ index 07f6716..bc08af8 100644
      if (socket) {
        socket.removeListener('data', data)
        socket.removeListener('connect', connected)
-@@ -437,7 +466,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -437,7 +469,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      incoming = Buffer.alloc(0)
      remaining = 0
      incomings = null
@@ -223,7 +231,7 @@ index 07f6716..bc08af8 100644
      socket.removeListener('data', data)
      socket.removeListener('connect', connected)
      idleTimer.cancel()
-@@ -495,6 +531,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -495,6 +534,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      let column
      let value
  
@@ -235,7 +243,7 @@ index 07f6716..bc08af8 100644
      const row = query.isRaw ? new Array(query.statement.columns.length) : {}
      for (let i = 0; i < query.statement.columns.length; i++) {
        column = query.statement.columns[i]
-@@ -532,15 +573,40 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -532,15 +576,41 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      }
    }
  
@@ -256,7 +264,8 @@ index 07f6716..bc08af8 100644
 +        wireBytes: diagnostic.wireBytes,
 +        elapsedMs: Math.max(0, performance.now() - diagnostic.startedAt),
 +        status: error ? 'error' : 'ok',
-+        errorCode: error && typeof error.code === 'string' ? error.code : null
++        errorCode: error && typeof error.code === 'string' ? error.code : null,
++        context: diagnostic.context
 +      })
 +    } catch (_) {
 +      // Diagnostics must never affect query success or failure.
@@ -279,19 +288,20 @@ index 07f6716..bc08af8 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/cjs/src/index.js b/node_modules/postgres/cjs/src/index.js
-index f09c61c..5850864 100644
+index f09c61c..e944863 100644
 --- a/node_modules/postgres/cjs/src/index.js
 +++ b/node_modules/postgres/cjs/src/index.js
-@@ -490,6 +490,7 @@ function parseOptions(a, b) {
+@@ -490,6 +490,8 @@ function parseOptions(a, b) {
      target_session_attrs: tsa(o, url, env),
      onnotice        : o.onnotice,
      onnotify        : o.onnotify,
++    onquerycontext  : o.onquerycontext,
 +    onresult        : o.onresult,
      onclose         : o.onclose,
      onparameter     : o.onparameter,
      socket          : o.socket,
 diff --git a/node_modules/postgres/src/connection.js b/node_modules/postgres/src/connection.js
-index 1b1cccd..11ef85d 100644
+index 1b1cccd..b31e6ec 100644
 --- a/node_modules/postgres/src/connection.js
 +++ b/node_modules/postgres/src/connection.js
 @@ -86,6 +86,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
@@ -302,7 +312,7 @@ index 1b1cccd..11ef85d 100644
      , closedTime = 0
      , remaining = 0
      , hostIndex = 0
-@@ -240,7 +241,17 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -240,7 +241,20 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
        ? statements[q.signature]
        : { string, types, name: q.prepare ? statementId + statementCount++ : '' }
  
@@ -316,12 +326,15 @@ index 1b1cccd..11ef85d 100644
 +      rowCount: 0,
 +      wireBytes: 0
 +    }
++    if (!('context' in q.resultDiagnostic) && typeof options.onquerycontext === 'function') {
++      try { q.resultDiagnostic.context = options.onquerycontext() } catch (_) { q.resultDiagnostic.context = undefined }
++    }
 +
 +    typeof options.debug === 'function' && options.debug(id, string, parameters, types, q.resultDiagnostic.queryId)
    }
  
    function write(x, fn) {
-@@ -252,6 +263,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -252,6 +266,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
    }
  
    function nextWrite(fn) {
@@ -344,7 +357,7 @@ index 1b1cccd..11ef85d 100644
      const x = socket.write(chunk, fn)
      nextWriteTimer !== null && clearImmediate(nextWriteTimer)
      chunk = nextWriteTimer = null
-@@ -424,7 +451,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -424,7 +454,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      if (stream || query || initial || sent.length)
        error(Errors.connection('CONNECTION_DESTROYED', options))
  
@@ -354,7 +367,7 @@ index 1b1cccd..11ef85d 100644
      if (socket) {
        socket.removeListener('data', data)
        socket.removeListener('connect', connected)
-@@ -437,7 +466,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -437,7 +469,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      incoming = Buffer.alloc(0)
      remaining = 0
      incomings = null
@@ -369,7 +382,7 @@ index 1b1cccd..11ef85d 100644
      socket.removeListener('data', data)
      socket.removeListener('connect', connected)
      idleTimer.cancel()
-@@ -495,6 +531,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -495,6 +534,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      let column
      let value
  
@@ -381,7 +394,7 @@ index 1b1cccd..11ef85d 100644
      const row = query.isRaw ? new Array(query.statement.columns.length) : {}
      for (let i = 0; i < query.statement.columns.length; i++) {
        column = query.statement.columns[i]
-@@ -532,15 +573,40 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -532,15 +576,41 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      }
    }
  
@@ -402,7 +415,8 @@ index 1b1cccd..11ef85d 100644
 +        wireBytes: diagnostic.wireBytes,
 +        elapsedMs: Math.max(0, performance.now() - diagnostic.startedAt),
 +        status: error ? 'error' : 'ok',
-+        errorCode: error && typeof error.code === 'string' ? error.code : null
++        errorCode: error && typeof error.code === 'string' ? error.code : null,
++        context: diagnostic.context
 +      })
 +    } catch (_) {
 +      // Diagnostics must never affect query success or failure.
@@ -425,27 +439,30 @@ index 1b1cccd..11ef85d 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/src/index.js b/node_modules/postgres/src/index.js
-index c7fba3d..79da8a3 100644
+index c7fba3d..2a0b9d1 100644
 --- a/node_modules/postgres/src/index.js
 +++ b/node_modules/postgres/src/index.js
-@@ -490,6 +490,7 @@ function parseOptions(a, b) {
+@@ -490,6 +490,8 @@ function parseOptions(a, b) {
      target_session_attrs: tsa(o, url, env),
      onnotice        : o.onnotice,
      onnotify        : o.onnotify,
++    onquerycontext  : o.onquerycontext,
 +    onresult        : o.onresult,
      onclose         : o.onclose,
      onparameter     : o.onparameter,
      socket          : o.socket,
 diff --git a/node_modules/postgres/types/index.d.ts b/node_modules/postgres/types/index.d.ts
-index 13c3432..25d7336 100644
+index 13c3432..fc7d0de 100644
 --- a/node_modules/postgres/types/index.d.ts
 +++ b/node_modules/postgres/types/index.d.ts
-@@ -74,8 +74,10 @@ interface BaseOptions<T extends Record<string, postgres.PostgresType>> {
+@@ -74,8 +74,12 @@ interface BaseOptions<T extends Record<string, postgres.PostgresType>> {
    onnotice: (notice: postgres.Notice) => void;
    /** (key; value) when a server param change */
    onparameter: (key: string, value: any) => void;
 -  /** Is called with (connection; query; parameters) */
 -  debug: boolean | ((connection: number, query: string, parameters: any[], paramTypes: any[]) => void);
++  /** Papercusp patch: capture local diagnostic context at query construction. */
++  onquerycontext: (() => unknown) | undefined;
 +  /** Is called with (connection; query; parameters; paramTypes; queryId) */
 +  debug: boolean | ((connection: number, query: string, parameters: any[], paramTypes: any[], queryId: number) => void);
 +  /** Papercusp patch: terminal ReadyForQuery diagnostics (fail-soft). */
@@ -453,7 +470,7 @@ index 13c3432..25d7336 100644
    /** Transform hooks */
    transform: {
      /** Transforms outcoming undefined values */
-@@ -198,6 +200,19 @@ type Return<T, K extends readonly any[]> =
+@@ -198,6 +202,20 @@ type Return<T, K extends readonly any[]> =
    postgres.Helper<T, K>
  
  declare namespace postgres {
@@ -468,6 +485,7 @@ index 13c3432..25d7336 100644
 +    elapsedMs: number;
 +    status: 'ok' | 'error';
 +    errorCode: string | null;
++    context?: unknown;
 +  }
 +
    class PostgresError extends Error {
