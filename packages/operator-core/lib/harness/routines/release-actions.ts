@@ -3798,6 +3798,26 @@ export async function trackGateStall(
                 atMs: tickLegs.atMs,
                 ok: tickLegs.ok,
                 failingSignatures: tickLegs.failingSignatures.slice(0, 20),
+                // WI-10002091: persist the PER-LEG records too. Every consumer already expects
+                // them and this is the only writer that can supply them:
+                //   · `repair-tick-legs-snapshot.ts` DECLARES `legs: RepairTickLegSnapshot[]`
+                //     and documents it "Bounded to 32 by the writer" — a bound only this line
+                //     can apply, and which was never applied because the field was never written;
+                //   · `readRepairTickLegOutputs` (P-021) reads `legs[].outputTail` as "the only
+                //     evidence of WHICH files a lint / post-suite leg reported", so omitting the
+                //     field made that reader return {} FOREVER and rendered every repair manifest
+                //     pathless — which is why a full day of lint:tsc reds was undiagnosable from
+                //     any surface (failingSignatures names the LEG, never the FILES).
+                // outputTail is sliced from the FRONT, unlike the sibling pipeline-event mapping
+                // above: per WI-10002075 each tail is digest-first (summarizeLegOutput), so
+                // truncating from the end would discard exactly the file names the digest exists
+                // to preserve.
+                legs: tickLegs.legs.slice(0, 32).map((leg) => ({
+                  id: leg.id.slice(0, 128),
+                  status: leg.status,
+                  durationMs: Math.max(0, Math.floor(leg.durationMs)),
+                  ...(leg.outputTail ? { outputTail: leg.outputTail.slice(0, 1000) } : {}),
+                })),
               }),
               measuredIds,
               JSON.stringify(tickLegs.failingSignatures.slice(0, 20)),
