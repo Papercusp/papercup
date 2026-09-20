@@ -339,6 +339,67 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
     expect(await snapshot()).toEqual(before);
   });
 
+  it('permits a reviewed remap after the old generated projection is superseded and unpinned', async () => {
+    const planSlug = 'superseded-generated-projection-remap';
+    const planContent = contentFor(planSlug);
+    await insertSubject(planSlug, planContent);
+    const first = await db.adminSql.begin((tx) => seedAcceptanceBarsInTransaction({
+      ...seedInput(planSlug, planContent, 'su-seeder'),
+      executor: tx as unknown as SpecClauseSql,
+    }));
+    expect(first.ok).toBe(true);
+
+    const retired = await db.adminSql.begin((tx) => setSpecClause({
+      planSlug,
+      specId: 'AUTO-BAR-R-1-P-001',
+      expectedRevision: 1,
+      planItemId: 'P-001',
+      behavior: 'The first outcome holds.',
+      behaviorClass: 'happy-path',
+      requiredEvidence: ['tree'],
+      requiredTestLayers: [],
+      mutationRequired: false,
+      lifecycleStatus: 'superseded',
+      acceptanceRef: 'superseded by reviewed R-1 remap to P-002',
+      actorId: 'su-reviewer',
+    }, {
+      executor: tx as unknown as SpecClauseSql,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+    }));
+    expect(retired).toMatchObject({ status: 'revised', revision: 2 });
+
+    const changedContent = planContent.replace('| R-1 | P-001 | tree |', '| R-1 | P-002 | tree |');
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET content = ${changedContent}, content_hash = ${hashPlanContent(changedContent)}, version = 2
+       WHERE workspace_id = ${WORKSPACE}
+         AND harness_slug = ${HARNESS}
+         AND plan_slug = ${planSlug}`;
+
+    const reaudit = await db.adminSql.begin((tx) => seedAcceptanceBarsInTransaction({
+      ...seedInput(planSlug, changedContent, 'su-reauditor'),
+      planVersion: 2,
+      executor: tx as unknown as SpecClauseSql,
+    }));
+    expect(reaudit, JSON.stringify(reaudit)).toMatchObject({ ok: true, projectionEdges: 2 });
+    await expect(db.adminSql`
+      SELECT c.spec_id, r.lifecycle_status, r.source_bar_key
+        FROM harness_shared.plan_spec_clauses c
+        JOIN harness_shared.plan_spec_clause_revisions r
+          ON r.workspace_id=c.workspace_id AND r.harness_slug=c.harness_slug
+         AND r.plan_slug=c.plan_slug AND r.spec_id=c.spec_id AND r.revision=c.current_revision
+       WHERE c.workspace_id=${WORKSPACE} AND c.harness_slug=${HARNESS}
+         AND c.plan_slug=${planSlug} AND c.spec_id=ANY(${[
+           'AUTO-BAR-R-1-P-001', 'AUTO-BAR-R-1-P-002',
+         ]}::text[])
+       ORDER BY c.spec_id
+    `).resolves.toEqual([
+      { spec_id: 'AUTO-BAR-R-1-P-001', lifecycle_status: 'superseded', source_bar_key: null },
+      { spec_id: 'AUTO-BAR-R-1-P-002', lifecycle_status: 'draft', source_bar_key: 'R-1' },
+    ]);
+  });
+
   it('still refuses a deterministic slug occupied by a non-rubric plan', async () => {
     const planSlug = 'non-rubric-bar-collision';
     const planContent = contentFor(planSlug);

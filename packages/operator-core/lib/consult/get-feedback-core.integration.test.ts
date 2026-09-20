@@ -519,7 +519,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     await rootSql`INSERT INTO harness_shared.work_items (feature_id, payload) VALUES ('EI-settled', '{"observation":{"gradingAudit":{"state":"passed"}}}'::jsonb)`;
     await rootSql`UPDATE harness_shared.consult_state SET expires_at = ${new Date(NOW.getTime() - 1).toISOString()} WHERE conversation_id = ${result.conversation_id}`;
     const reach = vi.fn(async () => ({ woke: 1 }));
-    await sweepExpiredConsults({ getSql: () => rootSql, now: () => NOW, emitReplyEvent: async () => {}, reach });
+    await sweepExpiredConsults({ getSql: () => rootSql, now: () => NOW, emitReplyEvent: async () => {}, notifyRequester: async () => {}, reach });
     expect((await stateRow(result.conversation_id)).state).toBe('closed_answered');
     expect(reach).not.toHaveBeenCalled();
   });
@@ -582,6 +582,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     expect(fixture.reached.at(-1)).toMatchObject({ responder: 'independent-b', body: expect.stringContaining('frozen-source-bytes') });
     await rootSql`UPDATE harness_shared.consult_state SET expires_at = ${new Date(NOW.getTime() - 1).toISOString()} WHERE conversation_id = ${conversationId}`;
     await sweepExpiredConsults({ getSql: () => rootSql, now: () => NOW, emitReplyEvent: async () => {},
+      notifyRequester: async () => {},
       reach: async (input) => { fixture.reached.push(input); return { woke: 1 }; },
     });
     expect(fixture.reached.at(-1)).toMatchObject({ responder: 'independent-c', body: expect.stringContaining("ref:'EI-source-router'") });
@@ -589,6 +590,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     expect((await stateRow(conversationId)).state).toBe('closed_answered');
     const deliveries = fixture.reached.length;
     await sweepExpiredConsults({ getSql: () => rootSql, now: () => new Date(NOW.getTime() + 36e5), emitReplyEvent: async () => {},
+      notifyRequester: async () => {},
       reach: async (input) => { fixture.reached.push(input); return { woke: 1 }; },
     });
     expect(fixture.reached).toHaveLength(deliveries);
