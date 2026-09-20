@@ -93,12 +93,13 @@ async function insertRoutine(o: {
   nextFireAt?: Date | 'infinity' | null;
   rescheduleIntervalSec?: number | null;
   workspaceId?: string;
+  installSlug?: string;
 }) {
   const nf = o.nextFireAt === 'infinity' ? null : (o.nextFireAt ?? null);
   await rootSql`
     INSERT INTO harness_shared.routines
       (id, install_slug, name, trigger_kind, trigger_config, target_role, active, next_fire_at, workspace_id, reschedule_interval_sec)
-    VALUES (${o.id}, 'web', ${o.name ?? o.id}, 'schedule', ${JSON.stringify(o.cfg)}::text::jsonb, 'system:loop-wake',
+    VALUES (${o.id}, ${o.installSlug ?? 'web'}, ${o.name ?? o.id}, 'schedule', ${JSON.stringify(o.cfg)}::text::jsonb, 'system:loop-wake',
             ${o.active ?? true}, ${nf}, ${o.workspaceId ?? 'ws1'}, ${o.rescheduleIntervalSec ?? null})`;
   // 'infinity' can't bind as a Date param — set it via SQL after insert (mirrors a parked loop).
   if (o.nextFireAt === 'infinity') {
@@ -266,5 +267,66 @@ describe('resolveDeadRoutineOverdueMs — checkpoint-window-aware threshold agai
     lockProbe.mockReturnValue({ held: false, elapsedSec: null });
     const ms = await resolveDeadRoutineOverdueMs(rootSql, null, Date.now());
     expect(ms).toBe(10 * 60_000);
+  });
+});
+
+/**
+ * WI-10002084 — per-install coverage for the RELEASE install.
+ *
+ * `formatDeadRoutinesSummary` says "NOTHING in the shared tree is being committed". That is a
+ * claim about ONE install — the one owning the canonical checkout — but it was licensed by a
+ * ratio over every git-sync row in the workspace, and those rows are mostly library submodules
+ * and toy pots (measured 2026-09-20: 67 git-sync rows across 67 installs, of which exactly one
+ * is the shared tree's). These pin the census leg that makes the per-install question answerable.
+ *
+ * This lives in the integration suite because the whole leg is SQL — a `FILTER` that silently
+ * matched nothing would report `'absent'` for every routine, which is deliberately non-refuting
+ * and would therefore restore the old behaviour without failing a single unit test.
+ */
+describe('readDeadRoutines — release-install coverage (WI-10002084)', () => {
+  const cron = { cron: '*/30 * * * * *' };
+
+  it("reports 'overdue' when the release install's own row is among the overdue", async () => {
+    await insertRoutine({ id: 'gs-home', name: 'git-sync', installSlug: 'home', cfg: cron, nextFireAt: overduePast() });
+    await insertRoutine({ id: 'gs-toy', name: 'git-sync', installSlug: 'hello-world', cfg: cron, nextFireAt: overduePast() });
+    const census = await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1', 'home');
+    expect(census.routineCoverage['git-sync']).toMatchObject({ overdue: 2, active: 2, homeInstall: 'overdue' });
+  });
+
+  // The exact shape the alarm was misreporting: a strict majority of overdue rows that is
+  // entirely sibling installs, while the shared tree's own git-sync is perfectly on schedule.
+  it("reports 'live' when only sibling installs are overdue", async () => {
+    await insertRoutine({ id: 'gs-home', name: 'git-sync', installSlug: 'home', cfg: cron, nextFireAt: future() });
+    await insertRoutine({ id: 'gs-toy1', name: 'git-sync', installSlug: 'hello-world', cfg: cron, nextFireAt: overduePast() });
+    await insertRoutine({ id: 'gs-toy2', name: 'git-sync', installSlug: 'spoon-knife', cfg: cron, nextFireAt: overduePast() });
+    const census = await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1', 'home');
+    expect(census.routineCoverage['git-sync']).toMatchObject({ overdue: 2, active: 3, homeInstall: 'live' });
+  });
+
+  // An UNMEASURED leg must stay distinguishable from a healthy one. If this collapsed to
+  // 'live' it would refute — silently suppressing a real fleet-wide alarm.
+  it("reports 'absent', not 'live', when the release install has no row for that routine", async () => {
+    await insertRoutine({ id: 'gs-toy', name: 'git-sync', installSlug: 'hello-world', cfg: cron, nextFireAt: overduePast() });
+    const census = await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1', 'home');
+    expect(census.routineCoverage['git-sync'].homeInstall).toBe('absent');
+  });
+
+  // Guards a FILTER that ignored the GROUP BY: the home leg must be answered per routine NAME.
+  // Here the home install is overdue on ONE routine and absent from the other, so a leak across
+  // names shows up as both rows reading the same value.
+  it('answers the home-install leg per routine name, not across names', async () => {
+    await insertRoutine({ id: 'gs-home', name: 'git-sync', installSlug: 'home', cfg: cron, nextFireAt: overduePast() });
+    await insertRoutine({ id: 'gc-toy', name: 'green-checkpoint', installSlug: 'hello-world', cfg: cron, nextFireAt: overduePast() });
+    const census = await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1', 'home');
+    expect(census.routineCoverage['git-sync'].homeInstall).toBe('overdue');
+    expect(census.routineCoverage['green-checkpoint'].homeInstall).toBe('absent');
+  });
+
+  // A routine nobody is overdue on never reaches the alarm, so it must not appear at all —
+  // otherwise a healthy home row would start emitting coverage rows the consumer has to filter.
+  it('omits a routine with no overdue rows entirely', async () => {
+    await insertRoutine({ id: 'gs-home', name: 'git-sync', installSlug: 'home', cfg: cron, nextFireAt: future() });
+    const census = await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1', 'home');
+    expect(census.routineCoverage['git-sync']).toBeUndefined();
   });
 });
