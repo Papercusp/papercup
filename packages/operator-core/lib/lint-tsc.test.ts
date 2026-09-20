@@ -44,6 +44,7 @@ import {
   formatStandingRedRow,
   formatStandingRedFooter,
   partitionNewFilesByLiveEdit,
+  partitionEntriesByLiveEdit,
   partitionBrokenFilesByLiveEdit,
   diagnosticLinesForFiles,
   formatRegressedFileDiagnostics,
@@ -1635,6 +1636,84 @@ describe('parseExplicitFiles feeding decidePerFile (EI-18731016038876755)', () =
     });
     expect(r.verdict).toBe('fail-attributed');
     expect(r.attributed!.map((x: { file: string }) => x.file)).toEqual(['a.ts']);
+  });
+});
+
+// EI-23768041578113385 — the type-attribution widening (EI-18756182128903253) is deliberately
+// over-inclusive: a file OUTSIDE your --files set still gates when it references an exported type
+// one of your changed files also exports. That is CORRECT — missing a stranded consumer is what
+// freezes `main`. But on this shared checkout its false positive is expensive: a PEER's uncommitted
+// hunks in that file are reported as YOUR regression with a clean-looking `status=regressed`, and
+// the natural next move is to go edit a live peer's work. These pin the live-edit signal that makes
+// that false positive legible WITHOUT weakening the verdict.
+describe('type-attributed rows carry the live-edit signal (EI-23768041578113385)', () => {
+  const scopedTypeAttributed = (dirtyFiles: Set<string> | null) =>
+    decidePerFile({
+      currentByFile: { 'mine.ts': 0, 'peer.ts': 2 },
+      baselineByFile: { 'mine.ts': 0, 'peer.ts': 0 },
+      brokenFiles: [],
+      changedFiles: new Set(['mine.ts']),
+      typeReferencedFiles: new Set(['peer.ts']),
+      dirtyFiles,
+    });
+
+  it('annotates a type-attributed file that is uncommitted (the peer-hunks case)', () => {
+    const r = scopedTypeAttributed(new Set(['peer.ts']));
+    expect(r.verdict).toBe('fail-attributed');
+    expect(r.typeAttributed!.map((x: { file: string }) => x.file)).toEqual(['peer.ts']);
+    expect(r.typeAttributed![0].dirty).toBe(true);
+    expect(
+      partitionEntriesByLiveEdit(r.typeAttributed!).liveEdits.map((x: { file: string }) => x.file),
+    ).toEqual(['peer.ts']);
+  });
+
+  // The point is a routing HINT, never a fail-open: a dirty type-attributed file STILL gates.
+  it('does NOT weaken the verdict — an uncommitted type-attributed file still fails', () => {
+    expect(scopedTypeAttributed(new Set(['peer.ts'])).verdict).toBe('fail-attributed');
+  });
+
+  // Non-vacuousness: with no dirty set the annotation must be ABSENT, not `false`, so an unreadable
+  // git state can never be read as "clean, therefore definitely yours".
+  it('leaves dirty UNDEFINED when the dirty set is unavailable — never an exoneration', () => {
+    const r = scopedTypeAttributed(null);
+    expect(r.typeAttributed![0].dirty).toBeUndefined();
+    const split = partitionEntriesByLiveEdit(r.typeAttributed!);
+    expect(split.liveEdits).toEqual([]);
+    expect(split.standing.map((x: { file: string }) => x.file)).toEqual(['peer.ts']);
+  });
+
+  // A file the caller NAMED is expected to be dirty (they just edited it). Annotating it would be
+  // noise that trains the reader to ignore the marker on the rows where it carries information.
+  it('does not annotate a file the caller named, even when that file is dirty', () => {
+    const r = decidePerFile({
+      currentByFile: { 'mine.ts': 2 },
+      baselineByFile: { 'mine.ts': 0 },
+      brokenFiles: [],
+      changedFiles: new Set(['mine.ts']),
+      typeReferencedFiles: new Set<string>(),
+      dirtyFiles: new Set(['mine.ts']),
+    });
+    expect(r.verdict).toBe('fail-attributed');
+    expect(r.attributed!.map((x: { file: string }) => x.file)).toEqual(['mine.ts']);
+    expect(r.attributed![0].dirty).toBeUndefined();
+  });
+
+  // The new-file caller delegates to the generic primitive, so the two can never drift on the rule
+  // that matters: `dirty !== true` — INCLUDING undefined — routes to `standing`.
+  it('partitionNewFilesByLiveEdit delegates to partitionEntriesByLiveEdit', () => {
+    const entries = [
+      { file: 'a.ts', baseline: 0, current: 1, delta: 1, dirty: true },
+      { file: 'b.ts', baseline: 0, current: 1, delta: 1, dirty: false },
+      { file: 'c.ts', baseline: 0, current: 1, delta: 1 },
+    ];
+    expect(partitionNewFilesByLiveEdit(entries)).toEqual(partitionEntriesByLiveEdit(entries));
+    expect(partitionEntriesByLiveEdit(entries).liveEdits.map((x: { file: string }) => x.file)).toEqual([
+      'a.ts',
+    ]);
+    expect(partitionEntriesByLiveEdit(entries).standing.map((x: { file: string }) => x.file)).toEqual([
+      'b.ts',
+      'c.ts',
+    ]);
   });
 });
 
