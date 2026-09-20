@@ -65,6 +65,22 @@ export interface SpecAdequacyCompletionAttestation {
  * automated proof) is preserved exactly, and `ok` is unchanged in every path. The two
  * states differ by NAME now, not by outcome.
  */
+/**
+ * WI-10002063: a resolvable pointer from a failed-audit refusal to its findings.
+ *
+ * `issueId` is the GRADED card (what `failedGradingAuditTargetIds` already carries);
+ * `auditIssueId` is the AUDIT card, which is the only id that resolves to why the
+ * audit failed. `auditIssueId` stays optional because `ScorecardGradingAudit` only
+ * populates it "once audited" — a card can be stamped `failed` by the identity-reopen
+ * path without one, and reporting its absence honestly beats inventing a handle.
+ */
+export interface FailedGradingAudit {
+  issueId: string;
+  auditIssueId?: string;
+  auditor?: string;
+  auditedAt?: string;
+}
+
 export type SpecAdequacyCompletionGateResult =
   | { ok: true; applicable: false; checked: []; exempted?: string[]; impactReport?: string }
   | { ok: true; applicable: true; checked: string[]; exempted?: string[]; impactReport?: string }
@@ -78,6 +94,18 @@ export type SpecAdequacyCompletionGateResult =
       impactReport?: string;
       pendingGradingAuditTargetIds?: string[];
       failedGradingAuditTargetIds?: string[];
+      /**
+       * WI-10002063: the resolvable handle for each FAILED grading audit.
+       *
+       * `failedGradingAuditTargetIds` carries the GRADED card's id, which does not
+       * resolve to why the audit failed: `ScorecardGradingAudit` deliberately stores no
+       * reason/findings field, because the findings live in the AUDIT scorecard addressed
+       * by `auditIssueId`. Dropping that handle made the refusal a closed loop — the gate
+       * refused, the refusal would not say why, and the only field that could say why was
+       * discarded before the caller saw it. Added as a PARALLEL field so the existing
+       * `failedGradingAuditTargetIds` contract stays intact for current readers.
+       */
+      failedGradingAudits?: FailedGradingAudit[];
     };
 
 /**
@@ -450,8 +478,11 @@ export async function specTestAdequacyCompletionGate(
     specRevision: input.attestation.specRevision,
     specFingerprint: input.attestation.specFingerprint,
     replaySnapshot: input.attestation.replaySnapshot === true,
+    // Same rail as the evaluator: a replayed snapshot is a caller-supplied tuple,
+    // never server proof. Closing a work-item must not be able to buy a
+    // 'server-measured' freshness verdict by passing replaySnapshot:true.
     ...(input.attestation.replaySnapshot === true && input.attestation.current !== undefined
-      ? { currentProvenance: 'server-measured' as const }
+      ? { currentProvenance: 'replayed-snapshot' as const }
       : {}),
     current: input.attestation.current,
     limit: 1000,
@@ -470,6 +501,7 @@ export async function specTestAdequacyCompletionGate(
   const failures: string[] = [];
   const pendingGradingAuditTargetIds = new Set<string>();
   const failedGradingAuditTargetIds = new Set<string>();
+  const failedGradingAudits: FailedGradingAudit[] = [];
   for (const clause of relevant) {
     const result = evaluateSpecTestAdequacy({
       clause,
@@ -503,6 +535,7 @@ export async function specTestAdequacyCompletionGate(
       limit: 20,
     });
     if (!cards.some((card) => scorecardMatches(card, result))) {
+      const failedAuditsForLabel: FailedGradingAudit[] = [];
       for (const card of cards) {
         const needsIdentityReopen = gradingAuditNeedsIdentityReopen(card);
         if (
@@ -513,10 +546,38 @@ export async function specTestAdequacyCompletionGate(
         ) {
           if (card.gradingAudit?.state === 'pending' || needsIdentityReopen) {
             pendingGradingAuditTargetIds.add(card.issueId);
-          } else failedGradingAuditTargetIds.add(card.issueId);
+          } else {
+            failedGradingAuditTargetIds.add(card.issueId);
+            // WI-10002063 (1/2): carry the handle that actually reaches the findings.
+            const audit = card.gradingAudit;
+            failedAuditsForLabel.push({
+              issueId: card.issueId,
+              ...(audit?.auditIssueId ? { auditIssueId: audit.auditIssueId } : {}),
+              ...(audit?.auditor ? { auditor: audit.auditor } : {}),
+              ...(audit?.auditedAt ? { auditedAt: audit.auditedAt } : {}),
+            });
+          }
         }
       }
-      failures.push(`${label}: no current terminal complete scorecard matches the exact evaluator verdicts`);
+      failedGradingAudits.push(...failedAuditsForLabel);
+      // WI-10002063 (2/2): a FAILED audit is not a scorecard MISMATCH, and saying so
+      // matters more than it sounds. The generic wording below describes a MATCHING
+      // problem, so an agent whose evidence matched fine reasonably concludes their
+      // scorecard/verdict shape is wrong and goes off re-emitting cards — when the real
+      // state is "a non-author auditor failed your grading". The wrong diagnosis is not
+      // merely unhelpful, it is actively expensive. Branch on which one actually happened.
+      failures.push(
+        failedAuditsForLabel.length
+          ? `${label}: grading audit FAILED — the evidence matched, but a non-author auditor failed the grading. ` +
+              `Read the audit scorecard(s) for the findings: ${failedAuditsForLabel
+                .map((entry) =>
+                  entry.auditIssueId
+                    ? entry.auditIssueId
+                    : `(no audit card recorded for graded card ${entry.issueId})`,
+                )
+                .join(', ')}`
+          : `${label}: no current terminal complete scorecard matches the exact evaluator verdicts`,
+      );
       continue;
     }
     checked.push(label);
@@ -531,6 +592,7 @@ export async function specTestAdequacyCompletionGate(
       ...(exempted.length ? { exempted } : {}),
       ...(pendingGradingAuditTargetIds.size ? { pendingGradingAuditTargetIds: [...pendingGradingAuditTargetIds] } : {}),
       ...(failedGradingAuditTargetIds.size ? { failedGradingAuditTargetIds: [...failedGradingAuditTargetIds] } : {}),
+      ...(failedGradingAudits.length ? { failedGradingAudits: [...failedGradingAudits] } : {}),
     });
   }
   return withReport({ ok: true, applicable: true, checked, ...(exempted.length ? { exempted } : {}) });
