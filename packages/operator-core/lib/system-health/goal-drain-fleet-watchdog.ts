@@ -77,7 +77,12 @@ import {
   resolveHolderLiveness,
   type GoalHolderRow as GoalHolderLike,
 } from '../goals/holder';
-import { validateClaimSpec } from '../scheduler/claim-spec';
+import {
+  DEFAULT_CLAIM_SPEC,
+  validateClaimSpec,
+  type ClaimSpec,
+  type FilterNode,
+} from '../scheduler/claim-spec';
 
 export const GOAL_DRAIN_FLEET_SWEEP_INTERVAL_MS = 10 * 60_000;
 
@@ -164,8 +169,25 @@ export type GoalDrainReason =
  * everything, so it guarantees nothing about THIS goal's filed work.
  * `unknown` exists for the same reason as everywhere else in this file: a
  * degraded spec read suppresses rather than false-alarms.
+ *
+ * `goal-cohort-starved` (EI-23748092951882673) is the fourth verdict, and it
+ * exists because D-005's obligation and the scheduler's own starvation guard
+ * were armed AGAINST EACH OTHER. The lane is genuinely not goal-scoped — that
+ * much is a true positive — but the ONLY remedy the obligation implies is a
+ * `goal`-pinned claim spec, and `goal_id` is NULL on ~99.9% of rows, so pinning
+ * it collapses the claimable pool (measured on this very fleet: 4430 -> 13 of
+ * 4444) and `evaluateCollapseGuard` correctly REFUSES the write. The documented
+ * way past that refusal is `confirmCollapse:true` — which would actually starve
+ * the fleet. So the system steered a conscientious agent toward the damaging
+ * action by following instructions, every 10-minute sweep, forever.
+ *
+ * The rule this verdict encodes: THE WATCHDOG MUST NOT DEMAND A WRITE THE
+ * SCHEDULER WOULD REFUSE. Both sides now consult one oracle, so the obligation
+ * fires exactly when its remedy is legal and is silent when it is not. It is
+ * NOT a suppression of D-005: a fleet whose goal HAS a populated cohort still
+ * alarms, because there the pinned write succeeds.
  */
-export type DrainFleetSpecScope = 'goal-scoped' | 'not-goal-scoped' | 'unknown';
+export type DrainFleetSpecScope = 'goal-scoped' | 'not-goal-scoped' | 'goal-cohort-starved' | 'unknown';
 
 /**
  * PURE: does this filter node constrain EVERY admitted row to the goal?
@@ -217,6 +239,27 @@ export function claimSpecIsPlanScoped(spec: unknown, planSlug: string): boolean 
   if (!spec || typeof spec !== 'object') return false;
   const view = (spec as { view?: { filter?: unknown } }).view;
   return claimSpecFilterConstrainsField(view?.filter, 'plan', planSlug);
+}
+
+/**
+ * PURE: the exact claim spec the `drain-fleet-not-goal-scoped` obligation asks
+ * for — the incumbent lane with a positive `goal` pin ANDed on.
+ *
+ * This must build the SAME revision an agent obeying the alarm would write, or
+ * the writability probe in {@link makeResolveFleetSpecScopes} measures
+ * something nobody would ever submit and the two guards drift apart again. A
+ * positive `{field:'goal', op:'='}` leaf is the only shape `claimSpecIsGoalScoped`
+ * accepts (a `not`/`!=` leaf is never goal-scoping over a NULLABLE column), so
+ * it is the only shape worth measuring. ANDing preserves any incumbent
+ * narrowing rather than discarding the lane's existing intent.
+ */
+export function goalPinnedRemedySpec(incumbent: ClaimSpec, goalId: string): ClaimSpec {
+  const goalLeaf: FilterNode = { field: 'goal', op: '=', value: goalId };
+  const existing = incumbent.view?.filter as FilterNode | undefined;
+  return {
+    ...incumbent,
+    view: { ...incumbent.view, filter: existing ? { all: [existing, goalLeaf] } : goalLeaf },
+  };
 }
 
 export interface GoalPlanFleetTargetLike {
@@ -568,6 +611,12 @@ export function classifyGoalDrainFleet(
   // spec must positively constrain admitted rows to THIS goal. Unknown (a
   // degraded spec read) suppresses, same as every other leg.
   const scope = specScopes.get(goal.goalId) ?? 'unknown';
+  // ONLY 'not-goal-scoped' alarms. The other two verdicts SUPPRESS, for different
+  // reasons: 'unknown' per the file-wide conservative rule (a degraded read is not
+  // evidence), and 'goal-cohort-starved' (EI-23748092951882673) because the
+  // obligation's only remedy is a write the scheduler's starvation guard refuses —
+  // alarming there steers the reader toward confirmCollapse:true, which is the
+  // actual harm. See DrainFleetSpecScope.
   if (scope === 'not-goal-scoped') return { ...base, reason: 'drain-fleet-not-goal-scoped' };
   return null;
 }
@@ -965,6 +1014,61 @@ function makeResolveFleetLiveness(
 }
 
 /**
+ * EI-23748092951882673: would the `goal`-pinned remedy actually be WRITABLE?
+ *
+ * This is the whole fix for the two-guards-armed-against-each-other conflict.
+ * The watchdog used to assert "not goal-scoped => misconfigured" unconditionally.
+ * But the remedy it implies is a claim-spec write, and that write goes through
+ * `evaluateCollapseGuard`, which refuses a revision that collapses the claimable
+ * pool. On a workspace where `goal_id` is NULL on ~99.9% of rows the pinned lane
+ * is near-empty BY CONSTRUCTION, so the guard refuses — and the obligation was
+ * unsatisfiable except via `confirmCollapse:true`, the override whose use is the
+ * actual harm.
+ *
+ * So: build the exact remedy, measure it with the SAME primitive `set_claim_spec`
+ * uses, and ask the SAME guard. Refused => `goal-cohort-starved` (not an
+ * obligation, because it is not actionable). Accepted => `not-goal-scoped`, a
+ * real obligation whose remedy will land. The two guards can no longer disagree,
+ * because there is now only one oracle.
+ *
+ * `confirm` is hard-wired false on purpose: the question is "would this be
+ * REFUSED?", never "could it be FORCED?".
+ */
+async function resolveGoalPinWritability(
+  incumbentSpec: unknown,
+  goalId: string,
+  workspaceId: string,
+): Promise<DrainFleetSpecScope> {
+  try {
+    const { previewSpecPoolEffect, evaluateCollapseGuard } = await import('../scheduler/spec-pool-preview');
+    const authored = !!incumbentSpec && typeof incumbentSpec === 'object';
+    const incumbent = (authored ? incumbentSpec : DEFAULT_CLAIM_SPEC) as ClaimSpec;
+    const remedy = goalPinnedRemedySpec(incumbent, goalId);
+    // Mirrors set_claim_spec's `countScope`. A FLEET lane is not harness-scoped,
+    // so the basis is the whole workspace (harness:null) under the neutral floors
+    // previewSpecPoolEffect documents.
+    const countScope = { workspaceId, harness: null };
+    const candidate = await previewSpecPoolEffect(remedy, countScope);
+    const previousMatched = authored ? (await previewSpecPoolEffect(incumbent, countScope)).matched : null;
+    const verdict = evaluateCollapseGuard({
+      matched: candidate.matched,
+      pool: candidate.pool,
+      previousMatched,
+      previousSource: authored ? 'authored' : 'default',
+      confirm: false,
+      filter: remedy.view?.filter as FilterNode | undefined,
+      previousFilter: incumbent.view?.filter as FilterNode | undefined,
+    });
+    return verdict.refuse ? 'goal-cohort-starved' : 'not-goal-scoped';
+  } catch {
+    // The file-wide conservative rule: a degraded probe is UNKNOWN and suppresses.
+    // Raising an obligation we cannot show is actionable is the exact failure this
+    // function exists to remove, so a failed measurement must not fall back to it.
+    return 'unknown';
+  }
+}
+
+/**
  * D-005: resolve each (goal, declared fleet) pair's claim-spec scope. The fleet
  * lane lives on the `fleet:<slug>` sentinel row of cup_claim_specs; NO row means
  * members inherit DEFAULT_CLAIM_SPEC (an empty view), which is truthfully a
@@ -989,7 +1093,13 @@ function makeResolveFleetSpecScopes(sql: Sql): GoalDrainFleetSweepDeps['resolveF
         const row =
           rows.find((r) => r.bee_id === beeKey && r.workspace_id === p.workspaceId) ??
           rows.find((r) => r.bee_id === beeKey);
-        out.set(p.goalId, claimSpecIsGoalScoped(row?.spec ?? null, p.goalId) ? 'goal-scoped' : 'not-goal-scoped');
+        if (claimSpecIsGoalScoped(row?.spec ?? null, p.goalId)) {
+          out.set(p.goalId, 'goal-scoped');
+          continue;
+        }
+        // EI-23748092951882673: "not goal-scoped" is only an OBLIGATION when the
+        // remedy is a legal write. Ask the scheduler's own guard before alarming.
+        out.set(p.goalId, await resolveGoalPinWritability(row?.spec ?? null, p.goalId, p.workspaceId));
       }
     } catch {
       out.clear();

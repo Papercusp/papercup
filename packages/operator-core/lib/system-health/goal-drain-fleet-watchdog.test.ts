@@ -9,8 +9,10 @@ import {
   GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
   GOAL_DRAIN_FLEET_RELAUNCH_RATE_LIMIT,
   claimSpecFilterConstrainsGoal,
+  claimSpecIsGoalScoped,
   decideGoalDrainFleetRelaunch,
   goalDrainRelaunchEligibility,
+  goalPinnedRemedySpec,
   parseGoalDrainRespawnLedger,
   claimSpecIsPlanScoped,
   classifyGoalDrainFleet,
@@ -27,6 +29,8 @@ import {
   type GoalDrainRowLike,
   type GoalPlanFleetCohort,
 } from './goal-drain-fleet-watchdog';
+import { DEFAULT_CLAIM_SPEC, type ClaimSpec, type FilterNode } from '../scheduler/claim-spec';
+import { evaluateCollapseGuard } from '../scheduler/spec-pool-preview';
 
 const NOW = 1_800_000_000_000;
 const PAST_GRACE = NOW - GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS - 60_000;
