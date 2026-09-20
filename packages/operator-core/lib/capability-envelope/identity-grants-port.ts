@@ -36,6 +36,10 @@ import { operatorResolveExtends } from '../blueprint/installed-blueprints';
 import { potSlugsForHarnesses } from '../memory/hive-scope';
 import { identityGrantToolFailure, resolveIdentityGrantEnvelope, type IdentityGrantFailure } from './blueprint-envelopes';
 import { ROLE_ENVELOPES, type RoleEnvelope } from './policy';
+// The door's identity lives in a module with no imports, so the kernel resolver's
+// catch can reach it when THIS module is what failed to load. Importing the same
+// constants here keeps one source of truth rather than a second copy to drift.
+import { RECOVERY_DOOR_TOOL, RECOVERY_DOOR_DISPATCH_WRAPPER, isRecoveryDoorCall } from './recovery-door';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
 
 export interface IdentityGrantPolicy {
@@ -217,7 +221,55 @@ function denial(
  * tools/orient.ts), so it is the one verb that can converge a stranded
  * activation from inside the session that is stranded.
  */
-const IDENTITY_RECOVERY_TOOL = 'coord:orient';
+const IDENTITY_RECOVERY_TOOL = RECOVERY_DOOR_TOOL;
+
+/**
+ * EI-23745120264597384: this gate's BREAK-GLASS contract, declared in code so a
+ * test can enforce it instead of a reviewer having to notice.
+ *
+ * `causes` is the subset of {@link IdentityGrantFailure.cause} that is
+ * SELF-SEALING. Each one means the identity plane cannot establish WHICH
+ * specification is in force — precisely the condition
+ * {@link IDENTITY_RECOVERY_TOOL} exists to clear. Denying the recovery verb
+ * under one of them strands the session in the exact state it has a documented
+ * cure for, and because both documented toolless fallbacks reach this same
+ * server-side preflight, no change of client, port or transport can reopen it.
+ *
+ * Every OTHER cause is either a statement about authority (`outside-ceiling`,
+ * `tool-unavailable`, `provider-*`) or about transient infrastructure
+ * (`policy-unavailable`). Those are correct to enforce against every verb,
+ * this one included: honouring a ceiling that genuinely excludes the recovery
+ * verb is not self-sealing, because running the recovery verb would not clear
+ * it. Keeping the set narrow is what makes this a door and not a hole.
+ *
+ * Enforced at a single chokepoint ({@link denyUnlessRecoveryDoor}) so adding a
+ * cause here protects EVERY denial site at once; the companion test asserts the
+ * implication across all of them rather than a hand-listed few.
+ */
+export const IDENTITY_BREAK_GLASS: {
+  readonly tool: string;
+  readonly causes: readonly IdentityGrantFailure['cause'][];
+  /**
+   * The single-target dispatch wrapper that forwards ONE named tool server-side.
+   *
+   * WI-10002028 shipped the door keyed on the tool name alone, and it could not
+   * open on the path that actually bricks sessions: a TRIMMED su surface does not
+   * carry {@link IDENTITY_RECOVERY_TOOL} in its seed, so the only way to reach the
+   * recovery door is `tools:invoke { name: 'coord:orient' }`. The gate then sees
+   * `tools:invoke`, the name comparison fails, and the door stays shut — measured
+   * live 2026-09-20T10:43Z by su-56d0a9bd, whose own fix could not save them.
+   *
+   * Admitting the wrapper confers NOTHING on its own: `tools:invoke` forwards
+   * through `ctx.dispatchTool`, so the inner tool runs its own full kernel
+   * preflight and is gated exactly as a direct call. The outer denial therefore
+   * protected nothing while making the brick permanent.
+   */
+  readonly dispatchWrapper: string;
+} = {
+  tool: IDENTITY_RECOVERY_TOOL,
+  causes: ['stale-artifact', 'no-launch-record'],
+  dispatchWrapper: RECOVERY_DOOR_DISPATCH_WRAPPER,
+};
 
 /**
  * WI-10002028: of every cause this port can raise, `stale-artifact` is the one
@@ -244,17 +296,56 @@ function staleArtifact(
   toolName: string = request.toolName,
   policyRevision?: string | null,
 ): KernelEnforcementResult {
-  if (request.toolName === IDENTITY_RECOVERY_TOOL || toolName === IDENTITY_RECOVERY_TOOL) {
+  return denyUnlessRecoveryDoor(request, 'stale-artifact', null, toolName, policyRevision);
+}
+
+/**
+ * The one place this gate turns a cause into a denial.
+ *
+ * Routing EVERY denial site through here is the point: the recovery door used
+ * to be opened by an explicit check sitting next to two of the six sites, which
+ * left the others free to emit a self-sealing cause with the door shut. That is
+ * not hypothetical — `denial(failure.cause, …)` on the envelope path forwards a
+ * cause chosen at runtime, and {@link IdentityGrantFailure.cause} includes both
+ * break-glass causes, so a producer returning one there bricked the session
+ * while every hand-written test still passed. Centralising the decision means
+ * the guarantee is a property of the gate rather than of whoever last added a
+ * return statement.
+ *
+ * Authority is untouched: the door confers `applied: false` (no grants), and a
+ * cause outside {@link IDENTITY_BREAK_GLASS.causes} still denies the recovery
+ * verb exactly as before. Non-recovery tools keep their distinct diagnosis, so
+ * operators are not sent chasing a revision mismatch that never existed.
+ */
+function denyUnlessRecoveryDoor(
+  request: KernelEnforcementRequest,
+  cause: IdentityGrantFailure['cause'],
+  classRef: string | null,
+  toolName: string = request.toolName,
+  policyRevision?: string | null,
+): KernelEnforcementResult {
+  // Both the request's own name and the resolved MCP name are checked, and each
+  // through the shared predicate — so the door opens whether the verb is named
+  // directly or carried as the declared target of the single-target dispatch
+  // wrapper. The wrapper route is not an edge case: on a TRIMMED surface it is
+  // the ONLY route an affected session has to the door.
+  const isRecoveryVerb =
+    isRecoveryDoorCall(request.toolName, request.args) ||
+    isRecoveryDoorCall(toolName, request.args);
+  if (isRecoveryVerb && IDENTITY_BREAK_GLASS.causes.includes(cause)) {
+    const diagnosis = cause === 'no-launch-record'
+      ? 'identity launch record is missing'
+      : 'identity artifact is unresolved';
     return {
       decision: 'allow',
       availability: 'available',
       applied: false,
       code: 'identity-recovery',
-      reason: `identity artifact is unresolved; ${IDENTITY_RECOVERY_TOOL} is the recovery door`,
+      reason: `${diagnosis}; ${IDENTITY_BREAK_GLASS.tool} is the recovery door`,
       ...(policyRevision !== undefined && policyRevision !== null ? { policyRevision } : {}),
     };
   }
-  return denial('stale-artifact', null, toolName, policyRevision);
+  return denial(cause, classRef, toolName, policyRevision);
 }
 
 export async function checkIdentityGrantKernel(
@@ -283,7 +374,9 @@ export async function checkIdentityGrantKernel(
           ...(state.policyRevision !== undefined ? { policyRevision: state.policyRevision } : {}),
         };
       }
-      return denial('no-launch-record', null, request.toolName, state.policyRevision);
+      return denyUnlessRecoveryDoor(
+        request, 'no-launch-record', null, request.toolName, state.policyRevision,
+      );
     }
     return applied ? staleArtifact(request) : null;
   }
@@ -347,7 +440,7 @@ export async function checkIdentityGrantKernel(
   const workspaceId = request.ctx.workspaceId ?? request.ctx.principal?.workspaceId;
   if (record.workspaceId !== workspaceId ||
       typeof record.harnessSlug !== 'string' || !record.harnessSlug) {
-    return denial('policy-unavailable', null, request.toolName);
+    return denyUnlessRecoveryDoor(request, 'policy-unavailable', null, request.toolName);
   }
   const classRefs = [...new Set([artifact, current].flatMap((specification) => [
     ...(specification.configuration.grants?.requires ?? []),
@@ -360,7 +453,9 @@ export async function checkIdentityGrantKernel(
       role: request.ctx.role ?? 'su', classRefs,
     });
   } catch {
-    return denial('policy-unavailable', classRefs[0] ?? null, request.toolName);
+    return denyUnlessRecoveryDoor(
+      request, 'policy-unavailable', classRefs[0] ?? null, request.toolName,
+    );
   }
   const toolName = resolveMcpName(request.toolName)?.expose.mcp?.name ?? request.toolName;
   for (const specification of [artifact, current]) {
@@ -369,9 +464,18 @@ export async function checkIdentityGrantKernel(
     });
     if (!envelope.applied) return staleArtifact(request, toolName, policy.policyRevision);
     const failure = envelope.failures[0];
-    if (failure) return denial(failure.cause, failure.classRef, toolName, policy.policyRevision);
+    // The runtime-chosen cause: `IdentityGrantFailure['cause']` spans both
+    // break-glass causes, so this site can emit one. It must consult the
+    // contract rather than deny unconditionally.
+    if (failure) {
+      return denyUnlessRecoveryDoor(
+        request, failure.cause, failure.classRef, toolName, policy.policyRevision,
+      );
+    }
     if (!envelope.allowedTools.includes(toolName)) {
-      return denial('outside-ceiling', classRefs[0] ?? null, toolName, policy.policyRevision);
+      return denyUnlessRecoveryDoor(
+        request, 'outside-ceiling', classRefs[0] ?? null, toolName, policy.policyRevision,
+      );
     }
   }
   return {
