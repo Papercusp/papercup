@@ -46,35 +46,18 @@ export { PLATFORM_POT_SLUG, canonicalPotSlug, isPlatformPotScope } from './platf
 import { PLATFORM_POT_SLUG, canonicalPotSlug } from './platform-pot-slug';
 
 /**
- * Workspace-global scope labels a work item might carry INSTEAD of a real Pot slug
- * — the recurring drift sources migration 649 re-homed. `operator:<ws>` matches via
- * the `operator:` prefix; the bare workspace id (e.g. `papercusp-workspace`) is not a
- * Pot either and is caught by the `=== workspaceId` check in {@link isWorkspaceGlobalLabel}.
+ * The workspace-global label classifier now lives in the PG-free
+ * {@link ../workspace-global-labels} module, for the same reason `platform-pot-slug`
+ * does: a lean consumer (`scout/ungraded-scope`) must express this predicate without
+ * importing `@papercusp/db-org` through this file. Re-exported so every existing
+ * `pot-membership` import keeps working unchanged.
  */
-const WORKSPACE_GLOBAL_LABELS: ReadonlySet<string> = new Set([
-  'operator',
-  '*',
-  '@singleton',
-  'all',
-  'hive-canary',
-]);
-
-/**
- * Is `slug` a workspace-global / non-Pot scope label rather than a concrete Pot?
- * A null/blank slug is the operator (workspace-global) scope. The workspace id
- * itself (`papercusp-workspace`) is a partition, not a Pot.
- */
-export function isWorkspaceGlobalLabel(
-  slug: string | null | undefined,
-  workspaceId?: string | null,
-): boolean {
-  if (slug == null) return true;
-  const s = slug.trim();
-  if (s === '') return true;
-  if (s.startsWith('operator:')) return true;
-  if (workspaceId && s === workspaceId.trim()) return true;
-  return WORKSPACE_GLOBAL_LABELS.has(s);
-}
+export {
+  isWorkspaceGlobalLabel,
+  enumerableWorkspaceGlobalLabels,
+  WORKSPACE_GLOBAL_LABEL_PREFIX,
+} from './workspace-global-labels';
+import { isWorkspaceGlobalLabel } from './workspace-global-labels';
 
 /** Injectable Pot lookup (no PG) so {@link resolveWorkItemPot} unit-tests purely. */
 export interface PotLookup {

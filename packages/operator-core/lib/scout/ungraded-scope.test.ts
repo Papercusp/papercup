@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyUngraded,
   epochMsForOrigin,
+  harnessScopeAbsorbsWorkspaceGlobal,
   summarizeUngraded,
   DEFAULT_UNGRADED_EPOCH_POLICY,
   SCOUT_UNGRADED_EPOCH_MS,
@@ -23,6 +24,12 @@ import {
   type UngradedEpochPolicy,
   type UngradedRowLike,
 } from './ungraded-scope';
+import {
+  enumerableWorkspaceGlobalLabels,
+  isWorkspaceGlobalLabel,
+  WORKSPACE_GLOBAL_LABEL_PREFIX,
+} from '../workspace-global-labels';
+import { PLATFORM_POT_SLUG } from '../platform-pot-slug';
 
 const EPOCH = Date.parse('2026-07-11T00:00:00Z');
 const AFTER = EPOCH + 86_400_000;
@@ -165,6 +172,70 @@ describe('summarizeUngraded', () => {
  * independent files each writing the predicate inline, none of them wrong on its own.
  * Nothing structural stopped a fourth, so this does.
  */
+/**
+ * The FOURTH axis (EI-23811029152367526). The three axes above decide WHICH ROWS
+ * count; this one decides WHOSE they are — and it is the axis `ungraded-scope`
+ * shipped without, so the row-selector could only ever be asked for one concrete
+ * harness. Measured 2026-09-20: 249 actionable `scout` rows sat under the
+ * workspace-brain grain (`@singleton` / the bare workspace id), which names no
+ * registered Blender scope, so no caller could ask for them while grading ran
+ * normally for everyone else.
+ *
+ * Same shape as the bug this file already guards: every surface was individually
+ * correct and the POPULATIONS disagreed.
+ */
+describe('axis HARNESS — the workspace-global grain homes to the platform pot', () => {
+  const WS = 'papercusp-workspace';
+  const SIBLING = 'sidestage';
+
+  it('CALIBRATION: the platform slug and the sibling fixture differ, else every test below is vacuous', () => {
+    expect(PLATFORM_POT_SLUG).not.toBe(SIBLING);
+    expect(harnessScopeAbsorbsWorkspaceGlobal(PLATFORM_POT_SLUG)).toBe(true);
+  });
+
+  it('THE BUG THIS FIXES: the platform harness absorbs workspace-global rows; a sibling harness does not', () => {
+    expect(harnessScopeAbsorbsWorkspaceGlobal(PLATFORM_POT_SLUG)).toBe(true);
+    // `sidestage`/`portal` are REAL harnesses with their own graders. Absorbing here
+    // would hand one pot's grader another pot's workspace-brain backlog — the
+    // cross-tenant read `learning/pot-scope` exists to prevent.
+    expect(harnessScopeAbsorbsWorkspaceGlobal(SIBLING)).toBe(false);
+    expect(harnessScopeAbsorbsWorkspaceGlobal('portal')).toBe(false);
+  });
+
+  it('a legacy platform spelling still resolves — the rows outlive the rename', () => {
+    expect(harnessScopeAbsorbsWorkspaceGlobal('papercup')).toBe(true);
+    expect(harnessScopeAbsorbsWorkspaceGlobal(`  ${PLATFORM_POT_SLUG}  `)).toBe(true);
+  });
+
+  /**
+   * The SQL path cannot call `isWorkspaceGlobalLabel`, so it re-expresses it as
+   * `= ANY(labels) OR LIKE 'operator:%'`. That re-expression is the drift risk: a
+   * label added to the TS Set but missed by the SQL pair silently EXCLUDES rows,
+   * which is the failure shape that never announces itself.
+   */
+  it('DRIFT GUARD: the SQL-expressible pair accepts exactly what the predicate accepts', () => {
+    for (const label of enumerableWorkspaceGlobalLabels(WS)) {
+      expect(isWorkspaceGlobalLabel(label, WS)).toBe(true);
+    }
+    // The one family the list cannot carry — covered by the prefix half, not the list.
+    const prefixed = `${WORKSPACE_GLOBAL_LABEL_PREFIX}${WS}`;
+    expect(isWorkspaceGlobalLabel(prefixed, WS)).toBe(true);
+    expect(enumerableWorkspaceGlobalLabels(WS)).not.toContain(prefixed);
+    expect(prefixed.startsWith(WORKSPACE_GLOBAL_LABEL_PREFIX)).toBe(true);
+    // Both halves of the real partition key are reachable: the pre-cutover sentinel
+    // and the post-cutover bare workspace id (success-metrics.ts flipped the writer).
+    expect(enumerableWorkspaceGlobalLabels(WS)).toEqual(expect.arrayContaining(['@singleton', WS]));
+  });
+
+  it('CALIBRATION: a real harness slug is accepted by NEITHER half, else the drift guard is trivially true', () => {
+    for (const real of [PLATFORM_POT_SLUG, SIBLING, 'portal', 'sb-devboard-hive']) {
+      expect(enumerableWorkspaceGlobalLabels(WS)).not.toContain(real);
+      expect(real.startsWith(WORKSPACE_GLOBAL_LABEL_PREFIX)).toBe(false);
+      expect(isWorkspaceGlobalLabel(real, WS)).toBe(false);
+    }
+  });
+});
+
 describe('P-010 recurrence guard: one definition, not four', () => {
   /**
    * Scans ALL of operator-core/lib, not just scout/. That scope is the whole point:
