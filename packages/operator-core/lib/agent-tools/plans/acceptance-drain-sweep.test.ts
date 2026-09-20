@@ -7,9 +7,41 @@
  * the exclusions whose absence would either file work nobody can complete, or
  * re-file work that is already open.
  */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const M = vi.hoisted(() => ({
+  getFlag: vi.fn(),
+  sql: vi.fn(),
+  list: vi.fn(),
+  evaluate: vi.fn(),
+  ensure: vi.fn(),
+}));
+
+vi.mock('@papercusp/flags/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/flags/server')>();
+  return { ...actual, getFlag: M.getFlag };
+});
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  return { ...actual, getOrgPg: () => ({ sql: M.sql }) };
+});
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
+vi.mock('../../work-scope-policy', () => ({ isHarnessInScope: () => true }));
+vi.mock('./source', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./source')>();
+  return { ...actual, listPlanIndexRowsForWorkspace: M.list };
+});
+vi.mock('../../plan-acceptance-gate', () => ({
+  evaluatePlanAcceptanceGate: M.evaluate,
+}));
+vi.mock('./acceptance-drain-filing', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./acceptance-drain-filing')>();
+  return { ...actual, ensureAcceptanceDrainFiling: M.ensure };
+});
+
 import {
   ACCEPTANCE_DRAIN_MAX_FILINGS_PER_RUN,
+  runAcceptanceDrainSweepOnce,
   selectAcceptanceDrainCandidates,
 } from './acceptance-drain-sweep';
 import {
@@ -41,6 +73,23 @@ function row(over: Partial<Row>): Row {
 }
 
 const WS = 'papercusp-workspace';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  M.getFlag.mockResolvedValue(true);
+  M.sql.mockResolvedValue([]);
+  M.list.mockResolvedValue([]);
+  M.evaluate.mockResolvedValue({
+    satisfied: false,
+    code: 'acceptance_unaudited',
+    message: 'run plans:audit',
+  });
+  M.ensure.mockResolvedValue({
+    outcome: 'created',
+    id: 'WI-ACCEPTANCE',
+    ref: `${WS}/papercusp/ordinary`,
+  });
+});
 
 describe('selectAcceptanceDrainCandidates', () => {
   it('admits an ordinary held plan — the calibration case, so the exclusions below are not vacuous', () => {
@@ -81,6 +130,43 @@ describe('selectAcceptanceDrainCandidates', () => {
   it('caps filings per run, so the first tick cannot file the whole measured backlog at once', () => {
     expect(ACCEPTANCE_DRAIN_MAX_FILINGS_PER_RUN).toBeGreaterThan(0);
     expect(ACCEPTANCE_DRAIN_MAX_FILINGS_PER_RUN).toBeLessThan(187);
+  });
+});
+
+describe('runAcceptanceDrainSweepOnce — P-023 lifecycle characterization', () => {
+  it('reproduces the drained-but-unshipped sink: an open filing suppresses gate re-evaluation', async () => {
+    M.list.mockResolvedValue([row({ planSlug: 'already-filed' })]);
+    M.sql.mockResolvedValue([{ ref: `${WS}/papercusp/already-filed` }]);
+
+    const result = await runAcceptanceDrainSweepOnce({ workspaceId: WS });
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      alreadyFiled: 1,
+      filed: [],
+      shippableNow: 0,
+    });
+    expect(M.evaluate).not.toHaveBeenCalled();
+    expect(M.ensure).not.toHaveBeenCalled();
+  });
+
+  it('provides the control: a held plan without a filing reaches the live gate and filer', async () => {
+    M.list.mockResolvedValue([row({ planSlug: 'ordinary' })]);
+
+    const result = await runAcceptanceDrainSweepOnce({ workspaceId: WS });
+
+    expect(M.evaluate).toHaveBeenCalledWith('ordinary');
+    expect(M.ensure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: WS,
+        harnessSlug: 'papercusp',
+        planSlug: 'ordinary',
+        code: 'acceptance_unaudited',
+      }),
+    );
+    expect(result.filed).toEqual([
+      { planSlug: 'ordinary', harnessSlug: 'papercusp', code: 'acceptance_unaudited', workItemId: 'WI-ACCEPTANCE' },
+    ]);
   });
 });
 
