@@ -453,7 +453,29 @@ async function deriveDispatchAdvisory(
           );
         }),
       }))
-      .filter((assignment) => assignment.recipientsNotHolding.length > 0);
+      // EI-23785816111021036 — COVERAGE, not existence. This filter used to fire on
+      // `recipientsNotHolding.length > 0`, i.e. whenever ANY addressee did not hold the
+      // item. That is the wrong quantifier for what the advisory means, and it made the
+      // alarm fire on the ordinary fan-out shape: one message to [worker, reviewer]
+      // naming an item the worker already holds flagged the reviewer, and a message with
+      // per-recipient asks (2 recipients, 2 items, each held by its own addressee)
+      // flagged BOTH — the union at the `recipientsNotHolding` line below then produced a
+      // note that contradicted the `assignments` block in the very same object.
+      //
+      // The advisory's subject (EI-21824246903447871) is PHANTOM ROUTING: a recipient who
+      // replies "yes" cannot become the worker, so the request dies un-actioned. That
+      // failure requires NOBODY addressed to be able to act. If even one addressee holds
+      // the item, the work has a real owner in the audience and the suggested remedy
+      // (coord:dispatch, to "assign the execution lane") is already satisfied — an
+      // advisory whose fix is a no-op is noise, and noise trains readers to ignore the
+      // alarm that does matter.
+      //
+      // `recipients.length > 0` is load-bearing: a bare `0 === 0` match would fire a
+      // vacuous advisory naming an empty recipient set.
+      .filter(
+        (assignment) =>
+          recipients.length > 0 && assignment.recipientsNotHolding.length === recipients.length,
+      );
     if (mismatches.length === 0) return undefined;
 
     const workItemIds = mismatches.map((entry) => entry.workItemId);
@@ -468,8 +490,9 @@ async function deriveDispatchAdvisory(
       assignments,
       suggestedTool: 'coord:dispatch',
       note:
-        `This directed expects:'action' message mentions ${workItemIds.join(', ')}, but the ` +
-        `recipient(s) ${recipientsNotHolding.join(', ')} do not hold that work. Live assignments: ` +
+        `This directed expects:'action' message mentions ${workItemIds.join(', ')}, but NONE of ` +
+        `the recipient(s) ${recipientsNotHolding.join(', ')} hold that work, so none of them can ` +
+        `act on it by replying. Live assignments: ` +
         `${assignmentText}. coord:send only records/delivers the request; it does not assign the ` +
         'work-item. Use coord:dispatch with workItemIds:[…] to assign the execution lane and wake ' +
         'the target, or keep this send as a plain nudge and verify the claim separately.',
