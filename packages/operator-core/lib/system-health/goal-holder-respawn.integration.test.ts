@@ -237,7 +237,9 @@ async function goalModeRows(goalId: string) {
       mode: string;
       subject: string | null;
       set_by: string;
-      goal_lease_epoch: string | null;
+      // bigint — a NUMBER through this fixture's production-mirroring client (see the
+      // epoch assertion below), not the string a bare postgres() client would return.
+      goal_lease_epoch: number | null;
       goal_handoff_from_owner_id: string | null;
       goal_handoff_expires_at: Date | null;
     }[]
@@ -269,7 +271,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   sessions.clear();
-  await rootSql`TRUNCATE harness_shared.goals, harness_shared.agent_modes, harness_shared.agent_mode_changes`;
+  // CASCADE is required, not cosmetic: on the REAL head schema `goals` is referenced by
+  // foreign keys, so a bare TRUNCATE is refused outright ("cannot truncate a table
+  // referenced in a foreign key constraint"). Safe here because the database is a
+  // throwaway provisioned per test file, and every row these tests read is seeded per-test.
+  await rootSql`TRUNCATE harness_shared.goals, harness_shared.agent_modes, harness_shared.agent_mode_changes CASCADE`;
 });
 
 describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () => {
@@ -555,7 +561,12 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
     expect(rows.map((row) => row.owner_id).sort()).toEqual(
       [INITIAL_HOLDER, 'su-legitimate-takeover'].sort(),
     );
-    expect(rows.find((row) => row.owner_id === 'su-legitimate-takeover')?.goal_lease_epoch).toBe('2');
+    // A NUMBER, not the string '2': the canonical operator client parses bigint as a JS
+    // number and this fixture now mirrors it. The old hand-rolled fixture used a bare
+    // postgres() client with no bigint parser, so this assertion used to require '2' —
+    // i.e. it encoded the FIXTURE's non-production typing as the expected contract, the
+    // exact direction-inverting hazard EI-18698602043482898 describes.
+    expect(rows.find((row) => row.owner_id === 'su-legitimate-takeover')?.goal_lease_epoch).toBe(2);
     expect(rows.some((row) => row.owner_id === 'su-stale-respawn')).toBe(false);
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('already elected to su-legitimate-takeover at epoch 2'),
