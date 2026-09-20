@@ -18,7 +18,8 @@
  * — the requester parked on it (P-003 returns it; get-feedback-core parks
  * hard-blocked callers on exactly it) would otherwise sleep until their
  * await's own timeout. Terminal 'proceed' rows get no emit: the requester is
- * already proceeding and reconciles by reading state='expired'.
+ * already proceeding and reconciles by reading state='expired'. Both contracts
+ * receive a durable requester alert before a stalled lifecycle transition.
  *
  * Concurrency: no FOR UPDATE — advanceCascade's CAS guard (cursor unchanged +
  * row still open) and the guarded terminal flip make a raced row a clean
@@ -105,6 +106,17 @@ export interface ExpirySweepDeps {
     brief: string;
     workspaceId: string;
   }) => Promise<{ spawned: boolean; verified: boolean | null; detail: string }>;
+  /** Durable requester alert for every stalled/expired lifecycle transition.
+   * The caller supplies a deterministic replay key. A rejected alert blocks
+   * the lifecycle write so the next sweep retries the same key. */
+  notifyRequester: (opts: {
+    requesterId: string;
+    conversationId: string;
+    workspaceId: string;
+    msgId: string;
+    summary: string;
+    body: string;
+  }) => Promise<void>;
   /** Optional bounded detector for a responder that did not pick up after
    * routing and left the row-workspace thread empty. Detector failures fail
    * closed for this early leg; due rows retain normal expiry. */
@@ -126,6 +138,10 @@ export interface ExpirySweepResult {
   /** Conversation ids whose hard-blocked park key was emitted (terminal only —
    * a mid-chain advance never wakes the parked requester). */
   woke: string[];
+  /** Durable alert calls acknowledged this tick (replays included). */
+  requesterAlerts: string[];
+  /** Rows deliberately left retryable because the durable alert write failed. */
+  requesterAlertFailures: string[];
   /** True when the tick hit the bound — more due rows likely remain. */
   saturated: boolean;
 }
@@ -175,14 +191,32 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   let advanced = 0;
   let expiredCount = 0;
   const woke: string[] = [];
+  const requesterAlerts: string[] = [];
+  const requesterAlertFailures: string[] = [];
   for (const row of due) {
     const isDue = row.is_due === true;
     const isSilentEarlyRow =
       !isDue && row.state === 'awaiting_responder' && row.responder_id != null && silentResponderIds.has(row.conversation_id);
     if (!isDue && !isSilentEarlyRow) continue;
 
-    // Best-effort per row: one bad row (malformed routing jsonb, a wake seam
-    // throwing) must not strand the rest of the batch.
+    // Requester alert delivery is deliberately attempted BEFORE the CAS
+    // transition: if its durable write fails, the row remains eligible and the next sweep retries
+    // the same deterministic msgId instead of silently losing the alert. Copy
+    // describes an observation + PENDING recovery, never claims a future
+    // cascade transition succeeded or that an expiry is approval.
+    try {
+      await deps.notifyRequester(requesterAlertForRow({
+        row,
+        kind: isDue ? 'expired' : 'pickup_failed',
+        nowIso,
+      }));
+      requesterAlerts.push(row.conversation_id);
+    } catch {
+      requesterAlertFailures.push(row.conversation_id);
+      continue;
+    }
+
+    // One malformed routing value or throwing wake must not strand the batch.
     try {
       const adv = await advanceCascade(
         {
@@ -323,7 +357,47 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     expired: expiredCount,
     advanced,
     woke,
+    requesterAlerts,
+    requesterAlertFailures,
     saturated: due.length >= limit && due[limit - 1]?.is_due === true,
+  };
+}
+
+export function requesterAlertForRow(input: {
+  row: DueConsultRow;
+  kind: 'pickup_failed' | 'expired';
+  nowIso: string;
+}): Parameters<ExpirySweepDeps['notifyRequester']>[0] {
+  const { row, kind } = input;
+  // Neither wall-clock time nor reason belongs in the replay key: a failed
+  // early-pickup notification may retry after the ordinary expiry threshold.
+  // Encoding each component avoids delimiter collisions between workspaces.
+  const msgId = [
+    'consult-expiry-requester-alert',
+    row.workspace_id,
+    row.conversation_id,
+    String(row.cascade_cursor),
+  ].map(encodeURIComponent).join(':');
+  const reason = kind === 'pickup_failed'
+    ? 'reviewer pickup stalled without a consult post'
+    : `${row.latency_contract} reviewer wait window elapsed`;
+  const action =
+    row.latency_contract === 'hard-blocked'
+      ? `If still open, await ${consultParkKey(row.conversation_id)}; if terminal, inspect the feedback and request another review when required.`
+      : 'Continue independent work and reconcile with the consult thread; request another review when required.';
+  return {
+    requesterId: row.requester_id,
+    workspaceId: row.workspace_id,
+    conversationId: row.conversation_id,
+    msgId,
+    summary: `Consult ${row.conversation_id}: ${reason} — recovery pending`,
+    body:
+      `At ${input.nowIso}, consult ${row.conversation_id} was ${row.state} with reviewer ` +
+      `${row.responder_id ?? '(unassigned)'} (cascade position ${row.cascade_cursor + 1}): ${reason}. ` +
+      'Recovery disposition: pending. The existing router will attempt the next eligible reviewer, ' +
+      'or expire the consult if the cascade is exhausted. This alert does not confirm recovery, reviewer death, or approval. ' +
+      `Read conversations:get { conversation_id: ${JSON.stringify(row.conversation_id)} } for current state and feedback. ` +
+      `${action} Record any policy-allowed disposition with consult:close; a review failure is never approval.`,
   };
 }
 

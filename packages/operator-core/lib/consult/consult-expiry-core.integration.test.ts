@@ -14,14 +14,34 @@
  *  - the latched park-key emit fires ONLY for hard-blocked rows, addressed to
  *    the requester, in the row's own workspace.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { getTestPg } from '@papercusp/test-config/pg';
 import { sweepExpiredConsults, type ExpirySweepDeps } from './consult-expiry-core';
-import { consultExpiryFindSilentResponders } from './consult-expiry-adapters';
+import { consultExpiryFindSilentResponders, consultExpiryNotifyRequester } from './consult-expiry-adapters';
+import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
+import type { CoordEnvelope } from '@papercusp/coordination/core';
+import { currentRequestWorkspaceId } from '../workspace-als';
+import { sendMessage } from '../agent-tools/coordination/messages';
+
+// Execute the REAL message writer + REAL PG replay backend, but never resolve
+// synthetic requester ids against the live agent roster or use the live DB.
+const coordFixture = vi.hoisted(() => ({ log: null as PgCoordLog | null }));
+vi.mock('../agent-tools/coordination/recipient-resolve', () => ({
+  resolveBestEffortAgainstRoster: async (to: string[]) => to,
+}));
+vi.mock('../agent-tools/coordination/log', async (original) => ({
+  ...await original<typeof import('../agent-tools/coordination/log')>(),
+  coordLog: {
+    appendLineIfAbsent: (...args: Parameters<PgCoordLog['appendLineIfAbsent']>) =>
+      coordFixture.log!.appendLineIfAbsent(...args),
+    appendLine: (...args: Parameters<PgCoordLog['appendLine']>) =>
+      coordFixture.log!.appendLine(...args),
+  },
+}));
 
 const WS = 'ws-consult-expiry';
 const NOW = new Date('2026-08-16T12:00:00Z');
@@ -73,6 +93,16 @@ beforeAll(async () => {
   // The REAL migrations — consult_state + consult_post_meta cannot drift.
   await rootSql.unsafe(readFileSync(MIGRATION_834, 'utf8'));
   await rootSql.unsafe(readFileSync(MIGRATION_844, 'utf8'));
+  await ensureCoordEventLogTable(rootSql);
+  coordFixture.log = new PgCoordLog({
+    getSql: () => rootSql,
+    ensureSchema: async () => {},
+    getWorkspaceId: () => {
+      const workspace = currentRequestWorkspaceId();
+      if (!workspace) throw new Error('requester alert lost its row workspace');
+      return workspace;
+    },
+  });
 }, 120_000);
 
 afterAll(async () => {
@@ -137,9 +167,11 @@ function menuSnapshot(owners: string[]) {
 
 function makeDeps(opts: { limit?: number; emitError?: boolean; withReach?: boolean } = {}) {
   const emits: Array<Parameters<ExpirySweepDeps['emitReplyEvent']>[0]> = [];
+  const alerts: Array<Parameters<ExpirySweepDeps['notifyRequester']>[0]> = [];
   const reachCalls: Array<Parameters<NonNullable<ExpirySweepDeps['reach']>>[0]> = [];
   const deps: ExpirySweepDeps = {
     getSql: () => rootSql,
+    notifyRequester: async (alert) => { alerts.push(alert); },
     emitReplyEvent: async (e) => {
       if (opts.emitError) throw new Error('emit down');
       emits.push(e);
@@ -155,7 +187,7 @@ function makeDeps(opts: { limit?: number; emitError?: boolean; withReach?: boole
         }
       : {}),
   };
-  return { deps, emits, reachCalls };
+  return { deps, emits, reachCalls, alerts };
 }
 
 async function stateOf(id: string, ws = WS): Promise<{ state: string; closed_at: string | null }> {
@@ -257,6 +289,44 @@ describe('sweepExpiredConsults', () => {
     expect(r.expired).toBe(1);
     expect(r.woke).toEqual([]); // emit failed — honestly not reported as woken
     expect((await stateOf(hardDue)).state).toBe('expired'); // the flip survived
+  });
+
+  it('keeps a lifecycle row retryable when the durable requester alert fails, then replays the same key once the writer recovers', async () => {
+    const id = await seedConsult({ latency: 'proceed' });
+    const { deps, alerts } = makeDeps();
+    let attempts = 0;
+    const seenKeys: string[] = [];
+    deps.notifyRequester = async (alert) => {
+      attempts += 1;
+      seenKeys.push(alert.msgId);
+      if (attempts === 1) throw new Error('coord writer unavailable');
+      alerts.push(alert);
+    };
+
+    const first = await sweepExpiredConsults(deps);
+    expect(first).toMatchObject({
+      expired: 0,
+      advanced: 0,
+      requesterAlerts: [],
+      requesterAlertFailures: [id],
+    });
+    expect(await stateOf(id)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
+
+    const second = await sweepExpiredConsults(deps);
+    expect(second).toMatchObject({
+      expired: 1,
+      requesterAlerts: [id],
+      requesterAlertFailures: [],
+    });
+    expect(await stateOf(id)).toMatchObject({ state: 'expired' });
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({
+      conversationId: id,
+      requesterId: 'req-1',
+      workspaceId: WS,
+    });
+    expect(seenKeys).toHaveLength(2);
+    expect(seenKeys[0]).toBe(seenKeys[1]);
   });
 
   it('sweeps across workspaces, stamping each emit with the ROW workspace', async () => {
@@ -659,5 +729,101 @@ describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill
     expect(row.state).toBe('expired');
     // s-c stayed untried: the stamp, not pool exhaustion, ended the chain.
     expect(routingOf(row).selection?.selected).toHaveLength(2);
+  });
+});
+
+describe('P-005 requester alert — real message writer and PG replay boundary', () => {
+  async function durableAlerts(id: string) {
+    return rootSql<{ workspace_id: string; body: CoordEnvelope }[]>`
+      SELECT workspace_id, body FROM harness_shared.coord_event_log
+      WHERE surface = 'messages' AND body->>'conversation_id' = ${id}
+      ORDER BY id`;
+  }
+
+  // A reusable oracle for the actual delivery property, also run against the
+  // deliberately broken no-replay-key control below (no shared-tree mutation).
+  function assertSingleAlert(rows: Awaited<ReturnType<typeof durableAlerts>>, id: string, ws: string) {
+    expect(rows).toHaveLength(1);
+    expect(rows[0].workspace_id).toBe(ws);
+    expect(rows[0].body.to).toEqual(['req-alert']);
+    expect(rows[0].body.summary).toContain(id);
+    expect(rows[0].body.body).toContain(`conversation_id: "${id}"`);
+    expect(rows[0].body.body).toContain('Recovery disposition: pending');
+    expect(rows[0].body.body).toContain('never approval');
+  }
+
+  async function lostAcknowledgementProbe(latency: 'proceed' | 'hard-blocked', early: boolean, mutate = false) {
+    const ws = `ws-alert-${seq + 1}`;
+    const id = await seedConsult({
+      latency, requesterId: 'req-alert', workspaceId: ws,
+      expiresAt: early ? FUTURE : PAST, updatedAt: PAST,
+      ...(early ? { routing: menuSnapshot(['resp-1', 'resp-2']) } : {}),
+    });
+    const first = makeDeps({ withReach: true });
+    first.deps.findSilentResponders = async () => new Set([id]);
+    first.deps.notifyRequester = consultExpiryNotifyRequester(async (identity, opts) => {
+      await sendMessage(identity, mutate ? { ...opts, msgId: undefined } : opts);
+      throw new Error('transport acknowledgement lost AFTER commit');
+    });
+    const attempted = await sweepExpiredConsults(first.deps);
+    expect(attempted.requesterAlertFailures).toContain(id);
+    expect(await stateOf(id, ws)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
+    const original = (await durableAlerts(id))[0].body;
+
+    // Fresh binding/deps simulate a restarted producer. No in-memory dedupe
+    // state survives; only the durable message id can prevent a second alert.
+    const retry = makeDeps({ withReach: true });
+    retry.deps.findSilentResponders = async () => new Set([id]);
+    retry.deps.now = () => new Date(NOW.getTime() + 1_000);
+    retry.deps.notifyRequester = consultExpiryNotifyRequester((identity, opts) =>
+      sendMessage(identity, mutate ? { ...opts, msgId: undefined } : opts));
+    const recovered = await sweepExpiredConsults(retry.deps);
+    expect(recovered.requesterAlerts).toContain(id);
+    expect(recovered.requesterAlertFailures).toEqual([]);
+    if (early) {
+      expect(await cascadeRow(id, ws)).toMatchObject({ cascade_cursor: 1, responder_id: 'resp-2', closed_at: null });
+      expect(retry.emits).toHaveLength(0); // do not release the hard-blocked park key mid-chain
+    } else {
+      expect(await stateOf(id, ws)).toMatchObject({ state: 'expired' });
+      expect(recovered.woke.includes(id)).toBe(latency === 'hard-blocked');
+    }
+    const rows = await durableAlerts(id);
+    expect(rows[0].body).toEqual(original); // first durable content survives replay
+    // Leave no synthetic live consult for a later test's broad sweep.
+    await rootSql`UPDATE harness_shared.consult_state SET closed_at = ${NOW.toISOString()} WHERE conversation_id = ${id}`;
+    return { rows, id, ws };
+  }
+
+  it.each([
+    ['proceed', false], ['hard-blocked', false],
+    ['proceed', true], ['hard-blocked', true],
+  ] as const)('deduplicates committed alerts after a lost acknowledgement (%s, early=%s)', async (latency, early) => {
+    const { rows, id, ws } = await lostAcknowledgementProbe(latency, early);
+    assertSingleAlert(rows, id, ws);
+  });
+
+  it('mutation control: dropping the replay key is caught by the SAME single-alert oracle', async () => {
+    const { rows, id, ws } = await lostAcknowledgementProbe('proceed', true, true);
+    expect(rows).toHaveLength(2);
+    expect(() => assertSingleAlert(rows, id, ws)).toThrow();
+  });
+
+  it.each(['unknown', 'missing', 'throws'])('never invents an early stall from %s liveness', async (mode) => {
+    const id = await seedConsult({ expiresAt: FUTURE, updatedAt: PAST });
+    const { deps, alerts } = makeDeps();
+    deps.findSilentResponders = consultExpiryFindSilentResponders({
+      getPresence: async () => null,
+      resolveSessionStates: async () => {
+        if (mode === 'throws') throw new Error('oracle unavailable');
+        return mode === 'missing' ? new Map() : new Map([['resp-1', { sessionState: 'unknown' }]]);
+      },
+      getThreadStore: () => { throw new Error('unknown is not evidence of an empty consult'); },
+      now: () => NOW,
+    });
+    const result = await sweepExpiredConsults(deps);
+    expect(alerts).toEqual([]);
+    expect(result).toMatchObject({ expired: 0, advanced: 0, requesterAlerts: [], requesterAlertFailures: [] });
+    expect(await stateOf(id)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
+    await rootSql`UPDATE harness_shared.consult_state SET closed_at = ${NOW.toISOString()} WHERE conversation_id = ${id}`;
   });
 });

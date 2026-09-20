@@ -32,6 +32,7 @@ registerSystemAction('consult-expiry-sweep', async () => {
     {
       consultExpiryEmitReplyEvent,
       consultExpiryFindSilentResponders,
+      consultExpiryNotifyRequester,
       consultExpiryReach,
       consultExpiryRevive,
     },
@@ -45,6 +46,10 @@ registerSystemAction('consult-expiry-sweep', async () => {
   await sweepExpiredConsults({
     getSql: () => getOrgPg().sql,
     emitReplyEvent: consultExpiryEmitReplyEvent(emitAwaitedEvent),
+    notifyRequester: consultExpiryNotifyRequester(async (identity, opts) => {
+      const { sendMessage } = await import('../../agent-tools/coordination/messages');
+      return sendMessage(identity, opts);
+    }),
     reach: consultExpiryReach(async (identity, opts) => {
       const { notifyAgents } = await import('../../agent-tools/coordination/notify-agents');
       return notifyAgents(identity, opts);

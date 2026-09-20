@@ -22,6 +22,7 @@ import {
   CONSULT_EXPIRY_SWEEP_OWNER_ID,
   consultExpiryEmitReplyEvent,
   consultExpiryFindSilentResponders,
+  consultExpiryNotifyRequester,
   consultExpiryReach,
   consultExpiryRevive,
   sweepIdentity,
@@ -29,9 +30,73 @@ import {
   type AwaitedEventEmitter,
   type ResponderReviver,
 } from './consult-expiry-adapters';
+import { requesterAlertForRow, type DueConsultRow } from './consult-expiry-core';
+import { currentRequestWorkspaceId, runWithWorkspace } from '../workspace-als';
 
 /** A row workspace that could not be mistaken for an ambient/default one. */
 const ROW_WS = 'ws-row-7f3a';
+
+const alertRow: DueConsultRow = {
+  workspace_id: ROW_WS, conversation_id: 'conv-alert', requester_id: 'su-requester',
+  responder_id: 'su-reviewer', state: 'awaiting_responder', is_due: true,
+  updated_at: '2026-09-20T00:00:00Z', latency_contract: 'hard-blocked',
+  question: 'review this', routing: {}, cascade_cursor: 0, cascade_digest: [],
+};
+
+describe('P-005 durable requester alert', () => {
+  it('uses a stable lifecycle key across clocks/reasons and distinct keys across consults, workspaces, and positions', () => {
+    const make = (row: DueConsultRow, kind: 'expired' | 'pickup_failed' = 'expired', nowIso = '2026-09-20T01:00:00Z') =>
+      requesterAlertForRow({ row, kind, nowIso });
+    const first = make(alertRow);
+    expect(make(alertRow, 'pickup_failed', '2026-09-20T02:00:00Z').msgId).toBe(first.msgId);
+    expect(new Set([
+      first.msgId,
+      make({ ...alertRow, conversation_id: 'conv-other' }).msgId,
+      make({ ...alertRow, workspace_id: 'ws-other' }).msgId,
+      make({ ...alertRow, cascade_cursor: 1 }).msgId,
+      make({ ...alertRow, workspace_id: 'ws:conv', conversation_id: 'alert' }).msgId,
+      make({ ...alertRow, workspace_id: 'ws', conversation_id: 'conv:alert' }).msgId,
+    ]).size).toBe(6);
+  });
+
+  it.each(['hard-blocked', 'proceed'])('names the exact consult and honest pending recovery for %s', (latency_contract) => {
+    const alert = requesterAlertForRow({
+      row: { ...alertRow, latency_contract }, kind: 'expired', nowIso: '2026-09-20T01:00:00Z',
+    });
+    expect(alert.summary).toContain(alertRow.conversation_id);
+    expect(alert.body).toContain(`conversation_id: "${alertRow.conversation_id}"`);
+    expect(alert.body).toContain('Recovery disposition: pending');
+    expect(alert.body).toContain('never approval');
+    expect(alert.body).toContain(latency_contract === 'hard-blocked'
+      ? `await consult:reply:${alertRow.conversation_id}` : 'Continue independent work');
+    // A due row may still ADVANCE; expiry of one wait is not cascade exhaustion.
+    expect(alert.body).toContain('if the cascade is exhausted');
+  });
+
+  it('threads replay key, recipient, content and ROW workspace through the real ALS scope, then restores ambient scope', async () => {
+    const alert = requesterAlertForRow({ row: alertRow, kind: 'pickup_failed', nowIso: '2026-09-20T01:00:00Z' });
+    const send = vi.fn(async (identity, opts) => {
+      await Promise.resolve();
+      expect(currentRequestWorkspaceId()).toBe(ROW_WS);
+      expect(identity).toMatchObject({ workspaceId: ROW_WS, ownerId: CONSULT_EXPIRY_SWEEP_OWNER_ID });
+      expect(opts).toEqual({
+        msgId: alert.msgId, to: ['su-requester'], summary: alert.summary, body: alert.body, harnessSlug: null,
+        extra: { conversation_id: alert.conversationId, recovery: 'pending' },
+      });
+    });
+    await runWithWorkspace('ambient-other', async () => {
+      await consultExpiryNotifyRequester(send)(alert);
+      expect(currentRequestWorkspaceId()).toBe('ambient-other');
+    });
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it('propagates durable-write failures so the sweep can retry instead of silently consuming the lifecycle row', async () => {
+    const send = vi.fn(async () => { throw new Error('coord write failed'); });
+    const alert = requesterAlertForRow({ row: alertRow, kind: 'expired', nowIso: '2026-09-20T01:00:00Z' });
+    await expect(consultExpiryNotifyRequester(send)(alert)).rejects.toThrow('coord write failed');
+  });
+});
 
 describe('sweepIdentity', () => {
   it('takes the workspace from its argument and uses the real sweep ownerId', () => {
@@ -77,16 +142,20 @@ describe('consultExpiryReach', () => {
     // a `string | undefined` here would not compile.
     let identityWs: string | null | undefined;
     const notify = (async (identity) => {
+      expect(currentRequestWorkspaceId()).toBe(ROW_WS);
       identityWs = identity.workspaceId;
       return { notified: [], subscribed: [], woke: 1 } as never;
     }) as AgentNotifier;
 
-    await consultExpiryReach(notify)({
-      responder: 'su-next',
-      conversationId: 'conv-1',
-      summary: 's',
-      body: 'b',
-      workspaceId: ROW_WS,
+    await runWithWorkspace('ambient-other', async () => {
+      await consultExpiryReach(notify)({
+        responder: 'su-next',
+        conversationId: 'conv-1',
+        summary: 's',
+        body: 'b',
+        workspaceId: ROW_WS,
+      });
+      expect(currentRequestWorkspaceId()).toBe('ambient-other');
     });
 
     expect(identityWs).toBe(ROW_WS);

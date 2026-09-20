@@ -35,12 +35,14 @@
  * notify-agents, and reviver import graphs.
  */
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import type { SendOptions } from '../agent-tools/coordination/messages';
 import type { NotifyAgentsOpts, NotifyAgentsResult } from '../agent-tools/coordination/notify-agents';
 import type { EmitAwaitedEventOpts, EmitResult } from '../events/await/engine';
 import type { ExpirySweepDeps, SilentResponderCandidate } from './consult-expiry-core';
 import { DEAD_RESPONDER_STATES, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
 import type { ConsultReviveContext, ConsultReviveResult } from './revive-responder';
 import type { ThreadableStore } from '@papercusp/coordination/capabilities';
+import { runWithWorkspace } from '../workspace-als';
 
 /** The ownerId this sweep acts under. Exported so a test asserts the real constant
  *  rather than re-typing the string it is checking against. */
@@ -58,6 +60,12 @@ export type AgentNotifier = (
   identity: AgentIdentity,
   opts: NotifyAgentsOpts,
 ) => Promise<NotifyAgentsResult>;
+
+/** What this module needs from the durable coord message writer. */
+export type RequesterAlertSender = (
+  identity: AgentIdentity,
+  opts: SendOptions,
+) => Promise<unknown>;
 
 /** What this module needs from `reviveConsultResponder` — note the TWO-parameter
  *  shape, which is the thing the adapter has to get right. */
@@ -125,6 +133,28 @@ export function consultExpiryEmitReplyEvent(
 }
 
 /**
+ * Durable requester alert. The core derives a replay key from the consult
+ * lifecycle position; passing it through to sendMessage makes a retry return
+ * the stored winner instead of appending a duplicate message.
+ */
+export function consultExpiryNotifyRequester(
+  send: RequesterAlertSender,
+): NonNullable<ExpirySweepDeps['notifyRequester']> {
+  return async (opts) => {
+    await runWithWorkspace(opts.workspaceId, () =>
+      send(sweepIdentity(opts.workspaceId), {
+        msgId: opts.msgId,
+        to: [opts.requesterId],
+        summary: opts.summary,
+        body: opts.body,
+        harnessSlug: null,
+        extra: { conversation_id: opts.conversationId, recovery: 'pending' },
+      }),
+    );
+  };
+}
+
+/**
  * D-005 cascade advance: an unanswered window elapsing wakes the NEXT selectee
  * exactly like a decline does — subscribe + ping + wake, so the selectee joins the
  * consult conversation durably.
@@ -133,13 +163,15 @@ export function consultExpiryReach(
   notify: AgentNotifier,
 ): NonNullable<ExpirySweepDeps['reach']> {
   return async (opts) => {
-    const r = await notify(sweepIdentity(opts.workspaceId), {
-      addressees: [opts.responder],
-      objectRef: { kind: 'conversation', ref: opts.conversationId },
-      summary: opts.summary,
-      body: opts.body,
-      wake: true,
-    });
+    const r = await runWithWorkspace(opts.workspaceId, () =>
+      notify(sweepIdentity(opts.workspaceId), {
+        addressees: [opts.responder],
+        objectRef: { kind: 'conversation', ref: opts.conversationId },
+        summary: opts.summary,
+        body: opts.body,
+        wake: true,
+      }),
+    );
     return { woke: r.woke };
   };
 }
