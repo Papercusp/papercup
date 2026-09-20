@@ -30,6 +30,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { stripCommentsAndStrings } from '../../../../../scripts/lib/strip-comments-and-strings.mjs';
 import type { ListIssuesFilter } from '../../issues-engineer';
 import {
   OBSERVATION_LANE,
@@ -171,5 +172,56 @@ describe('no reader reaches the observation population through the topic join', 
       if (hits.length) offenders.push(`${rel} → ${hits.join('; ')}`);
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * The OTHER half of the same identity: which mechanism may act on the lane.
+ *
+ * D-005 keeps observation rows out of the work/triage pipeline, so
+ * `recurrence-escalation.ts` — whose three rules are all triage-lane mutations
+ * (severity bump, re-triage to `gym`, a capture filed into the improvement queue) —
+ * reads improvements ONLY. The lane's recurrence is handled instead by Scout's
+ * corpus digest, which unions observations into `friction()` and clusters them into
+ * `category:'recurring-friction'` meta-patterns.
+ *
+ * WHY THIS IS GUARDED. The asymmetry is invisible at the call site and reads exactly
+ * like blindness, so it was twice diagnosed as a defect and filed as a bug
+ * (WI-10002069, dropped 2026-09-20 after measuring the Scout path). Wiring
+ * `readObservationItems` into that module would violate D-005 AND duplicate Scout's
+ * clustering — a plausible, well-intentioned change that this guard now catches, and
+ * whose rationale the third case keeps attached to the code that needs it.
+ */
+describe('the observation lane recurs through SCOUT, never through triage (D-005)', () => {
+  const REL_ESCALATION = 'harness/improvements/recurrence-escalation.ts';
+
+  /** Comments AND strings blanked — see the third case for why that is load-bearing. */
+  const liveCode = (rel: string): string =>
+    stripCommentsAndStrings(readFileSync(resolve(guardRoot, rel), 'utf8'), rel);
+
+  const OBS_READER = /\breadObservationItems\b/;
+
+  it('CONTROL: the detector FIRES on the lane reader that legitimately owns recurrence', () => {
+    // A positive control over REAL tree source rather than a fixture string: this is
+    // the file the boundary DELEGATES to, so if it ever stops reading the lane the
+    // rationale below is stale and the case under it would pass vacuously.
+    expect(OBS_READER.test(liveCode('scout/corpus-digest-deps.ts'))).toBe(true);
+  });
+
+  it('recurrence-escalation.ts does not read the observation lane', () => {
+    expect(OBS_READER.test(liveCode(REL_ESCALATION))).toBe(false);
+  });
+
+  it('...and the module SAYS why, naming the mechanism that does own it', () => {
+    // Asserted on RAW text because the claim lives in a comment — which is also why
+    // the case above must strip: that header discusses `readObservationItems` at
+    // length to explain why it must never CALL it, and an unstripped detector would
+    // self-match its own rationale and report a violation that does not exist (the
+    // source-tree guard trap in CLAUDE.md). Deleting the prose to quiet a future
+    // reader's confusion therefore fails here rather than silently re-arming it.
+    const raw = readFileSync(resolve(guardRoot, REL_ESCALATION), 'utf8');
+    expect(raw).toMatch(/D-005/);
+    expect(raw).toMatch(/corpus-digest-deps/);
+    expect(raw).toMatch(/recurring-friction/);
   });
 });

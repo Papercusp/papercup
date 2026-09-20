@@ -25,6 +25,37 @@
  * idempotent: severity bumps stop at major, gym routing skips already-routed,
  * promotion captures dedup via the normal search-first capture core, candidate
  * staging dedups structurally (UNIQUE per signature) + caps the pending queue.
+ *
+ * ## The population this reads is IMPROVEMENTS ONLY — deliberately (D-005)
+ *
+ * `defaultDeps.readItems` is `readImprovementItems`, and there is no
+ * `readObservationItems` here BY DESIGN. Read that as a boundary, not as blindness:
+ * this module's three rules are all WORK/TRIAGE-lane mutations (a severity bump, a
+ * re-triage to `gym`, a capture filed into the improvement queue), and D-005 holds
+ * that observation rows are a TIME SERIES which must never enter the work/triage
+ * pipeline — `status='open'` on that lane does not mean unfinished work. Pushing
+ * observations in here would re-run the 806-row bulk-close mistake D-028 records,
+ * one severity bump at a time.
+ *
+ * **The observation lane already HAS a recurrence mechanism — a different one.**
+ * Scout's corpus digest unions observations into its FRICTION lane
+ * (`scout/corpus-digest-deps.ts` `friction()` returns
+ * `[...improvements, ...observations, ...recurringImprovements, ...recurringObservations]`,
+ * the last two fetched by id off the OCCURRENCE LEDGER precisely so high-flow rows
+ * are not lost to a recency window — EI-20587312505064997). `scout/corpus-digest.ts`
+ * `recurringFriction` then clusters that union into `category:'recurring-friction'`
+ * meta-patterns carrying `wi:<id>` refs, which ground routed ideas
+ * (`scout_routed_ideas.addresses_pattern_refs`) and ship; `observation-consumption.ts`
+ * stamps what was read and `scout/observation-impact-leg.ts` shows the filer the
+ * observation → pattern → idea → shipped arc.
+ *
+ * So "a recurring observation can never escalate, route, or promote" is FALSE — it
+ * does all three, through Scout, not through here. Do not "fix" the asymmetry by
+ * wiring `readObservationItems` into `deps.readItems`: that both violates D-005 and
+ * duplicates clustering Scout already does. This paragraph exists because the
+ * asymmetry was twice read as a defect and filed as a bug (WI-10002069, dropped
+ * 2026-09-20 with this measurement); the boundary is pinned by
+ * `observation-lane-identity.test.ts`.
  */
 
 import { updateIssue, commentIssue } from '../../issues-engineer';
