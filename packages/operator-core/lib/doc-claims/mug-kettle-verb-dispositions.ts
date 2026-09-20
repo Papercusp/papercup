@@ -243,12 +243,13 @@ export const violationsOf = (claims: readonly DispositionClaim[]): DispositionCl
 
 /**
  * The denominator. Measured 2026-09-20 across the four pinned surfaces AFTER the drift
- * was repaired: 7 claims judged. Floored below that with headroom, because prose is
- * edited continuously and a floor pinned to the exact count reds on any honest removal.
+ * was repaired: 9 claims judged (2 + 3 + 3 + 1), 0 violations. Floored below that with
+ * headroom, because prose is edited continuously and a floor pinned to the exact count
+ * reds on any honest removal.
  *
  * It is not decoration. This is the assertion that fails when someone rewords past
  * `DISPOSITION_PHRASES` — the one failure mode leg 2 cannot otherwise report, because
  * an unrecognised claim looks exactly like no claim at all. If it legitimately drops,
  * say why; do not just lower the number.
  */
-export const JUDGED_CLAIM_FLOOR = 4;
+export const JUDGED_CLAIM_FLOOR = 6;
