@@ -93,7 +93,10 @@ export interface LiveSessionRender {
  * Best-effort per pid: a process that exits mid-scan, or whose environ is
  * unreadable, is skipped rather than failing the sweep.
  */
-export function listLiveSessionRenders(procRoot = '/proc'): LiveSessionRender[] {
+export function listLiveSessionRenders(
+  procRoot = '/proc',
+  cap: number = SWEEP_SESSION_CAP,
+): LiveSessionRender[] {
   let pids: string[];
   try {
     pids = readdirSync(procRoot).filter((d) => /^\d+$/.test(d));
@@ -135,7 +138,7 @@ export function listLiveSessionRenders(procRoot = '/proc'): LiveSessionRender[] 
       workspaceId: env.get('PAPERCUSP_WORKSPACE') ?? null,
       harnessSlug: env.get('PAPERCUSP_HARNESS_SLUG') ?? null,
     });
-    if (out.length >= SWEEP_SESSION_CAP) break;
+    if (out.length >= cap) break;
   }
   return out;
 }

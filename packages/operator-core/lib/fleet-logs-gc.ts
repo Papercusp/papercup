@@ -444,3 +444,224 @@ export function runPapercuspWorkdirGc(
 
   return { root, scanned: candidates.length, removed, bytesFreed, dryRun, candidates };
 }
+
+// ── `~/.papercusp/launch-context` — the third, unowned accumulation ──────────
+//
+// The two sweeps above leave a hole exactly the shape of this directory, and
+// each leaves it for a DIFFERENT structural reason:
+//
+//   - `runFleetLogsGc` reaps FILES, but only inside directories literally named
+//     `fleet-logs`;
+//   - `runPapercuspWorkdirGc` sweeps DIRECTORIES under `~/.papercusp`, but only
+//     mktemp-suffixed ones, and `launch-context` is in its protected-basenames
+//     set — correctly, since the directory itself must never be removed.
+//
+// So a stable, named directory whose CONTENTS grow without bound is owned by
+// neither. Measured on the papercusp box 2026-09-20: 769 MB across 14,920
+// renders, the oldest dated 2026-05-31 — 14,626 files (719.8 MiB, 94% of both
+// count and bytes) older than three days, on a root filesystem at 98%.
+//
+// ── WHY MTIME ALONE WOULD DELETE A LIVE SESSION'S PERSONA ───────────────────
+//
+// This is the one guard that makes this sweep different from its siblings, and
+// getting it wrong is silent. A render is written ONCE, at launch, and then
+// never touched again: the child reads it via `--system-prompt-file` at exec.
+// Its mtime therefore records when the session STARTED, not when it was last
+// useful. A session alive for ten days owns a ten-day-old file that every
+// age-based rule on this page would happily reap.
+//
+// Age is consequently necessary but NOT sufficient, so this sweep additionally
+// requires positive evidence of what is in use: `liveRenderPaths`, the set of
+// `--system-prompt-file` argv values read from /proc by
+// `listLiveSessionRenders`. That read is the authoritative answer to "what
+// bytes is this process serving right now" — a respawn rewrites argv without
+// touching any database row.
+//
+// FAIL-CLOSED: when that set is absent the sweep deletes NOTHING and says so
+// (`refused: 'no-live-render-evidence'`). An empty Set is a measurement that
+// found no live sessions; `undefined` is the absence of a measurement, and the
+// two must never collapse into the same behaviour — the sibling above draws the
+// same line with its `scan-capped` refusal. A caller that cannot enumerate
+// /proc gets a no-op, never a guess.
+//
+// The caller must also pass an UNCAPPED enumeration. `listLiveSessionRenders`
+// defaults to `SWEEP_SESSION_CAP` (500), which is a bound on work that is
+// harmless for a notifier and load-bearing here: a truncated exclusion set
+// silently converts live renders into deletion candidates.
+
+/** Renders older than this are reclaimable — if, and only if, no live session
+ *  is serving them. Matches the workdir sweep's 7 days. */
+export const LAUNCH_CONTEXT_GC_DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface LaunchContextGcOptions {
+  /** Defaults to `PAPERCUSP_LAUNCH_CONTEXT_DIR` or `~/.papercusp/launch-context`.
+   *  Injectable so a test points at a tmp dir. */
+  dir?: string;
+  retentionMs?: number;
+  dryRun?: boolean;
+  now?: number;
+  /**
+   * Absolute render paths that live sessions are serving RIGHT NOW, normally
+   * `new Set(listLiveSessionRenders('/proc', Infinity).map((r) => r.promptFile))`.
+   *
+   * Required to delete anything. Omitted ⇒ the sweep refuses (see above). It is
+   * injected rather than read here so this module stays a pure fs unit with no
+   * dependency on the coord/notification stack.
+   */
+  liveRenderPaths?: ReadonlySet<string>;
+}
+
+export interface LaunchContextGcCandidate {
+  path: string;
+  name: string;
+  bytes: number;
+  mtimeMs: number;
+  ageMs: number;
+  removed: boolean;
+  skipped?: 'too-new' | 'live-session' | 'not-a-file' | 'raced' | 'error';
+  error?: string;
+}
+
+export interface LaunchContextGcResult {
+  dir: string;
+  scanned: number;
+  removed: number;
+  bytesFreed: number;
+  dryRun: boolean;
+  /** Set when the sweep declined to consider ANY file. `removed` is 0. */
+  refused?: 'no-live-render-evidence';
+  /** How many candidates were held back because a live session serves them. */
+  liveHeld: number;
+  candidates: LaunchContextGcCandidate[];
+}
+
+/** The canonical launch-context directory, honouring the same env override as
+ *  `launchContextDirPath()` in `stale-prompt-render-sweep.ts`. Duplicated as a
+ *  one-line default rather than imported, so this fs-only module does not pull
+ *  the coord/notification stack in behind it. */
+function defaultLaunchContextDir(): string {
+  return process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR || join(homedir(), '.papercusp', 'launch-context');
+}
+
+/**
+ * Reap aged persona/carry renders from `~/.papercusp/launch-context`.
+ *
+ * Best-effort and never throws, like its siblings: an unreadable directory is
+ * treated as empty, a file that vanishes mid-sweep is recorded rather than
+ * fatal, and every deletion failure lands in the candidate record.
+ *
+ * Only direct FILE children are considered — a subdirectory is never recursed
+ * into and never removed.
+ */
+export function runLaunchContextGc(opts: LaunchContextGcOptions = {}): LaunchContextGcResult {
+  const dir = opts.dir ?? defaultLaunchContextDir();
+  const retentionMs = opts.retentionMs ?? LAUNCH_CONTEXT_GC_DEFAULT_RETENTION_MS;
+  const dryRun = opts.dryRun === true;
+  const now = opts.now ?? Date.now();
+  const cutoff = now - retentionMs;
+  const live = opts.liveRenderPaths;
+
+  // Fail-closed: no evidence of what is in use ⇒ touch nothing. Reported before
+  // the directory is even read, so the refusal can never be mistaken for "the
+  // directory was empty".
+  if (!live) {
+    return {
+      dir,
+      scanned: 0,
+      removed: 0,
+      bytesFreed: 0,
+      dryRun,
+      refused: 'no-live-render-evidence',
+      liveHeld: 0,
+      candidates: [],
+    };
+  }
+
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return { dir, scanned: 0, removed: 0, bytesFreed: 0, dryRun, liveHeld: 0, candidates: [] };
+  }
+
+  const candidates: LaunchContextGcCandidate[] = [];
+  let removed = 0;
+  let bytesFreed = 0;
+  let liveHeld = 0;
+
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (!entry.isFile()) {
+      // Includes symlinks and subdirectories — never followed, never removed.
+      candidates.push({
+        path, name: entry.name, bytes: 0, mtimeMs: 0, ageMs: 0,
+        removed: false, skipped: 'not-a-file',
+      });
+      continue;
+    }
+
+    let mtimeMs: number;
+    let bytes: number;
+    try {
+      const st = statSync(path);
+      mtimeMs = st.mtimeMs;
+      bytes = st.size;
+    } catch (e) {
+      candidates.push({
+        path, name: entry.name, bytes: 0, mtimeMs: 0, ageMs: 0,
+        removed: false, skipped: 'error', error: (e as Error)?.message ?? String(e),
+      });
+      continue;
+    }
+
+    const record: LaunchContextGcCandidate = {
+      path, name: entry.name, bytes, mtimeMs, ageMs: now - mtimeMs, removed: false,
+    };
+    candidates.push(record);
+
+    // Guard 1 — in use. Checked BEFORE age, because this is the guard whose
+    // violation is unrecoverable: a live session's render is its persona.
+    if (live.has(path)) {
+      record.skipped = 'live-session';
+      liveHeld++;
+      continue;
+    }
+
+    // Guard 2 — age.
+    if (mtimeMs >= cutoff) {
+      record.skipped = 'too-new';
+      continue;
+    }
+
+    // Guard 3 — re-stat immediately before unlinking. The readdir above may be
+    // many seconds old, and a launch can have rewritten this path since.
+    try {
+      const confirm = statSync(path);
+      if (confirm.mtimeMs >= cutoff) {
+        record.skipped = 'raced';
+        record.mtimeMs = confirm.mtimeMs;
+        record.ageMs = now - confirm.mtimeMs;
+        continue;
+      }
+    } catch (e) {
+      record.skipped = 'raced';
+      record.error = (e as Error)?.message ?? String(e);
+      continue;
+    }
+
+    if (!dryRun) {
+      try {
+        unlinkSync(path);
+      } catch (e) {
+        record.skipped = 'error';
+        record.error = (e as Error)?.message ?? String(e);
+        continue;
+      }
+    }
+    record.removed = true;
+    removed++;
+    bytesFreed += bytes;
+  }
+
+  return { dir, scanned: candidates.length, removed, bytesFreed, dryRun, liveHeld, candidates };
+}
