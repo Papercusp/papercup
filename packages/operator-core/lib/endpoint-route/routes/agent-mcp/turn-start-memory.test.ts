@@ -32,6 +32,7 @@ const {
   buildPersonalAmbientContextBlockMock,
   getMemoryBlockBoundedResultMock,
   buildTurnStartOrientationBlockMock,
+  readSuLaunchSpecByOwnerMock,
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
   preparePendingControlTransitionMock: vi.fn(),
@@ -45,6 +46,7 @@ const {
   buildPersonalAmbientContextBlockMock: vi.fn(),
   getMemoryBlockBoundedResultMock: vi.fn(),
   buildTurnStartOrientationBlockMock: vi.fn(),
+  readSuLaunchSpecByOwnerMock: vi.fn(),
 }));
 
 // Same relative specifiers the source's dynamic imports use (this test is
@@ -63,6 +65,9 @@ vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
 }));
 vi.mock('../../../stack-binding-channel', () => ({
   renderStackTransitionContextResult: renderStackTransitionContextResultMock,
+}));
+vi.mock('../../../adv-sessions', () => ({
+  readSuLaunchSpecByOwner: readSuLaunchSpecByOwnerMock,
 }));
 vi.mock('../../../memory/detect-harness-slug', () => ({
   detectHarnessSlugSync: detectHarnessSlugSyncMock,
@@ -117,6 +122,7 @@ beforeEach(() => {
     }),
   );
   buildTurnStartOrientationBlockMock.mockReset().mockResolvedValue('');
+  readSuLaunchSpecByOwnerMock.mockReset().mockResolvedValue(null);
 });
 
 /**
@@ -450,5 +456,109 @@ describe('turn-start delivery coverage (WI-37597)', () => {
     await settle();
     expect(out.ok).toBe(true);
     expect(out.text).toContain('MEM-BLOCK');
+  });
+});
+
+/**
+ * WI-10002021 — `requiresFreshContext` means "a successor host must carry this before
+ * it is acknowledged". That is a WAIT, but nothing ended it on its own: `stackBefore`
+ * is rewritten ONLY when the control STATE next changes (control-anchor's ON CONFLICT
+ * clause), never by acknowledgement. So the successor recomputed the identical
+ * stackBefore→state.stack diff, got `relaunch-with-carry` again, skipped prepare+ack
+ * again, and `applied` never converged to the specification it was actually running —
+ * after which identity-grants-port reads current !== applied and denies
+ * 'stale-artifact' on EVERY tool for the life of the session, including the
+ * coord:orient recovery door. A wait with no terminating condition is a veto.
+ *
+ * The wait genuinely ends when THIS session's own launch record carries the desired
+ * specification: the relaunch already happened and we are the successor.
+ */
+describe('relaunch-with-carry convergence (WI-10002021)', () => {
+  const desired = { specificationRevision: 'spec-new', stateRevision: 'state-new' };
+  const transitionWithActivation = {
+    kind: 'stack',
+    generation: 11,
+    state: { activation: { desired } },
+  };
+
+  const armRelaunchWithCarry = () => {
+    buildMemoryContextBlockMock.mockResolvedValue(null);
+    preparePendingControlTransitionMock.mockResolvedValue(transitionWithActivation);
+    renderStackTransitionContextResultMock.mockResolvedValue({
+      text: 'STACK-LAYER',
+      rendered: true,
+      requiresFreshContext: true,
+    });
+  };
+
+  it('withholds acknowledgement while the launch record still predates the desired spec', async () => {
+    armRelaunchWithCarry();
+    readSuLaunchSpecByOwnerMock.mockResolvedValue({ specificationRevision: 'spec-old' });
+
+    const out = await post({ owner: 'sess-1', prompt: 'before the relaunch' });
+
+    expect(out.text).toBe('CTRL:stack\n\nSTACK-LAYER');
+    expect(markControlTransitionPreparedMock).not.toHaveBeenCalled();
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+  });
+
+  it('converges once the launch record carries the desired spec — the successor IS the fresh context', async () => {
+    armRelaunchWithCarry();
+    readSuLaunchSpecByOwnerMock.mockResolvedValue({ specificationRevision: 'spec-new' });
+
+    const out = await post({ owner: 'sess-1', prompt: 'after the relaunch' });
+
+    expect(out.text).toBe('CTRL:stack\n\nSTACK-LAYER');
+    expect(markControlTransitionPreparedMock).toHaveBeenCalledWith('sess-1', 'ws-test', 11, desired);
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledTimes(1);
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith('sess-1', 'ws-test', 11, undefined, desired);
+  });
+
+  it('a never-advancing launch record still never converges — the permanent-skip loop, pinned', async () => {
+    armRelaunchWithCarry();
+    readSuLaunchSpecByOwnerMock.mockResolvedValue({ specificationRevision: 'spec-old' });
+
+    for (const prompt of ['turn one', 'turn two', 'turn three']) {
+      await post({ owner: 'sess-1', prompt });
+    }
+
+    // Identical diff on every turn: this is exactly the loop that used to run for the
+    // life of the session. The test above is what makes it terminate on a real relaunch.
+    expect(renderStackTransitionContextResultMock).toHaveBeenCalledTimes(3);
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps waiting when the launch record is unreadable — never acknowledges on a fault', async () => {
+    armRelaunchWithCarry();
+    readSuLaunchSpecByOwnerMock.mockRejectedValue(new Error('adv_sessions unreachable'));
+
+    const out = await post({ owner: 'sess-1', prompt: 'launch record down' });
+
+    expect(out.ok).toBe(true); // fail-soft: a read fault never costs the turn
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps waiting when the launch record carries no specificationRevision at all', async () => {
+    armRelaunchWithCarry();
+    readSuLaunchSpecByOwnerMock.mockResolvedValue({ harnessSlug: 'papercusp' });
+
+    await post({ owner: 'sess-1', prompt: 'legacy launch record' });
+
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+  });
+
+  it('does not consult the launch record at all for an ordinary in-place transition', async () => {
+    buildMemoryContextBlockMock.mockResolvedValue(null);
+    preparePendingControlTransitionMock.mockResolvedValue(transitionWithActivation);
+    renderStackTransitionContextResultMock.mockResolvedValue({
+      text: 'STACK-LAYER',
+      rendered: true,
+      requiresFreshContext: false,
+    });
+
+    await post({ owner: 'sess-1', prompt: 'in-place mode flip' });
+
+    expect(readSuLaunchSpecByOwnerMock).not.toHaveBeenCalled();
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledTimes(1);
   });
 });
