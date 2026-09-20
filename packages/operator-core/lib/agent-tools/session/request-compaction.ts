@@ -938,11 +938,26 @@ export default defineTool({
     const nativeBgNote = ok ? renderNativeBgTaskWarning(nativeBgTasks) : '';
     // P-010 informative note: when the owner's final message is open, the cut
     // does NOT lose it — it IS the successor's first prompt.
+    //
+    // The wording MUST track the gate's `basis`. A `history-uncertain` gate is an
+    // ABSENCE of evidence — the tail reader's byte window truncated the history — not
+    // evidence that an owner spoke, and an agent-launched session may have no owner
+    // speech at all (WI-10002032). Emitting the known-unanswered wording there asserts
+    // that an owner message EXISTS, which is precisely the "manufacture an owner
+    // directive" failure the carry-provenance rules exist to prevent.
     const openQuestionNote =
       ok && openOwnerMessageQuestion
-        ? " ⚠ open-owner-question: your owner's final message looks UNANSWERED at this DELIBERATE" +
-          ' boundary. It is NOT lost — it becomes your successor’s first prompt — but if you' +
-          ' have room, answer it before you stop.'
+        ? spec.openOwnerQuestion.basis === 'history-uncertain'
+          ? ` ⚠ open-owner-question: owner-request history is ${(
+              spec.openOwnerQuestion.historyStatus ?? 'bounded'
+            ).toUpperCase()}, so whether anything is owed is UNKNOWN at this DELIBERATE boundary.` +
+            ' This is NOT a finding that an owner message exists — an agent-launched session may' +
+            ' have no owner speech at all. Nothing is lost across the cut: any such message becomes' +
+            " your successor's first prompt. Do not answer, and do not infer an owner directive," +
+            ' from an unknown.'
+          : " ⚠ open-owner-question: your owner's final message looks UNANSWERED at this DELIBERATE" +
+            ' boundary. It is NOT lost — it becomes your successor’s first prompt — but if you' +
+            ' have room, answer it before you stop.'
         : ok && openOwnerAskCount > 0
           ? ` ⚠ open-owner-question: ${openOwnerAskCount} owner ask(s) remain OPEN in the conversation ledger at this DELIBERATE boundary. They are carried in the deterministic document; do not self-answer them after the respawn.`
           : '';

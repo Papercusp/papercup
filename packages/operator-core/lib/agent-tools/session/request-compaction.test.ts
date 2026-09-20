@@ -1449,6 +1449,48 @@ describe('session:request-compaction — P-010 open-owner-question first-prompt 
     expect(b.ok).toBe(true);
     expect(b.requested).toBe(true);
   });
+
+  // WI-10002032 follow-up. The gate distinguishes basis 'known-unanswered' (an owner
+  // message really is open) from 'history-uncertain' (the tail reader's byte window
+  // truncated the history, so answered/no-demand is UNKNOWN). The note used to discard
+  // `basis` and emit the known-unanswered wording for BOTH — positively asserting an
+  // owner message existed on agent-launched sessions that have no owner speech at all.
+  // Two arms on purpose: each kills a DIFFERENT assertion, so neither is vacuous.
+  it("basis='history-uncertain' → reports UNKNOWN and must NOT assert an owner message exists", async () => {
+    buildOwnerRespawnLaunchSpec.mockResolvedValue({
+      ...closedSpec,
+      openOwnerQuestion: {
+        crossesOpenOwnerMessage: true,
+        basis: 'history-uncertain',
+        historyStatus: 'truncated',
+      },
+    });
+    const b = body(await call({ focus: 'x' }));
+    // The signal is still raised — this fix corrects the WORDING, it does not suppress.
+    expect(b.openOwnerQuestion).toBe(true);
+    expect(b.note).toContain('open-owner-question');
+    expect(b.note).toContain('TRUNCATED');
+    expect(b.note).toContain('UNKNOWN');
+    expect(b.note).toContain('NOT a finding that an owner message exists');
+    // The load-bearing silence: never claim the owner's message is unanswered when we
+    // only know the history was bounded.
+    expect(b.note).not.toContain('final message looks UNANSWERED');
+    // Warn-only, exactly as the known-unanswered arm.
+    expect(b.ok).toBe(true);
+    expect(b.requested).toBe(true);
+  });
+
+  it("basis='known-unanswered' → keeps the direct wording (the fix must not over-soften)", async () => {
+    buildOwnerRespawnLaunchSpec.mockResolvedValue({
+      ...closedSpec,
+      openOwnerQuestion: { crossesOpenOwnerMessage: true, basis: 'known-unanswered' },
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.openOwnerQuestion).toBe(true);
+    expect(b.note).toContain('final message looks UNANSWERED');
+    expect(b.note).not.toContain('NOT a finding that an owner message exists');
+    expect(b.ok).toBe(true);
+  });
 });
 
 /**
