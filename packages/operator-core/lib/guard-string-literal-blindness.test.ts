@@ -876,6 +876,19 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // (`// sql-snippet-justified: …`), so masking it would blank every justification in the repo
     // and turn the guard into a false-positive machine. `--self-test` case 4 pins that.
     'check-systemd-startlimit-placement.mjs',
+    // ⚠ KNOWN FALSE POSITIVE, not debt — remove this entry when EI-20077125623815751 lands.
+    // This guard never reads JS/TS source: it reads `package.json` and regex-tests
+    // `JSON.stringify(declared)`. Its ONLY quoted-extension evidence is its own IMPORT
+    // SPECIFIER (`from './lib/tracked-files.mjs'`), which SCANS_CODE_FILES cannot tell apart
+    // from a scan target — the both-directions blindness EI-20077125623815751 tracks.
+    // ⛔ DO NOT "fix" that by blanking module specifiers before SCANS_CODE_FILES. Measured
+    // 2026-09-20: it drops the population 93 -> 75, silently de-guarding 18 files whose only
+    // quoted extension is likewise an import — among them check-no-nul-in-source.mjs,
+    // check-shell-syntax.mjs and check-constant-conditional.mjs, which genuinely DO scan
+    // source. That trades one false positive for 18 false NEGATIVES, the direction this
+    // suite must never err in. The real fix needs evidence of the file list actually being
+    // iterated, not a quoted-extension proxy.
+    'check-tracked-src-entry-dist.mjs',
     'check-vacuous-negative-assertions.mjs',
     // check-workspace-default-sql.mjs was REMOVED here on 2026-08-10 (WI-37717 /
     // EI-20073035509369492). Same PARTIAL-mask shape as its siblings above: it now imports
