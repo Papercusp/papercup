@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 896,
+  "count": 897,
   "tools": [
     {
       "name": "ablation:report",
@@ -9483,6 +9483,24 @@
       "guidance": {
         "when": "Diagnostic feed of recent workspace activity — for dashboards and debugging. Lower-detail than `audit:list`.",
         "notWhen": "For agent action audit, use `audit:list`. dev:activity is for the /dev panel, not for analysis."
+      }
+    },
+    {
+      "name": "dev:advisory_bet_signal",
+      "http": {
+        "path": "/api/agent-tools/dev/advisory_bet_signal",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Settle the dev:pg_query partition-advisory bet: labelled advisory fire counts and population-claim correction rates over two comparable windows, counted independently, with each of the plan’s falsifiers evaluated.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Decide whether the partition advisory changed behaviour, or establish the baseline before it ships.",
+        "notWhen": "For coord lifecycle bucket percentages use dev:coord_categorize; this measures one specific bet."
       }
     },
     {
