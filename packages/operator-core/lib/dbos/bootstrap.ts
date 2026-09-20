@@ -658,6 +658,15 @@ async function startDbosOnce(): Promise<void> {
     // FLAGS.RETRIEVAL_DEGRADATION_WATCHDOG (default ON), checked per tick.
     const { startRetrievalDegradationWatchdog } = await import('../system-health/retrieval-degradation-watchdog');
     startRetrievalDegradationWatchdog();
+    // WI-10002031: alarm when ~/.papercusp/hooks/cc (the copy that actually
+    // executes on every agent turn) diverges from the canonical hooks under the
+    // integration root. The class has recurred twice and was caught both times
+    // only by an agent hand-diffing the two files, because a stale hook is a
+    // valid script that merely lacks the fix and so fails silently. Hourly; it
+    // escalates on a FAILED MEASUREMENT as well as on drift, since the detector
+    // is fail-closed and a refusal would otherwise render as clean.
+    const { startInstalledHookDriftWatchdog } = await import('../system-health/installed-hook-drift-watchdog');
+    startInstalledHookDriftWatchdog();
     // EI-21491088289861649: alarm when a search caller's query-embed p99
     // breaches THAT caller's own budget. The sibling above sees only leg
     // OUTCOMES, so a slow-but-succeeding embed (measured: 1.92s cold vs ~1ms

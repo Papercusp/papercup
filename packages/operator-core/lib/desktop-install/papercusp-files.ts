@@ -1233,7 +1233,7 @@ function desktopInstallUnit(): string {
  * `extensionCandidates` (the omp coord-hook resolver); esbuild can't trace these
  * fs-read scripts, so build-desktop-sidecar.sh copies the dir verbatim.
  */
-function ccHookDirCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
+export function ccHookDirCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
   return hookDirCandidates(operatorAppRoot, explicitRoot, 'cc');
 }
 

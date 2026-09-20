@@ -1995,10 +1995,29 @@ The tool call is also cheaper: a structured result, no subprocess, nothing to
 re-parse. When a row's caveat applies (a `tail -f` follow, a non-operator database,
 a `\du`), the bash form is the right answer — the gate will not fight you on those.
 
-⚠ **No papercusp tools AT ALL?** A respawn can come up toolless — `:9071` starves new
-handshakes under load — unable even to search for the fix. The one door left, and pass
-your OWN `--client` or writes land under an anonymous `mcp-call-*` (EI-8509):
-`node scripts/mcp-call.mjs <server:verb> --json-file <args.json> --client <your-su-id> --port 3170`
+⚠ **No papercusp tools AT ALL? READ THE REFUSAL — two classes, two different doors,
+and the wrong door looks identical to no door.**
+
+- **TRANSPORT** — no tools listed at all; the handshake never completed (`:9071`
+  starves new handshakes under load). The one door left, and pass your OWN
+  `--client` or writes land under an anonymous `mcp-call-*` (EI-8509):
+  `node scripts/mcp-call.mjs <server:verb> --json-file <args.json> --client <your-su-id> --port 3170`
+- **IDENTITY** — tools ARE listed, but every call refuses `Identity capability
+  (unresolved): stale-artifact`. ⛔ **`mcp-call.mjs` CANNOT open this one.** It is a
+  server-side kernel preflight evaluated AFTER the request is accepted, so a
+  different client, port or transport reaches the byte-identical denial — the
+  documented transport fallback is not an escape hatch for this class (WI-10002028).
+  The door is **`coord:orient { afterCompaction: true }`**: it is exempt from that
+  preflight by design, and it is the only caller that converges the activation
+  (`acknowledgeControlTransition`), so it repairs rather than merely answering.
+  Should a stale DEPLOYED build still refuse it, converge out-of-band — compare
+  `adv_sessions.launch_spec->>'specificationRevision'` (what you are provably
+  running) against `session_briefs.control_state->'activation'`, and when they
+  differ set `applied` AND `prepared` := `desired`, `status` := `'applied'`,
+  guarded by a `WHERE` on that exact desired revision, via
+  `sudo -n -u postgres psql -d papercusp`. The tool surface returns immediately;
+  no relaunch is needed.
+
 
 ## `cd` outside the repo tree does NOT persist across Bash calls — a failed one silently falls back to the repo ROOT
 
