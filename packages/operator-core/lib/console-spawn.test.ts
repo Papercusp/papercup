@@ -547,6 +547,9 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
       },
     });
     spawnMock.mockImplementation(() => fakeChild(7778));
+    // The skip must be OBSERVABLE, never silent — assert the warning rather than
+    // merely tolerating it (this suite is fail-on-console).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     try {
       const r = await spawnHeadless({
@@ -560,10 +563,15 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
 
       // The leak is refused...
       expect(existsSync(join(cwd, '.mcp.json'))).toBe(false);
+      // ...loudly...
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('refusing to write a signed single-agent .mcp.json'),
+      );
       // ...and skipping is non-fatal: the role reaches its door via an explicit
       // --mcp-config <sessionMcpDir>/.mcp.json, so the cwd copy was redundant.
       expect(r.status).toBe('ok');
     } finally {
+      warn.mockRestore();
       rmSync(cwd, { recursive: true, force: true });
     }
   }, 10_000);
