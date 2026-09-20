@@ -8,14 +8,19 @@ const db = vi.hoisted(() => {
   const sql = vi.fn(async (..._args: unknown[]) => rows.shift() ?? []);
   return { rows, sql, failClient: false };
 });
-const grants = vi.hoisted(() => ({ read: vi.fn() }));
+const grants = vi.hoisted(() => ({ read: vi.fn(), kernelThrows: false }));
 // Keep artifact validation and policy evaluation real; inject only policy I/O.
 vi.mock('./capability-envelope/identity-grants-port', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./capability-envelope/identity-grants-port')>();
   return {
     ...actual,
-    checkIdentityGrantKernel: (request: KernelEnforcementRequest, state: never, record: unknown) =>
-      actual.checkIdentityGrantKernel(request, state, record, grants.read),
+    checkIdentityGrantKernel: (request: KernelEnforcementRequest, state: never, record: unknown) => {
+      // Stands in for the whole class the resolver's catch exists for: the gate
+      // is reached by DYNAMIC import, so a module that fails to load and one
+      // that throws are the same event from the caller's side. Defaults off.
+      if (grants.kernelThrows) throw new Error('identity policy module unavailable');
+      return actual.checkIdentityGrantKernel(request, state, record, grants.read);
+    },
   };
 });
 
@@ -334,6 +339,50 @@ describe('P-005 grants reach actual execution boundaries', () => {
       expect(handler).not.toHaveBeenCalled();
     },
   );
+
+  // EI-23768233018723089. This resolver reaches the identity gate through a
+  // DYNAMIC import inside a try/catch, so an identity-plane fault takes out the
+  // recovery door along with everything else: the door's own allow lives INSIDE
+  // the module that just failed. The catch then denied every tool, and the
+  // session had no way left to ask for help — recovery meant an out-of-band sudo
+  // psql write, which is an accident of deployment, not a designed break-glass.
+  describe('when the identity gate itself fails to evaluate', () => {
+    async function resolveWith(over: Partial<KernelEnforcementRequest>) {
+      const f = grantedRow();
+      grants.read.mockResolvedValue(f.policy);
+      db.rows.push([f.row]);
+      grants.kernelThrows = true;
+      try {
+        return await controlAnchorKernelResolver(request(over));
+      } finally {
+        grants.kernelThrows = false;
+      }
+    }
+
+    it('keeps the recovery door open, named directly or carried by the dispatch wrapper', async () => {
+      expect(await resolveWith({ toolName: 'coord:orient' }))
+        .toMatchObject({ decision: 'allow', code: 'identity-recovery', applied: false });
+      // The route that actually matters: a TRIMMED surface carries no
+      // coord:orient in its seed, so this wrapper form is the only way an
+      // affected session can reach the door at all.
+      expect(await resolveWith({ toolName: 'tools:invoke', args: { name: 'coord:orient', args: {} } }))
+        .toMatchObject({ decision: 'allow', code: 'identity-recovery', applied: false });
+    });
+
+    // The control that keeps this a DOOR. Without it, "the gate threw" would
+    // widen into a blanket allow — the opposite failure, and the worse one.
+    it('still fails closed for every other tool, including through the wrapper', async () => {
+      const refused: Partial<KernelEnforcementRequest>[] = [
+        { toolName: 'plans:set-status' },
+        { toolName: 'tools:invoke', args: { name: 'work_items:complete', args: {} } },
+        { toolName: 'tools:invoke', args: {} },
+        { toolName: 'tools:invoke', args: { name: 42 } },
+      ];
+      for (const over of refused) {
+        expect(await resolveWith(over), JSON.stringify(over)).toMatchObject({ decision: 'deny' });
+      }
+    });
+  });
 
   it('allows the exact provider, then refuses a reduction after preflight before invoking', async () => {
     const f = grantedRow();

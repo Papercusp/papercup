@@ -276,6 +276,67 @@ describe('P-005 current identity grants at the common kernel seat', () => {
     }
   });
 
+  // The door above is keyed on the tool NAME, and on the path that actually
+  // bricks sessions the name never matches. A TRIMMED su surface does not carry
+  // coord:orient in its seed, so the only route to the door is
+  // `tools:invoke { name: 'coord:orient' }` — the gate saw `tools:invoke`, the
+  // comparison failed, and the door stayed shut. Measured live 2026-09-20T10:43Z
+  // by su-56d0a9bd, who had shipped the previous fix and was still bricked by
+  // this on the first call of their next life ("that fix could not have saved me").
+  it('opens the recovery door for the dispatch wrapper carrying coord:orient', async () => {
+    const f = fixture();
+    const stranded = fixture({ requires: [] });
+    const shapes: Array<[string, unknown, unknown]> = [
+      ['unresolvable applied receipt', { activation: { applied: stranded.applied } }, f.record],
+      ['tampered artifact', f.state, { ...f.record, specificationArtifact: { ...f.artifact, configuration: {} } }],
+      ['absent record', f.state, null],
+    ];
+
+    for (const [label, state, record] of shapes) {
+      const read = vi.fn(async () => f.policy);
+      const wrapped = {
+        ...f.request,
+        toolName: IDENTITY_BREAK_GLASS.dispatchWrapper,
+        args: { name: 'coord:orient', args: {} },
+      };
+      expect(await checkIdentityGrantKernel(wrapped, state as never, record, read), label)
+        .toMatchObject({ decision: 'allow', code: 'identity-recovery', applied: false });
+
+      // Calibration, and the control that keeps this a DOOR rather than a hole:
+      // admitting the WRAPPER itself would make the entire catalogue reachable
+      // through it. The declared target must decide, not the wrapper's presence.
+      const ordinary = {
+        ...f.request,
+        toolName: IDENTITY_BREAK_GLASS.dispatchWrapper,
+        args: { name: 'work_items:complete', args: {} },
+      };
+      expect(await checkIdentityGrantKernel(ordinary, state as never, record, read), label)
+        .toMatchObject({ decision: 'deny' });
+    }
+  });
+
+  // A wrapper call whose target is absent or not a string must not fall through
+  // to the door: `{}` and a non-string name are the shapes a malformed or
+  // probing call produces, and neither names the recovery verb.
+  it('denies the dispatch wrapper when it declares no usable target', async () => {
+    const f = fixture();
+    for (const args of [{}, { name: 42 }, { name: null }, undefined]) {
+      const read = vi.fn(async () => f.policy);
+      const wrapped = { ...f.request, toolName: IDENTITY_BREAK_GLASS.dispatchWrapper, args };
+      expect(await checkIdentityGrantKernel(wrapped, f.state as never, null, read), JSON.stringify(args))
+        .toMatchObject({ decision: 'deny' });
+    }
+  });
+
+  // Derived-truth pin: the wrapper name is a second copy of a name invoke.ts
+  // owns. A rename there would silently re-seal this door with every test green,
+  // which is exactly how the original defect survived its own fix.
+  it('pins the break-glass wrapper to the tool that actually registers it', async () => {
+    const { readFileSync } = await import('node:fs');
+    const source = readFileSync(new URL('../agent-tools/tools/invoke.ts', import.meta.url), 'utf8');
+    expect(source).toContain(`name: '${IDENTITY_BREAK_GLASS.dispatchWrapper}'`);
+  });
+
   // EI-23745120264597384 — the RECOVERY-REACHABILITY invariant, enforced
   // structurally instead of by enumerating shapes.
   //

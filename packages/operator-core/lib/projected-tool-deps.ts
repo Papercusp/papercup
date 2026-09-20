@@ -47,6 +47,11 @@ import { maybeBeatPresenceOnDispatch } from './agent-tools/coordination/dispatch
 import { beginInFlightCall, endInFlightCall } from './in-flight-calls';
 import { evaluateCapabilityEnvelope, ROLE_ENVELOPES } from './capability-envelope/policy';
 import { checkSessionConfinement } from './capability-envelope/session-confinement-port';
+// STATIC on purpose: the identity gate below is reached by DYNAMIC import inside
+// a try/catch, and this predicate is what keeps the recovery door reachable when
+// that import is what failed. A dynamic import here would reintroduce the exact
+// circularity it exists to break. The module has no imports of its own.
+import { isRecoveryDoorCall } from './capability-envelope/recovery-door';
 import { checkAuditModeMutationGuard } from './capability-envelope/audit-mode-guard';
 // Imported for its INSTALL side effect (D-017 §5): loading the store assigns the session
 // confinement resolver. This gate fails SILENTLY when unresolved — no resolver means every
@@ -434,7 +439,36 @@ export const controlAnchorKernelResolver: KernelEnforcementPort = async (request
       if (grants) return grants;
     } catch {
       // The generic optional port catches throws as unavailable/allow. This
-      // resolver owns real authority, so it must publish an explicit denial.
+      // resolver owns real authority, so it must publish an explicit denial —
+      // with ONE exception, which is the difference between a degraded session
+      // and a permanently mute one.
+      //
+      // The gate above is reached through a DYNAMIC import, so an identity-plane
+      // fault takes out the recovery door along with everything else: the door's
+      // own allow lives INSIDE the module that just failed to load, and the
+      // blanket denial below then seals the session with no way to ask for help.
+      // That is the self-sealing class (EI-23768233018723089) — recovery has so
+      // far required an out-of-band sudo psql write, which is an accident of
+      // this deployment rather than a designed break-glass.
+      //
+      // Admitting the door here confers NOTHING. `applied: false` carries no
+      // grants; anything the wrapper forwards is preflighted again by this same
+      // seat under its own name; and the structural verdict above has already
+      // passed. Nor does refusing protect anything — a caller able to induce
+      // this throw could instead present no launch record at all and take the
+      // weaker `no-launch-record` door, so gating on "the port threw" bricks
+      // honest sessions while stopping nobody. The predicate is imported
+      // STATICALLY from a module with no imports of its own, so it cannot become
+      // unavailable for the same reason the gate did.
+      if (isRecoveryDoorCall(request.toolName, request.args)) {
+        return {
+          decision: 'allow',
+          availability: 'available',
+          applied: false,
+          code: 'identity-recovery',
+          reason: 'identity policy evaluation unavailable; the recovery door stays open',
+        };
+      }
       return operatorKernelDenial('policy-unavailable', 'identity policy evaluation unavailable; no effect authorized');
     }
   }
