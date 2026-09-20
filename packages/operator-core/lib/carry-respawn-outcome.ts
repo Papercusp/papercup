@@ -40,7 +40,11 @@ import { readOwnerHostEvents, type ColdBootDrillHostEvent } from './cold-boot-dr
  *  successful respawn emits them. Anything else in the log (wake deferrals,
  *  stale-fire drops, shutdown rows) is NOT a verdict about a respawn. */
 const RESPAWN_TERMINAL_OK = new Set(['respawn-carry-delivered']);
-const RESPAWN_TERMINAL_FAIL = new Set(['respawn-carry-dropped']);
+// `respawn-failed` is emitted when the host cannot build/spawn the successor
+// (for example a missing per-session Codex AGENTS.md). It is terminal for this
+// carry attempt just like `respawn-carry-dropped`; omitting it makes the reader
+// report an already-failed request as `pending` forever.
+const RESPAWN_TERMINAL_FAIL = new Set(['respawn-carry-dropped', 'respawn-failed']);
 /** Non-terminal: an attempt is still re-polling for an idle window. */
 const RESPAWN_IN_FLIGHT = new Set(['respawn-rearm-queued', 'respawn-rearm-superseded']);
 

@@ -9027,6 +9027,25 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
     expect(agents).not.toContain("first deterministic carry");
   });
 
+  it("recreates a missing Codex AGENTS.md instead of retrying the carry forever", () => {
+    const codexHome = join(home, "codex-home");
+    mkdirSync(codexHome, { recursive: true });
+
+    const out = mintCarryRespawnArgs(["--dangerously-bypass-hook-trust"], {
+      systemPromptAddendum: "recovered carry",
+      ownerId: "su-codex-missing-agents",
+      home,
+      agent: "codex",
+      codexHome,
+    });
+
+    expect(out.args).toEqual(["--dangerously-bypass-hook-trust"]);
+    expect(readFileSync(join(codexHome, "AGENTS.md"), "utf8")).toContain(
+      "recovered carry",
+    );
+    expect(readFileSync(join(codexHome, ".papercusp-carry-base-AGENTS.md"), "utf8")).toBe("");
+  });
+
   it.each([
     ["legacy AGENTS.md without a base snapshot", false],
     ["legacy contaminated base snapshot", true],
@@ -11943,6 +11962,7 @@ describe("launchResume wiring — claim before setup or spawn", () => {
       'if (session.agent === "codex" && env.CODEX_HOME)',
     );
     const homeRepair = body.indexOf("await ensureCodexHomeViaOperator(", codexBranch);
+    const hostRepair = src.indexOf("ensureCodexHome: () =>");
     const authGuard = body.indexOf(
       'if (accountEnv?.mode === "default")',
       homeRepair,
@@ -11956,6 +11976,7 @@ describe("launchResume wiring — claim before setup or spawn", () => {
 
     expect(codexBranch).toBeGreaterThan(-1);
     expect(homeRepair).toBeGreaterThan(codexBranch);
+    expect(hostRepair).toBeGreaterThan(homeRepair);
     expect(authGuard).toBeGreaterThan(homeRepair);
     expect(authRepair).toBeGreaterThan(authGuard);
     expect(route).toBeGreaterThan(authRepair);

@@ -48,6 +48,31 @@ describe('deriveLastRespawnOutcome', () => {
     expect(out.ageMs).toBe(NOW - Date.parse('2026-08-04T00:38:29.702Z'));
   });
 
+  it('treats respawn-failed as terminal instead of leaving the carry pending', () => {
+    const out = deriveLastRespawnOutcome(
+      [
+        {
+          ts: '2026-09-20T00:00:00.000Z',
+          kind: 'respawn-rearm-queued',
+          reason: 'busy-gate-expired',
+          mode: 'carry-respawn',
+        },
+        {
+          ts: '2026-09-20T00:05:00.000Z',
+          kind: 'respawn-failed',
+          reason: 'argv-build-failed',
+          mode: 'carry-respawn',
+        },
+      ],
+      { now: Date.parse('2026-09-20T00:10:00.000Z') },
+    );
+    expect(out).toMatchObject({
+      outcome: 'dropped',
+      reason: 'argv-build-failed',
+      ts: '2026-09-20T00:05:00.000Z',
+    });
+  });
+
   it('ignores non-lifecycle rows entirely — a wake deferral is not a verdict about a respawn', () => {
     const rows = [
       { ts: '2026-08-04T00:10:00.000Z', kind: 'respawn-carry-delivered' },
