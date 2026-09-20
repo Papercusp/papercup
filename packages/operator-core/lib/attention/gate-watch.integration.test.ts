@@ -24,7 +24,7 @@ vi.mock('../workspace-registry', async () => {
 });
 
 const { tickGateWatch } = await import('./gate-watch');
-const { listPendingGates } = await import('./gate-store');
+const { listPendingGates, openOrTouchGate } = await import('./gate-store');
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -118,5 +118,171 @@ describe('tickGateWatch (real PG + real transcript files)', () => {
     const result = await tickGateWatch({ root: dir });
     expect(result.opened).toBe(0);
     expect(await listPendingGates({ workspaceId: WS, sessionId: uuid })).toHaveLength(0);
+  });
+});
+
+/**
+ * WI-10002079 regression guards. Each of these FAILS against the pre-fix
+ * watcher, which is why the routine was unrunnable rather than merely
+ * incomplete.
+ */
+describe('tickGateWatch — WI-10002079 defects', () => {
+  const MONTH_AGO = () => new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  it('R1: scans EVERY configured root, not only one', async () => {
+    const dirA = await fs.mkdtemp(path.join(os.tmpdir(), 'gate-watch-a-'));
+    const dirB = await fs.mkdtemp(path.join(os.tmpdir(), 'gate-watch-b-'));
+    tmpDirs.push(dirA, dirB);
+    const uuidA = 'a1111111-0000-4000-8000-00000000000a';
+    const uuidB = 'b2222222-0000-4000-8000-00000000000b';
+    await fs.writeFile(path.join(dirA, `${uuidA}.jsonl`), askLine('toolu_rootA', 'A?') + '\n');
+    await fs.writeFile(path.join(dirB, `${uuidB}.jsonl`), askLine('toolu_rootB', 'B?') + '\n');
+
+    const result = await tickGateWatch({ roots: [dirA, dirB] });
+
+    expect(result.opened).toBe(2);
+    expect(await listPendingGates({ workspaceId: WS, sessionId: uuidA })).toHaveLength(1);
+    expect(await listPendingGates({ workspaceId: WS, sessionId: uuidB })).toHaveLength(1);
+  });
+
+  it('R1: a missing root is skipped without costing the roots that do exist', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gate-watch-'));
+    tmpDirs.push(dir);
+    const uuid = 'c3333333-0000-4000-8000-00000000000c';
+    await fs.writeFile(path.join(dir, `${uuid}.jsonl`), askLine('toolu_survives', 'Still?') + '\n');
+
+    const result = await tickGateWatch({
+      roots: [path.join(os.tmpdir(), 'gate-watch-root-that-does-not-exist'), dir],
+    });
+
+    expect(result.opened).toBe(1);
+  });
+
+  it('R2: closes the NEWEST gate when more than 200 are open', async () => {
+    // 204 older gates, each in its own session, then the one we will close.
+    for (let i = 0; i < 204; i += 1) {
+      await openOrTouchGate({
+        workspaceId: WS,
+        sessionId: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+        client: 'claude',
+        kind: 'ask',
+        refId: `toolu_filler_${i}`,
+        question: 'filler',
+        options: null,
+        source: 'watcher',
+        rawRef: 'filler',
+      });
+    }
+    const uuid = 'd4444444-0000-4000-8000-00000000000d';
+    await openOrTouchGate({
+      workspaceId: WS,
+      sessionId: uuid,
+      client: 'claude',
+      kind: 'ask',
+      refId: 'toolu_newest',
+      question: 'Newest?',
+      options: null,
+      source: 'watcher',
+      rawRef: 'seed',
+    });
+    expect(await listPendingGates({ workspaceId: WS, sessionId: uuid })).toHaveLength(1);
+
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gate-watch-'));
+    tmpDirs.push(dir);
+    await fs.writeFile(path.join(dir, `${uuid}.jsonl`), resultLine('toolu_newest') + '\n');
+
+    const result = await tickGateWatch({ root: dir });
+
+    // Seeding from listPendingGates({ limit: 200 }) ORDER BY opened_at ASC put
+    // this gate — the 205th, and the NEWEST — outside the seed, so its close
+    // candidate was discarded as "not a gate we opened". The bias was exactly
+    // backwards: the excluded set is always the freshest gates.
+    expect(result.closed).toBe(1);
+    expect(await listPendingGates({ workspaceId: WS, sessionId: uuid })).toHaveLength(0);
+  });
+
+  it('R3: a first-seen OLD transcript never mints a gate from dead history', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gate-watch-'));
+    tmpDirs.push(dir);
+    const uuid = 'e5555555-0000-4000-8000-00000000000e';
+    const file = path.join(dir, `${uuid}.jsonl`);
+    await fs.writeFile(file, askLine('toolu_ancient', 'Abandoned months ago?') + '\n');
+    await fs.utimes(file, MONTH_AGO(), MONTH_AGO());
+
+    const result = await tickGateWatch({ root: dir });
+
+    expect(result.opened).toBe(0);
+    expect(result.coldStartSkippedOpens).toBe(1);
+    expect(await listPendingGates({ workspaceId: WS, sessionId: uuid })).toHaveLength(0);
+  });
+
+  it('R3: an old first-seen transcript still DISCHARGES a gate whose answer it contains', async () => {
+    const uuid = 'f6666666-0000-4000-8000-00000000000f';
+    await openOrTouchGate({
+      workspaceId: WS,
+      sessionId: uuid,
+      client: 'claude',
+      kind: 'ask',
+      refId: 'toolu_answered',
+      question: 'Answered long ago?',
+      options: null,
+      source: 'watcher',
+      rawRef: 'pre-existing',
+    });
+
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gate-watch-'));
+    tmpDirs.push(dir);
+    const file = path.join(dir, `${uuid}.jsonl`);
+    // Ask AND answer are both in history, so they cancel inside the cold-start
+    // chunk: `closes` is empty and only `resolved` carries the evidence.
+    await fs.writeFile(
+      file,
+      [askLine('toolu_answered', 'Answered long ago?'), resultLine('toolu_answered')].join('\n') + '\n',
+    );
+    await fs.utimes(file, MONTH_AGO(), MONTH_AGO());
+
+    const result = await tickGateWatch({ root: dir });
+
+    expect(result.opened).toBe(0);
+    expect(result.closed).toBe(1);
+    expect(await listPendingGates({ workspaceId: WS, sessionId: uuid })).toHaveLength(0);
+  });
+
+  it('R3: a RECENT first-seen transcript is still ingested normally', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gate-watch-'));
+    tmpDirs.push(dir);
+    const uuid = 'a7777777-0000-4000-8000-00000000000a';
+    await fs.writeFile(path.join(dir, `${uuid}.jsonl`), askLine('toolu_fresh', 'Live?') + '\n');
+
+    const result = await tickGateWatch({ root: dir });
+
+    expect(result.opened).toBe(1);
+    expect(result.coldStartSkippedOpens).toBe(0);
+  });
+
+  it('the per-tick file budget is a WORK cap that resumes, not a permanent horizon', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gate-watch-'));
+    tmpDirs.push(dir);
+    for (let i = 0; i < 3; i += 1) {
+      await fs.writeFile(
+        path.join(dir, `b8888888-0000-4000-8000-00000000000${i}.jsonl`),
+        askLine(`toolu_budget_${i}`, `Q${i}?`) + '\n',
+      );
+    }
+
+    const first = await tickGateWatch({ root: dir, maxFilesPerTick: 2 });
+    expect(first.scannedFiles).toBe(2);
+    expect(first.budgetExhausted).toBe(true);
+
+    // The pre-fix `.slice(0, maxFiles)` re-picked the SAME first N every tick,
+    // so the tail was unreachable on EVERY tick rather than merely deferred.
+    const second = await tickGateWatch({ root: dir, maxFilesPerTick: 2 });
+    expect(second.scannedFiles).toBe(1);
+    expect(second.budgetExhausted).toBe(false);
+
+    const total = await sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM harness_shared.session_pending_gates WHERE workspace_id = ${WS}
+    `;
+    expect(total[0].n).toBe(3);
   });
 });
