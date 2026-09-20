@@ -3495,6 +3495,35 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: () => true,
   },
   {
+    // WI-10002064 — the same INDEX-shaped D-034 violation as lint:no-tracked-node-modules
+    // above, one layer in: not a directory that should never be tracked anywhere, but
+    // build output tracked by a package that cannot even load it.
+    //
+    // packages/agent-mcp/dist/ tracked 144 files while package.json routed every
+    // entrypoint to ./src/*. Unreachable by construction, so it drifted: dist/_bulk.js
+    // kept returning the hard-coded `{ ok: true, ... }` envelope for 13 days after
+    // src/_bulk.ts replaced it with `ok: failed === 0` — re-teaching, to a grep and to
+    // the next reader, the exact false-success contract that removal retired. 66 of the
+    // files were .d.ts that the current build config (`declaration: false`) cannot emit
+    // at all. Nothing errored, and no source file looked wrong.
+    workspace: "@papercusp/operator-core",
+    // The standalone script (0.36-0.50s measured, 3 runs — cheaper than
+    // lint:no-tracked-node-modules' 0.61s, already accepted here).
+    script: "lint:no-tracked-src-entry-dist",
+    // Deliberately NO hostSuiteRatchet, though one would be DEFENSIBLE here: unlike its
+    // sibling, tracked-src-entry-dist-guard.test.ts does exec the guard against the real
+    // tree. Declining it anyway is the fail-safe direction — a ratchet would make the
+    // standalone leg depend on one test case continuing to exist, and silently drop the
+    // invariant if a later edit weakened it. At 0.4s that insurance is free.
+    // Deliberately EVERY changed path, for the sibling's stated reason: no source pattern
+    // predicts this violation. It is armed by `git add -f`, by a build run that gets
+    // swept into a commit, or by a package MOVING (the second instance found here lived
+    // in the libs/generic/tooldef-http submodule, whose superproject ignore rule pointed
+    // at a `packages/` path that no longer existed). None need touch a file this run
+    // would otherwise select.
+    appliesTo: () => true,
+  },
+  {
     // EI-22201289307647151 — the same D-034 shape as lint:no-tracked-node-modules just
     // above, one boundary over: a superproject .gitignore rule does not reach inside a
     // submodule, so 22 of 38 coverage-capable submodules had no local `coverage/` ignore

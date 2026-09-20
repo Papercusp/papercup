@@ -53,6 +53,7 @@
     "lint:okf-conformance": "tsx ../../scripts/check-okf-conformance.mjs",
     "lint:drop-database-force": "node ../../scripts/check-drop-database-force.mjs",
     "lint:no-tracked-node-modules": "node ../../scripts/check-tracked-node-modules.mjs",
+    "lint:no-tracked-src-entry-dist": "node ../../scripts/check-tracked-src-entry-dist.mjs",
     "lint:submodule-coverage-ignore": "node ../../scripts/check-submodule-coverage-ignore.mjs",
     "lint:js-syntax": "node ../../scripts/check-js-syntax.mjs",
     "lint:no-retired": "node ../../scripts/check-no-retired-imports.mjs",
