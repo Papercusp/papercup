@@ -1,0 +1,326 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  evaluateAgentObligations,
+  planAcceptanceChangedKey,
+} from '../../agent-obligations';
+import { independentVerificationObligation } from '../../agent-obligation-providers';
+import { readAgentObligationAgenda } from '../../agent-obligation-reader';
+import type { PlanAcceptanceGateVerdict } from '../../plan-acceptance-gate';
+import { parsePlan, type PlanItem } from '@papercusp/plan-parser';
+import { flipStatusInBody, releaseTerminalGrips } from './set-status';
+import { applyPlanDrainTransition } from './plan-drain-transition';
+import { planDrainSweepCandidate } from './plan-drain-sweep';
+import { runAcceptanceDrainSweepOnce } from './acceptance-drain-sweep';
+
+const M = vi.hoisted(() => ({
+  withPlanLock: vi.fn(),
+  getFlag: vi.fn(),
+  sql: vi.fn(),
+  list: vi.fn(),
+  evaluate: vi.fn(),
+  upsert: vi.fn(),
+  sessionBrief: vi.fn(),
+}));
+
+vi.mock('./with-plan-lock', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./with-plan-lock')>();
+  return { ...actual, withPlanLock: M.withPlanLock };
+});
+vi.mock('@papercusp/flags/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/flags/server')>();
+  return { ...actual, getFlag: M.getFlag };
+});
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  return { ...actual, getOrgPg: () => ({ sql: M.sql }) };
+});
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
+vi.mock('../../work-scope-policy', () => ({ isHarnessInScope: () => true }));
+vi.mock('./source', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./source')>();
+  return { ...actual, listPlanIndexRowsForWorkspace: M.list };
+});
+vi.mock('../../plan-acceptance-gate', () => ({
+  evaluatePlanAcceptanceGate: M.evaluate,
+}));
+vi.mock('../../coord/condition-upsert', () => ({
+  upsertConditionWorkItem: M.upsert,
+}));
+vi.mock('../../session-brief', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../session-brief')>();
+  return { ...actual, getSessionBrief: M.sessionBrief };
+});
+
+const NOW = '2026-09-20T01:45:00.000Z';
+const WS = 'papercusp-workspace';
+const PLAN = 'drained-plan-2026-09-20';
+let currentBody: string;
+
+function planBody(status: string, itemStatus = 'done'): string {
+  return [
+    '---',
+    'title: Drained plan',
+    `slug: ${PLAN}`,
+    `status: ${status}`,
+    '---',
+    '',
+    '## Phase 1',
+    '',
+    `- **P-001** \`${itemStatus}\` final implementation item`,
+    '',
+  ].join('\n');
+}
+
+function gate(overrides: Partial<PlanAcceptanceGateVerdict>): PlanAcceptanceGateVerdict {
+  return {
+    buildProvenance: { sha: 'test-sha', version: 'test' },
+    satisfied: false,
+    code: 'acceptance_rubric_missing',
+    message: 'author the acceptance rubric',
+    ...overrides,
+  };
+}
+
+const item = (status: PlanItem['storedStatus']): PlanItem => ({
+  id: 'P-001',
+  text: 'final implementation item',
+  storedStatus: status,
+  importance: 'normal',
+  blockedBy: [],
+  decisionRefs: [],
+  phase: null,
+  lineNumber: 1,
+  rawLine: '',
+});
+
+function obligationFor(gateVerdict: PlanAcceptanceGateVerdict, planSlug = 'drained-plan') {
+  return independentVerificationObligation({
+    workspaceId: WS,
+    ownerId: 'su-test',
+    planSlug,
+    observedAt: NOW,
+    sourceGeneration: `gate:${gateVerdict.code ?? 'satisfied'}`,
+    read: {
+      status: 'known',
+      value: {
+        gate: gateVerdict,
+        evidenceRef: 'plan-acceptance:drained-plan',
+        gradeable: true,
+      },
+    },
+  });
+}
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  currentBody = planBody('ready');
+  let openFiling = false;
+  M.withPlanLock.mockImplementation(
+    async (
+      _ctx: unknown,
+      _opts: unknown,
+      mutator: (current: string, meta: unknown) => Promise<{ newBody: string | null; value: unknown }>,
+    ) => {
+      const mutation = await mutator(currentBody, {});
+      if (mutation.newBody !== null) currentBody = mutation.newBody;
+      return {
+        kind: 'applied',
+        value: mutation.value,
+      };
+    },
+  );
+  M.getFlag.mockResolvedValue(true);
+  M.sql.mockImplementation(async () =>
+    openFiling ? [{ ref: `${WS}/papercusp/${PLAN}` }] : [],
+  );
+  M.list.mockImplementation(async ({ status }: { status: string }) =>
+    parsePlan(currentBody).frontmatter.status === status
+      ? [{ planSlug: PLAN, harnessSlug: 'papercusp', template: null }]
+      : [],
+  );
+  M.evaluate.mockResolvedValue(gate({}));
+  M.sessionBrief.mockResolvedValue({ currentPlanSlug: PLAN });
+  M.upsert.mockImplementation(async () => {
+    openFiling = true;
+    return { created: true, id: 'WI-ACCEPTANCE' };
+  });
+});
+
+describe('P-023 drained-to-acceptance lifecycle', () => {
+  it('moves a drained ready plan into awaiting-acceptance before the acceptance gate runs', () => {
+    expect(planDrainSweepCandidate('ready', [item('done')])).toEqual({
+      from: 'ready',
+      to: 'awaiting-acceptance',
+    });
+  });
+
+  it('records the refusal as an actionable obligation with a material-change wake', () => {
+    const obligation = obligationFor(gate({}));
+
+    expect(obligation).toMatchObject({
+      family: 'independent-verification',
+      status: 'blocked',
+      action: { kind: 'repair' },
+      changeSignal: { event: planAcceptanceChangedKey('drained-plan') },
+      scope: { planSlug: 'drained-plan' },
+    });
+  });
+
+  it('removes the acceptance obligation from the primary agenda once the gate reports satisfied', () => {
+    const obligation = obligationFor(
+      gate({
+        satisfied: true,
+        code: undefined,
+        message: 'accepted',
+        rubricId: 'rubric-1',
+        gradedBy: 'independent-grader',
+      }),
+    );
+    const agenda = evaluateAgentObligations([obligation], NOW);
+
+    expect(obligation.status).toBe('satisfied');
+    expect(agenda.primary).toEqual([]);
+    expect(agenda.evaluations).toEqual([expect.objectContaining({ status: 'satisfied' })]);
+  });
+
+  it('joins terminal cleanup, drain transition, acceptance filing, and obligation clearing', async () => {
+    // Exercise the real item mutator too; this fixture starts with unfinished
+    // implementation rather than assuming a completed item in the input.
+    currentBody = planBody('ready', 'wip');
+    expect(await applyPlanDrainTransition(PLAN, 'papercusp')).toMatchObject({
+      applied: false,
+      skipped: 'no_transition_warranted',
+    });
+    const close = flipStatusInBody(currentBody, 'P-001', 'done');
+    expect(close).toMatchObject({ found: true, oldStatus: 'wip' });
+    currentBody = close.newBody;
+
+    const persistence = {
+      releasedClaims: [] as string[][],
+      clearedAssignments: [] as string[][],
+    };
+
+    const grips = await releaseTerminalGrips({
+      status: 'done',
+      agentOwnerId: 'su-test',
+      scope: { workspaceId: WS, harnessSlug: 'papercusp' },
+      slug: PLAN,
+      itemId: 'P-001',
+      releaseClaim: async (...args) => {
+        persistence.releasedClaims.push(args);
+        return true;
+      },
+      clearAssignment: async (...args) => {
+        persistence.clearedAssignments.push(args);
+        return { itemId: 'P-001' };
+      },
+    });
+    expect(grips).toEqual({ claimReleased: true, assignmentReleased: true });
+
+    const transition = await applyPlanDrainTransition(PLAN, 'papercusp');
+    expect(transition).toMatchObject({
+      applied: true,
+      from: 'ready',
+      to: 'awaiting-acceptance',
+    });
+    expect(M.withPlanLock).toHaveBeenCalledTimes(2);
+    expect(parsePlan(currentBody).frontmatter.status).toBe('awaiting-acceptance');
+    expect(persistence.releasedClaims).toEqual([[WS, 'papercusp', PLAN, 'P-001', 'su-test']]);
+    expect(persistence.clearedAssignments).toEqual([[WS, 'papercusp', PLAN, 'P-001']]);
+
+    M.evaluate.mockResolvedValue(gate({ code: 'acceptance_unaudited', message: 'run plans:audit' }));
+    const sweep = await runAcceptanceDrainSweepOnce({ workspaceId: WS });
+    expect(sweep).toMatchObject({
+      scanned: 1,
+      alreadyFiled: 0,
+      shippableNow: 0,
+      filed: [{ planSlug: PLAN, harnessSlug: 'papercusp', code: 'acceptance_unaudited', workItemId: 'WI-ACCEPTANCE' }],
+    });
+    expect(M.upsert).toHaveBeenCalledWith(
+      `acceptance-drain:papercusp/${PLAN}`,
+      expect.objectContaining({
+        payload: {
+          acceptanceDrainPlan: `${WS}/papercusp/${PLAN}`,
+          planSlug: PLAN,
+          blockerCode: 'acceptance_unaudited',
+        },
+      }),
+    );
+
+    const refused = await readAgentObligationAgenda({
+      workspaceId: WS,
+      ownerId: 'su-test',
+      goalId: null,
+      now: new Date(NOW),
+    });
+    expect(refused.agenda.primary).toHaveLength(1);
+    expect(refused.agenda.primary[0]).toMatchObject({
+      family: 'independent-verification',
+      status: 'blocked',
+      scope: { planSlug: PLAN },
+      action: { kind: 'repair' },
+    });
+
+    // Leaving a plan's session context is a SEPARATE edge, not an automatic
+    // consequence of releaseTerminalGrips. The default scope reader consults
+    // the session brief, not the outstanding acceptance filing.
+    M.sessionBrief.mockResolvedValue({ currentPlanSlug: null });
+    M.evaluate.mockClear();
+    const clearedContext = await readAgentObligationAgenda({
+      workspaceId: WS,
+      ownerId: 'su-test',
+      goalId: null,
+      now: new Date(NOW),
+    });
+    expect(clearedContext.planSlugs).toEqual([]);
+    expect(clearedContext.agenda.evaluations).toEqual([]);
+    expect(M.evaluate).not.toHaveBeenCalled();
+    expect(parsePlan(currentBody).frontmatter.status).toBe('awaiting-acceptance');
+
+    M.sessionBrief.mockResolvedValue({ currentPlanSlug: PLAN });
+    M.evaluate.mockResolvedValue(
+      gate({
+        satisfied: true,
+        code: undefined,
+        message: 'accepted',
+        rubricId: 'rubric-1',
+        gradedBy: 'independent-grader',
+      }),
+    );
+    const accepted = await readAgentObligationAgenda({
+      workspaceId: WS,
+      ownerId: 'su-test',
+      goalId: null,
+      now: new Date(NOW),
+    });
+    expect(accepted.agenda.primary).toEqual([]);
+    expect(accepted.agenda.evaluations).toEqual([
+      expect.objectContaining({ family: 'independent-verification', status: 'satisfied' }),
+    ]);
+
+    // The obligation reader has cleared its primary agenda entry, but the existing
+    // open filing is now a sink: dedupe happens before gate evaluation, so the
+    // sweep does not observe that the same plan became shippable.
+    M.evaluate.mockClear();
+    const suppressed = await runAcceptanceDrainSweepOnce({ workspaceId: WS });
+    expect(suppressed).toMatchObject({
+      scanned: 1,
+      alreadyFiled: 1,
+      shippableNow: 0,
+      filed: [],
+    });
+    expect(M.evaluate).not.toHaveBeenCalled();
+    expect(M.upsert).toHaveBeenCalledTimes(1);
+    expect(parsePlan(currentBody).frontmatter.status).toBe('awaiting-acceptance');
+  });
+
+  it('observes a shippable plan without an open filing but does not ship it', async () => {
+    await applyPlanDrainTransition(PLAN, 'papercusp');
+    M.evaluate.mockResolvedValue(gate({ satisfied: true, code: undefined }));
+    const sweep = await runAcceptanceDrainSweepOnce({ workspaceId: WS });
+    expect(sweep).toMatchObject({ scanned: 1, alreadyFiled: 0, shippableNow: 1, filed: [] });
+    expect(M.evaluate).toHaveBeenCalledExactlyOnceWith(PLAN);
+    expect(M.upsert).not.toHaveBeenCalled();
+    expect(parsePlan(currentBody).frontmatter.status).toBe('awaiting-acceptance');
+  });
+});
