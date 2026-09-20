@@ -14,6 +14,7 @@ import {
   projectedToolRegistryRevision,
 } from '@papercusp/agent-mcp';
 import { schemaToText } from '../../../cupboard/tools-discovery';
+import { withInlinedSchemaRefs } from '../../schema-ref-inline';
 
 export const TASK_SCHEMA_PACK_SCHEMA = 'orient-task-tool-schema-pack-v2' as const;
 export const TASK_SCHEMA_PACK_BUDGET_CHARS = 3_500;
@@ -192,8 +193,17 @@ function compactSchema(schema: unknown): string | null {
   // terminal contract as a suffix instead of relying on property order. The
   // full schema still arrives through tools/list_changed; this is the bounded
   // recovery preview an agent must be able to act from before that round-trip.
-  const root = schema && typeof schema === 'object' && !Array.isArray(schema)
-    ? schema as Record<string, unknown>
+  // Resolve `$ref`/`$defs` FIRST. work_items:complete moved its completion
+  // record into a shared `$defs` entry, so the `completion` property node at
+  // this position is a bare {"$ref": "#/$defs/..."} carrying no `description`
+  // — which made the root-cause probe below silently fail and degrade the
+  // preview to `completion?:object structured record`, dropping the very
+  // contract a recovery caller needs to form a valid bug close. This is the
+  // single choke point: both completionHasRootCauseContract and the
+  // schemaToText fragment loop read from `rawBranches`.
+  const inlinedSchema = withInlinedSchemaRefs(schema);
+  const root = inlinedSchema && typeof inlinedSchema === 'object' && !Array.isArray(inlinedSchema)
+    ? inlinedSchema as Record<string, unknown>
     : null;
   const rawBranches = root && Array.isArray(root.anyOf)
     ? root.anyOf
