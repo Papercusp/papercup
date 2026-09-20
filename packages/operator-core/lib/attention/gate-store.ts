@@ -267,6 +267,35 @@ export async function listPendingGates(filter: {
 }
 
 /**
+ * Every OPEN gate's (session, ref) key for a workspace — the transcript
+ * watcher's set-membership test, and deliberately NOT {@link listPendingGates}.
+ *
+ * WI-10002079/R2. `listPendingGates` is the DISPLAY read: it is hard-clamped to
+ * 200 rows (`Math.min(..., 200)` — a ceiling no caller can raise) and ordered
+ * `opened_at ASC`. Using it to decide "is this tool_result closing a gate we
+ * have open?" made the watcher's close path silently blind to every gate past
+ * the 200th, and because the order is oldest-first the excluded set was always
+ * the NEWEST gates — precisely the ones with a live session and a fresh
+ * tool_result. The bias is self-reinforcing: it grows as the backlog grows.
+ *
+ * A correctness-critical membership test must see the WHOLE set, so this
+ * projects only the two key columns (no lateral owner join, no display
+ * payload) and takes no limit. At the 241-gate backlog that measured this bug
+ * the result is ~241 short string pairs.
+ */
+export async function listOpenGateRefs(filter: {
+  workspaceId: string;
+}): Promise<Array<{ session_id: string; ref_id: string }>> {
+  const { sql } = getOrgPg();
+  return await sql<Array<{ session_id: string; ref_id: string }>>`
+    SELECT session_id, ref_id
+      FROM harness_shared.session_pending_gates
+     WHERE workspace_id = ${filter.workspaceId}
+       AND closed_at IS NULL
+  `;
+}
+
+/**
  * Closed `ask` gates (an AskUserQuestion the owner actually answered) since a
  * given ISO timestamp — the feed `decision-owed-source.ts` (EI-147) scans for
  * possibly-unrecorded owner decisions. Distinct from {@link listPendingGates}

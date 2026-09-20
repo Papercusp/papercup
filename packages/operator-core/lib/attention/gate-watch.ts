@@ -18,8 +18,9 @@
  * 619) rather than sharing `interactive_usage_files` — a different
  * producer/consumer, kept decoupled.
  *
- * "Claude transcripts first" (plan Background) — this tick only walks
- * `~/.claude/projects`; codex/OMP roots are a straightforward follow-on (same
+ * "Claude transcripts first" (plan Background) — this tick walks every Claude
+ * transcript root (`defaultGateWatchRoots`: the psu root AND the native
+ * `~/.claude/projects`); codex/OMP roots are a straightforward follow-on (same
  * shape as `interactive-usage/ingest-adapters.ts`) once each adapter's
  * tool_use/tool_result line shape is confirmed, left for a later plan item.
  */
@@ -29,7 +30,7 @@ import path from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { readFileDelta } from '../interactive-usage/ingest-claude-transcripts';
-import { closeGateByToolUseId, listPendingGates, openOrTouchGate } from './gate-store';
+import { closeGateByToolUseId, listOpenGateRefs, openOrTouchGate } from './gate-store';
 
 /** Tool names whose unanswered tool_use means "blocked on the owner". */
 const GATE_TOOL_NAMES = new Set(['AskUserQuestion', 'ExitPlanMode']);
@@ -49,6 +50,19 @@ export interface GateCloseEvent {
 export interface ParsedGateChunk {
   opens: GateOpenEvent[];
   closes: GateCloseEvent[];
+  /**
+   * Asks whose tool_result landed in this SAME chunk.
+   *
+   * They were never observably open, so they are correctly absent from
+   * `opens` — but a gate the STORE already holds open (minted by a turn-end
+   * hook, or by an earlier tick) is discharged by exactly this evidence. On a
+   * cold-start full-file replay EVERY historical ask/answer pair lands in one
+   * chunk, so dropping these (the pre-WI-10002079 behaviour) left the watcher
+   * structurally unable to close the very gates whose transcript proves they
+   * were answered. The caller still intersects against what is actually open,
+   * so a non-gate pair remains a harmless, ignorable candidate.
+   */
+  resolved: GateCloseEvent[];
   consumedBytes: number;
 }
 
@@ -103,10 +117,11 @@ export function extractGateQuestion(
  */
 export function parseGateChunk(chunk: string): ParsedGateChunk {
   const lastNewline = chunk.lastIndexOf('\n');
-  if (lastNewline === -1) return { opens: [], closes: [], consumedBytes: 0 };
+  if (lastNewline === -1) return { opens: [], closes: [], resolved: [], consumedBytes: 0 };
   const consumed = chunk.slice(0, lastNewline + 1);
   const stillOpen = new Map<string, GateOpenEvent>();
   const closes: GateCloseEvent[] = [];
+  const resolved: GateCloseEvent[] = [];
 
   for (const line of consumed.split('\n')) {
     if (!line.trim()) continue;
@@ -133,58 +148,119 @@ export function parseGateChunk(chunk: string): ParsedGateChunk {
         if (p?.type !== 'tool_result' || !p.tool_use_id) continue;
         if (stillOpen.has(p.tool_use_id)) {
           stillOpen.delete(p.tool_use_id); // resolved inside this same window
+          resolved.push({ toolUseId: p.tool_use_id });
         } else {
           closes.push({ toolUseId: p.tool_use_id });
         }
       }
     }
   }
-  return { opens: [...stillOpen.values()], closes, consumedBytes: Buffer.byteLength(consumed, 'utf8') };
+  return { opens: [...stillOpen.values()], closes, resolved, consumedBytes: Buffer.byteLength(consumed, 'utf8') };
 }
 
 export interface GateWatchOptions {
+  /**
+   * Single-root form. When set it REPLACES the defaults — kept so an existing
+   * routine `trigger_config.root` and the focused tests keep working.
+   */
   root?: string;
+  /** Explicit root list; when set it REPLACES the defaults. */
+  roots?: string[];
   maxFilesPerTick?: number;
   maxBytesPerFile?: number;
+  /**
+   * WI-10002079/R3. A transcript seen for the FIRST time (no watermark row)
+   * whose last write is older than this is replayed for CLOSES ONLY — its
+   * unanswered historical asks never mint a gate. Default 24h.
+   */
+  coldStartOpenWindowMs?: number;
+  /** Injectable clock for the cold-start window (tests). */
+  now?: number;
 }
 
 export interface GateWatchResult {
-  root: string;
+  roots: string[];
+  /** Transcripts that actually had unread bytes this tick (an already-current
+   *  file costs a stat, not a budget slot). */
   scannedFiles: number;
   opened: number;
   alreadyOpen: number;
   closed: number;
+  /** Opens suppressed by the R3 cold-start rule — dead history, not a miss. */
+  coldStartSkippedOpens: number;
+  /** TRUE when `maxFilesPerTick` cut the pass short; the next tick resumes
+   *  where this one stopped, because every processed file leaves a watermark. */
+  budgetExhausted: boolean;
   errors: Array<{ file: string; error: string }>;
 }
 
 const DEFAULT_MAX_FILES = 5000;
 const DEFAULT_MAX_BYTES_PER_FILE = 32 * 1024 * 1024;
+const DEFAULT_COLD_START_OPEN_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
- * One watcher tick: walk the Claude transcript root, read each file's delta
- * past its watermark, and upsert opens/closes into session_pending_gates.
+ * Every transcript root this box actually writes.
+ *
+ * WI-10002079/R1. `~/.claude/projects` alone — the original default — is the
+ * NATIVE CLI's root and holds a small minority of this box's transcripts;
+ * psu sessions write under
+ * `~/.papercusp/session-claude/<owner>/projects/<encoded>/<session>.jsonl`.
+ * Measured when this was filed: 300 files under the old root vs 2,105 under
+ * the psu one, and of the open gates whose transcript demonstrably contained
+ * the closing tool_result, ZERO were under the watched root. The watcher was
+ * tailing a tree that does not contain the sessions it exists to watch.
+ *
+ * Both are returned (not swapped) because a plain `claude` run on this box
+ * still writes the native root — a session id is unique across them, and the
+ * file list is de-duplicated by absolute path.
+ */
+export function defaultGateWatchRoots(home: string = os.homedir()): string[] {
+  return [path.join(home, '.papercusp', 'session-claude'), path.join(home, '.claude', 'projects')];
+}
+
+/**
+ * One watcher tick: walk every transcript root, read each file's delta past
+ * its watermark, and upsert opens/closes into session_pending_gates.
  * Safe to re-run (the system-actions contract) — every file delta is fenced
  * by its own byte watermark.
  */
 export async function tickGateWatch(opts: GateWatchOptions = {}): Promise<GateWatchResult> {
-  const root = opts.root ?? path.join(os.homedir(), '.claude', 'projects');
+  const roots = opts.roots?.length ? opts.roots : opts.root ? [opts.root] : defaultGateWatchRoots();
   const maxFiles = opts.maxFilesPerTick ?? DEFAULT_MAX_FILES;
   const capBytes = opts.maxBytesPerFile ?? DEFAULT_MAX_BYTES_PER_FILE;
+  const coldWindowMs = opts.coldStartOpenWindowMs ?? DEFAULT_COLD_START_OPEN_WINDOW_MS;
+  const now = opts.now ?? Date.now();
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
 
-  const result: GateWatchResult = { root, scannedFiles: 0, opened: 0, alreadyOpen: 0, closed: 0, errors: [] };
+  const result: GateWatchResult = {
+    roots,
+    scannedFiles: 0,
+    opened: 0,
+    alreadyOpen: 0,
+    closed: 0,
+    coldStartSkippedOpens: 0,
+    budgetExhausted: false,
+    errors: [],
+  };
 
-  let entries: Array<{ parentPath?: string; path?: string; name: string; isFile(): boolean }>;
-  try {
-    entries = (await fs.readdir(root, { withFileTypes: true, recursive: true })) as never;
-  } catch {
-    return result; // no Claude transcript root on this box
+  const files: string[] = [];
+  const seenPaths = new Set<string>();
+  for (const root of roots) {
+    let entries: Array<{ parentPath?: string; path?: string; name: string; isFile(): boolean }>;
+    try {
+      entries = (await fs.readdir(root, { withFileTypes: true, recursive: true })) as never;
+    } catch {
+      continue; // this root does not exist on this box — the others still count
+    }
+    for (const e of entries) {
+      if (!e.isFile() || !e.name.endsWith('.jsonl')) continue;
+      const full = path.join((e.parentPath ?? e.path ?? root) as string, e.name);
+      if (seenPaths.has(full)) continue;
+      seenPaths.add(full);
+      files.push(full);
+    }
   }
-  const files = entries
-    .filter((e) => e.isFile() && e.name.endsWith('.jsonl'))
-    .map((e) => path.join((e.parentPath ?? e.path ?? root) as string, e.name))
-    .slice(0, maxFiles);
 
   const wmRows = await sql<Array<{ file_path: string; byte_offset: string }>>`
     SELECT file_path, byte_offset FROM harness_shared.session_gate_watcher_files WHERE workspace_id = ${ws}
@@ -194,47 +270,81 @@ export async function tickGateWatch(opts: GateWatchOptions = {}): Promise<GateWa
   // Batch-fetch the currently-open ref ids ONCE per tick so a close candidate
   // for an ordinary (non-gate) tool_result never costs a write — we only ever
   // call closeGateByToolUseId for a ref this tick's opens-so-far confirm.
-  const openNow = await listPendingGates({ workspaceId: ws, includeClosed: false, limit: 200 });
+  //
+  // WI-10002079/R2: this MUST be the complete open set. It used to seed from
+  // listPendingGates({ limit: 200 }) — the display read, hard-clamped to 200
+  // and ordered oldest-first — so past 200 open gates the NEWEST were silently
+  // unclosable, which is exactly backwards.
+  const openRefs = await listOpenGateRefs({ workspaceId: ws });
   const openRefsBySession = new Map<string, Set<string>>();
-  for (const g of openNow) {
+  for (const g of openRefs) {
     const set = openRefsBySession.get(g.session_id) ?? new Set<string>();
     set.add(g.ref_id);
     openRefsBySession.set(g.session_id, set);
   }
 
   for (const file of files) {
-    result.scannedFiles += 1;
+    if (result.scannedFiles >= maxFiles) {
+      // The budget is a per-tick WORK cap, applied HERE rather than as a
+      // `.slice(0, maxFiles)` over the raw list: slicing made the cap a
+      // permanent horizon, so once the corpus outgrew it the tail was never
+      // reached on ANY tick. Every processed file leaves a watermark, so
+      // stopping here just resumes next tick.
+      result.budgetExhausted = true;
+      break;
+    }
     try {
-      const { size } = await fs.stat(file);
+      const { size, mtimeMs } = await fs.stat(file);
+      const firstSeen = !watermarks.has(file);
       let offset = watermarks.get(file) ?? 0;
       if (size < offset) offset = 0; // recreated transcript — re-ingest from the top
-      if (size === offset) continue;
+      if (size === offset) continue; // already current — costs a stat, not a budget slot
+      result.scannedFiles += 1;
       const chunk = await readFileDelta(file, offset, capBytes);
-      const { opens, closes, consumedBytes } = parseGateChunk(chunk);
+      const { opens, closes, resolved, consumedBytes } = parseGateChunk(chunk);
       if (consumedBytes === 0) continue; // no complete line yet — retry next tick
       const sessionId = path.basename(file, '.jsonl');
 
-      for (const open of opens) {
-        const { outcome } = await openOrTouchGate({
-          workspaceId: ws,
-          sessionId,
-          client: 'claude',
-          kind: 'ask',
-          refId: open.toolUseId,
-          question: open.question,
-          options: open.options,
-          source: 'watcher',
-          rawRef: file,
-        });
-        if (outcome === 'opened') result.opened += 1;
-        else result.alreadyOpen += 1;
-        const set = openRefsBySession.get(sessionId) ?? new Set<string>();
-        set.add(open.toolUseId);
-        openRefsBySession.set(sessionId, set);
+      // WI-10002079/R3 — the cold-start replay bound. With no watermark rows
+      // a first tick reads every file from byte 0, so a transcript's entire
+      // history arrives as one chunk. Minting gates from that would OPEN asks
+      // abandoned by long-dead sessions, growing the very backlog this watcher
+      // exists to drain. An OLD first-seen transcript is therefore replayed
+      // for CLOSES only; a RECENT one is ingested normally, because its
+      // trailing unanswered ask is a genuinely live gate.
+      const coldStartReplay = firstSeen && mtimeMs < now - coldWindowMs;
+      if (coldStartReplay) {
+        result.coldStartSkippedOpens += opens.length;
+      } else {
+        for (const open of opens) {
+          const { outcome } = await openOrTouchGate({
+            workspaceId: ws,
+            sessionId,
+            client: 'claude',
+            kind: 'ask',
+            refId: open.toolUseId,
+            question: open.question,
+            options: open.options,
+            source: 'watcher',
+            rawRef: file,
+          });
+          if (outcome === 'opened') result.opened += 1;
+          else result.alreadyOpen += 1;
+          const set = openRefsBySession.get(sessionId) ?? new Set<string>();
+          set.add(open.toolUseId);
+          openRefsBySession.set(sessionId, set);
+        }
       }
 
+      // `resolved` (ask + its answer inside this SAME chunk) is closing
+      // evidence exactly as `closes` is. Both are intersected against what the
+      // STORE actually holds open, so a non-gate pair stays ignorable — but a
+      // gate a turn-end hook minted, whose answer is already in the
+      // transcript, becomes dischargeable. On the cold-start replay above it
+      // is the ONLY shape the evidence can take, because every historical
+      // ask/answer pair cancels within the chunk.
       const knownOpen = openRefsBySession.get(sessionId);
-      for (const close of closes) {
+      for (const close of [...closes, ...resolved]) {
         if (!knownOpen?.has(close.toolUseId)) continue; // not a gate we opened — ignore
         const closedCount = await closeGateByToolUseId({ workspaceId: ws, sessionId, toolUseId: close.toolUseId });
         if (closedCount > 0) {

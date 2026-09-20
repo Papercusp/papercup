@@ -9,8 +9,8 @@ import { resolvePlanScope } from './source';
 import {
   ADHOC_WORK_ITEM_SPEC_SCOPE,
   bindSpecEvidence,
-  measureRepoFilesEvidence,
-  repoFilesEvidenceMeasurementSchema,
+  evidenceMeasurementSchema,
+  measureEvidenceForScope,
   retractSpecEvidence,
   SPEC_EVIDENCE_KINDS,
 } from './spec-evidence-store';
@@ -108,10 +108,10 @@ export const bindingSchema = z
     environmentFingerprint: fingerprint.nullable().optional(),
     coverageEvidenceRef: z.number().int().positive().nullable().optional(),
     testRunId: z.number().int().positive().nullable().optional(),
-    measurement: repoFilesEvidenceMeasurementSchema
+    measurement: evidenceMeasurementSchema
       .optional()
       .describe(
-        'Server-measured repository file sets. The binder stores the recipe and current source/test fingerprints; later reads recompute them from the canonical harness checkout.',
+        "Server-measured basis, discriminated on `kind`. kind:'repo-files' hashes bounded source/test file sets from the canonical harness checkout. kind:'work-items' hashes the disposition of a bounded work-item id set, which is what makes a NON-CODE outcome (a ledger census) reach source=current instead of being pinned at unknown forever. The binder stores the recipe and the current fingerprints; later reads recompute them, so a row that reopens correctly goes stale.",
       ),
     details: bindingDetailsSchema.optional(),
     observedAt: z.string().datetime({ offset: true }).optional(),
@@ -257,7 +257,7 @@ export default defineTool({
       bindings,
       async (binding) => {
         const measured = binding.measurement
-          ? await measureRepoFilesEvidence(measurementScope!.workspaceId, harnessSlug, binding.measurement)
+          ? await measureEvidenceForScope(measurementScope!.workspaceId, harnessSlug, binding.measurement)
           : null;
         const { measurement, ...declared } = binding;
         const result = await bindSpecEvidence({

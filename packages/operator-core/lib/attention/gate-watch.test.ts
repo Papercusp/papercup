@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { extractGateQuestion, parseGateChunk } from './gate-watch';
+import path from 'node:path';
+import { defaultGateWatchRoots, extractGateQuestion, parseGateChunk } from './gate-watch';
 
 const assistantToolUse = (id: string, name: string, input: unknown): string =>
   JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } });
@@ -97,5 +98,40 @@ describe('parseGateChunk', () => {
       ].join('\n') + '\n';
     const { opens } = parseGateChunk(chunk);
     expect(opens.map((o) => o.toolUseId).sort()).toEqual(['toolu_1', 'toolu_2']);
+  });
+
+  it('reports an in-chunk ask/answer pair as `resolved` — closing evidence the store may still need', () => {
+    const chunk =
+      [assistantToolUse('toolu_1', 'AskUserQuestion', askInput('Q?', [])), userToolResult('toolu_1')].join('\n') + '\n';
+    const { opens, closes, resolved } = parseGateChunk(chunk);
+    // Still correctly absent from BOTH: it was never observably open, and its
+    // tool_use was not in a prior chunk.
+    expect(opens).toEqual([]);
+    expect(closes).toEqual([]);
+    // WI-10002079: dropping it (the previous behaviour) left a gate minted by
+    // a turn-end hook, whose answer is already in the transcript, permanently
+    // unclosable — and on a cold-start full-file replay EVERY historical pair
+    // takes this shape, so it was the only evidence available.
+    expect(resolved).toEqual([{ toolUseId: 'toolu_1' }]);
+  });
+
+  it('leaves `resolved` empty when nothing was answered in-chunk', () => {
+    const chunk = assistantToolUse('toolu_1', 'AskUserQuestion', askInput('Q?', [])) + '\n';
+    expect(parseGateChunk(chunk).resolved).toEqual([]);
+    expect(parseGateChunk('{"type":"assist').resolved).toEqual([]);
+  });
+});
+
+describe('defaultGateWatchRoots (WI-10002079/R1)', () => {
+  it('includes the psu transcript root, not only the native CLI root', () => {
+    const roots = defaultGateWatchRoots('/home/agent');
+    // Watching only ~/.claude/projects made the tick tail a tree that does not
+    // contain the sessions it exists to watch.
+    expect(roots).toContain(path.join('/home/agent', '.papercusp', 'session-claude'));
+    expect(roots).toContain(path.join('/home/agent', '.claude', 'projects'));
+  });
+
+  it('orders the psu root first — it holds the overwhelming majority of transcripts', () => {
+    expect(defaultGateWatchRoots('/home/agent')[0]).toBe(path.join('/home/agent', '.papercusp', 'session-claude'));
   });
 });

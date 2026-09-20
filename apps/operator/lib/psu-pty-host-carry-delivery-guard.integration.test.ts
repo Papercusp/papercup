@@ -181,7 +181,11 @@ describe('carry-respawn native-turn delivery authority', () => {
         }
 
         expect(captured()).toContain('PAINT');
-        expect(events.filter((event) => event.kind === 'respawn-carry-turn-start-retry')).toHaveLength(1);
+        // The first retry is the verifier's raw CR retry. If that still cannot
+        // prove a native turn, production carry policy deliberately cuts one
+        // fresh epoch and verifies again; that second epoch has its own
+        // verifier retry. Both are expected and neither is delivery proof.
+        expect(events.filter((event) => event.kind === 'respawn-carry-turn-start-retry')).toHaveLength(2);
         expect(events).toContainEqual(expect.objectContaining({
           kind: 'turn-start-unverified',
           nativeId,
