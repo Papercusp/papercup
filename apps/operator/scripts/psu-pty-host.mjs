@@ -7010,9 +7010,16 @@ export function hostThroughPty(o) {
         // event log records the true reason.
         const superseded =
           msg.mode === 'carry-respawn' && isCarryRespawnSuperseded(msg.receivedAtMs, lastRespawnAtMs);
+        // Age expiry is a bounded DRILL safeguard only. A production
+        // carry-respawn is the successor's only context continuation and must
+        // remain deliverable even when the first busy-gate wait consumes the
+        // configured age window. Production carries are still rejected by the
+        // unconditional epoch-supersession check above, so an older snapshot
+        // cannot replace a newer successor.
         const stale =
           !superseded &&
           msg.mode === 'carry-respawn' &&
+          Boolean(msg.drillId) &&
           isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs });
         if (superseded || stale) {
           const ageMs = msg.receivedAtMs != null ? Date.now() - msg.receivedAtMs : null;

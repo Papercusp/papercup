@@ -609,6 +609,20 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     note: 'Sessions crossing the compaction band without flushing.',
   },
   {
+    name: 'installed-hook-drift-watchdog',
+    file: 'packages/operator-core/lib/system-health/installed-hook-drift-watchdog.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note: 'WI-10002031. Compares ~/.papercusp/hooks/cc (the copy that executes on every agent turn) against the canonical hooks under the integration root. The subject is plain files on disk written by an installer, not a component this timer depends on, so the executor sits outside the failure it targets.',
+  },
+  {
+    name: 'wedged-identity-activation-watchdog',
+    file: 'packages/operator-core/lib/system-health/wedged-identity-activation-watchdog.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note: 'WI-10002060. Finds sessions whose identity activation cannot be reconciled with their launch record, which makes the kernel refuse every tool for the life of that session. `recovers` is EMPTY deliberately: the failure is scoped to an individual AGENT session\'s authority, not to the operator this timer rides — the operator keeps serving every other session normally, which is precisely why nothing else notices. The wedged session cannot self-report (filing is itself a tool call), so being out-of-band is the whole point of the mechanism.',
+  },
+  {
     name: 'mid-turn-memory-admission-heartbeat',
     file: 'packages/operator-core/lib/memory/mid-turn-admission.ts',
     executor: 'operator-in-process-timer',
