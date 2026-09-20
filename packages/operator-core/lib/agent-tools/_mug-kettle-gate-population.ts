@@ -167,3 +167,59 @@ export const deletedVerbs = (): readonly MugKettleVerb[] =>
  * without guessing at each removed module's former path.
  */
 export const DELETED_TOOL_GROUP_DIRS: readonly string[] = Object.freeze(['cup', 'overwatch']);
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * PROSE DERIVATION (WI-10002068 step 2)
+ *
+ * Every prose statement of "which of these verbs refuse" used to be a hand-typed
+ * copy of the rows above — rung 4 (CURATED) where rung 1 (DERIVE) was available —
+ * and it drifted in BOTH directions, silently: a verb wrongly labelled REFUSES is
+ * simply never called, so it emits no error and leaves no trace.
+ *
+ * So the canonical sentence is RENDERED from the rows, dropped into each prose
+ * surface between the markers below, and byte-compared by
+ * `doc-claims/mug-kettle-verb-dispositions.test.ts`. The guard is an equality
+ * check, not an English parser: it cannot pass vacuously, and it cannot be made
+ * to pass by rewording.
+ *
+ * There is deliberately no `gen:` script. The block is ONE line; the guard's
+ * failure message prints the exact expected text, so the repair is a paste — a
+ * generator entrypoint would be a new durable surface earning nothing.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** Opening marker of the generated prose block. Must be unique per surface. */
+export const MUG_KETTLE_BLOCK_BEGIN =
+  '<!-- GENERATED mug-kettle-verb-dispositions — DO NOT HAND-EDIT. Derived from packages/operator-core/lib/agent-tools/_mug-kettle-gate-population.ts; pinned by packages/operator-core/lib/doc-claims/mug-kettle-verb-dispositions.test.ts -->';
+
+/** Closing marker of the generated prose block. */
+export const MUG_KETTLE_BLOCK_END = '<!-- /GENERATED mug-kettle-verb-dispositions -->';
+
+/** `a`, `b` and `c` — the Oxford-less list form the surrounding prose already uses. */
+function nameList(verbs: readonly MugKettleVerb[]): string {
+  const ticked = verbs
+    .map((v) => `\`${v.name}\``)
+    .slice()
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  if (ticked.length <= 1) return ticked.join('');
+  return `${ticked.slice(0, -1).join(', ')} and ${ticked[ticked.length - 1]}`;
+}
+
+/**
+ * The canonical one-line statement of the split, derived from `MUG_KETTLE_VERBS`.
+ *
+ * Kept to a single line on purpose: it is injected into prompt files that every
+ * su carries in context, and a line is the smallest unit a reader can diff by eye
+ * against the block they are reading.
+ */
+export function renderMugKettleDispositionProse(): string {
+  return [
+    `${nameList(excludedVerbs())} still WORK — never refuse them.`,
+    `${nameList(gatedVerbs())} REFUSE with \`mug_kettle_retired\` and perform no write.`,
+    `${nameList(deletedVerbs())} were DELETED outright and do not exist at all — a deleted verb is not a refusing one.`,
+  ].join(' ');
+}
+
+/** The full marker-delimited block, exactly as it must appear in every pinned surface. */
+export function renderMugKettleDispositionBlock(): string {
+  return `${MUG_KETTLE_BLOCK_BEGIN}\n${renderMugKettleDispositionProse()}\n${MUG_KETTLE_BLOCK_END}`;
+}
