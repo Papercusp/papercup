@@ -173,10 +173,9 @@ const goalUpdateArgs = z.object({
     .array(z.string())
     .optional()
     .describe(
-      'WI-10002016 — names the existing top-level launchSettings keys that a REPLACING write is allowed to delete. ' +
-        'Because launchSettings replaces the whole document, a partial patch like { maxAgents: 6 } deletes every sibling key; ' +
-        'that silently disarmed holder.onLoss respawn and defaults.account routing on a live goal. Such a write is now refused ' +
-        'and names the exact keys it would drop — pass them here to confirm the deletion is intended. ' +
+      'WI-10002016 — names the existing top-level launchSettings keys a REPLACING write may delete. ' +
+        'launchSettings replaces the whole document, so a partial patch like { maxAgents: 6 } drops every sibling key; ' +
+        'such a write is refused and names the exact keys — pass them here to confirm. ' +
         'To change one field WITHOUT touching the rest, re-send the existing keys alongside it; for holder policy use the `holder` arg, which merges.',
     ),
   reason: z
