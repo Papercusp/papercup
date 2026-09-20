@@ -367,6 +367,73 @@ describe('compact durable CTRL anchor', () => {
     expect(delivered?.budget.estimatedTokens).toBeGreaterThan(384);
   });
 
+  // WI-10002024: the CLASS guard. The test above enforces the CEILING; this one
+  // pins the FAILURE MODE, which is what actually bricked a session.
+  //
+  // A budget guard must never be able to cost more than the thing it rations.
+  // turn-start-memory's controlPromise SWALLOWS a throw from the renderer, so
+  // throwing does not report an overflow to anybody — it silently deletes the
+  // ⟦CTRL⟧ block carrying the session's authority state and its only recovery
+  // signal (WI-10002005 / WI-10002017). Overflow must therefore DEGRADE: mark
+  // it, and deliver it anyway. This test goes red if the throw is ever restored.
+  it('DELIVERS and MARKS an over-budget control state instead of throwing it away', () => {
+    // Built from the NORMALIZER'S OWN MAXIMA, so this overflow is reachable in
+    // production rather than synthetic: MAX_SCOPE_ITEMS=12 entries of
+    // MAX_ID_CHARS=120 is the largest scope a normalized state can carry.
+    const fat = state({
+      modes: ['auto', 'ideate', 'drain', 'audit'],
+      stack: [
+        'autonomy:su.mode-auto',
+        'ideation:su.mode-ideate',
+        'objective:su.mode-drain',
+        'fleet-posture:su.fleet-member',
+      ],
+      wakeSource: 'loop',
+      carry: 'cold',
+      route: {
+        kind: 'fleet',
+        fleet: 'goal-drain-work-on-everything-fresh-grading-and-impro-60d3a8',
+        role: 'member',
+      },
+      activation: {
+        schemaVersion: 1,
+        attribution: {
+          actorId: 'su-56d0a9bd-9c98-4c87-8e0d-ab9ddf15ba8f',
+          principalId: 'system:superuser',
+          sessionId: 'su-56d0a9bd-9c98-4c87-8e0d-ab9ddf15ba8f',
+        },
+        desired: { specificationRevision: 'a'.repeat(64), stateRevision: 'a'.repeat(24) },
+        prepared: null,
+        applied: { specificationRevision: 'b'.repeat(64), stateRevision: 'b'.repeat(24) },
+        status: 'desired',
+      },
+      scope: {
+        workspace: 'papercusp-workspace',
+        harness: 'papercusp',
+        plan: 'a-deliberately-long-plan-slug-for-the-budget-overflow-guard',
+        items: Array.from({ length: 12 }, (_, i) => `P-${String(i + 1).padStart(3, '0')}-${'x'.repeat(114)}`),
+      },
+    } as Partial<ControlAnchorState>);
+
+    const input = {
+      ownerId: 'su-56d0a9bd-9c98-4c87-8e0d-ab9ddf15ba8f',
+      generation: 17,
+      state: fat,
+      updatedAt: '2026-09-20T04:25:43.092Z',
+    };
+
+    expect(() => renderControlAnchor(input)).not.toThrow();
+    const anchor = renderControlAnchor(input);
+
+    // The overflow is real, and it is REPORTED rather than hidden...
+    expect(anchor.budget.estimatedTokens).toBeGreaterThan(CONTROL_ANCHOR_MAX_TOKENS);
+    expect(anchor.budget.overBudget).toBe(true);
+    // ...and the payload SURVIVED it, which is the entire point of the change.
+    expect(anchor.state.scope.items).toHaveLength(12);
+    expect(anchor.state.modes).toContain('auto');
+    expect(anchor.stateHash).toBeTruthy();
+  });
+
   it('separates prepare from acknowledgement so a render failure leaves the generation pending', async () => {
     const transition = {
       schemaVersion: CONTROL_TRANSITION_SCHEMA,
