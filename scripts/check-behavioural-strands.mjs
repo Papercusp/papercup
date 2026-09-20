@@ -803,14 +803,23 @@ function outputObjectStructuralIdentity(objectLiteral, sourceFile, fileName) {
   return `${callable}|${context.reverse().join('>') || 'root'}|shape:${shape}`;
 }
 
-/** Collect output values with an object identity in addition to the legacy property map. */
-export function collectOutputPropertyRecords(sourceText, fileName = 'file.ts') {
-  let sourceFile;
+/**
+ * Parse once per source text. Both the value collector and the return-topology collector
+ * walk the same tree, and `ts.createSourceFile` dominates their cost — parsing per collector
+ * measured a 93.5% regression on this file's own CLI path, which runs in an edit-time hook.
+ */
+function parseOutputSource(sourceText, fileName) {
   try {
-    sourceFile = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    return ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   } catch {
-    return [];
+    return null;
   }
+}
+
+/** Collect output values with an object identity in addition to the legacy property map. */
+export function collectOutputPropertyRecords(sourceText, fileName = 'file.ts', parsed = undefined) {
+  const sourceFile = parsed ?? parseOutputSource(sourceText, fileName);
+  if (!sourceFile) return [];
 
   const records = [];
   const visit = (node) => {
@@ -855,14 +864,179 @@ export function collectOutputPropertyValues(sourceText, fileName = 'file.ts') {
 }
 
 /**
+ * Name a callable stably enough to pair it across two versions of one file.
+ *
+ * Source position is deliberately NOT part of the key: an inserted branch shifts every
+ * offset below it, which is exactly the drift this pairing has to survive.
+ */
+function namedCallableKey(node, sourceFile) {
+  if (node.name && ts.isIdentifier(node.name)) return node.name.getText(sourceFile);
+  const parent = node.parent;
+  if (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
+    return parent.name.getText(sourceFile);
+  }
+  if (parent && ts.isPropertyAssignment(parent)) return propertyNameText(parent.name);
+  return null;
+}
+
+function isCallableNode(node) {
+  return (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node)
+  );
+}
+
+/** The `if`/`case` that gates this return, or null when the return is reached unconditionally. */
+function gatingBranchText(returnStatement, body, sourceFile, fileName) {
+  let current = returnStatement.parent;
+  while (current && current !== body) {
+    if (ts.isIfStatement(current)) {
+      const branch = isWithinNode(returnStatement, current.thenStatement, current) ? 'then' : 'else';
+      return `if:${normalisedExpressionText(current.expression, sourceFile, fileName)}:${branch}`;
+    }
+    if (ts.isCaseClause(current)) {
+      return `case:${normalisedExpressionText(current.expression, sourceFile, fileName)}`;
+    }
+    if (ts.isDefaultClause(current)) return 'case:<default>';
+    if (
+      ts.isForStatement(current) ||
+      ts.isForOfStatement(current) ||
+      ts.isForInStatement(current) ||
+      ts.isWhileStatement(current) ||
+      ts.isDoStatement(current) ||
+      ts.isTryStatement(current) ||
+      ts.isCatchClause(current)
+    ) {
+      // Not a predicate we can pair across versions. Naming it conservatively means a new
+      // return inside a loop/try is treated as pre-existing rather than as an interception.
+      return 'gated:loop-or-try';
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
+/**
+ * Per callable: its unconditional fallthrough return, plus every return with its gate.
+ *
+ * This is the discriminator the value diff cannot supply. An inserted guarded return is
+ * HARMLESS when unmatched inputs previously fell off the end of the callable — nothing
+ * observable changed for them, which is precisely why `diffOutputValues` drops unpaired
+ * insertions. It is a BEHAVIOURAL CHANGE when the callable ends in an unconditional return,
+ * because the inputs the new predicate matches used to reach THAT return. Both shapes present
+ * to the value diff identically ("the group grew by one"), so only the enclosing callable's
+ * return topology separates them.
+ */
+function callableReturnTopology(sourceText, fileName = 'file.ts', parsed = undefined) {
+  const sourceFile = parsed ?? parseOutputSource(sourceText, fileName);
+  if (!sourceFile) return new Map();
+
+  const topology = new Map();
+  const record = (node) => {
+    if (!isCallableNode(node) || !node.body || !ts.isBlock(node.body)) return;
+    const key = namedCallableKey(node, sourceFile);
+    if (!key) return;
+    if (topology.has(key)) {
+      // Two callables share this name, so pairing them across versions would be a guess.
+      topology.set(key, null);
+      return;
+    }
+    const body = node.body;
+    const returns = [];
+    const collect = (current) => {
+      if (isCallableNode(current)) return; // a nested callable owns its own returns
+      if (ts.isReturnStatement(current) && current.expression) {
+        const objectLiteral = ts.isObjectLiteralExpression(current.expression) ? current.expression : null;
+        returns.push({
+          gate: gatingBranchText(current, body, sourceFile, fileName),
+          pos: current.getStart(sourceFile),
+          expressionText: normalisedExpressionText(current.expression, sourceFile, fileName),
+          properties: objectLiteral
+            ? new Map(
+                objectLiteral.properties
+                  .filter((property) => ts.isPropertyAssignment(property) && propertyNameText(property.name))
+                  .map((property) => [
+                    propertyNameText(property.name),
+                    normalisedExpressionText(property.initializer, sourceFile, fileName),
+                  ]),
+              )
+            : null,
+        });
+      }
+      ts.forEachChild(current, collect);
+    };
+    ts.forEachChild(body, collect);
+
+    const fallthrough = [...returns].reverse().find((entry) => entry.gate === null) ?? null;
+    topology.set(key, { fallthrough, returns });
+  };
+
+  const visit = (node) => {
+    record(node);
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return topology;
+}
+
+/**
+ * Output properties whose value changed for inputs that ALREADY EXISTED, because a guarded
+ * return was inserted above the callable's unconditional fallthrough return.
+ *
+ * Reported separately from `value-changed` because nothing was rewritten: every pre-existing
+ * expression is still present, and the strand comes from traffic being re-routed away from
+ * the fallthrough. The stranded tests are the ones asserting the fallthrough's values for an
+ * input the new predicate now intercepts.
+ */
+function interceptingBranchChanges(beforeText, afterText, fileName = 'file.ts', parsedBefore = undefined, parsedAfter = undefined) {
+  const before = callableReturnTopology(beforeText, fileName, parsedBefore);
+  const after = callableReturnTopology(afterText, fileName, parsedAfter);
+  const changes = [];
+
+  for (const [key, afterEntry] of after) {
+    const beforeEntry = before.get(key);
+    if (!afterEntry || !beforeEntry) continue;
+
+    // BOTH versions must end in an unconditional return. Absent in BEFORE, unmatched inputs
+    // returned undefined and the new branch is genuinely additive. Absent in AFTER, the
+    // callable lost its fallthrough — a larger change than an interception.
+    const fallthrough = beforeEntry.fallthrough;
+    if (!fallthrough || !afterEntry.fallthrough) continue;
+
+    const existingGates = new Set(beforeEntry.returns.map((entry) => entry.gate).filter(Boolean));
+    for (const candidate of afterEntry.returns) {
+      if (!candidate.gate || !candidate.properties) continue;
+      if (existingGates.has(candidate.gate)) continue; // the predicate already existed
+      if (candidate.pos > afterEntry.fallthrough.pos) continue; // below the fallthrough: unreachable
+
+      for (const [property, afterValue] of candidate.properties) {
+        // An opaque fallthrough (a helper call) hides its own per-property values, so the
+        // whole expression is the honest "before": a reader used to get whatever it returned.
+        const beforeValue = fallthrough.properties ? fallthrough.properties.get(property) : fallthrough.expressionText;
+        if (beforeValue === undefined) continue; // the fallthrough never emitted this property
+        if (beforeValue === afterValue) continue;
+        changes.push({ property, before: beforeValue, after: afterValue, reason: 'branch-intercepts-fallthrough' });
+      }
+    }
+  }
+  return changes;
+}
+
+/**
  * Output properties whose value expression changed between two versions of a writer.
  * Only properties present in both versions are reported: a newly-added property has no
  * pre-existing reader that could be stranded by this edit (the required-field guard owns
  * the separate "new shape" case).
  */
 export function diffOutputValues(beforeText, afterText, fileName = 'file.ts') {
-  const beforeRecords = collectOutputPropertyRecords(beforeText, fileName);
-  const afterRecords = collectOutputPropertyRecords(afterText, fileName);
+  // Parse each side ONCE and share the tree with both collectors below.
+  const parsedBefore = parseOutputSource(beforeText, fileName);
+  const parsedAfter = parseOutputSource(afterText, fileName);
+  const beforeRecords = collectOutputPropertyRecords(beforeText, fileName, parsedBefore);
+  const afterRecords = collectOutputPropertyRecords(afterText, fileName, parsedAfter);
   const beforeByIdentity = new Map();
   const afterByIdentity = new Map();
   for (const record of beforeRecords) {
@@ -905,6 +1079,15 @@ export function diffOutputValues(beforeText, afterText, fileName = 'file.ts') {
       }
     }
   }
+  // An inserted branch is never an unpaired "rewrite", so the loop above deliberately drops
+  // it. Recover the harmful subset of those insertions from the callable's return topology.
+  for (const intercepting of interceptingBranchChanges(beforeText, afterText, fileName, parsedBefore, parsedAfter)) {
+    const alreadyReported = changes.some(
+      (existing) => existing.property === intercepting.property && existing.after === intercepting.after,
+    );
+    if (!alreadyReported) changes.push(intercepting);
+  }
+
   return changes.sort((a, b) => a.property.localeCompare(b.property) || a.before.localeCompare(b.before));
 }
 

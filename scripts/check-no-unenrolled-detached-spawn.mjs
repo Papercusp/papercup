@@ -128,6 +128,27 @@ export const ALLOWLIST = new Map([
   // orphaning grandchildren. Nothing outlives the call, so a ledger row would be born
   // and closed inside one invocation.
   ['packages/operator-core/lib/release/dependency-generation-prebuild.ts', 'detached ONLY to lead a process group so a timeout group-kills the prebuild; the child is awaited and dies with the call'],
+  // Same category-(2) shape, verified first-hand before adding (WI-10002061).
+  // `dumpWorkspace` wraps the spawn in a Promise with a `settled` flag and a single
+  // `finalize()` that always resolve()s; `detached: dumpDetached` exists solely so
+  // `terminateSpawnTree` can `process.kill(-child.pid)` the guard->pg_dump tree, and
+  // FIVE paths call killDumpTree() before finalizing (PG_DUMP_TIMEOUT_MS watchdog, gz
+  // error, out-stream error, gz.stdin EPIPE, dump.stdout EPIPE). The irony is the point:
+  // this `detached` IS the WI-10000839 fix for an orphaned pg_dump grandchild that
+  // inherited the guard flock and blocked the hourly recovery-point dump for hours —
+  // i.e. the remedy for exactly the harm this guard exists to prevent.
+  // NOTE: enrolment is not merely unnecessary here, it is architecturally UNAVAILABLE —
+  // @papercusp/backup declares dependencies:{} and operator-core depends on IT (see
+  // host-dump-coverage.ts:232), so importing the operator-core enrolment seam would
+  // invert the layer graph. That constraint is real but secondary: category (2) would
+  // not be enrolled even if the import were free.
+  ['packages/backup/src/hook.ts', 'detached ONLY to lead a process group so the watchdog group-kills the guard->pg_dump tree; the child is awaited and dies with the call'],
+  // Same category-(2) shape, verified first-hand before adding (WI-10002061): the option
+  // is literally named `ownsProcessGroup`, the child is awaited behind a `settled` flag,
+  // and `killTransport()` does `process.kill(-child.pid, 'SIGKILL')`. ssh launches gcloud
+  // as its ProxyCommand, so without an isolated group a failure bound reaches only ssh
+  // and orphans the proxy — the group is what makes the tree killable, not escapable.
+  ['packages/operator-core/lib/workspace-host/gcp-iap-initialization-operations.ts', 'detached ONLY to lead a process group so a failure bound group-kills the ssh->gcloud proxy tree; the child is awaited and dies with the call'],
 
   // ── one-shot host/dev plumbing, not fleet work ───────────────────────────
   // NOTE: this file serves TWO shapes and only ONE of them is exempt. The HEADLESS

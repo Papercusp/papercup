@@ -105,6 +105,43 @@ const INSERTED_OUTPUT_AFTER = `
   }
 `;
 
+// EI-23776710603159495 — an inserted guarded return ABOVE an unconditional fallthrough return.
+// Unlike INSERTED_OUTPUT above (whose callable has no fallthrough, so unmatched rows already
+// returned undefined), the inputs this new predicate matches USED TO reach the fallthrough, so
+// what they observe has changed. The two shapes are indistinguishable to the value diff.
+const INTERCEPTING_OPAQUE_BEFORE = `
+  export function evaluateIdentityCapability(request) {
+    if (request.trusted) {
+      return { decision: 'allow', code: 'trusted', applied: false };
+    }
+    return denial('stale-artifact', request);
+  }
+`;
+const INTERCEPTING_OPAQUE_AFTER = `
+  export function evaluateIdentityCapability(request) {
+    if (request.trusted) {
+      return { decision: 'allow', code: 'trusted', applied: false };
+    }
+    if (request.toolName === 'coord:orient') {
+      return { decision: 'allow', code: 'identity-recovery', applied: false };
+    }
+    return denial('stale-artifact', request);
+  }
+`;
+const INTERCEPTING_LITERAL_BEFORE = `
+  export function evaluateCapability(request) {
+    return { decision: 'deny', code: 'capability_unsatisfied', applied: true };
+  }
+`;
+const INTERCEPTING_LITERAL_AFTER = `
+  export function evaluateCapability(request) {
+    if (request.toolName === 'coord:orient') {
+      return { decision: 'allow', code: 'identity-recovery', applied: false };
+    }
+    return { decision: 'deny', code: 'capability_unsatisfied', applied: true };
+  }
+`;
+
 describe('the trigger: a seam gained call sites', () => {
   it('counts only calls rooted at a FUNCTION PARAMETER — an injected collaborator', () => {
     const counts = seamCallCounts(SHARED_LIB_AFTER, 'hybrid.ts');
@@ -255,6 +292,69 @@ describe('the second trigger: a writer output value changed', () => {
         reason: 'value-changed',
       },
     ]);
+  });
+
+  // EI-23776710603159495 — the detector returned EXIT=0 ("checked, no strands") on a change
+  // that DID strand a sibling suite. The discriminator is the enclosing callable's fallthrough
+  // return, because both the harmful and the harmless insertion present to the value diff
+  // identically: an unpaired branch whose group grew by one.
+  it('reports an inserted branch that INTERCEPTS traffic which used to reach the fallthrough return', () => {
+    expect(diffOutputValues(INTERCEPTING_LITERAL_BEFORE, INTERCEPTING_LITERAL_AFTER, 'capability.ts')).toEqual([
+      { property: 'applied', before: 'true', after: 'false', reason: 'branch-intercepts-fallthrough' },
+      {
+        property: 'code',
+        before: '"capability_unsatisfied"',
+        after: '"identity-recovery"',
+        reason: 'branch-intercepts-fallthrough',
+      },
+      { property: 'decision', before: '"deny"', after: '"allow"', reason: 'branch-intercepts-fallthrough' },
+    ]);
+  });
+
+  it('reports an interception even when the fallthrough is an opaque helper CALL, not an object literal', () => {
+    // The before-side collects no properties at all here, so a value diff has nothing to pair.
+    // The honest "before" is the whole fallthrough expression: that is what a reader used to get.
+    expect(collectOutputPropertyValues(INTERCEPTING_OPAQUE_BEFORE, 'identity.ts').get('decision')).toEqual([
+      '"allow"',
+    ]);
+    expect(diffOutputValues(INTERCEPTING_OPAQUE_BEFORE, INTERCEPTING_OPAQUE_AFTER, 'identity.ts')).toEqual([
+      {
+        property: 'applied',
+        before: 'denial("stale-artifact", request)',
+        after: 'false',
+        reason: 'branch-intercepts-fallthrough',
+      },
+      {
+        property: 'code',
+        before: 'denial("stale-artifact", request)',
+        after: '"identity-recovery"',
+        reason: 'branch-intercepts-fallthrough',
+      },
+      {
+        property: 'decision',
+        before: 'denial("stale-artifact", request)',
+        after: '"allow"',
+        reason: 'branch-intercepts-fallthrough',
+      },
+    ]);
+  });
+
+  it('stays silent for an ADDITIVE branch: no fallthrough return means unmatched inputs already returned undefined', () => {
+    // This is the false-positive class the structural-identity pairing was added to prevent,
+    // re-asserted here against the interception rule specifically. `classifyReservation` ends
+    // its guard chain with no unconditional return, so nothing was re-routed.
+    expect(diffOutputValues(INSERTED_OUTPUT_BEFORE, INSERTED_OUTPUT_AFTER, 'reservation.ts')).toEqual([]);
+  });
+
+  it('stays silent for a branch inserted BELOW the fallthrough, which no input can reach', () => {
+    const unreachable = INTERCEPTING_LITERAL_BEFORE.replace(
+      "return { decision: 'deny', code: 'capability_unsatisfied', applied: true };",
+      "return { decision: 'deny', code: 'capability_unsatisfied', applied: true };\n" +
+        "    if (request.toolName === 'coord:orient') {\n" +
+        "      return { decision: 'allow', code: 'identity-recovery', applied: false };\n" +
+        '    }',
+    );
+    expect(diffOutputValues(INTERCEPTING_LITERAL_BEFORE, unreachable, 'capability.ts')).toEqual([]);
   });
 
   it('also recognizes an object passed directly to a writer call', () => {
