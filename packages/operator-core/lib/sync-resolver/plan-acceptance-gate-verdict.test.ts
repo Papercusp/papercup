@@ -40,7 +40,7 @@ vi.mock('../acceptance-bar-contract-snapshot', () => ({
 import { resolvePlanAcceptanceGateVerdict } from './plan-acceptance-gate-verdict';
 import { getBuildInfo } from '../build-info';
 
-const ARGS = { workspaceId: 'default', harnessSlug: 'papercusp', planSlug: 'p-1' };
+const ARGS = { workspaceId: 'default', planSlug: 'p-1' };
 
 type Row = {
   planSlug: string;
@@ -75,6 +75,29 @@ beforeEach(() => {
 });
 
 describe('P-011 acceptance-gate read — never flatten a non-check into a pass', () => {
+  it('threads the exact subject harness to both canonical readers', async () => {
+    gateSpy.mockResolvedValue({ satisfied: false, code: 'acceptance_bar_contract_not_ready' });
+    await run({ ...ARGS, harnessSlug: 'other-home' });
+    expect(gateSpy).toHaveBeenCalledWith('p-1', { harnessSlug: 'other-home' });
+    expect(snapshotSpy).toHaveBeenCalledWith('p-1', {}, { harnessSlug: 'other-home' });
+  });
+
+  it('preserves the same observation repair context even when the later snapshot is unavailable', async () => {
+    const repairAction = {
+      kind: 'author-verdict', nextVerb: { name: 'scorecards:get', args: { issueId: 'EI-grade' } },
+    };
+    const acceptanceBarLifecycle = { phase: 'ship', codes: ['bar_snapshot_author_verdict_missing'] };
+    gateSpy.mockResolvedValue({
+      satisfied: false, code: 'acceptance_not_recorded', gradingRef: 'EI-grade',
+      repairAction, acceptanceBarLifecycle,
+    });
+    snapshotSpy.mockRejectedValue(new Error('later snapshot unavailable'));
+    expect(await run()).toMatchObject({
+      code: 'acceptance_not_recorded', gradingRef: 'EI-grade', repairAction, acceptanceBarLifecycle,
+      acceptanceBarContractSnapshotUnavailableReason: 'later snapshot unavailable',
+    });
+  });
+
   it('asks the gate about the plan it was given', async () => {
     gateSpy.mockResolvedValue({ satisfied: true });
     await run();

@@ -768,6 +768,11 @@ describe('evaluatePlanAcceptanceGate', () => {
       code: 'acceptance_not_recorded',
       rubricId: 'ar-some-plan',
       gradedBy: 'su-grader',
+      gradingRef: 'EI-1',
+      repairAction: {
+        kind: 'author-verdict',
+        nextVerb: { name: 'scorecards:get', args: { issueId: 'EI-1' } },
+      },
     });
     // WI-10001843: the refusal must name the repair verb's COMPLETE contract. Advertising
     // only 'accept'|'reject' omitted the third valid enum value and steered the reader toward

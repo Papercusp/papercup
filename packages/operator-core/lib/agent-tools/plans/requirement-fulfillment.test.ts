@@ -62,6 +62,21 @@ describe('requirement fulfillment at the actual ship door', () => {
     } as never);
     expect(JSON.stringify(result)).toContain('acceptance_bar_contract_not_ready');
     expect(JSON.stringify(result)).toContain('bar_snapshot_proof_inadequate');
+    const body = (result as { data: { results: unknown[] } }).data;
+    expect(body.results[0]).toMatchObject({
+      ok: false, code: 'acceptance_bar_contract_not_ready',
+      acceptanceBarLifecycle: {
+        phase: 'ship', codes: ['bar_snapshot_proof_inadequate'],
+        blockingBars: [{ barKey: 'R-1', codes: ['bar_snapshot_proof_inadequate'] }],
+      },
+      repairAction: {
+        kind: 'diagnostic',
+        nextVerb: {
+          name: 'plans:get',
+          args: { slug: 'wallet-plan', harness: 'papercusp', mode: 'meta', shipReadiness: true, current },
+        },
+      },
+    });
     expect(withPlanLock).not.toHaveBeenCalled();
     expect(readAcceptanceBarContractSnapshot).toHaveBeenCalledWith(
       'wallet-plan',

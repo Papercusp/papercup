@@ -201,7 +201,7 @@ describe('plans:get — shipReadiness', () => {
     await run({ slug: 'alpha', shipReadiness: true, current });
 
     expect(M.resolvePlanAcceptanceGateVerdict).toHaveBeenCalledWith(
-      expect.objectContaining({ planSlug: 'alpha', current }),
+      expect.objectContaining({ planSlug: 'alpha', harnessSlug: 'papercup', current }),
     );
   });
 

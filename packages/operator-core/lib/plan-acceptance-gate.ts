@@ -70,12 +70,22 @@ import {
 } from './plan-requirement-realization';
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
 import { citationDeploymentForPaths, type CitationDeployment } from './deployment-position';
-import { readAndEvaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
+import { readAndEvaluateAcceptanceBarLifecycle, type AcceptanceBarLifecycleVerdict } from './acceptance-bar-lifecycle-evaluator';
 import { splitPlanSections } from './agent-tools/plans/plan-sections';
 import { planDesignEvidenceGate } from './agent-tools/work_items/design-evidence-gate';
 import { getBuildInfo, type BuildInfo } from './build-info';
 
 export type { CitationDeployment };
+
+/** A route, not permission to write. Only nextVerb has complete, executable args. */
+export interface PlanAcceptanceRepairAction {
+  kind: 'diagnostic' | 'contract-repair' | 'rubric-vetting' | 'independent-grading'
+    | 'author-verdict' | 'evidence-repair' | 'shipment' | 'terminal';
+  nextVerb: { name: string; args: Record<string, unknown> } | null;
+  /** The eventual write needs authored evidence/arguments; never execute this as a call. */
+  repairVerb?: string;
+  instruction: string;
+}
 
 export type PlanAcceptanceGateCode =
   | 'acceptance_rubric_missing'
@@ -163,6 +173,11 @@ export interface PlanAcceptanceGateVerdict {
   requirementDroppedTargets?: DroppedTarget[];
   /** Why the gate refused (satisfied:false). */
   code?: PlanAcceptanceGateCode;
+  /** Preserve the SAME lifecycle observation that refused; do not re-read to explain it. */
+  acceptanceBarLifecycle?: Omit<AcceptanceBarLifecycleVerdict, 'nonCodeItemProofs'>;
+  /** Exact authoritative grading to read before recording an author verdict. */
+  gradingRef?: string;
+  repairAction?: PlanAcceptanceRepairAction;
   /** Teaching message for the refusal — the authoring/grading nudge (P-004). */
   message?: string;
   /** The acceptance rubric involved, when one exists. */
@@ -519,6 +534,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       if (expectedApplicable && !barLifecycle.applicable) {
         return {
           satisfied: false, code: 'acceptance_bar_contract_not_ready',
+          acceptanceBarLifecycle: barLifecycle,
           message: `plan '${planSlug}' has original requirements but no verifiable requirement contract. ` +
             'Adopt the complete original requirement set and its work mappings before shipment; an as-built rubric or disclosure cannot replace it. This is not waived by force.',
         };
@@ -527,6 +543,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         const refusal: PlanAcceptanceGateVerdictWithoutBuildProvenance = {
           satisfied: false,
           code: 'acceptance_bar_contract_not_ready',
+          acceptanceBarLifecycle: barLifecycle,
           message:
             barLifecycle.message ?? `plan '${planSlug}' cannot be marked shipped: acceptance BAR contract is not ready`,
         };
@@ -1345,6 +1362,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       satisfied: false,
       code: 'acceptance_not_recorded',
       rubricId: rubric.rubricId,
+      gradingRef: independent.issueId,
       gradedBy: independent.createdBy ?? null,
       gradedVia: independentVia,
       ...(unknownRatedCriteria.length > 0 ? { unknownRatedCriteria } : {}),
@@ -1365,6 +1383,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       satisfied: false,
       code: 'acceptance_rejected',
       rubricId: rubric.rubricId,
+      gradingRef: independent.issueId,
       gradedBy: independent.createdBy ?? null,
       gradedVia: independentVia,
       ...(unknownRatedCriteria.length > 0 ? { unknownRatedCriteria } : {}),
@@ -1400,16 +1419,97 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   };
 }
 
-/**
- * Evaluate the shared ship gate and stamp the result with the identity of the
- * loaded operator that produced it. The internal evaluator keeps its many
- * short-circuit returns focused on verdict semantics; this boundary guarantees
- * every direct result carries the same build identity, including refusals.
- */
+/** Route the observed refusal; never parse a prose hint into executable arguments. */
+export function planAcceptanceRepairAction(
+  planSlug: string,
+  verdict: PlanAcceptanceGateVerdictWithoutBuildProvenance,
+  opts: PlanAcceptanceGateOpts = {},
+): PlanAcceptanceRepairAction {
+  const scope = { slug: planSlug, ...(opts.harnessSlug ? { harness: opts.harnessSlug } : {}) };
+  const proof = opts.current ? { current: opts.current } : {};
+  const diagnostic = {
+    name: 'plans:get',
+    args: { ...scope, mode: 'meta', shipReadiness: true, ...proof },
+  };
+  const ship = {
+    name: 'plans:set-plan-status',
+    // The gate also serves legacy ready/active plans. Do not invent a CAS
+    // precondition for a status this observation does not carry.
+    args: { ...scope, status: 'shipped', ...proof },
+  };
+  const instruction = verdict.message ?? 'Read the current scoped acceptance gate before choosing a repair.';
+  if (verdict.satisfied) {
+    return verdict.skipped === 'already-shipped'
+      ? { kind: 'terminal', nextVerb: null, instruction: 'Already shipped; do not reopen acceptance.' }
+      : {
+          kind: 'shipment', nextVerb: ship,
+          instruction: 'The gate permits a ship attempt, not a completed shipment. Keep acceptance accountability until the lifecycle write succeeds. Preserve any skipped/waiver disclosures.',
+        };
+  }
+  if (verdict.code === 'acceptance_ungraded' || verdict.code === 'self_graded_only') {
+    return {
+      kind: 'independent-grading', nextVerb: ship,
+      instruction: 'Retry through the existing idempotent grader recruiter; its lifecycle and the grading sweep own dispatch/recovery. Do not self-grade or launch a parallel reviewer.',
+    };
+  }
+  if (verdict.code === 'acceptance_not_recorded' || verdict.code === 'acceptance_rejected') {
+    return {
+      kind: 'author-verdict',
+      nextVerb: verdict.gradingRef ? { name: 'scorecards:get', args: { issueId: verdict.gradingRef } } : diagnostic,
+      repairVerb: 'scorecards:emit',
+      instruction: `${instruction} Read the authoritative grading first, then supply acceptanceOf and an authored acceptance verdict/reasoning; never invent ratings or supersede the independent card.`,
+    };
+  }
+  if (verdict.code === 'acceptance_rubric_unvetted') {
+    return {
+      kind: 'rubric-vetting',
+      nextVerb: verdict.rubricId ? { name: 'rubrics:get', args: { rubricRef: verdict.rubricId } } : diagnostic,
+      repairVerb: 'consult:get_feedback',
+      instruction,
+    };
+  }
+  if (verdict.code === 'acceptance_bar_contract_not_ready') {
+    // D-022: this code ALSO means identity/read/adoption failure. Neither its
+    // spelling nor prose is evidence that the rubric needs mutation.
+    const lifecycle = verdict.acceptanceBarLifecycle;
+    const repair = lifecycle?.nextRepair;
+    const code = repair && lifecycle.codes.includes(repair.code) ? repair.code : undefined;
+    const context = code ? repair!.action : instruction;
+    if (code === 'bar_snapshot_vetting_missing' || code === 'bar_snapshot_vetting_stale') {
+      return { kind: 'rubric-vetting', nextVerb: diagnostic, repairVerb: 'consult:get_feedback', instruction: context };
+    }
+    if (code === 'bar_snapshot_author_verdict_missing' || code === 'bar_snapshot_author_verdict_stale' ||
+        code === 'bar_snapshot_author_rejected') {
+      return { kind: 'author-verdict', nextVerb: diagnostic, repairVerb: 'scorecards:emit', instruction: context };
+    }
+    if (code && [
+      'bar_snapshot_method_missing', 'bar_snapshot_falsifier_missing', 'bar_snapshot_check_missing',
+      'bar_snapshot_check_invalid', 'bar_snapshot_role_invalid', 'bar_snapshot_mandatory_invalid',
+      'bar_snapshot_scope_invalid', 'bar_snapshot_pass_ratings_invalid', 'bar_snapshot_coverage_invalid',
+    ].includes(code)) {
+      return {
+        kind: 'contract-repair', nextVerb: diagnostic, repairVerb: 'rubrics:amend',
+        instruction: `${context} Inspect the canonical contract, author the measured BAR/METHOD/check correction, then use rubrics:amend dryRun and its approval/apply flow. No replacement text or approval is inferred.`,
+      };
+    }
+    // A proof/grading/read failure never becomes an amendment or grader launch
+    // just because it shares the umbrella contract code.
+    return { kind: 'diagnostic', nextVerb: diagnostic, instruction: context };
+  }
+  if (verdict.code === 'acceptance_rubric_missing') {
+    return { kind: 'contract-repair', nextVerb: diagnostic, repairVerb: 'rubrics:propose', instruction };
+  }
+  if (['acceptance_unaudited', 'audit_coverage_stale', 'audit_citations_unresolved', 'requirement_unrealized']
+    .includes(verdict.code ?? '')) {
+    return { kind: 'evidence-repair', nextVerb: diagnostic, repairVerb: 'plans:audit', instruction };
+  }
+  return { kind: 'diagnostic', nextVerb: diagnostic, instruction };
+}
+
 export async function evaluatePlanAcceptanceGate(
   planSlug: string,
   opts: PlanAcceptanceGateOpts = {},
 ): Promise<PlanAcceptanceGateVerdict> {
   const verdict = await evaluatePlanAcceptanceGateWithoutBuildProvenance(planSlug, opts);
-  return { ...verdict, buildProvenance: getBuildInfo() };
+  return { ...verdict, repairAction: planAcceptanceRepairAction(planSlug, verdict, opts), buildProvenance: getBuildInfo() };
 }

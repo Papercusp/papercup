@@ -1271,14 +1271,12 @@ export default defineTool({
         try {
           const { resolvePlanAcceptanceGateVerdict } = await import('../../sync-resolver/plan-acceptance-gate-verdict');
           const rows = await resolvePlanAcceptanceGateVerdict({
-            // The resolver's own contract: this arg "rides for registry
-            // consistency and to key the subscription rather than being
-            // threaded in" — the gate resolves its harness scope from the plan
-            // row itself. So the schema's own default is the honest value here;
-            // inventing a workspace id would imply a scoping that does not
-            // happen.
+            // Workspace rides for subscription identity; the resolved subject
+            // harness below scopes BOTH the gate and BAR snapshot. Never borrow
+            // a same-slug sibling while following a refusal's diagnostic read.
             workspaceId: 'default',
             planSlug: slug,
+            ...(typeof result.harness === 'string' ? { harnessSlug: result.harness } : {}),
             ...(args.current ? { current: args.current } : {}),
           });
           result.shipReadiness = rows[0];

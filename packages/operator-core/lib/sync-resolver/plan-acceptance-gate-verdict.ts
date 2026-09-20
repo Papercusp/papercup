@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { AcceptanceBarContractSnapshot } from '../acceptance-bar-contract-snapshot';
 import { evidenceCurrentInputSchema } from '../agent-tools/plans/spec-evidence-store';
 import { getBuildInfo, type BuildInfo } from '../build-info';
+import type { PlanAcceptanceGateVerdict } from '../plan-acceptance-gate';
 
 /**
  * P-011 — the READ surface for a plan's ACCEPTANCE GATE verdict.
@@ -50,6 +51,7 @@ export const planAcceptanceGateArgsSchema = z.object({
   // registry consistency and to key the subscription rather than being threaded in.
   workspaceId: z.string().default('default'),
   planSlug: z.string().min(1),
+  harnessSlug: z.string().min(1).optional(),
   current: z
     .array(evidenceCurrentInputSchema)
     .max(2000)
@@ -101,6 +103,9 @@ export interface PlanAcceptanceGateVerdictRow {
   acceptanceBarContractSnapshot: AcceptanceBarContractSnapshot | null;
   /** A snapshot module/read failure never erases a real gate verdict. */
   acceptanceBarContractSnapshotUnavailableReason: string | null;
+  acceptanceBarLifecycle?: PlanAcceptanceGateVerdict['acceptanceBarLifecycle'];
+  gradingRef?: string;
+  repairAction?: PlanAcceptanceGateVerdict['repairAction'];
 }
 
 export async function resolvePlanAcceptanceGateVerdict(args: PlanAcceptanceGateArgs): Promise<unknown[]> {
@@ -111,12 +116,17 @@ export async function resolvePlanAcceptanceGateVerdict(args: PlanAcceptanceGateA
       import('../plan-acceptance-gate'),
       import('../acceptance-bar-contract-snapshot'),
     ]);
+    const scope = {
+      ...(args.harnessSlug ? { harnessSlug: args.harnessSlug } : {}),
+      ...(args.current ? { current: args.current } : {}),
+    };
+    const scoped = Object.keys(scope).length > 0;
     const [v, snapshotResult] = await Promise.all([
-      args.current
-        ? mod.evaluatePlanAcceptanceGate(planSlug, { current: args.current })
+      scoped
+        ? mod.evaluatePlanAcceptanceGate(planSlug, scope)
         : mod.evaluatePlanAcceptanceGate(planSlug),
-      (args.current
-        ? snapshotMod.readAcceptanceBarContractSnapshot(planSlug, {}, { current: args.current })
+      (scoped
+        ? snapshotMod.readAcceptanceBarContractSnapshot(planSlug, {}, scope)
         : snapshotMod.readAcceptanceBarContractSnapshot(planSlug))
         .then((snapshot) => ({ snapshot, error: null as string | null }))
         .catch((error) => ({
@@ -147,6 +157,9 @@ export async function resolvePlanAcceptanceGateVerdict(args: PlanAcceptanceGateA
         unavailableReason: null,
         acceptanceBarContractSnapshot: snapshotResult.snapshot,
         acceptanceBarContractSnapshotUnavailableReason: snapshotResult.error,
+        ...(v.acceptanceBarLifecycle ? { acceptanceBarLifecycle: v.acceptanceBarLifecycle } : {}),
+        ...(v.gradingRef ? { gradingRef: v.gradingRef } : {}),
+        ...(v.repairAction ? { repairAction: v.repairAction } : {}),
       } satisfies PlanAcceptanceGateVerdictRow,
     ];
   } catch (error) {
