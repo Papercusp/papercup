@@ -115,7 +115,15 @@ describe('claim-time source-generation measurement (EI-22283949842250645)', () =
         git,
       });
     }
-    expect(seen).toHaveLength(2);
+    // Two iterations, each making TWO git calls: the `.gitmodules` submodule probe
+    // added by EI-23812772755803731, then the log range itself. Split by call rather
+    // than loosened to a bare count — the SEQUENCE is what makes an unintended extra
+    // git call detectable, and that detectability is the point of asserting here.
+    expect(seen).toHaveLength(4);
+    expect(seen.filter((args) => args[0] === 'config')).toHaveLength(2);
+    const logCalls = seen.filter((args) => args[0] === 'log');
+    expect(logCalls).toHaveLength(2);
+    expect(logCalls.every((args) => args.every((a) => !a.startsWith('--since=')))).toBe(true);
     expect(seen.every((args) => args.every((a) => !a.startsWith('--since=')))).toBe(true);
   });
 
