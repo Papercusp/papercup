@@ -8772,7 +8772,7 @@ export function summarizeSuiteOutput(fullOutput: string): string {
  *  and none of the NAMES. A per-file tsc BASELINE gate always ENDS with its generic
  *  trailer ("Fix the new errors in the named file(s). The baseline only ratchets
  *  DOWN..."), so a plain `.slice(-300)` keeps the advice and discards the evidence — the
- *  per-file rows (`path/to/x.ts: 12 > 11 (+1)`) and `error TSxxxx` lines sit ABOVE the
+ *  per-file rows (`path/to/x.ts: 12 → 11 (-1)`) and `error TSxxxx` lines sit ABOVE the
  *  window. Successive fixers then had to re-derive the failure from diffs.
  *
  *  The digest LEADS so a caller that later truncates from the FRONT keeps the file
@@ -8784,8 +8784,15 @@ export function summarizeLegOutput(fullOutput: string, budget = 1200): string {
     .filter((l) => !/^npm error/.test(l));
 
   const isSignal = (l: string): boolean =>
-    // per-file baseline regression row: `path/to/file.ts: 12 > 11 (+1)`
-    /\.[cm]?[jt]sx?:\s*\d+\s*>\s*\d+/.test(l) ||
+    // Per-file baseline regression row — the single most useful line in a red leg, because it
+    // names the file AND its baseline/current counts. The producer is `formatRow` in
+    // scripts/lib/tsc-baseline-gate.mjs, reached on the red path by the
+    // `for (const r of result.regressions) console.error(formatRow(r))` loop, and it renders
+    //     `   path/to/file.ts: 12 → 11  (-1)`
+    // with U+2192 — NEVER an ASCII `>`. An earlier version of this pattern required `>` and so
+    // could not match a single real regression. Accept the ASCII spellings too, so a later
+    // re-render cannot silently drop this line again.
+    /\.[cm]?[jt]sx?:\s*\d+\s*(?:→|->|>)\s*\d+/.test(l) ||
     // raw tsc diagnostics, in either `error TS1234:` or `file(line,col):` form
     /\berror TS\d{3,5}\b/.test(l) ||
     /\.[cm]?[jt]sx?\(\d+,\d+\):/.test(l) ||
