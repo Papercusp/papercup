@@ -48,7 +48,42 @@ import { advertisedWireBytes } from './tool-guidance-budget';
 // OMP_CORE_MCP_TOOL_NAMES mirrors the orchestrator's CORE_MCP_TOOL_NAMES) because the
 // launcher is dependency-free by design: importing it makes seed drift STRUCTURALLY
 // IMPOSSIBLE instead of merely detected.
-import { CLAUDE_MINIMAL_SEED_TOOL_NAMES } from '../../../../apps/operator/scripts/psu-launcher.mjs';
+import {
+  CLAUDE_MINIMAL_SEED_TOOL_NAMES,
+  claudeSeedToolNames,
+} from '../../../../apps/operator/scripts/psu-launcher.mjs';
+
+/**
+ * Ceiling on the OTHER branch this launcher ships.
+ *
+ * WHY THIS EXISTS (WI-10002043, 2026-09-20). Every assertion in this file indexes
+ * CLAUDE_MINIMAL_SEED_TOOL_NAMES directly, but the launcher does not wire that const —
+ * it wires claudeSeedToolNames(env), which BRANCHES:
+ *   PAPERCUSP_CLAUDE_FULL_SEED truthy -> [...ompCoreToolNames(env), ...CLAUDE_SEED_EXTRA_TOOL_NAMES]
+ *   otherwise                         -> CLAUDE_MINIMAL_SEED_TOOL_NAMES
+ * (apps/operator/scripts/psu-launcher.mjs, claudeSeedToolNames). So the guard budgeted ONE
+ * of TWO shipping code paths, and the unbudgeted one is precisely the historical seed whose
+ * cost (432,714 B on the wire, ~157K tokens/turn) is the regression this file exists to kill
+ * — reachable by setting a single env var, with no assertion anywhere to notice.
+ *
+ * MEASURED 2026-09-20 by this very assertion, in-repo projection: 378,873 B across 65 names.
+ * That reading REPLACES the derivation this constant shipped with for one run (432,714 B wire
+ * scaled by this file's documented ~20% projection gap => ~346,200 B), which came in ~9% LOW —
+ * the bracket below is what surfaced the real number rather than letting the estimate stand.
+ * Compare in-repo to in-repo: 378,873 B here corresponds to roughly 473 KB on the live wire,
+ * i.e. this escape hatch costs about 3.3x the default branch, on every turn that sets it.
+ *
+ * RAISING IT IS A BUDGET DECISION, NOT A CHORE — same discipline as the default-branch
+ * budget above. This branch is the escape hatch, not a free surface. The ~11 KB of headroom
+ * covers ordinary schema drift; it is NOT spare budget to spend.
+ */
+export const CLAUDE_FULL_SEED_WIRE_BYTE_BUDGET = 390_000;
+
+/** Lower plausibility bracket on the full-seed measurement — same vacuous-green trap as
+ *  MIN_PLAUSIBLE_SEED_WIRE_BYTES below. It also catches ompCoreToolNames() returning []
+ *  under a synthetic env, which would otherwise make the full branch look cheap rather
+ *  than unmeasured. */
+const MIN_PLAUSIBLE_FULL_SEED_WIRE_BYTES = 250_000;
 
 /**
  * Ceiling on the advertised Claude seed's tools/list wire payload.
@@ -212,5 +247,73 @@ describe('Claude seed wire budget (EI-23319364088969722)', () => {
     ]) {
       expect(CLAUDE_MINIMAL_SEED_TOOL_NAMES).not.toContain(n);
     }
+  });
+
+  it('the DEFAULT branch the launcher SHIPS is exactly the list this file measures', () => {
+    // Everything above indexes the const, but the launcher wires claudeSeedToolNames(env).
+    // Without this, a change to the ASSEMBLER — a new default, an added filter, a merge —
+    // would ship a surface no assertion in this file has ever measured, and every budget
+    // here would keep reporting green about a list that is no longer what boots.
+    expect(
+      claudeSeedToolNames({}) as string[],
+      'claudeSeedToolNames({}) no longer returns CLAUDE_MINIMAL_SEED_TOOL_NAMES verbatim — the ' +
+        'default branch has diverged from the list every other assertion in this file measures.',
+    ).toEqual([...(CLAUDE_MINIMAL_SEED_TOOL_NAMES as string[])]);
+  });
+
+  it('the FULL-SEED branch (PAPERCUSP_CLAUDE_FULL_SEED=1) has a wire budget of its own', () => {
+    const names = claudeSeedToolNames({ PAPERCUSP_CLAUDE_FULL_SEED: '1' }) as string[];
+    const rows = names
+      .map((n) => ({ name: n, bytes: byName.has(n) ? wireBytes(n, byName.get(n)!) : 0 }))
+      .sort((a, b) => b.bytes - a.bytes);
+    const total = rows.reduce((s, r) => s + r.bytes, 0);
+    const minimal = (CLAUDE_MINIMAL_SEED_TOOL_NAMES as string[]).reduce(
+      (s, n) => s + (byName.has(n) ? wireBytes(n, byName.get(n)!) : 0),
+      0,
+    );
+
+    // Structural floor first: this branch must actually BE the wide surface. If
+    // ompCoreToolNames() returns [] under a synthetic env, the branch collapses toward the
+    // extras alone and every ceiling below passes while measuring the wrong thing.
+    expect(
+      names.length,
+      `the full-seed branch advertised ${names.length} name(s), not more than the ${CLAUDE_MINIMAL_SEED_TOOL_NAMES.length} ` +
+        `of the minimal branch. It is meant to restore the historical wide seed — this reads as an ` +
+        `assembler/env problem, not as the full seed getting cheap.`,
+    ).toBeGreaterThan(CLAUDE_MINIMAL_SEED_TOOL_NAMES.length);
+
+    expect(
+      total,
+      `full-seed branch measured ${total.toLocaleString()} B in-repo for ${names.length} names ` +
+        `(derivation expects ~346,200 B). Below ${MIN_PLAUSIBLE_FULL_SEED_WIRE_BYTES.toLocaleString()} B means the ` +
+        `instrument or the assembler broke, NOT that the branch got cheap — record this number on ` +
+        `CLAUDE_FULL_SEED_WIRE_BYTE_BUDGET's comment, which is a derivation awaiting exactly this reading.`,
+    ).toBeGreaterThan(MIN_PLAUSIBLE_FULL_SEED_WIRE_BYTES);
+
+    expect(
+      total,
+      total > CLAUDE_FULL_SEED_WIRE_BYTE_BUDGET
+        ? `\n\nCLAUDE FULL SEED OVER WIRE BUDGET: ${total.toLocaleString()} B > ` +
+          `${CLAUDE_FULL_SEED_WIRE_BYTE_BUDGET.toLocaleString()} B for ${names.length} names.\n` +
+          `This is the PAPERCUSP_CLAUDE_FULL_SEED=1 escape hatch — every session that sets it pays ` +
+          `this on EVERY turn (ToolSearch is denied, so there is no schema deferral).\n\n` +
+          `Heaviest names on this branch:\n` +
+          rows
+            .slice(0, 8)
+            .map((r) => `  ${String(r.bytes).padStart(7)}  ${r.name}`)
+            .join('\n') +
+          `\n\nFIX: drop the name from CLAUDE_SEED_EXTRA_TOOL_NAMES / the orchestrator core list in\n` +
+          `apps/operator/scripts/psu-launcher.mjs, or shrink the offender's argSchema. Raise this\n` +
+          `budget only as a deliberate per-turn cost decision, recorded with a fresh measurement.\n`
+        : undefined,
+    ).toBeLessThanOrEqual(CLAUDE_FULL_SEED_WIRE_BYTE_BUDGET);
+
+    // The two branches must stay far apart: if they converge, one of them is not what it
+    // claims to be, and the cheap default is the one that matters.
+    expect(
+      total,
+      `the full-seed branch (${total.toLocaleString()} B) is not materially wider than the minimal ` +
+        `branch (${minimal.toLocaleString()} B) — the branches have converged.`,
+    ).toBeGreaterThan(minimal * 2);
   });
 });
