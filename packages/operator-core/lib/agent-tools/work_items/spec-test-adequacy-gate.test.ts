@@ -660,7 +660,15 @@ describe('specTestAdequacyCompletionGate', () => {
 
     const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM }, deps);
 
-    expect(result).toEqual({ ok: true, applicable: false, checked: [] });
+    // WI-10002055: the exemption must be NAMED. `checked: []` alone cannot distinguish
+    // this — a clause considered and deliberately excused — from a clause never
+    // considered at all, which is what made zero enforcement the silent resting state.
+    expect(result).toEqual({
+      ok: true,
+      applicable: false,
+      checked: [],
+      exempted: ['SPEC-003-01@1 — exempt (non-automated clause declaring no required test layer)'],
+    });
     expect(deps.listEvidence).not.toHaveBeenCalled();
   });
 
@@ -669,7 +677,12 @@ describe('specTestAdequacyCompletionGate', () => {
 
     const result = await specTestAdequacyCompletionGate({ workItem: { ...WORK_ITEM, kind: 'task' } }, deps);
 
-    expect(result).toEqual({ ok: true, applicable: false, checked: [] });
+    expect(result).toEqual({
+      ok: true,
+      applicable: false,
+      checked: [],
+      exempted: ['SPEC-003-01@1 — exempt (non-code work-item kind)'],
+    });
     expect(deps.listEvidence).not.toHaveBeenCalled();
     expect(deps.listCards).not.toHaveBeenCalled();
   });
@@ -729,9 +742,56 @@ describe('specTestAdequacyCompletionGate', () => {
     const input = { workItem: { ...WORK_ITEM, kind: 'task' }, changedPaths: ['docs/design.md', 'report.csv'] };
 
     expect(await specTestAdequacyCompletionGate(input, deps))
-      .toEqual({ ok: true, applicable: false, checked: [] });
+      .toEqual({
+        ok: true,
+        applicable: false,
+        checked: [],
+        exempted: ['SPEC-003-01@1 — exempt (non-code work-item kind)'],
+      });
     expect(deps.listEvidence).not.toHaveBeenCalled();
     expect(deps.listCards).not.toHaveBeenCalled();
+  });
+
+  it('names an excused clause even when a sibling clause IS enforced in the same completion', async () => {
+    // The mixed case is the one a populated `checked` hides: without `exempted`, a
+    // completion that enforced one clause and silently excused another is
+    // indistinguishable from one that enforced everything it was given.
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([
+      clause(),
+      clause({
+        specId: 'SPEC-003-02',
+        behaviorClass: 'non-automated',
+        requiredTestLayers: [],
+        mutationRequired: false,
+      }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: WORK_ITEM, attestation: ATTESTATION },
+      deps,
+    );
+
+    expect(result.exempted).toEqual([
+      'SPEC-003-02@1 — exempt (proof floor none — non-automated with no required test layer)',
+    ]);
+    // The enforced sibling is unaffected: this change reports, it does not gate.
+    expect(result.checked).toEqual(['SPEC-003-01@1']);
+    expect(result.ok).toBe(true);
+  });
+
+  it('reports NO exemption when every clause was genuinely enforced', async () => {
+    // Calibration control: if `exempted` were populated unconditionally, the test
+    // above would pass while saying nothing. An all-enforced completion must omit it.
+    const deps = passingDeps();
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: WORK_ITEM, attestation: ATTESTATION },
+      deps,
+    );
+
+    expect(result.exempted).toBeUndefined();
+    expect(result.checked).toEqual(['SPEC-003-01@1']);
   });
 });
 

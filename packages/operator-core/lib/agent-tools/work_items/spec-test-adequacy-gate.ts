@@ -51,15 +51,30 @@ export interface SpecAdequacyCompletionAttestation {
  * condition into a refusal. It is therefore populated independently of `ok`: a caller
  * that treats a populated report as a failure has imported P-013's enforcement early.
  */
+/**
+ * WI-10002055: `exempted` names the clauses this gate CONSIDERED and deliberately
+ * did not enforce, each with the reason it was excused.
+ *
+ * It exists because an exempted clause and a clause that was never considered used
+ * to render identically — both as `checked: []` — so "discharged" and "never looked
+ * at" were the same observable state, and zero enforcement became the silent default
+ * resting state rather than a decision anyone could audit.
+ *
+ * This is REPORTING only. It deliberately does NOT re-impose a proof floor: the
+ * EI-23396502901266480 fix (an explicitly manual BAR must not be forced to fabricate
+ * automated proof) is preserved exactly, and `ok` is unchanged in every path. The two
+ * states differ by NAME now, not by outcome.
+ */
 export type SpecAdequacyCompletionGateResult =
-  | { ok: true; applicable: false; checked: []; impactReport?: string }
-  | { ok: true; applicable: true; checked: string[]; impactReport?: string }
+  | { ok: true; applicable: false; checked: []; exempted?: string[]; impactReport?: string }
+  | { ok: true; applicable: true; checked: string[]; exempted?: string[]; impactReport?: string }
   | {
       ok: false;
       applicable: true;
       retryable: true;
       reason: string;
       checked: string[];
+      exempted?: string[];
       impactReport?: string;
       pendingGradingAuditTargetIds?: string[];
       failedGradingAuditTargetIds?: string[];
@@ -310,6 +325,12 @@ export async function specTestAdequacyCompletionGate(
   const withReport = <T extends object>(result: T): T & { impactReport?: string } =>
     impactReport ? { ...result, impactReport } : result;
 
+  // WI-10002055: name a clause this gate excused, and why. See the `exempted` field
+  // doc on SpecAdequacyCompletionGateResult — an empty `checked` could not previously
+  // distinguish "considered and discharged" from "never considered".
+  const exemptionLabel = (clause: { specId: string; revision: number | string }, reason: string): string =>
+    `${clause.specId}@${clause.revision} — exempt (${reason})`;
+
   // P-013 CLOSES the D-013 split this block used to hold open. P-016 resolved clauses
   // across plan namespaces but deliberately enforced only the stamped namespace's, so a
   // cross-namespace obligation was visible and toothless; that half-state was always
@@ -363,7 +384,12 @@ export async function specTestAdequacyCompletionGate(
           'settled grading audits. No proof exemption can be inferred from the task label.',
       });
     }
-    return withReport({ ok: true, applicable: false, checked: [] });
+    return withReport({
+      ok: true,
+      applicable: false,
+      checked: [],
+      exempted: clauses.map((clause) => exemptionLabel(clause, 'non-code work-item kind')),
+    });
   }
 
   if (!input.attestation) {
@@ -371,7 +397,15 @@ export async function specTestAdequacyCompletionGate(
       (clause) =>
         clause.behaviorClass !== 'non-automated' || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
     );
-    if (potentiallyTestRequiring.length === 0) return withReport({ ok: true, applicable: false, checked: [] });
+    if (potentiallyTestRequiring.length === 0)
+      return withReport({
+        ok: true,
+        applicable: false,
+        checked: [],
+        exempted: clauses.map((clause) =>
+          exemptionLabel(clause, 'non-automated clause declaring no required test layer'),
+        ),
+      });
     return withReport({
       ok: false,
       applicable: true,
@@ -387,7 +421,14 @@ export async function specTestAdequacyCompletionGate(
   }
 
   const relevant = clauses.filter((clause) => requiredProofFloor(clause, input.attestation!.classRef) !== 'none');
-  if (relevant.length === 0) return withReport({ ok: true, applicable: false, checked: [] });
+  // WI-10002055: the complement of `relevant` is the excused set. Computed once so every
+  // exit below can name it — including the MIXED case, where some clauses are enforced and
+  // others excused in the same completion and the excused ones would otherwise vanish
+  // behind a populated `checked`.
+  const exempted = clauses
+    .filter((clause) => requiredProofFloor(clause, input.attestation!.classRef) === 'none')
+    .map((clause) => exemptionLabel(clause, 'proof floor none — non-automated with no required test layer'));
+  if (relevant.length === 0) return withReport({ ok: true, applicable: false, checked: [], exempted });
   // ⚠ The evidence read is scoped by the SAME namespaces as the enforced clause set, and
   // that coupling is not optional. This was `planSlug: stamp.planSlug` — a single-plan
   // read. Widening the enforced set above while leaving this read single-plan would make
@@ -487,9 +528,10 @@ export async function specTestAdequacyCompletionGate(
       retryable: true,
       checked,
       reason: failures.join('; '),
+      ...(exempted.length ? { exempted } : {}),
       ...(pendingGradingAuditTargetIds.size ? { pendingGradingAuditTargetIds: [...pendingGradingAuditTargetIds] } : {}),
       ...(failedGradingAuditTargetIds.size ? { failedGradingAuditTargetIds: [...failedGradingAuditTargetIds] } : {}),
     });
   }
-  return withReport({ ok: true, applicable: true, checked });
+  return withReport({ ok: true, applicable: true, checked, ...(exempted.length ? { exempted } : {}) });
 }
