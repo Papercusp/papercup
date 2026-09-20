@@ -45,6 +45,13 @@
 import type { Sql } from 'postgres';
 
 import { SHADOW_VARIANT_ORIGIN } from './shadow-variant-origin';
+// Both PG-free on purpose — this module is otherwise `type { Sql }` and one constant,
+// and `pot-membership` (the usual home of these) would drag `@papercusp/db-org` in.
+import {
+  enumerableWorkspaceGlobalLabels,
+  WORKSPACE_GLOBAL_LABEL_PREFIX,
+} from '../workspace-global-labels';
+import { canonicalPotSlug, PLATFORM_POT_SLUG } from '../platform-pot-slug';
 
 /**
  * The producers that file into `harness_shared.scout_routed_ideas`.
@@ -326,6 +333,45 @@ export interface UngradedFilingRow {
  * backlog (agent-review's 1,397) must not be able to starve every other origin out of
  * the result the way one global `ORDER BY routed_at LIMIT n` would.
  */
+/**
+ * The FOURTH axis (EI-23811029152367526): does this harness scope absorb rows filed
+ * under a workspace-global label?
+ *
+ * `harness_slug` is a legitimate partition — measured 2026-09-20, this workspace's
+ * ledger carries seven REAL harnesses (papercusp, sb-devboard-hive, sidestage,
+ * portal, email, oddsmith, …) and the live producers key it correctly. What it ALSO
+ * carries is the workspace-brain grain: 1,615 `scout` rows under `@singleton` and the
+ * bare workspace id, split at the `WORKSPACE_COORDINATION` cutover that "flipped the
+ * writer's install_slug from @singleton to the workspaceId" (success-metrics.ts).
+ * Neither value names a registered Blender scope, so `listBlenderMaintenanceScopes`
+ * never hands them to the sweep and no harness-scoped caller can ask for them.
+ *
+ * So do NOT normalize the column — that would merge seven tenants. Resolve the label
+ * the way the rest of the system already ratified it: `learning/pot-scope` step 3, "a
+ * WORKSPACE-GLOBAL label homes to the workspace PLATFORM pot", mirroring
+ * `resolveWorkItemPot`. The platform harness absorbs them; `sidestage` and `portal`
+ * must not, or one pot's grader inherits another's workspace-brain backlog.
+ *
+ * A workspace with no platform pot absorbs nothing and falls through — the same
+ * fail-open `pot-scope` chose, never inventing an owner.
+ */
+export function harnessScopeAbsorbsWorkspaceGlobal(harnessSlug: string): boolean {
+  return canonicalPotSlug(harnessSlug.trim()) === PLATFORM_POT_SLUG;
+}
+
+function workspaceGlobalScopeFor(
+  workspaceId: string,
+  harnessSlug: string,
+): { absorbsWorkspaceGlobal: boolean; labels: string[]; likePattern: string } {
+  return {
+    absorbsWorkspaceGlobal: harnessScopeAbsorbsWorkspaceGlobal(harnessSlug),
+    labels: enumerableWorkspaceGlobalLabels(workspaceId),
+    // The `operator:<ws>` family cannot be enumerated; matching it by prefix is what
+    // keeps this predicate equal to `isWorkspaceGlobalLabel` rather than a subset.
+    likePattern: `${WORKSPACE_GLOBAL_LABEL_PREFIX}%`,
+  };
+}
+
 export async function readActionableUngradedFilings(
   sql: Sql,
   args: {
@@ -339,6 +385,7 @@ export async function readActionableUngradedFilings(
   const limitPerOrigin = Math.max(1, Math.floor(args.limitPerOrigin ?? 50));
   const floors = JSON.stringify(policy.byOrigin);
   const fallback = policy.fallbackMs;
+  const scope = workspaceGlobalScopeFor(workspaceId, harnessSlug);
   const rows = await sql<
     { idea_id: string; origin: string; title: string | null; routed_ref: string; routed_at: string | number | null }[]
   >`
@@ -346,7 +393,12 @@ export async function readActionableUngradedFilings(
       SELECT idea_id, origin, title, routed_ref, routed_at,
              coalesce((${floors}::jsonb ->> origin)::bigint, ${fallback}::bigint) AS epoch_ms
         FROM harness_shared.scout_routed_ideas
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+       WHERE workspace_id = ${workspaceId}
+         AND (
+              harness_slug = ${harnessSlug}
+           OR (${scope.absorbsWorkspaceGlobal}
+               AND (harness_slug = ANY(${scope.labels}) OR harness_slug LIKE ${scope.likePattern}))
+         )
          AND origin <> ${SHADOW_VARIANT_ORIGIN}
          AND human_grade IS NULL
          AND (outcome IS NULL OR outcome = 'pending')
