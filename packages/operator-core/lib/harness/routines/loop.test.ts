@@ -1929,17 +1929,79 @@ describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un
       expect(out).toBe(5);
     });
 
-    it('the default (post-note-work) scope never queries agent_activity at all', async () => {
+    it('the default (post-note-work) scope ALSO unions in agent_activity — native-only post-note work must not score a structural 0 (WI-10002086)', async () => {
       const seen: string[] = [];
       const sql = transactionalSql((strings: TemplateStringsArray) => {
-        seen.push(strings.join(' '));
-        return [{ n: 0 }];
+        const rendered = strings.join(' ');
+        seen.push(rendered);
+        if (rendered.includes('harness_shared.agent_activity')) return [{ n: 3 }];
+        if (rendered.includes('harness_shared.tool_invocations')) return [{ n: 0 }];
+        return []; // the predicate-fragment call, see note above
       });
 
       const out = await countAgentToolCallsInWindow('su-x', 0, 1000, { sql: sql as any });
 
-      expect(out).toBe(0);
-      expect(seen.some((s) => s.includes('harness_shared.agent_activity'))).toBe(false);
+      // This assertion used to read `expect(out).toBe(0)` plus "never queries
+      // agent_activity at all" — it pinned the DEFECT in place. Before WI-10002086 this
+      // scope counted tool_invocations only, so three native Bash/Edit calls of real
+      // post-note work scored 0, and su-cold-loop.ts's `confirmedNoWork` downgraded the
+      // warning to "the note above is CURRENT. No recovery hunt needed." A false NEGATIVE
+      // in a safety signal, which is strictly worse than the false-positive direction.
+      expect(out).toBe(3);
+      expect(seen.some((s) => s.includes('harness_shared.agent_activity'))).toBe(true);
+    });
+
+    it('excludes the carry-note bookkeeping names from the post-note-work native leg, so the checkpoint that WROTE the note cannot answer yes on its own behalf (WI-10002086)', async () => {
+      const excluded: string[][] = [];
+      const sql = transactionalSql((strings: TemplateStringsArray, ...values: unknown[]) => {
+        const rendered = strings.join(' ');
+        if (rendered.includes('harness_shared.agent_activity')) {
+          // The exclusion set travels as a PARAMETER, not in the template text, so assert
+          // on the bound value. The canonical list is the one carrying 'activity:report';
+          // the sibling CLI-tail array holds 'activity_report' and is skipped by this test.
+          for (const v of values) {
+            if (Array.isArray(v) && v.includes('activity:report')) excluded.push(v as string[]);
+          }
+          return [{ n: 0 }];
+        }
+        if (rendered.includes('harness_shared.tool_invocations')) return [{ n: 0 }];
+        return [];
+      });
+
+      await countAgentToolCallsInWindow('su-x', 0, 1000, { sql: sql as any });
+
+      expect(excluded.length).toBeGreaterThan(0);
+      // The window OPENS at the note's updated_at, and the note-writing call's own row is
+      // stamped at INSERT — after the handler's write commits, so it lands just INSIDE the
+      // window (measured: note 18:20:06.840Z, its loop:checkpoint row 18:20:07.136Z). Leg 1
+      // already excludes these; leg 2 must too, or widening it merely trades the false
+      // negative above for a false POSITIVE on every cold wake.
+      expect(excluded[0]).toContain('loop:checkpoint');
+      expect(excluded[0]).toContain('work_items:checkpoint');
+    });
+
+    it("'fire-productivity' still KEEPS the carry-note bookkeeping names in the native leg — for a disciplined watcher the checkpoint is often the only call of the wake (su-54215254)", async () => {
+      const excluded: string[][] = [];
+      const sql = transactionalSql((strings: TemplateStringsArray, ...values: unknown[]) => {
+        const rendered = strings.join(' ');
+        if (rendered.includes('harness_shared.agent_activity')) {
+          for (const v of values) {
+            if (Array.isArray(v) && v.includes('activity:report')) excluded.push(v as string[]);
+          }
+          return [{ n: 0 }];
+        }
+        if (rendered.includes('harness_shared.tool_invocations')) return [{ n: 0 }];
+        return [];
+      });
+
+      await countAgentToolCallsInWindow('su-x', 0, 1000, {
+        sql: sql as any,
+        evidenceScope: 'fire-productivity',
+      });
+
+      expect(excluded.length).toBeGreaterThan(0);
+      expect(excluded[0]).not.toContain('loop:checkpoint');
+      expect(excluded[0]).not.toContain('work_items:checkpoint');
     });
 
     it('still returns null on a fire-productivity query failure — evidence-unavailable must not become a false zero either', async () => {

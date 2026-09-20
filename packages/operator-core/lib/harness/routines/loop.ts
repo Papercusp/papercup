@@ -2258,7 +2258,6 @@ export async function countAgentToolCallsInWindow(
       { client: opts.sql },
     );
     const ledgerCount = row ? Number(row.n) : 0;
-    if (!fireProductivity) return ledgerCount;
 
     // WI-2143038 second leg. harness_shared.tool_invocations records MCP calls ONLY — a
     // native Claude Code Bash/Read/Grep/Edit produces no row there at all (measured over 24h:
@@ -2268,7 +2267,30 @@ export async function countAgentToolCallsInWindow(
     // disarm window) carries none of the hook-driven activity:report / coord:glance traffic
     // that floods tool_invocations — so it reads agent-authored work directly. Count `pre`
     // rows only: each call writes a pre/post pair.
-    const automaticCanonical = [...AUTOMATIC_TOOL_NAMES];
+    //
+    // WI-10002086: this leg runs for BOTH scopes. It used to sit behind an
+    // `if (!fireProductivity) return ledgerCount;` early return, which left the cold-wake
+    // un-checkpointed-work detector — which uses the DEFAULT 'post-note-work' scope —
+    // counting MCP calls only. An agent whose post-note work was entirely native
+    // Bash/Read/Edit therefore scored a structural 0, and su-cold-loop.ts's
+    // `confirmedNoWork` downgraded the loud warning to "the note above is CURRENT, no
+    // recovery hunt needed" while that work was silently re-derived or lost. A FALSE
+    // NEGATIVE in a safety signal is strictly worse than the false-positive direction,
+    // which merely costs a verification. The `null`-on-failure contract is unchanged:
+    // a failed query stays evidence-unavailable and must never be read as zero.
+    const automaticCanonical = [
+      ...AUTOMATIC_TOOL_NAMES,
+      // Scope-dependent, mirroring leg 1's own `CARRY_NOTE_BOOKKEEPING_TOOL_NAMES`
+      // exclusion above. 'post-note-work' asks whether work happened AFTER the note, so
+      // the call that WROTE the note must not answer yes on its own behalf: its row is
+      // stamped at INSERT, after the handler's write commits, so it lands just INSIDE the
+      // window that opens at the note's updated_at (measured on this path: note
+      // 18:20:06.840Z, its own loop:checkpoint row 18:20:07.136Z). Without this, widening
+      // leg 2 would trade the false negative above for a false POSITIVE. 'fire-productivity'
+      // deliberately keeps them — for a disciplined watcher the checkpoint is often the
+      // only MCP call of the wake, and excluding it is what disarmed su-54215254.
+      ...(fireProductivity ? [] : CARRY_NOTE_BOOKKEEPING_TOOL_NAMES),
+    ];
     // Forward-map the canonical names to the CLI's `mcp__<server>__<verb>` tail form
     // (`coord:glance` → `coord_glance`). Forward is unambiguous; reversing is not, because
     // a canonical name like `work_items:checkpoint` already contains an underscore.

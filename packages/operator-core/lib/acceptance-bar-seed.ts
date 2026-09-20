@@ -435,14 +435,38 @@ function methodProjection(existing: Record<string, unknown>): Record<string, unk
 
 /** Pure complete-set builder. Existing METHOD fields survive only when the BAR
  * hash is unchanged; a post-start meaning change is routed to amendment. */
-export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): AcceptanceBarSeedBuildResult {
-  const requirements = parseRequirementBars(input.planContent);
-  if (!requirements.ok) return refusal(requirements.problems);
+/**
+ * The BAR-source precondition every acceptance-bar write path validates, as a
+ * PURE function: `## Requirements` bars, then the `## Design` Bar-to-work map
+ * that must cover them. This is the `bar_requirements_*` / `bar_mapping_*` /
+ * `bar_evidence_plane_invalid` family's single authoring site.
+ *
+ * It is exported so a PREVIEW (`plans:audit { dryRun:true }`) can report exactly
+ * what the writer would refuse without performing — or locking for — any write.
+ * Callers must gate it on the same condition the writer does: a plan whose
+ * `acceptance_bar_epoch` is NULL is not under the BAR contract and requires no
+ * Bar-to-work map at all (measured 2026-09-20: 1916 of 2044 plans). Running this
+ * unconditionally would false-refuse the large majority of plans — the mirror of
+ * the false-pass it exists to fix.
+ */
+export function validateAcceptanceBarSource(planContent: string):
+  | { ok: true; bars: ParsedRequirementBar[]; mappings: ParsedBarMapping[] }
+  | { ok: false; problems: AcceptanceBarSeedProblem[] } {
+  const requirements = parseRequirementBars(planContent);
+  if (!requirements.ok) return { ok: false, problems: requirements.problems };
   const mappings = parseBarMappings(
-    input.planContent,
+    planContent,
     new Set(requirements.bars.map((bar) => bar.barKey)),
   );
-  if (!mappings.ok) return refusal(mappings.problems);
+  if (!mappings.ok) return { ok: false, problems: mappings.problems };
+  return { ok: true, bars: requirements.bars, mappings: mappings.mappings };
+}
+
+export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): AcceptanceBarSeedBuildResult {
+  const source = validateAcceptanceBarSource(input.planContent);
+  if (!source.ok) return refusal(source.problems);
+  const requirements = { ok: true as const, bars: source.bars };
+  const mappings = { ok: true as const, mappings: source.mappings };
   const mappingByKey = new Map(mappings.mappings.map((mapping) => [mapping.barKey, mapping]));
   const conflicts = requirements.bars.filter((bar) => {
     const mapping = mappingByKey.get(bar.barKey)!;
