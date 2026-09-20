@@ -125,8 +125,8 @@ describe('features:history — keyed-array envelope + failure items', () => {
         CTX(),
       )) as Out
     ).data;
-    expect(bulk.ok).toBe(true);
-    expect(bulk.counts).toEqual({ ok: 1, failed: 1 });
+    expect(bulk.ok).toBe(false); // DERIVED from counts.failed — F-002 failed
+    expect(bulk.counts).toEqual({ ok: 1, failed: 1 }); // …but the batch still RAN: F-001 succeeded
     expect(bulk.results.map((r: { feature_id: string; ok: boolean }) => [r.feature_id, r.ok])).toEqual([
       ['F-001', true],
       ['F-002', false],

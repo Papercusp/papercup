@@ -127,8 +127,8 @@ describe('features:get (bulk keyed-array)', () => {
         { slug: 'bad slug', feature_id: 'F-002' },
       ],
     });
-    expect(b.ok).toBe(true);
-    expect(b.counts).toEqual({ ok: 1, failed: 2 });
+    expect(b.ok).toBe(false); // DERIVED from counts.failed — 2 items failed
+    expect(b.counts).toEqual({ ok: 1, failed: 2 }); // …but the batch still RAN: F-001 succeeded
     expect(b.results.map((r: { feature_id: string; ok: boolean }) => [r.feature_id, r.ok])).toEqual([
       ['F-001', true],
       ['F-404', false],

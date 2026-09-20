@@ -127,11 +127,11 @@ describe('harness:status — registry-first resolution (bulk envelope, n=1)', ()
     expect(b.results[0].status).toBe('in_progress');
   });
 
-  it('a slug that exists nowhere fails its item (counts.failed===1, batch ok)', async () => {
+  it('a slug that exists nowhere fails its item (counts.failed===1, envelope ok:false)', async () => {
     const tx = fakeTx([]);
     const b = await statusOne({ slug: 'nope' }, tx);
-    expect(b.ok).toBe(true);
-    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.ok).toBe(false); // DERIVED from counts.failed — the sole item failed
+    expect(b.counts).toEqual({ ok: 0, failed: 1 }); // …the batch still RAN, no throw
     expect(b.results[0].ok).toBe(false);
     expect(b.results[0].error).toContain('nope');
   });

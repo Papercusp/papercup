@@ -82,7 +82,7 @@ describe('conversations:get handler (bulk keyed-array)', () => {
   it('maps a missing conversation to a per-item { ok:false, reason→error:not_found }', async () => {
     getM.mockResolvedValue(null);
     const b = await body({ id: 'c1' });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'c1', error: 'not_found' });
   });
 
@@ -125,7 +125,7 @@ describe('conversations:get handler (bulk keyed-array)', () => {
   it('ids:[…]: one found + one missing — the miss fails only its item', async () => {
     getM.mockImplementation(async (id: string) => (id === 'c404' ? null : detail(id)));
     const b = await body({ ids: ['c1', 'c404'] });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'c1' });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'c404', error: 'not_found' });
   });

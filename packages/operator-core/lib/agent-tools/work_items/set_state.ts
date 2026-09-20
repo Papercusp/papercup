@@ -56,7 +56,11 @@ import { activeExternalBlockers } from '../../external-blockers';
  * the result door when a large batch spills. `other` intentionally includes not-found,
  * plan-lane, and future refusal text until a new stable category is added here.
  */
-function addRefusalSummary<T extends { ok: true; results: Array<{ ok: boolean; error?: unknown }>; counts: { ok: number; failed: number } }>(
+// `ok` is DERIVED from counts.failed (see packages/agent-mcp/src/_bulk.ts runBulk),
+// so this constraint must accept a FAILED envelope too. It previously read `ok: true`,
+// which was the same "the type cannot express failure" defect as the hard-coded
+// producer — it just happened to sit on the consumer side (EI-23737206446729041).
+function addRefusalSummary<T extends { ok: boolean; results: Array<{ ok: boolean; error?: unknown }>; counts: { ok: number; failed: number } }>(
   env: T,
 ): T {
   if (env.counts.failed === 0) return env;
