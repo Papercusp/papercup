@@ -2765,6 +2765,72 @@ describe('formatDeadRoutinesSummary — magnitude + consequence (EI-200456914514
     expect(s).not.toContain('NOTHING in the shared tree is being committed');
   });
 
+  // EI-23794126226234520 — a strict majority of overdue ROWS is an inference about commits drawn
+  // from scheduler rows belonging to ~67 sibling installs. A measured sync is a direct observation
+  // of the thing the sentence denies. These pin that evidence may only ever WEAKEN the claim.
+  describe('direct commit evidence refutes, but never manufactures, a commit-outage claim', () => {
+    const majority = {
+      deadRoutines: 40,
+      deadRoutinesInScope: 153,
+      deadRoutinesDistinct: 1,
+      deadRoutineNames: ['git-sync'],
+      deadRoutineCriticalNames: ['git-sync'],
+      deadRoutineCoverage: { 'git-sync': { overdue: 40, active: 67 } },
+    };
+    const NOW = 1_700_000_000_000;
+
+    // NEGATIVE CONTROL: without this the suppression tests below would pass vacuously — a
+    // function that never emits the sentence at all would satisfy every `not.toContain`.
+    it('still pages at full strength on a genuine freeze, when no commit evidence exists', () => {
+      const s = formatDeadRoutinesSummary(majority);
+      expect(s).toContain('NOTHING in the shared tree is being committed');
+    });
+
+    it('still pages when the observed sync is OLDER than the refutation window', () => {
+      const s = formatDeadRoutinesSummary(majority, {
+        gitSyncLastSyncedAtMs: NOW - 45 * 60_000,
+        nowMs: NOW,
+      });
+      expect(s).toContain('NOTHING in the shared tree is being committed');
+    });
+
+    // The measured incident: git-sync had fired 17s earlier while the alarm asserted the opposite.
+    it('withholds the outage claim when a sync was observed inside the window, and says why', () => {
+      const s = formatDeadRoutinesSummary(majority, {
+        gitSyncLastSyncedAtMs: NOW - 17_000,
+        nowMs: NOW,
+      });
+      expect(s).not.toContain('NOTHING in the shared tree is being committed');
+      expect(s).toContain('a successful sync 17s ago directly contradicts a fleet-wide commit outage');
+      expect(s).toContain('40 of 67 active rows overdue'); // the real finding is still reported
+    });
+
+    // Half-supplied evidence must not read as a recent sync; an unreadable clock is not an observation.
+    it('ignores a last-synced timestamp supplied without a clock', () => {
+      const s = formatDeadRoutinesSummary(majority, { gitSyncLastSyncedAtMs: NOW - 17_000 });
+      expect(s).toContain('NOTHING in the shared tree is being committed');
+    });
+
+    it('ignores a future-dated sync rather than treating the skew as freshness', () => {
+      const s = formatDeadRoutinesSummary(majority, {
+        gitSyncLastSyncedAtMs: NOW + 60_000,
+        nowMs: NOW,
+      });
+      expect(s).toContain('NOTHING in the shared tree is being committed');
+    });
+
+    // Evidence may only weaken. A minority of overdue rows never licensed the claim, so a recent
+    // sync must not flip it into one, and the existing minority wording must survive untouched.
+    it('cannot upgrade a minority of overdue rows into an outage claim', () => {
+      const s = formatDeadRoutinesSummary(
+        { ...majority, deadRoutines: 2, deadRoutineCoverage: { 'git-sync': { overdue: 2, active: 67 } } },
+        { gitSyncLastSyncedAtMs: NOW - 17_000, nowMs: NOW },
+      );
+      expect(s).not.toContain('NOTHING in the shared tree is being committed');
+      expect(s).toContain('not evidence of a fleet-wide commit outage');
+    });
+  });
+
   it('requires a strict majority, not half, before asserting a fleet-wide commit outage', () => {
     const s = formatDeadRoutinesSummary({
       deadRoutines: 2,

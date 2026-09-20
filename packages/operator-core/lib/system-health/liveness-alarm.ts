@@ -526,7 +526,12 @@ export function evaluateLivenessAlarm(
       signals.push({
         key: 'dead-routines',
         severity: 'blocker',
-        summary: formatDeadRoutinesSummary(wf),
+        // Pass the deploy panel's measured last-sync so a commit-outage claim can be refuted by
+        // direct observation rather than resting on overdue scheduler rows alone (EI-23794126226234520).
+        summary: formatDeadRoutinesSummary(wf, {
+          gitSyncLastSyncedAtMs: health.panels.deploy?.data?.gitSyncLastSyncedAtMs ?? null,
+          nowMs: Date.now(),
+        }),
       });
     }
   }
@@ -1029,6 +1034,13 @@ const PANEL_LABEL_TO_KEY: Record<string, PanelKey> = {
 };
 
 /**
+ * How recent a successful git-sync must be to refute a fleet-wide commit-outage claim.
+ * Matches `DEAD_ROUTINE_OVERDUE_MS` (compute.ts) on purpose: a sync newer than the same window
+ * that defines "overdue" is, by the alarm's own yardstick, commits still flowing.
+ */
+const COMMIT_REFUTATION_WINDOW_MS = 10 * 60_000;
+
+/**
  * EI-20045691451471399 — the engine-starvation summary line. PURE (no clock, no DB) so the
  * exact operator-facing wording is unit-testable.
  *
@@ -1061,6 +1073,16 @@ export function formatDeadRoutinesSummary(wf: {
   deadRoutinesDistinct?: number;
   deadRoutineCriticalNames?: string[];
   deadRoutineCoverage?: Record<string, DeadRoutineNameCoverage>;
+}, commitEvidence?: {
+  /**
+   * Most recent SUCCESSFUL git-sync across installs — `DeployHealth.gitSyncLastSyncedAtMs`,
+   * computed as a max, which is exactly the polarity needed to refute the word "NOTHING".
+   */
+  gitSyncLastSyncedAtMs?: number | null;
+  /** Caller's clock. Omitted ⇒ the evidence is unreadable and is ignored (see below). */
+  nowMs?: number;
+  /** How recent a sync must be to count as "commits are flowing". Defaults to the 10m overdue window. */
+  windowMs?: number;
 }): string {
   const count = wf.deadRoutines;
   const total = wf.deadRoutinesInScope;
@@ -1094,9 +1116,32 @@ export function formatDeadRoutinesSummary(wf: {
   const gitSyncCoverageNote = gitSyncCoverage
     ? ` (${gitSyncCoverage.overdue} of ${gitSyncCoverage.active} active rows overdue)`
     : '';
-  const consequence = critical.includes('git-sync') && gitSyncHasStrictMajority
+  // EI-23794126226234520 — REFUTATION-ONLY use of direct commit evidence.
+  //
+  // `gitSyncHasStrictMajority` is circumstantial INFERENCE: it reasons from overdue SCHEDULER
+  // ROWS to a conclusion about COMMITS. Those are different things, and the rows belong to ~67
+  // sibling installs (library submodules, toy pots) that have nothing to do with the shared tree.
+  // A measured successful sync is a DIRECT OBSERVATION of the very thing the sentence denies, so
+  // when one exists inside the window it refutes the inference and the strong claim is withheld.
+  //
+  // Strictly one-directional, for the same reason the non-code proof-floor downgrade is: evidence
+  // may only ever WEAKEN the claim. Absent evidence, an unreadable clock, or a stale sync all
+  // leave the inference exactly as it was, so a genuine engine freeze still pages at full
+  // severity. Nothing here can manufacture an outage claim that the ratio did not already license.
+  const syncWindowMs = commitEvidence?.windowMs ?? COMMIT_REFUTATION_WINDOW_MS;
+  const lastSyncedAtMs = commitEvidence?.gitSyncLastSyncedAtMs;
+  const nowMs = commitEvidence?.nowMs;
+  const syncAgoMs =
+    typeof lastSyncedAtMs === 'number' && typeof nowMs === 'number' && nowMs >= lastSyncedAtMs
+      ? nowMs - lastSyncedAtMs
+      : null;
+  const commitsObservedRecently = syncAgoMs !== null && syncAgoMs <= syncWindowMs;
+  const syncAgoNote = syncAgoMs !== null ? `${Math.round(syncAgoMs / 1000)}s ago` : 'recently';
+  const consequence = critical.includes('git-sync') && gitSyncHasStrictMajority && !commitsObservedRecently
     ? ` git-sync is among them${gitSyncCoverageNote}, so NOTHING in the shared tree is being committed — the release gate ` +
       'will keep re-judging a candidate that structurally cannot contain anyone\'s fix.'
+    : critical.includes('git-sync') && gitSyncHasStrictMajority
+      ? ` Fleet-blocking: git-sync${gitSyncCoverageNote}; a successful sync ${syncAgoNote} directly contradicts a fleet-wide commit outage.`
     : critical.includes('git-sync')
       ? ` Fleet-blocking: git-sync${gitSyncCoverageNote}; this is not evidence of a fleet-wide commit outage.`
     : critical.length > 0
