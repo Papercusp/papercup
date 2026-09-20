@@ -1,4 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// DERIVE the wire versions from the canonical constants instead of re-typing
+// them. `sessionPortProtocolError` hard-refuses any mismatch with 426
+// upgrade-required BEFORE the handler runs, so a hand-copied literal turns
+// every test in this file red the moment the protocol is bumped — which is
+// exactly what happened when SESSION_PORT_PROTOCOL_VERSION went 1 -> 2 and
+// these literals stayed at 1. The module is a side-effect-free constants file,
+// so a static import is safe alongside this file's hoisted vi.mock factories.
+import {
+  SESSION_PORT_PROTOCOL_VERSION,
+  SESSION_PORT_TRANSFORM_VERSION,
+} from '../../session-port/types';
 
 const PORT_ID = '22222222-2222-4222-8222-222222222222';
 const TOKEN = `${PORT_ID}.${'a'.repeat(64)}`;
@@ -70,8 +81,8 @@ async function delivery(body: Record<string, unknown>): Promise<Response> {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        protocolVersion: 1,
-        transformVersion: 3,
+        protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+        transformVersion: SESSION_PORT_TRANSFORM_VERSION,
         workspace: 'papercusp-workspace',
         portId: PORT_ID,
         ...body,
@@ -84,7 +95,7 @@ function port(overrides: Record<string, unknown> = {}) {
   return {
     id: PORT_ID,
     workspaceId: 'papercusp-workspace',
-    protocolVersion: 1,
+    protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
     status: 'prepared',
     sourceAdvSessionId: 41,
     targetAdvSessionId: null,

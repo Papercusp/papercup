@@ -128,26 +128,43 @@ describe('config:set-compaction-limit runtime validation', () => {
  * lowering of the ceiling. Before `fleetMember` was threaded through, the member case
  * returned ok:true and wrote the value — that is the exact assertion that flips.
  */
-describe('config:set-compaction-limit fleet-role ceiling (WI-10002013)', () => {
-  const OVER_MEMBER_CAP = 700_000;
+const OVER_MEMBER_CAP = 700_000;
 
+/**
+ * The member-refusal assertion, factored out so that ONE assertion can be run
+ * against two subjects: the real handler (which must pass it) and the
+ * deliberately-wrong controls below (which must fail it). That pairing is what
+ * makes this guard demonstrably falsifiable — see the control block at the
+ * bottom of this file.
+ *
+ * `wrote` is passed rather than read off the mock so a control can exercise the
+ * no-write half without having to drive the real module at all.
+ */
+function assertHonestMemberRefusal(data: unknown, wrote: boolean): void {
+  // The no-write half is the point: the pre-fix bug was not a wrong number in the
+  // response, it was ok:true PLUS a persisted { explicit: true } value the watchdog
+  // then quietly rewrote. A refusal that still wrote would reproduce the defect.
+  expect(wrote).toBe(false);
+  expect(data).toMatchObject({
+    ok: false,
+    error: 'limit_exceeds_cap',
+    requested: OVER_MEMBER_CAP,
+    cap: COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
+  });
+  expect((data as { compactionLimit?: number }).compactionLimit).toBeUndefined();
+}
+
+describe('config:set-compaction-limit fleet-role ceiling (WI-10002013)', () => {
   it('a fleet MEMBER self-raising above the member cap is refused WITHOUT a write', async () => {
     specMock.mockResolvedValue('opus[1m]:high');
     fleetMock.mockResolvedValue(selfFleetMap('rocket', 'member'));
 
     const out = (await tool.handler({ limit: OVER_MEMBER_CAP }, {} as never)) as ToolOut;
 
-    // The no-write half is the point: the pre-fix bug was not a wrong number in the
-    // response, it was ok:true PLUS a persisted { explicit: true } value the watchdog
-    // then quietly rewrote. A refusal that still wrote would reproduce the defect.
-    expect(setLimitMock).not.toHaveBeenCalled();
-    expect(out.data).toMatchObject({
-      ok: false,
-      error: 'limit_exceeds_cap',
-      requested: OVER_MEMBER_CAP,
-      cap: COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
-    });
-    expect(out.data.compactionLimit).toBeUndefined();
+    // CALIBRATION for the control block below: the real subject must PASS the very
+    // assertion the wrong implementations fail. Without this, controls that pass
+    // for the wrong reason would look like a working guard.
+    assertHonestMemberRefusal(out.data, setLimitMock.mock.calls.length > 0);
   });
 
   it('a fleet LEADER at the same value still succeeds (the cap is role-derived, not a blanket lowering)', async () => {
@@ -170,5 +187,63 @@ describe('config:set-compaction-limit fleet-role ceiling (WI-10002013)', () => {
     expect(setLimitMock).toHaveBeenCalledWith('su-test', OVER_MEMBER_CAP, { explicit: true });
     expect(out.data.ok).toBe(true);
     expect(out.data.compactionLimit).toBe(OVER_MEMBER_CAP);
+  });
+});
+
+/**
+ * FALSIFIABILITY CONTROLS — permanent. Do not delete; they are the only evidence
+ * that the member-refusal guard above can fail at all.
+ *
+ * A guard that has never failed is a guard nobody has tested. The repo's usual
+ * proof (scripts/mutation-probe.sh) CANNOT reach this subject: the test binds the
+ * module with a relative dynamic import (`await import('./set-compaction-limit')`),
+ * and every probe tier that substitutes a PATH has no seam to redirect — so the
+ * mutant survives and the probe reports "your guard is weak" when in truth it never
+ * measured anything. That false-negative instrument reading is recorded as plan
+ * decision D-042 on frontier-remediation-...-60d3a8-2026-09-20.
+ *
+ * So the control lives here instead, which is what CLAUDE.md prescribes for an
+ * imported module: keep a deliberately-wrong implementation permanently in the
+ * test file, plus a calibration case the real subject must pass (the MEMBER case
+ * above calls the identical assertion).
+ *
+ * Each control reproduces one historically-real way the refusal was dishonest.
+ */
+describe('config:set-compaction-limit member-refusal guard is falsifiable (controls)', () => {
+  it('CONTROL: the pre-fix behaviour (ok:true + a write) FAILS the member assertion', () => {
+    // Exactly what the self-set path did before `fleetMember` was threaded through:
+    // the member dimension was never consulted, so an over-cap ask was accepted and
+    // persisted — and the watchdog silently reverted it afterwards.
+    const preFix = { ok: true, compactionLimit: OVER_MEMBER_CAP };
+
+    expect(() => assertHonestMemberRefusal(preFix, true)).toThrow();
+  });
+
+  it('CONTROL: a correctly-shaped refusal that STILL WROTE fails it too', () => {
+    // The subtler regression: the response says no while the value is persisted
+    // anyway. Response-only assertions would pass this; the no-write half is what
+    // catches it, so it is asserted separately here.
+    const refusedButWrote = {
+      ok: false,
+      error: 'limit_exceeds_cap',
+      requested: OVER_MEMBER_CAP,
+      cap: COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
+    };
+
+    expect(() => assertHonestMemberRefusal(refusedButWrote, true)).toThrow();
+  });
+
+  it('CONTROL: refusing with the WRONG cap (the leader/1m ceiling) fails it', () => {
+    // A refusal that quotes 825k tells a member the wrong number, which is the
+    // dishonest-refusal defect this work-item exists to fix — not merely a
+    // cosmetic difference.
+    const wrongCap = {
+      ok: false,
+      error: 'limit_exceeds_cap',
+      requested: OVER_MEMBER_CAP,
+      cap: 825_000,
+    };
+
+    expect(() => assertHonestMemberRefusal(wrongCap, false)).toThrow();
   });
 });
