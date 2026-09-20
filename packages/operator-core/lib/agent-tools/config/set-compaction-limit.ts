@@ -23,6 +23,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { setCompactionLimit, getPresence } from '../coordination/presence';
 import { estimateContextWindowForOwner, resolveModelSpecForOwner } from '../../compaction-usage';
 import { clampCompactionLimit, selfSetCeilingForSpec, selfSetCeilingForWindow } from '../../agent-config-constants';
+import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { setCompactionLimitForOwner } from './set-compaction-limit-core';
 
 /** Soft limit applied when a session has set none. Read-time default (P-007).
@@ -87,7 +88,22 @@ export default defineTool({
     // stated purpose — "raise it for wide-context work" — was unreachable on the
     // fleet's default spec: every request above 400k silently clamped back to it.
     // Seeding still uses defaultCompactionLimitForSpec, so fleet-wide cost is unchanged.
-    const cap = measuredWindow != null ? selfSetCeilingForWindow(measuredWindow) : selfSetCeilingForSpec(spec);
+    // A FLEET MEMBER has a tighter self-set ceiling than a leader. Resolve the
+    // CALLER's own fleet role exactly as set-compaction-limit-core resolves the
+    // TARGET's, and thread it into both the cap and the spec clamp below.
+    // Omitting it made `roleCap` resolve to POSITIVE_INFINITY for members, so an
+    // over-cap request returned ok:true and was persisted { explicit: true } —
+    // then silently rewritten to the role cap by compaction-compliance-watchdog.
+    // The false SUCCESS is the defect; the ceiling itself is deliberate policy.
+    const selfFleet = (await fetchPresenceFleet([identity.ownerId]).catch(() => new Map())).get(
+      identity.ownerId,
+    );
+    const selfRole: string | null = selfFleet?.fleetRole ?? null;
+    const fleetMember = selfRole != null && selfRole !== 'leader';
+    const cap =
+      measuredWindow != null
+        ? selfSetCeilingForWindow(measuredWindow, { fleetMember })
+        : selfSetCeilingForSpec(spec, { fleetMember });
     if (args.limit > cap) {
       return {
         data: {
@@ -104,7 +120,9 @@ export default defineTool({
     // A measured window is authoritative, so the spec-based clamp must not
     // silently lower an otherwise valid request after the measured-cap check.
     const applied =
-      measuredWindow != null ? args.limit : clampCompactionLimit(args.limit, spec, { selfSet: true });
+      measuredWindow != null
+        ? args.limit
+        : clampCompactionLimit(args.limit, spec, { fleetMember, selfSet: true });
     if (applied !== args.limit) {
       return {
         data: {
