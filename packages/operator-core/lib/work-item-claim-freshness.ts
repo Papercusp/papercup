@@ -170,7 +170,11 @@ export function assessClaimFreshness(
   const envelope = readEnvelope(payload);
   const validationInstruction =
     'Cheap validation lane: inspect current HEAD and run the smallest targeted reproduction/test first. ' +
-    'If it no longer reproduces, close only with that evidence; this score never auto-closes an item.';
+    'If it no longer reproduces, close only with that evidence; this score never auto-closes an item. ' +
+    'A FALSIFIER quoted in the item body is an unvalidated instrument authored by the filer, not an oracle: ' +
+    'before acting on it FIRING, run it against a negative control you know is NOT done. A broad keyword ' +
+    'grep that also matches unrelated identifiers is the common defect, and this one fails toward a false ' +
+    'PRESENCE of the fix — silently closing real work instead of causing loud rework.';
   if (!envelope) {
     return {
       lane: 'validation',

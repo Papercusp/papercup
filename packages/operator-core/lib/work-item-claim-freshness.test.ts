@@ -180,3 +180,58 @@ describe('claim-time bug freshness (P-014)', () => {
     });
   });
 });
+
+/**
+ * EI-23791154428101928. The validation lane tells a claimant to run the cheapest
+ * reproduction FIRST, which is the moment it is least equipped to notice that the
+ * filer-supplied falsifier it was handed is itself broken. Measured on WI-10002068:
+ * the quoted falsifier was a bare `grep -rn 'GATED\|EXCLUDED'`, which matched ~20
+ * unrelated modules and read as FIRING, i.e. "already done" for a real unstarted item.
+ *
+ * This failure direction is the dangerous one. The false-instrument family already
+ * documented in CLAUDE.md (a `head`-truncated search, `pgrep -q`, a wrong-relation SQL
+ * zero-row) fails toward a false ABSENCE and causes loud rework; this one fails toward
+ * a false PRESENCE of the fix and silently closes real work, leaving no error to notice.
+ */
+describe('validation-lane instruction frames a filer-supplied falsifier as unvalidated', () => {
+  const staleEnvelope = createBugFreshnessEnvelope({
+    now: '2026-08-10T19:00:00.000Z',
+    sourceSha: 'oldsrc1',
+    runtimeSha: 'oldrun1',
+    reporterSession: 'su-a',
+  });
+
+  it('names the falsifier as an instrument rather than an oracle, and demands a negative control', () => {
+    const verdict = assessClaimFreshness({ freshnessEnvelope: staleEnvelope }, current, NOW);
+    expect(verdict.lane).toBe('validation');
+    expect(verdict.instruction).toMatch(/FALSIFIER/);
+    expect(verdict.instruction).toMatch(/unvalidated instrument/i);
+    expect(verdict.instruction).toMatch(/not an oracle/i);
+    // The actionable half: without this the warning is a mood, not a procedure.
+    expect(verdict.instruction).toMatch(/negative control/i);
+  });
+
+  it('carries the same framing when there is no envelope at all', () => {
+    // The envelope-less path builds its verdict separately, so it can regress alone.
+    const verdict = assessClaimFreshness({}, current, NOW);
+    expect(verdict.lane).toBe('validation');
+    expect(verdict.instruction).toMatch(/negative control/i);
+  });
+
+  it('does NOT put the falsifier warning on the implementation lane', () => {
+    // This file's own design note ("every row, which trains readers to ignore the lane
+    // it is supposed to sharpen") is the reason this is asserted rather than assumed:
+    // a warning printed on each claim is one a claimant learns to skip.
+    const fresh = createBugFreshnessEnvelope({
+      now: '2026-08-11T19:00:00.000Z',
+      sourceSha: 'src9999',
+      runtimeSha: 'abc1234',
+      reporterSession: 'su-a',
+      reporterRuntimeVersion: '1.2.3',
+      lastSuccessfulReproductionAt: '2026-08-11T19:30:00.000Z',
+    });
+    const verdict = assessClaimFreshness({ freshnessEnvelope: fresh }, current, NOW);
+    expect(verdict.lane).toBe('implementation');
+    expect(verdict.instruction).not.toMatch(/negative control/i);
+  });
+});
