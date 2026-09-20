@@ -9,6 +9,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+// Enrolled in tsconfig.declarations.json — typed, so no @ts-expect-error directive
+// (one here would be TS2578 "unused"). Used by the AUTO-BAR-R-001-P-002 guard below
+// so its tree scan cannot match detection tokens that live inside string literals.
+import { stripCommentsAndStrings } from '../../../scripts/lib/strip-comments-and-strings.mjs';
 // The write half of the shared Personal Vault fence — imported here so the two
 // doors are pinned by ONE test block and cannot drift into one being fenced.
 import { assertSingleWriteStatement } from './pg-mutate-query';
@@ -4185,12 +4189,33 @@ describe('AUTO-BAR-R-001-P-002 — ONE partition primitive, never two implementa
   const PARTITION_DEFINITION =
     /export\s+(?:async\s+)?function\s+(?:plan|execute|render)PredicatePartition\b/;
 
-  /** Pure + injectable, so the forked control is ordinary data and never a temp file. */
+  /**
+   * Pure + injectable, so the forked control is ordinary data and never a temp file.
+   *
+   * SELF-MATCH DEFENCE (EI-23769743489199449). The SUBJECT of this scan is the source
+   * tree, and this test file is IN that tree — so any fixture, error message or comment
+   * here that spells the detection token becomes a phantom second implementation, and the
+   * guard goes red forever on a fork that does not exist. That is the PHANTOM-OFFENDER
+   * class `guard-string-literal-blindness.test.ts` exists to prevent, and the shared
+   * stripper is its prescribed cure: blank comments and string literals before matching,
+   * so only REAL top-level code can satisfy the detector. Reused rather than re-solved —
+   * the earlier hand-rolled fix here split the keyword (`'export ' + 'function '`) to keep
+   * the source unmatchable, which worked but silently obliged every future author to
+   * remember the trick.
+   *
+   * Safe for THIS detector specifically: a genuine `export function planPredicatePartition`
+   * never appears inside a string literal, so stripping cannot turn a true positive into a
+   * silent false negative. That is the caveat the shared stripper's own docs raise — it is
+   * why a `DROP DATABASE` detector must NOT strip strings, since in TS source those words
+   * occur only inside a SQL template literal. The split is per call site, not per guard.
+   */
   function modulesDefiningPartition(
     files: ReadonlyArray<{ path: string; source: string }>,
   ): string[] {
     return files
-      .filter((file) => PARTITION_DEFINITION.test(file.source))
+      .filter((file) =>
+        PARTITION_DEFINITION.test(stripCommentsAndStrings(file.source, file.path)),
+      )
       .map((file) => file.path)
       .sort();
   }
@@ -4233,30 +4258,27 @@ describe('AUTO-BAR-R-001-P-002 — ONE partition primitive, never two implementa
   });
 
   it('CONTROL — a forked second implementation is CAUGHT (this is what makes the guard falsifiable)', () => {
-    // This fixture's own source lives INSIDE the tree the detector scans, so a
-    // naively-spelled literal SELF-MATCHES and reports a fork that does not
-    // exist — the same trap as `pgrep -f <pattern>` matching its own argv.
-    // Observed: the first run of this block failed the calibration above,
-    // naming this very file as the "second implementation". Splitting the
-    // keyword keeps the SOURCE unmatchable while the RUNTIME string stays
-    // byte-identical to a real fork.
-    const exportFn = 'export ' + 'function ';
+    // This fixture's own source lives INSIDE the tree the detector scans. It is spelled
+    // plainly on purpose: `modulesDefiningPartition` blanks string literals before
+    // matching, so a fixture can now look EXACTLY like the fork it stands in for without
+    // minting a phantom offender. (The self-match defence itself is proven load-bearing by
+    // the dedicated test below, not merely assumed here.)
     const forked = {
       path: 'packages/operator-core/lib/claim-spec/partition-preview.ts',
       source: [
         '// Deliberately wrong, and deliberately permanent: a second caller that',
         '// re-derives the partition instead of importing the shared primitive.',
-        `${exportFn}planPredicatePartition(rawSql: string) {`,
+        'export function planPredicatePartition(rawSql: string) {',
         '  return rawSql.includes("WHERE") ? { dimensions: [] } : null;',
         '}',
       ].join('\n'),
     };
-    // Guard the guard: if that split ever stops producing a fork-shaped string,
-    // this control would feed the detector something it cannot match and pass
-    // VACUOUSLY — a green that proves nothing, which is the exact failure the
-    // control exists to rule out.
+    // Guard the guard: if the fixture ever stops being fork-shaped, this control would
+    // feed the detector something it cannot match and pass VACUOUSLY — a green that proves
+    // nothing, which is the exact failure the control exists to rule out. Asserted through
+    // the SAME lens the detector uses (stripped), or this check could disagree with it.
     expect(
-      PARTITION_DEFINITION.test(forked.source),
+      PARTITION_DEFINITION.test(stripCommentsAndStrings(forked.source, forked.path)),
       'the forked fixture must genuinely look like a second implementation',
     ).toBe(true);
     const defining = modulesDefiningPartition([...candidateFiles(), forked]);
@@ -4265,6 +4287,44 @@ describe('AUTO-BAR-R-001-P-002 — ONE partition primitive, never two implementa
       'the detector must FLAG a second implementation, not tolerate it',
     ).toContain(forked.path);
     expect(defining).toHaveLength(2);
+  });
+
+  /**
+   * The recurrence guard for EI-23769743489199449 itself. The calibration above would also
+   * catch a regression here, but only as a confusing "2 defining modules" failure naming
+   * this very file — the symptom that already cost one debugging cycle. This names the
+   * cause directly.
+   */
+  it('SELF-MATCH DEFENCE — this test file is scanned but never reported as a fork', () => {
+    const selfPath = 'packages/operator-core/lib/pg-read-query.test.ts';
+    const self = {
+      path: selfPath,
+      source: readFileSync(join(repoRoot(), selfPath), 'utf8'),
+    };
+
+    // This file IS in the scanned population (candidateFiles greps the whole tree for
+    // `PredicatePartition`, which this file is full of), so the detector must look at it
+    // and still decline to call it an implementation.
+    expect(
+      modulesDefiningPartition([self]),
+      'the guard must not report its own fixtures as a second implementation',
+    ).toEqual([]);
+
+    // FALSIFIABILITY of the defence — kept permanently, because the assertion above passes
+    // for TWO very different reasons: the stripping works, or this file no longer contains
+    // the token at all. Only the first is the property we mean. So the PRE-FIX detector
+    // (match the RAW source, no stripping) is preserved inline and asserted to reach the
+    // WRONG verdict on the same input, which is what proves the defence is doing real work
+    // rather than guarding a case that no longer exists.
+    const legacyModulesDefiningPartition = (
+      files: ReadonlyArray<{ path: string; source: string }>,
+    ): string[] => files.filter((f) => PARTITION_DEFINITION.test(f.source)).map((f) => f.path);
+
+    expect(
+      legacyModulesDefiningPartition([self]),
+      'the pre-fix detector must still self-match this file — otherwise the defence above ' +
+        'is guarding an empty case and this control has stopped discriminating',
+    ).toEqual([selfPath]);
   });
 
   it('the dev:pg_query caller reaches the partition ONLY through the shared primitive', () => {
