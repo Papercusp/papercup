@@ -235,6 +235,17 @@ describe('grading-recruitment unfinished-item exception', () => {
 });
 
 describe('evaluatePlanAcceptanceGate', () => {
+  it.each(['ready', 'awaiting-acceptance'])('binds repair scope and CAS to the observed %s subject', async (status) => {
+    mockFlag.mockResolvedValue(false);
+    mockPg.mockReturnValue(sqlReturning([{ plan_slug: 'observed-plan', harness_slug: 'actual-home', status }]));
+    const verdict = await evaluatePlanAcceptanceGate('observed-plan');
+    expect(verdict.repairAction?.nextVerb).toMatchObject({
+      name: 'plans:set-plan-status', args: { slug: 'observed-plan', harness: 'actual-home', status: 'shipped' },
+    });
+    expect(verdict.repairAction?.nextVerb?.args.expectedCurrent)
+      .toBe(status === 'awaiting-acceptance' ? status : undefined);
+  });
+
   it('stamps even an early refusal with the loaded build provenance', async () => {
     mockRubric.mockResolvedValue(null);
 

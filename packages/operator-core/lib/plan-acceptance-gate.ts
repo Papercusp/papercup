@@ -426,6 +426,7 @@ function locateEphemeralDeliverableReferences(
 async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   planSlug: string,
   opts: PlanAcceptanceGateOpts = {},
+  subject: { status?: string | null; harnessSlug?: string } = {},
 ): Promise<PlanAcceptanceGateVerdictWithoutBuildProvenance> {
   // Each family reads its OWN flag, below, rather than one early return for all of
   // them: the code-truth checks and the rubric checks are independently killable, so
@@ -474,6 +475,12 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       };
     }
     const row = subjects[0];
+    // Capture only a positively selected subject from THIS evaluation. Repair
+    // routes need its CAS/scope; a second read could describe a different state.
+    if (row) {
+      subject.status = row.status;
+      subject.harnessSlug = row.harness_slug ?? undefined;
+    }
     planHarnessSlug = row?.harness_slug ?? null;
     planContent = row?.content ?? null;
     if (row?.template === RUBRIC_TEMPLATE_NAME) return { satisfied: true, skipped: 'rubric-template-plan' };
@@ -1424,6 +1431,7 @@ export function planAcceptanceRepairAction(
   planSlug: string,
   verdict: PlanAcceptanceGateVerdictWithoutBuildProvenance,
   opts: PlanAcceptanceGateOpts = {},
+  observedStatus?: string | null,
 ): PlanAcceptanceRepairAction {
   const scope = { slug: planSlug, ...(opts.harnessSlug ? { harness: opts.harnessSlug } : {}) };
   const proof = opts.current ? { current: opts.current } : {};
@@ -1433,9 +1441,12 @@ export function planAcceptanceRepairAction(
   };
   const ship = {
     name: 'plans:set-plan-status',
-    // P-024/D-021: acceptance-ready is a shipment transition, not shipment
-    // itself; preserve the carried lifecycle CAS in the executable route.
-    args: { ...scope, status: 'shipped', expectedCurrent: 'awaiting-acceptance', ...proof },
+    // D-021's carry CAS applies when the same read observed that lifecycle.
+    // Legacy ready/active plans must not receive an invented precondition.
+    args: {
+      ...scope, status: 'shipped', ...proof,
+      ...(observedStatus === 'awaiting-acceptance' ? { expectedCurrent: 'awaiting-acceptance' } : {}),
+    },
   };
   const instruction = verdict.message ?? 'Read the current scoped acceptance gate before choosing a repair.';
   if (verdict.satisfied) {
@@ -1510,6 +1521,13 @@ export async function evaluatePlanAcceptanceGate(
   planSlug: string,
   opts: PlanAcceptanceGateOpts = {},
 ): Promise<PlanAcceptanceGateVerdict> {
-  const verdict = await evaluatePlanAcceptanceGateWithoutBuildProvenance(planSlug, opts);
-  return { ...verdict, repairAction: planAcceptanceRepairAction(planSlug, verdict, opts), buildProvenance: getBuildInfo() };
+  const subject: { status?: string | null; harnessSlug?: string } = {};
+  const verdict = await evaluatePlanAcceptanceGateWithoutBuildProvenance(planSlug, opts, subject);
+  return {
+    ...verdict,
+    repairAction: planAcceptanceRepairAction(
+      planSlug, verdict, { ...opts, harnessSlug: subject.harnessSlug ?? opts.harnessSlug }, subject.status,
+    ),
+    buildProvenance: getBuildInfo(),
+  };
 }

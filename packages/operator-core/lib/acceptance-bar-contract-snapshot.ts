@@ -296,6 +296,32 @@ export interface AcceptanceBarTrace {
   };
 }
 
+/**
+ * THE reader for {@link AcceptanceBarTrace.automatedProofRequired} — one definition, every gate.
+ *
+ * Three gates ask "does this BAR owe automated proof?": contract readiness (this module), the
+ * lifecycle evaluator, and non-code requirement realization. The predicate previously lived
+ * PRIVATELY inside the lifecycle evaluator, so realization never learned about the explicitly
+ * manual case and rejected a manual BAR on the exact values the manual escape hatch produces
+ * — zero declared layers and adequacy `undeclared` (WI-10002089).
+ *
+ * It lives HERE because this module owns the field it reads, and both consumers already import
+ * from it, so neither needs an import cycle to reach it. A fourth copy of this predicate would
+ * be a fourth definition of "manual", free to drift silently — each copy individually correct.
+ *
+ * Fails closed: a snapshot written before the field existed keeps the historic automated
+ * behavior until a fresh projection proves the clause is non-automated.
+ */
+export function barRequiresAutomatedProof(bar: AcceptanceBarTrace): boolean {
+  // Prefer the projection's own verdict. Only it can see the rubric criterion's instrument
+  // declaration, so only it can tell an EXPLICITLY manual BAR from an automated one: a manual
+  // BAR still projects `behaviorClass: 'happy-path'` on the `tree` plane, and re-deriving the
+  // floor from the clause class below would reinstate a floor the projection deliberately lifted.
+  if (typeof bar.automatedProofRequired === 'boolean') return bar.automatedProofRequired;
+  return bar.behaviorClass !== 'non-automated' ||
+    (bar.requiredTestLayers?.length ?? 0) > 0 || bar.mutationRequired === true;
+}
+
 export interface AcceptanceBarContractSnapshot {
   schemaVersion: typeof ACCEPTANCE_BAR_CONTRACT_SNAPSHOT_VERSION;
   contentHash: string;

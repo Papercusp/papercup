@@ -59,6 +59,7 @@ import {
   type PlanItemStatus,
 } from './plan-audits';
 import type { AcceptanceBarContractSnapshot, AcceptanceBarTrace } from './acceptance-bar-contract-snapshot';
+import { barRequiresAutomatedProof } from './acceptance-bar-contract-snapshot';
 
 /** Derived from the canonical BAR evaluator, never from a doc citation or a completion claim. */
 export interface NonCodeItemProof {
@@ -90,14 +91,33 @@ export function deriveNonCodeItemProofs(snapshot: AcceptanceBarContractSnapshot)
   for (const [planItemId, projections] of byItem) {
     const evidenceRefs = new Set<string>();
     const fulfilled = projections.every(({ bar, mapping }) => {
-      if (mapping.planItemStatus !== 'done' || !bar.barHash || !bar.requiredTestLayers?.length ||
+      // An EXPLICITLY manual BAR — a document/ledger census whose criterion declares no
+      // instrument — CANNOT produce declared test layers or an adequacy verdict: the
+      // projection forces `requiredTestLayers: []`, which in turn forces adequacy
+      // `undeclared` and an EMPTY checks array. Demanding either here rejected such a BAR
+      // on precisely the values its own escape hatch produces, so a manual outcome was
+      // unshippable by construction: the contract gate accepted it and this gate then
+      // refused it, leaving only false statements as escapes (WI-10002089).
+      //
+      // This relaxes NOTHING else. Every other clause below is still required of a manual
+      // BAR: plane match, spec id/revision/fingerprint identity, a current work contract,
+      // `matchesCurrentSpec`, a supplied currentness comparison, and at least one current
+      // evidence row. A manual BAR with no current evidence still fails.
+      const manual = !barRequiresAutomatedProof(bar);
+      const adequacyState = bar.proof.adequacy?.state;
+      if (mapping.planItemStatus !== 'done' || !bar.barHash ||
+          (!manual && !bar.requiredTestLayers?.length) ||
           mapping.sourceBarHash !== bar.barHash || mapping.sourceBarSetHash !== snapshot.plan!.barSetHash ||
           mapping.sourceRubricRevision !== snapshot.rubric!.revision || mapping.evidencePlane !== bar.evidencePlane ||
           bar.proof.state !== 'current' || bar.proof.uncertainEvidence > 0 ||
-          bar.proof.adequacy?.state !== 'pass') return false;
-      const check = bar.proof.adequacy.checks.find((entry) =>
+          (manual ? !(adequacyState === 'undeclared' || adequacyState === 'pass')
+                  : adequacyState !== 'pass')) return false;
+      const check = bar.proof.adequacy?.checks.find((entry) =>
         entry.specId === mapping.specId && entry.revision === mapping.specRevision);
-      if (check?.verdict !== 'pass' || check.wouldBlock.length > 0 || !bar.workContracts.some((contract) =>
+      // Where a check EXISTS it must pass, manual or not — being manual never licenses
+      // ignoring a RECORDED adequacy failure. Only a manual BAR may have no check at all.
+      if (check ? (check.verdict !== 'pass' || check.wouldBlock.length > 0) : !manual) return false;
+      if (!bar.workContracts.some((contract) =>
         contract.current && contract.specId === mapping.specId && contract.specRevision === mapping.specRevision &&
         contract.specFingerprint === mapping.specContentHash)) return false;
       const evidence = (bar.proof.history ?? []).filter((row) => {
@@ -105,7 +125,11 @@ export function deriveNonCodeItemProofs(snapshot: AcceptanceBarContractSnapshot)
         return (row.evidenceKind === 'operational' || row.evidenceKind === 'check') &&
           row.matchesCurrentSpec && row.specId === mapping.specId && row.specRevision === mapping.specRevision &&
           row.specFingerprint === mapping.specContentHash && row.currentness.comparisonSupplied === true &&
-          row.currentness.overall === 'current' && check.evidenceRefs.includes(row.evidenceRef) &&
+          row.currentness.overall === 'current' &&
+          // With no adequacy check to enumerate the admissible refs, a manual BAR binds
+          // evidence to THIS mapping through the exact spec id + revision + fingerprint
+          // identity already asserted above, rather than through the check's ref list.
+          (check ? check.evidenceRefs.includes(row.evidenceRef) : manual) &&
           (bar.evidencePlane === 'tree' || plane === bar.evidencePlane);
       });
       for (const row of evidence) evidenceRefs.add(row.evidenceRef);

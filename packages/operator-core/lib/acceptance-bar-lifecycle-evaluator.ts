@@ -12,7 +12,7 @@ import type {
   AcceptanceBarSnapshotCode,
   AcceptanceBarTrace,
 } from './acceptance-bar-contract-snapshot';
-import { readAcceptanceBarContractSnapshot } from './acceptance-bar-contract-snapshot';
+import { barRequiresAutomatedProof, readAcceptanceBarContractSnapshot } from './acceptance-bar-contract-snapshot';
 import type { EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
 import { deriveNonCodeItemProofs, type NonCodeItemProof } from './plan-requirement-realization';
 
@@ -75,18 +75,12 @@ function addCode(codes: AcceptanceBarSnapshotCode[], code: AcceptanceBarSnapshot
   if (!codes.includes(code)) codes.push(code);
 }
 
-function automatedProofRequired(bar: AcceptanceBarTrace): boolean {
-  // Prefer the projection's own verdict. Only it can see the rubric criterion's
-  // instrument declaration, so only it can tell an EXPLICITLY manual BAR from an
-  // automated one: a manual BAR still projects `behaviorClass: 'happy-path'` on the
-  // `tree` plane, and re-deriving the floor from the clause class below would reinstate
-  // a floor the projection deliberately lifted.
-  if (typeof bar.automatedProofRequired === 'boolean') return bar.automatedProofRequired;
-  // Missing behaviorClass is an old snapshot shape; fail closed to the historic
-  // automated behavior until a fresh snapshot proves the clause is non-automated.
-  return bar.behaviorClass !== 'non-automated' ||
-    (bar.requiredTestLayers?.length ?? 0) > 0 || bar.mutationRequired === true;
-}
+// The manual-BAR predicate now lives beside the field it reads, in
+// acceptance-bar-contract-snapshot, so the requirement-realization gate can share this
+// exact definition instead of re-deriving one that never learned about the explicitly
+// manual case (WI-10002089). Imported under the historic local name to keep call sites
+// unchanged; the fail-closed fallback for pre-field snapshots moved with it.
+const automatedProofRequired = barRequiresAutomatedProof;
 
 /**
  * P-001: attribute every blocking code to the BAR(s) that produced it.

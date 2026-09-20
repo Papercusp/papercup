@@ -79,7 +79,6 @@ describe('plans:set-plan-status structured acceptance repair routes (P-026)', ()
             slug: 'plan-a',
             harness: 'papercusp',
             status: 'shipped',
-            expectedCurrent: 'awaiting-acceptance',
           },
         },
       });
@@ -128,7 +127,7 @@ describe('plans:set-plan-status structured acceptance repair routes (P-026)', ()
   });
 
   it('routes a satisfied gate to shipment and an already-shipped plan to terminal', () => {
-    expect(planAcceptanceRepairAction('plan-a', { satisfied: true })).toMatchObject({
+    expect(planAcceptanceRepairAction('plan-a', { satisfied: true }, {}, 'awaiting-acceptance')).toMatchObject({
       kind: 'shipment',
       nextVerb: {
         name: 'plans:set-plan-status',
@@ -140,6 +139,13 @@ describe('plans:set-plan-status structured acceptance repair routes (P-026)', ()
       nextVerb: null,
       instruction: 'Already shipped; do not reopen acceptance.',
     });
+  });
+
+  it('does not infer a carried lifecycle for a legacy or unmeasured subject', () => {
+    for (const status of ['ready', 'active', undefined]) {
+      const action = planAcceptanceRepairAction('plan-a', { satisfied: true }, {}, status);
+      expect(action.nextVerb?.args).not.toHaveProperty('expectedCurrent');
+    }
   });
 
   it('never copies a repair from a different lifecycle phase', () => {

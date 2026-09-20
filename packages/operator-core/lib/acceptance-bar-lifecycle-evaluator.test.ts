@@ -301,6 +301,70 @@ describe('operational realization from the canonical BAR snapshot', () => {
     s.bars.push({ ...s.bars[0]!, barKey: 'R-2', proof: { ...s.bars[0]!.proof, history: [] } });
     expect(deriveNonCodeItemProofs(s)).toEqual([]);
   });
+
+  // WI-10002089: the contract gate grew an `explicitlyManual` escape hatch, but this gate
+  // never learned about it, so a manual BAR passed contract readiness and was then refused
+  // here on the exact values that hatch produces — unshippable by construction.
+  describe('an explicitly manual BAR', () => {
+    function manualProven(): AcceptanceBarContractSnapshot {
+      const s = proven();
+      const b = s.bars[0]!;
+      // Precisely what the projection emits for a criterion declaring no instrument: zero
+      // layers, which FORCES adequacy `undeclared` AND an empty checks array.
+      b.automatedProofRequired = false;
+      b.requiredTestLayers = [];
+      b.proof.adequacy = { state: 'undeclared', checks: [] };
+      return s;
+    }
+
+    it('reaches a non-code proof on current plane-matched evidence', () => {
+      expect(deriveNonCodeItemProofs(manualProven())).toEqual([
+        { planItemId: 'P-001', barKeys: ['R-1'], evidenceRefs: ['probe:current'] },
+      ]);
+    });
+
+    // Falsifiability: being manual lifts the DEPTH floor and nothing else. Each of these
+    // must still refuse, or the fix traded a contradiction for a hole.
+    const manualGaps: Array<[string, (s: AcceptanceBarContractSnapshot) => void]> = [
+      ['no evidence at all', s => { s.bars[0]!.proof.history = []; }],
+      ['stale currentness', s => { s.bars[0]!.proof.history![0]!.currentness.overall = 'stale'; }],
+      ['unknown currentness', s => { s.bars[0]!.proof.history![0]!.currentness.overall = 'unknown'; }],
+      ['no comparison supplied', s => { s.bars[0]!.proof.history![0]!.currentness.comparisonSupplied = false; }],
+      ['spec fingerprint drift', s => { s.bars[0]!.proof.history![0]!.specFingerprint = 'old'; }],
+      ['wrong spec revision', s => { s.bars[0]!.proof.history![0]!.specRevision = 2; }],
+      ['wrong evidence plane', s => { s.bars[0]!.proof.history![0]!.details.evidencePlane = 'tree'; }],
+      ['a mere manual claim as evidence', s => { s.bars[0]!.proof.history![0]!.evidenceKind = 'manual'; }],
+      ['no current work contract', s => { s.bars[0]!.workContracts[0]!.current = false; }],
+      ['a dropped target', s => { s.bars[0]!.mappings[0]!.planItemStatus = 'dropped'; }],
+      ['stale proof state', s => { s.bars[0]!.proof.state = 'stale'; }],
+      ['uncertain evidence', s => { s.bars[0]!.proof.uncertainEvidence = 1; }],
+      // Manual lifts `undeclared`; it never licenses ignoring a RECORDED failure.
+      ['a failed adequacy state', s => { s.bars[0]!.proof.adequacy!.state = 'fail'; }],
+      ['a recorded failing check', s => {
+        s.bars[0]!.proof.adequacy!.checks = [{ specId: 'spec-1', revision: 1, verdict: 'fail',
+          wouldBlock: ['depth'], evidenceRefs: ['probe:current'] }];
+      }],
+    ];
+    it.each(manualGaps)('still refuses %s', (_name, change) => {
+      const s = manualProven();
+      change(s);
+      expect(deriveNonCodeItemProofs(s)).toEqual([]);
+    });
+
+    it('does not open the depth floor for a bar that is merely MISSING the manual flag', () => {
+      const s = manualProven();
+      // Fail closed: an old snapshot predating `automatedProofRequired` must keep the
+      // historic automated behavior rather than inherit the manual escape by omission.
+      delete s.bars[0]!.automatedProofRequired;
+      expect(deriveNonCodeItemProofs(s)).toEqual([]);
+    });
+
+    it('does not open the depth floor for an explicitly AUTOMATED bar', () => {
+      const s = manualProven();
+      s.bars[0]!.automatedProofRequired = true;
+      expect(deriveNonCodeItemProofs(s)).toEqual([]);
+    });
+  });
 });
 
 describe('AcceptanceBarLifecycleEvaluator — phase-aware BAR contract', () => {
