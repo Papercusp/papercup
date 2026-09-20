@@ -43,6 +43,9 @@ describe('db diagnostic correlation wiring', () => {
     const result = pgResultDiagnosticSnapshot('org-app').results[0];
     expect(result).toMatchObject({
       correlationState: 'linked',
+      source: {
+        processInstanceId: attempt.context.processInstanceId,
+      },
       correlation: {
         processInstanceId: attempt.context.processInstanceId,
         buildSha: attempt.context.buildSha,

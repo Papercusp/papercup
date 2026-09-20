@@ -41,11 +41,17 @@ export default defineTool({
       pid: process.pid,
       capturedAt: new Date().toISOString(),
       coverage: 'completed-results-in-selected-pools-only' as const,
+      timing: 'query-build-to-terminal-not-acquisition' as const,
+      queryIdentity: ['source.processInstanceId', 'source.poolInstanceId', 'connectionId', 'queryId'],
       resultLimitPerPool,
       limitations:
         'Only completed results in the named pools of this process are observed; in-flight queries, ' +
         'other pools and processes are not covered. An empty ring does not prove an idle database or connectivity. ' +
-        'dropped counts ring eviction; omittedRetained counts retained results outside this response window.',
+        'dropped counts ring eviction; omittedRetained counts retained results outside this response window. ' +
+        'Evicted result linkage is unavailable. correlationState=unobserved means no captured attempt, ' +
+        'unknown means its context could not be read safely; neither means no business work occurred. ' +
+        'Correlation records query creation, not current attempt liveness. elapsedMs spans build to terminal ' +
+        'ReadyForQuery, not acquisition, CPU, GC or root cause. Non-ReadyForQuery failures are not covered.',
       pools: ['org-app', 'org-admin', 'org-admin-lossless-bigint'].map((pool) => {
         const snapshot = pgResultDiagnosticSnapshot(pool, resultLimitPerPool);
         const retained = snapshot.totalRecorded - snapshot.dropped;

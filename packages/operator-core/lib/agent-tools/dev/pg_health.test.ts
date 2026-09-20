@@ -16,7 +16,10 @@ vi.mock('../../dev-data', () => ({
 import {
   _resetStoreIdentityForTests,
   beginAcquire,
+  capturePgDiagnosticContext,
   pinOrVerifyStoreIdentity,
+  setPgDiagnosticContextResolver,
+  resetPgDiagnosticContextResolver,
   resetAcquireRegistryForTest,
 } from '@papercusp/db-org';
 import { recordPgResult } from '../../../../../libs/papercusp/libs/db/src/acquire-registry';
@@ -33,7 +36,12 @@ const run = (args: { localOnly?: boolean } = {}) =>
     handler: (a: unknown) => Promise<{ data: Record<string, any> }>;
   }).handler(args);
 
-const recordResult = (pool = 'org-app', queryId = 1, status: 'ok' | 'error' = 'ok') =>
+const recordResult = (
+  pool = 'org-app',
+  queryId = 1,
+  status: 'ok' | 'error' = 'ok',
+  context?: unknown,
+) =>
   recordPgResult(pool, {
     connectionId: 2,
     queryId,
@@ -45,11 +53,13 @@ const recordResult = (pool = 'org-app', queryId = 1, status: 'ok' | 'error' = 'o
     elapsedMs: 25,
     status,
     errorCode: status === 'error' ? '42P01' : null,
+    context,
   });
 
 beforeEach(() => {
   _resetStoreIdentityForTests();
   resetAcquireRegistryForTest();
+  resetPgDiagnosticContextResolver();
   vi.mocked(pgHealth).mockClear();
 });
 
@@ -173,6 +183,35 @@ describe('dev:pg_health completed-result delivery', () => {
     } finally {
       acquisition.release();
     }
+  });
+
+  it('delivers optional local correlation through the query-free public snapshot', async () => {
+    const correlation = {
+      processInstanceId: '11111111-1111-4111-8111-111111111111',
+      buildSha: null,
+      rowId: '42',
+      attemptId: '22222222-2222-4222-8222-222222222222',
+      hopId: 2,
+      stage: 'epoch-query',
+      boundary: 'await' as const,
+    };
+    setPgDiagnosticContextResolver(() => correlation);
+    recordResult('org-app', 77, 'ok', capturePgDiagnosticContext());
+
+    const { data } = await run({ localOnly: true });
+    expect(pgHealth).not.toHaveBeenCalled();
+    expect(data.processDiagnostics.pools[0].results[0]).toMatchObject({
+      correlationState: 'linked',
+      correlation,
+    });
+    data.processDiagnostics.pools[0].results[0].correlation.rowId = '999';
+    data.processDiagnostics.pools[0].results[0].source.processInstanceId = 'wrong';
+    const reread = (await run({ localOnly: true })).data.processDiagnostics;
+    expect(reread.pools[0].results[0].correlation.rowId).toBe('42');
+    expect(reread.pools[0].results[0].source.processInstanceId).not.toBe('wrong');
+    expect(reread.timing).toBe('query-build-to-terminal-not-acquisition');
+    expect(reread.limitations).toContain('Non-ReadyForQuery failures are not covered');
+    resetPgDiagnosticContextResolver();
   });
 
   it('preserves store-identity warnings on the query-free path', async () => {

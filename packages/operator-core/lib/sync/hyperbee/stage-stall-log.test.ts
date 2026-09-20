@@ -10,7 +10,7 @@
  * still resolves normally after logging).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { setBuildStampResolver, resetBuildStampResolver } from '../../../../../libs/papercusp/libs/db/src/build-stamp';
+import { resetBuildStampResolver, setBuildStampResolver } from '@papercusp/db-org';
 import {
   createStageAttempt,
   logIfStageStalls,
