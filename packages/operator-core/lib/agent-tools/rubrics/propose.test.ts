@@ -533,10 +533,20 @@ describe('rubrics:propose args — standard-only watchdog fields', () => {
     expect(proposeTool.description).toMatch(/allowMethodShrink \+ shrinkReason/);
     expect(proposeTool.description).toMatch(/acceptance criteria may omit model\/method/i);
     expect(proposeTool.description).toMatch(/non-empty driftMarkers falsifier/i);
-    expect(proposeTool.description).toMatch(/at least one structured check/i);
-    expect(proposeTool.guidance?.when).toMatch(/stored structured check/i);
+    expect(proposeTool.description).toMatch(/(?:at least one|≥ ?1) structured check/i);
+    // The bare phrase moved out of guidance.when into the allowMethodShrink zod .describe()
+    // (cc95f91dfb). That text is NOT safely assertable — rubricsProposeArgs carries
+    // .superRefine, which strips .shape, so an args.shape.*.description match would pass
+    // VACUOUSLY (EI-22428147744123216). Assert the LINKAGE on the description instead, which
+    // is this test's stated intent and a stronger guard than the two loose matches it replaces.
+    expect(proposeTool.description).toMatch(
+      /removing a stored (?:structured )?check[\s\S]*?requires allowMethodShrink \+ shrinkReason/i,
+    );
     expect(proposeTool.guidance?.when).toMatch(/acceptance criteria are a light profile/i);
     expect(proposeTool.guidance?.when).toMatch(/traceability to the plan goal\/Decisions/i);
-    expect(proposeTool.guidance?.chaining).toMatch(/structured check/i);
+    // chaining no longer carries check semantics (cc95f91dfb rewrote it as pure tool
+    // sequencing). Pin what it actually guards now — the independent-ratify chain (D-001) —
+    // rather than a phrase that moved, so this stays a real assertion instead of a dead one.
+    expect(proposeTool.guidance?.chaining).toMatch(/independent rubrics:ratify/i);
   });
 });
