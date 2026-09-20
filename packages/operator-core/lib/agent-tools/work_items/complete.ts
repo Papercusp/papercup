@@ -3213,6 +3213,13 @@ async function completeOne(
       if (!gate.ok) {
         const pendingGradingAuditTargetIds = gate.pendingGradingAuditTargetIds;
         const failedGradingAuditTargetIds = gate.failedGradingAuditTargetIds;
+        // WI-10002063: the graded-card ids above do not resolve to WHY an audit failed;
+        // only the audit card (auditIssueId) does. Thread the resolvable handles through
+        // to the caller, or the refusal stays a closed loop.
+        const failedGradingAudits = gate.failedGradingAudits;
+        const failedAuditReadRefs = (failedGradingAudits ?? [])
+          .map((entry) => entry.auditIssueId)
+          .filter((id): id is string => Boolean(id));
         const gradingAuditDispatch =
           pendingGradingAuditTargetIds?.length && !it.validateOnly
             ? await dispatchPendingGradingAudits({
@@ -3234,7 +3241,11 @@ async function completeOne(
             : pendingGradingAuditTargetIds?.length
               ? 'Retry after binding current proof, emitting terminal scorecards, and settling any pending grading audits. The existing router selects independent auditors automatically; the returned gradingAuditDispatch receipts identify routed conversations or bounded launch fallback. Declines and expiry advance the existing cascade.'
               : failedGradingAuditTargetIds?.length
-                ? `Retry after repairing the failed grading-integrity findings for scorecard(s) ${failedGradingAuditTargetIds.join(', ')}, then emit fresh terminal scorecards through scorecards:emit.`
+                ? `Retry after repairing the failed grading-integrity findings for scorecard(s) ${failedGradingAuditTargetIds.join(', ')}, then emit fresh terminal scorecards through scorecards:emit.${
+                    failedAuditReadRefs.length
+                      ? ` The findings are NOT on the graded card — read the audit scorecard(s) ${failedAuditReadRefs.join(', ')} for them.`
+                      : ' No audit scorecard id was recorded for those cards, so the findings are not addressable from this refusal; inspect the graded card(s) gradingAudit subtree directly.'
+                  }`
                 : 'Retry after binding current proof and emitting terminal scorecards when required.';
         refuseGate(
           `refusing terminal completion for '${it.id}': spec-test-adequacy gate is not current: ${gate.reason}. ` +
@@ -3251,6 +3262,7 @@ async function completeOne(
               ...(failedGradingAuditTargetIds?.length
                 ? { failedGradingAuditTargetIds: [...failedGradingAuditTargetIds] }
                 : {}),
+              ...(failedGradingAudits?.length ? { failedGradingAudits: [...failedGradingAudits] } : {}),
               ...(gradingAuditDispatch ? { gradingAuditDispatch } : {}),
             },
           },

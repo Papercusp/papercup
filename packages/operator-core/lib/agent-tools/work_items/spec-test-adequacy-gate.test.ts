@@ -516,6 +516,91 @@ describe('specTestAdequacyCompletionGate', () => {
     });
   });
 
+  it('exposes the audit handle on a FAILED grading audit so the refusal can reach the findings (WI-10002063)', async () => {
+    const deps = passingDeps();
+    deps.listCards.mockResolvedValue([
+      matchingCard({
+        issueId: 'EI-failed-current',
+        gradingAudit: {
+          state: 'failed',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-20T00:02:00.000Z',
+          auditIssueId: 'EI-audit-failed-current',
+        },
+      }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+
+    if (result.ok) throw new Error('expected the gate to refuse');
+    expect(result).toMatchObject({
+      failedGradingAudits: [{ issueId: 'EI-failed-current', auditIssueId: 'EI-audit-failed-current' }],
+    });
+    // The refusal TEXT must carry the resolvable handle too: an agent reading `reason`
+    // must not have to already know `failedGradingAudits` exists in order to find the findings.
+    expect(result.reason).toContain('EI-audit-failed-current');
+  });
+
+  it('distinguishes a FAILED grading audit from a scorecard no-match (WI-10002063)', async () => {
+    const failedDeps = passingDeps();
+    failedDeps.listCards.mockResolvedValue([
+      matchingCard({
+        issueId: 'EI-failed-current',
+        gradingAudit: {
+          state: 'failed',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-20T00:02:00.000Z',
+          auditIssueId: 'EI-audit-failed-current',
+        },
+      }),
+    ]);
+    const failed = await specTestAdequacyCompletionGate(
+      { workItem: WORK_ITEM, attestation: ATTESTATION },
+      failedDeps,
+    );
+
+    const noMatchDeps = passingDeps();
+    noMatchDeps.listCards.mockResolvedValue([]);
+    const noMatch = await specTestAdequacyCompletionGate(
+      { workItem: WORK_ITEM, attestation: ATTESTATION },
+      noMatchDeps,
+    );
+
+    if (failed.ok || noMatch.ok) throw new Error('expected both gates to refuse');
+
+    // A failed audit is not a MATCHING problem. Telling an agent whose evidence matched
+    // fine that "no scorecard matches" sends them off re-emitting cards — the active
+    // misdirection this guards. The two refusals must not be confusable in EITHER direction.
+    expect(failed.reason).toMatch(/grading audit FAILED/);
+    expect(failed.reason).not.toMatch(/no current terminal complete scorecard matches/);
+    expect(noMatch.reason).toMatch(/no current terminal complete scorecard matches/);
+    expect(noMatch.reason).not.toMatch(/grading audit FAILED/);
+    expect(noMatch.failedGradingAudits).toBeUndefined();
+  });
+
+  it('says plainly when a failed grading audit recorded no audit card, rather than printing a blank handle (WI-10002063)', async () => {
+    const deps = passingDeps();
+    deps.listCards.mockResolvedValue([
+      matchingCard({
+        issueId: 'EI-failed-no-audit-card',
+        gradingAudit: {
+          state: 'failed',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-20T00:02:00.000Z',
+        },
+      }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+
+    if (result.ok) throw new Error('expected the gate to refuse');
+    // auditIssueId is legitimately absent on an identity-reopen failure, so the honest
+    // statement is the CONTRACT here — a bare interpolation would read "undefined".
+    expect(result.reason).toContain('no audit card recorded for graded card EI-failed-no-audit-card');
+    expect(result.reason).not.toMatch(/undefined|null/);
+    expect(result.failedGradingAudits).toMatchObject([{ issueId: 'EI-failed-no-audit-card' }]);
+  });
+
   it('returns evaluator would-block reasons for stale or otherwise inadequate evidence', async () => {
     const deps = passingDeps();
     deps.listEvidence.mockResolvedValue([
@@ -952,7 +1037,9 @@ describe('specTestAdequacyCompletionGate — universal contract resolution (P-01
         specRevision: 1,
         specFingerprint: 'sha256:spec-v1',
         replaySnapshot: true,
-        currentProvenance: 'server-measured',
+        // A replayed snapshot is a caller-supplied tuple, never server proof; the
+        // completion gate must not be able to buy 'server-measured' with a flag.
+        currentProvenance: 'replayed-snapshot',
         current: ATTESTATION.current,
       }),
     );
