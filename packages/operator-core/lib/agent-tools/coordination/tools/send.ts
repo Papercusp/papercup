@@ -2385,7 +2385,7 @@ export default defineTool({
     when: 'Share context or ask. `summary` is the required inbox headline; `body` is detail. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it. Waiting? `blockedOn: { kind, ref }` on that section gets readers a live cleared/pending verdict. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.',
     argRedirects: sectionOnlyArgRedirects,
     returns:
-      'Per-message {ok, to, msg_id|error} counts. When any message fails, top-level `partial:true` and `deliveryFailureWarning` call out that envelope `ok:true` only means the batch RAN — not that every message was delivered. A body above the ' + DEFAULT_INBOX_BODY_CAP + '-character default inbox cap is refused before a load-bearing expects:ack/answer/action send; an expects:none FYI may persist with top-level `bodyDeliveryWarning` because truncation is then explicit. A directed action that mentions an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy. `draftSuspension` appears when the sender\'s own tool activity shows a gap (default >10m) before the send — a wake-pump can interleave a turn between measuring a claim and sending it, so any measurement taken before `gapStartedAt` may have aged; it reports the measured gap only and never guesses which claim is stale.',
+      'Per-message {ok, to, msg_id|error} counts. Envelope `ok` is DERIVED from results[].ok, so ANY failed delivery makes it false; `partial:true` and `deliveryFailureWarning` then name which messages failed and why. A body above the ' + DEFAULT_INBOX_BODY_CAP + '-character default inbox cap is refused before a load-bearing expects:ack/answer/action send; an expects:none FYI may persist with top-level `bodyDeliveryWarning` because truncation is then explicit. A directed action that mentions an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy. `draftSuspension` appears when the sender\'s own tool activity shows a gap (default >10m) before the send — a wake-pump can interleave a turn between measuring a claim and sending it, so any measurement taken before `gapStartedAt` may have aged; it reports the measured gap only and never guesses which claim is stale.',
     notWhen: 'Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Named work-item transfer: coord:dispatch with workItemIds:[…]; plan-lane transfer: coord:handoff.',
     seeAlso: [
       'EI-21927749510698309: relaying an owner or fleet-leader directive? Pass relayOf/relayQuote on THIS send, not after — a text claim ("owner said/directive/approved") with neither ships anyway but renders [UNVERIFIED authority claim] to every recipient; re-sending backed does not un-flag the first copy, so a fleet-wide broadcast lands twice.',
@@ -2958,13 +2958,12 @@ export default defineTool({
         keyOf: (msg) => ({ to: msg.to }),
       },
     );
-    // The shared bulk contract deliberately keeps `ok:true` at the envelope level:
-    // it means the batch executed, while `results[].ok` / `counts.failed` describe
-    // each item's outcome. That distinction is easy to miss on a direct coord:send
-    // call, where a thrown persistence error (for example a transient PG lock
-    // timeout) becomes a nested `{ ok:false }` and otherwise looks like success.
-    // Keep the generic contract unchanged, but make this delivery-specific tool
-    // failure impossible to mistake for a clean send.
+    // The shared bulk contract DERIVES the envelope's `ok` from `results[].ok`
+    // (EI-23737206446729041), so a thrown persistence error — for example a transient
+    // PG lock timeout that becomes a nested `{ ok:false }` — already makes this call
+    // falsy rather than looking like a clean send. That is the load-bearing rail; the
+    // delivery-specific `partial` + `deliveryFailureWarning` below stay because they
+    // name WHICH messages failed and why, which a boolean cannot carry.
     const bodyTruncated = env.results.filter(
       (result) =>
         result.ok &&
@@ -3052,7 +3051,7 @@ export default defineTool({
         .join('; ');
       const warning =
         `coord:send completed the batch, but ${failed.length} message${failed.length === 1 ? '' : 's'} ` +
-        `failed delivery (counts.failed:${env.counts.failed}). Top-level ok:true only means the batch ran — ` +
+        `failed delivery (counts.failed:${env.counts.failed}). Top-level ok is therefore FALSE — ` +
         `do not assume every message was delivered; inspect results[].ok and retry or re-dispatch the failed ` +
         `message${failed.length === 1 ? '' : 's'} as appropriate.` +
         (errors ? ` Failure detail: ${errors}` : '');
