@@ -359,14 +359,67 @@ describe('coord:send handler (bulk keyed-array)', () => {
     // but a caller reading only the top-level `ok` must never see `true` for a send
     // whose body was shortened. This assertion is the whole point of the item: the
     // condition was ALREADY detected before the fix and merely reported beside ok:true.
-    expect(b.ok).toBe(false);
-    expect(b.bodyDeliveryLossy).toBe(true);
+    expectLossyEnvelope(b);
+  });
+
+  /**
+   * P-001 / spec-coord-send-no-silent-body-truncation@3 — the spec's load-bearing
+   * envelope assertions, extracted so ONE predicate guards the real handler
+   * (above) and can also be shown to REJECT a deliberately-wrong implementation
+   * (the falsifiability control below). A predicate that only ever runs against
+   * passing input proves nothing about what it would actually catch.
+   */
+  function expectLossyEnvelope(env: {
+    ok?: boolean;
+    bodyDeliveryLossy?: boolean;
+    bodyDeliveryWarning?: string;
+  }): void {
+    expect(env.ok).toBe(false);
+    expect(env.bodyDeliveryLossy).toBe(true);
     // The verdict must NAME BOTH COUNTS, so the sender can see how much was lost
     // without a second call.
-    expect(b.bodyDeliveryWarning).toMatch(/bodyDeliveredChars < bodyAuthoredChars/i);
-    expect(b.bodyDeliveryWarning).toMatch(/m1 \(600\/2260 chars visible\)/i);
-    expect(b.bodyDeliveryWarning).toMatch(/ok:false/i);
-    expect(b.bodyDeliveryWarning).toMatch(/coord:read/i);
+    expect(env.bodyDeliveryWarning).toMatch(/bodyDeliveredChars < bodyAuthoredChars/i);
+    expect(env.bodyDeliveryWarning).toMatch(/m1 \(600\/2260 chars visible\)/i);
+    expect(env.bodyDeliveryWarning).toMatch(/ok:false/i);
+    expect(env.bodyDeliveryWarning).toMatch(/coord:read/i);
+  }
+
+  it('P-001 falsifiability control: the envelope predicate CATCHES a deliberately-wrong verdict', async () => {
+    // A guard that has never failed is a guard nobody has tested. CLAUDE.md's
+    // mutation-probe table prescribes THIS tier for a module you import: keep the
+    // wrong implementations PERMANENTLY in the test file rather than mutating
+    // production code, which on this swept tree git-sync can commit for you.
+    //
+    // Each mutant is a rule send.ts could plausibly regress to, and the warning
+    // text is taken from the REAL envelope so a straw man cannot drift away from
+    // what the handler actually returns.
+    const longBody = 'x'.repeat(2_260);
+    const real = await body({
+      to: ['bee-1'],
+      summary: 'decision with branches',
+      expects: 'none',
+      body: [{ text: longBody, forYouBecause: { relation: 'other', note: 'the recipient owns the next step' } }],
+    });
+
+    // CALIBRATION — the real implementation must PASS. Without this a vacuous
+    // predicate would "catch" every mutant below while proving nothing at all.
+    expectLossyEnvelope(real);
+
+    // WRONG #1 — the pre-fix behaviour this item exists to remove: detect the loss
+    // and report it BESIDE ok:true. This is the exact regression the spec names.
+    expect(() =>
+      expectLossyEnvelope({ ok: true, bodyDeliveryWarning: real.bodyDeliveryWarning }),
+    ).toThrow();
+
+    // WRONG #2 — flip the verdict but drop the counts from the warning, so the
+    // sender cannot tell how much was lost without a second call.
+    expect(() =>
+      expectLossyEnvelope({
+        ok: false,
+        bodyDeliveryLossy: true,
+        bodyDeliveryWarning: 'body was shortened; see coord:read (ok:false)',
+      }),
+    ).toThrow();
   });
 
   it('P-001: a >600-char body is STORED complete — ok:false reports a lossy default READ, never a lossy write', async () => {
