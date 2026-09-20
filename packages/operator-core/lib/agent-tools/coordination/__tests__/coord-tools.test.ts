@@ -331,8 +331,9 @@ describe('coord:ack', () => {
 
   it('returns a per-item unknown_msg_id for a msg_id that does not exist', async () => {
     const res = await run(ackTool, { msg_id: 'never' });
-    // Bulk verbs never set top-level isError; a bad item surfaces under results[i].
-    expect(parse(res)).toMatchObject({ ok: true, results: [{ ok: false, error: 'unknown_msg_id' }] });
+    // Bulk verbs never set top-level isError; a bad item surfaces under results[i] AND
+    // in the envelope ok, which is DERIVED (`counts.failed === 0`) — EI-23737206446729041.
+    expect(parse(res)).toMatchObject({ ok: false, results: [{ ok: false, error: 'unknown_msg_id' }] });
   });
 });
 

@@ -67,8 +67,10 @@ describe('coord:resolve handler', () => {
   it('returns a per-item not_found for an unknown msg_id and does not unblock', async () => {
     const res = await run({ msg_id: 'never', choice: 'x' });
     const body = parse(res);
-    // Bulk verbs never set top-level isError; a bad item surfaces as results[i].ok=false.
-    expect(body.ok).toBe(true);
+    // Bulk verbs never set top-level isError; a bad item surfaces as results[i].ok=false
+    // AND is reflected in the envelope ok, which is DERIVED (`counts.failed === 0`)
+    // — EI-23737206446729041.
+    expect(body.ok).toBe(false);
     expect(body.counts.failed).toBe(1);
     expect(body.results[0].ok).toBe(false);
     expect(body.results[0].error).toBe('not_found');

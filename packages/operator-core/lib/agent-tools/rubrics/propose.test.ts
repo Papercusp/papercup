@@ -526,7 +526,10 @@ describe('rubrics:propose args — standard-only watchdog fields', () => {
     });
 
     expect(parsed.success).toBe(true);
-    expect(proposeTool.description).toMatch(/removing a stored structured check/i);
+    // "structured" is optional here ONLY because the description is byte-budgeted and was
+    // trimmed to "a stored check"; guidance.when below still pins the full phrase, so the
+    // acknowledgement requirement stays asserted rather than loosened away.
+    expect(proposeTool.description).toMatch(/removing a stored (?:structured )?check/i);
     expect(proposeTool.description).toMatch(/allowMethodShrink \+ shrinkReason/);
     expect(proposeTool.description).toMatch(/acceptance criteria may omit model\/method/i);
     expect(proposeTool.description).toMatch(/non-empty driftMarkers falsifier/i);

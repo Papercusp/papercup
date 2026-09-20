@@ -334,7 +334,8 @@ describe('locks:release handler', () => {
     const b = body(await call({ lock_id: lockId }));
 
     expect(b).toMatchObject({
-      ok: true,
+      // Envelope ok is DERIVED (`counts.failed === 0`) — EI-23737206446729041.
+      ok: false,
       counts: { ok: 0, failed: 1 },
       results: [{
         ok: false,

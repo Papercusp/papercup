@@ -1150,7 +1150,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       noHarnessCtx, // no ctx harness → WI-A & WI-B rely on per-item/none, WI-C unresolvable
     );
     // WI-A has no per-item harness and noHarnessCtx → also unresolvable; WI-B resolves via 'web'.
-    expect(out.ok).toBe(true);
+    // Envelope ok is DERIVED (`counts.failed === 0`), so the two bad items make it false
+    // while each good item still succeeds on its own — EI-23737206446729041.
+    expect(out.ok).toBe(false);
     expect(out.results.map((r: { id: string; ok: boolean }) => [r.id, r.ok])).toEqual([
       ['WI-A', false],
       ['WI-B', true],

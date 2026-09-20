@@ -59,7 +59,8 @@ describe('locks:heartbeat_resource handler', () => {
     mockResolvedTyped(hbM, { extended: false, expires_ts: null });
     const b = body(await call());
     expect(b).toMatchObject({
-      ok: true,
+      // Envelope ok is DERIVED (`counts.failed === 0`) — EI-23737206446729041.
+      ok: false,
       counts: { ok: 0, failed: 1 },
       results: [
         {
@@ -170,7 +171,8 @@ describe('locks:heartbeat_resource handler', () => {
       const b = body(await pending);
 
       expect(b).toMatchObject({
-        ok: true,
+        // Envelope ok is DERIVED (`counts.failed === 0`) — EI-23737206446729041.
+        ok: false,
         counts: { ok: 0, failed: 1 },
         results: [
           {
