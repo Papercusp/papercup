@@ -578,6 +578,50 @@ describe('goals:get — holder IDENTITY is on the summary branch (EI-22084485266
     ]);
   });
 
+  /**
+   * WI-10002038 — `launchSettings` has REPLACE semantics on goals:update, so a correct
+   * read-modify-write REQUIRES the reader to hand back the WHOLE document, and this is that
+   * reader. The property was previously unguarded, and it has already cost real data: the
+   * WI-10002016 filer DID read first, still lost keys, and the values had to be recovered from
+   * harness_shared.audit_log.
+   *
+   * WI-10002038 was filed as "goals:get returns launchSettings PROJECTION-TRUNCATED". It does
+   * not: it omits the key ENTIRELY at detail:'summary' (the full branch spreads the goal row,
+   * the summary branch does not) and returns it COMPLETE at detail:'full'. Both halves are
+   * pinned here, because each has its own failure mode — a future change that clips the
+   * full-branch document, or one that starts half-populating the summary branch and invites a
+   * caller to round-trip THAT, must fail here rather than in a caller's silently lost keys.
+   */
+  it('returns the WHOLE launchSettings document at detail:full (RMW round-trip), and none at summary', async () => {
+    const LAUNCH_SETTINGS = {
+      holder: { onLoss: 'respawn', requireLive: true },
+      defaults: { agent: 'claude', carry: 'warm', model: 'claude-opus-5', effort: 'xhigh', account: 'auto' },
+      maxAgents: 6,
+      maxPerFleet: 2,
+    };
+
+    fixtureQueue = [[GOAL_ROW({ launchSettings: LAUNCH_SETTINGS })]];
+    const summary = dataOf(await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never));
+    // `full` also reads children; give it a row queue that satisfies both.
+    fixtureQueue = [[GOAL_ROW({ launchSettings: LAUNCH_SETTINGS })], []];
+    const full = dataOf(await tool.handler({ id: 'g-1', detail: 'full' } as never, CTX() as never));
+
+    // DEEP-EQUAL on purpose: the guarded bug is a MISSING key, and a key-by-key spot check only
+    // catches the keys whoever wrote the check happened to think of.
+    expect(full.launchSettings).toEqual(LAUNCH_SETTINGS);
+    // the two keys the filed report named — one of them NESTED under `defaults`, which is why a
+    // flat scan for a top-level `account` reports it missing when it is present.
+    expect((full.launchSettings as typeof LAUNCH_SETTINGS).maxPerFleet).toBe(2);
+    expect((full.launchSettings as typeof LAUNCH_SETTINGS).defaults.account).toBe('auto');
+    // the documented split, so nobody "fixes" the wrong branch
+    expect(summary.launchSettings).toBeUndefined();
+    // CALIBRATION — without this, the line above passes vacuously on an empty/broken projection,
+    // since a missing body yields `undefined` just as a correctly-omitted key does. Prove the
+    // summary read really happened (the neighbouring holders test guards itself the same way).
+    expect(summary.id).toBe('g-1');
+    expect(summary.title).toBe('Ship v1');
+  });
+
   it('an UNHELD goal reports holders:[] — absence is stated, never omitted', async () => {
     // The null-vs-missing rule the portfolioThroughput block states: a caller
     // must be able to tell "nobody holds it" from "this build does not report
