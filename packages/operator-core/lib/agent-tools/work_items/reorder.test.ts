@@ -45,8 +45,8 @@ describe('work_items:reorder handler (bulk keyed-array)', () => {
   it('maps an error result to that item\'s { ok:false } without failing the batch', async () => {
     reorderM.mockResolvedValue({ error: 'not_assigned' } as never);
     const b = body(await call({ rank: 0 }));
-    expect(b.ok).toBe(true); // the batch ran
-    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.ok).toBe(false); // DERIVED from counts.failed — the sole item failed
+    expect(b.counts).toEqual({ ok: 0, failed: 1 }); // …the batch still RAN, no throw
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-1', error: 'not_assigned' });
   });
 

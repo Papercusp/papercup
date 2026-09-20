@@ -37,7 +37,7 @@ describe('plans:disarm-schedule handler', () => {
   it('not_found for an unknown plan, and does not disarm', async () => {
     getRow.mockResolvedValue(null as never);
     const b = body(await call());
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 }, results: [{ ok: false, error: 'not_found', slug: 'p1' }] });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 }, results: [{ ok: false, error: 'not_found', slug: 'p1' }] });
     expect(disarmM).not.toHaveBeenCalled();
   });
 

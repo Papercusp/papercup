@@ -112,8 +112,8 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
   it('items:[…] comments on many; a not-found item fails only itself', async () => {
     cmtM.mockImplementation(async (id: string) => (id === 'WI-X' ? null : ({ id: `post-${id}` } as never)));
     const b = await body({ items: [{ id: 'WI-1', body: 'a' }, { id: 'WI-X', body: 'b' }, { id: 'WI-2', body: 'c' }] });
-    expect(b.ok).toBe(true); // the batch ran
-    expect(b.counts).toEqual({ ok: 2, failed: 1 });
+    expect(b.ok).toBe(false); // DERIVED from counts.failed — WI-X failed
+    expect(b.counts).toEqual({ ok: 2, failed: 1 }); // …but the batch still RAN: 2 succeeded
     expect(b.results.map((r: { id: string; ok: boolean }) => [r.id, r.ok])).toEqual([
       ['WI-1', true],
       ['WI-X', false],

@@ -565,7 +565,7 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
 
     // Bulk transport remains healthy even when the sole item is refused; the
     // per-item result and failed count carry the policy verdict.
-    expect(result).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(result).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(result.results[0]).toMatchObject({
       ok: false,
       slug: 'handler-plan',
@@ -837,7 +837,7 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
       ctx,
     );
 
-    expect(result).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(result).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(result.results[0]).toEqual({
       ok: false,
       slug: 'handler-plan',

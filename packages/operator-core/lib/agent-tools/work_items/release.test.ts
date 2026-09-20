@@ -250,7 +250,7 @@ describe('work_items:release holder guard (EI-7588)', () => {
       releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
     });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-HELD', error: 'not_holder', holder: 'peer' });
     expect(b.results[0].hint).toMatch(/Held by peer, not you \(me\)/);
   });

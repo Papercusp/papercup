@@ -33,7 +33,7 @@ describe('conversations:resolve handler (bulk keyed-array)', () => {
 
   it('an item missing both accepted answer + post id fails without touching the store', async () => {
     const b = await body({ id: 'c1' });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'c1', error: 'need_accepted_answer_or_post_id' });
     expect(resolveM).not.toHaveBeenCalled();
   });
@@ -77,7 +77,7 @@ describe('conversations:resolve handler (bulk keyed-array)', () => {
         { id: 'c2', accepted_post_id: 5 },
       ],
     });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'c1', state: 'resolved' });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'c2', error: 'not_a_question' });
   });

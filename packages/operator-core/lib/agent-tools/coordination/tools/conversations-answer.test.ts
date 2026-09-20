@@ -27,7 +27,7 @@ describe('conversations:answer handler (bulk keyed-array)', () => {
   it('maps a store error to a per-item { ok:false, error }', async () => {
     answerM.mockResolvedValue({ error: 'not_a_question' } as never);
     const b = await body({ id: 'c1', body: 'the answer' });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'c1', error: 'not_a_question' });
   });
 
@@ -52,7 +52,7 @@ describe('conversations:answer handler (bulk keyed-array)', () => {
         { id: 'c2', body: 'answer two' },
       ],
     });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'c1', post_id: 7 });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'c2', error: 'not_found' });
     expect(answerM.mock.calls[0]![1]).toMatchObject({ conversation_id: 'c1', body: 'answer one' });

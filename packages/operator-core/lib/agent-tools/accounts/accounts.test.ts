@@ -124,7 +124,7 @@ describe('accounts:reset-rate (bulk keyed-array, P-006)', () => {
   it('n=1 guards unknown_account as that item\'s { ok:false } and does NOT save', async () => {
     getAcct.mockReturnValue(undefined as never);
     const b = body(await resetTool.handler({ id: 'ghost' } as never, {} as never) as Out);
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'ghost', error: 'unknown_account' });
     expect(saveM).not.toHaveBeenCalled();
   });
@@ -139,8 +139,8 @@ describe('accounts:reset-rate (bulk keyed-array, P-006)', () => {
   it('ids:[…] resets many; an unknown one fails ONLY itself (no save for it)', async () => {
     getAcct.mockImplementation((_pool: unknown, id: string) => (id === 'gone' ? (undefined as never) : ({ id } as never)));
     const b = body(await resetTool.handler({ ids: ['A1', 'gone', 'A2'] } as never, {} as never) as Out);
-    expect(b.ok).toBe(true);
-    expect(b.counts).toEqual({ ok: 2, failed: 1 });
+    expect(b.ok).toBe(false); // DERIVED from counts.failed — 'gone' failed
+    expect(b.counts).toEqual({ ok: 2, failed: 1 }); // …but the batch still RAN: A1/A2 succeeded
     expect(b.results.map((r: any) => [r.id, r.ok])).toEqual([
       ['A1', true],
       ['gone', false],

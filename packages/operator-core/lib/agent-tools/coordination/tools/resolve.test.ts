@@ -47,7 +47,7 @@ describe('coord:resolve handler (bulk keyed-array)', () => {
       msg_id === 'E-404' ? ('not_found' as never) : ({ msg_id, choice: 'go' } as never),
     );
     const b = await body({ items: [{ msg_id: 'E-1', choice: 'go' }, { msg_id: 'E-404', choice: 'go' }] });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: true, msg_id: 'E-1' });
     expect(b.results[1]).toMatchObject({ ok: false, msg_id: 'E-404', error: 'not_found' });
   });

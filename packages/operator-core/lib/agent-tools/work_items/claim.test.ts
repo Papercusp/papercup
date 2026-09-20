@@ -357,7 +357,7 @@ describe('work_items:claim handler (keyed-array)', () => {
   it('refuses implicit claims as the shared su-loopback fallback', async () => {
     identity.ownerId = 'su-loopback';
     const b = await body({ id: 'WI-LOOPBACK' });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-LOOPBACK', error: 'missing_client_identity' });
     expect(b.results[0].hint).toMatch(/real per-session or spawn owner/);
     expect(claimM).not.toHaveBeenCalled();
@@ -378,7 +378,7 @@ describe('work_items:claim handler (keyed-array)', () => {
   it('refuses an implicit claim under the mcp-call.mjs auto-generated fallback identity', async () => {
     identity.ownerId = 'mcp-call-12345';
     const b = await body({ id: 'WI-EPHEMERAL' });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({
       ok: false,
       id: 'WI-EPHEMERAL',
@@ -400,7 +400,7 @@ describe('work_items:claim handler (keyed-array)', () => {
     getM.mockResolvedValue({ id: 'WI-HELD', assignee: 'peer' } as never);
     classifyM.mockReturnValue({ reason: 'conflict', holder: 'peer' } as never);
     const b = await body({ ids: ['WI-1', 'WI-HELD'] });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'WI-HELD', error: 'claim_conflict', holder: 'peer' });
     expect(b.results[1].hint).toMatch(/Already claimed by peer/);
   });
@@ -856,7 +856,7 @@ describe('work_items:claim handler (keyed-array)', () => {
   it('EI-9274: assignee:"self" under the su-loopback fallback is refused the same as an omitted assignee', async () => {
     identity.ownerId = 'su-loopback';
     const b = await body({ id: 'WI-LOOPBACK-SELF', assignee: 'self' });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-LOOPBACK-SELF', error: 'missing_client_identity' });
     expect(claimM).not.toHaveBeenCalled();
   });

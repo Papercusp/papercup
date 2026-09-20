@@ -82,7 +82,7 @@ describe('plan_items:convert handler (bulk keyed-array)', () => {
         : converted(opts.itemId, 'WI-1'),
     );
     const b = await body({ plan: 'p1', itemIds: ['P-001', 'P-REF'] });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: true, item: 'P-001', status: 'converted' });
     expect(b.results[1]).toMatchObject({ ok: false, item: 'P-REF', status: 'refused' });
   });

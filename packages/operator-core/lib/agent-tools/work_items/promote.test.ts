@@ -37,8 +37,8 @@ describe('work_items:promote handler (bulk keyed-array)', () => {
       (id === 'WI-X' ? ({ error: `work_item '${id}' not found` } as never) : ({ featureId: `F-${id}` } as never)),
     );
     const b = await body({ items: [{ id: 'WI-1' }, { id: 'WI-X' }, { id: 'WI-2' }] });
-    expect(b.ok).toBe(true); // the batch ran
-    expect(b.counts).toEqual({ ok: 2, failed: 1 });
+    expect(b.ok).toBe(false); // DERIVED from counts.failed — WI-X failed
+    expect(b.counts).toEqual({ ok: 2, failed: 1 }); // …but the batch still RAN: 2 succeeded
     expect(b.results.map((r: { id: string; ok: boolean }) => [r.id, r.ok])).toEqual([
       ['WI-1', true],
       ['WI-X', false],

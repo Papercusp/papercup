@@ -106,7 +106,7 @@ describe('coord:ack handler (bulk keyed-array)', () => {
         : ({ status: 'found', msgId: id, message: { msg_id: id, from: 'peer' }, resolvedFrom: 'exact' } as never),
     );
     const b = await body({ msg_ids: ['M-1', 'M-404'] });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: true, msg_id: 'M-1' });
     expect(b.results[1]).toMatchObject({ ok: false, msg_id: 'M-404', error: 'unknown_msg_id' });
     // the unknown one was NOT acked
@@ -122,7 +122,7 @@ describe('coord:ack handler (bulk keyed-array)', () => {
 
     const b = await body({ msg_id: 'M-' });
 
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, msg_id: 'M-', error: 'msg_id_ambiguous', candidates: ['M-1', 'M-2'] });
     expect(appendM).not.toHaveBeenCalled();
   });

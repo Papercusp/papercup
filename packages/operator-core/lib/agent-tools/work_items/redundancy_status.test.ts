@@ -39,8 +39,8 @@ describe('work_items:redundancy_status handler (bulk keyed-array)', () => {
   it('maps a missing/non-redundant item to that item\'s not-found result', async () => {
     redM.mockResolvedValue(null as never);
     const b = body(await call());
-    expect(b.ok).toBe(true); // the batch ran
-    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.ok).toBe(false); // DERIVED from counts.failed — the sole item failed
+    expect(b.counts).toEqual({ ok: 0, failed: 1 }); // …the batch still RAN, no throw
     expect(b.results[0].ok).toBe(false);
     expect(String(b.results[0].error)).toMatch(/not found/i);
   });

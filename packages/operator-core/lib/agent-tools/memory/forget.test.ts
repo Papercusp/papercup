@@ -89,7 +89,7 @@ describe('memory:forget handler (bulk keyed-array)', () => {
     });
     useBackend(b);
     const r = await body({ ids: ['m1', 'bad', 'm2'] });
-    expect(r).toMatchObject({ ok: true, counts: { ok: 2, failed: 1 } });
+    expect(r).toMatchObject({ ok: false, counts: { ok: 2, failed: 1 } });
     expect(r.results[1]).toMatchObject({ ok: false, id: 'bad', error: 'delete blew up' });
   });
 

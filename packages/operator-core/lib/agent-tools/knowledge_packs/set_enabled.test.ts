@@ -60,7 +60,7 @@ describe('knowledge_packs:set_enabled tool (bulk keyed-array)', () => {
       return { ok: true, disabled: [] } as never;
     });
     const r = body(await callTool({ pot: 'h', packs: ['p1', 'bad'], enabled: false }));
-    expect(r).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(r).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(r.results[0]).toMatchObject({ ok: true, pot: 'h', pack: 'p1' });
     expect(r.results[1]).toMatchObject({ ok: false, pot: 'h', pack: 'bad', error: 'store write failed' });
   });

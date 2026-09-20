@@ -88,7 +88,7 @@ describe('features:history — keyed-array envelope + failure items', () => {
 
   it('rejects an invalid slug as that item without querying', async () => {
     const b = await env({ slug: 'bad slug!' });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({
       ok: false,
       slug: 'bad slug!',

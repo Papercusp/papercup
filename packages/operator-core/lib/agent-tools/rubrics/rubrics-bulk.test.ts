@@ -329,8 +329,8 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
   it('rubricRefs:[…] fetches many; a not-found item fails only itself', async () => {
     getM.mockImplementation(async (id: string) => (id === 'gone' ? null : ({ id } as never)));
     const b = await body(getTool, { rubricRefs: ['r-1', 'gone', 'r-2'] });
-    expect(b.ok).toBe(true);
-    expect(b.counts).toEqual({ ok: 2, failed: 1 });
+    expect(b.ok).toBe(false); // DERIVED from counts.failed — 'gone' failed
+    expect(b.counts).toEqual({ ok: 2, failed: 1 }); // …but the batch still RAN: r-1/r-2 succeeded
     expect(b.results.map((r: { rubricRef: string; ok: boolean }) => [r.rubricRef, r.ok])).toEqual([
       ['r-1', true],
       ['gone', false],
@@ -589,7 +589,7 @@ describe('rubrics:ratify handler (bulk keyed-array)', () => {
   it('ratifies MANY via rubricRefs:[…]; a missing one fails only itself', async () => {
     ratifyM.mockImplementation(async (id: string) => (id === 'gone' ? null : ({ id, status: 'active' } as never)));
     const b = await body(ratifyTool, { rubricRefs: ['r-1', 'gone'] });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: true, rubricRef: 'r-1' });
     expect(b.results[1]).toMatchObject({ ok: false, rubricRef: 'gone', error: 'rubric not found' });
   });

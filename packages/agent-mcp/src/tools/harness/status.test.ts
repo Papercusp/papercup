@@ -141,8 +141,8 @@ describe('harness:status — bulk keyed-array dual-arity (P-006)', () => {
       { match: 'audit_log', rows: [] },
     ]);
     const b = await env({ slugs: ['papercup', 'gone'] }, tx);
-    expect(b.ok).toBe(true);
-    expect(b.counts).toEqual({ ok: 1, failed: 1 });
+    expect(b.ok).toBe(false); // DERIVED from counts.failed — `gone` failed
+    expect(b.counts).toEqual({ ok: 1, failed: 1 }); // …but the batch still RAN: papercup succeeded
     expect(b.results.map((r) => [r.slug, r.ok])).toEqual([
       ['papercup', true],
       ['gone', false],

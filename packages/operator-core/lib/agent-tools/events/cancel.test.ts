@@ -82,7 +82,7 @@ describe('events:cancel dual-path result', () => {
       inFlightDeliveries: 0,
     });
     const out = await call({ await_id: 7 });
-    expect(out).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 }, results: [{ ok: false, await_id: 7, cancelled: false, error: 'not_found_or_not_yours_or_already_settled' }] });
+    expect(out).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 }, results: [{ ok: false, await_id: 7, cancelled: false, error: 'not_found_or_not_yours_or_already_settled' }] });
   });
 
   it('ack-only success → ok:true, acked:true', async () => {
@@ -97,7 +97,7 @@ describe('events:cancel dual-path result', () => {
   it('ack-only miss (await_id==null) → ok:false + reason', async () => {
     vi.mocked(ackDelivery).mockResolvedValue({ acked: false, alreadySettled: false });
     const out = await call({ delivery_id: 3 });
-    expect(out).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 }, results: [{ ok: false, delivery_id: 3, acked: false, error: 'not_found_or_not_yours_or_already_settled' }] });
+    expect(out).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 }, results: [{ ok: false, delivery_id: 3, acked: false, error: 'not_found_or_not_yours_or_already_settled' }] });
   });
 
   it('ack-only already-delivered result says the host handoff is not recallable', async () => {

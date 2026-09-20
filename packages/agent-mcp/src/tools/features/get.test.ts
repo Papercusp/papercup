@@ -93,7 +93,7 @@ describe('features:get (bulk keyed-array)', () => {
 
   it('rejects an invalid slug as that item without touching the db', async () => {
     const b = await body({ slug: 'in valid', feature_id: 'F-1' });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({
       ok: false,
       slug: 'in valid',

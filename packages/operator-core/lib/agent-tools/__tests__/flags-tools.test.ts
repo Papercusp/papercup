@@ -81,9 +81,12 @@ describe('flags:set', () => {
     )) as any;
 
     // flags:set is bulk (P-006): a backend failure becomes THIS item's
-    // { ok:false, key, error } — the batch ran (envelope ok:true, counts.failed:1).
+    // { ok:false, key, error }. The batch RAN (counts is populated, the item
+    // self-describes), but the envelope's ok is DERIVED from counts.failed, so a
+    // failed item makes it false — a caller branching on `ok` must never be told
+    // a batch succeeded while an item inside it failed.
     const data = result.data;
-    expect(data.ok).toBe(true);
+    expect(data.ok).toBe(false);
     expect(data.counts).toEqual({ ok: 0, failed: 1 });
     expect(data.results[0]).toMatchObject({ ok: false, key: 'papercusp-testing', error: 'posthog_unconfigured' });
     // publishFlagChange must NOT be called on failure.

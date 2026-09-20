@@ -69,7 +69,7 @@ describe('knowledge_packs:decide_candidate tool (bulk keyed-array)', () => {
         : ({ ok: true, action: 'adopt', packVersion: '1.1.0' } as never),
     );
     const r = body(await callTool({ ids: ['c1', 'gone'], action: 'adopt' }));
-    expect(r).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(r).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(r.results[0]).toMatchObject({ ok: true, id: 'c1' });
     expect(r.results[1]).toMatchObject({ ok: false, id: 'gone', reason: 'not_found' });
   });

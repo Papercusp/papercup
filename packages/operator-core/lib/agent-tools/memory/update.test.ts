@@ -82,7 +82,7 @@ describe('memory:update handler (bulk keyed-array)', () => {
     });
     useBackend(b);
     const r = await body({ ids: [VID, VID2], content: 'x' });
-    expect(r).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(r).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(r.results[0]).toMatchObject({ ok: true, id: VID });
     expect(r.results[1]).toMatchObject({ ok: false, id: VID2 });
     expect(r.results[1].error).toContain('not found');

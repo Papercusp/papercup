@@ -138,7 +138,7 @@ describe('work_items:set_state handler (keyed-array)', () => {
 
     const b = await body({ id: 'WI-plan', state: 'blocked' });
 
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-plan' });
     expect(String(b.results[0].error)).toMatch(/plan-slug#P-015/);
     expect(String(b.results[0].error)).toMatch(/plans:set-status/);
@@ -150,7 +150,7 @@ describe('work_items:set_state handler (keyed-array)', () => {
     mockResolvedTyped(getM, workItem({ id: 'WI-standalone', state: 'wip', payload: {} }));
     const b = await body({ id: 'WI-standalone', state: 'blocked' });
 
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(String(b.results[0].error)).toMatch(/no active typed blocker/);
     expect(String(b.results[0].error)).toMatch(/work_items:set_blocker/);
     expect(String(b.results[0].error)).toMatch(/work_items:link/);

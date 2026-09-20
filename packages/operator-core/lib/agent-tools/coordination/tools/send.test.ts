@@ -456,7 +456,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
     });
 
     expect(b).toMatchObject({
-      ok: true,
+      ok: false,
       counts: { ok: 0, failed: 1 },
       partial: true,
       results: [{ ok: false, error: 'body_exceeds_inbox_cap' }],
@@ -602,7 +602,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
         { to: ['ghost'], summary: 'bad' },
       ],
     });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: true, to: ['bee-1'], msg_id: 'm1' });
     expect(b.results[1]).toMatchObject({ ok: false, to: ['ghost'], error: 'unknown_recipient', unknown_recipients: ['ghost'] });
     // the bad message was NOT sent (the good one was)
@@ -610,16 +610,21 @@ describe('coord:send handler (bulk keyed-array)', () => {
   });
 
   it('EI-20268344447779966: a delivery exception is surfaced at the envelope level', async () => {
-    // runBulk intentionally catches per-item throws and preserves the generic
-    // execution-level ok:true. coord:send must add an unmistakable delivery
-    // signal so a caller cannot report this as sent after a transient PG lock
-    // timeout (the incident that filed this item).
+    // runBulk catches per-item throws so the batch runs to completion, but the
+    // envelope's ok is DERIVED from counts.failed, so a caught throw makes it
+    // false. `partial` remains as the finer-grained signal distinguishing "some
+    // items failed" from "the whole call failed" — a caller must not be able to
+    // report this as sent after a transient PG lock timeout (the incident that
+    // filed this item). NOTE: `partial` was originally introduced BECAUSE the
+    // envelope ok was hard-coded true and therefore uninformative; now that ok
+    // is derived, `partial` is redundant for the pure 0-succeeded case and is a
+    // candidate for follow-up simplification (see EI-23737206446729041).
     sendM.mockRejectedValueOnce(new Error('canceling statement due to lock timeout'));
 
     const b = await body({ to: ['bee-1'], summary: 'wind down and report back' });
 
     expect(b).toMatchObject({
-      ok: true,
+      ok: false,
       partial: true,
       counts: { ok: 0, failed: 1 },
       results: [{ ok: false, to: ['bee-1'], error: 'canceling statement due to lock timeout' }],
@@ -653,7 +658,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
       await vi.advanceTimersByTimeAsync(COORD_SEND_DB_DEADLINE_MS);
       const b = await pending;
 
-      expect(b).toMatchObject({ ok: true, partial: true, counts: { ok: 0, failed: 1 } });
+      expect(b).toMatchObject({ ok: false, partial: true, counts: { ok: 0, failed: 1 } });
       expect(b.results[0]).toMatchObject({ ok: false, to: ['bee-1'] });
       expect(b.results[0].error).toMatch(
         /\[db-call-deadline\] "coord:send\.sendMessage" did not resolve within/,

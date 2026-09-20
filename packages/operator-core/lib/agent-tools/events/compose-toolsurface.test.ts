@@ -196,7 +196,7 @@ describe('events:cancel root_id (composed tree)', () => {
   it('root_id miss → ok:false + the not_found reason', async () => {
     vi.mocked(cancelComposedTree).mockResolvedValue(false);
     const out = await callCancel({ root_id: 55 });
-    expect(out).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 }, results: [{ ok: false, root_id: 55, cancelled: false, error: 'not_found_or_not_yours_or_already_settled' }] });
+    expect(out).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 }, results: [{ ok: false, root_id: 55, cancelled: false, error: 'not_found_or_not_yours_or_already_settled' }] });
   });
 
   it('root_ids batch → one cancelComposedTree per tree, keyed by root_id', async () => {

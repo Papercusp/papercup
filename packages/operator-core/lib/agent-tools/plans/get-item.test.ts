@@ -95,8 +95,8 @@ describe('plans:get-item handler (bulk keyed-array)', () => {
   it('itemIds:[…] reads many of one plan; a missing item fails only itself', async () => {
     getRowM.mockResolvedValue(rowOf('plan-a', ['P-001', 'P-002']));
     const b = await body({ slug: 'plan-a', itemIds: ['P-001', 'P-099', 'P-002'] });
-    expect(b.ok).toBe(true); // the batch ran
-    expect(b.results).toHaveLength(3);
+    expect(b.ok).toBe(false); // DERIVED from counts.failed — P-099 failed
+    expect(b.results).toHaveLength(3); // …but the batch still RAN, all 3 items attempted
     expect(b.counts).toEqual({ ok: 2, failed: 1 });
     expect(b.results.map((r: { itemId: string; ok: boolean }) => [r.itemId, r.ok])).toEqual([
       ['P-001', true],

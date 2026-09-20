@@ -183,8 +183,8 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
   it('a partial failure (one unknown item) fails ONLY itself — batch survives', async () => {
     lockReturnsMutatorValue(new Set(['P-001'])); // P-099 is unknown → item_not_found
     const b = await body({ slug: 'plan-a', itemIds: ['P-001', 'P-099'], status: 'wip' });
-    expect(b.ok).toBe(true); // the batch ran
-    expect(b.counts).toEqual({ ok: 1, failed: 1 });
+    expect(b.ok).toBe(false); // DERIVED from counts.failed — one item failed
+    expect(b.counts).toEqual({ ok: 1, failed: 1 }); // …but the batch still RAN: P-001 succeeded
     expect(b.results[0]).toMatchObject({ ok: true, itemId: 'P-001' });
     expect(b.results[1]).toMatchObject({ ok: false, slug: 'plan-a', itemId: 'P-099', error: 'item_not_found' });
   });
@@ -192,7 +192,7 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
   it('a busy lock maps to that item\'s { ok:false, error:"busy" } without throwing', async () => {
     lockM.mockResolvedValue({ kind: 'busy', busy: [{ path: 'p', owner_label: 'o', intent: 'i', expires_ts: 1 }] } as never);
     const b = await body({ slug: 'plan-a', item: 'P-001', status: 'wip' });
-    expect(b.ok).toBe(true);
+    expect(b.ok).toBe(false); // DERIVED from counts.failed — the sole item failed
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: false, slug: 'plan-a', itemId: 'P-001', error: 'busy' });
   });
@@ -206,7 +206,7 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
       note: '   ',
       rationale: '\n',
     });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({
       ok: false,
       slug: 'plan-a',
@@ -235,7 +235,7 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
         { slug: 'plan-a', item: 'P-002', status: 'done' },
       ],
     });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, itemId: 'P-001', error: 'dropped_reason_required' });
     expect(b.results[1]).toMatchObject({ ok: true, itemId: 'P-002', newStatus: 'done' });
   });
@@ -281,7 +281,7 @@ describe('plans:set-status →wip auto-claim refuses the mcp-call.mjs fallback i
     )) as { data: any };
     const b = out.data;
 
-    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({
       ok: false,
       slug: 'plan-a',
