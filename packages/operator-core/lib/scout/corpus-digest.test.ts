@@ -228,15 +228,52 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
       expect(lock.detail).toContain('recurred 2×');
     });
 
-    it('marks observation-derived recurrence as an agent reflection, not a bug', async () => {
+    // ── EI-23782723592280521: lane is PROVENANCE, never a content verdict ───────
+    //
+    // These three tests replace one that asserted the digest printed
+    // '(agent reflection; not a bug)' — i.e. it pinned the defect as a feature. The
+    // cluster below is MIXED (one work-lane row, one observation row), which is exactly
+    // the case the old `.some()` predicate labelled wholesale as a reflection.
+    it('reports observation-lane COMPOSITION for a mixed cluster, and asserts nothing about content', async () => {
       const observed: ImprovementCandidate[] = [
         { ...friction[0], id: 'EI-WORK-F-1' },
         { ...friction[1], id: 'EI-OBS-F-2', lane: 'observation' },
       ];
       const digest = await synthesizeStateOfHive(fixtureReaders({ friction: async () => observed }), { nowMs: NOW });
       const pattern = digest.recurringFriction[0]!;
-      expect(pattern.detail).toContain('source: observation lane (agent reflection; not a bug)');
-      expect(renderDigest(digest)).toContain('source: observation lane (agent reflection; not a bug)');
+      expect(pattern.detail).toContain('1 of 2 row(s) from the observation lane');
+      expect(pattern.detail).toContain('UNTRIAGED');
+      expect(renderDigest(digest)).toContain('1 of 2 row(s) from the observation lane');
+    });
+
+    it('labels an all-observation cluster by provenance and its triage consequence only', async () => {
+      const observed: ImprovementCandidate[] = [
+        { ...friction[0], id: 'EI-OBS-F-1', lane: 'observation' },
+        { ...friction[1], id: 'EI-OBS-F-2', lane: 'observation' },
+      ];
+      const digest = await synthesizeStateOfHive(fixtureReaders({ friction: async () => observed }), { nowMs: NOW });
+      const pattern = digest.recurringFriction[0]!;
+      expect(pattern.detail).toContain('source: observation lane (provenance, not a triage verdict');
+      expect(pattern.detail).toContain('UNTRIAGED');
+    });
+
+    // The recurrence guard for the whole class. The digest may state WHERE a row came
+    // from; it may never state WHAT IT IS on that basis. Measured 2026-09-20: a
+    // four-digit recurrence count rendered beside '(agent reflection; not a bug)' is
+    // what parked the corpus's highest-frequency failure in the one lane that is never
+    // triaged. The first assertion is a POSITIVE CONTROL — without it an empty render
+    // would satisfy every not.toContain below and the guard would pass vacuously.
+    it('never derives a content verdict from the lane', async () => {
+      const observed: ImprovementCandidate[] = [
+        { ...friction[0], id: 'EI-OBS-V-1', lane: 'observation' },
+        { ...friction[1], id: 'EI-OBS-V-2', lane: 'observation' },
+      ];
+      const digest = await synthesizeStateOfHive(fixtureReaders({ friction: async () => observed }), { nowMs: NOW });
+      const rendered = renderDigest(digest).toLowerCase();
+      expect(rendered).toContain('observation lane'); // positive control: provenance IS reported
+      for (const verdict of ['not a bug', 'not bugs', 'agent reflection']) {
+        expect(rendered).not.toContain(verdict);
+      }
     });
 
     // ── EI-20587312505064997: FLOW vs STOCK ──────────────────────────────────
@@ -464,15 +501,19 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
       expect(rename.detail).toContain('asked 2×');
     });
 
-    it('marks observation-derived capability gaps as agent reflections, not bugs', async () => {
+    // EI-23782723592280521 — same rule on the capability-gap lane: composition, never a
+    // verdict. A gap whose rows are partly real work must not be dismissed because one
+    // member arrived through the observation lane.
+    it('reports observation-lane composition on a mixed capability gap, without a content verdict', async () => {
       const observed: ImprovementCandidate[] = [
         { ...friction[4], id: 'EI-WORK-C-1' },
         { ...friction[5], id: 'EI-OBS-C-2', lane: 'observation' },
       ];
       const digest = await synthesizeStateOfHive(fixtureReaders({ friction: async () => observed }), { nowMs: NOW });
       const pattern = digest.capabilityGaps.find((p) => p.summary === 'no way to rename a harness')!;
-      expect(pattern.detail).toContain('source: observation lane (agent reflection; not a bug)');
-      expect(renderDigest(digest)).toContain('source: observation lane (agent reflection; not a bug)');
+      expect(pattern.detail).toContain('1 of 2 row(s) from the observation lane');
+      expect(pattern.detail).not.toContain('not a bug');
+      expect(renderDigest(digest)).toContain('1 of 2 row(s) from the observation lane');
     });
   });
 

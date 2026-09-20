@@ -647,10 +647,45 @@ function flowCountOf(cluster: DupCluster, occurrencesById: ReadonlyMap<string, n
   return cluster.ids.reduce((sum, id) => sum + Math.max(1, occurrencesById.get(id) ?? 1), 0);
 }
 
-const OBSERVATION_SOURCE_DETAIL = ' · source: observation lane (agent reflection; not a bug)';
+/**
+ * Lane is PROVENANCE. It is not a severity verdict, and keeping those two apart is the
+ * whole job of this string (EI-23782723592280521).
+ *
+ * It used to read `(agent reflection; not a bug)`. Measured 2026-09-20, the digest's #1
+ * recurringFriction row was an `authorization_denied` that had recurred 4,902× across 14
+ * open rows and was still firing ~2.5×/min — rendered with that parenthetical.
+ * `source: observation lane` is a fact about WHO FILED IT; `not a bug` is a claim about
+ * WHAT IT IS, and printing them as one phrase let the first silently supply the second.
+ *
+ * The suppression is structural, not cosmetic: observation rows are excluded from
+ * `work_items:list / :search / :claimable` by default, so the corpus's highest-frequency
+ * failure signal sits in the one lane guaranteed to produce no action — while the digest,
+ * whose entire purpose is surfacing what needs attention, reassured the reader it needed
+ * none. State the provenance, state its real operational consequence (UNTRIAGED), and
+ * assert nothing whatsoever about the content.
+ */
+const OBSERVATION_SOURCE_DETAIL =
+  ' · source: observation lane (provenance, not a triage verdict — excluded from claimable by default, so UNTRIAGED)';
 
+/**
+ * Report the COMPOSITION, not `.some()`.
+ *
+ * The predicate used to be `candidates.some(...)`, so a single observation member
+ * labelled the whole cluster — a mostly-work-lane cluster carrying genuine triaged bug
+ * rows was attributed to an agent reflection. That is the same defect one level down: a
+ * property of ONE member read as a property of the SUBJECT. The ratio is derivable from
+ * the members, needs no tunable threshold, and a mixed cluster is precisely the one a
+ * reader must not dismiss — part of it is already real, triageable work.
+ */
 function observationSourceDetail(candidates: readonly ImprovementCandidate[]): string {
-  return candidates.some((candidate) => candidate.lane === 'observation') ? OBSERVATION_SOURCE_DETAIL : '';
+  const total = candidates.length;
+  const observed = candidates.filter((candidate) => candidate.lane === 'observation').length;
+  if (total === 0 || observed === 0) return '';
+  if (observed === total) return OBSERVATION_SOURCE_DETAIL;
+  return (
+    ` · source: mixed — ${observed} of ${total} row(s) from the observation lane` +
+    ' (UNTRIAGED: excluded from claimable by default), the rest triageable'
+  );
 }
 
 /**
