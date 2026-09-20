@@ -162,15 +162,37 @@ export function resolveSourceDir(): string | null {
   // This is the same `process.cwd()`-resolves-to-release class that makes
   // testing:run verify main's copy of a file rather than the one you just edited.
   //
-  // Deliberately env-gated rather than path-sniffing: PAPERCUSP_REPO_ROOT is set
-  // for dev/psu sessions and is UNSET in a packaged Tauri app (where cwd is the
-  // sidecar dir and there is no second checkout), so packaged installs keep
-  // exactly today's behavior and only a box that HAS a canonical tree prefers it.
-  // Still sentinel-checked, so a stale/incorrect env var falls through instead of
-  // pointing the installer at a directory with no scripts/ in it.
-  const repoRoot = process.env.PAPERCUSP_REPO_ROOT?.trim();
-  if (repoRoot) {
-    const operatorAppDir = join(repoRoot, 'apps', 'operator');
+  // Deliberately env-gated rather than path-sniffing: these vars are set for
+  // dev/psu sessions and the operator services, and are UNSET in a packaged
+  // Tauri app (where cwd is the sidecar dir and there is no second checkout), so
+  // packaged installs keep exactly today's behavior and only a box that HAS a
+  // canonical tree prefers it. Still sentinel-checked, so a stale/incorrect env
+  // var falls through instead of pointing the installer at a directory with no
+  // scripts/ in it.
+  //
+  // EI-23749662191699491 (measured 2026-09-20): the guard above SHIPPED and was
+  // still a no-op, because it read a variable nothing on this box sets. Read
+  // from /proc/<pid>/environ across all 8 live hono-host processes (positive
+  // control: PATH present on the same probe, so the UNSET readings are real):
+  // PAPERCUSP_REPO_ROOT was UNSET on every one, while
+  // PAPERCUSP_INTEGRATION_ROOT was SET on every one — and three of those
+  // processes had cwd=papercup-release/apps/operator, i.e. precisely the cwd
+  // walk this guard exists to pre-empt. The result was the IDENTICAL failure the
+  // comment above describes, recurring 2026-09-20: ~/.papercusp/hooks/cc/
+  // ask-gate-mirror.sh was byte-identical to the RELEASE copy (md5
+  // 48c32a50b0adcdc68272e8438762e357, 0 lines matching tools_invoke) while the
+  // staging fix (md5 43bc5aa1ce7e79123014e515aa49c049, 1 such line) sat
+  // committed and inert.
+  //
+  // So accept EITHER seam. PAPERCUSP_INTEGRATION_ROOT is not a new name invented
+  // here: it is the canonical-tree seam release-config.ts and
+  // desktop-install/workspace-map.ts already treat as authoritative, which is
+  // why the service units set it. PAPERCUSP_REPO_ROOT stays FIRST so an explicit
+  // per-process override still wins over the box-wide default.
+  for (const envVar of ['PAPERCUSP_REPO_ROOT', 'PAPERCUSP_INTEGRATION_ROOT'] as const) {
+    const canonicalRoot = process.env[envVar]?.trim();
+    if (!canonicalRoot) continue;
+    const operatorAppDir = join(canonicalRoot, 'apps', 'operator');
     if (existsSync(sentinelAt(operatorAppDir))) return operatorAppDir;
   }
 

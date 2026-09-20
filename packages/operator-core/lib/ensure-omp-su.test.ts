@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -132,6 +132,12 @@ describe('resolveSourceDir precedence (WI-7344)', () => {
   let root = '';
   let cwdRoot = '';
   let realRepoRoot: string | undefined;
+  // EI-23749662191699491: resolveSourceDir now reads a SECOND canonical-tree
+  // seam, and PAPERCUSP_INTEGRATION_ROOT is set box-wide on the operator
+  // services — so a run that inherits it would leak into the fallback cases
+  // below and make them assert the opposite of what they mean. Save + clear
+  // BOTH, and let each case opt back in explicitly.
+  let realIntegrationRoot: string | undefined;
   let cwdSpy: ReturnType<typeof vi.spyOn>;
 
   const makeOperatorTree = (base: string) => {
@@ -146,12 +152,16 @@ describe('resolveSourceDir precedence (WI-7344)', () => {
     root = mkdtempSync(join(tmpdir(), 'wi7344-staging-'));
     cwdRoot = mkdtempSync(join(tmpdir(), 'wi7344-release-'));
     realRepoRoot = process.env.PAPERCUSP_REPO_ROOT;
+    realIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    delete process.env.PAPERCUSP_INTEGRATION_ROOT;
   });
 
   afterEach(() => {
     cwdSpy?.mockRestore();
     if (realRepoRoot === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
     else process.env.PAPERCUSP_REPO_ROOT = realRepoRoot;
+    if (realIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    else process.env.PAPERCUSP_INTEGRATION_ROOT = realIntegrationRoot;
     rmSync(root, { recursive: true, force: true });
     rmSync(cwdRoot, { recursive: true, force: true });
   });
@@ -167,10 +177,11 @@ describe('resolveSourceDir precedence (WI-7344)', () => {
     expect(mod.resolveSourceDir()).toBe(stagingApp);
   });
 
-  it('falls back to the cwd walk when PAPERCUSP_REPO_ROOT is unset (packaged app)', async () => {
+  it('falls back to the cwd walk when BOTH canonical-root vars are unset (packaged app)', async () => {
     const releaseApp = makeOperatorTree(cwdRoot);
     cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(releaseApp);
     delete process.env.PAPERCUSP_REPO_ROOT;
+    delete process.env.PAPERCUSP_INTEGRATION_ROOT;
 
     const mod = await import('./ensure-omp-su');
     expect(mod.resolveSourceDir()).toBe(releaseApp);
@@ -182,6 +193,102 @@ describe('resolveSourceDir precedence (WI-7344)', () => {
     const releaseApp = makeOperatorTree(cwdRoot);
     cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(releaseApp);
     process.env.PAPERCUSP_REPO_ROOT = join(root, 'does', 'not', 'exist');
+
+    const mod = await import('./ensure-omp-su');
+    expect(mod.resolveSourceDir()).toBe(releaseApp);
+  });
+
+  /**
+   * EI-23749662191699491 — the WI-7344 guard above shipped and stayed a NO-OP
+   * for six weeks, because it read PAPERCUSP_REPO_ROOT and nothing on the box
+   * sets it. Measured 2026-09-20 from /proc/<pid>/environ across all 8 live
+   * hono-host processes: PAPERCUSP_REPO_ROOT UNSET on every one,
+   * PAPERCUSP_INTEGRATION_ROOT SET on every one, three of them with
+   * cwd=papercup-release/apps/operator. So the identical release-staleness
+   * failure recurred: the live ask-gate-mirror.sh was byte-identical to the
+   * release copy while the staging fix sat committed and inert.
+   *
+   * This case is the one that FAILS without the second seam — it reproduces the
+   * live process environment exactly.
+   */
+  it('prefers PAPERCUSP_INTEGRATION_ROOT over the cwd walk when PAPERCUSP_REPO_ROOT is unset (the live operator-service env)', async () => {
+    const stagingApp = makeOperatorTree(root);
+    const releaseApp = makeOperatorTree(cwdRoot);
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(releaseApp);
+    delete process.env.PAPERCUSP_REPO_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = root;
+
+    const mod = await import('./ensure-omp-su');
+    expect(mod.resolveSourceDir()).toBe(stagingApp);
+  });
+
+  it('keeps PAPERCUSP_REPO_ROOT ahead of PAPERCUSP_INTEGRATION_ROOT when both are set', async () => {
+    // An explicit per-process override must still beat the box-wide default.
+    const repoApp = makeOperatorTree(root);
+    const integrationRoot = mkdtempSync(join(tmpdir(), 'wi7344-integration-'));
+    try {
+      makeOperatorTree(integrationRoot);
+      const releaseApp = makeOperatorTree(cwdRoot);
+      cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(releaseApp);
+      process.env.PAPERCUSP_REPO_ROOT = root;
+      process.env.PAPERCUSP_INTEGRATION_ROOT = integrationRoot;
+
+      const mod = await import('./ensure-omp-su');
+      expect(mod.resolveSourceDir()).toBe(repoApp);
+    } finally {
+      rmSync(integrationRoot, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Permanent NEGATIVE CONTROL (tier-1 falsifiability, per CLAUDE.md "Proving a
+   * guard is falsifiable"): a deliberately-pre-fix implementation kept in the
+   * test file, so the case above is shown to DISCRIMINATE without ever mutating
+   * the shared tree (no death race, no git-sync sweep race).
+   *
+   * This is the WI-7344 logic exactly as it shipped — a single seam — and it
+   * resolves the STALE release tree under the very environment measured on the
+   * live box. The final assertion is the calibration: the control still honours
+   * the one seam it knows about, proving it is a faithful reproduction rather
+   * than a function that always returns cwd.
+   */
+  it('CONTROL: the pre-fix single-seam logic resolves the STALE release tree in that same environment', () => {
+    const sentinelAt = (dir: string) => join(dir, 'scripts', 'install-standalone-mcp.sh');
+    const preFixResolveSourceDir = (cwd: string, env: NodeJS.ProcessEnv): string | null => {
+      const repoRoot = env.PAPERCUSP_REPO_ROOT?.trim();
+      if (repoRoot) {
+        const operatorAppDir = join(repoRoot, 'apps', 'operator');
+        if (existsSync(sentinelAt(operatorAppDir))) return operatorAppDir;
+      }
+      let dir = cwd;
+      for (let i = 0; i < 6; i++) {
+        if (existsSync(sentinelAt(dir))) return dir;
+        const parent = dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+      return null;
+    };
+
+    const stagingApp = makeOperatorTree(root);
+    const releaseApp = makeOperatorTree(cwdRoot);
+
+    // The live operator-service environment: INTEGRATION_ROOT set, REPO_ROOT not.
+    const liveEnv = { PAPERCUSP_INTEGRATION_ROOT: root } as NodeJS.ProcessEnv;
+    expect(preFixResolveSourceDir(releaseApp, liveEnv)).toBe(releaseApp);
+    expect(preFixResolveSourceDir(releaseApp, liveEnv)).not.toBe(stagingApp);
+
+    // CALIBRATION — the control is not simply broken: it does honour REPO_ROOT.
+    expect(preFixResolveSourceDir(releaseApp, { PAPERCUSP_REPO_ROOT: root })).toBe(stagingApp);
+  });
+
+  it('ignores a PAPERCUSP_INTEGRATION_ROOT with no operator tree rather than returning a bad dir', async () => {
+    // Same sentinel gating as the REPO_ROOT case: a stale/incorrect value must
+    // fall THROUGH to cwd, never point the installer at a tree with no scripts/.
+    const releaseApp = makeOperatorTree(cwdRoot);
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(releaseApp);
+    delete process.env.PAPERCUSP_REPO_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = join(root, 'does', 'not', 'exist');
 
     const mod = await import('./ensure-omp-su');
     expect(mod.resolveSourceDir()).toBe(releaseApp);

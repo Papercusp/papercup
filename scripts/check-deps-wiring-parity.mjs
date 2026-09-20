@@ -836,6 +836,20 @@ const DRILL_VS_PRODUCTION =
   'adjudicated 2026-09-05: rubric live drill vs production Scout action — the Mug draft-routed ping is ' +
   'deliberately not wired for synthetic drill drafts';
 
+const PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK =
+  'inTransaction runs INSIDE the plan write transaction and exists for applyPlanDrainTransition ' +
+  'alone (plans/plan-drain-transition.ts:151), which must atomically ensure an acceptance-drain ' +
+  'carry row alongside the status write. An ordinary plans:* mutation has no intra-transaction ' +
+  'concern to attach, so omitting it is the correct wiring, not a forgotten seam. Recorded once ' +
+  'rather than re-litigated per run (WI-10002020).';
+
+const DRAIN_TRANSITION_BEST_EFFORT =
+  'applyPlanDrainTransition piggybacks on another caller’s ALREADY-SUCCESSFUL plans:set-status ' +
+  'write and must never surface as a failure of THEIR call, so it deliberately omits the revision ' +
+  'hooks whose throws propagate; the periodic backstop (P-005) reconciles anything it misses. ' +
+  'Whether a drain-driven status change should nonetheless record a plan_revisions row is a real ' +
+  'audit question, tracked separately — it is NOT settled by this row.';
+
 const FAIL_BASELINE = new Map([
   // Historical seed from the measured `--list` run after the WI-1745363 attribution fix:
   // 28 findings / 22 distinct rows over 7,150 files (was 44 / 33 under shape-based
@@ -916,11 +930,89 @@ const FAIL_BASELINE = new Map([
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/start.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/transfer-owner.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/scout/scout-plan-draft.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
+
+  // `inTransaction` is a drain-transition-only hook; every ordinary plans:* site
+  // correctly omits it. Rows generated from the measured population (--json), never
+  // hand-written from a grep.
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/add-decision.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/add-item.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/edit.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/new.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/ratify-decision.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-content-chunk.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-content.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-decision-body.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-frontmatter-field.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-frontmatter.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-importance.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-initiative.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-input-schema.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-item-blocked-by.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-item-phase.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-now.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-output-schema.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-plan-status.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-template-data.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-title.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/start.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/transfer-owner.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+  ['WithPlanLockOpts|packages/operator-core/lib/scout/scout-plan-draft.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
+
+  // The drain transition is the one site that WIRES inTransaction; it omits the two
+  // revision hooks on purpose, because a throw there would fail another caller's write.
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/plan-drain-transition.ts|afterWrite', DRAIN_TRANSITION_BEST_EFFORT],
+  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/plan-drain-transition.ts|revisionInTransaction', DRAIN_TRANSITION_BEST_EFFORT],
 ]);
 
-/** The line-independent identity a baseline row matches on. */
-function findingKey(f) {
-  return `${f.interface}|${f.file}|${f.missing.join(',')}`;
+/**
+ * The line-independent identities a baseline row matches on — ONE PER MISSING
+ * SEAM, never one per seam-SET.
+ *
+ * This was `${interface}|${file}|${missing.join(',')}`, which made the key a
+ * function of the WHOLE set, so adding ONE unrelated seam to an interface re-keyed
+ * every already-baselined construction site of it. The same divergence was then
+ * reported twice, contradictorily: STALE (the old single-seam row stopped matching)
+ * AND NEW (the widened key was absent from the baseline) — a red guard nobody
+ * introduced, which --fail turns into rc=1.
+ *
+ * WI-10002020 is the instance: one new `inTransaction` seam on WithPlanLockOpts,
+ * wired at a single site, invalidated all 24 `revisionInTransaction` rows at once.
+ * The --include-observers note further down documents this very fragility; it
+ * suppressed the symptom in that one mode rather than fixing the key, so the next
+ * seam added to a baselined interface reproduced it in the default mode where
+ * nothing suppresses it. Keying per seam removes the failure class instead.
+ */
+function seamKeys(f) {
+  return f.missing.map((seam) => `${f.interface}|${f.file}|${seam}`);
+}
+
+/**
+ * FAIL_BASELINE re-expressed per seam.
+ *
+ * Legacy rows were written in the old joined form (`iface|file|seamA,seamB`), which
+ * is precisely the shape that made the baseline brittle. Expanding each into one
+ * entry per seam preserves exactly what the row asserted — every seam it lists is
+ * deliberately omitted at that site — while letting a row keep matching when an
+ * unrelated seam is later added to the same interface. Splitting on the LAST two
+ * separators keeps interface and file intact even though a seam list contains
+ * commas.
+ */
+const BASELINE_SEAMS = new Set(
+  [...FAIL_BASELINE.keys()].flatMap((k) => {
+    const firstSep = k.indexOf('|');
+    const secondSep = k.indexOf('|', firstSep + 1);
+    if (firstSep === -1 || secondSep === -1) return [k];
+    const prefix = k.slice(0, secondSep + 1);
+    return k
+      .slice(secondSep + 1)
+      .split(',')
+      .map((seam) => `${prefix}${seam.trim()}`);
+  }),
+);
+
+/** The seams of `f` that no baseline row individually covers. */
+function unbaselinedSeams(f) {
+  return f.missing.filter((seam) => !BASELINE_SEAMS.has(`${f.interface}|${f.file}|${seam}`));
 }
 
 function parseArgs(argv) {
@@ -958,16 +1050,24 @@ function main() {
   }
 
   const allFindings = findWiringParityGaps(sources, { includeObservers: opts.includeObservers });
-  const liveKeys = new Set(allFindings.map(findingKey));
-  const newFindings = allFindings.filter((f) => !FAIL_BASELINE.has(findingKey(f)));
-  const baselined = allFindings.filter((f) => FAIL_BASELINE.has(findingKey(f)));
+  const liveKeys = new Set(allFindings.flatMap(seamKeys));
+  // A site is NEW only for the seams no baseline row individually covers, and it
+  // reports just those seams rather than re-reporting the whole site. That is what
+  // keeps an added seam from re-keying — and so re-reddening — every already
+  // baselined site of the same interface (WI-10002020).
+  const newFindings = allFindings
+    .map((f) => ({ ...f, missing: unbaselinedSeams(f) }))
+    .filter((f) => f.missing.length > 0);
+  const baselined = allFindings.filter((f) => unbaselinedSeams(f).length === 0);
   // Staleness is only meaningful for rows whose FILE was in the scanned population: a
   // `--files=` scoped run cannot see a divergence outside its scope, so reporting every
   // out-of-scope row as "stale — prune it" would tell the reader to destroy a valid
   // baseline (and leaks unrelated interface names into a scoped run's output — the
   // real-tree Scout test asserts on exactly that output).
   const scannedFiles = new Set(sources.map((s) => s.fileName));
-  const staleBaseline = [...FAIL_BASELINE.keys()].filter(
+  // Computed in per-seam space so a legacy joined row reports only the seam that
+  // actually went away, instead of nominating the whole row for pruning.
+  const staleBaseline = [...BASELINE_SEAMS].filter(
     (k) => !liveKeys.has(k) && (opts.files === null || scannedFiles.has(k.split('|')[1])),
   );
 
@@ -991,11 +1091,12 @@ function main() {
     const seen = new Set();
     let rows = 0;
     for (const f of allFindings) {
-      const k = findingKey(f);
-      if (seen.has(k)) continue;
-      seen.add(k);
-      rows += 1;
-      console.log(`  ['${k}', 'REASON HERE'],`);
+      for (const k of seamKeys(f)) {
+        if (seen.has(k)) continue;
+        seen.add(k);
+        rows += 1;
+        console.log(`  ['${k}', 'REASON HERE'],`);
+      }
     }
     console.log(
       `\ncheck-deps-wiring-parity: ${allFindings.length} finding(s) over ${sources.length} files ` +
@@ -1009,10 +1110,14 @@ function main() {
         `another site wires (examined ${sources.length} files):\n`,
     );
     for (const f of allFindings) {
-      const mark = FAIL_BASELINE.has(findingKey(f)) ? '  [baselined — deliberate or already filed]' : '';
+      // Marked per SEAM, not per site: a site may be baselined for one seam and
+      // genuinely new for another, and collapsing that to a single site-level mark
+      // is what made a partially-covered site read as wholly new.
+      const mark = unbaselinedSeams(f).length === 0 ? '  [baselined — deliberate or already filed]' : '';
       console.log(`  ${f.file}:${f.line}  constructs \`${f.interface}\` (declared ${f.declaredIn})${mark}`);
       for (const m of f.missing) {
-        console.log(`    missing seam \`${m}\` — wired at ${f.wiredElsewhereAt[m] ?? '(another site)'}`);
+        const seamMark = BASELINE_SEAMS.has(`${f.interface}|${f.file}|${m}`) ? '  [baselined]' : '';
+        console.log(`    missing seam \`${m}\` — wired at ${f.wiredElsewhereAt[m] ?? '(another site)'}${seamMark}`);
       }
       console.log('');
     }
