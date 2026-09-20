@@ -144,6 +144,19 @@ function stripComments(source: string): string {
  * comparison). Walks backwards over balanced parens so nested calls in earlier
  * arguments do not confuse the match.
  */
+/**
+ * A control-flow keyword is NOT a callee. `if (x === 'stale-artifact')` puts the
+ * literal inside parentheses whose nearest preceding word is `if`, so without
+ * this the walker reports `if(...)` as the constructing function and the guard
+ * fires on a plain COMPARISON — which constructs no denial at all.
+ *
+ * This does not weaken check (2). A real construction — `someDeny(request,
+ * 'stale-artifact')` — puts its own `(` nearer to the literal than the
+ * enclosing `if (`, so the call is still found first; the keyword is only ever
+ * reached when the literal sits in no call at all.
+ */
+const NOT_A_CALLEE = new Set(['if', 'while', 'for', 'switch', 'catch', 'return', 'typeof', 'await']);
+
 export function enclosingCallee(source: string, index: number): string | null {
   let depth = 0;
   for (let i = index - 1; i >= 0; i--) {
@@ -155,7 +168,8 @@ export function enclosingCallee(source: string, index: number): string | null {
     while (j >= 0 && /\s/.test(source[j])) j--;
     const end = j + 1;
     while (j >= 0 && /[\w$.]/.test(source[j])) j--;
-    return source.slice(j + 1, end) || null;
+    const word = source.slice(j + 1, end);
+    return !word || NOT_A_CALLEE.has(word) ? null : word;
   }
   return null;
 }
@@ -332,6 +346,29 @@ describe('CLAUDE.md identity-recovery-door claim', () => {
       expect(judgeRecoveryDoorFailureDomain({
         portSource: FIXTURE_PORT_OK, doorSource: FIXTURE_DOOR, envelopesSource: FIXTURE_ENVELOPES,
       })).toMatchObject({ ok: true, breakGlassCauses: ['stale-artifact', 'no-launch-record'] });
+    });
+
+    // WI-10002060: a COMPARISON is not a construction. `if (k === 'stale-artifact')`
+    // sits inside the parens of `if`, so the callee walker used to report `if(...)`
+    // and the guard fired on code that denies nothing. It is a false positive, and
+    // a permanently-red guard is one somebody eventually deletes.
+    it('does not flag a comparison against a break-glass cause inside an if', () => {
+      expect(judgeRecoveryDoorFailureDomain({
+        portSource: `${FIXTURE_PORT_OK}\nfunction dispatch(r, k) { if (k === 'stale-artifact') return staleArtifact(r); return null; }`,
+        doorSource: FIXTURE_DOOR, envelopesSource: FIXTURE_ENVELOPES,
+      })).toMatchObject({ ok: true });
+    });
+
+    // The paired control: the keyword exemption must not become a hiding place.
+    // A real denial CONSTRUCTED inside an if-condition is still caught, because
+    // its own `(` is nearer to the literal than the enclosing `if (`.
+    it('still flags a denial constructed inside an if-condition', () => {
+      const verdict = judgeRecoveryDoorFailureDomain({
+        portSource: `${FIXTURE_PORT_OK}\nfunction dispatch(r) { if (sneakyDeny(r, 'stale-artifact')) return null; }`,
+        doorSource: FIXTURE_DOOR, envelopesSource: FIXTURE_ENVELOPES,
+      });
+      expect(verdict.ok).toBe(false);
+      expect(verdict.violations.join('\n')).toMatch(/denied by sneakyDeny\(\.\.\.\)/);
     });
   });
 
