@@ -970,37 +970,16 @@ export function unresolvedOwnerRequests(cont: CarryDocContinuation): CarryDocOwn
   return [{ requestId: null, ...cont.lastOwnerMessage }];
 }
 
-/**
- * Derive JUST the {@link CarryDocContinuation} for a session's own transcript —
- * the verbatim tail read + per-turn provenance stamp ({@link classifyRecordedTurn})
- * + {@link deriveContinuation} — WITHOUT the rest of the carry-doc assembly
- * (modes / plan-items / asks / brief rebuild). session:request-compaction uses
- * this to surface the P-010 open-owner-question warn on its hot path without
- * paying for a whole {@link buildCarryDoc}. Best-effort by construction: an
- * unreadable/absent transcript yields an empty tail ⇒ `{ lastOwnerMessage:null,
- * answered:true }` (nothing open), so a caller's warn stays SILENT rather than
- * firing blind on a read miss.
- */
-export async function deriveSessionContinuation(opts: {
-  transcriptPath?: string | null;
-  transcriptSourceKind?: 'claude' | 'omp' | 'codex';
-  boundaryDeliberate?: boolean;
-  boundarySelfRequested?: boolean;
-  /** See {@link BuildCarryDocOpts.finalTurnInFlight} — the in-process caller
-   *  attesting that the final tail turn is its own, still-executing turn. */
-  finalTurnInFlight?: boolean;
-}): Promise<CarryDocContinuation> {
-  const tail = await defaultGetTail({
-    transcriptPath: opts.transcriptPath ?? undefined,
-    transcriptSourceKind: opts.transcriptSourceKind,
-  });
-  return deriveContinuation(
-    tail.slice(-CARRY_DOC_MAX_TAIL_TURNS),
-    opts.boundaryDeliberate ?? false,
-    opts.boundarySelfRequested,
-    { finalTurnInFlight: opts.finalTurnInFlight },
-  );
-}
+// REMOVED (WI-10002032 follow-up): `deriveSessionContinuation` — a census-free
+// shortcut that called `deriveContinuation` WITHOUT `ownerSpeechCensus`, so
+// `resolveTruncatedHistory` could never clear a truncated-history flag and the
+// P-010 gate fired `history-uncertain` permanently. It had ZERO callers and ZERO
+// tests repo-wide (its docstring's claim that session:request-compaction used it
+// "on its hot path" was stale — that consumer reads spec.openOwnerQuestion via
+// carry-respawn -> buildCarryDoc, which DOES census). Deleted rather than fixed:
+// it was the only code path able to bypass the census, so removing it makes the
+// bypass unreintroducible. Any future non-buildCarryDoc consumer must thread
+// `ownerSpeechCensus` through `deriveContinuation` explicitly.
 
 export interface OpenOwnerQuestionGate {
   /** True when a DELIBERATE compaction/handoff would cross an UNANSWERED owner
