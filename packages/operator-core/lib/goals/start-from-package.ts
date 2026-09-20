@@ -367,11 +367,7 @@ export const DEFAULT_DEPS: StartGoalFromPackageDeps = {
     // a package that declares no properties would otherwise land with
     // property_schema '{}' and could never have a worklist written to it.
     // Non-destructive — a package declaring `worklist` keeps its own.
-    const seededPropertySchema = await seedCanonicalGoalPropertySchema(
-      sql,
-      workspaceId,
-      content.propertySchema,
-    );
+    const seededPropertySchema = withCanonicalWorklistDeclaration(content.propertySchema);
     await insertGoalRow(sql as unknown as GoalSqlTag, {
       id,
       installSlug,
