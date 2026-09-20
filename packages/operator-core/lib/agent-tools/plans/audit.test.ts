@@ -150,9 +150,9 @@ beforeEach(() => {
     id: 'EI-ACTIVATION-REPAIR',
     created: true,
   });
-  mockGetPlanRow.mockResolvedValue({
-    content: `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\ncreated: 2026-08-27\nupdated: 2026-08-27\nowner: test\n---\n\n## Items\n\n- **P-001** \`todo\` Implement the audit gate on staging.\n`,
-  } as never);
+  resolvePlanContent(
+    `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\ncreated: 2026-08-27\nupdated: 2026-08-27\nowner: test\n---\n\n## Items\n\n- **P-001** \`todo\` Implement the audit gate on staging.\n`,
+  );
 });
 
 describe('plans:audit exact-slug scope recovery', () => {
@@ -200,6 +200,48 @@ const activationArgs = (over: Record<string, unknown> = {}) => ({
   unresolvedBlockers: [],
   ...over,
 });
+
+/**
+ * Single seam for the getPlanRow fixture. PlanRow is ~30 columns wide while these
+ * tests read only `content`, so the partial fixture needs one cast — kept HERE, in
+ * one place, rather than re-spelled at every call site (lint:mock-cast-escape).
+ */
+const resolvePlanContent = (content: string): void => {
+  mockGetPlanRow.mockResolvedValue({ content } as never);
+};
+
+// EI-23806095672871173 fixtures. Both carry P-001 so plan-target validation passes
+// and the BAR gate is the only thing under test, and both carry a valid
+// `## Requirements` so parseRequirementBars succeeds — that is what makes the
+// refusal land on `bar_mapping_missing` (the exact reported code) rather than on
+// `bar_requirements_missing`.
+const barPlanWithoutDesign = `---
+title: Plan A
+slug: plan-a
+status: draft
+created: 2026-08-27
+updated: 2026-08-27
+owner: test
+---
+
+## Requirements
+
+**R-1 — Persist the canonical promise.** One acceptance criterion remains the BAR authority.
+
+## Items
+
+- **P-001** \`todo\` Implement the audit gate on staging.
+`;
+
+const barPlanWithDesign = `${barPlanWithoutDesign}
+## Design
+
+### Bar-to-work map for this plan
+
+| bar | implementing plan items | evidence plane |
+|---|---|---|
+| R-1 | P-001 | tree |
+`;
 
 const COMPLETE_CONVERSATION_OBLIGATION_IDS = [
   'M-001', // requirement
@@ -839,6 +881,58 @@ describe('plans:audit phase:activation', () => {
     expect(mockSetSpecClause).not.toHaveBeenCalled();
     expect(mockPreviewPlanStartConsult).not.toHaveBeenCalled();
     expect(mockEmitPlanEvent).not.toHaveBeenCalled();
+  });
+
+  // EI-23806095672871173. The preview answered `ok:true, "validation passed"` while
+  // the identical dryRun:false call refused `bar_mapping_missing`: BAR seeding is a
+  // precondition on the PLAN, not on the payload, so an ok scoped to the payload was
+  // being read as a verdict on the call. These three pin BOTH directions, because the
+  // obvious fix (check unconditionally) trades this false PASS for a worse false REFUSAL.
+  //
+  // This is observable here only because the check calls the unmocked pure
+  // validateAcceptanceBarSource. The original defect could NOT be caught at this layer:
+  // it lived behind recordCurrentActivationAudit, which this file mocks wholesale.
+  it('previews the BAR-seed refusal the writer would raise, for a plan under the contract', async () => {
+    resolvePlanContent(barPlanWithoutDesign);
+    mockOrgSql.mockResolvedValue([{ acceptance_bar_epoch: '1' }]);
+
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      dryRun: true,
+      preview: true,
+      error: 'bar_mapping_missing',
+    });
+    expect(result.message).toContain('BAR seed problem(s)');
+    // A preview must still write nothing, including on its new refusal path.
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+    expect(mockEmitPlanEvent).not.toHaveBeenCalled();
+  });
+
+  it('does NOT demand a Bar-to-work map from a plan whose acceptance_bar_epoch is NULL', async () => {
+    // The writer wraps EVERY BAR branch in `if (current.acceptance_bar_epoch != null)`
+    // (plan-audits.ts:2182, closing 2319), so a plan outside the contract correctly
+    // carries no map. Measured 2026-09-20: 1916 of 2044 plans have a NULL epoch, so
+    // checking unconditionally would false-refuse ~94% of activation previews.
+    resolvePlanContent(barPlanWithoutDesign);
+    mockOrgSql.mockResolvedValue([{ acceptance_bar_epoch: null }]);
+
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, phase: 'activation', dryRun: true, preview: true });
+  });
+
+  it('passes the preview for a contract plan that DOES carry a Bar-to-work map', async () => {
+    // Calibration control: without this, the refusal above would also pass against a
+    // check that simply refused whenever the epoch is set.
+    resolvePlanContent(barPlanWithDesign);
+    mockOrgSql.mockResolvedValue([{ acceptance_bar_epoch: '1' }]);
+
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, phase: 'activation', dryRun: true, preview: true });
   });
 
   it('records the activation audit even when plan items are unreadable, and reports the derivation', async () => {

@@ -63,6 +63,7 @@ import { detectUnderReadFromSource } from '../../activation-under-read';
 import { assertSourceSpan } from '../../activation-source-span';
 import { setSpecClause } from './spec-clauses-store';
 import { getPlanRow } from './source';
+import { validateAcceptanceBarSource } from '../../acceptance-bar-seed';
 import { parsePlan } from './parser';
 import { stagingFirstActivationProblems } from './staging-first-activation-guard';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
@@ -571,6 +572,37 @@ export default defineTool({
             problems: targetProblems,
             message: `${targetProblems.length} mapping target(s) do not exist in the current plan revision; no writes were performed.`,
           } };
+        }
+        // BAR seeding is a precondition on the PLAN, not on this payload, so the
+        // preview used to pass while the identical dryRun:false call refused
+        // `bar_mapping_missing` — an ok:true scoped to the payload but read as a
+        // verdict on the call. Mirror the writer's own gate EXACTLY: plan-audits
+        // wraps every BAR branch in `if (current.acceptance_bar_epoch != null)`,
+        // so a plan outside the contract requires no Bar-to-work map. Checking
+        // unconditionally would refuse the ~94% of plans whose epoch is NULL
+        // (measured 2026-09-20: 1916 of 2044) — the mirror-image false verdict.
+        const barGateRows = await sql<Array<{ acceptance_bar_epoch: string | null }>>`
+          SELECT acceptance_bar_epoch
+            FROM harness_shared.harness_plans
+           WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug ?? ''}
+             AND plan_slug = ${args.slug}
+        `;
+        if (barGateRows?.[0]?.acceptance_bar_epoch != null) {
+          const barSource = validateAcceptanceBarSource(currentPlan!.content);
+          if (!barSource.ok) {
+            return { data: {
+              ok: false as const,
+              slug: args.slug,
+              phase: 'activation' as const,
+              dryRun: true as const,
+              preview: true as const,
+              error: barSource.problems[0]!.code,
+              problems: barSource.problems,
+              message:
+                `${barSource.problems.length} BAR seed problem(s): ` +
+                `${barSource.problems.map((problem) => problem.detail).join('; ')}`,
+            } };
+          }
         }
         return { data: {
           ok: true as const,
