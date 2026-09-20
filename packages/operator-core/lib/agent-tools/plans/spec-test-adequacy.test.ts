@@ -1113,6 +1113,53 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['fixture-calibration'].evidence).toContain('2 exact fixture binding(s) are outside');
     expect(result.ratings.falsifiability.evidence).not.toContain('no mutation or counterexample binding is bound');
     expect(result.ratings.falsifiability.evidence).toContain('1 mutation or counterexample binding(s) exist');
+    // EI-23756870948948211: pin WHICH branch this case exercises. `unknownMutation` carries
+    // provenance:'not-supplied', so it is excluded from the grading cohort while still satisfying
+    // isSuccessfulExecutableEvidence — this is the genuinely-outside-the-cohort case, and the
+    // cohort explanation is TRUE here. Its sibling test below covers the in-cohort case, where
+    // that same sentence would be false. Keeping both pinned is what stops the two causes being
+    // collapsed back into one untested assertion.
+    expect(result.ratings.falsifiability.evidence).toContain('outside the current grading cohort');
+  });
+
+  it('names the unmet executable-evidence conjunct instead of asserting an untested cohort cause', () => {
+    // EI-23756870948948211: a mutation binding authored the normal way sets evidenceKind + a
+    // ledger ref + outcome and OMITS adequacy.collected/skipped/executed. It sits INSIDE the
+    // grading cohort and fails isSuccessfulExecutableEvidence on those three booleans — but the
+    // refusal used to blame "outside the current grading cohort", a cause it never tested and
+    // which is impossible here. That misdirection cost ~15 respawns across three agents.
+    const incompleteMutation = evidence({
+      evidenceKind: 'mutation',
+      evidenceRef: 'mutation-probe:unset-adequacy-booleans',
+      details: {
+        adequacy: {
+          fixtureCalibrated: true,
+          falsifiable: true,
+          testLayer: 'integration',
+          pathReachable: true,
+          oracleIndependent: true,
+          outcome: 'killed',
+          targeted: true,
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['integration test'] }),
+      evidence: [incompleteMutation],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.falsifiability.rating).toBe('unknown');
+    // The row IS in the cohort, so the cohort-narrowing explanation would be a false statement.
+    expect(result.ratings.falsifiability.evidence).not.toContain('outside the current grading cohort');
+    expect(result.ratings.falsifiability.evidence).toContain('in the current grading cohort');
+    // The actionable half: name the conjuncts that were actually unmet, and distinguish an unset
+    // boolean from an explicit false, because the two are fixed by different edits.
+    expect(result.ratings.falsifiability.evidence).toContain('collected=unset');
+    expect(result.ratings.falsifiability.evidence).toContain('skipped=unset');
+    expect(result.ratings.falsifiability.evidence).toContain('executed=unset');
+    expect(result.ratings.falsifiability.suggestion).toContain('collected=unset');
   });
 
   it('never lets evidence for another revision establish traceability', () => {

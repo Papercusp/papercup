@@ -609,6 +609,53 @@ function isSuccessfulExecutableEvidence(row: SpecEvidenceForAdequacy): boolean {
   );
 }
 
+// EI-23756870948948211: when a row FAILS isSuccessfulExecutableEvidence, callers need to know
+// WHICH conjunct was unmet — otherwise a refusal names a cause it never tested and the reader
+// goes hunting the wrong layer. A normally-authored binding sets evidenceKind + a ledger ref +
+// outcome and omits details.collected/skipped/executed, so those three are the usual culprits,
+// and `unset` is reported distinctly from an explicit `false` because the two are fixed by
+// different edits.
+function executableEvidenceGaps(row: SpecEvidenceForAdequacy): string[] {
+  const details = detailsOf(row);
+  const show = (value: boolean | undefined): string => (value === undefined ? 'unset' : String(value));
+  const gaps: string[] = [];
+  if (!EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind)) {
+    gaps.push(`evidenceKind=${row.evidenceKind} is not executable`);
+  }
+  if (!hasExecutionLedgerReference(row)) {
+    gaps.push('no testRunId/coverageEvidenceRef ledger reference');
+  }
+  if (details.collected !== true) {
+    gaps.push(`collected=${show(details.collected)}`);
+  }
+  if (details.skipped !== false) {
+    gaps.push(`skipped=${show(details.skipped)}`);
+  }
+  if (details.executed !== true) {
+    gaps.push(`executed=${show(details.executed)}`);
+  }
+  if (!SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? '')) {
+    gaps.push(`outcome=${details.outcome === undefined ? 'unset' : JSON.stringify(details.outcome)}`);
+  }
+  return gaps;
+}
+
+function summarizeExecutableEvidenceGaps(rows: SpecEvidenceForAdequacy[]): string {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    for (const gap of executableEvidenceGaps(row)) {
+      counts.set(gap, (counts.get(gap) ?? 0) + 1);
+    }
+  }
+  if (counts.size === 0) {
+    return 'no unmet conjunct identified';
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([gap, count]) => (rows.length > 1 ? `${gap} on ${count}` : gap))
+    .join(', ');
+}
+
 function isSuccessfulRepairedEvidence(row: SpecEvidenceForAdequacy): boolean {
   const details = detailsOf(row);
   return isSuccessfulExecutableEvidence(row) && REPAIRED_OUTCOMES.has(details.outcome?.toLowerCase() ?? '');
@@ -1074,7 +1121,26 @@ export function evaluateSpecTestAdequacy(input: {
   const exactMutationOrCounterexample = exactEvidence.filter(
     (row) => row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample',
   );
+  // EI-23756870948948211: `exactMutationOrCounterexample` is filtered by evidenceKind ALONE, so a
+  // non-empty result says nothing about WHY the row failed to bind. The refusal below used it to
+  // assert one untested cause — "outside the current grading cohort" — when the far more common
+  // case is a row sitting INSIDE the cohort that fails isSuccessfulExecutableEvidence (usually
+  // details.collected/skipped/executed left unset by a normally-authored binding). Worse, when the
+  // caller supplies `current[]` then `evidence === exactEvidence`, so NOTHING can be outside the
+  // cohort and the asserted cause is impossible while still being printed. Split the populations by
+  // real membership — the same test the fixture branch already uses for `fixtureOutsideCurrent` —
+  // and report the conjunct that actually failed.
+  const mutationOutsideCohort = exactMutationOrCounterexample.filter((row) => !evidence.includes(row));
+  const mutationInCohortNotExecutable = exactMutationOrCounterexample.filter(
+    (row) => evidence.includes(row) && !isSuccessfulExecutableEvidence(row),
+  );
   const attestedFalsifiableOnly = evidence.filter((row) => detailsOf(row).falsifiable === true);
+  const unboundMutationReason =
+    mutationInCohortNotExecutable.length > 0
+      ? `${mutationInCohortNotExecutable.length} mutation or counterexample binding(s) are in the current grading cohort for ${clauseIdentity(clause)} but do not qualify as successful executable evidence (${summarizeExecutableEvidenceGaps(mutationInCohortNotExecutable)}).`
+      : mutationOutsideCohort.length > 0
+        ? `${mutationOutsideCohort.length} mutation or counterexample binding(s) exist in the exact clause population but are outside the current grading cohort for ${clauseIdentity(clause)}.`
+        : `no mutation or counterexample binding is bound for ${clauseIdentity(clause)}.`;
   ratings.falsifiability =
     boundMutationOrCounterexample.length > 0
       ? {
@@ -1088,15 +1154,13 @@ export function evaluateSpecTestAdequacy(input: {
         ? {
             rating: 'unknown',
             evidence: evidenceWithBindings(
-              `Binder-attested falsifiable=true on ${attestedFalsifiableOnly.length} binding(s) is insufficient to demonstrate red capability for ${clauseIdentity(clause)}; ${
-                exactMutationOrCounterexample.length > 0
-                  ? `${exactMutationOrCounterexample.length} mutation or counterexample binding(s) exist in the exact clause population but are outside the current grading cohort for ${clauseIdentity(clause)}.`
-                  : `no mutation or counterexample binding is bound for ${clauseIdentity(clause)}.`
-              }`,
+              `Binder-attested falsifiable=true on ${attestedFalsifiableOnly.length} binding(s) is insufficient to demonstrate red capability for ${clauseIdentity(clause)}; ${unboundMutationReason}`,
               attestedFalsifiableOnly,
             ),
             suggestion:
-              'Bind a successful ledger-backed mutation or counterexample result; falsifiable=true metadata alone is insufficient.',
+              mutationInCohortNotExecutable.length > 0
+                ? `Complete the existing mutation or counterexample binding so it qualifies as successful executable evidence (unmet: ${summarizeExecutableEvidenceGaps(mutationInCohortNotExecutable)}); falsifiable=true metadata alone is insufficient.`
+                : 'Bind a successful ledger-backed mutation or counterexample result; falsifiable=true metadata alone is insufficient.',
           }
         : booleanRating(evidence, (d) => d.falsifiable, {
             pass: `A bound proof explicitly demonstrates falsifiability for ${clauseIdentity(clause)}.`,
