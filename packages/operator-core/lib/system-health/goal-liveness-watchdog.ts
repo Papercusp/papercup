@@ -1710,7 +1710,7 @@ export async function pauseGoalForHolderRespawnRateCap(
                '{holderRespawn}',
                (CASE WHEN jsonb_typeof(metadata -> 'holderRespawn') = 'object'
                      THEN metadata -> 'holderRespawn' ELSE '{}'::jsonb END) ||
-                 ${JSON.stringify({ needsHuman: true })}::jsonb ||
+                 ${JSON.stringify({ needsHuman: true })}::text::jsonb ||
                  jsonb_build_object(
                    'escalatedAtMs', ${nowMs}::bigint,
                    'attemptsInWindow', ${attemptsInWindow}::int
@@ -1718,7 +1718,7 @@ export async function pauseGoalForHolderRespawnRateCap(
                true
              ),
              '{pause}',
-             ${JSON.stringify(pause)}::jsonb,
+             ${JSON.stringify(pause)}::text::jsonb,
              true
            )
      WHERE id = ${goal.goalId}

@@ -53,6 +53,10 @@ const DELIBERATE_CONTROLS: ReadonlyArray<{ file: string; why: string }> = [
     file: 'packages/operator-core/lib/startup/validate-active-routines-sql.integration.test.ts',
     why: 'WI-37757 reproduces the uncast statement inline as the negative control for its own guard.',
   },
+  {
+    file: 'packages/operator-core/lib/system-health/goal-holder-respawn.integration.test.ts',
+    why: 'WI-10002085 reproduces the uncast statement inline as the negative control for its own guard.',
+  },
 ];
 
 const VARIADIC_ANY_FNS = ['jsonb_build_object', 'jsonb_build_array', 'json_build_object', 'json_build_array'];

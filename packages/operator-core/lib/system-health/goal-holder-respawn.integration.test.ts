@@ -44,10 +44,12 @@ import { getTestPg } from '@papercusp/test-config/pg';
 import {
   GOAL_HOLDER_RESPAWN_RATE_LIMIT,
   GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS,
+  pauseGoalForHolderRespawnRateCap,
   reserveGoalHolderRespawnRateSlot,
   runGoalHolderRespawnOnce,
   type GoalHolderRespawnDeps,
 } from './goal-liveness-watchdog';
+import { setGoalTransitionExecutor, type GoalStopReport } from '@papercusp/agent-mcp';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
 import type { WakeabilitySignals } from '../agent-tools/coordination/presence-wakeability';
 import type { SelfWakeSignals } from '../agent-tools/coordination/presence-selfwake';
@@ -281,6 +283,13 @@ beforeAll(async () => {
       goal_lease_epoch bigint,
       goal_handoff_from_owner_id text,
       goal_handoff_expires_at timestamptz,
+      -- Fixture DRIFT repair (WI-10002085): the real table gained implied_by jsonb and this
+      -- hand-rolled DDL fell behind, so setMode's INSERT failed with
+      --   column "implied_by" of relation "agent_modes" does not exist
+      -- and 8 tests in this file were already red before any of today's changes. A hand-rolled
+      -- fixture cannot track a migration on its own; when it drifts again, diff it against
+      -- information_schema.columns for harness_shared.agent_modes.
+      implied_by jsonb,
       PRIMARY KEY (workspace_id, owner_id, axis_key)
     )`);
   await rootSql.unsafe(`
@@ -635,5 +644,113 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
     const tick = await runGoalHolderRespawnOnce(rootSql, deps);
     expect(tick).toMatchObject({ scanned: 1, eligible: 1, attempted: 0, respawned: 0 });
     expect(launches).toEqual([]);
+  }, 60_000);
+});
+
+/**
+ * WI-10002085 — the safety cap must actually PAUSE, against a real server.
+ *
+ * Why this exists. `pauseGoalForHolderRespawnRateCap` shipped with an uncast parameter inside
+ * jsonb_build_object (VARIADIC "any"), so Postgres refused the UPDATE at PARSE time — "could
+ * not determine data type of parameter $4" — on every call. The rail could therefore NEVER
+ * pause a goal: one tripped the cap, was marked needsHuman at 15:37:31Z, and kept running as
+ * status='active' for ~50 minutes with `pause` and `escalatedAtMs` both absent.
+ *
+ * It was invisible because the only coverage this statement had mocked `sql`, which asserts the
+ * statement was BUILT correctly and cannot observe a server-side PARSE failure by construction.
+ * So the test that closes it has to execute the real statement against a real Postgres.
+ */
+describe('holder-respawn safety cap actually pauses the goal (WI-10002085)', () => {
+  type GoalMeta = {
+    pause?: { reason?: string; pausedBy?: string; pausedAtMs?: number };
+    holderRespawn?: { needsHuman?: boolean; escalatedAtMs?: number; attemptsInWindow?: number };
+  };
+
+  it('flips status to paused and records the pause + escalation stamps', async () => {
+    const goalId = `goal-cap-${randomBytes(4).toString('hex')}`;
+    await seedGoal({
+      id: goalId,
+      status: 'active',
+      metadata: {
+        holderRespawn: {
+          needsHuman: true,
+          reason: 'hourly-respawn-cap',
+          limit: GOAL_HOLDER_RESPAWN_RATE_LIMIT,
+          windowMs: GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS,
+        },
+      },
+    });
+
+    // The executor is installed by importing goals/stop-fanout for its side effect; stubbing the
+    // seam keeps this test on the SQL. The code under test reads only `unattributedActiveLoops`
+    // and `degraded` from the report, so the rest is filler for the interface.
+    const stops: Array<{ goalId: string; status: string }> = [];
+    setGoalTransitionExecutor(async (input) => {
+      stops.push({ goalId: input.goalId, status: input.status });
+      return {
+        goalId: input.goalId,
+        status: input.status,
+        potsStopped: [],
+        unattributedActiveLoops: 0,
+        degraded: false,
+      } as unknown as GoalStopReport;
+    });
+
+    const nowMs = Date.now();
+    await pauseGoalForHolderRespawnRateCap(rootSql, { goalId, workspaceId: WS }, 6, nowMs);
+
+    const [row] = await rootSql<Array<{ status: string; metadata: GoalMeta }>>`
+      SELECT status, metadata FROM harness_shared.goals WHERE id = ${goalId}`;
+
+    // metadata.pause must be an OBJECT, not a JSON string — and which of those you get depends
+    // on the CLIENT, which is worth stating precisely because it is easy to misread as a
+    // production bug (EI-18698602043482898). A pre-stringified `${v}::jsonb` param is resolved
+    // to OID 3802 by the cast, so postgres-js serializes it through serializers['3802']: the
+    // DEFAULT one JSON.stringifies it AGAIN and the value lands as a jsonb scalar string. The
+    // canonical operator client is not affected — buildClient installs restoreRawJsonbSerializer,
+    // a hybrid that passes an already-stringified string through unchanged. But THIS test (like
+    // every integration test in this file) uses a raw postgres() client, where the default
+    // serializer applies. `::text::jsonb` types the parameter as text first and so behaves
+    // identically under BOTH clients, which is what lets this assertion mean the same thing here
+    // as in production instead of diverging from it.
+    // The symptom, inverted: status moved, and both stamps the live incident lacked are present.
+    expect(row?.status).toBe('paused');
+    expect(row?.metadata.pause?.reason).toMatch(/human review is required/i);
+    expect(row?.metadata.pause?.pausedAtMs).toBe(nowMs);
+    expect(row?.metadata.holderRespawn?.escalatedAtMs).toBe(nowMs);
+    expect(row?.metadata.holderRespawn?.attemptsInWindow).toBe(6);
+    expect(row?.metadata.holderRespawn?.needsHuman).toBe(true); // preserved, not clobbered
+    expect(stops).toEqual([{ goalId, status: 'paused' }]);
+  }, 60_000);
+
+  it('is a no-op for a goal that is not flagged needsHuman (the WHERE guard holds)', async () => {
+    const goalId = `goal-nocap-${randomBytes(4).toString('hex')}`;
+    await seedGoal({ id: goalId, status: 'active', metadata: {} });
+    const stops: string[] = [];
+    setGoalTransitionExecutor(async (input) => {
+      stops.push(input.goalId);
+      return { goalId: input.goalId, status: input.status, potsStopped: [] } as unknown as GoalStopReport;
+    });
+
+    await pauseGoalForHolderRespawnRateCap(rootSql, { goalId, workspaceId: WS }, 6, Date.now());
+
+    const [row] = await rootSql<Array<{ status: string }>>`
+      SELECT status FROM harness_shared.goals WHERE id = ${goalId}`;
+    expect(row?.status).toBe('active');
+    expect(stops).toEqual([]); // no row changed => no stop fan-out
+  }, 60_000);
+
+  it('NEGATIVE CONTROL: the uncast form this bug shipped cannot even PARSE', async () => {
+    // Reproduced inline rather than by mutating the source tree — a mutate-and-restore probe
+    // races git-sync's whole-tree sweep and has committed a mutant in this repo before. This is
+    // what proves the two assertions above are not passing for some unrelated reason.
+    await expect(rootSql`SELECT jsonb_build_object('attemptsInWindow', ${6}) AS v`).rejects.toThrow(
+      /could not determine data type of parameter/i,
+    );
+
+    // ...and the cast — exactly the fix — is what makes it parse.
+    const [ok] = await rootSql<Array<{ v: { attemptsInWindow: number } }>>`
+      SELECT jsonb_build_object('attemptsInWindow', ${6}::int) AS v`;
+    expect(ok?.v).toEqual({ attemptsInWindow: 6 });
   }, 60_000);
 });
