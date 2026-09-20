@@ -343,18 +343,10 @@ describe('compact durable CTRL anchor', () => {
         rule: 'replace-full-never-merge-behind' as const,
       },
     };
-    // ⚠ PINNED DEFECT, NOT DESIRED BEHAVIOUR (WI-10002005 / WI-10002017).
-    // Measured 2026-09-20: this maximal state renders at 406 tokens against a
-    // 384 budget, so renderControlTransitionDelivery THROWS. turn-start swallows
-    // that throw to keep the prompt alive, so the entire ⟦CTRL⟧ block silently
-    // disappears — taking the generation-mismatch signal with it.
-    //
-    // This assertion pins the overflow so the defect is visible and cannot
-    // regress further unnoticed. It is deliberately written to FAIL THE MOMENT
-    // THE DEFECT IS FIXED: when the budget is raised or the state is slimmed,
-    // this stops throwing, this test goes red, and whoever fixed it must flip
-    // the assertion back to the `toBeLessThanOrEqual` form it should have been.
-    const render = () => decideControlTransitionDelivery({
+    // WI-10002024 FIXED — this is the `toBeLessThanOrEqual` form the pin above
+    // instructed its fixer to restore. The ceiling is now enforced HERE, at build
+    // time, rather than by a render-time throw that the caller swallows.
+    const delivered = decideControlTransitionDelivery({
       ownerId: 'su-56d0a9bd-9c98-4c87-8e0d-ab9ddf15ba8f',
       deliveredGeneration: 14,
       generation: 17,
@@ -362,10 +354,17 @@ describe('compact durable CTRL anchor', () => {
       transition,
       updatedAt: transition.provenance.recordedAt,
     });
-    expect(render).toThrow(/control_transition_budget_exceeded/);
+    expect(delivered).not.toBeNull();
+    expect(delivered?.budget.estimatedTokens).toBeLessThanOrEqual(CONTROL_TRANSITION_MAX_TOKENS);
+    expect(delivered?.budget.overBudget).toBeUndefined();
     // Calibration: the fixture must stay genuinely LARGE, so a future refactor
     // that quietly shrinks it cannot turn this guard into a vacuous one.
     expect(estimateControlAnchorTokens(maximal)).toBeGreaterThan(200);
+    // Anti-vacuity: this fixture must still be the one that BROKE the old 384
+    // ceiling. If a later change shrinks the render below 384 this assertion goes
+    // red, so the guard can never quietly stop exercising the overflow it exists
+    // for — the 512 ceiling would then be untested headroom rather than a bound.
+    expect(delivered?.budget.estimatedTokens).toBeGreaterThan(384);
   });
 
   it('separates prepare from acknowledgement so a render failure leaves the generation pending', async () => {
