@@ -358,6 +358,36 @@ describe('evaluatePlanSpecQualityGate', () => {
       scorecardId: 'EI-quality-card-failed',
       wouldBlock: ['exact-specSetHash-scorecard-grading-audit-failed'],
     });
+    // WI-10002063 (sibling of the spec-test-adequacy defect): the GRADED card's id is not
+    // the findings — the AUDIT card holds them. A refusal that says "repair whatever the
+    // audit flagged" while naming only EI-quality-card-failed is unactionable.
+    expect(result.message).toContain('EI-audit-card');
+  });
+
+  it('states plainly when a failed grading audit recorded no audit card id (WI-10002063)', async () => {
+    const clauses = [clause()];
+    const result = await evaluatePlanSpecQualityGate(
+      { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      gateDeps({
+        listClauses: vi.fn(async () => clauses),
+        listCards: vi.fn(async () => [
+          {
+            ...auditFailedCard(clauses),
+            gradingAudit: {
+              state: 'failed' as const,
+              metaRubricRef: 'grading-integrity',
+              stampedAt: '2026-08-20T00:03:00.000Z',
+            },
+          },
+        ]),
+      }),
+    );
+
+    expect(result).toMatchObject({ satisfied: false, code: 'spec_quality_scorecard_grading_audit_failed' });
+    // auditIssueId is legitimately absent on some audit states, so the honest statement is
+    // the contract — a bare interpolation would render "Read the audit card undefined".
+    expect(result.message).toContain('No audit card id was recorded');
+    expect(result.message).not.toMatch(/undefined|null/);
   });
 
   it('still reports plain "missing" when no exact card exists at all, pending or not', async () => {
