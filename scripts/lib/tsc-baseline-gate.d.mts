@@ -462,6 +462,20 @@ export function partitionNewFilesByLiveEdit(newFiles: PerFileGateEntry[]): {
     standing: PerFileGateEntry[];
 };
 /**
+ * EI-23768041578113385 — the live-edit split, generic over ANY `PerFileGateEntry[]` carrying
+ * `dirty`. `partitionNewFilesByLiveEdit` (above) is the new-file caller and delegates here; the
+ * `typeAttributed` reporter is the second. Kept as ONE primitive so the two can never disagree
+ * about the rule that actually matters: `dirty !== true` — which INCLUDES `undefined`, i.e. an
+ * unreadable git state — routes to `standing`. Absence of evidence is never an exoneration.
+ *
+ * @param {PerFileGateEntry[]} entries
+ * @returns {{liveEdits: PerFileGateEntry[], standing: PerFileGateEntry[]}}
+ */
+export function partitionEntriesByLiveEdit(entries: PerFileGateEntry[]): {
+    liveEdits: PerFileGateEntry[];
+    standing: PerFileGateEntry[];
+};
+/**
  * Split files with unattributed TS1xxx hard-fail diagnostics (outside the caller's `--mine`/`--files` set — see
  * `decidePerFile`'s `unattributedBrokenFiles`) into a peer's LIVE EDIT (uncommitted right now)
  * vs a COMMITTED standing red — the hard-fail analog of `partitionNewFilesByLiveEdit` above

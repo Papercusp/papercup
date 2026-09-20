@@ -927,8 +927,21 @@ export function decidePerFile({
       // changed subset so callers/reporting can say WHY a file outside the diff still gates.
       const isTypeAttributed = (file) =>
         !changedFiles.has(file) && !!typeReferencedFiles && typeReferencedFiles.has(file);
-      const attributed = regressions.filter((r) => changedFiles.has(r.file) || isTypeAttributed(r.file));
-      const typeAttributed = regressions.filter((r) => isTypeAttributed(r.file));
+      // EI-23768041578113385 — a type-attributed file is BY CONSTRUCTION one the caller did not
+      // name. The widening above is deliberate and stays (missing a stranded consumer is what
+      // freezes `main`), but on this shared checkout that file may equally be a PEER's live
+      // uncommitted edit which merely references a type the caller also exports — in which case
+      // the errors are not the caller's to fix, and editing them stomps a live peer. Carry the
+      // same live-edit signal the adjacent `newFiles` branch already carries
+      // (EI-19278299775574199) so the reporter can say so. Annotating only the type-attributed
+      // subset is deliberate: a file the caller DID name is expected to be dirty (they just
+      // edited it), so marking that would be noise, not signal. `dirty` is left UNDEFINED when
+      // the dirty set is unavailable, so an unreadable git state is never mistaken for "clean".
+      const annotateLiveEdit = (r) => (dirtyFiles ? { ...r, dirty: dirtyFiles.has(r.file) } : r);
+      const attributed = regressions
+        .filter((r) => changedFiles.has(r.file) || isTypeAttributed(r.file))
+        .map((r) => (isTypeAttributed(r.file) ? annotateLiveEdit(r) : r));
+      const typeAttributed = regressions.filter((r) => isTypeAttributed(r.file)).map(annotateLiveEdit);
       const unattributed = regressions.filter((r) => !changedFiles.has(r.file) && !isTypeAttributed(r.file));
       // EI-18766822535373909 — a regression in a file with NO baseline entry is a BRAND-NEW file,
       // and it must never be dismissed as peer drift. Two independent reasons:
@@ -959,7 +972,7 @@ export function decidePerFile({
       // unreadable git state can never be mistaken for "clean" (see partitionNewFilesByLiveEdit).
       const newFiles = unattributed
         .filter((r) => r.file !== '(unattributed)' && !(r.file in baselineByFile))
-        .map((r) => (dirtyFiles ? { ...r, dirty: dirtyFiles.has(r.file) } : r));
+        .map(annotateLiveEdit);
       const peerDrift = unattributed.filter((r) => r.file === '(unattributed)' || r.file in baselineByFile);
       // Under --mine the gate fails when a regression lands in a file you changed, OR in a file so
       // new the baseline has never seen it. Drift in KNOWN files you did not touch stays reported
@@ -1237,9 +1250,23 @@ export function formatStandingRedFooter({ dwellSec = DWELL_SEC, unchangedCount =
  * @returns {{liveEdits: PerFileGateEntry[], standing: PerFileGateEntry[]}}
  */
 export function partitionNewFilesByLiveEdit(newFiles) {
+  return partitionEntriesByLiveEdit(newFiles);
+}
+
+/**
+ * EI-23768041578113385 — the live-edit split, generic over ANY `PerFileGateEntry[]` carrying
+ * `dirty`. `partitionNewFilesByLiveEdit` (above) is the new-file caller and delegates here; the
+ * `typeAttributed` reporter is the second. Kept as ONE primitive so the two can never disagree
+ * about the rule that actually matters: `dirty !== true` — which INCLUDES `undefined`, i.e. an
+ * unreadable git state — routes to `standing`. Absence of evidence is never an exoneration.
+ *
+ * @param {PerFileGateEntry[]} entries
+ * @returns {{liveEdits: PerFileGateEntry[], standing: PerFileGateEntry[]}}
+ */
+export function partitionEntriesByLiveEdit(entries) {
   return {
-    liveEdits: newFiles.filter((r) => r.dirty === true),
-    standing: newFiles.filter((r) => r.dirty !== true),
+    liveEdits: entries.filter((r) => r.dirty === true),
+    standing: entries.filter((r) => r.dirty !== true),
   };
 }
 
@@ -3491,7 +3518,17 @@ export async function runTscBaselineGate({
         },
       );
       for (const r of result.attributed) {
-        console.error(formatRow(r));
+        // EI-23768041578113385 — only a TYPE-attributed row (one you did not name) carries
+        // `dirty`, so this marker cannot fire for a file you listed yourself. The verdict is
+        // deliberately UNCHANGED — it still gates — but an uncommitted file you never named may
+        // be a peer's live edit, and the caller must not be sent to fix hunks that are not
+        // theirs. Deliberately weaker than the `newFiles` marker, which can say "not attributed
+        // to you" because those rows genuinely are not the caller's.
+        console.error(
+          r.dirty === true
+            ? `${formatRow(r)}  ← uncommitted: verify these hunks are YOURS before editing (a peer may own them)`
+            : formatRow(r),
+        );
         for (const line of formatRegressedFileDiagnostics(r, attributedDiagnostics.get(r.file) ?? [])) {
           console.error(line);
         }
@@ -3503,6 +3540,20 @@ export async function runTscBaselineGate({
             `EI-18756182128903253 fix: a required-field addition breaks a fixture/constructor your diff never ` +
             `touched, and that fixture now gates with your change instead of surfacing hours later at green-checkpoint.)`,
         );
+        // EI-23768041578113385 — the widening above is correct but over-inclusive by design, and
+        // on this shared checkout its false positive has a cheap, specific tell: the file is
+        // UNCOMMITTED and you never named it, so a peer may be mid-edit in it. Naming those files
+        // converts a silent misattribution into a routing hint. Without this, narrowing `--files`
+        // to your own files returns a confident `status=regressed` for errors that are entirely
+        // someone else's — and the natural next move is to go edit a live peer's hunks.
+        const typeAttributedLive = partitionEntriesByLiveEdit(result.typeAttributed).liveEdits;
+        if (typeAttributedLive.length > 0) {
+          console.error(
+            `   (of those, ${typeAttributedLive.length} is/are UNCOMMITTED and not named by you: ` +
+              `${typeAttributedLive.map((r) => r.file).join(', ')} — a peer may be mid-edit there. ` +
+              `Check \`git diff\` on those hunks before editing: if they are not yours, this red is not yours to fix.)`,
+          );
+        }
       }
       if (result.newFiles.length > 0) {
         // EI-19278299775574199 — same split as the fail-new-file branch: an uncommitted new file is
