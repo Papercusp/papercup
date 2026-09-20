@@ -1424,10 +1424,10 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
   );
 });
 
-describe('carry-respawn STALENESS guard — a message held too long by the busy gate is dropped, never delivered (EI-18109211232286833)', () => {
-  it(
-    'a carry-respawn that ages past PAPERCUSP_PSU_PTY_CARRY_STALE_MS while the busy gate waits is DROPPED — no second boot, no delivery, drop event recorded',
-    async () => {
+describe('carry-respawn STALENESS guard — only drills expire; production carries remain must-deliver', () => {
+  it.each([true, false])(
+    'preserves the age policy at the first prompt boundary (drill=%s)',
+    async (isDrill) => {
       const ownerId = `su-carry-stale-itest-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
@@ -1466,10 +1466,15 @@ describe('carry-respawn STALENESS guard — a message held too long by the busy 
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000', // generous — the busy gate must NOT defer/drop here
           PAPERCUSP_PSU_PTY_CARRY_STALE_MS: '50', // tiny — the ~600ms spin easily ages past it
           PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '500',
         },
         ownerId,
         io,
         bridgeTty: false,
+        nativePersistenceTimeoutMs: 200,
         onExit: (c: number) => { exitCode = c; },
       });
 
@@ -1492,9 +1497,10 @@ describe('carry-respawn STALENESS guard — a message held too long by the busy 
           ownerId,
           data: 'CARRIED',
           systemPromptAddendum: 'stale carry test',
+          ...(isDrill ? { drillId: 'age-expiry-control' } : {}),
         });
 
-        const deadline = Date.now() + 5_000;
+        const deadline = Date.now() + 8_000;
         while (Date.now() < deadline) {
           const log = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
           if (log.includes('"kind":"respawn-carry-dropped"')) break;
@@ -1502,15 +1508,27 @@ describe('carry-respawn STALENESS guard — a message held too long by the busy 
         }
 
         const events = readFileSync(eventLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-        expect(events).toContainEqual(expect.objectContaining({
-          kind: 'respawn-carry-dropped',
-          mode: 'carry-respawn',
-          reason: 'carry-stale',
-        }));
-        // Never delivered — no second boot (no recycle happened) and the carry
-        // text never reached the child's stdin.
-        expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
-        expect(captured()).not.toContain('ECHO:CARRIED');
+        if (isDrill) {
+          expect(events).toContainEqual(expect.objectContaining({
+            kind: 'respawn-carry-dropped',
+            mode: 'carry-respawn',
+            reason: 'carry-stale',
+          }));
+          expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+          expect(captured()).not.toContain('ECHO:CARRIED');
+        } else {
+          // The production request must reach its successor despite the age
+          // cap, not be discarded at the first boundary. This synthetic child
+          // does not persist a native turn: submission is not proof of delivery.
+          expect(events.some((event) => event.reason === 'carry-stale')).toBe(false);
+          expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(2);
+          expect(captured()).toContain('ECHO:CARRIED');
+          expect(events).toContainEqual(expect.objectContaining({
+            kind: 'respawn-carry-dropped',
+            reason: 'turn-start-unverified',
+          }));
+          expect(events.some((event) => event.kind === 'respawn-carry-delivered')).toBe(false);
+        }
 
         await rawInject(sock, 'QUIT\n');
         expect(await done).toBe(0);
@@ -1519,6 +1537,7 @@ describe('carry-respawn STALENESS guard — a message held too long by the busy 
         expect(existsSync(meta)).toBe(false);
       } finally {
         if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        await done;
         if (existsSync(eventLog)) unlinkSync(eventLog);
       }
     },
