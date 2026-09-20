@@ -31,15 +31,23 @@
  * `flagEnabled: true` per tick, exactly what the armed timer's per-tick gate resolves
  * to after the owner flips the flag — the flag itself is deliberately NOT flipped here.
  *
- * ⚠ Fixture DDL below is hand-rolled to the columns the code under test touches
- * (precedent: spend-rollup.integration.test.ts, and its recorded drift trap —
- * EI-21270668928342264): adding a column that `makeReadGoals` / `setMode` reads means
- * auditing this block by hand.
+ * ⚠ Schema: this fixture stands up the REAL head schema via `createOrgTestDb()`
+ * (packages/operator-core/test/_org-test-db.ts — the real boot-path migration runner,
+ * template-cached on a content hash of the whole migration set). It deliberately does
+ * NOT hand-roll DDL, because this file did and drifted TWICE: first `agent_modes`
+ * gained `implied_by jsonb` and `setMode`'s INSERT failed (WI-10002085, 8 tests red),
+ * then `harness_shared.adv_sessions` was missing entirely, so `setMode`'s control-anchor
+ * refresh degraded and 3 tests failed on its `console.warn` (WI-10002090) — a warn that
+ * was telling the truth, which is why silencing it in the console-noise filter would have
+ * been the wrong layer (that filter is deliberately scoped so a genuine bounded-timeout
+ * failure still fails loudly). A hand-rolled fixture cannot track a migration on its own;
+ * the real runner cannot fall behind one, because any new migration changes the template
+ * key and forces a rebuild. Do not reintroduce inline `CREATE TABLE` here.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import postgres from 'postgres';
+import type postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
 import {
   GOAL_HOLDER_RESPAWN_RATE_LIMIT,
@@ -65,6 +73,7 @@ const HARNESS = 'papercusp-p010';
 const GOAL = 'goal-woe-package-1';
 const INITIAL_HOLDER = 'su-initial-holder';
 
+let db: OrgTestDb;
 let rootSql: postgres.Sql;
 
 /* ── the presence-signal fixture: what each session's substrate looks like ── */
@@ -241,75 +250,22 @@ async function goalModeRows(goalId: string) {
 }
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  const dbName = `goalrespawn_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 4, onnotice: () => {} });
-  await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  // Minimal fixture DDL — the columns makeReadGoals / readGoalHolderRows / setMode
-  // touch (see the header's drift caveat).
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.goals (
-      id text PRIMARY KEY,
-      install_slug text NOT NULL,
-      title text NOT NULL,
-      status text NOT NULL DEFAULT 'active',
-      workspace_id text NOT NULL,
-      launch_settings jsonb,
-      standing boolean NOT NULL DEFAULT false,
-      budget_window_sec integer,
-      metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
-    )`);
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.agent_modes (
-      workspace_id text NOT NULL DEFAULT 'default',
-      owner_id text NOT NULL,
-      axis_key text NOT NULL,
-      mode text NOT NULL,
-      reason text NOT NULL DEFAULT '',
-      set_by text NOT NULL,
-      owner_directed boolean NOT NULL DEFAULT false,
-      set_at timestamptz NOT NULL DEFAULT now(),
-      subject text,
-      goal_lease_epoch bigint,
-      goal_handoff_from_owner_id text,
-      goal_handoff_expires_at timestamptz,
-      -- Fixture DRIFT repair (WI-10002085): the real table gained implied_by jsonb and this
-      -- hand-rolled DDL fell behind, so setMode's INSERT failed with
-      --   column "implied_by" of relation "agent_modes" does not exist
-      -- and 8 tests in this file were already red before any of today's changes. A hand-rolled
-      -- fixture cannot track a migration on its own; when it drifts again, diff it against
-      -- information_schema.columns for harness_shared.agent_modes.
-      implied_by jsonb,
-      PRIMARY KEY (workspace_id, owner_id, axis_key)
-    )`);
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.agent_mode_changes (
-      id bigserial PRIMARY KEY,
-      workspace_id text NOT NULL,
-      owner_id text NOT NULL,
-      axis_key text NOT NULL,
-      old_mode text,
-      new_mode text,
-      reason text NOT NULL DEFAULT '',
-      set_by text NOT NULL,
-      owner_directed boolean NOT NULL DEFAULT false,
-      changed_at timestamptz NOT NULL DEFAULT now()
-    )`);
-}, 120_000);
+  // Real head schema via the real boot-path migration runner (see the header note).
+  // `adminSql` is the RLS-BYPASS client, which is what these assertions want — and it
+  // mirrors the canonical operator client's bigint/timestamp parsers and raw
+  // Date/jsonb serializers, so a raw read or write here binds exactly as production
+  // does instead of in the opposite direction (EI-18698602043482898).
+  db = await createOrgTestDb();
+  rootSql = db.adminSql;
+}, 300_000);
 
+// Explicit timeout: dropping a throwaway database has to terminate other backends
+// first, and under concurrent fleet load that has exceeded Vitest's default 10s hook
+// timeout and failed suites whose assertions all passed (EI-23128538923529753,
+// EI-22778982473804010).
 afterAll(async () => {
-  await rootSql?.end({ timeout: 5 });
-});
+  await db?.cleanup();
+}, 120_000);
 
 beforeEach(async () => {
   sessions.clear();
