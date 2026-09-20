@@ -32,8 +32,10 @@ vi.mock('./source', async (importOriginal) => {
 
 import {
   classifySpecEvidenceCurrentness,
+  evidenceMeasurementSchema,
   listSpecEvidence,
   measureRepoFilesEvidenceAtRoot,
+  measureWorkItemsEvidenceForScope,
 } from './spec-evidence-store';
 
 let measurementRoot = '';
@@ -515,5 +517,97 @@ describe('listSpecEvidence timestamp normalization', () => {
         provisionalScorecard: { issueId: 'EI-123' },
       },
     });
+  });
+});
+
+// RECURRENCE GUARD (WI-10002087). `source` currentness used to have exactly ONE basis — a repo
+// file-set hash — so a binding whose SUBJECT was not a file set could never reach
+// `source:'current'` and every non-code plan outcome was unshippable. The fix adds a ledger-state
+// basis. These tests pin the property that makes it a real measurement rather than a bypass: the
+// digest must MOVE when the underlying disposition moves. If it ever stops moving, a reopened row
+// would keep reading "current" and the ledger basis would become the rubber stamp that
+// `source:'not-applicable'` (the rejected alternative) would have been.
+describe('ledger-state server measurement', () => {
+  const recipe = {
+    schemaVersion: 1 as const,
+    kind: 'work-items' as const,
+    workItemIds: ['EI-2', 'EI-1'],
+  };
+
+  beforeEach(() => {
+    h.rows = [];
+    h.scorecardRows = [];
+  });
+
+  it('hashes the named rows deterministically, independent of argument order and duplicates', async () => {
+    h.rows = [
+      { feature_id: 'EI-1', status: 'done' },
+      { feature_id: 'EI-2', status: 'dropped' },
+    ];
+
+    const first = await measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', recipe);
+    const replay = await measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', recipe);
+    expect(replay).toEqual(first);
+
+    // Same population, spelled differently: the digest is over a sorted, de-duplicated id set.
+    const reordered = await measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', {
+      ...recipe,
+      workItemIds: ['EI-1', 'EI-2', 'EI-1'],
+    });
+    expect(reordered.sourceFingerprint).toBe(first.sourceFingerprint);
+
+    expect(first.sourceFingerprint).toMatch(/^sha256-work-item-set-v1:[0-9a-f]{64}$/);
+    // Ledger state has no test-file half; a null here is what keeps `test` at not-applicable
+    // instead of inventing an unknown dimension the subject cannot ever satisfy.
+    expect(first.testFingerprint).toBeNull();
+  });
+
+  it('moves the digest when a disposition changes — this is what makes a reopened row go stale', async () => {
+    h.rows = [
+      { feature_id: 'EI-1', status: 'done' },
+      { feature_id: 'EI-2', status: 'dropped' },
+    ];
+    const before = await measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', recipe);
+
+    // EI-1 is reopened: the census claim "every row reached a recorded disposition" is no longer true.
+    h.rows = [
+      { feature_id: 'EI-1', status: 'open' },
+      { feature_id: 'EI-2', status: 'dropped' },
+    ];
+    const after = await measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', recipe);
+
+    expect(after.sourceFingerprint).not.toBe(before.sourceFingerprint);
+  });
+
+  it('hashes an absent row as an explicit null so a deleted or misspelled id cannot pass as present', async () => {
+    h.rows = [
+      { feature_id: 'EI-1', status: 'done' },
+      { feature_id: 'EI-2', status: 'done' },
+    ];
+    const bothPresent = await measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', recipe);
+
+    h.rows = [{ feature_id: 'EI-1', status: 'done' }];
+    const oneMissing = await measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', recipe);
+
+    expect(oneMissing.sourceFingerprint).not.toBe(bothPresent.sourceFingerprint);
+  });
+
+  it('routes both measurement kinds through one discriminated union', () => {
+    expect(
+      evidenceMeasurementSchema.safeParse({ schemaVersion: 1, kind: 'work-items', workItemIds: ['WI-1234'] }).success,
+    ).toBe(true);
+
+    // CALIBRATION / positive control: the pre-existing repo-files basis must still parse, or the
+    // assertions above could pass simply because the union stopped accepting anything real.
+    expect(
+      evidenceMeasurementSchema.safeParse({ schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/a.ts'] }).success,
+    ).toBe(true);
+
+    expect(evidenceMeasurementSchema.safeParse({ schemaVersion: 1, kind: 'work-items', workItemIds: [] }).success).toBe(
+      false,
+    );
+    expect(
+      evidenceMeasurementSchema.safeParse({ schemaVersion: 1, kind: 'work-items', workItemIds: ['not a ref'] }).success,
+    ).toBe(false);
   });
 });

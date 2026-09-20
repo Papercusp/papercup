@@ -59,6 +59,53 @@ export const repoFilesEvidenceMeasurementSchema = z
 
 export type RepoFilesEvidenceMeasurement = z.infer<typeof repoFilesEvidenceMeasurementSchema>;
 
+const ledgerMeasurementIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .regex(/^[A-Z]+-[A-Za-z0-9._-]+$/, 'ledger measurement ids are work-item refs such as WI-1234 or EI-5678');
+
+/**
+ * A LEDGER-STATE measurement basis (WI-10002087).
+ *
+ * WHY THIS EXISTS. `source` currentness had exactly ONE basis — a repo file-set hash — so a
+ * binding whose SUBJECT is not a file set had no basis at all and was pinned at `unknown`
+ * forever, whatever its `evidenceKind`. (The kind is a red herring: most `operational` rows
+ * measure fine because their subject happens to be repo files.) That made every non-code plan
+ * outcome unshippable, because the ship gate demands current proof and no current proof was
+ * reachable for a claim about ledger state — e.g. "each of these five rows reached a recorded
+ * disposition".
+ *
+ * WHY A DIGEST AND NOT A RECENCY WINDOW. Both a recency window and mapping non-file kinds to
+ * `not-applicable` would REMOVE the check rather than satisfy it: a caller could mint freshness
+ * from an assertion it authored itself, which is the whole failure the attested-current guard
+ * below exists to prevent. Hashing the named rows' disposition keeps the rail exactly as strong
+ * as the file-set hash — the server re-reads and re-hashes on every read, so a row that reopens
+ * or is deleted correctly goes `stale` instead of staying provably "current".
+ */
+export const workItemsEvidenceMeasurementSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    kind: z.literal('work-items'),
+    /**
+     * The census population. Bounded like `sourcePaths`: a measurement basis has to stay cheap
+     * enough to recompute on every evidence read.
+     */
+    workItemIds: z.array(ledgerMeasurementIdSchema).min(1).max(64),
+  })
+  .strict();
+
+export type WorkItemsEvidenceMeasurement = z.infer<typeof workItemsEvidenceMeasurementSchema>;
+
+/** Every server-re-measurable evidence basis. Discriminated on `kind`; add a case, not a parallel surface. */
+export const evidenceMeasurementSchema = z.discriminatedUnion('kind', [
+  repoFilesEvidenceMeasurementSchema,
+  workItemsEvidenceMeasurementSchema,
+]);
+
+export type EvidenceMeasurement = z.infer<typeof evidenceMeasurementSchema>;
+
 export interface MeasuredRepoEvidenceFingerprints {
   sourceFingerprint: string;
   testFingerprint: string | null;
@@ -128,8 +175,51 @@ export async function measureRepoFilesEvidence(
   return measureRepoFilesEvidenceAtRoot(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement), measurement);
 }
 
-function measurementFromDetails(details: Record<string, unknown>): RepoFilesEvidenceMeasurement | null {
-  const parsed = repoFilesEvidenceMeasurementSchema.safeParse(details.currentMeasurement);
+/**
+ * Recompute a bounded ledger-state evidence tuple from the CURRENT work-item rows.
+ *
+ * Only the disposition-bearing column is hashed. Hashing the whole row would make the binding
+ * go stale on any incidental touch (a comment, a re-checkpoint), which would train readers to
+ * ignore staleness; hashing `status` alone means the digest changes exactly when the claim
+ * "these rows reached a recorded disposition" stops being true.
+ *
+ * A row that is ABSENT is hashed as an explicit `null` rather than skipped, so a deleted row —
+ * or a typo'd id that never existed — cannot silently produce the same digest as a present one.
+ */
+export async function measureWorkItemsEvidenceForScope(
+  workspaceId: string,
+  harnessSlug: string,
+  measurement: WorkItemsEvidenceMeasurement,
+): Promise<MeasuredRepoEvidenceFingerprints> {
+  const parsed = workItemsEvidenceMeasurementSchema.parse(measurement);
+  const ids = [...new Set(parsed.workItemIds)].sort();
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<{ feature_id: string; status: string | null }[]>`
+      SELECT feature_id, status
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${harnessSlug}
+         AND feature_id = ANY(${ids}::text[])`;
+  });
+  const statusById = new Map(rows.map((row) => [row.feature_id, row.status]));
+  const entries = ids.map((id) => ({ id, status: statusById.get(id) ?? null }));
+  const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
+  return { sourceFingerprint: `sha256-work-item-set-v1:${digest}`, testFingerprint: null };
+}
+
+/** Dispatch a measurement recipe to its basis. Both bases are server-measured, never caller-attested. */
+export async function measureEvidenceForScope(
+  workspaceId: string,
+  harnessSlug: string,
+  measurement: EvidenceMeasurement,
+): Promise<MeasuredRepoEvidenceFingerprints> {
+  return measurement.kind === 'work-items'
+    ? measureWorkItemsEvidenceForScope(workspaceId, harnessSlug, measurement)
+    : measureRepoFilesEvidence(workspaceId, harnessSlug, measurement);
+}
+
+function measurementFromDetails(details: Record<string, unknown>): EvidenceMeasurement | null {
+  const parsed = evidenceMeasurementSchema.safeParse(details.currentMeasurement);
   return parsed.success ? parsed.data : null;
 }
 /** Shared wire contract for an explicit comparison with currently measured proof. */
@@ -1123,12 +1213,18 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       const recipe = measurementFromDetails(row.details);
       if (!recipe) return null;
       try {
-        const rootHarnessSlug = recipe.rootHarnessSlug ?? scope.harnessSlug;
-        const measurementRoot =
-          measurementRoots.get(rootHarnessSlug) ??
-          resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug, recipe);
-        measurementRoots.set(rootHarnessSlug, measurementRoot);
-        const measured = await measureRepoFilesEvidenceAtRoot(await measurementRoot, recipe);
+        let measured: MeasuredRepoEvidenceFingerprints;
+        if (recipe.kind === 'work-items') {
+          // Ledger state has no checkout to resolve: the digest is recomputed from the rows.
+          measured = await measureWorkItemsEvidenceForScope(scope.workspaceId, scope.harnessSlug, recipe);
+        } else {
+          const rootHarnessSlug = recipe.rootHarnessSlug ?? scope.harnessSlug;
+          const measurementRoot =
+            measurementRoots.get(rootHarnessSlug) ??
+            resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug, recipe);
+          measurementRoots.set(rootHarnessSlug, measurementRoot);
+          measured = await measureRepoFilesEvidenceAtRoot(await measurementRoot, recipe);
+        }
         return {
           status: 'measured' as const,
           current: {
