@@ -2203,6 +2203,57 @@ describe('P-009: an awaiting-fixer hold tick with a cheap-legs measurement stays
     expect(falseStamp).toBeUndefined();
   });
 
+  // WI-10002091 RECURRENCE GUARD. The provenance must carry the PER-LEG records, not just
+  // the signature list. `failingSignatures` names WHICH LEG failed and never WHICH FILES, so
+  // `legs[].outputTail` is the only path-bearing evidence the gate produces:
+  // `repair-tick-legs-snapshot.ts` declares `legs` (documented "Bounded to 32 by the writer")
+  // and `readRepairTickLegOutputs` (P-021) reads `legs[].outputTail` as "the only evidence of
+  // WHICH files a lint / post-suite leg reported". The writer omitted the field entirely, so
+  // that reader returned {} FOREVER and every repair manifest rendered pathless — a full day
+  // of lint:tsc reds was undiagnosable from any surface.
+  // NOTE the sibling assertion above uses toMatchObject, which passes with `legs` ABSENT.
+  // That is exactly how this survived, so these assert the field explicitly.
+  it('persists the per-leg records INCLUDING outputTail', async () => {
+    const tail = 'apps/operator/lib/x.ts(1,2): error TS2322: Type X is not assignable.';
+    await trackGateStall(ctx, 'repair-in-progress', CANDIDATE, undefined, null, undefined, 'held', undefined, {
+      repairTickLegs: {
+        ...tickLegs,
+        legs: [
+          { id: 'lint:tsc', status: 'fail' as const, durationMs: 5, outputTail: tail },
+          { id: 'lint:migrations', status: 'pass' as const, durationMs: 2 },
+        ],
+      },
+    });
+    const write = calls.find((c) => /failingTestsMeasured/.test(c.query) && /'true'::jsonb/.test(c.query));
+    const provenance = JSON.parse(write!.params[2] as string) as { legs?: Array<Record<string, unknown>> };
+    expect(provenance.legs).toEqual([
+      { id: 'lint:tsc', status: 'fail', durationMs: 5, outputTail: tail },
+      { id: 'lint:migrations', status: 'pass', durationMs: 2 },
+    ]);
+  });
+
+  it('bounds the persisted legs to 32 and FRONT-slices a long outputTail', async () => {
+    const long = `first/file.ts(1,1): error TS1000${'F'.repeat(2500)}`;
+    await trackGateStall(ctx, 'repair-in-progress', CANDIDATE, undefined, null, undefined, 'held', undefined, {
+      repairTickLegs: {
+        ...tickLegs,
+        legs: Array.from({ length: 40 }, (_, i) => ({
+          id: `leg:${i}`,
+          status: 'fail' as const,
+          durationMs: 1,
+          outputTail: long,
+        })),
+      },
+    });
+    const write = calls.find((c) => /failingTestsMeasured/.test(c.query) && /'true'::jsonb/.test(c.query));
+    const provenance = JSON.parse(write!.params[2] as string) as { legs: Array<{ outputTail: string }> };
+    expect(provenance.legs).toHaveLength(32);
+    // FRONT, not tail (WI-10002075): summarizeLegOutput puts the file names first, so
+    // truncating from the end would discard exactly what this evidence exists to carry.
+    expect(provenance.legs[0].outputTail).toBe(long.slice(0, 1000));
+    expect(provenance.legs[0].outputTail).toContain('first/file.ts');
+  });
+
   it('without a measurement, the hold still stamps failingTestsMeasured false (unchanged behaviour)', async () => {
     await trackGateStall(ctx, 'repair-in-progress', CANDIDATE, undefined, null, undefined, 'held');
     const write = calls.find((c) => /failingTestsMeasured/.test(c.query));
