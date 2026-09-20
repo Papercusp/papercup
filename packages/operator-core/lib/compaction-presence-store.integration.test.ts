@@ -73,6 +73,39 @@ describe('PgPresenceStore compaction columns (agent-managed-compaction)', () => 
     expect((await s.get(o))?.compactionLimitExplicit).toBe(true);
   });
 
+  it('a derived write must not clobber an explicitly-set limit (EI-23739064535335014)', async () => {
+    const s = store();
+    const o = owner();
+    await s.write(identity(o), {});
+    // The agent explicitly raises its own limit via config:set-compaction-limit.
+    await s.setCompactionLimit(o, 600_000, { explicit: true });
+    expect((await s.get(o))?.compactionLimit).toBe(600_000);
+    // A default-derived repair (watchdog recompute / model-default seed) omits
+    // provenance. Before the fix it reverted the VALUE while preserving the flag, so
+    // the row claimed the agent chose 250_000 and the session was force-compacted
+    // against a limit it had explicitly raised — losing its context for zero work.
+    await s.setCompactionLimit(o, 250_000);
+    expect((await s.get(o))?.compactionLimit).toBe(600_000);
+    expect((await s.get(o))?.compactionLimitExplicit).toBe(true);
+    // The guard must protect the value, NOT freeze it: an authoritative write wins.
+    await s.setCompactionLimit(o, 300_000, { explicit: true });
+    expect((await s.get(o))?.compactionLimit).toBe(300_000);
+  });
+
+  it('a derived write still applies when nothing explicit is on record', async () => {
+    const s = store();
+    const o = owner();
+    await s.write(identity(o), {});
+    // NULL provenance — `IS NOT TRUE`, not `= false`, is what keeps this working.
+    await s.setCompactionLimit(o, 400_000);
+    expect((await s.get(o))?.compactionLimit).toBe(400_000);
+    // An explicitly NON-explicit seed stays derived and remains overwritable.
+    await s.setCompactionLimit(o, 450_000, { explicit: false });
+    await s.setCompactionLimit(o, 480_000);
+    expect((await s.get(o))?.compactionLimit).toBe(480_000);
+    expect((await s.get(o))?.compactionLimitExplicit).toBe(false);
+  });
+
   it('setContextEstimate persists tokens + a timestamp', async () => {
     const s = store();
     const o = owner();
