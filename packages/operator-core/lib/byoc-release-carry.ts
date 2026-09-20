@@ -29,8 +29,6 @@ export interface ByocReleaseMilestone {
   receiptState: TaskReleaseReceiptState | null;
   receiptSequence: number | null;
   evidenceRefs: string[];
-  /** Immutable stage preimage captured by the task-ledger receipt. */
-  inputIdentity?: unknown | null;
 }
 
 export interface ByocReleaseMilestoneProjection {
@@ -109,7 +107,6 @@ export function projectByocReleaseMilestones(
       receiptState: receipt?.state ?? null,
       receiptSequence: receipt?.sequence ?? null,
       evidenceRefs: [...(receipt?.evidenceRefs ?? [])],
-      inputIdentity: receipt?.inputIdentity ?? null,
     };
   });
   const customerReady = milestones

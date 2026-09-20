@@ -1,21 +1,19 @@
 /**
  * `release:byoc_readiness` — computed, read-only BYOC acceptance evidence.
  *
- * This is deliberately a thin projection over the canonical task-ledger release
- * journal (`byoc-release-carry.ts`). It does not accept an instrument snapshot
- * from the caller and it does not infer readiness from prose: each BAR verdict
- * is recomputed from committed receipt milestones and their evidence references
- * at read time. It is intentionally not registered in the live tool index yet:
- * the current release journal carries publication receipts, but not the complete
- * R-5/R-6 operational evidence population, so exposing this draft as a grading
- * probe would create a false confidence path.
+ * Unregistered draft. The exact task-ledger journal supplies identity and
+ * negative evidence only: committed receipts cannot prove acceptance outcomes.
+ * Until the source observation joins are implemented this reader reports the
+ * unresolved proof obligations and can never return a positive verdict.
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import type { Sql } from 'postgres';
+import { taskReleaseJournalFromDetail } from '../../task-manager/store';
 import {
-  readLinkedByocReleaseCarries,
+  projectByocReleaseCarry,
   type ByocReleaseCarrySnapshot,
   type ByocReleaseMilestoneKey,
 } from '../../byoc-release-carry';
@@ -26,7 +24,20 @@ export type ByocReadinessVerdict = 'pass' | 'fail' | 'unknown';
 const BAR_MILESTONES: Record<ByocAcceptanceBar, readonly ByocReleaseMilestoneKey[]> = {
   'R-4': ['build', 'publication'],
   'R-5': ['root-bootstrap', 'fixed-agent-initialization', 'customer-acceptance'],
-  'R-6': ['soak-24h', 'resource-census', 'billing-closure', 'cleanup', 'shipment'],
+  // Shipment consumes acceptance; it cannot be a prerequisite for grading it.
+  'R-6': ['soak-24h', 'resource-census', 'billing-closure', 'cleanup'],
+};
+
+/**
+ * Open proof obligations, NOT a schema agents can populate with `verified:true`.
+ * A release receipt proves a driver transition, not any of these outcomes.
+ * Keep this draft incapable of passing until maintained readers actually join
+ * and validate the source observations. Do not register it as a grading probe.
+ */
+const UNJOINED_EVIDENCE: Record<ByocAcceptanceBar, readonly string[]> = {
+  'R-4': ['public-bytes', 'manifest-archive-digest', 'signature', 'sbom', 'executable-identity'],
+  'R-5': ['clean-gcp-controller', 'claude-execution', 'omp-execution', 'credentials', 'acl', 'data', 'customer-desktop'],
+  'R-6': ['five-live-journeys', '24h-soak', 'budget', 'billing', 'destroy', 'provider-absence', 'eight-kind-residue'],
 };
 
 function nonEmptyObject(value: unknown): boolean {
@@ -47,8 +58,56 @@ export interface ByocReadinessResult {
   missingMilestones: string[];
   failedMilestones: string[];
   contradictions: string[];
+  unverifiedEvidence: string[];
   artifactIdentityPresent: boolean;
   releaseTaskSelection: 'explicit' | 'ambiguous' | 'absent';
+}
+
+export interface ByocReleaseSubject {
+  workspaceId: string;
+  workItemId: string;
+  taskId: string;
+}
+
+/**
+ * Acceptance is about one explicitly selected task, not a recent carry window.
+ * Scope the SQL itself: an exact task belonging to another workspace or work
+ * item must neither supply evidence nor disclose its journal.
+ */
+export async function readByocReleaseSubject(
+  input: ByocReleaseSubject,
+  sql: Sql,
+): Promise<ByocReleaseCarrySnapshot | null> {
+  if (![input.workspaceId, input.workItemId, input.taskId].every((value) => value.trim().length > 0)) {
+    throw new Error('BYOC acceptance requires a non-empty workspace, work item, and explicit task');
+  }
+  const rows = await sql<Array<{
+    task_id: string;
+    workspace_id: string;
+    work_item_id: string;
+    class: string;
+    detail: Record<string, unknown> | null;
+  }>>`
+    SELECT task_id, workspace_id, work_item_id, class, detail
+      FROM harness_shared.task_ledger
+     WHERE task_id = ${input.taskId}
+       AND workspace_id = ${input.workspaceId}
+       AND work_item_id = ${input.workItemId}
+       AND class = 'deploy'
+  `;
+  const row = rows[0];
+  if (
+    rows.length !== 1 ||
+    row.task_id !== input.taskId ||
+    row.workspace_id !== input.workspaceId ||
+    row.work_item_id !== input.workItemId ||
+    row.class !== 'deploy'
+  ) return null;
+  const journal = taskReleaseJournalFromDetail(row.detail);
+  if (!journal || !journal.operationId.trim()) return null;
+  // The carry parser validates shape/sequence, not receipt-to-operation identity.
+  if (journal.receipts.some((receipt) => receipt.operationId !== journal.operationId)) return null;
+  return projectByocReleaseCarry(row.task_id, row.work_item_id, journal);
 }
 
 export function evaluateByocReadiness(
@@ -62,9 +121,11 @@ export function evaluateByocReadiness(
   const contradictions = [...new Set(snapshots.flatMap((snapshot) => snapshot.milestoneProjection.contradictions))];
   const missingMilestones: string[] = [];
   const failedMilestones: string[] = [];
+  const unverifiedEvidence = [...UNJOINED_EVIDENCE[bar]];
   let artifactIdentityPresent = false;
 
   for (const snapshot of snapshots) {
+    if (snapshot.workItemId !== workItemId) contradictions.push(`${snapshot.taskId}:work-item-identity-mismatch`);
     artifactIdentityPresent ||= nonEmptyObject(snapshot.artifactIdentity);
     for (const key of BAR_MILESTONES[bar]) {
       const milestone = milestoneFor(snapshot, key);
@@ -90,6 +151,7 @@ export function evaluateByocReadiness(
       missingMilestones: ['release-task'],
       failedMilestones,
       contradictions,
+      unverifiedEvidence,
       artifactIdentityPresent,
       releaseTaskSelection: 'absent',
     };
@@ -110,6 +172,7 @@ export function evaluateByocReadiness(
       missingMilestones: ['release-task-selection'],
       failedMilestones,
       contradictions,
+      unverifiedEvidence,
       artifactIdentityPresent,
       releaseTaskSelection: 'ambiguous',
     };
@@ -119,7 +182,7 @@ export function evaluateByocReadiness(
   const verdict: ByocReadinessVerdict =
     failedMilestones.length > 0 || contradictions.length > 0
       ? 'fail'
-      : missingMilestones.length > 0
+      : missingMilestones.length > 0 || unverifiedEvidence.length > 0
         ? 'unknown'
         : 'pass';
 
@@ -133,6 +196,7 @@ export function evaluateByocReadiness(
     missingMilestones: [...new Set(missingMilestones)],
     failedMilestones: [...new Set(failedMilestones)],
     contradictions,
+    unverifiedEvidence,
     artifactIdentityPresent,
     releaseTaskSelection: 'explicit',
   };
@@ -141,13 +205,13 @@ export function evaluateByocReadiness(
 export default defineTool({
   name: 'release:byoc_readiness',
   description:
-    'Read computed BYOC acceptance readiness for one BAR from the canonical task-ledger release journal. ' +
-    'This is a live, read-only evidence projection for typed scorecard probes; it never accepts caller-supplied snapshots.',
+    'Unregistered BYOC diagnostic draft: read one exactly scoped task journal and report unresolved acceptance evidence. ' +
+    'Receipt presence never produces a pass; operational evidence joins are not yet implemented.',
   guidance: {
-    when: 'At grading time for BYOC R-4, R-5, or R-6, after the maintained release driver has recorded receipts.',
-    notWhen: 'To mutate a release, replace a live journey, or treat a missing receipt as success.',
+    when: 'Developing the BYOC acceptance reader against an explicitly identified release task.',
+    notWhen: 'Grading or shipping: this draft is incomplete, unregistered, and not an acceptance probe.',
     chaining:
-      'release:byoc_readiness { bar:"R-4"|"R-5"|"R-6", workItemId } → verdict:"pass" is the only healthy reading; unknown/fail are not shippable.',
+      'Supply bar, workItemId, and taskId; inspect unverifiedEvidence. Do not bind this draft into a rubric.',
   },
   capability: 'intel:read',
   requirePrincipal: false,
@@ -156,26 +220,22 @@ export default defineTool({
   args: z.object({
     bar: z.enum(['R-4', 'R-5', 'R-6']),
     workItemId: z.string().min(1).max(120),
-    taskId: z.string().min(1).max(120).optional(),
+    taskId: z.string().trim().min(1).max(120),
   }),
   async handler(args) {
-    const snapshots = await readLinkedByocReleaseCarries(
+    const selected = await readByocReleaseSubject(
       {
-        ownerId: '',
         workspaceId: activeWorkspaceId(),
-        heldWorkItemIds: [args.workItemId],
-        limit: 3,
+        workItemId: args.workItemId,
+        taskId: args.taskId,
       },
       getOrgPg().sql,
     );
-    const selected = args.taskId
-      ? snapshots.filter((snapshot) => snapshot.taskId === args.taskId)
-      : snapshots;
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify(evaluateByocReadiness(args.bar, args.workItemId, selected)),
+          text: JSON.stringify(evaluateByocReadiness(args.bar, args.workItemId, selected ? [selected] : [])),
         },
       ],
     };
