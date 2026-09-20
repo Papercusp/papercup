@@ -280,6 +280,15 @@ export function specClauseContentHash(input: SpecClauseWrite): string {
 interface IdentityRow {
   source_val_id: string | null;
   current_revision: number;
+  // Carried from the CURRENT revision so an omitted `sourceBar` can ride its
+  // lineage forward instead of writing NULL. Optional because the post-insert
+  // race re-read selects only the identity columns.
+  source_bar_key?: string | null;
+  source_bar_hash?: string | null;
+  source_bar_set_hash?: string | null;
+  source_rubric_slug?: string | null;
+  source_rubric_revision?: number | string | null;
+  evidence_plane?: string | null;
 }
 
 interface AliasIdentityRow {
@@ -379,13 +388,21 @@ export async function setSpecClause(
     }
 
     const identities = await tx<IdentityRow[]>`
-      SELECT source_val_id, current_revision
-        FROM harness_shared.plan_spec_clauses
-       WHERE workspace_id = ${scope.workspaceId}
-         AND harness_slug = ${scope.harnessSlug}
-         AND plan_slug = ${planSlug}
-         AND spec_id = ${input.specId}
-       FOR UPDATE`;
+      SELECT c.source_val_id, c.current_revision,
+             r.source_bar_key, r.source_bar_hash, r.source_bar_set_hash,
+             r.source_rubric_slug, r.source_rubric_revision, r.evidence_plane
+        FROM harness_shared.plan_spec_clauses c
+        LEFT JOIN harness_shared.plan_spec_clause_revisions r
+          ON r.workspace_id = c.workspace_id
+         AND r.harness_slug = c.harness_slug
+         AND r.plan_slug = c.plan_slug
+         AND r.spec_id = c.spec_id
+         AND r.revision = c.current_revision
+       WHERE c.workspace_id = ${scope.workspaceId}
+         AND c.harness_slug = ${scope.harnessSlug}
+         AND c.plan_slug = ${planSlug}
+         AND c.spec_id = ${input.specId}
+       FOR UPDATE OF c`;
     const identity = identities[0];
     const actualRevision = Number(identity?.current_revision ?? 0);
     if (input.expectedRevision !== actualRevision) {
@@ -394,6 +411,42 @@ export async function setSpecClause(
     if (identity && input.sourceValId !== undefined && (input.sourceValId ?? null) !== identity.source_val_id) {
       return { status: 'source_alias_immutable', specId: input.specId, sourceValId: identity.source_val_id };
     }
+
+    // `sourceBar` is IMMUTABLE PROVENANCE, not an editable attribute, so an OMITTED
+    // pin must ride the prior revision forward rather than land as NULL. Writing NULL
+    // there is silent lineage loss: `acceptance_ref` survives (the caller passes it) so
+    // the clause still READS as bar-linked in reports, while `source_bar_key` — the one
+    // column acceptance-bar amendment joins on — is gone. The damaged clauses then go
+    // invisible to the amendment, which asks for expectedRevision 0 against a row that
+    // is really at N, conflicts, and permanently wedges that plan's BAR contract.
+    // An EXPLICIT `null` still means unlink, but for a generated AUTO-BAR-* projection
+    // that is only legitimate on a supersede — the shape reviewed remaps already use.
+    const priorBarPin: SpecClauseBarPin | null =
+      identity?.source_bar_key &&
+      identity.source_bar_hash &&
+      identity.source_bar_set_hash &&
+      identity.source_rubric_slug &&
+      identity.source_rubric_revision != null &&
+      identity.evidence_plane
+        ? {
+            barKey: identity.source_bar_key,
+            barHash: identity.source_bar_hash,
+            barSetHash: identity.source_bar_set_hash,
+            rubricSlug: identity.source_rubric_slug,
+            rubricRevision: Number(identity.source_rubric_revision),
+            evidencePlane: identity.evidence_plane as SpecClauseBarPin['evidencePlane'],
+          }
+        : null;
+    if (
+      input.sourceBar === null &&
+      priorBarPin &&
+      input.specId.startsWith('AUTO-BAR-') &&
+      normalized.lifecycleStatus !== 'superseded'
+    ) {
+      return { status: 'bar_pin_invalid', specId: input.specId, reason: 'bar_pin_unlink_forbidden' };
+    }
+    const effectiveBarPin: SpecClauseBarPin | null =
+      input.sourceBar === undefined ? priorBarPin : (normalized.sourceBar ?? null);
 
     if (!identity && input.sourceValId) {
       const aliases = await tx<AliasIdentityRow[]>`
@@ -493,10 +546,10 @@ export async function setSpecClause(
         ${normalized.supersedes?.revision ?? null}, ${exemptionJson}::text::jsonb,
         ${falsifierJson}::text::jsonb, ${contentHash},
         ${input.actorId}, ${accepted ? input.actorId : null}, ${accepted ? new Date() : null},
-        ${normalized.acceptanceRef}, ${normalized.sourceBar?.barKey ?? null},
-        ${normalized.sourceBar?.barHash ?? null}, ${normalized.sourceBar?.barSetHash ?? null},
-        ${normalized.sourceBar?.rubricSlug ?? null}, ${normalized.sourceBar?.rubricRevision ?? null},
-        ${normalized.sourceBar?.evidencePlane ?? null}
+        ${normalized.acceptanceRef}, ${effectiveBarPin?.barKey ?? null},
+        ${effectiveBarPin?.barHash ?? null}, ${effectiveBarPin?.barSetHash ?? null},
+        ${effectiveBarPin?.rubricSlug ?? null}, ${effectiveBarPin?.rubricRevision ?? null},
+        ${effectiveBarPin?.evidencePlane ?? null}
       )`;
 
     await tx`
