@@ -676,10 +676,20 @@ const WORKER_CAP = applyWorkerCapEnv({
   cores: availableParallelism(),
   load1: loadavg()[0],
 });
+// WI-10002092: the cgroup envelope is read HERE, before the memory token is sized, because the
+// token's credibility test needs it. EI-20801764054303492's read-once rule is unchanged — this is
+// still the single read, and the budget below plus the operator-visible marker consume THIS value.
+const TASK_CGROUP_MEMORY_MAX_MB = readTaskCgroupMemoryMaxMb();
 const SCHEDULER_WORKER_MEMORY_MB = resolveWorkerMemoryMb({
   affectedWorkerMemoryMb: process.env.AFFECTED_WORKER_MEMORY_MB,
   nodeOptions: process.env.NODE_OPTIONS,
   fallback: 1024,
+  // WI-10002092 (recurrence of EI-23242580927683488): agent shells carry an ambient
+  // `--max-old-space-size=131072`, which is a heap CEILING and not a 128 GiB-per-worker demand.
+  // Without this envelope the pre-launch refusal fired for EVERY agent running test:affected from
+  // its own ~6 GiB task cgroup, and zero tasks ran.
+  taskCgroupMemoryMaxMb: TASK_CGROUP_MEMORY_MAX_MB,
+  onNotice: (line) => errSync(line),
 });
 // The green checkpoint currently pins VITEST_MAX_FORKS/THREADS=2 but not
 // VITEST_MAX_WORKERS. `applyWorkerCapEnv` fills the missing modern spelling from host load, which
@@ -724,7 +734,8 @@ function readMemAvailableMb() {
 // operator-visible marker report the SAME measurement. Two separate readFileSync calls would
 // drift between them on a busy box, which makes the log unreadable exactly when it matters.
 const MEM_AVAILABLE_MB = readMemAvailableMb();
-const TASK_CGROUP_MEMORY_MAX_MB = readTaskCgroupMemoryMaxMb();
+// TASK_CGROUP_MEMORY_MAX_MB is read above, beside SCHEDULER_WORKER_MEMORY_MB — the memory token
+// cannot be sized without it (WI-10002092). It is still read exactly once.
 const TASK_CGROUP_PIDS_MAX = readTaskCgroupPidsMax();
 // EI-21540797943980235: pids.max cannot be translated into a reliable worker cap because the
 // controller counts threads and suites may spawn an unpredictable number of node/git/npm
