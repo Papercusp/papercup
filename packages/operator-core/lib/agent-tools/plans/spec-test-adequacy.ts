@@ -1156,32 +1156,30 @@ export function evaluateSpecTestAdequacy(input: {
   const mutationInCohortNotExecutable = exactMutationOrCounterexample.filter(
     (row) => evidence.includes(row) && !isSuccessfulExecutableEvidence(row),
   );
-  // A binding that matches every clause selector can still be removed by the `activeSpecEvidence`
-  // read projection, and a removed row reaches NONE of the populations above — so the refusal falls
-  // through to "no binding is bound", a false absence that reads as "you bound nothing" while a
-  // selector-matching binding exists in the table. That wording drives binders to stack redundant
-  // re-bindings on one clause instead of repairing the row they already have.
+  // WI-10002082, RETRACTED — recorded here so the "fix" below is not re-attempted. It LOOKS as
+  // though a binding could match every clause selector, be removed by the `activeSpecEvidence` read
+  // projection, reach NONE of the populations above, and fall through to "no binding is bound": a
+  // false absence printed while a selector-matching binding sits in the table. It cannot happen, and
+  // a branch reporting it is unreachable — one was added here and removed after a calibration
+  // assertion proved it never fires.
   //
-  // The projection removes a row by exactly two routes (`activeSpecEvidence` returns
-  // `latest.filter((row) => !superseded.has(row))`): `latestLogicalEvidence` keeps only the newest
-  // row per plan/spec/revision/kind/ref, and attempt-supersession drops an older structured attempt.
-  // A row with no `details.testExecution.binding` has a null identity, is never a supersession
-  // candidate, and is therefore always RETAINED — so absence here is never evidence about
-  // test-execution identity, and this message must not claim it is.
-  const mutationDroppedByProjection = exactSelectorMatches.filter(
-    (row) =>
-      (row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
-      !exactEvidence.includes(row),
-  );
+  // The projection drops a row by exactly two routes, and BOTH PRESERVE `evidenceKind`:
+  // `latestLogicalEvidence` keys on [workItemId, planSlug, specId, specRevision, evidenceKind,
+  // evidenceRef], and attempt-supersession requires `newer.scope.key === candidate.scope.key`, whose
+  // `registrationKey` carries `row.evidenceKind`. So a dropped mutation/counterexample row ALWAYS
+  // leaves a surviving same-kind superseder in `exactEvidence` — hence in
+  // `exactMutationOrCounterexample` — so either `mutationInCohortNotExecutable` or
+  // `mutationOutsideCohort` is non-empty and reports first, or the survivor grades and falsifiability
+  // passes outright. The bare-absence fall-through below is therefore TRUE whenever it prints.
+  // 'projection supersession cannot strand a mutation binding' in the sibling test pins that
+  // invariant: make supersession kind-agnostic and it fails, and this branch must come back.
   const attestedFalsifiableOnly = evidence.filter((row) => detailsOf(row).falsifiable === true);
   const unboundMutationReason =
     mutationInCohortNotExecutable.length > 0
       ? `${mutationInCohortNotExecutable.length} mutation or counterexample binding(s) are in the current grading cohort for ${clauseIdentity(clause)} but do not qualify as successful executable evidence (${summarizeExecutableEvidenceGaps(mutationInCohortNotExecutable)}).`
       : mutationOutsideCohort.length > 0
         ? `${mutationOutsideCohort.length} mutation or counterexample binding(s) exist in the exact clause population but are outside the current grading cohort for ${clauseIdentity(clause)}.`
-        : mutationDroppedByProjection.length > 0
-          ? `${mutationDroppedByProjection.length} mutation or counterexample binding(s) match the exact clause population for ${clauseIdentity(clause)} but were superseded within the graded evidence projection (a newer binding for the same plan/spec/revision/kind/ref, or a later attempt for the same registered proof), so they carry no grade.`
-          : `no mutation or counterexample binding is bound for ${clauseIdentity(clause)}.`;
+        : `no mutation or counterexample binding is bound for ${clauseIdentity(clause)}.`;
   ratings.falsifiability =
     boundMutationOrCounterexample.length > 0
       ? {
@@ -1209,11 +1207,9 @@ export function evaluateSpecTestAdequacy(input: {
             unknown:
               exactMutationOrCounterexample.length > 0
                 ? `A mutation or counterexample binding exists in the exact clause population, but no current-cohort binding demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`
-                : mutationDroppedByProjection.length > 0
-                  ? // Never report a bare absence while a selector-matching binding exists — it
-                    // sends binders to re-bind against a row that is already there.
-                    `${mutationDroppedByProjection.length} mutation or counterexample binding(s) match the exact clause population but were superseded within the graded evidence projection (a newer binding for the same plan/spec/revision/kind/ref, or a later attempt for the same registered proof), so no graded binding demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`
-                  : `No bound evidence demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`,
+                : // A projection-dropped binding cannot reach here while this population is empty —
+                  // see the retracted-WI-10002082 note above for why the two are inseparable.
+                  `No bound evidence demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`,
           });
 
   let layerRating: AdequacyRatingEntry;
