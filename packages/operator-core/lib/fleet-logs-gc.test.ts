@@ -3,13 +3,16 @@
  * the never-throws / best-effort contract.
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, utimesSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, utimesSync, chmodSync, symlinkSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   runFleetLogsGc,
   FLEET_LOGS_GC_DEFAULT_RETENTION_MS,
   FLEET_LOGS_GC_DEFAULT_MAX_TOTAL_BYTES,
+  runPapercuspWorkdirGc,
+  PAPERCUSP_WORKDIR_GC_DEFAULT_RETENTION_MS,
+  PAPERCUSP_WORKDIR_GC_PROTECTED_BASENAMES,
 } from './fleet-logs-gc';
 
 let sandbox: string;
@@ -171,5 +174,190 @@ describe('runFleetLogsGc', () => {
       expect(d.errors[0].path).toBe(locked);
       expect(existsSync(locked)).toBe(true);
     }
+  });
+});
+
+/**
+ * WI-10002015: one-off working-DIRECTORY retention under ~/.papercusp.
+ *
+ * The load-bearing case is "a nested write keeps the whole tree alive". It is
+ * the regression guard for a measured near-miss: the largest directory on the
+ * host (82.8 GiB, an in-flight release) had an OWN mtime 79 minutes old while
+ * being actively written, because appending to a nested file never touches an
+ * ancestor directory's mtime. Any "simplification" of the recursive scan back
+ * to the directory's own mtime passes every other test here and fails that one.
+ */
+const DAY = 24 * 60 * 60 * 1000;
+
+/** Recursively force every file AND directory mtime to `ageMs` in the past.
+ *  Depth-first so a parent is stamped last — stamping a child would otherwise
+ *  bump the parent's mtime again. */
+function ageTree(path: string, ageMs: number): void {
+  const t = new Date(Date.now() - ageMs);
+  const st = statSync(path);
+  if (st.isDirectory()) {
+    for (const child of readdirSync(path)) ageTree(join(path, child), ageMs);
+  }
+  utimesSync(path, t, t);
+}
+
+/** A realistic one-off working dir: nested structure holding real bytes. */
+function makeWorkdir(root: string, name: string): string {
+  const dir = join(root, name);
+  mkdirSync(join(dir, 'nested', 'deep'), { recursive: true });
+  writeFileSync(join(dir, 'nested', 'deep', 'payload.bin'), Buffer.alloc(2048, 'x'));
+  writeFileSync(join(dir, 'top.txt'), Buffer.alloc(512, 'y'));
+  return dir;
+}
+
+describe('runPapercuspWorkdirGc', () => {
+  it('uses a conservative 7-day default, longer than the 3-day fleet-logs bound', () => {
+    expect(PAPERCUSP_WORKDIR_GC_DEFAULT_RETENTION_MS).toBe(7 * DAY);
+    expect(PAPERCUSP_WORKDIR_GC_DEFAULT_RETENTION_MS).toBeGreaterThan(
+      FLEET_LOGS_GC_DEFAULT_RETENTION_MS,
+    );
+  });
+
+  it('removes a stale mktemp-suffixed working directory and reports its bytes', () => {
+    const dir = makeWorkdir(sandbox, 'p309-accept.BZHrUr');
+    ageTree(dir, 10 * DAY);
+
+    const result = runPapercuspWorkdirGc({ root: sandbox });
+
+    expect(result.removed).toBe(1);
+    expect(existsSync(dir)).toBe(false);
+    expect(result.bytesFreed).toBeGreaterThanOrEqual(2048 + 512);
+    expect(result.candidates[0]?.removed).toBe(true);
+  });
+
+  // ─── THE REGRESSION GUARD ────────────────────────────────────────────────
+  it('a NESTED write keeps the tree alive even though every directory mtime is ancient', () => {
+    const dir = makeWorkdir(sandbox, 'byoc-p318-release.lqhrUZ');
+    ageTree(dir, 30 * DAY);
+
+    // Exactly the dangerous real-world shape: a live writer appending deep
+    // inside, leaving every ancestor directory's mtime untouched and ancient.
+    const live = join(dir, 'nested', 'deep', 'payload.bin');
+    const recent = new Date(Date.now() - 60_000);
+    utimesSync(live, recent, recent);
+
+    // Precondition: the directory's OWN mtime still looks 30 days stale, so a
+    // naive own-mtime sweep would happily delete this tree.
+    expect(Date.now() - statSync(dir).mtimeMs).toBeGreaterThan(29 * DAY);
+
+    const result = runPapercuspWorkdirGc({ root: sandbox });
+
+    expect(result.removed).toBe(0);
+    expect(existsSync(live)).toBe(true);
+    expect(result.candidates[0]?.skipped).toBe('too-new');
+  });
+
+  it('ignores directories without a machine-generated mktemp suffix', () => {
+    const dir = makeWorkdir(sandbox, 'p046-deps-snapshot');
+    ageTree(dir, 90 * DAY);
+
+    const result = runPapercuspWorkdirGc({ root: sandbox });
+
+    expect(result.removed).toBe(0);
+    expect(result.candidates).toHaveLength(0); // never even considered
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('refuses a protected basename even when it carries a mktemp suffix', () => {
+    const name = `${[...PAPERCUSP_WORKDIR_GC_PROTECTED_BASENAMES][0]}.AbC123`;
+    const dir = makeWorkdir(sandbox, name);
+    ageTree(dir, 90 * DAY);
+
+    const result = runPapercuspWorkdirGc({ root: sandbox });
+
+    expect(result.removed).toBe(0);
+    expect(result.candidates[0]?.skipped).toBe('protected');
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('dryRun reports exactly what it would free and deletes nothing', () => {
+    const dir = makeWorkdir(sandbox, 'p314-accept.2Uix7q');
+    ageTree(dir, 10 * DAY);
+
+    const result = runPapercuspWorkdirGc({ root: sandbox, dryRun: true });
+
+    expect(result.dryRun).toBe(true);
+    expect(result.removed).toBe(1);
+    expect(result.bytesFreed).toBeGreaterThan(0);
+    expect(existsSync(dir)).toBe(true); // reported, but nothing removed
+  });
+
+  it('never follows a symlinked directory', () => {
+    const real = makeWorkdir(sandbox, 'real-payload');
+    ageTree(real, 90 * DAY);
+    symlinkSync(real, join(sandbox, 'linked.AbC123'));
+
+    const result = runPapercuspWorkdirGc({ root: sandbox });
+
+    expect(result.removed).toBe(0);
+    expect(existsSync(real)).toBe(true);
+    expect(existsSync(join(real, 'top.txt'))).toBe(true);
+  });
+
+  it('is a no-op on a missing root and never throws', () => {
+    const result = runPapercuspWorkdirGc({ root: join(sandbox, 'does-not-exist') });
+    expect(result.removed).toBe(0);
+    expect(result.candidates).toHaveLength(0);
+  });
+});
+
+/**
+ * Falsifiability control for the guard above.
+ *
+ * A guard test that has never failed is a guard nobody has tested. The usual
+ * way to prove one CAN fail is to mutate the implementation and re-run — but
+ * the implementation here calls `rmSync` recursively, and executing a MUTANT of
+ * deletion logic is precisely how a reaper's loop once became `for d in /*` and
+ * destroyed ~370 GB (EI-20566003853444873). A PATH shim cannot help either:
+ * `rmSync` is an in-process syscall, not an `rm` executable.
+ *
+ * So the wrong implementation lives here instead, permanently, per the repo's
+ * prescribed tier for an imported module. `naiveOwnMtimeWouldDelete` is the
+ * predicate this module must never regress to. The pair below is the whole
+ * proof, and BOTH halves are required:
+ *   • CALIBRATION — on a genuinely stale tree the control agrees with the real
+ *     sweep. Without this, a control that simply never fires would make the
+ *     divergence case pass even if the property under test were broken.
+ *   • DIVERGENCE — on the nested-write tree the control WOULD delete while the
+ *     real sweep spares it. That gap is the recursive scan doing its job, and
+ *     it is what the near-miss would have cost us.
+ */
+function naiveOwnMtimeWouldDelete(dir: string, retentionMs: number): boolean {
+  return Date.now() - statSync(dir).mtimeMs >= retentionMs;
+}
+
+describe('runPapercuspWorkdirGc — falsifiability control', () => {
+  it('CALIBRATION: on a genuinely stale tree the naive control agrees with the real sweep', () => {
+    const dir = makeWorkdir(sandbox, 'calibration-stale.QqWw11');
+    ageTree(dir, 30 * DAY);
+
+    // The control fires here — so it is not a predicate that never triggers.
+    expect(naiveOwnMtimeWouldDelete(dir, 7 * DAY)).toBe(true);
+
+    const result = runPapercuspWorkdirGc({ root: sandbox });
+    expect(result.removed).toBe(1);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('DIVERGENCE: the naive control would DELETE the live tree the real sweep spares', () => {
+    const dir = makeWorkdir(sandbox, 'byoc-p318-release.lqhrUZ');
+    ageTree(dir, 30 * DAY);
+    const live = join(dir, 'nested', 'deep', 'payload.bin');
+    const recent = new Date(Date.now() - 60_000);
+    utimesSync(live, recent, recent);
+
+    // The wrong implementation destroys an in-flight release …
+    expect(naiveOwnMtimeWouldDelete(dir, 7 * DAY)).toBe(true);
+
+    // … and the real one does not. If this pair ever stops diverging, the
+    // recursive scan has been lost and this suite is no longer guarding it.
+    const result = runPapercuspWorkdirGc({ root: sandbox });
+    expect(result.removed).toBe(0);
+    expect(existsSync(live)).toBe(true);
   });
 });

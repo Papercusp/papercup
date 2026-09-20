@@ -36,7 +36,7 @@ import { expireStaleAdvisoryEscalations } from '../agent-tools/coordination/esca
 import { gcOldPlanRevisions } from '../agent-tools/plans/revisions-gc';
 import { gcOldDecisionLedgerRows } from '../agent-tools/coordination/decision-ledger-gc';
 import { gcOldOperatorTurns } from '../operator-turns-gc';
-import { runFleetLogsGc } from '../fleet-logs-gc';
+import { runFleetLogsGc, runPapercuspWorkdirGc } from '../fleet-logs-gc';
 import { gcLedgerDir } from '../turn-provenance/turn-provenance';
 import { readRegistry } from '../workspace-registry';
 import { sweepOrphanSnapshots, sweepRecoveryDebrisTick, sweepRestoredClonesTick } from '@papercusp/backup';
@@ -530,6 +530,28 @@ async function fleetLogsGcTick(): Promise<void> {
           `removed ${totalRemovedAge} by age + ${totalRemovedCeiling} by ceiling, freed ` +
           `${Math.round(totalBytesFreed / (1024 * 1024))}MB` +
           (totalErrors ? `, ${totalErrors} error(s)` : ''),
+      );
+
+      // Second half of the same disk-headroom concern (WI-10002015): the sweep
+      // above bounds fleet-logs, a flat directory of FILES with known writers.
+      // It never touched the one-off working DIRECTORIES ad-hoc tooling leaves
+      // directly under ~/.papercusp, which had no owner and no retention at
+      // all — measured 2026-09-20, 188 top-level dirs, several multi-GB, the
+      // oldest 100+ days, on a filesystem oscillating ~16 GiB above the
+      // 37.51 GiB reserve the gate needs to render a verdict. Same tick because
+      // it is the same lever on the same failure; only mktemp-suffixed names
+      // are eligible and the age bound is the RECURSIVE newest mtime, never the
+      // directory's own (see fleet-logs-gc.ts for why that distinction is
+      // load-bearing rather than pedantic).
+      const workdirs = runPapercuspWorkdirGc();
+      const skipped = workdirs.candidates.filter((c) => !c.removed);
+      console.log(
+        `[papercusp-workdir-gc] considered ${workdirs.scanned} mktemp dir(s) → ` +
+          `removed ${workdirs.removed}, freed ` +
+          `${Math.round(workdirs.bytesFreed / (1024 * 1024))}MB` +
+          (skipped.length
+            ? `, kept ${skipped.length} (${skipped.map((c) => c.skipped ?? 'unknown').join(',')})`
+            : ''),
       );
     },
     { name: 'fleet-logs-gc' },
