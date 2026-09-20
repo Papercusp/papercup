@@ -20,12 +20,17 @@
  * pre-existing discounts must not fire twice on bytes inside a snapshot line (a double
  * discount UNDER-counts, the one direction that risks a real context death).
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { tokensFromFileSize } from './compaction-usage';
+import {
+  currentContextTokensSyncForOwner,
+  resetContextAnchorsForTests,
+  seedContextAnchorForTests,
+  tokensFromFileSize,
+} from './compaction-usage';
 
 /** Files below 256KB take the stat-only fast path, which never reaches the discount
  *  logic — every fixture here must clear it or the test would assert nothing. */
@@ -142,5 +147,101 @@ describe('tokensFromFileSize — prompt_snapshot discount (EI-23747373965813124)
     // No line is discounted: JSON.stringify escaped the quotes, so the raw byte form
     // never appears and the whole file counts.
     expect(tokensFromFileSize(p)).toBe(Math.floor(size / 4));
+  });
+});
+
+/**
+ * EI-23760035638533818 — the same discount on the ANCHORED path.
+ *
+ * EI-23747373965813124 fixed `tokensFromFileSize` (the full-scan estimator) but not the
+ * anchored incremental reader, which is what actually renders the live PostToolUse gauge
+ * (inbox.ts:1475 → currentContextTokensForOwner → anchorTokens). The anchor therefore kept
+ * counting whole snapshot lines, and since Claude Code appends one per prompt change the
+ * gauge advanced in discrete ~200k steps that no tool result explains.
+ *
+ * Measured on a live su transcript 2026-09-20 (session e90cfa6e): one 807,442-byte
+ * prompt_snapshot line moved the gauge 128,671 → 338,204 in a single turn whose tool
+ * results totalled a few KB. 807,442/4 = 201,860 — the step, exactly.
+ *
+ * Parity with `tokensFromFileSize` is the contract these assert, because that is already
+ * the invariant compaction-usage.anchor.test.ts holds the anchored path to on a plain
+ * transcript; snapshots are simply where it silently stopped holding.
+ */
+describe('anchored reads — prompt_snapshot discount (EI-23760035638533818)', () => {
+  afterEach(() => resetContextAnchorsForTests());
+
+  it('a snapshot appended BETWEEN reads does not step the gauge (the reported symptom)', () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 160; i++) lines.push(ordinaryLine(i));
+    const p = writeTranscript(lines);
+    expect(fs.statSync(p).size).toBeGreaterThan(BOUNDARY_SCAN_MIN);
+
+    expect(seedContextAnchorForTests('anchor-step', p)).toBe(true);
+    const before = currentContextTokensSyncForOwner('anchor-step');
+    expect(before).toBe(tokensFromFileSize(p));
+
+    // The live shape: one turn appends one whole system-prompt snapshot.
+    const snap = snapshotLine(0, 200_000);
+    fs.appendFileSync(p, snap + '\n', 'latin1');
+    const after = currentContextTokensSyncForOwner('anchor-step');
+
+    // Only the snapshot's trailing newline is real growth, so the reading must not move.
+    expect(after).toBe(tokensFromFileSize(p));
+    expect(after! - before!).toBeLessThanOrEqual(1);
+
+    // Falsifiability control: before this fix the anchor added the whole line, i.e.
+    // ~50,000 tokens for this fixture. Anything near that is the regression returning.
+    expect(after!).toBeLessThan(before! + 1_000);
+  });
+
+  it('a snapshot present AT SEED time is discounted too (seedAnchorFromFile branch)', () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 60; i++) lines.push(ordinaryLine(i));
+    for (let i = 0; i < 3; i++) lines.push(snapshotLine(i));
+    const p = writeTranscript(lines);
+    const size = fs.statSync(p).size;
+    expect(size).toBeGreaterThan(BOUNDARY_SCAN_MIN);
+
+    expect(seedContextAnchorForTests('anchor-seed', p)).toBe(true);
+    const got = currentContextTokensSyncForOwner('anchor-seed');
+    expect(got).toBe(expectedTokens(lines));
+    expect(got).toBe(tokensFromFileSize(p));
+    // Snapshots are ~83% of this fixture — a regression is a >5x over-report, not rounding.
+    expect(got!).toBeLessThan(Math.floor(size / 4) / 5);
+  });
+
+  it('a snapshot after a compaction marker is discounted (advanceAnchor marker branch)', () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 160; i++) lines.push(ordinaryLine(i));
+    const p = writeTranscript(lines);
+    expect(seedContextAnchorForTests('anchor-marker', p)).toBe(true);
+    currentContextTokensSyncForOwner('anchor-marker');
+
+    // A compaction lands, then the very next turn writes its fresh snapshot. Counting
+    // restarts at the marker, so this exercises the OTHER advanceAnchor branch.
+    fs.appendFileSync(
+      p,
+      '{"type":"summary","isCompactSummary":true,"summary":"compacted"}\n' +
+        ordinaryLine(999, 3000) + '\n' +
+        snapshotLine(7, 200_000) + '\n',
+      'latin1',
+    );
+
+    const after = currentContextTokensSyncForOwner('anchor-marker');
+    expect(after).toBe(tokensFromFileSize(p));
+    // Post-compaction the real context is one small turn, NOT one system prompt.
+    expect(after!).toBeLessThan(5_000);
+  });
+
+  it('does not double-discount a toolUseResult inside a snapshot on the anchored path', () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 60; i++) lines.push(ordinaryLine(i));
+    lines.push(snapshotLine(0, 200_000, `,"toolUseResult":"${'z'.repeat(50_000)}"`));
+    const p = writeTranscript(lines);
+    expect(fs.statSync(p).size).toBeGreaterThan(BOUNDARY_SCAN_MIN);
+
+    expect(seedContextAnchorForTests('anchor-ture', p)).toBe(true);
+    // Under-counting is the dangerous direction: it hides a real approaching limit.
+    expect(currentContextTokensSyncForOwner('anchor-ture')).toBe(expectedTokens(lines));
   });
 });

@@ -7,10 +7,25 @@
  * a value against itself and always affirmed. This port supplies the axis with a
  * real measurement instead.
  *
- * THE MEASUREMENT: `git log <observed generation>..staging -- <path>` per path.
- * A non-empty result is direct evidence that someone touched this item's code
- * after it was observed, which is exactly the condition that should route a claim
- * through the cheap validation lane before anyone writes a line of new code.
+ * THE MEASUREMENT: `git log --since=<observedAt> <observed generation>..staging --
+ * <path>` per path. A non-empty result is direct evidence that someone touched this
+ * item's code after it was observed, which is exactly the condition that should
+ * route a claim through the cheap validation lane before anyone writes a line of
+ * new code.
+ *
+ * WHY THE `--since` BOUND IS LOAD-BEARING (EI-23762020538736279): the observed
+ * generation is the DEPLOYED build's sha, and the deployed operator lags `staging`
+ * by hours. Without the time bound the range is dominated by commits that landed
+ * BEFORE the item was ever filed — deploy lag, not movement — so the clause fired
+ * on nearly every actively-edited file and asserted "moved since observation" about
+ * commits that PREDATE the observation. That is not a tuning problem: the sha range
+ * alone cannot answer a question about a moment in time. Measured instance: an item
+ * filed at 05:25Z was routed to the validation lane because of commits whose newest
+ * was 14 hours OLDER than the filing, and it then reproduced exactly at HEAD.
+ *
+ * The deploy-lag fact is NOT lost by this bound — it has its own mechanism, the
+ * `pathsStalenessHint` "Possible STALE RUNTIME" advisory. The defect was that one
+ * clause was doing duty for both questions and stating only the stronger one.
  *
  * WHY PATH-SCOPED AND NOT A TIP COMPARE: this tree is swept by git-sync every few
  * minutes across ~100 concurrent agents, so the repo tip has always moved. A
@@ -66,6 +81,32 @@ function readEnvelopeGeneration(payload: unknown): string | null {
 }
 
 /**
+ * The moment the item was OBSERVED — the boundary this port's question actually
+ * turns on, and a DIFFERENT fact from the generation above (EI-23762020538736279).
+ *
+ * The generation says only which BUILD the reporter was running. Because the
+ * deployed operator lags `staging` by hours, `generation..staging` is dominated by
+ * commits that landed before the report was ever filed, so on its own it answers
+ * "the tree is ahead of that build" — true of nearly every actively-edited file —
+ * while the clause built on it claims the much stronger "moved SINCE OBSERVATION".
+ * Bounding the range by this timestamp is what makes the stated claim the measured
+ * one. Absent or unparseable leaves the range unbounded, i.e. the prior behaviour.
+ *
+ * Normalised to an ISO-8601 UTC instant so git's `--since` cannot silently pick up
+ * the host's local offset (-04:00 here).
+ */
+function readEnvelopeObservedAt(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const raw = (payload as Record<string, unknown>).freshnessEnvelope;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const envelope = raw as Partial<WorkItemFreshnessEnvelope>;
+  const observedAt = envelope.observedAt;
+  if (typeof observedAt !== 'string' || !observedAt.trim()) return null;
+  const parsed = Date.parse(observedAt);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+/**
  * Candidate paths for the measurement: the stored `payload.paths` hints when the
  * item has them, else repo paths cited in its own title/summary prose. The prose
  * fallback is what lifts coverage from 26% to 38% of open bugs (measured
@@ -111,8 +152,16 @@ export async function getClaimTimeSourceGenerationSignal(ref: {
 
     const repoRoot = ref.repoRoot ?? integrationRoot();
     const git = ref.git ?? gitReadForRepo(realGit, repoRoot);
+    // Bound the range by WHEN the item was observed, not only by which build the
+    // reporter was running — see `readEnvelopeObservedAt`. Without this the range
+    // start is the deployed sha, which lags `staging` by hours, so the clause fires
+    // on deploy lag and claims post-observation movement it never measured
+    // (EI-23762020538736279). Null leaves the range unbounded: the prior behaviour.
+    const notBefore = readEnvelopeObservedAt(ref.payload ?? ref.workItem?.payload);
     const verdicts = await Promise.all(
-      paths.map((relPath) => pathStaleness(relPath, { deployedSha: () => generation, repoRoot, git })),
+      paths.map((relPath) =>
+        pathStaleness(relPath, { deployedSha: () => generation, repoRoot, git, notBefore }),
+      ),
     );
 
     const moved = verdicts

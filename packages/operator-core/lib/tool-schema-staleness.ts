@@ -122,10 +122,28 @@ export interface ToolSchemaStalenessDeps {
  * Read the commit range for one caller-supplied path.  An empty `git log`
  * result is a measured "no newer commit"; null is an unreadable git result and
  * must stay UNKNOWN (absence is never a positive verdict).
+ *
+ * `notBefore` (EI-23762020538736279) additionally bounds the range by COMMIT TIME.
+ * It exists because this primitive serves two questions that are NOT the same:
+ *
+ *   1. "Is the running build behind the tree?" — `pathsStalenessHint`. The whole
+ *      range `deployedSha..treeRef` is the answer; leave `notBefore` unset.
+ *   2. "Did this path move SINCE A GIVEN MOMENT?" — the claim-freshness port. The
+ *      sha range alone CANNOT answer this: the deployed build lags `staging` by
+ *      hours, so `deployedSha..treeRef` is dominated by commits that landed
+ *      BEFORE that moment (deploy lag) rather than after it (real movement).
+ *      Pass the moment as `notBefore` and only genuinely newer commits count.
+ *
+ * Supply an ISO-8601 instant with an explicit offset or `Z`. A bare local-looking
+ * stamp is ambiguous to git and would silently shift the boundary by the host's
+ * UTC offset, which on this box is -04:00.
  */
 export async function pathStaleness(
   relPath: string,
-  deps: Pick<ToolSchemaStalenessDeps, 'deployedSha' | 'repoRoot' | 'git'> & { treeRef?: string },
+  deps: Pick<ToolSchemaStalenessDeps, 'deployedSha' | 'repoRoot' | 'git'> & {
+    treeRef?: string;
+    notBefore?: string | null;
+  },
 ): Promise<PathStaleness> {
   const treeRef = deps.treeRef ?? 'staging';
   if (!relPath || relPath.startsWith('/') || relPath.split('/').some((segment) => segment === '..')) {
@@ -136,7 +154,18 @@ export async function pathStaleness(
   // Keep the repoRoot in the dependency contract even though GitRead is already
   // bound to it; callers cannot accidentally compare against another checkout.
   void deps.repoRoot;
-  const commits = await deps.git(['log', '--format=%H', `${deployedSha}..${treeRef}`, '--', relPath]);
+  // `--since` filters by COMMIT date, which on this tree is when git-sync's sweep
+  // actually landed the change — the right boundary for "did this move since then".
+  // Omitted entirely when unset, so the unbounded consumers are byte-identical.
+  const sinceArgs = deps.notBefore ? [`--since=${deps.notBefore}`] : [];
+  const commits = await deps.git([
+    'log',
+    '--format=%H',
+    ...sinceArgs,
+    `${deployedSha}..${treeRef}`,
+    '--',
+    relPath,
+  ]);
   if (commits === null) return { state: 'unknown', relPath, reason: 'git-unreadable' };
   const newerCommits = commits.split('\n').map((sha) => sha.trim()).filter(Boolean);
   return newerCommits.length === 0

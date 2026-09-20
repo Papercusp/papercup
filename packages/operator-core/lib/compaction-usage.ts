@@ -988,6 +988,11 @@ interface TranscriptAnchor {
   /** EI-12848: out-of-context `toolUseResult` byte excess over settled bytes in
    *  [countStart, settled) — the text double-write, image bytes already excluded. */
   tureExcess: number;
+  /** EI-23760035638533818: whole `prompt_snapshot` LINE bytes over settled bytes in
+   *  [countStart, settled). The full-scan path has discounted these since
+   *  EI-23747373965813124; without the same term here the anchored gauge steps by one
+   *  whole system prompt (~200k tokens on an su session) per snapshot line written. */
+  snapshotExcess: number;
   /** Absolute offset just past the last complete line scanned (settled ≤ sizeSeen). */
   settled: number;
   /** File size at the last read; (settled, sizeSeen] is the raw-counted partial tail. */
@@ -1004,7 +1009,12 @@ const anchors = new Map<string, TranscriptAnchor>();
 const seedInFlight = new Set<string>();
 
 function anchorTokens(a: TranscriptAnchor): number {
-  return Math.max(0, Math.floor((a.sizeSeen - a.countStart - a.imageExcess - a.tureExcess) / 4));
+  return Math.max(
+    0,
+    Math.floor(
+      (a.sizeSeen - a.countStart - a.imageExcess - a.tureExcess - a.snapshotExcess) / 4,
+    ),
+  );
 }
 
 /** Claude native session ids are v4 UUIDs. Deliberately a LOCAL copy of
@@ -1036,13 +1046,51 @@ export function anchorSessionIdFromPath(pathStr: string): string | null {
   return ANCHOR_SESSION_ID_RE.test(id) ? id : null;
 }
 
-/** Sum the image discount (WI-3176) over a settled latin1 slice. */
-function imageExcessIn(visible: string): number {
+/** Sum the image discount (WI-3176) over a settled latin1 slice. `skip` excludes
+ *  offsets lying inside an already-discounted whole prompt_snapshot line
+ *  (EI-23760035638533818) — discounting the same byte twice UNDER-counts, the one
+ *  direction that risks a real context death. */
+function imageExcessIn(visible: string, skip?: (i: number) => boolean): number {
   let excess = 0;
   for (const m of visible.matchAll(IMAGE_PAYLOAD_RE)) {
+    if (skip?.(m.index ?? 0)) continue;
     excess += m[0].length - IMAGE_TOKEN_COST * 4;
   }
   return excess;
+}
+
+/**
+ * EI-23760035638533818: the ANCHORED analogue of the full-scan path's discount trio.
+ *
+ * `tokensFromFileSize` has discounted whole `prompt_snapshot` lines since
+ * EI-23747373965813124, but the anchored incremental path — which is what actually
+ * renders the live PostToolUse gauge (inbox.ts → currentContextTokensForOwner) — never
+ * learned about them. Measured on a live su transcript 2026-09-20: 2 snapshots +
+ * 1 instructions attachment = 1,283,758 of 1,854,774 bytes (69.2%), so the anchored
+ * gauge read ~463,693 where the honest figure was ~142,754 — a 3.2x over-report that
+ * arrives as discrete ~200k steps (one per snapshot line), uncorrelated with result
+ * size, and force-compacts sessions that have done no work.
+ *
+ * Computing all three excesses together is what keeps the "no byte discounted twice"
+ * invariant local to ONE place instead of re-derived at each of the three anchor call
+ * sites (seed + both advance branches).
+ */
+function excessesIn(visible: string): {
+  snapshotExcess: number;
+  imageExcess: number;
+  tureExcess: number;
+} {
+  const snapRanges = promptSnapshotRangesIn(visible);
+  let snapshotExcess = 0;
+  for (const [s, e] of snapRanges) snapshotExcess += e - s;
+  const inSnapshot = snapRanges.length
+    ? (i: number) => snapRanges.some(([s, e]) => i >= s && i < e)
+    : undefined;
+  return {
+    snapshotExcess,
+    imageExcess: imageExcessIn(visible, inSnapshot),
+    tureExcess: toolUseResultExcessIn(visible, inSnapshot),
+  };
 }
 
 /** Full (tail-capped) scan → a fresh anchor. Same math as tokensFromFileSize,
@@ -1069,14 +1117,14 @@ function seedAnchorFromFile(pathStr: string): TranscriptAnchor | null {
       // every real limit" conservative signal without the unbounded growth.
       const countStart = idx === -1 ? start : start + idx;
       const countedView = view.toString('latin1', idx === -1 ? 0 : idx);
-      const imageExcess = imageExcessIn(countedView);
-      const tureExcess = toolUseResultExcessIn(countedView);
+      const { snapshotExcess, imageExcess, tureExcess } = excessesIn(countedView);
       const now = Date.now();
       return {
         path: pathStr,
         countStart,
         imageExcess,
         tureExcess,
+        snapshotExcess,
         settled: start + settledLen,
         sizeSeen: size,
         at: now,
@@ -1114,13 +1162,15 @@ function advanceAnchor(a: TranscriptAnchor, opts: { syncCap?: number } = {}): 'o
       if (idx !== -1) {
         // A compaction landed in this delta: counting restarts at the marker.
         a.countStart = a.settled + idx;
-        const from = view.toString('latin1', idx);
-        a.imageExcess = imageExcessIn(from);
-        a.tureExcess = toolUseResultExcessIn(from);
+        const e = excessesIn(view.toString('latin1', idx));
+        a.imageExcess = e.imageExcess;
+        a.tureExcess = e.tureExcess;
+        a.snapshotExcess = e.snapshotExcess;
       } else {
-        const all = view.toString('latin1');
-        a.imageExcess += imageExcessIn(all);
-        a.tureExcess += toolUseResultExcessIn(all);
+        const e = excessesIn(view.toString('latin1'));
+        a.imageExcess += e.imageExcess;
+        a.tureExcess += e.tureExcess;
+        a.snapshotExcess += e.snapshotExcess;
       }
       a.settled += settledLen;
     }

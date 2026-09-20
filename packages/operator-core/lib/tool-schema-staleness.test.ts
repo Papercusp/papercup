@@ -131,6 +131,34 @@ describe('pathStaleness (capture subject paths)', () => {
     expect(git).toHaveBeenCalledWith(['log', '--format=%H', `${DEPLOYED}..staging`, '--', 'packages/operator-core/lib/x.ts']);
   });
 
+  /**
+   * EI-23762020538736279. `notBefore` is what lets a caller ask "did this move SINCE
+   * A MOMENT" instead of "is the running build behind the tree". The unset case must
+   * stay BYTE-IDENTICAL: `pathsStalenessHint` depends on the unbounded range, and a
+   * stray `--since` there would silently narrow a correct consumer.
+   */
+  it('bounds the range by commit time when notBefore is set, and omits --since when it is not', async () => {
+    const bounded = vi.fn(async () => '');
+    await pathStaleness('a.ts', {
+      repoRoot: ROOT,
+      deployedSha: () => DEPLOYED,
+      git: bounded,
+      notBefore: '2026-09-20T05:25:17.000Z',
+    });
+    expect(bounded).toHaveBeenCalledWith([
+      'log',
+      '--format=%H',
+      '--since=2026-09-20T05:25:17.000Z',
+      `${DEPLOYED}..staging`,
+      '--',
+      'a.ts',
+    ]);
+
+    const unbounded = vi.fn(async () => '');
+    await pathStaleness('a.ts', { repoRoot: ROOT, deployedSha: () => DEPLOYED, git: unbounded });
+    expect(unbounded).toHaveBeenCalledWith(['log', '--format=%H', `${DEPLOYED}..staging`, '--', 'a.ts']);
+  });
+
   it('keeps a successful empty range current and git failures unknown', async () => {
     const current = await pathStaleness('a.ts', {
       repoRoot: ROOT,

@@ -53,6 +53,55 @@ describe('claim-time source-generation measurement (EI-22283949842250645)', () =
     expect((signal as { reason: string }).reason).toContain('1 of 2');
   });
 
+  /**
+   * EI-23762020538736279 — the deploy-lag/movement conflation, as a matched PAIR.
+   *
+   * The range start is the DEPLOYED build sha and the deployed operator lags
+   * `staging` by hours, so `generation..staging` is dominated by commits that landed
+   * BEFORE the item was filed. These two cases differ ONLY in the commit's date and
+   * must produce OPPOSITE verdicts; the seam models real `--since` semantics so the
+   * first case genuinely fails against an unbounded range.
+   */
+  const gitWithCommitAt = (iso: string) => async (args: string[]) => {
+    const since = args.find((a) => a.startsWith('--since='))?.slice('--since='.length);
+    return since && Date.parse(iso) < Date.parse(since) ? '' : 'deadbeef';
+  };
+
+  it('does NOT report moved for a commit that predates the observation (deploy lag)', async () => {
+    const signal = await getClaimTimeSourceGenerationSignal({
+      payload: { ...envelope({ observedAt: '2026-09-03T00:00:00.000Z' }), paths: ['packages/a.ts'] },
+      repoRoot: REPO,
+      git: gitWithCommitAt('2026-09-02T12:00:00.000Z'),
+    });
+    expect(signal).toEqual({ kind: 'paths-unchanged', checked: ['packages/a.ts'] });
+  });
+
+  it('still reports moved for a commit newer than the observation (real movement)', async () => {
+    const signal = await getClaimTimeSourceGenerationSignal({
+      payload: { ...envelope({ observedAt: '2026-09-03T00:00:00.000Z' }), paths: ['packages/a.ts'] },
+      repoRoot: REPO,
+      git: gitWithCommitAt('2026-09-03T06:00:00.000Z'),
+    });
+    expect(signal).toEqual({ kind: 'paths-moved', paths: ['packages/a.ts'] });
+  });
+
+  it('leaves the range unbounded when observedAt is absent or unparseable', async () => {
+    const seen: string[][] = [];
+    const git = async (args: string[]) => {
+      seen.push(args);
+      return '';
+    };
+    for (const over of [{ observedAt: undefined }, { observedAt: 'not-a-date' }]) {
+      await getClaimTimeSourceGenerationSignal({
+        payload: { ...envelope(over), paths: ['packages/a.ts'] },
+        repoRoot: REPO,
+        git,
+      });
+    }
+    expect(seen).toHaveLength(2);
+    expect(seen.every((args) => args.every((a) => !a.startsWith('--since=')))).toBe(true);
+  });
+
   it('a moved path still wins over an unreadable sibling', async () => {
     // Positive evidence of movement is a real verdict even if the rest is unreadable.
     const signal = await getClaimTimeSourceGenerationSignal({
