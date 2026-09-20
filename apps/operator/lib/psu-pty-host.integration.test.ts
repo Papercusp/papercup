@@ -2125,6 +2125,11 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '200',
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '700', // small → exhaust fast, then drop
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '40',
+          // Exercise the marker-missing path in every launcher environment,
+          // not Claude's first-byte-ready default inherited via process.env.
+          PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '60000',
+          PAPERCUSP_PSU_PTY_CARRY_PROOF_RETRIES: '1',
         },
         ownerId,
         io,
@@ -2164,12 +2169,15 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       expect(typeof metaAfter.lastCarryDropAt).toBe('number');
       const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
         .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-      expect(events).toContainEqual(expect.objectContaining({
+      const freshEpochRetry = events.find((event) => event.kind === 'respawn-carry-fresh-epoch-retry');
+      const terminalDrop = events.find((event) => event.kind === 'respawn-carry-dropped');
+      expect(freshEpochRetry).toEqual(expect.objectContaining({
         kind: 'respawn-carry-fresh-epoch-retry',
-        reason: 'no-startup-ready-marker-last-resort-failed',
         attempt: 1,
         maxRetries: 1,
       }));
+      expect(freshEpochRetry?.reason).toBe('no-startup-ready-marker-last-resort-failed');
+      expect(terminalDrop?.reason).toBe(freshEpochRetry?.reason);
 
       await rawInject(sock, 'QUIT\n');
       const code = await done;
