@@ -13,6 +13,7 @@ type Carry = {
   systemPromptAddendum: string;
   receivedAtMs: number;
 };
+type EventExtra = { reason?: string };
 type Boundary = { deferred: boolean };
 const carry = (receivedAtMs = 10): Carry => ({
   mode: 'carry-respawn',
@@ -137,7 +138,7 @@ describe('WI-10002078 — production carry re-arms cannot outlive their child ep
       hasPendingOwnerInput: () => true,
       waitAtPrompt: vi.fn(async () => ({ deferred: false })),
       recycle: h.recycle,
-      emitEvent: (kind, extra) => h.events.push({ kind, ...extra }),
+      emitEvent: (kind: string, extra: EventExtra) => h.events.push({ kind, ...extra }),
       maxProductionAttempts: 2,
       yieldAfterDefer,
     });
@@ -163,7 +164,7 @@ describe('WI-10002078 — production carry re-arms cannot outlive their child ep
       },
       waitAtPrompt: vi.fn(async () => ({ deferred: false })),
       recycle: h.recycle,
-      emitEvent: (kind, extra) => h.events.push({ kind, ...extra }),
+      emitEvent: (kind: string, extra: EventExtra) => h.events.push({ kind, ...extra }),
       maxProductionAttempts: 2,
     });
     controller.schedule(carry());
