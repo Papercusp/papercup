@@ -59,6 +59,7 @@ import { findTools, type Embedder } from '../../cupboard/tool-find';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { withInlinedSchemaRefs } from '../schema-ref-inline';
 
 /**
  * The result-door is a per-tool-result budget, not a per-field budget. A
@@ -741,11 +742,6 @@ function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjectio
 }
 
 /**
- * Render only the structural part of a JSON schema for the returned hit. The
- * full descriptions remain in the search corpus; this projection is what a
- * caller needs to form a valid next call without overflowing the result door.
- */
-/**
  * Discovery schemas now publish shared sub-objects through `$defs` and point at
  * them with `$ref` (work_items:complete's completion record, coord:send's body,
  * watch:create, events:await, triggers:bind, design-phase.*). Neither
@@ -759,16 +755,19 @@ function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjectio
  *
  * This touches DISCOVERY only — the wire `inputSchema` the byte-budget guards
  * measure is a different object and is deliberately left referenced.
+ *
+ * The implementation lives in ../schema-ref-inline so the orient task schema
+ * pack — a THIRD bounded renderer, in a different tree — resolves pointers the
+ * same way without importing this whole 1.3k-line tool module onto a hot
+ * recovery path. Re-exported here for callers already importing from find.
  */
-// Lifted to ../schema-ref-inline so the orient task schema pack — a THIRD
-// bounded renderer, in a different tree — resolves pointers the same way
-// without importing this whole tool module onto a hot recovery path.
-// Imported (not `export ... from`) because compactSchemaForResult's corpus
-// boundary below calls it locally as well as re-exporting it.
-import { withInlinedSchemaRefs } from '../schema-ref-inline';
-
 export { withInlinedSchemaRefs };
 
+/**
+ * Render only the structural part of a JSON schema for the returned hit. The
+ * full descriptions remain in the search corpus; this projection is what a
+ * caller needs to form a valid next call without overflowing the result door.
+ */
 export function compactSchemaForResult(inputSchema: unknown): string | null {
   if (!inputSchema || typeof inputSchema !== 'object') return null;
   const root = inputSchema as JsonSchemaNode;

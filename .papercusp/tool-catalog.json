@@ -9497,6 +9497,13 @@
       "capabilities": [
         "intel:read"
       ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger",
+        "curator",
+        "judge"
+      ],
       "profile": "engineer",
       "guidance": {
         "when": "Decide whether the partition advisory changed behaviour, or establish the baseline before it ships.",
