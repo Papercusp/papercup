@@ -227,10 +227,19 @@ export async function sweepSessionIndependentGates(opts?: {
     // read outside this statement, so a hook or watcher may have closed it in
     // between. Losing that race must be a no-op, never an overwrite of a
     // session-dependent (more specific) terminal reason.
+    //
+    // WI-10002067: this cast is `::bigint`, NOT `::uuid`. `session_pending_gates.id`
+    // is a BIGINT; the SELECT above projects it as `g.id::text`, so `row.id` is a
+    // numeric string. Casting that to uuid raises SQLSTATE 22P02 on the FIRST gate
+    // that qualifies, and because this await sits inside the per-row loop with no
+    // inner catch, that one throw aborts the ENTIRE sweep — which the caller's outer
+    // try/catch then swallows into a log line that never reaches the journal. The
+    // measured signature was: transcript-watcher closes landing normally while
+    // asker_gone/default_applied stayed at exactly zero against 238 open gates.
     await sql`
       UPDATE harness_shared.session_pending_gates
          SET closed_at = ${now}, closed_reason = ${decision.reason}, updated_at = now()
-       WHERE id = ${row.id}::uuid
+       WHERE id = ${row.id}::bigint
          AND closed_at IS NULL
     `;
   }
