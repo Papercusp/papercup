@@ -1688,6 +1688,17 @@ export async function pauseGoalForHolderRespawnRateCap(
     pausedBy: HOLDER_RESPAWNER_IDENTITY.ownerId,
     pausedAtMs: nowMs,
   };
+  // EVERY bare parameter inside jsonb_build_object below MUST carry a cast. That function is
+  // VARIADIC "any", so an uncast parameter has no argument type to resolve against and Postgres
+  // rejects the statement at PARSE time — "could not determine data type of parameter $N" — on
+  // every call, before a single row is examined. postgres.js sends type OID 0 for a JS number or
+  // string (see inferType), so the cast is the only thing that supplies a type; boolean, bigint,
+  // Date and sql.json() carry their own OID and are safe uncast.
+  //
+  // This is the THIRD occurrence of that class. WI-37757 (validate-active-routines) was the
+  // first and work-items.ts refreshPlanLinkedFeatureWorkItem the second; each shipped because
+  // the only test covering it mocked `sql`, which cannot observe a PARSE failure by construction.
+  // sql-variadic-any-uncast-param.test.ts is the standing class guard.
   const [changed] = await sql<Array<{ id: string }>>`
     UPDATE harness_shared.goals
        SET status = 'paused',
@@ -1702,7 +1713,7 @@ export async function pauseGoalForHolderRespawnRateCap(
                  ${JSON.stringify({ needsHuman: true })}::jsonb ||
                  jsonb_build_object(
                    'escalatedAtMs', ${nowMs}::bigint,
-                   'attemptsInWindow', ${attemptsInWindow}
+                   'attemptsInWindow', ${attemptsInWindow}::int
                  ),
                true
              ),

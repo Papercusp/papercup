@@ -4660,21 +4660,27 @@ export async function refreshPlanLinkedFeatureWorkItem(input: RefreshPlanLinkedF
       : sql`
           COALESCE(payload, '{}'::jsonb) #- '{plan_item,item_text_hash}'
         `;
+  // The ::text casts below are load-bearing, not style. jsonb_build_object is VARIADIC "any",
+  // so an uncast parameter is rejected at PARSE time ("could not determine data type of
+  // parameter $N") on every call — postgres.js sends OID 0 for a JS string (inferType), so only
+  // the cast supplies a type. Without them this whole refresh threw unconditionally, and
+  // text-drift-report's `catch {}` swallowed it silently, so plan-item text drift never
+  // refreshed the linked work-item. See sql-variadic-any-uncast-param.test.ts.
   const sourceStamp =
     itemTextHash !== undefined
       ? sql`
           jsonb_build_object(
-            'plan_slug', ${planSlug},
-            'item_id', ${itemId},
-            'harness_slug', ${harnessSlug},
+            'plan_slug', ${planSlug}::text,
+            'item_id', ${itemId}::text,
+            'harness_slug', ${harnessSlug}::text,
             'item_text_hash', ${JSON.stringify(itemTextHash)}::text::jsonb
           )
         `
       : sql`
           jsonb_build_object(
-            'plan_slug', ${planSlug},
-            'item_id', ${itemId},
-            'harness_slug', ${harnessSlug}
+            'plan_slug', ${planSlug}::text,
+            'item_id', ${itemId}::text,
+            'harness_slug', ${harnessSlug}::text
           )
         `;
   const stampedPayload = sql`

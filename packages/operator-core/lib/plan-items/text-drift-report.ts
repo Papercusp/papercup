@@ -281,8 +281,16 @@ export async function reportPlanItemTextDrift(opts: {
           compiledBrief,
         });
         if (didRefresh) refreshedPairs.add(key);
-      } catch {
-        // The write and report remain useful even when one guarded refresh fails.
+      } catch (error) {
+        // The write and report remain useful even when one guarded refresh fails — so this
+        // stays non-fatal. But a SILENT swallow is precisely how the uncast-parameter defect in
+        // refreshPlanLinkedFeatureWorkItem stayed invisible: that statement could not PARSE, so
+        // it threw on every call for as long as it existed, and nothing ever said so. Keep it
+        // non-fatal; make it observable.
+        console.warn(
+          `[plan-item-drift] work-item refresh failed for ${wi.workItemId} ` +
+            `(${opts.planSlug}#${wi.itemId}): ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
   }
