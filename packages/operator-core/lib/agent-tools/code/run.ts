@@ -1944,13 +1944,24 @@ export function annotatePublicCodeRunStatus<T extends OrchestrationRunResult | R
   };
 }
 
-export function shapeMutationEcho(result: OrchestrationRunResult): OrchestrationRunResult | Record<string, unknown> {
-  if (result.plannedMutations.length === 0) return result;
-  if (result.dryRun) {
-    const serialized = JSON.stringify(result.plannedMutations);
+// Same TS2345 class as shapeCodeRunLogs above, and the last link in the chain still demanding the
+// full interface. `annotatePublicCodeRunStatus` widens to `T | Record<string, unknown>` (a plain
+// interface has no index signature, so the record arm is not assignable to OrchestrateResult), and
+// the call site feeds exactly that union straight into this function. Accept the union its callers
+// actually produce — matching annotatePublicCodeRunStatus/annotateChildFailureWarning — then narrow
+// once, so the body below keeps its concrete field types instead of degrading to `unknown`.
+export function shapeMutationEcho<T extends OrchestrationRunResult | Record<string, unknown>>(
+  result: T,
+): T | OrchestrationRunResult | Record<string, unknown> {
+  const run = result as OrchestrationRunResult;
+  // Defensive, and load-bearing now that the record arm is accepted: a widened result (or a
+  // hand-built fixture) can omit plannedMutations entirely, where `.length` would have thrown.
+  if (!Array.isArray(run.plannedMutations) || run.plannedMutations.length === 0) return result;
+  if (run.dryRun) {
+    const serialized = JSON.stringify(run.plannedMutations);
     if (serialized.length <= DRY_RUN_MUTATION_PREVIEW_CHAR_BUDGET) return result;
 
-    const { plannedMutations, ...rest } = result;
+    const { plannedMutations, ...rest } = run;
     const byTool: Record<string, number> = {};
     const samplesPerTool: Record<string, number> = {};
     const sample: typeof plannedMutations = [];
@@ -1976,7 +1987,7 @@ export function shapeMutationEcho(result: OrchestrationRunResult): Orchestration
     };
   }
 
-  const { plannedMutations, writeAttempts, okFalseMutations, rejectedMutations, uncertainMutations, ...rest } = result;
+  const { plannedMutations, writeAttempts, okFalseMutations, rejectedMutations, uncertainMutations, ...rest } = run;
   // Defensive: fixture results built by hand (tests predating this field) omit it entirely.
   const okFalseMutationsList = okFalseMutations ?? [];
   const rejected = rejectedMutations ?? [];
@@ -2056,7 +2067,7 @@ export function shapeMutationEcho(result: OrchestrationRunResult): Orchestration
     // is right. Now: `landed` = dispatched and did not throw; `rejected` = provably wrote
     // nothing (safe to re-run); `uncertain` = threw mid-flight and MAY have landed — the
     // only set that still earns the loud double-write warning.
-    ...(!result.ok
+    ...(!run.ok
       ? buildFailureWarning(
           attempts.length > 0
             ? attempts.filter(
@@ -2065,7 +2076,7 @@ export function shapeMutationEcho(result: OrchestrationRunResult): Orchestration
             : plannedMutations,
           rejected,
           uncertain,
-          result.strandedWrites ?? [],
+          run.strandedWrites ?? [],
           inFlightAttempts,
         )
       : {}),

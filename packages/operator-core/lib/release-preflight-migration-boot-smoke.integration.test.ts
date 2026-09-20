@@ -237,6 +237,10 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
         client,
         sqlDir: sqlDir!,
         continueOnError: true,
+        // Keep a wedged seeded backfill from consuming the whole test timeout.
+        // The runner includes the migration filename and SQLSTATE in `failed`,
+        // which turns an opaque 300s test timeout into an actionable culprit.
+        migrationStatementTimeoutMs: 15_000,
         log: () => {},
       });
 
