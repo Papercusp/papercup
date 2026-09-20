@@ -13,6 +13,8 @@ import {
   runPapercuspWorkdirGc,
   PAPERCUSP_WORKDIR_GC_DEFAULT_RETENTION_MS,
   PAPERCUSP_WORKDIR_GC_PROTECTED_BASENAMES,
+  runLaunchContextGc,
+  LAUNCH_CONTEXT_GC_DEFAULT_RETENTION_MS,
 } from './fleet-logs-gc';
 
 let sandbox: string;
@@ -359,5 +361,108 @@ describe('runPapercuspWorkdirGc — falsifiability control', () => {
     const result = runPapercuspWorkdirGc({ root: sandbox });
     expect(result.removed).toBe(0);
     expect(existsSync(live)).toBe(true);
+  });
+});
+
+// ── launch-context render GC (WI-10002015) ───────────────────────────────────
+
+describe('runLaunchContextGc', () => {
+  it('reaps an aged render nothing is serving', () => {
+    writeAged(sandbox, 'session-old.md', 2048, 30 * DAY);
+    const r = runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() });
+
+    expect(r.refused).toBeUndefined();
+    expect(r.removed).toBe(1);
+    expect(r.bytesFreed).toBe(2048);
+    expect(existsSync(join(sandbox, 'session-old.md'))).toBe(false);
+  });
+
+  it('keeps a render younger than the retention window', () => {
+    writeAged(sandbox, 'session-new.md', 512, 60_000);
+    const r = runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() });
+
+    expect(r.removed).toBe(0);
+    expect(r.candidates[0]?.skipped).toBe('too-new');
+    expect(existsSync(join(sandbox, 'session-new.md'))).toBe(true);
+  });
+
+  // THE load-bearing guard. A render is written once, at exec, and never
+  // touched again — so its mtime records when the session STARTED, not when it
+  // stopped mattering. Age alone therefore deletes the persona out from under
+  // any agent alive longer than the retention window. The pair below pins that:
+  // if the naive rule and the real one ever stop diverging, the live-session
+  // exclusion has been lost and this suite no longer guards it.
+  it('refuses to reap an ANCIENT render that a live session is still serving', () => {
+    const inUse = writeAged(sandbox, 'session-long-lived.md', 4096, 90 * DAY);
+    const stale = writeAged(sandbox, 'session-abandoned.md', 4096, 90 * DAY);
+
+    // The wrong implementation — age only — destroys a live agent's persona.
+    const naiveWouldDelete = (p: string) =>
+      Date.now() - statSync(p).mtimeMs > LAUNCH_CONTEXT_GC_DEFAULT_RETENTION_MS;
+    expect(naiveWouldDelete(inUse)).toBe(true);
+
+    // … and the real one holds it back while still reclaiming its twin.
+    const r = runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set([inUse]) });
+
+    expect(existsSync(inUse)).toBe(true);
+    expect(r.liveHeld).toBe(1);
+    expect(r.candidates.find((c) => c.path === inUse)?.skipped).toBe('live-session');
+
+    expect(existsSync(stale)).toBe(false);
+    expect(r.removed).toBe(1);
+  });
+
+  // `undefined` (no measurement) and an empty Set (a measurement that found no
+  // live sessions) must never collapse into the same behaviour.
+  it('fails closed when no live-render evidence is supplied at all', () => {
+    writeAged(sandbox, 'session-ancient.md', 4096, 120 * DAY);
+
+    const r = runLaunchContextGc({ dir: sandbox });
+
+    expect(r.refused).toBe('no-live-render-evidence');
+    expect(r.removed).toBe(0);
+    expect(r.scanned).toBe(0);
+    expect(existsSync(join(sandbox, 'session-ancient.md'))).toBe(true);
+
+    // The same directory, with an EMPTY set, does proceed — proving the refusal
+    // above is about missing evidence, not about an empty exclusion list.
+    const measured = runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() });
+    expect(measured.refused).toBeUndefined();
+    expect(measured.removed).toBe(1);
+  });
+
+  it('never recurses into or removes a subdirectory', () => {
+    const sub = join(sandbox, 'nested');
+    mkdirSync(sub);
+    const buried = join(sub, 'payload.md');
+    writeFileSync(buried, 'x');
+    const old = new Date(Date.now() - 120 * DAY);
+    utimesSync(buried, old, old);
+    utimesSync(sub, old, old);
+
+    const r = runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() });
+
+    expect(r.removed).toBe(0);
+    expect(r.candidates[0]?.skipped).toBe('not-a-file');
+    expect(existsSync(buried)).toBe(true);
+    expect(existsSync(sub)).toBe(true);
+  });
+
+  it('reports what it would free without removing anything on a dry run', () => {
+    writeAged(sandbox, 'session-old.md', 1024, 30 * DAY);
+
+    const r = runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set(), dryRun: true });
+
+    expect(r.removed).toBe(1);
+    expect(r.bytesFreed).toBe(1024);
+    expect(existsSync(join(sandbox, 'session-old.md'))).toBe(true);
+  });
+
+  it('treats an unreadable directory as empty rather than throwing', () => {
+    const missing = join(sandbox, 'does-not-exist');
+    expect(() =>
+      runLaunchContextGc({ dir: missing, liveRenderPaths: new Set() }),
+    ).not.toThrow();
+    expect(runLaunchContextGc({ dir: missing, liveRenderPaths: new Set() }).scanned).toBe(0);
   });
 });

@@ -36,7 +36,8 @@ import { expireStaleAdvisoryEscalations } from '../agent-tools/coordination/esca
 import { gcOldPlanRevisions } from '../agent-tools/plans/revisions-gc';
 import { gcOldDecisionLedgerRows } from '../agent-tools/coordination/decision-ledger-gc';
 import { gcOldOperatorTurns } from '../operator-turns-gc';
-import { runFleetLogsGc, runPapercuspWorkdirGc } from '../fleet-logs-gc';
+import { runFleetLogsGc, runLaunchContextGc, runPapercuspWorkdirGc } from '../fleet-logs-gc';
+import { listLiveSessionRenders } from '../stale-prompt-render-sweep';
 import { gcLedgerDir } from '../turn-provenance/turn-provenance';
 import { readRegistry } from '../workspace-registry';
 import { sweepOrphanSnapshots, sweepRecoveryDebrisTick, sweepRestoredClonesTick } from '@papercusp/backup';
@@ -552,6 +553,34 @@ async function fleetLogsGcTick(): Promise<void> {
           (skipped.length
             ? `, kept ${skipped.length} (${skipped.map((c) => c.skipped ?? 'unknown').join(',')})`
             : ''),
+      );
+
+      // Third and last of the ~/.papercusp accumulations (WI-10002015). The two
+      // sweeps above leave a hole exactly the shape of `launch-context`: the
+      // first reaps files but only under a directory named `fleet-logs`; the
+      // second sweeps directories but only mktemp-suffixed ones, and holds
+      // `launch-context` in its protected set — rightly, as the directory must
+      // survive. A stable, named directory whose CONTENTS grow without bound
+      // therefore had no owner. Measured 2026-09-20: 769 MB over 14,920 renders,
+      // oldest 2026-05-31, 94% of it past three days old.
+      //
+      // The live-render set is read here rather than inside the GC so that
+      // fleet-logs-gc.ts stays a pure fs unit. It MUST be uncapped: the default
+      // SWEEP_SESSION_CAP is a bound on a notifier's work, but here it is an
+      // exclusion set, and a truncated one silently turns live sessions' personas
+      // into deletion candidates. Absent the set entirely the GC refuses outright
+      // — a render's mtime records when its session STARTED, so age alone would
+      // reap the persona out from under a long-lived agent.
+      const liveRenderPaths = new Set(
+        listLiveSessionRenders('/proc', Number.MAX_SAFE_INTEGER).map((r) => r.promptFile),
+      );
+      const renders = runLaunchContextGc({ liveRenderPaths });
+      console.log(
+        renders.refused
+          ? `[launch-context-gc] refused (${renders.refused}) — nothing removed`
+          : `[launch-context-gc] scanned ${renders.scanned} render(s) → removed ` +
+              `${renders.removed}, freed ${Math.round(renders.bytesFreed / (1024 * 1024))}MB, ` +
+              `held ${renders.liveHeld} in use by live session(s)`,
       );
     },
     { name: 'fleet-logs-gc' },
