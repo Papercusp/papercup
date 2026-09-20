@@ -235,10 +235,24 @@ describe('control-anchor kernel resolver (D-030)', () => {
       obligations: { capabilityUnsatisfied: { cause: 'no-launch-record' } },
     });
 
-    // A real adv_sessions row with no usable launch_spec is still stale, not
-    // recoverable through the missing-row door.
+    // WI-10002028: a real adv_sessions row with no usable launch_spec is still
+    // `stale-artifact` rather than `no-launch-record` — the two causes stay
+    // distinct, so an operator is never sent chasing a revision mismatch that
+    // never existed. What changed is the DISPOSITION of that cause for the
+    // recovery verb alone: `stale-artifact` says the identity plane cannot
+    // establish WHICH specification is in force, never that this session lacks
+    // authority to orient. coord:orient is acknowledgeControlTransition's sole
+    // caller, so sealing it here bricked the session for its entire life with no
+    // in-band way back. It now opens through the stale-artifact recovery door.
     db.rows.push([{ ...missing, adv_session_id: 7 }]);
     await expect(controlAnchorKernelResolver(request({ toolName: 'coord:orient' }))).resolves.toMatchObject({
+      decision: 'allow', code: 'identity-recovery', applied: false,
+    });
+
+    // The door stays NARROW, which is what makes this test still discriminating:
+    // an ordinary tool on the byte-identical row is refused exactly as before.
+    db.rows.push([{ ...missing, adv_session_id: 7 }]);
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
       decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
     });
   });
