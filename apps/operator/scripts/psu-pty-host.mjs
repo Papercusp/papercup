@@ -3875,6 +3875,15 @@ export function startupOutputReady(agent, output) {
   return String(output ?? '').length > 0;
 }
 
+/** A fresh Claude child can repaint continuously (spinner/elapsed chrome), so
+ * output quietness is not a reliable post-epoch settle signal. A standalone
+ * composer glyph proves the editor is installed; menu rows include text and
+ * do not match this predicate. */
+export function freshChildPromptReady(agent, output) {
+  const normalized = String(agent ?? '').trim().toLowerCase();
+  return normalized === 'claude' && claudeStandaloneComposerPromptVisible(stripAnsi(output));
+}
+
 /** Terminate the entire process group created by forkpty, not only its leader.
  * OMP launches a descendant process; signalling only node-pty's immediate child
  * can let that target survive after the host exits. The direct child signal is
@@ -5348,6 +5357,7 @@ export function hostThroughPty(o) {
   // Reset on recycle.
   let childStartupOutput = '';
   let childStartupReady = false;
+  let childPromptReady = false;
   let childStartupFirstOutputAt = 0;
   let headlessClaudeOnboardingExpiryTimer = null;
   // A scripted resume/fork kickoff is the only path that can encounter Claude's
@@ -5889,12 +5899,14 @@ export function hostThroughPty(o) {
           break;
         }
         if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
-        // WI-10001066: a fresh Codex child has no submitted turn yet, but its
-        // idle composer can repaint continuously. Positive startup proof plus
-        // no intervening owner input establishes readiness without requiring
-        // raw PTY silence. Reused children and heuristic startup fallbacks
+        // WI-10001066: a fresh child has no submitted turn yet, but Codex and
+        // Claude composers can repaint continuously. Positive backend startup
+        // proof plus no intervening owner input establishes readiness without
+        // requiring raw PTY silence. Reused children and heuristic fallbacks
         // still take the ordinary busy gate.
-        const freshPromptReady = freshChildOwnerInputGeneration !== null && childStartupReady;
+        const freshPromptReady = freshChildOwnerInputGeneration !== null &&
+          (childPromptReady ||
+            (String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' && childStartupReady));
         const atPrompt = freshPromptReady
           ? { deferred: false }
           : await agentBusyGate.waitAtPrompt();
@@ -7439,16 +7451,21 @@ export function hostThroughPty(o) {
         // the full expiry window even when no wizard is present.
         childStartupReady = startupOutputReady(env.PAPERCUSP_AGENT, childStartupOutput);
       }
+      if (!childPromptReady) {
+        childPromptReady = freshChildPromptReady(env.PAPERCUSP_AGENT, childStartupOutput);
+      }
       if (onboarding.action === 'submit' && onboarding.prompt === 'theme') {
         childStartupReady = false;
+        childPromptReady = false;
       }
-      // The generic Claude readiness heuristic intentionally accepts any output,
-      // which is unsafe for the quiet resume-choice menu. Keep it blocked until
-      // the recovery machine has seen a later standalone composer prompt.
+      // A Claude recovery menu is not a composer prompt. Keep readiness blocked
+      // until the recovery machine has seen a later standalone composer prompt.
       if (resumeCompaction.awaitingPrompt || resumeCompaction.timedOut) {
         childStartupReady = false;
+        childPromptReady = false;
       } else if (resumeCompaction.action === 'ready') {
         childStartupReady = true;
+        childPromptReady = true;
       }
       // WI-1386682 (1): feed the quota-wall detector the same raw bytes.
       const quotaTransition = quotaBlockDetector.observe(raw);
@@ -8157,6 +8174,7 @@ export function hostThroughPty(o) {
         // identity / locks / socket all survive; only the native claude id rotates.
         childStartupOutput = '';
         childStartupReady = false;
+        childPromptReady = false;
         childStartupFirstOutputAt = 0;
         // WI-1386682 (1): a fresh child has no screen history and cannot
         // inherit the old child's wall.
@@ -8194,7 +8212,7 @@ export function hostThroughPty(o) {
         } catch {
           /* the terminal bridge is advisory — never let it break the respawn */
         }
-        freshChildOwnerInputGeneration = systemPromptAddendum && agentHint === 'codex'
+        freshChildOwnerInputGeneration = systemPromptAddendum
           ? ownerInputGeneration
           : null;
         child = spawnChild(recycleArgs);
