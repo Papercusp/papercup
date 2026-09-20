@@ -826,15 +826,20 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, }?: {
         started: boolean;
     }>;
 };
-export function makeCarryRearmController({ acquireInject, waitIdle, waitAtPrompt, recycle, emitEvent, capMs, maxProductionAttempts, isStale, }: {
+export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitAtPrompt, recycle, emitEvent, capMs, maxProductionAttempts, isStale, isSuperseded, }: {
     acquireInject: any;
-    waitIdle?: null | undefined;
+    waitIdle?: (() => Promise<{
+        deferred: boolean;
+        reason?: string;
+    } | void>) | null | undefined;
+    hasPendingOwnerInput?: (() => boolean) | undefined;
     waitAtPrompt: any;
     recycle: any;
     emitEvent: any;
     capMs?: number | undefined;
     maxProductionAttempts?: number | undefined;
     isStale?: (() => boolean) | undefined;
+    isSuperseded?: ((_msg: any) => boolean) | undefined;
 }): {
     /** Live count of carry-respawns either awaiting their first delivery
      *  attempt's outcome OR a re-armed retry (diagnostics/tests, and the input

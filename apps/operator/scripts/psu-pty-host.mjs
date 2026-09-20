@@ -2263,7 +2263,8 @@ const NON_DRILL_REARM_KEY = '__non-drill__';
 // terminal drill/backstop behavior without creating an infinite promise loop.
 export function makeCarryRearmController({
   acquireInject, // () => Promise<release()>  — the host's gated-inject mutex
-  waitIdle = null, // optional human-keystroke gate (bridged tty only)
+  waitIdle = /** @type {null | (() => Promise<{ deferred: boolean, reason?: string } | void>)} */ (null),
+  hasPendingOwnerInput = () => false,
   waitAtPrompt, // (capMs?) => Promise<{ deferred }>
   recycle, // (data, { systemPromptAddendum, drillId, sessionClass }) => Promise<void>
   emitEvent, // (kind, extra) => void — writes BOTH the per-owner host log + shared ledger
@@ -2276,6 +2277,9 @@ export function makeCarryRearmController({
   // every existing controller unit test unchanged; the real host wires
   // isCarryRespawnStale at construction (see carryRearm below).
   isStale = () => false,
+  // Age may not expire a production continuation. Epoch supersession MUST:
+  // an obsolete request must neither suppress wakes nor replace its successor.
+  isSuperseded = (_msg) => false,
 }) {
   const pending = new Set();
   // EI-18681914950138372: a SEPARATE tracking set, covering the carry-respawn's
@@ -2291,6 +2295,8 @@ export function makeCarryRearmController({
   // mutex BEFORE the eventual retry does, and won it every time (see
   // beginFirstAttempt/endFirstAttempt call sites for the exact mechanics).
   // `inFlight` closes that gap; `pendingCount()` below reports the union.
+  // Identity, not the shared production sentinel: finishing one accepted
+  // request must not erase another. Set.delete keeps duplicate finalization safe.
   const inFlight = new Set();
   // EI-19480099650947832: the FRESHEST carry message per key. A production
   // respawn's re-poll loop re-reads this at the top of every attempt, so a
@@ -2308,8 +2314,7 @@ export function makeCarryRearmController({
      *  accepted by the host, before it enters its own busy-gate wait — marks it
      *  in-flight so a wake arriving during that wait is correctly deferred. */
     beginFirstAttempt(msg) {
-      const drillId = String(msg?.drillId || '');
-      inFlight.add(drillId || NON_DRILL_REARM_KEY);
+      inFlight.add(msg);
     },
     /** EI-18681914950138372: call exactly once, when that first attempt has
      *  fully concluded (delivered, dropped, errored, or handed off to
@@ -2318,8 +2323,7 @@ export function makeCarryRearmController({
      *  mid-handoff, and a duplicate/idempotent delete on an already-cleared
      *  key is a no-op. */
     endFirstAttempt(msg) {
-      const drillId = String(msg?.drillId || '');
-      inFlight.delete(drillId || NON_DRILL_REARM_KEY);
+      inFlight.delete(msg);
     },
     /**
      * Schedule the one-shot retry for a busy-gate-refused carry-respawn drill.
@@ -2383,6 +2387,15 @@ export function makeCarryRearmController({
         // WHY it could never fire — see waitAtPrompt's maxQuietForMs comment.
         let observedMaxQuietMs = 0;
         let attemptsMade = 0;
+        let deferReason = 'busy-gate-expired';
+        const dropSuperseded = (candidate) => {
+          if (!isSuperseded(candidate)) return false;
+          emitEvent(droppedKind, {
+            ...extra, rearmed: true, reason: 'superseded',
+            observedMaxQuietMs, attempts: attemptsMade,
+          });
+          return true;
+        };
         try {
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             attemptsMade = attempt + 1;
@@ -2393,9 +2406,30 @@ export function makeCarryRearmController({
             const current = latest.get(key) ?? msg;
             let deferred = false;
             try {
-              if (waitIdle) await waitIdle();
+              // Check BEFORE waiting on the successor's output. Otherwise an
+              // obsolete retry can retain pending wake suppression indefinitely.
+              if (dropSuperseded(current)) return;
+              if (waitIdle) {
+                const idle = await waitIdle();
+                if (dropSuperseded(latest.get(key) ?? current)) return;
+                if (idle?.deferred) {
+                  deferReason = idle.reason || 'owner-input-cap';
+                  continue;
+                }
+              }
+              if (hasPendingOwnerInput()) {
+                deferReason = 'owner-input-cap';
+                continue;
+              }
               const atPrompt = await waitAtPrompt(capMs, current);
+              if (dropSuperseded(latest.get(key) ?? current)) return;
+              // The owner may have started composing during the prompt wait.
+              if (hasPendingOwnerInput()) {
+                deferReason = 'owner-input-cap';
+                continue;
+              }
               deferred = !!atPrompt.deferred;
+              deferReason = 'busy-gate-expired';
               if (Number.isFinite(atPrompt?.maxQuietForMs) && atPrompt.maxQuietForMs > observedMaxQuietMs) {
                 observedMaxQuietMs = atPrompt.maxQuietForMs;
               }
@@ -2453,9 +2487,10 @@ export function makeCarryRearmController({
           }
           // A drill's single shot deferred, or a production respawn exhausted the
           // anti-spin cap without ever idling — terminal, loud.
-          if (isDrill) {
-            emitEvent(droppedKind, { ...extra, rearmed: true, observedMaxQuietMs, attempts: attemptsMade });
-          }
+          emitEvent(droppedKind, {
+            ...extra, rearmed: true, reason: deferReason,
+            observedMaxQuietMs, attempts: attemptsMade,
+          });
         } catch (error) {
           emitEvent(droppedKind, {
             ...extra,
@@ -6339,6 +6374,7 @@ export function hostThroughPty(o) {
   const carryRearm = makeCarryRearmController({
     acquireInject: () => injectMutex.acquire(),
     waitIdle: bridgeTty ? () => idleGate.waitIdle() : null,
+    hasPendingOwnerInput: () => ownerComposerGate.hasPending(),
     waitAtPrompt: (cap, msg) => agentBusyGate.waitAtPrompt(cap, () => codexCarryTurnCompleted({
       agent: env.PAPERCUSP_AGENT, env, transcriptPath: msg?.sourceTranscriptPath,
       receivedAtMs: msg?.receivedAtMs,
@@ -6349,11 +6385,11 @@ export function hostThroughPty(o) {
       appendSharedDrillLedgerEvent(ownerId, kind, extra);
     },
     capMs: carryRearmCapMs,
-    // EI-18665672258948707: a carry-respawn that has been SUPERSEDED by a later
-    // respawn already delivered on this host is dropped unconditionally, same as
-    // age-based staleness — see isCarryRespawnSuperseded's doc block.
+    // Age expiry is drill-only. A newer child supersedes production carries
+    // too, and must retire their pending wake suppression without another cut.
     isStale: (msg) =>
-      isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs }) ||
+      isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs }),
+    isSuperseded: (msg) =>
       isCarryRespawnSuperseded(msg.receivedAtMs, lastRespawnAtMs),
   });
 
