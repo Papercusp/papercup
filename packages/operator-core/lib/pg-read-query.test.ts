@@ -6,6 +6,9 @@
  * advisory) through an injected client stub.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 // The write half of the shared Personal Vault fence — imported here so the two
 // doors are pinned by ONE test block and cannot drift into one being fenced.
 import { assertSingleWriteStatement } from './pg-mutate-query';
@@ -4015,5 +4018,124 @@ describe('the EXECUTED partition probe (WI-10002034 — AUTO-BAR-R-002-P-002)', 
     expect(ran, 'the narrow-reads-unchanged boundary must cost a narrow read nothing').toHaveLength(
       0,
     );
+  });
+});
+
+describe('AUTO-BAR-R-001-P-002 — ONE partition primitive, never two implementations (D-001)', () => {
+  /**
+   * D-001 ratifies ONE predicate-preview primitive with two callers, and calls a
+   * second implementation "a defect against this plan, not a convenience".
+   * R-001's falsifier has two disjuncts: (a) two call sites produce different
+   * partitions for the same predicate, or (b) the partition computation appears
+   * in more than one module.
+   *
+   * (b) is the disjunct that rots silently. The second caller (claim-spec
+   * authoring) does not exist yet, and when it arrives, forking the computation
+   * will be markedly easier than importing it — so it gets a mechanical guard
+   * now, while there is still exactly one implementation to pin.
+   *
+   * FALSIFIABILITY — this is what the CONTROL case is for. A detector that never
+   * fires is indistinguishable from a tree that genuinely has no fork, so a
+   * passing calibration proves nothing on its own. A deliberately FORKED module
+   * is therefore kept PERMANENTLY below and fed to the SAME detector, which must
+   * catch it. The real tree is never mutated to prove this: per CLAUDE.md
+   * "Proving a guard is falsifiable", git-sync sweeps the whole tree on a timer
+   * and can commit a mutant left behind by a probe that dies mid-run.
+   */
+  const PARTITION_DEFINITION =
+    /export\s+(?:async\s+)?function\s+(?:plan|execute|render)PredicatePartition\b/;
+
+  /** Pure + injectable, so the forked control is ordinary data and never a temp file. */
+  function modulesDefiningPartition(
+    files: ReadonlyArray<{ path: string; source: string }>,
+  ): string[] {
+    return files
+      .filter((file) => PARTITION_DEFINITION.test(file.source))
+      .map((file) => file.path)
+      .sort();
+  }
+
+  function repoRoot(): string {
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+  }
+
+  /**
+   * Candidate prefilter. Reading all ~12.7k operator-core TS files would make this
+   * a slow test for no gain: any module DEFINING one of these functions must also
+   * contain the literal `PredicatePartition`, so grepping that string cannot miss
+   * a fork — it only shrinks the set actually parsed. Scope is the superproject
+   * (submodules are not searched); operator-core lives here, so that is the right
+   * radius for this claim.
+   */
+  function candidateFiles(): Array<{ path: string; source: string }> {
+    const root = repoRoot();
+    const listed = execFileSync(
+      'git',
+      ['grep', '-l', '--untracked', 'PredicatePartition', '--', '*.ts'],
+      { encoding: 'utf8', cwd: root },
+    )
+      .split('\n')
+      .filter(Boolean);
+    // Positive control on the INSTRUMENT: if git grep silently searched the wrong
+    // tree or returned nothing, every assertion below would pass vacuously — which
+    // reads exactly like "no fork exists". Fail loudly instead.
+    expect(
+      listed,
+      'instrument check: git grep must at least find the primitive it is auditing',
+    ).toContain('packages/operator-core/lib/pg-read-query.ts');
+    return listed.map((path) => ({ path, source: readFileSync(join(root, path), 'utf8') }));
+  }
+
+  it('calibration — the real tree defines the partition computation in exactly ONE module', () => {
+    expect(modulesDefiningPartition(candidateFiles())).toEqual([
+      'packages/operator-core/lib/pg-read-query.ts',
+    ]);
+  });
+
+  it('CONTROL — a forked second implementation is CAUGHT (this is what makes the guard falsifiable)', () => {
+    // This fixture's own source lives INSIDE the tree the detector scans, so a
+    // naively-spelled literal SELF-MATCHES and reports a fork that does not
+    // exist — the same trap as `pgrep -f <pattern>` matching its own argv.
+    // Observed: the first run of this block failed the calibration above,
+    // naming this very file as the "second implementation". Splitting the
+    // keyword keeps the SOURCE unmatchable while the RUNTIME string stays
+    // byte-identical to a real fork.
+    const exportFn = 'export ' + 'function ';
+    const forked = {
+      path: 'packages/operator-core/lib/claim-spec/partition-preview.ts',
+      source: [
+        '// Deliberately wrong, and deliberately permanent: a second caller that',
+        '// re-derives the partition instead of importing the shared primitive.',
+        `${exportFn}planPredicatePartition(rawSql: string) {`,
+        '  return rawSql.includes("WHERE") ? { dimensions: [] } : null;',
+        '}',
+      ].join('\n'),
+    };
+    // Guard the guard: if that split ever stops producing a fork-shaped string,
+    // this control would feed the detector something it cannot match and pass
+    // VACUOUSLY — a green that proves nothing, which is the exact failure the
+    // control exists to rule out.
+    expect(
+      PARTITION_DEFINITION.test(forked.source),
+      'the forked fixture must genuinely look like a second implementation',
+    ).toBe(true);
+    const defining = modulesDefiningPartition([...candidateFiles(), forked]);
+    expect(
+      defining,
+      'the detector must FLAG a second implementation, not tolerate it',
+    ).toContain(forked.path);
+    expect(defining).toHaveLength(2);
+  });
+
+  it('the dev:pg_query caller reaches the partition ONLY through the shared primitive', () => {
+    const caller = readFileSync(
+      join(repoRoot(), 'packages/operator-core/lib/agent-tools/dev/pg_query.ts'),
+      'utf8',
+    );
+    expect(
+      PARTITION_DEFINITION.test(caller),
+      'the caller must import the primitive, never re-derive it',
+    ).toBe(false);
+    expect(caller).toMatch(/buildExecutedPartitionAdvisory/);
   });
 });
