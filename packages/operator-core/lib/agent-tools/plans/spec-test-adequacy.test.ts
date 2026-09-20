@@ -1162,6 +1162,42 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings.falsifiability.suggestion).toContain('collected=unset');
   });
 
+  // WI-10002082 (RETRACTED fix — this guard is what replaced it). A branch reporting "your binding
+  // was stranded by the read projection" was added here and removed: it is unreachable, because
+  // supersession preserves `evidenceKind` on BOTH routes (`latestLogicalEvidence` keys on it, and
+  // attempt-supersession matches `scope.key`, whose `registrationKey` carries it). A dropped
+  // mutation row therefore always leaves a same-kind survivor for the two REAL causes to report,
+  // so the bare-absence fall-through is true whenever it prints. Make supersession kind-agnostic
+  // and this test fails — at which point that fall-through becomes a false absence and the removed
+  // branch has to come back.
+  it('projection supersession cannot strand a mutation binding', () => {
+    const mutationAttempt = attempt(1).map((row) => ({ ...row, evidenceKind: 'mutation' as const }));
+
+    // Cross-kind: a newer wider-source TEST rerun does NOT retire a mutation attempt.
+    const testRerun = attempt(2, { sources: ['src/reconnect.ts', 'src/reporter.ts'] });
+    expect(activeSpecEvidence([...mutationAttempt, ...testRerun])).toContain(mutationAttempt[1]!);
+
+    // Same-kind: supersession DOES apply — and the survivor is itself a mutation row, so the
+    // dropped binding is never the only mutation binding in the clause population.
+    const newerMutation = attempt(2, { sources: ['src/reconnect.ts', 'src/reporter.ts'] }).map(
+      (row) => ({ ...row, evidenceKind: 'mutation' as const }),
+    );
+    const sameKind = activeSpecEvidence([...mutationAttempt, ...newerMutation]);
+    expect(sameKind).not.toContain(mutationAttempt[1]!);
+    expect(sameKind.some((row) => row.evidenceKind === 'mutation')).toBe(true);
+
+    // Corollary: the refusal never reports a bare absence while a selector-matching mutation
+    // binding exists in the table.
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['integration test'] }),
+      evidence: [...mutationAttempt, ...newerMutation],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings.falsifiability.evidence).not.toContain(
+      'no mutation or counterexample binding is bound',
+    );
+  });
+
   it('never lets evidence for another revision establish traceability', () => {
     const historical = evidence({ specRevision: 0 });
     const result = evaluateSpecTestAdequacy({
