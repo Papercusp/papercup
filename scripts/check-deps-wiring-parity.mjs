@@ -845,7 +845,17 @@ const FAIL_BASELINE = new Map([
   // consumption-based and are intentionally omitted below.
   ['BootHarnessOpts|packages/operator-core/lib/sync/hyperbee/perf/scenarios/merge-cost.ts|verifyBindingOverride', OVERRIDE_WITH_REAL_DEFAULT],
   ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/close.ts|reach,revive', VERB_SPECIFIC_BINDING],
-  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/decline.ts|mintGraduationWorkItem,settleConversation', VERB_SPECIFIC_BINDING],
+  // 2026-09-20 — RE-KEYED, not a new exception (row count unchanged, scope strictly
+  // narrower). `settleConversation` is now wired in decline.ts:63 (a terminal decline
+  // carries a typed `declined` consult_state but must also settle the coarse
+  // coord_conversations projection), which shrank this site's missing-seam SET. Because
+  // a baseline key encodes that whole set, wiring one deliberately-unwired seam orphans
+  // the surviving adjudication for the other — so the same VERB_SPECIFIC_BINDING ruling
+  // is re-keyed onto the narrowed finding. `mintGraduationWorkItem` remains correctly
+  // unwired here: it is declared OPTIONAL (consult-verbs-core.ts:146), is referenced
+  // only inside consultCloseCore (:776/:783), and its absence is guarded structurally
+  // by a `graduate_unavailable` refusal rather than silently ignored.
+  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/decline.ts|mintGraduationWorkItem', VERB_SPECIFIC_BINDING],
   ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/reply.ts|mintGraduationWorkItem,settleConversation', VERB_SPECIFIC_BINDING],
   ['GatewayServiceOptions|packages/operator-core/lib/inference-gateway/load-test.ts|resolveLocalBackends', HARNESS_VS_PRODUCTION],
   ['GatewayServiceOptions|packages/operator-core/lib/inference-gateway/sidecar-main.ts|log', HARNESS_VS_PRODUCTION],

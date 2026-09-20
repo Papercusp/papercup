@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 895,
+  "count": 896,
   "tools": [
     {
       "name": "ablation:report",
@@ -33717,6 +33717,44 @@
         "when": "Refine filed work-items: clarify text, re-rate severity, correct kind (bug↔change controls lane), attach a feature, adopt/clear a goal, or backfill plan_item provenance for a plan-scoped lane. Batch via items:[…].",
         "notWhen": "Use set_state for lifecycle, amend for structural decisions, comment for notes, or tag for topics.",
         "chaining": "work_items:get → work_items:update { id, …fields }."
+      }
+    },
+    {
+      "name": "work_items:withdraw",
+      "http": {
+        "path": "/api/agent-tools/work_items/withdraw",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "RETRACT a filing in one call: flips the work-item to the terminal `dropped` state AND releases your claim on it, so a withdrawn row stops occupying your lane. Marks the row as a retraction (not an ordinary drop) via a `withdrawn:` completion ref. A withdrawn row is absent from work_items:claimable and scheduler:get_next by construction. Refuses an item held by someone else (pass force:true to override) and an already-terminal item. Pass `id` for one or `ids` for several. Returns { ok, results:[{ ok, id, previousAssignee?, error? }], counts }.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You filed a work-item you should not have — a duplicate, a mistaken bug, an observation that turned out to be wrong, a filing whose premise you have since retracted — and you want it off the board AND off your lane in one call.",
+        "notWhen": "The work was genuinely DONE (use work_items:complete, which records evidence) — or you merely want to hand it to someone else while it stays open (that is a release/reassign, not a withdrawal).",
+        "chaining": "work_items:create → (premise falsified) → work_items:withdraw. Verify with work_items:claimable — the row is absent."
       }
     },
     {
