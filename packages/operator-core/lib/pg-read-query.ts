@@ -152,6 +152,24 @@ const SCHEMA_HINT_CACHE_TTL_MS = 5 * 60_000;
  * literal/comment-stripped text — best-effort: a quoted identifier or exotic
  * clause simply doesn't match (the guards then stay silent), never throws.
  */
+/**
+ * `FROM` introduces a COLUMN rather than a relation in two shapes:
+ *   - `IS [NOT] DISTINCT FROM col` — the comparison operator; `DISTINCT` sits
+ *     immediately before the `FROM`, which in valid SQL happens only here
+ *     (`SELECT DISTINCT x FROM t` always has the select-list between them).
+ *   - the SQL-standard function forms `EXTRACT(field FROM src)`,
+ *     `SUBSTRING(s FROM n)`, `TRIM(... FROM s)`, `OVERLAY(... FROM n)`, where
+ *     the `FROM` sits inside that function's still-open parenthesis.
+ * The lookback is windowed so this stays linear on long statements; both shapes
+ * put their `FROM` within a few dozen characters of the giveaway token.
+ */
+const FROM_NOT_A_CLAUSE_RE =
+  /(?:\bdistinct\s*$)|(?:\b(?:extract|substring|trim|overlay)\s*\([^()]*$)/i;
+
+function fromIsNotAClause(stripped: string, index: number): boolean {
+  return FROM_NOT_A_CLAUSE_RE.test(stripped.slice(Math.max(0, index - 200), index));
+}
+
 export function extractReferencedTables(rawSql: string): string[] {
   const stripped = stripSqlLiteralsAndComments(rawSql);
   const out: string[] = [];
@@ -160,10 +178,17 @@ export function extractReferencedTables(rawSql: string): string[] {
   // so pg-mutate-query's tenant gate sees the table being written, not just
   // FROM/JOIN sources. A `SELECT … FOR UPDATE OF t` capture lands on a keyword
   // (`of`/`nowait`/`skip`) — filtered below rather than mis-read as a table.
-  const re = /\b(?:from|join|update|into)\s+(?:only\s+)?([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?)/gi;
+  const re = /\b(from|join|update|into)\s+(?:only\s+)?([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?)/gi;
   const notATable = new Set(['of', 'nowait', 'skip', 'set', 'select']);
   for (let m = re.exec(stripped); m && out.length < GUARD_MAX_TABLES; m = re.exec(stripped)) {
-    const name = m[1].toLowerCase();
+    // WI-10002041: `FROM` is not always a clause. `IS [NOT] DISTINCT FROM col`
+    // and the SQL-standard function forms — EXTRACT(field FROM src),
+    // SUBSTRING(s FROM n), TRIM(... FROM s), OVERLAY(... FROM n) — all put a
+    // COLUMN after FROM. Reading it as a relation is wrong for every consumer,
+    // and callers that take tables[0] as the relation (planPredicatePartition)
+    // then render `FROM <column-name>`, i.e. SQL that cannot run.
+    if (m[1].toLowerCase() === 'from' && fromIsNotAClause(stripped, m.index)) continue;
+    const name = m[2].toLowerCase();
     if (notATable.has(name)) continue;
     if (seen.has(name)) continue;
     seen.add(name);

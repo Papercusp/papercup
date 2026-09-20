@@ -4139,3 +4139,42 @@ describe('AUTO-BAR-R-001-P-002 — ONE partition primitive, never two implementa
     expect(caller).toMatch(/buildExecutedPartitionAdvisory/);
   });
 });
+
+describe('extractReferencedTables — `FROM` that is not a clause (WI-10002041)', () => {
+  // Reported by a peer against the partition advisory: the FROM inside
+  // `IS DISTINCT FROM <col>` was read as a FROM clause, so tables[0] became a
+  // COLUMN and planPredicatePartition rendered `FROM <column-name>` — SQL that
+  // cannot run. The defect is in the SHARED extractor, not the partition code,
+  // so it is fixed there (every consumer benefits) and asserted here as a CLASS
+  // rather than only the one reported spelling.
+  const REAL = 'harness_shared.work_items';
+
+  it.each([
+    ['IS DISTINCT FROM', `SELECT count(*) FROM ${REAL} WHERE a IS DISTINCT FROM b`],
+    ['IS NOT DISTINCT FROM', `SELECT count(*) FROM ${REAL} WHERE a IS NOT DISTINCT FROM b`],
+    ['EXTRACT', `SELECT EXTRACT(epoch FROM created_ts) FROM ${REAL}`],
+    ['SUBSTRING', `SELECT SUBSTRING(title FROM 1 FOR 4) FROM ${REAL}`],
+    ['TRIM', `SELECT TRIM(BOTH 'x' FROM title) FROM ${REAL}`],
+    ['OVERLAY', `SELECT OVERLAY(title PLACING 'z' FROM 2) FROM ${REAL}`],
+  ])('%s contributes no phantom relation', (_label, sql) => {
+    expect(extractReferencedTables(sql)).toEqual([REAL]);
+  });
+
+  // Over-correction guard: `DISTINCT` also appears in perfectly ordinary
+  // positions, and a fix that suppressed those would silently blind every
+  // tenant/scope advisory that depends on this extractor.
+  it('does NOT over-correct — ordinary DISTINCT still yields the real relation', () => {
+    expect(extractReferencedTables(`SELECT DISTINCT title FROM ${REAL}`)).toEqual([REAL]);
+    expect(extractReferencedTables(`SELECT count(DISTINCT title) FROM ${REAL}`)).toEqual([REAL]);
+    expect(extractReferencedTables(`SELECT DISTINCT ON (kind) kind FROM ${REAL}`)).toEqual([REAL]);
+  });
+
+  it('the partition advisory names the RELATION, never a column (the reported symptom)', () => {
+    const plan = planPredicatePartition(
+      `SELECT count(*) FROM ${REAL} WHERE status IS DISTINCT FROM 'open' AND item_kind = 'bug'`,
+    );
+    expect(plan, 'this read qualifies for a partition, so a null plan means the test is vacuous')
+      .not.toBeNull();
+    expect(plan!.relation).toBe(REAL);
+  });
+});
