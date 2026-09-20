@@ -753,13 +753,55 @@ propagate_test_run_scope() {
   fi
 }
 
+# ── the in-tree DIRTY-WINDOW ceiling (EI-23809205858633494) ──────────────────
+# --in-tree holds the TRACKED file mutated for exactly as long as the guard
+# child runs, so every second inside that child that is NOT measurement is pure
+# sweep-race risk. Two things extend it while measuring nothing:
+#
+#   1. QUEUEING. The documented --test command is `npm run test:file`, which is
+#      pc-heavy-wrapped (scripts/pc-heavy.sh — a host-wide counting semaphore
+#      that WAITS for other agents' heavy runs to drain). MEASURED 2026-09-20:
+#      it sat in that admission queue 6+ MINUTES without starting a single test
+#      while a mutated packages/operator-core file sat in the shared tree; the
+#      same file through the direct router took ~25s. The queue is unbounded by
+#      design, so the mutation window inherited an unbounded wait — and the
+#      probe's whole reason to exist is keeping that window SHORT.
+#   2. A genuinely slow, or hung, guard command.
+#
+# (1) is removed by exporting PC_HEAVY_BYPASS=1 into the in-tree guard child.
+# That is pc-heavy's own sanctioned "this command is never made to QUEUE" door,
+# and it has an exact precedent: the RELEASE GATE takes the same exemption
+# (PC_HEAVY_RELEASE_GATE, pc-heavy.sh) for the same reason — waiting there
+# converts into a different, worse failure. It exempts from ADMISSION only.
+#
+# (2) is bounded by running the in-tree guard under `timeout`. The default
+# matches the 600s file-lock TTL the CLAUDE.md recipe prescribes: past it the
+# lock the caller was told to hold has lapsed anyway, so the sweep exclusion the
+# window depends on is already gone. MUTATION_PROBE_WINDOW_MAX_SEC overrides it;
+# 0 disables it.
+#
+# COPY-OUT MODE IS DELIBERATELY UNTOUCHED — it has no dirty window at all, so it
+# stays a well-behaved queued citizen and keeps whatever runtime it needs.
+GUARD_MAX_SEC=0
+if [ "$IN_TREE" -eq 1 ]; then
+  GUARD_MAX_SEC="${MUTATION_PROBE_WINDOW_MAX_SEC:-600}"
+  case "$GUARD_MAX_SEC" in
+    ''|*[!0-9]*)
+      die "MUTATION_PROBE_WINDOW_MAX_SEC must be a whole number of seconds (got: '${MUTATION_PROBE_WINDOW_MAX_SEC}'). Use 0 to disable the ceiling." ;;
+  esac
+  if [ "$GUARD_MAX_SEC" -gt 0 ] && ! command -v timeout >/dev/null 2>&1; then
+    log "⚠️  coreutils \`timeout\` is not on PATH — the in-tree dirty window will run UNBOUNDED. Prefer copy-out mode."
+    GUARD_MAX_SEC=0
+  fi
+fi
+
 # Run a guard in an interruptible child and preserve its output for the
 # machine-readable verdict below. The phase marker lets a guard's own test
 # fixture skip an intentionally slow baseline setup without weakening the
 # production command shape; it is also useful to test that the baseline and
 # mutant really went through the same invocation path.
 run_guard() {
-  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt
+  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt guard_started guard_elapsed
   for attempt in 1 2; do
     log "running $label: $cmd"
     (
@@ -770,6 +812,23 @@ run_guard() {
       # the caller's environment.
       export PAPERCUSP_MUTATION_PROBE=1
       export PAPERCUSP_MUTATION_MODE="$HISTORICAL_MODE"
+      # See the DIRTY-WINDOW ceiling above. Exported for BOTH phases in in-tree
+      # mode and never for the mutant alone: the baseline and the mutant have to
+      # go through the same invocation path, or the comparison the whole verdict
+      # rests on is between two different things.
+      if [ "$IN_TREE" -eq 1 ]; then
+        export PC_HEAVY_BYPASS=1
+      fi
+      # Plain assignment, not `local`: this is already a subshell, so it cannot
+      # leak, and an empty array must stay empty-safe under `set -u`.
+      guard_prefix=()
+      if [ "$GUARD_MAX_SEC" -gt 0 ]; then
+        # No --foreground: that omission is what lets `timeout` put the command
+        # in its OWN process group and signal the GROUP, so a runner's
+        # grandchildren (npm -> node -> vitest workers) are reaped with it
+        # rather than orphaned against a file this script is about to restore.
+        guard_prefix=(timeout --signal=TERM --kill-after=20 "$GUARD_MAX_SEC")
+      fi
       propagate_test_run_scope
       if [ "$FAKE_DESTRUCTIVE" -eq 1 ]; then
         # PATH-level interception, scoped to the supervised child only.
@@ -785,16 +844,61 @@ run_guard() {
         printf '%s\n' "$cmd" >"$SCRATCH/guard-cmd.sh"
         # --dev replaces /dev, hiding subjects stored in a tmpfs TMPDIR under /dev/shm.
         # Preserve that source tree read-only before granting the two writable binds.
-        exec bwrap --ro-bind / / --dev /dev --ro-bind-try /dev/shm /dev/shm --proc /proc \
+        exec ${guard_prefix[@]+"${guard_prefix[@]}"} \
+          bwrap --ro-bind / / --dev /dev --ro-bind-try /dev/shm /dev/shm --proc /proc \
           --bind "$SANDBOX_ROOT" "$SANDBOX_ROOT" --bind "$SCRATCH" "$SCRATCH" \
           --die-with-parent -- bash "$SCRATCH/guard-cmd.sh"
+      fi
+      if [ "${#guard_prefix[@]}" -gt 0 ]; then
+        exec "${guard_prefix[@]}" bash -c "$cmd"
       fi
       eval "$cmd"
     ) >"$output" 2>&1 &
     CHILD=$!
+    guard_started="$SECONDS"
     wait "$CHILD"
     rc=$?
     CHILD=""
+    guard_elapsed=$(( SECONDS - guard_started ))
+    # 124 is `timeout`'s own "I killed it" status; 137 is what it returns when
+    # --kill-after had to escalate to SIGKILL (MEASURED 2026-09-20 — NOT 124, as
+    # the coreutils docs read at a glance). 137 is AMBIGUOUS on its own: the
+    # OOM-killer lands there too. So the ceiling is credited only when the run
+    # ALSO actually reached it. A 5-second SIGKILL under a 600s ceiling stays an
+    # ordinary nonzero result and flows into the normal verdict logic, instead
+    # of being reported as a window overrun that never happened.
+    if [ "$GUARD_MAX_SEC" -gt 0 ] && { [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; } \
+       && [ "$guard_elapsed" -ge "$GUARD_MAX_SEC" ]; then
+      cat "$output"
+      # `set -u` is on and TARGET_MODE is assigned AFTER two of run_guard's five
+      # call sites, so default it rather than risk an "unbound variable" abort
+      # inside the one path whose entire job is reporting cleanly.
+      printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=-1 guard_exit=%d window_exceeded_sec=%d phase=%s\n' \
+        "$EXPECT" "${TARGET_MODE:-in-tree:pre-mutation}" "$rc" "$guard_elapsed" "$phase"
+      die "the $label run hit the in-tree DIRTY-WINDOW ceiling (${GUARD_MAX_SEC}s) and was killed, so this probe has NO verdict — not 'caught', not 'survived'.
+
+      The tracked file is restored (the trap proves it below), but NOTHING was
+      measured. Do not read this as a weak guard.
+
+      WHY THE CEILING EXISTS: --in-tree holds the TRACKED file mutated for
+      exactly as long as this command runs, and git-sync sweeps the whole tree
+      on a short cadence. An unbounded command is an unbounded window.
+
+      WHAT TO DO:
+        * If it was QUEUED rather than working, read the log above — in-tree
+          guard children now carry PC_HEAVY_BYPASS=1, so a pc-heavy admission
+          wait should no longer be what ate the time.
+        * If it is genuinely slow, use the DIRECT test router instead of the
+          pc-heavy-wrapped npm script:
+              node scripts/test-files.mjs <path>     (not: npm run test:file)
+        * If it genuinely needs longer, say so explicitly:
+              MUTATION_PROBE_WINDOW_MAX_SEC=<seconds> scripts/mutation-probe.sh ...
+          (0 disables the ceiling.) Then hold the file lock at least that long:
+          the 600s default IS the CLAUDE.md lock TTL, so past it the sweep
+          exclusion you were told to take has already lapsed.
+        * BEST: drop --in-tree. Copy-out mode has no window, so it has no
+          ceiling and no race to accept."
+    fi
     if [ "$attempt" -eq 1 ] && [ "$rc" -ne 0 ] && detect_pc_heavy_marker_collision "$output"; then
       log "$label hit a transient pc-heavy after-ready marker EEXIST (harness noise on the shared /tmp marker dir, zero tests measured) — retrying once with a fresh marker path"
       continue

@@ -370,3 +370,165 @@ describe('mutation-probe.sh unparseable-mutant gate', () => {
     expect(out).not.toContain('mutant_parse=ok');
   });
 });
+
+/**
+ * EI-23809205858633494 — the DIRTY-WINDOW ceiling.
+ *
+ * `--in-tree` holds the TRACKED file mutated for exactly as long as the guard
+ * child runs, so time spent in that child that is not MEASUREMENT is pure
+ * sweep-race risk. The documented `--test` command (`npm run test:file`) is
+ * pc-heavy-wrapped, and pc-heavy is a host-wide counting semaphore that WAITS
+ * for other agents' heavy runs to drain: measured 2026-09-20, it sat in that
+ * queue 6+ minutes without starting a single test while a mutated
+ * operator-core file sat in the shared tree (~25s through the direct router).
+ * The window had inherited an unbounded wait from a queue that has nothing to
+ * do with the probe.
+ *
+ * Two halves, each asserted below in both directions:
+ *   - in-tree guard children export PC_HEAVY_BYPASS=1 (copy-out does NOT —
+ *     it has no window, so it stays a well-behaved queued citizen);
+ *   - the in-tree guard runs under a wall-clock ceiling, and tripping it is a
+ *     harness-error, never a verdict.
+ */
+describe('mutation-probe.sh in-tree dirty-window ceiling', () => {
+  // Echoes the inherited value so the assertion reads the CHILD's environment
+  // rather than this test process's, then behaves like the ordinary subject
+  // guard so the surrounding verdict logic is exercised unchanged.
+  const REPORT_BYPASS = 'echo "BYPASS=[${PC_HEAVY_BYPASS:-unset}]"; grep -q GOOD {}';
+
+  it('exports PC_HEAVY_BYPASS=1 into in-tree guard children, so the window cannot inherit an admission queue', () => {
+    const { status, out } = runProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', REPORT_BYPASS,
+      '--in-tree',
+      '--accept-sweep-race',
+    ]);
+
+    expect(status).toBe(0);
+    expect(out).toContain('BYPASS=[1]');
+    expect(out).not.toContain('BYPASS=[unset]');
+    // The bypass must not disturb the thing the probe exists to produce, and
+    // the default 600s ceiling must not fire on an ordinary fast guard.
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(out).not.toContain('window_exceeded_sec=');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it('leaves COPY-OUT mode queueing normally — no window means no reason to skip admission', () => {
+    const { status, out } = runProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', REPORT_BYPASS,
+    ]);
+
+    expect(status).toBe(0);
+    expect(out).toContain('BYPASS=[unset]');
+    expect(out).not.toContain('BYPASS=[1]');
+    expect(out).toContain('target=copy-out');
+  });
+
+  it('applies the bypass to the BASELINE too, so both phases share one invocation path', () => {
+    // The baseline runs before the mutation. If only the mutant child were
+    // bypassed, the verdict would compare two differently-scheduled runs — so
+    // assert the marker appears for BOTH phases, not just once.
+    const { status, out } = runProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', REPORT_BYPASS,
+      '--in-tree',
+      '--accept-sweep-race',
+    ]);
+
+    expect(status).toBe(0);
+    expect(out.match(/BYPASS=\[1\]/g) ?? []).toHaveLength(2);
+  });
+
+  it('kills a hung BASELINE at the ceiling — before anything is mutated — and reports no verdict', () => {
+    const { status, out } = runProbe(
+      [
+        '--file', subject,
+        '--mutate', 's/GOOD/BAD/',
+        '--test', 'sleep 60',
+        '--in-tree',
+        '--accept-sweep-race',
+      ],
+      { MUTATION_PROBE_WINDOW_MAX_SEC: '2' },
+    );
+
+    expect(status).toBe(2);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=harness-error');
+    expect(out).toContain('window_exceeded_sec=');
+    expect(out).toContain('phase=baseline');
+    expect(out).toContain('DIRTY-WINDOW ceiling');
+    // Tripping in the baseline phase is the BEST outcome available: the tree
+    // was never dirtied at all.
+    expect(out).not.toContain('mutant applied:');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it('refuses to score a KILLED mutant run as a verdict, and restores the file', () => {
+    // THE CASE THE CEILING EXISTS FOR. The mutant path here would exit 0 if
+    // allowed to finish — i.e. the honest verdict is SURVIVED. `timeout` kills
+    // it at the ceiling with rc=124, and rc!=0 is precisely what the ordinary
+    // verdict logic reads as "the guard CAUGHT the mutant". So a naive ceiling
+    // would not merely be imprecise, it would INVERT the verdict and print
+    // "the guard is falsifiable ✓" about a run that reached no assertion.
+    const { status, out } = runProbe(
+      [
+        '--file', subject,
+        '--mutate', 's/GOOD/BAD/',
+        '--test', 'grep -q GOOD {} || { sleep 60; exit 0; }',
+        '--in-tree',
+        '--accept-sweep-race',
+      ],
+      { MUTATION_PROBE_WINDOW_MAX_SEC: '2' },
+    );
+
+    expect(status).toBe(2);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=harness-error');
+    expect(out).toContain('phase=mutant');
+    expect(out).not.toContain('verdict=caught');
+    expect(out).not.toContain('verdict=survived');
+    // The baseline DID run here, so the mutation really was applied — which
+    // makes the restore the load-bearing half of this case.
+    expect(out).toContain('mutant applied:');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it('honours MUTATION_PROBE_WINDOW_MAX_SEC=0 as an explicit opt-out rather than a 0-second ceiling', () => {
+    // A numeric-looking 0 must not be read as "kill immediately" — that would
+    // turn the opt-out into the harshest possible setting.
+    const { status, out } = runProbe(
+      [
+        '--file', subject,
+        '--mutate', 's/GOOD/BAD/',
+        '--test', 'sleep 2; grep -q GOOD {}',
+        '--in-tree',
+        '--accept-sweep-race',
+      ],
+      { MUTATION_PROBE_WINDOW_MAX_SEC: '0' },
+    );
+
+    expect(status).toBe(0);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(out).not.toContain('window_exceeded_sec=');
+  });
+
+  it('refuses a non-numeric ceiling instead of silently falling back to unbounded', () => {
+    const { status, out } = runProbe(
+      [
+        '--file', subject,
+        '--mutate', 's/GOOD/BAD/',
+        '--test', 'grep -q GOOD {}',
+        '--in-tree',
+        '--accept-sweep-race',
+      ],
+      { MUTATION_PROBE_WINDOW_MAX_SEC: 'abc' },
+    );
+
+    expect(status).toBe(2);
+    expect(out).toContain('MUTATION_PROBE_WINDOW_MAX_SEC must be a whole number');
+    expect(out).not.toContain('mutant applied:');
+  });
+});
