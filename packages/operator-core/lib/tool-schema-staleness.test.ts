@@ -115,6 +115,10 @@ describe('toolSchemaStaleness', () => {
 describe('pathStaleness (capture subject paths)', () => {
   it('reports the commits touching a path after the serving build', async () => {
     const git = gitFrom({});
+    // Call 1 is the `.gitmodules` probe (EI-23812772755803731): an empty answer means
+    // "no submodules", which routes this path down the plain superproject branch.
+    // Kept explicit rather than loosened — the ORDER is part of the contract now.
+    git.mockResolvedValueOnce('');
     git.mockResolvedValueOnce(`${BLOB_B}\n${BLOB_A}`);
     const verdict = await pathStaleness('packages/operator-core/lib/x.ts', {
       repoRoot: ROOT,
@@ -187,6 +191,142 @@ describe('pathStaleness (capture subject paths)', () => {
     expect(hint).not.toContain('same.ts');
     expect(hint!.length).toBeLessThan(600);
     expect(hint).not.toContain('\n');
+  });
+});
+
+/**
+ * EI-23812772755803731 — the submodule false-negative.
+ *
+ * The superproject tracks a submodule as ONE gitlink, so `git log` on a path INSIDE one
+ * is ALWAYS empty, however many commits that submodule really has. That empty string is
+ * indistinguishable from a genuine "no newer commit", and the code recorded it as exactly
+ * that: a confident `current`. It failed in the dangerous direction — never over-warning,
+ * silently under-warning — across the whole `libs/generic/*` borrowable tier and EVERY db
+ * migration under `libs/papercusp/libs/db/sql`.
+ *
+ * Measured at the time: `git log -- libs/generic/tooldef/src/corrected-call.ts` from the
+ * superproject returned 0 commits; the same file inside the submodule returned 8; and a
+ * superproject control path returned 29 — so the instrument worked and failed only here.
+ *
+ * The stubs below model that real behaviour: a bare `log` (args[0] === 'log') answers ''.
+ * That is what makes these guards falsifiable — revert the fix and the verdict silently
+ * becomes `current` again, which is a MISSING WARNING and produces no error of its own.
+ */
+describe('pathStaleness (submodule-backed paths)', () => {
+  const SUB = 'libs/generic/tooldef';
+  const PIN_OLD = '1111111111111111111111111111111111111111';
+  const PIN_NEW = '2222222222222222222222222222222222222222';
+
+  function submoduleGit(over: { lsTree?: Record<string, string>; subLog?: string | null } = {}) {
+    const lsTree = over.lsTree ?? {
+      [DEPLOYED]: `160000 commit ${PIN_OLD}\t${SUB}`,
+      staging: `160000 commit ${PIN_NEW}\t${SUB}`,
+    };
+    return vi.fn(async (args: string[]) => {
+      if (args[0] === 'config') return `submodule.tooldef.path ${SUB}`;
+      if (args[0] === 'ls-tree') return lsTree[String(args[1])] ?? '';
+      if (args[0] === 'log') return ''; // the superproject log: always empty here
+      if (args[0] === '-C') return over.subLog === undefined ? `${BLOB_B}\n${BLOB_A}` : over.subLog;
+      return '';
+    });
+  }
+
+  it('measures the range INSIDE the submodule instead of reporting a false current', async () => {
+    const git = submoduleGit();
+    const relPath = `${SUB}/src/corrected-call.ts`;
+    const verdict = await pathStaleness(relPath, { repoRoot: ROOT, deployedSha: () => DEPLOYED, git });
+
+    expect(verdict).toEqual({
+      state: 'stale',
+      relPath,
+      deployedSha: DEPLOYED,
+      treeRef: 'staging',
+      newerCommits: [BLOB_B, BLOB_A],
+    });
+    // Bounded by the two GITLINK PINS, run with `-C <submodule>`, and asking for a
+    // submodule-RELATIVE path. All three are load-bearing: drop any one and the read
+    // silently answers about the wrong object.
+    expect(git).toHaveBeenCalledWith([
+      '-C',
+      SUB,
+      'log',
+      '--format=%H',
+      `${PIN_OLD}..${PIN_NEW}`,
+      '--',
+      'src/corrected-call.ts',
+    ]);
+    // The superproject range must never be what decides a submodule-backed path — that
+    // is the exact read whose empty answer caused the false `current`.
+    expect(git).not.toHaveBeenCalledWith(expect.arrayContaining([`${DEPLOYED}..staging`]));
+  });
+
+  it('treats equal gitlink pins as a genuine current', async () => {
+    const git = submoduleGit({
+      lsTree: {
+        [DEPLOYED]: `160000 commit ${PIN_OLD}\t${SUB}`,
+        staging: `160000 commit ${PIN_OLD}\t${SUB}`,
+      },
+      subLog: '',
+    });
+    const verdict = await pathStaleness(`${SUB}/src/x.ts`, {
+      repoRoot: ROOT,
+      deployedSha: () => DEPLOYED,
+      git,
+    });
+    // The serving build and the tree pin the SAME submodule commit, so nothing the build
+    // runs is behind. A later commit in the submodule that the superproject has not
+    // pinned yet is outside `deployedSha..treeRef` by construction.
+    expect(verdict.state).toBe('current');
+  });
+
+  it('keeps an absent gitlink unknown rather than a measured zero', async () => {
+    const git = submoduleGit({ lsTree: {} }); // ls-tree succeeds but finds no entry
+    const verdict = await pathStaleness(`${SUB}/src/x.ts`, {
+      repoRoot: ROOT,
+      deployedSha: () => DEPLOYED,
+      git,
+    });
+    expect(verdict).toEqual({
+      state: 'unknown',
+      relPath: `${SUB}/src/x.ts`,
+      reason: 'submodule-pin-unresolved',
+    });
+  });
+
+  it('separates an unreadable git read from a definitively absent pin', async () => {
+    const git = vi.fn(async (args: string[]) =>
+      args[0] === 'config' ? `submodule.tooldef.path ${SUB}` : null,
+    );
+    const verdict = await pathStaleness(`${SUB}/src/x.ts`, {
+      repoRoot: ROOT,
+      deployedSha: () => DEPLOYED,
+      git,
+    });
+    expect(verdict).toEqual({
+      state: 'unknown',
+      relPath: `${SUB}/src/x.ts`,
+      reason: 'git-unreadable',
+    });
+  });
+
+  it('leaves a path OUTSIDE every submodule on the plain superproject range', async () => {
+    const git = submoduleGit({ subLog: null });
+    const verdict = await pathStaleness('packages/operator-core/lib/x.ts', {
+      repoRoot: ROOT,
+      deployedSha: () => DEPLOYED,
+      git,
+    });
+    // `.gitmodules` lists a submodule, but this path is not inside it, so the behaviour
+    // must be byte-identical to before: the superproject range, and an empty log is then
+    // a legitimately measured `current`.
+    expect(verdict.state).toBe('current');
+    expect(git).toHaveBeenCalledWith([
+      'log',
+      '--format=%H',
+      `${DEPLOYED}..staging`,
+      '--',
+      'packages/operator-core/lib/x.ts',
+    ]);
   });
 });
 

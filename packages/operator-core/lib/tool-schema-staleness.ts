@@ -54,7 +54,15 @@
 import { projectedToolSourceFile } from '@papercusp/tooldef';
 
 import { getBuildInfo } from './build-info';
-import { blobAtCommit, gitReadForRepo, type GitRead } from './candidate-contains';
+import {
+  blobAtCommit,
+  containingSubmodulePath,
+  gitReadForRepo,
+  gitReadInSubdir,
+  submoduleGitlinkAt,
+  submodulePrefixes,
+  type GitRead,
+} from './candidate-contains';
 import { realGit } from './git-pipeline-position';
 import { integrationRoot } from './release-deploy-launch';
 
@@ -67,7 +75,15 @@ export type StalenessUnknownReason =
   /** The tool's defining file is not inside the repo root (a node_modules copy, a bundle). */
   | 'source-outside-repo'
   /** A git read failed — no repo on disk, an unreachable sha, a busy index. */
-  | 'git-unreadable';
+  | 'git-unreadable'
+  /**
+   * The path lives inside a submodule, but the gitlink pinning that submodule could
+   * not be resolved at one of the two superproject refs, so there is no commit range
+   * to measure. Distinct from `git-unreadable`: the reads SUCCEEDED and returned a
+   * definitive "no such submodule at that commit". Either way it stays UNKNOWN —
+   * absence is never a positive verdict.
+   */
+  | 'submodule-pin-unresolved';
 
 export type ToolSchemaStaleness =
   | {
@@ -158,19 +174,61 @@ export async function pathStaleness(
   // actually landed the change — the right boundary for "did this move since then".
   // Omitted entirely when unset, so the unbounded consumers are byte-identical.
   const sinceArgs = deps.notBefore ? [`--since=${deps.notBefore}`] : [];
-  const commits = await deps.git([
-    'log',
-    '--format=%H',
-    ...sinceArgs,
-    `${deployedSha}..${treeRef}`,
-    '--',
-    relPath,
+
+  // The range read, shared by both the superproject and the in-submodule call below.
+  // `from`/`to` are whichever pair of commits actually bounds the range for that repo;
+  // the VERDICT always reports the superproject refs, because those name the comparison
+  // the caller asked for — the submodule pins are an implementation detail.
+  const readRange = async (
+    git: GitRead,
+    from: string,
+    to: string,
+    pathArg: string,
+  ): Promise<PathStaleness> => {
+    const commits = await git(['log', '--format=%H', ...sinceArgs, `${from}..${to}`, '--', pathArg]);
+    if (commits === null) return { state: 'unknown', relPath, reason: 'git-unreadable' };
+    const newerCommits = commits.split('\n').map((sha) => sha.trim()).filter(Boolean);
+    return newerCommits.length === 0
+      ? { state: 'current', relPath, deployedSha, treeRef }
+      : { state: 'stale', relPath, deployedSha, treeRef, newerCommits };
+  };
+
+  // A path INSIDE a submodule is not tracked by the superproject — which holds only a
+  // gitlink for the whole subtree — so a superproject `git log` on it is ALWAYS empty,
+  // however many commits the submodule really has. Reporting that empty result as a
+  // measured "no newer commit" is a silent false-negative for every submodule-backed
+  // subject (EI-23812772755803731), and it fails in the dangerous direction: it never
+  // over-warns, it silently under-warns. That is not a corner case here — it covers the
+  // whole `libs/generic/*` borrowable tier and EVERY db migration under
+  // `libs/papercusp/libs/db/sql`. Measure the real range INSIDE the submodule instead,
+  // between the commits its gitlink pins at the two superproject refs.
+  //
+  // Equal pins are a genuine `current`: the serving build and the tree reference the
+  // same submodule commit, so nothing the build runs is behind — a later commit in the
+  // submodule that the superproject has not pinned yet is outside `deployedSha..treeRef`
+  // by construction, and belongs to the gitlink-bump question, not this one.
+  //
+  // `submodulePrefixes` returns [] for a repo without `.gitmodules`, so a non-submodule
+  // tree keeps exactly the previous behaviour.
+  const submodule = containingSubmodulePath(await submodulePrefixes(deps.git), relPath);
+  if (!submodule) return readRange(deps.git, deployedSha, treeRef, relPath);
+
+  const [from, to] = await Promise.all([
+    submoduleGitlinkAt(deps.git, deployedSha, submodule),
+    submoduleGitlinkAt(deps.git, treeRef, submodule),
   ]);
-  if (commits === null) return { state: 'unknown', relPath, reason: 'git-unreadable' };
-  const newerCommits = commits.split('\n').map((sha) => sha.trim()).filter(Boolean);
-  return newerCommits.length === 0
-    ? { state: 'current', relPath, deployedSha, treeRef }
-    : { state: 'stale', relPath, deployedSha, treeRef, newerCommits };
+  if (from.state === 'unreadable' || to.state === 'unreadable') {
+    return { state: 'unknown', relPath, reason: 'git-unreadable' };
+  }
+  if (from.state === 'absent' || to.state === 'absent') {
+    return { state: 'unknown', relPath, reason: 'submodule-pin-unresolved' };
+  }
+  return readRange(
+    gitReadInSubdir(deps.git, submodule),
+    from.pin,
+    to.pin,
+    relPath.slice(submodule.length + 1),
+  );
 }
 
 /**
