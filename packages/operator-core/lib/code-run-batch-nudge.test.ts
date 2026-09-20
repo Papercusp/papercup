@@ -229,6 +229,64 @@ describe('clusterTurns — the turn-clustering primitive', () => {
     const events = [{ at: TURN_GAP_MS + 1 }, { at: 0 }];
     expect(clusterTurns(events)).toEqual([1, 0]);
   });
+
+  // ── EI-23762928303536326: the IN-FLIGHT guard ────────────────────────────────────────────────
+  // A call dispatched while an earlier call in the cluster is STILL RUNNING cannot open a new
+  // inference turn — the model had not yet received that result to reason about. `at` is dispatch
+  // as observed by the SERVER, so a parallel block is spread by request queueing under load.
+  // Measured fleet-wide over 4h: 1,169 gaps exceeded TURN_GAP_MS while the previous call was still
+  // executing (p50 gap 647ms vs p50 previous-call duration 1,473ms) — every one split into phantom
+  // turns, so the nudge nagged hardest at the agents who WERE batching correctly.
+  it('keeps a call in the SAME turn when it was dispatched while the previous call was still running', () => {
+    const events = [
+      { at: 0, durationMs: 1_473 },
+      { at: 647, durationMs: 20 },
+    ];
+    expect(clusterTurns(events)).toEqual([0, 0]);
+  });
+
+  it('extends the in-flight horizon across a block — one slow call covers the later dispatches', () => {
+    const events = [
+      { at: 0, durationMs: 5_000 },
+      { at: 900, durationMs: 10 },
+      { at: 2_400, durationMs: 10 },
+      { at: 4_900, durationMs: 10 },
+    ];
+    expect(clusterTurns(events)).toEqual([0, 0, 0, 0]);
+  });
+
+  // CALIBRATION — the guard must not merge everything. Without these, the two assertions above
+  // would pass just as well against a broken clusterTurns that returned all-zeros.
+  it('still splits genuinely sequential turns — the previous call had returned before the next dispatch', () => {
+    const events = [
+      { at: 0, durationMs: 83 },
+      { at: 2_547, durationMs: 83 },
+    ];
+    expect(clusterTurns(events)).toEqual([0, 1]);
+  });
+
+  it('splits as soon as the earlier call has returned, even by 1ms', () => {
+    // The first call ends at exactly TURN_GAP_MS, so the second dispatch is NOT in flight.
+    const events = [
+      { at: 0, durationMs: TURN_GAP_MS },
+      { at: TURN_GAP_MS + 1, durationMs: 5 },
+    ];
+    expect(clusterTurns(events)).toEqual([0, 1]);
+  });
+
+  // DEGRADATION — absent or unusable timing must behave EXACTLY like the pre-guard gap rule.
+  it('degrades to the pure gap rule when durations are absent', () => {
+    expect(clusterTurns([{ at: 0 }, { at: TURN_GAP_MS + 1 }])).toEqual([0, 1]);
+    expect(clusterTurns([{ at: 0, durationMs: undefined }, { at: 10_000 }])).toEqual([0, 1]);
+  });
+
+  it('ignores a non-finite or negative duration rather than trusting it', () => {
+    const events = [
+      { at: 0, durationMs: Number.NaN },
+      { at: TURN_GAP_MS + 1, durationMs: -5 },
+    ];
+    expect(clusterTurns(events)).toEqual([0, 1]);
+  });
 });
 
 describe('maybeBatchNudge — turn-aware same-tool trigger (P-012)', () => {
@@ -256,6 +314,39 @@ describe('maybeBatchNudge — turn-aware same-tool trigger (P-012)', () => {
     expect(hit?.text).toContain('2');
     expect(hit?.text).not.toMatch(/\b3 separate round-trips\b/);
     expect(hit?.text).toContain('2 separate round-trips');
+  });
+
+  // EI-23762928303536326 — the reported symptom, end to end. A single parallel block whose
+  // dispatches the SERVER observed 647ms apart (queueing spread under fleet load) while the first
+  // call was still running: one round-trip, nothing to fold, so the nudge must stay silent. Before
+  // the in-flight guard this fired, telling an agent who had correctly batched to batch harder.
+  it('does NOT fire for one parallel block whose dispatches the server observed >TURN_GAP_MS apart while still in flight', () => {
+    let last: ReturnType<typeof maybeBatchNudge> = null;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 1; i++) {
+      last = maybeBatchNudge({
+        ...cap,
+        sessionKey: 'queued-parallel-block',
+        now: i * (TURN_GAP_MS + 247), // 647ms apart — well past the timing threshold
+        durationMs: 1_473, // …but every call is still running when the next is dispatched
+      });
+    }
+    expect(last).toBeNull();
+  });
+
+  // CALIBRATION for the test above: identical spacing, but each call RETURNS almost immediately,
+  // so these are genuinely separate turns and the nudge must still fire. Without this, the
+  // assertion above would pass against a nudge that had simply been disabled.
+  it('DOES still fire at the same spacing when each call returned long before the next dispatch', () => {
+    let last: ReturnType<typeof maybeBatchNudge> = null;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 1; i++) {
+      last = maybeBatchNudge({
+        ...cap,
+        sessionKey: 'sequential-turns',
+        now: i * (TURN_GAP_MS + 247),
+        durationMs: 5,
+      });
+    }
+    expect(last?.kind).toBe('same-tool');
   });
 });
 

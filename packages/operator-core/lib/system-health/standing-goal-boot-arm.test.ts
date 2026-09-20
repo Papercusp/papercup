@@ -86,6 +86,11 @@ function harness(over: Partial<GoalHolderRespawnDeps> = {}) {
       attaches.push(`${g.goalId}:${ownerId}`);
     },
     reserveRateSlot: async () => ({ kind: 'reserved', attemptsInWindow: 1 }),
+    // A PG dep like the ones around it, so the `sql` stub above stays untouched. The
+    // latch reconciler (EI-23821882158913073) runs for EVERY swept goal by design —
+    // a recovered holder is exactly the case the health-gated branches skip — so an
+    // uninjected one reaches the stub and warns on every test in this file.
+    reconcileStrandedLatch: async () => ({ kind: 'noop' }),
     escalateGiveUp: async () => {},
     now: () => Date.now(),
     states: new Map(),

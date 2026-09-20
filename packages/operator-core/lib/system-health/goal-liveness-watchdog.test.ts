@@ -791,6 +791,11 @@ function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolder
     notifyHandoff: async () => {},
     refreshControlAnchor: vi.fn().mockResolvedValue(null),
     reserveRateSlot: async () => ({ kind: 'reserved', attemptsInWindow: 1 }),
+    // Every SQL-touching seam is stubbed here because `sql` is a bare `{}` stub. The
+    // latch reconciler runs for EVERY swept goal (that is the point of it — see the
+    // EI-23821882158913073 block at the bottom), so without a stub it issues a real
+    // query against that stub and warns on every unrelated test in this file.
+    reconcileStrandedLatch: async () => ({ kind: 'noop' }),
     pauseNeedsHuman: async () => {},
     escalateGiveUp: async () => {},
     // WI-2140573 finding 5: the default assessor reads live accounts:status; a
@@ -2179,5 +2184,109 @@ describe('runGoalHolderRespawnOnce — defers recovery while the launch target i
     expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 0, attempted: 0 });
     expect(assessLaunchCapacity).not.toHaveBeenCalled();
     expect(capacityDeferrals.size).toBe(0);
+  });
+});
+
+/**
+ * EI-23821882158913073 — REACHABILITY, which is the actual defect.
+ *
+ * The SQL semantics of the reconciler are covered against a real Postgres in
+ * goal-holder-respawn.integration.test.ts. What those cannot catch is the bug itself:
+ * every branch that can escalate or clear a durable needs-human latch sits BELOW
+ * decideFlapDamping({ healthy: false }), so once a holder recovers the latch is
+ * unreachable and survives forever. Measured: one live goal sat needsHuman:true with no
+ * escalatedAtMs for 7h while its holder was healthy and on wake #127.
+ *
+ * These pin the reconcile to the HEALTHY path. Move the call back below the `held`
+ * early-return and the integration tests all still pass — these are what go red.
+ */
+describe('stranded needs-human latch is reconciled on the HEALTHY path (EI-23821882158913073)', () => {
+  const sql = {} as never;
+
+  it('reconciles a goal whose holder is LIVE — the case every health-gated branch skips', async () => {
+    const target = respawnGoal();
+    const reconciled: string[] = [];
+    const result = await runGoalHolderRespawnOnce(
+      sql,
+      respawnDeps({
+        readGoals: async () => ({ goals: [target], holders: [holder()] }),
+        // A healthy holder: the sweep takes its `held` early-return, so nothing below it
+        // runs. This is precisely the goal whose latch could never converge.
+        resolveLiveness: async () => vmap(verdict('su-2c130be1', 'live')),
+        reconcileStrandedLatch: async (goal) => {
+          reconciled.push(goal.goalId);
+          return { kind: 'cleared', attemptsInWindow: 0 };
+        },
+      }),
+    );
+
+    expect(reconciled).toEqual([target.goalId]);
+    // ...and converging a stale latch must not pay for any recovery on a healthy holder.
+    expect(result).toMatchObject({ attempted: 0, respawned: 0 });
+  });
+
+  it('re-drives the escalate+pause the original tick dropped, when the cap still holds', async () => {
+    const escalated: number[] = [];
+    const paused: number[] = [];
+    const launches: string[] = [];
+
+    await runGoalHolderRespawnOnce(
+      sql,
+      respawnDeps({
+        resolveLiveness: async () => vmap(verdict('su-2c130be1', 'live')),
+        reconcileStrandedLatch: async () => ({ kind: 'escalate', attemptsInWindow: 6 }),
+        escalateGiveUp: async (_goal, n) => {
+          escalated.push(n);
+        },
+        pauseNeedsHuman: async (_goal, n) => {
+          paused.push(n);
+        },
+        launch: async (g) => {
+          launches.push(g.goalId);
+          return { ownerId: 'su-replacement', warnings: [] };
+        },
+      }),
+    );
+
+    // Both halves, with the window count the reconciler measured — not a fresh guess.
+    expect(escalated).toEqual([6]);
+    expect(paused).toEqual([6]);
+    // Repairing a latch is never a licence to spawn.
+    expect(launches).toEqual([]);
+  });
+
+  it('a reconcile THROW never blocks the ordinary lost-holder recovery below it', async () => {
+    const launches: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runGoalHolderRespawnOnce(
+        sql,
+        respawnDeps({
+          // Default fixture liveness is 'ended' => the normal recovery path must still run.
+          reconcileStrandedLatch: async () => {
+            throw new Error('reconcile boom');
+          },
+          launch: async (g) => {
+            launches.push(g.goalId);
+            return { ownerId: 'su-replacement', warnings: [] };
+          },
+        }),
+      );
+      expect(launches).toHaveLength(1);
+      expect(result).toMatchObject({ attempted: 1, respawned: 1 });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('defaults to a no-op when no reconciler is injected (the seam stays optional)', async () => {
+    const result = await runGoalHolderRespawnOnce(
+      sql,
+      respawnDeps({
+        resolveLiveness: async () => vmap(verdict('su-2c130be1', 'live')),
+        reconcileStrandedLatch: undefined,
+      }),
+    );
+    expect(result).toMatchObject({ attempted: 0 });
   });
 });

@@ -1524,6 +1524,16 @@ export interface GoalHolderRespawnDeps {
   reserveRateSlot?: (goal: GoalRowLike, nowMs: number) => Promise<GoalHolderRespawnRateDecision>;
   /** Move a capped goal onto the canonical non-terminal human-attention hold. */
   pauseNeedsHuman?: (goal: GoalRowLike, attemptsInWindow: number, nowMs: number) => Promise<void>;
+  /**
+   * Converge a needs-human latch that no health-gated branch below can reach.
+   * Runs for EVERY swept goal, healthy or not — that is the whole point: the
+   * escalate/pause branches sit under `healthy:false`, so a holder that
+   * recovers after a failed pause write strands its latch permanently.
+   */
+  reconcileStrandedLatch?: (
+    goal: GoalRowLike,
+    nowMs: number,
+  ) => Promise<GoalHolderRespawnLatchReconciliation>;
   escalateGiveUp: (goal: GoalRowLike, restartsInWindow: number) => Promise<void>;
   /**
    * WI-2140573: wake a live-but-idle elected holder with a retry brief. Default
@@ -1562,6 +1572,124 @@ export function goalHolderRespawnKey(
   goal: Pick<GoalRowLike, 'workspaceId' | 'goalId'>,
 ): string {
   return `${goal.workspaceId}:${goal.goalId}`;
+}
+
+/**
+ * What a stranded needs-human latch should converge to. `noop` is the ordinary
+ * case (no latch, or one that already carries its durable escalation stamp).
+ */
+export type GoalHolderRespawnLatchReconciliation =
+  | { kind: 'noop' }
+  | { kind: 'cleared'; attemptsInWindow: number }
+  | { kind: 'escalate'; attemptsInWindow: number };
+
+/**
+ * Converge a STRANDED needs-human latch — `needsHuman:true` with no
+ * `escalatedAtMs` behind it.
+ *
+ * WHY THIS EXISTS (measured 2026-09-20T15:52Z on goal
+ * work-on-everything-fresh-grading-and-improvement-60d3a8): the capped and
+ * give-up branches in the respawn sweep are reachable ONLY below
+ * `decideFlapDamping({ healthy: false })`. When the pause write throws, the
+ * handler clears the in-memory latch and `continue`s "so the next tick
+ * retries" — but the next tick only re-enters that branch if the holder is
+ * STILL judged unhealthy. That goal's holder recovered, so the branch was
+ * never re-entered: `needsHuman:true` survived for 7h with no escalation
+ * stamp, and `reserveGoalHolderRespawnRateSlot`'s clearing ELSE could not run
+ * either (it is reached only from the same restart path). A stranded latch
+ * could therefore neither escalate NOR clear. The specific throw that day was
+ * an uncast `jsonb_build_object` parameter (fixed since, and guarded by the
+ * NEGATIVE CONTROL in goal-holder-respawn.integration.test.ts) — but ANY
+ * future throw strands a goal identically, which is what this repairs.
+ *
+ * It is deliberately driven by the ATTEMPT WINDOW, not by holder health, so it
+ * cannot hand back a fresh safety budget early:
+ *  - attempts aged out of the window (the cap no longer holds) => CLEAR, the
+ *    exact semantics `reserveGoalHolderRespawnRateSlot`'s ELSE already encodes;
+ *  - the cap still holds => ESCALATE, i.e. re-drive the escalate+pause the
+ *    original tick intended and dropped. Bounded either way: an unrepaired
+ *    latch converges within one rate window instead of latching forever.
+ *
+ * Idempotent by construction: a latch that already carries `escalatedAtMs`
+ * does not match, so a re-drive cannot double-pause or re-stamp.
+ */
+export async function reconcileStrandedGoalHolderRespawnLatch(
+  sql: Sql,
+  goal: Pick<GoalRowLike, 'goalId' | 'workspaceId'>,
+  nowMs: number,
+): Promise<GoalHolderRespawnLatchReconciliation> {
+  const cutoffMs = nowMs - GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS;
+  // Same variadic-"any" cast discipline as the pause writer below: every bare
+  // parameter inside jsonb_build_object carries a cast, or Postgres rejects the
+  // whole statement at PARSE time. That failure is precisely what stranded the
+  // latch this function exists to converge, so re-introducing it here would
+  // disable the repair by the same mechanism it repairs.
+  const [row] = await sql<Array<{ outcome: string; attempts_in_window: string }>>`
+    WITH candidate AS (
+      SELECT id,
+             workspace_id,
+             CASE WHEN jsonb_typeof(metadata) = 'object'
+                  THEN metadata ELSE '{}'::jsonb END AS base_metadata
+        FROM harness_shared.goals
+       WHERE id = ${goal.goalId}
+         AND workspace_id = ${goal.workspaceId}
+         AND status = 'active'
+         AND metadata #>> '{holderRespawn,needsHuman}' = 'true'
+         -- STRANDED = flagged with no USABLE escalation stamp. Testing the type
+         -- rather than plain IS NULL also catches an explicit JSON null or a
+         -- garbage value, both as unactionable as an absent stamp.
+         AND jsonb_typeof(metadata #> '{holderRespawn,escalatedAtMs}') IS DISTINCT FROM 'number'
+       FOR UPDATE
+    ), state AS (
+      SELECT c.*,
+             CASE WHEN jsonb_typeof(c.base_metadata -> 'holderRespawn') = 'object'
+                  THEN c.base_metadata -> 'holderRespawn' ELSE '{}'::jsonb END AS base_state,
+             CASE WHEN jsonb_typeof(c.base_metadata #> '{holderRespawn,attempts}') = 'array'
+                  THEN c.base_metadata #> '{holderRespawn,attempts}' ELSE '[]'::jsonb END AS raw_attempts
+        FROM candidate c
+    ), pruned AS (
+      SELECT s.*,
+             COALESCE(
+               (SELECT jsonb_agg(value ORDER BY (value #>> '{}')::numeric)
+                  FROM jsonb_array_elements(s.raw_attempts) AS value
+                 WHERE jsonb_typeof(value) = 'number'
+                   AND (value #>> '{}')::numeric >= ${cutoffMs}::numeric),
+               '[]'::jsonb
+             ) AS attempts
+        FROM state s
+    ), decision AS (
+      SELECT p.*, jsonb_array_length(p.attempts) AS attempt_count
+        FROM pruned p
+    ), cleared AS (
+      -- A data-modifying CTE runs exactly once whether or not the primary
+      -- query reads it, so the clear commits without a second round trip.
+      UPDATE harness_shared.goals AS g
+         SET metadata = jsonb_set(
+               d.base_metadata,
+               '{holderRespawn}',
+               (d.base_state - 'needsHumanAtMs' - 'escalatedAtMs' - 'reason') ||
+                 jsonb_build_object(
+                   'attempts', d.attempts,
+                   'needsHuman', false
+                 ),
+               true
+             )
+        FROM decision d
+       WHERE g.id = d.id
+         AND g.workspace_id = d.workspace_id
+         AND d.attempt_count < ${GOAL_HOLDER_RESPAWN_RATE_LIMIT}::int
+      RETURNING g.id
+    )
+    SELECT CASE WHEN d.attempt_count >= ${GOAL_HOLDER_RESPAWN_RATE_LIMIT}::int
+                THEN 'escalate' ELSE 'cleared' END AS outcome,
+           d.attempt_count::text AS attempts_in_window
+      FROM decision d
+  `;
+  if (!row) return { kind: 'noop' };
+  const attemptsInWindow = Number(row.attempts_in_window);
+  return row.outcome === 'escalate'
+    ? { kind: 'escalate', attemptsInWindow }
+    : { kind: 'cleared', attemptsInWindow };
 }
 
 /**
@@ -1962,6 +2090,8 @@ function holderRespawnDeps(
     },
     notifyHandoff: notifyGoalHolderHandoff,
     reserveRateSlot: async (goal, nowMs) => await reserveGoalHolderRespawnRateSlot(sql, goal, nowMs),
+    reconcileStrandedLatch: async (goal, nowMs) =>
+      await reconcileStrandedGoalHolderRespawnLatch(sql, goal, nowMs),
     pauseNeedsHuman: async (goal, attemptsInWindow, nowMs) =>
       await pauseGoalForHolderRespawnRateCap(sql, goal, attemptsInWindow, nowMs),
     escalateGiveUp: defaultEscalateHolderRespawnGiveUp,
@@ -2039,6 +2169,38 @@ export async function runGoalHolderRespawnOnce(
       relevant,
       verdicts,
     );
+
+    // Converge a STRANDED needs-human latch BEFORE any health gate below.
+    // Every branch that can escalate or clear the latch sits under
+    // `decideFlapDamping({ healthy: false })`, so a holder that RECOVERS after a
+    // failed pause write would otherwise carry `needsHuman:true` forever with no
+    // escalation stamp behind it, and the clearing ELSE in the reservation is
+    // reached only from that same restart path. Running first is the point: a
+    // recovered holder is precisely the case every branch below skips.
+    try {
+      const latch = await (deps.reconcileStrandedLatch ?? (async () => ({ kind: 'noop' }) as const))(
+        goal,
+        deps.now(),
+      );
+      if (latch.kind === 'escalate') {
+        // The cap still holds, so re-drive the escalate+pause this goal never
+        // durably received. Both halves are safe to repeat: openEscalation
+        // dedups on subjectSignature, and the pause WHERE guard matches only a
+        // latch that still has no escalatedAtMs.
+        await deps.escalateGiveUp(goal, latch.attemptsInWindow);
+        await (deps.pauseNeedsHuman ?? (async () => {}))(goal, latch.attemptsInWindow, deps.now());
+        summary.gaveUp += 1;
+        continue;
+      }
+    } catch (error) {
+      // A repair failure must never block the ordinary recovery path below --
+      // and unlike the old in-memory latch, the retry is genuinely reachable
+      // next tick because this runs for every swept goal regardless of health.
+      console.warn(
+        `[goal-holder-respawner] stranded needs-human latch reconcile failed for ${goal.goalId}: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
 
     // A stub that was never picked up is not a lost holder and must not be
     // auto-started. But startGoalById stamps metadata.agentOwnerId only after a

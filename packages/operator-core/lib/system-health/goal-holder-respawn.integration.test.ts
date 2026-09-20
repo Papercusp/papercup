@@ -53,6 +53,7 @@ import {
   GOAL_HOLDER_RESPAWN_RATE_LIMIT,
   GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS,
   pauseGoalForHolderRespawnRateCap,
+  reconcileStrandedGoalHolderRespawnLatch,
   reserveGoalHolderRespawnRateSlot,
   runGoalHolderRespawnOnce,
   type GoalHolderRespawnDeps,
@@ -719,5 +720,172 @@ describe('holder-respawn safety cap actually pauses the goal (WI-10002085)', () 
     const [ok] = await rootSql<Array<{ v: { attemptsInWindow: number } }>>`
       SELECT jsonb_build_object('attemptsInWindow', ${6}::int) AS v`;
     expect(ok?.v).toEqual({ attemptsInWindow: 6 });
+  }, 60_000);
+});
+
+/**
+ * EI-23821882158913073 — the SECOND half of the incident above, and the durable one.
+ *
+ * WI-10002085 fixed the PARSE failure that made the pause write throw. This covers what
+ * happened NEXT: the throw was caught, the handler cleared an IN-MEMORY latch and
+ * continued "so the next tick retries" — but every branch that can escalate or clear the
+ * durable latch sits under decideFlapDamping({ healthy: false }). The holder then
+ * RECOVERED, so the branch was never re-entered and the goal kept needsHuman:true with no
+ * escalatedAtMs for 7h, while reserveGoalHolderRespawnRateSlot's clearing ELSE — reachable
+ * only from the same restart path — could not run either. Measured on the live row for goal
+ * work-on-everything-fresh-grading-and-improvement-60d3a8 (status active, needsHuman true,
+ * escalatedAtMs NULL, 6 attempts spanning 15:31-15:36Z, still unconverged at 22:5xZ).
+ *
+ * These execute the real statement against a real Postgres for the same reason the block
+ * above does: a mocked `sql` asserts a statement was BUILT and cannot observe a server-side
+ * PARSE failure by construction — which is exactly how the original defect shipped.
+ */
+describe('a stranded needs-human latch converges instead of latching forever (EI-23821882158913073)', () => {
+  type Latch = {
+    needsHuman?: boolean;
+    needsHumanAtMs?: number;
+    escalatedAtMs?: number;
+    reason?: string;
+    attempts?: number[];
+  };
+
+  async function readLatch(goalId: string): Promise<{ status: string; latch: Latch }> {
+    const [row] = await rootSql<Array<{ status: string; metadata: { holderRespawn?: Latch } }>>`
+      SELECT status, metadata FROM harness_shared.goals WHERE id = ${goalId}`;
+    return { status: row?.status ?? '', latch: row?.metadata?.holderRespawn ?? {} };
+  }
+
+  /** The capped shape the respawner leaves behind, with attempts at a chosen age. */
+  async function seedStrandedGoal(opts: {
+    id: string;
+    attemptAgesMs: number[];
+    escalatedAtMs?: number;
+    needsHuman?: boolean;
+    nowMs: number;
+  }): Promise<void> {
+    await seedGoal({
+      id: opts.id,
+      status: 'active',
+      metadata: {
+        holderRespawn: {
+          needsHuman: opts.needsHuman ?? true,
+          needsHumanAtMs: opts.nowMs - 60_000,
+          reason: 'hourly-respawn-cap',
+          limit: GOAL_HOLDER_RESPAWN_RATE_LIMIT,
+          windowMs: GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS,
+          attempts: opts.attemptAgesMs.map((age) => opts.nowMs - age),
+          ...(opts.escalatedAtMs === undefined ? {} : { escalatedAtMs: opts.escalatedAtMs }),
+        },
+      },
+    });
+  }
+
+  it('CLEARS the latch once the attempts age out — the live incident shape', async () => {
+    const nowMs = Date.now();
+    const goalId = `goal-strand-aged-${randomBytes(4).toString('hex')}`;
+    // Every attempt far outside the trailing window, as on the measured row (~7h old).
+    await seedStrandedGoal({
+      id: goalId,
+      nowMs,
+      attemptAgesMs: Array.from(
+        { length: GOAL_HOLDER_RESPAWN_RATE_LIMIT },
+        (_, i) => GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS + 60_000 * (i + 1),
+      ),
+    });
+
+    await expect(
+      reconcileStrandedGoalHolderRespawnLatch(rootSql, { goalId, workspaceId: WS }, nowMs),
+    ).resolves.toEqual({ kind: 'cleared', attemptsInWindow: 0 });
+
+    const { status, latch } = await readLatch(goalId);
+    expect(latch.needsHuman).toBe(false);
+    expect(latch.needsHumanAtMs).toBeUndefined();
+    expect(latch.escalatedAtMs).toBeUndefined();
+    expect(latch.reason).toBeUndefined();
+    expect(latch.attempts).toEqual([]); // pruned, not merely unflagged
+    // A stale latch whose holder recovered must NOT pause a working goal. This is the
+    // assertion that keeps a future "reconcile = always pause" simplification honest:
+    // the live row belongs to a goal with a healthy holder and running agents.
+    expect(status).toBe('active');
+  }, 60_000);
+
+  it('ESCALATES rather than clearing while the cap still genuinely holds', async () => {
+    const nowMs = Date.now();
+    const goalId = `goal-strand-live-${randomBytes(4).toString('hex')}`;
+    await seedStrandedGoal({
+      id: goalId,
+      nowMs,
+      attemptAgesMs: Array.from({ length: GOAL_HOLDER_RESPAWN_RATE_LIMIT }, (_, i) => 60_000 * (i + 1)),
+    });
+
+    await expect(
+      reconcileStrandedGoalHolderRespawnLatch(rootSql, { goalId, workspaceId: WS }, nowMs),
+    ).resolves.toEqual({ kind: 'escalate', attemptsInWindow: GOAL_HOLDER_RESPAWN_RATE_LIMIT });
+
+    // The reconciler decides; the CALLER drives escalate+pause. So the latch is left intact
+    // and the durable budget is NOT handed back early.
+    const { status, latch } = await readLatch(goalId);
+    expect(latch.needsHuman).toBe(true);
+    expect(latch.escalatedAtMs).toBeUndefined();
+    expect(status).toBe('active');
+  }, 60_000);
+
+  it('IDEMPOTENT: a latch that already carries escalatedAtMs is never re-driven', async () => {
+    const nowMs = Date.now();
+    const escalatedAtMs = nowMs - 5_000;
+    const goalId = `goal-strand-done-${randomBytes(4).toString('hex')}`;
+    await seedStrandedGoal({
+      id: goalId,
+      nowMs,
+      escalatedAtMs,
+      attemptAgesMs: Array.from({ length: GOAL_HOLDER_RESPAWN_RATE_LIMIT }, (_, i) => 60_000 * (i + 1)),
+    });
+
+    await expect(
+      reconcileStrandedGoalHolderRespawnLatch(rootSql, { goalId, workspaceId: WS }, nowMs),
+    ).resolves.toEqual({ kind: 'noop' });
+
+    // Untouched: no double-pause, no re-stamp.
+    const { status, latch } = await readLatch(goalId);
+    expect(latch.escalatedAtMs).toBe(escalatedAtMs);
+    expect(latch.needsHuman).toBe(true);
+    expect(status).toBe('active');
+  }, 60_000);
+
+  it('is a no-op for a goal carrying no needs-human latch at all', async () => {
+    const nowMs = Date.now();
+    const goalId = `goal-strand-none-${randomBytes(4).toString('hex')}`;
+    await seedStrandedGoal({ id: goalId, nowMs, needsHuman: false, attemptAgesMs: [60_000] });
+
+    await expect(
+      reconcileStrandedGoalHolderRespawnLatch(rootSql, { goalId, workspaceId: WS }, nowMs),
+    ).resolves.toEqual({ kind: 'noop' });
+
+    const { latch } = await readLatch(goalId);
+    expect(latch.needsHuman).toBe(false);
+    // The untouched no-op must not prune the budget either.
+    expect(latch.attempts).toHaveLength(1);
+  }, 60_000);
+
+  it('does not reach across workspaces or into a non-active goal', async () => {
+    const nowMs = Date.now();
+    const pausedId = `goal-strand-paused-${randomBytes(4).toString('hex')}`;
+    await seedStrandedGoal({ id: pausedId, nowMs, attemptAgesMs: [60_000] });
+    await rootSql`UPDATE harness_shared.goals SET status = 'paused' WHERE id = ${pausedId}`;
+
+    // An already-paused goal has had its human hand-off; re-converging it would fight
+    // whatever a human did next.
+    await expect(
+      reconcileStrandedGoalHolderRespawnLatch(rootSql, { goalId: pausedId, workspaceId: WS }, nowMs),
+    ).resolves.toEqual({ kind: 'noop' });
+
+    // A matching id in ANOTHER workspace must not be reachable.
+    await expect(
+      reconcileStrandedGoalHolderRespawnLatch(
+        rootSql,
+        { goalId: pausedId, workspaceId: 'some-other-workspace' },
+        nowMs,
+      ),
+    ).resolves.toEqual({ kind: 'noop' });
   }, 60_000);
 });

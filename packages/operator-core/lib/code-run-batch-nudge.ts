@@ -108,9 +108,16 @@ export const FANOUT_DISTINCT_THRESHOLD = 3;
  * own request), so turns are inferred from timing: two calls recorded this close together (or
  * closer) are treated as dispatched from the SAME turn. The gap needed to separate two GENUINE
  * turns is a live LLM inference round-trip (network + generation) — at minimum several hundred ms,
- * typically 1-3s+ for the models this fleet runs. Truly parallel dispatch (concurrent async calls
- * emitted from one turn) lands within tens of ms of each other server-side, rarely beyond ~100-200ms
- * even under load. TURN_GAP_MS sits with margin on both sides of that gap.
+ * typically 1-3s+ for the models this fleet runs.
+ *
+ * ⚠ This constant is NOT sufficient on its own, and the reason is measured, not assumed. An earlier
+ * revision of this comment claimed parallel dispatch "lands within tens of ms of each other
+ * server-side, rarely beyond ~100-200ms even under load"; fleet data refutes that (see the in-flight
+ * guard on clusterTurns below — 1,169 same-turn gaps in 4h exceeded this threshold, p50 647ms),
+ * because `at` is dispatch as OBSERVED BY THE SERVER and is therefore spread by request queueing.
+ * Do not retune this number in response to phantom-turn reports: a sweep over that population showed
+ * 400ms is already near-optimal as a threshold, and clusterTurns now separates the causal case
+ * (overlapping execution) from the timing case that this constant still handles.
  */
 export const TURN_GAP_MS = 400;
 
@@ -120,16 +127,44 @@ export const TURN_GAP_MS = 400;
  * (the ring is insertion-order, which is usually but not guaranteedly chronological) — this sorts a
  * local index array by `at`. Pure; shared by the same-tool and fan-out/pipeline triggers so "how
  * many separate round-trips did this burst actually take" is computed exactly once.
+ *
+ * EI-23762928303536326 — the IN-FLIGHT guard. The gap rule alone is a timing HEURISTIC, and its
+ * premise (that one turn's dispatches land within ~100-200ms of each other) fails under fleet load:
+ * `at` is server-observed dispatch, so a parallel block's requests are spread by SERVER-side queueing
+ * before any handler records them. Measured fleet-wide over 4h (harness_shared.tool_invocations,
+ * consecutive calls per coord_owner_id): 1,169 gaps exceeded TURN_GAP_MS *while the previous call was
+ * still executing* — p50 gap 647ms against a p50 previous-call duration of 1,473ms. Every one was
+ * split into phantom turns, which is exactly backwards: it nags hardest at agents who ARE batching.
+ *
+ * Raising the constant cannot fix it (the spread is load-dependent and unbounded, and a wider gap
+ * merges genuinely sequential turns — a sweep over this same population put total misclassification
+ * at 448 for 400ms, 720 for 1500ms and 1005 for 3000ms, so 400 is already near-optimal *as a
+ * threshold*). So this adds a CAUSAL test rather than a bigger number: a call dispatched before a
+ * previous call in the same cluster had returned cannot begin a new inference turn, because the
+ * model had not yet received that result to reason about. Overlap is proof of same-turn dispatch,
+ * whatever the clock says.
+ *
+ * `durationMs` is optional and absent timing degrades EXACTLY to the pre-existing gap rule (with no
+ * durations, every end collapses to its own `at`, so the in-flight test can never fire).
  */
-export function clusterTurns(events: readonly { at: number }[]): number[] {
+export function clusterTurns(events: readonly { at: number; durationMs?: number }[]): number[] {
   const order = events.map((_, i) => i).sort((a, b) => events[a].at - events[b].at);
   const turnOf = new Array<number>(events.length);
   let turn = -1;
   let prevAt: number | undefined;
+  /** Latest known END of any call in the CURRENT cluster — the in-flight horizon. */
+  let clusterEnd: number | undefined;
   for (const i of order) {
     const at = events[i].at;
-    if (prevAt === undefined || at - prevAt > TURN_GAP_MS) turn++;
+    const d = events[i].durationMs;
+    const end = typeof d === 'number' && Number.isFinite(d) && d >= 0 ? at + d : at;
+    // Still in flight ⇒ the model had not received the earlier result yet ⇒ same turn, regardless
+    // of how far apart the two dispatches were observed.
+    const stillInFlight = clusterEnd !== undefined && at < clusterEnd;
+    const startsNewTurn = prevAt === undefined || (!stillInFlight && at - prevAt > TURN_GAP_MS);
+    if (startsNewTurn) turn++;
     turnOf[i] = turn;
+    clusterEnd = startsNewTurn || clusterEnd === undefined ? end : Math.max(clusterEnd, end);
     prevAt = at;
   }
   return turnOf;
