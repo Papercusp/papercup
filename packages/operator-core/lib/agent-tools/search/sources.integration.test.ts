@@ -234,7 +234,19 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       speaker       TEXT        NOT NULL,
       text          TEXT        NOT NULL,
       text_tsv      tsvector GENERATED ALWAYS AS (to_tsvector('english', left(text, 20000))) STORED,
-      text_simple_tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', lower(left(text, 20000)))) STORED,
+      -- EI-23737056070911495: the simple-token tsvector column is deliberately
+      -- ABSENT here. It is added only by migration 1163, which stays parked with
+      -- a .DRAFT suffix and is therefore never applied, so the live schema lacks
+      -- it and this fixture tracks the REAL schema. Re-add it (and its GIN index)
+      -- only after migration 1163 is armed and applied.
+      -- TWO TRAPS if you revisit this, both of which cost a gate red:
+      --   1. Do NOT write that column name literally anywhere in this file, not
+      --      even in a SQL comment. lint:migration-forward-compat strips JS
+      --      line comments but NOT SQL comments inside a template literal, so a
+      --      bare mention here is enough on its own to re-red the fleet gate.
+      --   2. Do NOT use backticks in these SQL comments. They sit inside a JS
+      --      template literal, so a backtick terminates it and the file fails to
+      --      parse (TS1005) well away from the line you actually edited.
       ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
       text_embedding public.vector(384),
       text_embedding_mode TEXT,
@@ -249,8 +261,6 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       turn_origin_classifier_version INTEGER,
       PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx)
     );
-    CREATE INDEX session_turns_simple_tsv_idx
-      ON harness_shared.session_turns USING gin (text_simple_tsv);
   `);
 
   // ── session_turn_chunks (749-session-turn-chunks.sql) ──
@@ -1055,9 +1065,14 @@ describe('P-017 — session_turn.lexical lexicalMode', () => {
 
 describe('EI-23237047797741772 — compact transcript tokens use the literal fallback', () => {
   it('retrieves a pasted compact URL token when dictionary lookup misses it', async () => {
-    const dictionaryProbe = await sql<Array<{ english_matches: boolean; simple_matches: boolean; literal_match: boolean }>>`
+    // EI-23737056070911495: the simple-dictionary leg of this probe went away
+    // with migration 1163's column, which stays parked as `.DRAFT` and is never
+    // applied. That leg asserted `false` ANYWAY — both dictionaries miss a
+    // compact pasted token — so dropping it leaves this test's real claim fully
+    // intact: dictionary lookup misses the token, and the bounded literal
+    // substring fallback is what actually retrieves the row.
+    const dictionaryProbe = await sql<Array<{ english_matches: boolean; literal_match: boolean }>>`
       SELECT text_tsv @@ plainto_tsquery('english', ${COMPACT_QUERY}) AS english_matches,
-             text_simple_tsv @@ plainto_tsquery('simple', ${COMPACT_QUERY}) AS simple_matches,
              position(lower(${COMPACT_QUERY}) in lower(text)) > 0 AS literal_match
         FROM harness_shared.session_turns
        WHERE workspace_id = ${WS_A}
@@ -1065,7 +1080,7 @@ describe('EI-23237047797741772 — compact transcript tokens use the literal fal
          AND session_id = ${COMPACT_SESSION}
          AND turn_idx = 1
     `;
-    expect(dictionaryProbe).toEqual([{ english_matches: false, simple_matches: false, literal_match: true }]);
+    expect(dictionaryProbe).toEqual([{ english_matches: false, literal_match: true }]);
 
     const out = await byName('session_turn').lexical(
       params({ query: COMPACT_QUERY, limit: 20 }),
