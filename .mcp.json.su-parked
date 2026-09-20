@@ -1,8 +1,10 @@
 {
   "mcpServers": {
     "papercusp": {
-      "type": "http",
-      "url": "http://127.0.0.1:9071/api/mcp?harness=papercusp&workspace=papercusp-workspace&role=judge&run=1789896197-judge&spawn=952b44ff-c050-4c51-bef6-f8191b99bc9b&client=role-62b38c68-3603-4ec7-9b45-d8fe4c20c150&tools=coord%3Aorient%2Ccoord%3Adeclare-intent%2Ccoord%3Ainbox%2Ccoord%3Asend%2Ccoord%3Aglance%2Ccoord%3Adispatch%2Cplans%3Anew%2Cplans%3Aget%2Cplans%3Aset-status%2Cplans%3Aitems%2Cplans%3Aset-now%2Cwork_items%3Alist%2Cwork_items%3Acreate%2Cwork_items%3Aclaim%2Cwork_items%3Aclaim_next%2Cwork_items%3Aget%2Cwork_items%3Acomplete%2Cwork_items%3Arelease%2Cwork_items%3Aset_state%2Cwork_items%3Acomment%2Cwork_items%3Aupdate%2Cscheduler%3Aget_next%2Cdocs%3Asearch%2Cmemory%3Asearch%2Cmemory%3Aremember%2Cimprovements%3Acapture%2Ccode%3Arun%2Crecipes%3Asearch%2Cdev%3Apg_query%2Cfacts%3Aassert%2Cfacts%3Alist%2Cfacts%3Aretract%2Cwork_items%3Acheckpoint%2Cloop%3Aarm%2Cloop%3Acheckpoint%2Cloop%3Astatus%2Cloop%3Aend%2Cevents%3Aawait%2Cevents%3Acatalog%2Cevents%3Acancel%2Csession%3Arequest-compaction%2Cfleet%3Alaunch-on-plan%2Csearch%3Afulltext%2Cplans%3Aadd-decision%2Cwork_items%3Aclaimable%2Cmode%3Aset%2Ctools%3Afind%2Ctools%3Ainvoke&exp=0&sig=JPRAAM4vhP-5PmUc736U0vZm5Az3OZEZm-puqdk4RA4"
+      "url": "http://127.0.0.1:9071/api/mcp?superuser=1&workspace=papercusp-workspace",
+      "headers": {
+        "Authorization": "Bearer 0UZp37QmE7hbUwN5JPrUNlHsD8mDuREX"
+      }
     }
   }
 }
