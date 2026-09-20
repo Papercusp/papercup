@@ -78,7 +78,22 @@ function runProbe(args: string[], extraEnv: Record<string, string> = {}) {
     cwd: scratch,
     encoding: 'utf8',
     timeout: 60_000,
-    env: { ...process.env, TMPDIR: scratch, ...extraEnv },
+    env: {
+      ...process.env,
+      TMPDIR: scratch,
+      // Scrub the AMBIENT value so every case below measures what the PROBE
+      // does, not who launched vitest. This is not hypothetical: the
+      // green-checkpoint runs the suite as `npm run test:affected` THROUGH
+      // pc-heavy, and pc-heavy exports PC_HEAVY_BYPASS=1 into its whole child
+      // tree (its release-gate fast path does exactly that) — so in the gate
+      // this process already carries the variable the ceiling cases assert on,
+      // while an interactive shell does not. MEASURED 2026-09-20: without this
+      // line the copy-out case is green locally and RED in the gate. Empty is
+      // the right scrub rather than "0": pc-heavy tests `= "1"`, and the probe
+      // reports via `${PC_HEAVY_BYPASS:-unset}`, which treats empty as unset.
+      PC_HEAVY_BYPASS: '',
+      ...extraEnv,
+    },
   });
   return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
@@ -461,6 +476,11 @@ describe('mutation-probe.sh in-tree dirty-window ceiling', () => {
     expect(out).toContain('window_exceeded_sec=');
     expect(out).toContain('phase=baseline');
     expect(out).toContain('DIRTY-WINDOW ceiling');
+    // This phase is where the diagnosis earns its keep. Without it the run
+    // reports `BASELINE FAILED (guard exited 124) — refusing to score the
+    // mutant`, which accuses the caller's guard of failing on the UNMUTATED
+    // file when in fact the probe killed it — a wrong answer, not a vague one.
+    expect(out).not.toContain('BASELINE FAILED');
     // Tripping in the baseline phase is the BEST outcome available: the tree
     // was never dirtied at all.
     expect(out).not.toContain('mutant applied:');
@@ -468,12 +488,18 @@ describe('mutation-probe.sh in-tree dirty-window ceiling', () => {
   });
 
   it('refuses to score a KILLED mutant run as a verdict, and restores the file', () => {
-    // THE CASE THE CEILING EXISTS FOR. The mutant path here would exit 0 if
-    // allowed to finish — i.e. the honest verdict is SURVIVED. `timeout` kills
-    // it at the ceiling with rc=124, and rc!=0 is precisely what the ordinary
-    // verdict logic reads as "the guard CAUGHT the mutant". So a naive ceiling
-    // would not merely be imprecise, it would INVERT the verdict and print
-    // "the guard is falsifiable ✓" about a run that reached no assertion.
+    // The mutant path here would exit 0 if allowed to finish — the honest
+    // verdict is SURVIVED — and `timeout` kills it at rc=124 instead.
+    //
+    // ⚠ MEASURED, against an earlier draft of this comment: rc=124 does NOT
+    // become `caught`. The verdict ladder scores `caught` on TEST_RC -eq 1
+    // ALONE and sends every other nonzero status to `harness-error`, so the
+    // killed run was already refused a verdict before this block existed.
+    // (A mutation probe that disabled the detection below printed exactly
+    // that: `verdict=harness-error ... guard_exit=124`.) What this block adds
+    // is the DIAGNOSIS — which phase, how long, and what to do — on top of a
+    // bare "guard exited 124". The assertions therefore pin the diagnosis,
+    // and keep the no-verdict property from silently regressing into one.
     const { status, out } = runProbe(
       [
         '--file', subject,
