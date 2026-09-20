@@ -300,7 +300,14 @@ describe('goals:get — the deliberate-pause record is READ BACK (P-005)', () =>
         by: 'su-abc',
         at: new Date(1_755_000_000_000).toISOString(),
       },
-      actionable: true,
+      // EI-23738380307533850: `actionable` answers "is this doable RIGHT NOW",
+      // so it is folded through `goalActionable` and a deliberate hold makes it
+      // FALSE. It used to read `true` here — the same defect as a killed goal
+      // reading actionable, and for the same reason: `actionable` was derived
+      // from the blocker fold alone, which knows nothing about the goal's own
+      // status. A payload that says "paused, by whom, why" in one field and
+      // "go" in the next is exactly what this P-005 block exists to prevent.
+      actionable: false,
       premiseInvalidated: false,
       // P-018 (WI-41129) — see the note on the summary assertion above.
       packageUpdate: null,

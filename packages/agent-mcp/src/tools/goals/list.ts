@@ -13,7 +13,10 @@ import { z } from 'zod';
 import { generated, schemaOf } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
 import { goalHolderKey, resolveGoalHoldersBatch } from '@papercusp/operator-core/lib/goals/holder';
-import { resolveGoalEffectiveActivity } from '@papercusp/operator-core/lib/goals/activity';
+import {
+  goalActionable,
+  resolveGoalEffectiveActivity,
+} from '@papercusp/operator-core/lib/goals/activity';
 import { parseGoalLaunchSettings } from '@papercusp/operator-core/lib/goal-launch-settings';
 import {
   blockerStatusKey,
@@ -53,10 +56,18 @@ export default defineTool({
   // could not state the falsehood outright — but listing a dead goal
   // indistinguishably from a live one is the same failure by omission, and this
   // is the read agents call most. One flat boolean keeps the row CSV-shaped.
+  // `status` (EI-23738380307533850): the summary tier used to omit it, which
+  // left `actionable` — a DERIVED boolean — in a projection that dropped its
+  // determinant, so a killed goal read `actionable: true` with no field present
+  // that could falsify it. `actionable` is now folded through `goalActionable`
+  // in BOTH tiers (the fix that stops the class); carrying the determinant here
+  // too is what makes the tier honest rather than merely correct. Still a flat
+  // scalar, so the row stays CSV-shaped.
   result: z.array(
     z.object({
       id: z.string(),
       title: z.string(),
+      status: z.string().nullable(),
       actionable: z.boolean(),
       premiseInvalidated: z.boolean(),
       deactivated: z.boolean(),
@@ -144,12 +155,14 @@ export default defineTool({
       return {
         data: rows.map((r) => {
           const readiness = readinessOf(r.id);
+          const { activity } = activityOf(r);
           return {
             id: r.id,
             title: r.title,
-            actionable: readiness.actionable,
+            status: activity.effectiveStatus,
+            actionable: goalActionable(readiness.actionable, activity),
             premiseInvalidated: readiness.premiseInvalidated,
-            deactivated: activityOf(r).activity.deactivated,
+            deactivated: activity.deactivated,
           };
         }),
       };
@@ -164,7 +177,7 @@ export default defineTool({
         const { launch_settings: _launchSettings, ...row } = r;
         return {
           ...row,
-          actionable: readiness.actionable,
+          actionable: goalActionable(readiness.actionable, activity),
           premiseInvalidated: readiness.premiseInvalidated,
           blockedBy: readiness.blockers,
           status: activity.effectiveStatus,

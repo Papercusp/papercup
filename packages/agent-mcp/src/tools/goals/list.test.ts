@@ -68,13 +68,25 @@ describe('goals:list — summary/full projection', () => {
       { id: 'g1', title: 'Ship v1', body: 'long body', parent_id: null, budget_cents: 9999, created_at: 1, workspace_id: 'default', status: 'active' },
     ];
     const res = await tool.handler({ detail: 'summary', limit: 50 } as never, CTX() as never);
-    // `deactivated` (P-004 / D-011): the summary carries no `status`, so it
-    // could never state the falsehood outright — but listing a goal nothing is
-    // holding indistinguishably from a live one is the same failure by
-    // omission. No holder row + no declared policy ⇒ requireLive defaults true
-    // ⇒ deactivated.
+    // `deactivated` (P-004 / D-011): listing a goal nothing is holding
+    // indistinguishably from a live one is a failure by omission. No holder row
+    // + no declared policy ⇒ requireLive defaults true ⇒ deactivated.
+    //
+    // `status` (EI-23738380307533850): the summary tier now carries the
+    // determinant of its own derived booleans — here the DERIVED reading
+    // (`dormant`), not the raw column. `actionable` stays true: dormancy is
+    // holder-liveness, not status, and `deactivated` reports it in the same
+    // row, so the caller can still falsify it. See the terminal-status guard
+    // at the bottom of this file.
     expect(res.data).toEqual([
-      { id: 'g1', title: 'Ship v1', actionable: true, premiseInvalidated: false, deactivated: true },
+      {
+        id: 'g1',
+        title: 'Ship v1',
+        status: 'dormant',
+        actionable: true,
+        premiseInvalidated: false,
+        deactivated: true,
+      },
     ]);
     expect(JSON.stringify(res.data)).not.toContain('long body');
     expect(JSON.stringify(res.data)).not.toContain('9999');
@@ -225,4 +237,90 @@ describe('goals:list — workspace-global call-scope contract', () => {
     expect(rejected.ok).toBe(false);
     expect(rejected.error?.message ?? '').toMatch(/Unrecognized key|harness|detail|limit/i);
   });
+});
+
+/**
+ * RECURRENCE GUARD — EI-23738380307533850.
+ *
+ * `actionable` is DERIVED. It used to be computed from the blocker fold alone
+ * (`goalReadiness`), which knows nothing about the goal itself — and
+ * `views.every(...)` over an EMPTY edge list returns `true`. So a killed goal
+ * with no dependencies rendered `actionable: true`, and the `summary` tier,
+ * which omitted `status`, carried no field that could contradict it. Eight
+ * killed goals were read as eight live ones and carried into a decision as a
+ * settled premise; nothing in the payload looked uncertain enough to prompt a
+ * re-read, which is the defect's whole signature.
+ *
+ * The assertion is deliberately made ACROSS TIERS, with the tier list read from
+ * the tool's OWN arg schema rather than hard-coded. Asserting against one
+ * tier's field list is precisely what let the bug exist — this way a new detail
+ * tier is covered the day it is added and cannot silently opt out.
+ */
+describe('goals:list — a terminal goal is never actionable, in ANY tier', () => {
+  const DETAIL_TIERS: string[] = (() => {
+    const detail = (tool as unknown as { args: { shape: Record<string, unknown> } }).args?.shape
+      ?.detail as
+      | {
+          removeDefault?: () => { options?: readonly string[] };
+          options?: readonly string[];
+          _def?: { innerType?: { options?: readonly string[] } };
+        }
+      | undefined;
+    const options =
+      detail?.removeDefault?.().options ?? detail?.options ?? detail?._def?.innerType?.options;
+    return [...(options ?? [])];
+  })();
+
+  const goalRow = (status: string) => ({
+    id: 'g1',
+    title: 'Ship v1',
+    body: 'b',
+    parent_id: null,
+    budget_cents: 5,
+    created_at: 1,
+    workspace_id: 'default',
+    status,
+  });
+
+  const rowOf = (res: unknown) =>
+    (res as { data: Record<string, unknown>[] }).data[0];
+
+  // POSITIVE CONTROL. Without it a failed extraction yields an EMPTY tier list,
+  // every generated assertion below silently disappears, and the suite goes
+  // green having measured nothing — indistinguishable from a real pass. This is
+  // the check that makes the rest of this block mean anything.
+  it('derives its tier list from the tool arg schema, not a hard-coded pair', () => {
+    expect(DETAIL_TIERS).toContain('summary');
+    expect(DETAIL_TIERS).toContain('full');
+    expect(DETAIL_TIERS.length).toBeGreaterThanOrEqual(2);
+  });
+
+  for (const tier of DETAIL_TIERS) {
+    for (const status of ['killed', 'achieved']) {
+      it(`${tier}: a '${status}' goal is actionable:false and carries its own status`, async () => {
+        fixtureRows = [goalRow(status)];
+        edgeRows = [];
+
+        const res = await tool.handler({ detail: tier, limit: 50 } as never, CTX() as never);
+        const row = rowOf(res);
+
+        // The bug, stated directly: having no blockers must not mean "go".
+        expect(row.actionable).toBe(false);
+        // The determinant must travel WITH the derived boolean in every tier —
+        // a derived value outliving its input is the class this guards.
+        expect(row.status).toBe(status);
+      });
+    }
+
+    // CALIBRATION — a guard that can only ever assert `false` proves nothing:
+    // the fix would "pass" by switching the boolean off everywhere. A live,
+    // unblocked goal must still read actionable.
+    it(`${tier}: an active, unblocked goal still reads actionable:true`, async () => {
+      fixtureRows = [goalRow('active')];
+      edgeRows = [];
+
+      const res = await tool.handler({ detail: tier, limit: 50 } as never, CTX() as never);
+      expect(rowOf(res).actionable).toBe(true);
+    });
+  }
 });

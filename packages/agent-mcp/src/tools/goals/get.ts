@@ -13,7 +13,10 @@ import { z } from 'zod';
 import { generated, schemaOf } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
 import { resolveGoalHolders } from '@papercusp/operator-core/lib/goals/holder';
-import { resolveGoalEffectiveActivity } from '@papercusp/operator-core/lib/goals/activity';
+import {
+  goalActionable,
+  resolveGoalEffectiveActivity,
+} from '@papercusp/operator-core/lib/goals/activity';
 import { readGoalPortfolioThroughput } from '@papercusp/operator-core/lib/goals/portfolio-throughput';
 import { parseGoalLaunchSettings } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { goalPackageUpdateInfo } from '@papercusp/operator-core/lib/goals/package-update';
@@ -183,7 +186,7 @@ export default defineTool({
           holderLiveness: holders.liveness,
           holders: holderIdentities,
           pause,
-          actionable: readiness.actionable,
+          actionable: goalActionable(readiness.actionable, activity),
           premiseInvalidated: readiness.premiseInvalidated,
           // P-018: the package-update OFFER, folded where the owning agent
           // already reads its goal. Null unless packaged; the accept is
@@ -224,7 +227,7 @@ export default defineTool({
         // The archived record of the last pause that has since been resumed —
         // "was this ever held, and by whom" survives the resume.
         lastPause: readGoalLastPause(metadata),
-        actionable: readiness.actionable,
+        actionable: goalActionable(readiness.actionable, activity),
         premiseInvalidated: readiness.premiseInvalidated,
         blockedBy: readiness.blockers,
         // P-018: see the summary branch's note.

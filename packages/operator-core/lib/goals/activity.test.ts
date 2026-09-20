@@ -21,6 +21,7 @@ import {
   resolveGoalActivity,
   resolveGoalEffectiveActivity,
   resolveGoalHolderWedge,
+  goalActionable,
 } from './activity';
 import type { GoalHolderLiveness } from './holder';
 
@@ -360,5 +361,49 @@ describe('resolveGoalHolderWedge — alive, and producing nothing', () => {
 
   it('a null liveness (never asked) is not wedged', () => {
     expect(resolveGoalHolderWedge({ liveness: null }).reason).toBe('not-held');
+  });
+});
+
+/**
+ * `goalActionable` — EI-23738380307533850.
+ *
+ * The fold that stops a DERIVED liveness boolean from outliving the status that
+ * determines it. Every case below drives the REAL oracle rather than a
+ * hand-built verdict, so these cannot drift from `resolveGoalEffectiveActivity`.
+ */
+describe('goalActionable', () => {
+  it('passes a blocker verdict straight through for a plain live goal', () => {
+    const live = resolveGoalEffectiveActivity({ status: 'active', liveness: 'held' });
+    expect(goalActionable(true, live)).toBe(true);
+    expect(goalActionable(false, live)).toBe(false);
+  });
+
+  for (const status of ['killed', 'achieved']) {
+    it(`a '${status}' goal is never actionable, however clean its blockers`, () => {
+      // The original bug: `goalReadiness` folds over the dependency EDGES, and
+      // `.every()` over an empty list is `true` — so a terminal goal with no
+      // dependencies arrived here as `blockersSatisfied: true` and was
+      // published as `actionable: true`.
+      const over = resolveGoalEffectiveActivity({ status, liveness: 'held' });
+      expect(over.terminal).toBe(true);
+      expect(goalActionable(true, over)).toBe(false);
+    });
+  }
+
+  it('a deliberately PAUSED goal is never actionable', () => {
+    const paused = resolveGoalEffectiveActivity({ status: 'paused', liveness: 'unheld' });
+    expect(paused.deliberatelyPaused).toBe(true);
+    expect(goalActionable(true, paused)).toBe(false);
+  });
+
+  it('does NOT gate on `deactivated` — that is holder-liveness, not status', () => {
+    // A deliberate omission, pinned here so it is not "completed" by a later
+    // reader. `deactivated` means "requires a live holder and has none": the
+    // goal is dormant, not over, and a holder can still pick it up. Every tier
+    // emits `deactivated` as its own field, so a caller CAN falsify it — which
+    // is exactly what `actionable` could not be before this fold existed.
+    const dormant = resolveGoalEffectiveActivity({ status: 'active', liveness: 'lost' });
+    expect(dormant.deactivated).toBe(true);
+    expect(goalActionable(true, dormant)).toBe(true);
   });
 });

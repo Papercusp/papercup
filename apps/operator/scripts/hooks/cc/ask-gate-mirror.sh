@@ -633,6 +633,42 @@ def _contains_tool_call(obj):
     )
 
 
+def _is_dispatcher_tool_name(name):
+    """True for tools:invoke and its MCP-prefixed spellings.
+
+    A dispatcher does not DO anything itself: it forwards to another tool whose
+    real name travels in its arguments, so the outer block name is never the
+    tool that actually ran.
+    """
+    return _tool_name_key(name).endswith('toolsinvoke')
+
+
+def _dispatched_tool_name(block):
+    """EI-23745075736001151 — recover the tool a dispatcher actually ran.
+
+    A colon-form tool sent through tools:invoke appears in the transcript as
+    `mcp__<server>__tools_invoke`, with the tool that REALLY ran named only in
+    that block's arguments. Reading the outer name alone reports a genuine
+    session:request-compaction (or any other gated call) as never made, so the
+    Stop gate refuses to let the turn end -- a livelock on precisely the door
+    the su playbook mandates when a colon-form name will not resolve directly,
+    and one that fires hardest on a session already over its context limit.
+    """
+    for key in ('input', 'tool_input', 'toolInput', 'arguments', 'args', 'parameters'):
+        args = block.get(key)
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:
+                continue
+        if not isinstance(args, dict):
+            continue
+        inner = args.get('name') or args.get('tool') or args.get('tool_name')
+        if isinstance(inner, str) and inner.strip():
+            return inner.strip()
+    return None
+
+
 def _tool_call_names(obj):
     if not isinstance(obj, dict):
         return []
@@ -647,7 +683,14 @@ def _tool_call_names(obj):
     for block in blocks:
         name = block.get('name') or block.get('tool_name') or block.get('toolName')
         if isinstance(name, str) and name.strip():
-            names.append(name.strip())
+            name = name.strip()
+            names.append(name)
+            # Keep the outer dispatcher name too: it is what a claim naming
+            # tools:invoke itself would match against.
+            if _is_dispatcher_tool_name(name):
+                dispatched = _dispatched_tool_name(block)
+                if dispatched:
+                    names.append(dispatched)
     # A nameless tool-use block still proves that a call occurred, but cannot
     # satisfy a claim that names a different concrete tool.
     return names

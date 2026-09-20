@@ -177,6 +177,81 @@ describe('ask-gate-mirror — operator-independent paths', () => {
       expect(out.reason).toMatch(/matching session:request-compaction/);
     });
 
+    // EI-23745075736001151 — a colon-form tool dispatched through tools:invoke
+    // appears in the transcript under the DISPATCHER's name, with the tool that
+    // really ran named only in its arguments. Reading the outer name alone
+    // reported a genuine session:request-compaction as never made and refused
+    // the stop, livelocking the carry-respawn (which needs a quiet pty) on
+    // precisely the door the su playbook mandates for colon-form names.
+    const transcriptWithDispatchedToolUse = (
+      text: string,
+      dispatchedName: string,
+      outerName = 'mcp__papercusp-su__tools_invoke',
+      argsKey = 'input',
+    ) => {
+      const p = join(tmp, `dispatched-${Math.random().toString(36).slice(2)}.jsonl`);
+      const entries = [
+        { type: 'user', message: { content: [{ type: 'text', text: 'Continue.' }] } },
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'tool-1',
+                name: outerName,
+                [argsKey]: { name: dispatchedName, args: { autoContinue: true } },
+              },
+            ],
+          },
+        },
+        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'ok' }] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text }] } },
+      ];
+      fs.writeFileSync(p, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+      return p;
+    };
+
+    const stopWith = (transcript_path: string) =>
+      run(payload({ hook_event_name: 'Stop', session_id: 'claimed-action-session', transcript_path }));
+
+    it.each([
+      ['mcp__papercusp-su__tools_invoke', 'input'],
+      ['mcp__papercusp__tools_invoke', 'input'],
+      ['tools:invoke', 'input'],
+      ['tools_invoke', 'tool_input'],
+    ])('ALLOWS a real session:request-compaction dispatched via %s', (outerName, argsKey) => {
+      const r = stopWith(transcriptWithDispatchedToolUse('Compacting now', 'session:request-compaction', outerName, argsKey));
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe('');
+    });
+
+    it('still BOUNCES when tools:invoke dispatched an unrelated tool', () => {
+      const r = stopWith(transcriptWithDispatchedToolUse('Compacting now', 'work_items:get'));
+      expect(r.status).toBe(0);
+      const out = JSON.parse(r.stdout);
+      expect(out.decision).toBe('block');
+      expect(out.reason).toMatch(/matching session:request-compaction/);
+    });
+
+    it('still BOUNCES when tools:invoke carries no dispatched name at all', () => {
+      const p = join(tmp, `dispatched-nameless-${Math.random().toString(36).slice(2)}.jsonl`);
+      const entries = [
+        { type: 'user', message: { content: [{ type: 'text', text: 'Continue.' }] } },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'tool_use', id: 'tool-1', name: 'mcp__papercusp-su__tools_invoke', input: {} }] },
+        },
+        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'ok' }] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Compacting now' }] } },
+      ];
+      fs.writeFileSync(p, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+      const r = stopWith(p);
+      expect(r.status).toBe(0);
+      const out = JSON.parse(r.stdout);
+      expect(out.decision).toBe('block');
+    });
+
     it.each([
       'I will compact after the owner confirms the route.',
       'The report explains why the prior agent wrote “Compacting now” as an example.',

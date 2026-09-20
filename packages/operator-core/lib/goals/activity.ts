@@ -273,6 +273,44 @@ export function resolveGoalEffectiveActivity(input: {
   };
 }
 
+/**
+ * Fold a goal's OWN activity into a blocker-derived `actionable`, so the
+ * derived boolean can never outlive the status that determines it.
+ *
+ * ── WHY THIS EXISTS (EI-23738380307533850) ──────────────────────────────────
+ *
+ * `goalReadiness` answers exactly one question: are this goal's BLOCKERS
+ * satisfied? It is a fold over the dependency edges and deliberately knows
+ * nothing about the goal itself — so `views.every(...)` over an EMPTY edge list
+ * returns `true`. A killed goal with no dependencies therefore read
+ * `actionable: true`, and the `summary` tier, which omitted `status`, carried
+ * no field that could contradict it.
+ *
+ * The dangerous half was never "summary carries less detail" — that is correct
+ * and expected. It is that the omission flipped a boolean to its confident
+ * WRONG value instead of to absent/unknown, so nothing in the payload looked
+ * uncertain enough to prompt a re-read. A caller carried "8 live sibling goals"
+ * as a settled premise through a goal-sovereignty decision; every one of the 8
+ * was `killed`.
+ *
+ * Folding status in HERE — rather than only adding `status` to one tier's
+ * projection — is what stops the CLASS: a new tier cannot reintroduce the bug
+ * by dropping a field, because no tier computes `actionable` for itself.
+ *
+ * Only STATUS-determined gates belong in this fold. `deactivated` is
+ * holder-liveness, not status, and every tier already emits it as its own
+ * falsifiable field — so it deliberately stays out: a dormant goal is one a
+ * holder can still pick up.
+ */
+export function goalActionable(
+  blockersSatisfied: boolean,
+  activity: Pick<GoalActivityVerdict, 'deliberatelyPaused' | 'terminal'>,
+): boolean {
+  if (activity.terminal) return false;
+  if (activity.deliberatelyPaused) return false;
+  return blockersSatisfied;
+}
+
 /* ────────────────────────────────────────────────────────────────────────────
  * WEDGED HOLDERS — alive, and producing nothing
  *
