@@ -1497,6 +1497,11 @@ export function makeScrollbackGuard(): {
  * still runs after either marker. Pure and exported so backend readiness
  * cannot regress into timing folklore. */
 export function startupOutputReady(agent: any, output: any): boolean;
+/** A fresh Claude child can repaint continuously (spinner/elapsed chrome), so
+ * output quietness is not a reliable post-epoch settle signal. A standalone
+ * composer glyph proves the editor is installed; menu rows include text and
+ * do not match this predicate. */
+export function freshChildPromptReady(agent: any, output: any): boolean;
 /** Terminate the entire process group created by forkpty, not only its leader.
  * OMP launches a descendant process; signalling only node-pty's immediate child
  * can let that target survive after the host exits. The direct child signal is
