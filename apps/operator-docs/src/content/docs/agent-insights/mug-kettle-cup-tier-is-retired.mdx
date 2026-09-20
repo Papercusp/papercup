@@ -129,8 +129,13 @@ call sites, because the UI and settings surfaces each gate several components.
 | UI | `LeftSidebar.tsx:292`; `adv/LearningTab.tsx:585`; `admin/plans/PlanOtherList.tsx:158,436` | the tabs and panels for a tier that cannot run |
 | settings | `settings/layout.tsx:165`; `settings/autonomy/page.tsx:144` | the Queen autonomy ceiling + its master switch |
 
-The five gated actuator tools: `cup:spawn`, `pot:start`, `pot:wake`, `overwatch:start`,
-`overwatch:declare_wake`.
+D-017 covered five actuator tools at the time — `cup:spawn`, `pot:start`, `pot:wake`,
+`overwatch:start` and `overwatch:declare_wake`. Read that as HISTORICAL membership, never
+as current disposition: `cup:spawn` was deleted outright afterwards, along with the whole
+`overwatch:` namespace (P-059). For what each verb does TODAY, read
+`packages/operator-core/lib/agent-tools/_mug-kettle-gate-population.ts` — the row-set every
+prose surface is now pinned to by `doc-claims/mug-kettle-verb-dispositions.test.ts`, which
+is what stops this paragraph going stale again as a present-tense claim.
 
 **None of these gates implies another.** They were each measured and landed separately, and
 in most cases the plan item's *stated* file list turned out wrong in both directions — see
