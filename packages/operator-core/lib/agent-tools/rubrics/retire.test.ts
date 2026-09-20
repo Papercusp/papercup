@@ -74,7 +74,9 @@ describe('rubrics:retire handler (bulk keyed-array)', () => {
     retireM.mockImplementation(async (id: string) => (id === 'gone' ? null : { ...RETIRED_R1, rubricId: id }));
     const b = await body({ rubricRefs: ['r-1', 'gone', 'r-2'] });
     // The batch as a whole still succeeded — one bad ref is not a batch failure.
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toMatchObject({ ok: 2, failed: 1 });
     const byRef = Object.fromEntries(b.results.map((r: { rubricRef: string }) => [r.rubricRef, r]));
     expect(byRef['r-1'].ok).toBe(true);
@@ -92,7 +94,9 @@ describe('rubrics:retire handler (bulk keyed-array)', () => {
       return { ...RETIRED_R1, rubricId: id };
     });
     const b = await body({ rubricRefs: ['r-1', 'acc-1', 'r-2'] });
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toMatchObject({ ok: 2, failed: 1 });
     const byRef = Object.fromEntries(b.results.map((r: { rubricRef: string }) => [r.rubricRef, r]));
     expect(byRef['acc-1'].ok).toBe(false);

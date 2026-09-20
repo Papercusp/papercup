@@ -78,7 +78,9 @@ describe('pot:moderation_resolve handler (bulk keyed-array, P-006)', () => {
         { reportId: 'gone', status: 'dismissed' },
       ],
     });
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 1, failed: 1 });
     expect(b.results[1]).toMatchObject({ ok: false, reportId: 'gone', error: 'no report with that id' });
   });

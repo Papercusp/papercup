@@ -148,7 +148,9 @@ describe('processes:kill (bulk keyed-array, P-006)', () => {
     }));
     const { default: tool } = await import('../kill');
     const b = parseEnvelope((await tool.handler({ pid: 1234 }, MAKE_PRINCIPAL_CTX())) as never);
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: false, pid: 1234, error: 'protected_kind' });
   });
@@ -176,7 +178,9 @@ describe('processes:kill (bulk keyed-array, P-006)', () => {
     }));
     const { default: tool } = await import('../kill');
     const b = parseEnvelope((await tool.handler({ pids: [10, 99, 20] }, MAKE_PRINCIPAL_CTX())) as never);
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 2, failed: 1 });
     expect(b.results.map((r) => [r.pid, r.ok])).toEqual([
       [10, true],

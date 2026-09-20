@@ -100,7 +100,9 @@ describe('trust:add — workspace resolution (privilege boundary) + bulk envelop
     addTrustedUser.mockRejectedValueOnce(new Error('boom-add'));
     const tool = await addTool();
     const b = body(await tool.handler({ githubUserId: 42 }, ctxWith({ workspaceId: 'ws-1' })));
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: false, githubUserId: 42, error: 'boom-add' });
   });
@@ -124,7 +126,9 @@ describe('trust:add — workspace resolution (privilege boundary) + bulk envelop
     });
     const tool = await addTool();
     const b = body(await tool.handler({ githubUserIds: [42, 99, 7] }, ctxWith({ workspaceId: 'ws-1', slug: 'owner' })));
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 2, failed: 1 });
     expect(b.results.map((r: any) => [r.githubUserId, r.ok])).toEqual([
       [42, true],

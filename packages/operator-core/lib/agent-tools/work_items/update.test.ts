@@ -166,7 +166,9 @@ describe('work_items:update handler (bulk keyed-array)', () => {
         (id === 'EI-X' ? { ok: false, reason: 'not_found' } : { ok: true, item: { id } }) as never,
     );
     const b = await body({ items: [{ id: 'EI-1' }, { id: 'EI-X' }] });
-    expect(b.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran every item.
+    expect(b.ok).toBe(false);
     expect(b.counts).toEqual({ ok: 1, failed: 1 });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'EI-X', error: expect.stringContaining('not found') });
   });

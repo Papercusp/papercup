@@ -88,7 +88,10 @@ describe('work_items:set_priority handler (bulk keyed-array)', () => {
   it('not-found fails only that item (batch survives)', async () => {
     setM.mockResolvedValue(null as never);
     const out = await env({ workItem: 'F-404', priority: 1 });
-    expect(out.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged: the batch still ran the item and
+    // reported its own failure at results[0].
+    expect(out.ok).toBe(false);
     expect(out.counts).toEqual({ ok: 0, failed: 1, written: 0, proposed: 0 });
     expect(out.results[0]).toMatchObject({ ok: false, workItem: 'F-404' });
     expect(String(out.results[0].error)).toMatch(/F-404.*not found/i);
@@ -128,7 +131,10 @@ describe('work_items:set_priority handler (bulk keyed-array)', () => {
         { workItem: 'F-B', position: 'top' }, // bump
       ],
     });
-    expect(out.ok).toBe(true);
+    // EI-23737206446729041: envelope `ok` is DERIVED from items, so failed>0 => ok:false.
+    // Per-item isolation (what this test proves) is unchanged — see the per-item results below,
+    // where F-R/F-S/F-B all still succeed and only F-X fails.
+    expect(out.ok).toBe(false);
     // WI-1376 rollup: F-S (set) + F-B (bump) both persisted (written:true) → written:2;
     // F-R is a read (no write attempt), F-X not-found → failed:1; no proposals.
     expect(out.counts).toEqual({ ok: 3, failed: 1, written: 2, proposed: 0 });
