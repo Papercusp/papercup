@@ -54,6 +54,13 @@ vi.mock('../../fleet/context-critical-bench', () => ({
 vi.mock('../coordination/context-pressure', () => ({
   fetchContextPressure: mocks.fetchContextPressure,
   resolveContextPressureRecoveryPath: vi.fn(async () => null),
+  // EI-23744538757758407: the critical-pressure path reads headroom alongside the recovery
+  // path, so this FULL-REPLACEMENT factory omitting the export throws "No
+  // resolveContextPressureHeadroom export is defined on the mock" before the bench assertion
+  // ever runs. null is a valid reading — the predicate treats unknown as "do not assert" —
+  // so this restores the original assertion rather than weakening it. Same fix already
+  // applied to work_items/claim_next.context-pressure-gate.test.ts.
+  resolveContextPressureHeadroom: vi.fn(async () => null),
 }));
 
 // Everything below is preflight/enrichment scenery: pinned so a cold module cache or a saturated
