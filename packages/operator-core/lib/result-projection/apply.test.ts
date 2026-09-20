@@ -10,7 +10,15 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { applyPick, applyResultProjection, parsePickPath, projectionMaterializationFormat } from './apply';
+import {
+  applyPick,
+  applyResultProjection,
+  parsePickPath,
+  pickPathTail,
+  pickRepairCandidates,
+  projectionMaterializationFormat,
+  proposePickRepairs,
+} from './apply';
 import { parseProjection } from './parse';
 
 const textResult = (text: string) => ({ content: [{ type: 'text' as const, text }] });
@@ -1013,5 +1021,167 @@ describe('applyResultProjection — structured-body and custom truncation disclo
     expect(JSON.parse(bodyText(out))).toEqual({ rows: [{ id: 'WI-1' }] });
     expect(footerOf(out)).not.toContain('field-level/custom-shaper truncation');
     expect(reportOf(out).notes).toEqual([]);
+  });
+});
+
+/**
+ * WI-10002073 — the projection ROOT is not uniform across tools.
+ *
+ * The three roots below are not invented: they were MEASURED in one task against
+ * the running operator — `plans:get` answers under `results[]`,
+ * `plans:get-spec-evidence` under `evidence[]`, and `work_items:get` under
+ * `results[].workItem`. Nothing in a tool's schema announces which, so a path
+ * correct for one tool silently matches nothing on another and the only recovery
+ * was a second round-trip.
+ *
+ * EI-20720054720826414 already established the safe shape of a repair for the
+ * ARRAY-root case; this extends it to keyed envelopes under the same two teeth
+ * (only a MISSED path is rewritten; only a PROVABLY matching rewrite is applied)
+ * plus a third the object-root case needs: when SEVERAL spellings match, NONE is
+ * applied, because a wrong guess is a SILENT wrong read — strictly worse than the
+ * miss it replaces.
+ *
+ * The CONTROLS carry the weight here. A repair engine is only as trustworthy as
+ * its negative space, so the ambiguity case, the genuine miss, and the
+ * never-reinterpret-a-working-path case are each pinned explicitly.
+ */
+describe('applyResultProjection — keyed-envelope pick repair (WI-10002073)', () => {
+  // Real shapes, trimmed: work_items:get nests the row a level deeper than the
+  // envelope key, which is the miss no key-list in an error message can fix.
+  const WORK_ITEMS_GET = JSON.stringify({
+    ok: true,
+    results: [{ id: 'WI-1', workItem: { state: 'open', title: 't1' } }],
+  });
+  const SPEC_EVIDENCE = JSON.stringify({
+    ok: true,
+    slug: 'a-plan',
+    harnessSlug: 'papercusp',
+    evidence: [{ id: 'ev-1', kind: 'code' }],
+    count: 1,
+  });
+
+  it('repairs a path that stops one level short of the row (work_items:get)', () => {
+    const out = applyResultProjection(textResult(WORK_ITEMS_GET), spec({ pick: ['results[].state'] }));
+    expect(JSON.parse(bodyText(out))).toEqual({ results: [{ workItem: { state: 'open' } }] });
+    const footer = footerOf(out);
+    expect(footer).toContain('auto-adjusted');
+    expect(footer).toContain('results[].state → results[].workItem.state');
+    expect(footer).toContain('keyed-envelope');
+  });
+
+  it('repairs a path that names the WRONG envelope key (plans:get-spec-evidence)', () => {
+    const out = applyResultProjection(textResult(SPEC_EVIDENCE), spec({ pick: ['results[].id'] }));
+    expect(JSON.parse(bodyText(out))).toEqual({ evidence: [{ id: 'ev-1' }] });
+    expect(footerOf(out)).toContain('results[].id → evidence[].id');
+  });
+
+  it('repairs a bare [].key path used against a keyed envelope', () => {
+    const out = applyResultProjection(textResult(SPEC_EVIDENCE), spec({ pick: ['[].kind'] }));
+    expect(JSON.parse(bodyText(out))).toEqual({ evidence: [{ kind: 'code' }] });
+    expect(footerOf(out)).toContain('[].kind → evidence[].kind');
+  });
+
+  it('a repaired selection is NOT degraded: the verdict stays a tail footer', () => {
+    const texts = textsOf(
+      applyResultProjection(textResult(SPEC_EVIDENCE), spec({ pick: ['results[].id'] })),
+    );
+    expect(isVerdictText(texts[texts.length - 1])).toBe(true);
+    expect(isVerdictText(texts[0])).toBe(false);
+  });
+
+  it('mixed: repairs the wrong-rooted path and keeps the already-correct one', () => {
+    const out = applyResultProjection(
+      textResult(WORK_ITEMS_GET),
+      spec({ pick: ['results[].id', 'results[].state'] }),
+    );
+    expect(JSON.parse(bodyText(out))).toEqual({
+      results: [{ id: 'WI-1', workItem: { state: 'open' } }],
+    });
+    expect(footerOf(out)).toContain('results[].state → results[].workItem.state');
+  });
+
+  it('CONTROL: AMBIGUOUS — two spellings match, so NEITHER is applied; both are named', () => {
+    const body = JSON.stringify({ rows: [{ id: 'from-rows' }], extras: [{ id: 'from-extras' }] });
+    const out = applyResultProjection(textResult(body), spec({ pick: ['results[].id'] }));
+    // Body left unprojected: guessing between them would be a silent wrong read.
+    expect(JSON.parse(bodyText(out))).toEqual({
+      rows: [{ id: 'from-rows' }],
+      extras: [{ id: 'from-extras' }],
+    });
+    const footer = footerOf(out);
+    expect(footer).not.toContain('auto-adjusted');
+    expect(footer).toContain('matched NOTHING');
+    expect(footer).toContain('WOULD match');
+    expect(footer).toContain('rows[].id');
+    expect(footer).toContain('extras[].id');
+  });
+
+  it('CONTROL: a genuine miss stays a loud miss and names the body shape', () => {
+    const out = applyResultProjection(textResult(SPEC_EVIDENCE), spec({ pick: ['results[].zzz'] }));
+    const footer = footerOf(out);
+    expect(footer).toContain('matched NOTHING');
+    expect(footer).not.toContain('auto-adjusted');
+    expect(footer).not.toContain('WOULD match');
+    expect(footer).toContain('an OBJECT with key(s)');
+    expect(footer).toContain('evidence');
+  });
+
+  it('CONTROL: never reinterprets a WORKING path — a top-level hit wins over a row hit', () => {
+    // `id` resolves at the root, so it is not a miss and repair must not run —
+    // otherwise the caller silently receives the ROW's id instead of the root's.
+    const body = JSON.stringify({ id: 'top', results: [{ id: 'row' }] });
+    const out = applyResultProjection(textResult(body), spec({ pick: ['id'] }));
+    expect(JSON.parse(bodyText(out))).toEqual({ id: 'top' });
+    expect(footerOf(out)).not.toContain('auto-adjusted');
+  });
+});
+
+/**
+ * The repair primitives, unit-level. These are the falsifiability controls for
+ * the block above: the engine's promise is "generate broadly, apply only what is
+ * PROVEN", so the tests that matter assert what it REFUSES to propose.
+ */
+describe('pick repair primitives (WI-10002073)', () => {
+  it('pickPathTail strips whichever envelope segment is present, and nothing else', () => {
+    expect(pickPathTail('results[].workItem.state')).toBe('workItem.state');
+    expect(pickPathTail('[].id')).toBe('id');
+    expect(pickPathTail('id')).toBe('id'); // already a tail — unchanged
+    expect(pickPathTail('a.b.c')).toBe('a.b.c'); // no envelope segment — unchanged
+  });
+
+  it('candidates never include the path the caller already wrote', () => {
+    const body = { results: [{ id: 'x' }] };
+    expect(pickRepairCandidates(body, 'results[].id')).not.toContain('results[].id');
+  });
+
+  it('proposes nothing for an array root beyond the [].key respelling', () => {
+    expect(pickRepairCandidates([{ id: 'x' }], 'id')).toEqual(['[].id']);
+    // Already correctly spelled for an array root — nothing to propose.
+    expect(pickRepairCandidates([{ id: 'x' }], '[].id')).toEqual([]);
+  });
+
+  it('CALIBRATION + CONTROL: proposes for a real re-root, refuses when the leaf is absent', () => {
+    const body = { evidence: [{ id: 'ev-1' }] };
+    // Calibration: the mechanism does fire on a body it should repair.
+    expect(proposePickRepairs(body, ['results[].id'], []).repairs.get('results[].id')).toBe(
+      'evidence[].id',
+    );
+    // Control: same body, a leaf that exists NOWHERE — no repair, no ambiguity.
+    const absent = proposePickRepairs(body, ['results[].nope'], []);
+    expect(absent.repairs.size).toBe(0);
+    expect(absent.ambiguous.size).toBe(0);
+  });
+
+  it('CONTROL: a candidate already in the caller selection is not offered as a repair', () => {
+    const body = { evidence: [{ id: 'ev-1', kind: 'code' }] };
+    const out = proposePickRepairs(body, ['results[].id'], ['evidence[].id']);
+    expect(out.repairs.size).toBe(0);
+  });
+
+  it('CONTROL: two matching candidates are reported as ambiguous, never repaired', () => {
+    const body = { rows: [{ id: 'a' }], extras: [{ id: 'b' }] };
+    const out = proposePickRepairs(body, ['results[].id'], []);
+    expect(out.repairs.size).toBe(0);
+    expect(out.ambiguous.get('results[].id')).toEqual(['rows[].id', 'extras[].id']);
   });
 });
