@@ -4815,7 +4815,30 @@ describe("psu-launcher arg parsing", () => {
     ).toBe("auto");
   });
 
+  // WI-10002057: terminalRenderEnv(agent, env = process.env) DEFERS to an explicit
+  // CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN (it exists to stamp that value, not to
+  // override an operator's), and buildResumeEnv / trackedForkEnvelopeEnv call it
+  // WITHOUT injecting an env. So any assertion that hardcodes the key silently
+  // measures the RUNNER's environment instead of the contract — and every
+  // psu-launched Claude session exports that variable, which made these three
+  // tests red for every agent running the suite from inside psu while staying
+  // green in the gate's clean env. Measured A/B (only this variable differs):
+  // unset => 13 passed | 0 failed; set => 3 failed. Pin it for these tests, and
+  // restore EXACTLY rather than calling vi.unstubAllEnvs(), which would also drop
+  // env stubs owned by other tests in this file.
+  let priorAlternateScreen: string | undefined;
+  const pinAlternateScreenUnset = () => {
+    priorAlternateScreen = process.env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN;
+    delete process.env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN;
+  };
+  afterEach(() => {
+    if (priorAlternateScreen === undefined) return;
+    process.env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN = priorAlternateScreen;
+    priorAlternateScreen = undefined;
+  });
+
   it("buildResumeEnv: resumed psu sessions always carry the agent-session marker", () => {
+    pinAlternateScreenUnset();
     const session = {
       agent: "claude",
       id: 7,
@@ -4923,6 +4946,7 @@ describe("psu-launcher arg parsing", () => {
   });
 
   it("buildResumeEnv: account env LAYERS onto the resume identity/scope and marker", () => {
+    pinAlternateScreenUnset();
     const session = {
       agent: "claude",
       id: 7,
@@ -4989,6 +5013,7 @@ describe("psu-launcher arg parsing", () => {
     // gates git stash/reset --hard/clean -f/checkout . on exactly this var) and the
     // native-scheduler lockout. `git stash` executed unblocked on the shared staging tree
     // from a forked session on 2026-07-05 as a direct result.
+    pinAlternateScreenUnset();
     const bootstrapEnvelopeEnv = {
       CLAUDE_CONFIG_DIR: "/home/x/.papercusp/su-claude-homes/session-9",
       PAPERCUSP_SID: "su-forked",
