@@ -510,13 +510,14 @@ export type EvidenceCurrentnessProvenance =
   | 'server-measured'
   | 'partially-server-measured'
   | 'attested-current'
+  | 'replayed-snapshot'
   | 'not-supplied';
 
 type OpaqueFingerprintDimension = 'fixture' | 'rubric' | 'environment';
 
 /** Trust metadata for the current-fingerprint tuple used by the classifier. */
 interface CurrentnessClassificationOptions {
-  provenance?: 'server-measured' | 'partially-server-measured';
+  provenance?: 'server-measured' | 'partially-server-measured' | 'replayed-snapshot';
   /** Applicable non-repository dimensions supplied by the caller beside server measurements. */
   attestedDimensions?: OpaqueFingerprintDimension[];
 }
@@ -615,12 +616,23 @@ export function classifySpecEvidenceCurrentness(
       : options.provenance === 'server-measured' && attestedDimensions.length > 0
         ? 'partially-server-measured'
         : options.provenance ?? 'attested-current';
+  // A replayed snapshot is NOT an independent measurement: on the replay path the
+  // server skips measuring entirely and the whole `current` tuple arrives from the
+  // caller, so labelling it 'server-measured' would launder a caller assertion into
+  // server proof. Guard it exactly like an attested tuple — the caller can still
+  // reproduce a historical grade, but cannot mint a fresh-freshness verdict from
+  // fingerprints it authored itself.
   const attestedCurrentGuard =
-    (provenance === 'attested-current' || provenance === 'partially-server-measured') && staleReasons.length === 0
+    (provenance === 'attested-current' ||
+      provenance === 'partially-server-measured' ||
+      provenance === 'replayed-snapshot') &&
+    staleReasons.length === 0
       ? [
           provenance === 'partially-server-measured'
             ? `current-fingerprints-partially-attested-not-independently-measured:${attestedDimensions.join(',')}`
-            : 'current-fingerprints-attested-not-independently-measured',
+            : provenance === 'replayed-snapshot'
+              ? 'current-fingerprints-replayed-not-independently-measured'
+              : 'current-fingerprints-attested-not-independently-measured',
         ]
       : [];
   const guardedUnknownReasons = [...unknownReasons, ...attestedCurrentGuard];
@@ -709,7 +721,7 @@ export interface ListSpecEvidenceOptions {
   /** Replay the supplied current tuple as a prior server measurement; never re-read live files. */
   replaySnapshot?: boolean;
   /** Provenance for a replayed current tuple. */
-  currentProvenance?: 'server-measured' | 'partially-server-measured';
+  currentProvenance?: 'server-measured' | 'partially-server-measured' | 'replayed-snapshot';
   currentness?: Array<'current' | 'stale' | 'unknown'>;
   /**
    * Include bindings that were deliberately WITHDRAWN (migration 1174, decision D-011).
