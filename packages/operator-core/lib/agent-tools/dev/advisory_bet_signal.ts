@@ -53,7 +53,7 @@ export interface WindowSpec {
   complete: boolean;
 }
 
-function windowOf(since: Date, until: Date, now: Date): WindowSpec {
+export function windowOf(since: Date, until: Date, now: Date): WindowSpec {
   const effectiveUntil = until.getTime() > now.getTime() ? now : until;
   return {
     since: since.toISOString(),
@@ -114,14 +114,14 @@ async function loadWindow(
   };
 }
 
-type FalsifierStatus = 'met' | 'not-met' | 'indeterminate';
+export type FalsifierStatus = 'met' | 'not-met' | 'indeterminate';
 
-interface Falsifier {
+export interface Falsifier {
   status: FalsifierStatus;
   why: string;
 }
 
-function triggerTooNarrow(after: AdvisoryFireCount, w: WindowSpec): Falsifier {
+export function triggerTooNarrow(after: AdvisoryFireCount, w: WindowSpec): Falsifier {
   if (after.status !== 'measured') {
     return {
       status: 'indeterminate',
@@ -138,7 +138,7 @@ function triggerTooNarrow(after: AdvisoryFireCount, w: WindowSpec): Falsifier {
   };
 }
 
-function noBehaviourChange(
+export function noBehaviourChange(
   fires: AdvisoryFireCount,
   before: CorrectionReport,
   after: CorrectionReport,
@@ -161,11 +161,19 @@ function noBehaviourChange(
   }
   const delta = after.ratePerAuthored - before.ratePerAuthored;
   const relative = before.ratePerAuthored > 0 ? delta / before.ratePerAuthored : null;
-  const moved = relative !== null && Math.abs(relative) >= 0.1;
+  // A zero BEFORE-rate has no RELATIVE change to compute, but that is not the
+  // same as "no change": 0 -> anything positive is the largest movement this
+  // metric can express. Deciding from `relative` alone reported that maximal
+  // move as 'met' (i.e. the advisory changed nothing), settling the bet in
+  // precisely the wrong direction off a degenerate denominator. Fall back to the
+  // absolute delta when there is no baseline to be relative to.
+  const moved = relative === null ? delta > 0 : Math.abs(relative) >= 0.1;
   return {
     status: moved ? 'not-met' : 'met',
     why: `correction rate per authored message went ${before.ratePerAuthored.toFixed(5)} -> ${after.ratePerAuthored.toFixed(5)}${
-      relative === null ? '' : ` (${(relative * 100).toFixed(1)}%)`
+      relative === null
+        ? ' (no relative change from a zero baseline; compared absolutely)'
+        : ` (${(relative * 100).toFixed(1)}%)`
     }; the advisory fired ${fires.total} times over the same window.`,
   };
 }
@@ -181,6 +189,15 @@ export default defineTool({
     notWhen: 'For coord lifecycle bucket percentages use dev:coord_categorize; this measures one specific bet.',
     seeAlso: ['dev:coord_categorize (lifecycle bucket rollup)'],
   },
+  // Role-gated, like every sibling dev: diagnostic (pg_query, coord_categorize,
+  // state_counter). This is not a typecheck workaround: `requirePrincipal: false`
+  // is the literal-typed discriminant that selects defineTool's role-gated
+  // overload, whose handler receives a UnifiedToolContext carrying `workspaceId`
+  // directly. The principal-gated default exposes identity only as
+  // `ctx.principal.workspaceId` (non-optional), which is precisely why the
+  // workspace guard below is load-bearing here rather than unreachable.
+  requirePrincipal: false,
+  agentRoles: ['operator', 'architect', 'debugger', 'curator', 'judge'],
   args: ArgsSchema,
   async handler(args, ctx) {
     const now = new Date();
