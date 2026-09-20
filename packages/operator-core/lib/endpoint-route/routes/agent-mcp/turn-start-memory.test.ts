@@ -66,7 +66,11 @@ vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
 vi.mock('../../../stack-binding-channel', () => ({
   renderStackTransitionContextResult: renderStackTransitionContextResultMock,
 }));
-vi.mock('../../../adv-sessions', () => ({
+// Spread the real module: `adv-sessions` is PROTECTED because it has 74 exports,
+// so a bare factory enumerating only what this test needs today silently strands
+// the file the next time an export is added (WI-7187/WI-7185).
+vi.mock('../../../adv-sessions', async (orig) => ({
+  ...(await orig<typeof import('../../../adv-sessions')>()),
   readSuLaunchSpecByOwner: readSuLaunchSpecByOwnerMock,
 }));
 vi.mock('../../../memory/detect-harness-slug', () => ({

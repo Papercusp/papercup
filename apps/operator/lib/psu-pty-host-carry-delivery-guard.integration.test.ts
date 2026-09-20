@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execPath } from 'node:process';
 import { pathToFileURL } from 'node:url';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 const subjectPath = process.env.PROBE_SCRIPT
   ? resolve(process.env.PROBE_SCRIPT)
@@ -65,15 +66,17 @@ function fakeIo() {
 
 function injectEnvelope(socketPath: string, envelope: Record<string, unknown>): Promise<{ ok: boolean; reason: string }> {
   return new Promise((resolveInject, reject) => {
-    let response = '';
     const connection = net.connect(socketPath, () => {
       connection.write(JSON.stringify({ v: 1, ...envelope }));
       connection.end();
     });
-    connection.on('data', (chunk) => { response += chunk.toString(); });
+    // Boundary-safe accumulation: `response += chunk.toString()` decodes each
+    // 'data' event independently, so a multi-byte UTF-8 character split across
+    // two events becomes replacement chars with no error (WI-6728).
+    const response = createTextCollector(connection);
     connection.on('error', reject);
     connection.on('close', () => {
-      try { resolveInject(JSON.parse(response)); } catch (error) { reject(error); }
+      try { resolveInject(JSON.parse(response.text())); } catch (error) { reject(error); }
     });
   });
 }
