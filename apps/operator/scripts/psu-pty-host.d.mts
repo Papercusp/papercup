@@ -2032,6 +2032,7 @@ export function injectTurn(sock: string, text: string, ownerId?: string): Promis
  *   supplied through {@link HEADLESS_NORMALIZED_LOG_ENV} in `o.env`
  * @param {(args:string[])=>any} [o.mintRecycleArgs] mint argv for an ordinary recycle
  * @param {(args:string[])=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
+ * @param {()=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
  * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
@@ -2065,6 +2066,7 @@ export function hostThroughPty(o: {
     normalizedLogPath?: string | undefined;
     mintRecycleArgs?: ((args: string[]) => any) | undefined;
     mintCarryRespawnArgs?: ((args: string[]) => any) | undefined;
+    ensureCodexHome?: (() => Promise<any>) | undefined;
     refreshPersonaFile?: (() => Promise<any>) | undefined;
     onRespawn?: ((...args: any[]) => any) | undefined;
     onReexec?: ((...args: any[]) => any) | null | undefined;

@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-015 R-7 live identities UI review journey",
+  "framework": "operational",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-2143764",
+  "capturedAt": "2026-09-20T01:28:14.279Z",
+  "command": [
+    "scripts/verify-tauri-headless.sh -- bash -s",
+    "tauri-agent-tools navigate --pid \"$VERIFY_TAURI_PID\" /settings/identities",
+    "tauri-agent-tools click --pid \"$VERIFY_TAURI_PID\" .pc-identities__identity",
+    "tauri-agent-tools click --pid \"$VERIFY_TAURI_PID\" .pc-identities__actions button",
+    "tauri-agent-tools eval --pid \"$VERIFY_TAURI_PID\" <identity-review-measurement>"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-20T01:27:55.938Z",
+  "finishedAt": "2026-09-20T01:28:14.279Z",
+  "runtime": {
+    "bridgePid": 143826,
+    "display": ":90",
+    "port": 33701,
+    "treeHeadAfterRun": "b3ddc1f52da5cc76a3572c36dbd3bc316d8597a7",
+    "buildProvenanceNote": "The verifier froze operator-source and SPA snapshots before boot. The recorded tree head was read after the run and is not asserted to identify either frozen snapshot.",
+    "workspace": "papercusp-workspace"
+  },
+  "summary": "Owned isolated Tauri bridge passed origin health, loaded /settings/identities, rendered the installed identity library, selected operator.audience-engineer, opened Review switch, and rendered a 14-row applied-versus-selected revision diff. Apply identity was enabled but was NOT clicked. The agent picker retained its default selection; its owner ID was not captured. The delivery-input selector returned an empty array and proves nothing about those controls. This is partial live UI observation, not the complete R-7 chain or an applied identity switch.",
+  "assertions": [
+    {
+      "id": "owned-live-desktop",
+      "passed": true,
+      "evidence": "verify-tauri-headless verified bridge provenance for agent su-5fe0f2de-a2a8-4019-99cb-85117be748c0, PID 143826, display :90, port 33701; apiHealth=200 and rootHtml=200."
+    },
+    {
+      "id": "identity-settings-route",
+      "passed": true,
+      "evidence": "tauri-agent-tools navigated to /settings/identities and the rendered page passed body, Identities, and no-console-error assertions."
+    },
+    {
+      "id": "installed-identity-library",
+      "passed": true,
+      "evidence": "The library rendered at least one .pc-identities__identity and the Installed identities subject was present before the review transition."
+    },
+    {
+      "id": "review-switch",
+      "passed": true,
+      "evidence": "tauri-agent-tools click on the rendered operator.audience-engineer identity and Review switch action opened the Switch review controls with no console errors."
+    },
+    {
+      "id": "applied-selected-diff",
+      "passed": true,
+      "evidence": "The rendered diff contained applied and selected content and 14 diff rows; the enabled Apply identity action was present."
+    }
+  ],
+  "observations": {
+    "url": "http://127.0.0.1:33701/settings/identities?identityDelivery=inject-now&identityId=operator.audience-engineer&identityTab=agent",
+    "identityLibraryRowsAfterLeavingLibraryTab": 0,
+    "diffRows": 14,
+    "applyButtonEnabled": true,
+    "deliveryInputDisabledValues": []
+  },
+  "measurementExpression": "JSON.stringify({url:location.href, identities:document.querySelectorAll(\".pc-identities__identity\").length, diffRows:document.querySelectorAll(\".pc-identities__diff tbody tr\").length, apply:[...document.querySelectorAll(\"button\")].some((x)=>x.getAttribute(\"aria-label\")===\"Apply identity\" && !x.disabled), controls:[...document.querySelectorAll(\".pc-identities__delivery input\")].map((x)=>x.disabled)})",
+  "notProven": [
+    "disabled delivery controls (the selector matched no inputs)",
+    "durable apply, failure, retry, rollback, or sync invalidation",
+    "selected agent identity or exact frozen-build revision",
+    "attested-listing to listing-resolved install link",
+    "launch receipt for this exact journey",
+    "leadership attachment",
+    "persisted applied-span observation joined to this journey",
+    "prompt-text-only diff classification",
+    "complete R-7 end-to-end evidence chain",
+    "independent passing R-7 grade"
+  ],
+  "sourcePaths": [
+    "apps/operator/app/settings/identities/page.tsx",
+    "packages/operator-core/lib/identity-management.ts",
+    "scripts/verify-tauri-headless.sh",
+    "apps/operator-docs/src/content/docs/agent-insights/headless-tauri-driver-worked-example.mdx"
+  ],
+  "testRunIds": []
+}

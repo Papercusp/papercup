@@ -5055,6 +5055,7 @@ export function injectTurn(sock, text, ownerId) {
  *   supplied through {@link HEADLESS_NORMALIZED_LOG_ENV} in `o.env`
  * @param {(args:string[])=>any} [o.mintRecycleArgs] mint argv for an ordinary recycle
  * @param {(args:string[])=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
+ * @param {()=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
  * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
@@ -5078,6 +5079,10 @@ export function hostThroughPty(o) {
     // standalone host + existing tests behavior-identical (same args, no anchor).
     mintRecycleArgs = (a) => ({ args: a, nativeId: null }),
     mintCarryRespawnArgs = (a) => mintRecycleArgs(a),
+    // The launcher owns the authenticated operator repair route. Invoke it at
+    // the carry boundary so an archived Codex home cannot make every successor
+    // attempt fail before minting its AGENTS.md prompt.
+    ensureCodexHome = async () => null,
     // stale-prompt-render-in-live-sessions-2026-08-02 P-002: re-render this
     // session's base persona from CURRENT prompt sources before a respawn mints the
     // successor's argv. Injected by the launcher (which owns the operator call) for
@@ -7953,6 +7958,16 @@ export function hostThroughPty(o) {
       let launchContextPath = null;
       let freshChildOwnerInputGeneration = null;
       try {
+        if (
+          systemPromptAddendum &&
+          String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex'
+        ) {
+          try {
+            await ensureCodexHome();
+          } catch {
+            /* mintCarryRespawnArgs remains the final fail-soft fallback */
+          }
+        }
         const minted = systemPromptAddendum
           ? mintCarryRespawnArgs(args, {
               systemPromptAddendum,
