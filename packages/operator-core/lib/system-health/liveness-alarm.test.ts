@@ -2831,6 +2831,82 @@ describe('formatDeadRoutinesSummary — magnitude + consequence (EI-200456914514
     });
   });
 
+  // WI-10002084 — "NOTHING in the shared tree is being committed" is a claim about the ONE
+  // install that owns the canonical checkout, yet it was licensed by a ratio over every
+  // git-sync row in the workspace. Measured 2026-09-20: 67 such rows across 67 installs, of
+  // which exactly one is the shared tree's; the rest are library submodules and toy pots
+  // (`hello-world`, `spoon-knife`, `papercusp/libs/generic/*`). These pin the per-install
+  // refuter, which — like the commit-evidence guard above — may only ever WEAKEN the claim.
+  describe("the shared tree's own git-sync row licenses the shared-tree sentence", () => {
+    const majority = {
+      deadRoutines: 40,
+      deadRoutinesInScope: 153,
+      deadRoutinesDistinct: 1,
+      deadRoutineNames: ['git-sync'],
+      deadRoutineCriticalNames: ['git-sync'],
+      deadRoutineCoverage: { 'git-sync': { overdue: 40, active: 67 } },
+    };
+
+    // NEGATIVE CONTROL: without this, every `not.toContain` below would pass vacuously — a
+    // function that never emits the sentence at all would satisfy them all.
+    it('still pages at full strength when the shared tree\'s own row is itself overdue', () => {
+      const s = formatDeadRoutinesSummary({
+        ...majority,
+        deadRoutineCoverage: { 'git-sync': { overdue: 40, active: 67, homeInstall: 'overdue' } },
+      });
+      expect(s).toContain('NOTHING in the shared tree is being committed');
+      expect(s).toContain("including the shared tree's own");
+    });
+
+    // The misreport this fixes: a strict majority of overdue rows that is entirely toy pots.
+    it('withholds the outage claim when the shared tree\'s own row is on schedule, and says why', () => {
+      const s = formatDeadRoutinesSummary({
+        ...majority,
+        deadRoutineCoverage: { 'git-sync': { overdue: 40, active: 67, homeInstall: 'live' } },
+      });
+      expect(s).not.toContain('NOTHING in the shared tree is being committed');
+      expect(s).toContain("the shared tree's own git-sync row is on schedule");
+      expect(s).toContain('40 of 67 active rows overdue'); // the real finding is still reported
+    });
+
+    // 'absent' is UNMEASURED, not healthy. Reading it as a refutation would silently suppress a
+    // genuine fleet-wide alarm, so it must leave the inference exactly as it stood.
+    it('does NOT treat an absent home row as a refutation', () => {
+      const s = formatDeadRoutinesSummary({
+        ...majority,
+        deadRoutineCoverage: { 'git-sync': { overdue: 40, active: 67, homeInstall: 'absent' } },
+      });
+      expect(s).toContain('NOTHING in the shared tree is being committed');
+    });
+
+    // A census predating the per-install leg omits the field entirely; that is also unmeasured.
+    it('leaves the inference unchanged when coverage carries no home-install reading', () => {
+      expect(formatDeadRoutinesSummary(majority)).toContain('NOTHING in the shared tree is being committed');
+    });
+
+    // Refutation-only in the other direction too: a healthy home row never licensed the claim,
+    // so an overdue one must not manufacture it where the ratio was only a minority.
+    it('cannot upgrade a minority of overdue rows into an outage claim', () => {
+      const s = formatDeadRoutinesSummary({
+        ...majority,
+        deadRoutines: 2,
+        deadRoutineCoverage: { 'git-sync': { overdue: 2, active: 67, homeInstall: 'overdue' } },
+      });
+      expect(s).not.toContain('NOTHING in the shared tree is being committed');
+      expect(s).toContain('not evidence of a fleet-wide commit outage');
+    });
+
+    // Both refuters firing at once must still suppress — neither may cancel the other out.
+    it('withholds the claim when the home row and direct commit evidence both refute', () => {
+      const NOW = 1_700_000_000_000;
+      const s = formatDeadRoutinesSummary(
+        { ...majority, deadRoutineCoverage: { 'git-sync': { overdue: 40, active: 67, homeInstall: 'live' } } },
+        { gitSyncLastSyncedAtMs: NOW - 17_000, nowMs: NOW },
+      );
+      expect(s).not.toContain('NOTHING in the shared tree is being committed');
+    });
+  });
+
   it('requires a strict majority, not half, before asserting a fleet-wide commit outage', () => {
     const s = formatDeadRoutinesSummary({
       deadRoutines: 2,
