@@ -6,6 +6,7 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   existsSync,
@@ -8888,7 +8889,7 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
     if (home) rmSync(home, { recursive: true, force: true });
   });
 
-  it("rotates the native id and layers one 0600 owner-scoped carry file", () => {
+  it("rotates the native id and layers one 0600 cut-scoped carry file", () => {
     const out = mintCarryRespawnArgs(
       ["claude", "--session-id", UUID, "--foo"],
       {
@@ -8900,7 +8901,12 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
     );
     expect(out.nativeId).toBe(FRESH);
     expect(out.launchContextPath).toBe(
-      join(home, ".papercusp", "launch-context", "carry-su_test_owner.md"),
+      join(
+        home,
+        ".papercusp",
+        "launch-context",
+        `carry-su_test_owner-${FRESH}.md`,
+      ),
     );
     expect(out.args).toEqual([
       "claude",
@@ -8914,6 +8920,67 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
       "deterministic carry body\n",
     );
     expect(statSync(out.launchContextPath).mode & 0o777).toBe(0o600);
+  });
+
+  // WI-10002026: the reported failure is a successor handed the PREVIOUS
+  // generation's carry document, discarding an entire intervening session's
+  // turns while the embedded recovery marker still asserted complete:true.
+  // The structural precondition for that is a SHARED mutable delivery slot —
+  // one `carry-<ownerId>.md` overwritten in place by every cut of that owner,
+  // read by the successor BY PATH at boot. Binding the freshly-minted native id
+  // into the name removes the precondition: a cut's document is unreachable by
+  // any other cut's successor. Asserting the paths merely differ is too weak —
+  // it passes for a slot that is renamed but still clobbered — so this asserts
+  // the earlier cut's CONTENT survives the later cut verbatim.
+  it("gives each cut its own carry file, so a later cut cannot overwrite an earlier cut's document", () => {
+    const FIRST_CUT = "aaaa1111-1234-5678-9abc-def012345678";
+    const SECOND_CUT = "bbbb2222-1234-5678-9abc-def012345678";
+    const owner = "su-shared-owner";
+
+    const first = mintCarryRespawnArgs(["claude", "--session-id", UUID], {
+      systemPromptAddendum: "GENERATION ONE document",
+      ownerId: owner,
+      mintId: () => FIRST_CUT,
+      home,
+    });
+    const second = mintCarryRespawnArgs(["claude", "--session-id", FIRST_CUT], {
+      systemPromptAddendum: "GENERATION TWO document",
+      ownerId: owner,
+      mintId: () => SECOND_CUT,
+      home,
+    });
+
+    expect(first.launchContextPath).not.toBe(second.launchContextPath);
+    // The successor reads its carry by the path it was launched with, so each
+    // path must still resolve to the document built for THAT cut.
+    expect(readFileSync(first.launchContextPath, "utf8")).toBe(
+      "GENERATION ONE document\n",
+    );
+    expect(readFileSync(second.launchContextPath, "utf8")).toBe(
+      "GENERATION TWO document\n",
+    );
+    // Each cut's successor is launched with its OWN path, never a shared one.
+    expect(first.args).toContain(first.launchContextPath);
+    expect(second.args).toContain(second.launchContextPath);
+    expect(second.args).not.toContain(first.launchContextPath);
+  });
+
+  it("writes the carry file atomically, leaving no partial temp render behind", () => {
+    const out = mintCarryRespawnArgs(["claude", "--session-id", UUID], {
+      systemPromptAddendum: "atomic carry body",
+      ownerId: "su-atomic",
+      mintId: () => FRESH,
+      home,
+    });
+    expect(readFileSync(out.launchContextPath, "utf8")).toBe(
+      "atomic carry body\n",
+    );
+    // A plain in-place writeFileSync truncates before it writes, so a successor
+    // booting mid-write reads a TRUNCATED document that presents as a
+    // short-but-valid one. tmp+rename makes the swap atomic; assert the temp
+    // render is not left behind (and so can never be mistaken for a carry).
+    const dir = join(home, ".papercusp", "launch-context");
+    expect(readdirSync(dir).filter((name) => name.includes(".tmp"))).toEqual([]);
   });
 
   it("threads personaFile through to the base-prompt swap while still layering the carry (P-002)", () => {
