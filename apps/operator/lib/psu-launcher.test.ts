@@ -7106,9 +7106,12 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       args,
     );
     expect(body.cwd).toBe("/repo");
-    expect(body.session_port_protocol).toBe(1);
+    expect(body.session_port_protocol).toBe(SESSION_PORT_PROTOCOL_VERSION);
     expect(body.session_port_transform_version).toBe(SESSION_PORT_TRANSFORM_VERSION);
     expect(body.session_port_token).toBe(args.sessionPortToken);
+    expect(body.bootstrap_idempotency_key).toBe(
+      "session-port:22222222-2222-4222-8222-222222222222",
+    );
     expect(body.owner_id).toBe("su-source-owner");
     expect(body.launch_argv).toContain("--resume=42");
     expect(body.launch_argv).toContain("--agent=codex");
