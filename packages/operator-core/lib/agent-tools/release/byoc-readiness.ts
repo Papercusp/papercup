@@ -7,6 +7,9 @@
  * unresolved proof obligations and can never return a positive verdict.
  */
 import { createHash, createPublicKey, verify as verifyEd25519 } from 'node:crypto';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { createGunzip } from 'node:zlib';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
@@ -14,6 +17,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import type { Sql } from 'postgres';
 import {
   deriveWorkspaceHostCanonicalArtifactUrls,
+  DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
 } from '@papercusp/deployment-driver';
 import { taskReleaseJournalFromDetail, type TaskReleaseJournal } from '../../task-manager/store';
 import { releaseStageInputHash } from '../../../../../scripts/lib/release-task-journal';
@@ -124,11 +128,92 @@ const MAX_PUBLICATION_BUNDLE_BYTES = 1024 * 32 * 1024 * 1024;
 const MAX_PUBLICATION_SIGNATURE_BYTES = 64 * 1024;
 const PUBLICATION_FETCH_TIMEOUT_MS = 300_000;
 
+interface ArchiveIdentityResult {
+  readonly failures: string[];
+  readonly entries: Array<{ name: string; size: number; mode: number }>;
+}
+
+/**
+ * Inspect the gzip tar stream used by the publisher in the same pass as the bundle hash.
+ * Manifest material declarations are intentionally not used here: they describe what the
+ * producer meant to publish, while this parser proves the required executable files are present
+ * as regular, non-empty, executable archive members in the bytes fetched by the reader.
+ */
+async function inspectWorkspaceHostArchive(
+  body: ReadableStream<Uint8Array>,
+): Promise<ArchiveIdentityResult> {
+  const required = new Set(Object.values(DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS));
+  const seen = new Set<string>();
+  const failures: string[] = [];
+  const entries: Array<{ name: string; size: number; mode: number }> = [];
+  const parseOctal = (header: Buffer, offset: number, length: number): number => {
+    const text = header.subarray(offset, offset + length).toString('ascii').replace(/\0.*$/u, '').trim();
+    const value = Number.parseInt(text, 8);
+    return Number.isSafeInteger(value) && value >= 0 ? value : -1;
+  };
+  const gunzip = createGunzip();
+  const source = Readable.fromWeb(body as any).pipe(gunzip);
+  let buffered = Buffer.alloc(0);
+  let skipBytes = 0;
+  let ended = false;
+  try {
+    for await (const chunk of source) {
+      buffered = Buffer.concat([buffered, Buffer.from(chunk as Uint8Array)]);
+      while (!ended) {
+        if (skipBytes > 0) {
+          const skipped = Math.min(skipBytes, buffered.length);
+          buffered = buffered.subarray(skipped);
+          skipBytes -= skipped;
+          if (skipBytes > 0) break;
+        }
+        if (buffered.length < 512) break;
+        const header = buffered.subarray(0, 512);
+        buffered = buffered.subarray(512);
+        if (header.every((byte) => byte === 0)) {
+          ended = true;
+          break;
+        }
+        const name = header.subarray(0, 100).toString('utf8').replace(/\0.*$/u, '').replace(/^(?:\.\/)+/u, '');
+        const size = parseOctal(header, 124, 12);
+        const mode = parseOctal(header, 100, 8);
+        const type = header[156] === 0 || header[156] === 0x30 ? 'file' : String.fromCharCode(header[156]!);
+        if (size < 0 || mode < 0) {
+          failures.push('archive:invalid-header');
+          break;
+        }
+        if (required.has(name)) {
+          if (seen.has(name)) failures.push(`${name}:duplicate`);
+          seen.add(name);
+          entries.push({ name, size, mode });
+          if (type !== 'file' || size <= 0 || (mode & 0o111) === 0) {
+            failures.push(`${name}:not-executable-file`);
+          }
+        }
+        skipBytes = Math.ceil(size / 512) * 512;
+      }
+    }
+    if (!ended) failures.push('archive:missing-end-of-archive');
+  } catch (error) {
+    failures.push(`archive:${error instanceof Error ? error.message : String(error)}`);
+  }
+  for (const name of required) {
+    if (!seen.has(name)) failures.push(`${name}:missing`);
+  }
+  return { failures: [...new Set(failures)], entries };
+}
+
 async function readPublicationObject(
   response: PublicationProbeResponse,
   maxBytes: number,
   retain = false,
-): Promise<{ sha256: string; blake2b512: Uint8Array; bytes: number; payload: Uint8Array | null }> {
+  inspectArchive = false,
+): Promise<{
+  sha256: string;
+  blake2b512: Uint8Array;
+  bytes: number;
+  payload: Uint8Array | null;
+  archiveIdentity?: ArchiveIdentityResult;
+}> {
   const rawSize = response.headers.get('content-length');
   const declaredBytes = rawSize === null ? null : Number(rawSize);
   if (declaredBytes !== null && (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0 || declaredBytes > maxBytes)) {
@@ -136,7 +221,9 @@ async function readPublicationObject(
     throw new Error('invalid-or-excessive-content-length');
   }
   if (!response.body) throw new Error('missing-body');
-  const reader = response.body.getReader();
+  const [hashBody, archiveBody] = inspectArchive ? response.body.tee() : [response.body, null];
+  const reader = hashBody.getReader();
+  const archivePromise = archiveBody ? inspectWorkspaceHostArchive(archiveBody) : null;
   const chunks: Uint8Array[] = [];
   const hash = createHash('sha256');
   const prehash = createHash('blake2b512');
@@ -172,7 +259,13 @@ async function readPublicationObject(
       offset += chunk.byteLength;
     }
   }
-  return { sha256: hash.digest('hex'), blake2b512: prehash.digest(), bytes: total, payload };
+  return {
+    sha256: hash.digest('hex'),
+    blake2b512: prehash.digest(),
+    bytes: total,
+    payload,
+    ...(archivePromise ? { archiveIdentity: await archivePromise } : {}),
+  };
 }
 
 function decodeCanonicalBase64(value: string, expectedBytes: number): Uint8Array | null {
@@ -376,7 +469,7 @@ export async function probeByocPublication(
         missing.push(label);
         return null;
       }
-      return await readPublicationObject(response, maxBytes, retain);
+      return await readPublicationObject(response, maxBytes, retain, label === 'public-bytes');
     } catch (error) {
       missing.push(label);
       failed.push(`${label}:${error instanceof Error ? error.message : String(error)}`);
@@ -427,6 +520,20 @@ export async function probeByocPublication(
     refs.push(`publication:bundle:${bundle.sha256}:${bundle.bytes}`);
     refs.push(`publication:signature:${signature.sha256}:${signature.bytes}`);
     if (failed.length === 0) verified.push('public-bytes', 'manifest-archive-digest');
+    if (bundle.archiveIdentity) {
+      if (bundle.archiveIdentity.failures.length > 0) {
+        failed.push(...bundle.archiveIdentity.failures.map((failure) => `executable-identity:${failure}`));
+      } else {
+        const identityIndex = missing.indexOf('executable-identity');
+        if (identityIndex >= 0) missing.splice(identityIndex, 1);
+        verified.push('executable-identity');
+        refs.push(
+          `publication:archive-identity:${bundle.archiveIdentity.entries
+            .map(({ name, size, mode }) => `${name}:${size}:${mode.toString(8)}`)
+            .join(',')}`,
+        );
+      }
+    }
 
     // Re-measure the trust decision the guest bootstrap makes. The manifest's
     // `trustReport.signature.valid` is producer-authored evidence; it cannot
