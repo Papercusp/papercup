@@ -41,6 +41,33 @@ const run = (
     typeof execFileAsync
   >;
 
+/** The env for the cases that mean to exercise the BAKED-IN path.
+ *
+ *  The shim PREFERS $CLAUDE_CODE_EXECPATH over the path baked into it — that is its
+ *  documented precedence, and the override case below asserts it deliberately. But
+ *  these suites run from agent shells that EXPORT a real CLAUDE_CODE_EXECPATH, so a
+ *  bare `...process.env` silently hands the shim the REAL claude binary and the
+ *  stand-in we just wrote is never exercised at all. That binary then dispatches on
+ *  argv[0]=rg into its embedded ripgrep which, given a pattern plus execFile's
+ *  never-closed stdin pipe, blocks reading stdin until the kill bound — so a
+ *  PERFECTLY CORRECT shim reds as a ~30s timeout. A blind instrument, not a defect.
+ *
+ *  MEASURED 2026-09-21 as two arms of one run: with the variable inherited these two
+ *  cases fail at ~30s; with it cleared all 11 pass in 112ms. The 2026-08-29 sighting
+ *  at 60105ms — D-014 of ship-main-greening-plans-2026-08-29, recorded there as
+ *  "non-attributable rather than a proven load artifact" — is this same defect one
+ *  bound earlier. It never reproduced on the green-checkpoint gate because that
+ *  environment does not export the variable (verified against the live run's
+ *  /proc/<pid>/environ), which is exactly what made it read as host load.
+ *
+ *  Empty string rather than deleting the key: the shim tests `-z` before `-x`, so ""
+ *  takes the baked-in branch — the same idiom the exit-127 cases below already use. */
+const bakedInShimEnv = (): NodeJS.ProcessEnv => ({
+  ...process.env,
+  PATH: '/usr/bin:/bin',
+  CLAUDE_CODE_EXECPATH: '',
+});
+
 let tmp: string;
 
 beforeEach(async () => {
@@ -73,7 +100,7 @@ describe('writeRipgrepShim — the generated entry point', () => {
     expect(await writeRipgrepShim(shim, { claudeExecutable: process.execPath })).toBe(true);
 
     const { stdout } = await run(shim, ['-e', 'console.log("argv0=" + process.argv0)'], {
-      env: { ...process.env, PATH: '/usr/bin:/bin' },
+      env: bakedInShimEnv(),
     });
 
     // The whole point: the child sees itself as `rg`, not as claude. A shim that
@@ -92,7 +119,7 @@ describe('writeRipgrepShim — the generated entry point', () => {
     await writeRipgrepShim(shim, { claudeExecutable: claude });
 
     const { stdout } = await run(shim, ['-n', '--glob', '*.ts', 'needle'], {
-      env: { ...process.env, PATH: '/usr/bin:/bin' },
+      env: bakedInShimEnv(),
     });
     expect(stdout).toContain('args=-n --glob *.ts needle');
   });
