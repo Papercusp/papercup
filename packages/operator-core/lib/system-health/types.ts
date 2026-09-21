@@ -289,6 +289,16 @@ export interface WorkFeedHealth {
    *  `autoEligibleStuck` or used to trigger a Mug nudge/escalation (EI-14223).
    *  Optional; absent ⇒ 0 (prior callers/fixtures unaffected). */
   keylessHumanReviewBacklog?: number;
+  /** Acceptance-carry visibility (P-027). Counts are read from the same
+   * harness_plans/work_items authorities used by the drain sweep; a missing
+   * driver is durable backlog, not an absent plan. */
+  acceptanceDrain?: {
+    awaiting: number;
+    withDriver: number;
+    withoutDriver: number;
+    escalated: number;
+    oldestPlanUpdatedAt: string | null;
+  };
   /** Active routines whose next_fire_at is long overdue (the dead-routine / EI-584 signal).
    *  ⚠ EI-20045691451471399: this is the UNCAPPED population count, NOT `deadRoutineNames.length`
    *  — the names are a bounded display list. Deriving the count from that list is what reported

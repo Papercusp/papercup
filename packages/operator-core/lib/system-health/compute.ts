@@ -1232,6 +1232,47 @@ export async function readStalePausedRoutines(sql: Sql, currentInstallSlug?: str
   return computeStalePausedRoutines(inputs, Date.now(), { currentInstallSlug });
 }
 
+/** P-027: one bounded projection for the drained acceptance carry ledger. The
+ * plan row is the population; an active keyed acceptance filing is the driver.
+ * A left join keeps "no active driver" visible instead of allowing the plan to
+ * disappear when a filing was never created or was prematurely closed. */
+export async function readAcceptanceDrainVisibility(sql: Sql, workspaceId: string): Promise<NonNullable<WorkFeedHealth['acceptanceDrain']>> {
+  const rows = await sql<Array<{
+    awaiting: string;
+    with_driver: string;
+    without_driver: string;
+    escalated: string;
+    oldest_plan_updated_at: Date | null;
+  }>>`
+    SELECT count(*)::text AS awaiting,
+           count(*) FILTER (WHERE d.feature_id IS NOT NULL)::text AS with_driver,
+           count(*) FILTER (WHERE d.feature_id IS NULL)::text AS without_driver,
+           count(*) FILTER (WHERE d.payload->>'escalation' = 'due')::text AS escalated,
+           min(p.updated_at) AS oldest_plan_updated_at
+      FROM harness_shared.harness_plans p
+      LEFT JOIN LATERAL (
+        SELECT wi.feature_id, wi.payload
+          FROM harness_shared.work_items wi
+         WHERE wi.workspace_id = p.workspace_id
+           AND wi.payload->>'acceptanceDrainPlan' = (p.workspace_id || '/' || p.harness_slug || '/' || p.plan_slug)
+           AND wi.status = ANY(ARRAY['open','todo','wip','in_progress','blocked','needs-human','validating','failing'])
+         ORDER BY wi.created_ts, wi.feature_id
+         LIMIT 1
+      ) d ON TRUE
+     WHERE p.workspace_id = ${workspaceId}
+       AND p.status = 'awaiting-acceptance'
+       AND p.template IS DISTINCT FROM 'rubric'
+       AND p.archived = FALSE`;
+  const row = rows[0];
+  return {
+    awaiting: Number(row?.awaiting ?? 0),
+    withDriver: Number(row?.with_driver ?? 0),
+    withoutDriver: Number(row?.without_driver ?? 0),
+    escalated: Number(row?.escalated ?? 0),
+    oldestPlanUpdatedAt: row?.oldest_plan_updated_at ? new Date(row.oldest_plan_updated_at).toISOString() : null,
+  };
+}
+
 /** The minimal ScoredItem projection this split needs (pure/unit-testable). */
 export interface AutoEligibleStuckInput {
   attempts?: number;
@@ -1358,6 +1399,14 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
       const digest = buildDigest(items, { nowMs: ctx.now, nearDuplicates: false });
       ({ autoEligibleStuck, keylessHumanReviewBacklog } = splitAutoEligibleStuck(digest.autoEligible));
     } catch { /* improvements unreadable — leave 0s (the dead-routine signal still computes) */ }
+    let acceptanceDrain: WorkFeedHealth['acceptanceDrain'] | undefined;
+    try {
+      acceptanceDrain = await readAcceptanceDrainVisibility(sql, ws);
+    } catch {
+      // The work-feed panel remains usable when this additive visibility leg is
+      // unavailable; omission is explicit and never treated as an empty queue.
+      acceptanceDrain = undefined;
+    }
     const data: WorkFeedHealth = {
       frontier, frontierStuck, frontierBlocked, startedPlans, autoEligibleStuck,
       // EI-20045691451471399: the TRUE overdue count, not `deadRoutineNames.length` — the names
@@ -1374,6 +1423,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
       ...(stalePausedBacklogDepth > 0 ? { stalePausedBacklogDepth } : {}),
       ...(stalePausedUnreadable ? { stalePausedRoutinesUnreadable: true } : {}),
       ...(frontierUnreadable ? { frontierUnreadable: true } : {}),
+      ...(acceptanceDrain ? { acceptanceDrain } : {}),
     };
     const status = workFeedStatus(data);
     return {
@@ -1382,7 +1432,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
         ? `DEAD ROUTINE(S) ${data.deadRoutines}/${deadCensus.totalInScope}: ${deadRoutineNames.slice(0, 3).join(', ')}${deadCensus.count > 3 ? ', …' : ''}`
         : stalePausedCriticalRoutines > 0
           ? `STALE PAUSE on release-critical routine(s): ${stalePausedRoutineNames.slice(0, 3).join(', ')} — deploy pipeline may be silently stopped`
-          : `${frontier} ready${frontierStuck > 0 ? ` (${frontierStuck} long-stuck/gated)` : ''}, ${frontierBlocked} blocked, ${startedPlans} started plan(s)${autoEligibleStuck > 0 ? `, ${autoEligibleStuck} auto-stuck` : ''}${keylessHumanReviewBacklog > 0 ? `, ${keylessHumanReviewBacklog} keyless human-review` : ''}${stalePaused.length > 0 ? `, ${stalePaused.length} stale-paused routine(s): ${stalePausedRoutineNames.slice(0, 3).join(', ')}` : ''}${stalePausedUnreadable ? ', paused routine/backlog unreadable' : stalePausedBacklogDepth > 0 ? `, paused acceptance backlog ${stalePausedBacklogDepth}` : ''}`,
+          : `${frontier} ready${frontierStuck > 0 ? ` (${frontierStuck} long-stuck/gated)` : ''}, ${frontierBlocked} blocked, ${startedPlans} started plan(s)${autoEligibleStuck > 0 ? `, ${autoEligibleStuck} auto-stuck` : ''}${keylessHumanReviewBacklog > 0 ? `, ${keylessHumanReviewBacklog} keyless human-review` : ''}${stalePaused.length > 0 ? `, ${stalePaused.length} stale-paused routine(s): ${stalePausedRoutineNames.slice(0, 3).join(', ')}` : ''}${stalePausedUnreadable ? ', paused routine/backlog unreadable' : stalePausedBacklogDepth > 0 ? `, paused acceptance backlog ${stalePausedBacklogDepth}` : ''}${acceptanceDrain ? `, acceptance carry ${acceptanceDrain.awaiting} (${acceptanceDrain.withoutDriver} without active driver${acceptanceDrain.escalated > 0 ? `, ${acceptanceDrain.escalated} escalated` : ''})` : ''}`,
       data,
       link: { label: 'Work', href: '/adv?tab=harnesses' },
       metrics: [
@@ -1395,6 +1445,11 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
         m('dead routines', data.deadRoutines, data.deadRoutines > 0 ? 'crit' : undefined),
         m('stale-paused routines', stalePaused.length, stalePausedCriticalRoutines > 0 ? 'crit' : stalePaused.length > 0 ? 'warn' : undefined),
         m('paused acceptance backlog', stalePausedUnreadable ? 'unreadable' : stalePausedBacklogDepth, stalePausedBacklogDepth > 0 ? 'warn' : undefined),
+        ...(acceptanceDrain ? [
+          m('acceptance awaiting', acceptanceDrain.awaiting),
+          m('acceptance without driver', acceptanceDrain.withoutDriver, acceptanceDrain.withoutDriver > 0 ? 'warn' : undefined),
+          m('acceptance escalated', acceptanceDrain.escalated, acceptanceDrain.escalated > 0 ? 'warn' : undefined),
+        ] : []),
       ],
     };
   });
