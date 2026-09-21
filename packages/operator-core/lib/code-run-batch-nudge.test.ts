@@ -287,6 +287,46 @@ describe('clusterTurns — the turn-clustering primitive', () => {
     ];
     expect(clusterTurns(events)).toEqual([0, 1]);
   });
+
+  // FALSIFIABILITY CONTROL — the pre-fix algorithm, kept here deliberately wrong and permanently,
+  // because a guard that has never failed is a guard nobody has tested. Mutating the real source to
+  // prove this would be unsafe on the shared tree (git-sync sweeps every few minutes and would
+  // commit the mutant), so the control lives in the test file instead.
+  const gapOnlyClusterTurns = (events: readonly { at: number }[]): number[] => {
+    const order = events.map((_, i) => i).sort((a, b) => events[a].at - events[b].at);
+    const turnOf = new Array<number>(events.length);
+    let turn = -1;
+    let prevAt: number | undefined;
+    for (const i of order) {
+      const at = events[i].at;
+      if (prevAt === undefined || at - prevAt > TURN_GAP_MS) turn++;
+      turnOf[i] = turn;
+      prevAt = at;
+    }
+    return turnOf;
+  };
+
+  it('CONTROL: the pre-fix gap-only algorithm splits the in-flight fixture — the guard is what fixes it', () => {
+    const inFlight = [
+      { at: 0, durationMs: 1_473 },
+      { at: 647, durationMs: 20 },
+    ];
+    // The bug, reproduced: two dispatches from ONE parallel block counted as two round-trips.
+    expect(gapOnlyClusterTurns(inFlight)).toEqual([0, 1]);
+    // …and corrected. If clusterTurns ever regresses to gap-only clustering, this line fails.
+    expect(clusterTurns(inFlight)).toEqual([0, 0]);
+
+    // The other half of falsifiable: the guard must CHANGE only the in-flight case. Wherever timing
+    // alone is decisive the two algorithms must still agree, or this is over-merging rather than
+    // correcting — which would silence the nudge everywhere instead of fixing it.
+    for (const agreeing of [
+      [{ at: 0, durationMs: 83 }, { at: 2_547, durationMs: 83 }],
+      [{ at: 0, durationMs: 5 }, { at: 50, durationMs: 5 }, { at: 120, durationMs: 5 }],
+      [{ at: 0 }, { at: TURN_GAP_MS + 1 }],
+    ]) {
+      expect(clusterTurns(agreeing)).toEqual(gapOnlyClusterTurns(agreeing));
+    }
+  });
 });
 
 describe('maybeBatchNudge — turn-aware same-tool trigger (P-012)', () => {
@@ -321,32 +361,38 @@ describe('maybeBatchNudge — turn-aware same-tool trigger (P-012)', () => {
   // call was still running: one round-trip, nothing to fold, so the nudge must stay silent. Before
   // the in-flight guard this fired, telling an agent who had correctly batched to batch harder.
   it('does NOT fire for one parallel block whose dispatches the server observed >TURN_GAP_MS apart while still in flight', () => {
-    let last: ReturnType<typeof maybeBatchNudge> = null;
+    // Collect EVERY result, not just the last: a nudge that fired mid-loop and was then silenced by
+    // the exponential backoff would leave `last` null and pass this test while the bug was live.
+    const fires: ReturnType<typeof maybeBatchNudge>[] = [];
     for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 1; i++) {
-      last = maybeBatchNudge({
+      const r = maybeBatchNudge({
         ...cap,
         sessionKey: 'queued-parallel-block',
         now: i * (TURN_GAP_MS + 247), // 647ms apart — well past the timing threshold
         durationMs: 1_473, // …but every call is still running when the next is dispatched
       });
+      if (r) fires.push(r);
     }
-    expect(last).toBeNull();
+    expect(fires).toEqual([]);
   });
 
   // CALIBRATION for the test above: identical spacing, but each call RETURNS almost immediately,
   // so these are genuinely separate turns and the nudge must still fire. Without this, the
   // assertion above would pass against a nudge that had simply been disabled.
   it('DOES still fire at the same spacing when each call returned long before the next dispatch', () => {
-    let last: ReturnType<typeof maybeBatchNudge> = null;
+    // Capture the FIRST fire, not the last: the trigger trips as soon as the turn count is reached,
+    // and continuing calls hit the exponential backoff (a different guard).
+    let firstFire: ReturnType<typeof maybeBatchNudge> = null;
     for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 1; i++) {
-      last = maybeBatchNudge({
+      const r = maybeBatchNudge({
         ...cap,
         sessionKey: 'sequential-turns',
         now: i * (TURN_GAP_MS + 247),
-        durationMs: 5,
+        durationMs: 5, // returns immediately ⇒ nothing is ever in flight ⇒ genuine turns
       });
+      if (r && !firstFire) firstFire = r;
     }
-    expect(last?.kind).toBe('same-tool');
+    expect(firstFire?.kind).toBe('same-tool');
   });
 });
 
@@ -1221,7 +1267,13 @@ describe('maybeBatchNudge — the fold must FIT the script budget (EI-2125496518
     let hit: ReturnType<typeof maybeBatchNudge> = null;
     let t = 0;
     for (let i = 0; i < times; i++) {
-      t += 1000;
+      // EI-23762928303536326: this helper models SEQUENTIAL turns, so each dispatch must land after
+      // the previous call RETURNED — t advances by the call's own duration plus an inference gap.
+      // Spacing them closer than `durationMs` would describe a PARALLEL block, which clusterTurns'
+      // in-flight guard correctly folds into one turn; the budget triggers under test would then
+      // never fire and every assertion below would be vacuous. (Undefined duration keeps the
+      // original 1000ms spacing exactly, so the no-timing control is unchanged.)
+      t += (durationMs ?? 0) + 1000;
       hit = maybeBatchNudge({ sessionKey: 's-budget', toolName: tool, canCodeRun: true, now: t, durationMs });
     }
     return hit;
@@ -1274,14 +1326,18 @@ describe('maybeBatchNudge — the fold must FIT the script budget (EI-2125496518
     // continuing calls past the first trip the exponential backoff, which is a different guard.)
     let hit: ReturnType<typeof maybeBatchNudge> = null;
     let t = 0;
+    const perCall = 6_000;
     for (let i = 0; i < 8; i++) {
-      t += 1000;
+      // HAND-LOOPED SEQUENTIALLY is the whole premise of this regression (the agent waited for each
+      // call before making the next), so the dispatches must be a full call apart — not 1s apart,
+      // which would describe the parallel block clusterTurns now folds into one turn.
+      t += perCall + 1_000;
       const r = maybeBatchNudge({
         sessionKey: 's-budget-8call',
         toolName: 'dev:pipeline_position',
         canCodeRun: true,
         now: t,
-        durationMs: 6_000,
+        durationMs: perCall,
       });
       if (r && !hit) hit = r;
     }
@@ -1296,7 +1352,11 @@ describe('maybeBatchNudge — the fold must FIT the script budget (EI-2125496518
     // The caller did nothing wrong. Burning their cooldown here would silence the NEXT burst,
     // which may well be foldable — turning one bad recommendation into a lasting blind spot.
     expect(burst(55_000)).toBeNull();
-    let t = 100_000; // a fresh window, same session
+    // Past the END of that burst plus a full NUDGE_WINDOW_MS. `burst` now spaces its dispatches by
+    // the call duration (EI-23762928303536326), so a 55s burst runs out to ~112s — a "fresh window"
+    // at 100s would sit BEFORE it, leaving the testing:run calls in the ring and the clock moving
+    // backwards. This must stay comfortably clear of burst's end, not merely a round number.
+    let t = 300_000; // a fresh window, same session
     let hit: ReturnType<typeof maybeBatchNudge> = null;
     for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
       t += 1000;
@@ -1320,7 +1380,10 @@ describe('maybeBatchNudge — the fold must FIT the script budget (EI-2125496518
     let t = 0;
     let hit: ReturnType<typeof maybeBatchNudge> = null;
     for (const tool of ['plans:get', 'work_items:get', 'issues:list']) {
-      t += TURN_GAP_MS * 3; // distinct inference turns
+      // Distinct inference turns: each dispatch follows the previous call's RETURN (15s) plus an
+      // inference gap. A 1.2s spacing with 15s calls would be a parallel block, which clusterTurns'
+      // in-flight guard folds into one turn — no fan-out trigger, and nothing here would be tested.
+      t += 15_000 + TURN_GAP_MS * 3;
       hit = maybeBatchNudge({ sessionKey: 's-fan', toolName: tool, canCodeRun: true, now: t, durationMs: 15_000 });
     }
     expect(hit?.kind).toBe('fanout');
@@ -1331,11 +1394,26 @@ describe('maybeBatchNudge — the fold must FIT the script budget (EI-2125496518
   it('CONTROL: the same fan-out at a duration that overruns even in parallel IS suppressed', () => {
     // Guards the test above from passing because fan-out is simply never gated: raise the SLOWEST
     // branch past the ceiling and the same shape must go quiet.
+    // This control asserts NULL, so it is the one most easily made VACUOUS — there are three
+    // different ways to get null here and only one of them is the budget gate under test:
+    //   1. dispatches spaced closer than their duration ⇒ clusterTurns' in-flight guard folds them
+    //      into ONE turn and the fan-out trigger never fires (EI-23762928303536326);
+    //   2. three SEQUENTIAL 55s calls span ~168s ⇒ the first is trimmed out of the 90s
+    //      NUDGE_WINDOW_MS, leaving too few distinct tools to trigger;
+    //   3. the intended reason: the fold is projected past the foreground ceiling.
+    // Fan-out is projected as the SLOWEST branch, so one slow branch is all the ceiling needs —
+    // keeping the other two fast makes the burst fit the window AND stay genuinely sequential.
+    const branches: [string, number][] = [
+      ['plans:get', 200],
+      ['work_items:get', 200],
+      ['issues:list', 55_000],
+    ];
     let t = 0;
     let hit: ReturnType<typeof maybeBatchNudge> = null;
-    for (const tool of ['plans:get', 'work_items:get', 'issues:list']) {
-      t += TURN_GAP_MS * 3;
-      hit = maybeBatchNudge({ sessionKey: 's-fan2', toolName: tool, canCodeRun: true, now: t, durationMs: 55_000 });
+    for (const [tool, durationMs] of branches) {
+      t += TURN_GAP_MS * 3; // a real inference gap, and past every preceding call's return
+      hit = maybeBatchNudge({ sessionKey: 's-fan2', toolName: tool, canCodeRun: true, now: t, durationMs });
+      t += durationMs; // …this call returns before the next is dispatched
     }
     expect(hit).toBeNull();
   });
