@@ -58,6 +58,68 @@ export function filterListingsByAllowlist<T extends { name: string }>(
   return listings.filter((t) => allow.has(t.name));
 }
 
+/* ── COMPACT delivery tier (deterministic-tool-definition-delivery-2026-09-21) ─
+ *
+ * `?tools=` answers WHICH tools are advertised. It cannot answer HOW MUCH of
+ * each one ships, and that second axis is where the bytes are: the advertised
+ * definition is dominated by `inputSchema`, and the seed had to drop seven
+ * high-demand heavies outright (work_items:complete 44 KB, coord:send 39 KB, …)
+ * purely because admission was all-or-nothing.
+ *
+ * `?tools_compact=` makes it a THREE-way decision — full / compact / deferred —
+ * so demand and cost stop competing. A named tool is still advertised and still
+ * callable; only the prose is removed from its definition (`compactInputSchema`
+ * keeps every element a model needs to form a VALID call: property names,
+ * types, the required set, enum members, bounds, oneOf/anyOf discriminators,
+ * nested shape and `$defs`/`$ref` structure).
+ *
+ * Which names land here is NOT a hand-maintained list — it is resolved by
+ * `resolveToolDelivery()` from measured per-tool demand × measured per-tier
+ * bytes and emitted into `apps/operator/scripts/tool-delivery.generated.mjs`,
+ * which the launcher passes through as `PAPERCUSP_TOOLS_COMPACT`.
+ *
+ * Absent/empty ⇒ nothing is compacted (byte-identical to the pre-change
+ * behaviour for every other client). A name here that is NOT advertised is
+ * simply never reached — the filter runs first.
+ */
+
+/**
+ * Parse the `?tools_compact=` query value into a name set, or `null` when
+ * absent/empty (the "compact nothing" signal). Same shape as
+ * `parseToolsAllowlist` on purpose: the two params are read together and a
+ * caller that builds one builds the other the same way.
+ */
+export function parseCompactToolNames(raw: string | null | undefined): Set<string> | null {
+  return parseToolsAllowlist(raw);
+}
+
+/**
+ * Project the named listings onto their COMPACT form. Non-named listings are
+ * returned by reference, untouched.
+ *
+ * The compact form must match what the delivery policy BUDGETED, or the
+ * generated artifact's `spentBytes` is a fiction: `compactWireBytes` measures
+ * `{ name, description: '', inputSchema: compactInputSchema(...) }`, so this
+ * drops the description and compacts the schema — nothing else. `_meta`,
+ * `outputSchema` and `resultFormats` are left alone because they are protocol
+ * fields, not prose, and a client that negotiated on them would break.
+ *
+ * ⚠ This is a LISTING projection only. `tools/call` is untouched: a compact
+ * tool validates against the SAME server-side schema as a full one, so a model
+ * that forms a valid call from the compact definition is never refused for
+ * having been told less.
+ */
+export function applyCompactTier<
+  T extends { name: string; description?: string; inputSchema?: unknown },
+>(listings: readonly T[], compact: Set<string> | null, compactSchema: (s: unknown) => unknown): T[] {
+  if (!compact || compact.size === 0) return [...listings];
+  return listings.map((t) =>
+    compact.has(t.name)
+      ? ({ ...t, description: '', inputSchema: compactSchema(t.inputSchema ?? {}) } as T)
+      : t,
+  );
+}
+
 /* ── Per-session MUTABLE tool surface (dynamic-tool-surface-2026-07-01) ────────
  *
  * The `?tools=` allowlist above is a SEED, not a hard cap: a seeded session can
