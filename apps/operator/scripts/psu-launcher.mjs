@@ -100,6 +100,12 @@ function reexecExitCodeAnnounced(env) {
   return code;
 }
 import { runPsuConnectionFrontController } from "./psu-connection-front-controller.mjs";
+// DERIVED tool-delivery map (deterministic-tool-definition-delivery-2026-09-21).
+// A plain generated .mjs of frozen literals, deliberately: this launcher is
+// dependency-free by design and must import it with no build step. Regenerate
+// with `npm run gen:tool-delivery`; `npm run gen:tool-delivery:check` is wired
+// into the affected-run gate, so a stale artifact reds rather than drifts.
+import { TOOL_DELIVERY_BY_AGENT_KIND } from "./tool-delivery.generated.mjs";
 import {
   RECOVERY_CAPABILITY_DIAGNOSTIC,
   hasRecoveryCliFlag,
@@ -4146,18 +4152,99 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   "tools:invoke",
 ];
 
-/** The core spine minus any names in PAPERCUSP_OMP_TOOLS_EXCLUDE (comma-separated).
- *  Escape hatch for a spine tool the target operator currently serves BROKEN — e.g. a
- *  schema Ollama's parser 400s on until a server fix deploys (P-030: work_items:update's
- *  unconstrained status/state on the release host). An excluded tool stays CALLABLE via
- *  tools:invoke; only its up-front advertisement is dropped. Exported for tests. */
-export function ompCoreToolNames(env = process.env) {
-  const excluded = String(env.PAPERCUSP_OMP_TOOLS_EXCLUDE || "")
+/* ── DERIVED DELIVERY (deterministic-tool-definition-delivery-2026-09-21) ─────
+ *
+ * WHAT CHANGED, and why the hand lists below are no longer the source.
+ * Every seed in this file used to be a hand-maintained array whose entries were
+ * each individually justified — and that is exactly how the Claude seed reached
+ * 432,714 B one defensible append at a time before anything measured the
+ * aggregate. The lists are METADATA DESCRIBING CODE (which tools exist, how
+ * much each costs), which the repo's own derived-truth ladder says to DERIVE
+ * rather than curate.
+ *
+ * So the decision is now a function: `resolveToolDelivery()` ranks the live
+ * catalog by measured VALUE DENSITY (distinct callers ÷ bytes-at-that-tier,
+ * from a committed demand snapshot) against a byte budget, admits every floor
+ * tool, and returns full / compact / deferred per tool. `npm run
+ * gen:tool-delivery` freezes that result into the artifact imported above, and
+ * `gen:tool-delivery:check` reds the gate if the artifact drifts from its
+ * inputs.
+ *
+ * TWO CORRECTIONS THIS ENCODES, both of which a name count cannot express:
+ *   - DEMAND IS DISTINCT CALLERS, NOT CALL COUNT. Call count is dominated by
+ *     machinery (`activity:report` alone is ~233 calls per caller — a loop), so
+ *     ranking by calls buys seats for the busiest robot rather than the most
+ *     widely-needed verb.
+ *   - THE DECISION IS NOT BINARY. A tool used to be either full-schema or
+ *     invisible, which is why the 2026-09-15 cut had to drop seven high-demand
+ *     heavies outright. COMPACT is the tier that lets demand and cost combine
+ *     instead of compete.
+ */
+
+/** Advertised names for an agent kind, straight from the generated artifact.
+ *  Throws rather than falling back: a silently-empty seed is indistinguishable
+ *  from a deliberate trim, and would strand every session's whole catalog. */
+function deliveryAdvertisedNames(agentKind) {
+  const entry = TOOL_DELIVERY_BY_AGENT_KIND[agentKind];
+  if (!entry || !Array.isArray(entry.advertised) || entry.advertised.length === 0) {
+    throw new Error(
+      `psu: tool-delivery.generated.mjs has no advertised set for agentKind='${agentKind}'. ` +
+        "Run `npm run gen:tool-delivery` — an empty seed would advertise NO tools at all, " +
+        "which reads exactly like a deliberate minimal seed.",
+    );
+  }
+  return [...entry.advertised];
+}
+
+/** The subset of {@link deliveryAdvertisedNames} that ships at COMPACT tier.
+ *  An empty result is legitimate (a budget that fits everything at FULL), so
+ *  unlike the advertised set this does not throw. */
+function deliveryCompactNames(agentKind) {
+  const entry = TOOL_DELIVERY_BY_AGENT_KIND[agentKind];
+  const tiers = entry?.tiers ?? {};
+  return Object.keys(tiers)
+    .filter((n) => tiers[n] === "compact")
+    .sort();
+}
+
+/** Names excluded by PAPERCUSP_OMP_TOOLS_EXCLUDE (comma-separated). Escape hatch for a
+ *  seeded tool the target operator currently serves BROKEN — e.g. a schema Ollama's parser
+ *  400s on until a server fix deploys (P-030: work_items:update's unconstrained
+ *  status/state on the release host). An excluded tool stays CALLABLE via tools:invoke;
+ *  only its up-front advertisement is dropped. */
+function ompExcludedToolNames(env) {
+  return String(env.PAPERCUSP_OMP_TOOLS_EXCLUDE || "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  if (!excluded.length) return [...OMP_CORE_MCP_TOOL_NAMES];
-  return OMP_CORE_MCP_TOOL_NAMES.filter((n) => !excluded.includes(n));
+}
+
+/** The OMP/codex advertised seed — DERIVED, from the same policy and the same generated
+ *  artifact as {@link claudeSeedToolNames} (D-005, owner directive: "unify them").
+ *
+ *  This used to return the hand-maintained {@link OMP_CORE_MCP_TOOL_NAMES} literal, and
+ *  the two seeds were separate lists maintained by separate arguments — which is why the
+ *  drift guard had to assert the Claude extras stayed DISJOINT from this spine. They are
+ *  no longer two lists: `resolveToolDelivery()` ranks the SAME catalog against the SAME
+ *  budget for every agent kind, so `omp`, `codex` and `claude` come out byte-identical by
+ *  construction rather than by a rule someone has to keep enforcing. Disjointness is now
+ *  not merely unenforced but FALSE — and correctly so.
+ *
+ *  The literal survives as the historical PAPERCUSP_CLAUDE_FULL_SEED revert target, which
+ *  is the only remaining reason it is still in this file. Exported for tests. */
+export function ompCoreToolNames(env = process.env) {
+  const excluded = ompExcludedToolNames(env);
+  const advertised = deliveryAdvertisedNames("omp");
+  if (!excluded.length) return advertised;
+  return advertised.filter((n) => !excluded.includes(n));
+}
+
+/** The COMPACT-tier half of {@link ompCoreToolNames} — the `?tools_compact=` axis for an
+ *  OMP session, the exact mirror of {@link claudeCompactToolNames}. An excluded tool must
+ *  not be named as compact either: a name that is not advertised has no tier. */
+export function ompCompactToolNames(env = process.env) {
+  const advertised = new Set(ompCoreToolNames(env));
+  return deliveryCompactNames("omp").filter((n) => advertised.has(n));
 }
 
 /** EI-9011 (fleet-retro-hardening-2026-07-10 P-002): the CLAUDE seed = the shared core
@@ -4332,48 +4419,69 @@ export const CLAUDE_MINIMAL_SEED_TOOL_NAMES = [
   "docs:search", // "Before you design or test — read the docs first."
 ];
 
-/** RATCHET on the minimal seed — the thing that makes this a fix rather than a one-off trim.
+/* ⛔ `CLAUDE_MINIMAL_SEED_MAX_NAMES = 31` WAS HERE. RETIRED by D-009, and the reason is
+ * worth keeping because the constant was not wrong so much as measuring the wrong thing.
  *
- *  HOW THE SEED GOT TO 64 IN THE FIRST PLACE: every single addition was individually
- *  justified with real demand evidence (reaches/callers, reach-per-KB) and individually
- *  correct. Nothing ever checked the AGGREGATE, so the list grew one defensible append at a
- *  time until it was 432,714 B — the "grew 11x past its documented ~9K expectation" finding
- *  in EI-23319364088969722. A trim with no ceiling regrows exactly the same way, which is
- *  why this constant exists and why the guard is a `<=`, not a docstring.
+ * It ratcheted a NAME COUNT as a proxy for a BYTE COST, and the proxy fails in BOTH
+ * directions at once. Measured 2026-09-21 on the same catalog: the 31-name list it governed
+ * was 106,873 B — already OVER the 100,000 B wire budget the seed is actually held to — while
+ * the derived map advertises 90 names in 99,898 B. So the ratchet simultaneously FORBADE
+ * cheap names (a 500 B verb cost a whole seat) and PERMITTED expensive ones (a 12 KB verb
+ * cost the same seat), which is precisely how a list can pass its own guard while breaching
+ * the budget the guard exists to protect.
  *
- *  RAISING IT IS A BUDGET DECISION, NOT A CHORE — same discipline as DARK_FLAGS_HIGH_WATERMARK
- *  in libs/flags/src/types.ts. Before you raise it:
- *    1. MEASURE. Cost is the tools/list WIRE payload and is dominated by argSchema, NOT by the
- *       description/guidance that `npm run tool-weight` and promptWeight() govern — so the
- *       repo's usual weight instrument does not answer this question. Ask a live server:
- *       POST tools/list to /api/mcp?...&tools=<names>&ctx_tier=trimmed and sum
- *       Buffer.byteLength(JSON.stringify(tool)) per entry.
- *    2. STATE THE TIER. Every name traces to one of the four admission tiers documented above.
- *    3. PREFER tools:find/tools:invoke. A tool reachable in one round-trip costs 0 B/turn; a
- *       seeded one costs its full schema on EVERY turn of EVERY session, forever.
- *  Measured 2026-09-15 at 31 names = 113,588 B (vs 432,714 B for the historical 64). */
-export const CLAUDE_MINIMAL_SEED_MAX_NAMES = 31;
+ * WHAT REPLACES IT — the same discipline, moved onto the thing that costs: the budget is
+ * TRIMMED_BUDGET_BYTES in scripts/gen-tool-delivery.ts, enforced by the generator at
+ * resolution time and asserted on the emitted artifact by claude-seed-wire-budget.test.ts.
+ * Raising THAT is still a deliberate budget decision, not a chore.
+ *
+ * The 64-name history this constant was written against is preserved verbatim in the
+ * DERIVED DELIVERY block comment above, which is where the ranking that replaced it lives. */
 
-/** Claude's advertised seed. DEFAULT = the minimal list above (the ~-116K-tokens/turn cut).
+/** Claude's advertised seed. DEFAULT = the DERIVED delivery map (see the block comment
+ *  above `deliveryAdvertisedNames`).
  *  Set PAPERCUSP_CLAUDE_FULL_SEED=1 to restore the historical spine+extras seed byte-for-byte
  *  — the escape hatch for a session that genuinely needs the wide surface up front, and the
- *  instant revert if the minimal seed ever proves too thin. Both paths honor
+ *  instant revert if the derived seed ever proves wrong. Both paths honor
  *  PAPERCUSP_OMP_TOOLS_EXCLUDE (a tool the target operator currently serves BROKEN should not
  *  be advertised on either). Exported for tests. */
 export function claudeSeedToolNames(env = process.env) {
   const full = String(env.PAPERCUSP_CLAUDE_FULL_SEED || "").trim();
   const wantsFull = full !== "" && full !== "0" && full.toLowerCase() !== "false";
-  const excluded = String(env.PAPERCUSP_OMP_TOOLS_EXCLUDE || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const excluded = ompExcludedToolNames(env);
+  // ⚠ The revert path reads the HISTORICAL LITERAL, not ompCoreToolNames() — since D-005
+  // that function DERIVES, so routing the hatch through it would "restore" the very map it
+  // exists to revert. An escape hatch that resolves to the thing it escapes is worse than
+  // no hatch: it looks like it worked.
   const base = wantsFull
-    ? [...ompCoreToolNames(env), ...CLAUDE_SEED_EXTRA_TOOL_NAMES]
-    : CLAUDE_MINIMAL_SEED_TOOL_NAMES;
+    ? [...OMP_CORE_MCP_TOOL_NAMES, ...CLAUDE_SEED_EXTRA_TOOL_NAMES]
+    : deliveryAdvertisedNames("claude");
   const seen = new Set();
   return base.filter(
     (n) => !excluded.includes(n) && !seen.has(n) && (seen.add(n), true),
   );
+}
+
+/** The COMPACT-tier half of the same decision, for `?tools_compact=`.
+ *
+ *  A name here is advertised (it is also in {@link claudeSeedToolNames}) but its
+ *  definition ships without prose — the transport applies `compactInputSchema`,
+ *  which preserves everything a model needs to form a VALID call. That is what
+ *  makes admission three-way instead of all-or-nothing, and it is the whole
+ *  reason the derived seed can carry ~90 names in the byte budget that a
+ *  hand-curated 31-name list was already filling.
+ *
+ *  PAPERCUSP_CLAUDE_FULL_SEED=1 restores the historical spine+extras seed
+ *  byte-for-byte, which by definition compacts NOTHING — so this returns the
+ *  empty list on that path, and the escape hatch stays a true revert.
+ *  PAPERCUSP_OMP_TOOLS_EXCLUDE is honored here too: a tool that is not
+ *  advertised must not be named as compact either. Exported for tests. */
+export function claudeCompactToolNames(env = process.env) {
+  const full = String(env.PAPERCUSP_CLAUDE_FULL_SEED || "").trim();
+  const wantsFull = full !== "" && full !== "0" && full.toLowerCase() !== "false";
+  if (wantsFull) return [];
+  const advertised = new Set(claudeSeedToolNames(env));
+  return deliveryCompactNames("claude").filter((n) => advertised.has(n));
 }
 
 /** The context-trimming env trio (context-trimming-tiers D-004 / D-010 / P-031) — the keys
@@ -4412,6 +4520,10 @@ export function contextTrimmingEnv(agent, env = process.env) {
           // not be able to express (P-007).
           ...(nativeDeferralReachable() ? { ENABLE_TOOL_SEARCH: "true" } : {}),
           PAPERCUSP_TOOLS: claudeSeedToolNames(env).join(","),
+          // The delivery TIER for the names above (?tools_compact=). DERIVED
+          // from the same generated artifact, so the two can never disagree:
+          // a compact name is always a subset of the advertised set.
+          PAPERCUSP_TOOLS_COMPACT: claudeCompactToolNames(env).join(","),
         }
       : {}),
   };
@@ -4672,12 +4784,20 @@ export function resolveOmpSessionModel(model, accountRoute = "default", home = h
   return selected;
 }
 
-/** Append `?tools=<names>` to every papercusp `/api/mcp` server URL in an OMP mcp.json that
- *  doesn't already carry one, so the superuser MCP advertises ONLY the core spine (weak-model
- *  trim). Pure string→string (uses URL/searchParams so colons/commas are encoded exactly the
+/** Append `?tools=<names>` (and, when supplied, `&tools_compact=<names>`) to every papercusp
+ *  `/api/mcp` server URL in an OMP mcp.json that doesn't already carry one, so the superuser
+ *  MCP advertises ONLY the derived seed and ships the compact half without prose.
+ *
+ *  D-005: OMP gets BOTH axes, exactly as Claude does. Claude carries them by env-expansion in
+ *  the user-level url template (`&tools_compact=${PAPERCUSP_TOOLS_COMPACT:-}`); OMP's mcp.json
+ *  cannot interpolate, so the launcher writes them in. Seeding `tools` without `tools_compact`
+ *  would advertise all ~90 names at FULL schema — the budget the policy resolved against is
+ *  43 full + 47 compact, so that is a ~2x wire overrun, not a conservative default.
+ *
+ *  Pure string→string (uses URL/searchParams so colons/commas are encoded exactly the
  *  way the server's parseToolsAllowlist decodes them); returns the input unchanged on any parse
  *  failure. Exported for tests. */
-export function applyOmpToolsAllowlist(mcpJsonText, toolNames) {
+export function applyOmpToolsAllowlist(mcpJsonText, toolNames, compactNames = null) {
   try {
     const obj = JSON.parse(mcpJsonText);
     const servers = obj?.mcpServers;
@@ -4697,6 +4817,8 @@ export function applyOmpToolsAllowlist(mcpJsonText, toolNames) {
         ) {
           const u = new URL(srv.url);
           u.searchParams.set("tools", toolNames.join(","));
+          if (Array.isArray(compactNames) && compactNames.length)
+            u.searchParams.set("tools_compact", compactNames.join(","));
           srv.url = u.toString();
         }
       }
@@ -5027,6 +5149,11 @@ export function writeOmpSessionConfigDir(
   const {
     discoveryOff = false,
     toolsAllowlist = null,
+    // The COMPACT-tier subset of toolsAllowlist (`&tools_compact=`, D-005). Null/empty ⇒
+    // nothing is compacted, which is the correct behaviour for a ROLE launch (it supplies
+    // no allowlist at all) but a ~2x wire overrun for a seeded one — so the seeded call
+    // site passes it, and the omp-seed-wire-budget guard measures the pair.
+    toolsCompact = null,
     operatorUrl = OPERATOR_URL,
     model = null,
     // Authoritative gateway registry bytes from bootstrap account routing.
@@ -5315,7 +5442,11 @@ export function writeOmpSessionConfigDir(
           mcpText = filterTrimmedOmpMcpServers(mcpText);
         mcpText = applyOmpOperatorOrigin(mcpText, operatorUrl);
         if (toolsAllowlist && toolsAllowlist.length)
-          mcpText = applyOmpToolsAllowlist(mcpText, toolsAllowlist);
+          mcpText = applyOmpToolsAllowlist(
+            mcpText,
+            toolsAllowlist,
+            toolsCompact,
+          );
         // Stamp the caller's backend (always omp here) + resolved model so the operator can inherit
         // them for a fleet this session launches (fleet-launch-agent-inheritance-2026-07-03).
         // WI-1866: ALSO stamp the per-session coord ownerId as `client=` — the user-level template
@@ -15303,14 +15434,20 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // exposing it directly also makes post-list_changed refreshes auto-expose surfaced
       // tools (sdk activateAll path) instead of gating them behind a second bm25 pass.
       const spine = ompCoreToolNames();
-      if (spine.length !== OMP_CORE_MCP_TOOL_NAMES.length) {
+      const spineCompact = ompCompactToolNames();
+      // Compare against the DERIVED set, not the historical literal (D-005): the literal is
+      // now only the PAPERCUSP_CLAUDE_FULL_SEED revert target, so differencing against it
+      // would report a "drop" of ~42 tools on every launch where nothing was excluded.
+      const undropped = deliveryAdvertisedNames("omp").length;
+      if (spine.length !== undropped) {
         console.error(
-          `psu: PAPERCUSP_OMP_TOOLS_EXCLUDE — dropped ${OMP_CORE_MCP_TOOL_NAMES.length - spine.length} tool(s) from the advertised spine; still callable via tools:invoke.`,
+          `psu: PAPERCUSP_OMP_TOOLS_EXCLUDE — dropped ${undropped - spine.length} tool(s) from the advertised spine; still callable via tools:invoke.`,
         );
       }
       ompPiConfigDir = await writeOmpSessionConfigDirAsync(res.sessionId, {
         discoveryOff: true,
         toolsAllowlist: spine,
+        toolsCompact: spineCompact,
         model: effectiveModel,
         modelsYml: res.envelopeEnv?.PAPERCUSP_OMP_MODELS_YML || null,
         clientId: res.envelopeEnv?.PAPERCUSP_SID || null,

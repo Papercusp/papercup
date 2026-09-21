@@ -1128,16 +1128,29 @@ export function planValue(picked: any): any;
  * null when nothing was parked. Side-effects fs only; exported for tests.
  */
 export function parkRoleScopedMcpJson(cwd: any): string | null;
-/** The core spine minus any names in PAPERCUSP_OMP_TOOLS_EXCLUDE (comma-separated).
- *  Escape hatch for a spine tool the target operator currently serves BROKEN — e.g. a
- *  schema Ollama's parser 400s on until a server fix deploys (P-030: work_items:update's
- *  unconstrained status/state on the release host). An excluded tool stays CALLABLE via
- *  tools:invoke; only its up-front advertisement is dropped. Exported for tests. */
-export function ompCoreToolNames(env?: NodeJS.ProcessEnv): string[];
-/** Claude's advertised seed. DEFAULT = the minimal list above (the ~-116K-tokens/turn cut).
+/** The OMP/codex advertised seed — DERIVED, from the same policy and the same generated
+ *  artifact as {@link claudeSeedToolNames} (D-005, owner directive: "unify them").
+ *
+ *  This used to return the hand-maintained {@link OMP_CORE_MCP_TOOL_NAMES} literal, and
+ *  the two seeds were separate lists maintained by separate arguments — which is why the
+ *  drift guard had to assert the Claude extras stayed DISJOINT from this spine. They are
+ *  no longer two lists: `resolveToolDelivery()` ranks the SAME catalog against the SAME
+ *  budget for every agent kind, so `omp`, `codex` and `claude` come out byte-identical by
+ *  construction rather than by a rule someone has to keep enforcing. Disjointness is now
+ *  not merely unenforced but FALSE — and correctly so.
+ *
+ *  The literal survives as the historical PAPERCUSP_CLAUDE_FULL_SEED revert target, which
+ *  is the only remaining reason it is still in this file. Exported for tests. */
+export function ompCoreToolNames(env?: NodeJS.ProcessEnv): any[];
+/** The COMPACT-tier half of {@link ompCoreToolNames} — the `?tools_compact=` axis for an
+ *  OMP session, the exact mirror of {@link claudeCompactToolNames}. An excluded tool must
+ *  not be named as compact either: a name that is not advertised has no tier. */
+export function ompCompactToolNames(env?: NodeJS.ProcessEnv): string[];
+/** Claude's advertised seed. DEFAULT = the DERIVED delivery map (see the block comment
+ *  above `deliveryAdvertisedNames`).
  *  Set PAPERCUSP_CLAUDE_FULL_SEED=1 to restore the historical spine+extras seed byte-for-byte
  *  — the escape hatch for a session that genuinely needs the wide surface up front, and the
- *  instant revert if the minimal seed ever proves too thin. Both paths honor
+ *  instant revert if the derived seed ever proves wrong. Both paths honor
  *  PAPERCUSP_OMP_TOOLS_EXCLUDE (a tool the target operator currently serves BROKEN should not
  *  be advertised on either). Exported for tests. */
 export function claudeSeedToolNames(env?: NodeJS.ProcessEnv): any[];
@@ -1249,12 +1262,20 @@ export function ompDefaultModel(home?: string): string | null;
  * @param {string} [home]
  */
 export function resolveOmpSessionModel(model: string | null | undefined, accountRoute?: string | null | undefined, home?: string): string | null;
-/** Append `?tools=<names>` to every papercusp `/api/mcp` server URL in an OMP mcp.json that
- *  doesn't already carry one, so the superuser MCP advertises ONLY the core spine (weak-model
- *  trim). Pure string→string (uses URL/searchParams so colons/commas are encoded exactly the
+/** Append `?tools=<names>` (and, when supplied, `&tools_compact=<names>`) to every papercusp
+ *  `/api/mcp` server URL in an OMP mcp.json that doesn't already carry one, so the superuser
+ *  MCP advertises ONLY the derived seed and ships the compact half without prose.
+ *
+ *  D-005: OMP gets BOTH axes, exactly as Claude does. Claude carries them by env-expansion in
+ *  the user-level url template (`&tools_compact=${PAPERCUSP_TOOLS_COMPACT:-}`); OMP's mcp.json
+ *  cannot interpolate, so the launcher writes them in. Seeding `tools` without `tools_compact`
+ *  would advertise all ~90 names at FULL schema — the budget the policy resolved against is
+ *  43 full + 47 compact, so that is a ~2x wire overrun, not a conservative default.
+ *
+ *  Pure string→string (uses URL/searchParams so colons/commas are encoded exactly the
  *  way the server's parseToolsAllowlist decodes them); returns the input unchanged on any parse
  *  failure. Exported for tests. */
-export function applyOmpToolsAllowlist(mcpJsonText: any, toolNames: any): any;
+export function applyOmpToolsAllowlist(mcpJsonText: any, toolNames: any, compactNames?: null): any;
 /** Rewrite the ORIGIN (scheme+host+port) of every papercusp `/api/mcp` server URL in an OMP
  *  mcp.json to the launcher's resolved operator URL, preserving path + query. The user-level
  *  `~/.omp/agent/mcp.json` pins whatever origin it was minted with (usually direct :3070) — a
@@ -3992,27 +4013,6 @@ export const CLAUDE_SEED_EXTRA_TOOL_NAMES: string[];
  *  Deliberately OUT, reachable via tools:find/tools:invoke: every heavy above, plus the
  *  plans:* / events:* / work_items:create|update|set_state|complete families. */
 export const CLAUDE_MINIMAL_SEED_TOOL_NAMES: string[];
-/** RATCHET on the minimal seed — the thing that makes this a fix rather than a one-off trim.
- *
- *  HOW THE SEED GOT TO 64 IN THE FIRST PLACE: every single addition was individually
- *  justified with real demand evidence (reaches/callers, reach-per-KB) and individually
- *  correct. Nothing ever checked the AGGREGATE, so the list grew one defensible append at a
- *  time until it was 432,714 B — the "grew 11x past its documented ~9K expectation" finding
- *  in EI-23319364088969722. A trim with no ceiling regrows exactly the same way, which is
- *  why this constant exists and why the guard is a `<=`, not a docstring.
- *
- *  RAISING IT IS A BUDGET DECISION, NOT A CHORE — same discipline as DARK_FLAGS_HIGH_WATERMARK
- *  in libs/flags/src/types.ts. Before you raise it:
- *    1. MEASURE. Cost is the tools/list WIRE payload and is dominated by argSchema, NOT by the
- *       description/guidance that `npm run tool-weight` and promptWeight() govern — so the
- *       repo's usual weight instrument does not answer this question. Ask a live server:
- *       POST tools/list to /api/mcp?...&tools=<names>&ctx_tier=trimmed and sum
- *       Buffer.byteLength(JSON.stringify(tool)) per entry.
- *    2. STATE THE TIER. Every name traces to one of the four admission tiers documented above.
- *    3. PREFER tools:find/tools:invoke. A tool reachable in one round-trip costs 0 B/turn; a
- *       seeded one costs its full schema on EVERY turn of EVERY session, forever.
- *  Measured 2026-09-15 at 31 names = 113,588 B (vs 432,714 B for the historical 64). */
-export const CLAUDE_MINIMAL_SEED_MAX_NAMES: 31;
 export function readModelsYmlContextWindow(ymlText: any, bareId: any): number | null;
 export function rewriteModelsYmlContextWindow(ymlText: any, bareId: any, newWindow: any): any;
 export function rewriteModelsJsonContextWindow(jsonText: any, bareId: any, newWindow: any): any;

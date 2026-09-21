@@ -40,7 +40,7 @@
  * same regression arriving through a different door and is invisible to a name count.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
-import { listAllProjectedTools, type ProjectedTool } from '@papercusp/tooldef';
+import { listAllProjectedTools, compactWireBytes, type ProjectedTool } from '@papercusp/tooldef';
 import { advertisedWireBytes } from './tool-guidance-budget';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- plain .mjs launcher script, no type declarations. Imported directly
@@ -51,7 +51,11 @@ import { advertisedWireBytes } from './tool-guidance-budget';
 import {
   CLAUDE_MINIMAL_SEED_TOOL_NAMES,
   claudeSeedToolNames,
+  claudeCompactToolNames,
 } from '../../../../apps/operator/scripts/psu-launcher.mjs';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore -- generated .mjs data module, no type declarations.
+import { CLAUDE_TOOL_DELIVERY } from '../../../../apps/operator/scripts/tool-delivery.generated.mjs';
 
 /**
  * Ceiling on the OTHER branch this launcher ships.
@@ -137,6 +141,32 @@ function mcpName(t: ProjectedTool): string | null {
  *  seed budgets cannot drift onto different measurements. */
 function wireBytes(name: string, t: ProjectedTool): number {
   return advertisedWireBytes(name, t as { description?: string; inputSchema?: unknown });
+}
+
+/**
+ * The seed's cost AT ITS RESOLVED TIER — the only number that describes what now ships.
+ *
+ * ⚠ Summing `wireBytes` over the advertised names is the natural thing to write here and
+ * it is WRONG by ~2x, because more than half the seed ships COMPACT. That reading would
+ * fail this budget on a seed that is comfortably inside it, and the failure message would
+ * point at tools whose prose is not actually on the wire. A compact name is measured by
+ * `compactWireBytes(...).compact` — the same instrument the generator resolved against, so
+ * this test and the artifact cannot disagree about what a byte is.
+ */
+function tieredBytes(
+  names: readonly string[],
+  compact: ReadonlySet<string>,
+  byName: Map<string, ProjectedTool>,
+): { total: number; rows: Array<{ name: string; bytes: number; tier: 'full' | 'compact' }> } {
+  const rows = names.map((name) => {
+    const t = byName.get(name);
+    const tier: 'full' | 'compact' = compact.has(name) ? 'compact' : 'full';
+    if (!t) return { name, bytes: 0, tier };
+    const b = compactWireBytes(name, t as { description?: string; inputSchema?: unknown });
+    return { name, bytes: tier === 'compact' ? b.compact : b.full, tier };
+  });
+  rows.sort((a, b) => b.bytes - a.bytes);
+  return { total: rows.reduce((s, r) => s + r.bytes, 0), rows };
 }
 
 describe('Claude seed wire budget (EI-23319364088969722)', () => {
