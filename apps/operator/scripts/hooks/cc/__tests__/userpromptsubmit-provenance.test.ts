@@ -15,7 +15,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -87,6 +87,13 @@ describe('userpromptsubmit-provenance.sh', () => {
     const ctx = contextOf(runHook({ prompt: 'please fix the login page' }));
     expect(ctx).toContain('OWNER (interactive)');
     expect(ctx).toContain('typed by the human owner');
+  });
+
+  it('owner branch keeps the hybrid pending-capture rail wired to the durable tool', () => {
+    const source = readFileSync(SCRIPT, 'utf8');
+    expect(source).toContain('capture_pending_owner_prompt');
+    expect(source).toContain("_mcp_call('orders:capture-pending'");
+    expect(source).toContain("'sourceTurnRef'");
   });
 
   it('envelope + live nonce + matching hash → VERIFIED with the LEDGER origin', () => {
