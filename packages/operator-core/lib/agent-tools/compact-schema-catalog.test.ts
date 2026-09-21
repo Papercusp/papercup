@@ -99,7 +99,18 @@ function contractLines(node: unknown, path: string, inNameKeyedMap: boolean, out
     node.forEach((entry, i) => contractLines(entry, `${path}[${i}]`, false, out));
     return;
   }
-  const entries = Object.entries(node as Record<string, unknown>);
+  // Filter FIRST, then decide whether the node is empty. A node whose only keys
+  // were prose (`{ description: '…' }`) compacts to `{}`; if the emptiness
+  // marker were driven by the RAW entry list, the full side would emit nothing
+  // there while the compact side emitted `path={}`, and the two projections
+  // would disagree on 12 real catalog tools over a difference that is not a
+  // contract change at all (an empty subschema and a description-only subschema
+  // both constrain nothing). Measured: that asymmetry is the ONLY divergence the
+  // live catalog produces, and every instance was an `added` `{}`, never a
+  // `missing` constraint.
+  const entries = Object.entries(node as Record<string, unknown>).filter(
+    ([key]) => inNameKeyedMap || !PROSE_KEYS.has(key),
+  );
   if (entries.length === 0) out.push(`${path}={}`);
   for (const [key, value] of entries) {
     if (inNameKeyedMap) {
@@ -108,7 +119,8 @@ function contractLines(node: unknown, path: string, inNameKeyedMap: boolean, out
       contractLines(value, `${path}/${nameSegment(key)}`, false, out);
       continue;
     }
-    if (PROSE_KEYS.has(key)) continue;
+    // Prose was already dropped by the filter above — reaching here means the
+    // key is validity-bearing.
     contractLines(value, `${path}/${key}`, NAME_KEYED_CONTAINERS.has(key), out);
   }
 }

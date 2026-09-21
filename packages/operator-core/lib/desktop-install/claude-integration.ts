@@ -177,6 +177,18 @@ export function buildClaudeMcpEntry(
       // claude or any session that sets no allowlist). The long tail stays reachable via
       // `tools:find` (in the spine).
       `&tools=\${PAPERCUSP_TOOLS:-}` +
+      // deterministic-tool-definition-delivery-2026-09-21: the SECOND axis of the
+      // same decision. `?tools=` says WHICH tools are advertised; this says HOW
+      // MUCH of each one ships. A name here is still advertised and still
+      // callable — only prose is stripped from its advertised definition
+      // (compactInputSchema keeps property names, types, the required set, enum
+      // members, bounds, discriminators, nested shape and $defs/$ref). That makes
+      // admission three-way (full / compact / deferred) instead of all-or-nothing,
+      // which is what let seven high-demand heavies back into the seed. psu
+      // exports PAPERCUSP_TOOLS_COMPACT from the GENERATED delivery artifact, so
+      // neither list is hand-maintained. Unset/empty ⇒ nothing is compacted
+      // (byte-identical for a bare claude or any non-psu session).
+      `&tools_compact=\${PAPERCUSP_TOOLS_COMPACT:-}` +
       // context-trimming-tiers D-004: the session PAYLOAD tier — a DIFFERENT axis from the
       // retired --context-size mode. psu exports PAPERCUSP_CONTEXT_TIER='trimmed'
       // unconditionally (no launch flag selects 'full'; ptool's PAPERCUSP_CONTEXT_TIER=full

@@ -154,6 +154,8 @@ import {
 import { verifyAccessToken } from '../../../power-user-token';
 import {
   parseToolsAllowlist,
+  parseCompactToolNames,
+  applyCompactTier,
   filterListingsByAllowlist,
   getSessionSurface,
   activateSessionTools,
@@ -170,7 +172,7 @@ import { buildMcpPrelude } from '../../../memory/mcp-prelude';
 import { INSIGHTS_DIR } from '../../../memory/knowledge-read';
 import { getSessionUserOrDefault } from '../../../auth';
 import { advertisedArgsSchema } from '@papercusp/result-encoding';
-import type { ResultDoorSkipReason } from '@papercusp/tooldef';
+import { compactInputSchema, type ResultDoorSkipReason } from '@papercusp/tooldef';
 import { MCP_SERVER_CAPABILITIES } from './mcp-contract';
 import { withMcpDiagnosticWarnings, type McpCallResult } from './mcp-diagnostic-warnings';
 import { parseMcpToolText } from './mcp-result-text';
@@ -2797,10 +2799,24 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   const seed = parseToolsAllowlist(urlFromExtra(extra)?.searchParams.get('tools'));
   const sessionKey = spawnRes.kind === 'ok' ? spawnRes.ctx.uiClientId : null;
   const allow = getSessionSurface(sessionKey, seed);
+  // `?tools_compact=` is the SECOND axis of the same decision (deterministic-
+  // tool-definition-delivery-2026-09-21): `?tools=` says WHICH tools are
+  // advertised, this says HOW MUCH of each one ships. A named tool keeps its
+  // full callable contract — only prose is removed — so the two params together
+  // express full / compact / deferred instead of the all-or-nothing admission
+  // that forced seven high-demand heavies out of the seed entirely. Absent ⇒
+  // nothing is compacted, byte-identical to the previous behaviour. Applied
+  // AFTER the allowlist filter so a compact name that is not advertised is
+  // simply never reached.
+  const compact = parseCompactToolNames(urlFromExtra(extra)?.searchParams.get('tools_compact'));
   return {
     kind: spawnRes.kind,
     spawnRes,
-    listings: filterListingsByAllowlist(result, allow),
+    listings: applyCompactTier(
+      filterListingsByAllowlist(result, allow),
+      compact,
+      compactInputSchema,
+    ),
   };
 }
 
