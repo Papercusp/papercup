@@ -8081,6 +8081,11 @@ export function hostThroughPty(o) {
         recycleArgs = minted.args;
         nativeId = minted.nativeId;
         launchContextPath = minted.launchContextPath ?? null;
+        // Codex's carry mint adds a visible, non-user-authored lineage marker
+        // after the original turn-origin line. Feed that exact rendered text
+        // to the native transcript; AGENTS.md alone is system context and does
+        // not solve the owner's missing-history view.
+        if (minted.carryText) carryText = minted.carryText;
       } catch (e) {
         if (drillId) {
           const failExtra = {
