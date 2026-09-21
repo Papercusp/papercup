@@ -82,6 +82,11 @@ interface GeneratedAgent {
   budgetOverrun: number;
   counts: { full: number; compact: number; deferred: number };
   advertised: string[];
+  /** The floor names this resolution was obliged to admit (P-004). Emitted so a consumer
+   *  can check floor COVERAGE without re-deriving the registry — and so a floor silently
+   *  disappearing from the registry shows up as an artifact diff rather than as a guard
+   *  that quietly starts asserting over a shorter list. */
+  floors: string[];
   rows: GeneratedRow[];
 }
 
@@ -132,6 +137,12 @@ export function renderArtifact(input: {
     lines.push('  advertised: Object.freeze([');
     for (const name of agent.advertised) lines.push(`    ${JSON.stringify(name)},`);
     lines.push('  ]),');
+    lines.push(
+      '  /** Floors this resolution had to admit (>= COMPACT, never dropped) — P-004/D-004. */',
+    );
+    lines.push('  floors: Object.freeze([');
+    for (const name of agent.floors) lines.push(`    ${JSON.stringify(name)},`);
+    lines.push('  ]),');
     lines.push('});');
     lines.push('');
   }
@@ -144,7 +155,76 @@ export function renderArtifact(input: {
   return lines.join('\n');
 }
 
-async function build(): Promise<{ text: string; agents: Record<string, GeneratedAgent>; catalogSize: number }> {
+/** The measured Aug-20 advertised set, recovered from commit 84829ccc (D-007). */
+const BASELINE_PATH = 'packages/operator-core/lib/agent-tools/tool-seed-baseline-2026-08-20.json';
+
+interface SeedBaseline {
+  commit: string;
+  commitDate: string;
+  counts: { ompCore: number; claudeExtras: number; union: number };
+  union: string[];
+}
+
+/**
+ * The P-012 baseline diff: what the derivation KEPT, ADDED and DROPPED against the
+ * measured Aug-20 set — with each addition's demand/byte justification, and each drop's
+ * reason.
+ *
+ * ⚠ WHY THIS EXISTS AT ALL, and why it diffs against 61 rather than the 26 the owner was
+ * told (D-007): the "19 OMP-core + 7 Claude extras = 26 tools" figure came from a prior
+ * session's own ANSWER and was never checked against the code. The real Aug-20 set was 43
+ * + 18 = 61 distinct names. A derivation that reports "we grew from 26 to 90" would carry
+ * that error forward with the authority of a generated artifact — which is exactly how a
+ * wrong number becomes load-bearing. So the baseline is a committed measurement, and this
+ * report states the comparison it is actually making.
+ */
+function renderBaselineDiff(agent: GeneratedAgent, baseline: SeedBaseline): string {
+  const byName = new Map(agent.rows.map((r) => [r.name, r]));
+  const advertised = new Set(agent.advertised);
+  const base = new Set(baseline.union);
+  const floors = new Set(agent.floors);
+
+  const kept = baseline.union.filter((n) => advertised.has(n)).sort();
+  const added = agent.advertised.filter((n) => !base.has(n)).sort();
+  const dropped = baseline.union.filter((n) => !advertised.has(n)).sort();
+
+  const out: string[] = [];
+  out.push(
+    `TOOL_DELIVERY_BASELINE commit=${baseline.commit} date=${baseline.commitDate} ` +
+      `baselineNames=${baseline.counts.union} kept=${kept.length} added=${added.length} dropped=${dropped.length}\n`,
+  );
+  const why = (n: string): string => {
+    const r = byName.get(n);
+    if (!r) return 'notInCatalog=1 (the tool no longer exists — nothing to advertise)';
+    const dens = r.callers / Math.max(1, r.tier === 'compact' ? r.compactBytes : r.fullBytes);
+    return (
+      `tier=${r.tier} callers=${r.callers} calls=${r.calls} fullB=${r.fullBytes} ` +
+      `compactB=${r.compactBytes} callersPerKB=${(dens * 1000).toFixed(1)}` +
+      (floors.has(n) ? ' floor=1' : '')
+    );
+  };
+  for (const n of kept) out.push(`TOOL_DELIVERY_KEPT ${n} ${why(n)}\n`);
+  for (const n of added) out.push(`TOOL_DELIVERY_ADDED ${n} ${why(n)}\n`);
+  for (const n of dropped) {
+    const r = byName.get(n);
+    // A dropped name has NO row (rows carry only admitted tools), so the reason has to be
+    // stated rather than read off one: either the tool is gone from the catalog, or it
+    // ranked below the value line for the budget.
+    out.push(
+      `TOOL_DELIVERY_DROPPED ${n} ${
+        r ? `tier=${r.tier}` : 'reason=below-value-line-or-absent-from-catalog'
+      }\n`,
+    );
+  }
+  return out.join('');
+}
+
+async function build(): Promise<{
+  text: string;
+  agents: Record<string, GeneratedAgent>;
+  catalogSize: number;
+  baseline: SeedBaseline;
+}> {
   // Side-effect import FIRST: it registers the catalog that listAllProjectedTools reads.
   await import('../packages/operator-core/lib/agent-tools/index.ts');
   const { listAllProjectedTools, compactWireBytes } = await import('@papercusp/tooldef');
@@ -204,14 +284,24 @@ async function build(): Promise<{ text: string; agents: Record<string, Generated
       budgetOverrun: r.budgetOverrun,
       counts: r.counts,
       advertised: rows.filter((x) => x.tier !== 'deferred').map((x) => x.name),
+      floors: [...floors].sort(),
       rows,
     };
+  }
+
+  const baseline = JSON.parse(readFileSync(resolve(REPO_ROOT, BASELINE_PATH), 'utf8')) as SeedBaseline;
+  if (!Array.isArray(baseline.union) || baseline.union.length !== baseline.counts.union) {
+    throw new Error(
+      `gen-tool-delivery: ${BASELINE_PATH} is internally inconsistent (counts.union=${baseline.counts.union}, ` +
+        `union.length=${baseline.union?.length}). A baseline that disagrees with itself cannot anchor a diff.`,
+    );
   }
 
   return {
     text: renderArtifact({ snapshotCapturedAt: snapshot.capturedAt, catalogSize: catalog.length, agents }),
     agents,
     catalogSize: catalog.length,
+    baseline,
   };
 }
 
@@ -228,6 +318,7 @@ async function main(): Promise<number> {
       );
     }
     process.stdout.write(`TOOL_DELIVERY_CATALOG tools=${built.catalogSize}\n`);
+    process.stdout.write(renderBaselineDiff(built.agents.claude, built.baseline));
     return 0;
   }
 

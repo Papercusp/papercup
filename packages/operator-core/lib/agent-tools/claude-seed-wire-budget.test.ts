@@ -199,7 +199,7 @@ describe('Claude seed wire budget (EI-23319364088969722)', () => {
     // A typo'd seed name is silently DROPPED by the server's ?tools= allowlist: the
     // agent simply never sees that tool, and the byte total goes DOWN — so the budget
     // assertion below would read green for a broken seed. This is what stops that.
-    const missing = (CLAUDE_MINIMAL_SEED_TOOL_NAMES as string[]).filter((n) => !byName.has(n));
+    const missing = (claudeSeedToolNames({}) as string[]).filter((n) => !byName.has(n));
     expect(
       missing,
       missing.length
@@ -209,20 +209,32 @@ describe('Claude seed wire budget (EI-23319364088969722)', () => {
     ).toEqual([]);
   });
 
-  it('the advertised seed stays within its measured wire budget', () => {
-    const rows = (CLAUDE_MINIMAL_SEED_TOOL_NAMES as string[])
-      .map((n) => ({ name: n, bytes: byName.has(n) ? wireBytes(n, byName.get(n)!) : 0 }))
-      .sort((a, b) => b.bytes - a.bytes);
-    const total = rows.reduce((s, r) => s + r.bytes, 0);
+  it('the advertised seed stays within its measured wire budget, AT ITS RESOLVED TIER', () => {
+    const names = claudeSeedToolNames({}) as string[];
+    const compact = new Set(claudeCompactToolNames({}) as string[]);
+    const { total, rows } = tieredBytes(names, compact, byName);
 
     // Floor FIRST: a collapsed measurement must be loud, not silently under budget.
     expect(
       total,
-      `measured only ${total.toLocaleString()} B for ${CLAUDE_MINIMAL_SEED_TOOL_NAMES.length} seeded ` +
-        `tools (this projection reads ~90,869 B today). Below ${MIN_PLAUSIBLE_SEED_WIRE_BYTES.toLocaleString()} B ` +
-        `means the projection stopped carrying argSchema — the instrument broke, the seed did not ` +
-        `get cheap. Every other assertion here is an upper bound and would pass anyway.`,
+      `measured only ${total.toLocaleString()} B for ${names.length} seeded tools ` +
+        `(${names.length - compact.size} full + ${compact.size} compact). Below ` +
+        `${MIN_PLAUSIBLE_SEED_WIRE_BYTES.toLocaleString()} B means the projection stopped carrying ` +
+        `argSchema — the instrument broke, the seed did not get cheap. Every other assertion here ` +
+        `is an upper bound and would pass anyway.`,
     ).toBeGreaterThan(MIN_PLAUSIBLE_SEED_WIRE_BYTES);
+
+    // SECOND floor, and the one a tier bug trips: compaction must actually be doing
+    // something. If `?tools_compact=` resolved empty (an assembler bug, a renamed env key)
+    // this total collapses onto the FULL reading of all ~90 names — which is over budget,
+    // so it fails loudly — but the reverse bug, compacting EVERYTHING, would pass the
+    // ceiling while silently stripping prose from tools the policy ranked as worth it.
+    expect(
+      compact.size,
+      'the compact tier resolved to ZERO names — the three-way admission collapsed back to ' +
+        'full/deferred, and the budget below is being met by a seed that is not the one resolved.',
+    ).toBeGreaterThan(0);
+    expect(compact.size).toBeLessThan(names.length);
 
     expect(
       total,
@@ -230,65 +242,89 @@ describe('Claude seed wire budget (EI-23319364088969722)', () => {
         ? `\n\nCLAUDE SEED OVER WIRE BUDGET: ${total.toLocaleString()} B > ` +
           `${CLAUDE_SEED_WIRE_BYTE_BUDGET.toLocaleString()} B.\n` +
           `This is context every psu Claude session pays on EVERY turn (ToolSearch is denied, ` +
-          `so there is no schema deferral).\n\nHeaviest seeded tools:\n` +
+          `so there is no schema deferral).\n\nHeaviest seeded tools (tier shown):\n` +
           rows
             .slice(0, 8)
-            .map((r) => `  ${String(r.bytes).padStart(7)}  ${r.name}`)
+            .map((r) => `  ${String(r.bytes).padStart(7)}  ${r.tier.padEnd(7)}  ${r.name}`)
             .join('\n') +
-          `\n\nFIX, cheapest first:\n` +
-          `  (a) UNSEED it — drop the name from CLAUDE_MINIMAL_SEED_TOOL_NAMES in\n` +
-          `      apps/operator/scripts/psu-launcher.mjs. It stays fully reachable via\n` +
-          `      tools:find / tools:invoke at a one-round-trip cost instead of every turn.\n` +
+          `\n\nFIX, cheapest first — note the seed is DERIVED now, so you do not edit a list:\n` +
+          `  (a) RE-RESOLVE: npm run gen:tool-delivery. If a seeded tool's schema grew, the\n` +
+          `      policy will drop the lowest-value name(s) to pay for it — that is the budget\n` +
+          `      working, and the artifact diff shows exactly who paid.\n` +
           `  (b) SHRINK the argSchema of the offender above (note: npm run tool-weight measures\n` +
           `      description+guidance, NOT argSchema — it will look fine while this fails).\n` +
-          `  (c) RAISE the budget — only with a fresh live tools/list measurement recorded on\n` +
-          `      CLAUDE_SEED_WIRE_BYTE_BUDGET, as a deliberate per-turn cost decision.\n`
+          `  (c) RAISE the budget — TRIMMED_BUDGET_BYTES in scripts/gen-tool-delivery.ts, only\n` +
+          `      with a fresh live tools/list measurement, as a deliberate per-turn cost decision.\n`
         : undefined,
     ).toBeLessThanOrEqual(CLAUDE_SEED_WIRE_BYTE_BUDGET);
   });
 
   it('CONTROL: the budget assertion actually fires when the seed grows', () => {
     // A budget guard nobody has seen fail is a budget guard nobody has tested. Adding the
-    // heaviest non-seeded verbs must blow the ceiling — proved without mutating the tree.
-    const heavies = ['work_items:complete', 'coord:send', 'work_items:checkpoint'].filter((n) =>
-      byName.has(n),
+    // heaviest non-seeded verbs at FULL tier must blow the ceiling — proved without
+    // mutating the tree.
+    const names = claudeSeedToolNames({}) as string[];
+    const compact = new Set(claudeCompactToolNames({}) as string[]);
+    const heavies = ['work_items:complete', 'coord:send', 'work_items:checkpoint'].filter(
+      (n) => byName.has(n) && !names.includes(n),
     );
-    expect(heavies.length, 'expected the known heavy verbs to exist in the catalog').toBeGreaterThan(0);
+    expect(
+      heavies.length,
+      'expected the known heavy verbs to exist in the catalog and be UNSEEDED — if the policy ' +
+        'has since admitted them this control is vacuous and needs a new set',
+    ).toBeGreaterThan(0);
 
-    const seeded = (CLAUDE_MINIMAL_SEED_TOOL_NAMES as string[]).reduce(
-      (s, n) => s + (byName.has(n) ? wireBytes(n, byName.get(n)!) : 0),
-      0,
-    );
-    const regrown = heavies.reduce((s, n) => s + wireBytes(n, byName.get(n)!), seeded);
+    const seeded = tieredBytes(names, compact, byName).total;
+    const regrown = tieredBytes([...names, ...heavies], compact, byName).total;
+    expect(regrown).toBeGreaterThan(seeded);
     expect(regrown).toBeGreaterThan(CLAUDE_SEED_WIRE_BYTE_BUDGET);
   });
 
-  it('the seven measured heavies stay OUT of the advertised seed', () => {
-    // 187,841 B for seven names in the old seed, and not one is promoted by the generated
-    // bash->tool routing table (so seed-mandate-coverage will not object to their absence).
-    for (const n of [
-      'work_items:complete',
-      'coord:send',
-      'work_items:checkpoint',
-      'fleet:launch-on-plan',
-      'loop:checkpoint',
-      'improvements:capture',
-      'facts:assert',
-    ]) {
-      expect(CLAUDE_MINIMAL_SEED_TOOL_NAMES).not.toContain(n);
-    }
+  it('FLOOR COVERAGE: every floor tool is advertised at >= COMPACT (P-008)', () => {
+    // The budget is allowed to hold a floor at COMPACT (D-004) but is NEVER allowed to
+    // DROP one: a floor's absence is the class that does not degrade gracefully — it
+    // halts, or strands state, or makes the rest of the catalog unreachable. A byte
+    // ceiling with no floor check would happily buy its savings out of exactly these.
+    const advertised = new Set(claudeSeedToolNames({}) as string[]);
+    const floors = (CLAUDE_TOOL_DELIVERY as { floors?: string[] }).floors ?? [];
+    expect(
+      floors.length,
+      'the generated artifact carries no floor list — this assertion would be vacuous',
+    ).toBeGreaterThan(10);
+    const dropped = floors.filter((n) => !advertised.has(n));
+    expect(
+      dropped,
+      dropped.length
+        ? `floor tool(s) NOT advertised: ${dropped.join(', ')}. A floor may be held at COMPACT ` +
+          `when bytes demand it, never dropped — see apps/operator/lib/tool-delivery-floors.ts ` +
+          `for what breaks without each one.`
+        : undefined,
+    ).toEqual([]);
   });
 
-  it('the DEFAULT branch the launcher SHIPS is exactly the list this file measures', () => {
-    // Everything above indexes the const, but the launcher wires claudeSeedToolNames(env).
-    // Without this, a change to the ASSEMBLER — a new default, an added filter, a merge —
-    // would ship a surface no assertion in this file has ever measured, and every budget
-    // here would keep reporting green about a list that is no longer what boots.
+  it('NO REGRESSION: the derived seed still carries every name of the 31-name hand cut', () => {
+    // The hand list survives in the launcher as this file's no-regression floor and as the
+    // PAPERCUSP_CLAUDE_FULL_SEED history. The derived map is allowed to ADD names — that is
+    // the COMPACT tier paying for itself — but a name the 2026-09-15 cut deemed mandatory
+    // must not fall out on a value-density ranking. That would be a capability regression
+    // wearing a byte saving's clothes.
+    const advertised = new Set(claudeSeedToolNames({}) as string[]);
+    const lost = (CLAUDE_MINIMAL_SEED_TOOL_NAMES as string[]).filter((n) => !advertised.has(n));
+    expect(lost, lost.length ? `dropped from the seed: ${lost.join(', ')}` : undefined).toEqual([]);
+    expect(advertised.size).toBeGreaterThan(CLAUDE_MINIMAL_SEED_TOOL_NAMES.length);
+  });
+
+  it('the DEFAULT branch the launcher SHIPS is exactly the generated artifact', () => {
+    // Everything above measures claudeSeedToolNames(env), but the ARTIFACT is what the
+    // generator's --check gate verifies against its inputs. Without this, a change to the
+    // ASSEMBLER — a new default, an added filter, a merge — would ship a surface the
+    // artifact check has never seen, and both guards would keep reporting green about
+    // different things.
     expect(
       claudeSeedToolNames({}) as string[],
-      'claudeSeedToolNames({}) no longer returns CLAUDE_MINIMAL_SEED_TOOL_NAMES verbatim — the ' +
-        'default branch has diverged from the list every other assertion in this file measures.',
-    ).toEqual([...(CLAUDE_MINIMAL_SEED_TOOL_NAMES as string[])]);
+      'claudeSeedToolNames({}) no longer returns the generated advertised set verbatim — the ' +
+        'default branch has diverged from the artifact gen:tool-delivery:check verifies.',
+    ).toEqual([...(CLAUDE_TOOL_DELIVERY as { advertised: string[] }).advertised]);
   });
 
   it('the FULL-SEED branch (PAPERCUSP_CLAUDE_FULL_SEED=1) has a wire budget of its own', () => {
