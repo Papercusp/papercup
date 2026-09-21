@@ -437,7 +437,7 @@ export default function IdentitySettingsPage() {
   }, [effectiveAgentId, run]);
 
   const banner = statusCopy(
-    surface?.session?.activation ?? lastResult?.activation ?? null,
+    lastResult?.activation ?? surface?.session?.activation ?? null,
   );
   const reviewRows = review?.diff ?? [];
   const agentLabel =

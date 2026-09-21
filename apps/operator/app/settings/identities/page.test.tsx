@@ -292,6 +292,23 @@ describe("IdentitySettingsPage", () => {
     await waitFor(() => expect(H.invalidate).toHaveBeenCalled());
   });
 
+  it("shows the immediate desired activation returned by a mutation before the query refreshes", async () => {
+    render(<IdentitySettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Review switch" }));
+    const apply = await screen.findByRole("button", { name: "Apply identity" });
+    await waitFor(() =>
+      expect((apply as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(apply);
+
+    await waitFor(() =>
+      expect(screen.getByText(/Change requested\./)).toBeTruthy(),
+    );
+    expect(
+      screen.getByText("The currently applied identity remains active."),
+    ).toBeTruthy();
+  });
+
   it.each([
     [
       "desired",
