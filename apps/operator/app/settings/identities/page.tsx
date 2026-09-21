@@ -971,7 +971,7 @@ export default function IdentitySettingsPage() {
       )}
 
       <style>{`
-        .pc-identities { display: grid; gap: 16px; min-width: 0; }
+        .pc-identities { display: grid; gap: 16px; min-width: 0; container-type: inline-size; container-name: identities; }
         .pc-identities h1, .pc-identities h2, .pc-identities h3, .pc-identities p { margin-top: 0; }
         .pc-identities__header { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
         .pc-identities__agent-picker { display: grid; gap: 5px; min-width: 210px; color: var(--fg-mute); font-size: 11px; }
@@ -1018,11 +1018,11 @@ export default function IdentitySettingsPage() {
         .pc-identities__explain ul { max-height: 300px; overflow: auto; }
         .pc-identities__bindings { display: grid; gap: 12px; }
         .pc-identities__unreadable { color: var(--fg-mute); font-size: 12px; }
-        @media (max-width: 900px) {
+        @container identities (max-width: 900px) {
           .pc-identities__header { align-items: stretch; flex-direction: column; }
           .pc-identities__library { grid-template-columns: 1fr; }
         }
-        @media (max-width: 560px) {
+        @container identities (max-width: 560px) {
           .pc-identities__details { grid-template-columns: 1fr; }
           .pc-identities__tabs .pc-btn { flex: 1 1 auto; }
         }
