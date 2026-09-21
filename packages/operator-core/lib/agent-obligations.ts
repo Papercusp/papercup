@@ -105,6 +105,18 @@ export interface AgentObligationAction {
   tool?: string;
   args?: Record<string, unknown>;
   targetRef?: string;
+  /**
+   * An AGENT-CALLABLE pointer that recovers the content this row had to budget
+   * away — rendered verbatim into even the narrowest sink, so it must be a call
+   * the reader can make (`orders:get #27`), never an internal symbol.
+   *
+   * Deliberately NOT `targetRef`: that field is diagnostic provenance and
+   * carries internal reader names (`readGoalPlanFleetCohort`,
+   * `evaluatePlanAcceptanceGate`) on measurement-failure rows. Rendering it
+   * would spend the turn-start sink's scarcest chars on a symbol the agent
+   * cannot call.
+   */
+  recoveryRef?: string;
   resumeWhen?: string;
   /** True when advancing the already-owned item is preferable to taking fresh work. */
   continuesCurrentWork?: boolean;
@@ -433,7 +445,10 @@ function authorityLabel(authority: AgentObligationAuthority): string {
 /** Load-bearing action first; optional reason/provenance may be clipped later. */
 export function formatAgentObligationLine(obligation: AgentObligation, detail: 'full' | 'action' = 'full'): string {
   const action = obligation.action?.summary ?? obligation.clearsWhen.summary;
-  const actionLine = `- [${obligation.status.toUpperCase()}] ${obligation.title} — ${action}`;
+  // The recovery pointer rides at BOTH detail levels: a narrow sink is exactly
+  // where content was budgeted away, so it is where the pointer earns its chars.
+  const recovery = obligation.action?.recoveryRef ? `; full: ${obligation.action.recoveryRef}` : '';
+  const actionLine = `- [${obligation.status.toUpperCase()}] ${obligation.title} — ${action}${recovery}`;
   if (detail === 'action') return actionLine;
   const demand = obligation.applicableDemand > 0 ? `; demand ${obligation.applicableDemand}` : '';
   const age = obligation.ageMs != null ? `; age ${Math.max(0, Math.round(obligation.ageMs / 60_000))}m` : '';

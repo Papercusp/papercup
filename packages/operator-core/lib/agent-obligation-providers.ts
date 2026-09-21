@@ -15,6 +15,7 @@ import {
   type AgentObligationEvidence,
   type AgentObligationMeasurementFailure,
 } from './agent-obligations';
+import { orientationRowExcerpt } from './owner-directives';
 import type { GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief } from './goal-launch-settings';
 import type { GoalPlanFleetAlert } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
@@ -770,13 +771,17 @@ const OWNER_DIRECTIVE_DISPOSITION: Record<
 > = {
   pending: {
     title: 'Pending owner turn awaits promote-or-dismiss',
-    summary: 'promote or dismiss this captured owner turn before your next agenda step',
+    // `summary` is spent once PER ROW in a 3-row/400-char sink, so it carries the
+    // disposition VERB and nothing else; the prose that used to live here was
+    // identical on every row and cost a whole third row (measured: 133-char rows,
+    // 2 of 3 delivered, the third dropped on the character cap).
+    summary: 'promote or dismiss: orders:resolve-pending',
     tool: 'orders:resolve-pending',
     clearsWhen: 'the row leaves `pending` via promotion or a reasoned dismissal',
   },
   open: {
     title: 'Open owner directive awaits disposition',
-    summary: 'carry out this owner directive, then close it with orders:disposition',
+    summary: 'carry out, then close: orders:disposition',
     tool: 'orders:disposition',
     clearsWhen: 'the row is dispositioned done or declined',
   },
@@ -867,12 +872,26 @@ export function ownerDirectiveObligations(input: OwnerDirectivesProviderInput): 
   const observedMs = Date.parse(input.observedAt);
   return rows.map((row) => {
     const disposition = OWNER_DIRECTIVE_DISPOSITION[row.state];
+    const excerpt = orientationRowExcerpt(row.excerpt);
+    // The pointer is load-bearing ONLY when text was actually budgeted away: a
+    // directive rendered WHOLE has nothing to recover, so spending 22 of a
+    // 400-char sink's chars on it would cost a whole other directive its row.
+    // Same rule renderOwnerDirectiveRow already applies in the block renderer.
+    // `endsWith('…')` catches an excerpt ALREADY truncated upstream by
+    // ownerDirectiveExcerpt, where the row's own cut was a no-op.
+    const truncated = excerpt !== row.excerpt.trim() || excerpt.endsWith('…');
+    const fullTextRef = `orders:get #${row.id}`;
     const recordedMs = Date.parse(row.recordedAt);
     const ageMs =
       Number.isFinite(observedMs) && Number.isFinite(recordedMs) ? Math.max(0, observedMs - recordedMs) : undefined;
     return defineAgentObligation({
       ...common,
-      title: `${disposition.title} — #${row.id}`,
+      // The UNIFORM ROW (P-002): { id, short verbatim, disposition verb,
+      // recovery pointer }. id + verbatim go in the TITLE because the title is
+      // the only field that renders at BOTH detail levels — `reason` is dropped
+      // at the narrow `action` detail, which is precisely the turn-start sink
+      // where telling two pending directives apart matters most.
+      title: `Owner directive #${row.id}: "${excerpt}"`,
       // The row id alone is the episode: the SAME undispositioned directive must
       // produce the SAME obligation id on every turn, or a warm-turn dedup would
       // read a re-render as a brand-new obligation and the row would churn.
@@ -898,8 +917,13 @@ export function ownerDirectiveObligations(input: OwnerDirectivesProviderInput): 
         tool: disposition.tool,
         args: { id: row.id },
         // The RECOVERY POINTER: the excerpt above is budgeted, so the full
-        // verbatim owner turn must stay one addressable call away.
-        targetRef: `orders:get #${row.id}`,
+        // verbatim owner turn must stay one addressable call away. Both fields
+        // come from ONE expression so they cannot drift — `targetRef` is the
+        // unconditional structured pointer for programmatic consumers, while
+        // `recoveryRef` is RENDERED and so is spent only when text was
+        // actually cut.
+        targetRef: fullTextRef,
+        ...(truncated ? { recoveryRef: fullTextRef } : {}),
       },
       clearsWhen: {
         id: `owner-directive-dispositioned:${row.id}`,

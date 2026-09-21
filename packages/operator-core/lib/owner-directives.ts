@@ -108,6 +108,19 @@ export interface OwnerDirectiveRow {
 export const OWNER_DIRECTIVE_WHOLE_MAX = 300;
 /** A longer row renders substr(0, this) + the orders:get pointer. */
 export const OWNER_DIRECTIVE_EXCERPT_CHARS = 200;
+/**
+ * The ORIENTATION-ROW excerpt, a much tighter bound than the block renders.
+ *
+ * Deliberately its own constant rather than a reuse of the two above: the
+ * turn-start obligation sink budgets 400 chars for 3 whole rows (~132 each),
+ * and a row also has to carry its id, disposition verb and recovery pointer.
+ * A 200-char excerpt there does not merely clip — it costs WHOLE ROWS, so a
+ * third pending directive silently stops being delivered at all.
+ *
+ * Changing this without re-measuring the rendered row against that budget is
+ * the failure `agent-obligation-orientation-row.test.ts` exists to catch.
+ */
+export const ORIENTATION_ROW_EXCERPT_CHARS = 90;
 /** Hard cap on the rendered block (~1.5K tokens) — overflow rows collapse to a count line. */
 export const OWNER_DIRECTIVES_BLOCK_CHAR_CAP = 6000;
 /** Most rows any render fetches — beyond this, the "+N more" line covers the rest. */
@@ -401,6 +414,16 @@ function humanAge(ms: number): string {
  * the same owner sentence. Truncation is detectable by the caller without a
  * second flag: a truncated excerpt is strictly SHORTER than the trimmed input.
  */
+export function orientationRowExcerpt(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= ORIENTATION_ROW_EXCERPT_CHARS) return trimmed;
+  // The input may ALREADY be a budgeted excerpt (ownerDirectiveExcerpt output),
+  // so strip its ellipsis before re-cutting — otherwise a row renders '……' and
+  // spends two of its scarcest chars saying "truncated" twice.
+  const body = trimmed.endsWith('…') ? trimmed.slice(0, -1) : trimmed;
+  return `${body.slice(0, ORIENTATION_ROW_EXCERPT_CHARS).trimEnd()}…`;
+}
+
 export function ownerDirectiveExcerpt(verbatimText: string): string {
   const text = verbatimText.trim();
   if (text.length <= OWNER_DIRECTIVE_WHOLE_MAX) return text;
