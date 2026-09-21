@@ -228,13 +228,16 @@ describe('readAgentObligationAgenda owner-directive wiring', () => {
 
   it('keeps an unchanged queue at an unchanged sourceGeneration across turns', async () => {
     const dep = vi.fn(async () => [PENDING_ROW]);
+    // Deliberately NOT `as const`: that widens `planSlugs` to `readonly []`,
+    // which the reader's `string[]` parameter rejects — a type-only break a
+    // green vitest run cannot see, because esbuild never typechecks.
     const args = {
       workspaceId: 'papercusp-workspace',
       ownerId: 'su-test',
       goalId: null,
-      planSlugs: [],
+      planSlugs: [] as string[],
       deps: readerDeps(dep),
-    } as const;
+    };
     const first = await readAgentObligationAgenda({ ...args, now: new Date('2026-09-21T16:00:00.000Z') });
     const second = await readAgentObligationAgenda({ ...args, now: new Date('2026-09-21T17:00:00.000Z') });
     const generationOf = (agenda: typeof first.agenda) =>
