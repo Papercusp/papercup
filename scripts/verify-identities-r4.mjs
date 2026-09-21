@@ -16,10 +16,21 @@ import postgres from "postgres";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+/**
+ * @param {string|number} pid
+ * @param {readonly string[]} args
+ * @returns {string[]}
+ */
 export function toolArgs(pid, args) {
   return [args[0], "--pid", pid, ...args.slice(1), ...(args[0] === "eval" ? [] : ["--json"])];
 }
 
+/**
+ * @param {string} command
+ * @param {readonly string[]} args
+ * @param {Record<string, any>} [options]
+ * @returns {string}
+ */
 export function checkedCommand(command, args, options = {}) {
   return execFileSync(command, args, { encoding: "utf8", timeout: 45_000, ...options });
 }
@@ -247,7 +258,16 @@ const patchFetch = `
 })()
 `;
 
-const artifact = (revision) => ({ specificationRevision: revision, stack: ["domain:papercusp-engineer"], provenance: [] });
+const artifact = (revision) => ({
+  schemaVersion: 1,
+  specificationRevision: revision,
+  compilerVersion: "p015-r4-fixture",
+  source: { id: "p015-r4-fixture", kind: "harness", contentHash: "d".repeat(64) },
+  configuration: { roles: [{ stack: ["domain:papercusp-engineer"] }] },
+  inputs: [],
+  stack: ["domain:papercusp-engineer"],
+  provenance: [{ path: "roles[0].stack[0]", sourceRef: "identity:papercusp-engineer", sourceRevision: revision }],
+});
 
 async function seed() {
   const launchSpec = {
