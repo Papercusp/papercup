@@ -8,7 +8,10 @@ const seams = vi.hoisted(() => ({
   send: vi.fn(async () => undefined),
 }));
 vi.mock('./system-actions', () => ({ registerSystemAction: seams.register }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('@papercusp/db-org', async (original) => ({
+  ...await original<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => ({ sql: {} }),
+}));
 vi.mock('../../consult/consult-expiry-core', async (original) => ({
   ...await original<typeof import('../../consult/consult-expiry-core')>(),
   sweepExpiredConsults: seams.sweep,
