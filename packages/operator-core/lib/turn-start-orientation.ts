@@ -445,6 +445,56 @@ export async function readOrientationToolSurfaces(
   });
 }
 
+/**
+ * P-002: is any delivered obligation still UNDISCHARGED?
+ *
+ * A class-B row is discharged by DISPOSITION, not by DELIVERY. `agenda.primary`
+ * is already exactly the actionable set — `evaluateAgentObligations` filters it
+ * with `agentObligationIsActionable`, and each entry carries its own
+ * `clearsWhen` predicate naming the effect that ends it. So the discharge
+ * question is answered by the canonical agenda, never re-derived here.
+ *
+ * Reading `primary` rather than `projection.entries` is deliberate: a row the
+ * outer budget OMITTED is still undischarged, and the "+N omitted — <detailRef>"
+ * pointer must keep rendering while it is.
+ */
+export function hasUndischargedObligations(state: OrientationState): boolean {
+  return (state.obligations?.primary.length ?? 0) > 0;
+}
+
+/**
+ * The reduced state used when every class is unchanged but an obligation is
+ * still undischarged: obligations ONLY.
+ *
+ * Re-emitting the WHOLE block each turn for one standing row would repeat held
+ * items, gates and facts that genuinely have not changed — manufacturing the
+ * exact signal decay D-003 withdrew the improvement-triage line for. The item
+ * says an obligation ROW renders every turn, not the block, so this keeps the
+ * re-injection as narrow as the contract requires.
+ *
+ * `loopArmed: true` is the QUIET value, not an assertion about the loop: the
+ * renderer warns on a loop that is NOT armed, so `false` here would fabricate a
+ * "not armed" line on a healthy session every time a directive went unsettled.
+ */
+function undischargedObligationsOnly(state: OrientationState): OrientationState {
+  return {
+    held: [],
+    unansweredDirected: 0,
+    unansweredStale: 0,
+    inboxRecent: [],
+    openAsks: null,
+    announcedGates: [],
+    loopArmed: true,
+    loopFireWithheld: false,
+    improvementTriage: null,
+    executableFrontier: null,
+    neverDropFacts: [],
+    toolSurface: null,
+    carryBlindWindow: null,
+    obligations: state.obligations,
+  };
+}
+
 /** True when there is genuinely nothing worth spending a single character on. */
 export function isEmptyOrientation(state: OrientationState): boolean {
   return (
@@ -963,10 +1013,23 @@ export function composeOrientationBlock(input: {
   const { state, committed, epoch } = input;
   const budget = input.budgetChars ?? ORIENTATION_BUDGET_CHARS;
   if (isEmptyOrientation(state)) return '';
-  if (orientationUnchanged(committed, fingerprintOrientation(state, epoch, committed))) return '';
+  // P-002 — CLASS-B RE-INJECT POLICY. An obligation row is discharged by
+  // DISPOSITION, not by DELIVERY, so the unchanged-fingerprint comparison must
+  // not govern it: a standing owner directive that rendered once and was then
+  // suppressed as "unchanged" is a one-shot, which is the defect this item
+  // names. Undischarged rows are therefore EXCLUDED from that comparison.
+  //
+  // When everything else really is unchanged, re-emit the ROW and not the whole
+  // block: repeating held items, gates and facts that have not moved would
+  // manufacture the exact signal decay D-003 withdrew the improvement-triage
+  // line for.
+  const unchanged = orientationUnchanged(committed, fingerprintOrientation(state, epoch, committed));
+  const undischarged = hasUndischargedObligations(state);
+  if (unchanged && !undischarged) return '';
+  const renderState = unchanged ? undischargedObligationsOnly(state) : state;
 
   const header = `## ${HEADING}`;
-  const lines = renderOrientationLines(state, committed);
+  const lines = renderOrientationLines(renderState, committed);
   const out: string[] = [header];
   let used = header.length;
   for (const line of lines) {
