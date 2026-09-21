@@ -269,15 +269,11 @@ describe('turn-start-orientation — when it speaks', () => {
       { ...withWork, held: [{ id: 'WI-2', status: 'wip' }] },
       { ...withWork, announcedGates: [{ event: 'fleet:atlas:another-gate' }] },
       { ...withWork, inboxRecent: [{ msgId: 'm-2', from: 'su-peer', summary: 'New ask' }] },
-      {
-        ...withWork,
-        improvementTriage: {
-          pending: 3,
-          considered: 3,
-          lowerBound: false,
-          top: { id: 'EI-3', title: 'Consume me', lane: 'human' },
-        },
-      },
+      // improvementTriage was a tracked field here until P-017 withdrew it from
+      // the per-turn block. It is deliberately absent rather than relaxed: the
+      // paired 'watermark withdrawal' test below now asserts the OPPOSITE for
+      // it — a triage-only delta must NOT re-emit — so the property is still
+      // measured, just with the sign the current contract actually has.
       { ...withWork, obligations: obligationBrief() },
     ] as OrientationState[]) {
       expect(composeOrientationBlock({ state: changed, committed, epoch: EPOCH })).not.toBe('');
@@ -647,7 +643,12 @@ describe('turn-start-orientation — what it says', () => {
     });
   });
 
-  it('injects the ranked top untriaged improvement with its bounded-window count and lane', () => {
+  // P-017 (plan turn-start-memory-two-class-2026-09-21): the improvement-triage
+  // line is WITHDRAWN from the per-turn block. It rendered every single turn and
+  // produced no observed action, which is what teaches a reader to skip the whole
+  // block. `selectOrientationImprovementTriage` and the provider are untouched —
+  // the full coord:orient payload still serves this on demand.
+  it('does not render an improvement-triage line in the per-turn block (P-017 withdrawal)', () => {
     const out = composeOrientationBlock({
       state: {
         ...base,
@@ -661,26 +662,36 @@ describe('turn-start-orientation — what it says', () => {
       committed: null,
       epoch: EPOCH,
     });
-    expect(out).toContain('improvement triage: 6 untriaged');
-    expect(out).toContain('top EI-6 [human] — Repeated coord send truncation');
+    expect(out).not.toContain('improvement triage');
+    expect(out).not.toContain('EI-6');
   });
 
-  it('labels a capped triage window as a lower bound instead of a fleet-wide total', () => {
-    const out = composeOrientationBlock({
-      state: {
-        ...base,
-        improvementTriage: {
-          pending: 80,
-          considered: 100,
-          lowerBound: true,
-          top: { id: 'EI-80', title: 'Bound the population', lane: 'human' },
-        },
+  it('does not let an improvement-triage change alone re-emit the block (P-017 watermark withdrawal)', () => {
+    // The paired half of the withdrawal: if `triage` stayed in the watermark, a
+    // triage-only delta would mark the block changed and re-emit it with nothing
+    // visibly different — a re-emit whose cause the reader cannot see.
+    // Built on `withWork` (not `base`) deliberately: a triage-only state is now
+    // EMPTY, so an empty baseline would satisfy the '' assertion for the wrong
+    // reason and measure nothing.
+    const triageState = (pending: number): OrientationState => ({
+      ...withWork,
+      improvementTriage: {
+        pending,
+        considered: 100,
+        lowerBound: true,
+        top: { id: `EI-${pending}`, title: 'Bound the population', lane: 'human' },
       },
-      committed: null,
-      epoch: EPOCH,
     });
-    expect(out).toContain('at least 80 untriaged in 100-row window');
-    expect(out).not.toContain('triage: 80 untriaged;');
+    const committed = fingerprintOrientation(triageState(80), EPOCH);
+    expect(orientationUnchanged(committed, fingerprintOrientation(triageState(81), EPOCH, committed))).toBe(
+      true,
+    );
+    expect(composeOrientationBlock({ state: triageState(81), committed, epoch: EPOCH })).toBe('');
+    // Calibration: the same comparison MUST still detect a change the reader can
+    // see, or the assertion above would pass on a fingerprint that ignores
+    // everything.
+    const realChange = { ...triageState(81), unansweredDirected: withWork.unansweredDirected + 1 };
+    expect(orientationUnchanged(committed, fingerprintOrientation(realChange, EPOCH, committed))).toBe(false);
   });
 
   it('preserves the one human-queue ranker order while filtering untriaged rows', () => {
@@ -940,22 +951,22 @@ describe('never-drop facts fold', () => {
   });
 
   it('ranks the do-not-repeat ABOVE the what-to-work-on lines', () => {
+    // The what-to-work-on line here used to be improvement-triage; that class is
+    // withdrawn from the per-turn block (P-017), so the ordering property is now
+    // carried by the executable frontier, which renders in the same position.
     const lines = renderOrientationLines({
       ...base,
       neverDropFacts: KEYS,
-      improvementTriage: {
-        pending: 5,
-        considered: 100,
-        lowerBound: true,
-        top: { id: 'EI-9', lane: 'human', title: 'some untriaged thing' },
-      },
+      executableFrontier: { planSlug: 'turn-start-memory-two-class-2026-09-21', executableWidth: 3 },
     });
     const factIdx = lines.findIndex((l) => l.includes('never-drop facts'));
-    const triageIdx = lines.findIndex((l) => l.includes('improvement triage'));
+    const workIdx = lines.findIndex((l) => l.includes('frontier:'));
     expect(factIdx).toBeGreaterThanOrEqual(0);
+    // Both indices must be REAL, or `-1 > n` would silently make this vacuous.
+    expect(workIdx).toBeGreaterThanOrEqual(0);
     // Ordering IS the feature: a guard rail is worth almost nothing once the
     // agent has already picked an approach off the line below it.
-    expect(triageIdx).toBeGreaterThan(factIdx);
+    expect(workIdx).toBeGreaterThan(factIdx);
   });
 
   it('is not an empty orientation when a never-drop fact is the only signal', () => {

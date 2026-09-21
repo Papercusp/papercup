@@ -459,7 +459,9 @@ export function isEmptyOrientation(state: OrientationState): boolean {
     state.announcedGates.length === 0 &&
     !state.loopArmed &&
     !state.loopFireWithheld &&
-    state.improvementTriage === null &&
+    // improvementTriage is NOT a conjunct here (P-017): it no longer renders,
+    // so letting it hold the block open would emit a block whose only reason
+    // for existing is invisible to the reader.
     state.executableFrontier === null &&
     !state.obligations &&
     state.neverDropFacts.length === 0 &&
@@ -618,11 +620,10 @@ export function fingerprintOrientation(
       .join('|'),
     loop: state.loopArmed ? 1 : 0,
     loopWithheld: state.loopFireWithheld ? 1 : 0,
-    triage: state.improvementTriage
-      ? `${state.improvementTriage.pending}:${state.improvementTriage.considered}:` +
-        `${state.improvementTriage.lowerBound ? 1 : 0}:${state.improvementTriage.top.lane}:` +
-        `${state.improvementTriage.top.id}:${state.improvementTriage.top.title}`
-      : '',
+    // `triage` is deliberately ABSENT from the watermark (P-017). It stopped
+    // rendering, and a component for an unrendered class would re-mark the
+    // block as changed for a signal the reader can no longer see — a re-emit
+    // with no visible cause, which is worse than the row it replaced.
     // UNKNOWN preserves the last known frontier token. A transient read failure
     // must not erase the cursor and make the same stable width look like a new
     // edge on the next successful turn.
@@ -893,13 +894,15 @@ export function renderOrientationLines(state: OrientationState, committed: Curso
   }
   const frontierLine = renderExecutableFrontierLine(state.executableFrontier, committed);
   if (frontierLine) lines.push(frontierLine);
-  if (state.improvementTriage) {
-    const { pending, considered, lowerBound, top } = state.improvementTriage;
-    const population = lowerBound
-      ? `at least ${pending} untriaged in ${considered}-row window`
-      : `${pending} untriaged`;
-    lines.push(`- improvement triage: ${population}; top ${top.id} [${top.lane}] — ${compactHeadline(top.title)}`);
-  }
+  // improvementTriage is DELIBERATELY NOT RENDERED here (plan
+  // turn-start-memory-two-class-2026-09-21, P-017; rationale in D-003). It
+  // rendered on every turn and produced zero observed action — the canonical
+  // signal-decay case: a row that is always present teaches the reader to skip
+  // the whole block. The provider and `OrientationState.improvementTriage`
+  // REMAIN so the full coord:orient payload keeps serving it on demand; only
+  // the unconditional per-turn line is withdrawn. The class-coverage guard
+  // records this as an entry in DELIBERATELY_UNRENDERED, because a dropped
+  // class is a decision, not a coverage gap.
   if (state.held.length > 0) {
     const shown = state.held.slice(0, HELD_DISPLAY_CAP);
     const rest = state.held.length - shown.length;

@@ -74,7 +74,14 @@ function declaredOrientationClasses(): string[] {
  * name HERE with a reason, so the drop is recorded rather than silently
  * indistinguishable from the regression this file detects.
  */
-const DELIBERATELY_UNRENDERED: Record<string, string> = {};
+const DELIBERATELY_UNRENDERED: Record<string, string> = {
+  improvementTriage:
+    'P-017 (plan turn-start-memory-two-class-2026-09-21, rationale D-003): withdrawn from the ' +
+    'per-turn block after rendering on every turn with zero observed action — the canonical ' +
+    'signal-decay case. The field and its provider REMAIN on OrientationState so the full ' +
+    'coord:orient payload still serves it on demand; only the unconditional per-turn line is ' +
+    'gone. This entry is what makes that a recorded DECISION rather than a coverage gap.',
+};
 
 interface ClassProbe {
   /** Populates ONLY this class, over the baseline below. */
@@ -163,17 +170,6 @@ const CLASS_PROBES: Record<string, ClassProbe> = {
     patch: { loopFireWithheld: true },
     marker: /withheld for interactive turn/,
   },
-  improvementTriage: {
-    patch: {
-      improvementTriage: {
-        pending: 100,
-        considered: 100,
-        lowerBound: true,
-        top: { id: 'EI-23817792409764138', title: 'live SMTP rejection contradicts cached OK', lane: 'human' },
-      },
-    },
-    marker: /improvement triage:/,
-  },
   executableFrontier: {
     patch: { executableFrontier: { planSlug: 'turn-start-memory-two-class-2026-09-21', executableWidth: 3 } },
     marker: /frontier: 3 executable/,
@@ -202,6 +198,24 @@ const CLASS_PROBES: Record<string, ClassProbe> = {
       },
     },
     marker: /carry blind window:/,
+  },
+};
+
+/**
+ * A POPULATING patch for every DELIBERATELY_UNRENDERED class. Without one the
+ * withdrawal is only asserted in prose: the class would be excused from the
+ * coverage test and nothing would notice if its line came back, or if it had
+ * never actually been removed. With one, "deliberately unrendered" becomes a
+ * measured claim — populate the class, and the renderer must stay silent.
+ */
+const UNRENDERED_PROBES: Record<string, Partial<OrientationState>> = {
+  improvementTriage: {
+    improvementTriage: {
+      pending: 100,
+      considered: 100,
+      lowerBound: true,
+      top: { id: 'EI-23817792409764138', title: 'live SMTP rejection contradicts cached OK', lane: 'human' },
+    },
   },
 };
 
@@ -263,6 +277,27 @@ describe('turn-start orientation class coverage', () => {
     const orphaned = Object.keys(CLASS_PROBES).filter((name) => !declaredSet.has(name));
     expect(orphaned, 'a probe outlived its class — delete it rather than testing a field nothing populates').toEqual([]);
   });
+
+  it('has a populating patch for every deliberately-unrendered class', () => {
+    // Calibration: without a patch, the assertion below would trivially pass on
+    // an empty state and "deliberately unrendered" would measure nothing.
+    const unmeasured = Object.keys(DELIBERATELY_UNRENDERED).filter((name) => !UNRENDERED_PROBES[name]);
+    expect(
+      unmeasured,
+      'a DELIBERATELY_UNRENDERED entry needs a patch in UNRENDERED_PROBES, or its withdrawal is never measured',
+    ).toEqual([]);
+  });
+
+  it.each(Object.keys(DELIBERATELY_UNRENDERED))(
+    'deliberately-unrendered class %s adds no line to the per-turn block',
+    (name) => {
+      const added = linesAddedBy({ patch: UNRENDERED_PROBES[name]!, marker: /(?!)/ });
+      expect(
+        added,
+        `'${name}' is recorded as deliberately unrendered, but populating it still produced a line`,
+      ).toEqual([]);
+    },
+  );
 
   it.each(Object.keys(CLASS_PROBES))('declared class %s reaches a rendered prompt', (name) => {
     expect(() => assertClassReachesRenderedPrompt(name, CLASS_PROBES[name]!)).not.toThrow();
