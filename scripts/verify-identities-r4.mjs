@@ -14,7 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import postgres from "postgres";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 
 /**
  * @param {string|number} pid
@@ -484,6 +484,9 @@ try {
 console.log(JSON.stringify({ ok: evidence.status === "pass", evidence: `${outDir}/evidence.json`, status: evidence.status, owner, realBackend, syntheticMutationResponses: !realBackend, hostActivationProven: evidence.hostActivationProven }));
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// isCliEntry, not a hand-rolled import.meta.url comparison: esbuild gives every
+// inlined module the BUNDLE entry's import.meta.url, so the hand-rolled form fires
+// main() during desktop-sidecar host boot (EI-650 took embedded PG down that way).
+if (isCliEntry(import.meta.url)) {
   main().catch(error => { console.error(error); process.exitCode = 1; });
 }

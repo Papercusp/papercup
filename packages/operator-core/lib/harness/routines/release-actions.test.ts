@@ -2817,6 +2817,8 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
           attemptId: 'attempt-1',
           reason: 'skipped-locked',
           green: undefined,
+          candidate: 'abc123',
+          runId: 'run-1',
           evidenceRefs: ['checkpoint-run:run-1', 'candidate:abc123'],
         },
       );

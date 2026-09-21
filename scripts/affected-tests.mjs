@@ -1951,6 +1951,52 @@ const SU_SPLICE_MARKER_TRIGGER_PATHS = new Set([
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // deterministic-tool-definition-delivery-2026-09-21 P-005 — the tool-delivery
+    // drift gate. `apps/operator/scripts/tool-delivery.generated.mjs` holds the
+    // RESOLVED per-agent delivery map (which tools are advertised, at FULL or
+    // COMPACT), derived from the live catalog measured at both tiers, the committed
+    // demand snapshot, the floor registry, and a stated per-agent byte budget.
+    //
+    // WIRED REPO-WIDE rather than left to workspace selection because the drift is
+    // NON-LOCAL by construction, and that is the whole defect this closes. Editing
+    // ONE tool's schema or guidance changes ITS bytes, which changes what fits in a
+    // fixed budget, which silently changes whether some OTHER, unrelated tool is
+    // still advertised at all. The edited tool's own workspace suite has no reason
+    // to know that, and the displaced tool's workspace was never selected — so the
+    // agent population quietly loses a tool and nothing anywhere goes red.
+    //
+    // TRIGGER SCOPE covers the two things that can move the map: a TOOL DEFINITION
+    // (the agent-tools source, where defineTool's description/guidance/argSchema
+    // live) and the derivation's own inputs. Test files are excluded: they cannot
+    // change a projected tool's wire bytes. It does NOT fire on ordinary source
+    // edits elsewhere in the tree.
+    // COST measured 2026-09-21 via this exact npm script: 14.83s, exit 0.
+    //
+    // Safe to wire NOW on the same precedent as the entries below: measured green
+    // over the whole real tree FIRST (899 tools measured, 90 advertised at 99,898 B
+    // of a 100,000 B budget, 0 overrun, check exit 0), and its falsifiability was
+    // proven by mutation probe rather than assumed — a one-byte edit to the
+    // artifact is CAUGHT (guard exit 1), so this cannot be a gate that passes by
+    // measuring nothing.
+    // Hosted by the operator-core workspace (a thin `tsx ../../scripts/...` shim) for
+    // the same reason `lint:reachable-advisories` is: the loop below resolves
+    // `guard.workspace` through the npm-workspaces map, and the ROOT monorepo package
+    // is not a member of it — a root-named guard is silently skipped rather than
+    // reported, which is how a wired-looking gate ends up never running.
+    workspace: "@papercusp/operator-core",
+    script: "gen:tool-delivery:check",
+    appliesTo: (f) =>
+      !f.includes("node_modules/") &&
+      !f.endsWith(".test.ts") &&
+      (f === "scripts/gen-tool-delivery.ts" ||
+        f === "apps/operator/scripts/tool-delivery.generated.mjs" ||
+        f === "apps/operator/lib/tool-delivery-floors.ts" ||
+        f === "packages/operator-core/lib/agent-tools/tool-delivery-policy.ts" ||
+        f === "packages/operator-core/lib/agent-tools/tool-demand-snapshot.json" ||
+        f === "libs/generic/tooldef/src/compact-schema.ts" ||
+        f.startsWith("packages/operator-core/lib/agent-tools/")),
+  },
+  {
     // security-boundary-remediation-and-usability-2026-09-04 P-007 / WI-2144851 —
     // the reachable-production-advisory gate. It attributes every npm advisory to the
     // workspace(s) that pull it in, gates only on the SHIPPING high/critical set, and

@@ -34,6 +34,7 @@
     "lint:guard-reachability": "node ../../scripts/check-lint-guard-reachability.mjs",
     "gen:gitnexus-bridge:check": "node ../../scripts/gen-gitnexus-bridge-runtime.mjs --check",
     "gen:contract:check": "tsx ../../scripts/gen-testing-domains-contract.ts --check",
+    "gen:tool-delivery:check": "tsx ../../scripts/gen-tool-delivery.ts --check",
     "lint:guidance-returns-schema": "node ../../scripts/check-guidance-returns-schema.mjs",
     "lint:reachable-advisories": "node ../../scripts/check-reachable-advisories.mjs --strict",
     "lint:rust-advisories": "node ../../scripts/check-rust-advisories.mjs --strict",

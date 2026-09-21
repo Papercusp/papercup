@@ -356,6 +356,17 @@ async function reconcileLoadedScheduledCheckpointTerminal(
   const emittedReason = typeof emitted?.reason === 'string' && emitted.reason.trim() ? emitted.reason.trim() : null;
   const reason = emittedReason ?? checkpointFallbackStatus(false, terminal.exitCode ?? undefined, null, terminal);
   const green = typeof emitted?.green === 'boolean' ? emitted.green : null;
+  const emittedCandidate =
+    typeof emitted?.candidate === 'string' && emitted.candidate.trim() ? emitted.candidate.trim() : null;
+  const emittedRunId =
+    typeof emitted?.runId === 'string' && emitted.runId.trim() ? emitted.runId.trim() : terminal.runId;
+  const emittedRepairHead =
+    emitted?.repairQueue &&
+    typeof emitted.repairQueue === 'object' &&
+    !Array.isArray(emitted.repairQueue) &&
+    typeof (emitted.repairQueue as Record<string, unknown>).repairHead === 'string'
+      ? String((emitted.repairQueue as Record<string, unknown>).repairHead).trim()
+      : null;
   const evidenceRefs = [
     `checkpoint-terminal:${terminal.runId}`,
     `checkpoint-log:${terminal.logPath}`,
@@ -367,6 +378,9 @@ async function reconcileLoadedScheduledCheckpointTerminal(
       attemptId: terminal.qualificationAttemptId,
       reason,
       green,
+      ...(emittedCandidate ? { candidate: emittedCandidate } : {}),
+      ...(emittedRepairHead ? { repairHead: emittedRepairHead } : {}),
+      ...(emittedRunId ? { runId: emittedRunId } : {}),
       evidenceRefs,
     });
   } catch (error) {
@@ -1856,6 +1870,9 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
         ...(transportedAttemptId ? { attemptId: transportedAttemptId } : {}),
         reason: verdict.reason,
         green: verdict.green,
+        ...(verdict.candidate ? { candidate: verdict.candidate } : {}),
+        ...(verdict.repairQueue?.repairHead ? { repairHead: verdict.repairQueue.repairHead } : {}),
+        ...(verdict.runId ? { runId: verdict.runId } : {}),
         evidenceRefs: [
           ...(verdict.runId ? [`checkpoint-run:${verdict.runId}`] : []),
           ...(verdict.candidate ? [`candidate:${verdict.candidate}`] : []),
@@ -1874,6 +1891,11 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
         `(${qualificationSettlement.status}${'error' in qualificationSettlement && qualificationSettlement.error ? `: ${qualificationSettlement.error}` : ''})`,
     );
   }
+  // A terminal result from a stale/replaced runner must never wake or mutate the exact-candidate
+  // waiters belonging to a newer physical run. The qualification transaction is the CAS
+  // authority; a candidate/run identity conflict is therefore a deliberate no-op, not a reason
+  // to emit a second terminal event from this producer.
+  if (transportedAttemptId && qualificationSettlement?.status === 'conflict') return false;
   if (!isRecordableVerdict(verdict.reason)) return false;
   await appendPipelineEvent({
     workspaceId: target.workspaceId,
