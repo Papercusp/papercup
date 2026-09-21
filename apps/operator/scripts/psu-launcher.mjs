@@ -2569,6 +2569,60 @@ function findCodexRollout(root, id) {
   return null;
 }
 
+const CODEX_ROLLOUT_ID_RE =
+  /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+
+/**
+ * Resolve the newest persisted Codex thread in one isolated home. Carry
+ * respawn is the one place where `codex resume --last` is not enough: the
+ * successor must branch the exact predecessor so Codex keeps the visible
+ * conversation while still minting a fresh native writer. Fail-soft and
+ * bounded like the transcript readers above; a missing/partial rollout takes
+ * the fresh-thread fallback instead of guessing another session.
+ */
+export function latestCodexRollout(root) {
+  const files = [];
+  const walk = (dir, depth) => {
+    if (depth > 10) return;
+    for (const entry of safeReaddir(dir)) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(path, depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.startsWith("rollout-") || !entry.name.endsWith(".jsonl")) continue;
+      const match = CODEX_ROLLOUT_ID_RE.exec(entry.name);
+      if (!match) continue;
+      try {
+        const stat = statSync(path);
+        if (!stat.isFile() || stat.size <= 0 || stat.size > 64 * 1024 * 1024) continue;
+        files.push({ path, id: match[1], mtimeMs: stat.mtimeMs });
+      } catch {
+        /* a concurrently rotated rollout is not a safe predecessor */
+      }
+    }
+  };
+  walk(root, 0);
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs || b.path.localeCompare(a.path));
+  return files[0] ?? null;
+}
+
+/** The Codex-native marker carried in the successor's first visible turn. */
+export function codexCarryLineageMarker(predecessorId) {
+  if (predecessorId) {
+    return (
+      `⟦codex-carry-lineage predecessor:${predecessorId}⟧\n` +
+      "This is a managed continuation fork. The predecessor conversation remains available above; " +
+      "its turns were not deleted."
+    );
+  }
+  return (
+    "⟦codex-carry-lineage predecessor:unresolved⟧\n" +
+    "This is a managed continuation, but the predecessor rollout was not available to fork; " +
+    "the prior turns remain in the predecessor session and are not deleted."
+  );
+}
+
 /**
  * Does this codex sessions root hold ANY rollout at all — i.e. would `codex resume --last`
  * find something? The by-uuid sibling {@link findCodexRollout} cannot answer for a row with
@@ -3336,6 +3390,21 @@ export function mintCarryRespawnArgs(
   // plain recycle) get the fresh values from one code path. This function stays
   // PURE: the fs/network reads that produce them are the caller's, where their
   // failure can be caught and fail-softed.
+  const codexSessionsRoot =
+    normalizedAgent === "codex" && codexHome
+      ? join(String(codexHome), "sessions")
+      : null;
+  const codexPredecessor = codexSessionsRoot
+    ? latestCodexRollout(codexSessionsRoot)
+    : null;
+  const codexLineage =
+    normalizedAgent === "codex"
+      ? codexCarryLineageMarker(codexPredecessor?.id ?? null)
+      : null;
+  // The marker is part of the managed first turn, not merely AGENTS.md. That
+  // makes the transition visible in Codex's transcript even when the owner is
+  // looking at the successor TUI rather than the launcher/session browser.
+  const effectiveText = codexLineage ? `${text}\n\n${codexLineage}` : text;
   const rotated = mintRecycleArgs(args, { mintId, agent, personaFile, model });
   const dir = join(home, ".papercusp", "launch-context");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -3356,7 +3425,12 @@ export function mintCarryRespawnArgs(
   // structurally instead of detected after the fact. Aged renders are reaped by
   // runLaunchContextGc (mtime + live-render evidence, name-agnostic), so the
   // per-cut names do not accumulate.
-  const cutId = sanitizeCarrySegment(rotated.nativeId);
+  // Codex does not expose a pre-minted successor id. Use a private cut token
+  // for the delivery filename so successive Codex cuts cannot overwrite one
+  // another while the native fork is creating its new rollout.
+  const cutId = sanitizeCarrySegment(
+    rotated.nativeId || (normalizedAgent === "codex" ? mintId() : null),
+  );
   const launchContextPath = join(
     dir,
     cutId ? `carry-${key}-${cutId}.md` : `carry-${key || "unknown"}.md`,
@@ -3366,10 +3440,37 @@ export function mintCarryRespawnArgs(
   // TRUNCATES first, so a successor booting mid-write reads a truncated carry
   // document, which presents as a short-but-valid one rather than as a failure.
   const carryTmp = `${launchContextPath}.${process.pid}.carry.tmp`;
-  writeFileSync(carryTmp, `${text}\n`, { mode: 0o600 });
+  writeFileSync(carryTmp, `${effectiveText}\n`, { mode: 0o600 });
   chmodSync(carryTmp, 0o600);
   renameSync(carryTmp, launchContextPath);
   chmodSync(launchContextPath, 0o600);
+
+  const lineagePath =
+    normalizedAgent === "codex"
+      ? join(dir, `${basename(launchContextPath, ".md")}.lineage.json`)
+      : null;
+  if (lineagePath) {
+    const lineageTmp = `${lineagePath}.${process.pid}.lineage.tmp`;
+    writeFileSync(
+      lineageTmp,
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          ownerId: ownerId || null,
+          predecessorSessionId: codexPredecessor?.id ?? null,
+          predecessorPath: codexPredecessor?.path ?? null,
+          successorMode: codexPredecessor ? "fork" : "fresh",
+          carryPath: launchContextPath,
+        },
+        null,
+        2,
+      )}\n`,
+      { mode: 0o600 },
+    );
+    chmodSync(lineageTmp, 0o600);
+    renameSync(lineageTmp, lineagePath);
+    chmodSync(lineagePath, 0o600);
+  }
 
   if (normalizedAgent === "codex") {
     const targetHome = String(codexHome ?? "").trim();
@@ -3403,7 +3504,7 @@ export function mintCarryRespawnArgs(
       "---",
       "## Managed carry checkpoint",
       "",
-      text,
+      effectiveText,
       "",
     ].join("\n");
     const tmp = `${agentsPath}.${process.pid}.carry.tmp`;
@@ -3419,14 +3520,27 @@ export function mintCarryRespawnArgs(
     const subcommandAt = strippedKickoff.findIndex(
       (arg) => arg === "resume" || arg === "fork",
     );
+    const forkArgs = codexPredecessor
+      ? [
+          ...(
+            subcommandAt >= 0
+              ? strippedKickoff.slice(0, subcommandAt)
+              : strippedKickoff
+          ),
+          "fork",
+          codexPredecessor.id,
+        ]
+      : subcommandAt >= 0
+        ? strippedKickoff.slice(0, subcommandAt)
+        : strippedKickoff;
     return {
-      args:
-        subcommandAt >= 0
-          ? strippedKickoff.slice(0, subcommandAt)
-          : strippedKickoff,
+      args: forkArgs,
       nativeId: null,
       launchContextPath,
       codexAgentsPath: agentsPath,
+      lineagePath,
+      predecessorSessionId: codexPredecessor?.id ?? null,
+      carryText: effectiveText,
     };
   }
 

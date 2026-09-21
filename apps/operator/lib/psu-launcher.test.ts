@@ -127,6 +127,8 @@ import {
   nativeSessionIdFromLaunchArgs,
   mintRecycleArgs,
   mintCarryRespawnArgs,
+  latestCodexRollout,
+  codexCarryLineageMarker,
   splitRespawnModelSpec,
   reconcileRespawnModelSpec,
   modelSpecFromRecycleArgv,
@@ -9117,6 +9119,75 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
     expect(agents).toContain("# Base persona");
     expect(agents).toContain("second deterministic carry");
     expect(agents).not.toContain("first deterministic carry");
+  });
+
+  it("forks the newest Codex predecessor when one is persisted, preserving native history without reusing its writer", () => {
+    const codexHome = join(home, "codex-home");
+    const sessions = join(codexHome, "sessions", "2026", "09", "21");
+    mkdirSync(sessions, { recursive: true });
+    const predecessor = "0123abcd-1234-5678-9abc-def012345678";
+    const rollout = join(sessions, `rollout-2026-09-21T12-00-00-${predecessor}.jsonl`);
+    writeFileSync(rollout, '{"type":"event_msg","payload":{"type":"task_complete"}}\n', { mode: 0o600 });
+    writeFileSync(join(codexHome, "AGENTS.md"), "# Base persona\n", { mode: 0o600 });
+
+    expect(latestCodexRollout(join(codexHome, "sessions"))).toMatchObject({
+      id: predecessor,
+      path: rollout,
+    });
+    const out = mintCarryRespawnArgs(
+      ["--dangerously-bypass-hook-trust", "-m", "gpt-5.6-luna"],
+      {
+        systemPromptAddendum: "successor carry",
+        ownerId: "su-codex-lineage",
+        home,
+        agent: "codex",
+        codexHome,
+      },
+    );
+
+    expect(out.nativeId).toBeNull();
+    expect(out.args).toEqual([
+      "--dangerously-bypass-hook-trust",
+      "-m",
+      "gpt-5.6-luna",
+      "fork",
+      predecessor,
+    ]);
+    expect(out.predecessorSessionId).toBe(predecessor);
+    expect(readFileSync(out.launchContextPath, "utf8")).toContain(
+      codexCarryLineageMarker(predecessor),
+    );
+    expect(readFileSync(join(codexHome, "AGENTS.md"), "utf8")).toContain(
+      `predecessor:${predecessor}`,
+    );
+    expect(JSON.parse(readFileSync(out.lineagePath, "utf8"))).toMatchObject({
+      predecessorSessionId: predecessor,
+      successorMode: "fork",
+      carryPath: out.launchContextPath,
+    });
+  });
+
+  it("uses an unresolved lineage marker and a blank-thread fallback when no Codex rollout exists", () => {
+    const codexHome = join(home, "codex-home");
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(join(codexHome, "AGENTS.md"), "# Base persona\n", { mode: 0o600 });
+    const out = mintCarryRespawnArgs(["--dangerously-bypass-hook-trust"], {
+      systemPromptAddendum: "successor carry",
+      ownerId: "su-codex-no-predecessor",
+      home,
+      agent: "codex",
+      codexHome,
+    });
+
+    expect(out.args).toEqual(["--dangerously-bypass-hook-trust"]);
+    expect(out.predecessorSessionId).toBeNull();
+    expect(readFileSync(out.launchContextPath, "utf8")).toContain(
+      codexCarryLineageMarker(null),
+    );
+    expect(JSON.parse(readFileSync(out.lineagePath, "utf8"))).toMatchObject({
+      predecessorSessionId: null,
+      successorMode: "fresh",
+    });
   });
 
   it("recreates a missing Codex AGENTS.md instead of retrying the carry forever", () => {

@@ -336,7 +336,7 @@ describe('turn-start-orientation — when it speaks', () => {
       ],
     };
 
-    const out = composeOrientationBlock({ state, committed: null, epoch: EPOCH });
+    const out = composeOrientationBlock({ state, committed: null, epoch: EPOCH, budgetChars: 600 });
 
     expect(out.length).toBeLessThanOrEqual(ORIENTATION_BUDGET_CHARS);
     expect(out).toContain('directed msg(s) awaiting YOUR reply');
@@ -371,7 +371,7 @@ describe('turn-start-orientation — when it speaks', () => {
       neverDropFacts: ['guard-rail:current-owner-request-remains-open'],
     };
 
-    const out = composeOrientationBlock({ state, committed: null, epoch: EPOCH });
+    const out = composeOrientationBlock({ state, committed: null, epoch: EPOCH, budgetChars: 600 });
 
     expect(out.length).toBeLessThanOrEqual(ORIENTATION_BUDGET_CHARS);
     expect(out).toContain('directed msg(s) awaiting YOUR reply');
@@ -854,6 +854,33 @@ describe('turn-start-orientation — what it costs', () => {
     };
     const out = composeOrientationBlock({ state, committed: null, epoch: EPOCH });
     expect(out.length).toBeLessThanOrEqual(ORIENTATION_BUDGET_CHARS);
+  });
+
+  it('uses the expanded default budget for crowded turn-start state', () => {
+    const state: OrientationState = {
+      ...base,
+      held: Array.from({ length: 12 }, (_, i) => ({
+        id: `WI-${i}`,
+        status: 'wip',
+        checkpoint: 'A long checkpoint '.repeat(8),
+        checkpointUpdatedAtMs: 1_000,
+        checkpointStale: false,
+      })),
+      historyUpdates: [
+        { workItemId: 'WI-0', harness: 'papercusp', count: 2, newestPostId: 1 },
+        { workItemId: 'WI-1', harness: 'papercusp', count: 2, newestPostId: 2 },
+      ],
+      unansweredDirected: 4,
+      loopArmed: false,
+    };
+
+    const narrow = composeOrientationBlock({ state, committed: null, epoch: EPOCH, budgetChars: 600 });
+    const expanded = composeOrientationBlock({ state, committed: null, epoch: EPOCH });
+
+    expect(ORIENTATION_BUDGET_CHARS).toBe(1_000);
+    expect(expanded.length).toBeGreaterThan(narrow.length);
+    expect(expanded.length).toBeLessThanOrEqual(ORIENTATION_BUDGET_CHARS);
+    expect(expanded).toContain('checkpoint WI-0');
   });
 
   it('drops the LOWEST-priority line under pressure, keeping unanswered mail', () => {

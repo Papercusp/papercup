@@ -77,6 +77,18 @@ describe('blueprint su prompt — launch-tool routing survives the live render p
     expect(r.text).toContain('`fleet:launch-on-plan` is the ergonomic N-agents-on-a-plan door');
     expect(r.text).toContain('`capability:terminal` is for arbitrary commands');
   });
+
+  it('live blueprint prompt carries the hybrid owner-directive capture and resolution rail', async () => {
+    const r = await renderSuPlaybook({
+      agent: 'codex',
+      operatorAppRoot,
+      baseSource: blueprintSuBase,
+      projectGuideSource: '',
+    });
+    expect(r.text).toContain('UserPromptSubmit hook records the owner turn verbatim as a PENDING row');
+    expect(r.text).toContain('orders:resolve-pending');
+    expect(r.text).toContain('orders:disposition');
+  });
 });
 
 describe('psu prompt isolation — assembled engineer prompt (P-005, real playbook + CLAUDE.md)', () => {

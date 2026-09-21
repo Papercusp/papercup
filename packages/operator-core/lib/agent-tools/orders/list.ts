@@ -43,6 +43,8 @@ export default defineTool({
             directives: rows.map((r) => ({
               id: r.id,
               open: r.dispositionedAtMs == null,
+              captureStatus: r.captureStatus ?? 'open',
+              ...(r.captureStatus === 'pending' ? { needsResolution: true } : {}),
               verbatim:
                 r.verbatimText.length > LIST_BODY_CAP
                   ? `${r.verbatimText.slice(0, LIST_BODY_CAP)}… [orders:get #${r.id}]`

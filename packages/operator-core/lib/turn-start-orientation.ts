@@ -56,6 +56,7 @@ import { renderCarryBlindWindowLine, type CarryBlindWindow } from './carry-blind
 import { capPreservingOperativeDetailed } from './operative-clause';
 import { workItemFetchHint } from './work-item-fetch-hint';
 import type { AgentObligationBrief } from './agent-obligation-reader';
+import type { OwnerDirectiveRow } from './owner-directives';
 
 /** A held work-item, reduced to what the fold actually prints. */
 export interface OrientationHeldItem {
@@ -71,6 +72,13 @@ export interface OrientationHeldItem {
   checkpointUpdatedAtMs?: number | null;
   /** True only when the shared turn-end checkpoint rule proves this snapshot old. */
   checkpointStale?: boolean;
+}
+
+/** Compact owner-directive context delivered on the deterministic turn-start rail. */
+export interface OrientationOwnerDirective {
+  id: number;
+  captureStatus: 'pending' | 'open';
+  verbatimText: string;
 }
 
 /** Post-claim discussion changes that the holder has not necessarily seen yet. */
@@ -256,6 +264,8 @@ export interface OrientationToolSurface {
 export interface OrientationState {
   /** Non-terminal work-items assigned to this agent. */
   held: OrientationHeldItem[];
+  /** Unresolved explicit directives and hook-captured pending owner turns. */
+  ownerDirectives?: OrientationOwnerDirective[];
   /** `undefined` means the read failed and must preserve the prior cursor token. */
   historyUpdates?: OrientationHistoryUpdate[];
   /** `undefined` means unreadable; preserve the previous delivery token. */
@@ -328,8 +338,16 @@ export interface OrientationState {
   carryBlindWindow: CarryBlindWindow | null;
 }
 
-/** Default budget. Small on purpose: this fires EVERY turn and compounds. */
-export const ORIENTATION_BUDGET_CHARS = 600;
+/**
+ * Default budget for the compact turn-start delta.
+ *
+ * This block is cursor-deduplicated, so the full budget is spent only when an
+ * orientation signal changes (or a new context epoch starts), not on every
+ * prompt. 1,000 characters leaves room for the recovery/action lines that
+ * routinely fell beyond the old 600-character ceiling while remaining a small
+ * fraction of the turn-start memory budget.
+ */
+export const ORIENTATION_BUDGET_CHARS = 1_000;
 
 export const ORIENTATION_CURSOR_SURFACE = 'orientation';
 
@@ -431,6 +449,7 @@ export async function readOrientationToolSurfaces(
 export function isEmptyOrientation(state: OrientationState): boolean {
   return (
     state.held.length === 0 &&
+    (!state.ownerDirectives || state.ownerDirectives.length === 0) &&
     (!state.historyUpdates || state.historyUpdates.length === 0) &&
     (!state.effortUpdates || state.effortUpdates.length === 0) &&
     state.unansweredDirected === 0 &&
@@ -561,6 +580,9 @@ export function fingerprintOrientation(
       )
       .sort()
       .join(','),
+    ownerDirectives: (state.ownerDirectives ?? [])
+      .map((d) => `${d.id}:${d.captureStatus}:${d.verbatimText}`)
+      .join('|'),
     historyUpdates:
       state.historyUpdates === undefined
         ? typeof committed?.historyUpdates === 'string'
@@ -646,6 +668,7 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
   const b = next as Record<string, unknown>;
   return (
     a.held === b.held &&
+    a.ownerDirectives === b.ownerDirectives &&
     (a.historyUpdates ?? '') === (b.historyUpdates ?? '') &&
     (a.effortUpdates ?? '') === (b.effortUpdates ?? '') &&
     a.unanswered === b.unanswered &&
@@ -768,6 +791,17 @@ export function renderOrientationLines(state: OrientationState, committed: Curso
         `${state.toolSurface.hookCalls} harness beats OK. Tool list loaded EMPTY; it cannot ` +
         `self-heal. RESTART THE SESSION (EI-21308269358666878).`,
     );
+  }
+  if (state.ownerDirectives && state.ownerDirectives.length > 0) {
+    for (const directive of state.ownerDirectives.slice(0, 2)) {
+      const text = directive.verbatimText.replace(/\s+/g, ' ').trim();
+      const excerpt = text.length > 110 ? `${text.slice(0, 109)}…` : text;
+      lines.push(
+        `- 📌 owner directive #${directive.id} [${directive.captureStatus}] ${JSON.stringify(excerpt)} — ` +
+          (directive.captureStatus === 'pending' ? 'orders:resolve-pending first.' : 'carry/disposition when done.'),
+      );
+    }
+    if (state.ownerDirectives.length > 2) lines.push(`- 📌 +${state.ownerDirectives.length - 2} more owner directives — orders:list { open: true }.`);
   }
   // Second, and above the directed-message line for one reason: it is the only
   // line here that DECAYS. Every other line describes state the agent can re-read
@@ -980,6 +1014,7 @@ export function fingerprintDeliveredOrientation(
  */
 export interface OrientationDeps {
   held: (ownerId: string, workspaceId: string) => Promise<OrientationHeldItem[]>;
+  ownerDirectives?: (workspaceId: string) => Promise<OrientationOwnerDirective[]>;
   historyUpdates: (ownerId: string, workspaceId: string) => Promise<OrientationHistoryUpdate[]>;
   effortUpdates: (ownerId: string, workspaceId: string) => Promise<OrientationEffortUpdate[]>;
   inbox: (ownerId: string) => Promise<{
@@ -1041,8 +1076,10 @@ export async function resolveOrientationState(
   deps: Partial<OrientationDeps> = {},
 ): Promise<OrientationState> {
   const d = { ...defaultOrientationDeps(), ...deps };
+  const ownerDirectivesReader = d.ownerDirectives ?? (async () => [] as OrientationOwnerDirective[]);
   const [
     held,
+    ownerDirectives,
     historyUpdates,
     effortUpdates,
     inbox,
@@ -1058,6 +1095,7 @@ export async function resolveOrientationState(
     carryBlindWindow,
   ] = await Promise.all([
     d.held(ownerId, workspaceId).catch(() => [] as OrientationHeldItem[]),
+    ownerDirectivesReader(workspaceId).catch(() => [] as OrientationOwnerDirective[]),
     // Unknown must remain distinct from measured-empty. Otherwise a transient
     // read failure advances the shared cursor past history the agent never saw.
     d.historyUpdates(ownerId, workspaceId).catch(() => undefined),
@@ -1090,6 +1128,7 @@ export async function resolveOrientationState(
   ]);
   return {
     held,
+    ...(ownerDirectives.length > 0 ? { ownerDirectives } : {}),
     historyUpdates,
     effortUpdates,
     unansweredDirected: inbox.count,
@@ -1115,6 +1154,17 @@ export async function resolveOrientationState(
  *  Dynamic imports keep them off the module graph until a turn actually needs them. */
 export function defaultOrientationDeps(): OrientationDeps {
   return {
+    ownerDirectives: async (workspaceId) => {
+      const { listOpenOwnerDirectives } = await import('./owner-directives');
+      const rows: OwnerDirectiveRow[] = await listOpenOwnerDirectives(workspaceId, 12);
+      return rows
+        .filter((row) => row.captureStatus === 'pending' || row.captureStatus === 'open')
+        .map((row) => ({
+          id: row.id,
+          captureStatus: row.captureStatus === 'pending' ? 'pending' : 'open',
+          verbatimText: row.verbatimText,
+        }));
+    },
     effortUpdates: async (ownerId, workspaceId) => {
       const [{ getOrgPg }, { resolveConcreteWorkspaceId }] = await Promise.all([
         import('@papercusp/db-org'),

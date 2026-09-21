@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 897,
+  "count": 899,
   "tools": [
     {
       "name": "ablation:report",
@@ -19498,6 +19498,39 @@
       }
     },
     {
+      "name": "orders:capture-pending",
+      "http": {
+        "path": "/api/agent-tools/orders/capture-pending",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Capture an OWNER (interactive) prompt verbatim as a pending owner directive for next-turn promotion or dismissal.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "profile": "engineer"
+    },
+    {
       "name": "orders:disposition",
       "http": {
         "path": "/api/agent-tools/orders/disposition",
@@ -19645,6 +19678,43 @@
         "when": "The owner just issued you an order/directive ('do X', 'stop Y', 'implement Z now') — file it THE MOMENT it lands, verbatim, before starting the work. You decide what rises to a directive; when in doubt about whether it will survive your loop agenda, record it.",
         "notWhen": "Your own notes-to-self or self-imposed discipline (loop:checkpoint / work_items:checkpoint), a peer request (coord messages), a standing conclusion (facts:assert). Never paraphrase — the field is the owner's literal words.",
         "chaining": "orders:record when the order lands → work it → orders:disposition { id, status, note } when done or declined. orders:list { open: true } shows what you still owe."
+      }
+    },
+    {
+      "name": "orders:resolve-pending",
+      "http": {
+        "path": "/api/agent-tools/orders/resolve-pending",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Resolve one UserPromptSubmit-captured owner turn: promote it to an actionable open directive, or dismiss it with a mandatory reason.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The Orientation block shows a PENDING owner directive. Resolve every pending row on the next agent turn before starting new work.",
+        "notWhen": "Closing an already-promoted directive — use orders:disposition."
       }
     },
     {

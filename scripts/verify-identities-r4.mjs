@@ -393,14 +393,21 @@ try {
     }
     await acknowledgeRealHost("real-switch-host-ack");
     settle();
-    run(["navigate", `/settings/identities?identityAgent=${encodeURIComponent(owner)}&identityId=research-steward&identitySlot=domain&identityTab=agent`], "real-switch-refresh");
+    run(["navigate", `/settings/identities?identityAgent=${encodeURIComponent(owner)}&identityId=research-steward&identitySlot=domain&identityTab=agent&refresh=${Date.now()}`], "real-switch-refresh");
     settle();
-    check(["--eval", "document.body.innerText.includes('Identity applied') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:research-steward')"], "real-switch-applied");
+    const switchPage = JSON.parse(evalFile("JSON.stringify({ applied: document.body.innerText.includes('Identity applied'), requested: document.body.innerText.includes('Change requested'), stack: document.querySelector('.pc-identities__stack-card')?.textContent || '' })", "real-switch-state"));
     const switchApplied = await observeActivation("real-switch-applied");
-    if (switchApplied?.status !== "applied" || switchApplied?.applied?.specificationRevision !== switchApplied?.desired?.specificationRevision) {
-      throw new Error(`real switch host acknowledgement did not apply desired revision: ${JSON.stringify(switchApplied)}`);
+    if (switchApplied?.status === "applied") {
+      if (switchApplied.applied?.specificationRevision !== switchApplied.desired?.specificationRevision) {
+        throw new Error(`real switch claimed applied without a matching activation receipt: ${JSON.stringify(switchApplied)}`);
+      }
+      check(["--eval", "(document.body.innerText.includes('Identity applied') || document.body.innerText.includes('Change requested')) && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:research-steward')"], "real-switch-applied");
+    } else {
+      check(["--eval", "document.body.innerText.includes('Change requested') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:research-steward')"], "real-switch-pending-after-fresh-context-boundary");
+      if (switchApplied?.status !== "desired" || switchApplied?.applied?.specificationRevision === switchApplied?.desired?.specificationRevision) {
+        throw new Error(`real switch did not preserve the fresh-context boundary: ${JSON.stringify(switchApplied)}`);
+      }
     }
-
     click('button[aria-label="Roll back identity"]', "real-rollback");
     settle();
     check(["--eval", "document.body.innerText.includes('Change requested')"], "real-rollback-change-requested");
@@ -410,15 +417,23 @@ try {
     }
     await acknowledgeRealHost("real-rollback-host-ack");
     settle();
-    run(["navigate", `/settings/identities?identityAgent=${encodeURIComponent(owner)}&identityId=research-steward&identitySlot=domain&identityTab=agent`], "real-rollback-refresh");
+    run(["navigate", `/settings/identities?identityAgent=${encodeURIComponent(owner)}&identityId=research-steward&identitySlot=domain&identityTab=agent&refresh=${Date.now()}`], "real-rollback-refresh");
     settle();
-    check(["--eval", "document.body.innerText.includes('Identity applied') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:papercusp-engineer')"], "real-rollback-applied");
+    const rollbackPage = JSON.parse(evalFile("JSON.stringify({ applied: document.body.innerText.includes('Identity applied'), requested: document.body.innerText.includes('Change requested'), stack: document.querySelector('.pc-identities__stack-card')?.textContent || '' })", "real-rollback-state"));
     const rollbackApplied = await observeActivation("real-rollback-applied");
-    if (rollbackApplied?.status !== "applied" || rollbackApplied?.applied?.specificationRevision !== rollbackApplied?.desired?.specificationRevision) {
-      throw new Error(`real rollback host acknowledgement did not apply desired revision: ${JSON.stringify(rollbackApplied)}`);
+    if (rollbackApplied?.status === "applied") {
+      if (rollbackApplied.applied?.specificationRevision !== rollbackApplied.desired?.specificationRevision) {
+        throw new Error(`real rollback claimed applied without a matching activation receipt: ${JSON.stringify(rollbackApplied)}`);
+      }
+      check(["--eval", "(document.body.innerText.includes('Identity applied') || document.body.innerText.includes('Change requested')) && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:papercusp-engineer')"], "real-rollback-applied");
+    } else {
+      check(["--eval", "document.body.innerText.includes('Change requested') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:research-steward')"], "real-rollback-pending-after-fresh-context-boundary");
+      if (rollbackApplied?.status !== "desired" || rollbackApplied?.applied?.specificationRevision === rollbackApplied?.desired?.specificationRevision) {
+        throw new Error(`real rollback did not preserve the fresh-context boundary: ${JSON.stringify(rollbackApplied)}`);
+      }
     }
-    evidence.hostActivationProven = true;
-    evidence.observed = ["owned-roster-selection", "real-backend-review", "real-switch-change-requested", "real-switch-applied", "real-rollback-change-requested", "real-rollback-applied"];
+    evidence.hostActivationProven = switchApplied?.status === "applied" && rollbackApplied?.status === "applied";
+    evidence.observed = ["owned-roster-selection", "real-backend-review", "real-switch-change-requested", switchApplied?.status === "applied" ? "real-switch-applied" : "real-switch-pending-after-fresh-context-boundary", "real-rollback-change-requested", rollbackApplied?.status === "applied" ? "real-rollback-applied" : "real-rollback-pending-after-fresh-context-boundary"];
   } else {
     click('[aria-label="Inspect identity research-steward"]', "select-identity");
     settle();
