@@ -1412,6 +1412,68 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
   });
 });
 
+describe('EI-237397 fixed prompt-floor livelock guard', () => {
+  it('raises a derived limit above the measured fixed floor and skips another respawn', async () => {
+    estimateMock.mockResolvedValue(340_000);
+    observedPromptFloorMock.mockReturnValue({ tokens: 340_000, observations: 3, at: Date.now() });
+    contextWindowMock.mockResolvedValue(1_000_000);
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [{
+          owner_id: 'floor-bound',
+          owner_label: 'su · floor-bound',
+          compaction_limit: 250_000,
+          compaction_limit_explicit: false,
+        }],
+      }),
+    );
+
+    expect(setLimitMock).toHaveBeenCalledWith('floor-bound', 450_000);
+    expect(out.relimited).toEqual([{ owner: 'floor-bound', from: 250_000, to: 450_000 }]);
+    expect(out.unsatisfiableLimits).toEqual([{
+      owner: 'floor-bound',
+      fixedFloor: 340_000,
+      limit: 250_000,
+      forceAt: 325_000,
+      repairedTo: 450_000,
+    }]);
+    expect(out.overLimit).toEqual([]);
+    expect(out.carryRespawned).toEqual([]);
+    expect(out.forceCompacted).toEqual([]);
+    expect(openEscalationMock).not.toHaveBeenCalled();
+  });
+
+  it('does not override a deliberate limit; emits a blocker and suppresses the cut loop', async () => {
+    estimateMock.mockResolvedValue(340_000);
+    observedPromptFloorMock.mockReturnValue({ tokens: 340_000, observations: 3, at: Date.now() });
+    contextWindowMock.mockResolvedValue(1_000_000);
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [{
+          owner_id: 'explicit-floor-bound',
+          owner_label: 'su · explicit-floor-bound',
+          compaction_limit: 250_000,
+          compaction_limit_explicit: true,
+        }],
+      }),
+    );
+
+    expect(out.unsatisfiableLimits).toEqual([{
+      owner: 'explicit-floor-bound',
+      fixedFloor: 340_000,
+      limit: 250_000,
+      forceAt: 325_000,
+    }]);
+    expect(setLimitMock).not.toHaveBeenCalled();
+    expect(out.carryRespawned).toEqual([]);
+    expect(out.forceCompacted).toEqual([]);
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+    const [, payload] = openEscalationMock.mock.calls[0] as unknown as [unknown, { summary: string; body: string }];
+    expect(payload.summary).toContain('soft compaction limit below fixed context cost');
+    expect(payload.body).toContain('EI-237397');
+  });
+});
+
 describe('context-death detector (context-trimming-tiers P-019)', () => {
   it('carry-respawns a dead session before escalating, using a forced boundary and measured window', async () => {
     resetContextDeathEscalationsForTests();
