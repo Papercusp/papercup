@@ -48,6 +48,8 @@ function terminalAttempt(attemptId: string, candidate: string): CheckpointQualif
     requiredAncestorSha: null,
     candidatePolicy: { kind: 'quiet-cut', declaredPaths: [] },
     candidate,
+    repairHead: null,
+    runId: null,
     phase: 'terminal',
     phaseEnteredAtMs: nowMs + 1,
     phaseDurationsMs: {},
