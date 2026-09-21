@@ -2,12 +2,15 @@
  * Unit tests for `reseedLeaderCompactionLimit` — the P-009 become-a-leader compaction-cap
  * re-seed (owner directive 2026-07-19, per-member-declarative-launch-specs). The presence +
  * model-spec seams are mocked; `agent-config-constants` runs REAL (real clamp / default /
- * member-cap logic) so the [1m] 400k leader vs the member-cap gap is exercised for real. Covers
+ * member-cap logic) so the [1m] leader-cap vs member-cap gap is exercised for real. Covers
  * every `reason` branch of LeaderReseedOutcome plus the never-throw fail-safe (a re-seed miss
  * must never fail the already-committed leadership transfer).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP } from '../../agent-config-constants';
+import {
+  COMPACTION_LIMIT_DEFAULT_1M_CAP,
+  COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
+} from '../../agent-config-constants';
 
 const getPresence = vi.fn();
 const setCompactionLimit = vi.fn();
@@ -37,7 +40,11 @@ const OWNER = 'su-bob';
 // Track the REAL constant (agent-config-constants runs unmocked here) so this test never
 // drifts when the fleet-member default changes (e.g. owner 2026-07-19: 300k→200k).
 const MEMBER_CAP = COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP;
-const LEADER_CAP = 400_000; // COMPACTION_LIMIT_DEFAULT_1M_CAP
+// DERIVED, never a literal — the same rule CUSTOM_LIMIT's comment below states.
+// This was hardcoded `400_000` and went red the moment owner directive 2026-09-21
+// moved the leader/solo cap to 450k, even though nothing about the re-seed changed:
+// a hand-copied constant is a second copy of a truth the source owns.
+const LEADER_CAP = COMPACTION_LIMIT_DEFAULT_1M_CAP;
 /** A limit that is provably NEITHER cap — the midpoint cannot equal either
  *  endpoint while MEMBER_CAP < LEADER_CAP, so a future cap move cannot silently
  *  turn this fixture into an exact member-seed match (which is what happened to
@@ -50,13 +57,13 @@ function presenceWithLimit(limit: number | null) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  resolveModelSpecForOwner.mockResolvedValue('opus[1m]'); // default: a [1m] session (400k/300k gap)
+  resolveModelSpecForOwner.mockResolvedValue('opus[1m]'); // default: a [1m] session (leader-cap/member-cap gap)
   getPresence.mockResolvedValue(presenceWithLimit(MEMBER_CAP));
   setCompactionLimit.mockResolvedValue(undefined);
 });
 
 describe('reseedLeaderCompactionLimit (P-009 become-a-leader cap re-seed)', () => {
-  it('lifts a stuck 300k member-cap seed to the 400k leader default on a [1m] session', async () => {
+  it('lifts a stuck member-cap seed to the leader default on a [1m] session', async () => {
     const out = await reseedLeaderCompactionLimit(OWNER);
     expect(setCompactionLimit).toHaveBeenCalledWith(OWNER, LEADER_CAP, { explicit: false });
     expect(out).toEqual({ applied: LEADER_CAP, from: MEMBER_CAP, reason: 'member-cap-lifted' });
@@ -93,7 +100,7 @@ describe('reseedLeaderCompactionLimit (P-009 become-a-leader cap re-seed)', () =
 
   it('an explicit compactionLimit wins and is clamped to the leader ceiling', async () => {
     const out = await reseedLeaderCompactionLimit(OWNER, { compactionLimit: 999_999 });
-    expect(setCompactionLimit).toHaveBeenCalledWith(OWNER, LEADER_CAP, { explicit: true }); // clamped down to 400k
+    expect(setCompactionLimit).toHaveBeenCalledWith(OWNER, LEADER_CAP, { explicit: true }); // clamped down to the leader cap
     expect(out).toMatchObject({ applied: LEADER_CAP, reason: 'explicit-limit' });
   });
 

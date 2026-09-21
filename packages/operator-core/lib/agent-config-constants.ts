@@ -290,7 +290,7 @@ export function isCodexExtendedWindowSpec(spec?: string | null): boolean {
  * configured window even when an installed registry still reports 872,000.
  *
  * It exists mainly to clear the role cap: `defaultCompactionLimitForWindow(1_000_000)`
- * derives 825,000, which the 400k su/leader and 250k fleet-member caps then bind.
+ * derives 825,000, which the 450k su/leader and 250k fleet-member caps then bind.
  * So the exact value below never reaches a session — the ROLE CAP does, which is
  * the whole point of D-001 (papercusp's soft limits are unchanged; codex sessions
  * simply become able to reach them instead of being pinned at 158,000 by a
@@ -298,7 +298,7 @@ export function isCodexExtendedWindowSpec(spec?: string | null): boolean {
  *
  * FAIL-SAFE NOTE — the direction that matters. A spec-derived seed is a CLAIM
  * about a window this process cannot observe: on a codex CLI too old to honour
- * `model_context_window`, the session really would run 258,400 and a 400k limit
+ * `model_context_window`, the session really would run 258,400 and a 450k limit
  * would mean papercusp never pre-empts. That is caught, not assumed away: the
  * compaction watchdog reads the window Codex REPORTS in every token_count event
  * and lowers a stored limit that sits above the safe derivation
@@ -1131,15 +1131,41 @@ export const COMPACTION_OVERSHOOT_FACTOR = 1.2;
 export const MIN_COMPACTION_LIMIT_TOKENS = 20_000;
 
 /**
- * Preemptive compaction cap for `[1m]`-window sessions: they run on the full
- * 1M window but papercusp compacts them at 400k to bound token spend (owner
- * directive 2026-07-03, revised down from the original 500k of 2026-07-02:
- * a live 500k leader session measured its non-compactable per-turn baseline
- * at ~100k, so 400k keeps ~300k of working runway — task-quality-identical to
- * 500k at ~25% lower cache-read cost per turn). The ×1.2 overshoot (480k)
- * stays well under the 1M − margin ceiling.
+ * Preemptive compaction cap for `[1m]`-window sessions that are NOT named-fleet
+ * members — i.e. ad-hoc/solo su sessions and fleet LEADERS. They run on the full
+ * 1M window but papercusp compacts them below it to bound token spend.
+ *
+ * Current policy is 450k (owner directive 2026-09-21, interactive: "increase the
+ * default context limit for ad-hoc su sessions and fleet leaders from 400 to
+ * 450"). The ×1.2 overshoot (540k) stays well under the 1M − margin ceiling.
+ * Fleet MEMBERS are governed by the separate, leaner
+ * {@link COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP} and are unaffected.
+ *
+ * History: 500k (2026-07-02) → 400k (2026-07-03) → current. Keep the outgoing
+ * value in {@link SUPERSEDED_1M_LEADER_CAPS} whenever this changes, or every
+ * already-live session pinned at the old number is stranded — see that constant.
  */
-export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 400_000;
+export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 450_000;
+
+/** Leader/solo 1M-window role caps this platform has PREVIOUSLY derived — the
+ * exact counterpart of {@link SUPERSEDED_1M_FLEET_MEMBER_CAPS} for the
+ * non-fleet-member population, and it exists for the identical reason
+ * (EI-22241751831038573): the watchdog's upward heal raises a stored limit only
+ * when it equals the current derived seed or one of these, so raising the cap
+ * without appending the outgoing value strands every already-live leader/solo
+ * session at the old number. It no longer equals the new default, so it reads as
+ * a deliberate override, and the lower-only branch cannot reach it because the
+ * stale value sits BELOW the correct one.
+ *
+ * The member-side list was added when the 200k → 250k member raise produced
+ * fifteen consecutive carry-respawns of one member; that fix was scoped to the
+ * member cap and left this identical hole open for leaders and ad-hoc sessions.
+ * The 400k → 450k raise of 2026-09-21 is the first change to exercise it.
+ *
+ * History: 500_000 (2026-07-02) → 400_000 (2026-07-03) → current
+ * {@link COMPACTION_LIMIT_DEFAULT_1M_CAP}. APPEND the outgoing value here
+ * whenever that cap changes; the current value is filtered out automatically. */
+export const SUPERSEDED_1M_LEADER_CAPS: readonly number[] = [500_000, 400_000];
 
 /**
  * Leaner `[1m]` DEFAULT for named-fleet MEMBERS: a member runs short
@@ -1169,7 +1195,7 @@ export const COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP = 250_000;
 
 /** Derive the maximum safe limit for a DELIBERATE runtime override from a
  * measured effective model window. Unlike the seeded default, this deliberately
- * does not impose the 400k leader/solo role cap: a self-set may use the wider
+ * does not impose the 450k leader/solo role cap: a self-set may use the wider
  * measured runway, while fleet members remain bounded by their current role cap. */
 /**
  * The purely WINDOW-DERIVED limit, before any role cap or floor:
@@ -1215,7 +1241,7 @@ export function defaultCompactionLimitForWindow(window: number, opts?: { fleetMe
  * - `model-window` — the `floor((window − margin) / 1.2)` derivation bound, so
  *   "the cap keeps limit × 1.2 under the model window" is accurate.
  * - `role-cap`     — a deliberate COST cap bound well below that derivation
- *   (400k leader/solo, 250k fleet member on a 1M window). The window sentence
+ *   (450k leader/solo, 250k fleet member on a 1M window). The window sentence
  *   is FALSE here; the honest reason is spend, and a single session may still
  *   go higher via `config:set-compaction-limit` (see {@link selfSetCeilingForSpec}).
  * - `minimum`      — the window is so small that {@link MIN_COMPACTION_LIMIT_TOKENS}
@@ -1253,13 +1279,13 @@ export function compactionCapBindingForWindow(
  * presence row) shapes only the [1m] leg — role never changes a real-window
  * derivation.
  *
- * UNRESOLVABLE spec (null / empty) → the SAME [1m] default (400k leader/solo,
+ * UNRESOLVABLE spec (null / empty) → the SAME [1m] default (450k leader/solo,
  * the current fleet-member cap),
  * NOT the conservative 200k → 158k (owner directive 2026-07-08, WI-3383). On
  * this fleet the default model is opus[1m], and a genuine small-window model is
  * ALWAYS explicitly specced (so it resolves to a real spec and derives its 158k
  * below). A truly-unknown spec is therefore an opus[1m] session — it must seed
- * 400k, never the haiku-sized 158k that mis-seeded manually-launched su sessions
+ * 450k, never the haiku-sized 158k that mis-seeded manually-launched su sessions
  * (resolveModelSpecForOwner returns null when neither a `--model` in launch_argv
  * nor a settings.json model is found). Only null/empty lifts: a NON-null bare
  * `opus`/`sonnet` still derives 158k (the un-normalized 200k-window hazard above).
@@ -1332,7 +1358,7 @@ export function compactionCapBindingForTier(
  * That is not hypothetical: it is exactly what WI-38347's own comment describes
  * ("a repair that only runs downhill converts a GOOD input into the unfixable
  * one"), and codex-1m-context-window-2026-08-17 reintroduced it sideways —
- * moving the extended-codex derivation 158,000 → the 400k role cap orphaned 13
+ * moving the extended-codex derivation 158,000 → the leader/solo role cap orphaned 13
  * live sessions at 158,000 (measured 2026-08-18). So a derivation change must
  * declare its previous value HERE, next to the policy that supersedes it, rather
  * than leaving the watchdog to hardcode a number whose meaning it cannot see.
@@ -1367,6 +1393,15 @@ export function supersededDerivedCompactionLimits(spec?: string | null, opts?: {
     out.push(...SUPERSEDED_1M_FLEET_MEMBER_CAPS);
   }
 
+  // The LEADER/solo counterpart, keyed the same way on the derived seed rather
+  // than on the `[1m]` marker. Without it the 400_000 → 450_000 raise of
+  // 2026-09-21 would have stranded every already-live ad-hoc/leader session at
+  // 400_000 — exactly the shape the member branch above was added to fix, on the
+  // other half of the population.
+  if (!opts?.fleetMember && defaultCompactionLimitForSpec(spec, opts) === COMPACTION_LIMIT_DEFAULT_1M_CAP) {
+    out.push(...SUPERSEDED_1M_LEADER_CAPS);
+  }
+
   // Guard against a policy that makes these equal: a value that is still the
   // CURRENT derivation is not superseded, and returning it here would be a no-op
   // at best and confusing at worst.
@@ -1389,8 +1424,9 @@ export function supersededDerivedCompactionLimits(spec?: string | null, opts?: {
  * your own token limit to 1m … I want to do a lot of research in this session"
  * — is what surfaced it.
  *
- * The DEFAULT is deliberately unchanged: every session still SEEDS at 400k, so
- * the fleet-wide cost profile behind the 2026-07-03 directive is untouched. Only
+ * The DEFAULT is deliberately unchanged by THIS knob: every session still SEEDS
+ * at its role cap (450k leader/solo), so the fleet-wide cost profile the owner
+ * directives set is untouched by a self-set ceiling widening. Only
  * an explicit, per-session, audited self-set can now exceed it, and only up to
  * the real window-derived maximum (1M window ⇒ 825,000) — the same
  * `floor((window − margin) / overshoot)` derivation every non-`[1m]` spec
@@ -1398,7 +1434,7 @@ export function supersededDerivedCompactionLimits(spec?: string | null, opts?: {
  *
  * ⚠ Cost note, stated where the knob lives: raising this is NOT free. A session
  * parked near 825k pays that whole window as a cache read on EVERY turn, which
- * is precisely the spend the 400k default was tuned to bound. It is the right
+ * is precisely the spend the 450k default was tuned to bound. It is the right
  * trade for a long single-threaded research/audit session; it is the wrong
  * trade for a drain loop.
  *
@@ -1422,7 +1458,7 @@ export function selfSetCeilingForSpec(spec?: string | null, opts?: { fleetMember
  * per-session request (see that function for why the two differ).
  *
  * `opts.fleetMember` applies the leaner fleet-member ceiling (250k vs a leader's
- * 400k) — pass it wherever the requester's fleet role is known, so an explicit
+ * 450k) — pass it wherever the requester's fleet role is known, so an explicit
  * request cannot exceed the cap its role is governed by
  * (per-member-declarative-launch-specs P-005). Omitted ⇒ the leader/solo ceiling,
  * which is the pre-existing behavior for every caller that has no role context.

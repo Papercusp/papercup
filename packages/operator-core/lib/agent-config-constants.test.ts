@@ -11,6 +11,7 @@ import {
   supersededDerivedCompactionLimits,
   derivesFrom1mWindow,
   SUPERSEDED_1M_FLEET_MEMBER_CAPS,
+  SUPERSEDED_1M_LEADER_CAPS,
   selfSetCeilingForWindow,
   selfSetCeilingForSpec,
   compactionCapBindingForWindow,
@@ -28,7 +29,7 @@ import { ROLE_MODEL_DEFAULTS } from '@papercusp/orchestrator/role-models';
 
 // opus + fable + sonnet-5 are LAUNCHED at the full 1M window — psu-launcher
 // normalizeModelSpec injects the [1m] marker for all three families — and
-// papercusp compacts [1m] sessions preemptively at 400k, fleet MEMBERS at 250k
+// papercusp compacts [1m] sessions preemptively at 450k, fleet MEMBERS at 250k
 // (the current role policy, retained by measured-agent-productivity D-009).
 // Window/limit MATH keys on the [1m] MARKER only, never the bare
 // family name: live-verified via /context on CC 2.1.198 (2026-07-02), a bare
@@ -146,7 +147,7 @@ describe('selfSetCeilingForSpec — a DELIBERATE self-set may exceed the SEEDED 
   // Until 2026-08-08 COMPACTION_LIMIT_DEFAULT_1M_CAP was both the seeded default AND the
   // hard ceiling, so config:set-compaction-limit could never do the one thing its own
   // description promises ("raise it for wide-context work") on this fleet's default spec.
-  it('[1m] self-set reaches the real window-derived max (825k), not the 400k default', () => {
+  it('[1m] self-set reaches the real window-derived max (825k), not the 450k default', () => {
     const windowDerived1m = Math.floor((MODEL_WINDOW_1M - 10_000) / 1.2 / 1000) * 1000;
     expect(windowDerived1m).toBe(825_000);
     expect(selfSetCeilingForSpec('opus[1m]')).toBe(825_000);
@@ -159,13 +160,13 @@ describe('selfSetCeilingForSpec — a DELIBERATE self-set may exceed the SEEDED 
   });
 
   // CONTROL: the whole point is that SEEDING is unchanged, so the fleet-wide cost
-  // profile behind the 2026-07-03 400k directive is untouched. If this ever goes red,
-  // the change leaked from the self-set path into the default and every session got
-  // more expensive.
-  it('the SEEDED default is untouched — still 400k, and a non-selfSet clamp still caps there', () => {
-    expect(defaultCompactionLimitForSpec('opus[1m]')).toBe(400_000);
-    expect(clampCompactionLimit(900_000, 'opus[1m]')).toBe(400_000);
-    expect(clampCompactionLimit(900_000, 'opus[1m]', { selfSet: false })).toBe(400_000);
+  // profile behind the owner-directed leader/solo role cap is untouched. If this
+  // ever goes red, the change leaked from the self-set path into the default and
+  // every session got more expensive.
+  it('the SEEDED default is untouched by the self-set path — still the 450k role cap, and a non-selfSet clamp still caps there', () => {
+    expect(defaultCompactionLimitForSpec('opus[1m]')).toBe(450_000);
+    expect(clampCompactionLimit(900_000, 'opus[1m]')).toBe(450_000);
+    expect(clampCompactionLimit(900_000, 'opus[1m]', { selfSet: false })).toBe(450_000);
   });
 
   it('fleet MEMBERS cannot self-raise past their 250k role cap — selfSet does not beat role', () => {
@@ -183,7 +184,7 @@ describe('selfSetCeilingForSpec — a DELIBERATE self-set may exceed the SEEDED 
     (spec) => {
       expect(selfSetCeilingForSpec(spec)).toBe(825_000);
       expect(clampCompactionLimit(682_000, spec, { selfSet: true })).toBe(682_000);
-      expect(defaultCompactionLimitForSpec(spec)).toBe(400_000);
+      expect(defaultCompactionLimitForSpec(spec)).toBe(450_000);
       expect(selfSetCeilingForSpec(spec, { fleetMember: true })).toBe(250_000);
     },
   );
@@ -253,20 +254,20 @@ describe('compactionCapBindingForWindow — role cap vs window derivation', () =
 });
 
 describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
-  it('[1m] specs are capped at 400k (preemptive compaction despite the 1M window)', () => {
-    expect(COMPACTION_LIMIT_DEFAULT_1M_CAP).toBe(400_000);
-    expect(defaultCompactionLimitForSpec('opus[1m]')).toBe(400_000);
-    expect(defaultCompactionLimitForSpec('opus[1m]:xhigh')).toBe(400_000);
-    expect(defaultCompactionLimitForSpec('claude-fable-5[1m]:xhigh')).toBe(400_000);
-    expect(defaultCompactionLimitForSpec('sonnet[1m]:medium')).toBe(400_000);
-    expect(defaultCompactionLimitForSpec('haiku[1m]')).toBe(400_000);
+  it('[1m] specs are capped at 450k (preemptive compaction despite the 1M window)', () => {
+    expect(COMPACTION_LIMIT_DEFAULT_1M_CAP).toBe(450_000);
+    expect(defaultCompactionLimitForSpec('opus[1m]')).toBe(450_000);
+    expect(defaultCompactionLimitForSpec('opus[1m]:xhigh')).toBe(450_000);
+    expect(defaultCompactionLimitForSpec('claude-fable-5[1m]:xhigh')).toBe(450_000);
+    expect(defaultCompactionLimitForSpec('sonnet[1m]:medium')).toBe(450_000);
+    expect(defaultCompactionLimitForSpec('haiku[1m]')).toBe(450_000);
   });
   it('[1m] fleet MEMBERS default to the current leaner 250k; role never touches a real-window derivation', () => {
     expect(COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP).toBe(250_000);
     expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: true })).toBe(250_000);
     expect(defaultCompactionLimitForSpec('opus[1m]', { fleetMember: true })).toBe(250_000);
     // explicit non-member (leader/solo) keeps the full cap
-    expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: false })).toBe(400_000);
+    expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: false })).toBe(450_000);
     // a 200k-window member still derives from the REAL window, not the role
     expect(defaultCompactionLimitForSpec('haiku', { fleetMember: true })).toBe(158_000);
   });
@@ -282,13 +283,13 @@ describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
   });
   it('an UNRESOLVABLE spec (null / empty) seeds the [1m] policy default, NOT 158k (WI-3383, owner 2026-07-08)', () => {
     // On this opus[1m]-default fleet a truly-unknown spec is an opus[1m] session:
-    // seed 400k (250k member), never the haiku-sized 158k that mis-seeded a
+    // seed 450k (250k member), never the haiku-sized 158k that mis-seeded a
     // manually-launched su session. Only null/empty lifts — a NON-null bare
     // `opus`/`sonnet` still derives 158k (asserted above).
-    expect(defaultCompactionLimitForSpec(null)).toBe(400_000);
-    expect(defaultCompactionLimitForSpec(undefined)).toBe(400_000);
-    expect(defaultCompactionLimitForSpec('')).toBe(400_000);
-    expect(defaultCompactionLimitForSpec('   ')).toBe(400_000);
+    expect(defaultCompactionLimitForSpec(null)).toBe(450_000);
+    expect(defaultCompactionLimitForSpec(undefined)).toBe(450_000);
+    expect(defaultCompactionLimitForSpec('')).toBe(450_000);
+    expect(defaultCompactionLimitForSpec('   ')).toBe(450_000);
     expect(defaultCompactionLimitForSpec(null, { fleetMember: true })).toBe(250_000);
     expect(defaultCompactionLimitForSpec('', { fleetMember: true })).toBe(250_000);
   });
@@ -307,13 +308,13 @@ describe('defaultCompactionLimitForWindow (live backend window)', () => {
   });
 
   it('preserves the established 1M and 200k derivations', () => {
-    expect(defaultCompactionLimitForWindow(1_000_000)).toBe(400_000);
+    expect(defaultCompactionLimitForWindow(1_000_000)).toBe(450_000);
     expect(defaultCompactionLimitForWindow(200_000)).toBe(158_000);
   });
 });
 
 describe('selfSetCeilingForWindow (measured runtime override ceiling)', () => {
-  it('allows a leader/solo override above the 400k seeded cap when the window supports it', () => {
+  it('allows a leader/solo override above the 450k seeded cap when the window supports it', () => {
     expect(selfSetCeilingForWindow(828_400)).toBe(682_000);
   });
 
@@ -334,9 +335,9 @@ describe('selfSetCeilingForWindow (measured runtime override ceiling)', () => {
  * compacted at well under half the runway the 400k policy grants it.
  */
 describe('codex extended-window specs seed the SAME role caps as claude [1m]', () => {
-  it('seeds 400k for an ad-hoc su / fleet leader', () => {
+  it('seeds 450k for an ad-hoc su / fleet leader', () => {
     for (const spec of ['gpt-5.6-sol', 'gpt-5.6-sol:high', 'gpt-5.6-terra:xhigh', 'sol', 'luna:max', 'gpt-5.4', 'gpt-6-astra:max']) {
-      expect(defaultCompactionLimitForSpec(spec), spec).toBe(400_000);
+      expect(defaultCompactionLimitForSpec(spec), spec).toBe(450_000);
     }
   });
 
@@ -357,7 +358,7 @@ describe('codex extended-window specs seed the SAME role caps as claude [1m]', (
   });
 
   it('does not disturb the claude derivations it shares a resolver with', () => {
-    expect(defaultCompactionLimitForSpec('opus[1m]')).toBe(400_000);
+    expect(defaultCompactionLimitForSpec('opus[1m]')).toBe(450_000);
     expect(defaultCompactionLimitForSpec('haiku')).toBe(158_000);
     expect(defaultCompactionLimitForSpec('sonnet')).toBe(158_000);
   });
@@ -395,10 +396,21 @@ describe('supersededDerivedCompactionLimits reaches stranded claude [1m] fleet m
     }
   });
 
-  it('does NOT widen non-1m specs or non-fleet-members (the fix stays scoped)', () => {
+  it('does NOT widen non-1m specs, and keeps the member history OUT of the leader population', () => {
     expect(supersededDerivedCompactionLimits('claude-opus-5', { fleetMember: true })).toEqual([]);
-    // a leader/solo keeps its own cap history, which these values are not part of
-    expect(supersededDerivedCompactionLimits('opus[1m]', { fleetMember: false })).toEqual([]);
+    // A leader/solo now carries its OWN cap history (SUPERSEDED_1M_LEADER_CAPS,
+    // added with the 2026-09-21 400k → 450k raise), so this is no longer empty —
+    // but the two lists stay disjoint by ROLE. Healing a leader to a MEMBER's old
+    // 300k/200k, or a member to a leader's 400k/500k, would move a session across
+    // the role boundary its cap exists to enforce.
+    const leader = supersededDerivedCompactionLimits('opus[1m]', { fleetMember: false });
+    for (const memberOnly of SUPERSEDED_1M_FLEET_MEMBER_CAPS) {
+      expect(leader).not.toContain(memberOnly);
+    }
+    const member = supersededDerivedCompactionLimits('opus[1m]', { fleetMember: true });
+    for (const leaderOnly of SUPERSEDED_1M_LEADER_CAPS) {
+      expect(member).not.toContain(leaderOnly);
+    }
   });
 
   it('derivesFrom1mWindow is the SHORT-CIRCUIT branch, not "resolves to a 1M window"', () => {
@@ -432,11 +444,11 @@ describe('supersededDerivedCompactionLimits reaches stranded claude [1m] fleet m
 });
 
 describe('clampCompactionLimit (the default is also the CEILING)', () => {
-  it('clamps a [1m] request above 400k down to the 400k cap', () => {
-    expect(clampCompactionLimit(900_000, 'opus[1m]')).toBe(400_000);
-    expect(clampCompactionLimit(600_000, 'claude-fable-5[1m]:xhigh')).toBe(400_000);
+  it('clamps a [1m] request above 450k down to the 450k cap', () => {
+    expect(clampCompactionLimit(900_000, 'opus[1m]')).toBe(450_000);
+    expect(clampCompactionLimit(600_000, 'claude-fable-5[1m]:xhigh')).toBe(450_000);
   });
-  it('the CEILING for an explicit set stays the spec cap (400k) even for a fleet member — 300k shapes only the DEFAULT', () => {
+  it('the CEILING for an explicit set stays the spec cap (450k) even for a fleet member — 300k shapes only the DEFAULT', () => {
     // clampCompactionLimit takes no role: an explicit 350k on a member is honored.
     expect(clampCompactionLimit(350_000, 'sonnet[1m]:high')).toBe(350_000);
   });
@@ -446,11 +458,11 @@ describe('clampCompactionLimit (the default is also the CEILING)', () => {
   it('clamps a bare-family request to the 158k derived ceiling (the real 200k window)', () => {
     expect(clampCompactionLimit(500_000, 'sonnet:medium')).toBe(158_000);
   });
-  it('an unresolvable spec (null) clamps to the 400k [1m] ceiling now, not 158k (WI-3383)', () => {
+  it('an unresolvable spec (null) clamps to the 450k [1m] ceiling now, not 158k (WI-3383)', () => {
     // config:set-compaction-limit on a session whose spec did not resolve is no
-    // longer forced down to 158k — the fleet default is opus[1m], so 400k holds.
-    expect(clampCompactionLimit(400_000, null)).toBe(400_000);
-    expect(clampCompactionLimit(900_000, null)).toBe(400_000);
+    // longer forced down to 158k — the fleet default is opus[1m], so 450k holds.
+    expect(clampCompactionLimit(450_000, null)).toBe(450_000);
+    expect(clampCompactionLimit(900_000, null)).toBe(450_000);
     expect(clampCompactionLimit(250_000, null)).toBe(250_000);
   });
   it('floors any request at MIN_COMPACTION_LIMIT_TOKENS', () => {
@@ -474,7 +486,49 @@ describe('clampCompactionLimit (the default is also the CEILING)', () => {
   });
 
   it('omitting opts keeps the pre-existing leader/solo ceiling (no caller behavior change)', () => {
-    expect(clampCompactionLimit(400_000, 'opus[1m]')).toBe(COMPACTION_LIMIT_DEFAULT_1M_CAP);
+    expect(clampCompactionLimit(900_000, 'opus[1m]')).toBe(COMPACTION_LIMIT_DEFAULT_1M_CAP);
+  });
+});
+
+/**
+ * The LEADER/solo half of the stranding guard (EI-22241751831038573).
+ *
+ * The watchdog's upward heal only raises a stored limit that equals the CURRENT
+ * derived seed or a KNOWN superseded one. So every time the leader/solo role cap
+ * moves, the outgoing value must appear in SUPERSEDED_1M_LEADER_CAPS or every
+ * already-live ad-hoc/leader session is pinned below the new default, reads as a
+ * deliberate override, and is never healed — the exact shape that produced
+ * fifteen consecutive carry-respawns of one fleet MEMBER when the member cap moved
+ * 200k → 250k with no such list. That fix was scoped to members; this asserts the
+ * same protection now exists for the population the 2026-09-21 400k → 450k raise
+ * touched.
+ */
+describe('SUPERSEDED_1M_LEADER_CAPS — a leader/solo cap raise does not strand live sessions', () => {
+  it('offers the outgoing 400k to the heal for a leader/solo 1M session', () => {
+    expect(supersededDerivedCompactionLimits('opus[1m]')).toContain(400_000);
+    expect(supersededDerivedCompactionLimits(null)).toContain(400_000);
+    // keyed on the DERIVED SEED, not the `[1m]` marker: a bare extended-codex spec
+    // resolves to the same 1M leader cap and can be stranded identically.
+    expect(supersededDerivedCompactionLimits('gpt-5.6-sol')).toContain(400_000);
+  });
+
+  it('never offers the CURRENT cap as superseded', () => {
+    expect(supersededDerivedCompactionLimits('opus[1m]')).not.toContain(
+      COMPACTION_LIMIT_DEFAULT_1M_CAP,
+    );
+  });
+
+  it('does not leak the leader list into the fleet-MEMBER population', () => {
+    // A member is governed by its own cap and its own superseded list; offering a
+    // leader's 400k to a 250k member would heal it straight past its role ceiling.
+    expect(supersededDerivedCompactionLimits('opus[1m]', { fleetMember: true })).not.toContain(
+      400_000,
+    );
+  });
+
+  it('does not offer a leader list to a spec that does not derive the 1M leader cap', () => {
+    // A real 200k-window spec derives 158k; its stale values are not these.
+    expect(supersededDerivedCompactionLimits('haiku')).not.toContain(400_000);
   });
 });
 
