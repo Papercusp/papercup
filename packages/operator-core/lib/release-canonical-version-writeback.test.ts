@@ -179,6 +179,18 @@ describe('bump_version_manifests (extracted from release-local.sh)', () => {
     });
     expect(verdict).toEqual({ ok: true });
   });
+
+  it('recognises a package manifest bump without canonicalising escaped JSON literals', () => {
+    const head = '{\n  "name": "papercusp-desktop",\n  "version": "0.0.17",\n  "scripts": {\n    "check": "echo \'\\u2713 ready\'"\n  }\n}\n';
+    const worktree = head.replace('"0.0.17"', '"0.0.20"');
+    expect(validateReleaseResumeResidue({
+      superprojectStatus: ' M papercusp-desktop',
+      desktopStatus: ' M package.json',
+      desktopHeadMatches: true,
+      version: '0.0.20',
+      files: { 'package.json': { head, worktree } },
+    })).toEqual({ ok: true });
+  });
 });
 
 // The call SITES, not the helper's behaviour. Every test above picks the arity itself via

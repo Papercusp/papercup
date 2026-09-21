@@ -143,9 +143,12 @@ export const RELEASE_RESUME_VERSION_PATHS = [
 
 function expectedVersionFile(relativePath: string, head: string, version: string): string {
   if (relativePath === 'package.json' || relativePath === 'src-tauri/tauri.conf.json') {
-    const parsed = JSON.parse(head) as Record<string, unknown>;
-    parsed.version = version;
-    return `${JSON.stringify(parsed, null, 2)}\n`;
+    // Preserve the source bytes when validating release-owned residue. JSON.parse/
+    // stringify would canonicalize escaped literals (for example `\\u2713` in a
+    // shell command string) and reject an otherwise exact version-only bump.
+    const matches = head.match(/^(\s*"version"\s*:\s*)"[^"]*"(\s*,?\s*)$/gm) ?? [];
+    if (matches.length !== 1) throw new Error(`expected exactly one top-level version field, found ${matches.length}`);
+    return head.replace(/^(\s*"version"\s*:\s*)"[^"]*"(\s*,?\s*)$/m, `$1"${version}"$2`);
   }
   if (relativePath === 'src-tauri/Cargo.toml') {
     return head.replace(/^version = "[^"]+"/m, `version = "${version}"`);
