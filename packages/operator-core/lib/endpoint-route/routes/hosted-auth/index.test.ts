@@ -13,6 +13,7 @@ import {
   HOSTED_AUTH_ROUTES,
   createHostedAuthRoutes,
   safeHostedReturnTarget,
+  type HostedAuthRouteDependencies,
   type HostedAuthSessionStore,
 } from './index';
 import type { HostedAuthFlow, HostedAuthFlowConsumeResult, HostedAuthFlowStore } from './flow';
@@ -83,16 +84,18 @@ function fixedEntropy() {
   return (size: number) => new Uint8Array(size).fill(value++);
 }
 
-function setup(provider = createFakeHostedIdentityProvider()) {
-  const flowStore = new MemoryFlowStore();
-  const sessionStore = new MemorySessionStore();
-  const codec = new HostedSessionCookieCodec(SECRET);
-  const bindIdentity = async () => ({
+function setup(
+  provider = createFakeHostedIdentityProvider(),
+  bindIdentity: HostedAuthRouteDependencies['bindIdentity'] = async () => ({
     userId: 'user-local-1',
     organizationId: 'org-local-1',
     workspaceId: 'workspace-local-1',
     permissionVersion: 7,
-  });
+  }),
+) {
+  const flowStore = new MemoryFlowStore();
+  const sessionStore = new MemorySessionStore();
+  const codec = new HostedSessionCookieCodec(SECRET);
   const routes = createHostedAuthRoutes({
     provider,
     flowStore,
@@ -247,6 +250,26 @@ describe('hosted auth route contract', () => {
     );
     expect(response.headers.get('set-cookie')).toContain(`${HOSTED_AUTH_FLOW_COOKIE}=`);
     expect(s.provider.calls.exchangeCallback).toHaveLength(0);
+    expect(s.sessionStore.created).toHaveLength(0);
+  });
+
+  it('recovers a valid provider callback with no active Papercusp membership', async () => {
+    const s = setup(createFakeHostedIdentityProvider(), async () => null);
+    const started = await begin(s, '/workspaces/ws-1');
+    const response = await invoke(
+      s.route('GET', '/hosted/auth/callback'),
+      new Request(`${ORIGIN}${HOSTED_AUTH_CALLBACK_PATH}?code=code-1&state=${started.state}`, {
+        headers: { cookie: `${HOSTED_AUTH_FLOW_COOKIE}=${encodeURIComponent(started.flowCookie)}` },
+      }),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(
+      `${ORIGIN}/?hosted_auth_error=membership_required&hosted_auth_recovery=1`,
+    );
+    expect(response.headers.get('set-cookie')).toContain(`${HOSTED_AUTH_FLOW_COOKIE}=`);
+    expect(s.provider.calls.exchangeCallback).toHaveLength(1);
+    expect(s.provider.calls.revokeSession).toEqual([{ externalSessionId: 'session_test_001', reason: 'security_event' }]);
     expect(s.sessionStore.created).toHaveLength(0);
   });
 

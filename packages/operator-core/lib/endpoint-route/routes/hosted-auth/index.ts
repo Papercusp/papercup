@@ -414,9 +414,11 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
       }
       if (!binding || !validBinding(binding)) {
         await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
-        return jsonError('membership_required', 'No active Papercusp membership is available.', 403, {
-          'set-cookie': deleteFlowCookie(),
-        });
+        // Admission is intentionally still fail-closed: an identity provider
+        // sign-up never creates Papercusp membership. Recover in the Portal,
+        // though, so a new user gets the enrollment/invitation next step
+        // instead of a raw JSON 403 dead end.
+        return callbackRecoveryRedirect(origin, 'membership_required');
       }
 
       let session: HostedSession;
