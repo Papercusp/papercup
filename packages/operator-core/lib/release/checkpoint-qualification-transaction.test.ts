@@ -57,6 +57,49 @@ describe('logical checkpoint qualification transaction', () => {
     ).toBe(false);
   });
 
+  it('pins the first terminal result to the exact candidate and run identity', () => {
+    const current = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1',
+      runnerId: 'physical-1',
+      candidate: 'candidate-1',
+      leaseDurationMs: 1_000,
+      nowMs: 150,
+    }).transaction;
+
+    const staleCandidate = settleQualificationTransaction(current, {
+      attemptId: 'attempt-1',
+      candidate: 'candidate-2',
+      runId: 'run-1',
+      reason: 'not-green',
+      green: false,
+      nowMs: 200,
+    });
+    expect(staleCandidate).toMatchObject({ status: 'conflict', transaction: current });
+
+    const first = settleQualificationTransaction(current, {
+      attemptId: 'attempt-1',
+      candidate: 'candidate-1',
+      runId: 'run-1',
+      reason: 'not-green',
+      green: false,
+      nowMs: 200,
+    });
+    expect(first).toMatchObject({
+      status: 'updated',
+      transaction: { candidate: 'candidate-1', runId: 'run-1', phase: 'terminal' },
+    });
+
+    const duplicateFromOtherRun = settleQualificationTransaction(first.transaction, {
+      attemptId: 'attempt-1',
+      candidate: 'candidate-1',
+      runId: 'run-2',
+      reason: 'advanced',
+      green: true,
+      nowMs: 300,
+    });
+    expect(duplicateFromOtherRun).toMatchObject({ status: 'terminal', transaction: first.transaction });
+  });
+
   it('releases the singleton when an eligibility waiter never started, while preserving real waits', () => {
     const unavailable = waitQualificationTransaction(begin(), {
       attemptId: 'attempt-1',

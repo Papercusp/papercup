@@ -190,6 +190,10 @@ export interface CheckpointQualificationTransaction {
     declaredPaths: string[];
   };
   candidate: string | null;
+  /** Exact repair-head identity selected for this attempt, when a frozen queue supplied one. */
+  repairHead: string | null;
+  /** Physical run identity that currently owns (or produced) this logical attempt. */
+  runId: string | null;
   phase: QualificationPhase;
   phaseEnteredAtMs?: number;
   phaseDurationsMs?: Partial<Record<QualificationPhase, number>>;
@@ -208,6 +212,8 @@ export interface BeginQualificationInput {
   requiredAncestorSha?: string | null;
   declaredPaths?: readonly string[];
   candidate?: string | null;
+  repairHead?: string | null;
+  runId?: string | null;
   evidenceRefs?: readonly string[];
   /** What the caller proved about the INCUMBENT attempt's runner. Default 'unknown' = old behaviour. */
   incumbentLiveness?: RunnerLiveness;
@@ -546,6 +552,8 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
     !Array.isArray(row.candidatePolicy.declaredPaths) ||
     !Array.isArray(row.blockers) ||
     !Array.isArray(row.evidenceRefs) ||
+    (row.repairHead != null && (typeof row.repairHead !== 'string' || !row.repairHead.trim())) ||
+    (row.runId != null && (typeof row.runId !== 'string' || !row.runId.trim())) ||
     (row.phaseEnteredAtMs != null && !Number.isFinite(row.phaseEnteredAtMs)) ||
     (row.phaseDurationsMs != null &&
       (typeof row.phaseDurationsMs !== 'object' ||
@@ -616,6 +624,8 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
     row.eligibilitySnapshot == null ? null : parseCheckpointEligibilitySnapshot(row.eligibilitySnapshot);
   return {
     ...(row as CheckpointQualificationTransaction),
+    repairHead: typeof row.repairHead === 'string' ? row.repairHead.trim() : null,
+    runId: typeof row.runId === 'string' ? row.runId.trim() : null,
     phaseEnteredAtMs,
     phaseDurationsMs,
     currentPhysicalRunner,
@@ -644,6 +654,8 @@ export function beginQualificationTransaction(
             declaredPaths: uniqueStrings(input.declaredPaths ?? current.candidatePolicy.declaredPaths),
           },
           candidate: input.candidate?.trim() || current.candidate,
+          repairHead: input.repairHead?.trim() || current.repairHead,
+          runId: input.runId?.trim() || current.runId,
           phase: 'ready',
           phaseEnteredAtMs: nowMs,
           phaseDurationsMs: completedPhaseDurations(current, 'ready', nowMs),
@@ -673,6 +685,8 @@ export function beginQualificationTransaction(
       declaredPaths: uniqueStrings(input.declaredPaths ?? []),
     },
     candidate: input.candidate?.trim() || null,
+    repairHead: input.repairHead?.trim() || null,
+    runId: input.runId?.trim() || null,
     phase: 'ready',
     phaseEnteredAtMs: nowMs,
     phaseDurationsMs: {},
@@ -727,6 +741,9 @@ export function waitQualificationTransaction(
     attemptId: string;
     reason: PreSuiteNoVerdictReason;
     blockers?: readonly Omit<QualificationBlocker, 'observedAtMs'>[];
+    candidate?: string | null;
+    repairHead?: string | null;
+    runId?: string | null;
     evidenceRefs?: readonly string[];
     nowMs?: number;
   },
@@ -761,6 +778,9 @@ export function waitQualificationTransaction(
       phaseEnteredAtMs: current.phase === 'waiting' ? current.phaseEnteredAtMs : nowMs,
       phaseDurationsMs: completedPhaseDurations(current, 'waiting', nowMs),
       outcome,
+      candidate: input.candidate?.trim() || current.candidate,
+      repairHead: input.repairHead?.trim() || current.repairHead,
+      runId: input.runId?.trim() || current.runId,
       blockers: (input.blockers ?? []).slice(0, 24).map((blocker) => ({ ...blocker, observedAtMs: nowMs })),
       waitGeneration: current.waitGeneration + 1,
       currentPhysicalRunner: null,
@@ -774,7 +794,9 @@ export function reserveQualificationRunner(
   current: CheckpointQualificationTransaction,
   input: {
     attemptId: string;
-    runnerId: string;
+      runnerId: string;
+    runId?: string | null;
+    repairHead?: string | null;
     candidate?: string | null;
     evidenceRefs?: readonly string[];
     leaseDurationMs: number;
@@ -825,6 +847,8 @@ export function reserveQualificationRunner(
       ...current,
       updatedAtMs: nowMs,
       candidate: input.candidate?.trim() || current.candidate,
+      repairHead: input.repairHead?.trim() || current.repairHead,
+      runId: input.runId?.trim() || current.runId,
       phase: 'running',
       phaseEnteredAtMs:
         current.phase === 'running' && !current.currentPhysicalRunner
@@ -865,17 +889,31 @@ export function settleQualificationTransaction(
     attemptId: string;
     reason: string;
     green?: boolean | null;
+    candidate?: string | null;
+    repairHead?: string | null;
+    runId?: string | null;
     evidenceRefs?: readonly string[];
     nowMs?: number;
   },
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
   if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
+  const candidate = input.candidate?.trim() || null;
+  const runId = input.runId?.trim() || null;
+  if (current.candidate && candidate && current.candidate !== candidate) {
+    return { status: 'conflict', transaction: current };
+  }
+  if (current.runId && runId && current.runId !== runId) {
+    return { status: 'conflict', transaction: current };
+  }
   const outcome = classifyQualificationVerdict(input);
   if (outcome.kind === 'pre-suite-no-verdict') {
     return waitQualificationTransaction(current, {
       attemptId: input.attemptId,
       reason: outcome.reason,
+      candidate,
+      repairHead: input.repairHead,
+      runId,
       evidenceRefs: input.evidenceRefs,
       nowMs: input.nowMs,
     });
@@ -890,6 +928,9 @@ export function settleQualificationTransaction(
       phaseEnteredAtMs: nowMs,
       phaseDurationsMs: completedPhaseDurations(current, 'terminal', nowMs),
       outcome,
+      candidate: candidate ?? current.candidate,
+      repairHead: input.repairHead?.trim() || current.repairHead,
+      runId: runId ?? current.runId,
       blockers: [],
       currentPhysicalRunner: null,
       consumedPhysicalRuns: consumedRunner(current, outcome, nowMs),
@@ -1337,6 +1378,9 @@ export function recordStoredQualificationVerdict(
     attemptId?: string;
     reason: string;
     green?: boolean | null;
+    candidate?: string | null;
+    repairHead?: string | null;
+    runId?: string | null;
     evidenceRefs?: readonly string[];
     nowMs?: number;
   },
