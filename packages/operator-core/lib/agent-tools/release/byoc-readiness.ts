@@ -6,7 +6,7 @@
  * Until the source observation joins are implemented this reader reports the
  * unresolved proof obligations and can never return a positive verdict.
  */
-import { createHash } from 'node:crypto';
+import { createHash, createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
@@ -128,7 +128,7 @@ async function readPublicationObject(
   response: PublicationProbeResponse,
   maxBytes: number,
   retain = false,
-): Promise<{ sha256: string; bytes: number; payload: Uint8Array | null }> {
+): Promise<{ sha256: string; blake2b512: Uint8Array; bytes: number; payload: Uint8Array | null }> {
   const rawSize = response.headers.get('content-length');
   const declaredBytes = rawSize === null ? null : Number(rawSize);
   if (declaredBytes !== null && (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0 || declaredBytes > maxBytes)) {
@@ -139,6 +139,7 @@ async function readPublicationObject(
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   const hash = createHash('sha256');
+  const prehash = createHash('blake2b512');
   let total = 0;
   try {
     while (true) {
@@ -147,6 +148,7 @@ async function readPublicationObject(
       total += next.value.byteLength;
       if (total > maxBytes) throw new Error('bytes-exceed-bound');
       hash.update(next.value);
+      prehash.update(next.value);
       if (retain) chunks.push(next.value);
     }
   } catch (error) {
@@ -170,7 +172,94 @@ async function readPublicationObject(
       offset += chunk.byteLength;
     }
   }
-  return { sha256: hash.digest('hex'), bytes: total, payload };
+  return { sha256: hash.digest('hex'), blake2b512: prehash.digest(), bytes: total, payload };
+}
+
+function decodeCanonicalBase64(value: string, expectedBytes: number): Uint8Array | null {
+  const encoded = value.trim();
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length % 4 !== 0) return null;
+  const decoded = Buffer.from(encoded, 'base64');
+  if (
+    decoded.byteLength !== expectedBytes ||
+    decoded.toString('base64').replace(/=+$/u, '') !== encoded.replace(/=+$/u, '')
+  ) return null;
+  return decoded;
+}
+
+/**
+ * Verify the exact detached minisign file the workspace-host bootstrap consumes.
+ *
+ * This deliberately implements only minisign's modern prehashed `ED` form. The
+ * bootstrap signs multi-gigabyte release bundles in that form, so accepting the
+ * legacy raw-message `Ed` form would either require retaining the whole bundle or
+ * quietly verify a different protocol. Both the bundle signature and minisign's
+ * global signature over `signature || trusted-comment` are required.
+ */
+export function verifyPrehashedMinisign(
+  signingPublicKey: string,
+  signatureFile: Uint8Array,
+  bundleBlake2b512: Uint8Array,
+): { valid: true; keyId: string } | { valid: false; reason: string } {
+  let signatureText: string;
+  try {
+    signatureText = new TextDecoder('utf-8', { fatal: true }).decode(signatureFile);
+  } catch {
+    return { valid: false, reason: 'invalid-utf8' };
+  }
+  const keyLines = signingPublicKey.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  const signatureLines = signatureText.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  if (
+    keyLines.length !== 2 ||
+    !keyLines[0]?.startsWith('untrusted comment:') ||
+    signatureLines.length !== 4 ||
+    !signatureLines[0]?.startsWith('untrusted comment:') ||
+    !signatureLines[2]?.startsWith('trusted comment: ')
+  ) return { valid: false, reason: 'invalid-envelope' };
+
+  const keyBlock = decodeCanonicalBase64(keyLines[1]!, 42);
+  const signatureBlock = decodeCanonicalBase64(signatureLines[1]!, 74);
+  const globalSignature = decodeCanonicalBase64(signatureLines[3]!, 64);
+  if (!keyBlock || !signatureBlock || !globalSignature) {
+    return { valid: false, reason: 'invalid-base64-block' };
+  }
+  const keyAlgorithm = Buffer.from(keyBlock.subarray(0, 2)).toString('latin1');
+  const signatureAlgorithm = Buffer.from(signatureBlock.subarray(0, 2)).toString('latin1');
+  if (!['Ed', 'ED'].includes(keyAlgorithm) || signatureAlgorithm !== 'ED') {
+    return { valid: false, reason: 'unsupported-algorithm' };
+  }
+  const keyId = keyBlock.subarray(2, 10);
+  if (!Buffer.from(keyId).equals(Buffer.from(signatureBlock.subarray(2, 10)))) {
+    return { valid: false, reason: 'key-id-mismatch' };
+  }
+  if (bundleBlake2b512.byteLength !== 64) {
+    return { valid: false, reason: 'invalid-bundle-prehash' };
+  }
+
+  try {
+    const publicKey = createPublicKey({
+      key: Buffer.concat([
+        Buffer.from('302a300506032b6570032100', 'hex'),
+        Buffer.from(keyBlock.subarray(10, 42)),
+      ]),
+      format: 'der',
+      type: 'spki',
+    });
+    const signature = signatureBlock.subarray(10, 74);
+    if (!verifyEd25519(null, bundleBlake2b512, publicKey, signature)) {
+      return { valid: false, reason: 'bundle-signature-invalid' };
+    }
+    const trustedComment = signatureLines[2]!.slice('trusted comment: '.length);
+    const globalMessage = Buffer.concat([
+      Buffer.from(signature),
+      Buffer.from(trustedComment, 'utf8'),
+    ]);
+    if (!verifyEd25519(null, globalMessage, publicKey, globalSignature)) {
+      return { valid: false, reason: 'global-signature-invalid' };
+    }
+  } catch {
+    return { valid: false, reason: 'verification-error' };
+  }
+  return { valid: true, keyId: Buffer.from(keyId).toString('hex') };
 }
 
 /**
@@ -279,7 +368,7 @@ export async function probeByocPublication(
   }
   refs.push(`publication:signing-key:${signingKeySha256}`);
 
-  const fetchObject = async (url: string, maxBytes: number, label: string) => {
+  const fetchObject = async (url: string, maxBytes: number, label: string, retain = false) => {
     try {
       const response = await fetcher(url, requestInit());
       if (!response.ok) {
@@ -287,7 +376,7 @@ export async function probeByocPublication(
         missing.push(label);
         return null;
       }
-      return await readPublicationObject(response, maxBytes);
+      return await readPublicationObject(response, maxBytes, retain);
     } catch (error) {
       missing.push(label);
       failed.push(`${label}:${error instanceof Error ? error.message : String(error)}`);
@@ -296,7 +385,7 @@ export async function probeByocPublication(
   };
   const [bundle, signature] = await Promise.all([
     fetchObject(urls.bundleUrl, MAX_PUBLICATION_BUNDLE_BYTES, 'public-bytes'),
-    fetchObject(urls.signatureUrl, MAX_PUBLICATION_SIGNATURE_BYTES, 'signature'),
+    fetchObject(urls.signatureUrl, MAX_PUBLICATION_SIGNATURE_BYTES, 'signature', true),
   ]);
   if (bundle && signature) {
     const publicationInput: WorkspaceHostPublicationManifestInput = {
@@ -338,6 +427,23 @@ export async function probeByocPublication(
     refs.push(`publication:bundle:${bundle.sha256}:${bundle.bytes}`);
     refs.push(`publication:signature:${signature.sha256}:${signature.bytes}`);
     if (failed.length === 0) verified.push('public-bytes', 'manifest-archive-digest');
+
+    // Re-measure the trust decision the guest bootstrap makes. The manifest's
+    // `trustReport.signature.valid` is producer-authored evidence; it cannot
+    // substitute for verifying these independently fetched bytes now.
+    const minisign = verifyPrehashedMinisign(
+      signingPublicKey,
+      signature.payload!,
+      bundle.blake2b512,
+    );
+    if (minisign.valid) {
+      const signatureIndex = missing.indexOf('signature');
+      if (signatureIndex >= 0) missing.splice(signatureIndex, 1);
+      verified.push('signature');
+      refs.push(`publication:minisign-key-id:${minisign.keyId}`);
+    } else {
+      failed.push(`signature:${minisign.reason}`);
+    }
   }
 
   return result();
@@ -610,7 +716,7 @@ export default defineTool({
   name: 'release:byoc_readiness',
   description:
     'Unregistered BYOC diagnostic draft: read one exactly scoped task journal and independently inspect its public bytes. ' +
-    'Receipt presence never produces a pass; signature, SBOM, executable and live operational joins remain unresolved.',
+    'Receipt presence never produces a pass; detached minisign bytes are reverified, while SBOM, executable and live operational joins remain unresolved.',
   guidance: {
     when: 'Developing the BYOC acceptance reader against an explicitly identified release task.',
     notWhen: 'Grading or shipping: this draft is incomplete, unregistered, and not an acceptance probe.',
