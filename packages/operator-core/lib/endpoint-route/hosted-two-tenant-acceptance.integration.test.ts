@@ -68,6 +68,7 @@ const MIGRATIONS = [
   '1009-hosted-workspace-reverse-connectors.sql',
   '1010-hosted-provider-delegation-metadata.sql',
   '1126-hosted-two-tenant-boundary-repair.sql',
+  '1188-hosted-self-signup.sql',
 ] as const;
 
 const CONFIGURATION = {

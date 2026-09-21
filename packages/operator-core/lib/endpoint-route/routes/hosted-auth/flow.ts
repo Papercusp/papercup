@@ -13,6 +13,8 @@ const FLOW_FIELD = 'browser-session';
 
 export interface HostedAuthFlow {
   readonly providerId: string;
+  /** Explicit admission intent; absent is treated as legacy sign-in. */
+  readonly intent?: 'sign-in' | 'sign-up';
   readonly redirectUri: string;
   readonly returnTo: string;
   readonly nonce: string;
@@ -62,6 +64,7 @@ export class OAuthHostedAuthFlowStore implements HostedAuthFlowStore {
       {
         privateContext: {
           providerId: flow.providerId,
+          ...(flow.intent ? { intent: flow.intent } : {}),
           redirectUri: flow.redirectUri,
           returnTo: flow.returnTo,
           nonce: flow.nonce,
@@ -92,6 +95,7 @@ export class OAuthHostedAuthFlowStore implements HostedAuthFlowStore {
     const context = verified.privateContext;
     const flow: HostedAuthFlow = {
       providerId: context?.providerId ?? '',
+      intent: context?.intent === 'sign-up' ? 'sign-up' : 'sign-in',
       redirectUri: context?.redirectUri ?? '',
       returnTo: context?.returnTo ?? '',
       nonce: context?.nonce ?? '',

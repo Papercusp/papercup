@@ -23,6 +23,14 @@ import {
 } from '../../../auth/hosted/provider';
 import { readCookie, serializeDeleteCookie, serializeSetCookie } from '../../cookies';
 import { OAuthHostedAuthFlowStore, type HostedAuthFlow, type HostedAuthFlowStore } from './flow';
+import type {
+  HostedSelfSignupAdmission,
+  HostedSelfSignupInput,
+} from '../../../auth/hosted/self-signup';
+import {
+  HOSTED_SELF_SIGNUP_PRIVACY_VERSION,
+  HOSTED_SELF_SIGNUP_TERMS_VERSION,
+} from '../../../auth/hosted/self-signup';
 
 export const HOSTED_AUTH_FLOW_COOKIE = '__Secure-papercusp_hosted_auth_flow';
 export const HOSTED_AUTH_CALLBACK_ROUTE = '/hosted/auth/callback';
@@ -62,6 +70,8 @@ export interface HostedAuthRouteDependencies {
   /** Exact externally reachable HTTPS origin, for example https://app.papercusp.com. */
   readonly publicOrigin: string;
   readonly flowStore?: HostedAuthFlowStore;
+  /** Explicit public-account admission; never used by ordinary sign-in. */
+  readonly selfSignup?: HostedSelfSignupAdmission;
   readonly clock?: () => Date;
   readonly randomBytes?: (size: number) => Uint8Array;
 }
@@ -235,6 +245,25 @@ function validBinding(value: HostedIdentityBinding): boolean {
   );
 }
 
+function validAdmittedSession(
+  session: HostedSession,
+  binding: HostedIdentityBinding,
+  upstream: HostedVerifiedIdentitySession,
+  providerId: string,
+): boolean {
+  return (
+    session.id.length > 0 &&
+    session.userId === binding.userId &&
+    session.organizationId === binding.organizationId &&
+    (session.workspaceId ?? null) === (binding.workspaceId ?? null) &&
+    session.permissionVersion === binding.permissionVersion &&
+    session.upstreamProvider === providerId &&
+    session.upstreamSessionId === upstream.externalSessionId &&
+    session.expiresAt.getTime() === upstream.expiresAtMs &&
+    session.revokedAt === null
+  );
+}
+
 async function revokeUpstreamBestEffort(provider: HostedIdentityProvider, externalSessionId: string): Promise<void> {
   try {
     await provider.revokeSession({ externalSessionId, reason: 'security_event' });
@@ -272,6 +301,7 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
       const browserBinding = randomToken(random);
       const flow: HostedAuthFlow = {
         providerId: deps.provider.providerId,
+        intent,
         redirectUri: callbackUri,
         returnTo,
         nonce,
@@ -399,18 +429,53 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
         });
       }
 
-      let binding: HostedIdentityBinding | null;
-      try {
-        binding = await deps.bindIdentity({
-          providerId: deps.provider.providerId,
-          identity: upstream.identity,
-          ...(upstream.externalOrganizationId ? { externalOrganizationId: upstream.externalOrganizationId } : {}),
-        });
-      } catch {
-        await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
-        return jsonError('identity_binding_unavailable', 'The local identity could not be resolved.', 503, {
-          'set-cookie': deleteFlowCookie(),
-        });
+      let binding: HostedIdentityBinding | null = null;
+      let admittedSession: HostedSession | null = null;
+      if (flow.intent === 'sign-up') {
+        if (!deps.selfSignup) {
+          await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
+          return callbackRecoveryRedirect(origin, 'signup_unavailable');
+        }
+        let admitted: Awaited<ReturnType<HostedSelfSignupAdmission['complete']>>;
+        try {
+          const input: HostedSelfSignupInput = {
+            attemptId: state,
+            providerId: deps.provider.providerId,
+            identity: upstream.identity,
+            upstreamSessionId: upstream.externalSessionId,
+            upstreamSessionExpiresAt: new Date(upstream.expiresAtMs),
+            // Versions are intentionally fixed at the route seam until the
+            // Portal supplies a reviewed terms-version selector.
+            termsVersion: HOSTED_SELF_SIGNUP_TERMS_VERSION,
+            privacyVersion: HOSTED_SELF_SIGNUP_PRIVACY_VERSION,
+            acceptedAt: now,
+          };
+          admitted = await deps.selfSignup.complete(input);
+        } catch {
+          await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
+          return jsonError('signup_unavailable', 'Account creation is temporarily unavailable.', 503, {
+            'set-cookie': deleteFlowCookie(),
+          });
+        }
+        if (!admitted.ok) {
+          await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
+          return callbackRecoveryRedirect(origin, `signup_${admitted.code}`);
+        }
+        binding = admitted.binding;
+        admittedSession = admitted.session;
+      } else {
+        try {
+          binding = await deps.bindIdentity({
+            providerId: deps.provider.providerId,
+            identity: upstream.identity,
+            ...(upstream.externalOrganizationId ? { externalOrganizationId: upstream.externalOrganizationId } : {}),
+          });
+        } catch {
+          await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
+          return jsonError('identity_binding_unavailable', 'The local identity could not be resolved.', 503, {
+            'set-cookie': deleteFlowCookie(),
+          });
+        }
       }
       if (!binding || !validBinding(binding)) {
         await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
@@ -420,24 +485,32 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
         // instead of a raw JSON 403 dead end.
         return callbackRecoveryRedirect(origin, 'membership_required');
       }
-
-      let session: HostedSession;
-      try {
-        const createInput: CreateHostedSessionInput = {
-          userId: binding.userId,
-          organizationId: binding.organizationId,
-          workspaceId: binding.workspaceId ?? null,
-          permissionVersion: binding.permissionVersion,
-          upstreamProvider: deps.provider.providerId,
-          upstreamSessionId: upstream.externalSessionId,
-          expiresAt: new Date(upstream.expiresAtMs),
-        };
-        session = await deps.sessionStore.create(createInput);
-      } catch {
+      if (admittedSession && !validAdmittedSession(admittedSession, binding, upstream, deps.provider.providerId)) {
         await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
         return jsonError('session_create_failed', 'The hosted session could not be created.', 503, {
           'set-cookie': deleteFlowCookie(),
         });
+      }
+
+      let session = admittedSession;
+      if (!session) {
+        try {
+          const createInput: CreateHostedSessionInput = {
+            userId: binding.userId,
+            organizationId: binding.organizationId,
+            workspaceId: binding.workspaceId ?? null,
+            permissionVersion: binding.permissionVersion,
+            upstreamProvider: deps.provider.providerId,
+            upstreamSessionId: upstream.externalSessionId,
+            expiresAt: new Date(upstream.expiresAtMs),
+          };
+          session = await deps.sessionStore.create(createInput);
+        } catch {
+          await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
+          return jsonError('session_create_failed', 'The hosted session could not be created.', 503, {
+            'set-cookie': deleteFlowCookie(),
+          });
+        }
       }
 
       return redirect(new URL(returnTo, origin).toString(), [
