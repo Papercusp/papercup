@@ -292,7 +292,17 @@ async function seed() {
     specificationArtifact: artifact("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
     identityHistory: [{ stack: ["domain:papercusp-engineer"], specificationRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", stateRevision: "seed-old-state", specificationArtifact: artifact("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), recordedAt: new Date().toISOString() }],
   };
-  const control = { stack: ["domain:papercusp-engineer"], activation: { desired: { specificationRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", stateRevision: "seed-new-state" }, prepared: null, applied: { specificationRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", stateRevision: "seed-old-state" }, status: "applied" } };
+  const control = {
+    stack: ["domain:papercusp-engineer"],
+    activation: {
+      schemaVersion: 1,
+      attribution: { actorId: owner, principalId: owner, sessionId: owner },
+      desired: { specificationRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", stateRevision: "seed-new-state" },
+      prepared: null,
+      applied: { specificationRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", stateRevision: "seed-old-state" },
+      status: "applied",
+    },
+  };
   await sql.begin(async (tx) => {
     await tx`
       INSERT INTO harness_shared.coord_presence
@@ -371,6 +381,11 @@ try {
 
     click('button[aria-label="Apply identity"]', "real-switch");
     settle();
+    const switchResponse = JSON.parse(evalFile("window.__p015R4RealCalls.at(-1)", "real-switch-response"));
+    evidence.steps.push({ label: "real-switch-response", response: switchResponse });
+    if (switchResponse?.request?.action !== "switch" || switchResponse?.status !== 200) {
+      throw new Error(`real switch route did not return a successful switch response: ${JSON.stringify(switchResponse)}`);
+    }
     check(["--eval", "document.body.innerText.includes('Change requested') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:papercusp-engineer')"], "real-switch-change-requested");
     const switchRequested = await observeActivation("real-switch-requested");
     if (switchRequested?.status !== "desired" || !switchRequested?.desired) {
