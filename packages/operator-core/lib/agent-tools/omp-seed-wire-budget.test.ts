@@ -57,18 +57,37 @@
  * failing-message the next editor reads rather than in a comment they do not.
  *
  * WHY THE CANONICAL LIST AND NOT THE LAUNCHER MIRROR. CORE_MCP_TOOL_NAMES is what D-001
- * ruled on, what `role-launch-spec.ts` hands to operator-core role launches, and what
- * apps/operator/scripts/psu-launcher.mjs mirrors into OMP_CORE_MCP_TOOL_NAMES for OMP/codex
- * psu sessions. Measuring the canonical one covers every consumer; the mirror is asserted
- * identical below so a cost claim about one is a cost claim about both.
+ * ruled on and what `role-launch-spec.ts` hands to operator-core ROLE launches. That is
+ * still a real shipping surface and this ratchet still guards it.
+ *
+ * ⚠ IT NO LONGER COVERS psu OMP/codex SESSIONS — corrected 2026-09-21, D-005. Until then
+ * this header claimed that measuring the canonical list "covers every consumer", because
+ * psu-launcher.mjs mirrored it into OMP_CORE_MCP_TOOL_NAMES. Since D-005 a psu OMP/codex
+ * session is advertised the DERIVED delivery map (`ompCoreToolNames()`), so the two
+ * populations have deliberately diverged and the old "identical, therefore equivalent"
+ * assertion would now be asserting a falsehood about what ships. The derived seed has its
+ * own budget assertions below — measured at its RESOLVED TIER, which is the only reading
+ * that describes it, since more than half of it ships COMPACT.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
-import { listAllProjectedTools, type ProjectedTool } from '@papercusp/tooldef';
+import { listAllProjectedTools, compactWireBytes, type ProjectedTool } from '@papercusp/tooldef';
 import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
 import { advertisedWireBytes, MIN_PLAUSIBLE_CATALOG_SIZE } from './tool-guidance-budget';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- plain .mjs launcher script, no type declarations.
-import { OMP_CORE_MCP_TOOL_NAMES } from '../../../../apps/operator/scripts/psu-launcher.mjs';
+import {
+  OMP_CORE_MCP_TOOL_NAMES,
+  ompCoreToolNames,
+  ompCompactToolNames,
+} from '../../../../apps/operator/scripts/psu-launcher.mjs';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore -- generated .mjs data module, no type declarations.
+import { OMP_TOOL_DELIVERY } from '../../../../apps/operator/scripts/tool-delivery.generated.mjs';
+
+/** The unified trimmed budget (D-009) the DERIVED OMP seed is resolved against. Stated
+ *  here rather than imported so this guard fails when the artifact drifts past it, instead
+ *  of silently re-reading whatever the artifact happens to claim its own budget is. */
+const OMP_DERIVED_SEED_WIRE_BYTE_BUDGET = 100_000;
 
 /**
  * Ratchet on the core spine's advertised tools/list wire payload, pinned to its CURRENT
@@ -168,13 +187,78 @@ describe('core MCP spine wire budget (EI-23345472964244980 / D-001)', () => {
     ).toEqual([]);
   });
 
-  it('the launcher mirror is identical, so this measurement covers OMP/codex too', () => {
-    // psu-launcher.test.ts already holds the canonical lockstep drift guard. This is not a
-    // duplicate of it: it is what entitles THIS file to measure the canonical list and
-    // state a cost for OMP sessions, which are served the mirror. If the two ever diverge,
-    // the number below stops describing OMP and the claim in this file's header goes quiet
-    // rather than wrong.
+  it('the launcher literal still mirrors the canonical list (the FULL-SEED revert target)', () => {
+    // psu-launcher.test.ts holds the canonical lockstep drift guard; this is not a
+    // duplicate of it. What it no longer entitles is the claim that measuring
+    // CORE_MCP_TOOL_NAMES states a cost for psu OMP sessions — since D-005 those are served
+    // the DERIVED map, asserted separately below. The literal survives as the
+    // PAPERCUSP_CLAUDE_FULL_SEED revert target, and the revert has to restore the
+    // historical surface byte-for-byte or it is not a revert.
     expect([...(OMP_CORE_MCP_TOOL_NAMES as string[])]).toEqual([...CORE_MCP_TOOL_NAMES]);
+  });
+
+  it('the DERIVED psu OMP seed is what a psu OMP session is actually advertised (D-005)', () => {
+    // The population this file's header used to claim to cover. Asserting it here is what
+    // keeps that correction honest: if ompCoreToolNames() ever collapses back onto the
+    // literal, this fails rather than the header quietly becoming true again by accident.
+    const derived = ompCoreToolNames({}) as string[];
+    expect(derived).toEqual([...(OMP_TOOL_DELIVERY as { advertised: string[] }).advertised]);
+    expect(derived).not.toEqual([...(OMP_CORE_MCP_TOOL_NAMES as string[])]);
+  });
+
+  it('the DERIVED psu OMP seed stays within its unified budget, AT ITS RESOLVED TIER', () => {
+    const names = ompCoreToolNames({}) as string[];
+    const compact = new Set(ompCompactToolNames({}) as string[]);
+    // ⚠ Summing advertisedWireBytes over these names is the natural thing to write and is
+    // wrong by ~2x: more than half ship COMPACT. Measure each at the tier it resolved to.
+    const rowsTiered = names
+      .map((n) => {
+        const t = byName.get(n);
+        const tier = compact.has(n) ? 'compact' : 'full';
+        if (!t) return { name: n, bytes: 0, tier };
+        const b = compactWireBytes(n, t as { description?: string; inputSchema?: unknown });
+        return { name: n, bytes: tier === 'compact' ? b.compact : b.full, tier };
+      })
+      .sort((a, b) => b.bytes - a.bytes);
+    const total = rowsTiered.reduce((s, r) => s + r.bytes, 0);
+
+    // Floors first, both directions — an upper bound alone is satisfied by a broken
+    // instrument, and a compact tier that resolved empty would silently be measured as full.
+    expect(total, `measured only ${total.toLocaleString()} B — the instrument broke`).toBeGreaterThan(
+      40_000,
+    );
+    expect(compact.size, 'the compact tier resolved to ZERO names').toBeGreaterThan(0);
+    expect(compact.size).toBeLessThan(names.length);
+
+    expect(
+      total,
+      total > OMP_DERIVED_SEED_WIRE_BYTE_BUDGET
+        ? `\n\nDERIVED OMP SEED OVER ITS UNIFIED BUDGET: ${total.toLocaleString()} B > ` +
+          `${OMP_DERIVED_SEED_WIRE_BYTE_BUDGET.toLocaleString()} B (D-009).\n` +
+          `Heaviest (tier shown):\n` +
+          rowsTiered
+            .slice(0, 8)
+            .map((r) => `  ${String(r.bytes).padStart(7)}  ${r.tier.padEnd(7)}  ${r.name}`)
+            .join('\n') +
+          `\n\nThis seed is DERIVED — you do not edit a list. Run npm run gen:tool-delivery;\n` +
+          `the policy drops the lowest-value name(s) to pay for whatever grew, and the\n` +
+          `artifact diff names who paid.\n`
+        : undefined,
+    ).toBeLessThanOrEqual(OMP_DERIVED_SEED_WIRE_BYTE_BUDGET);
+  });
+
+  it('FLOOR COVERAGE: every floor tool is advertised to psu OMP at >= COMPACT (P-008)', () => {
+    const advertised = new Set(ompCoreToolNames({}) as string[]);
+    const floors = (OMP_TOOL_DELIVERY as { floors?: string[] }).floors ?? [];
+    expect(
+      floors.length,
+      'the generated artifact carries no floor list — this assertion would be vacuous',
+    ).toBeGreaterThan(10);
+    const dropped = floors.filter((n) => !advertised.has(n));
+    expect(
+      dropped,
+      dropped.length ? `floor tool(s) NOT advertised to psu OMP: ${dropped.join(', ')}` : undefined,
+    ).toEqual([]);
   });
 
   it('the advertised spine stays within its measured wire ratchet', () => {
