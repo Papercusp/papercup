@@ -13,6 +13,20 @@ import { fileURLToPath } from 'node:url';
 
 const PROMPTS = join(dirname(fileURLToPath(import.meta.url)), '..', 'prompts');
 const read = (rel: string) => readFileSync(join(PROMPTS, rel), 'utf8');
+const BLUEPRINT_SU = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '..',
+  'libs',
+  'papercusp',
+  'packages',
+  'harness',
+  'blueprints',
+  'base',
+  'prompts',
+  'su.md',
+);
 
 /** The su/interactive persona sources swept in B-LOOP-FIN-1. */
 const SU_PERSONAS = [
@@ -55,5 +69,22 @@ describe('su/interactive personas steer recurrence onto the engine loop (B-LOOP-
     // bee.md keeps its own "native /loop is disabled" rule; it must NOT gain the
     // su/interactive self-loop verb — the sweep deliberately excludes the autonomous loop.
     expect(read('bee.md')).not.toContain('loop:arm');
+  });
+});
+
+describe('canonical SU persona — hybrid owner-directive capture (WI-10002186)', () => {
+  it('keeps the capture and next-turn resolution contract on the live blueprint path', () => {
+    const persona = readFileSync(BLUEPRINT_SU, 'utf8');
+    const sectionStart = persona.indexOf('## Owner directives — durable capture and resolution');
+    const autoMode = persona.indexOf('<!-- PAPERCUSP-SU:AUTO-MODE -->');
+
+    expect(sectionStart, 'the owner-directive section must remain in the canonical persona').toBeGreaterThanOrEqual(0);
+    expect(autoMode, 'the generated AUTO seam must remain present').toBeGreaterThan(sectionStart);
+
+    const section = persona.slice(sectionStart, autoMode);
+    expect(section).toContain('UserPromptSubmit hook records the owner turn verbatim as a PENDING row');
+    expect(section).toContain('orders:resolve-pending { id, action: \'promote\' }');
+    expect(section).toContain("orders:resolve-pending { id, action: 'dismiss', reason }");
+    expect(section).toContain("orders:disposition { id, status: 'done'|'declined', note }");
   });
 });
