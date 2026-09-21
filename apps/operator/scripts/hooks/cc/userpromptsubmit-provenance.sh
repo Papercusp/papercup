@@ -482,6 +482,21 @@ def record_owner_prompt(prompt, native_session):
         'submittedAtMs': round(now_ms),
     })
 
+def capture_pending_owner_prompt(prompt, native_session):
+    """Best-effort hybrid capture; the next agent turn must resolve the row."""
+    if not isinstance(prompt, str) or not prompt.strip():
+        return
+    # Claude does not expose a stable turn id on every hook payload. The session,
+    # payload hash, and submit timestamp give retries a useful provenance pointer;
+    # the server's partial unique index makes a same-ref retry idempotent.
+    source = f"{native_session or sid}:{sha256_hex(prompt)}"
+    _mcp_call('orders:capture-pending', {
+        'verbatim': prompt[:16000],
+        'sourceTurnRef': source,
+        'sessionRef': native_session or sid,
+        'ownerName': 'owner',
+    }, timeout=1)
+
 
 m = ENVELOPE_RE.match(prompt)
 if m:
@@ -576,6 +591,10 @@ else:
             record_owner_prompt(prompt, data.get('session_id') or data.get('sessionId'))
         except Exception:
             pass  # fail-open: persistence is advisory to the prompt path
+        try:
+            capture_pending_owner_prompt(prompt, data.get('session_id') or data.get('sessionId'))
+        except Exception:
+            pass  # fail-open: capture must never wedge UserPromptSubmit
         try:
             _note = register_owner_mode(prompt)
         except Exception:

@@ -37,6 +37,7 @@ import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-regis
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
 export type OwnerDirectiveDisposition = 'done' | 'declined';
+export type OwnerDirectiveCaptureStatus = 'pending' | 'open' | 'dismissed';
 
 export interface OwnerDirectiveRow {
   id: number;
@@ -51,6 +52,10 @@ export interface OwnerDirectiveRow {
   dispositionStatus: OwnerDirectiveDisposition | null;
   dispositionNote: string | null;
   dispositionedBy: string | null;
+  captureStatus?: OwnerDirectiveCaptureStatus;
+  captureDismissalReason?: string | null;
+  captureDismissedAtMs?: number | null;
+  captureDismissedBy?: string | null;
 }
 
 // ── Bounds ────────────────────────────────────────────────────────────────────
@@ -95,6 +100,10 @@ interface RawRow {
   disposition_status: string | null;
   disposition_note: string | null;
   dispositioned_by: string | null;
+  capture_status: string | null;
+  capture_dismissal_reason: string | null;
+  capture_dismissed_at: string | Date | null;
+  capture_dismissed_by: string | null;
 }
 
 function rowOf(r: RawRow): OwnerDirectiveRow {
@@ -112,6 +121,11 @@ function rowOf(r: RawRow): OwnerDirectiveRow {
       r.disposition_status === 'done' || r.disposition_status === 'declined' ? r.disposition_status : null,
     dispositionNote: r.disposition_note,
     dispositionedBy: r.dispositioned_by,
+    captureStatus:
+      r.capture_status === 'pending' || r.capture_status === 'dismissed' ? r.capture_status : 'open',
+    captureDismissalReason: r.capture_dismissal_reason,
+    captureDismissedAtMs: toMs(r.capture_dismissed_at),
+    captureDismissedBy: r.capture_dismissed_by,
   };
 }
 
@@ -127,6 +141,8 @@ export interface RecordOwnerDirectiveInput {
   verbatimText: string;
   /** The recording agent (coord ownerId). */
   recordedBy: string;
+  /** Hybrid capture lifecycle. Hook-created rows start pending; agents promote to open. */
+  captureStatus?: Exclude<OwnerDirectiveCaptureStatus, 'dismissed'>;
 }
 
 export async function recordOwnerDirective(
@@ -138,13 +154,29 @@ export async function recordOwnerDirective(
   const text = input.verbatimText.slice(0, OWNER_DIRECTIVE_VERBATIM_MAX);
   const rows = await s<RawRow[]>`
     INSERT INTO harness_shared.owner_directives
-      (workspace_id, owner_id, session_ref, source_turn_ref, verbatim_text, recorded_by)
-    VALUES
-      (${ws}, ${input.ownerId ?? OWNER_DIRECTIVE_DEFAULT_OWNER}, ${input.sessionRef ?? null},
-       ${input.sourceTurnRef ?? null}, ${text}, ${input.recordedBy})
+      (workspace_id, owner_id, session_ref, source_turn_ref, verbatim_text, recorded_by, capture_status)
+    SELECT ${ws}, ${input.ownerId ?? OWNER_DIRECTIVE_DEFAULT_OWNER}, ${input.sessionRef ?? null},
+       ${input.sourceTurnRef ?? null}, ${text}, ${input.recordedBy}, ${input.captureStatus ?? 'open'}
+    WHERE NOT EXISTS (
+      SELECT 1 FROM harness_shared.owner_directives
+       WHERE workspace_id = ${ws}
+         AND owner_id = ${input.ownerId ?? OWNER_DIRECTIVE_DEFAULT_OWNER}
+         AND source_turn_ref = ${input.sourceTurnRef ?? null}
+    )
     RETURNING *
   `;
-  return rowOf(rows[0]);
+  if (rows[0]) return rowOf(rows[0]);
+  const existing = await s<RawRow[]>`
+    SELECT * FROM harness_shared.owner_directives
+     WHERE workspace_id = ${ws}
+       AND owner_id = ${input.ownerId ?? OWNER_DIRECTIVE_DEFAULT_OWNER}
+       AND source_turn_ref = ${input.sourceTurnRef ?? null}
+       AND capture_status = 'pending'
+     ORDER BY id DESC
+     LIMIT 1
+  `;
+  if (existing[0]) return rowOf(existing[0]);
+  throw new Error('owner_directive_insert_conflict');
 }
 
 export async function getOwnerDirective(id: number, sql?: Sql): Promise<OwnerDirectiveRow | null> {
@@ -156,7 +188,7 @@ export async function getOwnerDirective(id: number, sql?: Sql): Promise<OwnerDir
 
 export interface ListOwnerDirectivesOpts {
   workspaceId: string;
-  /** true → only open (undispositioned); false → only closed; omitted → all. */
+  /** true → only unresolved capture rows; false → only dispositioned history; omitted → all. */
   open?: boolean;
   limit?: number;
 }
@@ -173,7 +205,7 @@ export async function listOwnerDirectives(
   const rows = await s<RawRow[]>`
     SELECT * FROM harness_shared.owner_directives
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
-       ${opts.open === true ? s`AND dispositioned_at IS NULL` : opts.open === false ? s`AND dispositioned_at IS NOT NULL` : s``}
+       ${opts.open === true ? s`AND dispositioned_at IS NULL AND capture_status <> 'dismissed'` : opts.open === false ? s`AND (dispositioned_at IS NOT NULL OR capture_status = 'dismissed')` : s``}
      ORDER BY created_at ASC, id ASC
      LIMIT ${limit}
   `;
@@ -196,6 +228,7 @@ export async function countOpenOwnerDirectives(workspaceId: string, sql?: Sql): 
     SELECT count(*) AS n FROM harness_shared.owner_directives
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
        AND dispositioned_at IS NULL
+       AND capture_status <> 'dismissed'
   `;
   return Number(rows[0]?.n ?? 0);
 }
@@ -225,6 +258,49 @@ export async function dispositionOwnerDirective(
   return { ok: false, error: 'already_dispositioned', row: existing };
 }
 
+export type ResolvePendingOwnerDirectiveResult =
+  | { ok: true; row: OwnerDirectiveRow }
+  | { ok: false; error: 'not_found' | 'not_pending'; row?: OwnerDirectiveRow };
+
+/** Promote an auto-captured pending owner turn into an actionable directive. */
+export async function promoteOwnerDirective(
+  input: { id: number; promotedBy: string },
+  sql?: Sql,
+): Promise<ResolvePendingOwnerDirectiveResult> {
+  const s = db(sql);
+  const rows = await s<RawRow[]>`
+    UPDATE harness_shared.owner_directives
+       SET capture_status = 'open'
+     WHERE id = ${input.id} AND capture_status = 'pending' AND dispositioned_at IS NULL
+     RETURNING *
+  `;
+  if (rows[0]) return { ok: true, row: rowOf(rows[0]) };
+  const existing = await getOwnerDirective(input.id, sql);
+  if (!existing) return { ok: false, error: 'not_found' };
+  return { ok: false, error: 'not_pending', row: existing };
+}
+
+/** Dismiss an auto-captured pending turn with an explicit, durable reason. */
+export async function dismissOwnerDirective(
+  input: { id: number; reason: string; dismissedBy: string },
+  sql?: Sql,
+): Promise<ResolvePendingOwnerDirectiveResult> {
+  const s = db(sql);
+  const rows = await s<RawRow[]>`
+    UPDATE harness_shared.owner_directives
+       SET capture_status = 'dismissed',
+           capture_dismissal_reason = ${input.reason},
+           capture_dismissed_at = now(),
+           capture_dismissed_by = ${input.dismissedBy}
+     WHERE id = ${input.id} AND capture_status = 'pending' AND dispositioned_at IS NULL
+     RETURNING *
+  `;
+  if (rows[0]) return { ok: true, row: rowOf(rows[0]) };
+  const existing = await getOwnerDirective(input.id, sql);
+  if (!existing) return { ok: false, error: 'not_found' };
+  return { ok: false, error: 'not_pending', row: existing };
+}
+
 // ── Renderer (pure) ───────────────────────────────────────────────────────────
 
 function humanAge(ms: number): string {
@@ -244,14 +320,14 @@ export function renderOwnerDirectiveRow(row: OwnerDirectiveRow, nowMs: number = 
     text.length <= OWNER_DIRECTIVE_WHOLE_MAX
       ? `"${text}"`
       : `"${text.slice(0, OWNER_DIRECTIVE_EXCERPT_CHARS)}…" [full text: orders:get #${row.id}]`;
-  return `  • #${row.id} [${age} old, recorded by ${by}] ${rendered}`;
+  const pending = row.captureStatus === 'pending' ? ' [PENDING — resolve next turn]' : '';
+  return `  • #${row.id} [${age} old, recorded by ${by}]${pending} ${rendered}`;
 }
 
 export const OWNER_DIRECTIVES_BLOCK_HEADER =
-  '📌 OPEN OWNER DIRECTIVES — explicit owner orders recorded verbatim (orders:record), still awaiting ' +
-  'disposition. These OUTRANK your loop agenda: re-read them BEFORE acting on the checkpoint below, act ' +
-  'on / carry the ones in your lane, and close each finished or refused one via ' +
-  'orders:disposition { id, status: done|declined, note }.';
+  '📌 OPEN OWNER DIRECTIVES — explicit owner turns recorded verbatim; pending captures must be promoted or ' +
+  'dismissed before they stop injecting. These OUTRANK your loop agenda: re-read them BEFORE acting on ' +
+  'the checkpoint below, then use orders:resolve-pending or orders:disposition as appropriate.';
 
 /**
  * The block every render point injects. Returns null when there are no open
