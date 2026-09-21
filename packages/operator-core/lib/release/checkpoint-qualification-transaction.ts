@@ -998,9 +998,16 @@ export function assessTerminalRepairQueueReconciliation(
   // to it. This link is accepted only for the narrow untested repair-head state below.
   const originMatchesImmediatePredecessor =
     current.previousAttemptId !== null && queue.qualificationAttemptId === current.previousAttemptId;
+  // `fixerSpawnId` is historical provenance once the queue reaches ready-to-verify:
+  // markFrozenRepairFixerFinished intentionally keeps the completed spawn id so the
+  // repair lineage can explain who produced the head.  The phase is the ownership
+  // boundary; an active fixer is only allowed to hold an awaiting-fixer row, and an
+  // active launch is separately fenced by dispatchReservation.  Requiring a NULL
+  // fixerSpawnId here therefore strands every completed fixer admission behind a
+  // terminal qualification predecessor (the live failure this reconciliation exists
+  // to recover from).
   const safeUntestedRepairHead =
     queue.phase === 'ready-to-verify' &&
-    queue.fixerSpawnId === null &&
     queue.dispatchReservation == null &&
     frozenRepairHeadAwaitsVerification(queue);
   // A legacy/null-origin queue can still be handed forward safely when the caller independently

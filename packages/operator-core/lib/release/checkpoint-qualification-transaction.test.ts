@@ -490,6 +490,58 @@ describe('logical checkpoint qualification transaction', () => {
     ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
   });
 
+  it('preserves a completed-fixer repair head whose spawn id is retained as provenance', () => {
+    const terminal = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'not-green',
+      green: false,
+      nowMs: 400,
+    }).transaction;
+    const redCandidate = markFrozenCandidateVerificationRed(
+      createFrozenCandidateQueue({
+        candidate: 'candidate-1',
+        qualificationAttemptId: 'attempt-1',
+        base: null,
+        nowMs: 200,
+      }),
+      { failingTests: ['broken.test.ts'], nowMs: 300 },
+    );
+    // A completed fixer is represented by ready-to-verify plus its historical spawn id;
+    // the id is deliberately retained for lineage diagnostics and is not a live lease.
+    const completedFixerQueue = {
+      ...markFrozenRepairAdmitted(redCandidate, {
+        atMs: 350,
+        actor: 'agent-1',
+        source: { ref: 'staging', sha: 'repair-1' },
+        fromRepairHead: 'candidate-1',
+        toRepairHead: 'repair-1',
+        paths: ['fixed.ts'],
+        unchanged: [],
+        blobs: { 'fixed.ts': 'blob-1' },
+      }),
+      fixerSpawnId: 'completed-fixer-1',
+    };
+    expect(completedFixerQueue.phase).toBe('ready-to-verify');
+
+    expect(
+      assessTerminalRepairQueueReconciliation(
+        terminal,
+        {
+          attemptId: 'attempt-2',
+          requiredAncestorSha: 'repair-1',
+          declaredPaths: [],
+          candidate: 'candidate-2',
+          nowMs: 500,
+        },
+        completedFixerQueue,
+      ),
+    ).toMatchObject({
+      status: 'preserved',
+      reason: 'matching-untested-repair-head',
+      candidate: 'candidate-1',
+    });
+  });
+
   it('preserves an untested repair head linked through the terminal attempt immediate predecessor', () => {
     const firstTerminal = settleQualificationTransaction(begin(), {
       attemptId: 'attempt-1',
