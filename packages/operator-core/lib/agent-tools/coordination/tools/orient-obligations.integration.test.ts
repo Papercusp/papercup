@@ -198,12 +198,30 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     const warm = await deliver(2_000);
     for (const line of actionLines) expect(warm).toContain(line);
     expect((await cursor()).pending.obligations).toBe(brief.sourceGeneration);
-    expect(await deliver(2_000)).toBe('');
+
+    // P-002 CLASS-B RE-INJECT POLICY. A class-B row is discharged by
+    // DISPOSITION, not by DELIVERY — so an identical next turn must RE-EMIT the
+    // rows rather than fall silent. This assertion used to read `.toBe('')`,
+    // which encoded exactly the one-shot behaviour P-002 replaced: the agenda
+    // was committed as "seen" and an undispositioned owner directive never
+    // reappeared.
+    //
+    // Note what is re-emitted: the ROW, not the whole block. Re-sending the
+    // block would repeat unchanged held items/gates/facts and manufacture the
+    // signal decay D-003 withdrew the triage line for.
+    const reinjected = await deliver(2_000);
+    for (const line of actionLines) expect(reinjected).toContain(line);
+    // ...and it re-emits DESPITE the generation being committed, which is the
+    // whole contract. Suppression itself is still guarded — the discharged
+    // control lives in turn-start-class-b-reinject.test.ts, so a change that
+    // made orientation unconditionally chatty fails THERE, not silently here.
     expect((await cursor()).committed.obligations).toBe(brief.sourceGeneration);
+
     epoch += 1;
     const cold = await deliver(2_000);
     for (const line of actionLines) expect(cold).toContain(line);
-    expect(await deliver(2_000)).toBe('');
+    const reinjectedAfterCold = await deliver(2_000);
+    for (const line of actionLines) expect(reinjectedAfterCold).toContain(line);
   }, 90_000);
 
   it('returns the canonical full agenda from the production handler', async () => {
