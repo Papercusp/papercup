@@ -188,6 +188,22 @@ function callbackErrorRedirect(origin: string, returnTo: string, code: string): 
   return redirect(target.toString(), [deleteFlowCookie()]);
 }
 
+/**
+ * Recover to the public portal when the provider callback omitted state.
+ *
+ * We cannot safely recover the original return target without a valid flow
+ * state, so this deliberately falls back to `/`. The callback remains
+ * fail-closed (no code exchange and no session creation), while the portal
+ * gets a navigable error signal from which it can offer the unified
+ * sign-in/sign-up entry point instead of exposing a dead-end JSON response.
+ */
+function callbackRecoveryRedirect(origin: string, code: string): Response {
+  const target = new URL('/', origin);
+  target.searchParams.set('hosted_auth_error', code);
+  target.searchParams.set('hosted_auth_recovery', '1');
+  return redirect(target.toString(), [deleteFlowCookie()]);
+}
+
 function validProviderRedirect(value: string | null): string | null {
   if (!value) return null;
   try {
@@ -305,9 +321,7 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
       const url = new URL(req.url);
       const state = url.searchParams.get('state') ?? '';
       if (!state) {
-        return jsonError('state_required', 'The sign-in state is required.', 400, {
-          'set-cookie': deleteFlowCookie(),
-        });
+        return callbackRecoveryRedirect(origin, 'state_required');
       }
 
       let consumed;

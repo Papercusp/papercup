@@ -234,6 +234,22 @@ describe('hosted auth route contract', () => {
     expect(s.provider.calls.exchangeCallback).toHaveLength(0);
   });
 
+  it('recovers a callback that omitted state to the public unified-auth entry point', async () => {
+    const s = setup();
+    const response = await invoke(
+      s.route('GET', '/hosted/auth/callback'),
+      new Request(`${ORIGIN}${HOSTED_AUTH_CALLBACK_PATH}?code=code-1`),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(
+      `${ORIGIN}/?hosted_auth_error=state_required&hosted_auth_recovery=1`,
+    );
+    expect(response.headers.get('set-cookie')).toContain(`${HOSTED_AUTH_FLOW_COOKIE}=`);
+    expect(s.provider.calls.exchangeCallback).toHaveLength(0);
+    expect(s.sessionStore.created).toHaveLength(0);
+  });
+
   it('validates an upstream session and returns metadata with no authority payload', async () => {
     const s = setup();
     await s.sessionStore.create({
