@@ -3,11 +3,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { parseEnvFile, resolveIntegrationReferences } from "../systemd/portal-hosted-launcher";
 
 const ROOT = resolve(__dirname, "../../../..");
 const SCRIPT = join(ROOT, "apps/operator/scripts/systemd/deploy-cloud-portal.sh");
 const TEMPLATE = join(ROOT, "apps/operator/scripts/systemd/papercusp-cloud-portal.service.in");
 const PROXY_SCRIPT = join(ROOT, "apps/operator/scripts/systemd/papercusp-cloud-portal-proxy.mjs");
+const LAUNCHER_SCRIPT = join(ROOT, "apps/operator/scripts/systemd/portal-hosted-launcher.ts");
 const README = join(ROOT, "apps/operator/scripts/systemd/README.md");
 
 interface Fixture {
@@ -42,6 +44,8 @@ function fixture(): Fixture {
   mkdirSync(join(procRoot, "4242"), { recursive: true });
   mkdirSync(join(procRoot, "4242", "task", "4242"), { recursive: true });
   mkdirSync(join(procRoot, "4343"), { recursive: true });
+  writeFileSync(join(dir, "hosted.env"), "PAPERCUSP_HOSTED_PUBLIC_ORIGIN=https://example.test\n");
+  writeFileSync(join(dir, "operator.env"), "DATABASE_URL=postgres://fixture\n");
   writeFileSync(join(portalRoot, "package.json"), '{"name":"portal-fixture"}\n');
   writeFileSync(join(nextDir, "next"), "#!/usr/bin/env bash\nexit 0\n");
   chmodSync(join(nextDir, "next"), 0o755);
@@ -85,6 +89,11 @@ function envFor(files: Fixture): NodeJS.ProcessEnv {
     PAPERCUSP_CLOUD_PORTAL_SYSTEMD_ANALYZE: "/bin/true",
     PAPERCUSP_CLOUD_PORTAL_PROC_ROOT: files.procRoot,
     PAPERCUSP_CLOUD_PORTAL_PROXY_INSTALL: join(files.binDir, "papercusp-cloud-portal-proxy.mjs"),
+    PAPERCUSP_CLOUD_PORTAL_LAUNCHER_INSTALL: join(files.binDir, "papercusp-cloud-portal-launcher.ts"),
+    PAPERCUSP_CLOUD_PORTAL_HOSTED_ENV_FILE: join(files.dir, "hosted.env"),
+    PAPERCUSP_CLOUD_PORTAL_OPERATOR_ENV_FILE: join(files.dir, "operator.env"),
+    PAPERCUSP_CLOUD_PORTAL_INTEGRATION_ROOT: ROOT,
+    PAPERCUSP_CLOUD_PORTAL_TSX: process.execPath,
   };
 }
 
@@ -131,6 +140,24 @@ function writeDigestCli(portalRoot: string, digest: string) {
 
 const RELEASE_DIGEST = "c0ffee".repeat(10) + "abcd";
 
+describe("hosted Portal boot launcher", () => {
+  it("rewrites encrypted integration references to ephemeral env references", async () => {
+    const source = parseEnvFile("# comment\nWORKOS_API_KEY_REF=integration:WORKOS_API_KEY\nWORKOS_CLIENT_ID=client_test\n");
+    const rewritten = await resolveIntegrationReferences(source, async (reference) => {
+      expect(reference).toBe("integration:WORKOS_API_KEY");
+      return "SECRET_SENTINEL";
+    });
+    expect(rewritten.WORKOS_API_KEY_REF).toBe("env:PAPERCUSP_CLOUD_PORTAL_SECRET_WORKOS_API_KEY");
+    expect(rewritten.PAPERCUSP_CLOUD_PORTAL_SECRET_WORKOS_API_KEY).toBe("SECRET_SENTINEL");
+    expect(rewritten.WORKOS_CLIENT_ID).toBe("client_test");
+  });
+
+  it("rejects malformed encrypted references before child startup", async () => {
+    await expect(resolveIntegrationReferences({ BAD_REF: "integration:not-valid" }, async () => "never"))
+      .rejects.toThrow("portal_hosted_secret_ref_malformed");
+  });
+});
+
 function staleTestSystemctl(files: Fixture): string {
   const systemctl = join(files.binDir, "systemctl");
   writeFileSync(
@@ -171,10 +198,12 @@ describe("Cloud Portal systemd deployment contract", () => {
   it("renders machine-specific paths with systemd escaping and keeps the source template neutral", () => {
     const files = fixture();
     try {
+      writeFileSync(join(files.dir, "hosted.env"), "PAPERCUSP_HOSTED_PUBLIC_ORIGIN=https://example.test\n");
       const result = run(files, ["--render-only"]);
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain(`WorkingDirectory=${files.portalRoot.replaceAll(" ", "\\ ")}`);
-      expect(result.stdout).toContain(`ExecStart=${process.execPath} `);
+      expect(result.stdout).toContain("ExecStart=");
+      expect(result.stdout).toContain("papercusp-cloud-portal-launcher.ts");
       expect(result.stdout).toContain("Environment=NODE_ENV=production");
       expect(result.stdout).toContain("Environment=HOSTNAME=127.0.0.1");
       expect(result.stdout).toContain("Type=notify");
@@ -184,7 +213,9 @@ describe("Cloud Portal systemd deployment contract", () => {
       expect(result.stdout).toContain(
         `Environment=PORTAL_RUNTIME_ROOT=${files.runtimeRoot.replaceAll(" ", "\\ ")}`,
       );
-      expect(result.stdout).toContain(`EnvironmentFile=-${files.portalRoot.replaceAll(" ", "\\ ")}/.env.local`);
+      expect(result.stdout).not.toContain("EnvironmentFile=");
+      expect(result.stdout).toContain("PAPERCUSP_PORTAL_HOSTED_ENV_FILE=");
+      expect(result.stdout).toContain("PAPERCUSP_INTEGRATION_ROOT=");
       expect(result.stdout).toContain("scripts/start-web.mjs");
       expect(result.stdout).not.toContain(`${files.portalRoot.replaceAll(" ", "\\ ")}/.portal-runtime`);
       expect(result.stdout).not.toContain("ExecStart=" + process.execPath + " " + files.portalRoot + "/node_modules/.bin/next dev");
@@ -193,7 +224,7 @@ describe("Cloud Portal systemd deployment contract", () => {
       const template = readFileSync(TEMPLATE, "utf8");
       expect(template).toContain("@PORTAL_ROOT@");
       expect(template).toContain("@RUNTIME_ROOT@");
-      expect(template).toContain("@NODE@");
+      expect(template).toContain("@TSX@");
       expect(template).not.toMatch(/\/home\/[a-z]/i);
     } finally {
       rmSync(files.dir, { recursive: true, force: true });
@@ -242,8 +273,9 @@ esac
       expect(installed).toContain("WorkingDirectory=");
       expect(installed).toContain("ExecStart=");
       expect(installed).toContain("Environment=NODE_ENV=production");
-      expect(installed).toContain("EnvironmentFile=-");
-      expect(installed).toContain("scripts/start-web.mjs");
+      expect(installed).not.toContain("EnvironmentFile=");
+      expect(installed).toContain("PAPERCUSP_PORTAL_HOSTED_ENV_FILE=");
+      expect(installed).toContain("papercusp-cloud-portal-launcher.ts");
       expect(installed).toContain("Type=notify");
       expect(installed).toContain("NotifyAccess=all");
       expect(installed).toContain("WatchdogSec=15s");
@@ -256,6 +288,9 @@ esac
       expect(readFileSync(files.analyzeLogPath, "utf8")).toMatch(/\.service\n$/);
       expect(readFileSync(join(files.binDir, "papercusp-cloud-portal-proxy.mjs"), "utf8")).toBe(
         readFileSync(PROXY_SCRIPT, "utf8"),
+      );
+      expect(readFileSync(join(files.binDir, "papercusp-cloud-portal-launcher.ts"), "utf8")).toBe(
+        readFileSync(LAUNCHER_SCRIPT, "utf8"),
       );
     } finally {
       rmSync(files.dir, { recursive: true, force: true });

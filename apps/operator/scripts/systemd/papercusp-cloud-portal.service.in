@@ -19,12 +19,19 @@ StartLimitBurst=5
 Type=notify
 NotifyAccess=all
 WorkingDirectory=@PORTAL_ROOT@
-# Runtime configuration remains in the external app checkout and is read by
-# systemd rather than copied into the standalone artifact or this unit.
-EnvironmentFile=-@PORTAL_ROOT@/.env.local
+# Runtime configuration is assembled by the boot launcher. The hosted env file
+# contains only non-secret values and integration:NAME references; the launcher
+# resolves those references in-process and exports ephemeral env slots to the
+# standalone child. The Portal checkout's local .env.local is deliberately NOT
+# sourced: it pins PORTAL_LOCAL_MODE=1 and carries plaintext local credentials.
 Environment=NODE_ENV=production
 Environment=HOSTNAME=127.0.0.1
 Environment=PORT=@PORT@
+Environment=PAPERCUSP_PORTAL_ROOT=@PORTAL_ROOT@
+Environment=PAPERCUSP_PORTAL_START_WEB=@START_WEB@
+Environment=PAPERCUSP_PORTAL_HOSTED_ENV_FILE=@HOSTED_ENV_FILE@
+Environment=PAPERCUSP_PORTAL_OPERATOR_ENV_FILE=@OPERATOR_ENV_FILE@
+Environment=PAPERCUSP_INTEGRATION_ROOT=@INTEGRATION_ROOT@
 Environment=PORTAL_RUNTIME_ROOT=@RUNTIME_ROOT@
 Environment=PORTAL_HEALTH_PATH=/
 Environment=PORTAL_READINESS_TIMEOUT_MS=60000
@@ -34,7 +41,7 @@ Environment=PATH=@NODE_DIR@:%h/.local/bin:%h/.linuxbrew/bin:/usr/local/bin:/usr/
 # Generated releases live beside the checkout, not under it: a standalone trace
 # must never copy its own release history into the next generation. start-web
 # resolves that external current pointer once, then runs the immutable target.
-ExecStart=@NODE@ @START_WEB@
+ExecStart=@TSX@ @LAUNCHER@
 Restart=on-failure
 RestartSec=3s
 WatchdogSec=15s

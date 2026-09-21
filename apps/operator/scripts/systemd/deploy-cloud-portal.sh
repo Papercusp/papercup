@@ -11,6 +11,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE="${PAPERCUSP_CLOUD_PORTAL_TEMPLATE:-$SCRIPT_DIR/papercusp-cloud-portal.service.in}"
 PROXY_SOURCE="${PAPERCUSP_CLOUD_PORTAL_PROXY_SOURCE:-$SCRIPT_DIR/papercusp-cloud-portal-proxy.mjs}"
+LAUNCHER_SOURCE="${PAPERCUSP_CLOUD_PORTAL_LAUNCHER_SOURCE:-$SCRIPT_DIR/portal-hosted-launcher.ts}"
 
 : "${HOME:?HOME must be set for the user-service deployment}"
 
@@ -39,6 +40,11 @@ CURL_TIMEOUT_SEC="${PAPERCUSP_CLOUD_PORTAL_CURL_TIMEOUT_SEC:-5}"
 PORT_RELEASE_WAIT_SEC="${PAPERCUSP_CLOUD_PORTAL_PORT_RELEASE_WAIT_SEC:-30}"
 FALLBACK_LOG="${PAPERCUSP_CLOUD_PORTAL_FALLBACK_LOG:-$HOME/.papercusp/logs/cloud-portal-legacy.log}"
 PROXY_INSTALL="${PAPERCUSP_CLOUD_PORTAL_PROXY_INSTALL:-$HOME/.local/bin/papercusp-cloud-portal-proxy.mjs}"
+LAUNCHER_INSTALL="${PAPERCUSP_CLOUD_PORTAL_LAUNCHER_INSTALL:-$HOME/.local/bin/papercusp-cloud-portal-launcher.ts}"
+INTEGRATION_ROOT="${PAPERCUSP_CLOUD_PORTAL_INTEGRATION_ROOT:-$(cd -- "$SCRIPT_DIR/../../../.." && pwd)}"
+HOSTED_ENV_FILE="${PAPERCUSP_CLOUD_PORTAL_HOSTED_ENV_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/papercusp/hosted-control-plane.env}"
+OPERATOR_ENV_FILE="${PAPERCUSP_CLOUD_PORTAL_OPERATOR_ENV_FILE:-$INTEGRATION_ROOT/apps/operator/.env.local}"
+TSX_BIN="${PAPERCUSP_CLOUD_PORTAL_TSX:-$INTEGRATION_ROOT/node_modules/.bin/tsx}"
 PROC_ROOT="${PAPERCUSP_CLOUD_PORTAL_PROC_ROOT:-/proc}"
 
 MODE="install"
@@ -73,7 +79,10 @@ Environment overrides:
   PAPERCUSP_CLOUD_PORTAL_CURL, PAPERCUSP_CLOUD_PORTAL_HEALTH_PATH,
   PAPERCUSP_CLOUD_PORTAL_HEALTH_WAIT_SEC, PAPERCUSP_CLOUD_PORTAL_GIT,
   PAPERCUSP_CLOUD_PORTAL_ALLOW_STALE_RELEASE,
-  PAPERCUSP_CLOUD_PORTAL_PROXY_SOURCE, PAPERCUSP_CLOUD_PORTAL_PROXY_INSTALL
+  PAPERCUSP_CLOUD_PORTAL_PROXY_SOURCE, PAPERCUSP_CLOUD_PORTAL_PROXY_INSTALL,
+  PAPERCUSP_CLOUD_PORTAL_LAUNCHER_SOURCE, PAPERCUSP_CLOUD_PORTAL_LAUNCHER_INSTALL,
+  PAPERCUSP_CLOUD_PORTAL_INTEGRATION_ROOT, PAPERCUSP_CLOUD_PORTAL_HOSTED_ENV_FILE,
+  PAPERCUSP_CLOUD_PORTAL_OPERATOR_ENV_FILE
 EOF
 }
 
@@ -108,8 +117,17 @@ validate_inputs() {
   require_absolute PROC_ROOT "$PROC_ROOT"
   require_absolute PROXY_SOURCE "$PROXY_SOURCE"
   require_absolute PROXY_INSTALL "$PROXY_INSTALL"
+  require_absolute LAUNCHER_SOURCE "$LAUNCHER_SOURCE"
+  require_absolute LAUNCHER_INSTALL "$LAUNCHER_INSTALL"
+  require_absolute INTEGRATION_ROOT "$INTEGRATION_ROOT"
+  require_absolute HOSTED_ENV_FILE "$HOSTED_ENV_FILE"
+  require_absolute OPERATOR_ENV_FILE "$OPERATOR_ENV_FILE"
+  require_absolute TSX_BIN "$TSX_BIN"
   [[ -f "$TEMPLATE" ]] || die "unit template is missing: $TEMPLATE"
   [[ -f "$PROXY_SOURCE" ]] || die "portal proxy source is missing: $PROXY_SOURCE"
+  [[ -f "$LAUNCHER_SOURCE" ]] || die "portal hosted launcher source is missing: $LAUNCHER_SOURCE"
+  [[ -f "$HOSTED_ENV_FILE" ]] || die "hosted env file is missing: $HOSTED_ENV_FILE"
+  [[ -x "$TSX_BIN" ]] || die "tsx executable is not executable: $TSX_BIN"
   [[ -d "$PORTAL_ROOT" ]] || die "portal root is not a directory: $PORTAL_ROOT"
   [[ -f "$PORTAL_ROOT/package.json" ]] || die "portal package.json is missing: $PORTAL_ROOT/package.json"
   [[ -x "$NODE_BIN" ]] || die "Node executable is not executable: $NODE_BIN"
@@ -135,7 +153,7 @@ validate_inputs() {
 
   # These values become systemd syntax. Reject control bytes and specifier
   # markers rather than allowing a path to alter a unit's meaning.
-  for value in "$PORTAL_ROOT" "$PORTAL_RUNTIME_ROOT" "$NODE_BIN" "$NEXT_BIN" "$START_WEB" "$CURRENT_RELEASE_LINK" "$NODE_DIR" "$PROXY_SOURCE" "$PROXY_INSTALL"; do
+  for value in "$PORTAL_ROOT" "$PORTAL_RUNTIME_ROOT" "$NODE_BIN" "$NEXT_BIN" "$START_WEB" "$CURRENT_RELEASE_LINK" "$NODE_DIR" "$PROXY_SOURCE" "$PROXY_INSTALL" "$LAUNCHER_SOURCE" "$LAUNCHER_INSTALL" "$INTEGRATION_ROOT" "$HOSTED_ENV_FILE" "$OPERATOR_ENV_FILE" "$TSX_BIN"; do
     [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *%* ]] ||
       die "portal paths may not contain newlines or systemd '%' specifiers"
   done
@@ -153,13 +171,18 @@ unit_escape() {
 }
 
 render_unit() {
-  local root runtime_root node next start_web node_dir
+  local root runtime_root node next start_web node_dir launcher integration_root hosted_env operator_env tsx
   root="$(unit_escape "$PORTAL_ROOT")"
   runtime_root="$(unit_escape "$PORTAL_RUNTIME_ROOT")"
   node="$(unit_escape "$NODE_BIN")"
   next="$(unit_escape "$NEXT_BIN")"
   start_web="$(unit_escape "$START_WEB")"
   node_dir="$(unit_escape "$NODE_DIR")"
+  launcher="$(unit_escape "$LAUNCHER_INSTALL")"
+  integration_root="$(unit_escape "$INTEGRATION_ROOT")"
+  hosted_env="$(unit_escape "$HOSTED_ENV_FILE")"
+  operator_env="$(unit_escape "$OPERATOR_ENV_FILE")"
+  tsx="$(unit_escape "$TSX_BIN")"
 
   local line
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -170,6 +193,11 @@ render_unit() {
     line=${line//@NEXT_BIN@/$next}
     line=${line//@START_WEB@/$start_web}
     line=${line//@NODE_DIR@/$node_dir}
+    line=${line//@LAUNCHER@/$launcher}
+    line=${line//@INTEGRATION_ROOT@/$integration_root}
+    line=${line//@HOSTED_ENV_FILE@/$hosted_env}
+    line=${line//@OPERATOR_ENV_FILE@/$operator_env}
+    line=${line//@TSX@/$tsx}
     printf '%s\n' "$line"
   done < "$TEMPLATE"
 }
@@ -201,7 +229,22 @@ install_proxy_script() {
   log "installed portal proxy program at $PROXY_INSTALL (restart papercusp-cloud-portal-3081.service to activate a changed program)"
 }
 
+install_launcher() {
+  local launcher_dir launcher_tmp
+  launcher_dir="$(dirname -- "$LAUNCHER_INSTALL")"
+  mkdir -p -- "$launcher_dir"
+  if [[ -f "$LAUNCHER_INSTALL" ]] && cmp -s -- "$LAUNCHER_SOURCE" "$LAUNCHER_INSTALL"; then
+    return 0
+  fi
+  launcher_tmp="$(mktemp "$launcher_dir/.papercusp-cloud-portal-launcher.XXXXXX.ts")"
+  cp -- "$LAUNCHER_SOURCE" "$launcher_tmp"
+  chmod 0755 "$launcher_tmp"
+  mv -f -- "$launcher_tmp" "$LAUNCHER_INSTALL"
+  log "installed hosted portal launcher at $LAUNCHER_INSTALL"
+}
+
 install_unit() {
+  install_launcher
   mkdir -p -- "$UNIT_DIR"
   if [[ ! -d "$TEMP_DIR" ]]; then
     mkdir -p -- "$TEMP_DIR"
