@@ -318,5 +318,14 @@ describe.skipIf(!desktopPresent)(
       // malformed response, which mis-names whatever actually went wrong.
       expect(script).toMatch(/wrote to STDOUT on the error path/);
     });
+
+    it('initializes NODE_BIN and falls back to host node for cross-target JavaScript probes', () => {
+      const script = read(VERIFY_SCRIPT);
+      // Cross-target bundles cannot execute their foreign bundled node on the build host. The
+      // verifier must initialize the variable before the cross branch and then use host node for
+      // platform-independent JS probes; otherwise set -u aborts after a successful package.
+      expect(script).toContain('NODE_BIN="${NODE_BIN:-}"');
+      expect(script).toContain('NODE_BIN="$(command -v node 2>/dev/null || true)"');
+    });
   },
 );
