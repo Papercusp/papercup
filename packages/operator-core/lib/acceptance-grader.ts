@@ -12,6 +12,9 @@ import { getAcceptanceRubricForPlan } from './rubrics';
 import { listWorkItems, type WorkItem } from './work-items';
 import { reserveAcceptanceReviewTarget, type AcceptanceReviewReservationRef } from './coord/condition-upsert';
 import type { GraderEligibility, GraderEscalation } from './consult/acceptance-grader-select';
+// Type-only: erased at runtime, so it does NOT pull the oracle eagerly — the
+// VALUE (`resolveSessionStates`) stays behind the dynamic import below.
+import type { LivenessVerdict } from './agent-tools/coordination/liveness-oracle';
 // Manual citation checks must use the same subject tree as the frozen audit, and
 // the fresh-judge prompt and the assigned-grader briefs must say so identically —
 // so the guidance is single-sourced beside the briefs, in grading-cascade.ts.
@@ -24,6 +27,50 @@ import { listTasks } from './task-manager/store';
 import { killTask } from './task-manager/control';
 
 type LaunchCtx = Parameters<typeof launchAgentTool.handler>[1];
+
+/**
+ * WI-10002156: a REAPED session wears a healthy costume at grader selection.
+ *
+ * When a session dies uncleanly it never writes `adv_sessions.ended_at`, so the
+ * oracle's recorded-live leg still counts it as positive liveness evidence; its
+ * coord_presence row is reaped on TTL, but its inbox-wake WATCH ROW outlives the
+ * process, so wakeability still reads true. The verdict therefore lands `parked`
+ * — which is NOT in DEAD_RESPONDER_STATES and is therefore selectable. The
+ * cascade then assigns grading to a session that can never take a turn, and the
+ * plan waits on it until the 4h cascade expiry. MEASURED 2026-09-21 on
+ * su-ce0b634c-004b-438e-ab1d-cd677fd5c604: no coord_presence row at all, an
+ * adv_sessions row open since 07:01Z with a NULL pid, selected `via: 'minimum'`
+ * and reported `liveness: 'parked'` by the live ship gate.
+ *
+ * A watch row and an unclosed session row BOTH outlive the process; neither is a
+ * heartbeat. So the honest discriminator at THIS seam is presence: a `parked`
+ * verdict that no fresh heartbeat backs is a dead responder, demoted to `ended`
+ * FOR SELECTION ONLY. The shared oracle is deliberately left alone — its
+ * `parked` is correct for the ~10 other surfaces that read it.
+ *
+ * Deliberately NOT done, each considered and rejected against measurement:
+ *  - widening DEAD_RESPONDER_STATES to include `parked`: a genuinely parked
+ *    grader is legitimate BY DESIGN — it reads the request on its next turn.
+ *  - `psuHostAuthority: true`: the oracle header restricts that leg to cohorts
+ *    known to be psu-pty-hosted; the grader pool is arbitrary routed agents, so
+ *    enabling it would mass-demote live candidates to `ended`.
+ *  - gating on `selfWake === 'none'`: that axis is about UNPROMPTED self-wake
+ *    and the cascade sends an EXTERNAL wake. Measured: ~13 of 24 parked agents
+ *    report 'none' and are perfectly reachable; gating on it would halve the
+ *    candidate pool.
+ *  - gating on `pickupConfirmed`: typed the literal `false` by construction
+ *    (inbox-wake.ts), so `=== true` is a compile error, not a check.
+ *
+ * Failure direction is deliberate: a wrongly-demoted candidate costs a shorter
+ * menu (the recruiter falls through to another candidate or a fresh mint), while
+ * a wrongly-admitted dead one costs a silently stalled plan.
+ */
+export function selectableGraderLiveness(
+  verdict: Pick<LivenessVerdict, 'sessionState' | 'heartbeatFresh'>,
+): LivenessVerdict['sessionState'] {
+  if (verdict.sessionState !== 'parked') return verdict.sessionState;
+  return verdict.heartbeatFresh ? 'parked' : 'ended';
+}
 
 /**
  * Stable in-process principal that owns automatic acceptance-grader recruitment.
@@ -910,7 +957,11 @@ async function prodDiscoverGrader(
               ownerIds.map((ownerId) => ({ ownerId })),
               { hydratePerId: true },
             );
-            return Object.fromEntries([...verdicts.values()].map((v) => [v.ownerId, v.sessionState]));
+            // WI-10002156: demote a `parked` verdict no live process backs, so
+            // the cascade cannot assign grading to a reaped session.
+            return Object.fromEntries(
+              [...verdicts.values()].map((v) => [v.ownerId, selectableGraderLiveness(v)]),
+            );
           },
         }),
     },

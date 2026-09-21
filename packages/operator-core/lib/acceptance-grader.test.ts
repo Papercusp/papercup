@@ -9,7 +9,79 @@ import {
   isAcceptanceGradingRequestForPlan,
   resolveAcceptanceGraderDiscoveryExtraExclusions,
   resolveAcceptanceGrader,
+  selectableGraderLiveness,
 } from './acceptance-grader';
+
+describe('WI-10002156: a reaped session must not be selectable as a grader', () => {
+  // MEASURED 2026-09-21 on su-ce0b634c-004b-438e-ab1d-cd677fd5c604: NO
+  // coord_presence row, an adv_sessions row still open (an unclean death never
+  // writes ended_at, so the recorded-live leg counts it as positive evidence)
+  // and an orphan inbox-wake watch row that outlived the process (so
+  // wakeability still read true). The oracle therefore landed `parked`, which
+  // DEAD_RESPONDER_STATES = {ended, recorded} does not cover — and the cascade
+  // assigned grading to a session that could never take a turn.
+  it('demotes a parked verdict that no fresh heartbeat backs to ended', () => {
+    expect(selectableGraderLiveness({ sessionState: 'parked', heartbeatFresh: false })).toBe(
+      'ended',
+    );
+  });
+
+  // THE CONTROL that keeps the fix from being over-broad. A genuinely parked
+  // grader is legitimate BY DESIGN — it reads the grading request on its next
+  // turn — and measured, most candidates here are parked-but-heartbeating. If
+  // this ever flips to 'ended', the recruiter has started collapsing every menu
+  // to a fresh mint, which is the failure mode that rejected `psuHostAuthority`
+  // and the `selfWake === 'none'` gate for this seam.
+  it('leaves a genuinely parked, still-heartbeating grader selectable', () => {
+    expect(selectableGraderLiveness({ sessionState: 'parked', heartbeatFresh: true })).toBe(
+      'parked',
+    );
+  });
+
+  // FALSIFIABILITY CONTROL — CLAUDE.md § "Proving a guard is falsifiable" puts a
+  // module you IMPORT on the tier that keeps a deliberately-wrong implementation
+  // permanently in the test file, rather than mutating the shared tree (the
+  // in-tree probe is the last resort, and mutation-probe.sh refuses it from a
+  // foreground call precisely because a kill can strand the mutant).
+  //
+  // `preFix` is the PRE-FIX behaviour: pass the oracle's label straight through.
+  // It is what shipped while the cascade was assigning grading to a reaped
+  // session. If the demotion above is ever removed or neutered, the first
+  // assertion below starts failing instead of the guard silently going vacuous.
+  it('discriminates against the pre-fix pass-through implementation', () => {
+    const preFix = (v: { sessionState: string | null; heartbeatFresh?: boolean }) => v.sessionState;
+    const reaped = { sessionState: 'parked', heartbeatFresh: false } as const;
+
+    // THE DISCRIMINATION: the shipped guard and the pre-fix one must disagree
+    // on exactly the reaped case — this is what makes the test above non-vacuous.
+    expect(preFix(reaped)).toBe('parked');
+    expect(selectableGraderLiveness(reaped)).toBe('ended');
+    expect(selectableGraderLiveness(reaped)).not.toBe(preFix(reaped));
+
+    // CALIBRATION: a control that differed EVERYWHERE would prove nothing (it
+    // would just be a different function). They must still AGREE wherever the
+    // fix is not supposed to change behaviour, or this control is not modelling
+    // the pre-fix implementation at all.
+    for (const agreed of [
+      { sessionState: 'parked', heartbeatFresh: true },
+      { sessionState: 'live', heartbeatFresh: true },
+      { sessionState: 'recorded', heartbeatFresh: false },
+    ] as const) {
+      expect(selectableGraderLiveness(agreed)).toBe(preFix(agreed));
+    }
+  });
+
+  it('passes every non-parked verdict through untouched, heartbeat regardless', () => {
+    for (const heartbeatFresh of [true, false]) {
+      for (const sessionState of ['live', 'ended', 'recorded', 'draining', 'suspect'] as const) {
+        expect(selectableGraderLiveness({ sessionState, heartbeatFresh })).toBe(sessionState);
+      }
+      // `null` is the oracle's IN-BAND unknown and must never be collapsed into
+      // a definite state — not measured is not the same as not alive.
+      expect(selectableGraderLiveness({ sessionState: null, heartbeatFresh })).toBeNull();
+    }
+  });
+});
 
 describe("WI-10002152: the grader never launches on a no-failover account route", () => {
   it('pins every account in acceptance-grader.ts to the gateway route, not the single system credential', async () => {
