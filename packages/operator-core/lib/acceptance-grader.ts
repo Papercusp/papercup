@@ -164,12 +164,14 @@ export type AcceptanceGraderLifecycle = {
   /** A judge can fail before grading at all (a terminal model-limit response,
    * or a bounded connection-startup stall with no first-turn progress). The
    * launcher retires that failed mission and makes one cross-backend retry on
-   * the same system-account route. */
+   * the gateway-routed account (`auto`) — WI-10002152: the retry must be able to
+   * land on a DIFFERENT pool account than the one that just failed, which the
+   * single-credential `default` route cannot do. */
   terminalRecovery?: {
     retiredTaskIds: string[];
     attempts: number;
     codes: AcceptanceGraderTerminalFailureCode[];
-    fallback: { agent: 'codex'; model: 'gpt-5.6-sol'; effort: 'high'; account: 'default' };
+    fallback: { agent: 'codex'; model: 'gpt-5.6-sol'; effort: 'high'; account: 'auto' };
   };
 };
 
@@ -200,7 +202,10 @@ const ACCEPTANCE_GRADER_FALLBACK = {
   agent: 'codex' as const,
   model: 'gpt-5.6-sol' as const,
   effort: 'high' as const,
-  account: 'default' as const,
+  // WI-10002152: `auto`, never `default`. Switching the AGENT (claude -> codex)
+  // is not a real escape hatch if both arms keep the same single credential —
+  // a usage wall on it fails the fallback exactly like the primary.
+  account: 'auto' as const,
 };
 
 export type AcceptanceGraderTerminalFailureCode =
@@ -1491,7 +1496,16 @@ export async function launchAcceptanceGrader(
           brief,
           harness: plan.row.harnessSlug,
           headless: true,
-          account: 'default',
+          // WI-10002152: an unattended headless judge MUST route through the
+          // inference gateway (`auto`), never the single system credential
+          // (`default`). `default` skips the gateway and therefore cannot fail
+          // over, so ONE usage-walled credential drops every grader kickoff at
+          // Claude Code's interactive rate-limit picker — which a headless
+          // session can never answer — while other pool accounts sit
+          // serviceable. Measured: two consecutive judges aborted
+          // `submit-verification-aborted-quota-blocked` with claude
+          // atCapacity=false and 2 of 3 accounts available.
+          account: 'auto',
           agent: launchBackend,
           count: 1,
           independent: true,

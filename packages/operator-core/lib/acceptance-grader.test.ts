@@ -11,6 +11,33 @@ import {
   resolveAcceptanceGrader,
 } from './acceptance-grader';
 
+describe("WI-10002152: the grader never launches on a no-failover account route", () => {
+  it('pins every account in acceptance-grader.ts to the gateway route, not the single system credential', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('./acceptance-grader.ts', import.meta.url), 'utf8');
+    // Strip comment lines ONLY — never string literals: the token this detector
+    // looks for legitimately LIVES inside a string, so blanking strings would
+    // turn a true positive into a silent false negative.
+    const code = src
+      .split('\n')
+      .filter((line) => {
+        const t = line.trim();
+        return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+      })
+      .join('\n');
+
+    // Positive control: proves the detector is reading the real module. Without
+    // it, a moved/renamed file would make the assertion below pass vacuously.
+    expect(code).toMatch(/account: 'auto'/);
+
+    // `default` is the system's own single credential with the inference
+    // gateway SKIPPED, so it cannot fail over. One usage-walled credential then
+    // drops every headless grader kickoff at an interactive rate-limit picker
+    // no headless session can answer, even while other pool accounts serve.
+    expect(code).not.toMatch(/account: 'default'/);
+  });
+});
+
 const plan = {
   row: {
     planSlug: 'ship-the-thing',
@@ -185,7 +212,7 @@ describe('launchAcceptanceGrader', () => {
     expect(args).toMatchObject({
       harness: 'papercusp',
       headless: true,
-      account: 'default',
+      account: 'auto',
       agent: 'claude',
       count: 1,
       independent: true,
@@ -373,7 +400,7 @@ describe('launchAcceptanceGrader', () => {
     expect(kill).toHaveBeenCalledWith('task-quota', { includeSubtree: true, escalateAfterMs: 5_000 });
     expect(launch).toHaveBeenCalledTimes(2);
     expect(launch.mock.calls[1][0]).toMatchObject({
-      account: 'default',
+      account: 'auto',
       agent: 'codex',
       members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high' }],
       idempotencyKey: expect.stringMatching(/:recovery:[a-f0-9]{16}$/),
@@ -385,7 +412,7 @@ describe('launchAcceptanceGrader', () => {
         retiredTaskIds: ['task-quota'],
         attempts: 2,
         codes: ['model_quota_exhausted'],
-        fallback: { agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'default' },
+        fallback: { agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' },
       },
     });
   });
@@ -463,7 +490,7 @@ describe('launchAcceptanceGrader', () => {
     expect(kill).toHaveBeenCalledWith('task-session-limit', { includeSubtree: true, escalateAfterMs: 5_000 });
     expect(launch).toHaveBeenCalledTimes(2);
     expect(launch.mock.calls[1][0]).toMatchObject({
-      account: 'default',
+      account: 'auto',
       agent: 'codex',
       members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high' }],
       idempotencyKey: expect.stringMatching(/:recovery:[a-f0-9]{16}$/),
@@ -513,7 +540,7 @@ describe('launchAcceptanceGrader', () => {
     expect(kill).toHaveBeenCalledWith('task-connecting', { includeSubtree: true, escalateAfterMs: 5_000 });
     expect(launch).toHaveBeenCalledTimes(2);
     expect(launch.mock.calls[1][0]).toMatchObject({
-      account: 'default',
+      account: 'auto',
       agent: 'codex',
       members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high' }],
       idempotencyKey: expect.stringMatching(/:recovery:[a-f0-9]{16}$/),
