@@ -615,6 +615,17 @@ export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork
     args: any[];
 };
 /**
+ * Resolve the newest persisted Codex thread in one isolated home. Carry
+ * respawn is the one place where `codex resume --last` is not enough: the
+ * successor must branch the exact predecessor so Codex keeps the visible
+ * conversation while still minting a fresh native writer. Fail-soft and
+ * bounded like the transcript readers above; a missing/partial rollout takes
+ * the fresh-thread fallback instead of guessing another session.
+ */
+export function latestCodexRollout(root: any): any;
+/** The Codex-native marker carried in the successor's first visible turn. */
+export function codexCarryLineageMarker(predecessorId: any): string;
+/**
  * Does this codex sessions root hold ANY rollout at all — i.e. would `codex resume --last`
  * find something? The by-uuid sibling {@link findCodexRollout} cannot answer for a row with
  * no recorded `session_id`, and that is the majority case: measured 2026-08-12, 127 of the
@@ -906,15 +917,21 @@ export function mintCarryRespawnArgs(args?: string[], { systemPromptAddendum, ow
     codexHome?: string | null;
     model?: string | null;
 }): {
-    args: string[];
+    args: any[];
     nativeId: null;
     launchContextPath: string;
     codexAgentsPath: string;
+    lineagePath: string | null;
+    predecessorSessionId: any;
+    carryText: string;
 } | {
     args: string[];
     nativeId: string;
     launchContextPath: string;
     codexAgentsPath?: undefined;
+    lineagePath?: undefined;
+    predecessorSessionId?: undefined;
+    carryText?: undefined;
 };
 /**
  * Does claude's OWN store hold a transcript for this session id? A tracked
