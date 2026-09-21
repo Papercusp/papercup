@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { vi } from 'vitest';
 import type { RouteDefinition } from '@papercusp/tooldef/define-tool';
 import {
   HostedSessionCookieCodec,
@@ -17,6 +18,7 @@ import {
   type HostedAuthSessionStore,
 } from './index';
 import type { HostedAuthFlow, HostedAuthFlowConsumeResult, HostedAuthFlowStore } from './flow';
+import type { HostedSelfSignupAdmission } from '../../../auth/hosted/self-signup';
 
 const ORIGIN = 'https://app.papercusp.com';
 const NOW = new Date(FAKE_HOSTED_IDENTITY_NOW_MS);
@@ -92,6 +94,7 @@ function setup(
     workspaceId: 'workspace-local-1',
     permissionVersion: 7,
   }),
+  selfSignup?: HostedSelfSignupAdmission,
 ) {
   const flowStore = new MemoryFlowStore();
   const sessionStore = new MemorySessionStore();
@@ -102,6 +105,7 @@ function setup(
     sessionStore,
     sessionCookieCodec: codec,
     bindIdentity,
+    ...(selfSignup ? { selfSignup } : {}),
     publicOrigin: ORIGIN,
     clock: () => NOW,
     randomBytes: fixedEntropy(),
@@ -129,6 +133,23 @@ async function begin(setupResult: ReturnType<typeof setup>, returnTo = '/workspa
   const response = await invoke(
     setupResult.route('GET', '/hosted/auth/sign-in'),
     new Request(`${ORIGIN}/api/hosted/auth/sign-in?returnTo=${encodeURIComponent(returnTo)}`),
+  );
+  const location = response.headers.get('location') ?? '';
+  return {
+    response,
+    state: new URL(location).searchParams.get('state') ?? '',
+    flowCookie: responseCookieValue(response, HOSTED_AUTH_FLOW_COOKIE),
+  };
+}
+
+async function beginWithIntent(
+  setupResult: ReturnType<typeof setup>,
+  intent: 'sign-in' | 'sign-up',
+  returnTo = '/',
+) {
+  const response = await invoke(
+    setupResult.route('GET', '/hosted/auth/sign-in'),
+    new Request(`${ORIGIN}/api/hosted/auth/sign-in?intent=${intent}&returnTo=${encodeURIComponent(returnTo)}`),
   );
   const location = response.headers.get('location') ?? '';
   return {
@@ -214,6 +235,73 @@ describe('hosted auth route contract', () => {
     );
     expect(replay.status).toBe(400);
     expect(await replay.json()).toMatchObject({ error: { code: 'invalid_state_already-consumed' } });
+  });
+
+  it('keeps explicit sign-up separate from read-only sign-in binding', async () => {
+    const bindIdentity = vi.fn(async () => {
+      throw new Error('sign-in binder must not run for sign-up');
+    });
+    const admittedSession: HostedSession = {
+      id: SESSION_ID,
+      userId: 'new-user',
+      organizationId: 'new-org',
+      workspaceId: null,
+      permissionVersion: 9,
+      upstreamProvider: 'fake',
+      upstreamSessionId: 'session_test_001',
+      createdAt: NOW,
+      rotatedAt: null,
+      expiresAt: new Date(FAKE_HOSTED_IDENTITY_NOW_MS + 3_600_000),
+      lastSeenAt: null,
+      revokedAt: null,
+      revocationReason: null,
+      updatedAt: NOW,
+    };
+    const complete = vi.fn(async () => ({
+      ok: true as const,
+      binding: {
+        userId: 'new-user',
+        organizationId: 'new-org',
+        workspaceId: null,
+        permissionVersion: 9,
+      },
+      session: admittedSession,
+    }));
+    const s = setup(createFakeHostedIdentityProvider(), bindIdentity, { complete });
+    const started = await beginWithIntent(s, 'sign-up');
+    const response = await invoke(
+      s.route('GET', '/hosted/auth/callback'),
+      new Request(`${ORIGIN}${HOSTED_AUTH_CALLBACK_PATH}?code=code-1&state=${started.state}`, {
+        headers: { cookie: `${HOSTED_AUTH_FLOW_COOKIE}=${encodeURIComponent(started.flowCookie)}` },
+      }),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(`${ORIGIN}/`);
+    expect(bindIdentity).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId: started.state,
+      providerId: 'fake',
+      identity: expect.objectContaining({ externalUserId: 'user_test_001', emailVerified: true }),
+      upstreamSessionId: 'session_test_001',
+    }));
+    expect(s.sessionStore.created).toHaveLength(0);
+  });
+
+  it('fails closed when sign-up admission is not wired', async () => {
+    const s = setup();
+    const started = await beginWithIntent(s, 'sign-up');
+    const response = await invoke(
+      s.route('GET', '/hosted/auth/callback'),
+      new Request(`${ORIGIN}${HOSTED_AUTH_CALLBACK_PATH}?code=code-1&state=${started.state}`, {
+        headers: { cookie: `${HOSTED_AUTH_FLOW_COOKIE}=${encodeURIComponent(started.flowCookie)}` },
+      }),
+    );
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(
+      `${ORIGIN}/?hosted_auth_error=signup_unavailable&hosted_auth_recovery=1`,
+    );
+    expect(s.sessionStore.created).toHaveLength(0);
   });
 
   it('rejects an external return target and a callback from the wrong browser', async () => {
