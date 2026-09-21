@@ -33,9 +33,18 @@ describe("P-015 R-4 maintained identity UI verifier", () => {
   });
 
   it("keeps synthetic UI proof separate from host activation proof", () => {
-    expect(script).toContain("syntheticMutationResponses: true");
+    expect(script).toContain("syntheticMutationResponses: !realBackend");
     expect(script).toContain("hostActivationProven: false");
     expect(script).toContain("p015-r4-fetch-patched");
+  });
+
+  it("has a real-backend branch with a workspace-wide fixture and host acknowledgement", () => {
+    expect(script).toContain('process.env.P015_R4_REAL_BACKEND === "1"');
+    expect(script).toContain("planSlug: null");
+    expect(script).toContain("real-switch-change-requested");
+    expect(script).toContain("real-rollback-applied");
+    expect(script).toContain("/api/agent-mcp/turn-start-memory");
+    expect(script).toContain("hostActivationProven = true");
   });
 
   it("fails fast and writes an evidence artifact on both pass and failure", () => {

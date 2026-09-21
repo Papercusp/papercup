@@ -48,6 +48,7 @@ required("VERIFY_TAURI_SPA_DIST");
 if (process.argv.includes("--preflight")) process.exit(0);
 const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN || "tauri-agent-tools";
 const workspace = process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE || "default";
+const realBackend = process.env.P015_R4_REAL_BACKEND === "1";
 const owner = `p015-r4-owned-${process.pid}-${Date.now()}`;
 const label = `P-015 R-4 disposable owner ${owner.slice(-12)}`;
 const stamp = new Date().toISOString().replaceAll(":", "").replaceAll(".", "");
@@ -57,7 +58,8 @@ mkdirSync(outDir, { recursive: true });
 const evidence = {
   schemaVersion: "p015-r4-identities-ui-v1",
   status: "running",
-  syntheticMutationResponses: true,
+  realBackend,
+  syntheticMutationResponses: !realBackend,
   hostActivationProven: false,
   workspace,
   owner,
@@ -151,6 +153,67 @@ const evalFile = (source, name) => {
   return run(["eval", "--file", file], `eval:${name}`);
 };
 
+const observeActivation = async (label) => {
+  const [row] = await sql`
+    SELECT control_generation, control_delivered_generation,
+           control_state->'activation' AS activation
+      FROM harness_shared.session_briefs
+     WHERE workspace_id = ${workspace} AND owner_id = ${owner}
+  `;
+  const activation = row?.activation ?? null;
+  evidence.steps.push({
+    label,
+    controlGeneration: row ? Number(row.control_generation) : null,
+    controlDeliveredGeneration: row ? Number(row.control_delivered_generation) : null,
+    activation,
+  });
+  return activation;
+};
+
+const acknowledgeRealHost = async (label) => {
+  const responseText = evalFile(`
+    fetch('/api/agent-mcp/turn-start-memory', {
+      method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: JSON.stringify({
+        owner: ${JSON.stringify(owner)},
+        workspace: ${JSON.stringify(workspace)},
+        prompt: 'identity activation acknowledgement',
+        client: 'codex',
+      }),
+    }).then(async (response) => JSON.stringify({status: response.status, body: await response.text()}))
+  `, label);
+  let response;
+  try {
+    response = JSON.parse(responseText);
+  } catch {
+    throw new Error(`${label} returned non-JSON response: ${responseText}`);
+  }
+  evidence.steps.push({ label, response });
+  if (response.status !== 200) throw new Error(`${label} failed: ${responseText}`);
+  return response;
+};
+
+const captureRealFetch = `
+(() => {
+  window.__p015R4RealCalls = [];
+  const original = window.fetch;
+  window.fetch = async (input, init) => {
+    const response = await original(input, init);
+    if (String(input).includes('/api/agent-mcp/identity-management')) {
+      const body = await response.clone().text();
+      window.__p015R4RealCalls.push({
+        request: JSON.parse(init?.body || '{}'),
+        status: response.status,
+        body,
+      });
+    }
+    return response;
+  };
+  return 'p015-r4-real-fetch-observer';
+})()
+`;
+
 const patchFetch = `
 (() => {
   window.__p015R4Calls = [];
@@ -196,7 +259,7 @@ async function seed() {
     contextSize: "trimmed",
     personaTier: null,
     model: null,
-    planSlug: "identities-v1-2026-08-30",
+    planSlug: null,
     launchedBy: "p015-r4-driver",
     autoMode: false,
     drainMode: false,
@@ -214,7 +277,7 @@ async function seed() {
     await tx`
       INSERT INTO harness_shared.coord_presence
         (owner_id, owner_label, workspace_id, source, intent, current_plan_slug, current_files, host, pid, started_at, heartbeat_at, last_active_at, agent_role, pot_slug, capability_tags)
-      VALUES (${owner}, ${label}, ${workspace}, 'p015-r4-driver', 'R-4 identity UI verification', 'identities-v1-2026-08-30', '[]'::jsonb, 'isolated-verifier', ${process.pid}, now(), now(), now(), 'su', 'papercusp', '[]'::jsonb)
+      VALUES (${owner}, ${label}, ${workspace}, 'p015-r4-driver', 'R-4 identity UI verification', null, '[]'::jsonb, 'isolated-verifier', ${process.pid}, now(), now(), now(), 'su', 'papercusp', '[]'::jsonb)
       ON CONFLICT (owner_id) DO UPDATE SET heartbeat_at = now(), last_active_at = now()
     `;
     const sessions = await tx`
@@ -226,7 +289,7 @@ async function seed() {
     sessionId = Number(sessions[0].id);
     await tx`
       INSERT INTO harness_shared.session_briefs (owner_id, workspace_id, owner_label, source, intent, current_plan_slug, harness_slug, control_state, control_updated_at)
-      VALUES (${owner}, ${workspace}, ${label}, 'p015-r4-driver', 'R-4 identity UI verification', 'identities-v1-2026-08-30', null, ${tx.json(control)}, now())
+      VALUES (${owner}, ${workspace}, ${label}, 'p015-r4-driver', 'R-4 identity UI verification', null, null, ${tx.json(control)}, now())
       ON CONFLICT (owner_id) DO UPDATE SET control_state = EXCLUDED.control_state, control_updated_at = now()
     `;
     await tx`
@@ -272,35 +335,83 @@ try {
   settle();
   check(["--eval", `document.body.innerText.includes(${JSON.stringify(label)})`], "owned-agent-visible");
   check(["--selector", ".pc-identities__identity"], "identity-library-visible");
-  evalFile(patchFetch, "patch-fetch");
+  if (realBackend) evalFile(captureRealFetch, "observe-real-fetch");
+  else evalFile(patchFetch, "patch-fetch");
 
   check(["--selector", '[aria-label="Agent to manage"]', "--eval", `document.querySelector('[aria-label="Agent to manage"]')?.disabled === false && new URLSearchParams(location.search).get('identityAgent') === ${JSON.stringify(owner)}`], "owned-agent-selected");
-  click('[aria-label="Inspect identity research-steward"]', "select-identity");
-  settle();
-  click(".pc-identities__actions button", "review-switch");
-  settle();
-  check(["--eval", "document.querySelector('.pc-identities__diff')?.textContent.includes('configuration.roles[0]') && !document.querySelector('[aria-label=\"Apply identity\"]')?.disabled"], "review-diff-visible");
+  if (realBackend) {
+    click('[aria-label="Inspect identity research-steward"]', "real-select-identity");
+    settle();
+    click(".pc-identities__actions button", "real-review-switch");
+    settle();
+    const reviewCall = JSON.parse(evalFile("window.__p015R4RealCalls.at(-1)", "real-review-response"));
+    evidence.steps.push({ label: "real-review-response", response: reviewCall });
+    if (reviewCall?.status !== 200) throw new Error(`real preview route refused the mutation: ${reviewCall?.body ?? JSON.stringify(reviewCall)}`);
+    check(["--eval", "document.querySelector('.pc-identities__diff')?.textContent.includes('Revision diff') && !document.querySelector('[aria-label=\"Apply identity\"]')?.disabled"], "real-review-diff-visible");
 
-  click('button[aria-label="Apply identity"]', "forced-failure");
-  settle();
-  check(["--eval", "document.body.innerText.includes('Identity change failed: synthetic R-4 failure') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:papercusp-engineer')"], "failure-retains-applied-state");
+    click('button[aria-label="Apply identity"]', "real-switch");
+    settle();
+    check(["--eval", "document.body.innerText.includes('Change requested') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:papercusp-engineer')"], "real-switch-change-requested");
+    const switchRequested = await observeActivation("real-switch-requested");
+    if (switchRequested?.status !== "desired" || !switchRequested?.desired) {
+      throw new Error(`real switch did not persist desired activation: ${JSON.stringify(switchRequested)}`);
+    }
+    await acknowledgeRealHost("real-switch-host-ack");
+    settle();
+    run(["navigate", `/settings/identities?identityAgent=${encodeURIComponent(owner)}&identityId=research-steward&identitySlot=domain&identityTab=agent`], "real-switch-refresh");
+    settle();
+    check(["--eval", "document.body.innerText.includes('Identity applied') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:research-steward')"], "real-switch-applied");
+    const switchApplied = await observeActivation("real-switch-applied");
+    if (switchApplied?.status !== "applied" || switchApplied?.applied?.specificationRevision !== switchApplied?.desired?.specificationRevision) {
+      throw new Error(`real switch host acknowledgement did not apply desired revision: ${JSON.stringify(switchApplied)}`);
+    }
 
-  click(".pc-identities__actions button", "retry-review");
-  settle();
-  check(["--text", "Revision diff"], "retry-review-diff-visible");
-  await sql`UPDATE harness_shared.session_briefs SET control_state = jsonb_set(control_state, '{activation}', ${sql.json({ desired: { specificationRevision: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", stateRevision: "synthetic-r4-state" }, prepared: null, applied: { specificationRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", stateRevision: "seed-old-state" }, status: "failed", failure: "synthetic R-4 failed activation; prior applied identity retained" })}::jsonb) WHERE workspace_id = ${workspace} AND owner_id = ${owner}`;
-  click('button[aria-label="Apply identity"]', "retry-apply");
-  settle();
-  check(["--text", "The change failed"], "retry-failure-state-visible");
+    click('button[aria-label="Roll back identity"]', "real-rollback");
+    settle();
+    check(["--eval", "document.body.innerText.includes('Change requested')"], "real-rollback-change-requested");
+    const rollbackRequested = await observeActivation("real-rollback-requested");
+    if (rollbackRequested?.status !== "desired" || !rollbackRequested?.desired) {
+      throw new Error(`real rollback did not persist desired activation: ${JSON.stringify(rollbackRequested)}`);
+    }
+    await acknowledgeRealHost("real-rollback-host-ack");
+    settle();
+    run(["navigate", `/settings/identities?identityAgent=${encodeURIComponent(owner)}&identityId=research-steward&identitySlot=domain&identityTab=agent`], "real-rollback-refresh");
+    settle();
+    check(["--eval", "document.body.innerText.includes('Identity applied') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:papercusp-engineer')"], "real-rollback-applied");
+    const rollbackApplied = await observeActivation("real-rollback-applied");
+    if (rollbackApplied?.status !== "applied" || rollbackApplied?.applied?.specificationRevision !== rollbackApplied?.desired?.specificationRevision) {
+      throw new Error(`real rollback host acknowledgement did not apply desired revision: ${JSON.stringify(rollbackApplied)}`);
+    }
+    evidence.hostActivationProven = true;
+    evidence.observed = ["owned-roster-selection", "real-backend-review", "real-switch-change-requested", "real-switch-applied", "real-rollback-change-requested", "real-rollback-applied"];
+  } else {
+    click('[aria-label="Inspect identity research-steward"]', "select-identity");
+    settle();
+    click(".pc-identities__actions button", "review-switch");
+    settle();
+    check(["--eval", "document.querySelector('.pc-identities__diff')?.textContent.includes('configuration.roles[0]') && !document.querySelector('[aria-label=\"Apply identity\"]')?.disabled"], "review-diff-visible");
 
-  await sql`UPDATE harness_shared.session_briefs SET control_state = jsonb_set(control_state, '{activation}', ${sql.json({ desired: { specificationRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", stateRevision: "seed-old-state" }, prepared: null, applied: { specificationRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", stateRevision: "seed-old-state" }, status: "applied" })}::jsonb) WHERE workspace_id = ${workspace} AND owner_id = ${owner}`;
-  click('button[aria-label="Roll back identity"]', "rollback");
-  settle();
-  check(["--eval", "document.body.innerText.includes('Identity applied')"], "rollback-applied-state-visible");
-  check(["--eval", `JSON.stringify(window.__p015R4Calls.map(x => x.action)) === JSON.stringify(['preview','switch','preview','switch','rollback']) && window.__p015R4Calls.every(x => x.ownerId === ${JSON.stringify(owner)})`], "exact-owner-action-sequence");
-  evalFile("({ calls: window.__p015R4Calls, url: location.href, body: document.querySelector('.pc-identities').innerText })", "final-state");
+    click('button[aria-label="Apply identity"]', "forced-failure");
+    settle();
+    check(["--eval", "document.body.innerText.includes('Identity change failed: synthetic R-4 failure') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:papercusp-engineer')"], "failure-retains-applied-state");
+
+    click(".pc-identities__actions button", "retry-review");
+    settle();
+    check(["--text", "Revision diff"], "retry-review-diff-visible");
+    await sql`UPDATE harness_shared.session_briefs SET control_state = jsonb_set(control_state, '{activation}', ${sql.json({ desired: { specificationRevision: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", stateRevision: "synthetic-r4-state" }, prepared: null, applied: { specificationRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", stateRevision: "seed-old-state" }, status: "failed", failure: "synthetic R-4 failed activation; prior applied identity retained" })}::jsonb) WHERE workspace_id = ${workspace} AND owner_id = ${owner}`;
+    click('button[aria-label="Apply identity"]', "retry-apply");
+    settle();
+    check(["--text", "The change failed"], "retry-failure-state-visible");
+
+    await sql`UPDATE harness_shared.session_briefs SET control_state = jsonb_set(control_state, '{activation}', ${sql.json({ desired: { specificationRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", stateRevision: "seed-old-state" }, prepared: null, applied: { specificationRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", stateRevision: "seed-old-state" }, status: "applied" })}::jsonb) WHERE workspace_id = ${workspace} AND owner_id = ${owner}`;
+    click('button[aria-label="Roll back identity"]', "rollback");
+    settle();
+    check(["--eval", "document.body.innerText.includes('Identity applied')"], "rollback-applied-state-visible");
+    check(["--eval", `JSON.stringify(window.__p015R4Calls.map(x => x.action)) === JSON.stringify(['preview','switch','preview','switch','rollback']) && window.__p015R4Calls.every(x => x.ownerId === ${JSON.stringify(owner)})`], "exact-owner-action-sequence");
+    evidence.observed = ["owned-roster-selection", "review-diff", "failure-banner", "retry-review", "rollback-applied-banner"];
+  }
+  evalFile("({ calls: window.__p015R4Calls || window.__p015R4RealCalls, url: location.href, body: document.querySelector('.pc-identities').innerText })", "final-state");
   evidence.status = "pass";
-  evidence.observed = ["owned-roster-selection", "review-diff", "failure-banner", "retry-review", "rollback-applied-banner"];
 } catch (error) {
   evidence.status = "fail";
   evidence.error = String(error?.stack || error);
@@ -320,7 +431,7 @@ try {
   writeFileSync(`${outDir}/evidence.json`, `${JSON.stringify(evidence, null, 2)}\n`);
 }
 
-console.log(JSON.stringify({ ok: evidence.status === "pass", evidence: `${outDir}/evidence.json`, status: evidence.status, owner, syntheticMutationResponses: true }));
+console.log(JSON.stringify({ ok: evidence.status === "pass", evidence: `${outDir}/evidence.json`, status: evidence.status, owner, realBackend, syntheticMutationResponses: !realBackend, hostActivationProven: evidence.hostActivationProven }));
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
