@@ -74,4 +74,18 @@ describe('POST /agent-mcp/run-tool — callerSid shaping', () => {
     const call = invokeM.mock.calls[0]![0];
     expect(call).not.toHaveProperty('callerSid');
   });
+
+  it('forwards an explicit harness separately from tool args and caller identity', async () => {
+    await tool.handler(req({ name: 'capability:computer', args: { action: 'screenshot' }, harness: 'desktop-pot' }), fakeCtx());
+    expect(invokeM).toHaveBeenCalledWith({
+      name: 'capability:computer', args: { action: 'screenshot' }, confirmed: false, harness: 'desktop-pot',
+    });
+  });
+
+  it.each([{ harness: null }, { harness: 123 }, { harness: {} }, { harness: [] }])('rejects a non-string harness $harness before dispatch', async ({ harness }) => {
+    const response = await tool.handler(req({ name: 'capability:computer', harness }), fakeCtx());
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ ok: false, error: 'invalid_harness' });
+    expect(invokeM).not.toHaveBeenCalled();
+  });
 });

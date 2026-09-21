@@ -23,6 +23,8 @@ import { dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { PROJECTED_DEPS } from '../projected-tool-deps';
 import { activeWorkspaceId } from '../workspace-registry';
+import { loadHarnessRegistry } from '../harness-registry';
+import { isAllHarnessSentinel } from '../agent-tools/_harness-scope';
 import { suggestClosestToolNames } from '../agent-tools/tools/unknown-tool-referral';
 import { projectedToolToCapability } from './from-tooldef';
 import { paletteEligibility, type PaletteEligibilityOpts } from './safety-filter';
@@ -85,6 +87,7 @@ type ServerCapabilityInvoker = (opts: {
   args?: unknown;
   confirmed?: boolean;
   callerSid?: string;
+  harness?: string;
 }) => Promise<InvokeResult>;
 
 /**
@@ -98,6 +101,7 @@ export async function dispatchPaletteTarget(
     args: unknown;
     confirmed?: boolean;
     callerSid?: string;
+    harness?: string;
   },
   invoke: ServerCapabilityInvoker = invokeServerCapability,
 ): Promise<PaletteDispatchResult> {
@@ -140,6 +144,8 @@ export async function invokeServerCapability(opts: {
    *  consumers keyed on that literal (fleet-ekg/features.ts,
    *  decision-ledger/emit.ts's isReadShapedCoordPoll) are unaffected. */
   callerSid?: string;
+  /** Selected resource scope only. The palette principal and active workspace remain fixed. */
+  harness?: string;
 }): Promise<InvokeResult> {
   // The projected registry is the lookup of record — it carries EVERY tool
   // (principal-gated, role-gated, plugin); the legacy getCatalog() misses all
@@ -170,6 +176,25 @@ export async function invokeServerCapability(opts: {
   }
 
   const workspaceId = activeWorkspaceId();
+  let harnessSlug = '*';
+  if (opts.harness !== undefined) {
+    const selected = typeof opts.harness === 'string' ? opts.harness.trim() : '';
+    if (!selected || selected.length > 120 || isAllHarnessSentinel(selected)) {
+      return { ok: false, status: 400, code: 'invalid_harness', message: 'Select a concrete harness in this workspace.' };
+    }
+    // Never search other workspaces or infer scope from the caller's telemetry id.
+    // The registry is the existing authoritative set of selectable harnesses.
+    let registry: Awaited<ReturnType<typeof loadHarnessRegistry>>;
+    try {
+      registry = await loadHarnessRegistry(workspaceId);
+    } catch {
+      return { ok: false, status: 503, code: 'harness_registry_unavailable', message: 'Could not read this workspace’s harnesses.' };
+    }
+    if (!registry.projects.some((project) => project.slug === selected)) {
+      return { ok: false, status: 404, code: 'harness_not_found', message: 'The selected harness is not in this workspace.' };
+    }
+    harnessSlug = selected;
+  }
   const canonicalName = projected.expose?.mcp?.name ?? opts.name;
   const dispatch = async (tx?: UnifiedToolContext['tx']) => {
     // The desktop loopback caller IS the operator (same trust the MCP
@@ -183,7 +208,7 @@ export async function invokeServerCapability(opts: {
     // origin + §3 + confirm-for-destructive + audit (see D-007).
     const ctx: UnifiedToolContext = {
       workspaceId,
-      harnessSlug: '*',
+      harnessSlug,
       role: 'operator',
       featureId: null,
       chunkId: null,
@@ -229,6 +254,7 @@ export async function invokeServerCapability(opts: {
         args,
         confirmed: opts.confirmed,
         callerSid: opts.callerSid,
+        ...(opts.harness === undefined ? {} : { harness: harnessSlug }),
       });
     return dispatchProjectedToolToMcp(projected, opts.name, opts.args ?? {}, ctx, PROJECTED_DEPS);
   };

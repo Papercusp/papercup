@@ -15,6 +15,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 
+const scope = vi.hoisted(() => ({ registry: vi.fn() }));
+vi.mock('../harness-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../harness-registry')>()),
+  loadHarnessRegistry: scope.registry,
+}));
+
 const fakeProjected = {
   description: 'a low-risk test tool',
   inputSchema: {},
@@ -53,6 +59,7 @@ const { invokeServerCapability } = await import('./invoke');
 
 beforeEach(() => {
   capturedCtx = null;
+  scope.registry.mockReset().mockResolvedValue({ projects: [{ slug: 'desktop-pot' }] });
 });
 
 describe('invokeServerCapability — EI-1751 callerSid attribution', () => {
@@ -76,5 +83,45 @@ describe('invokeServerCapability — EI-1751 callerSid attribution', () => {
     expect(r.ok).toBe(true);
     expect(capturedCtx?.spawnId).toBe('palette');
     expect(capturedCtx?.uiClientId).toBe('pui-4242');
+  });
+
+  it('binds the selected harness within the active workspace without changing the principal', async () => {
+    const r = await invokeServerCapability({ name: 't:x', harness: ' desktop-pot ' });
+    expect(r.ok).toBe(true);
+    expect(scope.registry).toHaveBeenCalledWith('ws1');
+    expect(capturedCtx).toMatchObject({
+      workspaceId: 'ws1', harnessSlug: 'desktop-pot', spawnId: 'palette', role: 'operator', isSuperuser: false,
+      principal: { slug: 'loopback', workspaceId: 'ws1', authMethod: 'process-internal' },
+    });
+  });
+
+  it('preserves selected harness through nested tools:invoke dispatch', async () => {
+    await invokeServerCapability({ name: 'tools:invoke', harness: 'desktop-pot', callerSid: 'pui-4242' });
+    const dispatch = capturedCtx?.dispatchTool;
+    expect(dispatch).toBeTypeOf('function');
+    await dispatch!('t:x', {});
+    expect(capturedCtx).toMatchObject({ harnessSlug: 'desktop-pot', workspaceId: 'ws1', uiClientId: 'pui-4242' });
+  });
+
+  it('refuses a harness absent from this workspace instead of searching other workspaces', async () => {
+    const r = await invokeServerCapability({ name: 't:x', harness: 'other-workspace-pot' });
+    expect(r).toMatchObject({ ok: false, status: 404, code: 'harness_not_found' });
+    expect(scope.registry.mock.calls).toEqual([['ws1']]);
+    expect(capturedCtx).toBeNull();
+  });
+
+  it.each(['', '   ', '*', 'all', 'x'.repeat(121)])('refuses invalid selected harness %j before dispatch', async (harness) => {
+    const r = await invokeServerCapability({ name: 't:x', harness });
+    expect(r).toMatchObject({ ok: false, status: 400, code: 'invalid_harness' });
+    expect(capturedCtx).toBeNull();
+    expect(scope.registry).not.toHaveBeenCalled();
+  });
+
+  it('does not treat an unreadable registry as an absent harness or fall back to operator scope', async () => {
+    scope.registry.mockRejectedValue(new Error('private datastore diagnostic'));
+    const r = await invokeServerCapability({ name: 't:x', harness: 'desktop-pot' });
+    expect(r).toMatchObject({ ok: false, status: 503, code: 'harness_registry_unavailable' });
+    expect(JSON.stringify(r)).not.toContain('private datastore diagnostic');
+    expect(capturedCtx).toBeNull();
   });
 });

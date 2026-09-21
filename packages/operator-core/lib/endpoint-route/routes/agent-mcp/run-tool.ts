@@ -6,7 +6,7 @@
  * (excluded tools refused; destructive/high require `confirmed:true`). See
  * `lib/capabilities/invoke.ts`.
  *
- * Body: { name: string, args?: object, confirmed?: boolean }.
+ * Body: { name: string, args?: object, confirmed?: boolean, harness?: string }.
  * `auth: 'loopback'` (auth-tier Wave 1) follows the sibling agent-mcp routes; the loopback gate +
  * the dispatch stack are the actual boundary.
  */
@@ -18,6 +18,8 @@ interface Body {
   name?: unknown;
   args?: unknown;
   confirmed?: unknown;
+  /** Optional selected harness; validated inside the active workspace by the dispatcher. */
+  harness?: unknown;
   /** EI-1751: an optional CALLER-supplied, process-stable id (e.g. the pui's
    *  `pui-<pid>`) — folded into the dispatch ctx as `uiClientId` purely for
    *  per-caller telemetry attribution. Never trusted for anything beyond
@@ -47,6 +49,9 @@ export default defineTool({
     if (!name) {
       return Response.json({ ok: false, error: 'missing_name' }, { status: 400 });
     }
+    if (body.harness !== undefined && typeof body.harness !== 'string') {
+      return Response.json({ ok: false, error: 'invalid_harness' }, { status: 400 });
+    }
 
     const callerSid = typeof body.callerSid === 'string' ? body.callerSid.trim().slice(0, 128) : '';
     const r = await invokeServerCapability({
@@ -54,6 +59,7 @@ export default defineTool({
       args: body.args,
       confirmed: body.confirmed === true,
       ...(callerSid ? { callerSid } : {}),
+      ...(body.harness === undefined ? {} : { harness: body.harness }),
     });
     if (!r.ok) {
       return Response.json({ ok: false, error: r.code, message: r.message }, { status: r.status });
