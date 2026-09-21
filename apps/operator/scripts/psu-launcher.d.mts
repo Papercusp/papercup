@@ -1140,7 +1140,22 @@ export function ompCoreToolNames(env?: NodeJS.ProcessEnv): string[];
  *  instant revert if the minimal seed ever proves too thin. Both paths honor
  *  PAPERCUSP_OMP_TOOLS_EXCLUDE (a tool the target operator currently serves BROKEN should not
  *  be advertised on either). Exported for tests. */
-export function claudeSeedToolNames(env?: NodeJS.ProcessEnv): string[];
+export function claudeSeedToolNames(env?: NodeJS.ProcessEnv): any[];
+/** The COMPACT-tier half of the same decision, for `?tools_compact=`.
+ *
+ *  A name here is advertised (it is also in {@link claudeSeedToolNames}) but its
+ *  definition ships without prose — the transport applies `compactInputSchema`,
+ *  which preserves everything a model needs to form a VALID call. That is what
+ *  makes admission three-way instead of all-or-nothing, and it is the whole
+ *  reason the derived seed can carry ~90 names in the byte budget that a
+ *  hand-curated 31-name list was already filling.
+ *
+ *  PAPERCUSP_CLAUDE_FULL_SEED=1 restores the historical spine+extras seed
+ *  byte-for-byte, which by definition compacts NOTHING — so this returns the
+ *  empty list on that path, and the escape hatch stays a true revert.
+ *  PAPERCUSP_OMP_TOOLS_EXCLUDE is honored here too: a tool that is not
+ *  advertised must not be named as compact either. Exported for tests. */
+export function claudeCompactToolNames(env?: NodeJS.ProcessEnv): string[];
 /** The context-trimming env trio (context-trimming-tiers D-004 / D-010 / P-031) — the keys
  *  that keep a launched session's prompt at the ~143k trimmed baseline instead of the ~756k
  *  whole-catalog boot. ONE derivation, spread by launchFreshSu AND re-applied by the host-code
@@ -1169,6 +1184,7 @@ export function claudeSeedToolNames(env?: NodeJS.ProcessEnv): string[];
  *    TRIMMED for EVERY launch, model window irrelevant [owner 2026-08-10]. Every agent. */
 export function contextTrimmingEnv(agent: any, env?: NodeJS.ProcessEnv): {
     PAPERCUSP_TOOLS?: string | undefined;
+    PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_CONTEXT_TIER: string;
 };
@@ -1379,6 +1395,7 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv }?: {
     } | null;
 }): {
     PAPERCUSP_TOOLS?: string | undefined;
+    PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_CONTEXT_TIER: string;
     CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN?: undefined;
@@ -1392,6 +1409,7 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv }?: {
     PAPERCUSP_SID: any;
 } | {
     PAPERCUSP_TOOLS?: string | undefined;
+    PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_CONTEXT_TIER: string;
     CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: string;
@@ -1405,6 +1423,7 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv }?: {
     PAPERCUSP_SID: any;
 } | {
     PAPERCUSP_TOOLS?: string | undefined;
+    PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_CONTEXT_TIER: string;
     CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN?: undefined;
@@ -1418,6 +1437,7 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv }?: {
     PAPERCUSP_SID: any;
 } | {
     PAPERCUSP_TOOLS?: string | undefined;
+    PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
     PAPERCUSP_CONTEXT_TIER: string;
     CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: string;
