@@ -45,7 +45,7 @@ describe("P-015 R-4 maintained identity UI verifier", () => {
     expect(script).toContain("real-rollback-applied");
     expect(script).toContain("/api/agent-mcp/turn-start-memory");
     expect(script).toContain("attribution: { actorId: owner, principalId: owner, sessionId: owner }");
-    expect(script).toContain("hostActivationProven = true");
+    expect(script).toContain("hostActivationProven: false");
   });
 
   it("fails fast and writes an evidence artifact on both pass and failure", () => {
