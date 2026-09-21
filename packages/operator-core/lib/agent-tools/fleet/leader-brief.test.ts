@@ -39,6 +39,7 @@ import {
   leaderBriefLaneHealthUnavailable,
   leaderBriefRosterDegradation,
   projectMember,
+  projectLeaderBriefOwnerDirectives,
   projectFleetAdmissionBlockRead,
   prioritizeActionableMembers,
   prioritizeBenchSuggestedMembers,
@@ -64,8 +65,68 @@ import { VERDICT_SPEAKING_FRESH_MS } from './assignments';
 import { computeMemberIdleVerdict } from '../../fleet-member-idle-verdict';
 import type { DependencyBottleneckResult } from '../../dependency-traversal';
 import type { FleetAdmissionBlock } from '../coordination/fleet-scope-admission-blocks';
+import type { AgentObligationAgenda } from '../../agent-obligations';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
+
+describe('P-026 owner-directive leader projection', () => {
+  it('keeps owner directives distinct from member actuation and exposes recoveryRef, never targetRef', () => {
+    const obligation = {
+      id: 'obl:owner-directive:1',
+      ruleId: 'owner-directive-disposition',
+      ruleRevision: 'owner-directive-disposition-v1',
+      family: 'owner-directive' as const,
+      title: 'Owner directive #27: "finish the review"',
+      scope: { workspaceId: 'ws', ownerId: 'leader' },
+      responsibleOwnerId: 'leader',
+      episode: 'open:27',
+      status: 'due' as const,
+      authority: { kind: 'owner-candidate' as const, sourceRef: 'owner-directive:27', turnOrigin: 'unknown' as const },
+      reason: 'finish the review',
+      priority: 'critical' as const,
+      causalRank: 0,
+      applicableDemand: 1,
+      sourceGeneration: 'gen-1',
+      evidence: [],
+      action: {
+        kind: 'repair' as const,
+        summary: 'carry out, then close: orders:disposition',
+        tool: 'orders:disposition',
+        args: { id: 27 },
+        targetRef: 'orders:get #27',
+        recoveryRef: 'orders:get #27',
+      },
+      clearsWhen: { id: 'owner-directive-dispositioned:27', summary: 'close it', evidenceKind: 'state' as const, sourceRef: 'owner-directive:27' },
+    };
+    const agenda: AgentObligationAgenda = {
+      schemaVersion: 'agent-obligations-v1',
+      evaluatedAt: '2026-09-21T20:00:00.000Z',
+      sourceGeneration: 'agenda-1',
+      evaluations: [obligation],
+      primary: [obligation],
+      conflicts: [],
+    };
+    const projected = projectLeaderBriefOwnerDirectives({
+      agenda,
+      projection: {
+        text: '- [DUE] Owner directive #27: "finish the review" — carry out, then close: orders:disposition; full: orders:get #27',
+        entries: [obligation],
+        receipt: {
+          sink: 'fleet:leader-brief:owner-directives', mode: 'truncate', entriesAvailable: 1,
+          entriesDelivered: 1, entriesOmitted: 0, bodyDeliveredChars: 120, estimatedTokens: 30,
+          bodyTruncated: false, refused: false,
+        },
+      },
+      read: { elapsedMs: 4, degradedSources: [] },
+    });
+    expect(projected.directives[0]).toMatchObject({
+      id: obligation.id,
+      action: { tool: 'orders:disposition', recoveryRef: 'orders:get #27' },
+    });
+    expect(projected.directives[0]!.action).not.toHaveProperty('targetRef');
+    expect(projected.projection.text).toContain('orders:get #27');
+  });
+});
 
 describe('leaderBriefRosterDegradation (EI-22734316557524020)', () => {
   it('qualifies degraded roster legs so an empty fallback cannot read as a healthy fleet', () => {

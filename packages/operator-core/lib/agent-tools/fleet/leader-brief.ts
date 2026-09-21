@@ -171,6 +171,12 @@ import { getLongCallsInFlight } from '../../in-flight-calls';
 import { readDependencyBottlenecks, type DependencyBottleneckResult } from '../../dependency-traversal';
 import { renderDependencyBottleneckMermaid } from '../../dependency-mermaid';
 import { mapWithConcurrency } from '../../gym/concurrency';
+import type {
+  AgentObligation,
+  AgentObligationAgenda,
+  AgentObligationAction,
+  AgentObligationProjection,
+} from '../../agent-obligations';
 import {
   computeLeaderBlockerStallView,
   DEFAULT_LEADER_BLOCKER_STALL_THRESHOLD_HOURS,
@@ -762,6 +768,81 @@ export interface LeaderBriefMember {
    * to kill, reclaim, duplicate, or widen a member's work. */
   repeatedRecovery?: RepeatedRecoveryAlert;
   isSelf?: true;
+}
+
+/**
+ * P-026 / D-016: the owner's pending/open turns are a leader obligation, not
+ * the member-directed actuation ledger below. Keep this root projection
+ * deliberately separate from `members[].directives`, whose meaning is
+ * DirectiveActuationSummary (what the leader asked members to do and what was
+ * observed). The action surface only carries `recoveryRef`; `targetRef` is
+ * diagnostic provenance for provider rows and is not an owner-facing call.
+ */
+export interface LeaderBriefOwnerDirective {
+  id: string;
+  status: AgentObligation['status'];
+  title: string;
+  priority: AgentObligation['priority'];
+  applicableDemand: number;
+  ageMs?: number;
+  action?: Pick<AgentObligationAction, 'kind' | 'summary' | 'tool' | 'args' | 'recoveryRef' | 'continuesCurrentWork'>;
+  authority: AgentObligation['authority'];
+  evidence: AgentObligation['evidence'];
+}
+
+export interface LeaderBriefOwnerDirectives {
+  schemaVersion: AgentObligationAgenda['schemaVersion'];
+  evaluatedAt: string;
+  sourceGeneration: string;
+  state: 'known' | 'unknown';
+  directives: LeaderBriefOwnerDirective[];
+  projection: Pick<AgentObligationProjection, 'text' | 'receipt'>;
+  detailRef: string;
+  read: { elapsedMs: number; degradedSources: string[] };
+}
+
+/** Pure owner-directive projection used by the live brief and its tests. */
+export function projectLeaderBriefOwnerDirectives(input: {
+  agenda: AgentObligationAgenda;
+  projection: AgentObligationProjection;
+  read: { elapsedMs: number; degradedSources: string[] };
+  detailRef?: string;
+}): LeaderBriefOwnerDirectives {
+  const evaluations = input.agenda.evaluations.filter((entry) => entry.family === 'owner-directive');
+  const directives = evaluations
+    .filter((entry) => entry.status !== 'not-applicable')
+    .map((entry) => ({
+      id: entry.id,
+      status: entry.status,
+      title: entry.title,
+      priority: entry.priority,
+      applicableDemand: entry.applicableDemand,
+      ...(entry.ageMs == null ? {} : { ageMs: entry.ageMs }),
+      ...(entry.action
+        ? {
+            action: {
+              kind: entry.action.kind,
+              summary: entry.action.summary,
+              ...(entry.action.tool ? { tool: entry.action.tool } : {}),
+              ...(entry.action.args ? { args: entry.action.args } : {}),
+              ...(entry.action.recoveryRef ? { recoveryRef: entry.action.recoveryRef } : {}),
+              ...(entry.action.continuesCurrentWork ? { continuesCurrentWork: true } : {}),
+            },
+          }
+        : {}),
+      authority: entry.authority,
+      evidence: entry.evidence,
+    }));
+  return {
+    schemaVersion: input.agenda.schemaVersion,
+    evaluatedAt: input.agenda.evaluatedAt,
+    sourceGeneration: input.agenda.sourceGeneration,
+    state: evaluations.some((entry) => entry.status === 'unknown') ? 'unknown' : 'known',
+    directives,
+    projection: { text: input.projection.text, receipt: input.projection.receipt },
+    detailRef: input.detailRef ?? 'fleet:leader-brief { payloadTier:"full" }',
+    read: input.read,
+  };
 }
 
 export interface LeaderBriefMemberVerdict {
@@ -3428,6 +3509,7 @@ export default defineTool({
       leadershipClaimed: z.unknown().optional(),
       leaderControl: z.unknown().optional(),
       agentObligations: z.unknown().optional(),
+      ownerDirectives: z.unknown().optional(),
       monitoringBlindAdvisory: z.unknown().optional(),
       blockedAt: z.unknown().optional(),
       summary: z.unknown().optional(),
@@ -4665,7 +4747,7 @@ export async function buildLeaderBrief(
   // evaluation path used by automatic turn-start orientation, projected to the
   // leader sink's wider budget. It is read-only and bounded per canonical
   // source; existing fleet diagnostics remain independent and intact.
-  const agentObligations = ownerId
+  const obligationProjections = ownerId
     ? await boundedLeaderBriefRead(
         'agent-obligations',
         async () => {
@@ -4679,23 +4761,54 @@ export async function buildLeaderBrief(
             launchCount: 1,
             sourceTimeoutMs: LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
           });
-          if (read.agenda.evaluations.length === 0) return null;
+          const readMeta = { elapsedMs: read.elapsedMs, degradedSources: read.degradedSources };
+          const agentBrief =
+            read.agenda.evaluations.length === 0
+              ? null
+              : {
+                  ...projectAgentObligationBrief({
+                    agenda: read.agenda,
+                    sink: 'fleet:leader-brief',
+                    detailRef: 'fleet:leader-brief { payloadTier:"full" } for complete obligation evidence',
+                    maxEntries: 3,
+                    maxChars: 1_600,
+                    maxEstimatedTokens: 400,
+                  }),
+                  read: readMeta,
+                };
+          const ownerEvaluations = read.agenda.evaluations.filter(
+            (entry) => entry.family === 'owner-directive' && entry.status !== 'not-applicable',
+          );
+          const ownerAgenda: AgentObligationAgenda = {
+            ...read.agenda,
+            evaluations: ownerEvaluations,
+            primary: read.agenda.primary.filter((entry) => entry.family === 'owner-directive'),
+          };
+          const ownerBrief =
+            ownerEvaluations.length === 0
+              ? null
+              : projectAgentObligationBrief({
+                  agenda: ownerAgenda,
+                  sink: 'fleet:leader-brief:owner-directives',
+                  detail: 'action',
+                  detailRef: 'fleet:leader-brief { payloadTier:"full" } for complete owner-directive evidence',
+                  maxEntries: 12,
+                  maxChars: 2_000,
+                  maxEstimatedTokens: 500,
+                });
           return {
-            ...projectAgentObligationBrief({
-              agenda: read.agenda,
-              sink: 'fleet:leader-brief',
-              detailRef: 'fleet:leader-brief { payloadTier:"full" } for complete obligation evidence',
-              maxEntries: 3,
-              maxChars: 1_600,
-              maxEstimatedTokens: 400,
-            }),
-            read: { elapsedMs: read.elapsedMs, degradedSources: read.degradedSources },
+            agentObligations: agentBrief ? { ...agentBrief, read: readMeta } : null,
+            ownerDirectives: ownerBrief
+              ? projectLeaderBriefOwnerDirectives({ agenda: ownerAgenda, projection: ownerBrief.projection, read: readMeta })
+              : null,
           };
         },
         null,
         1_800,
       )
     : null;
+  const agentObligations = obligationProjections?.agentObligations ?? null;
+  const ownerDirectives = obligationProjections?.ownerDirectives ?? null;
   // P-009: detector-only projection over P-006's existing graph/liveness/
   // progress rows. Do not re-read any of those sources here: one measured view
   // feeds both the ranked table and this tri-state alarm.
@@ -4872,6 +4985,10 @@ export async function buildLeaderBrief(
       ...(leaderControl ? { leaderControl } : {}),
       ...(monitoringBlindAdvisory ? { monitoringBlindAdvisory } : {}),
       ...(agentObligations ? { agentObligations } : {}),
+      // P-026 / D-016: owner turns are a distinct leader obligation. Do not
+      // fold this into members[].directives, which is the DirectiveActuation
+      // Summary for leader→member effects.
+      ...(ownerDirectives ? { ownerDirectives } : {}),
       // P-019/P-012: the arbitrated "which layer is blocking my fleet" verdict, placed
       // ABOVE the summary on purpose — the alert booleans below are flat and co-fire, and
       // reading them in field order is what produced the inverted remedy this fixes.

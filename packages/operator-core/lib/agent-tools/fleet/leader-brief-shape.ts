@@ -149,6 +149,68 @@ function compactAgentObligations(value: unknown, emergency = false): unknown {
   return out;
 }
 
+/**
+ * P-026 / D-016: owner directives have their own root contract. Do not reuse
+ * compactAgentObligations here: its generic action allowlist intentionally
+ * keeps diagnostic `targetRef`, while an owner-facing directive must expose
+ * only the executable `recoveryRef` (and preserve the existing member
+ * `directives` actuation ledger untouched).
+ */
+function compactOwnerDirectives(value: unknown, emergency = false): unknown {
+  const source = asDict(value);
+  if (!source) return value;
+  const out = pick(source, ['schemaVersion', 'evaluatedAt', 'sourceGeneration', 'state', 'detailRef'], emergency ? 100 : 220) ?? {};
+  const directives = Array.isArray(source.directives) ? source.directives : [];
+  out.directives = directives.slice(0, emergency ? 2 : 12).map((entry) => {
+    const directive = asDict(entry);
+    if (!directive) return entry;
+    const compact = pick(
+      directive,
+      ['id', 'status', 'title', 'priority', 'applicableDemand', 'ageMs'],
+      emergency ? 100 : 180,
+    ) ?? {};
+    const authority = asDict(directive.authority);
+    if (authority) compact.authority = pick(authority, ['kind', 'sourceRef', 'turnOrigin', 'revision'], emergency ? 100 : 160) ?? {};
+    if (Array.isArray(directive.evidence)) {
+      compact.evidence = directive.evidence.slice(0, emergency ? 1 : 3).map((entry) =>
+        pick(entry, ['ref', 'observedAt', 'freshness', 'sourceRevision', 'effect', 'note'], emergency ? 100 : 160) ?? entry,
+      );
+      if (directive.evidence.length > (emergency ? 1 : 3)) {
+        compact.evidenceTruncated = { total: directive.evidence.length, shown: emergency ? 1 : 3 };
+      }
+    }
+    const action = asDict(directive.action);
+    if (action) {
+      compact.action = pick(action, ['kind', 'summary', 'tool', 'args', 'recoveryRef', 'continuesCurrentWork'], emergency ? 100 : 180) ?? {};
+      if (asDict(compact.action)?.targetRef !== undefined) delete (compact.action as Dict).targetRef;
+    }
+    return compact;
+  });
+  if (directives.length > (emergency ? 2 : 12)) {
+    out.directivesTruncated = { total: directives.length, shown: emergency ? 2 : 12 };
+  }
+  const projection = asDict(source.projection);
+  if (projection) {
+    out.projection = {
+      text: clip(projection.text, emergency ? 160 : 800) ?? projection.text,
+      receipt: pick(projection.receipt, [
+        'sink', 'mode', 'entriesAvailable', 'entriesDelivered', 'entriesOmitted',
+        'bodyDeliveredChars', 'estimatedTokens', 'bodyTruncated', 'refused', 'reason',
+      ], 100),
+    };
+  }
+  const read = asDict(source.read);
+  if (read) {
+    out.read = {
+      ...(pick(read, ['elapsedMs'], 60) ?? {}),
+      ...(Array.isArray(read.degradedSources)
+        ? { degradedSources: read.degradedSources.slice(0, emergency ? 1 : 3).map((entry) => clip(entry, 160) ?? entry) }
+        : {}),
+    };
+  }
+  return out;
+}
+
 function compactAnnouncedGate(value: unknown): unknown {
   return pick(value, ['event', 'note', 'scope', 'announcedBy', 'fired', 'firedAt', 'awaiters'], 180) ?? value;
 }
@@ -908,6 +970,7 @@ function buildProjection(
     out.monitoringBlindAdvisory = compactMonitoringBlindAdvisory(data.monitoringBlindAdvisory);
   }
   if ('agentObligations' in data) out.agentObligations = compactAgentObligations(data.agentObligations);
+  if ('ownerDirectives' in data) out.ownerDirectives = compactOwnerDirectives(data.ownerDirectives);
   if ('planHistory' in data) out.planHistory = compactPlanHistory(data.planHistory);
   if ('summary' in data) out.summary = compactSummary(data.summary);
   if ('dependencyBottlenecks' in data) {
@@ -1076,6 +1139,9 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
       : {}),
     ...(source.agentObligations !== undefined
       ? { agentObligations: compactAgentObligations(source.agentObligations, true) }
+      : {}),
+    ...(source.ownerDirectives !== undefined
+      ? { ownerDirectives: compactOwnerDirectives(source.ownerDirectives, true) }
       : {}),
     ...(source.summary !== undefined ? { summary: emergencySummary } : {}),
     ...(source.dependencyBottlenecks !== undefined

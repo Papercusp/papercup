@@ -95,6 +95,44 @@ export interface LeaderBriefDirectives {
   outstanding?: string[];
 }
 
+/** Mirrors the distinct owner-directive projection on fleet:leader-brief.
+ * This is intentionally NOT `LeaderBriefDirectives`: that existing type is
+ * the leader→member DirectiveActuationSummary and remains on each member row.
+ */
+export interface LeaderBriefOwnerDirective {
+  id?: string;
+  status?: string;
+  title?: string;
+  priority?: string;
+  applicableDemand?: number;
+  ageMs?: number;
+  action?: {
+    kind?: string;
+    summary?: string;
+    tool?: string;
+    args?: Record<string, unknown>;
+    /** Executable pointer for recovering budgeted owner text. */
+    recoveryRef?: string;
+    continuesCurrentWork?: boolean;
+  };
+  authority?: Record<string, unknown>;
+  evidence?: Array<Record<string, unknown>>;
+}
+
+export interface LeaderBriefOwnerDirectives {
+  schemaVersion?: string;
+  evaluatedAt?: string;
+  sourceGeneration?: string;
+  state?: 'known' | 'unknown';
+  directives?: LeaderBriefOwnerDirective[];
+  projection?: {
+    text?: string;
+    receipt?: Record<string, unknown>;
+  };
+  detailRef?: string;
+  read?: { elapsedMs?: number; degradedSources?: string[] };
+}
+
 /** Mirrors `LeaderBriefMember['benchSuggestion']`.
  *  `idle-with-claimable` is the branch a leader must NOT act on by benching —
  *  it is a STARVATION symptom, not a member that should park. */
@@ -292,6 +330,8 @@ export interface LeaderBriefData {
   error?: string;
   hint?: string;
   summary?: LeaderBriefSummary;
+  /** Distinct owner-turn obligations; member `directives` remains actuation. */
+  ownerDirectives?: LeaderBriefOwnerDirectives;
   members?: LeaderBriefMemberRow[];
   /** Set when the verbose member rows were bounded for transport. */
   membersTruncated?: boolean;

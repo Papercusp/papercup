@@ -225,6 +225,45 @@ function largeBrief() {
 }
 
 describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
+  it('keeps the owner-directive root distinct and strips diagnostic targetRef from its action', () => {
+    const out = shapeLeaderBrief({
+      ok: true,
+      ownerDirectives: {
+        schemaVersion: 'agent-obligations-v1',
+        evaluatedAt: '2026-09-21T20:00:00.000Z',
+        sourceGeneration: 'agenda-1',
+        state: 'known',
+        directives: [{
+          id: 'obl:owner-directive:1',
+          status: 'due',
+          title: 'Owner directive #27',
+          priority: 'critical',
+          applicableDemand: 1,
+          action: {
+            kind: 'repair',
+            summary: 'close it',
+            tool: 'orders:disposition',
+            targetRef: 'internal-provider-symbol',
+            recoveryRef: 'orders:get #27',
+          },
+          authority: { kind: 'owner-candidate', sourceRef: 'owner-directive:27', turnOrigin: 'unknown' },
+          evidence: [],
+        }],
+        projection: {
+          text: '- [DUE] Owner directive #27 — close it; full: orders:get #27',
+          receipt: { sink: 'fleet:leader-brief:owner-directives', mode: 'truncate', entriesAvailable: 1, entriesDelivered: 1, entriesOmitted: 0, bodyDeliveredChars: 60, estimatedTokens: 15, bodyTruncated: false, refused: false },
+        },
+        detailRef: 'fleet:leader-brief { payloadTier:"full" }',
+        read: { elapsedMs: 2, degradedSources: [] },
+      },
+    }, 'trimmed') as Record<string, any>;
+    expect(out.ownerDirectives).toMatchObject({
+      state: 'known',
+      directives: [{ action: { tool: 'orders:disposition', recoveryRef: 'orders:get #27' } }],
+    });
+    expect(out.ownerDirectives.directives[0].action).not.toHaveProperty('targetRef');
+  });
+
   it('preserves degraded roster status beside a zero-member fallback', () => {
     for (const tier of ['trimmed', 'standard'] as const) {
       const out = shapeLeaderBrief(
