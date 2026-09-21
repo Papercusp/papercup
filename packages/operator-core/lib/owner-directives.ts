@@ -39,6 +39,41 @@ import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-regis
 export type OwnerDirectiveDisposition = 'done' | 'declined';
 export type OwnerDirectiveCaptureStatus = 'pending' | 'open' | 'dismissed';
 
+/**
+ * The single LIFECYCLE state of a directive (P-005). `capture_status` and
+ * `disposition_status` are two orthogonal columns, which is why `orders:list`
+ * could only ever offer a boolean `open` that BUNDLED pending with open and
+ * dismissed with done/declined — so neither the pending queue nor the dismissed
+ * audit trail could be isolated. These five values are mutually exclusive and
+ * total over the row space, which is what makes them filterable.
+ */
+export type OwnerDirectiveState = 'pending' | 'open' | 'dismissed' | 'done' | 'declined';
+
+export const OWNER_DIRECTIVE_STATES: readonly OwnerDirectiveState[] = [
+  'pending',
+  'open',
+  'dismissed',
+  'done',
+  'declined',
+] as const;
+
+/**
+ * Derive the lifecycle state of one row. PURE, and deliberately the ONLY place
+ * the precedence is expressed: dismissal and pending are capture-plane facts
+ * that never carry a disposition (dismissOwnerDirective requires
+ * dispositioned_at IS NULL and does not set it), so they are checked first.
+ */
+export function ownerDirectiveState(row: {
+  captureStatus?: OwnerDirectiveCaptureStatus;
+  dispositionedAtMs: number | null;
+  dispositionStatus: OwnerDirectiveDisposition | null;
+}): OwnerDirectiveState {
+  if (row.captureStatus === 'pending') return 'pending';
+  if (row.captureStatus === 'dismissed') return 'dismissed';
+  if (row.dispositionedAtMs != null) return row.dispositionStatus === 'declined' ? 'declined' : 'done';
+  return 'open';
+}
+
 export interface OwnerDirectiveRow {
   id: number;
   workspaceId: string;
@@ -208,6 +243,15 @@ export interface ListOwnerDirectivesOpts {
   workspaceId: string;
   /** true → only unresolved capture rows; false → only dispositioned history; omitted → all. */
   open?: boolean;
+  /**
+   * P-005: filter by exact lifecycle state(s) — the only way to isolate the
+   * `pending` queue or the `dismissed` audit trail, which the boolean `open`
+   * bundles with other states and therefore cannot express. Applied in SQL,
+   * BEFORE `limit`: filtering client-side on the returned page silently drops
+   * matching rows that the limit already truncated away, which reads as a real
+   * absence. Combined with `open`, both predicates apply (AND).
+   */
+  state?: OwnerDirectiveState | readonly OwnerDirectiveState[];
   limit?: number;
 }
 
@@ -220,10 +264,25 @@ export async function listOwnerDirectives(
   const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
   // 'default' is matched alongside the canonical workspace for the same reason
   // readHeldWorkItems does: legacy/unscoped writers land rows under 'default'.
+  const states = opts.state == null ? null : [...(Array.isArray(opts.state) ? opts.state : [opts.state])];
   const rows = await s<RawRow[]>`
     SELECT * FROM harness_shared.owner_directives
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
        ${opts.open === true ? s`AND dispositioned_at IS NULL AND capture_status <> 'dismissed'` : opts.open === false ? s`AND (dispositioned_at IS NOT NULL OR capture_status = 'dismissed')` : s``}
+       ${
+         states && states.length > 0
+           ? // Mirrors ownerDirectiveState() exactly, in the same precedence order.
+             // owner-directive-state-parity.test.ts asserts the two agree for every
+             // state, so this CASE cannot silently drift from the TS derivation.
+             s`AND CASE
+                 WHEN capture_status = 'pending' THEN 'pending'
+                 WHEN capture_status = 'dismissed' THEN 'dismissed'
+                 WHEN dispositioned_at IS NOT NULL AND disposition_status = 'declined' THEN 'declined'
+                 WHEN dispositioned_at IS NOT NULL THEN 'done'
+                 ELSE 'open'
+               END IN ${s(states)}`
+           : s``
+       }
      ORDER BY created_at ASC, id ASC
      LIMIT ${limit}
   `;
@@ -330,16 +389,35 @@ function humanAge(ms: number): string {
   return h < 48 ? `${h}h` : `${Math.round(h / 24)}d`;
 }
 
+/**
+ * The budgeted VERBATIM excerpt of one directive's text — whole when short,
+ * `substr(0, EXCERPT_CHARS) + '…'` when long. substr, never summarization: the
+ * full verbatim is one `orders:get` away, and a paraphrase of an owner turn is
+ * precisely the rot the verbatim store exists to prevent.
+ *
+ * Exported because more than one render point needs the SAME budgeted text
+ * (the per-turn owner-directive block and the class-B obligation row), and two
+ * hand-spelled copies of a truncation rule drift into two different excerpts of
+ * the same owner sentence. Truncation is detectable by the caller without a
+ * second flag: a truncated excerpt is strictly SHORTER than the trimmed input.
+ */
+export function ownerDirectiveExcerpt(verbatimText: string): string {
+  const text = verbatimText.trim();
+  if (text.length <= OWNER_DIRECTIVE_WHOLE_MAX) return text;
+  return `${text.slice(0, OWNER_DIRECTIVE_EXCERPT_CHARS)}…`;
+}
+
 /** One row, budgeted: whole when short, substr(0, EXCERPT) + pointer when long.
  *  substr, never summarization — the full verbatim is one orders:get away. */
 export function renderOwnerDirectiveRow(row: OwnerDirectiveRow, nowMs: number = Date.now()): string {
   const age = humanAge(Math.max(0, nowMs - row.createdAtMs));
   const by = row.recordedBy.length > 12 ? row.recordedBy.slice(0, 12) : row.recordedBy;
   const text = row.verbatimText.trim();
+  const excerpt = ownerDirectiveExcerpt(text);
   const rendered =
-    text.length <= OWNER_DIRECTIVE_WHOLE_MAX
+    excerpt.length === text.length
       ? `"${text}"`
-      : `"${text.slice(0, OWNER_DIRECTIVE_EXCERPT_CHARS)}…" [full text: orders:get #${row.id}]`;
+      : `"${excerpt}" [full text: orders:get #${row.id}]`;
   const pending = row.captureStatus === 'pending' ? ' [PENDING — resolve next turn]' : '';
   return `  • #${row.id} [${age} old, recorded by ${by}]${pending} ${rendered}`;
 }
