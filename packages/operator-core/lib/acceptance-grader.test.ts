@@ -295,6 +295,128 @@ describe('launchAcceptanceGrader', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
+  it('WI-10002155: a dropped kickoff is TERMINAL from the launcher receipt alone — never reported as launched', async () => {
+    const kill = vi.fn(async () => ({ ok: true }));
+    const readLogTail = vi.fn(() => '');
+    const launch = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'launched' }],
+      data: {
+        deduped: false,
+        launch: {
+          tasks: [
+            {
+              taskId: 'task-kickoff-dropped',
+              logPath: '/tmp/judge.log',
+              kickoffProof: {
+                persisted: false,
+                nativeRef: null,
+                reason: 'kickoff-not-submitted:submit-verification-aborted-quota-blocked',
+              },
+            },
+          ],
+        },
+      },
+    }));
+
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      killTask: kill as never,
+      readLogTail,
+    });
+
+    // The whole defect was reporting this as a live judge. It must never read 'launched'.
+    expect(result.state).not.toBe('launched');
+    expect(result.state).toBe('failed');
+    expect(result.terminalRecovery?.codes).toContain('launch_kickoff_not_persisted');
+    expect(result.terminalRecovery?.retiredTaskIds).toContain('task-kickoff-dropped');
+    expect(kill).toHaveBeenCalledWith('task-kickoff-dropped', { includeSubtree: true, escalateAfterMs: 5_000 });
+    // The structured receipt is authoritative, so the opt-OUT log scrape is not consulted.
+    expect(readLogTail).not.toHaveBeenCalled();
+  });
+
+  it('WI-10002155: POSITIVE CONTROL — a persisted kickoff, and an ABSENT receipt, stay non-terminal', async () => {
+    const kill = vi.fn(async () => ({ ok: true }));
+
+    const healthyLaunch = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'launched' }],
+      data: {
+        deduped: false,
+        launch: {
+          tasks: [
+            {
+              taskId: 'task-healthy',
+              logPath: '/tmp/judge.log',
+              kickoffProof: { persisted: true, nativeRef: '/native/judge.jsonl', reason: null },
+            },
+          ],
+        },
+      },
+    }));
+    const healthy = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(healthyLaunch),
+      killTask: kill as never,
+      readLogTail: () => '',
+    });
+    expect(healthy.state).toBe('launched');
+
+    // Absent receipt = no process was spawned (discovery 'assigned' launch). Not a failure.
+    const noProofLaunch = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'launched' }],
+      data: { deduped: false, launch: { tasks: [{ taskId: 'task-no-proof', logPath: '/tmp/judge.log' }] } },
+    }));
+    const noProof = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(noProofLaunch),
+      killTask: kill as never,
+      readLogTail: () => '',
+    });
+    expect(noProof.state).toBe('launched');
+
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('WI-10002155: a dedupe onto a still-"running" zombie inside the 2h stale window is retired, not returned as deduped', async () => {
+    // The measured failure: the judge parked on an unanswerable interactive
+    // rate-limit picker, so it never exited. state stays 'running' => live=true,
+    // and at 40min it is far inside ACCEPTANCE_GRADER_STALE_AFTER_MS (2h) =>
+    // overAge=false. Before this fix that combination returned 'deduped'
+    // forever and no plan could ever be graded.
+    const kill = vi.fn(async () => ({ ok: true }));
+    const launch = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'already launched' }],
+      data: {
+        deduped: true,
+        launch: {
+          tasks: [
+            {
+              taskId: 'task-zombie',
+              logPath: '/tmp/judge.log',
+              kickoffProof: { persisted: false, nativeRef: null, reason: 'kickoff-proof-timeout' },
+            },
+          ],
+        },
+      },
+    }));
+
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      listTasks: vi.fn(async () => [
+        {
+          taskId: 'task-zombie',
+          state: 'running',
+          startedAt: '2026-08-25T00:00:00.000Z',
+          endedAt: null,
+        },
+      ]) as never,
+      killTask: kill as never,
+      readLogTail: () => '',
+      nowMs: () => Date.parse('2026-08-25T00:40:00.000Z'),
+    });
+
+    expect(result.state).not.toBe('deduped');
+    expect(kill).toHaveBeenCalledWith('task-zombie', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(result.terminalRecovery?.codes).toContain('launch_kickoff_not_persisted');
+  });
+
   it("EI-21923986145923904: passes through launch-agent's agentStarted verdict on a fresh launch, including the honest null case", async () => {
     const launch = vi.fn(async () => ({
       content: [{ type: 'text', text: 'launched' }],

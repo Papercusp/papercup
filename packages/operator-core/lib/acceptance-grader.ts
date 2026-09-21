@@ -211,7 +211,17 @@ const ACCEPTANCE_GRADER_FALLBACK = {
 export type AcceptanceGraderTerminalFailureCode =
   | 'model_quota_exhausted'
   | 'startup_connection_stalled'
-  | 'inference_gateway_error';
+  | 'inference_gateway_error'
+  /**
+   * WI-10002155: the launcher's OWN structured receipt said the kickoff was
+   * never submitted (`launch.tasks[].kickoffProof.persisted !== true`). This is
+   * deliberately NOT derived from the log: `capability:launch-agent` publishes
+   * this verdict about THIS launch, so unlike the pty-host log patterns it
+   * cannot be forged by a judge's frozen evidence quoting launcher
+   * diagnostics — which is exactly why `allowLauncherQuotaDrop` must stay
+   * opt-in while this signal can always be trusted.
+   */
+  | 'launch_kickoff_not_persisted';
 
 export interface AcceptanceGraderTerminalFailure {
   code: AcceptanceGraderTerminalFailureCode;
@@ -1530,7 +1540,17 @@ export async function launchAcceptanceGrader(
       };
       const launchData = result.data?.launch as
         | {
-            tasks?: Array<{ taskId?: unknown; logPath?: unknown }>;
+            tasks?: Array<{
+              taskId?: unknown;
+              logPath?: unknown;
+              /**
+               * WI-10002155: the launcher's structured kickoff receipt. Absent
+               * when no process was spawned (a discovery 'assigned' launch);
+               * present with `persisted:false` when the first turn was never
+               * submitted and the task is a zombie awaiting recovery.
+               */
+              kickoffProof?: { persisted?: unknown; reason?: unknown } | null;
+            }>;
             // EI-21923986145923904: present only when the fresh-launch verification
             // path ran (see FreshLaunchVerdict.agentStarted); absent for a discovery
             // 'assigned' launch, which never spawns.
@@ -1540,7 +1560,30 @@ export async function launchAcceptanceGrader(
       const launchedTask = launchData?.tasks?.[0];
       const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
       const logPath = typeof launchedTask?.logPath === 'string' ? launchedTask.logPath : null;
-      const terminalFailure = logPath
+
+      // WI-10002155: prefer the launcher's STRUCTURED verdict over scraping its
+      // log. `capability:launch-agent` reports `kickoffProof.persisted !== true`
+      // when the first turn was never submitted, and retains the task/log
+      // identity precisely so this caller can recover (launch-agent.ts, "retained
+      // for recovery"); `consult/revive-responder` already gates on the same
+      // field. Without this, a judge that parked on an unanswerable interactive
+      // rate-limit picker NEVER exits, so `live` stays true, `overAge` needs the
+      // full 2h ACCEPTANCE_GRADER_STALE_AFTER_MS, and every later ship attempt
+      // dedupes onto the zombie — while a FRESH such launch is reported
+      // `state:'launched'` even though the judge never took a single turn.
+      // Absent `kickoffProof` means no spawn happened (a discovery 'assigned'
+      // launch), which is not a failure — only a PRESENT receipt can be terminal.
+      const kickoffProof = launchedTask?.kickoffProof;
+      const kickoffNotPersisted = !!kickoffProof && kickoffProof.persisted !== true;
+      const kickoffDropReason =
+        typeof kickoffProof?.reason === 'string' && kickoffProof.reason ? kickoffProof.reason : 'reason not reported';
+
+      const terminalFailure: AcceptanceGraderTerminalFailure | null = kickoffNotPersisted
+        ? {
+            code: 'launch_kickoff_not_persisted',
+            evidence: `launch receipt reported kickoffProof.persisted !== true (${kickoffDropReason})`,
+          }
+        : logPath
         ? await detectAcceptanceGraderTerminalFailure(logPath, {
             readLogTail,
             ...(sleep ? { sleep } : {}),
