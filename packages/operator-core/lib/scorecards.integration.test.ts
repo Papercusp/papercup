@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { composeCompanionSummary } from '@papercusp/facets';
+import type { StructuredObservation } from './harness/improvements/observation-types';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 
@@ -130,8 +131,10 @@ async function fileScorecard(
     sourceHive?: string;
     rubricRevision?: number;
     criteriaHash?: string;
-    ratings: Record<string, { rating: string; evidence: string }>;
+    ratings: NonNullable<StructuredObservation['ratings']>;
     instrumentSnapshots?: Record<string, unknown>;
+    subject?: StructuredObservation['subject'];
+    rollup?: StructuredObservation['rollup'];
     createdAt: string;
     createdBy?: string;
   },
@@ -149,6 +152,8 @@ async function fileScorecard(
         ...(opts.sourceHive ? { sourceHive: opts.sourceHive } : {}),
         ratings: opts.ratings,
         ...(opts.instrumentSnapshots ? { instrumentSnapshots: opts.instrumentSnapshots } : {}),
+        ...(opts.subject ? { subject: opts.subject } : {}),
+        ...(opts.rollup ? { rollup: opts.rollup } : {}),
       },
     },
   });
@@ -181,10 +186,21 @@ describe('listScorecards (P-013) — real PG', () => {
       rubricRef: RUBRIC,
       rubricRevision: 17,
       criteriaHash: 'criteria-hash-roundtrip',
+      subject: {
+        kind: 'agent-run', ref: 'historical-holder',
+        windowStart: '2026-06-05T00:00:00.000Z', windowEnd: '2026-06-06T00:00:00.000Z',
+      },
+      rollup: {
+        verdict: 'fail', criticalKeys: ['end-to-end-flow'], criticalFailures: ['end-to-end-flow'],
+        criticalUnknowns: [], coverage: { rated: 3, required: 3, sufficient: true },
+      },
       sourceHive: 'papercusp',
       createdAt: '2026-06-20T12:00:00.000Z',
       ratings: {
-        'end-to-end-flow': { rating: 'broken', evidence: '88 unplaced' },
+        'end-to-end-flow': {
+          rating: 'broken', evidence: '88 unplaced', evidenceRef: 'test:placement-snapshot',
+          evidenceKind: 'test', attribution: 'subject',
+        },
         'ideation-quality': { rating: 'healthy', evidence: 'fresh ideas' },
         'watchdog-determinism': { rating: 'degraded', evidence: '2 flaky red-tests' },
         'legacy-ad-hoc-check': { rating: 'healthy', evidence: 'old writer invented a dimension' },
@@ -395,7 +411,11 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(complete.rubricRevision).toBe(17);
     expect(complete.criteriaHash).toBe('criteria-hash-roundtrip');
     expect(complete.score10).toBe(5); // known criteria only: broken(0), healthy(10), degraded(5)
-    expect(complete.ratings['end-to-end-flow']).toEqual({ rating: 'broken', evidence: '88 unplaced' });
+    expect(complete.ratings['end-to-end-flow']).toEqual({
+      rating: 'broken', evidence: '88 unplaced', evidenceRef: 'test:placement-snapshot',
+      evidenceKind: 'test', attribution: 'subject',
+    });
+    expect(complete.rollup?.verdict).toBe('fail');
     expect(complete.instrumentSnapshots).toEqual({
       'spec-quality.proof': {
         verdict: 'pass',
@@ -421,6 +441,10 @@ describe('listScorecards (P-013) — real PG', () => {
         issueId: roundtripScorecardId,
         rubricRevision: 17,
         criteriaHash: 'criteria-hash-roundtrip',
+        rollup: { verdict: 'fail' },
+        criteria: expect.arrayContaining([expect.objectContaining({
+          key: 'end-to-end-flow', evidenceRef: 'test:placement-snapshot', evidenceKind: 'test', attribution: 'subject',
+        })]),
       },
     });
   });
@@ -501,6 +525,17 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(trend.sourceHive).toBe('papercusp');
     expect(trend.scorecardCount).toBe(2); // complete + partial (generic-test excluded by sourceHive)
     expect(trend.window).toEqual({ from: '2026-06-20T10:00:00.000Z', to: '2026-06-20T12:00:00.000Z' });
+    expect(trend.filingWindow).toEqual(trend.window);
+    expect(trend.observationWindow).toEqual({ from: '2026-06-05T00:00:00.000Z', to: '2026-06-06T00:00:00.000Z' });
+    const lag = Date.parse('2026-06-20T12:00:00.000Z') - Date.parse('2026-06-06T00:00:00.000Z');
+    expect(trend.filingLagMs).toEqual({ min: lag, max: lag, mean: lag, measured: 1 });
+    expect(trend.scorecardIdentities).toEqual([
+      expect.objectContaining({ createdAt: '2026-06-20T10:00:00.000Z' }),
+      expect.objectContaining({
+        issueId: roundtripScorecardId, rubricRevision: 17, criteriaHash: 'criteria-hash-roundtrip',
+        subject: { kind: 'agent-run', ref: 'historical-holder', windowStart: '2026-06-05T00:00:00.000Z', windowEnd: '2026-06-06T00:00:00.000Z' },
+      }),
+    ]);
     // criteria sorted ASC by key.
     expect(trend.criteria.map((c) => c.criterion)).toEqual([
       'end-to-end-flow',
@@ -532,6 +567,7 @@ describe('listScorecards (P-013) — real PG', () => {
     const trend = await scorecardTrend({ rubricRef: RUBRIC, sourceHive: 'papercusp' });
     expect(trend.criteria.length).toBeGreaterThan(0);
     for (const c of trend.criteria) expect(c.series).toBeUndefined();
+    expect(trend.scorecardIdentities).toBeUndefined();
     // The summary fields still fully describe the criterion.
     const e2e = trend.criteria.find((c) => c.criterion === 'end-to-end-flow')!;
     expect(e2e.direction).toBe('worsening');

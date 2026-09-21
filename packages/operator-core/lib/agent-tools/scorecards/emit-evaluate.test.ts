@@ -2069,22 +2069,21 @@ describe('scorecards result-shape contract is PUBLISHED, and matches what the co
 });
 
 describe('scorecards:evaluate input ownership is explicit', () => {
-  it('keeps emit-only subject strict on evaluate and documents the correct handoff', () => {
+  it('accepts the same subject/window on evaluate and emit for registered instruments', () => {
     expect(
       scorecardEvaluateArgs.safeParse({
         rubricRef: 'test-rubric',
         subject: { kind: 'plan', ref: 'test-plan' },
       }).success,
-    ).toBe(false);
+    ).toBe(true);
 
     const evaluate = evaluateTool as unknown as {
       description?: string;
       guidance?: { when?: string; chaining?: string };
     };
-    expect(evaluate.description).toContain('emit-only metadata such as subject');
-    expect(evaluate.guidance?.when).toContain('pass `subject` and other write metadata only to `scorecards:emit`');
-    expect(evaluate.guidance?.chaining).toContain('`subject` is an emit-only field');
-    expect(evaluate.guidance?.chaining).toContain('do not pass it to either evaluate call');
+    expect(evaluate.description).toContain('exact subject/window');
+    expect(evaluate.guidance?.when).toContain('same `subject` and observation window');
+    expect(evaluate.guidance?.chaining).toContain('Registered instruments execute on both calls');
   });
 
   it('documents source-vs-target hive ownership for cross-hive grading', () => {
@@ -2102,6 +2101,42 @@ describe('scorecards:evaluate input ownership is explicit', () => {
     expect(emitSourceHive).toContain('use targetHive for that subject hive');
     expect(emitTargetHive).toContain("rubric subject plan's harness");
     expect(emitTargetHive).toContain('does not change sourceHive');
+  });
+});
+
+describe('Work on everything evidence contract through evaluate and emit', () => {
+  const rubricRef = 'work-on-everything-stewardship-health';
+  const subject = { kind: 'agent-run' as const, ref: 'holder', windowStart: '2026-09-05T00:00:00Z', windowEnd: '2026-09-06T00:00:00Z' };
+  const ratings = Object.fromEntries(Object.entries(RATINGS).map(([key, value]) => [key, {
+    ...value, evidenceRef: 'test:stewardship-run', evidenceKind: 'test', attribution: 'subject' as const,
+  }]));
+
+  beforeEach(() => getRubricM.mockResolvedValue({ ...RUBRIC, rubricId: rubricRef }));
+
+  it('refuses prose-only evidence at both public handlers without writing', async () => {
+    expect(await evaluateScorecard({ rubricRef, ratings: RATINGS })).toMatchObject({ ok: false, error: expect.stringContaining('evidenceRef') });
+    expect(await emitScorecard({ rubricRef, ratings: RATINGS }, { createdBy: 'su-1' })).toMatchObject({ ok: false, error: expect.stringContaining('evidenceRef') });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('preserves the complete evidence bundle and computed rollup through emission', async () => {
+    const args = { rubricRef, subject, ratings, instrumentSnapshots: {
+      unsupported: { verdict: 'pass' as const, measuredAt: subject.windowEnd, provenance: 'platform-computed' as const, value: { retainedCount: 42 } },
+    } };
+    const evaluated = await evaluateScorecard(scorecardEvaluateArgs.parse(args));
+    expect(evaluated).toMatchObject({ ok: true, rollup: { verdict: 'pass', coverage: { sufficient: true } } });
+    expect(await emitScorecard(scorecardEmitArgs.parse(args), { createdBy: 'su-1' })).toMatchObject({ ok: true, created: true });
+    expect(captureM.mock.calls[0][0]).toMatchObject({ payloadExtra: { observation: {
+      subject, ratings, rollup: { verdict: 'pass' },
+      instrumentSnapshots: { unsupported: { provenance: 'self-reported', value: { retainedCount: 42 } } },
+    } } });
+  });
+
+  it('rejects a missing absence control at both handlers', async () => {
+    const missingControl = { ...ratings, 'crit-a': { ...ratings['crit-a'], absenceClaim: true } };
+    expect(await evaluateScorecard({ rubricRef, ratings: missingControl })).toMatchObject({ ok: false, error: expect.stringContaining('positiveControlRef') });
+    expect(await emitScorecard({ rubricRef, ratings: missingControl }, { createdBy: 'su-1' })).toMatchObject({ ok: false, error: expect.stringContaining('positiveControlRef') });
+    expect(captureM).not.toHaveBeenCalled();
   });
 });
 
