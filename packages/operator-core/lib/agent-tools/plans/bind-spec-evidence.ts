@@ -111,7 +111,7 @@ export const bindingSchema = z
     measurement: evidenceMeasurementSchema
       .optional()
       .describe(
-        "Server-measured basis, discriminated on `kind`. kind:'repo-files' hashes bounded source/test file sets from the canonical harness checkout. kind:'work-items' hashes the disposition of a bounded work-item id set, which is what makes a NON-CODE outcome (a ledger census) reach source=current instead of being pinned at unknown forever. The binder stores the recipe and the current fingerprints; later reads recompute them, so a row that reopens correctly goes stale.",
+        "Server-measured basis, discriminated on `kind`: 'repo-files' hashes bounded source/test files; 'work-items' hashes a bounded work-item id set, which is how a NON-CODE outcome reaches source=current. Stores the recipe, so later reads recompute it and a reopened row goes stale.",
       ),
     details: bindingDetailsSchema.optional(),
     observedAt: z.string().datetime({ offset: true }).optional(),
@@ -166,7 +166,7 @@ const retractionSchema = z.object({
     .int()
     .positive()
     .describe(
-      'The exact binding row id, from plans:get-spec-evidence. Never a (workItemId, evidenceRef) pair: changed fingerprints append history, so that pair routinely matches several rows.',
+      'The exact binding row id, from plans:get-spec-evidence — never a (workItemId, evidenceRef) pair, which routinely matches several history rows.',
     ),
   reason: z
     .string()
@@ -174,7 +174,7 @@ const retractionSchema = z.object({
     .min(12)
     .max(2000)
     .describe(
-      'Why this proof is being withdrawn (for example: the bound run was never collected or executed). Required and stored on the row — a retraction with no stated cause is indistinguishable from evidence-shedding, which D-011 forbids.',
+      'Why this proof is withdrawn (e.g. the bound run was never executed). Stored on the row: an unexplained retraction is indistinguishable from the evidence-shedding D-011 forbids.',
     ),
 });
 
@@ -186,8 +186,7 @@ const argsSchema = z
       .min(1)
       .optional()
       .describe(
-        'Plan owning the referenced spec revisions. Omit for an ad-hoc work-item that belongs to no plan; ' +
-          'its clauses are scoped to the harness-wide ad-hoc spec scope instead.',
+        'Plan owning the referenced spec revisions. Omit for an ad-hoc work-item with no plan — its clauses use the harness-wide ad-hoc spec scope.',
       ),
     binding: bindingSchema.optional().describe('Single-binding shorthand (n=1 of items).'),
     items: z.array(bindingSchema).min(1).max(500).optional(),

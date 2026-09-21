@@ -54,7 +54,7 @@ describe('config:tiers-set', () => {
       { name: 'wide', spec: 'opus[1m]:high' },
     ]);
     expect(out.data.droppedInvalid).toBe(1);
-    expect(out.data.tiers[1].effectiveCompactionLimit).toBe(400_000);
+    expect(out.data.tiers[1].effectiveCompactionLimit).toBe(450_000);
     expect(out.data.tiers[1].modelWindow).toBe(1_000_000);
   });
 
@@ -99,7 +99,7 @@ describe('config:tiers-get', () => {
     const out = (await getTool.handler({}, {} as never)) as ToolOut;
     expect(out.data.stored).toBe(false);
     const std = out.data.tiers.find((t) => t.name === 'standard')!;
-    expect(std.effectiveCompactionLimit).toBe(400_000); // sonnet alias → sonnet-5 → 400k cap
+    expect(std.effectiveCompactionLimit).toBe(450_000); // sonnet alias → sonnet-5 → the leader/solo 1M cap (450k, owner directive 2026-09-21)
     expect(std.compactionLimitSource).toBe('model-default');
   });
 

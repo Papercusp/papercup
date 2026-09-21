@@ -438,7 +438,7 @@ describe('resolveTierSpec compactionLimit', () => {
     // a `standard` pick up past it; worker stays sonnet-floored.
     const r = resolveTierSpec({ tier: 'standard', role: 'worker' });
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.compactionLimit).toBe(400_000); // standard = sonnet[1m] → the [1m] 400k cap
+    if (r.ok) expect(r.compactionLimit).toBe(450_000); // standard = sonnet[1m] → the [1m] leader/solo cap (450k, owner directive 2026-09-21)
   });
 
   it('honors an explicit per-tier limit and reflects a [1m] window', () => {
@@ -452,9 +452,9 @@ describe('resolveTierSpec compactionLimit', () => {
     const lean = resolveTierSpec({ tier: 'lean', role: 'reviewer', tiers });
     expect(lean.ok && lean.compactionLimit).toBe(90_000);
     const vast = resolveTierSpec({ tier: 'vast', role: 'reviewer', tiers });
-    expect(vast.ok && vast.compactionLimit).toBe(400_000); // [1m] ⇒ the uniform 400k spend cap (marker-keyed, 2026-07-03)
+    expect(vast.ok && vast.compactionLimit).toBe(450_000); // [1m] ⇒ the uniform leader/solo spend cap (marker-keyed; 450k since owner directive 2026-09-21)
     const wide = resolveTierSpec({ tier: 'wide', role: 'reviewer', tiers });
-    expect(wide.ok && wide.compactionLimit).toBe(400_000); // [1m] ⇒ 400k cap (owner directive 2026-07-03)
+    expect(wide.ok && wide.compactionLimit).toBe(450_000); // [1m] ⇒ 450k cap (owner directive 2026-09-21, raising the 2026-07-03 400k)
   });
 
   it('derives a wide default from a backend-catalog tier window', () => {
@@ -463,13 +463,13 @@ describe('resolveTierSpec compactionLimit', () => {
       contextWindow: 1_048_576,
     }];
     const r = resolveTierSpec({ tier: 'ox-alpha', role: 'reviewer', tiers });
-    expect(r.ok && r.compactionLimit).toBe(400_000);
+    expect(r.ok && r.compactionLimit).toBe(450_000); // 1M backend window ⇒ the leader/solo cap (450k, owner directive 2026-09-21)
   });
 
   it('a budget downgrade adopts the downgraded-to tier limit', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ cup: 'haiku' }));
     const dg = downgradeOpusTierForBudget({ currentSpec: 'opus:xhigh', currentTier: 'max', role: 'cup' });
     expect(dg.downgraded).toBe(true);
-    expect(dg.compactionLimit).toBe(400_000); // standard target = sonnet[1m] → the [1m] 400k cap
+    expect(dg.compactionLimit).toBe(450_000); // standard target = sonnet[1m] → the [1m] leader/solo cap (450k, owner directive 2026-09-21)
   });
 });

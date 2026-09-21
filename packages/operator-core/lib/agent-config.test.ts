@@ -288,14 +288,17 @@ describe('parseTiers compactionLimit (context-trimming-tiers D-001/D-002)', () =
     expect(parseTiers([{ name: 'std', spec: 'haiku', compactionLimit: 900_000 }])).toEqual([
       { name: 'std', spec: 'haiku', compactionLimit: 158_000 },
     ]);
-    // EVERY [1m]-marked spec caps at 400k — the cap is keyed on the marker
-    // (the actual window signal), not the model family, so it compacts
-    // preemptively despite the 1M window (owner directive 2026-07-03).
+    // EVERY [1m]-marked spec caps at the leader/solo 1M cap — the cap is keyed on
+    // the marker (the actual window signal), not the model family, so it compacts
+    // preemptively despite the 1M window. 400k (owner directive 2026-07-03) was
+    // raised to 450k by owner directive 2026-09-21 ("increase the default context
+    // limit for ad-hoc su sessions and fleet leaders from 400 to 450"); this
+    // asserts COMPACTION_LIMIT_DEFAULT_1M_CAP, not a hand-picked number.
     expect(parseTiers([{ name: 'vast', spec: 'haiku[1m]', compactionLimit: 900_000 }])).toEqual([
-      { name: 'vast', spec: 'haiku[1m]', compactionLimit: 400_000 },
+      { name: 'vast', spec: 'haiku[1m]', compactionLimit: 450_000 },
     ]);
     expect(parseTiers([{ name: 'deep', spec: 'opus[1m]:high', compactionLimit: 900_000 }])).toEqual([
-      { name: 'deep', spec: 'opus[1m]:high', compactionLimit: 400_000 },
+      { name: 'deep', spec: 'opus[1m]:high', compactionLimit: 450_000 },
     ]);
     // floor clamp
     expect(parseTiers([{ name: 'std', spec: 'haiku', compactionLimit: 5 }])).toEqual([
