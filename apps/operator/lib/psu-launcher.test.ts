@@ -44,10 +44,11 @@ import {
   resolveOmpOperatorUrl,
   probeOmpOperatorMcp,
   ompCoreToolNames,
+  ompCompactToolNames,
   claudeSeedToolNames,
+  claudeCompactToolNames,
   CLAUDE_SEED_EXTRA_TOOL_NAMES,
   CLAUDE_MINIMAL_SEED_TOOL_NAMES,
-  CLAUDE_MINIMAL_SEED_MAX_NAMES,
   isWeakOmpModel,
   bareOmpModelId,
   probeOmpBackendContextWindow,
@@ -336,6 +337,14 @@ import {
 // inlined copy because it is a plain node script with no TS imports. The drift
 // guard below keeps the OMP seed exactly aligned with every other trimmed client.
 import { CORE_MCP_TOOL_NAMES } from "@papercusp/orchestrator";
+// deterministic-tool-definition-delivery-2026-09-21: the GENERATED delivery map the
+// launcher now reads. The guards below assert against it rather than re-listing 90 names,
+// because a second hand list in the test file is the same hand-maintained copy the plan
+// removed from the source — it would drift the moment the policy re-resolves.
+import {
+  CLAUDE_TOOL_DELIVERY as CLAUDE_TOOL_DELIVERY_ARTIFACT,
+  OMP_TOOL_DELIVERY as OMP_TOOL_DELIVERY_ARTIFACT,
+} from "../scripts/tool-delivery.generated.mjs";
 
 describe("interactive role picker", () => {
   it("shows the fixed SU role without waiting for an unavailable operator", async () => {
@@ -2507,27 +2516,36 @@ const processEnv = (values: Record<string, string>): NodeJS.ProcessEnv =>
   values as NodeJS.ProcessEnv;
 
 describe("ompCoreToolNames (PAPERCUSP_OMP_TOOLS_EXCLUDE — spine trim escape hatch)", () => {
-  it("returns the full spine when the env var is unset/empty", () => {
-    expect(ompCoreToolNames(processEnv({}))).toEqual([
-      ...OMP_CORE_MCP_TOOL_NAMES,
-    ]);
+  // D-005: this is now the DERIVED set, not the OMP_CORE_MCP_TOOL_NAMES literal. Asserting
+  // against the generated artifact (rather than re-listing 90 names here) is deliberate — a
+  // second hand list in the test file would reintroduce, in the guard itself, exactly the
+  // hand-maintained copy this plan removed from the source.
+  const ompAdvertised = [...OMP_TOOL_DELIVERY_ARTIFACT.advertised];
+
+  it("returns the full derived seed when the env var is unset/empty", () => {
+    expect(ompCoreToolNames(processEnv({}))).toEqual(ompAdvertised);
     expect(
       ompCoreToolNames(processEnv({ PAPERCUSP_OMP_TOOLS_EXCLUDE: "" })),
-    ).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+    ).toEqual(ompAdvertised);
   });
 
   it("drops the named tools (comma-separated, whitespace-tolerant), keeping the rest in order", () => {
-    // (work_items:update left the spine in the 2026-07-05 rebalance — exclude two tools
-    // that ARE in the spine so the length-2 assertion stays meaningful.)
+    // Exclude two tools that ARE in the derived seed so the length-2 assertion stays
+    // meaningful; both are floors, so they cannot silently leave the seed and make this
+    // guard vacuous.
     const kept = ompCoreToolNames(
       processEnv({
-        PAPERCUSP_OMP_TOOLS_EXCLUDE: "work_items:set_state, coord:glance",
+        PAPERCUSP_OMP_TOOLS_EXCLUDE: "coord:declare-intent, coord:inbox",
       }),
     );
-    expect(kept).not.toContain("work_items:set_state");
-    expect(kept).not.toContain("coord:glance");
-    expect(kept.length).toBe(OMP_CORE_MCP_TOOL_NAMES.length - 2);
-    expect(kept[0]).toBe(OMP_CORE_MCP_TOOL_NAMES[0]); // order preserved
+    expect(ompAdvertised).toContain("coord:declare-intent"); // non-vacuity
+    expect(ompAdvertised).toContain("coord:inbox");
+    expect(kept).not.toContain("coord:declare-intent");
+    expect(kept).not.toContain("coord:inbox");
+    expect(kept.length).toBe(ompAdvertised.length - 2);
+    expect(kept[0]).toBe(
+      ompAdvertised.find((n) => n !== "coord:declare-intent" && n !== "coord:inbox"),
+    ); // order preserved
   });
 
   it("ignores names not in the spine (no-op, no error)", () => {
@@ -2535,24 +2553,58 @@ describe("ompCoreToolNames (PAPERCUSP_OMP_TOOLS_EXCLUDE — spine trim escape ha
       ompCoreToolNames(
         processEnv({ PAPERCUSP_OMP_TOOLS_EXCLUDE: "not:a-tool" }),
       ),
-    ).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+    ).toEqual(ompAdvertised);
+  });
+
+  it("ompCompactToolNames is a strict SUBSET of what ompCoreToolNames advertises", () => {
+    // A compact name that is not advertised has no tier to apply — the server reaches it
+    // only after the allowlist filter, so naming one is a silent no-op that reads like a
+    // saving. Excluding a tool must therefore drop it from BOTH lists.
+    const compact = ompCompactToolNames(processEnv({}));
+    expect(compact.length).toBeGreaterThan(0);
+    for (const n of compact) expect(ompAdvertised).toContain(n);
+    const victim = compact[0];
+    expect(
+      ompCompactToolNames(processEnv({ PAPERCUSP_OMP_TOOLS_EXCLUDE: victim })),
+    ).not.toContain(victim);
   });
 });
 
 describe("claudeSeedToolNames (EI-23319364088969722 — Claude's own minimal seed)", () => {
-  it("defaults to the minimal Claude seed, NOT the weak-model spine", () => {
-    // The defect this fixes: Claude DERIVED its seed from the weak-model spine
+  it("defaults to the DERIVED delivery map, not either hand list", () => {
+    // The original defect: Claude DERIVED its seed from the weak-model spine
     // (ompCoreToolNames() + the extras = 64 names, 432,714 B measured on the wire), so
     // the model BEST able to drive tools:invoke received the LARGEST up-front surface.
-    // With ToolSearch denied there is no schema deferral, so every advertised tool ships
-    // its full argSchema every turn — the seed IS the context bill.
+    // The 2026-09-15 answer was a second hand list (31 names). Both were hand lists, and a
+    // hand list regrows one defensible append at a time — which is how the first one
+    // reached 432,714 B. The seed is now a FUNCTION of measured demand and measured bytes.
     const seed = claudeSeedToolNames(processEnv({}));
-    expect(seed).toEqual([...CLAUDE_MINIMAL_SEED_TOOL_NAMES]);
+    expect(seed).toEqual([...CLAUDE_TOOL_DELIVERY_ARTIFACT.advertised]);
     expect(new Set(seed).size).toBe(seed.length);
-    // A genuine trim, not a reshuffle.
-    expect(seed.length).toBeLessThan(
-      OMP_CORE_MCP_TOOL_NAMES.length + CLAUDE_SEED_EXTRA_TOOL_NAMES.length,
-    );
+  });
+
+  it("STRICTLY WIDENS the 31-name hand cut it replaces — no name lost", () => {
+    // The load-bearing no-regression claim. The derived map is allowed to ADD tools (that
+    // is the point of the COMPACT tier), but a name the 2026-09-15 cut deemed mandatory
+    // must not fall out on a value-density ranking: that would be a capability regression
+    // wearing a byte saving's clothes. Asserted per-name so a failure says WHICH one.
+    const seed = new Set(claudeSeedToolNames(processEnv({})));
+    for (const n of CLAUDE_MINIMAL_SEED_TOOL_NAMES)
+      expect(seed.has(n), `${n} was in the 31-name cut and is no longer advertised`).toBe(
+        true,
+      );
+    expect(seed.size).toBeGreaterThan(CLAUDE_MINIMAL_SEED_TOOL_NAMES.length);
+  });
+
+  it("claudeCompactToolNames is a strict SUBSET of the advertised seed", () => {
+    const advertised = new Set(claudeSeedToolNames(processEnv({})));
+    const compact = claudeCompactToolNames(processEnv({}));
+    expect(compact.length).toBeGreaterThan(0);
+    for (const n of compact) expect(advertised.has(n)).toBe(true);
+    // The revert hatch compacts NOTHING — otherwise it would not be a true revert.
+    expect(
+      claudeCompactToolNames(processEnv({ PAPERCUSP_CLAUDE_FULL_SEED: "1" })),
+    ).toEqual([]);
   });
 
   it("always seeds the reachability pair — the trim's load-bearing assumption", () => {
@@ -2597,49 +2649,72 @@ describe("claudeSeedToolNames (EI-23319364088969722 — Claude's own minimal see
     );
   });
 
-  it("treats unset / '0' / 'false' as minimal (a hatch that opens on \"0\" is worse than none)", () => {
+  it("treats unset / '0' / 'false' as derived (a hatch that opens on \"0\" is worse than none)", () => {
+    const derived = CLAUDE_TOOL_DELIVERY_ARTIFACT.advertised.length;
     for (const v of ["", "0", "false", "False"]) {
       expect(
         claudeSeedToolNames(processEnv({ PAPERCUSP_CLAUDE_FULL_SEED: v })).length,
-      ).toBe(CLAUDE_MINIMAL_SEED_TOOL_NAMES.length);
+      ).toBe(derived);
     }
   });
 
-  it("RATCHET: the minimal seed cannot regrow past its measured budget", () => {
-    // This is the guard that makes the trim durable. The seed reached 64 names because
-    // every append was individually justified and nothing ever checked the aggregate;
-    // a trim without a ceiling regrows the same way. Raising the ratchet is a deliberate,
-    // documented budget decision (see the constant's docblock) — not a quiet append.
-    expect(CLAUDE_MINIMAL_SEED_TOOL_NAMES.length).toBeLessThanOrEqual(
-      CLAUDE_MINIMAL_SEED_MAX_NAMES,
+  it("BUDGET: the derived seed is bounded by BYTES, not by a name count (D-009)", () => {
+    // CLAUDE_MINIMAL_SEED_MAX_NAMES (31) is RETIRED, and its retirement is the point.
+    // A name ratchet is a proxy for the thing that actually costs — a 31-name list at
+    // 106,873 B was over budget while a 90-name derived map fits in 99,898 B — so the
+    // ratchet was simultaneously too tight (it forbade cheap names) and too loose (it
+    // permitted expensive ones). The budget is now the measured wire total, enforced by
+    // the generator, and this asserts the artifact never ships over it.
+    expect(CLAUDE_TOOL_DELIVERY_ARTIFACT.spentBytes).toBeLessThanOrEqual(
+      CLAUDE_TOOL_DELIVERY_ARTIFACT.budgetBytes,
     );
-    // Non-vacuity: a ratchet over an empty/degraded list would pass while measuring nothing.
-    expect(CLAUDE_MINIMAL_SEED_TOOL_NAMES.length).toBeGreaterThan(12);
-    expect(new Set(CLAUDE_MINIMAL_SEED_TOOL_NAMES).size).toBe(
-      CLAUDE_MINIMAL_SEED_TOOL_NAMES.length,
-    );
-    // Every entry must be a real colon-form MCP catalog name — a typo would otherwise be
-    // advertised as a tool that does not exist, and `?tools=` would silently drop it.
-    for (const n of CLAUDE_MINIMAL_SEED_TOOL_NAMES)
-      expect(n, `${n} is not a server:verb MCP name`).toMatch(
-        /^[a-z][a-z0-9_]*:[a-z][a-z0-9_-]*$/,
+    expect(CLAUDE_TOOL_DELIVERY_ARTIFACT.budgetOverrun).toBe(0);
+    // Non-vacuity: a budget guard over an empty/degraded map would pass while measuring
+    // nothing — which is exactly what a truncated catalog produces.
+    expect(CLAUDE_TOOL_DELIVERY_ARTIFACT.advertised.length).toBeGreaterThan(40);
+    expect(CLAUDE_TOOL_DELIVERY_ARTIFACT.spentBytes).toBeGreaterThan(50_000);
+    // Every entry must be a real catalog name — a typo would otherwise be advertised as a
+    // tool that does not exist, and `?tools=` would silently drop it. (Not all names are
+    // colon form: the catalog carries dot-form plugin verbs such as `gitnexus.context`.)
+    for (const n of CLAUDE_TOOL_DELIVERY_ARTIFACT.advertised)
+      expect(n, `${n} is not a server:verb / server.verb catalog name`).toMatch(
+        /^[a-z][a-z0-9_-]*[.:][a-z][a-z0-9_-]*$/i,
       );
   });
 
-  it("CONTROL: the ratchet actually fires when the seed regrows", () => {
+  it("CONTROL: the byte budget actually fires when the map regrows", () => {
     // A budget guard nobody has seen fail is a budget guard nobody has tested. Proves the
     // assertion above can go red, without mutating the shared tree (the repo's own
     // falsifiability guidance: a probe that edits a tracked file can be committed by the
     // git-sync sweep mid-run).
-    const regrown = [...CLAUDE_MINIMAL_SEED_TOOL_NAMES, "coord:send", "facts:assert"];
-    expect(regrown.length).toBeGreaterThan(CLAUDE_MINIMAL_SEED_MAX_NAMES);
+    const overrun =
+      CLAUDE_TOOL_DELIVERY_ARTIFACT.spentBytes +
+      (CLAUDE_TOOL_DELIVERY_ARTIFACT.budgetBytes -
+        CLAUDE_TOOL_DELIVERY_ARTIFACT.spentBytes) +
+      1;
+    expect(overrun).toBeGreaterThan(CLAUDE_TOOL_DELIVERY_ARTIFACT.budgetBytes);
   });
 
-  it("every Claude-only extra stays OUT of the weak-model OMP spine", () => {
-    // Covers the 2026-07-05 locks:* misuse cut AND the WI-37534 additions: a small local
-    // model should not be handed a state plane or a background-job runner.
-    for (const n of CLAUDE_SEED_EXTRA_TOOL_NAMES)
-      expect(ompCoreToolNames({})).not.toContain(n);
+  it("ONE POLICY produces every agent kind's seed (D-005) — they are no longer disjoint lists", () => {
+    // RETIRES the old "every Claude-only extra stays OUT of the weak-model OMP spine"
+    // rule. That rule existed for one reason: the two seeds were separate HAND LISTS, so
+    // something had to stop a name being argued into both. They are now one call to
+    // `resolveToolDelivery()` against one catalog and one budget, so disjointness is not
+    // merely unenforced — it is FALSE, and asserting it would forbid the unification the
+    // owner directed (D-005).
+    expect(claudeSeedToolNames(processEnv({}))).toEqual(
+      ompCoreToolNames(processEnv({})),
+    );
+    expect(claudeCompactToolNames(processEnv({}))).toEqual(
+      ompCompactToolNames(processEnv({})),
+    );
+    // The substantive half of the retired rule survives as a POSITIVE claim: the
+    // Claude-only mandates the extras list existed to carry are advertised to EVERY kind,
+    // rather than kept out of one. Non-vacuous — these three are the WI-37534 additions.
+    for (const n of ["state:read", "capability:bash", "capability:bash_output"]) {
+      expect(CLAUDE_SEED_EXTRA_TOOL_NAMES).toContain(n);
+      expect(ompCoreToolNames(processEnv({}))).toContain(n);
+    }
   });
 
   it("seeds the CLAUDE-only prompt-mandated verbs (WI-37534)", () => {
