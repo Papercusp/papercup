@@ -39,6 +39,11 @@ registerSystemAction('acceptance-drain-sweep', async (ctx: SystemActionCtx) => {
     result.deferred > 0 ||
     result.errors.length > 0 ||
     result.shippableNow > 0 ||
+    result.refreshed > 0 ||
+    result.ready > 0 ||
+    result.unknown > 0 ||
+    result.escalated > 0 ||
+    result.reconciled > 0 ||
     result.skipped
   ) {
     console.log(`[acceptance-drain-sweep] ${ctx.installSlug}: ${result.summary}`);
