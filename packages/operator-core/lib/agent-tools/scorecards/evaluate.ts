@@ -19,6 +19,9 @@ import {
   resolveScorecardReleaseGateBinding,
   scorecardRatingsClaimPass,
   scorecardEvidenceFingerprint,
+  validateWorkOnEverythingEvidenceEnvelope,
+  computeWorkOnEverythingRollup,
+  resolveScorecardInstrumentSnapshots,
   type ScorecardInstrumentSnapshot,
 } from '../../scorecards';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -30,6 +33,24 @@ export const scorecardRatingEntrySchema = z
   .object({
     rating: z.string().min(1),
     evidence: z.string().min(1),
+    evidenceRef: z.string().min(1).max(500).optional(),
+    evidenceKind: z.string().min(1).max(80).optional(),
+    positiveControlRef: z.string().min(1).max(500).optional(),
+    absenceClaim: z.boolean().optional(),
+    unknownReason: z
+      .enum([
+        'idle',
+        'not-exercised',
+        'instrument-unavailable',
+        'retention-gap',
+        'generation-mismatch',
+        'external-capacity',
+        'scope-mismatch',
+        'other',
+      ])
+      .optional(),
+    attribution: z.enum(['subject', 'system', 'instrument', 'environment', 'ambiguous']).optional(),
+    nextEvidenceAction: z.string().min(1).max(1000).optional(),
     suggestion: z.string().min(1).max(2000).optional(),
     /** Poor-rating disposition (owner-directed 2026-08-31): the WI-/EI-/F- item a
      *  fail/severe/broken/degraded/partial rating's remediation is tracked by. */
@@ -79,6 +100,12 @@ export const scorecardEvaluateArgs = z
         'Restrict to the hive that produced/filed the scorecard (normally the caller/grader hive), not the harness that owns the rubric subject plan. For cross-hive grading, use the grader/source hive here; scorecards:emit uses targetHive for the subject hive.',
       ),
     ratings: z.record(z.string().min(1), scorecardRatingEntrySchema).optional(),
+    subject: z.object({
+      kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'rubric', 'scorecard']).optional(),
+      ref: z.string().min(1).max(500),
+      windowStart: z.string().min(1).max(64).optional(),
+      windowEnd: z.string().min(1).max(64).optional(),
+    }).strict().optional().describe('Exact subject/window for registered platform-computed instruments.'),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
     testedSha: scorecardTestedShaSchema.optional(),
   })
@@ -280,9 +307,22 @@ export async function evaluateScorecard(
     // Poor-rating disposition preflight (owner-directed 2026-08-31): teach the
     // grader BEFORE the terminal emit that a poor rating must route somewhere.
     validateScorecardPoorRatingDisposition(observation, rubric);
-    const instrumentSnapshots = args.instrumentSnapshots as
-      | Record<string, ScorecardInstrumentSnapshot>
-      | undefined;
+    try {
+      validateWorkOnEverythingEvidenceEnvelope(args.rubricRef, ratings);
+    } catch (error) {
+      return {
+        ok: false as const,
+        graderEligibility,
+        error: error instanceof Error ? error.message : String(error),
+        canonicalRatings: ratings,
+        latest: latest ?? null,
+      };
+    }
+    const instrumentSnapshots = await resolveScorecardInstrumentSnapshots({
+      rubric,
+      subject: args.subject,
+      supplied: args.instrumentSnapshots as Record<string, ScorecardInstrumentSnapshot> | undefined,
+    });
     const unboundEvidenceFingerprint = scorecardEvidenceFingerprint({
       rubricRef: args.rubricRef,
       ratings,
@@ -293,6 +333,14 @@ export async function evaluateScorecard(
       ratings,
       instrumentSnapshots,
     });
+    if (args.rubricRef === 'work-on-everything-stewardship-health' && instrumentContract.verdictMismatches.length) {
+      return {
+        ok: false as const,
+        error: 'A registered platform measurement contradicts the claimed rating.',
+        instrumentContract,
+        instrumentSnapshots,
+      };
+    }
     if (rubric.releaseGating && !instrumentContract.valid) {
       return {
         ok: false as const,
@@ -368,6 +416,19 @@ export async function evaluateScorecard(
       canonicalRatings: ratings,
       evidenceFingerprint,
       instrumentContract,
+      ...(computeWorkOnEverythingRollup(
+        args.rubricRef,
+        ratings,
+        rubric.criteria.map((criterion) => criterion.key),
+      )
+        ? {
+            rollup: computeWorkOnEverythingRollup(
+              args.rubricRef,
+              ratings,
+              rubric.criteria.map((criterion) => criterion.key),
+            ),
+          }
+        : {}),
       ...(releaseGateBinding ? { releaseGateBinding } : {}),
       changed: latestFingerprint !== evidenceFingerprint,
       delta: {
@@ -396,13 +457,13 @@ export default defineTool({
   name: 'scorecards:evaluate',
   profile: 'engineer',
   description:
-    'Return the exact typed grading skeleton for a rubric. Optionally validate + canonicalize a complete ratings map, attach deterministic instrument snapshots, bind positive release-gating ratings to the tested green SHA, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; its input intentionally excludes emit-only metadata such as subject, acceptance, vetting links, terminal, and force. Use scorecards:emit to file the validated result.',
+    'Return the exact typed grading skeleton for a rubric. Optionally validate + canonicalize a complete ratings map, resolve registered instrument snapshots for the exact subject/window, bind positive release-gating ratings to the tested green SHA, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; acceptance, vetting links, terminal, and force remain emit-only metadata. Use scorecards:emit to file the validated result.',
   guidance: {
     when:
-      'Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing. For an acceptance rubric it also returns `graderEligibility` — whether YOU may file the grading at all; read it BEFORE doing the grading work, not after. The read-only input is limited to `rubricRef`, `sourceHive`, `ratings`, `instrumentSnapshots`, and `testedSha`; pass `subject` and other write metadata only to `scorecards:emit`.',
+      'Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing. For an acceptance rubric it also returns `graderEligibility` — whether YOU may file the grading at all; read it BEFORE doing the grading work, not after. Pass the same `subject` and observation window to evaluate and emit so registered instruments measure the same run.',
     notWhen: 'Reading scorecard history only — scorecards:list. Filing the validated scorecard — scorecards:emit.',
     chaining:
-      'scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the canonical result. `subject` is an emit-only field: do not pass it to either evaluate call; include it on `scorecards:emit` when the scorecard needs a subject. `testedSha` is required when a releaseGating rubric has a pass-like rating.',
+      'scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, subject, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the same subject/window and canonical ratings. Registered instruments execute on both calls; caller snapshots cannot assert platform provenance. `testedSha` is required when a releaseGating rubric has a pass-like rating.',
     returns:
       'Top level: { ok, code, skeleton, rubric, graderEligibility, latest, canonicalRatings, evidenceFingerprint, instrumentContract, releaseGateBinding, changed, delta, error }. `skeleton` is an ARRAY of criterion rows — NOT an object keyed by criterion, so index it positionally or by `.key`; each row carries key, title, instrumentKey, check and allowedRatings beside the null rating/evidence you fill in. `rubric` summarises the rubric incl. criteriaCount; `graderEligibility` is null unless the rubric is kind acceptance and then includes the acceptance-author `implementer` plus `principalImplementers` from its subject plan; a positive releaseGating evaluation returns a bound `releaseGateBinding` or refuses with code `stale_pass_blocked` and the current gate reason/failing tests. `latest` is the newest ScorecardRow or null, and its `ratings`, `gradedGeneration` and `generationFreshness` are nested OBJECTS rather than scalars — `generationFreshness` only when the row carries a `gradedGeneration` — so a flat/CSV projection over a row fails on them. `canonicalRatings`, `evidenceFingerprint`, `instrumentContract`, `changed` and `delta.changedCriteria` appear only when you pass `ratings`.',
     seeAlso: ['scorecards:emit', 'scorecards:list', 'rubrics:get'],

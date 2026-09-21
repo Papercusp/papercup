@@ -30,6 +30,7 @@ import {
   type ScorecardAdmissionExclusion,
   type ObservationRatings,
   type ObservationSubject,
+  type StructuredObservation,
   type ScorecardAcceptance,
   type ScorecardRetraction,
   type ScorecardRatingRubric,
@@ -70,6 +71,125 @@ import { trackDetached } from './detached-imports';
 
 /** The owner-mandated built-in rubric whose prompt/backstop contract is fixed. */
 export const HIVE_COORDINATION_HEALTH_RUBRIC = 'pot-coordination-health';
+export const WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC = 'work-on-everything-stewardship-health';
+
+export type ScorecardRollup = NonNullable<StructuredObservation['rollup']>;
+
+const WORK_ON_EVERYTHING_CRITICAL_KEYS = new Set([
+  'goal-mode-foundation',
+  'frontier-scope-sovereignty',
+  'delegated-execution-and-drain-health',
+  'claim-flow-and-completion-integrity',
+  'rolling-budget-circuit-and-capacity',
+  'owner-steering-and-reporting',
+  'retired-tier-nonresurrection',
+  'plan-fleet-materialization',
+]);
+
+const ROLLUP_UNKNOWN_RATINGS = new Set(['unknown']);
+const ROLLUP_FAILURE_RATINGS = new Set(['fail', 'broken']);
+
+/**
+ * Compute the non-compensating roll-up for the Work on everything rubric.
+ *
+ * Critical failures dominate, critical unknowns are explicitly unassessable,
+ * and a mean score can never hide either. Other rubrics remain free to use
+ * their existing per-criterion scales until they declare a roll-up contract.
+ */
+export function computeWorkOnEverythingRollup(
+  rubricRef: string,
+  ratings: ObservationRatings,
+  requiredKeys: readonly string[],
+): ScorecardRollup | undefined {
+  if (rubricRef !== WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC) return undefined;
+  const criticalKeys = requiredKeys.filter((key) => WORK_ON_EVERYTHING_CRITICAL_KEYS.has(key));
+  const ratedKeys = Object.keys(ratings);
+  const criticalFailures = criticalKeys.filter((key) => {
+    const rating = ratings[key]?.rating?.trim().toLowerCase();
+    return rating ? ROLLUP_FAILURE_RATINGS.has(rating) || rating === 'severe' : false;
+  });
+  const criticalUnknowns = criticalKeys.filter((key) => {
+    const rating = ratings[key]?.rating?.trim().toLowerCase();
+    return rating ? ROLLUP_UNKNOWN_RATINGS.has(rating) : true;
+  });
+  const coverage = {
+    rated: ratedKeys.filter((key) => requiredKeys.includes(key)).length,
+    required: requiredKeys.length,
+    sufficient: requiredKeys.length > 0 && requiredKeys.every((key) => Boolean(ratings[key])),
+  };
+  const values = requiredKeys.map((key) => ratings[key]?.rating.trim().toLowerCase());
+  const severe = values.includes('severe');
+  const failure = values.some((rating) => rating !== undefined && ROLLUP_FAILURE_RATINGS.has(rating));
+  const partial = values.some((rating) => ['partial', 'degraded', 'unknown'].includes(rating ?? ''));
+  const verdict = severe
+    ? 'severe'
+    : failure
+      ? 'fail'
+      : !coverage.sufficient || criticalUnknowns.length > 0
+        ? 'unassessable'
+        : partial
+          ? 'partial'
+          : values.every((rating) => rating === 'exemplary')
+            ? 'exemplary'
+            : 'pass';
+  return {
+    verdict,
+    criticalKeys,
+    criticalFailures,
+    criticalUnknowns,
+    coverage,
+  };
+}
+
+/**
+ * New Work on everything cards carry a structured, replay-oriented evidence
+ * envelope. Historical cards remain readable; only new/regraded cards are
+ * subject to this contract.
+ */
+export function validateWorkOnEverythingEvidenceEnvelope(
+  rubricRef: string,
+  ratings: ObservationRatings,
+): void {
+  if (rubricRef !== WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC) return;
+  for (const [key, entry] of Object.entries(ratings)) {
+    const rating = entry.rating.trim().toLowerCase();
+    if (!entry.evidenceRef || !entry.evidenceKind || !entry.attribution) {
+      throw new Error(
+        `Work on everything rating '${key}' requires evidenceRef, evidenceKind, and attribution; ` +
+          'legacy prose-only evidence is readable but cannot be regraded without an evidence envelope',
+      );
+    }
+    if (entry.absenceClaim && !entry.positiveControlRef) {
+      throw new Error(
+        `Work on everything rating '${key}' declares absenceClaim:true but has no positiveControlRef`,
+      );
+    }
+    if (
+      ['partial', 'fail', 'severe', 'broken', 'degraded'].includes(rating) &&
+      ['instrument', 'environment'].includes(entry.attribution)
+    ) {
+      throw new Error(
+        `Work on everything rating '${key}' describes a measurement limitation, not subject conduct; ` +
+          "use unknown with unknownReason and nextEvidenceAction",
+      );
+    }
+    if (rating !== 'unknown' && entry.unknownReason) {
+      throw new Error(`Work on everything rating '${key}' carries unknownReason but is not unknown`);
+    }
+    if (rating === 'unknown') {
+      if (!entry.unknownReason || !entry.nextEvidenceAction) {
+        throw new Error(
+          `Work on everything unknown rating '${key}' requires unknownReason and nextEvidenceAction`,
+        );
+      }
+      if (entry.attribution === 'subject') {
+        throw new Error(
+          `Work on everything unknown rating '${key}' cannot attribute an unmeasured condition to the subject`,
+        );
+      }
+    }
+  }
+}
 
 /**
  * One measurement attached to a scorecard evaluation/emission.
@@ -132,6 +252,117 @@ export function scorecardInstrumentProvenance(
   snapshot: ScorecardInstrumentSnapshot,
 ): 'self-reported' | 'platform-computed' {
   return snapshot.provenance === 'platform-computed' ? 'platform-computed' : 'self-reported';
+}
+
+/**
+ * Resolve registered measurements at the existing instrument seam. Caller
+ * snapshots are assertions, regardless of their claimed provenance. Only a
+ * resolver executing here may stamp platform-computed. Results ride the
+ * existing append-only observation.instrumentSnapshots, not a second ledger.
+ */
+export async function resolveScorecardInstrumentSnapshots(
+  input: {
+    rubric: Rubric;
+    subject?: ObservationSubject;
+    supplied?: Record<string, ScorecardInstrumentSnapshot>;
+  },
+  deps: {
+    list?: typeof listScorecardPage;
+    rubric?: typeof getRubric;
+    now?: () => number;
+  } = {},
+): Promise<Record<string, ScorecardInstrumentSnapshot> | undefined> {
+  const snapshots: Record<string, ScorecardInstrumentSnapshot> = Object.fromEntries(
+    Object.entries(input.supplied ?? {}).map(([key, value]) => [
+      key,
+      value.provenance === 'platform-computed' ? { ...value, provenance: 'self-reported' as const } : { ...value },
+    ]),
+  );
+  const registered = new Set(['woe.goal-mode-base-scorecard']);
+  const keys = new Set(input.rubric.criteria.map((criterion) =>
+    criterion.check?.kind === 'instrument' ? criterion.check.instrumentKey : criterion.instrumentKey,
+  ));
+  for (const key of keys) {
+    if (!key || !registered.has(key)) continue;
+    const measuredAt = new Date((deps.now ?? Date.now)()).toISOString();
+    const subject = input.subject;
+    const window = subject
+      ? { subjectRef: subject.ref, windowStart: subject.windowStart, windowEnd: subject.windowEnd }
+      : {};
+    const unknown = (reason: string): ScorecardInstrumentSnapshot => ({
+      verdict: 'unknown',
+      measuredAt,
+      provenance: 'platform-computed',
+      window,
+      value: { resolver: key, resolverVersion: 1, reason },
+      evidenceRef: 'scorecards:list:goal-mode-e2e',
+    });
+    if (!subject?.ref || !subject.windowStart || !subject.windowEnd) {
+      snapshots[key] = unknown('An exact subject observation window is required.');
+      continue;
+    }
+    const start = Date.parse(subject.windowStart);
+    const end = Date.parse(subject.windowEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
+      snapshots[key] = unknown('The subject window is invalid.');
+      continue;
+    }
+    try {
+      const base = await (deps.rubric ?? getRubric)('goal-mode-e2e');
+      const page = await (deps.list ?? listScorecardPage)({
+        rubricRef: 'goal-mode-e2e',
+        subjectRef: subject.ref,
+        limit: 500,
+      });
+      const card = page.rows.find((candidate) =>
+        candidate.subject?.ref === subject.ref &&
+        Date.parse(candidate.subject?.windowStart ?? '') === start &&
+        Date.parse(candidate.subject?.windowEnd ?? '') === end &&
+        candidate.rubricResolved &&
+        candidate.missingKeys.length === 0 &&
+        candidate.extraKeys.length === 0 &&
+        !candidate.synthesized && !candidate.provisional && !candidate.retracted &&
+        candidate.gradingAudit?.state === 'passed' &&
+        settledGradingAuditIsCurrent(candidate) &&
+        Boolean(base?.criteriaHash) && candidate.criteriaHash === base?.criteriaHash,
+      );
+      if (!base || !card) {
+        snapshots[key] = unknown(
+          page.hasMore
+            ? 'No matching audited base card in the bounded page; coverage is incomplete.'
+            : 'No complete, audited, current-contract base card for this exact subject window.',
+        );
+        continue;
+      }
+      const verdicts = Object.values(card.ratings).map((entry) => entry.rating.toLowerCase());
+      // Partial/unknown base behavior cannot establish a passing foundation.
+      const verdict = verdicts.some((rating) => ['fail', 'severe', 'broken'].includes(rating))
+        ? 'fail'
+        : verdicts.length > 0 && verdicts.every((rating) => ['pass', 'exemplary', 'healthy'].includes(rating))
+          ? 'pass'
+          : 'unknown';
+      snapshots[key] = {
+        verdict,
+        measuredAt,
+        provenance: 'platform-computed',
+        window,
+        evidenceRef: card.issueId,
+        value: {
+          resolver: key,
+          resolverVersion: 1,
+          baseCard: card.issueId,
+          rubricRevision: card.rubricRevision,
+          criteriaHash: card.criteriaHash,
+          subject: card.subject,
+          ratings: card.ratings,
+          gradingAudit: card.gradingAudit,
+        },
+      };
+    } catch (error) {
+      snapshots[key] = unknown(`Base-card instrument unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return Object.keys(snapshots).length ? snapshots : undefined;
 }
 
 function canonicalJson(value: unknown): string {
@@ -528,6 +759,8 @@ export interface ScorecardRow {
   criteriaHash?: string;
   /** Per-criterion ratings, keyed by rubric criterion `key` (each {rating, evidence}). */
   ratings: ObservationRatings;
+  /** Server-derived categorical roll-up when the rubric declares one. */
+  rollup?: ScorecardRollup;
   /** Commit the positive release-gating ratings tested, when gate-bound. */
   testedSha?: string;
   /** Server-stamped release-gate proof for `testedSha`, when gate-bound. */
@@ -648,11 +881,9 @@ export interface ScorecardRow {
  * prevents a future list-row field from silently making the single-card audit
  * read spill again (EI-22710824425098387).
  */
-export interface ScorecardEvidenceCriterion {
+export type ScorecardEvidenceCriterion = ObservationRatings[string] & {
   key: string;
-  rating: string;
-  evidence: string;
-}
+};
 
 export interface ScorecardEvidenceRow {
   issueId: string;
@@ -664,6 +895,7 @@ export interface ScorecardEvidenceRow {
   sourceHive?: string;
   subject?: ObservationSubject;
   criteria: ScorecardEvidenceCriterion[];
+  rollup?: ScorecardRollup;
   nKeys: number;
   missingKeys: string[];
   extraKeys: string[];
@@ -689,6 +921,7 @@ interface ScorecardEvidenceDb {
   source_hive: string | null;
   subject: unknown;
   ratings: unknown;
+  rollup: unknown;
   synthesized: unknown;
   grading_audit: unknown;
   provisional: unknown;
@@ -717,6 +950,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
              scorecard.payload -> 'observation' ->> 'sourceHive' AS source_hive,
              scorecard.payload -> 'observation' -> 'subject' AS subject,
              scorecard.payload -> 'observation' -> 'ratings' AS ratings,
+             scorecard.payload -> 'observation' -> 'rollup' AS rollup,
              scorecard.payload -> 'observation' -> 'synthesized' AS synthesized,
              scorecard.payload -> 'observation' -> 'gradingAudit' AS grading_audit,
              scorecard.payload -> 'observation' -> 'provisional' AS provisional,
@@ -737,6 +971,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
     sourceHive: row.source_hive,
     subject: row.subject,
     ratings: row.ratings,
+    rollup: row.rollup,
     synthesized: row.synthesized,
     gradingAudit: row.grading_audit,
     provisional: row.provisional,
@@ -765,7 +1000,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
   ];
   const criteria = orderedKeys.flatMap((key) => {
     const rating = normalizedRatings[key];
-    return rating ? [{ key, rating: rating.rating, evidence: rating.evidence }] : [];
+    return rating ? [{ key, ...rating }] : [];
   });
 
   return {
@@ -779,6 +1014,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
       ...(observation.criteriaHash ? { criteriaHash: observation.criteriaHash } : {}),
       ...(observation.sourceHive ? { sourceHive: observation.sourceHive } : {}),
       ...(observation.subject ? { subject: observation.subject } : {}),
+      ...(observation.rollup ? { rollup: observation.rollup } : {}),
       criteria,
       nKeys: ratedKeys.size,
       missingKeys,
@@ -1814,6 +2050,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       rubricRef: observation.rubricRef,
       ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
       ...(observation.criteriaHash ? { criteriaHash: observation.criteriaHash } : {}),
+      ...(observation.rollup ? { rollup: observation.rollup } : {}),
       ratings,
       ...(observation.testedSha ? { testedSha: observation.testedSha } : {}),
       ...(observation.releaseGateBinding
@@ -2175,6 +2412,14 @@ export interface RubricTrend {
   sample: { limit: number; inputCount: number };
   /** The observed time span (oldest..newest scorecard) + the requested `since`. */
   window: { since?: string; from?: string; to?: string };
+  /** Filing time remains separate from the subject observation window. */
+  filingWindow?: { from: string; to: string };
+  observationWindow?: { from: string; to: string };
+  filingLagMs?: { min: number; max: number; mean: number; measured: number };
+  /** Exact identities behind the aggregate, opt-in alongside the rating series. */
+  scorecardIdentities?: Array<Pick<ScorecardRow,
+    'issueId' | 'createdAt' | 'subject' | 'rubricRevision' | 'criteriaHash' | 'gradedGeneration' | 'generationFreshness'
+  >>;
   /** Per-criterion trends, criterion key ASC (stable output). */
   criteria: CriterionTrend[];
   /** Governance provenance (WI-4607, D-012): the rubric's status + who proposed vs.
@@ -2347,6 +2592,20 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   }
   // listScorecards is newest-first; the series wants chronological (oldest→newest).
   const chrono = [...finalCards].reverse();
+  const filingTimes = chrono.map((card) => Date.parse(card.createdAt)).filter(Number.isFinite);
+  const observationStarts = chrono
+    .map((card) => (card.subject?.windowStart ? Date.parse(card.subject.windowStart) : NaN))
+    .filter(Number.isFinite);
+  const observationEnds = chrono
+    .map((card) => (card.subject?.windowEnd ? Date.parse(card.subject.windowEnd) : NaN))
+    .filter(Number.isFinite);
+  const filingLags = chrono
+    .map((card) => {
+      const end = card.subject?.windowEnd ? Date.parse(card.subject.windowEnd) : NaN;
+      const filed = Date.parse(card.createdAt);
+      return Number.isFinite(end) && Number.isFinite(filed) ? filed - end : null;
+    })
+    .filter((lag): lag is number => lag !== null);
 
   const scoreOverrides = scoreOverridesForScale(trendRubric?.ratingScale);
   const declaredCriterionKeys = trendRubric ? new Set(trendRubric.criteria.map((c) => c.key)) : null;
@@ -2433,6 +2692,43 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
       ...(filter.since ? { since: filter.since } : {}),
       ...(chrono.length ? { from: chrono[0].createdAt, to: chrono[chrono.length - 1].createdAt } : {}),
     },
+    ...(filter.includeSeries ? {
+      scorecardIdentities: chrono.map((card) => ({
+        issueId: card.issueId,
+        createdAt: card.createdAt,
+        ...(card.subject ? { subject: card.subject } : {}),
+        ...(card.rubricRevision != null ? { rubricRevision: card.rubricRevision } : {}),
+        ...(card.criteriaHash ? { criteriaHash: card.criteriaHash } : {}),
+        ...(card.gradedGeneration ? { gradedGeneration: card.gradedGeneration } : {}),
+        ...(card.generationFreshness ? { generationFreshness: card.generationFreshness } : {}),
+      })),
+    } : {}),
+    ...(filingTimes.length
+      ? {
+          filingWindow: {
+            from: new Date(Math.min(...filingTimes)).toISOString(),
+            to: new Date(Math.max(...filingTimes)).toISOString(),
+          },
+        }
+      : {}),
+    ...(observationStarts.length && observationEnds.length
+      ? {
+          observationWindow: {
+            from: new Date(Math.min(...observationStarts)).toISOString(),
+            to: new Date(Math.max(...observationEnds)).toISOString(),
+          },
+        }
+      : {}),
+    ...(filingLags.length
+      ? {
+          filingLagMs: {
+            min: Math.min(...filingLags),
+            max: Math.max(...filingLags),
+            mean: Math.round(filingLags.reduce((sum, lag) => sum + lag, 0) / filingLags.length),
+            measured: filingLags.length,
+          },
+        }
+      : {}),
     criteria,
     ...(trendRubric ? { status: trendRubric.status } : {}),
     proposedBy: trendRubric?.proposedBy ?? null,
