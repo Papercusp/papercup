@@ -239,11 +239,11 @@ describe('P-023 drained-to-acceptance lifecycle', () => {
     expect(M.upsert).toHaveBeenCalledWith(
       `acceptance-drain:papercusp/${PLAN}`,
       expect.objectContaining({
-        payload: {
+        payload: expect.objectContaining({
           acceptanceDrainPlan: `${WS}/papercusp/${PLAN}`,
           planSlug: PLAN,
           blockerCode: 'acceptance_unaudited',
-        },
+        }),
       }),
     );
 
@@ -298,18 +298,20 @@ describe('P-023 drained-to-acceptance lifecycle', () => {
       expect.objectContaining({ family: 'independent-verification', status: 'satisfied' }),
     ]);
 
-    // The obligation reader has cleared its primary agenda entry, but the existing
-    // open filing is now a sink: dedupe happens before gate evaluation, so the
-    // sweep does not observe that the same plan became shippable.
+    // The obligation reader has cleared its primary agenda entry. The sweep still
+    // re-reads the canonical gate and refreshes the same keyed filing, so readiness
+    // is visible rather than becoming a dedupe sink.
     M.evaluate.mockClear();
     const suppressed = await runAcceptanceDrainSweepOnce({ workspaceId: WS });
     expect(suppressed).toMatchObject({
       scanned: 1,
       alreadyFiled: 1,
       shippableNow: 0,
+      refreshed: 1,
+      ready: 1,
       filed: [],
     });
-    expect(M.evaluate).not.toHaveBeenCalled();
+    expect(M.evaluate).toHaveBeenCalledExactlyOnceWith(PLAN);
     expect(M.upsert).toHaveBeenCalledTimes(1);
     expect(parsePlan(currentBody).frontmatter.status).toBe('awaiting-acceptance');
   });
