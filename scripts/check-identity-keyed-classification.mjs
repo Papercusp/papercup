@@ -77,6 +77,50 @@ export const OPERATOR_CORE_REL = 'packages/operator-core';
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
 /**
+ * Build the child env for the nested census run.
+ *
+ * WI-10002179 — WHY `PAPERCUSP_MUTATION_PROBE` IS SET HERE, AND WHY IT IS NOT
+ * COSMETIC. The vitest reporter that writes `harness_shared.test_runs` is
+ * auto-wired into EVERY workspace by defineVitestConfig, so it also runs in
+ * this NESTED `vitest run`. Under the fleet gate this function inherits the
+ * gate's own stamps via `{ ...process.env }` — `PAPERCUSP_TEST_RUN_SOURCE=ci`,
+ * `PAPERCUSP_TEST_RUN_GROUP=<runId>` and the judged `commit_sha`
+ * (buildGreenCheckpointEnv, green-checkpoint.ts). A nested run against an
+ * OVERRIDE subject therefore recorded a row that was byte-for-byte
+ * indistinguishable from a genuine gate failure of the TRACKED census file:
+ * `source='ci'`, `worktree_dirty=false`, `commit_sha=<the frozen candidate>`.
+ *
+ * That is exactly the `gate.greenCheckpoint.candidateFailures` query shape, so
+ * the guard's OWN falsifiability probe — which fails BY DESIGN, that being the
+ * whole point of `expect(verdict.ok).toBe(false)` — manufactured a phantom
+ * failing file on the gate's own candidate. Measured 2026-09-21: phantom `fail`
+ * rows at candidates 6e6405037324 and 80959359392e carrying the deliberate
+ * fixture's message (`ei20012634773877104_probe.owner_id`), sitting beside
+ * PASSING rows for the same file at the same sha in the same minute. It cost at
+ * least two agents a full triage cycle chasing a Postgres table that never
+ * existed — it is a drizzle table *definition* in a temp fixture string.
+ *
+ * `mutation-probe` is a first-class `TestRunSource` (testing-run-source.ts)
+ * meaning "a deliberate probe, not a verdict". Setting it keeps the row for
+ * auditability while taking it out of every `source='ci'` gate read. It is
+ * scoped to the override branch on purpose: an ordinary run against the tracked
+ * mirror IS a real verdict on the tracked file and must keep recording as one.
+ *
+ * @param {NodeJS.ProcessEnv} base
+ * @param {string | null} schemaAbs absolute candidate schema, or null for the
+ *   tracked mirror (the test's own default).
+ * @returns {NodeJS.ProcessEnv}
+ */
+export function buildCensusChildEnv(base, schemaAbs) {
+  const env = { ...base, NO_COLOR: '1', FORCE_COLOR: '0' };
+  if (schemaAbs) {
+    env.IDENTITY_KEYED_SCHEMA_PATH = schemaAbs;
+    env.PAPERCUSP_MUTATION_PROBE = '1';
+  }
+  return env;
+}
+
+/**
  * Run the identity-keyed census assertion against a candidate schema file.
  *
  * @param {{ schemaPath?: string, repoRoot?: string, timeoutMs?: number }} [opts]
@@ -101,9 +145,9 @@ export function checkIdentityKeyedClassification(opts = {}) {
     };
   }
 
-  const env = { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' };
+  let schemaAbs = null;
   if (opts.schemaPath) {
-    const schemaAbs = resolve(opts.schemaPath);
+    schemaAbs = resolve(opts.schemaPath);
     if (!existsSync(schemaAbs)) {
       return {
         ok: false,
@@ -112,8 +156,8 @@ export function checkIdentityKeyedClassification(opts = {}) {
         output: '',
       };
     }
-    env.IDENTITY_KEYED_SCHEMA_PATH = schemaAbs;
   }
+  const env = buildCensusChildEnv(process.env, schemaAbs);
 
   const run = spawnSync('npx', ['vitest', 'run', CENSUS_TEST_REL], {
     cwd: operatorCore,
