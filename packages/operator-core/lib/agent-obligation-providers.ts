@@ -23,6 +23,7 @@ import type { PlanAcceptanceGateCode, PlanAcceptanceGateVerdict } from './plan-a
 export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v3';
 export const OWNER_REPORT_OBLIGATION_REVISION = 'goal-owner-report-v1';
 export const INDEPENDENT_VERIFICATION_OBLIGATION_REVISION = 'plan-independent-verification-v1';
+export const OWNER_DIRECTIVE_OBLIGATION_REVISION = 'owner-directive-disposition-v1';
 
 interface ProviderBase {
   workspaceId: string;
@@ -725,11 +726,198 @@ export function independentVerificationObligation(input: IndependentVerification
   });
 }
 
+/**
+ * One undispositioned owner directive, reduced to what a class-B row needs.
+ *
+ * Deliberately NOT `OwnerDirectiveRow`: the obligation contract must not take a
+ * dependency on the directive store's full column set, and a caller (or a test)
+ * must be able to feed this provider without a database. `excerpt` is the
+ * caller's already-budgeted VERBATIM text — `ownerDirectiveExcerpt` produces it,
+ * and this provider never re-truncates or paraphrases it.
+ */
+export interface OwnerDirectiveObligationRow {
+  id: number;
+  /**
+   * `pending` — hook-captured, awaiting promote/dismiss.
+   * `open` — a promoted/recorded standing directive awaiting disposition.
+   * Terminal states (`dismissed`/`done`/`declined`) are not obligations and
+   * must be filtered out by the reader, never represented here.
+   */
+  state: 'pending' | 'open';
+  /** VERBATIM owner text, budgeted by the caller. Never a paraphrase. */
+  excerpt: string;
+  /** The row's own created_at — a stable row fact, never an observation clock. */
+  recordedAt: string;
+  recordedBy: string;
+  /**
+   * True when the UserPromptSubmit provenance hook captured the turn, which is
+   * the only mechanism here that CLASSIFIES a turn as OWNER (interactive).
+   * False means an agent asserted the owner said it via `orders:record` — real
+   * evidence, but not proof, so it is represented as `owner-candidate`.
+   * Conflating the two is exactly how a note-to-self becomes an owner directive.
+   */
+  capturedByHook: boolean;
+}
+
+export interface OwnerDirectivesProviderInput extends ProviderBase {
+  read: ProviderRead<OwnerDirectiveObligationRow[]>;
+}
+
+/** The disposition verb each state is cleared by. One row per state, no default. */
+const OWNER_DIRECTIVE_DISPOSITION: Record<
+  OwnerDirectiveObligationRow['state'],
+  { title: string; summary: string; tool: string; clearsWhen: string }
+> = {
+  pending: {
+    title: 'Pending owner turn awaits promote-or-dismiss',
+    summary: 'promote or dismiss this captured owner turn before your next agenda step',
+    tool: 'orders:resolve-pending',
+    clearsWhen: 'the row leaves `pending` via promotion or a reasoned dismissal',
+  },
+  open: {
+    title: 'Open owner directive awaits disposition',
+    summary: 'carry out this owner directive, then close it with orders:disposition',
+    tool: 'orders:disposition',
+    clearsWhen: 'the row is dispositioned done or declined',
+  },
+};
+
+function ownerDirectiveCommon(input: OwnerDirectivesProviderInput) {
+  return {
+    ruleId: 'owner-directive-disposition',
+    ruleRevision: OWNER_DIRECTIVE_OBLIGATION_REVISION,
+    family: 'owner-directive' as const,
+    scope: { workspaceId: input.workspaceId, ownerId: input.ownerId },
+    responsibleOwnerId: input.ownerId,
+    // An owner directive is the highest-precedence standing obligation an agent
+    // carries: it OUTRANKS the loop agenda, so it sorts ahead of every
+    // policy-sourced duty rather than competing with them on priority alone.
+    causalRank: 0,
+    sourceGeneration: input.sourceGeneration,
+  };
+}
+
+/**
+ * Owner directives → class-B obligation rows (P-006 of plan
+ * `turn-start-memory-two-class-2026-09-21`).
+ *
+ * ONE OBLIGATION PER DIRECTIVE, because each carries its own id, its own
+ * verbatim excerpt, its own disposition verb and its own recovery pointer — the
+ * uniform class-B row shape. A single aggregate obligation would collapse them
+ * into a count, which is the shape an agent can acknowledge without acting on
+ * any individual directive.
+ *
+ * The rows stay `due` until dispositioned, which is what makes them re-inject
+ * every turn under the P-002 discharge contract instead of clearing on delivery.
+ */
+export function ownerDirectiveObligations(input: OwnerDirectivesProviderInput): AgentObligation[] {
+  const common = ownerDirectiveCommon(input);
+  if (input.read.status === 'unknown') {
+    return [
+      defineAgentObligation({
+        ...common,
+        title: 'Owner-directive state is unavailable',
+        episode: `unknown:${input.sourceGeneration}`,
+        status: 'unknown',
+        priority: 'high',
+        authority: policyAuthority('owner-directives:listOwnerDirectives', OWNER_DIRECTIVE_OBLIGATION_REVISION),
+        reason: input.read.failure.detail,
+        applicableDemand: 0,
+        evidence: [],
+        action: { kind: 'inspect', summary: input.read.failure.retry, targetRef: 'orders:list { state: "pending" }' },
+        clearsWhen: {
+          id: 'owner-directive-queue-readable',
+          summary: 'the pending/open directive queue is readable again',
+          evidenceKind: 'state',
+          sourceRef: 'harness_shared.owner_directives',
+        },
+        measurementFailure: input.read.failure,
+      }),
+    ];
+  }
+  const rows = input.read.value;
+  if (rows.length === 0) {
+    return [
+      defineAgentObligation({
+        ...common,
+        title: 'No undispositioned owner directive applies',
+        episode: `none:${input.sourceGeneration}`,
+        status: 'not-applicable',
+        priority: 'normal',
+        authority: policyAuthority('owner-directives:listOwnerDirectives', OWNER_DIRECTIVE_OBLIGATION_REVISION),
+        reason: 'the canonical directive queue holds no pending or open row for this workspace',
+        applicableDemand: 0,
+        evidence: [
+          evidence(
+            `owner-directives:${input.workspaceId}`,
+            input.observedAt,
+            input.sourceGeneration,
+            'empty pending/open queue',
+          ),
+        ],
+        clearsWhen: {
+          id: 'owner-directive-queue-empty',
+          summary: 'no pending or open directive exists',
+          evidenceKind: 'state',
+          sourceRef: 'harness_shared.owner_directives',
+        },
+      }),
+    ];
+  }
+  const observedMs = Date.parse(input.observedAt);
+  return rows.map((row) => {
+    const disposition = OWNER_DIRECTIVE_DISPOSITION[row.state];
+    const recordedMs = Date.parse(row.recordedAt);
+    const ageMs =
+      Number.isFinite(observedMs) && Number.isFinite(recordedMs) ? Math.max(0, observedMs - recordedMs) : undefined;
+    return defineAgentObligation({
+      ...common,
+      title: `${disposition.title} — #${row.id}`,
+      // The row id alone is the episode: the SAME undispositioned directive must
+      // produce the SAME obligation id on every turn, or a warm-turn dedup would
+      // read a re-render as a brand-new obligation and the row would churn.
+      episode: `${row.state}:${row.id}`,
+      status: 'due',
+      priority: 'critical',
+      authority: row.capturedByHook
+        ? { kind: 'owner', sourceRef: `owner-directive:${row.id}`, turnOrigin: 'owner-typed' }
+        : { kind: 'owner-candidate', sourceRef: `owner-directive:${row.id}`, turnOrigin: 'unknown' },
+      reason: `owner directive #${row.id}: "${row.excerpt}"`,
+      applicableDemand: 1,
+      evidence: [
+        evidence(
+          `owner-directive:${row.id}`,
+          row.recordedAt,
+          input.sourceGeneration,
+          `recorded by ${row.recordedBy}${row.capturedByHook ? ' via the provenance hook' : ' via orders:record'}`,
+        ),
+      ],
+      action: {
+        kind: 'repair',
+        summary: disposition.summary,
+        tool: disposition.tool,
+        args: { id: row.id },
+        // The RECOVERY POINTER: the excerpt above is budgeted, so the full
+        // verbatim owner turn must stay one addressable call away.
+        targetRef: `orders:get #${row.id}`,
+      },
+      clearsWhen: {
+        id: `owner-directive-dispositioned:${row.id}`,
+        summary: disposition.clearsWhen,
+        evidenceKind: 'state',
+        sourceRef: `owner-directive:${row.id}`,
+      },
+      ...(ageMs == null ? {} : { ageMs }),
+    });
+  });
+}
+
 export function buildAgentObligationAgenda(
   inputs: {
     planPlacement?: PlanPlacementProviderInput;
     ownerReport?: OwnerReportProviderInput;
     independentVerification?: IndependentVerificationProviderInput[];
+    ownerDirectives?: OwnerDirectivesProviderInput;
   },
   evaluatedAt: string,
 ): AgentObligationAgenda {
@@ -737,6 +925,7 @@ export function buildAgentObligationAgenda(
     ...(inputs.planPlacement ? [planPlacementObligation(inputs.planPlacement)] : []),
     ...(inputs.ownerReport ? [ownerReportObligation(inputs.ownerReport)] : []),
     ...(inputs.independentVerification ?? []).map(independentVerificationObligation),
+    ...(inputs.ownerDirectives ? ownerDirectiveObligations(inputs.ownerDirectives) : []),
   ];
   return evaluateAgentObligations(obligations, evaluatedAt);
 }

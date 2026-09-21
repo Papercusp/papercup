@@ -16,6 +16,8 @@ import {
 import {
   buildAgentObligationAgenda,
   type IndependentVerificationProviderInput,
+  type OwnerDirectiveObligationRow,
+  type OwnerDirectivesProviderInput,
   type OwnerReportProviderInput,
   type PlanPlacementProviderInput,
 } from './agent-obligation-providers';
@@ -44,6 +46,15 @@ export interface AgentObligationReaderDeps {
     nowMs: number,
   ) => Promise<GoalOwnerReportObligation | null>;
   planAcceptance: (planSlug: string) => Promise<PlanAcceptanceGateVerdict>;
+  /**
+   * Undispositioned owner directives (`pending` + `open`) for this workspace.
+   *
+   * Unlike every other source here this is NOT gated on an active goal: an
+   * owner directive binds a session whether or not it holds a goal, and gating
+   * it would reproduce the measured hole this plan exists to close — a class
+   * that is read, populated, and then never reaches an agent that has no goal.
+   */
+  ownerDirectives: (workspaceId: string, ownerId: string) => Promise<OwnerDirectiveObligationRow[]>;
 }
 
 interface ReadOutcome<T> {
@@ -201,13 +212,45 @@ export async function readAgentObligationAgenda(input: {
       sourceTimeoutMs,
     ),
   );
-  const [portfolio, launch, fleet, report, acceptances] = await Promise.all([
+  // Deliberately NOT gated on goalId: see AgentObligationReaderDeps.ownerDirectives.
+  const directivesPromise = boundedRead(
+    'owner-directives',
+    deps.ownerDirectives(input.workspaceId, input.ownerId),
+    [] as OwnerDirectiveObligationRow[],
+    sourceTimeoutMs,
+  );
+  const [portfolio, launch, fleet, report, acceptances, directives] = await Promise.all([
     portfolioPromise,
     launchPromise,
     fleetPromise,
     reportPromise,
     Promise.all(acceptancePromises),
+    directivesPromise,
   ]);
+  if (directives.degraded) degradedSources.push(readFailure('owner directives', directives));
+  const ownerDirectives: OwnerDirectivesProviderInput = {
+    workspaceId: input.workspaceId,
+    ownerId: input.ownerId,
+    observedAt,
+    // Row facts only. `recordedAt` is the row's own created_at and `excerpt` is
+    // its verbatim text, so an unchanged queue keeps an unchanged generation
+    // across warm turns; an observation clock here would churn every read.
+    sourceGeneration: agentObligationSourceGeneration({
+      directives: directives.degraded
+        ? 'unknown'
+        : directives.value.map((row) => [row.id, row.state, row.recordedAt, row.excerpt, row.capturedByHook]),
+    }),
+    read: directives.degraded
+      ? {
+          status: 'unknown',
+          failure: {
+            code: 'canonical-owner-directive-read-failed',
+            detail: readFailure('owner directives', directives),
+            retry: 'retry listOwnerDirectives for the pending and open states',
+          },
+        }
+      : { status: 'known', value: directives.value },
+  };
 
   for (const [label, outcome] of [
     ['goal portfolio', portfolio],
@@ -375,7 +418,10 @@ export async function readAgentObligationAgenda(input: {
   });
 
   return {
-    agenda: buildAgentObligationAgenda({ planPlacement, ownerReport, independentVerification }, observedAt),
+    agenda: buildAgentObligationAgenda(
+      { planPlacement, ownerReport, independentVerification, ownerDirectives },
+      observedAt,
+    ),
     goalId,
     planSlugs,
     portfolio: portfolio.value,
@@ -587,6 +633,29 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
     planAcceptance: async (planSlug) => {
       const { evaluatePlanAcceptanceGate } = await import('./plan-acceptance-gate');
       return evaluatePlanAcceptanceGate(planSlug);
+    },
+    ownerDirectives: async (workspaceId) => {
+      const {
+        listOwnerDirectives,
+        ownerDirectiveExcerpt,
+        OWNER_DIRECTIVES_RENDER_MAX_ROWS,
+      } = await import('./owner-directives');
+      // The `state` filter is applied in SQL, BEFORE the limit (P-005). A
+      // client-side filter over a limited page silently drops matching rows the
+      // limit already truncated away, which reads as an empty directive queue.
+      const rows = await listOwnerDirectives({
+        workspaceId,
+        state: ['pending', 'open'],
+        limit: OWNER_DIRECTIVES_RENDER_MAX_ROWS,
+      });
+      return rows.map((row) => ({
+        id: row.id,
+        state: row.captureStatus === 'pending' ? ('pending' as const) : ('open' as const),
+        excerpt: ownerDirectiveExcerpt(row.verbatimText),
+        recordedAt: new Date(row.createdAtMs).toISOString(),
+        recordedBy: row.recordedBy,
+        capturedByHook: row.capturedByHook === true,
+      }));
     },
   };
 }

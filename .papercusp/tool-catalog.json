@@ -19638,8 +19638,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Orienting on what the workspace still OWES the owner (the wake/orient render shows the same set), before loop:end / wind-down, or auditing how past directives were dispositioned.",
-        "notWhen": "You have the id and want the full verbatim — orders:get."
+        "when": "Orienting on what the workspace still OWES the owner (the wake/orient render shows the same set), before loop:end / wind-down, or auditing how past directives were dispositioned. Use { state } to isolate one lifecycle stage — state:\"pending\" for the hook-captured queue awaiting promote/dismiss, state:\"dismissed\" for the audit trail of turns ruled not-directives.",
+        "notWhen": "You have the id and want the full verbatim — orders:get. Do NOT filter the returned page client-side on captureStatus: `limit` truncates in SQL first, so a match can be cut before you see it — pass { state } instead."
       }
     },
     {

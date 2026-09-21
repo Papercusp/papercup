@@ -104,6 +104,14 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
         message: 'author the rubric',
       }),
     ),
+    // Injected rather than left to the default dep: the real one reads
+    // harness_shared.owner_directives, so omitting it would make every case
+    // below depend on a live database AND silently add an `unknown`
+    // owner-directive row to the agenda each fixture is asserting on.
+    // The owner-directive family has its own suite
+    // (agent-obligation-owner-directives.test.ts); here it is deliberately
+    // empty so these cases keep measuring the goal/plan providers.
+    ownerDirectives: vi.fn(async () => []),
     ...overrides,
   };
 }
@@ -164,6 +172,10 @@ describe('shared agent obligation reader', () => {
     expect(read.agenda.evaluations.map((entry) => [entry.family, entry.status])).toEqual([
       ['owner-report', 'due'],
       ['plan-placement', 'not-applicable'],
+      // P-006: the owner-directive family is assembled UNCONDITIONALLY, so an
+      // empty queue is reported as a measured not-applicable rather than as the
+      // class being absent — those two must never render identically.
+      ['owner-directive', 'not-applicable'],
       ['independent-verification', 'blocked'],
     ]);
     expect(read.agenda.primary[0]?.family).toBe('independent-verification');

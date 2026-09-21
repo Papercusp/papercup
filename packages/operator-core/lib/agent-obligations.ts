@@ -25,7 +25,12 @@ export function planAcceptanceChangedKey(planSlug: string): string {
   return `plan:acceptance:${planSlug}`;
 }
 
-export type AgentObligationFamily = 'plan-placement' | 'owner-report' | 'independent-verification';
+export type AgentObligationFamily =
+  | 'plan-placement'
+  | 'owner-report'
+  | 'independent-verification'
+  /** An owner turn awaiting promote/dismiss (pending) or disposition (open). */
+  | 'owner-directive';
 export type AgentObligationStatus = 'due' | 'in-progress' | 'blocked' | 'satisfied' | 'not-applicable' | 'unknown';
 export type AgentObligationPriority = 'critical' | 'high' | 'normal' | 'low';
 export type AgentObligationFreshness = 'current' | 'stale' | 'unknown';

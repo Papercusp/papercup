@@ -54,6 +54,18 @@ vi.mock('../../session-brief', async (importOriginal) => {
 const NOW = '2026-09-20T01:45:00.000Z';
 const WS = 'papercusp-workspace';
 const PLAN = 'drained-plan-2026-09-20';
+
+/**
+ * This file asserts on the ACCEPTANCE lane's obligations. The reader also
+ * assembles an owner-directive obligation (P-006 of plan
+ * `turn-start-memory-two-class-2026-09-21`) whose default dependency reads
+ * harness_shared.owner_directives — a table this suite never seeds and the rest
+ * of the fleet writes to constantly. Left to the default, the assertions below
+ * would measure whatever real directives happen to be pending on the box.
+ * Pinning it empty keeps them exact; the family has its own suite in
+ * agent-obligation-owner-directives.test.ts.
+ */
+const NO_OWNER_DIRECTIVES = { ownerDirectives: async () => [] };
 let currentBody: string;
 
 function planBody(status: string, itemStatus = 'done'): string {
@@ -252,6 +264,7 @@ describe('P-023 drained-to-acceptance lifecycle', () => {
       ownerId: 'su-test',
       goalId: null,
       now: new Date(NOW),
+      deps: NO_OWNER_DIRECTIVES,
     });
     expect(refused.agenda.primary).toHaveLength(1);
     expect(refused.agenda.primary[0]).toMatchObject({
@@ -271,9 +284,18 @@ describe('P-023 drained-to-acceptance lifecycle', () => {
       ownerId: 'su-test',
       goalId: null,
       now: new Date(NOW),
+      deps: NO_OWNER_DIRECTIVES,
     });
     expect(clearedContext.planSlugs).toEqual([]);
-    expect(clearedContext.agenda.evaluations).toEqual([]);
+    // Leaving the plan context clears the ACCEPTANCE obligation. The
+    // owner-directive family is assembled unconditionally (P-006) and reports a
+    // measured empty queue as `not-applicable`, which is never actionable — so
+    // what must be empty here is `primary`, not `evaluations`. Asserting the
+    // latter empty would only be asserting that no OTHER family exists.
+    expect(clearedContext.agenda.primary).toEqual([]);
+    expect(clearedContext.agenda.evaluations.map((entry) => [entry.family, entry.status])).toEqual([
+      ['owner-directive', 'not-applicable'],
+    ]);
     expect(M.evaluate).not.toHaveBeenCalled();
     expect(parsePlan(currentBody).frontmatter.status).toBe('awaiting-acceptance');
 
@@ -292,9 +314,11 @@ describe('P-023 drained-to-acceptance lifecycle', () => {
       ownerId: 'su-test',
       goalId: null,
       now: new Date(NOW),
+      deps: NO_OWNER_DIRECTIVES,
     });
     expect(accepted.agenda.primary).toEqual([]);
     expect(accepted.agenda.evaluations).toEqual([
+      expect.objectContaining({ family: 'owner-directive', status: 'not-applicable' }),
       expect.objectContaining({ family: 'independent-verification', status: 'satisfied' }),
     ]);
 

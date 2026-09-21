@@ -12,6 +12,7 @@
 import { withHostedServiceContext, withTenantContext } from '@papercusp/db-org/tenant-context';
 import { Hono } from 'hono';
 import { createHostedIdentityBinder } from '../auth/hosted-identity-binding';
+import { PostgresHostedSelfSignupAdmission } from '../auth/hosted/self-signup';
 import {
   createHostedPrincipalResolver,
   type HostedPrincipalDenialReason,
@@ -182,6 +183,7 @@ export async function createHostedAuthRuntime(
     sessionVault: serviceWorkOSSessionVault(runService),
   });
   const bindIdentity = createHostedIdentityBinder({ directory: identityDirectory, membershipAuthority });
+  const selfSignup = new PostgresHostedSelfSignupAdmission(runService);
   const resolvePrincipal = createHostedPrincipalResolver({
     sessionCookieCodec,
     sessionStore,
@@ -191,6 +193,7 @@ export async function createHostedAuthRuntime(
   const mounted = createHostedAuthRoutes({
     provider,
     bindIdentity,
+    selfSignup,
     sessionStore,
     sessionCookieCodec,
     publicOrigin: configuration.publicOrigin,
