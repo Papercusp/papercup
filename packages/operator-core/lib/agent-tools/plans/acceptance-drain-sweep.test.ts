@@ -15,6 +15,7 @@ const M = vi.hoisted(() => ({
   list: vi.fn(),
   evaluate: vi.fn(),
   ensure: vi.fn(),
+  setState: vi.fn(),
 }));
 
 vi.mock('@papercusp/flags/server', async (importOriginal) => {
@@ -37,6 +38,10 @@ vi.mock('../../plan-acceptance-gate', () => ({
 vi.mock('./acceptance-drain-filing', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./acceptance-drain-filing')>();
   return { ...actual, ensureAcceptanceDrainFiling: M.ensure };
+});
+vi.mock('../../work-items', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../work-items')>();
+  return { ...actual, setWorkItemState: M.setState };
 });
 
 import {
@@ -89,6 +94,7 @@ beforeEach(() => {
     id: 'WI-ACCEPTANCE',
     ref: `${WS}/papercusp/ordinary`,
   });
+  M.setState.mockResolvedValue({ ok: true });
 });
 
 describe('selectAcceptanceDrainCandidates', () => {
@@ -146,10 +152,10 @@ describe('runAcceptanceDrainSweepOnce — P-023 lifecycle characterization', () 
     expect(M.ensure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       planSlug: 'newborn', code: 'acceptance_unaudited',
     }));
-    expect(result).toMatchObject({ alreadyFiled: 0, filed: [], errors: [] });
+    expect(result).toMatchObject({ alreadyFiled: 1, refreshed: 1, filed: [], errors: [] });
   });
 
-  it('reproduces the drained-but-unshipped sink: an open filing suppresses gate re-evaluation', async () => {
+  it('re-evaluates an open filing and keeps the same keyed row instead of minting a sibling', async () => {
     M.list.mockResolvedValue([row({ planSlug: 'already-filed' })]);
     M.sql.mockResolvedValue([{ ref: `${WS}/papercusp/already-filed` }]);
 
@@ -159,10 +165,11 @@ describe('runAcceptanceDrainSweepOnce — P-023 lifecycle characterization', () 
       scanned: 1,
       alreadyFiled: 1,
       filed: [],
+      refreshed: 1,
       shippableNow: 0,
     });
-    expect(M.evaluate).not.toHaveBeenCalled();
-    expect(M.ensure).not.toHaveBeenCalled();
+    expect(M.evaluate).toHaveBeenCalledExactlyOnceWith('already-filed');
+    expect(M.ensure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ planSlug: 'already-filed' }));
   });
 
   it('provides the control: a held plan without a filing reaches the live gate and filer', async () => {
@@ -182,6 +189,25 @@ describe('runAcceptanceDrainSweepOnce — P-023 lifecycle characterization', () 
     expect(result.filed).toEqual([
       { planSlug: 'ordinary', harnessSlug: 'papercusp', code: 'acceptance_unaudited', workItemId: 'WI-ACCEPTANCE' },
     ]);
+  });
+
+  it('closes the keyed filing only after the plan leaves awaiting-acceptance terminally', async () => {
+    M.list.mockResolvedValue([]);
+    M.sql.mockResolvedValue([{
+      feature_id: 'WI-SHIPPED',
+      harness_slug: 'papercusp',
+      ref: `${WS}/papercusp/shipped-plan`,
+      gate_observation: 'ready',
+      payload: { acceptanceDrainPlan: `${WS}/papercusp/shipped-plan`, gateObservation: 'ready' },
+      plan_status: 'shipped',
+      archived: false,
+    }]);
+    const result = await runAcceptanceDrainSweepOnce({ workspaceId: WS });
+    expect(result).toMatchObject({ reconciled: 1 });
+    expect(M.setState).toHaveBeenCalledWith('WI-SHIPPED', 'resolved', expect.objectContaining({
+      by: 'system:acceptance-drain',
+      completionRef: expect.stringContaining('shipped'),
+    }));
   });
 });
 

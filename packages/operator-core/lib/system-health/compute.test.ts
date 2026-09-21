@@ -84,7 +84,7 @@ vi.mock('node:os', async (importOriginal) => ({
   homedir: homedirMock,
   tmpdir: tmpdirMock,
 }));
-import { makeOpenImprovementsReader, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, deriveSystemHealthGitSyncStatus, collectDeploy, _resetSystemHealthCache, systemHealthGitSidecarEnabled, hostPressureSampleFromLiveHealth, publishGovernorStateSnapshot, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { makeOpenImprovementsReader, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, deriveSystemHealthGitSyncStatus, collectDeploy, _resetSystemHealthCache, systemHealthGitSidecarEnabled, hostPressureSampleFromLiveHealth, publishGovernorStateSnapshot, readAcceptanceDrainVisibility, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { readDiskPressure } from './compute';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
@@ -750,6 +750,25 @@ describe('computeStalePausedRoutines — stale/unexplained routine pause detecto
       const r = computeStalePausedRoutines(rows, now, { currentInstallSlug: 'papercusp' });
       expect(r).toHaveLength(1);
       expect(r[0]).toMatchObject({ name: 'scout-cycle', critical: false });
+    });
+  });
+});
+
+describe('readAcceptanceDrainVisibility — P-027 ledger projection', () => {
+  it('keeps awaiting plans visible when no active keyed filing owns them', async () => {
+    sqlMock.mockResolvedValueOnce([{
+      awaiting: '3',
+      with_driver: '1',
+      without_driver: '2',
+      escalated: '1',
+      oldest_plan_updated_at: new Date('2026-09-20T00:00:00.000Z'),
+    }]);
+    await expect(readAcceptanceDrainVisibility(sqlMock as never, 'papercusp-workspace')).resolves.toEqual({
+      awaiting: 3,
+      withDriver: 1,
+      withoutDriver: 2,
+      escalated: 1,
+      oldestPlanUpdatedAt: '2026-09-20T00:00:00.000Z',
     });
   });
 });

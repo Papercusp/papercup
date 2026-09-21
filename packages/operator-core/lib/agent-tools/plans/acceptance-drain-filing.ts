@@ -50,6 +50,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import type { TransactionSql } from 'postgres';
+import { agentObligationSourceGeneration } from '../../agent-obligations';
 import {
   upsertConditionWorkItem,
   upsertConditionWorkItemInTransaction,
@@ -77,19 +78,93 @@ export interface AcceptanceDrainFilingInput {
   workspaceId: string;
   harnessSlug: string;
   planSlug: string;
-  /** The gate's first refusal code, e.g. `acceptance_unaudited`. */
-  code: string;
+  /** The gate's first refusal code, e.g. `acceptance_unaudited`. Null is an
+   * unknown/read failure and must never be turned into a fabricated blocker. */
+  code: string | null;
   /** The gate's own refusal message — quoted, never paraphrased. */
   message: string;
+  /** Full canonical gate observation, when the caller has one. */
+  observation?: AcceptanceDrainGateObservation;
+  /** Observation clock. Tests may pin it; production defaults to now. */
+  observedAt?: Date;
 }
 
-export type AcceptanceDrainFilingOutcome = 'created' | 'already-open' | 'error';
+export type AcceptanceDrainFilingOutcome = 'created' | 'already-open' | 'unknown' | 'error';
 
 export interface AcceptanceDrainFilingResult {
   outcome: AcceptanceDrainFilingOutcome;
   id: string | null;
   ref: string;
   error?: string;
+}
+
+export const ACCEPTANCE_DRAIN_AGE_WARN_AFTER_MS = 2 * 60 * 60 * 1000;
+export const ACCEPTANCE_DRAIN_ESCALATE_AFTER_MS = 12 * 60 * 60 * 1000;
+
+export type AcceptanceDrainGateObservation = {
+  satisfied: boolean;
+  code?: string;
+  message?: string;
+  buildProvenance?: unknown;
+  repairAction?: unknown;
+  acceptanceBarLifecycle?: unknown;
+  gradingRef?: string;
+  rubricId?: string;
+  gradedBy?: string | null;
+};
+
+export type AcceptanceDrainObservationState = 'pending' | 'blocked' | 'unknown' | 'ready';
+
+export interface AcceptanceDrainObservationSignals {
+  gateObservation: AcceptanceDrainObservationState;
+  blockerCode: string | null;
+  sourceGeneration: string | null;
+  evidenceRef: string | null;
+  firstObservedAt: string;
+  lastObservedAt: string;
+  ageMs: number;
+  ageBand: 'fresh' | 'aging' | 'overdue';
+  escalation: 'none' | 'due';
+}
+
+function isoNow(value?: Date): string {
+  return (value ?? new Date()).toISOString();
+}
+
+function validIso(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
+/** Pure, durable projection used by both the SQL writer and tests. */
+export function acceptanceDrainObservationSignals(
+  observation: AcceptanceDrainGateObservation | undefined,
+  existingPayload: Record<string, unknown> | null | undefined,
+  observedAt = new Date(),
+  planSlug?: string,
+): AcceptanceDrainObservationSignals {
+  const now = isoNow(observedAt);
+  const state: AcceptanceDrainObservationState = observation == null
+    ? ((existingPayload?.gateObservation as AcceptanceDrainObservationState | undefined) ?? 'pending')
+    : observation.satisfied ? 'ready' : observation.code ? 'blocked' : 'unknown';
+  const sourceGeneration = observation == null
+    ? (typeof existingPayload?.sourceGeneration === 'string' ? existingPayload.sourceGeneration : null)
+    : agentObligationSourceGeneration({ planSlug, gate: observation });
+  const sameGeneration = sourceGeneration !== null && sourceGeneration === existingPayload?.sourceGeneration;
+  const firstObservedAt = sameGeneration && validIso(existingPayload?.firstObservedAt)
+    ? existingPayload.firstObservedAt
+    : now;
+  const ageMs = Math.max(0, Date.parse(now) - Date.parse(firstObservedAt));
+  return {
+    gateObservation: state,
+    blockerCode: observation && !observation.satisfied ? (observation.code ?? null) : null,
+    sourceGeneration,
+    evidenceRef: sourceGeneration && planSlug ? `plan-acceptance:${planSlug}:${sourceGeneration}` : null,
+    firstObservedAt,
+    lastObservedAt: now,
+    ageMs,
+    ageBand: ageMs >= ACCEPTANCE_DRAIN_ESCALATE_AFTER_MS ? 'overdue' : ageMs >= ACCEPTANCE_DRAIN_AGE_WARN_AFTER_MS ? 'aging' : 'fresh',
+    escalation: ageMs >= ACCEPTANCE_DRAIN_ESCALATE_AFTER_MS ? 'due' : 'none',
+  };
 }
 
 export function acceptanceDrainPlanRef(i: {
@@ -146,6 +221,26 @@ export function acceptanceDrainCarryBody(planSlug: string): string {
   );
 }
 
+function observationTitle(planSlug: string, signals: AcceptanceDrainObservationSignals): string {
+  if (signals.gateObservation === 'ready') return `Ship plan '${planSlug}' — acceptance gate ready`;
+  if (signals.gateObservation === 'unknown') return `Inspect plan '${planSlug}' — acceptance gate unreadable`;
+  if (signals.gateObservation === 'pending') return `Carry plan '${planSlug}' through acceptance/shipment`;
+  return `Unstick plan '${planSlug}' from awaiting-acceptance — blocked on ${signals.blockerCode ?? 'unknown'}`;
+}
+
+function observationSummary(planSlug: string, code: string | null, message: string, signals: AcceptanceDrainObservationSignals): string {
+  const age = `Observation age: ${signals.ageMs}ms (${signals.ageBand}); escalation: ${signals.escalation}.`;
+  if (signals.gateObservation === 'ready') {
+    return `Plan '${planSlug}' has a fresh acceptance-ready gate observation. ` +
+      `Run plans:set-plan-status { slug:'${planSlug}', status:'shipped', expectedCurrent:'awaiting-acceptance' }. ${age}`;
+  }
+  if (signals.gateObservation === 'unknown') {
+    return `The canonical acceptance gate for plan '${planSlug}' was unreadable or returned no refusal code; retry the scoped gate read. ${age}`;
+  }
+  if (signals.gateObservation === 'pending') return `${acceptanceDrainCarryBody(planSlug)} ${age}`;
+  return `${acceptanceDrainFilingBody(planSlug, code ?? 'unknown', message)}\n\n${age}`;
+}
+
 /**
  * Commit the acceptance accountability handoff in the SAME transaction as the
  * plan's transition into `awaiting-acceptance`. This is a pending observation,
@@ -196,8 +291,7 @@ export async function ensureAcceptanceDrainCarryInTransaction(
       payload: {
         acceptanceDrainPlan: ref,
         planSlug: input.planSlug,
-        blockerCode: null,
-        gateObservation: 'pending',
+        ...acceptanceDrainObservationSignals(undefined, null, new Date(), input.planSlug),
       },
     },
   );
@@ -220,44 +314,63 @@ export async function ensureAcceptanceDrainFiling(
   input: AcceptanceDrainFilingInput,
 ): Promise<AcceptanceDrainFilingResult> {
   const ref = acceptanceDrainPlanRef(input);
+  const observedAt = input.observedAt ?? new Date();
+  const observation = input.observation ?? (input.code == null ? undefined : {
+    satisfied: false,
+    code: input.code,
+    message: input.message,
+  });
   try {
     const { sql } = getOrgPg();
     // Payload fast-path, mirroring spec-triad-filing: adopt an existing open
     // filing rather than letting a keyed sibling join it. Cheap, and it also
     // covers any row filed before this condition key existed.
     const open = (await sql`
-      SELECT feature_id, harness_slug, payload->>'gateObservation' AS gate_observation
+      SELECT feature_id, harness_slug, payload, payload->>'gateObservation' AS gate_observation
         FROM harness_shared.work_items
        WHERE workspace_id = ${input.workspaceId}
          AND payload->>'acceptanceDrainPlan' = ${ref}
          AND status = ANY(${ACCEPTANCE_DRAIN_NON_TERMINAL_STATUSES})
        LIMIT 1
-    `) as unknown as Array<{ feature_id: string; harness_slug: string; gate_observation?: string | null }>;
+    `) as unknown as Array<{ feature_id: string; harness_slug: string; payload?: Record<string, unknown> | null; gate_observation?: string | null }>;
     if (open.length > 0) {
       const incumbent = open[0]!;
-      // P-025 creates a pending carry row inside the drain transaction. The
-      // first canonical gate read must replace that placeholder in-place;
-      // treating it as an ordinary dedupe hit would recreate the old sink.
-      if (incumbent.gate_observation === 'pending') {
+      const signals = acceptanceDrainObservationSignals(observation, incumbent.payload, observedAt, input.planSlug);
+      const patch = {
+        acceptanceDrainPlan: ref,
+        planSlug: input.planSlug,
+        ...signals,
+        buildProvenance: observation?.buildProvenance ?? null,
+        repairAction: observation?.repairAction ?? null,
+        acceptanceBarLifecycle: observation?.acceptanceBarLifecycle ?? null,
+        gradingRef: observation?.gradingRef ?? null,
+        rubricId: observation?.rubricId ?? null,
+        gradedBy: observation?.gradedBy ?? null,
+      };
+      {
         await sql`
           UPDATE harness_shared.work_items
-             SET title = ${`Unstick plan '${input.planSlug}' from awaiting-acceptance — blocked on ${input.code}`},
-                 summary = ${acceptanceDrainFilingBody(input.planSlug, input.code, input.message)},
+             SET title = ${observationTitle(input.planSlug, signals)},
+                 summary = ${observationSummary(input.planSlug, input.code, input.message, signals)},
                  updated_ts = (EXTRACT(EPOCH FROM now()) * 1000)::bigint,
-                 payload = COALESCE(payload, '{}'::jsonb) ||
-                   jsonb_build_object('blockerCode', ${input.code}::text, 'gateObservation', 'blocked')
+                 payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb
            WHERE feature_id = ${incumbent.feature_id}
              AND workspace_id = ${input.workspaceId}
              AND harness_slug = ${incumbent.harness_slug}
              AND status = ANY(${ACCEPTANCE_DRAIN_NON_TERMINAL_STATUSES})
-             AND payload->>'gateObservation' = 'pending'
         `;
       }
       return {
         outcome: 'already-open',
-        id: incumbent.gate_observation === 'pending' ? incumbent.feature_id : null,
+        id: incumbent.feature_id,
         ref,
       };
+    }
+
+    // A gate/read failure must not create a blocker with an invented code. The
+    // next sweep retries; only a known refusal is claimable new work.
+    if (input.code == null && observation?.satisfied !== true) {
+      return { outcome: 'unknown', id: null, ref };
     }
 
     // The read above is check-then-act and therefore RACED; the upsert claims the
@@ -272,12 +385,18 @@ export async function ensureAcceptanceDrainFiling(
         harness: input.harnessSlug,
         workspaceId: input.workspaceId,
         createdBy: 'system:acceptance-drain',
-        title: `Unstick plan '${input.planSlug}' from awaiting-acceptance — blocked on ${input.code}`,
-        summary: acceptanceDrainFilingBody(input.planSlug, input.code, input.message),
+        title: observationTitle(input.planSlug, acceptanceDrainObservationSignals(observation, null, observedAt, input.planSlug)),
+        summary: observationSummary(input.planSlug, input.code, input.message, acceptanceDrainObservationSignals(observation, null, observedAt, input.planSlug)),
         payload: {
           acceptanceDrainPlan: ref,
           planSlug: input.planSlug,
-          blockerCode: input.code,
+          ...acceptanceDrainObservationSignals(observation, null, observedAt, input.planSlug),
+          buildProvenance: observation?.buildProvenance ?? null,
+          repairAction: observation?.repairAction ?? null,
+          acceptanceBarLifecycle: observation?.acceptanceBarLifecycle ?? null,
+          gradingRef: observation?.gradingRef ?? null,
+          rubricId: observation?.rubricId ?? null,
+          gradedBy: observation?.gradedBy ?? null,
         },
       },
     );

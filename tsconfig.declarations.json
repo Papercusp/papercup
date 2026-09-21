@@ -346,6 +346,9 @@
     // would red-pin the next fresh gate cut. Enrolled rather than `@ts-expect-error`-d
     // because the test asserts on the manifest's inferred shape (inputs.source,
     // optionalPacks.model.sha256, artifactId).
-    "scripts/p2p-witness-manifest.mjs"
+    "scripts/p2p-witness-manifest.mjs",
+    // P-015 R-4 verifier is imported by its TypeScript contract test; enroll it so
+    // the generated sibling declaration tracks the JSDoc surface instead of a TS7016.
+    "scripts/verify-identities-r4.mjs"
   ]
 }

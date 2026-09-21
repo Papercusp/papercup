@@ -13,7 +13,12 @@ vi.mock('../../coord/condition-upsert', () => ({
   upsertConditionWorkItem: M.upsert,
 }));
 
-import { ensureAcceptanceDrainFiling } from './acceptance-drain-filing';
+import {
+  ACCEPTANCE_DRAIN_ESCALATE_AFTER_MS,
+  ACCEPTANCE_DRAIN_AGE_WARN_AFTER_MS,
+  acceptanceDrainObservationSignals,
+  ensureAcceptanceDrainFiling,
+} from './acceptance-drain-filing';
 
 const input = {
   workspaceId: 'papercusp-workspace',
@@ -29,15 +34,16 @@ describe('ensureAcceptanceDrainFiling — P-023 characterization', () => {
     M.sql.mockResolvedValue([{ feature_id: 'WI-ACCEPTANCE', harness_slug: 'papercusp' }]);
   });
 
-  it('returns already-open without refreshing the live blocker or accountability evidence', async () => {
+  it('refreshes an existing keyed filing with the current gate observation', async () => {
     const result = await ensureAcceptanceDrainFiling(input);
 
     expect(result).toEqual({
       outcome: 'already-open',
-      id: null,
+      id: 'WI-ACCEPTANCE',
       ref: 'papercusp-workspace/papercusp/drained-plan',
     });
     expect(M.upsert).not.toHaveBeenCalled();
+    expect(M.sql).toHaveBeenCalledTimes(2);
   });
 
   it('replaces a pending handoff observation in-place without minting or reassigning', async () => {
@@ -50,10 +56,53 @@ describe('ensureAcceptanceDrainFiling — P-023 characterization', () => {
     const [parts, ...values] = M.sql.mock.calls[1]!;
     const statement = (parts as TemplateStringsArray).join('?');
     expect(statement).toContain('UPDATE harness_shared.work_items');
-    expect(statement).toContain("payload->>'gateObservation' = 'pending'");
+    expect(statement).toContain('payload = COALESCE(payload');
     expect(statement).toContain('workspace_id =');
     expect(statement).toContain('harness_slug =');
     expect(statement).not.toContain('taken_by =');
-    expect(values).toContain('acceptance_unaudited');
+    expect(values.some((value) => String(value).includes('acceptance_unaudited'))).toBe(true);
+  });
+});
+
+describe('acceptanceDrainObservationSignals — P-027 durable age contract', () => {
+  const at = new Date('2026-09-21T00:00:00.000Z');
+  it('ages an unchanged source generation and marks escalation after 12 hours', () => {
+    const first = new Date(at.getTime() - ACCEPTANCE_DRAIN_ESCALATE_AFTER_MS - 1).toISOString();
+    const prior = acceptanceDrainObservationSignals(
+      { satisfied: false, code: 'acceptance_unaudited' },
+      null,
+      new Date(first),
+      'plan',
+    );
+    expect(acceptanceDrainObservationSignals(
+      { satisfied: false, code: 'acceptance_unaudited' },
+      { sourceGeneration: prior.sourceGeneration, firstObservedAt: first },
+      at,
+      'plan',
+    )).toMatchObject({ ageBand: 'overdue', escalation: 'due', firstObservedAt: first });
+  });
+
+  it('resets age when the canonical gate generation changes', () => {
+    const first = new Date(at.getTime() - ACCEPTANCE_DRAIN_AGE_WARN_AFTER_MS * 2).toISOString();
+    const signals = acceptanceDrainObservationSignals(
+      { satisfied: false, code: 'acceptance_unaudited' },
+      { sourceGeneration: 'old', firstObservedAt: first },
+      at,
+      'plan',
+    );
+    expect(signals.firstObservedAt).toBe(at.toISOString());
+    expect(signals.ageMs).toBe(0);
+    expect(signals.escalation).toBe('none');
+  });
+
+  it('does not create a fabricated blocker for an unknown/read failure', async () => {
+    M.sql.mockResolvedValueOnce([]);
+    await expect(ensureAcceptanceDrainFiling({
+      ...input,
+      code: null,
+      message: 'gate unavailable',
+      observation: { satisfied: false, message: 'gate unavailable' },
+    })).resolves.toMatchObject({ outcome: 'unknown', id: null });
+    expect(M.upsert).not.toHaveBeenCalled();
   });
 });

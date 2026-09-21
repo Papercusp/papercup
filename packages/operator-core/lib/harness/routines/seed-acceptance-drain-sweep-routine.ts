@@ -21,9 +21,9 @@
  *     Bounded, idempotent, non-throwing. Bounded: `maxFilings` items per tick, so
  *     the accumulated backlog is filed over several ticks rather than 187 items
  *     in one pass. Idempotent: each filing claims a unique condition key and is
- *     deduped by `payload.acceptanceDrainPlan` BEFORE the expensive gate runs, so
- *     a re-sweep is a no-op. Bounded SELECTs + work-item writes only; spawns no
- *     agent, no LLM, no network.
+ *     refreshed by `payload.acceptanceDrainPlan` on every gate read, so a re-sweep
+ *     updates the ledger in place without minting siblings. Bounded SELECTs +
+ *     work-item writes only; spawns no agent, no LLM, no network.
  *
  *     Never advances a plan to `shipped` and never edits a plan body — it only
  *     files work. The ship gate needs a code-truth audit and independent

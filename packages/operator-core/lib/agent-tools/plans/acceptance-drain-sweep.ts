@@ -28,8 +28,8 @@
  *     it over several ticks and costs nothing in the steady state, where a tick
  *     has 0–1 candidates.
  *  2. **Idempotent.** Each filing stamps `payload.acceptanceDrainPlan` and claims
- *     a unique condition key; a plan with a non-terminal filing already open is
- *     skipped BEFORE the gate runs. Re-running is a no-op.
+ *     a unique condition key. Re-running refreshes the existing row in place;
+ *     the key prevents duplicate creation but never suppresses a gate read.
  *  3. **The dedupe read precedes the expensive leg, not the other way round.**
  *     The gate is ~265ms per plan (five check families, citations re-resolved
  *     against the real tree). Evaluating first and deduping after would burn the
@@ -56,9 +56,12 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { evaluatePlanAcceptanceGate } from '../../plan-acceptance-gate';
+import { setWorkItemState } from '../../work-items';
 import {
   ensureAcceptanceDrainFiling,
   ACCEPTANCE_DRAIN_NON_TERMINAL_STATUSES,
+  acceptanceDrainObservationSignals,
+  type AcceptanceDrainGateObservation,
 } from './acceptance-drain-filing';
 import { listPlanIndexRowsForWorkspace, type PlanIndexRow } from './source';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -91,6 +94,16 @@ export interface AcceptanceDrainSweepResult {
   alreadyFiled: number;
   /** Of those evaluated, how many the gate said are shippable right now. */
   shippableNow: number;
+  /** Existing keyed filings refreshed with a current gate observation. */
+  refreshed: number;
+  /** Existing keyed filings whose current gate is ready for shipment. */
+  ready: number;
+  /** Existing keyed filings whose gate read was unknown/unreadable. */
+  unknown: number;
+  /** Existing keyed filings past the durable escalation age. */
+  escalated: number;
+  /** Existing filings closed after observing a terminal plan disposition. */
+  reconciled: number;
   filed: AcceptanceDrainSweepFiled[];
   /** Refusing plans left unfiled because the per-run cap was hit. */
   deferred: number;
@@ -143,6 +156,11 @@ function empty(summary: string, skipped?: AcceptanceDrainSweepResult['skipped'])
     scanned: 0,
     alreadyFiled: 0,
     shippableNow: 0,
+    refreshed: 0,
+    ready: 0,
+    unknown: 0,
+    escalated: 0,
+    reconciled: 0,
     filed: [],
     deferred: 0,
     scopeSkipped: 0,
@@ -182,20 +200,54 @@ export async function runAcceptanceDrainSweepOnce(
 
   // Phase 2 — the dedupe read, BEFORE the expensive gate (rail 3).
   const alreadyFiledRefs = new Set<string>();
+  const existingFilings = new Map<string, {
+    featureId: string;
+    harnessSlug: string;
+    gateObservation?: string | null;
+    payload?: Record<string, unknown> | null;
+    planStatus?: string | null;
+    archived?: boolean | null;
+  }>();
   try {
     const { sql } = getOrgPg();
     const existing = (await sql`
-      SELECT payload->>'acceptanceDrainPlan' AS ref,
-             payload->>'gateObservation' AS gate_observation
-        FROM harness_shared.work_items
+      SELECT wi.feature_id,
+             wi.harness_slug,
+             wi.payload->>'acceptanceDrainPlan' AS ref,
+             payload->>'gateObservation' AS gate_observation,
+             wi.payload,
+             p.status AS plan_status,
+             p.archived
+        FROM harness_shared.work_items wi
+        LEFT JOIN harness_shared.harness_plans p
+          ON p.workspace_id = wi.workspace_id
+         AND (p.workspace_id || '/' || p.harness_slug || '/' || p.plan_slug) = wi.payload->>'acceptanceDrainPlan'
        WHERE payload->>'acceptanceDrainPlan' IS NOT NULL
-         AND status = ANY(${ACCEPTANCE_DRAIN_NON_TERMINAL_STATUSES})
-    `) as unknown as { ref: string | null; gate_observation?: string | null }[];
+         AND wi.status = ANY(${ACCEPTANCE_DRAIN_NON_TERMINAL_STATUSES})
+    `) as unknown as Array<{
+      feature_id: string;
+      harness_slug: string;
+      ref: string | null;
+      gate_observation?: string | null;
+      payload?: Record<string, unknown> | null;
+      plan_status?: string | null;
+      archived?: boolean | null;
+    }>;
     // A P-025 carry row is an ownership handoff, not a completed gate
     // observation. Let the first sweep evaluate it and replace the placeholder
     // in-place; only a known blocker suppresses duplicate filing.
     for (const e of existing) {
-      if (e.ref && e.gate_observation !== 'pending') alreadyFiledRefs.add(e.ref);
+      if (e.ref) {
+        existingFilings.set(e.ref, {
+          featureId: e.feature_id,
+          harnessSlug: e.harness_slug,
+          gateObservation: e.gate_observation,
+          payload: e.payload,
+          planStatus: e.plan_status,
+          archived: e.archived,
+        });
+        if (e.gate_observation !== 'pending') alreadyFiledRefs.add(e.ref);
+      }
     }
   } catch (err) {
     return empty(
@@ -204,13 +256,20 @@ export async function runAcceptanceDrainSweepOnce(
     );
   }
 
-  const candidates = selectAcceptanceDrainCandidates(rows, alreadyFiledRefs, workspaceId);
-  const alreadyFiled = rows.length - candidates.length;
+  // Dedupe gates only NEW filing creation. Existing rows must still be re-read
+  // through the canonical gate so changed blockers and readiness refresh the
+  // same ledger row rather than becoming a permanent sink.
+  const candidates = selectAcceptanceDrainCandidates(rows, new Set(), workspaceId);
+  const alreadyFiled = rows.filter((row) => existingFilings.has(`${workspaceId}/${row.harnessSlug}/${row.planSlug}`)).length;
 
   // Phase 3 — evaluate and file, capped.
   const filed: AcceptanceDrainSweepFiled[] = [];
   const errors: string[] = [];
   let shippableNow = 0;
+  let refreshed = 0;
+  let ready = 0;
+  let unknown = 0;
+  let escalated = 0;
   let deferred = 0;
   let scopeSkipped = 0;
 
@@ -222,23 +281,42 @@ export async function runAcceptanceDrainSweepOnce(
       scopeSkipped++;
       continue;
     }
-    if (filed.length >= maxFilings) {
+    const planSlug = row.planSlug;
+    const harnessSlug = row.harnessSlug;
+    const ref = `${workspaceId}/${harnessSlug}/${planSlug}`;
+    const existing = existingFilings.get(ref);
+    // Existing accountability rows are always refreshed. The cap applies only
+    // to minting new rows into the shared work queue.
+    if (!existing && filed.length >= maxFilings) {
       deferred++;
       continue;
     }
-    const planSlug = row.planSlug;
-    const harnessSlug = row.harnessSlug;
     try {
       const verdict = await evaluatePlanAcceptanceGate(planSlug);
+      const observation: AcceptanceDrainGateObservation = verdict;
+      const signals = acceptanceDrainObservationSignals(observation, existing?.payload, new Date(), planSlug);
+      if (signals.escalation === 'due') escalated++;
       if (verdict.satisfied) {
-        shippableNow++;
+        if (existing) {
+          refreshed++;
+          ready++;
+        } else {
+          shippableNow++;
+        }
+        if (existing) {
+          await ensureAcceptanceDrainFiling({
+            workspaceId, harnessSlug, planSlug, code: null,
+            message: verdict.message ?? 'acceptance gate satisfied', observation,
+          });
+        }
         continue;
       }
       // A verdict that could not be EVALUATED is not a refusal to file work
       // against: "could not evaluate" and "is blocked" are different claims, and
       // filing the first as the second would put a fabricated blocker code in
       // front of whoever picks the item up.
-      if (!verdict.code) {
+      if (!verdict.code && !existing) {
+        unknown++;
         errors.push(`${planSlug}: refused with no code (unavailable?), not filed`);
         continue;
       }
@@ -246,16 +324,51 @@ export async function runAcceptanceDrainSweepOnce(
         workspaceId,
         harnessSlug,
         planSlug,
-        code: verdict.code,
+        code: verdict.code ?? null,
         message: verdict.message ?? `(gate refused with ${verdict.code} and no message)`,
+        observation,
       });
-      if (res.outcome === 'created') {
-        filed.push({ planSlug, harnessSlug, code: verdict.code, workItemId: res.id });
+      if (res.outcome === 'created' && !existing) {
+        filed.push({ planSlug, harnessSlug, code: verdict.code ?? 'unknown', workItemId: res.id });
+      } else if (existing || res.outcome === 'already-open') {
+        refreshed++;
+        if (signals.gateObservation === 'unknown') unknown++;
       } else if (res.outcome === 'error') {
         errors.push(`${planSlug}: filing failed: ${res.error}`);
       }
     } catch (err) {
+      if (existing) {
+        const observation: AcceptanceDrainGateObservation = { satisfied: false, message: (err as Error).message };
+        await ensureAcceptanceDrainFiling({
+          workspaceId, harnessSlug, planSlug, code: null,
+          message: (err as Error).message, observation,
+        });
+        refreshed++;
+        unknown++;
+      }
       errors.push(`${planSlug}: ${(err as Error).message}`);
+    }
+  }
+
+  // A plan leaves awaiting-acceptance only through a terminal disposition. Close
+  // the one keyed filing on that observed edge; readiness alone deliberately does
+  // not close it because the CAS shipment write is a separate lifecycle hop.
+  const awaitingRefs = new Set(rows.map((row) => `${workspaceId}/${row.harnessSlug}/${row.planSlug}`));
+  let reconciled = 0;
+  for (const [ref, filing] of existingFilings) {
+    if (awaitingRefs.has(ref) || filing.planStatus === undefined) continue;
+    const terminal = filing.archived === true || filing.planStatus === null || filing.planStatus === 'shipped' || filing.planStatus === 'superseded';
+    if (!terminal) continue;
+    const state = filing.planStatus === 'shipped' ? 'resolved' : 'dropped';
+    try {
+      await setWorkItemState(filing.featureId, state, {
+        harness: filing.harnessSlug,
+        by: 'system:acceptance-drain',
+        completionRef: `Acceptance filing ${state === 'resolved' ? 'resolved' : 'dropped'}: plan ${ref} observed ${filing.planStatus ?? 'missing'}${filing.archived ? ' and archived' : ''}.`,
+      });
+      reconciled++;
+    } catch (err) {
+      errors.push(`${ref}: terminal filing reconciliation failed: ${(err as Error).message}`);
     }
   }
 
@@ -269,10 +382,25 @@ export async function runAcceptanceDrainSweepOnce(
   const summary =
     `acceptance-drain sweep: ${rows.length} in awaiting-acceptance · ` +
     `${alreadyFiled} already filed · ${shippableNow} SHIPPABLE NOW · ` +
-    `${filed.length} filed${codeBreakdown ? ` (${codeBreakdown})` : ''}` +
+    `${filed.length} filed${codeBreakdown ? ` (${codeBreakdown})` : ''} · ` +
+    `${refreshed} refreshed · ${ready} ready · ${unknown} unknown · ${escalated} escalated · ${reconciled} reconciled` +
     (deferred > 0 ? ` · ${deferred} DEFERRED past the ${maxFilings}/run cap` : '') +
     (scopeSkipped > 0 ? ` · ${scopeSkipped} skipped (harness outside the work-scope policy)` : '') +
     (errors.length > 0 ? ` · ${errors.length} error(s)` : '');
 
-  return { scanned: rows.length, alreadyFiled, shippableNow, filed, deferred, scopeSkipped, errors, summary };
+  return {
+    scanned: rows.length,
+    alreadyFiled,
+    shippableNow,
+    refreshed,
+    ready,
+    unknown,
+    escalated,
+    reconciled,
+    filed,
+    deferred,
+    scopeSkipped,
+    errors,
+    summary,
+  };
 }

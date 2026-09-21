@@ -7,7 +7,7 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
-import { ensureAcceptanceDrainCarryInTransaction } from '../acceptance-drain-filing';
+import { ensureAcceptanceDrainCarryInTransaction, ensureAcceptanceDrainFiling } from '../acceptance-drain-filing';
 import { applyPlanDrainTransition } from '../plan-drain-transition';
 import { withPlanLock } from '../with-plan-lock';
 import {
@@ -175,5 +175,55 @@ describe('P-025 transactional acceptance carry', () => {
          AND payload->>'acceptanceDrainPlan' = ${`${workspaceId}/${HARNESS}/${slug}`}
     `;
     expect(rows).toEqual([{ taken_by: 'driver-a' }]);
+  }, 60_000);
+
+  it('refreshes one keyed filing across blocker changes and readiness while preserving age evidence', async () => {
+    const slug = PLAN('refresh');
+    await registerHarnessProject(admin, workspaceId, HARNESS);
+    await seedPlan(admin, workspaceId, HARNESS, slug, body(slug));
+    await applyPlanDrainTransition(slug, HARNESS);
+
+    const ref = `${workspaceId}/${HARNESS}/${slug}`;
+    const first = new Date('2026-09-20T00:00:00.000Z');
+    const blocked = await ensureAcceptanceDrainFiling({
+      workspaceId,
+      harnessSlug: HARNESS,
+      planSlug: slug,
+      code: 'acceptance_unaudited',
+      message: 'run plans:audit',
+      observation: { satisfied: false, code: 'acceptance_unaudited', message: 'run plans:audit' },
+      observedAt: first,
+    });
+    expect(blocked).toMatchObject({ outcome: 'already-open' });
+
+    const readyAt = new Date('2026-09-20T13:00:00.000Z');
+    await ensureAcceptanceDrainFiling({
+      workspaceId,
+      harnessSlug: HARNESS,
+      planSlug: slug,
+      code: null,
+      message: 'ready',
+      observation: { satisfied: true, rubricId: 'rubric-refresh', gradedBy: 'peer' },
+      observedAt: readyAt,
+    });
+
+    const rows = await admin<{ status: string; payload: Record<string, unknown> }[]>`
+      SELECT status, payload
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND payload->>'acceptanceDrainPlan' = ${ref}
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe('open');
+    expect(rows[0]!.payload).toMatchObject({
+      acceptanceDrainPlan: ref,
+      gateObservation: 'ready',
+      blockerCode: null,
+      rubricId: 'rubric-refresh',
+      firstObservedAt: readyAt.toISOString(),
+      lastObservedAt: readyAt.toISOString(),
+      ageMs: 0,
+      escalation: 'none',
+    });
   }, 60_000);
 });
