@@ -96,6 +96,55 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(source).toContain("'sourceTurnRef'");
   });
 
+  /*
+   * P-004 of turn-start-memory-two-class-2026-09-21 requires capture failure to be LOUD
+   * in additionalContext, never silent. These three cases test that as BEHAVIOUR, not as
+   * source text — the previous test above can only prove the call is spelled out
+   * somewhere, which stays true even if the result is dropped on the floor (it was).
+   *
+   * They need no new fixture: runHook already sets HOME=/nonexistent-home, so _mcp_call
+   * cannot read a superuser token and returns None for every one of these runs. Capture
+   * therefore ALWAYS fails here, which is exactly the condition under test.
+   */
+  it('a failed capture is LOUD in additionalContext, and still fail-open', () => {
+    writeRow();
+    const out = runHook({ prompt: 'please fix the login page' });
+    const ctx = contextOf(out);
+
+    expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    expect(ctx).toContain('orders:record'); // it names the manual repair, not just the fault
+
+    // Fail-OPEN: the classification still lands and the turn is never blocked. A notice
+    // that cost the owner their stamp would be a worse bug than the silence it replaced.
+    expect(out.status).toBe(0);
+    expect(ctx).toContain('OWNER (interactive)');
+  });
+
+  it('CONTROL: a VERIFIED machine turn never attempts capture, so it carries no notice', () => {
+    writeRow();
+    const ctx = contextOf(
+      runHook({ prompt: '⟦turn-origin:wake-pump nonce:aabbccddeeff0011⟧\nthe injected payload' }),
+    );
+
+    // The falsifiability control for the case above. Capture lives ONLY in the owner
+    // branch, so a machine turn cannot fail to capture — it never tries. Move the call
+    // out of that branch (the regression that would silently start recording wake-pump
+    // and loop-fire turns as owner directives) and this assertion fails immediately.
+    expect(ctx).toContain('VERIFIED');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+  });
+
+  it('CONTROL: a MACHINE-GENERATED SURFACE turn carries no capture notice either', () => {
+    writeRow();
+    const ctx = contextOf(
+      runHook({
+        prompt: '[SYSTEM NOTIFICATION - NOT USER INPUT]\nBackground task b1mtb01il completed: 42 tests passed.',
+      }),
+    );
+    expect(ctx).toContain('MACHINE-GENERATED SURFACE');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+  });
+
   it('envelope + live nonce + matching hash → VERIFIED with the LEDGER origin', () => {
     writeRow();
     const ctx = contextOf(

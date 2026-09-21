@@ -56,6 +56,15 @@ export interface OwnerDirectiveRow {
   captureDismissalReason?: string | null;
   captureDismissedAtMs?: number | null;
   captureDismissedBy?: string | null;
+  /** When a pending hook capture was promoted to an open directive; null until promotion. */
+  capturePromotedAtMs?: number | null;
+  capturePromotedBy?: string | null;
+  /**
+   * True when the row came from the UserPromptSubmit provenance hook rather than an agent
+   * calling orders:record. Unlike captureStatus this SURVIVES promotion, so provenance is
+   * still answerable once the row is acted on.
+   */
+  capturedByHook?: boolean;
 }
 
 // ── Bounds ────────────────────────────────────────────────────────────────────
@@ -104,6 +113,9 @@ interface RawRow {
   capture_dismissal_reason: string | null;
   capture_dismissed_at: string | Date | null;
   capture_dismissed_by: string | null;
+  capture_promoted_at: string | Date | null;
+  capture_promoted_by: string | null;
+  captured_by_hook: boolean | null;
 }
 
 function rowOf(r: RawRow): OwnerDirectiveRow {
@@ -126,6 +138,9 @@ function rowOf(r: RawRow): OwnerDirectiveRow {
     captureDismissalReason: r.capture_dismissal_reason,
     captureDismissedAtMs: toMs(r.capture_dismissed_at),
     captureDismissedBy: r.capture_dismissed_by,
+    capturePromotedAtMs: toMs(r.capture_promoted_at),
+    capturePromotedBy: r.capture_promoted_by,
+    capturedByHook: r.captured_by_hook === true,
   };
 }
 
@@ -143,6 +158,8 @@ export interface RecordOwnerDirectiveInput {
   recordedBy: string;
   /** Hybrid capture lifecycle. Hook-created rows start pending; agents promote to open. */
   captureStatus?: Exclude<OwnerDirectiveCaptureStatus, 'dismissed'>;
+  /** True only for the UserPromptSubmit hook's capture path; survives promotion. */
+  capturedByHook?: boolean;
 }
 
 export async function recordOwnerDirective(
@@ -154,9 +171,10 @@ export async function recordOwnerDirective(
   const text = input.verbatimText.slice(0, OWNER_DIRECTIVE_VERBATIM_MAX);
   const rows = await s<RawRow[]>`
     INSERT INTO harness_shared.owner_directives
-      (workspace_id, owner_id, session_ref, source_turn_ref, verbatim_text, recorded_by, capture_status)
+      (workspace_id, owner_id, session_ref, source_turn_ref, verbatim_text, recorded_by, capture_status, captured_by_hook)
     SELECT ${ws}, ${input.ownerId ?? OWNER_DIRECTIVE_DEFAULT_OWNER}, ${input.sessionRef ?? null},
-       ${input.sourceTurnRef ?? null}, ${text}, ${input.recordedBy}, ${input.captureStatus ?? 'open'}
+       ${input.sourceTurnRef ?? null}, ${text}, ${input.recordedBy}, ${input.captureStatus ?? 'open'},
+       ${input.capturedByHook === true}
     WHERE NOT EXISTS (
       SELECT 1 FROM harness_shared.owner_directives
        WHERE workspace_id = ${ws}
@@ -270,7 +288,9 @@ export async function promoteOwnerDirective(
   const s = db(sql);
   const rows = await s<RawRow[]>`
     UPDATE harness_shared.owner_directives
-       SET capture_status = 'open'
+       SET capture_status = 'open',
+           capture_promoted_at = now(),
+           capture_promoted_by = ${input.promotedBy}
      WHERE id = ${input.id} AND capture_status = 'pending' AND dispositioned_at IS NULL
      RETURNING *
   `;

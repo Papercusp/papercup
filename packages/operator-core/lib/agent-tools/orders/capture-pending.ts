@@ -30,6 +30,9 @@ export default defineTool({
       verbatimText: args.verbatim,
       recordedBy: identity.ownerId,
       captureStatus: 'pending',
+      // This verb IS the hook capture path; the flag outlives captureStatus, which stops
+      // saying "hook-captured" the moment the row is promoted to 'open'.
+      capturedByHook: true,
     });
     const openCount = await countOpenOwnerDirectives(workspaceId).catch(() => null);
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, id: row.id, captureStatus: row.captureStatus, ...(openCount == null ? {} : { openCount }) }) }] };

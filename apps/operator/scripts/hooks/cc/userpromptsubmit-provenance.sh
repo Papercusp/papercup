@@ -482,20 +482,44 @@ def record_owner_prompt(prompt, native_session):
         'submittedAtMs': round(now_ms),
     })
 
+CAPTURE_FAILED_NOTICE = (
+    "⚠ OWNER-DIRECTIVE CAPTURE FAILED — this owner turn was NOT recorded as a pending "
+    "directive. Most likely orders:capture-pending is not deployed to this operator yet "
+    "(it is newer than the green release :3070 serves); it can also mean the operator was "
+    "unreachable or the tool refused. The Orientation block will NOT resurface this turn, "
+    "so nothing will remind you a second time: if it carries a directive, record it "
+    "yourself now with orders:record."
+)
+
+
 def capture_pending_owner_prompt(prompt, native_session):
-    """Best-effort hybrid capture; the next agent turn must resolve the row."""
+    """Best-effort hybrid capture; the next agent turn must resolve the row.
+
+    Returns None when the row landed (or when there was nothing to capture), and a
+    SHORT notice string when it did not. Capture is fail-OPEN — it must never wedge
+    UserPromptSubmit — but fail-open is not the same as fail-SILENT: a capture that
+    vanishes without a word is indistinguishable from one that worked, and the whole
+    point of the hybrid rail is that the owner's words are not quietly dropped. The
+    caller folds the returned notice into additionalContext.
+    """
     if not isinstance(prompt, str) or not prompt.strip():
-        return
+        return None
     # Claude does not expose a stable turn id on every hook payload. The session,
     # payload hash, and submit timestamp give retries a useful provenance pointer;
     # the server's partial unique index makes a same-ref retry idempotent.
     source = f"{native_session or sid}:{sha256_hex(prompt)}"
-    _mcp_call('orders:capture-pending', {
+    res = _mcp_call('orders:capture-pending', {
         'verbatim': prompt[:16000],
         'sourceTurnRef': source,
         'sessionRef': native_session or sid,
         'ownerName': 'owner',
     }, timeout=1)
+    # _mcp_call never raises; it returns None for EVERY failure mode (no token, operator
+    # down, transport error, tool refusal). So None is the one signal we get, and it has
+    # to be surfaced rather than dropped on the floor.
+    if res is None:
+        return CAPTURE_FAILED_NOTICE
+    return None
 
 
 m = ENVELOPE_RE.match(prompt)
@@ -592,9 +616,12 @@ else:
         except Exception:
             pass  # fail-open: persistence is advisory to the prompt path
         try:
-            capture_pending_owner_prompt(prompt, data.get('session_id') or data.get('sessionId'))
-        except Exception:
-            pass  # fail-open: capture must never wedge UserPromptSubmit
+            _cap_note = capture_pending_owner_prompt(prompt, data.get('session_id') or data.get('sessionId'))
+        except Exception as _cap_exc:
+            # fail-OPEN (the turn still proceeds) but never fail-SILENT.
+            _cap_note = CAPTURE_FAILED_NOTICE + f" [{type(_cap_exc).__name__}]"
+        if _cap_note:
+            stamp += "\n\n" + _cap_note
         try:
             _note = register_owner_mode(prompt)
         except Exception:
