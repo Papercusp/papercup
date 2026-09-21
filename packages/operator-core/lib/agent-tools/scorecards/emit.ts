@@ -47,6 +47,9 @@ import {
   recordGradingAudit,
   scorecardEvidenceFingerprint,
   parseGradedGeneration,
+  computeWorkOnEverythingRollup,
+  resolveScorecardInstrumentSnapshots,
+  validateWorkOnEverythingEvidenceEnvelope,
   type ScorecardInstrumentSnapshot,
   type ScorecardReleaseGateSnapshot,
 } from '../../scorecards';
@@ -1483,6 +1486,21 @@ export async function emitScorecard(
     // on a standard rubric must carry `remediation` (WI-/EI-/F- ref) or an explicit
     // `disregard` — the agent-facing emit door enforces what the schema teaches.
     validateScorecardPoorRatingDisposition(observationForValidation, rubric);
+    try {
+      validateWorkOnEverythingEvidenceEnvelope(args.rubricRef, ratings);
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: error instanceof Error ? error.message : String(error),
+        canonicalRatings: ratings,
+      };
+    }
+    const rollup =
+      computeWorkOnEverythingRollup(
+        args.rubricRef,
+        ratings,
+        rubric.criteria.map((criterion) => criterion.key),
+      );
     // WI-2141007: the acceptance record as PERSISTED — the caller's verdict plus,
     // when the seat was inherited from a dead author, the server-stamped audited
     // succession. Computed once so the two persistence sites below cannot drift
@@ -1509,12 +1527,24 @@ export async function emitScorecard(
             : {}),
         }
       : undefined;
-    const instrumentSnapshots = args.instrumentSnapshots as Record<string, ScorecardInstrumentSnapshot> | undefined;
+    const instrumentSnapshots = await resolveScorecardInstrumentSnapshots({
+      rubric,
+      subject: args.subject,
+      supplied: args.instrumentSnapshots as Record<string, ScorecardInstrumentSnapshot> | undefined,
+    });
     const instrumentContract = evaluateScorecardInstrumentContract({
       rubric,
       ratings,
       instrumentSnapshots,
     });
+    if (args.rubricRef === 'work-on-everything-stewardship-health' && instrumentContract.verdictMismatches.length) {
+      return {
+        ok: false as const,
+        error: 'A registered platform measurement contradicts the claimed rating.',
+        instrumentContract,
+        instrumentSnapshots,
+      };
+    }
     if (rubric.releaseGating && !instrumentContract.valid) {
       return {
         ok: false as const,
@@ -2462,6 +2492,7 @@ export async function emitScorecard(
           ...(provisional ? { provisional } : {}),
           ...(gradingAudit ? { gradingAudit } : {}),
           ...(args.subject ? { subject: args.subject } : {}),
+          ...(rollup ? { rollup } : {}),
           ...(vetting ? { vetting } : {}),
           ...(checkRuns ? { checkRuns } : {}),
         },

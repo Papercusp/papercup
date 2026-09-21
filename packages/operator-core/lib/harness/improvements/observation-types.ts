@@ -37,6 +37,23 @@ import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 export const OBSERVATION_RATING_SCALE = ['healthy', 'degraded', 'broken', 'unknown'] as const;
 export type ObservationRating = (typeof OBSERVATION_RATING_SCALE)[number];
 
+/** Explicit epistemic reason for an unknown rating. */
+export const OBSERVATION_UNKNOWN_REASONS = [
+  'idle',
+  'not-exercised',
+  'instrument-unavailable',
+  'retention-gap',
+  'generation-mismatch',
+  'external-capacity',
+  'scope-mismatch',
+  'other',
+] as const;
+export type ObservationUnknownReason = (typeof OBSERVATION_UNKNOWN_REASONS)[number];
+
+/** Who/what the evidence describes, kept separate from the rating itself. */
+export const OBSERVATION_ATTRIBUTIONS = ['subject', 'system', 'instrument', 'environment', 'ambiguous'] as const;
+export type ObservationAttribution = (typeof OBSERVATION_ATTRIBUTIONS)[number];
+
 /** One per-criterion rating against a rubric. `evidence` is MANDATORY + non-empty
  *  (D-002: "mandatory evidence per rated criterion") so a rating is never an
  *  unbacked assertion — `validateObservationRatings` rejects an empty one. */
@@ -50,6 +67,23 @@ export interface ObservationRatingEntry {
   /** Concrete evidence backing the rating — a metric, a query result, a cite.
    *  MANDATORY + non-empty. */
   evidence: string;
+  /**
+   * A concrete replay locator. New scorecards should use this instead of
+   * embedding an opaque query/result in prose; historical entries may omit it.
+   */
+  evidenceRef?: string;
+  /** The evidence's source kind, e.g. tool, test, query, or manual. */
+  evidenceKind?: string;
+  /** Positive control for an absence/zero claim. */
+  positiveControlRef?: string;
+  /** Explicitly marks that the evidence is making an absence/zero claim. */
+  absenceClaim?: boolean;
+  /** Explicit epistemic reason when rating is unknown. */
+  unknownReason?: ObservationUnknownReason;
+  /** Attribution for the observed condition, independent of its rating. */
+  attribution?: ObservationAttribution;
+  /** Concrete next step to resolve an unknown or measurement gap. */
+  nextEvidenceAction?: string;
   /** OPTIONAL grader suggestion (blender-self-learning-2026-07-12 P-005): the
    *  grader's own concrete improvement idea for THIS criterion, born of the
    *  specific context only the grader saw. Folded into the digest's
@@ -322,6 +356,14 @@ export interface StructuredObservation {
   criteriaHash?: string;
   /** Per-criterion ratings against `rubricRef` — each carries MANDATORY evidence. */
   ratings?: ObservationRatings;
+  /** Server- or grader-derived roll-up; categorical and non-compensating. */
+  rollup?: {
+    verdict: 'exemplary' | 'pass' | 'partial' | 'fail' | 'severe' | 'unassessable';
+    criticalKeys: string[];
+    criticalFailures: string[];
+    criticalUnknowns: string[];
+    coverage: { rated: number; required: number; sufficient: boolean };
+  };
   /**
    * Commit that a release-gating scorecard's positive ratings actually tested.
    * `scorecards:emit` accepts this only after binding it to the live green pin and
@@ -1108,9 +1150,24 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       if (!raw || typeof raw !== 'object') continue;
       const e = raw as Record<string, unknown>;
       if (typeof e.rating === 'string' && typeof e.evidence === 'string') {
-        ratings[k] = {
+      ratings[k] = {
           rating: e.rating,
           evidence: e.evidence,
+          ...(typeof e.evidenceRef === 'string' && e.evidenceRef.trim() ? { evidenceRef: e.evidenceRef } : {}),
+          ...(typeof e.evidenceKind === 'string' && e.evidenceKind.trim() ? { evidenceKind: e.evidenceKind } : {}),
+          ...(typeof e.positiveControlRef === 'string' && e.positiveControlRef.trim()
+            ? { positiveControlRef: e.positiveControlRef }
+            : {}),
+          ...(typeof e.absenceClaim === 'boolean' ? { absenceClaim: e.absenceClaim } : {}),
+          ...(OBSERVATION_UNKNOWN_REASONS.includes(e.unknownReason as ObservationUnknownReason)
+            ? { unknownReason: e.unknownReason as ObservationUnknownReason }
+            : {}),
+          ...(OBSERVATION_ATTRIBUTIONS.includes(e.attribution as ObservationAttribution)
+            ? { attribution: e.attribution as ObservationAttribution }
+            : {}),
+          ...(typeof e.nextEvidenceAction === 'string' && e.nextEvidenceAction.trim()
+            ? { nextEvidenceAction: e.nextEvidenceAction }
+            : {}),
           ...(typeof e.suggestion === 'string' && e.suggestion.trim() ? { suggestion: e.suggestion } : {}),
           ...(typeof e.remediation === 'string' && e.remediation.trim() ? { remediation: e.remediation } : {}),
           ...(typeof e.disregard === 'string' && e.disregard.trim() ? { disregard: e.disregard } : {}),
@@ -1121,6 +1178,41 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
     // intentionally declares zero criteria. Preserve that distinction from a
     // non-empty malformed ratings object, whose entries were all rejected above.
     if (Object.keys(ratings).length > 0 || Object.keys(rawRatings).length === 0) out.ratings = ratings;
+  }
+  if (o.rollup && typeof o.rollup === 'object' && !Array.isArray(o.rollup)) {
+    const r = o.rollup as Record<string, unknown>;
+    const verdicts = ['exemplary', 'pass', 'partial', 'fail', 'severe', 'unassessable'] as const;
+    const criticalKeys = Array.isArray(r.criticalKeys)
+      ? r.criticalKeys.filter((x): x is string => typeof x === 'string')
+      : [];
+    const criticalFailures = Array.isArray(r.criticalFailures)
+      ? r.criticalFailures.filter((x): x is string => typeof x === 'string')
+      : [];
+    const criticalUnknowns = Array.isArray(r.criticalUnknowns)
+      ? r.criticalUnknowns.filter((x): x is string => typeof x === 'string')
+      : [];
+    const coverage = r.coverage;
+    if (
+      typeof r.verdict === 'string' &&
+      verdicts.includes(r.verdict as (typeof verdicts)[number]) &&
+      coverage &&
+      typeof coverage === 'object' &&
+      typeof (coverage as Record<string, unknown>).rated === 'number' &&
+      typeof (coverage as Record<string, unknown>).required === 'number' &&
+      typeof (coverage as Record<string, unknown>).sufficient === 'boolean'
+    ) {
+      out.rollup = {
+        verdict: r.verdict as (typeof verdicts)[number],
+        criticalKeys,
+        criticalFailures,
+        criticalUnknowns,
+        coverage: {
+          rated: (coverage as Record<string, number>).rated,
+          required: (coverage as Record<string, number>).required,
+          sufficient: (coverage as Record<string, boolean>).sufficient,
+        },
+      };
+    }
   }
   if (o.acceptance && typeof o.acceptance === 'object' && !Array.isArray(o.acceptance)) {
     const a = o.acceptance as Record<string, unknown>;
