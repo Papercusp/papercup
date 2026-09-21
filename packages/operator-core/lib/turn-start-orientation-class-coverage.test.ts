@@ -36,10 +36,21 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
-import type { AgentObligationBrief } from './agent-obligation-reader';
+import {
+  defineAgentObligation,
+  evaluateAgentObligations,
+  type AgentObligation,
+  type AgentObligationFamily,
+} from './agent-obligations';
+import { ownerDirectiveObligations } from './agent-obligation-providers';
+import {
+  projectAgentTurnStartObligationBrief,
+  type AgentObligationBrief,
+} from './agent-obligation-reader';
 import { renderOrientationLines, type OrientationState } from './turn-start-orientation';
 
 const ORIENTATION_SOURCE = fileURLToPath(new URL('./turn-start-orientation.ts', import.meta.url));
+const OBLIGATIONS_SOURCE = fileURLToPath(new URL('./agent-obligations.ts', import.meta.url));
 
 /**
  * The DECLARED set, read from the interface rather than restated here.
@@ -250,6 +261,232 @@ function assertClassReachesRenderedPrompt(name: string, probe: ClassProbe): void
     );
   }
 }
+
+// ── Obligation-family coverage (P-006 registers `owner-directive` here) ───────
+//
+// `obligations` is ONE OrientationState field carrying a whole SUB-TAXONOMY:
+// every provider family funnels through it. So the probe above ("populating
+// `obligations` adds a line") cannot distinguish a family that renders from one
+// that is built, evaluated, and then silently dropped before the prompt — the
+// 0/334 failure mode, one level down. A new family is a new CLASS, and this is
+// where every later item of this plan registers it.
+//
+// The declared set is PARSED from the `AgentObligationFamily` union for the same
+// reason the orientation classes are: a hand-listed copy of a union the code
+// already owns drifts the moment someone adds a member and forgets the list.
+
+/** The declared family set, read from the union rather than restated here. */
+function declaredObligationFamilies(): string[] {
+  const text = readFileSync(OBLIGATIONS_SOURCE, 'utf8');
+  const source = ts.createSourceFile(OBLIGATIONS_SOURCE, text, ts.ScriptTarget.Latest, true);
+  let members: string[] | null = null;
+  source.forEachChild((node) => {
+    if (!ts.isTypeAliasDeclaration(node) || node.name.text !== 'AgentObligationFamily') return;
+    if (!ts.isUnionTypeNode(node.type)) return;
+    members = node.type.types
+      .map((member) =>
+        ts.isLiteralTypeNode(member) && ts.isStringLiteral(member.literal) ? member.literal.text : null,
+      )
+      .filter((name): name is string => Boolean(name));
+  });
+  if (!members) throw new Error('coverage guard is broken: type AgentObligationFamily was not found');
+  if ((members as string[]).length === 0) {
+    throw new Error('coverage guard is broken: AgentObligationFamily parsed to zero string members');
+  }
+  return members;
+}
+
+const FAMILY_OBSERVED_AT = '2026-09-21T16:00:00.000Z';
+
+/**
+ * A minimal ACTIONABLE obligation of one family.
+ *
+ * Synthetic for families whose own providers are already covered by their own
+ * suites: what this registry measures is the RENDER path per family, not the
+ * provider's arithmetic. `owner-directive` below deliberately uses its REAL
+ * provider instead, because that path is what P-006 adds and an end-to-end
+ * probe is strictly stronger where it is cheap.
+ */
+function syntheticFamilyObligation(family: AgentObligationFamily, marker: string): AgentObligation {
+  return defineAgentObligation({
+    ruleId: `coverage-probe-${family}`,
+    ruleRevision: 'coverage-probe-v1',
+    family,
+    title: marker,
+    scope: { workspaceId: 'papercusp-workspace', ownerId: 'su-coverage-probe' },
+    responsibleOwnerId: 'su-coverage-probe',
+    episode: `probe:${family}`,
+    status: 'due',
+    authority: { kind: 'policy', sourceRef: `coverage-probe:${family}`, revision: 'coverage-probe-v1' },
+    reason: `coverage probe for the ${family} family`,
+    priority: 'high',
+    causalRank: 0,
+    applicableDemand: 1,
+    sourceGeneration: 'coverage-probe',
+    evidence: [],
+    action: { kind: 'inspect', summary: `probe action for ${family}` },
+    clearsWhen: {
+      id: `coverage-probe-${family}`,
+      summary: 'the probe is removed',
+      evidenceKind: 'state',
+      sourceRef: `coverage-probe:${family}`,
+    },
+  });
+}
+
+interface FamilyProbe {
+  /** Obligations of exactly this family, as a real agenda would carry them. */
+  build: () => AgentObligation[];
+  /** The text this family is supposed to put on the rendered prompt. */
+  marker: RegExp;
+}
+
+const FAMILY_PROBES: Record<string, FamilyProbe> = {
+  'plan-placement': {
+    build: () => [syntheticFamilyObligation('plan-placement', 'plan-placement coverage probe')],
+    marker: /plan-placement coverage probe/,
+  },
+  'owner-report': {
+    build: () => [syntheticFamilyObligation('owner-report', 'owner-report coverage probe')],
+    marker: /owner-report coverage probe/,
+  },
+  'independent-verification': {
+    build: () => [
+      syntheticFamilyObligation('independent-verification', 'independent-verification coverage probe'),
+    ],
+    marker: /independent-verification coverage probe/,
+  },
+  // P-006: the real provider, on a real pending row. This asserts the whole
+  // chain the item specifies — a pending directive becomes a class-B row whose
+  // disposition verb and `orders:get` recovery pointer reach the prompt.
+  'owner-directive': {
+    build: () =>
+      ownerDirectiveObligations({
+        workspaceId: 'papercusp-workspace',
+        ownerId: 'su-coverage-probe',
+        observedAt: FAMILY_OBSERVED_AT,
+        sourceGeneration: 'coverage-probe',
+        read: {
+          status: 'known',
+          value: [
+            {
+              id: 17,
+              state: 'pending',
+              excerpt: 'Implement owner-directive capture as HYBRID',
+              recordedAt: '2026-09-21T15:27:44.000Z',
+              recordedBy: 'su-c03852cb',
+              capturedByHook: true,
+            },
+          ],
+        },
+      }),
+    marker: /owner directive .*#17|#17/,
+  },
+};
+
+function obligationBriefFor(obligations: AgentObligation[]): AgentObligationBrief {
+  return projectAgentTurnStartObligationBrief(evaluateAgentObligations(obligations, FAMILY_OBSERVED_AT));
+}
+
+function linesAddedByFamily(probe: FamilyProbe): string[] {
+  const baseline = renderOrientationLines(BASELINE);
+  const populated = renderOrientationLines({ ...BASELINE, obligations: obligationBriefFor(probe.build()) });
+  return populated.filter((line) => !baseline.includes(line));
+}
+
+/** THROWS when a declared obligation family does not reach the rendered prompt. */
+function assertFamilyReachesRenderedPrompt(name: string, probe: FamilyProbe): void {
+  const added = linesAddedByFamily(probe);
+  if (added.length === 0) {
+    throw new Error(`declared obligation family '${name}' produced no rendered line`);
+  }
+  if (!added.some((line) => probe.marker.test(line))) {
+    throw new Error(
+      `declared obligation family '${name}' rendered ${added.length} line(s) but none matched ${probe.marker}: ` +
+        JSON.stringify(added),
+    );
+  }
+}
+
+/**
+ * The permanent CONTROL for the family registry: a family whose only obligation
+ * is `not-applicable` is never actionable, so it never enters `agenda.primary`
+ * and the turn-start projection has nothing to render. If the helper above is
+ * ever weakened into something that cannot fail, this goes red.
+ */
+const FAMILY_CONTROL_PROBE: FamilyProbe = {
+  build: () => [
+    defineAgentObligation({
+      ruleId: 'coverage-probe-control',
+      ruleRevision: 'coverage-probe-v1',
+      family: 'owner-directive',
+      title: 'control-family-that-is-never-rendered',
+      scope: { workspaceId: 'papercusp-workspace', ownerId: 'su-coverage-probe' },
+      responsibleOwnerId: 'su-coverage-probe',
+      episode: 'probe:control',
+      status: 'not-applicable',
+      authority: { kind: 'policy', sourceRef: 'coverage-probe:control', revision: 'coverage-probe-v1' },
+      reason: 'the permanent non-actionable control',
+      priority: 'low',
+      causalRank: 0,
+      applicableDemand: 0,
+      sourceGeneration: 'coverage-probe',
+      evidence: [],
+      clearsWhen: {
+        id: 'coverage-probe-control',
+        summary: 'the probe is removed',
+        evidenceKind: 'state',
+        sourceRef: 'coverage-probe:control',
+      },
+    }),
+  ],
+  marker: /control-family-that-is-never-rendered/,
+};
+
+describe('turn-start orientation obligation-family coverage', () => {
+  const families = declaredObligationFamilies();
+
+  it('reads a non-trivial declared family set from AgentObligationFamily (instrument calibration)', () => {
+    expect(families.length).toBeGreaterThanOrEqual(4);
+    expect(families).toContain('owner-directive');
+  });
+
+  it('has a probe for every declared obligation family', () => {
+    const unregistered = families.filter((name) => !FAMILY_PROBES[name]);
+    expect(
+      unregistered,
+      'a new AgentObligationFamily must register a probe in FAMILY_PROBES, or nothing notices when it never renders',
+    ).toEqual([]);
+  });
+
+  it('has no probe for a family AgentObligationFamily no longer declares', () => {
+    const declaredSet = new Set(families);
+    const orphaned = Object.keys(FAMILY_PROBES).filter((name) => !declaredSet.has(name));
+    expect(orphaned, 'a probe outlived its family — delete it rather than testing a family nothing emits').toEqual([]);
+  });
+
+  it.each(Object.keys(FAMILY_PROBES))('declared obligation family %s reaches a rendered prompt', (name) => {
+    expect(() => assertFamilyReachesRenderedPrompt(name, FAMILY_PROBES[name]!)).not.toThrow();
+  });
+
+  it('fails when a declared family never renders (permanent falsifiability control)', () => {
+    expect(() => assertFamilyReachesRenderedPrompt('__control', FAMILY_CONTROL_PROBE)).toThrow(
+      /produced no rendered line/,
+    );
+  });
+
+  it('carries the owner-directive disposition verb and recovery pointer into the agenda', () => {
+    // The class-B row contract P-006 specifies: id, verbatim excerpt, the
+    // disposition verb, and the `orders:get` recovery pointer. The turn-start
+    // sink is budgeted to the ACTION line, so the pointer is asserted on the
+    // agenda entry the recovery reader retains, not on the 400-char slice.
+    const [pending] = FAMILY_PROBES['owner-directive']!.build();
+    expect(pending!.status).toBe('due');
+    expect(pending!.action?.tool).toBe('orders:resolve-pending');
+    expect(pending!.action?.targetRef).toBe('orders:get #17');
+    expect(pending!.reason).toContain('Implement owner-directive capture as HYBRID');
+  });
+});
 
 describe('turn-start orientation class coverage', () => {
   const declared = declaredOrientationClasses();
