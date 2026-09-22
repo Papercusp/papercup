@@ -10,6 +10,8 @@ import {
   WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
   WORKSPACE_HOST_CANARY_AGENTS,
   resolveWorkspaceHostRequestedAgents,
+  workspaceHostAgentAllowedVerificationKinds,
+  workspaceHostAgentVerificationKindIsAllowed,
   WORKSPACE_HOST_CREDENTIAL_CHANNELS,
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
   adaptWorkspaceHostDestroyCanaryEvidence,
@@ -233,11 +235,18 @@ function validateAgentEvidence(
   }
   if (value.agent !== agent) reasons.push(`agent ${JSON.stringify(value.agent)} !== '${agent}'`);
   if (value.ready !== true) reasons.push(`ready ${JSON.stringify(value.ready)} !== true`);
-  if (
-    value.verificationKind !== 'authenticated-account' &&
-    !(agent === 'omp' && value.verificationKind === 'local-inference')
-  ) {
-    reasons.push(`verificationKind ${JSON.stringify(value.verificationKind)} is not allowed for '${agent}'`);
+  // WI-10002402: DERIVED from the agent's own probe table, never restated here. The literal this
+  // replaced demanded `authenticated-account` for claude, a kind claude's probe set cannot emit —
+  // its `authenticated-account` probe was removed as forgeable (WI-10001689) — so a live canary
+  // presenting the stronger `live-inference` evidence that replaced it was rejected outright.
+  if (!workspaceHostAgentVerificationKindIsAllowed(agent, value.verificationKind)) {
+    reasons.push(
+      `verificationKind ${JSON.stringify(value.verificationKind)} is not allowed for '${agent}' (allowed: ${[
+        ...workspaceHostAgentAllowedVerificationKinds(agent),
+      ]
+        .map((kind) => JSON.stringify(kind))
+        .join(', ')})`,
+    );
   }
   if (typeof value.endpoint !== 'string') reasons.push('endpoint is missing or not a string');
   if (!Number.isSafeInteger(value.exitStatus)) {
