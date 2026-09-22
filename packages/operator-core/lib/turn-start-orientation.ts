@@ -342,6 +342,34 @@ export interface OrientationModeState {
   impliedBy: string | null;
 }
 
+/**
+ * The three INSTRUCTION-PRECEDENCE decisions that define this agent's authority
+ * (P-013), reduced to the values the transition line needs.
+ *
+ * ⚠ DELIBERATELY NOT `InstructionPrecedenceTrace.watermark` (D-073). The item
+ * text said to diff on that watermark; measured, it is strictly WIDER than the
+ * verdict it would gate — `stableRuntimeContext` hashes `scope.items` and
+ * `loop.intervalSec`, both of which move on every plan-item claim/release and
+ * every loop re-arm, while all three decision values stay byte-identical. A
+ * watermark-keyed line therefore reappears verbatim on a turn where the agent's
+ * authority did not change — the same defect D-071 diagnosed for `modes`,
+ * reached by a different route. The trace stays an implementation detail of the
+ * resolver and is NOT carried here, so a later author cannot key on it and
+ * silently reintroduce this.
+ *
+ * Each field is the decision's `effective.value`, or the literal `'conflict'`
+ * when `status === 'conflict'`. A conflicting authority is the single most
+ * action-worthy state this class has and must never encode as empty.
+ */
+export interface OrientationAuthorityVerdict {
+  /** `execution-authorization`: act-with-disclosure / confirm-before-execution / … */
+  executionAuthorization: string;
+  /** `mission`: the effective mission constraint. */
+  mission: string;
+  /** `ideation`: invent-and-implement / invent-and-propose / direct-improvements-only. */
+  ideation: string;
+}
+
 export interface OrientationState {
   /** Non-terminal work-items assigned to this agent. */
   held: OrientationHeldItem[];
@@ -382,6 +410,14 @@ export interface OrientationState {
    *  transient read failure cannot erase the cursor and fake a fresh transition
    *  on recovery. */
   modes: OrientationModeState[] | null;
+  /**
+   * P-013: the effective authority verdict; `null` means UNREADABLE, never
+   * "no authority". The distinction is load-bearing for the same reason it is
+   * on `modes` — `fingerprintOrientation` preserves the committed token on
+   * null so a transient control-state read failure cannot erase the cursor and
+   * fake a fresh transition on recovery.
+   */
+  authorityVerdict: OrientationAuthorityVerdict | null;
   /** Whether an engine loop is armed — i.e. whether a wake source exists. */
   loopArmed: boolean;
   /** Whether the armed loop's most recent fire was withheld before delivery. */
@@ -584,6 +620,13 @@ function undischargedObligationsOnly(state: OrientationState): OrientationState 
     // exists to avoid. null would mean "unreadable", which is a different and
     // untrue claim on a turn where we simply did not look.
     modes: [],
+    // `null` is the QUIET value HERE, and — unlike `modes` above — it carries no
+    // "unreadable" claim, because this projection is RENDER-ONLY: composeOrientationBlock
+    // fingerprints the FULL state before building it, so nothing in here reaches a cursor.
+    // There is no empty AuthorityVerdict to use instead (the type is three required
+    // strings, and a blank-valued one would render `- authority: exec  …` on a first
+    // turn), so null — which renders unconditionally nothing — is the honest choice.
+    authorityVerdict: null,
     loopArmed: true,
     loopFireWithheld: false,
     improvementTriage: null,
@@ -615,6 +658,14 @@ export function isEmptyOrientation(state: OrientationState): boolean {
     // the transition line could never render at all. Holding the block open is
     // safe: `orientationUnchanged` still suppresses it on every later turn.
     (state.modes?.length ?? 0) === 0 &&
+    // Same rule as the mode row above (P-013): a READABLE authority verdict holds
+    // the block open. Without this conjunct an agent whose only signal is its
+    // authority — the common shape on a first turn: nothing held, empty inbox, no
+    // mode set, so the verdict is the generic confirm-first posture — returns ''
+    // BEFORE the watermark is consulted, and the line could never render at all.
+    // Holding it open is safe: `orientationUnchanged` suppresses every later turn,
+    // and composeOrientationBlock still emits '' when no line survives.
+    state.authorityVerdict === null &&
     !state.loopArmed &&
     !state.loopFireWithheld &&
     // improvementTriage is NOT a conjunct here (P-017): it no longer renders,
@@ -805,6 +856,20 @@ export function fingerprintOrientation(
       : typeof committed?.modes === 'string'
         ? committed.modes
         : '',
+    // P-013 / D-073: keyed on the three DECISION VALUES, never on the
+    // InstructionPrecedenceTrace watermark. That watermark hashes `scope.items`
+    // and `loop.intervalSec`, so it moves on every plan-item claim/release and
+    // every loop re-arm while the verdict text is byte-identical — a strictly
+    // wider key than the thing it would gate, which re-emits an unchanged line.
+    //
+    // UNKNOWN preserves the last known token, exactly like `modes` above: a
+    // transient control-state read failure must not erase the cursor and make an
+    // unchanged authority look like a fresh transition on the next good read.
+    authority: state.authorityVerdict
+      ? encodeAuthorityVerdict(state.authorityVerdict)
+      : typeof committed?.authority === 'string'
+        ? committed.authority
+        : '',
     loop: state.loopArmed ? 1 : 0,
     loopWithheld: state.loopFireWithheld ? 1 : 0,
     // `triage` is deliberately ABSENT from the watermark (P-017). It stopped
@@ -881,6 +946,15 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
     // unrelated token happens to change, which is precisely the one-shot-with-
     // no-visible-symptom failure the comments above describe three times over.
     (a.modes ?? '') === (b.modes ?? '') &&
+    // REQUIRED for exactly the reason the `modes` line above is (P-013 / D-071
+    // ruling 1): the `authority` token written in fingerprintOrientation is INERT
+    // unless it is compared HERE. Drop this and an authority TRANSITION — the
+    // owner flipping AUTO on, a fleet route changing the mission, the mode
+    // registry going unreadable and the verdict falling to `conflict` — never
+    // makes the block eligible to emit on its own. The line would then appear
+    // only when some unrelated token happened to change, i.e. a one-shot with no
+    // visible symptom, on the class describing what the agent is ALLOWED TO DO.
+    (a.authority ?? '') === (b.authority ?? '') &&
     (a.obligations ?? '') === (b.obligations ?? '') &&
     // REQUIRED, and easy to omit: fingerprintOrientation writing a `facts` token
     // does nothing on its own — this whitelist is what decides re-emission. Without
@@ -971,6 +1045,78 @@ function renderModeTransitionLines(
       if (row.setBySelf) return `- mode ${row.mode} ON — self-set${suffix}.`;
       return `- mode ${row.mode} ON — set by ${compactActor(row.setBy)}${suffix}.`;
     });
+}
+
+/**
+ * The three authority decisions, in the order a reader needs them, each with the
+ * short label the line renders. Declared ONCE so the encoding, the change
+ * detection and the rendered text cannot drift into describing different sets.
+ */
+const AUTHORITY_DECISIONS: ReadonlyArray<readonly [keyof OrientationAuthorityVerdict, string]> = [
+  ['executionAuthorization', 'exec'],
+  ['mission', 'mission'],
+  ['ideation', 'ideation'],
+];
+
+/**
+ * P-013 / D-073: the verdict's diff key is its three VALUES — `exec:mission:ideation`.
+ *
+ * Deliberately not `InstructionPrecedenceTrace.watermark`, which also hashes
+ * `scope.items` and `loop.intervalSec` and therefore moves on turns where the
+ * agent's authority did not change. Every value is a closed-set kebab literal
+ * from `buildInstructionPrecedenceTrace` (or the literal `conflict`), so `:`
+ * cannot appear inside one and stays an unambiguous separator.
+ */
+function encodeAuthorityVerdict(verdict: OrientationAuthorityVerdict): string {
+  return AUTHORITY_DECISIONS.map(([key]) => verdict[key]).join(':');
+}
+
+/**
+ * Recover the PREVIOUS verdict from the committed cursor, or null when there is
+ * none. A malformed or legacy token also yields null, which renders the full
+ * verdict rather than a bogus transition — loud and correct beats a silently
+ * fabricated `-> `.
+ */
+function decodeAuthorityVerdict(token: unknown): OrientationAuthorityVerdict | null {
+  if (typeof token !== 'string' || token === '') return null;
+  const parts = token.split(':');
+  if (parts.length !== AUTHORITY_DECISIONS.length) return null;
+  return { executionAuthorization: parts[0]!, mission: parts[1]!, ideation: parts[2]! };
+}
+
+/**
+ * P-013 / D-071 ruling 1: the line for an authority verdict that is NEW SINCE
+ * the committed cursor.
+ *
+ * This comparison — NOT the `authority` watermark token — is what satisfies
+ * "unchanged verdict renders nothing". `composeOrientationBlock` is
+ * all-or-nothing by design: when ANY token changes, every class re-renders, so a
+ * verdict gated only on its own token would reappear verbatim on the next turn
+ * an unrelated inbox message arrived. `renderModeTransitionLines` and
+ * `renderExecutableFrontierLine` above solve the identical problem identically.
+ *
+ * Only the CHANGED decisions render on a transition (D-073 ruling 3). Spelling
+ * all three on every change costs ~110 chars against a block that STOPS at the
+ * first line that does not fit, so the unchanged two would evict a line below
+ * them; all three render only when there is no prior cursor to diff against.
+ */
+function renderAuthorityVerdictLine(
+  verdict: OrientationAuthorityVerdict | null,
+  committed: CursorState | null,
+): string[] {
+  // null is UNREADABLE, not "no authority": say nothing rather than assert a
+  // mandate we could not read. Asserting the generic confirm-first default from
+  // a failed read would be a false statement about what the agent may do.
+  if (!verdict) return [];
+  const previous = decodeAuthorityVerdict(committed?.authority);
+  if (!previous) {
+    return [`- authority: ${AUTHORITY_DECISIONS.map(([key, label]) => `${label} ${verdict[key]}`).join(' · ')}.`];
+  }
+  const changed = AUTHORITY_DECISIONS.filter(([key]) => previous[key] !== verdict[key]);
+  if (changed.length === 0) return [];
+  return [
+    `- authority: ${changed.map(([key, label]) => `${label} ${previous[key]} -> ${verdict[key]}`).join(' · ')}.`,
+  ];
 }
 
 function compactIds(ids: string[], cap: number): string {
