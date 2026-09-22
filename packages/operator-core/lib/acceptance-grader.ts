@@ -141,16 +141,43 @@ export const ACCEPTANCE_GRADING_REQUEST_UNHELD_GRACE_MS = 6 * 60 * 60 * 1000;
  * suppress recruiting a grader? Identity alone is not enough: an unheld request is
  * graded by nobody, and suppressing dispatch behind it strands the plan for good.
  * An unreadable timestamp counts as not-fresh, keeping the guard fail-open.
+ *
+ * A HELD request is in flight only when its holder could produce an admissible grade.
+ * `ineligibleHolders` is the set of holders who cannot (see `ineligibleGradingHolders`):
+ * an agent-filed carry item whose prose asks to "request a new non-author acceptance
+ * grade" matches the identity markers, and its holder is the one about to call the
+ * ship gate — the shipper, whom D-009 excludes from grading. Suppressing behind that
+ * item dedupes the recruiter against the implementer's own carry item forever
+ * (WI-10002459). A holder who IS eligible keeps suppressing, which is the live grading
+ * EI-22678191183363422 protects.
  */
 export function isInFlightAcceptanceGradingRequest(
   workItem: Pick<WorkItem, 'title' | 'summary' | 'createdBy' | 'assignee' | 'createdAt' | 'lastProgressAt'>,
   planSlug: string,
   nowMs: number,
+  ineligibleHolders?: ReadonlySet<string>,
 ): boolean {
   if (!isAcceptanceGradingRequestForPlan(workItem, planSlug)) return false;
-  if (workItem.assignee) return true;
+  if (workItem.assignee) return !ineligibleHolders?.has(workItem.assignee);
   const lastMovedMs = Date.parse(workItem.lastProgressAt ?? workItem.createdAt);
   return Number.isFinite(lastMovedMs) && nowMs - lastMovedMs < ACCEPTANCE_GRADING_REQUEST_UNHELD_GRACE_MS;
+}
+
+/**
+ * Which of `holders` cannot produce an admissible grade: anyone in the D-009 exclusion
+ * set, or the same D-008 party as anyone in it. `partyKeys` maps an identity to its
+ * lineage party (an identity absent from the map is its own party), exactly as
+ * grader selection collapses its pool, so a holder rebound from the rubric author is
+ * excluded here just as it would be refused there.
+ */
+export function ineligibleGradingHolders(
+  holders: readonly string[],
+  excluded: readonly string[],
+  partyKeys: ReadonlyMap<string, string>,
+): Set<string> {
+  const partyOf = (id: string) => partyKeys.get(id) ?? id;
+  const excludedParties = new Set(excluded.map(partyOf));
+  return new Set(holders.filter((holder) => excludedParties.has(partyOf(holder))));
 }
 
 /** One entry of the assigned grader MENU, with its selection provenance. */
@@ -1028,14 +1055,7 @@ async function prodDiscoverGrader(
       ? r.criteria.map((c) => `${c.key ?? ''}: ${c.title ?? ''} ${c.model ?? ''}`.trim())
       : []),
   ].join('\n');
-  let shipperId: string | null = null;
-  try {
-    const { resolveAgentIdentity } = await import('./agent-tools/coordination/identity');
-    shipperId = resolveAgentIdentity(ctx as never).ownerId;
-  } catch {
-    /* unattributable shipper — the computed set still excludes implementers */
-  }
-  const extraExclusions = await resolveAcceptanceGraderDiscoveryExtraExclusions(r, shipperId, {
+  const extraExclusions = await resolveAcceptanceGraderDiscoveryExtraExclusions(r, await resolveShipperId(ctx), {
     workspaceId: plan.row.workspaceId,
     planSlug: plan.row.planSlug,
   });
