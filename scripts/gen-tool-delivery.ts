@@ -67,7 +67,7 @@ export const TRIMMED_BUDGET_BYTES: Readonly<Record<string, number>> = Object.fre
 /** Below this the registry did not finish registering; generating would truncate the map. */
 const MIN_PLAUSIBLE_CATALOG = 400;
 
-interface GeneratedRow {
+export interface GeneratedRow {
   name: string;
   tier: string;
   fullBytes: number;
@@ -76,7 +76,7 @@ interface GeneratedRow {
   calls: number;
 }
 
-interface GeneratedAgent {
+export interface GeneratedAgent {
   budgetBytes: number;
   spentBytes: number;
   budgetOverrun: number;
@@ -282,9 +282,10 @@ export function renderArtifact(input: {
 }
 
 /** The measured Aug-20 advertised set, recovered from commit 84829ccc (D-007). */
-const BASELINE_PATH = 'packages/operator-core/lib/agent-tools/tool-seed-baseline-2026-08-20.json';
+export const BASELINE_PATH =
+  'packages/operator-core/lib/agent-tools/tool-seed-baseline-2026-08-20.json';
 
-interface SeedBaseline {
+export interface SeedBaseline {
   commit: string;
   commitDate: string;
   counts: { ompCore: number; claudeExtras: number; union: number };
@@ -304,7 +305,7 @@ interface SeedBaseline {
  * wrong number becomes load-bearing. So the baseline is a committed measurement, and this
  * report states the comparison it is actually making.
  */
-function renderBaselineDiff(
+export function renderBaselineDiff(
   agent: GeneratedAgent,
   baseline: SeedBaseline,
   catalog: Map<string, { name: string; fullBytes: number; compactBytes: number }>,
