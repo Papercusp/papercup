@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 899,
+  "count": 900,
   "tools": [
     {
       "name": "ablation:report",
@@ -7013,6 +7013,37 @@
         "when": "At turn start or wake. Pass `intent` to recall memory and declare it. For repeating leader ticks, pass `mode:'monitor'` to skip heavy backlog/facts/events/catch-up/recipes/recall folds while keeping assignments, inbox, and declaration. Inspect the ⟦post-compaction-recovery⟧ marker already delivered in the carry context. If it is complete and its controlStateHash matches the latest ⟦CTRL:…⟧ stateHash, recovery already arrived: do not call coord:orient; declare your actual lane with coord:declare-intent { intent, current_plan_slug, items }. Call coord:orient { afterCompaction: true } exactly once only when the marker is absent, incomplete, content-mismatched, or a legacy marker/CTRL pair has no stateHash and its generation mismatches, or you deliberately need live data excluded from the injected block.",
         "notWhen": "A human status display or full presence roster; use coord:glance or coord:presence. Do not immediately re-call folds returned here.",
         "chaining": "Prefer over separate bootstrap calls. A close `recipes` hit → recipes:run it. Then work_items:pickup { id, intent }; claimable[] is advisory (EI-6468)."
+      }
+    },
+    {
+      "name": "coord:orientation_telemetry",
+      "http": {
+        "path": "/api/agent-tools/coord/orientation_telemetry",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Measured REACH (how often each turn-start orientation class actually reached an agent) and ACTION (turns-until-disposition for obligation classes), with a flag on any class that reached agents for 500+ turns causing zero dispositions. Evidence for adding or removing an orientation class.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Deciding whether a turn-start orientation class earns its place — before adding one, or when arguing to remove one. Use the measured reach/action instead of eyeballing a HUD diff.",
+        "notWhen": "Not for reading your CURRENT orientation (that is coord:orient). Not live state — every number is an aggregate over past turns, so there is nothing here to subscribe to.",
+        "chaining": "A flagged class is a prompt to re-argue its actor test, never an auto-removal. dispositions:null means action was NOT measured for that class, which is not a zero."
       }
     },
     {

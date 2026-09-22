@@ -731,11 +731,23 @@ export function classifyCodexTranscriptRow(row, { receivedAtMs, nowMs }) {
  *
  * ⚠ The trap: Claude Code writes TOOL RESULTS as `type:'user'` rows (449 of 489
  * user rows on that same transcript; only 31 were real owner turns). Porting
- * codex's "user_message resets" literally would therefore reset the latch once
- * per tool call — after the assistant's work and before its final message — so
- * completion could never latch and the verifier would return false FOREVER.
- * That is a silent no-op, the worst failure mode available here, so a user row
- * resets only when it is a genuine turn start.
+ * codex's "user_message resets" rule literally would therefore reset the latch
+ * once per tool call, so a user row resets only when it is a genuine turn start.
+ *
+ * ⚠⚠ BUT DO NOT OVERSTATE THE PAYOFF — D-009 retracts the original claim here,
+ * which said the naive port "could never latch" and would return false FOREVER.
+ * Measured (.papercusp/scratch/d003-divergence-probe.mts, replaying the
+ * production tail window at every poll point of that 3,071-row transcript):
+ * polls=3066, divergences=1 (0.03%). Claude Code always writes the `end_turn`
+ * row AFTER the final tool_result, so each spurious reset is immediately
+ * overwritten by the completion that follows it; a tool_result row following an
+ * end_turn with no genuine start between occurs ZERO times in the file. The one
+ * real divergence is the `isMeta` branch below, not this one.
+ *
+ * The carve-out stays anyway, and the reason is worth keeping straight: it makes
+ * the classifier correct BY CONSTRUCTION rather than correct by luck of the
+ * current row ordering. If a backgrounded tool ever lands a tool_result after an
+ * end_turn, the naive port breaks catastrophically and this does not.
  *
  * Every other row type ('system', 'queue-operation', 'last-prompt', 'mode',
  * 'cost-state', 'attachment', …) must be 'ignore': several of them legitimately
