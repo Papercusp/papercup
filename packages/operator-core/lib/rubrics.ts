@@ -42,6 +42,7 @@ import {
   rubricKindOf,
   isUnknownRatingEquivalent,
   RUBRIC_TEMPLATE_NAME,
+  type RubricGradingAuthority,
   type RubricKind,
   type RubricCriterionWindow,
   type RubricCriterionCheck,
@@ -278,6 +279,15 @@ export interface Rubric {
    *  it does not need and block ships it should not — so it stayed unwatched instead, and
    *  a dead health loop became indistinguishable from a healthy one. */
   stalenessWatched?: boolean;
+  /** WHO may grade the plan this rubric governs (generic-acceptance-routing-and-live-plan-
+   *  agent-brief-2026-09-20 D-002 — the rubric is the authority boundary).
+   *
+   *  REQUIRED on the record, and resolved EXACTLY ONCE at hydration, deliberately: an
+   *  optional field would push a `?? 'independent'` default out to every read site, and a
+   *  default re-decided per call site IS the "callers infer the authority" that D-002
+   *  forbids — one site forgetting it silently widens who may self-certify. Read it through
+   *  `rubricGradingAuthority()` (acceptance-grading-authority.ts), never off a raw row. */
+  gradingAuthority: RubricGradingAuthority;
   /**
    * CONTRACT-GENERATION BOUNDARY (goal-mode-rubric-v2-2026-08-10 D-015). ISO instant
    * before which gradings against this rubric measured a MATERIALLY DIFFERENT contract,
@@ -541,6 +551,10 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
     methodRef: d.methodRef ?? null,
     ...(d.releaseGating !== undefined ? { releaseGating: d.releaseGating } : {}),
     ...(d.stalenessWatched !== undefined ? { stalenessWatched: d.stalenessWatched } : {}),
+    // D-002: resolved UNCONDITIONALLY here — this is the ONE place the default is applied,
+    // which is what lets every consumer treat `gradingAuthority` as always-present instead
+    // of re-deciding the fail-closed default itself. Absent data ⇒ 'independent'.
+    gradingAuthority: d.gradingAuthority ?? 'independent',
     ...(typeof d.historyResetAt === 'string' ? { historyResetAt: d.historyResetAt } : {}),
     status,
     createdBy: row.owner ?? null,
@@ -918,6 +932,11 @@ function buildSeedProposeInput(r: LocalRubric, upgrading: Rubric | null): Propos
     status: upgrading?.status ?? 'active',
     ...(upgrading?.releaseGating !== undefined ? { releaseGating: upgrading.releaseGating } : {}),
     ...(upgrading?.stalenessWatched !== undefined ? { stalenessWatched: upgrading.stalenessWatched } : {}),
+    // D-002: grading authority is GOVERNANCE state, not content. A content sync that
+    // dropped it would silently revert an owner-authorized rubric to demanding an
+    // independent grader (or, read the other way, re-open a decision the owner made) —
+    // the same class of silent reversion EI-12932 fixed for status/releaseGating.
+    ...(upgrading?.gradingAuthority !== undefined ? { gradingAuthority: upgrading.gradingAuthority } : {}),
     // D-015: a declared contract-generation boundary is governance state, not content —
     // a content sync that silently dropped it would re-blend a retired contract's
     // gradings into the live trend, which is exactly what declaring it prevented.
@@ -1584,6 +1603,9 @@ export interface ProposeRubricInput {
   /** Mark this rubric staleness-watched WITHOUT making it a release gate (P-011) — for an
    *  ongoing HEALTH rubric that must keep being graded but must not block a ship. */
   stalenessWatched?: boolean;
+  /** Who may grade the plan this rubric governs — see Rubric.gradingAuthority (D-002).
+   *  Omitted ⇒ 'independent', the fail-closed default applied at hydration. */
+  gradingAuthority?: RubricGradingAuthority;
   /** Contract-generation boundary (D-015) — see Rubric.historyResetAt. Normally set via
    *  setRubricHistoryReset() rather than here, because a propose demotes to 'proposed'. */
   historyResetAt?: string;
@@ -1988,6 +2010,11 @@ function buildRubricTemplateData(
     ...(input.methodRef ? { methodRef: input.methodRef } : {}),
     ...(input.releaseGating !== undefined ? { releaseGating: input.releaseGating } : {}),
     ...(input.stalenessWatched !== undefined ? { stalenessWatched: input.stalenessWatched } : {}),
+    // D-002: persisted in template_data so the AUTHORITY travels with the rubric revision
+    // it was declared for, exactly like proposedBy (EI-10751). Absent ⇒ hydration applies
+    // the fail-closed 'independent'; we deliberately do not write the default explicitly,
+    // so an untouched rubric stays byte-identical and its contentHash does not churn.
+    ...(input.gradingAuthority !== undefined ? { gradingAuthority: input.gradingAuthority } : {}),
     ...(input.historyResetAt !== undefined ? { historyResetAt: input.historyResetAt } : {}),
     ...(input.description !== undefined ? { description: input.description } : {}),
     // EI-10751 provenance: the proposer of record is whoever authored THIS revision —
