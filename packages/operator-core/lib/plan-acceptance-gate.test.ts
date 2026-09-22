@@ -130,6 +130,8 @@ const sqlReturning = (rows: unknown[]) => {
 };
 
 const acceptanceRubric = (over: Partial<Rubric> = {}): Rubric => ({
+  // D-002 default; `over` still wins, so a case can declare 'owner-authorized'.
+  gradingAuthority: 'independent',
   rubricId: 'ar-some-plan',
   workspaceId: 'test-ws',
   kind: 'acceptance',

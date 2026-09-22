@@ -51,6 +51,7 @@ const rubric = (rubricId: string) => ({
   rubricId,
   workspaceId: 'default',
   kind: 'acceptance' as const,
+  gradingAuthority: 'independent' as const,
   subjectPlan: 'irrelevant-for-this-mock',
   characteristic: 'plan-acceptance',
   title: rubricId,

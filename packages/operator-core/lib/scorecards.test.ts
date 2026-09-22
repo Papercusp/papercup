@@ -532,6 +532,7 @@ describe('evaluateScorecardReleaseGateBinding (EI-18706603928993591)', () => {
 
 describe('evaluateScorecardInstrumentContract (rubric/instrument contract)', () => {
   const rubric = (over: Partial<Rubric> = {}): Rubric => ({
+    gradingAuthority: 'independent',
     rubricId: 'release-r',
     workspaceId: 'default',
     kind: 'standard',

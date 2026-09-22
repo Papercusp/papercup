@@ -52,6 +52,7 @@ const rubric: Rubric = {
   rubricId: 'scope-test-rubric',
   workspaceId: CALLER_WORKSPACE,
   kind: 'standard',
+  gradingAuthority: 'independent',
   characteristic: 'workspace-scope',
   title: 'Scope test',
   description: '',

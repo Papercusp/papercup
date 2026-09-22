@@ -34,6 +34,7 @@ const NOW = Date.parse('2026-07-15T00:01:00Z');
 const FRESH = '2026-07-15T00:00:30Z';
 
 const rubric = (over: Partial<Rubric> = {}): Rubric => ({
+  gradingAuthority: 'independent',
   rubricId: 'release-r',
   workspaceId: 'default',
   kind: 'standard',

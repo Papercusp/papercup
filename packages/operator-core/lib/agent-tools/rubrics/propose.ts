@@ -22,6 +22,7 @@ import {
   requirementIntentSchema,
   requirementAcceptanceSchema,
   requirementVerificationSchema,
+  RUBRIC_GRADING_AUTHORITIES,
 } from '../plans/rubric-template';
 import { normalizeRequirementSections } from '../../requirement-contract';
 import { VALID_PLAN_SLUG } from '../plans/source';
@@ -228,6 +229,12 @@ export const rubricsProposeArgs = z
       .nullable()
       .optional()
       .describe('agent-insights runbook slug for the long-form method; null is accepted from rubrics:get when unset'),
+    gradingAuthority: z
+      .enum(RUBRIC_GRADING_AUTHORITIES)
+      .optional()
+      .describe(
+        "who may grade the plan this rubric governs. 'independent' (the DEFAULT when omitted, and the fail-closed one) requires a lineage-independent non-implementer to file the grading; 'owner-authorized' ALSO admits an owner-filed grading, for a plan the owner drove themselves and that an independence-only gate could therefore never satisfy. It never removes the independent route",
+      ),
     releaseGating: z
       .boolean()
       .optional()
@@ -413,6 +420,7 @@ export default defineTool({
       // template-data shape instead of failing dispatch validation.
       ...(args.methodRef != null ? { methodRef: args.methodRef } : {}),
       releaseGating: args.releaseGating,
+      gradingAuthority: args.gradingAuthority,
       stalenessWatched: args.stalenessWatched,
       dropKeys: args.dropKeys,
       allowMethodShrink: args.allowMethodShrink,

@@ -50,6 +50,7 @@ const crit = (over: Partial<RubricCriterion> & { key: string }): RubricCriterion
 });
 
 const rubric = (criteria: RubricCriterion[], over: Partial<Rubric> = {}): Rubric => ({
+  gradingAuthority: 'independent',
   rubricId: 'su-agent-behavior',
   workspaceId: 'default',
   kind: 'standard',

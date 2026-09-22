@@ -43,7 +43,15 @@ import { rubricVettingConsultHint } from './consult/selection-policies';
 // into two different statements of what scorecards:emit actually requires.
 // `grading-cascade` is pure (type-only imports), so this adds no runtime edge.
 import { ACCEPTANCE_GRADING_NO_CLAIM_FACT } from './consult/grading-cascade';
-import { gradingViaOf, pickAuthoritativeGrading, readGraderSelectionVia } from './acceptance-grading-authority';
+import {
+  gradingAuthorityAdmits,
+  gradingViaOf,
+  isOwnerFiledGrading,
+  pickAuthoritativeGrading,
+  readGraderSelectionVia,
+  rubricGradingAuthority,
+} from './acceptance-grading-authority';
+import { ADMIN_COORD_UI_OWNER } from './agent-tools/coordination/identity';
 import {
   evaluatePlanSpecCoverageGate,
   type PlanSpecCoverageGateVerdict,
@@ -1244,8 +1252,29 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   // The `via` comes from the DURABLE cascade row, not from the lifecycle return
   // value (D-006), and a card with no cascade provenance ranks as floor rather
   // than being demoted — see acceptance-grading-authority.ts for both.
-  const independentCards = complete.filter(
-    (s) => !isPlanImplementerScorecard(s) && (!implementer || (s.createdBy != null && !holdsAuthorAuthority(s))),
+  // ── who may grade THIS plan: asked of the RUBRIC, never inferred here (D-002) ──
+  // generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20 D-002 makes the
+  // rubric the authority boundary, and D-001 forbids a per-goal branch. Before this the
+  // filter below was the gate's ONLY branch, so `independent` was correct by accident
+  // (it was the sole possibility) and `owner-authorized` could not be expressed at all.
+  //
+  // `owner-authorized` WIDENS and never replaces: the independence predicate is applied
+  // unchanged, so every plan that shipped before this keeps shipping for the same reason.
+  // What it adds is the case an independence-only gate can never satisfy — a plan the
+  // OWNER drove themselves, where the owner is inside the implementer lineage and so is
+  // correctly excluded by `isPlanImplementerScorecard`/`holdsAuthorAuthority`.
+  const authority = rubricGradingAuthority(rubric);
+  const isIndependentCard = (s: (typeof complete)[number]) =>
+    !isPlanImplementerScorecard(s) && (!implementer || (s.createdBy != null && !holdsAuthorAuthority(s)));
+  const independentCards = complete.filter((s) =>
+    gradingAuthorityAdmits({
+      authority,
+      isIndependent: isIndependentCard(s),
+      // Tool-layer-VERIFIED owner provenance (identity.ts) — resolveAgentIdentity ties
+      // this ownerId to the admin route's synthesized client id, which an ordinary agent
+      // context cannot supply, so it is not a forgeable caller claim.
+      isOwnerFiled: isOwnerFiledGrading(s, ADMIN_COORD_UI_OWNER),
+    }),
   );
   const graderVia = await readGraderSelectionVia(rubric.workspaceId, rubric.rubricId);
   const independent = pickAuthoritativeGrading(independentCards, (s) => gradingViaOf(s, graderVia));

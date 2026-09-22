@@ -72,6 +72,7 @@ const RUBRIC_R1: Rubric = {
   rubricId: 'r-1',
   workspaceId: 'default',
   kind: 'standard',
+  gradingAuthority: 'independent',
   characteristic: 'hive-coordination',
   title: 'r-1',
   description: '',

@@ -32,6 +32,7 @@ const RETIRED_R1: Rubric = {
   rubricId: 'r-1',
   workspaceId: 'default',
   kind: 'standard',
+  gradingAuthority: 'independent',
   characteristic: 'cup-lifecycle',
   title: 'r-1',
   description: '',

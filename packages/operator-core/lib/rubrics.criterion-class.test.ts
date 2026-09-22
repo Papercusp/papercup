@@ -26,6 +26,7 @@ function makeStored(criteria: RubricCriterion[]): Rubric {
     rubricId: 'goal-mode-e2e',
     workspaceId: 'ws',
     kind: 'standard',
+    gradingAuthority: 'independent',
     characteristic: 'goal-mode',
     title: 'Goal mode e2e',
     description: '',

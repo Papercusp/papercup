@@ -34,6 +34,7 @@ function fixture(rubricId: string, kind: Rubric['kind']): Rubric {
     rubricId,
     workspaceId: 'papercusp-workspace',
     kind,
+    gradingAuthority: 'independent',
     characteristic: 'c',
     title: rubricId,
     description: '',

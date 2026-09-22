@@ -45,6 +45,9 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { outranks, type SelectionVia } from '@papercusp/ranked-selection';
 import { GRADING_CASCADE_FLAVOR } from './consult/grading-cascade';
+// TYPE-ONLY (erased at build): keeps the derived RUBRIC_GRADING_AUTHORITIES union as the
+// single source of truth without adding a runtime edge from lib/ into agent-tools/.
+import type { RubricGradingAuthority } from './agent-tools/plans/rubric-template';
 
 /** The `via` labels the selector emits. Anything else on a row is treated as
  * unknown rather than coerced — a future third label must be ranked
@@ -313,4 +316,77 @@ export async function readAcceptanceGradingSettlement(
     independentCardId: independent.issueId,
     acceptanceCardId: authorCall.issueId,
   };
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * WHO MAY GRADE — resolved from the RUBRIC, never inferred by the caller.
+ *
+ * generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20 D-002 (the rubric
+ * is the authority boundary) + D-001 (platform behavior is generic — no per-goal
+ * branch). Before this, independence was HARDCODED: the ship gate's only branch
+ * demanded a non-implementer, so `independent` was correct by accident (it was the
+ * sole possibility) and `owner-authorized` did not exist at all.
+ *
+ * These three helpers are PURE on purpose, matching this module's existing contract
+ * ("Pure: the caller supplies the routing snapshots"). In particular the OWNER's
+ * identity is a PARAMETER, not an import: the one verified owner-authority predicate
+ * in this repo is `ident.ownerId === ADMIN_COORD_UI_OWNER` (identity.ts:213, used by
+ * mode/set.ts, plans/set-property.ts, goals/set-property.ts), and it is the CALLER
+ * that holds a resolved identity. Keeping it out of here also keeps this lib module
+ * free of an agent-tools runtime import, and keeps every branch here unit-testable
+ * without a database or a session.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The plan's declared grading authority, read from its own rubric.
+ *
+ * FAIL-CLOSED BY CONSTRUCTION: an explicit equality test against the one widening
+ * value, never `rubric.gradingAuthority ?? 'independent'`. Any absent, legacy, typo'd
+ * or future value therefore lands on `independent` — the stricter branch. A `??`
+ * default only catches `null`/`undefined` and would pass an unrecognized string
+ * straight through to a comparison that silently fails to match, which reads as
+ * "independence not required" at exactly the seam where being wrong admits a
+ * self-graded plan.
+ */
+export function rubricGradingAuthority(
+  rubric: { gradingAuthority?: RubricGradingAuthority | null | undefined } | null | undefined,
+): RubricGradingAuthority {
+  return rubric?.gradingAuthority === 'owner-authorized' ? 'owner-authorized' : 'independent';
+}
+
+/**
+ * Was this grading filed by the OWNER (via the admin coord UI, which
+ * `resolveAgentIdentity` ties to a route-synthesized client id that an ordinary agent
+ * context can never supply — so this is tool-layer-VERIFIED provenance, not a claim)?
+ *
+ * `ownerAuthorityId` is supplied by the caller; pass `ADMIN_COORD_UI_OWNER`.
+ */
+export function isOwnerFiledGrading(
+  card: { createdBy?: string | null | undefined },
+  ownerAuthorityId: string,
+): boolean {
+  return card.createdBy != null && card.createdBy !== '' && card.createdBy === ownerAuthorityId;
+}
+
+/**
+ * Does the plan's declared authority ADMIT this card as its acceptance grading?
+ *
+ * `owner-authorized` WIDENS, it never replaces: an independent grading always
+ * qualifies under either authority. The material difference is that an owner-filed
+ * card is admitted even when the owner sits INSIDE the implementer lineage — the case
+ * a plan the owner drove themselves could otherwise never satisfy, because every
+ * non-implementer predicate correctly excludes them.
+ *
+ * Under `independent` an owner-filed card is NOT specially admitted — it does not need
+ * to be, since an owner outside the implementer lineage already passes `isIndependent`.
+ * That is what keeps this change non-breaking for the existing refusal text ("A
+ * different agent or the owner must file the grading scorecard").
+ */
+export function gradingAuthorityAdmits(input: {
+  authority: RubricGradingAuthority;
+  isIndependent: boolean;
+  isOwnerFiled: boolean;
+}): boolean {
+  if (input.isIndependent) return true;
+  return input.authority === 'owner-authorized' && input.isOwnerFiled;
 }
