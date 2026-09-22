@@ -101,7 +101,28 @@ export async function listPlansAwaitingAcceptance(input: {
      ORDER BY GREATEST(r.rubric_since, a.audited_since) ASC
      LIMIT ${limit}`;
 
-  const { isHarnessInScope } = await import('./work-scope-policy');
+  // ⚠ The scope policy must be LOADED before it can filter. `workScopePolicy()` is a
+  // synchronous read of a cache that is EMPTY until an async refresh completes, and an
+  // empty policy is "not enforced", which `isHarnessInScope` treats as everything being
+  // in scope. So on a cold process this filter FAILS OPEN and admits the out-of-scope
+  // harnesses the comment above says it exists to exclude.
+  //
+  // MEASURED (2026-09-22, P-006 live probe): the first call in a fresh process returned
+  // 52 plans awaiting acceptance and every later call in that same process returned 51 —
+  // reproducibly, three runs, identical delta. The extra row was an out-of-scope harness
+  // admitted by the unloaded policy. That is not a cosmetic off-by-one: this count is the
+  // HIGHEST-priority input to the plan-agent brief's delegation decision, and the brief
+  // renders in a freshly-started process, so it was reading precisely the cold value. An
+  // over-reported acceptance count makes the brief withhold a legitimate delegation.
+  //
+  // Awaiting the refresh when the cache is cold makes the predicate depend on the policy
+  // rather than on how old the calling process happens to be. It is paid once per process:
+  // `refreshPotControlPolicy` populates the same cache `workScopePolicy()` reads.
+  const { isHarnessInScope, workScopePolicy } = await import('./work-scope-policy');
+  if (workScopePolicy() === null) {
+    const { refreshPotControlPolicy } = await import('./pot-control-policy');
+    await refreshPotControlPolicy();
+  }
   return rows.filter((r) => isHarnessInScope(r.harness_slug)).map((r) => ({
     planSlug: r.plan_slug,
     harnessSlug: r.harness_slug,
