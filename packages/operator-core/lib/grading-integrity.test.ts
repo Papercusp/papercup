@@ -814,6 +814,101 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
   });
 
+  /**
+   * WI-10002318. The dispatcher holds exactly ONE terminal retry, and it used to
+   * spend it on the Codex fallback unconditionally. Measured 2026-09-22T02:36Z,
+   * codex was 0-of-7 serviceable (usage-wall, ~4d out) while claude was 2-of-3,
+   * so every retry died at boot on the launcher's walled-pool preflight (exit 78)
+   * and the audit landed in backoff without ever being tried on a live provider.
+   *
+   * These three cases are a MATCHED SET, not variations: the walled case alone is
+   * satisfied by simply deleting the flip, so the serviceable case is the control
+   * that pins the flip still happening, and the throwing case pins the documented
+   * fail-open contract (a ledger outage must not stop us trying at all).
+   */
+  function quotaTerminalFallbackDeps() {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-walled-fallback')]);
+    d.launch
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: true,
+          launch: { tasks: [{ taskId: 'task-quota', logPath: '/tmp/grading-quota.log' }] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: { tasks: [{ taskId: 'task-retry', logPath: '/tmp/grading-retry.log' }] },
+        }),
+      );
+    return {
+      ...d,
+      killTask: vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' })),
+      readLogTail: vi.fn((path: string) =>
+        path.includes('quota')
+          ? "You've hit your weekly limit · resets Sep 10, 7am (America/New_York)"
+          : 'healthy retry boot',
+      ),
+      sleep: async () => undefined,
+      terminalLogRecheckDelayMs: 0,
+      terminalLogMaxRechecks: 0,
+    };
+  }
+
+  it('does NOT route the bounded terminal retry to a fallback provider that is measurably at capacity', async () => {
+    const d = quotaTerminalFallbackDeps();
+    const providerCanServe = vi.fn(async () => false);
+
+    await dispatchPendingGradingAudits(
+      { targetIds: ['EI-walled-fallback'], ctx, harness: 'papercusp' },
+      { ...d, providerCanServe },
+    );
+
+    expect(providerCanServe).toHaveBeenCalledWith('codex');
+    // The retry still happens — it is simply routed at the primary, whose
+    // auto-routed gateway pool may still have headroom.
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    const retry = d.launch.mock.calls[1]?.[0] as Record<string, unknown>;
+    expect(retry).not.toHaveProperty('agent');
+    expect(retry.members).toEqual([{ role: 'judge', account: 'auto' }]);
+    // And the one-retry ceiling still holds: the retry was CONSUMED, not refunded.
+    expect(d.launch).not.toHaveBeenCalledTimes(3);
+  });
+
+  it('DOES route the bounded terminal retry to the fallback provider when it can serve', async () => {
+    const d = quotaTerminalFallbackDeps();
+    const providerCanServe = vi.fn(async () => true);
+
+    await dispatchPendingGradingAudits(
+      { targetIds: ['EI-walled-fallback'], ctx, harness: 'papercusp' },
+      { ...d, providerCanServe },
+    );
+
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(d.launch.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        agent: 'codex',
+        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
+      }),
+    );
+  });
+
+  it('fails OPEN to the fallback provider when the account ledger cannot be read', async () => {
+    const d = quotaTerminalFallbackDeps();
+    const providerCanServe = vi.fn(async () => {
+      throw new Error('account ledger unavailable');
+    });
+
+    await dispatchPendingGradingAudits(
+      { targetIds: ['EI-walled-fallback'], ctx, harness: 'papercusp' },
+      { ...d, providerCanServe },
+    );
+
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(d.launch.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ agent: 'codex' }));
+  });
+
   it.each([
     {
       screen: 'gateway 5xx',

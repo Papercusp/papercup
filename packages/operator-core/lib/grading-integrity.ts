@@ -191,6 +191,11 @@ export interface DispatchPendingGradingAuditsDeps {
   listWorkspaceWideLoopStanddownOwners?: (workspaceId: string, nowMs: number) => Promise<Set<string>>;
   /** Future usage-reset terms for the account pool, for reset-aware quota backoff. */
   readProviderResets?: (nowMs: number) => Promise<number[]>;
+  /**
+   * Measured serviceability of a provider, so the ONE bounded terminal retry is
+   * never routed to a pool the launcher will refuse at boot. Fails open.
+   */
+  providerCanServe?: (provider: string) => Promise<boolean>;
   /** Clock seam for the recorded backoff instant. */
   now?: () => number;
 }
@@ -332,6 +337,44 @@ export async function readWalledAccountResets(nowMs: number): Promise<number[]> 
       .filter((at): at is number => typeof at === 'number' && Number.isFinite(at) && at > nowMs);
   } catch {
     return [];
+  }
+}
+
+/**
+ * Can `provider` serve an auditor launch RIGHT NOW, on a measured reading?
+ *
+ * The dispatcher holds exactly ONE terminal retry
+ * (GRADING_AUDIT_MAX_TERMINAL_FALLBACKS), so spending it on a provider whose
+ * entire pool is usage-walled burns that retry on a launch the launcher's own
+ * walled-pool preflight refuses at boot (exit 78, "REFUSING TO LAUNCH — ...
+ * pool is fully walled"). The audit then lands in quota backoff having never
+ * been attempted on a provider that could actually have served it.
+ *
+ * Measured 2026-09-22T02:36Z, the case that motivated this: codex was 0 of 7
+ * serviceable (binding 'usage-wall', reset ~4d out) while claude was 2 of 3,
+ * and the fallback flipped to codex regardless — see the population figure in
+ * this file's header (2523 preflight refusals, ZERO cards emitted).
+ *
+ * Fail-OPEN (true) on any read failure, matching readWalledAccountResets: a
+ * missing ledger must degrade to the previous unconditional behaviour, never
+ * strand the queue by refusing to try at all.
+ */
+export async function gradingAuditProviderCanServe(
+  provider: string,
+  nowMs = Date.now(),
+): Promise<boolean> {
+  try {
+    const [{ accountStatus, poolVerdictByProvider }, { activeWorkspaceId }] = await Promise.all([
+      import('./deployment/account-pool-store'),
+      import('./workspace-registry'),
+    ]);
+    const rows = await accountStatus(activeWorkspaceId(), nowMs);
+    const verdict = poolVerdictByProvider(rows, nowMs).find((row) => row.provider === provider);
+    // No verdict for this provider is IGNORANCE, not a measured wall — fail open.
+    if (!verdict) return true;
+    return !verdict.atCapacity;
+  } catch {
+    return true;
   }
 }
 
@@ -690,6 +733,20 @@ export async function dispatchPendingGradingAudits(
           .slice(0, GRADING_AUDIT_DISPATCH_LIMIT)
           .map((card) => card.issueId);
 
+  /**
+   * Is the bounded terminal retry worth ROUTING to the fallback provider?
+   *
+   * Resolved once per dispatched target and memoised, so the two terminal paths
+   * below cannot disagree with each other or double-read the account ledger.
+   */
+  let fallbackServiceable: Promise<boolean> | null = null;
+  const canServeFallback = (): Promise<boolean> => {
+    fallbackServiceable ??= (deps.providerCanServe ?? gradingAuditProviderCanServe)(
+      GRADING_AUDIT_FALLBACK.agent,
+    ).catch(() => true);
+    return fallbackServiceable;
+  };
+
   const dispatchTarget = async (issueId: string): Promise<PendingGradingAuditDispatchReceipt> => {
     const card = pendingById.get(issueId);
     if (!card) {
@@ -936,8 +993,14 @@ export async function dispatchPendingGradingAudits(
         retiredTaskIds.push(task.taskId);
         terminalCodes.push(terminalFailure.code);
         if (terminalFallbacks < GRADING_AUDIT_MAX_TERMINAL_FALLBACKS) {
+          // Consume the bounded retry either way, so the one-retry ceiling still
+          // holds; only ROUTE it to the fallback provider when that provider can
+          // measurably serve. Otherwise stay on the primary, whose auto-routed
+          // gateway pool may still have headroom.
           terminalFallbacks += 1;
-          launchBackend = GRADING_AUDIT_FALLBACK.agent;
+          if (await canServeFallback()) {
+            launchBackend = GRADING_AUDIT_FALLBACK.agent;
+          }
           currentIdempotencyKey = recoveryKeyFor(task.taskId, terminalFailure.code);
         }
       }
@@ -1117,8 +1180,13 @@ export async function dispatchPendingGradingAudits(
             };
             break;
           }
+          // Same rule as the live-task terminal path above: the bounded retry is
+          // consumed regardless, but it is only ROUTED to the fallback provider
+          // when that provider can measurably serve.
           terminalFallbacks += 1;
-          launchBackend = GRADING_AUDIT_FALLBACK.agent;
+          if (await canServeFallback()) {
+            launchBackend = GRADING_AUDIT_FALLBACK.agent;
+          }
           currentIdempotencyKey = recoveryKeyFor(taskId, terminalFailure.code);
           continue;
         }
