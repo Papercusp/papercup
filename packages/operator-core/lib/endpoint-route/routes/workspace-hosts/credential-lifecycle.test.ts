@@ -146,6 +146,9 @@ describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
         instanceId: '4715512353118305137',
         sshUser: 'papercusp-workspace',
         knownHostsFile: '/var/lib/papercusp/controller/known_hosts',
+        // buildGcpIapSshInvocation refuses a controller with no identity (b7aefde3), which this
+        // fixture predated — every POST here answered 500 before reaching the transport.
+        identityFile: '/var/lib/papercusp/controller/os-login',
         remoteEntrypoint: '/opt/papercusp/current/bin/papercusp-workspace-initialize',
       },
       { run: transport },
