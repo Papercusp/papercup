@@ -230,20 +230,41 @@ describe('GCP IAP workspace-host initialization operations', () => {
     await expect(failed.execute(step())).rejects.not.toThrow(/private diagnostic/);
   });
 
-  it('pins IdentitiesOnly even with no identity file, so ambient agent keys cannot exhaust MaxAuthTries', () => {
+  it('refuses a controller profile with no identity file instead of connecting as whatever default key the process owns', () => {
+    // Live failure on the P-318 r38 canary (2026-09-22). PROVISION bakes ${identityFile}.pub
+    // into the host's authorized_keys and REFUSES to render a bootstrap without one
+    // (provision-bootstrap.ts), because harden-os then locks the host to publickey-only for
+    // an account with no key (D-238). This CONNECT side used to drop `-i` silently when the
+    // controller had no identityFile, so ssh fell back to the operator process's default key —
+    // which, with IdentitiesOnly pinned below, can never be the key the host authorized.
+    // Result: 74/74 probes "Permission denied (publickey)" over 1199s, reported as a GUEST
+    // bootstrap timeout while the guest was in fact healthy. The two halves must agree, so a
+    // profile with no identity is refused here rather than producing a doomed command.
+    const { identityFile: _omitted, ...withoutIdentity } = PROFILE;
+    expect(() => buildGcpIapWorkspaceHostInitializationCommand(withoutIdentity, step())).toThrow(
+      /PAPERCUSP_WORKSPACE_HOST_IDENTITY_FILE/,
+    );
+    // An empty/whitespace value is the same misconfiguration wearing a different shape.
+    expect(() =>
+      buildGcpIapWorkspaceHostInitializationCommand({ ...PROFILE, identityFile: '   ' }, step()),
+    ).toThrow(/PAPERCUSP_WORKSPACE_HOST_IDENTITY_FILE/);
+  });
+
+  it('pins IdentitiesOnly alongside the controller identity, so ambient agent keys cannot exhaust MaxAuthTries', () => {
     // Live failure on p046-canary-02: the operator's ssh-agent held 7 keys, sshd's default
     // MaxAuthTries is 6, so the connection was disconnected with "Too many authentication
     // failures" before the correct credential was offered — surfacing only as exit 255.
-    // IdentitiesOnly must therefore NOT be conditional on identityFile being present.
-    const { identityFile: _omitted, ...withoutIdentity } = PROFILE;
-    const command = buildGcpIapWorkspaceHostInitializationCommand(withoutIdentity, step());
-    expect(command.args).toContain('IdentitiesOnly=yes');
-    expect(command.args).not.toContain('-i');
-
+    // IdentitiesOnly must therefore be pinned on EVERY command this builder produces, never
+    // made conditional on some other field being present.
     const withIdentity = buildGcpIapWorkspaceHostInitializationCommand(PROFILE, step());
     expect(withIdentity.args).toContain('IdentitiesOnly=yes');
     expect(withIdentity.args).toContain('-i');
     expect(withIdentity.args).toContain('/var/lib/papercusp/controller/os-login');
+    // The pin must precede the identity it constrains, or OpenSSH has already offered
+    // agent keys by the time it is applied.
+    expect(withIdentity.args.indexOf('IdentitiesOnly=yes')).toBeLessThan(
+      withIdentity.args.indexOf('-i'),
+    );
   });
 
   it('surfaces the transport stderr tail on a non-zero exit so the failure is diagnosable', async () => {

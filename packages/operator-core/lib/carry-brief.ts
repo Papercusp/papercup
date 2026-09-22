@@ -27,7 +27,11 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
-import { ANY_FAMILY_TERMINAL_STATES, FEATURE_TERMINAL_STATES } from './work-item-dispatch-states';
+import {
+  ANY_FAMILY_TERMINAL_STATES,
+  FEATURE_TERMINAL_STATES,
+  ISSUE_TERMINAL_STATES,
+} from './work-item-dispatch-states';
 import {
   getLoopCarryNoteWithMeta,
   renderCheckLine,
@@ -503,8 +507,16 @@ export async function readHeldWorkItems(
   // ('bug','change','task') — so a held FEATURE/chunk item (e.g. WI-3535, the
   // incident item) never appeared in the fold at all, checkpoint or not. The
   // scope CASE mirrors the view's mapping so harnessOfScope() semantics are
-  // unchanged (EI-8813). Terminal filters stay per-family: the issue-family list
-  // is the view-era literal set; feature-family uses FEATURE_TERMINAL_STATES.
+  // unchanged (EI-8813). Terminal filters stay per-family, but BOTH halves now
+  // DERIVE from work-item-dispatch-states rather than re-spelling the words.
+  // The issue half used to be the view-era literal ('done','resolved',
+  // 'deprecated','closed') — a hand-copy of ISSUE_TERMINAL_STATES taken BEFORE
+  // EI-21921121818266895 added `dropped` to it. work-item-status-full-unify
+  // made `dropped` the issue-family writer's terminal spelling for
+  // closed/deprecated inputs, so the stale copy read every dropped issue as
+  // STILL HELD (measured 2026-09-22: 12,958 such rows exist). Latent only
+  // because a dropped row currently also clears taken_by — derive, so the next
+  // terminal spelling cannot reopen it (D-068).
   const held = await sql<Array<{
     issue_id: string;
     title: string | null;
@@ -546,7 +558,7 @@ export async function readHeldWorkItems(
        -- receipts can still look held to this reader.
        AND NOT jsonb_exists(COALESCE(payload, '{}'::jsonb), 'resource_governor')
        AND (
-         (item_kind IN ('bug', 'change', 'task') AND status NOT IN ('done', 'resolved', 'deprecated', 'closed'))
+         (item_kind IN ('bug', 'change', 'task') AND NOT (status = ANY(${[...ISSUE_TERMINAL_STATES]}::text[])))
          OR (item_kind IN ('feature', 'chunk') AND NOT (status = ANY(${[...FEATURE_TERMINAL_STATES]}::text[])))
        )
      ORDER BY feature_id DESC

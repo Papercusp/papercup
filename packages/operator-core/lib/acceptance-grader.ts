@@ -194,9 +194,19 @@ export type AcceptanceGraderLifecycle = {
    * genuinely empty pool instead of presenting identically to a normal
    * fresh-judge launch (EI-21925808460100711). */
   discoveryError?: string;
-  /** Wake delivery for the HEAD grader ({ woke: 0 } = parked; they read the
-   * grading request on their next turn — the subscribe is durable). */
-  notified?: { woke: number };
+  /** Wake DELIVERY receipt for the HEAD grader ({ woke: 0 } = parked; they read
+   * the grading request on their next turn — the subscribe is durable).
+   *
+   * ⚠ DELIVERY, NOT PICKUP — and they are two different facts kept separately
+   * named on purpose (P-003 R-3 / plan D-011 ruling 2). `woke` says a wake was
+   * ENQUEUED on the await-event pump; the grader has not been scheduled a turn at
+   * that point, let alone taken one. So `woke > 0` is NOT pickup and must never be
+   * read as it.
+   *
+   * `wakeInstant` is recorded precisely so pickup can be established AFTERWARDS,
+   * by re-reading the grader's OWN later activity against this instant — see
+   * `observeGraderPickup` in ./acceptance-grader-pickup.ts. */
+  notified?: { woke: number; wakeInstant?: string };
   /** The durable typed review-target assignment used by this dispatch. */
   reviewReservation?: AcceptanceReviewReservationRef;
   /** Why dispatch was skipped (state 'settled'), or — on any other state — the
@@ -854,6 +864,64 @@ type GraderDiscoveryResult = {
  * merely because their critique was recorded on a work item instead of in a
  * consult conversation.
  */
+/** The plan-level scope a grading DECLINE is remembered against. */
+export interface GradingDeclineScope {
+  workspaceId: string;
+  planSlug: string;
+}
+
+/**
+ * WI-10002369: every agent who EXPLICITLY declined a grading cascade for this
+ * plan+rubric.
+ *
+ * The router already supports exactly this (`ConsultRouteParams.excludeOwners`
+ * — D-007(7): "a decliner is excluded on the requester's re-call, never
+ * auto-cascaded"), and `consult:decline`'s own terminal hint tells the
+ * requester that "a fresh consult:get_feedback re-routes". That design puts the
+ * remembering on the REQUESTER. For acceptance grading the requester is the
+ * system sweep, which never remembered anything — so each
+ * `plans:set-plan-status` opened a virgin cascade and re-offered the same
+ * agent. MEASURED on plan bash-substitution-reachable-ceiling-2026-08-01:
+ * su-c03852cb declined conv-mucapfpl at 06:40:52Z and was re-selected by
+ * conv-mucb58ib at 06:43:14Z, which then expired.
+ *
+ * ⚠ Read the decline from `consult_post_meta`, NOT from the two surfaces that
+ * look equivalent and are not:
+ *  - `consult_state.responder_id` ADVANCES PAST the decliner (always-advance,
+ *    D-005). On all three cascades above it reads su-cb56af59 — an agent who
+ *    never declined anything. Excluding on it excludes the wrong person.
+ *  - `consult_state.cascade_digest` is capped at CASCADE_DIGEST_MAX_ENTRIES
+ *    (16, `cascade-core.ts` — `.slice(-16)`), so a long cascade silently drops
+ *    its oldest entries. A dropped decline is an under-report, and an
+ *    under-reported decliner is re-offered: the exact bug this resolves.
+ * `consult_post_meta` is one immutable row per decline post and is neither
+ * truncated nor advanced.
+ *
+ * Scoped to explicit declines only. An `expired` no-show is deliberately NOT
+ * treated as a refusal: the agent may simply have been asleep, and the expiry
+ * sweep already retries that case.
+ */
+export async function resolvePriorGradingDecliners(
+  scope: GradingDeclineScope,
+  rubricId: string,
+): Promise<string[]> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const rows = (await getOrgPg().sql`
+    SELECT DISTINCT pm.author_id AS owner_id
+      FROM harness_shared.consult_post_meta pm
+      JOIN harness_shared.consult_state cs
+        ON cs.workspace_id = pm.workspace_id
+       AND cs.conversation_id = pm.conversation_id
+     WHERE pm.workspace_id = ${scope.workspaceId}
+       AND pm.kind = 'decline'
+       AND pm.author_id IS NOT NULL
+       AND cs.routing -> 'cascade' ->> 'flavor' = ${GRADING_CASCADE_FLAVOR}
+       AND cs.routing -> 'cascade' ->> 'planSlug' = ${scope.planSlug}
+       AND cs.routing -> 'cascade' ->> 'rubricId' = ${rubricId}
+  `) as unknown as Array<{ owner_id: string }>;
+  return rows.map((row) => row.owner_id);
+}
+
 export async function resolveAcceptanceGraderDiscoveryExtraExclusions(
   rubric: {
     rubricId: string;
@@ -862,12 +930,23 @@ export async function resolveAcceptanceGraderDiscoveryExtraExclusions(
     createdBy?: string | null;
   },
   shipperId: string | null,
+  /** Required, not optional-with-a-degrade: a missing scope would silently stop
+   * excluding decliners, which is indistinguishable from the bug itself. */
+  scope: GradingDeclineScope,
   readVettingCritics: typeof resolveAggregatedVettingCritics = resolveAggregatedVettingCritics,
+  readPriorDecliners: typeof resolvePriorGradingDecliners = resolvePriorGradingDecliners,
 ): Promise<string[]> {
-  const { critics } = await readVettingCritics(rubric.rubricId, rubric.revision ?? null);
+  // Infrastructure faults PROPAGATE here rather than degrading to "no
+  // exclusions" — a swallowed read would re-offer to a decliner, and the
+  // caller's own degrade path (`freshReason: 'degraded'`) is a fresh mint,
+  // which is the safe outcome.
+  const [{ critics }, decliners] = await Promise.all([
+    readVettingCritics(rubric.rubricId, rubric.revision ?? null),
+    readPriorDecliners(scope, rubric.rubricId),
+  ]);
   return [
     ...new Set(
-      [rubric.proposedBy, rubric.createdBy, shipperId, ...critics]
+      [rubric.proposedBy, rubric.createdBy, shipperId, ...critics, ...decliners]
         .filter((identity): identity is string => typeof identity === 'string')
         .map((identity) => identity.trim())
         .filter(Boolean),
@@ -918,7 +997,10 @@ async function prodDiscoverGrader(
   } catch {
     /* unattributable shipper — the computed set still excludes implementers */
   }
-  const extraExclusions = await resolveAcceptanceGraderDiscoveryExtraExclusions(r, shipperId);
+  const extraExclusions = await resolveAcceptanceGraderDiscoveryExtraExclusions(r, shipperId, {
+    workspaceId: plan.row.workspaceId,
+    planSlug: plan.row.planSlug,
+  });
   const selection = await selectAcceptanceGrader(
     {
       workspaceId: plan.row.workspaceId,
@@ -1380,7 +1462,16 @@ export async function resolveAcceptanceGrader(
           ...(selection.partyCollapsed ? { partyCollapsed: selection.partyCollapsed } : {}),
           eligibility: selection.eligibility,
           ...(selection.escalation ? { escalation: selection.escalation } : {}),
-          notified: { woke: opened?.woke ?? 0 },
+          notified: {
+            woke: opened?.woke ?? 0,
+            // The instant delivery was enqueued — the baseline a LATER pickup
+            // observation compares the grader's own activity against
+            // (`observeGraderPickup`). Recorded only when a cascade actually
+            // opened: with no wake there is nothing for a pickup to post-date,
+            // and an instant recorded anyway would make every subsequent grader
+            // action look like a confirmed pickup.
+            ...(opened ? { wakeInstant: new Date().toISOString() } : {}),
+          },
           reviewReservation,
           ...(settlement ? { settlement } : {}),
         };

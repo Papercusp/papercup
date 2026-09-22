@@ -43,6 +43,13 @@ const controller: WorkspaceHostInitializationControllerProfile = {
   knownHostsFile: '/etc/papercusp/known_hosts',
   remoteEntrypoint: '/opt/papercusp/bin/workspace-host-initializer',
   deliveryEntrypoint: '/opt/papercusp/bin/papercusp-deliver-material',
+  // A controller with no identityFile cannot authenticate to any host it provisioned —
+  // provision bakes ${identityFile}.pub into authorized_keys and harden-os then locks the
+  // host to publickey-only — so buildGcpIapSshInvocation now refuses one outright. Fixtures
+  // here exercise instance targeting and known_hosts enrollment, not that misconfiguration,
+  // so they carry a realistic identity; the refusal itself is covered by
+  // gcp-iap-initialization-operations.test.ts.
+  identityFile: '/etc/papercusp/id_ed25519',
 };
 
 const execFileAsync = promisify(execFile);

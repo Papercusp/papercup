@@ -41,6 +41,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { loopRoutineId, loopRoutineName } from '../../harness/routines/loop';
 import { WORK_ITEM_NON_REQUEUE_STATES } from '../../work-items-stale-claims';
+import { ISSUE_TERMINAL_STATES } from '../../work-item-dispatch-states';
 // TYPE-ONLY (erased at runtime): the liveness oracle statically pulls
 // presence.ts, adv-sessions and psu-pty-discovery, and this module is imported
 // by hermetic unit tests and the recovery hook's HTTP path. The runtime edge is
@@ -627,7 +628,7 @@ export async function rebindIdentity(
   await run('held-items', async (r) => {
     const moved = await sql<Array<{ issue_id: string }>>`
       UPDATE harness_shared.engineer_issues SET assignee = ${t}
-       WHERE assignee = ${f} AND state NOT IN ('done', 'resolved', 'deprecated', 'closed')
+       WHERE assignee = ${f} AND NOT (state = ANY(${[...ISSUE_TERMINAL_STATES]}::text[]))
        RETURNING issue_id
     `;
     r.moved = moved.length;

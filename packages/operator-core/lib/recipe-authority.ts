@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import type postgres from 'postgres';
 import { checkScript, ensureParseCheckReady, type StaticToolCall } from '@papercusp/tooldef';
 import { isAllHarnessSentinel } from './agent-tools/_harness-scope';
+import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 
 export interface RecipeAuthorityRefs {
   workspaces: string[];
@@ -61,7 +62,12 @@ export async function resolveLiveBoundRefs(
       SELECT DISTINCT harness_slug, feature_id AS item_id
         FROM harness_shared.work_items
        WHERE taken_by = ${ownerId}
-         AND status <> ALL(ARRAY['done','resolved','deprecated','closed']::text[])`,
+         -- CROSS-FAMILY: this query has no item_kind filter, so it must use the
+         -- cross-family union, not the issue-family list it used to spell by
+         -- hand. That copy omitted BOTH 'dropped' (added to the issue set by
+         -- EI-21921121818266895) and 'passed' (a feature terminal, 393 live
+         -- rows), so a settled feature counted as a live claim here (D-068).
+         AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))`,
     resourceSql<LiveResourceRow[]>`
       SELECT DISTINCT resource
         FROM agent_resource_locks

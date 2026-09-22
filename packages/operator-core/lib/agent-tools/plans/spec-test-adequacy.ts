@@ -68,6 +68,21 @@ export interface AdequacyRatingEntry {
   rating: AdequacyRating;
   evidence: string;
   suggestion?: string;
+  /**
+   * EI-23958122348412546: this verdict is a 'fail' that means ABSENCE of executable
+   * proof, not evidence that positively reports something bad. The two are otherwise
+   * indistinguishable once a branch has collapsed to the bare string 'fail', which is
+   * what made the requiredProofFloor='none' exemption below unreachable for exactly
+   * the non-code work it was written for: honest `manual` evidence produced zero
+   * executable rows, rated 'fail', and was skipped by an exemption that only ever
+   * downgraded 'unknown' — while a WEAKER binding (one executable-kind row with
+   * author-attested booleans and no ledger anchor) rated 'unknown' and WAS exempted.
+   *
+   * Only absence-shaped verdicts carry this. A 'fail' from falsifiable=false, a
+   * failed/skipped/unexecuted outcome, or a stale binding must never set it: that
+   * fail is real information about real evidence and keeps blocking, exemption or not.
+   */
+  absenceOnly?: boolean;
 }
 
 export interface SpecEvidenceForAdequacy {
@@ -1428,6 +1443,9 @@ export function evaluateSpecTestAdequacy(input: {
                     executable,
                   )
                 : `No executable test/check/mutation/counterexample/coverage/operational proof is bound for ${clauseIdentity(clause)}. ${clauseProbe(clause, input.harness)}`,
+              // EI-23958122348412546: with zero executable rows this 'fail' reports ABSENCE,
+              // not bad evidence — the non-code exemption below must be able to reach it.
+              ...(executable.length ? {} : { absenceOnly: true }),
             };
 
   let causalPairRating: AdequacyRatingEntry | null = null;
@@ -1597,6 +1615,8 @@ export function evaluateSpecTestAdequacy(input: {
         : {
             rating: 'fail',
             evidence: `No evidence exists whose freshness can be established for ${clauseIdentity(clause)}. ${clauseProbe(clause, input.harness)}`,
+            // EI-23958122348412546: absence of any measurable binding, not a stale one.
+            absenceOnly: true,
           };
 
   const risk = riskFloorRating(clause, classRef, evidence, input.now ?? new Date(), input.harness, input.workItemKind);
@@ -1620,16 +1640,30 @@ export function evaluateSpecTestAdequacy(input: {
   // structural and expected. A 'fail' means the bound evidence positively reports
   // something bad — falsifiable=false, a failed outcome, a stale binding — which is
   // real information about real evidence and must keep blocking, exemption or not.
+  // EI-23958122348412546: the exemption originally downgraded ONLY 'unknown', which left it
+  // unreachable for the canonical non-code case. Evidence declared honestly as `manual` is not
+  // an EXECUTABLE_EVIDENCE_KIND, so it produces ZERO executable rows, so execution-integrity
+  // rated a bare 'fail' and was skipped here — the clause blocked ship with no reachable repair,
+  // which is verbatim the failure the block above says it fixed. Worse, the incentive inverted:
+  // binding one executable-kind row with author-attested booleans and NO ledger anchor rated
+  // 'unknown' and WAS exempted, so weaker evidence passed where honest evidence failed.
+  //
+  // An absence-shaped 'fail' is now downgraded alongside 'unknown'. The safety boundary is
+  // unchanged and is carried by `absenceOnly`, not by the rating: a 'fail' that reports
+  // something POSITIVELY bad (falsifiable=false, a failed/skipped/unexecuted outcome, a stale
+  // binding) never sets that flag and therefore still blocks, exemption or not.
   if (risk.floor === 'none') {
     for (const criterion of EXECUTABLE_PROOF_CRITERIA) {
       const current = ratings[criterion];
-      if (current.rating !== 'unknown') continue;
+      const exemptible = current.rating === 'unknown' || (current.rating === 'fail' && current.absenceOnly === true);
+      if (!exemptible) continue;
       ratings[criterion] = {
         rating: 'not-applicable',
         evidence:
           `${clauseIdentity(clause)} carries no executable proof floor (requiredProofFloor='none'), so ` +
           `${criterion} is not applicable to it: the criterion can only be satisfied by ledger- or ` +
-          `repo-backed executable proof that non-code work cannot produce. Rated 'unknown' before the ` +
+          `repo-backed executable proof that non-code work cannot produce. Rated '${current.rating}'` +
+          `${current.absenceOnly === true ? ' (absence of executable proof, not adverse evidence)' : ''} before the ` +
           `exemption was applied — ${current.evidence}`,
       };
     }

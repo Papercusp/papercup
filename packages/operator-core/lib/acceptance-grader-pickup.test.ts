@@ -153,9 +153,13 @@ describe('classifyGraderPickup — R-3 pickup is the grader’s own later activi
 
   it('STRUCTURAL: a delivery count cannot be supplied to the classifier at all', () => {
     // Compile-time guard, checked by lint:tsc (vitest strips types and cannot see
-    // it). If anyone adds a delivery-count field to GraderActivityReading, this
-    // @ts-expect-error becomes an unused-directive error and the build fails —
-    // which is the point: an absent field is enforcement, a comment is advice.
+    // it). If anyone adds a delivery-count field to GraderActivityReading, the
+    // directive below becomes an unused-directive error (TS2578) and the build
+    // fails — which is the point: an absent field is enforcement, a comment is
+    // advice. NB: do not start a prose line in this file with the directive's own
+    // name — TypeScript parses any comment line beginning with it as a REAL
+    // directive, which then applies to the following comment line and reports
+    // TS2578 against documentation rather than code.
     // @ts-expect-error — `woke` is deliberately absent from GraderActivityReading
     const forbidden: GraderActivityReading = { recordLastActiveAt: null, woke: 1 };
     expect(forbidden.recordLastActiveAt).toBeNull();

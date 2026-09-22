@@ -47,6 +47,12 @@ const PROFILE: GcpIapWorkspaceHostCredentialDeliveryProfile = {
   sshUser: 'papercusp',
   knownHostsFile: '/var/lib/papercusp/known_hosts',
   deliveryEntrypoint: '/opt/papercusp/bin/papercusp-deliver-material',
+  // Credential delivery shares buildGcpIapSshInvocation with initialization, which now
+  // refuses a controller that has no identity to present (see
+  // gcp-iap-initialization-operations.test.ts for the refusal itself). These cases are about
+  // keeping material out of argv, so they carry a realistic identity rather than exercising
+  // that misconfiguration.
+  identityFile: '/var/lib/papercusp/controller/os-login',
 };
 
 function input() {

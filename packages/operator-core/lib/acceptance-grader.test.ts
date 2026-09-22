@@ -1116,7 +1116,15 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
     expect(result.graders?.map((g) => g.ownerId)).toEqual(['su-independent', 'su-second']);
     expect(result.conversationId).toBe('conv-1');
     expect(result.excluded).toEqual(['su-implementer']);
-    expect(result.notified).toEqual({ woke: 1 });
+    // DELIVERY receipt, NOT pickup (P-003 R-3 / plan D-011): `woke` counts an
+    // ENQUEUED wake, and `wakeInstant` is the baseline that a LATER pickup
+    // observation requires the grader's own activity to post-date. Asserted as an
+    // exhaustive KEY SET rather than relaxed to objectContaining, so this stays a
+    // detector: a future field added to the receipt fails here instead of landing
+    // unnoticed.
+    expect(Object.keys(result.notified ?? {}).sort()).toEqual(['wakeInstant', 'woke']);
+    expect(result.notified?.woke).toBe(1);
+    expect(Date.parse(result.notified?.wakeInstant ?? '')).not.toBeNaN();
     expect(launch).not.toHaveBeenCalled();
     // The WHOLE menu is handed to the cascade, but only ONE open call is made:
     // grader 2 is the cascade's to wake after grader 1 replies/declines/expires

@@ -16,6 +16,7 @@ import {
 } from './rebind-identity';
 import type { SessionState } from './presence-wakeability';
 import { loopRoutineId, loopRoutineName } from '../../harness/routines/loop';
+import { ISSUE_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
 const NOW = 1_800_000_000_000;
 const FROM = 'su-old-aaaa';
@@ -681,7 +682,18 @@ describe('remaining re-keys, totals, and error isolation', () => {
     const sql = fakeSql({ heldItems: 1 });
     await rebind(FROM, TO, sql);
     const upd = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.engineer_issues'));
-    expect(upd!.text).toContain("state NOT IN ('done', 'resolved', 'deprecated', 'closed')");
+    // D-068: this used to pin the literal ('done','resolved','deprecated','closed') —
+    // a hand-copy of ISSUE_TERMINAL_STATES taken BEFORE EI-21921121818266895 added
+    // `dropped`, so the pin actively FROZE the drift it looked like it was guarding.
+    // Pin the BOUND VALUE against the canonical constant instead: that fails if the
+    // predicate stops deriving, and it cannot itself go stale.
+    expect(upd!.text).toContain('NOT (state = ANY(?::text[]))');
+    expect(upd!.vals).toContain(FROM);
+    const bound = upd!.vals.find((v): v is string[] => Array.isArray(v));
+    expect(bound).toEqual([...ISSUE_TERMINAL_STATES]);
+    // The specific regression this guards: `dropped` is the issue-family writer's
+    // terminal spelling for closed/deprecated inputs since work-item-status-full-unify.
+    expect(bound).toContain('dropped');
   });
 
   it('held-work-items (WI-3642) re-keys work_items.taken_by directly, covering EVERY item_kind, excluding terminal statuses', async () => {

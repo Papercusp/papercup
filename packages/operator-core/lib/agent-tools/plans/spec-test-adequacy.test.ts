@@ -1931,6 +1931,89 @@ describe('non-code clauses can reach an all-pass verdict (EI-23793489732627099)'
     expect(result.ratings['execution-integrity'].rating).not.toBe('not-applicable');
     expect(result.verdict).not.toBe('pass');
   });
+
+  // EI-23958122348412546 — the SAME exemption, one level deeper, and the case every test
+  // above structurally COULD NOT reach. All of them bind `operational`, which IS an
+  // EXECUTABLE_EVIDENCE_KIND, so `executable.length` was always >= 1 and execution-integrity
+  // always rated 'unknown' — the one rating the exemption was scoped to. Declared honestly as
+  // `manual`, non-code evidence yields ZERO executable rows, execution-integrity rated a bare
+  // 'fail', and the exemption skipped it. The clause blocked plan ship with no reachable
+  // repair: verbatim the failure EI-23793489732627099 above says it fixed.
+  //
+  // This is why the fix is `absenceOnly` rather than "also downgrade 'fail'": the rating alone
+  // cannot distinguish "no executable artifact exists, by nature" from "the artifact exists and
+  // reports something bad", and only the first is exemptible.
+  /** What non-code work produces when it declares its kind HONESTLY: zero executable rows. */
+  function manualEvidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForAdequacy {
+    return operationalEvidence({ evidenceKind: 'manual', ...over });
+  }
+
+  it('reaches verdict pass with honest MANUAL evidence, which binds zero executable rows', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: nonCodeClause,
+      evidence: [manualEvidence()],
+      classRef: 'plan-class-bugfix',
+      workItemKind: 'task',
+    });
+
+    expect(result.requiredProofFloor).toBe('none');
+    expect(result.verdict).toBe('pass');
+    expect(result.wouldBlock).toEqual([]);
+    expect(result.ratings['execution-integrity'].rating).toBe('not-applicable');
+    // The exemption must SAY it downgraded a fail, and say which kind of fail — otherwise a
+    // reader cannot tell this clean result from one that graded adverse evidence away.
+    expect(result.ratings['execution-integrity'].evidence).toContain('absence of executable proof');
+  });
+
+  // THE INVERTED INCENTIVE, asserted directly rather than implied. Before the fix the WEAKER
+  // binding passed and the HONEST one failed: `operational` with author-attested booleans and
+  // no ledger anchor rated 'unknown' and was exempted, while `manual` rated 'fail' and was not.
+  // An author was rewarded for overstating the kind of evidence they held. Asserting the two
+  // together is what makes that asymmetry a test failure rather than a judgement call.
+  it('does not rank honest manual evidence BELOW a weaker unanchored executable row', () => {
+    const args = { clause: nonCodeClause, classRef: 'plan-class-bugfix', workItemKind: 'task' } as const;
+    const honest = evaluateSpecTestAdequacy({ ...args, evidence: [manualEvidence()] });
+    const overstated = evaluateSpecTestAdequacy({ ...args, evidence: [operationalEvidence()] });
+
+    expect(overstated.verdict).toBe('pass');
+    expect(honest.verdict).toBe('pass');
+    expect(honest.wouldBlock).toEqual(overstated.wouldBlock);
+  });
+
+  // SAFETY BOUNDARY for the WIDENED exemption. The block above proved a 'fail' from
+  // falsifiable=false still blocks; this proves the same for a failed OUTCOME, which reaches
+  // execution-integrity through `explicitBadExecution` — the branch that must never set
+  // `absenceOnly`. Without this, widening the exemption to 'fail' could quietly grade away
+  // every adverse execution result, and the passing tests above would look identical.
+  it('still blocks a FAILED outcome on an executable row — that fail is not absence-shaped', () => {
+    const failed = operationalEvidence({
+      details: {
+        adequacy: {
+          fixtureCalibrated: true,
+          falsifiable: true,
+          pathReachable: true,
+          oracleIndependent: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'failed',
+          targeted: true,
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: nonCodeClause,
+      evidence: [failed],
+      classRef: 'plan-class-bugfix',
+      workItemKind: 'task',
+    });
+
+    expect(result.requiredProofFloor).toBe('none');
+    expect(result.ratings['execution-integrity'].rating).toBe('fail');
+    expect(result.wouldBlock).toContain('execution-integrity');
+    expect(result.verdict).not.toBe('pass');
+  });
 });
 
 // EI-23499682118230306 recurrence guard — the SAME drift class as EI-13292, one pair up.

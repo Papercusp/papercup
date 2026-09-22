@@ -55,6 +55,7 @@ import type { Sql } from 'postgres';
 import { renderCarryBlindWindowLine, type CarryBlindWindow } from './carry-blind-window';
 import { capPreservingOperativeDetailed } from './operative-clause';
 import { workItemFetchHint } from './work-item-fetch-hint';
+import { FEATURE_TERMINAL_STATES, ISSUE_TERMINAL_STATES } from './work-item-dispatch-states';
 import type { AgentObligationBrief } from './agent-obligation-reader';
 import type { OwnerDirectiveRow } from './owner-directives';
 
@@ -1810,8 +1811,8 @@ export function defaultOrientationDeps(): OrientationDeps {
            WHERE workspace_id = ${ws}
              AND taken_by = ${ownerId}
              AND taken_at IS NOT NULL
-             AND ((item_kind IN ('bug', 'change', 'task') AND status NOT IN ('done', 'resolved', 'deprecated', 'closed'))
-               OR (item_kind IN ('feature', 'chunk') AND status NOT IN ('passed', 'deprecated', 'done', 'resolved', 'closed')))
+             AND ((item_kind IN ('bug', 'change', 'task') AND NOT (status = ANY(${[...ISSUE_TERMINAL_STATES]}::text[])))
+               OR (item_kind IN ('feature', 'chunk') AND NOT (status = ANY(${[...FEATURE_TERMINAL_STATES]}::text[]))))
            ORDER BY feature_id DESC
            LIMIT 6
         ), ancestry AS (
@@ -1883,8 +1884,8 @@ export function defaultOrientationDeps(): OrientationDeps {
            WHERE workspace_id = ${ws}
              AND taken_by = ${ownerId}
              AND taken_at IS NOT NULL
-             AND ((item_kind IN ('bug', 'change', 'task') AND status NOT IN ('done', 'resolved', 'deprecated', 'closed'))
-               OR (item_kind IN ('feature', 'chunk') AND status NOT IN ('passed', 'deprecated', 'done', 'resolved', 'closed')))
+             AND ((item_kind IN ('bug', 'change', 'task') AND NOT (status = ANY(${[...ISSUE_TERMINAL_STATES]}::text[])))
+               OR (item_kind IN ('feature', 'chunk') AND NOT (status = ANY(${[...FEATURE_TERMINAL_STATES]}::text[]))))
            ORDER BY feature_id DESC
            LIMIT 6
         ), relevant_threads AS (

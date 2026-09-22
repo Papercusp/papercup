@@ -204,9 +204,25 @@ export function buildGcpIapSshInvocation(
   const instanceName = requireGcpName(profile.instanceName, 'GCP instance name');
   requireCondition(SSH_USER.test(profile.sshUser), 'OpenSSH user has an invalid value');
   const knownHostsFile = requireAbsolutePath(profile.knownHostsFile, 'OpenSSH known_hosts file');
-  const identityFile = profile.identityFile
-    ? requireAbsolutePath(profile.identityFile, 'OpenSSH identity file')
-    : undefined;
+  // Every other option in this builder is validated; `identityFile` was the one field
+  // permitted to be absent, and that asymmetry is what broke the P-318 r38 canary on
+  // 2026-09-22. PROVISION refuses to render a bootstrap without a controller identity
+  // (provision-bootstrap.ts:128-136), because an empty authorized_keys combined with the
+  // harden-os publickey-only lock bricks the host (D-238). The CONNECT side silently
+  // dropped `-i` instead, so ssh fell back to whatever default key the operator process
+  // happened to own — and because `IdentitiesOnly=yes` is set unconditionally below, that
+  // fallback can never be the controller key the host authorized at provision time. Every
+  // probe then failed `Permission denied (publickey)` (74/74 over 1199s on r38) and the
+  // timeout surfaced as GcpIapWorkspaceHostBootstrapNotReadyError — naming the guest's
+  // bootstrap when the guest was healthy and the controller was misconfigured. Refusing
+  // here keeps both halves symmetric and names the exact knob to set.
+  requireCondition(
+    typeof profile.identityFile === 'string' && profile.identityFile.trim().length > 0,
+    'OpenSSH identity file is required: the controller cannot authenticate to a host that ' +
+      'authorized the controller public key at provision time. Set ' +
+      'PAPERCUSP_WORKSPACE_HOST_IDENTITY_FILE to the controller keypair.',
+  );
+  const identityFile = requireAbsolutePath(profile.identityFile, 'OpenSSH identity file');
   const sshExecutable = requireExecutable(profile.sshExecutable ?? 'ssh', 'OpenSSH executable');
   const gcloudExecutable = requireExecutable(profile.gcloudExecutable ?? 'gcloud', 'gcloud executable');
   const remoteEntrypoint = requireExecutable(
@@ -254,7 +270,12 @@ export function buildGcpIapSshInvocation(
       // happens to be loaded in the operator's agent.
       '-o',
       'IdentitiesOnly=yes',
-      ...(identityFile ? ['-i', identityFile] : []),
+      // Unconditional, and it pairs with the IdentitiesOnly above: the builder now refuses a
+      // profile without an identityFile, so there is no longer a path that reaches here with
+      // nothing to pin. A conditional `-i` is precisely what let a misconfigured controller
+      // connect as the wrong principal instead of failing.
+      '-i',
+      identityFile,
       '-o',
       `ProxyCommand=${proxyCommand}`,
       '--',
