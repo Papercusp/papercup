@@ -154,6 +154,9 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     // composer and PostgreSQL cursor are the production path under test.
     const deps: OrientationDeps = {
       planDecisions: async () => undefined,
+      // Lock transitions are unrelated to the agenda under test — undefined is
+      // the silent value, so this fixture asserts no lock posture.
+      lockTransitions: async () => undefined,
       held: async () => [],
       historyUpdates: async () => [],
       effortUpdates: async () => [],

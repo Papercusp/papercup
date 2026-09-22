@@ -31,6 +31,7 @@ import type { ScoredItem } from './harness/improvements/digest';
 
 const base: OrientationState = {
   planDecisions: undefined,
+  lockTransitions: undefined,
   held: [],
   historyUpdates: [],
   effortUpdates: [],
@@ -51,6 +52,7 @@ const base: OrientationState = {
 };
 const withWork: OrientationState = {
   planDecisions: undefined,
+  lockTransitions: undefined,
   held: [
     {
       id: 'WI-1',
@@ -907,6 +909,15 @@ describe('turn-start-orientation — what it says', () => {
           kind: 'check' as const,
         },
       ],
+      // P-015's leg, injected for the same reason as openChecks above. `deps`
+      // is Partial and resolveOrientationState fills the gaps from
+      // defaultOrientationDeps(), so an UN-injected lockTransitions reaches the
+      // real lock tables from a unit test — on this box that read SUCCEEDS and
+      // returns whatever the live fleet happens to hold, which is how this
+      // assertion first failed. The `observed` token below is deliberately
+      // unproducible by the default reader, so the assertion proves the value
+      // came through the seam rather than merely that some value arrived.
+      lockTransitions: async () => ({ held: [], blocked: [], observed: ['h:seam:proof'] }),
     });
     expect(state).toEqual({
       held: [{ id: 'WI-9', checkpoint: 'continue here', checkpointStale: true }],
@@ -929,6 +940,7 @@ describe('turn-start-orientation — what it says', () => {
         },
       ],
       authorityVerdict: null,
+      lockTransitions: { held: [], blocked: [], observed: ['h:seam:proof'] },
       loopArmed: true,
       loopFireWithheld: true,
       improvementTriage: {

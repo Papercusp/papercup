@@ -200,6 +200,12 @@ interface ClassProbe {
  */
 const BASELINE: OrientationState = {
   planDecisions: undefined,
+  // Empty ARRAYS, not `undefined` — the same distinction `modes: []` records
+  // below. `undefined` would also render nothing, but it means UNREADABLE, so
+  // a baseline built on it would be silent for the wrong reason and would keep
+  // passing if the lock reader were entirely broken. `observed: []` is the
+  // measured-empty identity set: this owner holds nothing and waits on nothing.
+  lockTransitions: { held: [], blocked: [], observed: [] },
   held: [],
   unansweredDirected: 0,
   unansweredStale: 0,
@@ -327,6 +333,39 @@ const CLASS_PROBES: Record<string, ClassProbe> = {
       },
     },
     marker: /plan demo-plan D-001:/,
+  },
+  lockTransitions: {
+    // A BLOCKED row, not a granted one, because this probe has to render
+    // against a null committed cursor and only the blocked half can. `granted`
+    // requires the `b:` token to be IN the committed cursor (the agent queued
+    // last turn) — cursorless, that conjunct is false by construction, so a
+    // granted probe here would pass vacuously by rendering nothing whether or
+    // not the class were wired up at all. The granted transition needs a real
+    // prior cursor and is pinned in the dedicated lock-transition suite.
+    patch: {
+      lockTransitions: {
+        held: [],
+        blocked: [
+          {
+            kind: 'blocked',
+            path: 'packages/operator-core/lib/demo-contested.ts',
+            // Path-shaped but deliberately NOT under `/home/<user>` — a
+            // hardcoded home path in shipped source reds the identity-lint leg
+            // of the green checkpoint. The value only has to be a stable
+            // opaque domain key; nothing here reads it as a real checkout.
+            coordinationDomain: '/srv/demo-checkout/papercusp',
+            holder: {
+              owner: 'su-demo0000-0000-0000-0000-000000000000',
+              ownerLabel: 'su · su-demo0',
+              intent: 'rewriting the demo resolver',
+              expiresTs: '2026-09-21T16:30:00.000Z',
+            },
+          },
+        ],
+        observed: ['b:/srv/demo-checkout/papercusp:packages/operator-core/lib/demo-contested.ts'],
+      },
+    },
+    marker: /blocked on packages\/operator-core\/lib\/demo-contested\.ts — held by su · su-demo0/,
   },
   modes: {
     // Against a null committed cursor every row is NEW, so this renders. The
@@ -1175,6 +1214,15 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'standing ruling never closes — it would sit there permanently unactioned, training the reader to ' +
           'ignore the list. The turn-start class delivers it as a diff instead, which is the right shape.',
       ),
+      lockTransitions: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'Locks newly granted to, or newly blocking, the reader.',
+        'Nobody PLACED a lock transition on this agent: it is a fact about the environment its work runs in, ' +
+          'not an instruction, so there is nothing to promote, dismiss, or drive to a terminal state. It is ' +
+          'also SELF-CLOSING in a way no obligation is — a block clears when the holder releases, without ' +
+          'the reader ever acting — so listing it on a close-out rail would show an entry that resolves ' +
+          'itself, which is the same "permanently unactioned row" failure `planDecisions` records directly ' +
+          'above, one step worse. The turn-start diff is the right shape: it is news exactly once.',
+      ),
       loopArmed: AGENT_ORDERS_NOT_AN_OBLIGATION(
         'Whether the reader has a wake source armed.',
         'The popup reads loop state live from the carry brief (`carry.loopActive`, `loopIntervalSec`), ' +
@@ -1327,6 +1375,16 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'delivers. The fleet-scoped question a leader acts on is whether a MEMBER has yet been SHOWN a ' +
           'governing ruling, which is per-member cursor data belonging on the member rows, not on this ' +
           'reader-scoped class.',
+      },
+      lockTransitions: {
+        kind: 'not-applicable',
+        reason:
+          'DIFFERENT SUBJECT, by the same reader-scoped argument as `planDecisions` and `authorityVerdict` ' +
+          "above. This class resolves from the READER's own lock position, so on a leader brief it would " +
+          "report the LEADER's own grants and blocks — which their own turn-start block already delivers. " +
+          'The fleet-scoped question a leader acts on is whether a MEMBER is stalled behind a lock, and that ' +
+          'is per-member data belonging on the member rows (alongside `throttled` and the liveness verdicts), ' +
+          'not on this reader-scoped class.',
       },
       loopArmed: {
         kind: 'not-applicable',
@@ -1532,6 +1590,18 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           '`authorityVerdict` record above: this class diffs FRESH-vs-SEEN against the committed cursor of ' +
           'the turn it renders on, and a carry document is assembled for a session that has taken no turn, so ' +
           'there is no prior cursor to diff against.',
+      },
+      lockTransitions: {
+        kind: 'not-applicable',
+        reason:
+          'TEMPORALLY UNAVAILABLE, the same reason `modes` (D-071) and `carryBlindWindow` (D-069) record — ' +
+          'and here it is the WHOLE class, not half of it. `planDecisions` directly above still has a ' +
+          'full-list form the carry document can emit without a cursor; this class has none, because a lock ' +
+          'TRANSITION is definitionally a diff: GRANTED requires the `b:` token to have been SEEN last turn ' +
+          'and BLOCKED requires its token NOT to have been. A carry document is assembled for a session that ' +
+          'has taken no turn, so both conjuncts are unevaluable and every row would be suppressed — the ' +
+          'class would register as applicable and then render nothing, forever. The one thing a cursorless ' +
+          'sink COULD emit is the full current lock table, which is exactly what P-015 forbids.',
       },
       inboxRecent: {
         kind: 'not-applicable',

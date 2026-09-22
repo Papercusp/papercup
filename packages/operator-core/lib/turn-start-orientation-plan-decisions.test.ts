@@ -49,6 +49,7 @@ function stateWith(
 ): OrientationState {
   return {
     planDecisions,
+    lockTransitions: undefined,
     held: [],
     unansweredDirected: 0,
     unansweredStale: 0,
