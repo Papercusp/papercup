@@ -104,15 +104,36 @@ describe('P-013 / P-020 — identity variants against the P-018 baseline (pinned
   const preambleText = read(join(harnessDir, 'blueprints/base/prompts/agent-base-preamble.md'));
   const preambleLines = lineSet(preambleText);
   const preambleBytes = bytes(preambleText);
+  /**
+   * The tiles the FROZEN fixture actually carries.
+   *
+   * `su.base.md` is PINNED (this dir's README forbids hand-editing it, and
+   * `su-render-baseline.test.ts` refuses a fixture whose hash no longer matches
+   * `baseline.json`), while `SU_TILES` tracks the LIVE su.md and legitimately gains anchors —
+   * it gained `## Owner directives — durable capture and resolution` on 2026-09-21T17:17Z,
+   * which red this file: a FROZEN subject was being validated with a LIVE invariant, so every
+   * future su.md section would red it again. Scoping the tiling to the fixture keeps the pin —
+   * and the P-018 comparability every Part B move is scored against (R12/R17) — intact,
+   * instead of re-pinning a baseline that is still being measured against.
+   *
+   * This loses NO coverage. The live-su.md tiling invariant (every tile anchor present, every
+   * heading classified, tiles in order) is asserted against the REAL harness file by
+   * `orchestrator/src/blueprint/su-identities.test.ts`, which passes no override — that is
+   * where a genuinely un-tiled new section must fail, and it still does.
+   *
+   * Membership is exact-equality on whole lines, matching the tiler's own `l === t.anchor`.
+   */
+  const fixtureLines = new Set(baseText.split('\n'));
+  const fixtureTiles = SU_TILES.filter((t) => fixtureLines.has(t.anchor));
 
   it('the test-only engineer + collaboration-stance + member + leader union accounts for every source byte, but a live binding rejects its exclusive-slot conflict', () => {
     // D-031 reconciles the original byte-equivalence wording with D-021's intentional
     // seal/order change: this is a COVERAGE/ACCOUNTING fixture, never a legal live stack.
     // Every part is derived from the SAME pinned input — never mix this historical fixture
     // with today's chain-resolved identity files (their live drift has its own golden).
-    const located = locateSuTiles(baseText);
+    const located = locateSuTiles(baseText, fixtureTiles);
     const coverageParts = [
-      ...SU_PART_DOCUMENTS.map((doc) => ({ id: doc.id, text: extractSuPart(baseText, doc.id) })),
+      ...SU_PART_DOCUMENTS.map((doc) => ({ id: doc.id, text: extractSuPart(baseText, doc.id, fixtureTiles) })),
       {
         id: 'client-seam',
         text: located
@@ -170,7 +191,7 @@ describe('P-013 / P-020 — identity variants against the P-018 baseline (pinned
     const rendered = {} as Record<Variant, string>;
     for (const variant of VARIANTS) {
       const posture = variant === 'default' ? null : variant;
-      const composed = composeSuStackSource({ suText: baseText, harnessDir, posture });
+      const composed = composeSuStackSource({ suText: baseText, harnessDir, posture, tiles: fixtureTiles });
       const text = await splice(composed.text);
       rendered[variant] = text;
       dump(`rendered.${variant}.md`, text);
@@ -227,8 +248,8 @@ describe('P-013 / P-020 — identity variants against the P-018 baseline (pinned
   it('renders every variant deterministically (two composes + splices are byte-identical)', async () => {
     for (const variant of VARIANTS) {
       const posture = variant === 'default' ? null : variant;
-      const a = await splice(composeSuStackSource({ suText: baseText, harnessDir, posture }).text);
-      const b = await splice(composeSuStackSource({ suText: baseText, harnessDir, posture }).text);
+      const a = await splice(composeSuStackSource({ suText: baseText, harnessDir, posture, tiles: fixtureTiles }).text);
+      const b = await splice(composeSuStackSource({ suText: baseText, harnessDir, posture, tiles: fixtureTiles }).text);
       expect(a).toBe(b);
     }
   });
