@@ -1050,7 +1050,26 @@ function renderCheckpointLine(item: OrientationHeldItem): string | null {
  * reading `applicableSinks` as "renders it as a line" would have made the
  * leader-brief and carry-brief sinks permanently unimplementable.
  */
-export type OrientationSink = 'turn-start' | 'leader-brief' | 'carry-brief';
+/**
+ * A surface that renders orientation classes FROM THIS DECLARATION.
+ *
+ * `agent-orders` is the HUD conversation popup's Orders rail (P-018). It is
+ * named for its data path, not its pixels: the popup is `SessionChatModal`,
+ * addressed entirely through the `hudsession` URL param, and its Orders rail
+ * reads the `agentOrders.byOwner` sync query → `getAgentOrders`
+ * (`adv-agent-orders.ts`). That is the observer's answer to "what was this
+ * agent told", and before P-018 it was built by a SECOND builder
+ * (`buildCarryBrief`, shaped inline in `getAgentOrders`) that shared no code
+ * with the block the agent actually received. Two builders, two answers.
+ *
+ * Unlike `leader-brief` and `carry-brief` — structured payloads that consume a
+ * class through `RegisteredOrientationClass.id` (D-053) — this sink consumes
+ * `segments[].render`, the SAME call turn-start makes, and carries the rendered
+ * row verbatim. That is deliberate and is what P-018's acceptance test asserts:
+ * one fixture must produce the same ROWS on both surfaces, not merely rows
+ * derived from the same declaration.
+ */
+export type OrientationSink = 'turn-start' | 'leader-brief' | 'carry-brief' | 'agent-orders';
 
 /**
  * One ordered emission of a class.
@@ -1139,6 +1158,29 @@ function orientationClass<T>(entry: OrientationClassEntry<T>): RegisteredOrienta
 const TURN_START: readonly OrientationSink[] = ['turn-start'];
 
 /**
+ * P-018: the OBLIGATION + DELTA classes, which the HUD conversation popup's
+ * Orders rail renders from this same declaration.
+ *
+ * ⚠ This is deliberately NOT every turn-start class. The popup is an OBSERVER
+ * surface and may legitimately render MORE than the agent was told (liveness,
+ * locks, a dossier) — but the question P-018 makes single-answered is narrower:
+ * "what standing obligation, and what changed, was this agent told about?" So
+ * exactly the classes that answer THAT carry this sink, and an operator-only
+ * embellishment stays outside the shared object rather than being smuggled into
+ * it. Adding a class here is a decision about what counts as an obligation, not
+ * a formatting choice.
+ *
+ * The membership traces to P-019's eviction order — owner directives > walls >
+ * waiting-on > directed messages — plus the obligation agenda itself:
+ *   - `ownerDirectives`     → owner directives (verbatim, undischarged)
+ *   - `neverDropFacts`      → walls / dead-ends / guard-rails
+ *   - `openChecks`          → waiting-on (open external blockers + carried claims)
+ *   - `unansweredDirected`  → directed messages awaiting this agent's answer
+ *   - `obligations`         → the bounded obligation agenda (`AgentObligationBrief`)
+ */
+const TURN_START_AND_AGENT_ORDERS: readonly OrientationSink[] = ['turn-start', 'agent-orders'];
+
+/**
  * P-025: classes the LEADER BRIEF also renders from this declaration.
  *
  * ⚠ The leader brief is a STRUCTURED, field-capped payload, not a text block, so
@@ -1186,6 +1228,24 @@ const TURN_START_LEADER_BRIEF_AND_CARRY: readonly OrientationSink[] = [
 ];
 
 /**
+ * P-018: `neverDropFacts` on every sink above PLUS the HUD Orders rail.
+ *
+ * A separate const rather than pushing `'agent-orders'` into
+ * {@link TURN_START_LEADER_BRIEF_AND_CARRY}, for the reason that const itself
+ * gives: each cell of this table is a decision, and widening a shared const in
+ * place hands the sink to whichever other classes happen to reference it. Here
+ * that is not hypothetical — walls are the class the observer most needs
+ * (P-019 ranks them second only to owner directives), and the leader brief and
+ * carry document have their own, different reasons for carrying them.
+ */
+const TURN_START_LEADER_BRIEF_CARRY_AND_AGENT_ORDERS: readonly OrientationSink[] = [
+  'turn-start',
+  'leader-brief',
+  'carry-brief',
+  'agent-orders',
+];
+
+/**
  * THE SHARED CLASS REGISTRY (P-023; mechanism per D-015).
  *
  * Every orientation state category is declared here exactly once, and every
@@ -1228,7 +1288,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
   orientationClass<OrientationOwnerDirective[]>({
     id: 'ownerDirectives',
     watermarkTokens: ['ownerDirectives'],
-    applicableSinks: TURN_START,
+    applicableSinks: TURN_START_AND_AGENT_ORDERS,
     populate: (state) => state.ownerDirectives ?? [],
     segments: [
       {
@@ -1273,7 +1333,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
   orientationClass<OrientationOpenCheck[] | undefined>({
     id: 'openChecks',
     watermarkTokens: ['openChecks'],
-    applicableSinks: TURN_START,
+    applicableSinks: TURN_START_AND_AGENT_ORDERS,
     populate: (state) => state.openChecks,
     segments: [
       {
@@ -1359,7 +1419,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
   orientationClass<number>({
     id: 'unansweredDirected',
     watermarkTokens: ['unanswered'],
-    applicableSinks: TURN_START,
+    applicableSinks: TURN_START_AND_AGENT_ORDERS,
     populate: (state) => state.unansweredDirected,
     segments: [
       {
@@ -1502,7 +1562,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
   orientationClass<AgentObligationBrief | null | undefined>({
     id: 'obligations',
     watermarkTokens: ['obligations'],
-    applicableSinks: TURN_START,
+    applicableSinks: TURN_START_AND_AGENT_ORDERS,
     populate: (state) => state.obligations,
     segments: [
       {
