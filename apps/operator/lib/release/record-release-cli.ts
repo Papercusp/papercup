@@ -958,6 +958,41 @@ export async function generateSite(
   scope: Scope,
   outDir: string,
 ): Promise<{ pages: number }> {
+  // All pages in this publication use one identity snapshot. Resolving it per
+  // work-item page spawns thousands of redundant git-config subprocesses.
+  const redact = identityLiterals();
+
+  /**
+   * FAIL CLOSED HERE — in the SHARED renderer, not in one caller.
+   *
+   * EI-20594446930640654 added this rail to `regenerateOnly()`, which is one of TWO
+   * callers of this function. The FULL RECORD path (`run()`) reaches these same
+   * `fs.writeFileSync` calls with the same empty redaction set and had NO such check,
+   * so it rendered the entire site unscrubbed, exited 0, and printed "recorded".
+   *
+   * Measured 2026-09-22: a full record run without the owner env produced 28,304 pages
+   * carrying 375 raw owner-name occurrences, with no warning of any kind. The leak
+   * surfaced only at the publish gate afterwards — and only because the env happened to
+   * be exported for THAT step and not this one. That is precisely the failure the
+   * original fix describes, reproduced verbatim on the sibling code path, because the
+   * guard was attached to a CALLER instead of to the thing that actually renders.
+   *
+   * So the check belongs where the literals are resolved and the bytes are written: one
+   * rail, covering every present and future caller. It runs before the first mkdir, so
+   * no unscrubbed byte reaches disk. `regenerateOnly()` keeps its own earlier check for
+   * its cleaner exit code (1, not a throw); this is the authoritative backstop.
+   */
+  if (!hasOwnerNameLiteral(redact)) {
+    throw new Error(
+      "REFUSING TO RENDER — no owner-name literal resolved, so the owner's name cannot be " +
+        'redacted from these pages and the site would ship unscrubbed.\n' +
+        '  Cause: `git config user.name` is unset or belongs to an automation (a bot/CI identity).\n' +
+        `  Fix:   set ${OWNER_NAME_ENV}='<the owner's name>' for this run — it is read at run\n` +
+        '         time and never stored, because writing the name into a source file to search\n' +
+        '         for it would itself be the leak, committed to git forever.',
+    );
+  }
+
   const rows = await listReleases(sql, scope.workspaceId);
   const hydratedAll: HydratedRelease[] = [];
   for (const row of rows) {
@@ -965,9 +1000,7 @@ export async function generateSite(
     hydratedAll.push({ row, items, plans, internalCount });
   }
 
-  // All pages in this publication use one identity snapshot. Resolving it per
-  // work-item page spawns thousands of redundant git-config subprocesses.
-  const opts = { generatedAt: new Date(), analytics: POSTHOG_PUBLIC_DEFAULTS, redact: identityLiterals() };
+  const opts = { generatedAt: new Date(), analytics: POSTHOG_PUBLIC_DEFAULTS, redact };
   fs.mkdirSync(path.join(outDir, 'plans'), { recursive: true });
   fs.mkdirSync(path.join(outDir, 'work-items'), { recursive: true });
   fs.mkdirSync(path.join(outDir, 'changes'), { recursive: true });
