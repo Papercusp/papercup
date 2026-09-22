@@ -830,13 +830,22 @@ function renderCheckpointLine(item: OrientationHeldItem): string | null {
  * its own budget. Turn-start keeps its cursor/watermark semantics via
  * `watermarkTokens`; leader-brief is read-on-demand and uses none.
  *
- * REGISTERED CONSUMERS TODAY: `turn-start` only. `leader-brief` and
- * `carry-brief` are named here because they are the surfaces the registry was
- * built to serve, but registering them is P-024/P-025's lane, not this one —
- * so no entry claims them until the surface actually selects from here. An
- * `applicableSinks` that named a surface which does not consume the registry
- * would be a false declaration, and the whole point of this table is that a
- * category is declared once, truthfully.
+ * REGISTERED CONSUMERS TODAY: `turn-start` (every class) and `leader-brief`
+ * (`neverDropFacts` only, via P-025's `readLeaderNeverDropFacts`). `carry-brief`
+ * is still named but claimed by no entry — registering it is P-029's lane.
+ *
+ * The rule that governs adding one has NOT changed: an `applicableSinks` naming
+ * a surface which does not consume the registry would be a false declaration,
+ * and the whole point of this table is that a category is declared once,
+ * truthfully. Declaration and consumption land in the SAME change.
+ *
+ * ⚠ CONSUMPTION IS NOT ALWAYS A LINE (D-053). Turn-start is a text block and
+ * consumes `segments[].render`. The leader brief is a STRUCTURED, field-capped
+ * payload and consumes a class through `id` (typed `keyof OrientationState`),
+ * emitting its own field — pushing a rendered line into that JSON would be the
+ * "second copy of the line" this table exists to prevent. Both are truthful;
+ * reading `applicableSinks` as "renders it as a line" would have made the
+ * leader-brief and carry-brief sinks permanently unimplementable.
  */
 export type OrientationSink = 'turn-start' | 'leader-brief' | 'carry-brief';
 
@@ -925,6 +934,23 @@ function orientationClass<T>(entry: OrientationClassEntry<T>): RegisteredOrienta
 }
 
 const TURN_START: readonly OrientationSink[] = ['turn-start'];
+
+/**
+ * P-025: classes the LEADER BRIEF also renders from this declaration.
+ *
+ * ⚠ The leader brief is a STRUCTURED, field-capped payload, not a text block, so
+ * it consumes a class through `RegisteredOrientationClass.id` (typed
+ * `keyof OrientationState`) rather than through `segments[].render` — pushing a
+ * rendered line into that JSON would be the "second copy of the line" this
+ * registry exists to prevent. Plan decision D-053 rules that both are truthful
+ * consumption of the shared declaration; `applicableSinks` means "renders this
+ * class FROM THIS DECLARATION", not "renders it as a line".
+ *
+ * Consumer: `readLeaderNeverDropFacts` in `agent-tools/fleet/leader-brief.ts`,
+ * which reads this very table for applicability — so withdrawing a sink here
+ * turns the field off with no second edit.
+ */
+const TURN_START_AND_LEADER_BRIEF: readonly OrientationSink[] = ['turn-start', 'leader-brief'];
 
 /**
  * THE SHARED CLASS REGISTRY (P-023; mechanism per D-015).
@@ -1211,7 +1237,12 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
   orientationClass<string[]>({
     id: 'neverDropFacts',
     watermarkTokens: ['facts'],
-    applicableSinks: TURN_START,
+    // P-025: also declared for the leader-brief sink, which genuinely selects it
+    // (see TURN_START_AND_LEADER_BRIEF above). A fleet leader has the widest
+    // blast radius on the pot and previously received NO wall / dead-end /
+    // guard-rail facts at all — the "antidote absent where the poison is
+    // strongest" failure EI-18725816532600240 established for cold wakes.
+    applicableSinks: TURN_START_AND_LEADER_BRIEF,
     populate: (state) => state.neverDropFacts,
     segments: [
       {
