@@ -2,12 +2,90 @@
  * Unit tests for the PURE half of adv-agent-orders
  * (session-chat-popup-direction-d-2026-08-02 P-011/P-012).
  *
- * The IO half (`getAgentOrders`) composes four existing authorities and is
- * covered by their own suites; what is genuinely new logic — and therefore
- * genuinely worth testing — is the grading and flattening below.
+ * The IO half (`getAgentOrders`) composes existing authorities that are covered
+ * by their own suites; what is genuinely new logic — and therefore genuinely
+ * worth testing — is the grading and flattening below.
+ *
+ * ONE exception, at the bottom of this file: the SINK the popup projects at is
+ * a decision made here and nowhere else, so no other suite can cover it. A
+ * mutation probe (P-018) proved that omission was load-bearing — see that
+ * describe block for the gap and what closes it.
  */
-import { describe, expect, it } from 'vitest';
-import { carryStaleness, missionFromTrace, renderRoute } from './adv-agent-orders';
+import { describe, expect, it, vi } from 'vitest';
+import { projectOrientationRows, type OrientationState } from './turn-start-orientation';
+import { carryStaleness, getAgentOrders, missionFromTrace, renderRoute } from './adv-agent-orders';
+
+/**
+ * The orientation fixture, hoisted so the `./turn-start-orientation` mock
+ * factory and the assertions can share ONE definition — a second copy would
+ * let the two drift and quietly stop comparing the same thing.
+ *
+ * It must light up at least one turn-start-ONLY class (here: `held` and
+ * `loopArmed`) or the two sinks project identically and the sink assertions
+ * below prove nothing. That is asserted, not trusted — see the calibration.
+ */
+const { orientationFixture } = vi.hoisted(() => ({
+  orientationFixture: (): Record<string, unknown> => ({
+    held: [],
+    ownerDirectives: [
+      {
+        id: 4242,
+        verbatimText: 'stop refactoring the gate and green it first',
+        recordedBy: 'owner',
+        createdAtMs: Date.UTC(2026, 8, 21, 12, 0, 0),
+        sourceTurnRef: 'turn:abc123',
+        dispositionStatus: null,
+      },
+    ],
+    openChecks: [
+      {
+        id: 'blocker-1',
+        claim: 'waiting on the release credential to be rotated',
+        recheck: 'accounts:status',
+        pointer: 'WI-10002406',
+        kind: 'blocker',
+      },
+    ],
+    unansweredDirected: 2,
+    unansweredStale: 0,
+    inboxRecent: [],
+    openAsks: null,
+    announcedGates: [],
+    modes: null,
+    loopArmed: true,
+    loopFireWithheld: false,
+    improvementTriage: null,
+    executableFrontier: null,
+    neverDropFacts: ['wall:no-owner-credential', 'guard-rail:never-force-past-red'],
+    toolSurface: null,
+    carryBlindWindow: null,
+  }),
+}));
+
+// Only the IO leg is stubbed. `projectOrientationRows` is spread through REAL
+// on purpose: the assertions compare against the true projection, so they
+// cannot pass by agreeing with a fake.
+vi.mock('./turn-start-orientation', async (importActual) => {
+  const actual = await importActual<typeof import('./turn-start-orientation')>();
+  return { ...actual, resolveOrientationState: async () => orientationFixture() };
+});
+
+// The remaining legs are each `.catch()`-degraded inside `getAgentOrders`, so
+// stubbing them to their unavailable/empty reading keeps this a UNIT test (no
+// database) while exercising the real composition path.
+vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-workspace' }));
+vi.mock('./agent-tools/coordination/control-anchor', () => ({
+  buildControlAnchorState: async () => null,
+}));
+vi.mock('./carry-brief', () => ({
+  buildCarryBrief: async () => null,
+  detectTerminalCitedRefs: () => [],
+}));
+vi.mock('./agent-tools/coordination/wake-mode', () => ({
+  getDefaultWakeMode: async () => 'auto',
+  getWakeModeOverride: async () => null,
+}));
+vi.mock('./agent-orient-disclosures', () => ({ readOrientDisclosures: async () => null }));
 
 describe('carryStaleness', () => {
   it('grades a cold agent harder than a warm one at the SAME age', () => {
@@ -134,5 +212,50 @@ describe('missionFromTrace', () => {
     expect(m?.constraint).toBe('x');
     expect(m?.authority).toBeNull();
     expect(m?.suppressed).toEqual([]);
+  });
+});
+
+/**
+ * P-018 — the popup projects at the `agent-orders` SINK, and that choice is
+ * made HERE, at one call site, so no other suite can cover it.
+ *
+ * ── Why this block exists (a mutation probe, not a hunch) ───────────────────
+ * Swapping that call site's sink literal from 'agent-orders' to the other
+ * VALID value 'turn-start' was caught by ZERO tests:
+ *
+ *   MUTATION_PROBE_RESULT verdict=survived expected=caught
+ *
+ * The sibling suite (turn-start-orientation-shared-projection.test.ts) covers
+ * an UNKNOWN sink — 'not-a-sink' projects [] — but never a valid-but-WRONG one,
+ * and this file covered only the pure half. The gap sat exactly between them.
+ *
+ * It is not cosmetic: 'turn-start' is a SUPERSET (15 classes carry it that the
+ * popup does not), so the mutation silently renders an agent's full turn-start
+ * set into an OBSERVER surface — and every existing assertion still passes.
+ */
+describe('getAgentOrders — the obligation rows are the agent-orders projection', () => {
+  it('projects at the agent-orders sink, not the full turn-start set', async () => {
+    const state = orientationFixture() as unknown as OrientationState;
+    const expectedAgentOrders = projectOrientationRows(state, 'agent-orders', null);
+    const turnStartRows = projectOrientationRows(state, 'turn-start', null);
+
+    // CALIBRATION FIRST. Both assertions below are vacuous if the fixture
+    // stops discriminating the two sinks (a class list change, or a future
+    // edit stubbing the projection so both return []). Then the block would
+    // keep passing while covering nothing — the very state the probe found.
+    expect(
+      turnStartRows,
+      'fixture no longer discriminates the sinks — the assertions below prove nothing',
+    ).not.toEqual(expectedAgentOrders);
+
+    const orders = await getAgentOrders('su-test-owner');
+
+    // The rows ARE the real projection at the popup's sink...
+    expect(orders.obligationRows).toEqual(expectedAgentOrders);
+    // ...and are NOT the turn-start set. Given a discriminating fixture either
+    // assertion alone fails under the mutant; both are stated so the failure
+    // names WHICH direction it diverged, and so the guarantee still holds if a
+    // later fixture change narrows the difference.
+    expect(orders.obligationRows).not.toEqual(turnStartRows);
   });
 });
