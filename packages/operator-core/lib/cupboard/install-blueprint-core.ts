@@ -212,6 +212,65 @@ function locateBlueprintDir(cloneDir: string, listingRef: string | undefined): s
   );
 }
 
+/**
+ * Resolve `extends` parents against the CLONED library first, then the host tiers.
+ *
+ * The listed release pins the cloned complete closure (D-074), and publish resolves
+ * parents from the publisher's own library root
+ * (`operatorResolveExtends({ localDirs: [sourceRoot] })`). Resolving them from the
+ * host tiers alone made the install-side closure depend on the INSTALLER's copy of
+ * each parent, so every pin on a blueprint that extends a shared parent (every
+ * identity extends `base`) stopped reproducing the moment the host's `base` drifted
+ * from the publisher's — a 422 on listing-resolved install for content that was
+ * byte-identical to what was attested (WI-10001750 / identities-v1 R-7).
+ *
+ * Only a multi-blueprint library (a listing ref resolved to `<library>/<ref>`) has
+ * sibling parents to offer; a single-blueprint repo root falls straight through to
+ * the host tiers, exactly as before. Parents the library does not ship still come
+ * from the host, so a repo cannot be required to vendor the built-in floor.
+ */
+export function cloneFirstResolveExtends(
+  cloneDir: string,
+  bpDir: string,
+  host: ResolveExtendsPath,
+): ResolveExtendsPath {
+  const libraryRoot = resolve(bpDir) === resolve(cloneDir) ? null : resolve(bpDir, '..');
+  return (id: string): string | null => {
+    if (libraryRoot && isSafeListingRef(id) && !id.includes('/')) {
+      const candidate = join(libraryRoot, id, 'blueprint.yaml');
+      assertInside(cloneDir, candidate, `extends "${id}"`);
+      if (existsSync(candidate)) return candidate;
+    }
+    return host(id);
+  };
+}
+
+/**
+ * The blueprint a listing SERVES: where `listingRef` lives inside a clone of the
+ * listing's repo, and the resolver that closure is computed with. The ONE seam
+ * shared by listing-resolved install and by publish
+ * (`POST /cupboard/publish-blueprint`), so the release hash a publisher signs is
+ * the hash an installer recomputes BY CONSTRUCTION — both read the same bytes
+ * through the same locate + clone-first resolution.
+ *
+ * Publish used to pin the publisher's LOCAL installed→built-in copy instead. For
+ * the official library that copy is not what the public repo serves (its sync
+ * projects `apps/operator/prompts` into `base/prompts`), so every identity pin
+ * failed to reproduce on install (WI-10001750 / EI-23992492696259433).
+ */
+export function servedBlueprintSource(
+  cloneDir: string,
+  listingRef: string | undefined,
+  host: ResolveExtendsPath,
+): { bpDir: string; blueprintFile: string; resolveExtends: ResolveExtendsPath } {
+  const bpDir = locateBlueprintDir(cloneDir, listingRef);
+  return {
+    bpDir,
+    blueprintFile: join(bpDir, 'blueprint.yaml'),
+    resolveExtends: cloneFirstResolveExtends(cloneDir, bpDir, host),
+  };
+}
+
 export async function installBlueprintFromCupboardCore(
   input: InstallBlueprintCoreInput,
   deps: InstallBlueprintCoreDeps,
@@ -224,7 +283,7 @@ export async function installBlueprintFromCupboardCore(
   const cloneDir = join(deps.tmpDir(), `cupboard-blueprint-${Date.now()}-${Math.floor(performance.now())}`);
   try {
     await deps.cloneRepo(url, cloneDir);
-    const bpDir = locateBlueprintDir(cloneDir, input.listingRef);
+    const { bpDir, resolveExtends } = servedBlueprintSource(cloneDir, input.listingRef, deps.resolveExtends);
 
     let raw: Record<string, unknown>;
     try {
@@ -269,7 +328,7 @@ export async function installBlueprintFromCupboardCore(
       // live registries — a marketplace blueprint that names an op the host hasn't
       // registered fails the import with a clear `unknown-op` (422), not a runtime
       // throw after it lands in the installed tier.
-      const res = resolveAndValidateBlueprint(raw, deps.resolveExtends, blueprintRegistrySets());
+      const res = resolveAndValidateBlueprint(raw, resolveExtends, blueprintRegistrySets());
       if (res.parseError) {
         throw new InstallBlueprintError(`blueprint "${id}" failed to resolve: ${res.parseError}`, 422);
       }
@@ -293,7 +352,7 @@ export async function installBlueprintFromCupboardCore(
     // every consumed parent, prompt file and bundle even after the clone is removed.
     let closure: NonNullable<Parameters<typeof validateBlueprintDependencies>[2]>;
     try {
-      const source = resolveBlueprintSource(raw, { resolve: deps.resolveExtends, sourcePath: join(bpDir, 'blueprint.yaml') });
+      const source = resolveBlueprintSource(raw, { resolve: resolveExtends, sourcePath: join(bpDir, 'blueprint.yaml') });
       if (!source.validation.ok) throw new Error(source.validation.errors.map((error) => error.message).join('; '));
       const resolved = BlueprintSourceDocumentSchema.parse(source.merged);
       // Identities are frequently abstract source fragments. Authority

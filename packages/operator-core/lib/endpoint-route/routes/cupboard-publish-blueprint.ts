@@ -8,8 +8,10 @@
  * listing is GitHub-repo-backed: it points at a PUBLIC repo whose
  * `<listing_ref>/blueprint.yaml` is the blueprint (the official library is one
  * repo hosting all the official blueprints, one listing per blueprint). The
- * blueprint is resolved locally (installed → built-in) to default the
- * title/description from its manifest, then published via the shared
+ * blueprint is resolved locally (installed → built-in) for the visibility gate
+ * and to default the title/description from its manifest. Its release is
+ * signed over a clone of `github_url` (the bytes the listing SERVES, through the
+ * same `servedBlueprintSource` seam install recomputes with), then published via the shared
  * listing-publish core — gh-token + channel-2 attestation + the worker's
  * standard gates (rate limit, public-repo check, dedup). The OFFICIAL
  * blueprints go through THIS exact path, authored by the papercupai account —
@@ -25,6 +27,9 @@
  * `auth: 'loopback'` (auth-tier Wave 1) — loopback-only via the operator's Host-header gate.
  */
 import { readFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { defineTool } from '@papercusp/agent-mcp';
 import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
@@ -42,6 +47,8 @@ import {
   BlueprintLifecycleError,
   prepareBlueprintPublicRelease,
 } from '../../cupboard/blueprint-release';
+import { InstallBlueprintError, servedBlueprintSource } from '../../cupboard/install-blueprint-core';
+import { gitCloneShallow } from '../../cupboard/install-io';
 
 export default defineTool({
   method: 'POST',
@@ -100,23 +107,7 @@ export default defineTool({
       throw e;
     }
 
-    let prepared: Awaited<ReturnType<typeof prepareBlueprintPublicRelease>>;
-    try {
-      prepared = await prepareBlueprintPublicRelease({
-        blueprintFile: file,
-        listingRef: typeof body.listing_ref === 'string' && body.listing_ref.trim() ? body.listing_ref.trim() : id,
-        resolveExtends: resolver,
-      });
-    } catch (error) {
-      return Response.json(
-        {
-          ok: false,
-          error: 'blueprint_release_invalid',
-          detail: error instanceof Error ? error.message : String(error),
-        },
-        { status: error instanceof BlueprintLifecycleError ? error.status : 422 },
-      );
-    }
+    const listingRef = typeof body.listing_ref === 'string' && body.listing_ref.trim() ? body.listing_ref.trim() : id;
 
     // The content repo is always explicit for blueprints (the bundled set lives
     // in a private monorepo — the listing must point at the PUBLIC repo).
@@ -138,6 +129,37 @@ export default defineTool({
       github_name: parsed.repo,
       github_url: meta.html_url || `https://github.com/${parsed.owner}/${parsed.repo}`,
     };
+
+    // Sign the bytes the listing SERVES, not the local copy. A listing-resolved
+    // install clones this repo and recomputes the closure through
+    // `servedBlueprintSource`; publishing through the same seam over the same
+    // clone makes the listed hash reproduce by construction. The local copy
+    // (resolved above) only supplies the visibility gate + manifest defaults.
+    let prepared: Awaited<ReturnType<typeof prepareBlueprintPublicRelease>>;
+    const cloneDir = join(tmpdir(), `cupboard-publish-${Date.now()}-${Math.floor(performance.now())}`);
+    try {
+      await gitCloneShallow(coords.github_url, cloneDir);
+      const served = servedBlueprintSource(cloneDir, listingRef, resolver);
+      prepared = await prepareBlueprintPublicRelease({
+        blueprintFile: served.blueprintFile,
+        listingRef,
+        resolveExtends: served.resolveExtends,
+      });
+    } catch (error) {
+      return Response.json(
+        {
+          ok: false,
+          error: 'blueprint_release_invalid',
+          detail: error instanceof Error ? error.message : String(error),
+        },
+        {
+          status:
+            error instanceof BlueprintLifecycleError || error instanceof InstallBlueprintError ? error.status : 422,
+        },
+      );
+    } finally {
+      await rm(cloneDir, { recursive: true, force: true }).catch(() => {});
+    }
 
     // Worker caps: title ≤ 200, description ≤ 280.
     const description = (
