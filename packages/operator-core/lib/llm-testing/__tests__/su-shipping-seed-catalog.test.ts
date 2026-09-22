@@ -23,6 +23,8 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { buildShippingSeedCatalog } from '../targets/su-compact-catalog';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore -- generated .mjs data module, no type declarations.
 import { CLAUDE_TOOL_DELIVERY } from '../../../../../apps/operator/scripts/tool-delivery.generated.mjs';
 
 /**
