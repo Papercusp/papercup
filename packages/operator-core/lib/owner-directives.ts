@@ -95,6 +95,12 @@ export interface OwnerDirectiveRow {
   capturePromotedAtMs?: number | null;
   capturePromotedBy?: string | null;
   /**
+   * Optional note given at promotion time (orders:resolve-pending { action:'promote', reason }).
+   * Counterpart to captureDismissalReason; null when promoted without a note, or before
+   * migration 1189. Distinct from dispositionNote, which records the later done/declined call.
+   */
+  capturePromotedNote?: string | null;
+  /**
    * True when the row came from the UserPromptSubmit provenance hook rather than an agent
    * calling orders:record. Unlike captureStatus this SURVIVES promotion, so provenance is
    * still answerable once the row is acted on.
@@ -163,6 +169,7 @@ interface RawRow {
   capture_dismissed_by: string | null;
   capture_promoted_at: string | Date | null;
   capture_promoted_by: string | null;
+  capture_promoted_note: string | null;
   captured_by_hook: boolean | null;
 }
 
@@ -188,6 +195,7 @@ function rowOf(r: RawRow): OwnerDirectiveRow {
     captureDismissedBy: r.capture_dismissed_by,
     capturePromotedAtMs: toMs(r.capture_promoted_at),
     capturePromotedBy: r.capture_promoted_by,
+    capturePromotedNote: r.capture_promoted_note,
     capturedByHook: r.captured_by_hook === true,
   };
 }
@@ -354,15 +362,17 @@ export type ResolvePendingOwnerDirectiveResult =
 
 /** Promote an auto-captured pending owner turn into an actionable directive. */
 export async function promoteOwnerDirective(
-  input: { id: number; promotedBy: string },
+  input: { id: number; promotedBy: string; note?: string | null },
   sql?: Sql,
 ): Promise<ResolvePendingOwnerDirectiveResult> {
   const s = db(sql);
+  const note = input.note?.trim() ? input.note.trim() : null;
   const rows = await s<RawRow[]>`
     UPDATE harness_shared.owner_directives
        SET capture_status = 'open',
            capture_promoted_at = now(),
-           capture_promoted_by = ${input.promotedBy}
+           capture_promoted_by = ${input.promotedBy},
+           capture_promoted_note = ${note}
      WHERE id = ${input.id} AND capture_status = 'pending' AND dispositioned_at IS NULL
      RETURNING *
   `;

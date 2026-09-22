@@ -21,7 +21,7 @@ export default defineTool({
   args: z.object({
     id: z.number().int().positive().describe('Pending directive id from the Orientation block or orders:list.'),
     action: z.enum(['promote', 'dismiss']).describe('Promote to open, or dismiss with a reason.'),
-    reason: z.string().min(4).max(2000).optional().describe('Required when action=dismiss; why this turn is not an owner directive.'),
+    reason: z.string().min(4).max(2000).optional().describe('Required when action=dismiss (why this turn is not an owner directive); optional when action=promote, where it is stored as the promotion note.'),
   }),
   async handler(args, ctx) {
     if (args.action === 'dismiss' && !args.reason?.trim()) {
@@ -29,7 +29,7 @@ export default defineTool({
     }
     const identity = resolveAgentIdentity(ctx);
     const result = args.action === 'promote'
-      ? await promoteOwnerDirective({ id: args.id, promotedBy: identity.ownerId })
+      ? await promoteOwnerDirective({ id: args.id, promotedBy: identity.ownerId, note: args.reason ?? null })
       : await dismissOwnerDirective({ id: args.id, reason: args.reason!.trim(), dismissedBy: identity.ownerId });
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(result) }],

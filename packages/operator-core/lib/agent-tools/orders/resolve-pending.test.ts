@@ -112,7 +112,28 @@ describe('orders:resolve-pending — dismissal requires a reason (AUTO-BAR-R-5-P
     const result = await call({ id: 17, action: 'promote' });
 
     expect(result.isError).toBeUndefined();
-    expect(h.promoteOwnerDirective).toHaveBeenCalledWith({ id: 17, promotedBy: 'su-test-owner' });
+    // Kept as an EXACT call-shape assertion (not objectContaining): it is the only thing
+    // that fails when an argument is added or dropped here, which is exactly how the
+    // promote-note gap below went unnoticed. `note: null` is the explicit "no note given".
+    expect(h.promoteOwnerDirective).toHaveBeenCalledWith({ id: 17, promotedBy: 'su-test-owner', note: null });
+    expect(h.dismissOwnerDirective).not.toHaveBeenCalled();
+  });
+
+  // P-005 / D-014: the plan's single un-waived gap. `reason` was accepted by the schema for
+  // BOTH actions, but the promote branch called the writer with only { id, promotedBy } —
+  // so a note given with action:'promote' validated and was then SILENTLY DROPPED. No test
+  // covered it because the only promote assertion used the no-reason call.
+  it('passes a promotion reason through to the writer as the note, TRIMMED', async () => {
+    h.promoteOwnerDirective.mockResolvedValue({ ok: true, row: { id: 17 } });
+
+    const result = await call({ id: 17, action: 'promote', reason: '  acting on this now  ' });
+
+    expect(result.isError).toBeUndefined();
+    expect(h.promoteOwnerDirective).toHaveBeenCalledWith({
+      id: 17,
+      promotedBy: 'su-test-owner',
+      note: '  acting on this now  ',
+    });
     expect(h.dismissOwnerDirective).not.toHaveBeenCalled();
   });
 

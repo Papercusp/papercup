@@ -108,6 +108,61 @@ describe('owner-directive capture provenance (migration 1187)', () => {
     expect(reread?.capturePromotedAtMs).toBe(promoted.row.capturePromotedAtMs);
   });
 
+  // P-005 / D-014: the `note?` on promote was the plan's single un-waived gap. Before
+  // migration 1189 orders:resolve-pending accepted `reason` for BOTH actions but
+  // promoteOwnerDirective was called with only { id, promotedBy }, so a note supplied
+  // alongside action:'promote' validated and was then SILENTLY DROPPED. These two cases
+  // are a matched pair: the first proves the note is stored, the second proves that
+  // storage is conditional on a note actually being supplied. Without the second, a
+  // column wired to a constant would pass the first.
+  it('persists a note supplied at promotion time', async () => {
+    const row = await captureViaHook('turn-promoted-note');
+    expect(row.capturePromotedNote ?? null).toBeNull();
+
+    const promoted = await promoteOwnerDirective(
+      { id: row.id, promotedBy: 'su-promoter', note: 'acting on this now; scoped to the migration only' },
+      db.adminSql,
+    );
+    expect(promoted.ok).toBe(true);
+    if (!promoted.ok) return;
+    expect(promoted.row.capturePromotedNote).toBe('acting on this now; scoped to the migration only');
+
+    // Re-read: the column exists so the note is DURABLE, not merely echoed by RETURNING.
+    const reread = await getOwnerDirective(row.id, db.adminSql);
+    expect(reread?.capturePromotedNote).toBe('acting on this now; scoped to the migration only');
+  });
+
+  it('CONTROL: promoting without a note leaves capture_promoted_note NULL', async () => {
+    const row = await captureViaHook('turn-promoted-no-note');
+
+    const promoted = await promoteOwnerDirective(
+      { id: row.id, promotedBy: 'su-promoter' },
+      db.adminSql,
+    );
+    expect(promoted.ok).toBe(true);
+    if (!promoted.ok) return;
+    expect(promoted.row.capturePromotedNote ?? null).toBeNull();
+
+    const reread = await getOwnerDirective(row.id, db.adminSql);
+    expect(reread?.capturePromotedNote ?? null).toBeNull();
+    // The promotion itself still happened — a null note is not a failed promote.
+    expect(reread?.captureStatus).toBe('open');
+  });
+
+  it('treats a whitespace-only promotion note as no note', async () => {
+    const row = await captureViaHook('turn-promoted-blank-note');
+
+    const promoted = await promoteOwnerDirective(
+      { id: row.id, promotedBy: 'su-promoter', note: '   ' },
+      db.adminSql,
+    );
+    expect(promoted.ok).toBe(true);
+    if (!promoted.ok) return;
+    // Stored as NULL, not as a blank string: a reader must not have to distinguish
+    // "no note" from "a note made of spaces".
+    expect(promoted.row.capturePromotedNote ?? null).toBeNull();
+  });
+
   it('CONTROL: after promotion capture_status cannot tell hook from agent, but the flag can', async () => {
     const hooked = await captureViaHook('turn-control-hook');
     const recorded = await recordViaAgent('turn-control-agent');
