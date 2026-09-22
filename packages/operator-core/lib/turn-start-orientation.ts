@@ -914,9 +914,12 @@ function renderCheckpointLine(item: OrientationHeldItem): string | null {
  * its own budget. Turn-start keeps its cursor/watermark semantics via
  * `watermarkTokens`; leader-brief is read-on-demand and uses none.
  *
- * REGISTERED CONSUMERS TODAY: `turn-start` (every class) and `leader-brief`
- * (`neverDropFacts` only, via P-025's `readLeaderNeverDropFacts`). `carry-brief`
- * is still named but claimed by no entry — registering it is P-029's lane.
+ * REGISTERED CONSUMERS TODAY: `turn-start` (every class), `leader-brief`
+ * (`neverDropFacts` via P-025's `readLeaderNeverDropFacts`, `announcedGates` via
+ * P-027) and `carry-brief` (`neverDropFacts` via P-029's
+ * `readCarryNeverDropFacts` in carry-brief.ts). All three sinks are now claimed
+ * by at least one entry, so `SINK_COVERAGE` in the class-coverage guard carries
+ * a per-class decision for each — there is no longer a `pending` column.
  *
  * The rule that governs adding one has NOT changed: an `applicableSinks` naming
  * a surface which does not consume the registry would be a false declaration,
@@ -1035,6 +1038,36 @@ const TURN_START: readonly OrientationSink[] = ['turn-start'];
  * turns the field off with no second edit.
  */
 const TURN_START_AND_LEADER_BRIEF: readonly OrientationSink[] = ['turn-start', 'leader-brief'];
+
+/**
+ * P-029: classes the CARRY DOCUMENT also renders from this declaration —
+ * currently `neverDropFacts` alone.
+ *
+ * A separate const rather than widening {@link TURN_START_AND_LEADER_BRIEF},
+ * because that one is shared with `announcedGates`: extending it in place would
+ * silently hand the carry document a class P-029 never decided on, and the
+ * whole point of this table is that each cell is a decision. Adding a second
+ * class to this sink should be its own edit with its own recorded reason.
+ *
+ * Consumer: `readCarryNeverDropFacts` in `carry-brief.ts`, which reads this very
+ * table for applicability — so withdrawing the sink here turns the section off
+ * with no second edit there. Like the leader brief (D-053) the carry document is
+ * a STRUCTURED payload rendered by its own renderer, so it consumes the class
+ * through `RegisteredOrientationClass.id` rather than `segments[].render`.
+ *
+ * ⚠ WHY THIS SINK NEEDS THE CLASS AT ALL, given it already carries `facts`: the
+ * carry document's general fact fold is OWNER-SCOPED ONLY, while this class is
+ * folded at WORKSPACE + owner. A fleet-wide guard rail is asserted at workspace
+ * scope in practice, so it reached turn-start and the leader brief and never the
+ * carry document — whose reader is the COLDEST in the system and rebuilds from
+ * the document alone. The gap was the missing SELECTOR, not the projection,
+ * which is why "carry-brief already carries facts" reads like coverage and is not.
+ */
+const TURN_START_LEADER_BRIEF_AND_CARRY: readonly OrientationSink[] = [
+  'turn-start',
+  'leader-brief',
+  'carry-brief',
+];
 
 /**
  * THE SHARED CLASS REGISTRY (P-023; mechanism per D-015).
@@ -1375,7 +1408,14 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
     // blast radius on the pot and previously received NO wall / dead-end /
     // guard-rail facts at all — the "antidote absent where the poison is
     // strongest" failure EI-18725816532600240 established for cold wakes.
-    applicableSinks: TURN_START_AND_LEADER_BRIEF,
+    //
+    // P-029: and ALSO for the carry document, which is that same failure one
+    // sink further out — its reader is the coldest of the three (it rebuilds
+    // from the document alone) and its own fact fold is owner-scoped, so
+    // workspace-scoped rails never reached it. See
+    // TURN_START_LEADER_BRIEF_AND_CARRY above; consumer is
+    // `readCarryNeverDropFacts` in carry-brief.ts.
+    applicableSinks: TURN_START_LEADER_BRIEF_AND_CARRY,
     populate: (state) => state.neverDropFacts,
     segments: [
       {

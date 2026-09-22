@@ -59,6 +59,9 @@ import {
   type RegisteredOrientationClass,
 } from './orientation-class-registry';
 import { readLeaderNeverDropFacts, readLeaderAnnouncedGates } from './agent-tools/fleet/leader-brief';
+// P-029: the carry-document sink's REAL consumer, so its cell is probed
+// end-to-end rather than by re-reading the declaration it is supposed to obey.
+import { readCarryNeverDropFacts } from './carry-brief';
 import type { AgentFact } from './agent-facts/store';
 
 const ORIENTATION_SOURCE = fileURLToPath(new URL('./turn-start-orientation.ts', import.meta.url));
@@ -889,6 +892,40 @@ const leaderBriefNeverDropProbe: CellProbe = async () => {
 };
 
 /**
+ * The carry-brief cell probe for `neverDropFacts` (P-029), driven through the
+ * REAL consumer (`readCarryNeverDropFacts`) with only the fact store stubbed.
+ *
+ * End-to-end for the same reason as the leader-brief probe above: a probe that
+ * re-read `applicableSinks` would pass against a consumer that ignores the
+ * registry entirely, which is the precise failure this sink was registered to
+ * make impossible.
+ *
+ * ⚠ IT ALSO ASSERTS THE SELECTOR SET, which is the substantive part of P-029.
+ * The document already folded owner-scoped facts before this item; what it
+ * lacked was the WORKSPACE leg, so a consumer that quietly dropped back to
+ * owner-only would still return facts and still look like it worked. The stub
+ * therefore captures the selectors it is called with and the cell fails unless
+ * a `workspace` selector is among them.
+ */
+const carryBriefNeverDropProbe: CellProbe = async () => {
+  let seenSelectors: readonly { scope: string }[] = [];
+  const out = await readCarryNeverDropFacts(
+    { ownerId: 'su-coverage-probe', workspaceId: 'papercusp-workspace' },
+    {
+      fold: (async (selectors: readonly { scope: string }[]) => {
+        seenSelectors = selectors;
+        return [neverDropFactProbe('dead-end:coverage-probe')];
+      }) as never,
+    },
+  );
+  const foldedWorkspaceScope = seenSelectors.some((selector) => selector.scope === 'workspace');
+  return {
+    reached: out !== undefined && out.length > 0 && foldedWorkspaceScope,
+    detail: JSON.stringify({ out, selectors: seenSelectors, foldedWorkspaceScope }),
+  };
+};
+
+/**
  * The leader-brief cell probe for `announcedGates` (P-027), driven through the
  * REAL consumer with only the announcement store and the waiter count stubbed.
  *
@@ -1081,18 +1118,195 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
   },
 
   'carry-brief': {
-    status: 'pending',
-    registeredBy: 'P-029',
-    reason:
-      'The carry document is a third brief with NO sink identity yet: it is named in `OrientationSink` but ' +
-      'claimed by zero registry entries, so nothing can assert what it does or does not carry. P-029 ' +
-      'registers it and DECIDES, per class, what a successor needs at a cut.\n\n' +
-      'This is recorded ONCE as a pending sink rather than as 17 per-class omissions on purpose. Writing 17 ' +
-      'placeholder reasons today would pre-decide P-029\'s deliverable in the very table P-029 must then ' +
-      'rewrite, and every one of them would say the same thing. The guard instead asserts that a pending ' +
-      'sink claims ZERO classes, so this sink cannot be half-registered in silence — and the moment P-029 ' +
-      'flips it to `consuming`, the matrix immediately demands a per-class decision for all 17. That ' +
-      'forcing function IS the deliverable of this item.',
+    status: 'consuming',
+    scope:
+      'The CARRY DOCUMENT, assembled at a compaction/respawn cut and read by the COLDEST reader in the ' +
+      'system: a successor process that rebuilds from this document alone, with no memory of the turns ' +
+      'that produced it. That single property decides every cell below, and it cuts BOTH ways.\n\n' +
+      'It ARGUES FOR a class when the successor cannot re-derive it — the antidote must be present where ' +
+      'the poison is strongest (EI-18725816532600240). It ARGUES AGAINST a class that is LIVE SESSION ' +
+      'STATE, and that is the majority verdict here: this document is built at the cut and read minutes ' +
+      'later by a session whose OWN turn-start block re-derives that state authoritatively at wake. ' +
+      'Embedding a build-time snapshot would not merely be redundant, it would be a STALE ASSERTION ' +
+      'competing with a live one — and a successor cannot tell which of two disagreeing sources it should ' +
+      'believe. So "the successor gets it from its own turn-start" is a sufficient reason to omit here in ' +
+      'a way it is NOT for the leader brief (a cold leader may never see a turn-start block).\n\n' +
+      '⚠ A THIRD, sharper test applies to this sink alone: TEMPORAL REACHABILITY. The document is ' +
+      'assembled AT the snapshot, so a class measuring anything about the cut itself, or about the window ' +
+      'between the snapshot and the cut, has no value to read at build time (see `carryBlindWindow`).',
+    probes: {
+      // The one claimed class. P-029 registered this sink BY giving it a real
+      // consumer — `readCarryNeverDropFacts` in carry-brief.ts — rather than by
+      // adding a row here, per the registry's "declaration and consumption land
+      // in the SAME change" rule.
+      neverDropFacts: carryBriefNeverDropProbe,
+    },
+    silent: {},
+    omitted: {
+      // ── Reaches this sink already, from the SAME canonical derivation ──────
+      held: {
+        kind: 'other-shared-mechanism',
+        mechanism: 'readHeldWorkItems (carry-brief.ts) — turn-start imports it for its own `held` dep',
+        reason:
+          'Already ONE assembler, and this module is its HOME: turn-start\'s `held` dep dynamically imports ' +
+          '`readHeldWorkItems` from carry-brief.ts rather than assembling its own. So the class reaches this ' +
+          'sink from the single canonical read, not a copy, and no collapse is owed. P-028 measured this ' +
+          'directly and found the item text\'s "three independent assemblers" premise already false.',
+      },
+      ownerDirectives: {
+        kind: 'other-shared-mechanism',
+        mechanism: 'listOpenOwnerDirectives (owner-directives.ts), rendered via renderOwnerDirectivesBlock',
+        reason:
+          'Both sinks call the SAME reader: turn-start\'s `ownerDirectives` dep and carry-brief\'s ' +
+          '`directivesPromise` each import `listOpenOwnerDirectives` from owner-directives.ts, differing only ' +
+          'in row budget. Not drift-prone, so no collapse is owed. The carry read is workspace-scoped on ' +
+          'purpose — a directive must survive the recording session\'s death, which is exactly this sink\'s case.',
+      },
+      openChecks: {
+        kind: 'other-shared-mechanism',
+        mechanism: 'splitCarryNoteChecks (carry-note.ts) — the same parser turn-start\'s openChecks dep uses',
+        reason:
+          'The carried-claims half reaches this document from the SAME canonical parser: turn-start\'s ' +
+          '`openChecks` dep calls `carryNote.splitCarryNoteChecks`, and carry-brief populates `checks` from ' +
+          'that identical function. ⚠ SCOPE NOTE, deliberately recorded rather than glossed: turn-start\'s ' +
+          'class ALSO folds a second half (open `work_items:set_blocker` rows) that this document does not ' +
+          'carry; those reach the successor through its own turn-start block and through each held item\'s ' +
+          're-injected checkpoint. So this entry covers the carry-note half only, and says so.',
+      },
+
+      // ── Reaches this sink from a SEPARATE derivation — DEBT, owned ─────────
+      loopArmed: {
+        kind: 'second-derivation',
+        collapsedBy: 'WI-10002403',
+        reason:
+          'The class DOES reach this sink, from a DIFFERENT reader than turn-start uses — measured, not ' +
+          'assumed: turn-start\'s `loopArmed` dep calls `activeLoopOwners()` (adv-roster), while carry-brief\'s ' +
+          '`loopPromise` calls `getLoopStatus(ownerId)` and consumes `loop.active` for the "armed loop @<harness>" ' +
+          'pointer and the "the loop is not armed" stale-note warning. Two readers of one truth is drift-prone ' +
+          'by the derived-truth ladder, and the disagreement is asymmetric-and-bad in both directions: a false ' +
+          'ARMED in this document asserts a wake guarantee that does not exist and the successor silently halts; ' +
+          'a false NOT-ARMED in turn-start trains agents to ignore the highest-priority warning it emits. ' +
+          'Recorded as DEBT rather than not-applicable precisely because the class is not absent here.',
+      },
+
+      // ── LIVE SESSION STATE: the successor's own turn-start re-derives it ───
+      // Each measured absent from carry-brief.ts (0 occurrences; positive
+      // control on the same instrument: neverDropFacts 16, facts 91, heldItems
+      // 36, loop 89 — so these zeros are measurements, not a broken grep).
+      toolSurface: {
+        kind: 'not-applicable',
+        reason:
+          'Measures whether THIS session\'s MCP tool list loaded empty — a property of a live process, and the ' +
+          'successor is a DIFFERENT process whose tool surface is its own. The predecessor\'s value is not ' +
+          'merely stale here, it is about someone else. Its only remedy (restart the session) is also something ' +
+          'the successor has already done by existing.',
+      },
+      unansweredDirected: {
+        kind: 'not-applicable',
+        reason:
+          'A directed message awaiting an answer is live inbox state that the successor\'s own turn-start block ' +
+          'derives authoritatively at wake — including messages that arrived AFTER this cut, which this document ' +
+          'cannot know about. A build-time snapshot would compete with that live read while being strictly ' +
+          'older. The document instead carries the narrower `postNoteInbox` delta, which is a different subject.',
+      },
+      unansweredStale: {
+        kind: 'not-applicable',
+        reason:
+          'Same family and same reasoning as `unansweredDirected`: staleness is measured against NOW, so a value ' +
+          'computed at the cut is wrong by construction by the time the successor reads it. Age-derived classes ' +
+          'are the worst possible fit for a document whose defining property is that it is read later.',
+      },
+      openAsks: {
+        kind: 'not-applicable',
+        reason:
+          'Open asks awaiting a human are live state re-derived by the successor\'s turn-start, and their status ' +
+          'can change between the cut and the read. ⚠ Recorded with a caveat rather than silently: the OWNER-' +
+          'FACING half of this (a question this session promised to answer) is genuinely carry-worthy, and it ' +
+          'already reaches the document through the loop carry-note\'s own `left` / owner-facing-threads ' +
+          'discipline — a prose carrier, not this class. If that proves insufficient, the fix is to claim this ' +
+          'class here deliberately, not to widen the note.',
+      },
+      inboxRecent: {
+        kind: 'not-applicable',
+        reason:
+          'DIFFERENT SUBJECT, not a missing copy. This class is the recent-inbox VIEW; the document carries ' +
+          '`postNoteInbox`, a bounded delta of pending interrupts arriving strictly AFTER the carry note was ' +
+          'written. That delta exists to tell a successor "your note may already be superseded", which the ' +
+          'recent-inbox view does not answer. Both read `readInbox`, but for different questions and windows.',
+      },
+      loopFireWithheld: {
+        kind: 'not-applicable',
+        reason:
+          'A per-fire condition of the engine loop, evaluated when a fire is withheld and re-derived at the ' +
+          'successor\'s next wake. It describes the scheduler\'s decision about a fire that has already ' +
+          'happened or been skipped, so carrying it past a cut informs no decision the successor can still make.',
+      },
+      obligations: {
+        kind: 'not-applicable',
+        reason:
+          'The obligation agenda is a live evaluation with its own sink vocabulary ' +
+          '(projectAgentObligationBrief), re-projected for the successor at its own turn-start and reachable ' +
+          'on demand via coord:orient. Measured absent from carry-brief.ts (0 occurrences). Recorded as ' +
+          'not-applicable rather than shared-mechanism precisely BECAUSE it does not reach this sink at all ' +
+          'today — naming a mechanism that does not run here would be the guess this kind exists to forbid.',
+      },
+      executableFrontier: {
+        kind: 'not-applicable',
+        reason:
+          'The claimable/next-executable queue is the most volatile state in the system — peers claim from it ' +
+          'continuously — so a snapshot taken at the cut is very likely wrong when read, and wrong in the ' +
+          'specific direction that causes harm: it would point a successor at work another agent already holds, ' +
+          'producing a claim conflict the document itself caused.',
+      },
+      announcedGates: {
+        kind: 'not-applicable',
+        reason:
+          'Gate announcements are live and LATCHING: a gate can fire between the cut and the read, so a carried ' +
+          'list can name a gate that has already opened. The successor\'s own ARMED AWAITS — which genuinely ' +
+          'survive the boundary and will wake it — are carried by this document separately and are the ' +
+          'actionable half; the announcement view is re-derived at turn-start and via events:catalog.',
+      },
+      historyUpdates: {
+        kind: 'not-applicable',
+        reason:
+          'A per-turn delta describing changes since the reader\'s last turn-start cursor. The successor has no ' +
+          'such cursor continuity across a respawn — its first turn-start establishes a fresh one — so the ' +
+          'class has no meaningful value to carry across the very boundary that resets its baseline.',
+      },
+      effortUpdates: {
+        kind: 'not-applicable',
+        reason:
+          'Same cursor-delta property as `historyUpdates`: it reports movement since a watermark the successor ' +
+          'does not inherit. Recorded as its own entry rather than folded into that one so withdrawing either ' +
+          'decision stays a visible, separate edit.',
+      },
+      improvementTriage: {
+        kind: 'not-applicable',
+        reason:
+          'Its turn-start LINE was withdrawn outright by P-017 (it sits in DELIBERATELY_UNRENDERED for the sink ' +
+          'that does claim it), so there is no rendered signal for this document to carry. Claiming it here ' +
+          'would re-introduce for the coldest reader a line the system already decided was not worth its budget ' +
+          'for the warmest one.',
+      },
+
+      // ── TEMPORALLY UNREACHABLE at this sink ───────────────────────────────
+      carryBlindWindow: {
+        kind: 'not-applicable',
+        reason:
+          'TEMPORALLY IMPOSSIBLE here, which INVERTS P-029\'s own item text (it names this class an "obvious ' +
+          'candidate" for this sink). The class counts tool calls between the carry SNAPSHOT and the CUT; this ' +
+          'document is ASSEMBLED at the snapshot, with the cut still in the future, so at build time the count ' +
+          'is necessarily 0 and its endpoint does not exist yet. A consumer wired here would return null on ' +
+          'every single call — and a null-returning dependency reads as broken plumbing to whoever audits it ' +
+          'next, so the omission would look like a bug to fix rather than a category error. Recorded ' +
+          'not-applicable (finished, nothing owed) and NOT second-derivation: labelling it debt would promise a ' +
+          'collapse that can never happen. Full measurement in plan decision D-069. ⚠ Do not "collapse" this ' +
+          'with carry-brief.ts\'s "CARRY-NOTE SUPERSEDED" warning — that measures a DIFFERENT subject (loop ' +
+          'carry-NOTE write time vs later session activity, EI-22436560948423011), and merging them would ' +
+          'destroy one of two real signals. The blind window is instead stated to the successor as PROSE in ' +
+          'the document\'s own header, which is the truthful carrier for something that cannot be measured yet.',
+      },
+    },
   },
 };
 
@@ -1336,18 +1550,80 @@ describe('P-024 — orientation class × sink coverage matrix', () => {
     expect(out, 'withdrawing the sink must turn the field off, with no second edit in the consumer').toBeUndefined();
   });
 
-  it('detects a PENDING sink that silently gained a claim (permanent falsifiability control)', () => {
-    // Drives the zero-claim assertion with a synthetic registry, so the control
-    // does not depend on carry-brief actually being empty today.
-    const halfRegistered = ORIENTATION_CLASS_REGISTRY.map((entry) =>
+  it('the carry-brief probe really can return false (control: it reads the declaration)', async () => {
+    // P-029's counterpart to the leader-brief control above, and the reason the
+    // live carry-brief cell's green means anything: drive the REAL consumer with
+    // the carry-brief sink withdrawn from the registry row. A consumer that
+    // hardcoded the class instead of reading `applicableSinks` turns this red.
+    const withdrawn = ORIENTATION_CLASS_REGISTRY.map((entry) =>
       entry.id === 'neverDropFacts'
-        ? { ...entry, applicableSinks: [...entry.applicableSinks, 'carry-brief' as const] }
+        ? { ...entry, applicableSinks: entry.applicableSinks.filter((sink) => sink !== 'carry-brief') }
         : entry,
     );
-    expect(classesClaimedBy('carry-brief', halfRegistered)).toEqual(['neverDropFacts']);
-    // …and that it reads empty against the real registry, so the control above
-    // is measuring a difference rather than always-true.
-    expect(classesClaimedBy('carry-brief')).toEqual([]);
+    const out = await readCarryNeverDropFacts(
+      { ownerId: 'su-coverage-probe', workspaceId: 'papercusp-workspace' },
+      { fold: (async () => [neverDropFactProbe('dead-end:coverage-probe')]) as never, registry: withdrawn },
+    );
+    expect(out, 'withdrawing the sink must turn the section off, with no second edit in carry-brief').toBeUndefined();
+  });
+
+  it('carry-brief folds never-drop facts at WORKSPACE scope, not owner-only (control: the P-029 gap)', async () => {
+    // THE SUBSTANTIVE REGRESSION GUARD. The carry document already folded
+    // OWNER-scoped facts before P-029; what it lacked was the WORKSPACE leg, so
+    // a consumer that quietly dropped back to owner-only would still return
+    // facts and still look like it worked — the live cell would stay green while
+    // the exact gap P-029 closed had reopened. Assert the selector set itself.
+    const seen: { scope: string; scopeRef?: string | null }[] = [];
+    await readCarryNeverDropFacts(
+      { ownerId: 'su-coverage-probe', workspaceId: 'papercusp-workspace' },
+      {
+        fold: (async (selectors: readonly { scope: string; scopeRef?: string | null }[]) => {
+          seen.push(...selectors);
+          return [neverDropFactProbe('dead-end:coverage-probe')];
+        }) as never,
+      },
+    );
+    expect(
+      seen.map((selector) => selector.scope).sort(),
+      'a workspace-scoped guard rail must reach the coldest reader in the system (EI-18725816532600240)',
+    ).toEqual(['owner', 'workspace']);
+  });
+
+  it('detects a PENDING sink that silently gained a claim (permanent falsifiability control)', () => {
+    // ⚠ REBUILT ON A SYNTHETIC SINK NAME (P-029), and the reason is the point.
+    //
+    // This control previously asserted that the REAL 'carry-brief' sink claimed
+    // ZERO classes. That made it die the moment carry-brief was legitimately
+    // registered — i.e. exactly when the mechanism it guards did its job. A
+    // control that a CORRECT change turns red is a control that the next author
+    // deletes or weakens rather than repairs, so its lifetime was capped at the
+    // first success of the thing it protects. It is now anchored to a sink name
+    // no registry row will ever claim, so it survives every future sink
+    // graduating from `pending` to `consuming`.
+    const SYNTHETIC_PENDING_SINK = 'probe-only-never-registered-sink';
+
+    // Half 1 — reads EMPTY for a sink nothing claims. True by construction
+    // rather than by the current state of the tree, so it cannot rot; it is
+    // what makes half 2 a measured DIFFERENCE instead of an always-true.
+    expect(classesClaimedBy(SYNTHETIC_PENDING_SINK)).toEqual([]);
+
+    // Half 2 — and DETECTS the claim the instant a registry row adds that sink.
+    const halfRegistered = ORIENTATION_CLASS_REGISTRY.map((entry) =>
+      entry.id === 'neverDropFacts'
+        ? { ...entry, applicableSinks: [...entry.applicableSinks, SYNTHETIC_PENDING_SINK as never] }
+        : entry,
+    );
+    expect(classesClaimedBy(SYNTHETIC_PENDING_SINK, halfRegistered)).toEqual(['neverDropFacts']);
+
+    // Half 3 — THE VACUITY GUARD, new with P-029. `keeps a PENDING sink claimed
+    // by exactly zero classes` iterates SINK_COVERAGE and skips every non-pending
+    // entry; with all three sinks now registered it iterates NOTHING and passes
+    // vacuously. A vacuous invariant is indistinguishable from a working one, so
+    // this asserts the underlying detector still discriminates: the zero-claim
+    // expectation MUST fail against a sink that has gained a claim. If that ever
+    // stops throwing, the pending-sink invariant has become permanently unable
+    // to fail and the next `pending` sink would be registered in silence.
+    expect(() => expect(classesClaimedBy(SYNTHETIC_PENDING_SINK, halfRegistered)).toEqual([])).toThrow();
   });
 
   it('carries the parsed-source note into a matrix failure', () => {
