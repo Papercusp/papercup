@@ -97,6 +97,7 @@ beforeAll(async () => {
   fx = await setupPlanPgFixture();
   process.env.PAPERCUSP_WORKSPACE_ID = fx.workspaceId;
   await seedPlan(fx.admin, fx.workspaceId, HARNESS, PLAN, PLAN_CONTENT);
+  await seedPlan(fx.admin, fx.workspaceId, HARNESS, BLOCKED_PLAN, BLOCKED_PLAN_CONTENT);
 }, 60_000);
 
 afterAll(async () => {
