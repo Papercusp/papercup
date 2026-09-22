@@ -6,7 +6,9 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  COMPACTION_LIMIT_DEFAULT_1M_CAP,
   DEFAULT_MODEL_TIERS,
+  SUPERSEDED_1M_LEADER_CAPS,
   SURFACE_KEYS,
   type ModelTier,
   type SurfaceKey,
@@ -339,8 +341,9 @@ describe("tier compaction limit (context-trimming-tiers D-001/D-002)", () => {
 
   // ── EI-19914665525338044 ──────────────────────────────────────────────────
   // The rejection used to explain EVERY cap with "the cap keeps limit × 1.2
-  // under the model window". On a [1m] spec the cap is the 400k ROLE cap, and
-  // 400,000 × 1.2 = 480,000 against a 1,000,000 window — so the message
+  // under the model window". On a [1m] spec the cap is the ROLE cap
+  // (COMPACTION_LIMIT_DEFAULT_1M_CAP), and that cap × 1.2 still sits under the
+  // 1,000,000 window — so the message
   // justified the cap with an argument that only holds for the number it is NOT
   // using. It was true while the seeded default and the ceiling were one
   // constant; the 2026-08-08 split falsified it and nothing covered this branch.
@@ -356,8 +359,20 @@ describe("tier compaction limit (context-trimming-tiers D-001/D-002)", () => {
 
   it("a [1m] over-cap message does NOT claim the window derivation, and points at the self-set escape", () => {
     const problem = overCapProblem("opus[1m]:high", "500000");
-    // the cap actually enforced is the 400k role cap
-    expect(problem).toContain("400,000");
+    // The cap actually enforced is the ROLE cap. DERIVE it — a literal here is a
+    // second copy of a policy value that demonstrably moves (500_000 → 400_000 →
+    // 450_000), and the hardcoded "400,000" stranded this test into a gate red on
+    // the 2026-09 raise while the behaviour under test was entirely correct.
+    expect(problem).toContain(COMPACTION_LIMIT_DEFAULT_1M_CAP.toLocaleString());
+    // Recurrence guard for that whole class: the message must quote the CURRENT
+    // cap and never a superseded one, so the next raise fails loudly here (with a
+    // message naming the stale value) instead of silently re-stranding the test.
+    for (const superseded of SUPERSEDED_1M_LEADER_CAPS) {
+      expect(
+        problem,
+        `over-cap message quotes the SUPERSEDED role cap ${superseded.toLocaleString()} — it must quote COMPACTION_LIMIT_DEFAULT_1M_CAP`,
+      ).not.toContain(superseded.toLocaleString());
+    }
     // ...so the window sentence must NOT be what explains it
     expect(problem).not.toContain("under the model window");
     // ...and the honest reason plus the documented way to go higher must be
