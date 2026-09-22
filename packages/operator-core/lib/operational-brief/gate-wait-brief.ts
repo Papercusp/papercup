@@ -127,6 +127,7 @@ function nextActionField(
   status: DeployStatus,
   trigger: GateWaitDeployLever,
   owner: OwnerFields,
+  verdict: BriefField<'green' | 'red'>,
 ): BriefField<string> {
   if (trigger.available) return known(`${trigger.lever} — ${trigger.reason}`, STATUS_SOURCE);
   const inFlight = status.deployInFlight;
@@ -136,7 +137,10 @@ function nextActionField(
       STATUS_SOURCE,
     );
   }
-  if (status.state === 'gate-red') {
+  // Owner-directed red advice only for a CURRENT red. A red counter from a checkpoint that is
+  // not firing (or whose verdict is superseded) describes the past; the status read's own
+  // recommendation already routes that case to recovering the producer.
+  if (status.state === 'gate-red' && verdict.status === 'known' && verdict.value === 'red') {
     if (owner.owner.status === 'unknown') {
       return unknown(`the gate is red but its owner is unknown (${owner.owner.reason}); read ${OWNERSHIP_SOURCE} before acting`);
     }
@@ -196,6 +200,7 @@ export function projectGateWaitOperationalBrief(input: ProjectGateWaitBriefInput
   const gate = status.gate;
   const owner = ownerFields(ownership, input.ownershipReadError);
   const trigger = deployTriggerLever(status);
+  const verdict = verdictField(gate);
   const last = gate.lastVerdict;
   return finalizeOperationalBrief<GateWaitBriefFacts>({
     surface: 'gate-wait',
@@ -205,7 +210,7 @@ export function projectGateWaitOperationalBrief(input: ProjectGateWaitBriefInput
         ? unknown(`release status could not classify the deploy state${status.errors.length ? `: ${status.errors.join('; ')}` : ''}`)
         : known(status.state, STATUS_SOURCE),
     owner: owner.owner,
-    nextAction: nextActionField(status, trigger, owner),
+    nextAction: nextActionField(status, trigger, owner, verdict),
     blockers: blockersField(status),
     lastVerified: last
       ? known(
@@ -219,7 +224,7 @@ export function projectGateWaitOperationalBrief(input: ProjectGateWaitBriefInput
       : unknown('no gate verdict is recorded on this read'),
     deadline: deadlineField(status, ownership, owner),
     facts: {
-      verdict: verdictField(gate),
+      verdict,
       judgedCandidate: last?.candidate
         ? known(last.candidate, STATUS_SOURCE)
         : unknown('the last verdict records no candidate sha'),

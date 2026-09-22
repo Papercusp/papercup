@@ -9,7 +9,7 @@
  * `deployTriggerRefusalReason`. Green, red and stalled release fixtures, per the falsifier's
  * probe method.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { computeDeployStatus } from '../../release-deploy-launch';
 import type { GitPipelineSnapshot } from '../../git-pipeline-stats';
 import { readGateOwnership } from '../../coord/gate-ownership';
@@ -52,6 +52,8 @@ function mkSnap(gate: Partial<GitPipelineSnapshot['gate']>, deploy: Partial<GitP
       integrationBranch: 'staging',
       stagingHead: { sha: 'staging00head', shortSha: 'staging0', committedAtMs: 0, subject: 's' },
       ready: { sha: 'greenpin0sha', shortSha: 'greenpin', committedAtMs: 0, subject: 'g' },
+      // computeDeployStatus reads the green pin from `greenPin`, not `ready`.
+      greenPin: { sha: 'greenpin0sha', shortSha: 'greenpin', committedAtMs: 0, subject: 'g' },
       deployed: { sha: 'deployed0sha', shortSha: 'deployed', committedAtMs: 0, subject: 'd' },
       deployedAtMs: 1,
       deployedBehindStaging: 0,
@@ -99,6 +101,7 @@ describe('release:deploy status operationalBrief — gateWaitBriefFor over real 
     const brief = await gateWaitBriefFor(status, ownershipFrom(null));
     expect(brief.facts.deployTrigger.available).toBe(true);
     expect(brief.nextAction.status === 'known' && brief.nextAction.value.startsWith(DEPLOY_TRIGGER_LEVER)).toBe(true);
+    expect(status.deploy.greenPinSha).toBe('greenpin0sha');
     expect(brief.facts.greenPin).toMatchObject({ status: 'known', value: status.deploy.greenPinSha });
     expect(brief.facts.deployedSha).toMatchObject({ status: 'known', value: status.deploy.deployedSha });
     expect(brief.owner).toEqual({ status: 'known', value: null, source: 'gate.greenCheckpoint.ownership' });
@@ -146,9 +149,13 @@ describe('release:deploy status operationalBrief — gateWaitBriefFor over real 
 
   it('a failing ownership read yields an explicit unknown owner, never "unowned"', async () => {
     const status = computeDeployStatus(mkSnap({ consecutiveReds: 2 }, { deployedBehindGreenPin: 0 }));
+    // withBoundedTimeout logs the degraded read; that warning is part of the contract here.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const brief = await gateWaitBriefFor(status, async () => {
       throw new Error('pg unavailable');
     });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('release:deploy:gate-ownership failed: pg unavailable'));
+    warn.mockRestore();
     expect(brief.owner).toEqual({ status: 'unknown', reason: 'gate ownership read failed: pg unavailable' });
     expect(brief.unknowns).toEqual(expect.arrayContaining(['owner', 'nextAction']));
   });

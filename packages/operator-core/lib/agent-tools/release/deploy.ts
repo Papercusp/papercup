@@ -235,7 +235,12 @@ export async function gateWaitBriefFor(
       label: 'release:deploy:gate-ownership',
     });
     ownership = read.value;
-    if (read.degraded || !read.value) ownershipReadError = 'gate ownership read timed out or returned nothing';
+    if (read.degraded || !read.value) {
+      // withBoundedTimeout converts a thrown read into { degraded, errorMessage } — name it.
+      ownershipReadError = read.errorMessage
+        ? `gate ownership read failed: ${read.errorMessage}`
+        : `gate ownership read returned nothing within ${GATE_OWNERSHIP_READ_TIMEOUT_MS}ms`;
+    }
   } catch (error) {
     ownershipReadError = `gate ownership read failed: ${error instanceof Error ? error.message : String(error)}`;
   }
