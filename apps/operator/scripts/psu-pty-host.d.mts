@@ -2331,9 +2331,17 @@ export const KICKOFF_PROOF_TOKEN_ENV: "PAPERCUSP_KICKOFF_PROOF_TOKEN";
  * hardcoding the two agents it happens to know about today. A registry no test
  * can enumerate is one that grows a third backend with no fixture and no
  * coverage, silently — and "silent" is the failure mode that matters here,
- * because an unverified classifier does not throw, it just returns false
- * forever (D-003). The enumerating guard fails the moment a key is added
- * without a captured transcript to prove it against.
+ * because an unverified classifier does not throw, it just returns false.
+ *
+ * ⚠ Do NOT cite D-003 as the authority for that, as this comment previously
+ * did. D-009 RETRACTED D-003's "returns false FOREVER" mechanism for the naive
+ * codex port — measured at polls=3066, divergences=1 (0.03%) — so D-003 is
+ * superseded in part and reads as a stronger warrant than it is. The claim that
+ * survives the measurement is narrower and is the one that actually motivates
+ * this export: a classifier that is genuinely WRONG fails QUIETLY rather than
+ * loudly, so absence of noise is not evidence of coverage. The enumerating
+ * guard fails the moment a key is added without a captured transcript to prove
+ * it against.
  */
 export const TURN_ROW_CLASSIFIERS: Readonly<{
     codex: typeof classifyCodexTranscriptRow;
