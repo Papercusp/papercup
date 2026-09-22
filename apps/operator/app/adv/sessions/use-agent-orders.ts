@@ -32,7 +32,37 @@ import type { RecordedOrientDisclosures } from './Disclosures';
 
 /** Which orders signal's read THREW this call. A key present here means
  *  "we could not ask", which is a different conclusion from "there is none". */
-export type AgentOrdersSignalKey = 'mission' | 'modes' | 'wakeMode' | 'carry' | 'disclosures';
+export type AgentOrdersSignalKey =
+  | 'mission'
+  | 'modes'
+  | 'wakeMode'
+  | 'carry'
+  | 'disclosures'
+  | 'obligationRows';
+
+/**
+ * One rendered line of the SHARED obligation + delta projection (P-018).
+ *
+ * Mirrors `OrientationRow` in packages/operator-core/lib/turn-start-orientation.ts
+ * — the projection `renderOrientationLines` itself delegates to — so the Orders
+ * rail and the agent's own turn-start block render from ONE object and cannot
+ * disagree about "what was this agent told".
+ *
+ * Inlined rather than imported for the same reason as every type above: this
+ * client module must not pull the PG-backed server module into the SPA bundle.
+ */
+export interface OrientationRow {
+  /** The registry class that emitted this row. Widened to `string` on purpose:
+   *  the server's `keyof OrientationState` grows as classes are added (P-013..
+   *  P-016 are adding four right now), and a client union would reject a row
+   *  from a NEWER operator — dropping real obligations on the floor, which is
+   *  the one failure this panel exists to prevent. */
+  classId: string;
+  /** The class segment's emission order — ascending, the shared priority rule. */
+  order: number;
+  /** The rendered line, verbatim. */
+  text: string;
+}
 
 export interface AgentOrdersMission {
   constraint: string | null;
@@ -160,6 +190,15 @@ export interface AgentOrders {
    *  recording existed, or the read failed. It must NEVER be rendered as
    *  "nothing was withheld"; see Disclosures.tsx. */
   disclosures?: RecordedOrientDisclosures | null;
+  /** The SHARED obligation + delta projection (P-018) — the same rows the
+   *  agent's own turn-start block rendered, projected at the `agent-orders`
+   *  sink with `committed: null` so an OBSERVER sees the full standing set
+   *  rather than the delta-suppressed subset the agent saw this turn.
+   *
+   *  ⚠ absent/`null` means NOT RECORDED — an operator predating the field, or a
+   *  read that threw (then the key is also in `unavailable`). It must NEVER be
+   *  rendered as "they were told nothing"; an empty ARRAY is that. */
+  obligationRows?: OrientationRow[] | null;
   unavailable?: AgentOrdersSignalKey[];
 }
 

@@ -504,6 +504,69 @@ export default function AgentOrders({
             testId="disclosures-reads"
           />
 
+          {/* ── Turn-start obligations, verbatim (P-018) ──
+              THE SAME OBJECT turn-start rendered, not a second assembly of it.
+              `obligationRows` is `projectOrientationRows(state, 'agent-orders')`
+              from packages/operator-core/lib/turn-start-orientation.ts — the one
+              projection `renderOrientationLines` now delegates to — so this
+              section and the agent's own turn-start block cannot disagree about
+              "what was this agent told". Every section above decomposes a single
+              class richly; this one is the ground truth they decompose.
+
+              Rendered at the agent-orders sink with `committed: null`, so an
+              OBSERVER sees the full standing set rather than the delta-suppressed
+              subset the agent itself saw this turn — deliberately MORE than
+              turn-start showed, which is exactly the latitude the item grants
+              ("the HUD may render more"). It is never LESS, and never different.
+
+              Absent/null ⇒ no projection was read (an operator predating the
+              field, or the read threw and landed in `unavailable`) — which must
+              read as "we can't answer", never as "they were told nothing". An
+              empty ARRAY is the real "nothing standing" and is the quiet line. */}
+          {unavailable.has('obligationRows') ? (
+            <section className="pc-orders__sec" id="pc-orders-obligations">
+              <Unavailable what="the turn-start obligations" />
+            </section>
+          ) : (orders.obligationRows ?? []).length === 0 ? (
+            <RailQuiet
+              label="Turn-start obligations"
+              none={orders.obligationRows ? 'nothing standing' : 'not recorded'}
+              testId="rail-quiet-obligations"
+            />
+          ) : (
+          <section
+            className="pc-orders__sec"
+            id="pc-orders-obligations"
+            data-collapsed={rail.closed('o-obligations') ? 'true' : 'false'}
+          >
+            <RailSectionHead
+              sectionId="o-obligations"
+              label="Turn-start obligations"
+              className="pc-orders__h"
+              closed={rail.closed('o-obligations')}
+              onToggle={() => rail.toggle('o-obligations')}
+            >
+              <span className="pc-orders__n">{(orders.obligationRows ?? []).length}</span>
+            </RailSectionHead>
+            {(orders.obligationRows ?? []).map((row, i) => (
+              /* classId+order is the projection's own identity, but it is not
+                 guaranteed unique across a re-projection, so `i` disambiguates
+                 rather than risking the duplicate-key crash the perf docs call
+                 out. The row's CLASS is surfaced as a data attribute, not a
+                 badge: an observer cross-checking a line against the section
+                 that decomposes it needs to know which class emitted it. */
+              <div
+                className="pc-orders__row"
+                key={`${row.classId}:${row.order}:${i}`}
+                data-class-id={row.classId}
+                data-testid="orders-obligation-row"
+              >
+                <span className="pc-orders__txt">{row.text}</span>
+              </div>
+            ))}
+          </section>
+          )}
+
           <RailCluster label="What they’re carrying" />
 
           {/* ── Walls: blocked on the owner ── */}

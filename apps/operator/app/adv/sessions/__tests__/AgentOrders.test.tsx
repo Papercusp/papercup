@@ -735,4 +735,107 @@ describe('AgentOrders', () => {
       expect(text).toContain('events:catalog');
     });
   });
+
+  /**
+   * P-018 — the SHARED obligation + delta projection reaching the screen.
+   *
+   * The server half routes this rail and `buildTurnStartOrientationBlock`
+   * through ONE projection; that equality is asserted at the source, in
+   * packages/operator-core/lib/turn-start-orientation-shared-projection.test.ts
+   * ("same fixture => same rows in both"). What CANNOT be asserted there is the
+   * half that made the projection worth sharing: that the rows survive the trip
+   * to the panel verbatim, in the projection's own order, and that the three
+   * states stay three — which is this file's thesis (D-003) applied to a field
+   * whose null is especially easy to misrender as reassurance.
+   */
+  describe('turn-start obligations — the shared projection (P-018)', () => {
+    const ROWS = [
+      {
+        classId: 'ownerDirectives',
+        order: 10,
+        text: '1 open owner directive — resolve it before your own agenda.',
+      },
+      {
+        classId: 'unansweredDirected',
+        order: 20,
+        text: 'su-peer asked you a question 4m ago and is blocked on the answer.',
+      },
+      {
+        classId: 'neverDropFacts',
+        order: 30,
+        text: 'wall: the owner holds the only credential for the publish step.',
+      },
+    ];
+
+    it('renders every row verbatim, in the projection’s order, tagged with its emitting class', () => {
+      setOrders({ obligationRows: ROWS });
+      const { getAllByTestId, getByTestId, queryByTestId } = render(<AgentOrders ownerId="su-1" />);
+
+      const rendered = getAllByTestId('orders-obligation-row');
+      expect(rendered).toHaveLength(3);
+
+      // VERBATIM and IN ORDER. A projection whose whole value is "one answer to
+      // what was this agent told" is defeated by a panel that reorders,
+      // re-words, or summarises it — each of which still renders plausibly.
+      expect(rendered.map((n) => n.textContent)).toEqual(ROWS.map((r) => r.text));
+
+      // The emitting class rides along so a reader cross-checking a line
+      // against the section that decomposes it knows where to look.
+      expect(rendered.map((n) => n.getAttribute('data-class-id'))).toEqual([
+        'ownerDirectives',
+        'unansweredDirected',
+        'neverDropFacts',
+      ]);
+
+      // The populated card replaces the quiet line rather than sitting beside
+      // it, and the section still NAMES itself (the named-empty rule above).
+      expect(queryByTestId('rail-quiet-obligations')).toBeNull();
+      expect(within(getByTestId('agent-orders')).getByText('Turn-start obligations')).toBeTruthy();
+    });
+
+    it('keeps THREE states apart: not recorded, genuinely none, and a failed read', () => {
+      // 1. NOT RECORDED — the field never arrived (an operator predating it).
+      //    The one misrender that matters: this must not read as "they were
+      //    told nothing", which is a claim we have no evidence for.
+      setOrders({});
+      const absent = render(<AgentOrders ownerId="su-1" />);
+      expect(absent.getByTestId('rail-quiet-obligations').textContent).toContain('not recorded');
+      expect(absent.queryByTestId('orders-obligation-row')).toBeNull();
+      cleanup();
+
+      // 2. GENUINELY NONE — we asked, the projection was empty. Different
+      //    conclusion, different words.
+      setOrders({ obligationRows: [] });
+      const none = render(<AgentOrders ownerId="su-1" />);
+      expect(none.getByTestId('rail-quiet-obligations').textContent).toContain('nothing standing');
+      expect(none.getByTestId('rail-quiet-obligations').textContent).not.toContain('not recorded');
+      cleanup();
+
+      // 3. FAILED READ — we could not ask at all.
+      setOrders({ unavailable: ['obligationRows'] });
+      const broken = render(<AgentOrders ownerId="su-1" />);
+      expect(broken.getByTestId('orders-unavailable').textContent).toContain('not “none”');
+      // …and the quiet line must NOT also render, or the failure is dressed up
+      // as an answer sitting right beside it.
+      expect(broken.queryByTestId('rail-quiet-obligations')).toBeNull();
+    });
+
+    it('renders a row from a class this bundle has never heard of', () => {
+      /* The SPA rebuilds on the vite hot path while the sidecar reloads only on
+         restart, so a NEWER operator routinely serves classes this bundle
+         predates — P-013..P-016 are adding four right now. Dropping such a row
+         would silently hide a real obligation, which is the single failure this
+         panel exists to prevent, so `classId` is deliberately `string` rather
+         than a client-side union of today's classes. */
+      setOrders({
+        obligationRows: [
+          { classId: 'aClassInventedAfterThisBundleShipped', order: 5, text: 'a newer obligation' },
+        ],
+      });
+      const { getAllByTestId } = render(<AgentOrders ownerId="su-1" />);
+      const rendered = getAllByTestId('orders-obligation-row');
+      expect(rendered).toHaveLength(1);
+      expect(rendered[0]!.textContent).toBe('a newer obligation');
+    });
+  });
 });
