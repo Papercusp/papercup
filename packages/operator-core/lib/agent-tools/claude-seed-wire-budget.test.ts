@@ -264,19 +264,28 @@ describe('Claude seed wire budget (EI-23319364088969722)', () => {
     // heaviest non-seeded verbs at FULL tier must blow the ceiling — proved without
     // mutating the tree.
     const names = claudeSeedToolNames({}) as string[];
+    const seeded = new Set(names);
     const compact = new Set(claudeCompactToolNames({}) as string[]);
-    const heavies = ['work_items:complete', 'coord:send', 'work_items:checkpoint'].filter(
-      (n) => byName.has(n) && !names.includes(n),
-    );
+    // ⚠ COMPUTED, not named. A hand-picked control set goes VACUOUS the moment the policy
+    // admits one of its members — which is exactly what happened when D-010 made the
+    // owner-baseline a floor and pulled coord:send / work_items:complete /
+    // work_items:checkpoint into the seed. The control then asserted nothing while still
+    // reading as a guard. Taking the heaviest currently-UNSEEDED tools off the live
+    // catalog cannot go stale that way.
+    const heavies = [...byName.keys()]
+      .filter((n) => !seeded.has(n))
+      .map((n) => ({ n, b: wireBytes(n, byName.get(n)!) }))
+      .sort((a, b) => b.b - a.b)
+      .slice(0, 5)
+      .map((x) => x.n);
     expect(
       heavies.length,
-      'expected the known heavy verbs to exist in the catalog and be UNSEEDED — if the policy ' +
-        'has since admitted them this control is vacuous and needs a new set',
+      'expected UNSEEDED tools to exist in the catalog — with none, this control measures nothing',
     ).toBeGreaterThan(0);
 
-    const seeded = tieredBytes(names, compact, byName).total;
+    const seededBytes = tieredBytes(names, compact, byName).total;
     const regrown = tieredBytes([...names, ...heavies], compact, byName).total;
-    expect(regrown).toBeGreaterThan(seeded);
+    expect(regrown).toBeGreaterThan(seededBytes);
     expect(regrown).toBeGreaterThan(CLAUDE_SEED_WIRE_BYTE_BUDGET);
   });
 

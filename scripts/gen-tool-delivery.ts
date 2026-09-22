@@ -178,7 +178,12 @@ interface SeedBaseline {
  * wrong number becomes load-bearing. So the baseline is a committed measurement, and this
  * report states the comparison it is actually making.
  */
-function renderBaselineDiff(agent: GeneratedAgent, baseline: SeedBaseline): string {
+function renderBaselineDiff(
+  agent: GeneratedAgent,
+  baseline: SeedBaseline,
+  catalog: Map<string, { name: string; fullBytes: number; compactBytes: number }>,
+  demand: Map<string, { name: string; callers: number; calls: number }>,
+): string {
   const byName = new Map(agent.rows.map((r) => [r.name, r]));
   const advertised = new Set(agent.advertised);
   const base = new Set(baseline.union);
@@ -206,16 +211,32 @@ function renderBaselineDiff(agent: GeneratedAgent, baseline: SeedBaseline): stri
   for (const n of kept) out.push(`TOOL_DELIVERY_KEPT ${n} ${why(n)}\n`);
   for (const n of added) out.push(`TOOL_DELIVERY_ADDED ${n} ${why(n)}\n`);
   for (const n of dropped) {
-    const r = byName.get(n);
-    // A dropped name has NO row (rows carry only admitted tools), so the reason has to be
-    // stated rather than read off one: either the tool is gone from the catalog, or it
-    // ranked below the value line for the budget.
+    // A dropped name has NO row (rows carry only admitted tools), so its cost has to come
+    // from the catalog measurement rather than from a row. Emitting the numbers is the
+    // point: "dropped with the reason" (P-012) means the reason has to be CHECKABLE, and
+    // "ranked below the value line" is only checkable beside the density that ranked it.
+    const c = catalog.get(n);
+    const d = demand.get(n);
+    if (!c) {
+      out.push(`TOOL_DELIVERY_DROPPED ${n} reason=absent-from-catalog (the tool no longer exists)\n`);
+      continue;
+    }
+    const callers = d?.callers ?? 0;
     out.push(
-      `TOOL_DELIVERY_DROPPED ${n} ${
-        r ? `tier=${r.tier}` : 'reason=below-value-line-or-absent-from-catalog'
-      }\n`,
+      `TOOL_DELIVERY_DROPPED ${n} reason=below-value-line callers=${callers} ` +
+        `calls=${d?.calls ?? 0} fullB=${c.fullBytes} compactB=${c.compactBytes} ` +
+        `callersPerKB=${((callers / Math.max(1, c.compactBytes)) * 1000).toFixed(1)}\n`,
     );
   }
+  // The cost of restoring the whole baseline at COMPACT, stated once — the single number
+  // someone reading this diff will otherwise compute by hand, and the one that decides
+  // whether "keep every baseline name" is affordable or a real trade.
+  const dropCost = dropped.reduce((s, n) => s + (catalog.get(n)?.compactBytes ?? 0), 0);
+  out.push(
+    `TOOL_DELIVERY_BASELINE_RESTORE_COST compactBytes=${dropCost} ` +
+      `spentBytes=${agent.spentBytes} budgetBytes=${agent.budgetBytes} ` +
+      `wouldSpend=${agent.spentBytes + dropCost}\n`,
+  );
   return out.join('');
 }
 
@@ -224,6 +245,8 @@ async function build(): Promise<{
   agents: Record<string, GeneratedAgent>;
   catalogSize: number;
   baseline: SeedBaseline;
+  catalogByName: Map<string, { name: string; fullBytes: number; compactBytes: number }>;
+  demandByName: Map<string, { name: string; callers: number; calls: number }>;
 }> {
   // Side-effect import FIRST: it registers the catalog that listAllProjectedTools reads.
   await import('../packages/operator-core/lib/agent-tools/index.ts');
@@ -302,6 +325,8 @@ async function build(): Promise<{
     agents,
     catalogSize: catalog.length,
     baseline,
+    catalogByName: byName,
+    demandByName,
   };
 }
 
@@ -318,7 +343,9 @@ async function main(): Promise<number> {
       );
     }
     process.stdout.write(`TOOL_DELIVERY_CATALOG tools=${built.catalogSize}\n`);
-    process.stdout.write(renderBaselineDiff(built.agents.claude, built.baseline));
+    process.stdout.write(
+      renderBaselineDiff(built.agents.claude, built.baseline, built.catalogByName, built.demandByName),
+    );
     return 0;
   }
 

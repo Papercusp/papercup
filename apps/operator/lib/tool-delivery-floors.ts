@@ -41,6 +41,12 @@ import { ALL_PAIRS } from '@papercusp/operator-core/lib/bash-substitution/pairs/
 import type { SubstitutionPair } from '@papercusp/operator-core/lib/bash-substitution/types';
 
 import { MANDATE_SEED_EXEMPT, promotedMandateToolNames } from './seed-mandate-coverage';
+// The owner-directed Aug-20 working set (D-007), recovered from commit 84829ccc and
+// committed as data. See ownerBaselineFloors() for why it is a floor tier.
+// ⚠ RELATIVE, not the `@papercusp/operator-core/...` bare specifier every TS import in this
+// file uses: that package's export map does not carry `.json`, so the bare form resolves to a
+// non-existent `.json.ts` and the generator dies at import.
+import BASELINE_2026_08_20 from '../../../packages/operator-core/lib/agent-tools/tool-seed-baseline-2026-08-20.json' with { type: 'json' };
 
 export type FloorTier =
   /** (1) Without these the whole cut strands the catalog. */
@@ -50,7 +56,9 @@ export type FloorTier =
   /** (3) Absence does not degrade — it HALTS or strands state. */
   | 'silent-halt-lifecycle'
   /** (4) Required by documentation no machine-readable guard covers. */
-  | 'prose-mandate';
+  | 'prose-mandate'
+  /** (5) The owner-directed Aug-20 working set (D-007/D-010). DERIVED from a commit. */
+  | 'owner-baseline';
 
 export interface FloorEntry {
   name: string;
@@ -219,14 +227,68 @@ export function assertFloorsAreReasoned(entries: readonly FloorEntry[]): void {
 }
 
 /**
- * The complete floor set: declared tiers 1/3/4 plus the derived tier 2.
+ * Tier 5, DERIVED from a committed measurement of a git commit rather than listed.
  *
- * A name reachable through two tiers keeps its DECLARED entry — the hand-written
- * reason says what specifically breaks, where the derived one can only say that
- * the routing table promotes it.
+ * ── WHY THIS TIER EXISTS ───────────────────────────────────────────────────
+ *
+ * The owner's directive (D-007, verbatim) was: "get the tool list we had at
+ * Aug. 20 ... lets base it off these plus any other you think we should add
+ * based on usage frequency". "Base it off these PLUS any other" is a floor
+ * statement: keep this set, then ADD. Without it the baseline is merely an
+ * input to a ranking, and a ranking is free to drop it — which is exactly what
+ * happened. The first P-012 diff, run before this tier existed, dropped 20 of
+ * the 61 baseline names: the entire work-item lifecycle (create / claim_next /
+ * complete / release / set_state / update / checkpoint), the entire plan-authoring
+ * surface (plans:new / items / set-status / set-now / add-decision), plus
+ * coord:send, improvements:capture, facts:assert+retract, loop:checkpoint,
+ * events:await, fleet:launch-on-plan and search:fulltext.
+ *
+ * ── AND WHY IT IS AFFORDABLE, WHICH IS THE PART WORTH MEASURING ────────────
+ *
+ * Those names lost on VALUE DENSITY (callers ÷ bytes) because they are the
+ * heaviest schemas in the catalog — coord:send is 32,612 B at FULL. At COMPACT
+ * they are 6,164 B. Measured 2026-09-21: the whole 61-name baseline costs
+ * 93,769 B at COMPACT against the 100,000 B budget (D-009), leaving 6,231 B for
+ * demand-ranked additions. So the owner's directive is not in tension with the
+ * budget at all — it was in tension with the FULL tier, and the COMPACT tier is
+ * precisely what D-002 added to dissolve that. A floor guarantees >= COMPACT,
+ * never FULL (D-004), which is what makes this fit.
+ *
+ * ── DERIVED, NOT RE-LISTED ─────────────────────────────────────────────────
+ *
+ * The names come from the committed measurement of commit 84829ccc, not from a
+ * hand-typed copy. Re-listing 61 names here would be the second copy this whole
+ * plan exists to remove, and it would go stale silently.
+ */
+export function ownerBaselineFloors(): FloorEntry[] {
+  const union = BASELINE_2026_08_20.union;
+  if (!Array.isArray(union) || union.length !== BASELINE_2026_08_20.counts.union) {
+    throw new Error(
+      `tool-delivery-floors: the Aug-20 baseline is internally inconsistent ` +
+        `(counts.union=${BASELINE_2026_08_20.counts.union}, union.length=${union?.length}). ` +
+        'A baseline that disagrees with itself cannot anchor a floor.',
+    );
+  }
+  return union.map((name) => ({
+    name,
+    tier: 'owner-baseline' as const,
+    reason:
+      `in the owner-directed Aug-20 working set (commit ${BASELINE_2026_08_20.commit}, D-007/D-010): ` +
+      'the directive was to base the unified seed ON that set and ADD to it, so dropping a member is a ' +
+      'capability regression against a stated starting point, not a budget saving',
+  }));
+}
+
+/**
+ * The complete floor set: declared tiers 1/3/4 plus the derived tiers 2 and 5.
+ *
+ * A name reachable through several tiers keeps its DECLARED entry — the
+ * hand-written reason says what specifically breaks, where a derived one can
+ * only say that the routing table promotes it or that the baseline held it.
  */
 export function resolveDeliveryFloors(pairs: readonly SubstitutionPair[] = ALL_PAIRS): FloorEntry[] {
   const byName = new Map<string, FloorEntry>();
+  for (const entry of ownerBaselineFloors()) byName.set(entry.name, entry);
   for (const entry of routingTableFloors(pairs)) byName.set(entry.name, entry);
   for (const entry of DECLARED_FLOORS) byName.set(entry.name, entry);
 

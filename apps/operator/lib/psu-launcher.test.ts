@@ -2617,12 +2617,22 @@ describe("claudeSeedToolNames (EI-23319364088969722 — Claude's own minimal see
     expect(seed).toContain("tools:invoke");
   });
 
-  it("keeps the heavy, non-mandated verbs OUT (this is where the saving lives)", () => {
-    // Regression guard on the actual number: these seven cost 187,841 B of the old
-    // 432,714 B seed — 43% of it for SEVEN names — and not one is promoted by the
-    // generated routing table. Re-seeding any of them silently hands back a large
-    // slice of the ~-116K tokens/turn this change bought.
+  it("carries the seven measured heavies AT COMPACT — the point of three-way admission (D-010)", () => {
+    // ⚠ THIS ASSERTION IS THE EXACT INVERSE OF THE ONE IT REPLACES, deliberately. The old
+    // guard said these seven must stay OUT, because in a two-way admission they cost
+    // 187,841 B — 43% of the old 432,714 B seed for SEVEN names — and there was no way to
+    // carry them for less. That was a true statement about a FULL-or-nothing world.
+    //
+    // They are all in the owner-directed Aug-20 baseline, which D-010 made a floor after
+    // P-012's diff caught the ranking dropping 20 of its 61 names. At COMPACT the same
+    // seven cost a fraction of that, which is precisely what D-002's third tier bought:
+    // the choice stopped being "pay 32,612 B for coord:send or lose it" and became "pay
+    // 6,164 B for it".
+    //
+    // So the saving is NOT located in their absence any more — it is located in their
+    // TIER. That is what this now guards: present, and present at compact.
     const seed = claudeSeedToolNames(processEnv({}));
+    const compact = new Set(claudeCompactToolNames(processEnv({})));
     for (const n of [
       "work_items:complete",
       "coord:send",
@@ -2632,7 +2642,12 @@ describe("claudeSeedToolNames (EI-23319364088969722 — Claude's own minimal see
       "improvements:capture",
       "facts:assert",
     ]) {
-      expect(seed).not.toContain(n);
+      expect(seed, `${n} is in the owner-directed Aug-20 baseline (D-010) and must be advertised`).toContain(n);
+      expect(
+        compact.has(n),
+        `${n} is one of the seven measured heavies — advertising it at FULL is what the ` +
+          `two-way admission could not afford, so it must ship COMPACT`,
+      ).toBe(true);
     }
   });
 
