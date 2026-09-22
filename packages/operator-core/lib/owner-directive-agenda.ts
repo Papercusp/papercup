@@ -221,14 +221,19 @@ export async function directiveActionVerdict(
   // derived-truth ladder warns about — and here the drift direction is
   // permissive, which is the worst one for a guard. Same `NOT (… = ANY(…))`
   // form issues-engineer.ts uses against the same constant.
-  const holders = await s<Array<{ assignee: string | null }>>`
-    SELECT assignee FROM harness_shared.work_items
+  // The unified work-items table stores claim ownership in `taken_by`; there is
+  // no `assignee` column on it (that spelling belongs to the issue family).
+  // Getting this wrong is not a silent miss: the query THROWS `column
+  // "assignee" does not exist`, which took out every dismiss/disposition path
+  // on this verb fleet-wide until it was fixed.
+  const holders = await s<Array<{ taken_by: string | null }>>`
+    SELECT taken_by FROM harness_shared.work_items
      WHERE workspace_id = ${input.workspaceId}
        AND directive_ref = ${input.directiveId}
        AND NOT (status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]))
-       AND assignee IS NOT NULL
+       AND taken_by IS NOT NULL
   `;
-  const holderIds = holders.map((h) => h.assignee!).filter(Boolean);
+  const holderIds = holders.map((h) => h.taken_by!).filter(Boolean);
   if (holderIds.includes(input.ownerId)) return { allowed: true, because: 'holds-linking-work-item' };
 
   return { allowed: false, addressedTo: directive.recorded_by, holders: [...new Set(holderIds)] };
