@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-015 R-3 live-plane observation: launch receipt chain, lost-acknowledgement resync, span/usage joins, leader-posture attachment, authority-reduction fail-closed",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-2143764",
+  "observer": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+  "capturedAt": "2026-09-22T18:45:50.762820Z",
+  "command": ["dev:pg_query", "four scoped read-only reads of session_identity_activation_events, session_identity_layer_spans joined to tool_invocations, agent_usage_samples_identity_attribution, and adv_sessions.launch_spec for owner su-38e71009 (SQL in replication[])"],
+  "exitCode": 0,
+  "startedAt": "2026-09-22T18:44:50.467713Z",
+  "finishedAt": "2026-09-22T18:45:50.762820Z",
+  "summary": "Observed on the live plane for the observer's own session (adv 29827): (1) the launch desired->prepared->applied receipt chain (13137-13139); (2) control and restart transitions (13140-13145, 13210-13212); (3) a lost acknowledgement (generation 4 absent) resynced via full-resync and converged to applied; (4) stable actor, principal and session across every event; (5) 317 real tool rows joined to the open layer span for event 13212, plus 5 inference rows attributed to events 13145, 13191 and 13212; (6) a live fleet leader's applied fleet-posture:su.fleet-leader attachment (13163, 13170, 13177). Authority-reduction fail-closed is pinned by a caught mutant (test runs 19019020/19019462, D-116).",
+  "timeBasis": "Database clock_timestamp() returned by each read-only dev:pg_query below (18:44:50Z, 18:45:25Z, 18:45:50Z).",
+  "subject": {
+    "ownerId": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+    "workspaceId": "papercusp-workspace",
+    "advSessionId": 29827,
+    "note": "The observer's OWN running psu session, launched 2026-09-22T18:06:58Z and still live, so every row read is a real production-path row, not a fixture."
+  },
+  "replication": [
+    {
+      "tool": "dev:pg_query",
+      "sql": "SELECT clock_timestamp() AS observed_at, e.id, e.control_generation AS gen, e.phase, e.source, e.stack_refs, left(e.specification_revision,12) AS spec, left(e.state_revision,12) AS state, e.adv_session_id AS adv, e.actor_id = e.owner_id AS actor_is_owner, e.principal_id, e.failure, e.recorded_at FROM harness_shared.session_identity_activation_events e WHERE e.workspace_id='papercusp-workspace' AND e.owner_id='su-38e71009-f36b-4ca7-8a14-e617921fd7cd' ORDER BY e.id"
+    },
+    {
+      "tool": "dev:pg_query",
+      "sql": "SELECT count(*) FROM harness_shared.tool_invocations t JOIN harness_shared.session_identity_layer_spans s ON s.workspace_id=t.workspace_id AND s.owner_id=t.coord_owner_id AND t.invoked_at>=s.active_from AND (s.active_until IS NULL OR t.invoked_at<s.active_until) WHERE t.workspace_id='papercusp-workspace' AND t.coord_owner_id='su-38e71009-f36b-4ca7-8a14-e617921fd7cd' AND t.invoked_at > '2026-09-22 18:35:00+00' AND s.activation_event_id=13212"
+    },
+    {
+      "tool": "dev:pg_query",
+      "sql": "SELECT count(*), jsonb_agg(DISTINCT u.identity_activation_event_id), jsonb_agg(DISTINCT u.identity_stack_refs) FROM harness_shared.agent_usage_samples_identity_attribution u WHERE u.workspace_id='papercusp-workspace' AND u.ts > 1790100000000 AND u.identity_owner_id='su-38e71009-f36b-4ca7-8a14-e617921fd7cd'"
+    },
+    {
+      "tool": "dev:pg_query",
+      "sql": "SELECT e.id, e.owner_id, e.phase, e.source, e.stack_refs, e.recorded_at FROM harness_shared.session_identity_activation_events e WHERE e.workspace_id='papercusp-workspace' AND e.stack_refs::text LIKE '%fleet-leader%' AND e.phase='applied' ORDER BY e.id DESC LIMIT 3"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "desired-prepared-applied-receipts",
+      "scope": "desired-prepared-applied-receipts",
+      "passed": true,
+      "evidence": "The launch chain for adv_session 29827 is 13137 desired/source=launch, then 13138 prepared, then 13139 applied (gen 1, spec ad97ad3c2714, state 37b21f82cba4). The mode:set auto control transition is 13140 desired, then 13144 prepared, then 13145 applied (gen 2, stack [autonomy:su.mode-auto], state 6d031da47dd3). The carry-respawn re-render is 13210 desired/source=restart, then 13211 prepared, then 13212 applied (gen 5, spec 5749872a5ad7, state 18cf633bd759). Every applied row is preceded by its own prepared row for the same revision pair."
+    },
+    {
+      "id": "lost-acknowledgement-resync",
+      "scope": "desired-prepared-applied-receipts",
+      "passed": true,
+      "evidence": "No generation-4 row exists for this owner. The successor turn at 18:35Z received a CTRL full-resync with reason generation-mismatch (previousGeneration 3, generation 5) and activation status 'desired' with applied lagging (desired 5749872a/18cf633b vs applied ad97ad3c/6d031da4). After coord:orient { afterCompaction:true } the persisted control_state read status 'applied' at generation 6, and events 13211/13212 record the prepared/applied phases for the desired pair. A lost acknowledgement was retried and converged, never merged behind."
+    },
+    {
+      "id": "actor-principal-session-stability",
+      "scope": "actor-principal-session-stability",
+      "passed": true,
+      "evidence": "All 11 activation events for this owner carry actor_id == owner_id, principal_id 'system:superuser' and adv_session_id 29827, across the launch, control and restart sources and across a carry-respawn."
+    },
+    {
+      "id": "per-layer-span-usage-join",
+      "scope": "per-layer-span-usage-join",
+      "passed": true,
+      "evidence": "session_identity_layer_spans holds three contiguous autonomy-slot spans for this owner: events 13145 (18:07:48 to 18:23:30Z), 13191 (18:23:30 to 18:35:06Z) and 13212 (from 18:35:06Z, open). Each span's active_until equals the next span's active_from. 317 real tool_invocations rows since 18:35Z join the open span for event 13212 (sample ids 28814534, 28814509, 28814495; tools include capability:bash, code:run, coord:declare-intent). 5 inference rows in agent_usage_samples_identity_attribution (sample ids 128042, 128041, 128019) attribute to activation events 13145, 13191 and 13212 with identity_stack_refs [autonomy:su.mode-auto], across both specification revisions."
+    },
+    {
+      "id": "leadership-posture-attachment",
+      "scope": "actor-principal-session-stability",
+      "passed": true,
+      "evidence": "A live fleet leader, owner su-c03852cb, has applied control events 13163 (18:16:13Z), 13170 (18:17:40Z) and 13177 (18:18:38Z), each with stack_refs [autonomy:su.mode-auto, fleet-posture:su.fleet-leader]. The leader posture layer attached through the same desired/prepared/applied control path."
+    },
+    {
+      "id": "authority-reduction-fails-closed",
+      "scope": "authority-reduction-fails-closed",
+      "passed": true,
+      "evidence": "Tree plus test, not live. checkIdentityGrantKernel admits a tool only if both the applied receipt's specification and the launch record's CURRENT specification admit it, and identity-management writes a narrowed specificationArtifact into the record before any render. The observer's own record (adv 29827) shows this retention shape live: current spec 5749872a5ad7 with identityHistory [ad97ad3c2714/6d031da47dd3], i.e. the prior applied receipt is retained beside the current spec. Falsifiable guard: identity-grants-port.test.ts 'binds a failed authority reduction to the narrower specification instead of retaining the wider one'. Mutation probe group p015-r3-reduction-fails-closed-20260922-1844: baseline test run 19019020 passed; mutant '[artifact, current] -> [artifact]' test run 19019462 was caught. See plan decision D-116."
+    }
+  ],
+  "notProven": [
+    "A launch receipt served specifically by the STAGING operator (:3170). The observed launch went through this box's MCP proxy (:9071 -> :3070, build be8396c6dd).",
+    "compile-once-per-adapter across more than one adapter. Only the claude adapter was observed; the record carries one specificationArtifact per revision.",
+    "A live failed REDUCTION transition. The fail-closed property is established by source trace plus a caught mutant, not by forcing a production reduction to fail.",
+    "Independent passing grading."
+  ],
+  "sourcePaths": [
+    "packages/operator-core/lib/capability-envelope/identity-grants-port.ts",
+    "packages/operator-core/lib/identity-management.ts",
+    "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+    "packages/operator-core/lib/session-identity-attribution.ts"
+  ],
+  "testRunIds": [19019020, 19019462]
+}
