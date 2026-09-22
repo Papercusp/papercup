@@ -446,16 +446,30 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
   // defects stayed `current` forever after those defects were repaired: it stayed
   // `not-pass`, and plan-acceptance-gate returns on not-pass BEFORE the recruiter
   // (`if (!gradingMissing && !gradingStale) return refusal`), so the re-grade its own
-  // remediation text asks for could not be summoned by any verb.
-  it('stales a non-pass grading whose evidence cohort was bound after it was graded, so a re-grade can be recruited', () => {
+  // remediation text asks for could not be summoned by any verb. The trigger is COHORT
+  // IDENTITY — what a grader would see — never a timestamp.
+  const degrade = (input: AcceptanceBarContractSnapshotInput, why: string) => {
+    const card = input.scorecards.rows.find((row) => row.issueId === 'SC-GRADE')!;
+    card.ratings['r-1'] = { rating: 'degraded', evidence: why };
+    return Date.parse(card.createdAt);
+  };
+  const addBinding = (
+    input: AcceptanceBarContractSnapshotInput,
+    at: number,
+    patch: Partial<AcceptanceBarEvidenceSource>,
+  ) => {
+    const base = input.evidence.rows[0]!;
+    input.evidence.rows.push({
+      ...structuredClone(base),
+      ...patch,
+      createdAt: new Date(at).toISOString(),
+    } as AcceptanceBarEvidenceSource);
+  };
+
+  it('stales a non-pass grading when a NEW artifact enters the cohort after grading, so a re-grade can be recruited', () => {
     const input = provedFixture(1);
-    const independent = input.scorecards.rows.find((card) => card.issueId === 'SC-GRADE')!;
-    independent.ratings['r-1'] = { rating: 'degraded', evidence: 'Proof was stale when graded.' };
-    const gradedAt = Date.parse(independent.createdAt);
-    // The implementer then repairs exactly the evidence that rating cited.
-    input.evidence.rows.forEach((row) => {
-      row.createdAt = new Date(gradedAt + 60_000).toISOString();
-    });
+    const gradedAt = degrade(input, 'The cited artifact did not establish the outcome.');
+    addBinding(input, gradedAt + 60_000, { evidenceRef: 'evidence-added-after-grading' });
 
     const snapshot = projectAcceptanceBarContractSnapshot(input);
 
@@ -466,14 +480,28 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').satisfied).toBe(false);
   });
 
-  it('CONTROL: a non-pass grading whose evidence predates it stays not-pass, so the escape is not a blanket waiver', () => {
+  it('stales when an UNEXECUTED binding becomes executed — excluding execution rebuilds the dead end one level down', () => {
     const input = provedFixture(1);
-    const independent = input.scorecards.rows.find((card) => card.issueId === 'SC-GRADE')!;
-    independent.ratings['r-1'] = { rating: 'degraded', evidence: 'The outcome is not yet satisfied.' };
-    const gradedAt = Date.parse(independent.createdAt);
-    input.evidence.rows.forEach((row) => {
-      row.createdAt = new Date(gradedAt - 60_000).toISOString();
-    });
+    const gradedAt = degrade(input, 'Attested execution with no run in the ledger.');
+    // The cohort the grader saw carried an unexecuted binding; the implementer then does
+    // the one repair the gate asks for and actually runs it. Same artifact, new state.
+    addBinding(input, gradedAt - 60_000, { evidenceRef: 'evidence-awaiting-a-run', testRunId: null, coverageEvidenceRef: null });
+    addBinding(input, gradedAt + 60_000, { evidenceRef: 'evidence-awaiting-a-run', testRunId: 4242 });
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.grading).toMatchObject({ state: 'stale', rating: 'degraded' });
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_grading_stale');
+  });
+
+  it('CONTROL: a metadata-only rebind of the SAME artifact does NOT stale — the measured ~3:1 over-trigger stays closed', () => {
+    const input = provedFixture(1);
+    const gradedAt = degrade(input, 'The outcome is not yet satisfied.');
+    // 55 such rebinds happened in one honest afternoon; only 19 moved the artifact set.
+    // Keying on "newer than the card" re-rolled a grader for every one of them.
+    const base = input.evidence.rows[0]!;
+    addBinding(input, gradedAt + 60_000, { evidenceRef: base.evidenceRef });
+    addBinding(input, gradedAt + 120_000, { evidenceRef: base.evidenceRef });
 
     const snapshot = projectAcceptanceBarContractSnapshot(input);
 
@@ -481,13 +509,10 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_grading_not_pass');
   });
 
-  it('CONTROL: a PASSING grading is untouched by later evidence, so repairs do not churn ship-ready bars', () => {
+  it('CONTROL: a PASSING grading is untouched by a later cohort change, so repairs do not churn ship-ready bars', () => {
     const input = provedFixture(1);
-    const independent = input.scorecards.rows.find((card) => card.issueId === 'SC-GRADE')!;
-    const gradedAt = Date.parse(independent.createdAt);
-    input.evidence.rows.forEach((row) => {
-      row.createdAt = new Date(gradedAt + 60_000).toISOString();
-    });
+    const gradedAt = Date.parse(input.scorecards.rows.find((row) => row.issueId === 'SC-GRADE')!.createdAt);
+    addBinding(input, gradedAt + 60_000, { evidenceRef: 'evidence-added-after-a-pass' });
 
     const snapshot = projectAcceptanceBarContractSnapshot(input);
 
