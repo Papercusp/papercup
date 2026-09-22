@@ -3,6 +3,21 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/verify-identities-r4.mjs and regenerate.
 /**
+ * Serialize the evidence artifact with every identity-leak class scrubbed.
+ *
+ * The artifact records spawned command lines and error stacks, and those carry the
+ * absolute tauri-agent-tools path under the developer's home directory. git-sync's
+ * content guard quarantines such a file on every sweep, so an unscrubbed artifact
+ * copied into docs/evidence never commits and cannot back testing:record-run
+ * (measured 2026-09-22: both R-4 artifacts sat quarantined for 141 consecutive
+ * ticks). Scrubbing here, with the same module the guard uses, makes every
+ * regeneration commit-safe instead of relying on the author to redact by hand.
+ *
+ * @param {unknown} evidence
+ * @returns {string}
+ */
+export function serializeEvidence(evidence: unknown): string;
+/**
  * @param {string|number} pid
  * @param {readonly string[]} args
  * @returns {string[]}

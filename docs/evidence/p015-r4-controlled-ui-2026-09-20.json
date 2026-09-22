@@ -1,0 +1,483 @@
+{
+  "workItem": "WI-2143764",
+  "bug": "EI-23824866927993301",
+  "plan": "identities-v1-2026-08-30",
+  "evidenceScope": "Controlled responses in a real isolated Tauri UI; supports pointer reachability and UI states only. Not full R-4 acceptance or host activation proof.",
+  "sourceSha256": {
+    "apps/operator/app/settings/identities/page.tsx": "3bdc2042c8aa3509209f26c3ab053ddcd167ec13acebd1bacb12a4b41bd49937",
+    "scripts/verify-identities-r4.mjs": "889163e962cdd2e062236a47b6937fc2585547f3ea09f01666fa7ac7e23f1555",
+    "apps/operator/lib/verify-identities-r4.test.ts": "b09ab226026fee5416512664cc5519a347c1da726e75110c9361995ec50abbd0"
+  },
+  "before": {
+    "source": "/tmp/p015-r4-live-20260920-ancestors/evidence.json",
+    "sha256": "b62d6ec27f59b3686b5f456b56e4620ac6032e16dbc0e13ca4f85abc8d2882a2",
+    "failureDom": {
+      "url": "http://127.0.0.1:33700/settings/identities?identityAgent=p015-r4-owned-2129764-1789946688582&identityId=research-steward&identitySlot=domain",
+      "body": "Identities\nChoose agent behavior, inspect what is actually active, and manage the transition safely.\n\nAgent\n\nP-015 R-4 disposable owner 789946688582\nLibrary\nCurrent agent\nProvider bindings\nInstalled identities\nSearch installed identities\nAll slots\naudience\naudit\nautonomy\ncollaboration-stance\ndomain\nfleet-posture\nideation\nobjective\n\npapercusp-engineer\nIDENTITY (abstract — a layer, never runnable alone): the software-engineering profession. Fills the exclusive `domain` slot with su.md's engineering discipline, extracted verbatim by P-002; P-023 makes it the coding hive's domain document.\nAPPLIED\n\nresearch-steward\nIDENTITY (abstract — a layer, never runnable alone): research and documentation stewardship for a repo-less task pipeline.\nresearch-steward\nIDENTITY (abstract — a layer, never runnable alone): research and documentation stewardship for a repo-less task pipeline.\n\nTIER\nbuiltin\nVERSION\n0.1.0\nSOURCE ID\nresearch-steward\nSOURCE\n/home/builduser/papercupai-workspace/papercusp/libs/papercusp/packages/harness/blueprints/research-steward/blueprint.yaml\nSlot\n\ndomain · exclusive\nExclusive — applying this identity replaces the current holder.\nIdentity settings\n\nThis installed identity declares no separately editable values on this surface. Its configuration remains file-canonical and is resolved from the installed blueprint before activation.\nReview switch\n",
+      "calls": [],
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "ancestors": [
+        {
+          "tag": "BUTTON",
+          "cls": "pc-btn pc-btn-primary",
+          "x": 1301,
+          "y": 382,
+          "width": 114.921875,
+          "height": 36,
+          "clientWidth": 113,
+          "scrollWidth": 113,
+          "scrollLeft": 0,
+          "overflowX": "visible",
+          "display": "flex",
+          "minWidth": "auto"
+        },
+        {
+          "tag": "DIV",
+          "cls": "pc-identities__actions",
+          "x": 1301,
+          "y": 382,
+          "width": 306,
+          "height": 36,
+          "clientWidth": 306,
+          "scrollWidth": 306,
+          "scrollLeft": 0,
+          "overflowX": "visible",
+          "display": "flex",
+          "minWidth": "0px"
+        },
+        {
+          "tag": "DIV",
+          "cls": "pc-identities__detail pc-card",
+          "x": 1284,
+          "y": -172,
+          "width": 340,
+          "height": 607,
+          "clientWidth": 338,
+          "scrollWidth": 338,
+          "scrollLeft": 0,
+          "overflowX": "hidden",
+          "display": "block",
+          "minWidth": "0px"
+        },
+        {
+          "tag": "SECTION",
+          "cls": "pc-identities__library",
+          "x": 1020,
+          "y": -172,
+          "width": 604,
+          "height": 607,
+          "clientWidth": 604,
+          "scrollWidth": 604,
+          "scrollLeft": 0,
+          "overflowX": "visible",
+          "display": "grid",
+          "minWidth": "auto"
+        },
+        {
+          "tag": "MAIN",
+          "cls": "pc-identities",
+          "x": 1020,
+          "y": -345,
+          "width": 188,
+          "height": 780,
+          "clientWidth": 188,
+          "scrollWidth": 604,
+          "scrollLeft": 0,
+          "overflowX": "clip",
+          "display": "grid",
+          "minWidth": "0px"
+        },
+        {
+          "tag": "SECTION",
+          "cls": "pc-settings-content",
+          "x": 1020,
+          "y": -345,
+          "width": 188,
+          "height": 1497.140625,
+          "clientWidth": 188,
+          "scrollWidth": 188,
+          "scrollLeft": 0,
+          "overflowX": "visible",
+          "display": "block",
+          "minWidth": "0px"
+        },
+        {
+          "tag": "DIV",
+          "cls": "pc-settings-shell",
+          "x": 744,
+          "y": -373,
+          "width": 488,
+          "height": 1589.140625,
+          "clientWidth": 488,
+          "scrollWidth": 516,
+          "scrollLeft": 0,
+          "overflowX": "visible",
+          "display": "grid",
+          "minWidth": "0px"
+        },
+        {
+          "tag": "MAIN",
+          "cls": "",
+          "x": 744,
+          "y": -373,
+          "width": 488,
+          "height": 1589.140625,
+          "clientWidth": 488,
+          "scrollWidth": 516,
+          "scrollLeft": 0,
+          "overflowX": "clip",
+          "display": "block",
+          "minWidth": "0px"
+        },
+        {
+          "tag": "DIV",
+          "cls": "",
+          "x": 744,
+          "y": -509,
+          "width": 488,
+          "height": 1725.140625,
+          "clientWidth": 488,
+          "scrollWidth": 488,
+          "scrollLeft": 0,
+          "overflowX": "visible",
+          "display": "block",
+          "minWidth": "0px"
+        },
+        {
+          "tag": "BODY",
+          "cls": "has-left-sidebar has-op-chat has-dev-rail dev-rail-collapsed",
+          "x": 0,
+          "y": -509,
+          "width": 1280,
+          "height": 1725.140625,
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "scrollLeft": 0,
+          "overflowX": "clip",
+          "display": "block",
+          "minWidth": "0px"
+        },
+        {
+          "tag": "HTML",
+          "cls": "",
+          "x": 0,
+          "y": -509,
+          "width": 1280,
+          "height": 1725.140625,
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "scrollLeft": 0,
+          "overflowX": "clip",
+          "display": "block",
+          "minWidth": "0px"
+        }
+      ],
+      "targets": [
+        {
+          "selector": ".pc-identities",
+          "rect": {
+            "tag": "MAIN",
+            "cls": "pc-identities",
+            "x": 1020,
+            "y": -345,
+            "width": 188,
+            "height": 780,
+            "clientWidth": 188,
+            "scrollWidth": 604,
+            "scrollLeft": 0,
+            "overflowX": "clip",
+            "display": "grid",
+            "minWidth": "0px"
+          }
+        },
+        {
+          "selector": ".pc-identities__library",
+          "rect": {
+            "tag": "SECTION",
+            "cls": "pc-identities__library",
+            "x": 1020,
+            "y": -172,
+            "width": 604,
+            "height": 607,
+            "clientWidth": 604,
+            "scrollWidth": 604,
+            "scrollLeft": 0,
+            "overflowX": "visible",
+            "display": "grid",
+            "minWidth": "auto"
+          }
+        },
+        {
+          "selector": ".pc-identities__detail",
+          "rect": {
+            "tag": "DIV",
+            "cls": "pc-identities__detail pc-card",
+            "x": 1284,
+            "y": -172,
+            "width": 340,
+            "height": 607,
+            "clientWidth": 338,
+            "scrollWidth": 338,
+            "scrollLeft": 0,
+            "overflowX": "hidden",
+            "display": "block",
+            "minWidth": "0px"
+          }
+        },
+        {
+          "selector": ".pc-identities__actions button",
+          "rect": {
+            "tag": "BUTTON",
+            "cls": "pc-btn pc-btn-primary",
+            "x": 1301,
+            "y": 382,
+            "width": 114.921875,
+            "height": 36,
+            "clientWidth": 113,
+            "scrollWidth": 113,
+            "scrollLeft": 0,
+            "overflowX": "visible",
+            "display": "flex",
+            "minWidth": "auto"
+          }
+        }
+      ]
+    },
+    "error": "Error: Command failed: /home/builduser/.local/node25/bin/tauri-agent-tools eval --pid 2114683 --file /tmp/p015-r4-live-20260920-ancestors/pointer-review-switch.js\nBridge error (500): {\"error\":\"ERROR: pointer target outside viewport: {\\\"left\\\":1301,\\\"right\\\":1415.921875,\\\"top\\\":382,\\\"bottom\\\":418,\\\"width\\\":1280,\\\"height\\\":800}\"}\n\n    at genericNodeError (node:internal/errors:998:15)\n    at wrappedFn (node:internal/errors:543:14)\n    at checkExecSyncError (node:child_process:925:11)\n    at execFileSync (node:child_process:961:15)\n    at checkedCommand (file:///home/builduser/papercupai-workspace/papercusp/scripts/verify-identities-r4.mjs:24:10)\n    at run (file:///home/builduser/papercupai-workspace/papercusp/scripts/verify-identities-r4.mjs:78:18)\n    at evalFile (file:///home/builduser/papercupai-workspace/papercusp/scripts/verify-identities-r4.mjs:151:10)\n    at click (file:///home/builduser/papercupai-workspace/papercusp/scripts/verify-identities-r4.mjs:113:27)\n    at main (file:///home/builduser/papercupai-workspace/papercusp/scripts/verify-identities-r4.mjs:280:3)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)"
+  },
+  "after": {
+    "schemaVersion": "p015-r4-identities-ui-v1",
+    "status": "pass",
+    "syntheticMutationResponses": true,
+    "hostActivationProven": false,
+    "workspace": "verify-tauri-isolated-90",
+    "owner": "p015-r4-owned-2463583-1789947050468",
+    "ownerLabel": "P-015 R-4 disposable owner 789947050468",
+    "treeHead": "ac8cc40b8d4d4092b6ee1de37162a887148bd4a2",
+    "bridgePid": 2439563,
+    "bridgeOwnerSid": "su-5fe0f2de-a2a8-4019-99cb-85117be748c0",
+    "launchProvenance": "agent:su-5fe0f2de-a2a8-4019-99cb-85117be748c0:run:1789946923869049418-2336551-24421",
+    "frozenSpaDist": "/tmp/verify-tauri-headless.bMuVad/spa",
+    "steps": [
+      {
+        "label": "seed",
+        "owner": "p015-r4-owned-2463583-1789947050468",
+        "sessionId": 1,
+        "workspace": "verify-tauri-isolated-90"
+      },
+      {
+        "label": "navigate-identities",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 navigate /settings/identities?identityAgent=p015-r4-owned-2463583-1789947050468&identityId=research-steward&identitySlot=domain",
+        "result": "{\n  \"success\": true,\n  \"selector\": \"/settings/identities?identityAgent=p015-r4-owned-2463583-1789947050468&identityId=research-steward&identitySlot=domain\",\n  \"tagName\": \"window\"\n}"
+      },
+      {
+        "label": "owned-agent-visible",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 check --eval document.body.innerText.includes(\"P-015 R-4 disposable owner 789947050468\")",
+        "result": "{\"passed\":true,\"checks\":[{\"type\":\"eval\",\"passed\":true,\"expression\":\"document.body.innerText.includes(\\\"P-015 R-4 disposable owner 789947050468\\\")\"}]}"
+      },
+      {
+        "label": "identity-library-visible",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 check --selector .pc-identities__identity",
+        "result": "{\"passed\":true,\"checks\":[{\"type\":\"selector\",\"passed\":true,\"selector\":\".pc-identities__identity\"}]}"
+      },
+      {
+        "label": "eval:patch-fetch",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 eval --file /tmp/p015-r4-live-20260920-success/patch-fetch.js",
+        "result": "p015-r4-fetch-patched"
+      },
+      {
+        "label": "owned-agent-selected",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 check --selector [aria-label=\"Agent to manage\"] --eval document.querySelector('[aria-label=\"Agent to manage\"]')?.disabled === false && new URLSearchParams(location.search).get('identityAgent') === \"p015-r4-owned-2463583-1789947050468\"",
+        "result": "{\"passed\":true,\"checks\":[{\"type\":\"selector\",\"passed\":true,\"selector\":\"[aria-label=\\\"Agent to manage\\\"]\"},{\"type\":\"eval\",\"passed\":true,\"expression\":\"document.querySelector('[aria-label=\\\"Agent to manage\\\"]')?.disabled === false && new URLSearchParams(location.search).get('identityAgent') === \\\"p015-r4-owned-2463583-1789947050468\\\"\"}]}"
+      },
+      {
+        "label": "eval:pointer-select-identity",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 eval --file /tmp/p015-r4-live-20260920-success/pointer-select-identity.js",
+        "result": "{\n  \"x\": 1125,\n  \"y\": 400,\n  \"viewport\": {\n    \"width\": 1280,\n    \"height\": 800\n  }\n}"
+      },
+      {
+        "label": "select-identity",
+        "input": "X11 pointer",
+        "selector": "[aria-label=\"Inspect identity research-steward\"]",
+        "window": "2097154",
+        "display": ":90",
+        "client": {
+          "x": 1125,
+          "y": 400,
+          "viewport": {
+            "width": 1280,
+            "height": 800
+          }
+        }
+      },
+      {
+        "label": "eval:pointer-review-switch",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 eval --file /tmp/p015-r4-live-20260920-success/pointer-review-switch.js",
+        "result": "{\n  \"x\": 1094,\n  \"y\": 683,\n  \"viewport\": {\n    \"width\": 1280,\n    \"height\": 800\n  }\n}"
+      },
+      {
+        "label": "review-switch",
+        "input": "X11 pointer",
+        "selector": ".pc-identities__actions button",
+        "window": "2097154",
+        "display": ":90",
+        "client": {
+          "x": 1094,
+          "y": 683,
+          "viewport": {
+            "width": 1280,
+            "height": 800
+          }
+        }
+      },
+      {
+        "label": "review-diff-visible",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 check --eval document.querySelector('.pc-identities__diff')?.textContent.includes('configuration.roles[0]') && !document.querySelector('[aria-label=\"Apply identity\"]')?.disabled",
+        "result": "{\"passed\":true,\"checks\":[{\"type\":\"eval\",\"passed\":true,\"expression\":\"document.querySelector('.pc-identities__diff')?.textContent.includes('configuration.roles[0]') && !document.querySelector('[aria-label=\\\"Apply identity\\\"]')?.disabled\"}]}"
+      },
+      {
+        "label": "eval:pointer-forced-failure",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 eval --file /tmp/p015-r4-live-20260920-success/pointer-forced-failure.js",
+        "result": "{\n  \"x\": 1095,\n  \"y\": 400,\n  \"viewport\": {\n    \"width\": 1280,\n    \"height\": 800\n  }\n}"
+      },
+      {
+        "label": "forced-failure",
+        "input": "X11 pointer",
+        "selector": "button[aria-label=\"Apply identity\"]",
+        "window": "2097154",
+        "display": ":90",
+        "client": {
+          "x": 1095,
+          "y": 400,
+          "viewport": {
+            "width": 1280,
+            "height": 800
+          }
+        }
+      },
+      {
+        "label": "failure-retains-applied-state",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 check --eval document.body.innerText.includes('Identity change failed: synthetic R-4 failure') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:papercusp-engineer')",
+        "result": "{\"passed\":true,\"checks\":[{\"type\":\"eval\",\"passed\":true,\"expression\":\"document.body.innerText.includes('Identity change failed: synthetic R-4 failure') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:papercusp-engineer')\"}]}"
+      },
+      {
+        "label": "eval:pointer-retry-review",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 eval --file /tmp/p015-r4-live-20260920-success/pointer-retry-review.js",
+        "result": "{\n  \"x\": 1098,\n  \"y\": 400,\n  \"viewport\": {\n    \"width\": 1280,\n    \"height\": 800\n  }\n}"
+      },
+      {
+        "label": "retry-review",
+        "input": "X11 pointer",
+        "selector": ".pc-identities__actions button",
+        "window": "2097154",
+        "display": ":90",
+        "client": {
+          "x": 1098,
+          "y": 400,
+          "viewport": {
+            "width": 1280,
+            "height": 800
+          }
+        }
+      },
+      {
+        "label": "retry-review-diff-visible",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 check --text Revision diff",
+        "result": "{\"passed\":true,\"checks\":[{\"type\":\"text\",\"passed\":true,\"pattern\":\"Revision diff\"}]}"
+      },
+      {
+        "label": "eval:pointer-retry-apply",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 eval --file /tmp/p015-r4-live-20260920-success/pointer-retry-apply.js",
+        "result": "{\n  \"x\": 1095,\n  \"y\": 400,\n  \"viewport\": {\n    \"width\": 1280,\n    \"height\": 800\n  }\n}"
+      },
+      {
+        "label": "retry-apply",
+        "input": "X11 pointer",
+        "selector": "button[aria-label=\"Apply identity\"]",
+        "window": "2097154",
+        "display": ":90",
+        "client": {
+          "x": 1095,
+          "y": 400,
+          "viewport": {
+            "width": 1280,
+            "height": 800
+          }
+        }
+      },
+      {
+        "label": "retry-failure-state-visible",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 check --text The change failed",
+        "result": "{\"passed\":true,\"checks\":[{\"type\":\"text\",\"passed\":true,\"pattern\":\"The change failed\"}]}"
+      },
+      {
+        "label": "eval:pointer-rollback",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 eval --file /tmp/p015-r4-live-20260920-success/pointer-rollback.js",
+        "result": "{\n  \"x\": 1087,\n  \"y\": 650,\n  \"viewport\": {\n    \"width\": 1280,\n    \"height\": 800\n  }\n}"
+      },
+      {
+        "label": "rollback",
+        "input": "X11 pointer",
+        "selector": "button[aria-label=\"Roll back identity\"]",
+        "window": "2097154",
+        "display": ":90",
+        "client": {
+          "x": 1087,
+          "y": 650,
+          "viewport": {
+            "width": 1280,
+            "height": 800
+          }
+        }
+      },
+      {
+        "label": "rollback-applied-state-visible",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 check --eval document.body.innerText.includes('Identity applied')",
+        "result": "{\"passed\":true,\"checks\":[{\"type\":\"eval\",\"passed\":true,\"expression\":\"document.body.innerText.includes('Identity applied')\"}]}"
+      },
+      {
+        "label": "exact-owner-action-sequence",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 check --eval JSON.stringify(window.__p015R4Calls.map(x => x.action)) === JSON.stringify(['preview','switch','preview','switch','rollback']) && window.__p015R4Calls.every(x => x.ownerId === \"p015-r4-owned-2463583-1789947050468\")",
+        "result": "{\"passed\":true,\"checks\":[{\"type\":\"eval\",\"passed\":true,\"expression\":\"JSON.stringify(window.__p015R4Calls.map(x => x.action)) === JSON.stringify(['preview','switch','preview','switch','rollback']) && window.__p015R4Calls.every(x => x.ownerId === \\\"p015-r4-owned-2463583-1789947050468\\\")\"}]}"
+      },
+      {
+        "label": "eval:final-state",
+        "command": "/home/builduser/.local/node25/bin/tauri-agent-tools --pid 2439563 eval --file /tmp/p015-r4-live-20260920-success/final-state.js",
+        "result": "{\n  \"calls\": [\n    {\n      \"ownerId\": \"p015-r4-owned-2463583-1789947050468\",\n      \"action\": \"preview\",\n      \"identityId\": \"research-steward\",\n      \"slot\": \"domain\"\n    },\n    {\n      \"ownerId\": \"p015-r4-owned-2463583-1789947050468\",\n      \"action\": \"switch\",\n      \"identityId\": \"research-steward\",\n      \"slot\": \"domain\"\n    },\n    {\n      \"ownerId\": \"p015-r4-owned-2463583-1789947050468\",\n      \"action\": \"preview\",\n      \"identityId\": \"research-steward\",\n      \"slot\": \"domain\"\n    },\n    {\n      \"ownerId\": \"p015-r4-owned-2463583-1789947050468\",\n      \"action\": \"switch\",\n      \"identityId\": \"research-steward\",\n      \"slot\": \"domain\"\n    },\n    {\n      \"ownerId\": \"p015-r4-owned-2463583-1789947050468\",\n      \"action\": \"rollback\"\n    }\n  ],\n  \"url\": \"http://127.0.0.1:33700/settings/identities?identityAgent=p015-r4-owned-2463583-1789947050468&identityId=research-steward&identitySlot=domain&identityTab=agent\",\n  \"body\": \"Identities\\nChoose agent behavior, inspect what is actually active, and manage the transition safely.\\n\\nAgent\\n\\nP-015 R-4 disposable owner 789947050468\\nLibrary\\nCurrent agent\\nProvider bindings\\nP-015 R-4 disposable owner 789947050468\\np015-r4-owned-2463583-1789947050468\\n\\nAPPLIED\\nAGENT\\ncodex\\nPRINCIPAL\\np015-r4-owned-2463583-1789947050468\\nHARNESS\\nworkspace-wide\\nAPPLIED REVISION\\naaaaaaaaaa\\nDESIRED REVISION\\naaaaaaaaaa\\nSTATE REVISION\\nseed-new-s\\nIdentity applied. This revision was acknowledged by the host.\\nApplied stack\\nThis is the host-acknowledged stack. Desired and prepared revisions remain pending above until acknowledgement.\\n\\ndomain:papercusp-engineer\\nSwitch review\\nSelected research-steward for the domain slot.\\n\\n\\nSoft update — keep this context.\\n\\nFresh context — relaunch with carried work.\\nDelivery is derived from the slot policy. Domain and client changes start a fresh context. Work state may carry; prior identity instructions do not. Private memory keeps its existing scope.\\n\\nRefresh review\\nApply identity\\nRevision diff\\nReview an identity to compare it with the applied artifact.\\n\\nExplain this agent\\nRoll back identity\\nRestores the previous validated receipt (aaaaaaaaaa).\\n\"\n}"
+      }
+    ],
+    "databaseDataDirectory": "/tmp/verify-tauri-headless.bMuVad/isolated-pgdata",
+    "frozenSpaIndexSha256": "6f4fd037671670164349898f4f7bf5f8ceeb89f42a2203789a2ea60d5bc82771",
+    "rosterFixture": {
+      "ownerId": "p015-r4-owned-2463583-1789947050468",
+      "sessionState": "recorded",
+      "label": "P-015 R-4 disposable owner 789947050468"
+    },
+    "observed": [
+      "owned-roster-selection",
+      "review-diff",
+      "failure-banner",
+      "retry-review",
+      "rollback-applied-banner"
+    ]
+  },
+  "checks": {
+    "focusedTests": "npm run test:file -- apps/operator/app/settings/identities/page.test.tsx apps/operator/lib/verify-identities-r4.test.ts (executed as two focused commands)",
+    "result": "9 page tests and 11 verifier tests passed; production SPA build passed; isolated Tauri wrapper exited 0"
+  },
+  "notProven": [
+    "Real backend identity mutation or host acknowledgement",
+    "Full R-4 acceptance including provider bindings",
+    "R-7 attested listing/install/launch/leadership/span proof chain",
+    "Shipment to main or deployed operator"
+  ],
+  "identityRedaction": {
+    "appliedAt": "2026-09-22T18:56:24.232Z",
+    "method": "serializeEvidence -> redactIdentityLeaks (scripts/lib/identity-leak-patterns.mjs)",
+    "reason": "git-sync content guard quarantined this artifact [identity-leak]: absolute tauri-agent-tools path under the developer home in recorded commands/errors. Only home-path/identity literals were rewritten; no observation changed.",
+    "preRedactionSha256": "f8a4a9c683774cd139d88af7d5f69b53f918958a4dc68cf10146c6ab2d7edf4d"
+  }
+}

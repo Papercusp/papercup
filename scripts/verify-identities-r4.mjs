@@ -15,6 +15,25 @@ import { dirname, relative, resolve, sep } from "node:path";
 import postgres from "postgres";
 import { execFileSync } from "node:child_process";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
+import { redactIdentityLeaks } from "./lib/identity-leak-patterns.mjs";
+
+/**
+ * Serialize the evidence artifact with every identity-leak class scrubbed.
+ *
+ * The artifact records spawned command lines and error stacks, and those carry the
+ * absolute tauri-agent-tools path under the developer's home directory. git-sync's
+ * content guard quarantines such a file on every sweep, so an unscrubbed artifact
+ * copied into docs/evidence never commits and cannot back testing:record-run
+ * (measured 2026-09-22: both R-4 artifacts sat quarantined for 141 consecutive
+ * ticks). Scrubbing here, with the same module the guard uses, makes every
+ * regeneration commit-safe instead of relying on the author to redact by hand.
+ *
+ * @param {unknown} evidence
+ * @returns {string}
+ */
+export function serializeEvidence(evidence) {
+  return `${redactIdentityLeaks(JSON.stringify(evidence, null, 2))}\n`;
+}
 
 /**
  * @param {string|number} pid
@@ -476,9 +495,9 @@ try {
   } catch (captureError) { evidence.captureError = String(captureError); }
   throw error;
 } finally {
-  writeFileSync(`${outDir}/evidence.json`, `${JSON.stringify(evidence, null, 2)}\n`);
+  writeFileSync(`${outDir}/evidence.json`, serializeEvidence(evidence));
   await cleanup().catch((error) => { evidence.cleanupError = String(error); evidence.status = "fail"; process.exitCode = 1; });
-  writeFileSync(`${outDir}/evidence.json`, `${JSON.stringify(evidence, null, 2)}\n`);
+  writeFileSync(`${outDir}/evidence.json`, serializeEvidence(evidence));
 }
 
 console.log(JSON.stringify({ ok: evidence.status === "pass", evidence: `${outDir}/evidence.json`, status: evidence.status, owner, realBackend, syntheticMutationResponses: !realBackend, hostActivationProven: evidence.hostActivationProven }));
