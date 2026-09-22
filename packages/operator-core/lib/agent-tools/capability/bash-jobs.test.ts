@@ -69,7 +69,15 @@ const never = new AbortController().signal;
 
 afterEach(() => __resetBashJobs());
 
-async function waitForStatus(id: string, ms = 5000): Promise<void> {
+// Default ABOVE every background job's own deadline in this file (10–20s), so the
+// wait always observes a terminal status unless the runner itself is broken.
+// It returns SILENTLY on timeout, and the old 5s default let a job still spinning
+// up its transient service under green-checkpoint load be read mid-run: the
+// redaction test then failed as "expected '' to contain [REDACTED …]", naming a
+// redaction regression that did not exist (WI-2144525, gate run on f3123367;
+// the same sha passed in isolation). A caller that passed before returns at the
+// same moment as before — this only lengthens waits that used to be cut short.
+async function waitForStatus(id: string, ms = 30_000): Promise<void> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     const j = getJob(id);
@@ -449,7 +457,12 @@ describe('integration credential output redaction (EI-20478240377353884)', () =>
       10_000,
     );
     await waitForStatus(job.id);
-    const output = readJobOutput(getJob(job.id)!);
+    const finished = getJob(job.id)!;
+    // Assert the job actually FINISHED before judging its output: an unfinished
+    // job reads as empty output, which would otherwise masquerade as a redaction
+    // failure (see waitForStatus).
+    expect(finished.status).toBe('completed');
+    const output = readJobOutput(finished);
     const spill = readFileSync(job.logPath, 'utf8');
 
     expect(output).toContain('[REDACTED integration credential]');

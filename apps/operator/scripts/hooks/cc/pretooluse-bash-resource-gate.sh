@@ -2381,6 +2381,13 @@ _BG_TRACK_LEGACY_FILE = os.path.expanduser('~/.papercusp/bg-output-tracking.json
 _BG_TRACK_MAX_AGE_SEC = 2 * 60 * 60  # prune anything older than 2h regardless of liveness
 _BG_REDIRECT_RE = re.compile(r'(?<![<>&])\d*>{1,2}(?!&)\s*([^\s;&|)\n]+)')
 _BG_TEE_RE = re.compile(r'\btee\b\s+(?:-a\s+)?([^\s;&|)\n]+)')
+# Bash's combined stdout+stderr redirect `&> file` / `&>> file` is a WRITE too.
+# _BG_REDIRECT_RE deliberately refuses a `>` preceded by `&` (so `2>&1` never
+# yields a bogus target), which left `&>` unrecognised: a foreground
+# `npm run lint:tsc &> /tmp/tsc.log` was then read as a READ of that tracked
+# path and drew a false read-race advisory whenever ANY process on the host held
+# it open (WI-2144525 — it red-pinned the green-checkpoint web leg).
+_BG_AMP_REDIRECT_RE = re.compile(r'&>{1,2}\s*([^\s;&|)\n]+)')
 
 
 def _bg_track_load():
@@ -2437,7 +2444,7 @@ def _bg_resolve(raw_path, cwd):
 
 def _bg_redirect_targets(cmd, cwd):
     out = set()
-    for pattern in (_BG_REDIRECT_RE, _BG_TEE_RE):
+    for pattern in (_BG_REDIRECT_RE, _BG_AMP_REDIRECT_RE, _BG_TEE_RE):
         for m in pattern.finditer(cmd):
             r = _bg_resolve(m.group(1), cwd)
             if r:

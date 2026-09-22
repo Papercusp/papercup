@@ -67,7 +67,12 @@ const PLAN = 'drained-plan-2026-09-20';
  * Pinning it empty keeps them exact; the family has its own suite in
  * agent-obligation-owner-directives.test.ts.
  */
-const NO_OWNER_DIRECTIVES = { ownerDirectives: async () => [] };
+// The same holds for the waiting-on family (D-055 A4): its default dependency
+// reads live event awaits plus the lock queue through getOrgPg().sql, which
+// this suite MOCKS to answer the acceptance-filing probe. Unpinned, a second
+// primary obligation appeared on the agenda below (measured 2026-09-22,
+// WI-2144525). It has its own suite; pin it empty here.
+const NO_OWNER_DIRECTIVES = { ownerDirectives: async () => [], waitingOn: async () => [] };
 let currentBody: string;
 
 function planBody(status: string, itemStatus = 'done'): string {
@@ -173,7 +178,11 @@ describe('P-023 drained-to-acceptance lifecycle', () => {
 
     expect(obligation).toMatchObject({
       family: 'independent-verification',
-      status: 'blocked',
+      // `due`, not `blocked`: an AUTHOR-owned refusal (rubric missing / unaudited)
+      // is actionable by the plan's own author right now — D-009 ruling 3 of
+      // generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20
+      // (isActionable vs isDelegable in independentVerificationObligation).
+      status: 'due',
       action: { kind: 'repair' },
       changeSignal: { event: planAcceptanceChangedKey('drained-plan') },
       scope: { planSlug: 'drained-plan' },
@@ -271,7 +280,11 @@ describe('P-023 drained-to-acceptance lifecycle', () => {
     expect(refused.agenda.primary).toHaveLength(1);
     expect(refused.agenda.primary[0]).toMatchObject({
       family: 'independent-verification',
-      status: 'blocked',
+      // `due`, not `blocked`: an AUTHOR-owned refusal (rubric missing / unaudited)
+      // is actionable by the plan's own author right now — D-009 ruling 3 of
+      // generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20
+      // (isActionable vs isDelegable in independentVerificationObligation).
+      status: 'due',
       scope: { planSlug: PLAN },
       action: { kind: 'repair' },
     });
@@ -294,10 +307,13 @@ describe('P-023 drained-to-acceptance lifecycle', () => {
     // measured empty queue as `not-applicable`, which is never actionable — so
     // what must be empty here is `primary`, not `evaluations`. Asserting the
     // latter empty would only be asserting that no OTHER family exists.
+    // The same reasoning covers every OTHER unconditional family (waiting-on,
+    // D-055 A4, joined it later): assert per family, never the exact list.
     expect(clearedContext.agenda.primary).toEqual([]);
-    expect(clearedContext.agenda.evaluations.map((entry) => [entry.family, entry.status])).toEqual([
-      ['owner-directive', 'not-applicable'],
-    ]);
+    const clearedFamilies = clearedContext.agenda.evaluations.map((entry) => [entry.family, entry.status]);
+    expect(clearedFamilies).toContainEqual(['owner-directive', 'not-applicable']);
+    expect(clearedFamilies.filter(([family]) => family === 'independent-verification')).toEqual([]);
+    expect(clearedFamilies.every(([, status]) => status === 'not-applicable')).toBe(true);
     expect(M.evaluate).not.toHaveBeenCalled();
     expect(parsePlan(currentBody).frontmatter.status).toBe('awaiting-acceptance');
 
@@ -319,10 +335,17 @@ describe('P-023 drained-to-acceptance lifecycle', () => {
       deps: NO_OWNER_DIRECTIVES,
     });
     expect(accepted.agenda.primary).toEqual([]);
-    expect(accepted.agenda.evaluations).toEqual([
-      expect.objectContaining({ family: 'owner-directive', status: 'not-applicable' }),
-      expect.objectContaining({ family: 'independent-verification', status: 'satisfied' }),
-    ]);
+    expect(accepted.agenda.evaluations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ family: 'owner-directive', status: 'not-applicable' }),
+        expect.objectContaining({ family: 'independent-verification', status: 'satisfied' }),
+      ]),
+    );
+    expect(
+      accepted.agenda.evaluations
+        .filter((entry) => entry.family !== 'independent-verification')
+        .every((entry) => entry.status === 'not-applicable'),
+    ).toBe(true);
 
     // The obligation reader has cleared its primary agenda entry. The sweep still
     // re-reads the canonical gate and refreshes the same keyed filing, so readiness
