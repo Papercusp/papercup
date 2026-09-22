@@ -28,11 +28,12 @@
  * reporting a comfortable green over a fixture that cannot fail.
  */
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { TURN_ROW_CLASSIFIERS } from '../scripts/psu-pty-host.mjs';
+import { TURN_ROW_CLASSIFIERS, nativeTurnCompletedInTranscript } from '../scripts/psu-pty-host.mjs';
 
 /**
  * Overridable ON PURPOSE. Pointing the fixture directory at a copy is what
@@ -293,5 +294,70 @@ describe('registered turn-row classifiers vs real captured transcripts (P-010)',
       // The naive port discards the true completion in exactly this case.
       expect(replay(naiveCodexPortToClaude, sequence, ctx)).toBe(false);
     });
+  });
+});
+
+/**
+ * END-TO-END through the host's REAL entry point (R-2 / P-001, P-002).
+ *
+ * Everything above replays a MIRROR of the host's latch loop, calling the
+ * registered classifier directly. That leaves the host's own dispatch
+ * unexercised: a mutation probe that replaced
+ * `TURN_ROW_CLASSIFIERS[agent]` inside nativeTurnCompletedInTranscript with a
+ * hardcoded codex classifier SURVIVED this whole suite (2026-09-22). This block
+ * closes that gap by driving nativeTurnCompletedInTranscript itself, per
+ * registered backend, over its captured transcript placed inside a throwaway
+ * ISOLATED root (D-002 — never the shared native root).
+ */
+describe('nativeTurnCompletedInTranscript dispatches through the registry (R-2)', () => {
+  /** Transcript subdirectory beneath each backend's isolated root, per the host. */
+  const ISOLATED_LAYOUT: Record<string, { envKey: string; subdir: string }> = {
+    claude: { envKey: 'CLAUDE_CONFIG_DIR', subdir: 'projects' },
+    codex: { envKey: 'CODEX_HOME', subdir: 'sessions' },
+  };
+
+  it.each(REGISTERED)('every registered agent has an isolated-root layout defined: %s', (agent) => {
+    expect(
+      ISOLATED_LAYOUT[agent],
+      `No isolated-root layout for '${agent}' — add it so the end-to-end dispatch below covers it.`,
+    ).toBeDefined();
+  });
+
+  it('CONTROL: each captured transcript is backend-specific — a foreign classifier does not certify it', () => {
+    // Without this, the end-to-end assertion could pass even if the host used the
+    // WRONG backend's classifier, because both might happen to latch true.
+    const classifiers = TURN_ROW_CLASSIFIERS as Record<string, Classifier>;
+    for (const agent of REGISTERED) {
+      const { rows } = loadFixture(agent);
+      const ctx = contextFor(rows);
+      for (const other of REGISTERED.filter((a) => a !== agent)) {
+        expect(replay(classifiers[other], rows, ctx), `${other} classifier certified the ${agent} fixture`).toBe(false);
+      }
+    }
+  });
+
+  it.each(REGISTERED)('recognises the real completed %s turn via the host entry point', (agent) => {
+    const layout = ISOLATED_LAYOUT[agent];
+    const { rows } = loadFixture(agent);
+    const ctx = contextFor(rows);
+    const root = mkdtempSync(join(tmpdir(), `psu-pty-e2e-${agent}-`));
+    try {
+      const dir = join(root, layout.subdir, 'session');
+      mkdirSync(dir, { recursive: true });
+      const transcriptPath = join(dir, 'transcript.jsonl');
+      writeFileSync(transcriptPath, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
+      const env = { [layout.envKey]: root };
+      expect(
+        nativeTurnCompletedInTranscript({ agent, env, transcriptPath, receivedAtMs: ctx.receivedAtMs, nowMs: ctx.nowMs }),
+      ).toBe(true);
+      // The freshness fence is honoured end-to-end too, not only in the mirror.
+      expect(
+        nativeTurnCompletedInTranscript({
+          agent, env, transcriptPath, receivedAtMs: ctx.nowMs + 1_000, nowMs: ctx.nowMs + 2_000,
+        }),
+      ).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
