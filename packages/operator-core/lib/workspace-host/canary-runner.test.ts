@@ -427,6 +427,60 @@ describe('runWorkspaceHostCanary', () => {
     ).rejects.toThrow(/missing 'codex' agent evidence/);
   });
 
+  // A rejection that names only the AGENT is unactionable for this gate: the verification evidence
+  // is never persisted (harness_shared.workspace_host_operations keeps only `request`/`error`), so
+  // the sole way to learn WHICH field was wrong is another full live GCP canary. Measured
+  // 2026-09-22: the live r38 run cleared initialization 6/6 and then returned exactly
+  // `initialization verification has invalid 'claude' agent evidence` — the same unactionable shape
+  // WI-2144034 removed from the readiness message one module away.
+  it("names every failing field when an agent's evidence is invalid, without echoing secret-bearing values", async () => {
+    const intactClaude = agentReport().agents.claude;
+    const intactOmp = agentReport().agents.omp;
+    if (!intactClaude || !intactOmp) throw new Error('fixture requires claude + omp evidence');
+    const { proofDigest: _droppedDigest, ...claudeWithoutDigest } = intactClaude;
+
+    const withClaudeEvidence = (claude: unknown) => async (run: WorkspaceHostInitializationRunInput) => {
+      const result = await fakeInitialization(run);
+      return {
+        ...result,
+        receipts: result.receipts.map((receipt) =>
+          'publicEvidence' in receipt && receipt.publicEvidence
+            ? {
+                ...receipt,
+                publicEvidence: { ...receipt.publicEvidence, agents: { claude, omp: intactOmp } },
+              }
+            : receipt,
+        ),
+      };
+    };
+
+    const canary = (claude: unknown) =>
+      runWorkspaceHostCanary(
+        input({ destroyFinalization: destroyFinalization(), requestedAgents: ['claude', 'omp'] }),
+        {
+          runInitialization: vi.fn(withClaudeEvidence(claude)),
+          runLifecycle: vi.fn(fakeLifecycle),
+          verifyAgentCredentialAdmission,
+          now: () => new Date(OBSERVED_AT),
+        },
+      );
+
+    // Three independently-broken fields, so a message naming only one is still caught.
+    const broken = { ...claudeWithoutDigest, subjectDisclosure: 'plaintext', exitStatus: 1.5 };
+    const error = (await canary(broken).catch((thrown: unknown) => thrown)) as Error;
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toMatch(/proofDigest is missing or empty/);
+    expect(error.message).toMatch(/subjectDisclosure "plaintext" must be 'redacted' or 'digest'/);
+    expect(error.message).toMatch(/exitStatus 1\.5 is not a safe integer/);
+    // Closed-enum values are contract vocabulary and safe to echo; the proof material is not.
+    expect(error.message).not.toMatch(/digest-claude/);
+
+    // CALIBRATION: the identical guest with INTACT claude evidence must succeed. Without it the
+    // assertions above would pass just as well if the canary rejected every run for some other
+    // reason, which is the vacuous-control failure this whole test exists to avoid.
+    await expect(canary(intactClaude)).resolves.toBeDefined();
+  });
+
   it('resumes with identical phase identities and does not re-execute completed fake phases', async () => {
     const initializationCache = new Map<string, Awaited<ReturnType<typeof fakeInitialization>>>();
     const lifecycleCache = new Map<string, Awaited<ReturnType<typeof fakeLifecycle>>>();

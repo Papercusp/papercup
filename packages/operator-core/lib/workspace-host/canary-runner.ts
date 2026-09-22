@@ -216,21 +216,44 @@ function validateAgentEvidence(
     problems.push(`initialization verification is missing '${agent}' agent evidence`);
     return undefined;
   }
+  // Name EVERY field that failed, not just the agent. A rejection that says only "invalid
+  // 'claude' agent evidence" sends the reader back to a guest they cannot query — this evidence
+  // is never persisted (workspace_host_operations keeps only `request`/`error`), so the sole way
+  // to learn which field was wrong is another full live GCP canary. That is precisely the defect
+  // WI-2144034 removed from the readiness message one module away, where naming only `codex`
+  // instead of its reason code cost two canaries. Field names and closed-enum values are contract
+  // vocabulary rather than agent output, so they are safe to report; `endpoint` and `proofDigest`
+  // are reported as a SHAPE verdict and never echoed, keeping this inside the same
+  // secret-isolation rule the evidence itself obeys.
+  const reasons: string[] = [];
+  if (value.contractVersion !== WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION) {
+    reasons.push(
+      `contractVersion ${JSON.stringify(value.contractVersion)} !== ${JSON.stringify(WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION)}`,
+    );
+  }
+  if (value.agent !== agent) reasons.push(`agent ${JSON.stringify(value.agent)} !== '${agent}'`);
+  if (value.ready !== true) reasons.push(`ready ${JSON.stringify(value.ready)} !== true`);
   if (
-    value.contractVersion !== WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION ||
-    value.agent !== agent ||
-    value.ready !== true ||
-    (value.verificationKind !== 'authenticated-account' &&
-      !(agent === 'omp' && value.verificationKind === 'local-inference')) ||
-    typeof value.endpoint !== 'string' ||
-    !Number.isSafeInteger(value.exitStatus) ||
-    typeof value.observedAt !== 'string' ||
-    !Number.isFinite(Date.parse(value.observedAt)) ||
-    (value.subjectDisclosure !== 'redacted' && value.subjectDisclosure !== 'digest') ||
-    typeof value.proofDigest !== 'string' ||
-    value.proofDigest.length === 0
+    value.verificationKind !== 'authenticated-account' &&
+    !(agent === 'omp' && value.verificationKind === 'local-inference')
   ) {
-    problems.push(`initialization verification has invalid '${agent}' agent evidence`);
+    reasons.push(`verificationKind ${JSON.stringify(value.verificationKind)} is not allowed for '${agent}'`);
+  }
+  if (typeof value.endpoint !== 'string') reasons.push('endpoint is missing or not a string');
+  if (!Number.isSafeInteger(value.exitStatus)) {
+    reasons.push(`exitStatus ${JSON.stringify(value.exitStatus)} is not a safe integer`);
+  }
+  if (typeof value.observedAt !== 'string' || !Number.isFinite(Date.parse(value.observedAt))) {
+    reasons.push(`observedAt ${JSON.stringify(value.observedAt)} is not an ISO timestamp`);
+  }
+  if (value.subjectDisclosure !== 'redacted' && value.subjectDisclosure !== 'digest') {
+    reasons.push(`subjectDisclosure ${JSON.stringify(value.subjectDisclosure)} must be 'redacted' or 'digest'`);
+  }
+  if (typeof value.proofDigest !== 'string' || value.proofDigest.length === 0) {
+    reasons.push('proofDigest is missing or empty');
+  }
+  if (reasons.length > 0) {
+    problems.push(`initialization verification has invalid '${agent}' agent evidence: ${reasons.join('; ')}`);
     return undefined;
   }
   return value as unknown as WorkspaceHostAgentVerificationEvidence;
