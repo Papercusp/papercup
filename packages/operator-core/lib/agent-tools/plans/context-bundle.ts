@@ -256,16 +256,19 @@ function directedDelegationAction(counts: DelegationCounts): string {
     );
   }
 
+  // The idle third state. Deliberately NOT conditioned on `noLiveAgents`: with
+  // nothing awaiting acceptance and nothing actionable there is no delegation to
+  // make whether or not agents are already running, so adding that clause would
+  // only send the both-zero case to the DO-NOT-SPAWN fallback when the count is
+  // merely unknown. (A second, `noLiveAgents`-guarded idle branch used to sit
+  // directly below this one; its condition was strictly stronger than this one's,
+  // so this branch always returned first and it was unreachable.)
   if (acceptanceSettled && isKnownZero(counts.plansAwaitingDelegation)) {
     return (
       'REPORT IDLE — no plan is awaiting acceptance and no actionable plan is awaiting delegation. ' +
       'Report idle / no work. DO NOT launch an agent: there is nothing for it to pick up, and an idle ' +
       'agent consumes budget while making the next real delegation harder to see.'
     );
-  }
-
-  if (acceptanceSettled && noLiveAgents && isKnownZero(counts.plansAwaitingDelegation)) {
-    return 'REPORT IDLE — nothing is awaiting acceptance or delegation. Do not launch an agent.';
   }
 
   if (acceptanceSettled && haveActionable && !noLiveAgents) {
@@ -453,6 +456,21 @@ export async function buildPlanContextBundle(
      * block while looking like it exercised a real one.
      */
     readDelegation?: (workspaceId: string) => Promise<DelegationCounts | null>;
+    /**
+     * Per-source budget for the production delegation read. Omitted in production,
+     * where `DELEGATION_COUNT_READ_TIMEOUT_MS` (900ms) is correct: this block feeds
+     * a turn-start brief, so a slow source must degrade to an explicit unknown
+     * rather than hold the launch.
+     *
+     * It exists for the live integration tests, and it is NOT a convenience. Those
+     * tests assert on the DIRECTIVE the block renders, and every source degrading
+     * to `unknown` renders a DO-NOT-SPAWN directive — so on a loaded box the 900ms
+     * budget turns a wiring assertion into a coin flip whose failure looks exactly
+     * like a wrong directive. Widening the budget keeps the PRODUCTION reader (the
+     * property those tests exist to check, which `readDelegation` would replace)
+     * while removing the load race.
+     */
+    delegationTimeoutMs?: number;
   } = {},
 ): Promise<PlanContextBundle | null> {
   const read = await readPlanBySlug(slug, opts);
@@ -511,7 +529,10 @@ export async function buildPlanContextBundle(
     const scope = await resolvePlanScope(opts);
     delegation = opts.readDelegation
       ? await opts.readDelegation(scope.workspaceId)
-      : await readDelegationCounts({ workspaceId: scope.workspaceId });
+      : await readDelegationCounts({
+          workspaceId: scope.workspaceId,
+          ...(opts.delegationTimeoutMs != null ? { sourceTimeoutMs: opts.delegationTimeoutMs } : {}),
+        });
   } catch (err) {
     console.warn(
       `[plan-context-bundle] delegation counts unavailable for ${slug}: ` +

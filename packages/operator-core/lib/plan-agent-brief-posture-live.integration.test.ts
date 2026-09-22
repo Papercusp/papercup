@@ -55,6 +55,23 @@ const RUBRIC_SLUG = 'acceptance-plan-r6-awaiting';
 const SAVED_ADMIN_URL = process.env.HARNESS_ADMIN_DATABASE_URL;
 
 /**
+ * Per-source budget for the bundle's own delegation read — the SAME 30s this file
+ * passes to its direct `readDelegationCounts` calls, so the two agree about what
+ * counts as measured.
+ *
+ * Production's default is 900ms and correct (a turn-start brief must not block on a
+ * slow source). But every source degrading to `unknown` renders a DO-NOT-SPAWN
+ * directive, and on a loaded box — ~100 agents, a testcontainer PG, the pc-heavy
+ * queue — that budget is regularly missed. This file asserts on which DIRECTIVE the
+ * block renders, so under the production budget a red here means "the box was busy"
+ * while looking exactly like "the brief directed the wrong action". Measured: this
+ * file passed at 19:15Z and failed CONTROL at 20:09Z with no change to the code path
+ * under test. The budget is widened rather than the assertions loosened, and the
+ * PRODUCTION reader still runs — which is the wiring property these tests exist for.
+ */
+const BUNDLE_READ_BUDGET_MS = 30_000;
+
+/**
  * The two directives, as the renderer actually spells them.
  *
  * Each is asserted POSITIVELY in one of the two states below, so a typo here
@@ -65,6 +82,9 @@ const SAVED_ADMIN_URL = process.env.HARNESS_ADMIN_DATABASE_URL;
 const ACCEPTANCE_DIRECTIVE = 'ACCEPTANCE FIRST — at least one plan is awaiting acceptance';
 const LAUNCH_DIRECTIVE =
   'DELEGATE — no acceptance is pending and live plan-execution agents is 0';
+/** The THIRD state R-6 promises. Asserted positively by the IDLE case below. */
+const IDLE_DIRECTIVE =
+  'REPORT IDLE — no plan is awaiting acceptance and no actionable plan is awaiting delegation';
 
 function planContent(slug: string, title: string, status: string): string {
   return [
@@ -161,7 +181,11 @@ describe('R-6 live delegation posture (real PG through buildPlanContextBundle)',
     // Take the plan-bundle path's own one-time process chatter here too, for the
     // same reason. This runs AFTER the rows above exist, so it is a real build
     // rather than a probe of an empty database.
-    await buildPlanContextBundle(SUBJECT_SLUG, { workspaceId: WORKSPACE, harnessSlug: HARNESS });
+    await buildPlanContextBundle(SUBJECT_SLUG, {
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      delegationTimeoutMs: BUNDLE_READ_BUDGET_MS,
+    });
   }, 180_000);
 
   afterAll(async () => {
@@ -213,6 +237,7 @@ describe('R-6 live delegation posture (real PG through buildPlanContextBundle)',
     const bundle = await buildPlanContextBundle(SUBJECT_SLUG, {
       workspaceId: WORKSPACE,
       harnessSlug: HARNESS,
+      delegationTimeoutMs: BUNDLE_READ_BUDGET_MS,
     });
     expect(bundle, 'the subject plan must resolve, or nothing below is measured').not.toBeNull();
     if (!bundle) return;
@@ -236,6 +261,7 @@ describe('R-6 live delegation posture (real PG through buildPlanContextBundle)',
     const bundle = await buildPlanContextBundle(SUBJECT_SLUG, {
       workspaceId: WORKSPACE,
       harnessSlug: HARNESS,
+      delegationTimeoutMs: BUNDLE_READ_BUDGET_MS,
     });
     expect(bundle).not.toBeNull();
     if (!bundle || counts.plansAwaitingAcceptance.status !== 'known') return;
@@ -269,6 +295,7 @@ describe('R-6 live delegation posture (real PG through buildPlanContextBundle)',
     const bundle = await buildPlanContextBundle(SUBJECT_SLUG, {
       workspaceId: WORKSPACE,
       harnessSlug: HARNESS,
+      delegationTimeoutMs: BUNDLE_READ_BUDGET_MS,
     });
     expect(bundle).not.toBeNull();
     if (!bundle) return;
@@ -278,5 +305,53 @@ describe('R-6 live delegation posture (real PG through buildPlanContextBundle)',
     // the renderer never produces.
     expect(bundle.text).toContain(LAUNCH_DIRECTIVE);
     expect(bundle.text).not.toContain(ACCEPTANCE_DIRECTIVE);
+  });
+
+  it('IDLE: with acceptance settled AND nothing actionable, the brief reports idle and launches nothing', async () => {
+    // R-6's bar promises THREE states — acceptance-first, delegation-second,
+    // idle-third — and the cases above only reach the first two. Without this one
+    // the third is asserted by the bar and evidenced by nothing.
+    //
+    // This runs after CONTROL, which already removed the completion audit, so the
+    // acceptance count is an established 0 and the ONE further change is the
+    // subject plan's only item: `todo` → `done` drops it out of
+    // `plansAwaitingDelegation` while leaving the plan resolvable, so the brief
+    // still builds for the same subject. Delegation is the single variable
+    // separating this state from CONTROL's launch.
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET items = ${db.adminSql.json([{ id: 'P-001', status: 'done', text: 'seeded actionable item' }])}
+       WHERE workspace_id = ${WORKSPACE} AND plan_slug = ${SUBJECT_SLUG}`;
+
+    const counts = await readDelegationCounts({ workspaceId: WORKSPACE, sourceTimeoutMs: 30_000 });
+    // Same instrument guard as every other case: an unknown count renders DO NOT
+    // SPAWN, which would satisfy "does not launch" while measuring nothing.
+    expect(counts.degradedSources).toEqual([]);
+    expect(counts.plansAwaitingAcceptance.status).toBe('known');
+    expect(counts.plansAwaitingDelegation.status).toBe('known');
+    if (
+      counts.plansAwaitingAcceptance.status !== 'known' ||
+      counts.plansAwaitingDelegation.status !== 'known'
+    ) {
+      return;
+    }
+    expect(counts.plansAwaitingAcceptance.value.count, 'acceptance stays settled').toBe(0);
+    expect(counts.plansAwaitingDelegation.value.count, 'nothing is actionable any more').toBe(0);
+
+    const bundle = await buildPlanContextBundle(SUBJECT_SLUG, {
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      delegationTimeoutMs: BUNDLE_READ_BUDGET_MS,
+    });
+    expect(bundle).not.toBeNull();
+    if (!bundle) return;
+
+    expect(bundle.text).toContain(IDLE_DIRECTIVE);
+    // The other two states are absent, and absent because THIS state was chosen —
+    // not because the read degraded into the measurement-failure directive.
+    expect(bundle.text).not.toContain(LAUNCH_DIRECTIVE);
+    expect(bundle.text).not.toContain(ACCEPTANCE_DIRECTIVE);
+    expect(bundle.text).not.toContain('DO NOT SPAWN');
+    expect(bundle.text).not.toContain('The live delegation counts could not be read');
   });
 });

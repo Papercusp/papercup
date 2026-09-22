@@ -31,6 +31,28 @@ const WORKSPACE = 'delegation-counts-live-ws';
 const SAVED_ADMIN_URL = process.env.HARNESS_ADMIN_DATABASE_URL;
 
 /**
+ * The cold-start probe body, run in a child with VITEST unset (see the D-014 case
+ * at the bottom of this file for why that is the only place the prime executes).
+ *
+ * It reads ONE population and prints it between sentinels. The module specifier is
+ * absolute so the child resolves the same source this file imports, and reading it
+ * from `PROBE_DELEGATION_MODULE` first keeps the subject path overridable — that
+ * single fallback is what makes a copy-out mutation probe possible without ever
+ * mutating the shared tree.
+ */
+const COLD_PROBE_SOURCE = `
+  const mod = process.env.PROBE_DELEGATION_MODULE || ${JSON.stringify(new URL('./delegation-counts.ts', import.meta.url).href)};
+  const { readDelegationCounts } = await import(mod);
+  const counts = await readDelegationCounts({ workspaceId: process.env.PROBE_WORKSPACE, sourceTimeoutMs: 30000 });
+  const read = counts.plansAwaitingDelegation;
+  process.stdout.write('<<PROBE ' + JSON.stringify({
+    status: read.status,
+    count: read.status === 'known' ? read.value.count : null,
+    degradedSources: counts.degradedSources,
+  }) + ' PROBE>>');
+`;
+
+/**
  * A pid that is CONFIRMED dead right now.
  *
  * `probeProcessLiveness` returns `false` only on an affirmative ESRCH, so a pid
@@ -145,11 +167,13 @@ describe('R-5 live plan-agent counts (real PG + real liveness oracle)', () => {
     expect(counts.planExecutionAgents.value.unmeasured).toBe(0);
   });
 
-  it('FRESH/WARM AGREEMENT: a first read and an immediate second read agree (D-014)', async () => {
-    // D-014 measured 52-on-first-read / 51-thereafter in a fresh process: the
-    // first read ran before the work-scope policy cache was loaded and so failed
-    // open. Every call re-reads by design (there is no cross-call cache), which
-    // is the property that makes this comparison meaningful rather than trivial.
+  it('NO CROSS-CALL CACHE: two reads in the same process agree', async () => {
+    // Scope, stated honestly: this is the no-cache property (every call re-reads),
+    // NOT D-014's cold-start defect. By the time this runs it is the fourth
+    // `readDelegationCounts` of the module, and the policy cache behind
+    // `isHarnessInScope` is warm — so a first/second comparison here cannot
+    // separate a primed read from an unprimed one. D-014 is covered by the COLD
+    // PROCESS case below, which is the only place that distinction is observable.
     const first = await readDelegationCounts({ workspaceId: WORKSPACE, sourceTimeoutMs: 30_000 });
     const second = await readDelegationCounts({ workspaceId: WORKSPACE, sourceTimeoutMs: 30_000 });
 
@@ -164,4 +188,101 @@ describe('R-5 live plan-agent counts (real PG + real liveness oracle)', () => {
     expect(first.degradedSources).toEqual([]);
     expect(second.degradedSources).toEqual([]);
   });
+
+  /**
+   * D-014's actual defect, measured the only way it is observable.
+   *
+   * ⚠ IT IS NOT OBSERVABLE IN THIS PROCESS, AND THAT IS NOT A CHOICE OF STYLE.
+   * The fix is `await primeWorkScopePolicy()` in `plansAwaitingDelegation`, and
+   * `primeWorkScopePolicy` returns early whenever `process.env.VITEST` is set. So
+   * under vitest the fixed line and the unfixed line do literally the same thing,
+   * and every in-process assertion about it passes under both. A child process
+   * with VITEST unset is the only place the prime runs at all.
+   *
+   * The defect: `isHarnessInScope` reads the SYNC `workScopePolicy()`, backed by a
+   * `placementOverride()` cache that is EMPTY at boot and filled by a 60s refresh.
+   * An empty policy is "not enforced", so it returns true for every slug — it
+   * fails OPEN, and the count includes out-of-scope plans for the first ~60s of a
+   * process. D-014 measured that as 52-on-first-read / 51-thereafter.
+   *
+   * WHY THE OFF-POLICY RUN IS HERE: it is a calibration, not decoration. It proves
+   * 2 is REACHABLE through this exact probe, so the enforcing run's `toBe(1)` is
+   * discriminating rather than a number that happens to be what the fixture
+   * produces either way. Drop `await primeWorkScopePolicy()` and BOTH runs return
+   * 2 — the second assertion is what goes red.
+   */
+  it('COLD PROCESS (D-014): the FIRST read in a fresh process honours the stored work-scope policy', async () => {
+    // Two actionable plans differing in ONE variable: the harness slug, one inside
+    // the allow-list and one outside it. Both are `ready` + `template IS NULL` +
+    // one `todo` item, and neither slug matches a seeded presence row's
+    // `current_plan_slug`, so neither is filtered out as staffed.
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, title, status, content, items)
+      VALUES
+        (${WORKSPACE}, 'papercusp', 'scope-in-actionable', 'in scope', 'ready', 'seeded by the D-014 cold probe',
+         ${db.adminSql.json([{ id: 'P-001', status: 'todo', text: 'seeded actionable item' }])}),
+        (${WORKSPACE}, 'sidestage', 'scope-out-actionable', 'out of scope', 'ready', 'seeded by the D-014 cold probe',
+         ${db.adminSql.json([{ id: 'P-001', status: 'todo', text: 'seeded actionable item' }])})`;
+
+    const writeWorkScope = async (mode: 'enforce' | 'off') => {
+      await db.adminSql`
+        INSERT INTO harness_shared.operator_pot_control_policy (workspace_id, payload, updated_at)
+        VALUES (
+          ${WORKSPACE},
+          ${db.adminSql.json({ workScope: { mode, allowHarnesses: ['papercusp'], setBy: 'd014-cold-probe' } })},
+          ${Date.now()}
+        )
+        ON CONFLICT (workspace_id)
+          DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`;
+    };
+
+    const coldProbe = (): { status: string; count: number | null; degradedSources: string[] } => {
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        HARNESS_ADMIN_DATABASE_URL: db.adminDsn,
+        // The policy row is read at `activeWorkspaceId()`, NOT at the workspace
+        // passed to readDelegationCounts — pin the child to the fixture's.
+        PAPERCUSP_WORKSPACE_ID: WORKSPACE,
+        PROBE_WORKSPACE: WORKSPACE,
+      };
+      // Without this the child inherits VITEST and `primeWorkScopePolicy` no-ops,
+      // which is precisely the thing being measured.
+      delete env.VITEST;
+      delete env.VITEST_WORKER_ID;
+      delete env.VITEST_POOL_ID;
+      delete env.VITEST_MODE;
+
+      const p = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', COLD_PROBE_SOURCE], {
+        env,
+        encoding: 'utf8',
+        timeout: 120_000,
+      });
+      expect(p.status, `cold probe exited non-zero: ${p.stderr}`).toBe(0);
+      // A sentinel rather than a bare JSON.parse of stdout: the module graph this
+      // child loads is free to log, and a parse failure on unrelated chatter would
+      // read as a broken subject.
+      const m = /<<PROBE (.*) PROBE>>/s.exec(p.stdout ?? '');
+      expect(m, `cold probe emitted no result marker.\nstdout: ${p.stdout}\nstderr: ${p.stderr}`).not.toBeNull();
+      return JSON.parse((m as RegExpExecArray)[1]);
+    };
+
+    // CALIBRATION: policy off ⇒ nothing is out of scope ⇒ both plans count.
+    await writeWorkScope('off');
+    const unscoped = coldProbe();
+    expect(unscoped.degradedSources).toEqual([]);
+    expect(unscoped.status, 'the calibration read must be measured, or it calibrates nothing').toBe('known');
+    expect(unscoped.count, 'calibration: with the policy off both plans count, so 2 IS reachable here').toBe(2);
+
+    // THE VERDICT: the same probe, same rows, one variable changed — the stored
+    // policy now enforces. A cold process that failed open would still answer 2.
+    await writeWorkScope('enforce');
+    const scoped = coldProbe();
+    expect(scoped.degradedSources).toEqual([]);
+    expect(scoped.status).toBe('known');
+    expect(
+      scoped.count,
+      'the out-of-scope plan must NOT be counted on a cold first read — an unprimed policy cache fails open (D-014)',
+    ).toBe(1);
+  }, 300_000);
 });
