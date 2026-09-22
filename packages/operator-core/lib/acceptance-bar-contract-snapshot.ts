@@ -958,6 +958,27 @@ export function projectAcceptanceBarContractSnapshot(
       { revision: grading.card?.rubricRevision, criteriaHash: grading.card?.criteriaHash },
       { revision: rubricRevision, criteriaHash: rubricCriteriaHash },
     ).state === 'current';
+    // D-030: a rating is a judgment about (rubric, evidence), but `gradingCurrent` above
+    // tracks only the rubric half. So a NOT-PASS card whose cited basis was evidence
+    // defects survives the repair of those defects forever: the rubric is untouched, so
+    // the card stays `current`, so it stays `not-pass`, and plan-acceptance-gate.ts's
+    // `if (!gradingMissing && !gradingStale) return refusal` returns BEFORE the recruiter
+    // can summon the re-grade the BAR lifecycle explicitly asks for. That is a structural
+    // dead end: satisfying the BAR cannot help either, because BAR satisfaction is not an
+    // input here. Treat a not-pass card that never saw the current cohort as STALE — the
+    // semantic the recruiter already honours ('Re-grade against the current rubric').
+    //
+    // Deliberately narrow: PASS cards are untouched. A pass graded against superseded
+    // evidence raises the same question, but staling every pass on every evidence touch
+    // would churn plans fleet-wide; only not-pass blocks, so only not-pass needs the escape.
+    // This grants no pass — it summons an independent grader who may rate not-pass again.
+    const gradedAt = grading.card ? Date.parse(grading.card.createdAt) : Number.NaN;
+    const evidencePostdatesGrading =
+      Number.isFinite(gradedAt) &&
+      currentEvidence.some((row) => {
+        const boundAt = Date.parse(row.createdAt);
+        return Number.isFinite(boundAt) && boundAt > gradedAt;
+      });
     const gradingState: AcceptanceBarTrace['grading']['state'] = input.scorecards.truncated
       ? 'truncated'
       : !grading.card || !rating
@@ -966,7 +987,9 @@ export function projectAcceptanceBarContractSnapshot(
           ? 'stale'
           : passRatings.includes(rating.toLowerCase())
             ? 'pass'
-            : 'not-pass';
+            : evidencePostdatesGrading
+              ? 'stale'
+              : 'not-pass';
     const mappingState: AcceptanceBarTrace['readiness']['mapping'] =
       mappings.length === 0
         ? 'missing'

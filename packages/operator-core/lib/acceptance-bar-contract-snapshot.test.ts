@@ -441,6 +441,60 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').satisfied).toBe(false);
   });
 
+  // D-030 — the repair-then-re-grade dead end. `gradingCurrent` compares only the rubric
+  // half (revision + criteriaHash), so a NOT-PASS card whose cited basis was evidence
+  // defects stayed `current` forever after those defects were repaired: it stayed
+  // `not-pass`, and plan-acceptance-gate returns on not-pass BEFORE the recruiter
+  // (`if (!gradingMissing && !gradingStale) return refusal`), so the re-grade its own
+  // remediation text asks for could not be summoned by any verb.
+  it('stales a non-pass grading whose evidence cohort was bound after it was graded, so a re-grade can be recruited', () => {
+    const input = provedFixture(1);
+    const independent = input.scorecards.rows.find((card) => card.issueId === 'SC-GRADE')!;
+    independent.ratings['r-1'] = { rating: 'degraded', evidence: 'Proof was stale when graded.' };
+    const gradedAt = Date.parse(independent.createdAt);
+    // The implementer then repairs exactly the evidence that rating cited.
+    input.evidence.rows.forEach((row) => {
+      row.createdAt = new Date(gradedAt + 60_000).toISOString();
+    });
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.grading).toMatchObject({ state: 'stale', rating: 'degraded' });
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_grading_stale');
+    expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_grading_not_pass');
+    // This summons an independent re-grade; it does NOT grant a pass. Still unshippable.
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').satisfied).toBe(false);
+  });
+
+  it('CONTROL: a non-pass grading whose evidence predates it stays not-pass, so the escape is not a blanket waiver', () => {
+    const input = provedFixture(1);
+    const independent = input.scorecards.rows.find((card) => card.issueId === 'SC-GRADE')!;
+    independent.ratings['r-1'] = { rating: 'degraded', evidence: 'The outcome is not yet satisfied.' };
+    const gradedAt = Date.parse(independent.createdAt);
+    input.evidence.rows.forEach((row) => {
+      row.createdAt = new Date(gradedAt - 60_000).toISOString();
+    });
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.grading).toMatchObject({ state: 'not-pass', rating: 'degraded' });
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_grading_not_pass');
+  });
+
+  it('CONTROL: a PASSING grading is untouched by later evidence, so repairs do not churn ship-ready bars', () => {
+    const input = provedFixture(1);
+    const independent = input.scorecards.rows.find((card) => card.issueId === 'SC-GRADE')!;
+    const gradedAt = Date.parse(independent.createdAt);
+    input.evidence.rows.forEach((row) => {
+      row.createdAt = new Date(gradedAt + 60_000).toISOString();
+    });
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.grading).toMatchObject({ state: 'pass' });
+    expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_grading_stale');
+  });
+
   it('keeps historical contracts visible without letting them invalidate a current discharge', () => {
     const input = fixture(1);
     const prior = { ...input.workContracts.rows[0]! };
