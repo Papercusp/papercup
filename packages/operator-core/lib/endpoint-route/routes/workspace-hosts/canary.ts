@@ -123,6 +123,15 @@ export function createWorkspaceHostCanaryRoute(
     method: 'POST',
     path: '/workspace-hosts/:hostId/canary',
     auth: 'loopback',
+    // The route-stack default is a 30s watchdog, which this route CANNOT satisfy: it drives a real
+    // five-phase cloud credential lifecycle against a live host (measured 2026-09-22 — 72s for the
+    // reconnect + restore-rebind legs, ~35s to merely REPLAY a complete run from stored receipts).
+    // That mattered more than a slow request: the assembled evidence/validation/backupManifest is
+    // never persisted (workspace_host_operations keeps only `request`/`error`), so the response is
+    // its SOLE carrier — a 30s abort made a green 5/5 run's evidence structurally unobtainable,
+    // and re-POSTing to recover it hit the same wall every time. Peer precedent for a long-running
+    // route: cupboard-install-plugin (120s), zero-harness/sse (null).
+    timeoutSec: 1800,
     async handler(req, ctx) {
       const hostId = String(ctx.params.hostId ?? '').trim();
       if (!SAFE_ID.test(hostId)) return requestError('invalid workspace host id', 400);
