@@ -221,6 +221,12 @@ describe('emitted priority order — the contract the coverage guard cannot asse
     // TRANSITION renders just above the wake-source warning.
     [85, 'modes'],
     [90, 'loopArmed'],
+    // D-081 plan decisions (WI-10002446). A governing ruling constrains HOW the
+    // held work may be done, so it must be read BEFORE the list of that work —
+    // hence between loopArmed and the held rows. This entry was missing when the
+    // segment shipped, which is what made the pin stale and this guard red; the
+    // segment also collided with loopArmed at order 90 and now sits at 95.
+    [95, 'planDecisions'],
     [100, 'held'],
     [110, 'held'],
     [120, 'obligations'],
