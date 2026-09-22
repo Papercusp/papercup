@@ -116,7 +116,8 @@ export type CoordFoldReason =
   | 'owner-irrelevant'
   | 'generation-mismatch'
   | 'force-resync'
-  | 'no-client-generation';
+  | 'no-client-generation'
+  | 'glance-only';
 
 /** One fold's observation on one `activity:report` call. */
 export interface CoordFoldCensus {
@@ -146,6 +147,18 @@ export interface CoordFoldCensus {
   inboxAdvanced: boolean;
   /** Rows the inbox surface carried; `null` when the leg did not run or failed. */
   inboxTotal: number | null;
+  /**
+   * Did the GLANCE leg run on this fold?
+   *
+   * Before the legs were split, this was redundant with `changed` — one gate
+   * opened both surfaces, so glance ran exactly when the fold was expensive.
+   * It is no longer derivable: a `glance-only` fold has `changed === false`
+   * (the INBOX gate stayed shut, correctly) while still paying a hydration.
+   * Without this field such a fold would read as `quiet` with a non-zero
+   * `hydrateMs`, i.e. the instrument would contradict itself on the very path
+   * the split introduces.
+   */
+  glanceHydrated: boolean;
 }
 
 export interface CoordFoldObservation {
@@ -164,6 +177,12 @@ export interface CoordFoldObservation {
   hydrateMs: number;
   inboxAdvanced: boolean;
   inboxTotal: number | null;
+  /**
+   * The GLANCE leg ran even though the INBOX gate stayed shut. Carried in from
+   * the fold for the same reason as `changed`: this labeller observes decisions,
+   * it never re-derives them.
+   */
+  glanceOnly: boolean;
 }
 
 function nonNegativeInt(value: number): number {
@@ -191,12 +210,20 @@ export function coordFoldReason(input: {
   forceResync: boolean;
   reqGen: string | null | undefined;
   gen: string;
+  glanceOnly?: boolean;
 }): CoordFoldReason {
   if (input.forceResync) return 'force-resync';
   const reqGen = emptyToNull(input.reqGen);
   if (reqGen === null) return 'no-client-generation';
-  if (reqGen !== input.gen) return input.changed ? 'generation-mismatch' : 'owner-irrelevant';
-  return 'quiet';
+  // `glance-only` is a SHUT inbox gate that still hydrated, so it can only
+  // displace the two cheap labels — never `generation-mismatch`, which means the
+  // inbox leg genuinely ran. Checking it after `changed` keeps that impossible
+  // by construction rather than by convention.
+  if (reqGen !== input.gen) {
+    if (input.changed) return 'generation-mismatch';
+    return input.glanceOnly === true ? 'glance-only' : 'owner-irrelevant';
+  }
+  return input.glanceOnly === true ? 'glance-only' : 'quiet';
 }
 
 /**
@@ -220,6 +247,9 @@ export function censusCoordFold(observation: CoordFoldObservation): CoordFoldCen
       typeof observation.inboxTotal === 'number' && Number.isFinite(observation.inboxTotal)
         ? Math.max(0, Math.trunc(observation.inboxTotal))
         : null,
+    // The glance leg runs on BOTH expensive paths: whenever the inbox gate
+    // opened (the legs still hydrate together there) and on a glance-only fold.
+    glanceHydrated: observation.changed === true || observation.glanceOnly === true,
   };
 }
 
