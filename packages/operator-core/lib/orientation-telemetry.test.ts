@@ -179,7 +179,15 @@ describe('FALSIFIABILITY CONTROL for the fabricated-disposition guard', () => {
     // Guards against a later "simplification" making the control unmatchable,
     // which would make the falsifiability proof pass vacuously.
     const populated = state({
-      ownerDirectives: [{ id: 1, captureStatus: 'pending', verbatimText: 'x' }],
+      ownerDirectives: [
+        {
+          id: 1,
+          captureStatus: 'pending',
+          verbatimText: 'x',
+          recordedBy: 'su-c03852cb',
+          capturedByHook: true,
+        },
+      ],
     });
     expect(brokenSelect(populated).evaluatedClasses).toContain('ownerDirectives');
     expect(selectObligationTelemetry(populated).evaluatedClasses).toContain(
@@ -193,7 +201,13 @@ describe('selectObligationTelemetry — row identity', () => {
     const { rows } = selectObligationTelemetry(
       state({
         ownerDirectives: [
-          { id: 85, captureStatus: 'pending', verbatimText: 'cut a 0.0.22 release' },
+          {
+            id: 85,
+            captureStatus: 'pending',
+            verbatimText: 'cut a 0.0.22 release',
+            recordedBy: 'su-c03852cb',
+            capturedByHook: true,
+          },
         ],
       }),
     );
@@ -203,7 +217,13 @@ describe('selectObligationTelemetry — row identity', () => {
     const reworded = selectObligationTelemetry(
       state({
         ownerDirectives: [
-          { id: 85, captureStatus: 'open', verbatimText: 'COMPLETELY different words' },
+          {
+            id: 85,
+            captureStatus: 'open',
+            verbatimText: 'COMPLETELY different words',
+            recordedBy: 'su-c03852cb',
+            capturedByHook: true,
+          },
         ],
       }),
     );
@@ -259,7 +279,15 @@ describe('the registry/selector covenant', () => {
     // A class added to the registry but not to the selector would report reach
     // forever and action never — silently unmeasured.
     const everyClassPopulated = state({
-      ownerDirectives: [{ id: 1, captureStatus: 'pending', verbatimText: 'x' }],
+      ownerDirectives: [
+        {
+          id: 1,
+          captureStatus: 'pending',
+          verbatimText: 'x',
+          recordedBy: 'su-c03852cb',
+          capturedByHook: true,
+        },
+      ],
       openChecks: [
         { id: 'c1', claim: 'c', pointer: 'p' },
       ] as OrientationState['openChecks'],
