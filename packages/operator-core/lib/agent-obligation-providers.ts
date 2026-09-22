@@ -751,18 +751,42 @@ export function independentVerificationObligation(input: IndependentVerification
     });
   }
   const code = gate.code;
-  const graderGap = Boolean(code && GATE_CODE_OWNERSHIP[code] === 'grader');
-  const authorRepair = Boolean(code && GATE_CODE_OWNERSHIP[code] === 'author');
+  const ownership = code ? GATE_CODE_OWNERSHIP[code] : undefined;
+  /**
+   * D-009 ruling 3 — the TWO independent questions one `graderGap` boolean used to
+   * conflate. They are not the same question, and collapsing them forced a false
+   * choice: either an author-owned stall renders `[BLOCKED]` (telling the one agent
+   * who CAN act that it cannot), or contract codes get reclassified as grader gaps
+   * and a malformed rubric starts spawning graders. Split, both stay true.
+   *
+   * - `isDelegable`  — may this recruit/wake a LINEAGE-INDEPENDENT PEER? `grader` only.
+   *                    This is the safety-bearing half; widening it is what
+   *                    `acceptance-bar-lifecycle-evaluator.ts` promises never happens.
+   * - `isActionable` — can SOMEONE act on this right now? Strictly wider: author
+   *                    repair qualifies, because the plan's own author can start it
+   *                    this second. This is the visibility half, and it recruits
+   *                    nobody.
+   *
+   * `unmeasured` satisfies NEITHER: a failed measurement is not work, so it stays
+   * `blocked` and takes an `inspect` action rather than being dressed up as a repair
+   * the author owes (the pre-split code told them to "repair" a gate read that never
+   * happened).
+   */
+  const isDelegable = ownership === 'grader';
+  const authorRepair = ownership === 'author';
+  const isActionable = isDelegable || authorRepair;
   return defineAgentObligation({
     ...common,
-    title: graderGap
+    title: isDelegable
       ? `Plan ${input.planSlug} needs an independent grader`
-      : `Plan ${input.planSlug} cannot yet be independently certified`,
+      : authorRepair
+        ? `Plan ${input.planSlug} needs author repair before independent certification`
+        : `Plan ${input.planSlug} cannot yet be independently certified`,
     // A plan can cycle back to the same refusal code/rubric after a revision.
     // Include the canonical source generation so a fired old episode never
     // suppresses the new revision's material-change watch.
     episode: `${code ?? 'gate-unknown'}:${gate.rubricId ?? 'no-rubric'}:${input.sourceGeneration}`,
-    status: graderGap ? 'due' : 'blocked',
+    status: isActionable ? 'due' : 'blocked',
     reason: gate.message ?? `plan acceptance gate refused with ${code ?? 'an unknown code'}`,
     // Author-owned audit/rubric/spec repair is a prerequisite to asking an
     // independent grader to act. Keep it in the upstream tier so a downstream
