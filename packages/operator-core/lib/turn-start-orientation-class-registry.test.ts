@@ -62,6 +62,7 @@ import {
  */
 const EVERY_ORIENTATION_STATE_FIELD: Record<keyof OrientationState, true> = {
   held: true,
+  planDecisions: true,
   ownerDirectives: true,
   historyUpdates: true,
   effortUpdates: true,
@@ -85,6 +86,7 @@ const EVERY_ORIENTATION_STATE_FIELD: Record<keyof OrientationState, true> = {
 
 /** The optional fields are omitted on purpose — `undefined` is a real input. */
 const MINIMAL_STATE: OrientationState = {
+  planDecisions: undefined,
   held: [],
   unansweredDirected: 0,
   unansweredStale: 0,

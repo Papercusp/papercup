@@ -370,6 +370,49 @@ export interface OrientationAuthorityVerdict {
   ideation: string;
 }
 
+/**
+ * P-014: one plan Decision, reduced to what a turn-start line needs.
+ *
+ * `ref` is the DIFF KEY, and deliberately so (D-081 ruling 1). The shared
+ * reader this class reuses — `getClaimTimePlanDecisions` — projects
+ * `{ id, title, snippet, sourcePlanSlug?, ref?, relation? }` and DISCARDS the
+ * `updated_at` / `seq` it orders by, so there is no timestamp on the row to
+ * compare against a cursor. Keying on a timestamp would therefore require
+ * widening `ClaimTimePlanDecision` across four claim paths; keying on the ref
+ * needs nothing and is monotonic per plan.
+ */
+export interface OrientationPlanDecision {
+  /** Globally citable `<plan>#D-NNN`. The diff key — see the interface doc. */
+  ref: string;
+  planSlug: string;
+  /** The in-plan id (`D-NNN`), for the rendered line. */
+  id: string;
+  title: string;
+}
+
+/**
+ * P-014: the decisions in scope, WITH the disclosures that stop the bounded
+ * window being read as the whole set.
+ */
+export interface OrientationPlanDecisions {
+  decisions: OrientationPlanDecision[];
+  /**
+   * D-081 ruling 2: decisions that exist but fell OUTSIDE the reader's bounded
+   * recency window, summed across plans. The window is a real omission source,
+   * so it is DISCLOSED rather than hidden — the underlying brief carries
+   * `totalDecisions` / `totalLocalDecisions` / `totalAffectedDecisions` for
+   * exactly this reason (EI-19396519606401168, where a window read as the whole
+   * set told a claimer it had seen the governing rulings when it had not).
+   */
+  omitted: number;
+  /**
+   * D-081 ruling 3: the reverse-authority read failed for at least one plan, so
+   * inbound decisions from other plans may be missing. Absence must not be
+   * interpreted as no inbound authority.
+   */
+  authorityReadFailed: boolean;
+}
+
 export interface OrientationState {
   /** Non-terminal work-items assigned to this agent. */
   held: OrientationHeldItem[];
@@ -418,6 +461,17 @@ export interface OrientationState {
    * fake a fresh transition on recovery.
    */
   authorityVerdict: OrientationAuthorityVerdict | null;
+  /**
+   * P-014: plan Decisions governing the plans this owner holds claimed items on.
+   *
+   * `undefined` means UNREADABLE (no reader, or the read threw) and renders
+   * NOTHING — never "no new decisions". D-081 ruling 3: a turn-start silence
+   * built on a failed read is the same false-negative class this plan keeps
+   * finding, and here it would assert the agent has seen every governing ruling
+   * when it has seen none. An empty `decisions` array is the MEASURED-empty
+   * value and is a different, true claim.
+   */
+  planDecisions: OrientationPlanDecisions | undefined;
   /** Whether an engine loop is armed — i.e. whether a wake source exists. */
   loopArmed: boolean;
   /** Whether the armed loop's most recent fire was withheld before delivery. */
@@ -627,6 +681,12 @@ function undischargedObligationsOnly(state: OrientationState): OrientationState 
     // strings, and a blank-valued one would render `- authority: exec  …` on a first
     // turn), so null — which renders unconditionally nothing — is the honest choice.
     authorityVerdict: null,
+    // `undefined` is the QUIET value for this class (renders nothing), and is
+    // the honest one here for the same reason as `authorityVerdict: null`
+    // above: this projection did not look, so it must not claim a measured
+    // empty. `{ decisions: [] }` would be the "no new decisions" assertion
+    // D-081 ruling 3 forbids building on anything but a real read.
+    planDecisions: undefined,
     loopArmed: true,
     loopFireWithheld: false,
     improvementTriage: null,
@@ -666,6 +726,13 @@ export function isEmptyOrientation(state: OrientationState): boolean {
     // Holding it open is safe: `orientationUnchanged` suppresses every later turn,
     // and composeOrientationBlock still emits '' when no line survives.
     state.authorityVerdict === null &&
+    // Same rule as the two rows above: a READABLE, non-empty decisions set holds
+    // the block OPEN. Without this conjunct an agent whose only signal is a new
+    // governing ruling on its plan returns '' before the watermark is consulted,
+    // and the line could never render at all. An UNREADABLE read (`undefined`)
+    // must NOT hold it open — that would spend a block on a class that renders
+    // nothing.
+    (state.planDecisions?.decisions.length ?? 0) === 0 &&
     !state.loopArmed &&
     !state.loopFireWithheld &&
     // improvementTriage is NOT a conjunct here (P-017): it no longer renders,
@@ -865,6 +932,21 @@ export function fingerprintOrientation(
     // UNKNOWN preserves the last known token, exactly like `modes` above: a
     // transient control-state read failure must not erase the cursor and make an
     // unchanged authority look like a fresh transition on the next good read.
+    // P-014 / D-081 ruling 1: the token is the sorted REF SET, not a timestamp
+    // — the reader projects no recordedAt/seq to compare (see
+    // {@link OrientationPlanDecision}). Same preserve-on-unreadable rule as
+    // `authority` below: an UNREADABLE read (`undefined`) carries the committed
+    // token forward, so a transient failure cannot erase the cursor and make
+    // every already-seen decision re-render as new on recovery. That failure
+    // mode is worse here than for a scalar: it would re-emit the whole set.
+    planDecisions: state.planDecisions
+      ? state.planDecisions.decisions
+          .map((d) => d.ref)
+          .sort()
+          .join(',')
+      : typeof committed?.planDecisions === 'string'
+        ? committed.planDecisions
+        : '',
     authority: state.authorityVerdict
       ? encodeAuthorityVerdict(state.authorityVerdict)
       : typeof committed?.authority === 'string'
@@ -955,6 +1037,12 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
     // only when some unrelated token happened to change, i.e. a one-shot with no
     // visible symptom, on the class describing what the agent is ALLOWED TO DO.
     (a.authority ?? '') === (b.authority ?? '') &&
+    // P-014, and the SAME required pairing as `authority` above and `openChecks`
+    // higher up: the `planDecisions` token written in fingerprintOrientation is
+    // INERT unless it is compared HERE. Drop this line and a newly recorded
+    // governing ruling is silently suppressed as "unchanged" — the class would
+    // pass every render test while never firing on the turn that matters.
+    (a.planDecisions ?? '') === (b.planDecisions ?? '') &&
     (a.obligations ?? '') === (b.obligations ?? '') &&
     // REQUIRED, and easy to omit: fingerprintOrientation writing a `facts` token
     // does nothing on its own — this whitelist is what decides re-emission. Without
@@ -1100,6 +1188,56 @@ function decodeAuthorityVerdict(token: unknown): OrientationAuthorityVerdict | n
  * first line that does not fit, so the unchanged two would evict a line below
  * them; all three render only when there is no prior cursor to diff against.
  */
+/** Max decision rows this class renders; the rest are disclosed as `+N`. */
+const PLAN_DECISION_DISPLAY_CAP = 3;
+
+/**
+ * P-014: the lines for plan Decisions that are NEW SINCE THE COMMITTED CURSOR.
+ *
+ * This comparison — NOT the `planDecisions` watermark token — is what makes the
+ * class a diff rather than a per-turn re-emit, exactly as for the authority
+ * verdict below. The token decides whether the BLOCK is worth building; this
+ * decides which decisions the reader has not already been shown.
+ */
+function renderPlanDecisionLines(
+  planDecisions: OrientationPlanDecisions | undefined,
+  committed: CursorState | null,
+): string[] {
+  // UNREADABLE is not "no new decisions" (D-081 ruling 3). Saying nothing is the
+  // only honest option: rendering an all-clear here would tell an agent it has
+  // seen every governing ruling on its plan at exactly the moment we failed to
+  // look — the false-negative class this plan keeps finding.
+  if (!planDecisions) return [];
+  const seen = new Set(
+    typeof committed?.planDecisions === 'string' && committed.planDecisions.length > 0
+      ? committed.planDecisions.split(',')
+      : [],
+  );
+  const fresh = planDecisions.decisions.filter((d) => !seen.has(d.ref));
+  const lines: string[] = [];
+  if (fresh.length > 0) {
+    const shown = fresh.slice(0, PLAN_DECISION_DISPLAY_CAP);
+    const rest = fresh.length - shown.length;
+    for (const d of shown) lines.push(`- plan ${d.planSlug} ${d.id}: ${d.title}`);
+    if (rest > 0) {
+      lines.push(`- +${rest} more new decision(s) — plans:get { slug, heading:'Decisions' }.`);
+    }
+  }
+  // The two disclosures ride on the turns that render decisions, so they cannot
+  // become a standing per-turn nag; both describe why the list above may be
+  // INCOMPLETE, which is only actionable next to the list itself.
+  if (fresh.length > 0 && planDecisions.omitted > 0) {
+    lines.push(
+      `- ⚠ ${planDecisions.omitted} older decision(s) fell outside the read window — ` +
+        `this is NOT the whole set; plans:get { slug, heading:'Decisions' }.`,
+    );
+  }
+  if (fresh.length > 0 && planDecisions.authorityReadFailed) {
+    lines.push('- ⚠ inbound-decision read FAILED — absence here is not evidence of no inbound authority.');
+  }
+  return lines;
+}
+
 function renderAuthorityVerdictLine(
   verdict: OrientationAuthorityVerdict | null,
   committed: CursorState | null,
@@ -1685,6 +1823,26 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
     ],
   }),
 
+  orientationClass<{ planDecisions: OrientationPlanDecisions | undefined }>({
+    id: 'planDecisions',
+    // PLAN_DECISION_DISPLAY_CAP decision rows + the `+N more` line + the two
+    // incompleteness disclosures, which render only alongside a non-empty list.
+    rowCeiling: { maxRows: PLAN_DECISION_DISPLAY_CAP + 3, recoveryVerb: "plans:get { slug, heading:'Decisions' }" },
+    watermarkTokens: ['planDecisions'],
+    applicableSinks: TURN_START,
+    populate: (state) => ({ planDecisions: state.planDecisions }),
+    segments: [
+      {
+        // Just BELOW the authority/mode rows and ABOVE the held-item rows: a
+        // governing ruling constrains HOW the held work may be done, so it has
+        // to be read before the list of that work, but after the mandate that
+        // frames both.
+        order: 90,
+        render: ({ planDecisions }, _state, committed) => renderPlanDecisionLines(planDecisions, committed),
+      },
+    ],
+  }),
+
   orientationClass<{ modes: OrientationModeState[] | null }>({
     id: 'modes',
     rowCeiling: { maxRows: 1, recoveryVerb: 'mode:get' },
@@ -2046,7 +2204,7 @@ export function projectOrientationRows(
  * Two contradictory priority rules in one file is the defect, not the fix. What the
  * parenthetical was actually reaching for — walls must not be starved by a chattier
  * class — is delivered by the ceiling itself: once `obligations` and `announcedGates`
- * cannot run away, the classes ordered after them stop being collateral. See D-076.
+ * cannot run away, the classes ordered after them stop being collateral. See D-079.
  *
  * WITHIN a class the leading rows are kept, which is each renderer's own priority
  * order (openChecks sorts contested-first; ownerDirectives emits newest-first) — the
@@ -2143,14 +2301,9 @@ function selectOrientationClassSegments(
 }
 
 
-/**
- * PURE: compose the final injected block, or '' for "say nothing this turn".
- *
- * Returns '' in all three silence cases — unchanged since last turn, nothing worth
- * saying, or a budget too small to fit even one line — so the caller can splice the
- * result unconditionally.
- */
-export function composeOrientationBlock(input: {
+/** Named so {@link composeOrientationBlock} and {@link composeOrientationBlockWithRows}
+ *  cannot drift apart: one composer, one input contract. */
+export interface ComposeOrientationBlockInput {
   state: OrientationState;
   committed: CursorState | null;
   /**
@@ -2163,10 +2316,47 @@ export function composeOrientationBlock(input: {
    */
   epoch: number;
   budgetChars?: number;
-}): string {
+}
+
+/**
+ * PURE: compose the final injected block, or '' for "say nothing this turn".
+ *
+ * Returns '' in all three silence cases — unchanged since last turn, nothing worth
+ * saying, or a budget too small to fit even one line — so the caller can splice the
+ * result unconditionally.
+ */
+export function composeOrientationBlock(input: ComposeOrientationBlockInput): string {
+  return composeOrientationBlockWithRows(input).block;
+}
+
+/**
+ * The same composition, ALSO returning the rows that survived the budget.
+ *
+ * Exists for P-020's REACH telemetry, which must count what the agent was
+ * actually TOLD rather than what the projection produced. The composer breaks
+ * on the first line that does not fit, so the surviving set is only knowable
+ * here — a caller re-running {@link projectOrientationRows} would count classes
+ * the budget dropped, and a starved class would then read as a healthy one.
+ *
+ * {@link composeOrientationBlock} delegates to this, so there is ONE composer
+ * and the block a telemetry reader describes is byte-identical to the block the
+ * agent received, by construction rather than by two functions agreeing.
+ */
+export function composeOrientationBlockWithRows(input: ComposeOrientationBlockInput): {
+  block: string;
+  rows: OrientationRow[];
+} {
+  /**
+   * The CONTEXT GENERATION this composition belongs to (see
+   * `fingerprintOrientation`). REQUIRED rather than defaulted: a caller that
+   * forgets it silently reinstates the epoch-blind suppression this parameter
+   * exists to remove, and a default would make that omission invisible. 0 is
+   * the honest value for "no generation known" (an unbumped or unreadable
+   * ledger), which degrades to the pre-P-023 behaviour rather than to noise.
+   */
   const { state, committed, epoch } = input;
   const budget = input.budgetChars ?? ORIENTATION_BUDGET_CHARS;
-  if (isEmptyOrientation(state)) return '';
+  if (isEmptyOrientation(state)) return { block: '', rows: [] };
   // P-002 — CLASS-B RE-INJECT POLICY. An obligation row is discharged by
   // DISPOSITION, not by DELIVERY, so the unchanged-fingerprint comparison must
   // not govern it: a standing owner directive that rendered once and was then
@@ -2179,21 +2369,28 @@ export function composeOrientationBlock(input: {
   // line for.
   const unchanged = orientationUnchanged(committed, fingerprintOrientation(state, epoch, committed));
   const undischarged = hasUndischargedObligations(state);
-  if (unchanged && !undischarged) return '';
+  if (unchanged && !undischarged) return { block: '', rows: [] };
   const renderState = unchanged ? undischargedObligationsOnly(state) : state;
 
   const header = `## ${HEADING}`;
-  const lines = renderOrientationLines(renderState, committed);
+  // Rows, not bare lines: identical text, but each carries the class that
+  // emitted it, which is what lets the budget loop below report WHICH classes
+  // survived. `renderOrientationLines` is this same call with `.map(r => r.text)`.
+  const projected = projectOrientationRows(renderState, 'turn-start', committed);
   const out: string[] = [header];
+  const kept: OrientationRow[] = [];
   let used = header.length;
-  for (const line of lines) {
-    const cost = line.length + 1; // + the newline joining it
+  for (const row of projected) {
+    const cost = row.text.length + 1; // + the newline joining it
     if (used + cost > budget) break;
-    out.push(line);
+    out.push(row.text);
+    kept.push(row);
     used += cost;
   }
   // Header alone says nothing — emit only if at least one real line survived.
-  return out.length > 1 ? out.join('\n') : '';
+  // A header-only composition delivered NOTHING, so its rows are dropped too:
+  // reporting them as reach would credit a class for a block nobody received.
+  return out.length > 1 ? { block: out.join('\n'), rows: kept } : { block: '', rows: [] };
 }
 
 /** Fingerprint only obligation content that survived the final outer budget.
@@ -2257,6 +2454,17 @@ export interface OrientationDeps {
    * reader-less landing fails to typecheck instead of rendering silence forever.
    */
   openChecks: (ownerId: string, workspaceId: string) => Promise<OrientationOpenCheck[]>;
+  /**
+   * P-014: governing plan Decisions for the plans this owner holds items on.
+   *
+   * REQUIRED for the same reason `openChecks` above is, and learned from the
+   * same incident (EI-23953846527835643): an OPTIONAL dep lets a class land
+   * declared, registered, watermarked and rendered while production populates
+   * NOTHING, because the coverage guard supplies the state itself and so proves
+   * only the RENDER path. Required means a reader-less landing fails to
+   * typecheck instead of rendering silence forever.
+   */
+  planDecisions: (ownerId: string, workspaceId: string) => Promise<OrientationPlanDecisions | undefined>;
   inbox: (ownerId: string) => Promise<{
     count: number;
     newest: OrientationInboxEntry[];
@@ -2344,6 +2552,7 @@ export async function resolveOrientationState(
     openAsks,
     modes,
     authorityVerdict,
+    planDecisions,
     loopArmed,
     loopFireWithheld,
     improvementTriage,
@@ -2381,6 +2590,11 @@ export async function resolveOrientationState(
     // to do. "Could not read" must stay distinguishable from a real verdict, or
     // the fingerprint erases the cursor and fakes a fresh transition on recovery.
     d.authorityVerdict(ownerId, workspaceId).catch(() => null as OrientationAuthorityVerdict | null),
+    // Fail-soft to UNDEFINED, never `{ decisions: [] }` (D-081 ruling 3). A
+    // measured-empty here would assert "no governing decisions" from a read that
+    // did not happen, and the fingerprint would then advance the cursor past
+    // rulings the agent never saw — so the decisions would never re-render.
+    d.planDecisions(ownerId, workspaceId).catch(() => undefined),
     d.loopArmed(ownerId).catch(() => false),
     d.loopFireWithheld(ownerId).catch(() => false),
     d.improvementTriage(workspaceId).catch(() => null),
@@ -2418,6 +2632,7 @@ export async function resolveOrientationState(
     openAsks,
     modes,
     authorityVerdict,
+    planDecisions,
     loopArmed,
     loopFireWithheld,
     improvementTriage,
@@ -2433,6 +2648,74 @@ export async function resolveOrientationState(
  *  Dynamic imports keep them off the module graph until a turn actually needs them. */
 export function defaultOrientationDeps(): OrientationDeps {
   return {
+    /**
+     * P-014. Reuse-first: the decisions themselves come from
+     * `getClaimTimePlanDecisions`, the SHARED reader already behind
+     * work_items:claim / claim_next / plan-items:claim / scheduler:get_next —
+     * NOT a new decisions query (D-081).
+     *
+     * `undefined` on ANY failure, never a measured-empty: see the dep's
+     * declaration and D-081 ruling 3.
+     */
+    planDecisions: async (ownerId, workspaceId) => {
+      try {
+        const [{ getOrgPg }, { resolveConcreteWorkspaceId }, { getClaimTimePlanDecisions }] = await Promise.all([
+          import('@papercusp/db-org'),
+          import('./workspace-registry'),
+          import('./plan-decisions-claim-port'),
+        ]);
+        const ws = resolveConcreteWorkspaceId(workspaceId);
+        // The plans this owner holds a claimed, NON-TERMINAL item on. Bounded:
+        // an owner working many plans at once is the rare case, and the row
+        // ceiling already truncates the rendered set.
+        const rows = (await getOrgPg().sql`
+          SELECT DISTINCT source_plan_slug, harness_slug
+            FROM harness_shared.work_items
+           WHERE workspace_id = ${ws}
+             AND assignee = ${ownerId}
+             AND source_plan_slug IS NOT NULL
+             AND lane IS DISTINCT FROM 'observation'
+             AND status NOT IN ('done', 'dropped', 'closed', 'resolved')
+           LIMIT 8
+        `) as { source_plan_slug: string; harness_slug: string | null }[];
+        if (rows.length === 0) return { decisions: [], omitted: 0, authorityReadFailed: false };
+        const briefs = await Promise.all(
+          rows.map((row) =>
+            getClaimTimePlanDecisions({
+              planSlug: row.source_plan_slug,
+              harness: row.harness_slug,
+              workspaceId: ws,
+            }).catch(() => null),
+          ),
+        );
+        const decisions: OrientationPlanDecision[] = [];
+        let omitted = 0;
+        let authorityReadFailed = false;
+        for (const brief of briefs) {
+          // A per-plan read that FAILED contributes the failure flag, not a
+          // silent zero — otherwise one bad plan reads as "nothing governing".
+          if (!brief) {
+            authorityReadFailed = true;
+            continue;
+          }
+          if (brief.authorityReadFailed) authorityReadFailed = true;
+          // The window is bounded; disclose what it could not show rather than
+          // letting `decisions.length` stand in for the whole set.
+          omitted += Math.max(0, brief.totalDecisions - brief.decisions.length);
+          for (const d of brief.decisions) {
+            decisions.push({
+              ref: d.ref ?? `${d.sourcePlanSlug ?? brief.planSlug}#${d.id}`,
+              planSlug: d.sourcePlanSlug ?? brief.planSlug,
+              id: d.id,
+              title: d.title,
+            });
+          }
+        }
+        return { decisions, omitted, authorityReadFailed };
+      } catch {
+        return undefined;
+      }
+    },
     ownerDirectives: async (workspaceId) => {
       const { listOpenOwnerDirectives } = await import('./owner-directives');
       const rows: OwnerDirectiveRow[] = await listOpenOwnerDirectives(workspaceId, 12);
@@ -3080,7 +3363,7 @@ export async function buildTurnStartOrientationBlock(input: {
     ]);
     if (isEmptyOrientation(state)) return '';
     const ack = await ackAndRead(ownerId, ORIENTATION_CURSOR_SURFACE).catch(() => null);
-    const block = composeOrientationBlock({
+    const composed = composeOrientationBlockWithRows({
       state,
       // A failed cursor read ⇒ treat as baseline and DELIVER. Fail-open: a delta
       // must never make orientation worse than no delta.
@@ -3088,6 +3371,31 @@ export async function buildTurnStartOrientationBlock(input: {
       epoch,
       ...(input.budgetChars === undefined ? {} : { budgetChars: input.budgetChars }),
     });
+    const block = composed.block;
+    // P-020 REACH + ACTION. Fire-and-forget, and deliberately NOT awaited into
+    // the return path: a telemetry write must never be able to cost an agent
+    // its orientation. Recorded on EVERY turn that composed, including a silent
+    // one — a turn where nothing was delivered is exactly the evidence that a
+    // class's reach is lower than its projection suggests.
+    void (async () => {
+      const [{ recordOrientationTurn, selectObligationTelemetry }, { getOrgPg }] = await Promise.all([
+        import('./orientation-telemetry'),
+        import('@papercusp/db-org'),
+      ]);
+      const renderedRowsByClass = new Map<string, number>();
+      for (const row of composed.rows) {
+        renderedRowsByClass.set(row.classId, (renderedRowsByClass.get(row.classId) ?? 0) + 1);
+      }
+      const { rows: obligationRows, evaluatedClasses } = selectObligationTelemetry(state);
+      await recordOrientationTurn(getOrgPg().sql, {
+        workspaceId,
+        ownerId,
+        sink: 'turn-start',
+        renderedRowsByClass,
+        obligationRows,
+        evaluatedClasses,
+      });
+    })().catch(() => {});
     if (block) {
       // Staged with the SAME epoch the block was composed against — never a
       // re-read. A second read here could land after a boundary and commit a
