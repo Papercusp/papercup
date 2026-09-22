@@ -63,6 +63,7 @@ import {
 const EVERY_ORIENTATION_STATE_FIELD: Record<keyof OrientationState, true> = {
   held: true,
   planDecisions: true,
+  lockTransitions: true,
   ownerDirectives: true,
   historyUpdates: true,
   effortUpdates: true,
@@ -87,6 +88,11 @@ const EVERY_ORIENTATION_STATE_FIELD: Record<keyof OrientationState, true> = {
 /** The optional fields are omitted on purpose — `undefined` is a real input. */
 const MINIMAL_STATE: OrientationState = {
   planDecisions: undefined,
+  // `undefined` is UNREADABLE — the resolver's fail-soft value when the lock
+  // store cannot be read. Written explicitly rather than omitted because the
+  // key is required on OrientationState; the silence it produces is the
+  // deliberate one (never assert "nothing changed" from a failed read).
+  lockTransitions: undefined,
   held: [],
   unansweredDirected: 0,
   unansweredStale: 0,
@@ -227,6 +233,12 @@ describe('emitted priority order — the contract the coverage guard cannot asse
     // segment shipped, which is what made the pin stale and this guard red; the
     // segment also collided with loopArmed at order 90 and now sits at 95.
     [95, 'planDecisions'],
+    // P-015 lock transitions. BELOW the governing ruling and ABOVE the held
+    // rows on purpose: a grant unblocks one of the work rows underneath it and
+    // a block stops one, so it reads with that work rather than with the
+    // mandate above. 96 and 98 were equally free; 97 leaves a slot either side
+    // for a future neighbour without re-homing anyone.
+    [97, 'lockTransitions'],
     [100, 'held'],
     [110, 'held'],
     [120, 'obligations'],
