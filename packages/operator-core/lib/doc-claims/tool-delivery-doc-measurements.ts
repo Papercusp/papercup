@@ -107,5 +107,62 @@ export function judgeToolDeliveryDoc(body: string): DocMeasurementVerdict {
     violations.push('guidance-bytes-do-not-reconcile');
   }
 
+  // ── The honesty half: a BYTE saving is an UPPER BOUND, never the realised saving ───
+  //
+  // WHY THIS IS A SEPARATE CLAUSE. Everything above checks that the doc states a real
+  // measurement. This checks that it states the right KIND of claim about it. The
+  // provider bills TOKENS, and the tokenizer does not compress prose and JSON
+  // punctuation at the same rate — so the byte percentage is systematically the more
+  // flattering number. A doc that publishes 72.8% as "the context we save" is
+  // arithmetically impeccable and still wrong, which is exactly the failure a checker
+  // over byte triples alone cannot see.
+  //
+  // The label is not taken on trust either. The doc must carry a token measurement on
+  // the SAME subject as its byte measurement, and the two percentages are recomputed
+  // here: if the token saving ever stops being the smaller of the two, the upper-bound
+  // framing is no longer supported by the doc's own numbers and this fails — rather
+  // than leaving a stale claim that once was true.
+  const defBytes = lineScoped(body, 'DEFINITION_BYTES');
+  const defBytesFull = pick(defBytes, 'full');
+  const defBytesCompact = pick(defBytes, 'compact');
+  const defBytesSaved = pick(defBytes, 'savedByCompact');
+  if (defBytesFull === null || defBytesCompact === null || defBytesSaved === null) {
+    violations.push('missing-definition-bytes-measurement');
+  } else if (defBytesFull - defBytesCompact !== defBytesSaved) {
+    violations.push('definition-bytes-do-not-reconcile');
+  }
+
+  const defTokens = lineScoped(body, 'DEFINITION_TOKENS');
+  const defTokensFull = pick(defTokens, 'full');
+  const defTokensCompact = pick(defTokens, 'compact');
+  const defTokensSaved = pick(defTokens, 'savedByCompact');
+  if (defTokensFull === null || defTokensCompact === null || defTokensSaved === null) {
+    violations.push('missing-definition-token-measurement');
+  } else if (defTokensFull - defTokensCompact !== defTokensSaved) {
+    violations.push('definition-tokens-do-not-reconcile');
+  }
+
+  if (!/upper\s+bound/i.test(body)) {
+    violations.push('missing-upper-bound-label');
+  }
+
+  // Both measurements present and internally sound — now check they still SUPPORT the
+  // label. A byte saving that is no longer the larger number means the doc is calling
+  // the wrong figure an upper bound.
+  if (
+    defBytesFull !== null &&
+    defBytesCompact !== null &&
+    defTokensFull !== null &&
+    defTokensCompact !== null &&
+    defBytesFull > 0 &&
+    defTokensFull > 0
+  ) {
+    const byteSaving = (defBytesFull - defBytesCompact) / defBytesFull;
+    const tokenSaving = (defTokensFull - defTokensCompact) / defTokensFull;
+    if (tokenSaving >= byteSaving) {
+      violations.push('byte-saving-not-an-upper-bound');
+    }
+  }
+
   return { ok: violations.length === 0, violations, pairs };
 }
