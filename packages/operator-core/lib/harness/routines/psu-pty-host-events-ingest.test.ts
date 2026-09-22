@@ -9,7 +9,7 @@
 import { mkdtemp, readdir, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   hostEventDigest,
   ingestPsuPtyHostEvents,
@@ -191,11 +191,29 @@ describe('ingestPsuPtyHostEvents', () => {
     await utimes(path, old, old);
 
     const { sql } = makeFakeSql({ failInsert: true });
-    const res = await ingestPsuPtyHostEvents({ sql, workspaceId: 'ws', dir });
+    // The ingester deliberately console.error()s a failed INSERT rather than swallowing it —
+    // a bare `catch {}` there once made a 100%-failing write look exactly like "nothing to
+    // ingest". vitest-fail-on-console turns any unasserted console.error into a failure, so
+    // the log has to be captured AND asserted: that keeps the non-swallowing guarantee pinned
+    // instead of merely tolerated.
+    const errors: unknown[][] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args) => {
+      errors.push(args);
+    });
+    let res;
+    try {
+      res = await ingestPsuPtyHostEvents({ sql, workspaceId: 'ws', dir });
+    } finally {
+      spy.mockRestore();
+    }
 
     expect(res.filesRetainedUningested).toBe(1);
     expect(res.filesDeleted).toBe(0);
     expect(await readdir(dir)).toContain('su-old.events.jsonl');
+    expect(res.ingestErrors).toBe(1);
+    expect(res.firstIngestError).toMatch(/insert boom/);
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0]?.[0])).toMatch(/INSERT failed for su-old/);
   });
 
   it('deletes a past-retention file once its rows are persisted', async () => {
