@@ -70,6 +70,7 @@ const EVERY_ORIENTATION_STATE_FIELD: Record<keyof OrientationState, true> = {
   inboxRecent: true,
   openAsks: true,
   announcedGates: true,
+  modes: true,
   loopArmed: true,
   loopFireWithheld: true,
   improvementTriage: true,
@@ -89,6 +90,9 @@ const MINIMAL_STATE: OrientationState = {
   inboxRecent: [],
   openAsks: null,
   announcedGates: [],
+  // `[]` is "no modes set", which is a READABLE state — distinct from `null`
+  // (unreadable), which must stay silent rather than assert a posture.
+  modes: [],
   loopArmed: false,
   loopFireWithheld: false,
   improvementTriage: null,
@@ -187,6 +191,9 @@ describe('emitted priority order — the contract the coverage guard cannot asse
     [60, 'unansweredDirected'],
     [70, 'unansweredStale'],
     [80, 'openAsks'],
+    // P-012 / D-071: posture is the frame the lines below depend on, so a mode
+    // TRANSITION renders just above the wake-source warning.
+    [85, 'modes'],
     [90, 'loopArmed'],
     [100, 'held'],
     [110, 'held'],
