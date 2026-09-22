@@ -225,6 +225,7 @@
     "scripts/check-no-unthreaded-apply.mjs",
     "scripts/check-no-proc-path-fixture.mjs",
     "scripts/check-fixed-but-open.mjs",
+    "scripts/audit-identity-column-domains.mjs",
     "scripts/check-okf-conformance.mjs",
     // Not imported by any .ts itself — registered because check-okf-conformance.mjs
     // imports it, so tsc emits its declaration REGARDLESS. Left unregistered it lands

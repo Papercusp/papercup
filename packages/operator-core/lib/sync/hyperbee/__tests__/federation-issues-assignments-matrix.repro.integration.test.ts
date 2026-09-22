@@ -276,6 +276,27 @@ async function countOutbox(sql: postgres.Sql, table: string, key: string): Promi
   return Number(rows[0]?.n ?? 0);
 }
 
+/**
+ * WI-10002487 — engineer_issues outbox rows are keyed `<storage harness_slug>/<issue_id>`
+ * (mig 829 harness-qualified op identity; mig 965's capture_work_items_outbox builds
+ * `v_rec.harness_slug || '/' || v_rec.feature_id`). Counting the BARE issue id matches
+ * nothing, which read as "the capture trigger never fired" when it had. The key is
+ * rebuilt from the STORED row, exactly as the trigger builds it, so this check cannot
+ * drift from the slug the compat view resolves `scope` to.
+ */
+async function countIssueOutbox(sql: postgres.Sql, issueId: string): Promise<number> {
+  const rows = await sql<Array<{ n: string | number }>>`
+    SELECT COUNT(*)::int AS n
+      FROM harness_shared.substrate_outbox o
+      JOIN harness_shared.work_items w
+        ON o.key = w.harness_slug || '/' || w.feature_id
+     WHERE o.table_name = 'engineer_issues'
+       AND w.workspace_id = ${WORKSPACE_ID}
+       AND w.feature_id = ${issueId}
+  `;
+  return Number(rows[0]?.n ?? 0);
+}
+
 // ── Author helpers (the REAL write paths whose capture triggers are the federation seam). ──
 
 /** Author an engineer_issue THROUGH the canonical compat view (mig 374/382 INSTEAD OF DML →
@@ -507,7 +528,7 @@ describe('federation ISSUES+ASSIGNMENTS matrix — engineer_issues + plan_item_a
         note: 'owner assigns P-001',
       });
       // Capture sanity on the AUTHOR (the real mig-375 + mig-145 triggers).
-      expect(await countOutbox(authorDb.adminSql, 'engineer_issues', 'EI-a1')).toBe(1);
+      expect(await countIssueOutbox(authorDb.adminSql, 'EI-a1')).toBe(1);
       expect(await countOutbox(authorDb.adminSql, 'plan_item_assignments', 'owner-plan:P-001')).toBe(1);
 
       await federate();
@@ -574,7 +595,7 @@ describe('federation ISSUES+ASSIGNMENTS matrix — engineer_issues + plan_item_a
         strategy: 'blueprint',
         note: 'member assigns P-007',
       });
-      expect(await countOutbox(authorDb.adminSql, 'engineer_issues', 'EI-b1')).toBe(1);
+      expect(await countIssueOutbox(authorDb.adminSql, 'EI-b1')).toBe(1);
       expect(await countOutbox(authorDb.adminSql, 'plan_item_assignments', 'member-plan:P-007')).toBe(1);
 
       await federate();

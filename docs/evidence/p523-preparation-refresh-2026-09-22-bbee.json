@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "kind": "p523-preparation-refresh",
+  "workItemId": "WI-2147009",
+  "planSlug": "p2p-public-release-endgame-2026-09-01",
+  "planItemId": "P-523",
+  "observedDate": "2026-09-22",
+  "preparationOnly": true,
+  "supersedes": [
+    "docs/evidence/p523-native-preparation-2026-09-14-5c8f.json",
+    "docs/evidence/p523-readiness-inventory-2026-09-14-5c8f.json"
+  ],
+  "whyRefreshed": "21 of the 45 paths in the 2026-09-14 v7 manifest (scratchpad/p523-59b85-v7-manifest.json) changed after that run, including papercusp-desktop/bin/release-local.sh, build-desktop-sidecar.sh, build-windows-cross.sh, build-mac-cross.sh, lib/release-artifacts.sh, src-tauri/tauri.conf.json and package.json. The saved proof no longer described current source.",
+  "repositoryRoot": "Canonical papercusp harness checkout containing this file (relative paths below).",
+  "sourceSnapshot": {
+    "superprojectHead": "8dcb98e68c3b754fa4fd5a2ae1a17185bd71b4b6",
+    "desktopHead": "e31862f2bb02547a7239b67252bffe3f69ef2c32",
+    "changedDuringRun": [],
+    "testedPathsDirty": false
+  },
+  "nativeRun": {
+    "framework": "node --test (papercusp-desktop native Node tests)",
+    "command": "scripts/pc-heavy.sh node --test --test-reporter=tap --test-concurrency=1 <42 files below>",
+    "startedAt": "2026-09-22T22:42:27Z",
+    "finishedAt": "2026-09-22T22:44:58Z",
+    "exitCode": 0,
+    "totals": { "files": 42, "tests": 535, "pass": 535, "fail": 0, "skipped": 0, "cancelled": 0, "todo": 0 },
+    "nodeDurationMs": 148015.584708,
+    "selection": "Every papercusp-desktop/test/*.test.js whose name matches release|sign|sidecar|windows|mac|install|provenance|tauri-config|seed|bundle|innoextract|appimage|build-, excluding vm|wsl|tauri-dev|verify-tauri-headless|updater-e2e so no test can reach the physical rig. The three files that mention the mac VM (install-and-relaunch-verify, release-sidecar-prune-and-scrub, tauri-config-resources) were inspected: they read source text or spawn local bash fixtures only. This is a superset of the 8-file 2026-09-14 native cohort.",
+    "files": [
+      "appimage-glfallback-guard", "appimage-gstreamer-guard", "appimage-hook-path-normalization", "appimage-pristine-derivation", "appimage-pristine-leg-wiring", "appimage-runtime-isolation", "bootstrap-node-install", "build-artifact-atomicity", "build-deb-archive-immutability", "build-deb-build-timeout", "build-deb-bundle-lock-path", "build-deb-placeholder-sidecar-guard", "build-deb-signing-key", "build-deb-stale-sidecar-guard", "build-desktop-sidecar-dependency-closure", "build-desktop-sidecar-lock", "build-desktop-sidecar-native-abi", "build-desktop-sidecar-onnx-gpu-providers", "build-desktop-sidecar-workspace-install", "build-linux-distribution-profile", "build-script-bundle-scope", "build-windows-identity", "innoextract-compat-preflight", "install-and-relaunch-verify", "installed-app-tree", "provenance-release-host-record", "provenance-sidecar-record", "release-baked-host-bytes", "release-gitleaks", "release-identity-case-insensitive", "release-identity-scan-archives", "release-local-linux-reuse", "release-local-precheck-exit", "release-local-sidecar-source", "release-sidecar-prune-and-scrub", "release-upload-content-skip", "release-vuln-leg-npm-coverage", "sidecar-freshness-guard", "sidecar-no-database-bake-guard", "sidecar-stray-cache-guard", "tauri-config-resources", "windows-source-repair"
+    ],
+    "filePathPattern": "papercusp-desktop/test/<name>.test.js"
+  },
+  "operatorRun": {
+    "framework": "vitest via testing:run",
+    "runId": "9fee2f9c-cfa9-4c15-95c1-6b5633c573fc",
+    "testRunIds": [19053715, 19053716, 19053717, 19053718, 19053719, 19053720],
+    "totals": { "files": 6, "passed": 78, "failed": 0, "skipped": 0 },
+    "files": [
+      "apps/operator/lib/release/preflight-build-set.test.ts",
+      "apps/operator/lib/release/seed-identity-guard.test.ts",
+      "apps/operator/lib/release/seed-payload-integrity-guard.test.ts",
+      "apps/operator/lib/release/tauri-signer-key-contract.test.ts",
+      "apps/operator/lib/release/verify-seed-payload-cli.test.ts",
+      "apps/operator/lib/release/windows-rootfs-preflight.test.ts"
+    ],
+    "interpretation": "Current working tree, not an immutable release-candidate test."
+  },
+  "sourceRoute": {
+    "orchestrator": "papercusp-desktop/bin/release-local.sh",
+    "windowsProducer": "papercusp-desktop/bin/build-windows-cross.sh (cargo-xwin + Inno under wine; Authenticode via osslsigncode only when a certificate is supplied)",
+    "macProducer": "papercusp-desktop/bin/build-mac-cross.sh (cargo-zigbuild + llvm-lipo + rcodesign; no mac VM). mac-vm-build.sh is retained but is not the release-local mac leg.",
+    "sidecar": "papercusp-desktop/bin/build-desktop-sidecar.sh",
+    "bundleTargets": ["app", "dmg", "msi", "nsis", "deb", "rpm", "appimage"],
+    "createUpdaterArtifacts": true
+  },
+  "signingInputs": [
+    {
+      "platform": "all-updaters",
+      "inputs": ["TAURI_SIGNING_PRIVATE_KEY_PATH", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD", "TAURI_SIGNING_PRIVATE_KEY"],
+      "status": "locally-available-and-pairing-proven",
+      "observation": "release-local.sh defaults the key to $HOME/.papercusp/signing/papercusp.key with an empty password. src-tauri/tauri.conf.json plugins.updater.pubkey equals the adjacent papercusp.key.pub byte-for-byte (minisign key id 5D3A7DD4A7089944). Pairing proof on a throwaway scratch file (never published, deleted afterwards): tauri signer sign with the default key and empty password exited 0; minisign -V with the pubkey decoded from tauri.conf.json reported 'Signature and comment signature verified'; after appending bytes to the scratch file, the same verify exited 1.",
+      "remaining": "Verify the updater signatures and latest manifest against the exact final candidate artifacts."
+    },
+    {
+      "platform": "windows",
+      "inputs": ["WINDOWS_CERT_BASE64", "WINDOWS_CERT_PASSWORD", "WINDOWS_SIGN_DIGEST", "WINDOWS_SIGN_TIMESTAMP_URL"],
+      "status": "owner-gated",
+      "observation": "Unchanged since 2026-09-14. build-windows-cross.sh decodes WINDOWS_CERT_BASE64 into a temporary PKCS#12 and signs each PE through osslsigncode; without it the build logs 'Authenticode signing DISABLED ... UNSIGNED build' and continues. Both certificate inputs are absent in this agent process.",
+      "remaining": "An authorized Authenticode code-signing certificate (PKCS#12, base64) and its password, supplied outside the repository; then exact installer and bundled-executable Authenticode verification and a signed downloaded-install journey. No SmartScreen reputation is claimed."
+    },
+    {
+      "platform": "macos",
+      "inputs": ["MAC_SIGN_P12_BASE64", "MAC_SIGN_P12_PASSWORD"],
+      "status": "owner-gated",
+      "observation": "Unchanged since 2026-09-14. build-mac-cross.sh decodes MAC_SIGN_P12_BASE64 and passes it to rcodesign sign --p12-file for the .app and dmg; without it the build signs ad hoc. No maintained source step submits for notarization or staples a ticket (the only notarization text is a diagnostic note in mac-vm-fresh-install-e2e.sh).",
+      "remaining": "An Apple Developer ID Application certificate and private key (PKCS#12, base64) with its password, plus App Store Connect API credentials for notarization, and a maintained notarize-and-staple step with its own credential contract. Then prove nested-code signing, hardened runtime, entitlements and timestamp, an accepted notary result, the stapled ticket and Gatekeeper acceptance. Rebuild downstream archives, updater signatures, hashes and provenance if that step changes bytes."
+    }
+  ],
+  "finalCandidateCommands": [
+    "npm run test:file -- apps/operator/lib/release/*.test.ts (or testing:run with the 6 operator files above)",
+    "scripts/pc-heavy.sh node --test --test-concurrency=1 papercusp-desktop/test/<the 42 files above>.test.js",
+    "papercusp-desktop/bin/release-local.sh on the single approved candidate (NOT run here), followed by the exact-artifact signature, updater-manifest and provenance verification it performs"
+  ],
+  "releaseVerdict": "Preparation readiness only. Not a full installer build, public signing, notarization, real-machine installation, P-521 physical acceptance, independent release GO, canary or publication. No candidate was cut, no artifact was published, the rig was not touched and no LIVE_GATE_OPS action was taken."
+}
