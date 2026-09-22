@@ -31,6 +31,7 @@ import {
   beginWorkspaceHostOperation,
   readWorkspaceHostDestroyTarget,
   readWorkspaceHostResourceCheckpoints,
+  recordWorkspaceHostImage,
   recordWorkspaceHostObservation,
   recordWorkspaceHostRecoveryPoint,
   updateWorkspaceHostOperation,
@@ -98,6 +99,7 @@ export interface WorkspaceHostLifecycleStore {
   appendEvent: typeof appendWorkspaceHostEvent;
   recordObservation: typeof recordWorkspaceHostObservation;
   recordRecoveryPoint: typeof recordWorkspaceHostRecoveryPoint;
+  recordImage: typeof recordWorkspaceHostImage;
 }
 
 export const WORKSPACE_HOST_PRODUCT_LIFECYCLE_STAGES = [
@@ -187,6 +189,7 @@ const DEFAULT_STORE: WorkspaceHostLifecycleStore = {
   appendEvent: appendWorkspaceHostEvent,
   recordObservation: recordWorkspaceHostObservation,
   recordRecoveryPoint: recordWorkspaceHostRecoveryPoint,
+  recordImage: recordWorkspaceHostImage,
 };
 
 function controllerStore(
@@ -203,6 +206,7 @@ function controllerStore(
     recordObservation: (workspaceId, observation) =>
       store.recordObservation(workspaceId, observation, { operationId, controllerAuthority }),
     recordRecoveryPoint: (input) => store.recordRecoveryPoint({ ...input, operationId, controllerAuthority }),
+    recordImage: (input) => store.recordImage({ ...input, operationId, controllerAuthority }),
   };
 }
 
@@ -894,6 +898,12 @@ export async function runWorkspaceHostLifecycle(
             updatedAt: new Date().toISOString(),
           },
         });
+      }
+      if (input.action === 'upgrade') {
+        // WI-10002494: every provider step applied, so the instance was recreated from input.image.
+        // Without this the host row and desired spec kept the pre-upgrade image, and the next
+        // recreate built from that spec would silently undo the upgrade.
+        await store.recordImage({ workspaceId, hostId: resultHostId, image: input.image! });
       }
       /*
        * This branch is generic across every lifecycle action, so on its own it can only ever
