@@ -32,6 +32,10 @@ import {
   deriveBuildSha,
   gatePath,
   readOrCreateGate,
+  releaseToolingDrift,
+  RELEASE_TOOLING_SUBTREE,
+  type GitRunner,
+  type ReleaseToolingDrift,
 } from './release-cut-launch';
 
 describe('version / channel validation', () => {
@@ -704,5 +708,204 @@ describe('readOrCreateGate', () => {
     expect(writeCount).toBe(1);
     expect(created).toBe(false);
     expect(gate.buildSha).toBe('winner-sha'); // reads back the WINNER's sha, not its own derivation
+  });
+});
+
+/**
+ * WI-10002449 — preflight used to check only that release scripts EXIST, never what they
+ * CONTAINED, so a cut root frozen weeks ago with superseded tooling returned go:true.
+ * Measured on the real paused 0.0.22 root: 187 commits behind, with bin/upload-release.sh
+ * at the PRE-fix blob of the stale-artifact bug (EI-23963309971611146). Preflight said go.
+ *
+ * The check must separate two things a cut tree mixes: product source (pinned on purpose,
+ * drift is correct) from release machinery (must be current, drift re-executes old bugs).
+ */
+describe('release-tooling staleness', () => {
+  const SUBJECT = '/cut/papercusp-desktop';
+  const REFERENCE = '/canonical/papercusp-desktop';
+  const SUBJECT_PIN = 'b396279eae52d2b7e96623ee48058423f0e3c9bb';
+  const REFERENCE_PIN = '867b7ddf94475461710870d6aa3421bfce73202f';
+
+  /** Keys are `<repo>::<argv joined>`; anything unlisted fails, like a real git would. */
+  function fakeGit(table: Record<string, { ok: boolean; stdout: string }>, calls: string[][] = []): GitRunner {
+    return (repo, args) => {
+      calls.push([repo, ...args]);
+      return table[`${repo}::${args.join(' ')}`] ?? { ok: false, stdout: '' };
+    };
+  }
+
+  const okv = (stdout = '') => ({ ok: true, stdout });
+
+  function behindTable(staleFiles: string[]) {
+    return {
+      [`${SUBJECT}::rev-parse HEAD`]: okv(`${SUBJECT_PIN}\n`),
+      [`${REFERENCE}::rev-parse HEAD`]: okv(`${REFERENCE_PIN}\n`),
+      [`${REFERENCE}::cat-file -e ${SUBJECT_PIN}^{commit}`]: okv(),
+      [`${REFERENCE}::cat-file -e ${REFERENCE_PIN}^{commit}`]: okv(),
+      [`${REFERENCE}::diff --name-only ${SUBJECT_PIN} ${REFERENCE_PIN} -- ${RELEASE_TOOLING_SUBTREE}`]:
+        okv(staleFiles.join('\n') + (staleFiles.length ? '\n' : '')),
+      [`${REFERENCE}::merge-base --is-ancestor ${SUBJECT_PIN} ${REFERENCE_PIN}`]: okv(),
+    };
+  }
+
+  describe('releaseToolingDrift', () => {
+    it('a cut root that IS the canonical checkout is current, and asks git nothing', () => {
+      const calls: string[][] = [];
+      const r = releaseToolingDrift({
+        subjectDesktopRoot: '/x/papercusp-desktop',
+        referenceDesktopRoot: '/x/./papercusp-desktop',
+        git: fakeGit({}, calls),
+      });
+      expect(r.state).toBe('current');
+      expect(calls).toEqual([]); // path equality short-circuits before any spawn
+    });
+
+    it('identical pins are current', () => {
+      const r = releaseToolingDrift({
+        subjectDesktopRoot: SUBJECT,
+        referenceDesktopRoot: REFERENCE,
+        git: fakeGit({
+          [`${SUBJECT}::rev-parse HEAD`]: okv(`${SUBJECT_PIN}\n`),
+          [`${REFERENCE}::rev-parse HEAD`]: okv(`${SUBJECT_PIN}\n`),
+        }),
+      });
+      expect(r.state).toBe('current');
+      expect(r.staleFiles).toEqual([]);
+    });
+
+    it('an ancestor pin with differing bin/ files reads BEHIND, with the files sorted', () => {
+      const r = releaseToolingDrift({
+        subjectDesktopRoot: SUBJECT,
+        referenceDesktopRoot: REFERENCE,
+        git: fakeGit(behindTable(['bin/upload-release.sh', 'bin/lib/release-artifacts.sh'])),
+      });
+      expect(r.state).toBe('behind');
+      expect(r.staleFiles).toEqual(['bin/lib/release-artifacts.sh', 'bin/upload-release.sh']);
+      expect(r.subjectPin).toBe(SUBJECT_PIN);
+      expect(r.referencePin).toBe(REFERENCE_PIN);
+    });
+
+    it('scopes the diff to the release-machinery subtree, not the whole tree', () => {
+      const calls: string[][] = [];
+      releaseToolingDrift({
+        subjectDesktopRoot: SUBJECT,
+        referenceDesktopRoot: REFERENCE,
+        git: fakeGit(behindTable(['bin/release-local.sh']), calls),
+      });
+      const diffCall = calls.find((c) => c.includes('diff'));
+      expect(diffCall).toBeDefined();
+      // Without the pathspec this would report product-source churn as stale machinery.
+      expect(diffCall!.slice(-2)).toEqual(['--', RELEASE_TOOLING_SUBTREE]);
+    });
+
+    it('a non-ancestor pin reads DIVERGED, not behind — a deliberate pin may be ahead', () => {
+      const table = behindTable(['bin/release-local.sh']);
+      table[`${REFERENCE}::merge-base --is-ancestor ${SUBJECT_PIN} ${REFERENCE_PIN}`] = { ok: false, stdout: '' };
+      const r = releaseToolingDrift({
+        subjectDesktopRoot: SUBJECT,
+        referenceDesktopRoot: REFERENCE,
+        git: fakeGit(table),
+      });
+      expect(r.state).toBe('diverged');
+      expect(r.staleFiles).toEqual(['bin/release-local.sh']);
+    });
+
+    it('an UNREADABLE commit is unknown — it must never read as clean', () => {
+      // The trap: git diff against an unresolvable object yields an EMPTY file list,
+      // which is byte-identical to "nothing drifted". That reading would wave a stale
+      // root straight through, so the object has to be proven readable first.
+      const table = behindTable(['bin/upload-release.sh']);
+      table[`${REFERENCE}::cat-file -e ${SUBJECT_PIN}^{commit}`] = { ok: false, stdout: '' };
+      const r = releaseToolingDrift({
+        subjectDesktopRoot: SUBJECT,
+        referenceDesktopRoot: REFERENCE,
+        git: fakeGit(table),
+      });
+      expect(r.state).toBe('unknown');
+      expect(r.state).not.toBe('current');
+      expect(r.detail).toMatch(/not readable/);
+    });
+
+    it('an unresolvable HEAD is unknown, naming which side failed', () => {
+      const r = releaseToolingDrift({
+        subjectDesktopRoot: SUBJECT,
+        referenceDesktopRoot: REFERENCE,
+        git: fakeGit({ [`${REFERENCE}::rev-parse HEAD`]: okv(`${REFERENCE_PIN}\n`) }),
+      });
+      expect(r.state).toBe('unknown');
+      expect(r.detail).toContain(SUBJECT);
+    });
+  });
+
+  describe('preflight check: release-tooling-current', () => {
+    const root = '/root/papercusp-desktop';
+    const home = '/home/tester';
+    const present = new Set([
+      `${home}/.papercusp/signing/papercusp.key`,
+      `${root}/bin/release-local.sh`,
+      '/root/node_modules/@papercusp/operator-core/lib/util/cli-entry.ts',
+      `${root}/bin/verify-provenance.sh`,
+      `${root}/bin/vm-preflight.sh`,
+      `${root}/bin/install-and-relaunch-verify.sh`,
+    ]);
+    const base = { home, exists: (p: string) => present.has(p), isUnitActive: () => false };
+    const withDrift = (d: Partial<ReleaseToolingDrift>) =>
+      preflightCut({}, { root }, {
+        ...base,
+        releaseToolingDrift: () => ({ state: 'current', staleFiles: [], ...d }) as ReleaseToolingDrift,
+      });
+    const check = (r: ReturnType<typeof preflightCut>) =>
+      r.checks.find((c) => c.name === 'release-tooling-current')!;
+
+    it('BEHIND with stale machinery is a HARD blocker that names the files and the remedy', () => {
+      const r = withDrift({
+        state: 'behind',
+        staleFiles: ['bin/lib/release-artifacts.sh', 'bin/upload-release.sh'],
+        subjectPin: SUBJECT_PIN,
+        referencePin: REFERENCE_PIN,
+      });
+      expect(r.go).toBe(false);
+      expect(r.blockers.join()).toMatch(/release-tooling-current/);
+      expect(check(r).detail).toContain('bin/upload-release.sh');
+      expect(check(r).detail).toMatch(/setup-release-checkout/); // remedy, not just a complaint
+      expect(check(r).warnOnly).toBeUndefined();
+    });
+
+    it('BEHIND with product-source drift ONLY is not a blocker — an isolated pin is meant to lag', () => {
+      const r = withDrift({ state: 'behind', staleFiles: [] });
+      expect(r.go).toBe(true);
+      expect(check(r).ok).toBe(true);
+      expect(check(r).detail).toMatch(/product-source drift only/);
+    });
+
+    it('DIVERGED is warn-only, so a deliberate pin is surfaced without being refused', () => {
+      const r = withDrift({ state: 'diverged', staleFiles: ['bin/release-local.sh'] });
+      expect(r.go).toBe(true);
+      expect(check(r).ok).toBe(false);
+      expect(check(r).warnOnly).toBe(true);
+    });
+
+    it('UNKNOWN is surfaced as unmeasured rather than passed off as clean', () => {
+      const r = withDrift({ state: 'unknown', detail: 'git diff failed' });
+      expect(check(r).ok).toBe(false);
+      expect(check(r).warnOnly).toBe(true);
+      expect(check(r).detail).toMatch(/UNMEASURED/);
+      expect(r.go).toBe(true); // unmeasured must not wedge a cut
+    });
+
+    it('CURRENT machinery leaves preflight green', () => {
+      const r = withDrift({ state: 'current', subjectPin: REFERENCE_PIN });
+      expect(r.go).toBe(true);
+      expect(check(r).ok).toBe(true);
+    });
+
+    it('a root that is not a git checkout is unmeasured, and never silently clean', () => {
+      // No releaseToolingDrift injected: the default path runs, and `exists` reports no
+      // .git, so it must decline to answer instead of shelling out or assuming current.
+      const r = preflightCut({}, { root }, base);
+      expect(check(r).ok).toBe(false);
+      expect(check(r).detail).toMatch(/UNMEASURED/);
+      expect(r.go).toBe(true);
+    });
   });
 });
