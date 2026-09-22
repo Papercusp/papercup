@@ -907,6 +907,69 @@ describe('exact spec evidence bindings', () => {
     ]);
   });
 
+  // WI-10002338. The test-run lookup is tenant-scoped, so a real row in another
+  // tenancy and a fabricated id both surfaced as a bare `test_run_not_found`.
+  // That reads as "you invented that id" and sends the caller hunting for the
+  // wrong bug — measured: it cost a full detour before the cause (harness_slug
+  // NULL, because the run was started without a harness stamp) was found by
+  // hand-diffing ledger rows. The diagnostic must name the discriminator.
+  it('tells an unbindable out-of-scope test-run apart from a fabricated id', async () => {
+    await specs.setSpecClause(clause());
+    const bindArgs = {
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      evidenceKind: 'test' as const,
+      sourceFingerprint: 'git:abc123',
+      actorId: 'su-test',
+    };
+
+    // (1) A run recorded with NO harness — what a runner started without a
+    // harness stamp writes. The row is REAL and permanently unbindable.
+    const [nullHarness] = await db.sql<{ id: number }[]>`
+      INSERT INTO harness_shared.test_runs (workspace_id, harness_slug)
+      VALUES (${WORKSPACE}, NULL) RETURNING id`;
+    const nullResult = await evidenceStore.bindSpecEvidence({
+      ...bindArgs,
+      evidenceRef: 'test:null-harness-run',
+      testRunId: Number(nullHarness.id),
+    });
+    expect(nullResult).toMatchObject({
+      status: 'test_run_not_found',
+      scopeMismatch: { foundOutsideScope: true, rowHarnessSlug: null, expectedHarnessSlug: HARNESS },
+    });
+    const nullHint = (nullResult as { scopeMismatch: { hint: string } }).scopeMismatch.hint;
+    // The hint must name the repair, not merely restate the failure.
+    expect(nullHint).toMatch(/harness_slug is NULL/);
+    expect(nullHint).toContain(HARNESS);
+
+    // (2) A run owned by a DIFFERENT harness takes the other hint branch.
+    const [otherHarness] = await db.sql<{ id: number }[]>`
+      INSERT INTO harness_shared.test_runs (workspace_id, harness_slug)
+      VALUES (${WORKSPACE}, 'some-other-harness') RETURNING id`;
+    const otherResult = await evidenceStore.bindSpecEvidence({
+      ...bindArgs,
+      evidenceRef: 'test:other-harness-run',
+      testRunId: Number(otherHarness.id),
+    });
+    expect(otherResult).toMatchObject({
+      status: 'test_run_not_found',
+      scopeMismatch: { foundOutsideScope: true, rowHarnessSlug: 'some-other-harness' },
+    });
+
+    // (3) POSITIVE CONTROL — a genuinely absent id must NOT claim a scope
+    // mismatch. Without this the diagnostic would be indistinguishable from the
+    // very ambiguity it exists to remove.
+    const absent = await evidenceStore.bindSpecEvidence({
+      ...bindArgs,
+      evidenceRef: 'test:fabricated-run',
+      testRunId: 999_000_111,
+    });
+    expect(absent).toMatchObject({ status: 'test_run_not_found' });
+    expect(absent).not.toHaveProperty('scopeMismatch');
+  });
+
   it('validates optional reference scope, detects pruned ledgers, and forbids history mutation', async () => {
     await specs.setSpecClause(clause());
     const external = await seedExternalEvidence();
