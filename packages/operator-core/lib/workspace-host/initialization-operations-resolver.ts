@@ -51,6 +51,7 @@ import { isHostedProviderCredentialRef, resolveHostedGcpAuth } from './hosted-gc
 import {
   GcpIapWorkspaceHostInitializationOperations,
   gcpIapHostKeyAlias,
+  gcpIapHostKeyAliasFamily,
   type GcpIapWorkspaceHostInitializationProfile,
 } from './gcp-iap-initialization-operations';
 import {
@@ -100,7 +101,8 @@ export class WorkspaceHostInitializationHostKeyError extends Error {
 }
 
 export interface GcpIapHostKeyEnrollmentInput {
-  identity: { projectId: string; zone: string; instanceName: string };
+  /** `instanceId` is the incarnation that PUBLISHED `attributes` — read around that read. */
+  identity: { projectId: string; zone: string; instanceName: string; instanceId: string };
   knownHostsFile: string;
   attributes: readonly GcpInstanceGuestAttribute[];
 }
@@ -403,6 +405,13 @@ async function enrollGcpIapHostKeysUnlocked(
   hooks: GcpIapHostKeyEnrollmentTestHooks,
 ): Promise<void> {
   const alias = gcpIapHostKeyAlias(input.identity);
+  // Every incarnation of this instance NAME shares the family prefix. A pin under the family with
+  // any other suffix — or none, the pre-WI-10002493 name-only alias — belongs to a machine GCP has
+  // already deleted (ids are never reused), so it can never match again and is pruned here, under
+  // the same mutex as the rewrite. A pin for THIS incarnation is still checked below and a changed
+  // key on it still refuses: that is the guard, and binding to the id is what keeps it meaningful.
+  const family = gcpIapHostKeyAliasFamily(input.identity);
+  const inFamily = (host: string) => host === family || host.startsWith(`${family}-`);
   const received = guestHostKeys(input.attributes);
   const directory = dirname(input.knownHostsFile);
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -442,7 +451,13 @@ async function enrollGcpIapHostKeysUnlocked(
       trusted.set(parsed.algorithm, parsed.key);
       continue;
     }
-    if (hostField.split(',').includes(alias)) {
+    if (inFamily(hostField)) {
+      if (marked) {
+        throw new WorkspaceHostInitializationHostKeyError('known_hosts contains a marked controller-alias entry');
+      }
+      continue;
+    }
+    if (hostField.split(',').some(inFamily)) {
       throw new WorkspaceHostInitializationHostKeyError(
         'known_hosts embeds the controller alias in a multi-host entry',
       );
@@ -532,6 +547,8 @@ export class UnsupportedWorkspaceHostInitializationTargetError extends Error {
 export function resolveWorkspaceHostInitializationOperations(
   desired: WorkspaceHostDesiredSpec,
   controller: WorkspaceHostInitializationControllerProfile,
+  /** The live incarnation the trust pin was enrolled for — the SSH alias must name the same one. */
+  incarnation: { instanceId: string },
   credentialMaterialSource?: WorkspaceHostCredentialMaterialSource,
 ): WorkspaceHostControllerOperations {
   if (desired.target !== GCP_WORKSPACE_HOST_TARGET) {
@@ -543,6 +560,7 @@ export function resolveWorkspaceHostInitializationOperations(
     projectId: identity.projectId,
     zone: identity.zone,
     instanceName: identity.instanceName,
+    instanceId: incarnation.instanceId,
     sshUser: controller.sshUser,
     knownHostsFile: controller.knownHostsFile,
     ...(controller.identityFile ? { identityFile: controller.identityFile } : {}),
@@ -722,7 +740,7 @@ export interface ResolveOperationsForHostInput {
   /** Test seam; defaults to the durable host record. */
   readDesiredSpec?: typeof readWorkspaceHostDesiredSpec;
   /** Test seam; production uses the persisted cloud credential reference. */
-  gcpClient?: Pick<GcpWorkspaceHostApiClient, 'getInstanceGuestAttributes'>;
+  gcpClient?: Pick<GcpWorkspaceHostApiClient, 'getInstance' | 'getInstanceGuestAttributes'>;
   /** Test seam for the real GCP client path. */
   gcpFetch?: typeof fetch;
   /** Test seam; production resolves only verified hosted delegation metadata to a short-lived token. */
@@ -762,11 +780,7 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
 
   // Keep the provider boundary ahead of the GCP-only trust enrollment. Unsupported targets must
   // refuse without making a cloud call (or attempting to interpret an AWS/Azure spec as GCP).
-  const operations = resolveWorkspaceHostInitializationOperations(
-    desired,
-    input.controller,
-    input.credentialMaterialSource ?? UNCONFIGURED_WORKSPACE_HOST_CREDENTIAL_MATERIAL_SOURCE,
-  );
+  const deliveryCapabilities = resolveWorkspaceHostDeliveryCapabilities(desired);
   const identity = resolveGcpWorkspaceHostInstanceIdentity(desired);
   const credentialRef = desired.credentials.cloudCredentialRef.ref;
   const client =
@@ -788,20 +802,62 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
   // VM. This read is the LAST thing resolution does and it runs BEFORE the initializer that owns
   // the bootstrap gate, so throwing here made that gate structurally unreachable and wrote no
   // operation row at all — the failure presented as `gcp_preflight_http_404 'hostkeys/'`.
+  //
+  // WI-10002493: the keys are pinned to the incarnation that published them, so the incarnation is
+  // read on BOTH sides of the key read. A delete + re-insert landing in between would otherwise pin
+  // one machine's keys under the other's id.
+  const instanceId = await readInstanceIncarnation(client, identity);
   const attributes = await readPublishedHostKeys(
     client,
     identity,
     input.awaitHostKeys ?? {},
   );
+  const confirmedInstanceId = await readInstanceIncarnation(client, identity);
+  if (confirmedInstanceId !== instanceId) {
+    throw new WorkspaceHostInitializationHostKeyError(
+      `instance '${identity.instanceName}' was recreated while its host keys were read ` +
+        `(incarnation ${instanceId} -> ${confirmedInstanceId}); retry the operation`,
+    );
+  }
   await (input.enrollHostKeys ?? enrollGcpIapHostKeys)({
-    identity,
+    identity: { ...identity, instanceId },
     knownHostsFile: input.controller.knownHostsFile,
     attributes,
   });
 
   return {
     desired,
-    operations,
-    deliveryCapabilities: resolveWorkspaceHostDeliveryCapabilities(desired),
+    operations: resolveWorkspaceHostInitializationOperations(
+      desired,
+      input.controller,
+      { instanceId },
+      input.credentialMaterialSource ?? UNCONFIGURED_WORKSPACE_HOST_CREDENTIAL_MATERIAL_SOURCE,
+    ),
+    deliveryCapabilities,
   };
+}
+
+/** Raised when the instance a host's intent names does not exist, or GCP will not identify it. */
+export class WorkspaceHostInstanceUnavailableError extends Error {
+  readonly instanceName: string;
+
+  constructor(identity: { projectId: string; zone: string; instanceName: string }, detail: string) {
+    super(
+      `GCP instance '${identity.instanceName}' in ${identity.projectId}/${identity.zone} ${detail}`,
+    );
+    this.name = 'WorkspaceHostInstanceUnavailableError';
+    this.instanceName = identity.instanceName;
+  }
+}
+
+async function readInstanceIncarnation(
+  client: Pick<GcpWorkspaceHostApiClient, 'getInstance'>,
+  identity: { projectId: string; zone: string; instanceName: string },
+): Promise<string> {
+  const instance = await client.getInstance(identity.projectId, identity.zone, identity.instanceName);
+  if (!instance) throw new WorkspaceHostInstanceUnavailableError(identity, 'does not exist');
+  if (!instance.instanceId) {
+    throw new WorkspaceHostInstanceUnavailableError(identity, 'was returned without an instance id');
+  }
+  return instance.instanceId;
 }
