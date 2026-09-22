@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-015 R-4 real-backend identity UI journey: pointer-driven select, review, switch and rollback in the rendered Tauri webview, each reaching an applied host activation",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-2143764",
+  "observer": "su-5fe0f2de-a2a8-4019-99cb-85117be748c0",
+  "recordedBy": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+  "capturedAt": "2026-09-21T14:53:44.395Z",
+  "command": [
+    "scripts/verify-tauri-headless.sh",
+    "VERIFY_TAURI_ISOLATED_DB=1 P015_R4_REAL_BACKEND=1 node scripts/verify-identities-r4.mjs"
+  ],
+  "commandBasis": "Reconstructed, not copied from a shell log: the driver refuses to run without PAPERCUSP_VERIFY_TAURI_ISOLATED=1 (set by VERIFY_TAURI_ISOLATED_DB=1) and records realBackend=true only when P015_R4_REAL_BACKEND=1, and the artifact shows both. exitCode 0 is inferred from status=pass; the driver sets a nonzero exit on any failed step or cleanup.",
+  "exitCode": 0,
+  "startedAt": "2026-09-21T14:50:07.677Z",
+  "finishedAt": "2026-09-21T14:53:44.395Z",
+  "summary": "The maintained R-4 driver (scripts/verify-identities-r4.mjs, real-backend branch) ran inside verify-tauri-headless.sh against an isolated Tauri webview and isolated Postgres (workspace verify-tauri-isolated-90). It drove the rendered /settings/identities page with pointer clicks. It selected the owned roster agent, reviewed the effective-configuration diff, switched identity through the real identity-management backend, and saw change-requested then applied after the host acknowledged. It then rolled back through the same path and saw change-requested then applied again. All 36 steps passed, with realBackend=true, syntheticMutationResponses=false and hostActivationProven=true. The raw driver artifact is docs/evidence/p015-r4-real-backend-2026-09-21.json (sha256 below); this file is its operational-test-evidence envelope.",
+  "timeBasis": "startedAt is the driver's own run stamp (outDir p015-r4-identities-2026-09-21T145007677Z, and the owner id suffix 1790002207677 ms). finishedAt is an UPPER BOUND: the time the observer recorded check r4-real-backend-applied on WI-2143764 (sinceMs 1790002424395), after the run completed. The driver does not stamp its own finish time.",
+  "subject": {
+    "workspaceId": "verify-tauri-isolated-90",
+    "ownerId": "p015-r4-owned-538340-1790002207677",
+    "bridgePid": 498264,
+    "treeHead": "20613e82dbf4ed5a491c864dfd22d15ab2a1f45e",
+    "frozenSpaIndexSha256": "c5dfb5c02af15a7227fa6c3f118fffc05495f718c6f13ea54c0b09783b853203",
+    "note": "A disposable owner seeded in the verifier's isolated database. The UI, the identity-management route and the host activation acknowledgement are the production code paths, not mocks."
+  },
+  "rawArtifact": {
+    "path": "docs/evidence/p015-r4-real-backend-2026-09-21.json",
+    "sha256": "71dce30cb092b35bb757a91426913d1fa1120ece931ba4c9dfffcd92182ebec1",
+    "committedIn": "7fab380eda",
+    "redaction": "Home-directory paths in recorded commands were rewritten by redactIdentityLeaks on 2026-09-22 so git-sync's content guard would admit the file. The pre-redaction sha256 is kept in the artifact's identityRedaction block. No observation changed."
+  },
+  "replication": [
+    {
+      "tool": "scripts/verify-tauri-headless.sh",
+      "command": "VERIFY_TAURI_ISOLATED_DB=1 scripts/verify-tauri-headless.sh -- bash -c 'P015_R4_REAL_BACKEND=1 node scripts/verify-identities-r4.mjs'",
+      "expect": "exit 0 and evidence.json with status=pass, realBackend=true, hostActivationProven=true, observed covering real-switch-applied and real-rollback-applied"
+    }
+  ],
+  "assertions": [
+    { "id": "pointer-reachable-selection", "scope": "nuqs selection + pointer reachability", "passed": true, "evidence": "Steps owned-agent-visible, identity-library-visible, owned-agent-selected, real-select-identity: every transition used a real pointer click on an element scrolled into the viewport (the driver refuses a target outside the viewport)." },
+    { "id": "review-diff-from-backend", "scope": "authoritative explain/diff", "passed": true, "evidence": "Steps real-review-switch, real-review-response, real-review-diff-visible: the diff came from the identity-management backend, not client-side state." },
+    { "id": "switch-honest-states", "scope": "desired/prepared/applied honesty", "passed": true, "evidence": "Steps real-switch-change-requested then real-switch-host-ack then real-switch-applied: requested state was shown as requested, and applied appeared only after the host acknowledgement." },
+    { "id": "rollback-applied", "scope": "rollback", "passed": true, "evidence": "Steps real-rollback-change-requested, real-rollback-host-ack, real-rollback-applied: rollback went through the same backend path and reached applied." },
+    { "id": "no-synthetic-transport", "scope": "live-path, not mocked transport", "passed": true, "evidence": "realBackend=true, syntheticMutationResponses=false; the driver's fetch observer recorded real /api identity-management calls (step eval:observe-real-fetch)." }
+  ],
+  "notProven": [
+    "Failure-banner rendering on the REAL backend. The failure/retry path is proven by the controlled-response run (docs/evidence/p015-r4-controlled-ui-2026-09-20.json), not this one.",
+    "Provider-binding selection (a missing provider silently selected). Not exercised by this journey.",
+    "Full P-015 or plan acceptance. This is scoped R-4 evidence."
+  ],
+  "sourcePaths": [
+    "apps/operator/app/settings/identities/page.tsx",
+    "packages/operator-core/lib/identity-management.ts",
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/identity-management.ts",
+    "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+    "scripts/verify-identities-r4.mjs"
+  ],
+  "testRunIds": []
+}
