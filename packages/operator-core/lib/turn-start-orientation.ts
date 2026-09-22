@@ -81,6 +81,43 @@ export interface OrientationOwnerDirective {
   verbatimText: string;
 }
 
+/**
+ * ONE carried claim the reader must FALSIFY before relying on it, or one still-open
+ * external blocker — each delivered WITH the probe that settles it (P-010).
+ *
+ * This is the compaction contract's "[inferred] until re-probed" rule mechanised.
+ * That rule already exists in prose, and `loop:checkpoint { checks }` already stores
+ * `{ claim, recheck, verified }` rows precisely so a probe travels with its claim —
+ * but nothing put the UNVERIFIED ones in front of the agent at the moment it acts.
+ * A claim whose probe is delivered gets re-checked; a claim that arrives bare gets
+ * INHERITED, and an inherited false claim is indistinguishable from a measured one.
+ *
+ * Root observation (first-hand, 2026-09-22, and the reason this class exists): a cold
+ * wake carried NINE checks, every one PREDICTED, each with a real re-check probe — and
+ * the turn-start block surfaced NONE of them. Two were already FALSE at wake time
+ * (their subjects had gone terminal). The carry note even renders a `?` legend the
+ * turn-start reader never sees.
+ */
+export interface OrientationOpenCheck {
+  /** Stable row identity (`carryRowKey`) where the source carries one, else a
+   *  source-qualified ordinal — so the same row keeps one identity across turns. */
+  id: string;
+  /** What the row asserts. Excerpted for the line; the pointer carries the rest. */
+  claim: string;
+  /** The probe that SETTLES the row. Absent ⇒ the row is unfalsifiable as stored,
+   *  which the line states outright rather than implying a probe exists. */
+  recheck?: string;
+  /** Where to read/settle the row — the loop carry-note or a specific work-item. */
+  pointer: string;
+  /** `blocker` rows are open external blockers (`work_items:set_blocker`), not
+   *  carried claims: they are already known-open, so they need no falsifying. */
+  kind: 'check' | 'blocker';
+  /** Supplied evidence CONTRADICTS the claim (the carry-note CONTESTED state).
+   *  Strictly worse than merely unverified — a claim with disproof attached — so
+   *  it is surfaced ahead of the plain PREDICTED rows. */
+  contested?: boolean;
+}
+
 /** Post-claim discussion changes that the holder has not necessarily seen yet. */
 export interface OrientationHistoryUpdate {
   workItemId: string;
@@ -270,6 +307,13 @@ export interface OrientationState {
   historyUpdates?: OrientationHistoryUpdate[];
   /** `undefined` means unreadable; preserve the previous delivery token. */
   effortUpdates?: OrientationEffortUpdate[];
+  /**
+   * Carried claims still UNVERIFIED, and still-open external blockers, each with
+   * its settling probe. `undefined` means the read failed and must preserve the
+   * prior cursor token — measured-empty ("nothing to re-check") and unreadable
+   * ("I could not tell") must not collapse, because only the first is a verdict.
+   */
+  openChecks?: OrientationOpenCheck[];
   /** Directed messages awaiting THIS agent's reply, from a sender who is not
    *  positively dead — the population that genuinely outranks your own work. */
   unansweredDirected: number;
@@ -502,6 +546,7 @@ export function isEmptyOrientation(state: OrientationState): boolean {
     (!state.ownerDirectives || state.ownerDirectives.length === 0) &&
     (!state.historyUpdates || state.historyUpdates.length === 0) &&
     (!state.effortUpdates || state.effortUpdates.length === 0) &&
+    (!state.openChecks || state.openChecks.length === 0) &&
     state.unansweredDirected === 0 &&
     state.unansweredStale === 0 &&
     state.openAsks === null &&
@@ -653,6 +698,22 @@ export function fingerprintOrientation(
             .map((u) => `${u.level}:${u.ref}:${u.count}:${u.newestPostId}`)
             .sort()
             .join(','),
+    // Same UNKNOWN-preserving rule as the two above. The token deliberately keys on
+    // `contested` as well as identity: a row flipping PREDICTED → CONTESTED is the
+    // single most action-worthy transition this class has (evidence arrived that
+    // DISPROVES a claim the agent may already be acting on), and a token keyed on
+    // identity alone would suppress it as "the same row, still open".
+    // It does NOT key on the claim text: re-wording a row is not new information,
+    // and `carryRowKey` exists precisely so identity survives a rewrite (P-013).
+    openChecks:
+      state.openChecks === undefined
+        ? typeof committed?.openChecks === 'string'
+          ? committed.openChecks
+          : ''
+        : state.openChecks
+            .map((c) => `${c.kind}:${c.id}:${c.contested ? 1 : 0}`)
+            .sort()
+            .join(','),
     unanswered: state.unansweredDirected,
     // EI-20085805220385722: its own token, not folded into `unanswered` — the
     // two move independently (a sender DYING demotes an ask from one to the
@@ -722,6 +783,12 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
     a.ownerDirectives === b.ownerDirectives &&
     (a.historyUpdates ?? '') === (b.historyUpdates ?? '') &&
     (a.effortUpdates ?? '') === (b.effortUpdates ?? '') &&
+    // REQUIRED, and the easiest line in this file to omit: writing the `openChecks`
+    // token in fingerprintOrientation does NOTHING unless it is compared here. Drop
+    // this and the class degrades to a one-shot with no visible symptom — a newly
+    // CONTESTED claim is silently suppressed as "unchanged", which is precisely the
+    // inherit-instead-of-falsify failure the class exists to prevent.
+    (a.openChecks ?? '') === (b.openChecks ?? '') &&
     a.unanswered === b.unanswered &&
     // REQUIRED, same rule as `unanswered` beside it: writing the token in
     // fingerprintOrientation does nothing unless it is compared here.
@@ -1033,6 +1100,55 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
         // discovered late or never. It renders once per respawn, so the cost is bounded.
         order: 30,
         render: (carryBlindWindow) => (carryBlindWindow ? [renderCarryBlindWindowLine(carryBlindWindow)] : []),
+      },
+    ],
+  }),
+
+  orientationClass<OrientationOpenCheck[] | undefined>({
+    id: 'openChecks',
+    watermarkTokens: ['openChecks'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.openChecks,
+    segments: [
+      {
+        // Directly after `carryBlindWindow` (30) and ahead of the post-claim update
+        // lines, because it shares that class's decay property and worsens it. A
+        // blind-window line describes turns the agent cannot read; THIS describes
+        // conclusions it CAN read and will act on while they are wrong. The damage
+        // from an inherited false claim lands on the agent's first action of the
+        // turn, which is upstream of everything the lines below prompt it to do.
+        order: 35,
+        render: (openChecks) => {
+          if (!openChecks || openChecks.length === 0) return [];
+          // CONTESTED first (disproof already attached), then the remaining
+          // unverified claims, then blockers — worst-first, so budget truncation
+          // drops the least actionable tail rather than an arbitrary one.
+          const rank = (row: OrientationOpenCheck): number =>
+            row.contested ? 0 : row.kind === 'check' ? 1 : 2;
+          const ordered = openChecks.slice().sort((a, b) => rank(a) - rank(b));
+          const lines: string[] = [];
+          for (const row of ordered.slice(0, 2)) {
+            const claim = row.claim.replace(/\s+/g, ' ').trim();
+            const excerpt = claim.length > 90 ? `${claim.slice(0, 89)}…` : claim;
+            // The probe is the POINT of the row — an unprobed claim is reported as
+            // unfalsifiable rather than silently rendered as if a probe existed.
+            const probe = row.recheck?.replace(/\s+/g, ' ').trim();
+            const settle = probe
+              ? `run recheck: ${probe.length > 90 ? `${probe.slice(0, 89)}…` : probe}`
+              : row.kind === 'blocker'
+                ? 'no next verb recorded — re-read the blocker before waiting on it'
+                : 'NO PROBE STORED — treat as [inferred]; do not rely on it';
+            const badge = row.contested ? '⚠ CONTESTED' : row.kind === 'blocker' ? 'open blocker' : '? UNVERIFIED';
+            lines.push(`- 🔎 ${badge} ${JSON.stringify(excerpt)} — ${settle} [${row.pointer}]`);
+          }
+          if (ordered.length > 2) {
+            const rest = ordered.length - 2;
+            lines.push(
+              `- 🔎 +${rest} more unverified claim(s)/open blocker(s) — loop:status / work_items:get carry the rows.`,
+            );
+          }
+          return lines;
+        },
       },
     ],
   }),
@@ -1474,6 +1590,8 @@ export interface OrientationDeps {
   ownerDirectives?: (workspaceId: string) => Promise<OrientationOwnerDirective[]>;
   historyUpdates: (ownerId: string, workspaceId: string) => Promise<OrientationHistoryUpdate[]>;
   effortUpdates: (ownerId: string, workspaceId: string) => Promise<OrientationEffortUpdate[]>;
+  /** P-010: unverified carried claims + open external blockers, each with its probe. */
+  openChecks: (ownerId: string, workspaceId: string) => Promise<OrientationOpenCheck[]>;
   inbox: (ownerId: string) => Promise<{
     count: number;
     newest: OrientationInboxEntry[];
