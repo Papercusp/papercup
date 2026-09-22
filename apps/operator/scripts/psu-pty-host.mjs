@@ -1195,19 +1195,6 @@ const SUBMIT_VERIFY_QUIET_MS =
  *  back at its prompt. Must exceed the agent's busy repaint cadence (Claude Code's
  *  elapsed counter repaints ~1/s) so a working agent never reads as idle. */
 const OUTPUT_QUIET_MS = Number(process.env.PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS) || 1500;
-/**
- * P-004: how many times the busy gate re-confirms an observed quiet window
- * before treating it as a false alarm.
- *
- * 1 reproduces the old behaviour exactly (a single buffered onData chunk
- * discards the observation). 3 lets a short burst of already-buffered chunks
- * drain while still bounding the work per iteration, so a continuously-emitting
- * child cannot be spun on.
- */
-const QUIET_CONFIRM_ATTEMPTS = Math.max(
-  1,
-  Number(process.env.PAPERCUSP_PSU_PTY_QUIET_CONFIRM_ATTEMPTS) || 3,
-);
 /** Cap on how long a `turn` inject waits for the agent to return to its prompt.
  *  On cap we DO NOT write into the still-busy turn (that is the wedge) — we DROP
  *  the live inject: the wake message is already durably in the recipient's inbox
@@ -2400,9 +2387,6 @@ export function makeAgentBusyGate({
   quietMs = OUTPUT_QUIET_MS,
   capMs = TURN_INJECT_BUSY_CAP_MS,
   now = Date.now,
-  // P-004: bounded re-confirmation of an observed quiet window. Injectable so a
-  // test can pin it to 1 and assert the pre-fix behaviour is still reachable.
-  confirmAttempts = QUIET_CONFIRM_ATTEMPTS,
 } = {}) {
   const getLast = typeof lastOutputAt === 'function' ? lastOutputAt : () => 0;
   return {
@@ -2436,12 +2420,6 @@ export function makeAgentBusyGate({
       // impossible — measured live on 2026-08-04, where a respawn died with no
       // evidence either way.
       let maxQuietForMs = 0;
-      // P-004: how many post-setImmediate confirmations were spent. Reported on
-      // the DEFER path only — the success path's shape is asserted with a strict
-      // toEqual({ deferred: false }) by existing callers/tests, and widening it
-      // would be a gratuitous break for telemetry that is only interesting when
-      // the gate gave up.
-      let confirmAttemptsUsed = 0;
       // Re-check in case the agent keeps emitting during the wait.
       // eslint-disable-next-line no-constant-condition
       while (true) {
@@ -2459,42 +2437,32 @@ export function makeAgentBusyGate({
           // still emitting. setImmediate is deliberate here: unlike another
           // timer, it runs after the current iteration's poll callbacks.
           //
-          // P-004: retry that confirmation a BOUNDED number of times instead of
-          // discarding an already-confirmed quiet window after one miss.
-          //
-          // The guard above drains ONE already-buffered onData callback. A burst
-          // of several buffered chunks therefore defeats it on every pass, so a
-          // genuinely-settled agent could never be released — measured across
-          // the host event logs, 629 of 3,485 defers (18.0%) had already
-          // observed a quiet window >= quietMs and deferred anyway, 243 of them
-          // in single-attempt turn mode.
-          //
-          // The race guard itself is UNCHANGED and still load-bearing: a release
-          // still requires a post-setImmediate re-read to clear the threshold.
-          // We only stop throwing away the observation after a single miss.
-          for (let attempt = 1; attempt <= confirmAttempts; attempt++) {
-            await new Promise((resolve) => setImmediate(resolve));
-            confirmAttemptsUsed++;
-            const confirmedQuietFor = this.quietForMs();
-            if (confirmedQuietFor > maxQuietForMs) maxQuietForMs = confirmedQuietFor;
-            if (confirmedQuietFor >= quietMs) return { deferred: false };
-            // Never let the retry loop outlive the caller's budget.
-            if (now() >= deadline) break;
-          }
+          // P-004 / D-005: this stays a SINGLE confirmation on purpose. The
+          // plan originally called for retrying it a bounded number of times to
+          // rescue the 629/3,485 defers (18.0%) that had already observed a
+          // quiet window >= quietMs. Simulating the loop showed that cannot
+          // work: a collapsed confirmation means a buffered onData callback was
+          // just drained, and draining it stamps lastOutputAt = now, so every
+          // additional setImmediate re-read sees ~0ms of quiet. A retry adds
+          // ticks and recovers nothing. (One setImmediate is also sufficient by
+          // construction — a poll phase drains ALL queued callbacks, not one.)
+          // Those defers are fixed by the NATIVE boundary proof (P-003), which
+          // does not depend on the pty ever going quiet.
+          await new Promise((resolve) => setImmediate(resolve));
+          const confirmedQuietFor = this.quietForMs();
+          if (confirmedQuietFor > maxQuietForMs) maxQuietForMs = confirmedQuietFor;
+          if (confirmedQuietFor >= quietMs) return { deferred: false };
         }
-        if (now() >= deadline) {
-          return { deferred: true, reason: 'agent-busy', maxQuietForMs, quietMs, confirmAttemptsUsed };
-        }
-        // P-004: recompute the sleep from the CURRENT quiet window, not the
-        // stale pre-confirmation `quietFor`.
+        if (now() >= deadline) return { deferred: true, reason: 'agent-busy', maxQuietForMs, quietMs };
+        // P-004 (the part that IS a real defect): recompute the sleep from the
+        // CURRENT quiet window, not the stale pre-confirmation `quietFor`.
         //
-        // The old `quietMs - quietFor` went NEGATIVE precisely in the case above
-        // (quietFor >= quietMs but the confirmation collapsed), so
-        // `Math.max(10, wait)` pinned the loop to a 10ms spin — up to ~18,000
-        // iterations against the 180s cap — while re-reading a value that had
-        // just told us output was flowing. Reading it fresh yields a sleep of
-        // roughly the full quiet window, which is exactly how long we must wait
-        // for the threshold to be reachable again.
+        // When quietFor >= quietMs but the confirmation collapsed, the old
+        // `quietMs - quietFor` was <= 0, so `Math.max(10, wait)` slept 10ms.
+        // MEASURED: that costs exactly ONE wasted 10ms iteration, not a spin to
+        // the cap — the next pass reads the fresh value and sleeps properly
+        // (10, 1490, 1500, 1500, …). So this is a micro-correction, NOT the
+        // false-defer fix; see D-005 for the retraction of that claim.
         const need = Math.max(0, quietMs - this.quietForMs());
         const wait = Math.min(need, Math.max(0, deadline - now()));
         await new Promise((r) => setTimeout(r, Math.max(10, wait)));
@@ -6830,6 +6798,23 @@ export function hostThroughPty(o) {
     waitForOwnerInputClear: bridgeTty ? () => ownerComposerGate.waitClear() : null,
     waitAtPrompt: (cap, msg) => agentBusyGate.waitAtPrompt(cap, verifiedBoundaryFor(msg).boundary),
     recycle: (data, opts) => recycleChild(data, opts),
+    // P-005 / D-004: dispatch a re-armed delivery by mode. Only the modes with
+    // a verified single-call delivery primitive are registered; anything else
+    // must fall through to the recycle default rather than be guessed at.
+    performDelivery: async (message, { drillId, mode }) => {
+      if (mode === 'turn') {
+        // A deferred wake `turn` is re-INJECTED, never recycled — recycling
+        // would kill the child and destroy the very turn being delivered.
+        const text = String(message?.data ?? '');
+        if (!text) return { delivered: false, reason: 'no-text' };
+        return injectTurnAtPrompt({ text, label: 'turn re-arm' });
+      }
+      return recycleChild(message?.data, {
+        systemPromptAddendum: message?.systemPromptAddendum ?? '',
+        drillId,
+        sessionClass: message?.sessionClass ?? '',
+      });
+    },
     emitEvent: (kind, extra) => {
       appendHostEvent(ownerId, kind, extra);
       appendSharedDrillLedgerEvent(ownerId, kind, extra);
@@ -7294,6 +7279,11 @@ export function hostThroughPty(o) {
               capMs: turnInjectBusyCapMs,
               observedMaxQuietMs: Number.isFinite(atPrompt?.maxQuietForMs) ? atPrompt.maxQuietForMs : null,
               quietMs: Number.isFinite(atPrompt?.quietMs) ? atPrompt.quietMs : null,
+              // P-003: whether a NATIVE boundary proof was even available for
+              // this defer. Without it, a defer on a repainting claude TUI is
+              // indistinguishable from one on a genuinely busy agent, which is
+              // what made the codex-only wiring invisible for so long.
+              verifier: verifierSupport.reason ?? 'supported',
             });
             // EI-12655 (fix b, leader-concurred rider: "expired must FAIL LOUD")
             // + EI-12754 (the re-arm leg deferred out of that diff) + WI-5368/
@@ -7349,6 +7339,48 @@ export function hostThroughPty(o) {
                 appendSharedDrillLedgerEvent(ownerId, dropKind, dropExtra);
                 return { ok: false, reason: 'carry-rearm-duplicate' };
               }
+            }
+            // P-005: a deferred wake `turn` is RE-ARMED, exactly as a
+            // carry-respawn already was.
+            //
+            // It used to be abandoned here to a "next natural turn" that never
+            // arrives for a session which parks after the turn that caused the
+            // defer: the wake sits unread in the inbox and nothing re-invokes
+            // the agent. Measured: 1,927 turn-mode wakes over 7 days.
+            //
+            // The re-arm verdict is reported on the DURABLE event below, not by
+            // widening this function's return. Two reasons: the durable row is
+            // the authoritative record a later census can actually read, and
+            // `return { ok: false, reason: 'deferred-busy-gate' };` is the
+            // literal `psu-pty-busy-gate-durable-evidence.test.ts` uses to
+            // delimit this whole block. Adding a field there silently
+            // un-anchors that guard (it caught exactly that on first attempt),
+            // and a weakened guard is a worse trade than a slightly less
+            // informative reply. The duplicate case gets its own reason,
+            // mirroring the existing 'carry-rearm-duplicate'.
+            if (msg.mode === 'turn') {
+              const turnVerdict = carryRearm.schedule(msg);
+              appendHostEvent(ownerId, 'wake-rearm-scheduled', {
+                mode: msg.mode,
+                verdict: turnVerdict,
+                capMs: turnInjectBusyCapMs,
+                verifier: verifierSupport.reason ?? 'supported',
+              });
+              if (turnVerdict === 'duplicate') {
+                // An earlier re-arm for this mode already owns delivery; a
+                // second one would double-inject the same wake.
+                claimCoalesced();
+                return { ok: false, reason: 'turn-rearm-duplicate' };
+              }
+            } else if (msg.mode !== 'carry-respawn') {
+              // D-004: this mode has no registered re-arm. Record the residue so
+              // it stays countable in the P-007 telemetry instead of being
+              // rediscovered by a future census.
+              appendHostEvent(ownerId, 'wake-rearm-unsupported', {
+                mode: msg.mode,
+                reason: 'no-registered-delivery',
+                capMs: turnInjectBusyCapMs,
+              });
             }
             // P-001a: clear the coalesce slot on defer — wakes folded into this
             // waiter are dropped WITH it (same queue-to-next-turn semantics), and
@@ -7597,14 +7629,17 @@ export function hostThroughPty(o) {
               step: result.step,
               detail: result.detail,
             });
-            try {
-              process.stderr.write(
-                `psu-pty-host: mcp-reconnect ${result.ok ? 'OK' : 'FAILED'} for ${ownerId} ` +
-                  `(${serverName}: ${result.step} — ${result.detail})\n`,
-              );
-            } catch {
-              /* diagnostic only */
-            }
+            // P-006 (completing the class): this is a FOURTH routine host
+            // diagnostic that writes straight into the owner's TUI — it fires on
+            // every mcp-reconnect, success included. The original P-006 pass
+            // routed the three busy-gate defer sites and missed this one, which
+            // would have left the reported symptom half-fixed and re-armed for
+            // the next reader. writeHostDiagnostic is itself fail-soft, so the
+            // local try/catch it replaces is redundant.
+            writeHostDiagnostic(
+              `psu-pty-host: mcp-reconnect ${result.ok ? 'OK' : 'FAILED'} for ${ownerId} ` +
+                `(${serverName}: ${result.step} — ${result.detail})\n`,
+            );
             return { ok: result.ok, reason: result.ok ? 'delivered' : 'mcp-reconnect-failed', detail: result.detail };
           } finally {
             tap.close();

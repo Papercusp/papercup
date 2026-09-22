@@ -915,7 +915,7 @@ export function shutdownRefusalReason({ launchedBy, headless, fleetSlug, lastInp
  * @param {number} [opts.capMs]
  * @param {() => number} [opts.now]
  */
-export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, confirmAttempts, }?: {
+export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, }?: {
     lastOutputAt?: (() => number) | undefined;
     quietMs?: number | undefined;
     capMs?: number | undefined;
@@ -942,20 +942,17 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, confirmAt
         reason?: undefined;
         maxQuietForMs?: undefined;
         quietMs?: undefined;
-        confirmAttemptsUsed?: undefined;
     } | {
         deferred: boolean;
         boundary?: undefined;
         reason?: undefined;
         maxQuietForMs?: undefined;
         quietMs?: undefined;
-        confirmAttemptsUsed?: undefined;
     } | {
         deferred: boolean;
         reason: string;
         maxQuietForMs: number;
         quietMs: number;
-        confirmAttemptsUsed: number;
         boundary?: undefined;
     }>;
     /** WI-1872 (2): the START-RACE fix. Resolves as soon as output goes BUSY
