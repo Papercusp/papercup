@@ -50,6 +50,16 @@ import {
   type AgentObligationBrief,
 } from './agent-obligation-reader';
 import { renderOrientationLines, type OrientationState } from './turn-start-orientation';
+// P-024 — the sink axis. The registry is imported through its sink-NEUTRAL seam
+// (see orientation-class-registry.ts): this guard is no longer a turn-start-only
+// instrument, so reaching into the turn-start sink's own module for the shared
+// declaration would be the layering inversion that seam exists to prevent.
+import {
+  ORIENTATION_CLASS_REGISTRY,
+  type RegisteredOrientationClass,
+} from './orientation-class-registry';
+import { readLeaderNeverDropFacts } from './agent-tools/fleet/leader-brief';
+import type { AgentFact } from './agent-facts/store';
 
 const ORIENTATION_SOURCE = fileURLToPath(new URL('./turn-start-orientation.ts', import.meta.url));
 const OBLIGATIONS_SOURCE = fileURLToPath(new URL('./agent-obligations.ts', import.meta.url));
@@ -663,5 +673,601 @@ describe('turn-start orientation class coverage', () => {
     expect(() =>
       assertClassReachesRenderedPrompt('held', { patch: CLASS_PROBES.held!.patch, marker: /never-drop facts:/ }),
     ).toThrow(/none matched/);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P-024 — THE (CLASS × SINK) COVERAGE MATRIX
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// WHAT CHANGED AND WHY. Everything above asserts that a declared class reaches
+// A rendered prompt — ONE sink, turn-start, via `renderOrientationLines`. Once
+// classes became sink-scoped (P-023 / D-015: one declaration, several surfaces
+// selecting from it at their own budget), that single-sink assertion stopped
+// describing coverage. A class can reach turn-start perfectly and be silently
+// absent from the leader brief — which is EXACTLY the hole P-025 measured:
+// `neverDropFacts` rendered on every turn-start block while the fleet leader,
+// who has the widest blast radius on the pot, received zero never-drop facts
+// and nothing anywhere went red. Coverage is a MATRIX, so the guard is a matrix.
+//
+// ⚠ THE TRAP THIS SECTION IS BUILT AROUND — `unrenderedReason` MEANS TWO
+// OPPOSITE THINGS, and a derivation that misses it breaks the guard while
+// looking like a cleanup. Two registry entries carry `segments: []` plus an
+// `unrenderedReason`, and they behave in OPPOSITE directions at the prompt:
+//
+//   • `loopFireWithheld` — "rendered as a VARIANT of the loopArmed line".
+//     Populating it DOES add a line. It REACHES the sink; it just does not own
+//     a segment of its own.
+//   • `improvementTriage` — "deliberately not rendered" (P-017/D-003).
+//     Populating it adds NOTHING. It does not reach the sink at all.
+//
+// So `segments.length === 0 && unrenderedReason != null` is TRUE for both and
+// cannot tell reaching from silent. That is why the tables below key expected
+// EMISSION off the guard's own `DELIBERATELY_UNRENDERED` rather than deriving
+// it from the registry: the registry does not currently carry a discriminator
+// that would make the derivation sound. Deriving it anyway — the obvious
+// "rung 1" cleanup — turns the `loopFireWithheld` cell into a demand that the
+// renderer stay silent, and this file goes red for a class that is working
+// correctly. Recorded here because it is a cleanup a future author WILL reach
+// for (this one did, and measured it instead).
+
+/**
+ * The declared SINK set, parsed from the `OrientationSink` union rather than
+ * restated — the same derived-truth rung as the class and family sets above,
+ * for the same reason: a hand-listed copy of a union the code owns drifts the
+ * moment someone adds a member, and the matrix would then report full coverage
+ * of a sink set that no longer describes the interface.
+ *
+ * Throws instead of returning `[]`, because an empty sink set would make every
+ * matrix assertion below iterate nothing and pass vacuously.
+ */
+function declaredOrientationSinks(): string[] {
+  const text = readFileSync(ORIENTATION_SOURCE, 'utf8');
+  const source = ts.createSourceFile(ORIENTATION_SOURCE, text, ts.ScriptTarget.Latest, true);
+  let members: string[] | null = null;
+  source.forEachChild((node) => {
+    if (!ts.isTypeAliasDeclaration(node) || node.name.text !== 'OrientationSink') return;
+    if (!ts.isUnionTypeNode(node.type)) return;
+    members = node.type.types
+      .map((member) =>
+        ts.isLiteralTypeNode(member) && ts.isStringLiteral(member.literal) ? member.literal.text : null,
+      )
+      .filter((name): name is string => Boolean(name));
+  });
+  if (!members) throw new Error('coverage guard is broken: type OrientationSink was not found');
+  if ((members as string[]).length === 0) {
+    throw new Error('coverage guard is broken: OrientationSink parsed to zero string members');
+  }
+  return members;
+}
+
+/** What a probe observed when it populated one class and looked at one sink. */
+interface CellReach {
+  reached: boolean;
+  /** What was actually observed, quoted into the failure message. */
+  detail: string;
+}
+
+/** Populate ONE class, observe ONE sink. */
+type CellProbe = () => CellReach | Promise<CellReach>;
+
+/**
+ * WHY A CLASS IS NOT CLAIMED BY A SINK. The three kinds are not cosmetic — they
+ * carry OPPOSITE follow-up actions, and collapsing them into one "deliberately
+ * omitted" bucket is what lets real drift hide behind a recorded decision:
+ *
+ *   `not-applicable`        — the sink's question genuinely does not want this
+ *                             class. Nothing to do; this is a finished decision.
+ *   `second-derivation`     — the class DOES reach this sink, but from a
+ *                             SEPARATE re-derivation of the same truth. This is
+ *                             DEBT, it is drift-prone by the derived-truth
+ *                             ladder, and it MUST name the item that collapses
+ *                             it. An omission recorded this way is a promise.
+ *   `other-shared-mechanism`— the class DOES reach this sink, from the SAME
+ *                             canonical derivation, through a different
+ *                             single-source registry. Not drift-prone, so no
+ *                             collapse is owed — but it must name the mechanism,
+ *                             because "reaches by some other route" with no
+ *                             route named is indistinguishable from a guess.
+ */
+interface SinkOmission {
+  kind: 'not-applicable' | 'second-derivation' | 'other-shared-mechanism';
+  reason: string;
+  /** REQUIRED for `second-derivation`: the plan item that collapses the copy. */
+  collapsedBy?: string;
+  /** REQUIRED for `other-shared-mechanism`: the registry that carries it there. */
+  mechanism?: string;
+}
+
+type SinkCoverage =
+  | {
+      status: 'pending';
+      /** The plan item that will register this sink. */
+      registeredBy: string;
+      reason: string;
+    }
+  | {
+      status: 'consuming';
+      /** What this sink is FOR — the standard each omission below is judged against. */
+      scope: string;
+      /** Probe per class this sink CLAIMS. */
+      probes: Record<string, CellProbe>;
+      /** Classes this sink CLAIMS but that deliberately emit nothing here. */
+      silent: Record<string, string>;
+      /** Classes this sink does NOT claim — each a recorded DECISION. */
+      omitted: Record<string, SinkOmission>;
+    };
+
+/** A turn-start cell probe: populate the class, look for its own line. */
+function turnStartProbe(name: string): CellProbe {
+  return () => {
+    const probe = CLASS_PROBES[name];
+    if (probe) {
+      const added = linesAddedBy(probe);
+      const matched = added.some((line) => probe.marker.test(line));
+      return { reached: matched, detail: JSON.stringify(added) };
+    }
+    // A DELIBERATELY_UNRENDERED class: populate it and require silence. Without
+    // the patch this measures nothing, which is the calibration the single-sink
+    // section already established for UNRENDERED_PROBES.
+    const patch = UNRENDERED_PROBES[name];
+    if (!patch) return { reached: false, detail: 'no probe and no unrendered patch registered' };
+    const added = linesAddedBy({ patch, marker: /(?!)/ });
+    return { reached: added.length > 0, detail: JSON.stringify(added) };
+  };
+}
+
+const neverDropFactProbe = (key: string): AgentFact =>
+  ({ scope: 'workspace', scopeRef: null, key, body: 'b', sourceRef: null, audienceScope: null }) as AgentFact;
+
+/**
+ * The leader-brief cell probe for `neverDropFacts`, driven through the REAL
+ * consumer (`readLeaderNeverDropFacts`) with only the fact store stubbed.
+ *
+ * This is deliberately an end-to-end probe rather than an assertion about the
+ * registry row: the failure P-025 fixed was not a missing declaration, it was a
+ * declaration nothing consumed. A probe that only re-read `applicableSinks`
+ * would pass against a consumer that ignores the registry entirely.
+ */
+const leaderBriefNeverDropProbe: CellProbe = async () => {
+  const out = await readLeaderNeverDropFacts(
+    { ownerId: 'su-coverage-probe', workspaceId: 'papercusp-workspace' },
+    { fold: async () => [neverDropFactProbe('dead-end:coverage-probe')] },
+  );
+  return { reached: out !== undefined && out.length > 0, detail: JSON.stringify(out) };
+};
+
+/**
+ * THE PER-SINK COVERAGE REGISTRY (P-024).
+ *
+ * One entry per declared `OrientationSink`. For a `consuming` sink every
+ * declared class lands in exactly one of `probes` / `silent` / `omitted`, so a
+ * class omitted from a sink is a RECORDED DECISION rather than a gap that
+ * nothing notices — the matrix generalisation of `DELIBERATELY_UNRENDERED`.
+ */
+const SINK_COVERAGE: Record<string, SinkCoverage> = {
+  'turn-start': {
+    status: 'consuming',
+    scope:
+      'The automatic per-turn block every agent receives. It is the widest sink by design: it answers ' +
+      '"what does this agent need in front of it THIS turn", so every declared class claims it and the ' +
+      'omitted table below is empty. A class that stops claiming turn-start is a withdrawal that needs ' +
+      'the same recorded reason as any other omission.',
+    // Derived from the single-sink tables above: every CLASS_PROBES entry is a
+    // turn-start cell expected to reach, every DELIBERATELY_UNRENDERED entry is
+    // a turn-start cell expected to stay silent. No second copy of either list.
+    probes: Object.fromEntries(Object.keys(CLASS_PROBES).map((name) => [name, turnStartProbe(name)])),
+    silent: DELIBERATELY_UNRENDERED,
+    omitted: {},
+  },
+
+  'leader-brief': {
+    status: 'consuming',
+    scope:
+      'Read ON DEMAND by a fleet leader, and budgeted to answer "what is my FLEET doing". A class about ' +
+      'the READER\'s own session state is therefore not automatically wanted here — it reaches the same ' +
+      'agent through their own turn-start block, and duplicating it would spend fleet budget on ' +
+      'non-fleet information. ⚠ That principle has a KNOWN LIMIT, and `neverDropFacts` is the exception ' +
+      'that establishes it: a leader on a COLD wake rebuilds from briefs rather than from a turn-start ' +
+      'block it never sees (EI-18725816532600240), so a safety class whose absence is unrecoverable is ' +
+      'worth carrying here anyway. Every `not-applicable` below is judged against that standard, not ' +
+      'against "the leader can get it elsewhere" alone.',
+    probes: { neverDropFacts: leaderBriefNeverDropProbe },
+    silent: {},
+    omitted: {
+      held: {
+        kind: 'not-applicable',
+        reason:
+          'DIFFERENT SUBJECT, not a missing copy. This class is the READER\'s own held work-items; the ' +
+          'leader brief renders its MEMBERS\' holdings (LeaderBriefMember.workItemIds / checkpointProgress). ' +
+          'A leader\'s own held items reach them through their own turn-start block. P-028 owns the question ' +
+          'of whether ONE assembler can serve both subjects — note leader-brief.ts already documents using ' +
+          '"the same canonical held-item checkpoint reader as carry" — but that is an assembler question, ' +
+          'not an `applicableSinks` change, and this entry deliberately does not pre-decide it.',
+      },
+      announcedGates: {
+        kind: 'second-derivation',
+        collapsedBy: 'P-027',
+        reason:
+          'MEASURED present at this sink from its OWN bounded read (leader-brief.ts `const announcedGates = ' +
+          'await boundedLeaderBriefRead(...)`), separate from the turn-start derivation of the same truth. ' +
+          'Two derivations of one value is the drift-prone shape the derived-truth ladder names, and it is ' +
+          'why this cell is DEBT rather than a finished decision.',
+      },
+      obligations: {
+        kind: 'other-shared-mechanism',
+        mechanism: "projectAgentObligationBrief({ sink: 'fleet:leader-brief' })",
+        reason:
+          'Reaches this sink from the SAME canonical evaluation turn-start uses — leader-brief.ts states it ' +
+          'verbatim: "the SAME evaluation path used by automatic turn-start orientation, projected to the ' +
+          'leader sink\'s wider budget". So this is one derivation with two sinks already; it simply routes ' +
+          'through the obligation system\'s OWN sink parameter rather than through `applicableSinks`. Not ' +
+          'drift-prone, so no collapse is owed. ⚠ Worth knowing that two parallel sink vocabularies exist.',
+      },
+      ownerDirectives: {
+        kind: 'other-shared-mechanism',
+        mechanism: "projectAgentObligationBrief({ sink: 'fleet:leader-brief:owner-directives' })",
+        reason:
+          'Same single derivation as `obligations` above — projected from the same obligation agenda under ' +
+          'its own sink key and a wider entry budget. Recorded separately because it is a distinct sink key ' +
+          'with a distinct budget, so a future withdrawal of one does not silently imply the other.',
+      },
+      // ── The reader's-own-session classes ────────────────────────────────
+      // Each measured absent from leader-brief.ts (0 occurrences) and omitted
+      // under the sink scope above. Stated per class rather than as one bulk
+      // exemption, so withdrawing any single one is a visible edit.
+      unansweredDirected: {
+        kind: 'not-applicable',
+        reason:
+          "The reader's own unanswered directed messages. The leader's equivalent FLEET-scoped signal is " +
+          'already carried per member (`unanswered`), so importing this class would answer a question this ' +
+          'sink is not asking.',
+      },
+      unansweredStale: {
+        kind: 'not-applicable',
+        reason: "The reader's own stale-sender backlog — a turn-start concern, with no fleet-scoped reading.",
+      },
+      inboxRecent: {
+        kind: 'not-applicable',
+        reason:
+          "The reader's own recent inbox lines. A leader's cross-agent view is coord:feed / catch-up, not a " +
+          'replay of their personal inbox inside a fleet brief.',
+      },
+      openAsks: {
+        kind: 'not-applicable',
+        reason: "The reader's own outstanding asks. Fleet-scoped blocking is carried by the member rows instead.",
+      },
+      loopArmed: {
+        kind: 'not-applicable',
+        reason:
+          "The reader's own wake source. The fleet-scoped equivalent — a MEMBER with no wake source — is " +
+          'already a member-row concern (`throttled`, liveness verdicts), which is the reading a leader acts on.',
+      },
+      loopFireWithheld: {
+        kind: 'not-applicable',
+        reason:
+          'A variant of the reader\'s own loop state (see the `unrenderedReason` trap noted at the top of ' +
+          'this section). Same reasoning as `loopArmed`.',
+      },
+      improvementTriage: {
+        kind: 'not-applicable',
+        reason:
+          'Withdrawn from the per-turn block entirely (P-017 / D-003, signal decay). Registering it on a ' +
+          'SECOND sink would re-introduce exactly the always-present row that decision removed.',
+      },
+      executableFrontier: {
+        kind: 'not-applicable',
+        reason:
+          "The reader's own executable frontier on their current plan. A leader's placement view is the " +
+          'fleet assignment/bottleneck tables, which are computed fleet-wide rather than for the reader.',
+      },
+      toolSurface: {
+        kind: 'not-applicable',
+        reason:
+          "A diagnostic about the READER's own MCP tool surface being unregistered. It is self-scoped by " +
+          'construction — a leader cannot act on it for anyone but themselves, and they receive it per turn.',
+      },
+      carryBlindWindow: {
+        kind: 'not-applicable',
+        reason:
+          'Describes the gap between a carry document being built and the session dying — a SUCCESSOR\'s ' +
+          'concern. P-029 registers the carry-brief sink and decides this class there, which is where it ' +
+          'belongs; the leader brief is not read by a successor reconstructing a cut.',
+      },
+      historyUpdates: {
+        kind: 'not-applicable',
+        reason:
+          "Post-claim comment activity on the READER's own held items. The fleet-scoped reading is per-member " +
+          'claim health (`claimHealth`, `stalled`), which the brief already carries from its own measurement.',
+      },
+      effortUpdates: {
+        kind: 'not-applicable',
+        reason: "Post-claim revisions to the READER's own plan/goal. Same reasoning as `historyUpdates`.",
+      },
+    },
+  },
+
+  'carry-brief': {
+    status: 'pending',
+    registeredBy: 'P-029',
+    reason:
+      'The carry document is a third brief with NO sink identity yet: it is named in `OrientationSink` but ' +
+      'claimed by zero registry entries, so nothing can assert what it does or does not carry. P-029 ' +
+      'registers it and DECIDES, per class, what a successor needs at a cut.\n\n' +
+      'This is recorded ONCE as a pending sink rather than as 17 per-class omissions on purpose. Writing 17 ' +
+      'placeholder reasons today would pre-decide P-029\'s deliverable in the very table P-029 must then ' +
+      'rewrite, and every one of them would say the same thing. The guard instead asserts that a pending ' +
+      'sink claims ZERO classes, so this sink cannot be half-registered in silence — and the moment P-029 ' +
+      'flips it to `consuming`, the matrix immediately demands a per-class decision for all 17. That ' +
+      'forcing function IS the deliverable of this item.',
+  },
+};
+
+interface MatrixCell {
+  sink: string;
+  className: string;
+  claimed: boolean;
+  expectation: 'reaches' | 'silent';
+  probe: CellProbe | null;
+}
+
+/** The classes a sink CLAIMS, read from the live registry (never hand-listed). */
+function classesClaimedBy(
+  sink: string,
+  registry: readonly RegisteredOrientationClass[] = ORIENTATION_CLASS_REGISTRY,
+): string[] {
+  return registry.filter((entry) => entry.applicableSinks.includes(sink as never)).map((entry) => String(entry.id));
+}
+
+/**
+ * Every (class × sink) cell for the CONSUMING sinks, with what the guard expects
+ * of it. A `pending` sink contributes no cells — its whole column is asserted
+ * empty instead.
+ */
+function buildMatrixCells(declared: string[], sinks: string[]): MatrixCell[] {
+  const cells: MatrixCell[] = [];
+  for (const sink of sinks) {
+    const coverage = SINK_COVERAGE[sink];
+    if (!coverage || coverage.status !== 'consuming') continue;
+    const claimedSet = new Set(classesClaimedBy(sink));
+    for (const className of declared) {
+      const claimed = claimedSet.has(className);
+      if (!claimed) continue;
+      const silent = coverage.silent[className] !== undefined;
+      cells.push({
+        sink,
+        className,
+        claimed,
+        expectation: silent ? 'silent' : 'reaches',
+        probe: coverage.probes[className] ?? (silent ? turnStartProbe(className) : null),
+      });
+    }
+  }
+  return cells;
+}
+
+/**
+ * THROWS when a cell does not behave as the matrix records it.
+ *
+ * Takes the probe result as a PARAMETER rather than running it, so the
+ * falsifiability controls below can drive every branch without needing a
+ * renderer that is actually broken.
+ */
+function assertCellMatchesExpectation(cell: MatrixCell, observed: CellReach, note = ''): void {
+  if (cell.expectation === 'reaches' && !observed.reached) {
+    throw new Error(
+      `orientation class '${cell.className}' claims sink '${cell.sink}' but did not reach it: ${observed.detail}` +
+        note,
+    );
+  }
+  if (cell.expectation === 'silent' && observed.reached) {
+    throw new Error(
+      `orientation class '${cell.className}' is recorded as deliberately silent at sink '${cell.sink}', ` +
+        `but populating it emitted: ${observed.detail}` +
+        note,
+    );
+  }
+}
+
+describe('P-024 — orientation class × sink coverage matrix', () => {
+  const declared = declaredOrientationClasses();
+  const sinks = declaredOrientationSinks();
+  const cells = buildMatrixCells(declared, sinks);
+
+  it('reads a non-trivial declared sink set from OrientationSink (instrument calibration)', () => {
+    // Without this, a parser that silently returned a short list would make the
+    // whole matrix iterate almost nothing while reporting full coverage.
+    expect(sinks.length).toBeGreaterThanOrEqual(3);
+    expect(sinks).toContain('turn-start');
+    expect(sinks).toContain('leader-brief');
+    expect(sinks).toContain('carry-brief');
+  });
+
+  it('has a coverage entry for every declared sink, and none for an undeclared one', () => {
+    const missing = sinks.filter((sink) => !SINK_COVERAGE[sink]);
+    expect(
+      missing,
+      'a new OrientationSink must get an entry in SINK_COVERAGE, or nothing asserts what it carries',
+    ).toEqual([]);
+    const declaredSet = new Set(sinks);
+    const orphaned = Object.keys(SINK_COVERAGE).filter((sink) => !declaredSet.has(sink));
+    expect(orphaned, 'a coverage entry outlived its sink — delete it rather than describing a sink nothing renders').toEqual(
+      [],
+    );
+  });
+
+  it('classifies EVERY declared class for every consuming sink', () => {
+    // The matrix generalisation of "a probe or an explicit exclusion for every
+    // declared class": each cell is exactly one of claimed-and-probed,
+    // claimed-and-silent, or omitted-with-a-reason.
+    const unclassified: string[] = [];
+    for (const sink of sinks) {
+      const coverage = SINK_COVERAGE[sink];
+      if (!coverage || coverage.status !== 'consuming') continue;
+      const claimedSet = new Set(classesClaimedBy(sink));
+      for (const className of declared) {
+        const claimed = claimedSet.has(className);
+        const hasProbe = coverage.probes[className] !== undefined;
+        const isSilent = coverage.silent[className] !== undefined;
+        const isOmitted = coverage.omitted[className] !== undefined;
+        if (claimed && !hasProbe && !isSilent) unclassified.push(`${sink}/${className}: claimed but no probe`);
+        if (!claimed && !isOmitted) unclassified.push(`${sink}/${className}: not claimed and not recorded`);
+      }
+    }
+    expect(
+      unclassified,
+      'every (class × sink) cell must be claimed-and-probed, claimed-and-silent, or omitted with a recorded reason',
+    ).toEqual([]);
+  });
+
+  it('never records a cell as both claimed and omitted', () => {
+    // The contradiction that would let a class look decided in both directions.
+    const contradictions: string[] = [];
+    for (const sink of sinks) {
+      const coverage = SINK_COVERAGE[sink];
+      if (!coverage || coverage.status !== 'consuming') continue;
+      const claimedSet = new Set(classesClaimedBy(sink));
+      for (const className of Object.keys(coverage.omitted)) {
+        if (claimedSet.has(className)) contradictions.push(`${sink}/${className}`);
+      }
+      for (const className of Object.keys(coverage.probes)) {
+        if (!claimedSet.has(className)) contradictions.push(`${sink}/${className}: probe without a claim`);
+      }
+    }
+    expect(contradictions, 'a cell recorded as omitted while the registry claims it (or vice versa)').toEqual([]);
+  });
+
+  it('requires a second-derivation omission to name the item that collapses it', () => {
+    // The whole point of the `second-derivation` kind: it is DEBT, and debt with
+    // no owner is indistinguishable from a finished decision.
+    const unowned: string[] = [];
+    for (const [sink, coverage] of Object.entries(SINK_COVERAGE)) {
+      if (coverage.status !== 'consuming') continue;
+      for (const [className, omission] of Object.entries(coverage.omitted)) {
+        if (omission.kind === 'second-derivation' && !omission.collapsedBy) {
+          unowned.push(`${sink}/${className}`);
+        }
+        if (omission.kind === 'other-shared-mechanism' && !omission.mechanism) {
+          unowned.push(`${sink}/${className}: no mechanism named`);
+        }
+        if (!omission.reason || omission.reason.length < 40) {
+          unowned.push(`${sink}/${className}: reason too thin to be a decision`);
+        }
+      }
+    }
+    expect(unowned, 'a second-derivation omission must name collapsedBy; a shared-mechanism one must name it').toEqual(
+      [],
+    );
+  });
+
+  it('keeps a PENDING sink claimed by exactly zero classes', () => {
+    // A pending sink is recorded once instead of per class. That is only honest
+    // while it consumes nothing: the moment a class claims it, the column must
+    // be filled in properly rather than riding on the pending note.
+    for (const [sink, coverage] of Object.entries(SINK_COVERAGE)) {
+      if (coverage.status !== 'pending') continue;
+      expect(
+        classesClaimedBy(sink),
+        `sink '${sink}' is recorded as PENDING (${coverage.registeredBy}) but classes already claim it — ` +
+          'flip it to `consuming` and record a decision for every declared class',
+      ).toEqual([]);
+      expect(coverage.registeredBy, `pending sink '${sink}' must name the item that registers it`).toMatch(/^P-\d+$/);
+    }
+  });
+
+  it('builds a non-vacuous matrix (instrument calibration)', () => {
+    // Guards the whole section against the failure mode it exists to prevent:
+    // a matrix that iterates nothing passes every assertion above.
+    expect(cells.length).toBeGreaterThanOrEqual(declared.length);
+    expect(cells.some((cell) => cell.sink === 'leader-brief')).toBe(true);
+    expect(cells.some((cell) => cell.expectation === 'silent')).toBe(true);
+    // Every cell must be runnable, or the `it.each` below would silently skip.
+    expect(cells.filter((cell) => !cell.probe).map((cell) => `${cell.sink}/${cell.className}`)).toEqual([]);
+  });
+
+  it.each(cells.map((cell) => [`${cell.sink} / ${cell.className} (${cell.expectation})`, cell] as const))(
+    'cell %s behaves as recorded',
+    async (_label, cell) => {
+      const observed = await cell.probe!();
+      expect(() => assertCellMatchesExpectation(cell, observed)).not.toThrow();
+    },
+  );
+
+  // ── Falsifiability controls on the SINK axis (P-024) ────────────────────
+  //
+  // The single-sink section has one permanent control (a class declared but
+  // never rendered must throw). The matrix adds an axis, so it needs controls
+  // that fail for SINK-shaped reasons — otherwise the green above means only
+  // that turn-start still works.
+
+  it('fails when a class CLAIMS a sink it does not reach (permanent falsifiability control)', () => {
+    const cell: MatrixCell = {
+      sink: 'leader-brief',
+      className: 'neverDropFacts',
+      claimed: true,
+      expectation: 'reaches',
+      probe: null,
+    };
+    expect(() =>
+      assertCellMatchesExpectation(cell, { reached: false, detail: 'undefined' }),
+    ).toThrow(/claims sink 'leader-brief' but did not reach it/);
+  });
+
+  it('fails when a class recorded SILENT at a sink emits there (permanent falsifiability control)', () => {
+    const cell: MatrixCell = {
+      sink: 'turn-start',
+      className: 'improvementTriage',
+      claimed: true,
+      expectation: 'silent',
+      probe: null,
+    };
+    expect(() =>
+      assertCellMatchesExpectation(cell, { reached: true, detail: '["- improvement triage: 100 pending"]' }),
+    ).toThrow(/recorded as deliberately silent/);
+  });
+
+  it('the leader-brief probe really can return false (control: it reads the declaration)', async () => {
+    // The strongest control available here: drive the REAL consumer with the
+    // leader-brief sink withdrawn from the registry row. If the consumer ever
+    // stops reading `applicableSinks` and hardcodes the class, this goes red —
+    // which is the only reason the live cell's green means anything.
+    const withdrawn = ORIENTATION_CLASS_REGISTRY.map((entry) =>
+      entry.id === 'neverDropFacts'
+        ? { ...entry, applicableSinks: entry.applicableSinks.filter((sink) => sink !== 'leader-brief') }
+        : entry,
+    );
+    const out = await readLeaderNeverDropFacts(
+      { ownerId: 'su-coverage-probe', workspaceId: 'papercusp-workspace' },
+      { fold: async () => [neverDropFactProbe('dead-end:coverage-probe')], registry: withdrawn },
+    );
+    expect(out, 'withdrawing the sink must turn the field off, with no second edit in the consumer').toBeUndefined();
+  });
+
+  it('detects a PENDING sink that silently gained a claim (permanent falsifiability control)', () => {
+    // Drives the zero-claim assertion with a synthetic registry, so the control
+    // does not depend on carry-brief actually being empty today.
+    const halfRegistered = ORIENTATION_CLASS_REGISTRY.map((entry) =>
+      entry.id === 'neverDropFacts'
+        ? { ...entry, applicableSinks: [...entry.applicableSinks, 'carry-brief' as const] }
+        : entry,
+    );
+    expect(classesClaimedBy('carry-brief', halfRegistered)).toEqual(['neverDropFacts']);
+    // …and that it reads empty against the real registry, so the control above
+    // is measuring a difference rather than always-true.
+    expect(classesClaimedBy('carry-brief')).toEqual([]);
+  });
+
+  it('carries the parsed-source note into a matrix failure', () => {
+    const note = parsedSourceNote({ status: 'uncommitted', paths: ['lib/turn-start-orientation.ts'] });
+    const cell: MatrixCell = {
+      sink: 'leader-brief',
+      className: 'neverDropFacts',
+      claimed: true,
+      expectation: 'reaches',
+      probe: null,
+    };
+    expect(() => assertCellMatchesExpectation(cell, { reached: false, detail: 'undefined' }, note)).toThrow(
+      /parsed from UNCOMMITTED source: lib\/turn-start-orientation\.ts/,
+    );
   });
 });
