@@ -986,9 +986,25 @@ export function projectAcceptanceBarContractSnapshot(
     // moved the artifact set), because honest metadata repair rebinds the SAME artifact
     // repeatedly. That is the default behaviour of a careful implementer, not an attack, so
     // no cap can separate the two — comparing what a grader actually inspects does.
-    // NAMED GAP: `defaultReadEvidence` does not request retracted rows, so a retraction-only
-    // cohort change is invisible here and will NOT stale. That fails CLOSED (the bar stays
-    // stuck, as it does today) rather than open, which is the safe direction.
+    // BOUNDED BY D-011, NOT AN OVERSIGHT — DO NOT "CLOSE" THIS BY FLIPPING `includeRetracted`.
+    // `defaultReadEvidence` does not request retracted rows, so a retraction-only cohort
+    // change is invisible here and will NOT stale. That fails CLOSED (the bar stays stuck, as
+    // it does today) rather than open, which is the safe direction — but the reason it must
+    // STAY closed AT THIS CALL SITE is stronger than "safe". `listSpecEvidence`'s
+    // `includeRetracted` is documented "pass true only for an AUDIT read ... never from an
+    // evaluator, a gate, or anything that counts evidence" (spec-evidence-store.ts, migration
+    // 1174 / D-011). This read IS such a caller — MEASURED, not assumed: the very `evidence`
+    // array fingerprinted below also feeds `activeEvidence`, `currentEvidence`, `staleEvidence`,
+    // `proofState`, and the `supersededEvidence` COUNT. Re-admitting withdrawn bindings there
+    // would re-brick exactly the clauses retraction exists to repair (one malformed binding
+    // permanently fails its clause, and an appended correction cannot outrank it because this
+    // loader has no DISTINCT ON) — trading a stuck bar for the mirror image of the gate evasion
+    // D-011 forbids. A reviewer has already proposed a "retraction-aware refinement" here, so
+    // the flag flip is a live temptation, not a hypothetical one.
+    // The ONLY D-011-compatible route is a SEPARATE audit-scoped read feeding the cohort
+    // fingerprint ALONE, with its rows provably unable to reach any counting path above — a
+    // real change carrying its own test burden (including a guard that FAILS if retracted rows
+    // ever reach the counting set), never a flag flip.
     // The identity tracks what a GRADER WOULD SEE, not what the writer DID — which is why
     // `createdAt` and `details` (writer-state) are out while the artifact is in. Execution
     // is the field where that rule is easiest to misapply, because a raw `testRunId` LOOKS
