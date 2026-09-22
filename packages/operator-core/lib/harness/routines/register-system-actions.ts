@@ -364,6 +364,16 @@ import './gc-verify-instances-action';
 // 12.8 cores (11% of this box) continuously for 5-9 days because a guest whose
 // idle loop never reaches HLT cannot tell it is idle — the host can.
 import './gc-desktop-sessions-action';
+// `system:psu-pty-host-events-ingest` — the Postgres tier + retention for psu-pty host
+// delivery telemetry (psu-pty-turn-boundary-generalization-2026-09-22 P-007 / D-006). The
+// host's own appendHostEvent is synchronous and fail-soft by contract and runs on teardown
+// paths, so it must keep writing a local JSONL write-ahead log rather than reaching for a
+// pool; this sweep is what makes that log queryable and bounded. It also supplies the
+// denominator the plan needed: until P-007 added a `turn-delivered` row, all 51 host event
+// kinds were failures or lifecycle markers, so a wake DELIVERY RATE was not computable and no
+// fix to the wake path could be proven to work. Ingest strictly precedes GC, and a file whose
+// insert failed is never deleted.
+import './psu-pty-host-events-ingest-action';
 // `system:precompute-derived-reads` — the cadence behind the derived-read substrate
 // (precompute-derived-sync-reads-2026-07-19, WI-5460). Computes the three expensive
 // derived sync reads (storage.usage 20.0s, plans.lint 13.8s, learning.soakReport
