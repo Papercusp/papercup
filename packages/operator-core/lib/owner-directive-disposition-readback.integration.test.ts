@@ -40,6 +40,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 import {
   dismissOwnerDirective,
+  dispositionOwnerDirective,
   getOwnerDirective,
   listOwnerDirectives,
   ownerDirectiveState,
@@ -174,5 +175,92 @@ describe('owner-directive disposition read-back (P-005)', () => {
     expect(after!.captureDismissedAtMs).toBe(before!.captureDismissedAtMs);
     // Nothing leaked from the refused promotion either.
     expect(after!.capturePromotedAtMs ?? null).toBeNull();
+  });
+
+  /**
+   * DISPOSITION MUST RESOLVE A PENDING CAPTURE — the deadlock guard.
+   *
+   * dispositionOwnerDirective once wrote only the disposition_* columns. Because
+   * deriveState() gives capture_status priority, a directive captured pending and then
+   * dispositioned read back as state='pending' forever, and the obligation provider
+   * (which selects on capture_status alone) re-emitted "[DUE] promote or dismiss" into
+   * every agent's Orientation in the workspace.
+   *
+   * It was UNRECOVERABLE, which is what makes it worth a durable guard rather than a
+   * tidy-up: promoteOwnerDirective and dismissOwnerDirective both carry
+   * `AND dispositioned_at IS NULL`, so the only two verbs able to resolve a capture
+   * could never match the row again. Every agent that followed the obligation's own
+   * instruction was told to run a tool that provably could not work. Observed live on
+   * papercusp-workspace directives #86/#87 (answered 2026-09-22T14:58Z, still nagging
+   * 5.5h later); migration 1196 releases the rows that reached that state beforehand.
+   */
+  it('DEADLOCK GUARD: dispositioning a still-PENDING capture resolves it, so the row cannot strand', async () => {
+    const id = await recordPending('turn-disposition-unsticks', 'please go and do the thing');
+    // Calibration, per this file's convention: prove the starting state is the one whose
+    // transition is under test, or the assertions below could pass without it happening.
+    expect(ownerDirectiveState((await getOwnerDirective(id, db.adminSql))!)).toBe('pending');
+
+    const result = await dispositionOwnerDirective(
+      { id, status: 'done', note: 'carried out under the readback test', dispositionedBy: 'su-readback-test' },
+      db.adminSql,
+    );
+    expect(result.ok).toBe(true);
+
+    const readBack = await getOwnerDirective(id, db.adminSql);
+    // The regression this guards: state stuck at 'pending' despite a recorded disposition.
+    expect(ownerDirectiveState(readBack!)).not.toBe('pending');
+    expect(readBack!.dispositionStatus).toBe('done');
+    // The capture was resolved by PROMOTION, not dismissal: acting on an order asserts it
+    // was genuine, whereas 'dismissed' would claim it was never a directive at all.
+    expect(readBack!.captureStatus).toBe('open');
+    expect(readBack!.capturePromotedAtMs).toBeGreaterThan(0);
+    expect(readBack!.capturePromotedBy).toBe('su-readback-test');
+    // The owner's words are never touched by any of this.
+    expect(readBack!.verbatimText).toBe('please go and do the thing');
+  });
+
+  it('DEADLOCK GUARD: a DECLINED directive promotes too — refusing an order is not denying it was one', async () => {
+    const id = await recordPending('turn-declined-unsticks', 'do the risky thing right now');
+    expect(ownerDirectiveState((await getOwnerDirective(id, db.adminSql))!)).toBe('pending');
+
+    expect(
+      (
+        await dispositionOwnerDirective(
+          { id, status: 'declined', note: 'consciously refused: out of scope', dispositionedBy: 'su-readback-test' },
+          db.adminSql,
+        )
+      ).ok,
+    ).toBe(true);
+
+    const readBack = await getOwnerDirective(id, db.adminSql);
+    expect(ownerDirectiveState(readBack!)).not.toBe('pending');
+    // 'declined' is a conscious refusal of a REAL order, so the capture is promoted, not
+    // dismissed — collapsing the two would erase the distinction the audit trail exists for.
+    expect(readBack!.captureStatus).toBe('open');
+    expect(readBack!.captureDismissalReason ?? null).toBeNull();
+  });
+
+  it('DEADLOCK GUARD: dispositioning never overwrites a capture that was ALREADY resolved', async () => {
+    const id = await recordPending('turn-already-promoted', 'a turn promoted before it was closed');
+    expect((await promoteOwnerDirective({ id, promotedBy: 'su-first-promoter', note: 'promoted first' }, db.adminSql)).ok).toBe(true);
+    const before = await getOwnerDirective(id, db.adminSql);
+
+    expect(
+      (
+        await dispositionOwnerDirective(
+          { id, status: 'done', note: 'closed afterwards', dispositionedBy: 'su-later-closer' },
+          db.adminSql,
+        )
+      ).ok,
+    ).toBe(true);
+
+    // The CASE guards must be inert on an already-resolved capture: the original promoter
+    // and timestamp are provenance, and a disposition silently restamping them would
+    // misattribute who judged the turn genuine.
+    const after = await getOwnerDirective(id, db.adminSql);
+    expect(after!.capturePromotedBy).toBe('su-first-promoter');
+    expect(after!.capturePromotedNote).toBe('promoted first');
+    expect(after!.capturePromotedAtMs).toBe(before!.capturePromotedAtMs);
+    expect(after!.dispositionStatus).toBe('done');
   });
 });
