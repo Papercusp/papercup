@@ -2686,6 +2686,104 @@ export const WORK_SCOPE_CELL: CellSpec = {
     '{ mode, enforced, allowHarnesses[], exceptions, setBy, reason, updatedAt, ledger: { counts: { denied, held, rehomed }, recent[] }, assessments: { policy } }',
 };
 
+/**
+ * `owner.directive.status` — P-007 of directive-visibility-and-ownership-2026-09-22.
+ *
+ * WHY THIS CELL EXISTS, ON A NARROWER RATIONALE THAN FIRST WRITTEN. The turn-start
+ * Orientation banner re-runs `populate()` every turn, so it does NOT need a cell for
+ * freshness — the banner is already current when it renders. What the banner cannot
+ * do is answer the question that arises LATER IN THE SAME TURN: you read "unclaimed,
+ * addressed to another session" at turn start, spent several minutes deciding, and
+ * are now about to act. Has a peer claimed it in between? That mid-turn ACTION-time
+ * re-read is the whole job here, and it is exactly the class of value CLAUDE.md warns
+ * against transcribing: one that changes under you inside a single turn.
+ *
+ * ONE DERIVATION, TWO DOORS. The resolver is `orders:get`, which calls the SAME
+ * `deriveDirectiveStatus(row, linkedWorkItems)` the renderer calls. Registering a
+ * second derivation here would reintroduce precisely the defect P-006 removed: two
+ * independently-tracked readings of one directive that nothing reconciles.
+ */
+export const OWNER_DIRECTIVE_STATUS_CELL: CellSpec = {
+  cell: 'owner.directive.status',
+  registeredOn: '2026-09-22',
+  owner: 'su-9390fc63-26a0-46a9-95d1-805705cc5e2d',
+  headline: 'directive.status.kind',
+
+  /**
+   * D-038: the assessment must say what the measurement MEANS, so its path is
+   * DELIBERATELY NOT the headline. These five codes are exactly the distinctions
+   * the bare `kind` cannot make, and each one changes what the reader does next.
+   * Two of them are the measured D-007 shapes this plan exists to stop rendering
+   * as imperatives — a settled directive that still nags, and worked-but-never-
+   * dispositioned work that reads as "nobody started this".
+   */
+  assessment: {
+    path: 'assessments.directiveStatus',
+    codes: {
+      'open-unworked': {
+        meaning:
+          'Unclaimed with NO linked work-item ever. The DEFAULT at capture and the most important bucket to render (D-005) — never a degenerate case.',
+        safeAction:
+          'Addressed to you ⇒ carry it out. Addressed to another session ⇒ yours to SEE, not to resolve: take it by binding a work-item first, work_items:create { directiveRef } or work_items:claim { directiveRef }.',
+      },
+      'worked-awaiting-disposition': {
+        meaning:
+          'Still `unclaimed`, but ONLY because every linked work-item is terminal and no disposition was ever recorded. Work happened; nobody closed the loop.',
+        safeAction:
+          'Do NOT re-do the work — read the terminal items in `activeWorkItemIds`\'s siblings first. The honest next step is orders:disposition, not a fresh attempt.',
+      },
+      'in-flight': {
+        meaning:
+          'A non-terminal work-item carrying this directive_ref is held. `holders` names who, `activeWorkItemIds` names which.',
+        safeAction:
+          'Awareness only — do NOT start parallel work. If you are not in `holders`, coordinate through the named work-item instead of re-deriving the task.',
+      },
+      settled: {
+        meaning: 'Terminal and consistent: a disposition (or a dismissed capture) was recorded, and the capture lifecycle agrees.',
+        safeAction: 'Nothing is owed. Render it in NO imperative bucket.',
+      },
+      'settled-capture-lagging': {
+        meaning:
+          'Terminal BY DISPOSITION while `captureStatus` still reads `pending` — the measured D-007 shape. The two inputs are tracked independently and the row would otherwise keep rendering "[DUE] … promote or dismiss" forever.',
+        safeAction:
+          'Nothing is owed. The `pending` capture is NOT a reason to prompt for resolution — that prompt is the defect this derivation removes.',
+      },
+    },
+    evidence: ['directiveUnknown'],
+  },
+
+  /** TRUE: `orders:get` answers `ok:false, error:'not_found'` for an id that does not
+   *  exist in this workspace, so the declared headline path is genuinely absent. The
+   *  hoist is what stops that absence reading as "this directive has no status". */
+  nullable: true,
+  unknownHoist: 'directiveUnknown',
+
+  /** Axis 3. Relative to WHICH DIRECTIVE you are asking about. The VERDICT itself is
+   *  workspace-global — two sessions reading the same id get the same kind — but
+   *  `holders` is what makes it actionable, and that is only meaningful per-id. */
+  callerRelativity: { kind: 'parameter', param: 'id' },
+
+  provenance: {
+    obtainedBy:
+      "the orders:get handler — deriveDirectiveStatus(row, listWorkItemsByDirective(workspaceId, [id])) @ packages/operator-core/lib/owner-directive-status.ts, the same pure function the turn-start renderer calls",
+    liveExercised: true,
+    evidence:
+      'Measured 2026-09-22 on the author\'s own queue (D-007): directives #86 and #87 carried dispositionStatus=done AND captureStatus=pending simultaneously, and kept rendering "[DUE] … promote or dismiss" indefinitely because the two inputs were tracked independently. This derivation is what reconciles them.',
+  },
+
+  resolver: 'deriveDirectiveStatus() @ packages/operator-core/lib/owner-directive-status.ts, via the orders:get handler',
+
+  /** Directives are owner speech recorded per workspace; every coord reader in the
+   *  workspace already sees them through orders:list (D-004 — LABEL, never filter). */
+  visibility: { kind: 'workspace' } as const,
+  federation: { kind: 'local' },
+
+  changeSignal: { kind: 'poll', tool: 'orders:get', path: 'directive.status.kind' },
+
+  shape:
+    '{ kind: unclaimed|claimed|done|declined, claimedBy?, holders[], activeWorkItemIds[], terminalSource?: disposition|capture-dismissed, captureLagging, workedButUndispositioned }',
+};
+
 export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
@@ -2713,6 +2811,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   CAPACITY_VERDICT_CELL,
   ROLE_LAUNCH_CELL,
   WORK_SCOPE_CELL,
+  OWNER_DIRECTIVE_STATUS_CELL,
 ];
 
 /** Register every built-in cell. Idempotent — safe to call from more than one entry

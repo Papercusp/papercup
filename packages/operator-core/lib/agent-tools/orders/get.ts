@@ -7,6 +7,9 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { getOwnerDirective } from '../../owner-directives';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { deriveDirectiveStatus } from '../../owner-directive-status';
+import { listWorkItemsByDirective } from '../../work-items';
 
 export default defineTool({
   name: 'orders:get',
@@ -22,25 +25,78 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    id: z.number().int().positive().describe('The directive id.'),
+    // COERCED, not merely numeric: this tool backs the `owner.directive.status`
+    // state cell, and `cell-read.ts` passes a caller-relative subject through as
+    // a STRING (`argsForRelativity`). A bare z.number() rejects "125" and the
+    // cell would report `resolver-failed` for a directive that exists.
+    id: z.coerce.number().int().positive().describe('The directive id.'),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
     const row = await getOwnerDirective(args.id);
     if (!row) {
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'not_found', id: args.id }) }],
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'not_found',
+              id: args.id,
+              // RESULT-level unknown channel for the `owner.directive.status` cell
+              // (D-038 axis 2). A per-row qualifier is missable; this is not. It
+              // says WHY the headline path is absent, so a null is never read as
+              // "this directive has no status".
+              directiveUnknown:
+                'no directive with this id is recorded in this workspace — it was never captured here, or the id belongs to another workspace. This is an ABSENT subject, not an unclaimed directive.',
+            }),
+          },
+        ],
         isError: true,
       };
     }
+    // P-007: the cell and the banner derive from ONE function. The turn-start
+    // renderer calls `deriveDirectiveStatus(row, linked)` (turn-start-orientation.ts
+    // ~:3507); this is the same call over the same two inputs, so a mid-turn
+    // ACTION-time re-read ("has this been claimed since turn start?") can never
+    // disagree with the banner the caller is acting on.
+    //
+    // Fail-soft on the linked-items read ONLY: a directive whose work-item query
+    // fails still derives from its own row, where `unclaimed` is the correct and
+    // safe reading. Swallowing the whole status instead would make the cell
+    // silently unreadable exactly when the caller most needs it.
+    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId() ?? 'default';
+    const linked = await listWorkItemsByDirective(workspaceId, [row.id]).catch(() => []);
+    const status = deriveDirectiveStatus(row, linked);
+    // The ASSESSMENT, distinct from the headline `status.kind` on purpose (D-038):
+    // an assessment must say what a measurement MEANS, and re-projecting the kind
+    // would add a field and no information. These five codes are exactly the
+    // distinctions the bare kind CANNOT make — each one changes what the reader
+    // should do next, and two of them ('worked-awaiting-disposition',
+    // 'settled-capture-lagging') are the measured D-007 shapes this plan exists
+    // to stop rendering as imperatives.
+    const assessments = {
+      directiveStatus:
+        status.kind === 'claimed'
+          ? 'in-flight'
+          : status.kind === 'unclaimed'
+            ? status.workedButUndispositioned
+              ? 'worked-awaiting-disposition'
+              : 'open-unworked'
+            : status.captureLagging
+              ? 'settled-capture-lagging'
+              : 'settled',
+    };
     return {
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify({
             ok: true,
+            assessments,
             directive: {
               id: row.id,
               open: row.dispositionedAtMs == null,
+              status,
               verbatim: row.verbatimText,
               owner: row.ownerId,
               recordedBy: row.recordedBy,

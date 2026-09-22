@@ -21,6 +21,14 @@ vi.mock('../../release-cut-launch', async (importOriginal) => ({
   abortLeg: vi.fn(),
   readOrCreateGate: vi.fn(),
 }));
+// P-001: the handler now opens a managed release operation before firing. Both of these
+// do real I/O (a task-ledger write and a `git ls-tree`), so they are overridden for the
+// same reason the launch primitives are — this suite asserts DECISION logic.
+vi.mock('../../release-cut-operation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../release-cut-operation')>()),
+  beginCutOperation: vi.fn(),
+  readSourceGitlinks: vi.fn(() => ({})),
+}));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: { unsafe: vi.fn() } }) as never,
@@ -46,8 +54,10 @@ vi.mock('node:child_process', async (importOriginal) => ({
 }));
 
 import { launchDetachedCut, readCutStatus, collectHandoff, preflightCut, abortLeg, readOrCreateGate } from '../../release-cut-launch';
+import { beginCutOperation } from '../../release-cut-operation';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { execFileSync } from 'node:child_process';
+const beginOpM = vi.mocked(beginCutOperation);
 const launchM = vi.mocked(launchDetachedCut);
 const statusM = vi.mocked(readCutStatus);
 const handoffM = vi.mocked(collectHandoff);
@@ -99,6 +109,21 @@ beforeEach(() => {
     argv: [],
     logPath: '/tmp/papercup-release-cut.log',
     donePath: '/tmp/papercup-release-cut.done',
+    operationId: 'op-1',
+    taskId: 'task1',
+  });
+  beginOpM.mockResolvedValue({
+    taskId: 'task1',
+    operationId: 'op-1',
+    identity: {
+      version: '0.0.8',
+      channel: 'alpha',
+      platform: null,
+      sourceSha: 'f'.repeat(40),
+      gitlinks: {},
+    },
+    seed: {} as never,
+    unit: 'papercup-release-cut',
   });
 });
 
@@ -481,6 +506,8 @@ describe('release:cut — status (read-only)', () => {
       logTail: null,
       logPath: '/tmp/papercup-release-cut.log',
       donePath: '/tmp/papercup-release-cut.done',
+      // Idle: no started marker on the host, so there is no operation to attribute.
+      operation: null,
     });
     const b = body(await tool.handler(statusArgs as never, { role: 'cup' } as never));
     expect(b).toMatchObject({ ok: true, op: 'status', state: 'idle' });
@@ -495,6 +522,7 @@ describe('release:cut — status (read-only)', () => {
       logTail: 'building…',
       logPath: '/tmp/papercup-release-cut.log',
       donePath: '/tmp/papercup-release-cut.done',
+      operation: { operationId: 'op-1', taskId: 'task1', startedAtSec: 1_700_000_000 },
     };
     statusM.mockReturnValue(running);
     const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup' } as never));
@@ -511,11 +539,16 @@ describe('release:cut — status (read-only)', () => {
       logTail: 'stopped by systemd',
       logPath: '/tmp/papercup-release-cut.log',
       donePath: '/tmp/papercup-release-cut.done',
+      operation: { operationId: 'op-1', taskId: 'task1', startedAtSec: 1_700_000_000 },
     };
     statusM.mockReturnValue(interrupted);
     const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup' } as never));
     expect(b).toMatchObject({ ok: true, op: 'status', state: 'interrupted' });
     expect(b.note).toMatch(/interrupted/i);
+    // P-001: a managed interruption is RESUMABLE, and the note must say so — the whole
+    // point of threading the operation id is that this case stops meaning "rebuild".
+    expect(b.note).toMatch(/op-1/);
+    expect(b.note).toMatch(/resumes/i);
     expect(launchM).not.toHaveBeenCalled();
   });
 });
@@ -653,11 +686,22 @@ describe('release:cut — run (operator-gated write)', () => {
         // root here would satisfy a loose matcher while being exactly the silent no-op
         // this field exists to prevent.
         canonicalDesktopRoot: '/tmp/release-cut-fixture/papercusp-desktop',
+        // P-001: the whole-cut path threads the same managed-release identity as a leg.
+        releaseTaskId: 'task1',
+        releaseOperationId: 'op-1',
+        enqueuedAtMs: expect.any(Number),
       },
       legs: { mac: true, windows: undefined, arm64: undefined },
       root: expect.any(String),
       orchestratorRoot: '/tmp/release-cut-fixture/papercusp-desktop',
     }));
+  });
+
+  it('opens the whole-cut operation with a null platform identity', async () => {
+    await tool.handler({ ...runArgs, confirm: true, mac: true } as never, { role: 'operator' } as never);
+    expect(beginOpM).toHaveBeenCalledWith(
+      expect.objectContaining({ identity: expect.objectContaining({ platform: null }) }),
+    );
   });
 });
 
@@ -670,6 +714,7 @@ describe('release:cut — status (per-leg, WI-4233)', () => {
       logTail: 'mac build ok',
       logPath: '/tmp/papercup-release-cut-mac.log',
       donePath: '/tmp/papercup-release-cut-mac.done',
+      operation: { operationId: 'op-mac', taskId: 'task-mac', startedAtSec: 1_700_000_000 },
     });
     const b = body(await tool.handler({ op: 'status', platform: 'mac' } as never, { role: 'cup' } as never));
     expect(statusM).toHaveBeenCalledWith({ platform: 'mac' });
@@ -772,6 +817,8 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
       argv: [],
       logPath: '/tmp/papercup-release-cut-mac.log',
       donePath: '/tmp/papercup-release-cut-mac.done',
+      operationId: 'op-1',
+      taskId: 'task1',
     });
     const b = body(await tool.handler({ ...legArgs, confirm: true } as never, { role: 'operator' } as never));
     expect(b).toMatchObject({ ok: true, op: 'run-leg', platform: 'mac', launched: true, localOnly: true, unit: 'papercup-release-cut-mac' });
@@ -789,6 +836,13 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
         // root here would satisfy a loose matcher while being exactly the silent no-op
         // this field exists to prevent.
         canonicalDesktopRoot: '/tmp/release-cut-fixture/papercusp-desktop',
+        // P-001: the managed-release journal identity opened just before this launch.
+        // Asserted as the exact ids rather than expect.any(String) for the same reason
+        // as canonicalDesktopRoot above — a loose matcher is satisfied by the
+        // half-configured pair that release-local.sh refuses.
+        releaseTaskId: 'task1',
+        releaseOperationId: 'op-1',
+        enqueuedAtMs: expect.any(Number),
       },
       legs: { mac: true },
       platform: 'mac',
@@ -805,6 +859,8 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
       argv: [],
       logPath: '/tmp/papercup-release-cut-linux.log',
       donePath: '/tmp/papercup-release-cut-linux.done',
+      operationId: 'op-1',
+      taskId: 'task1',
     });
     const b = body(await tool.handler({ ...legArgs, platform: 'linux', confirm: true } as never, { role: 'operator' } as never));
     expect(b.legs).toEqual({});
@@ -816,5 +872,45 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
       platform: 'linux',
       root: expect.any(String),
     }));
+  });
+
+  // P-001. The managed operation is opened BEFORE the launch, so a ledger failure lands
+  // in the one place where it can still be reported honestly.
+  it('opens the managed operation with the leg’s own platform identity', async () => {
+    await tool.handler({ ...legArgs, confirm: true } as never, { role: 'operator' } as never);
+    expect(beginOpM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        identity: expect.objectContaining({ platform: 'mac', version: '0.0.8', channel: 'alpha', sourceSha }),
+      }),
+    );
+  });
+
+  it('still fires when the journal is unavailable, but says the cut is UNMANAGED', async () => {
+    // Degrade, do not block: failing a release over a bookkeeping write would be worse
+    // than cutting unmanaged. Silence would be worse still — "this cannot be resumed" is
+    // exactly what an operator needs before the 35-minute mark.
+    beginOpM.mockRejectedValue(new Error('ledger down'));
+    launchM.mockResolvedValue({
+      launched: true,
+      unit: 'papercup-release-cut-mac',
+      version: '0.0.8',
+      channel: 'alpha',
+      legs: { mac: true },
+      argv: [],
+      logPath: '/tmp/papercup-release-cut-mac.log',
+      donePath: '/tmp/papercup-release-cut-mac.done',
+      operationId: null,
+      taskId: null,
+    });
+    const b = body(await tool.handler({ ...legArgs, confirm: true } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: true, launched: true, managed: false, operationId: null });
+    expect(b.managedSkipReason).toMatch(/UNMANAGED/);
+    expect(b.managedSkipReason).toMatch(/ledger down/);
+    // The launch must still have gone out WITHOUT a half-set identity pair.
+    expect(launchM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtime: expect.objectContaining({ releaseTaskId: undefined, releaseOperationId: undefined }),
+      }),
+    );
   });
 });
