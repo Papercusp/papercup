@@ -42,7 +42,17 @@ Environment=PATH=@NODE_DIR@:%h/.local/bin:%h/.linuxbrew/bin:/usr/local/bin:/usr/
 # must never copy its own release history into the next generation. start-web
 # resolves that external current pointer once, then runs the immutable target.
 ExecStart=@TSX@ @LAUNCHER@
-Restart=on-failure
+# Restart=always, NOT on-failure (WI-10002337). The launcher treats a readiness
+# -probe failure as an orderly shutdown and exits 0 — journal
+# "portal_start_readiness_failed:watchdog-notify:portal_systemd_notify_exit_1"
+# followed by sql-stopped / postgres-stopped, recorded by systemd as
+# Result=success ExecMainStatus=0. Under on-failure that clean exit is NOT
+# retried, so the single most likely boot fault for this unit was precisely the
+# one its supervision could not recover from: measured 2026-09-21T23:14:41Z ->
+# 2026-09-22T04:38:01Z, ~9h of app.papercusp.com front-door downtime ended only
+# by a hand `systemctl start`, after which the same binary came up healthy.
+# StartLimitIntervalSec=300 / StartLimitBurst=5 above still bound a crash loop.
+Restart=always
 RestartSec=3s
 WatchdogSec=15s
 TimeoutStartSec=120s

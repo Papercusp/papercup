@@ -231,6 +231,34 @@ describe("Cloud Portal systemd deployment contract", () => {
     }
   });
 
+  it("restarts the front door even when the launcher exits 0 on a readiness failure (WI-10002337)", () => {
+    const files = fixture();
+    try {
+      writeFileSync(join(files.dir, "hosted.env"), "PAPERCUSP_HOSTED_PUBLIC_ORIGIN=https://example.test\n");
+      const result = run(files, ["--render-only"]);
+      expect(result.status, result.stderr).toBe(0);
+
+      // The launcher reports a failed readiness probe as an ORDERLY shutdown and
+      // exits 0 ("portal_start_readiness_failed:watchdog-notify:portal_systemd_notify_exit_1",
+      // then sql-stopped / postgres-stopped), which systemd records as
+      // Result=success ExecMainStatus=0. Restart=on-failure does not retry a
+      // clean exit, so that combination left app.papercusp.com's only origin
+      // down for ~9h on 2026-09-21 until a hand `systemctl start` — with the
+      // same binary coming straight back up healthy. Restart=always is what
+      // makes the most likely boot fault recoverable.
+      expect(result.stdout).toContain("Restart=always");
+      expect(result.stdout).not.toContain("Restart=on-failure");
+
+      // Restart=always is only safe because the start limiter still bounds a
+      // genuine crash loop; assert the pair together so neither can be dropped
+      // in isolation.
+      expect(result.stdout).toContain("StartLimitIntervalSec=300");
+      expect(result.stdout).toContain("StartLimitBurst=5");
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
+  });
+
   it("atomically installs, verifies, reloads, and enables without starting the backend", () => {
     const files = fixture();
     const systemctl = join(files.binDir, "systemctl");
