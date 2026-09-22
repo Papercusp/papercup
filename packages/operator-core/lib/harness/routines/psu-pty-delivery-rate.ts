@@ -172,8 +172,7 @@ export async function readWakeDeliveryHealth(
     const msg = e instanceof Error ? e.message : String(e);
     // A missing relation means migration 1190 has not applied on this host yet — a
     // legitimate, temporary state that must read differently from a real query failure.
-    const missing = /psu_pty_host_events|relation .* does not exist/i.test(msg)
-      && /does not exist/i.test(msg);
+    const missing = /does not exist/i.test(msg);
     return { ...base, reason: missing ? 'relation-missing' : 'query-failed' };
   }
 }
