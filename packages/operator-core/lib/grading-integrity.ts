@@ -131,6 +131,41 @@ async function mapWithConcurrency<T, R>(
 export type GradingAuditLaunchContext = Parameters<typeof launchAgentTool.handler>[1];
 type GradingAuditLaunchHandler = typeof launchAgentTool.handler;
 
+/**
+ * Stable in-process principal that owns fresh grading-auditor launches.
+ *
+ * Dispatch runs inside whichever call surfaced the pending card — most often
+ * the card AUTHOR's own `scorecards:emit` / `work_items:complete`. Forwarding
+ * that caller context to capability:launch-agent stamped the author as the
+ * judge's `--launched-by`, placing the judge inside the author's launch
+ * lineage, so the emit-side `self_audit_refused` guard rejected the finished
+ * audit every time (EI-23911815311476758, EI-23987538343141495). The routing
+ * leg already excludes author lineage; only the fresh-launch leg leaked it.
+ * Mirrors ACCEPTANCE_GRADING_SWEEP_ACTOR in acceptance-grader.ts.
+ */
+export const GRADING_AUDIT_DISPATCH_ACTOR = 'system:grading-audit-dispatch';
+
+/**
+ * The launch context for a fresh grading auditor: the caller's context re-owned
+ * by GRADING_AUDIT_DISPATCH_ACTOR so the judge is outside every card author's
+ * lineage. A system principal needs a concrete workspace; without one, keep the
+ * caller context (the emit-side lineage guard still fails closed).
+ */
+export function gradingAuditorLaunchCtx(ctx: GradingAuditLaunchContext): GradingAuditLaunchContext {
+  const workspaceId = ctx.workspaceId?.trim();
+  if (!workspaceId || workspaceId === '*') return ctx;
+  return {
+    ...ctx,
+    uiClientId: null,
+    isSuperuser: false,
+    isPowerUser: false,
+    principal: { kind: 'system', slug: GRADING_AUDIT_DISPATCH_ACTOR, workspaceId },
+    ownerId: GRADING_AUDIT_DISPATCH_ACTOR,
+    ownerLabel: 'grading audit dispatch',
+    userId: null,
+  } as never;
+}
+
 export type PendingGradingAuditDispatchState = 'routed' | 'launched' | 'deduped' | 'skipped' | 'failed';
 
 export interface PendingGradingAuditDispatchReceipt {
@@ -1089,7 +1124,10 @@ export async function dispatchPendingGradingAudits(
             label: `grading-audit:${issueId}`,
             idempotencyKey: currentIdempotencyKey,
           } as never,
-          input.ctx,
+          // Never the caller's context: the caller is often the card author, and
+          // a judge it launches is refused as a self-audit (see
+          // GRADING_AUDIT_DISPATCH_ACTOR).
+          gradingAuditorLaunchCtx(input.ctx),
         )) as {
           isError?: boolean;
           content?: Array<{ text?: string }>;

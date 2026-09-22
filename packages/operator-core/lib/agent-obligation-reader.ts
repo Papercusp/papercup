@@ -689,7 +689,7 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
       const { evaluatePlanAcceptanceGate } = await import('./plan-acceptance-gate');
       return evaluatePlanAcceptanceGate(planSlug);
     },
-    ownerDirectives: async (workspaceId) => {
+    ownerDirectives: async (workspaceId, ownerId) => {
       const {
         listOwnerDirectives,
         ownerDirectiveExcerpt,
@@ -698,9 +698,13 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
       // The `state` filter is applied in SQL, BEFORE the limit (P-005). A
       // client-side filter over a limited page silently drops matching rows the
       // limit already truncated away, which reads as an empty directive queue.
+      // viewerOwnerId for the same reason, and in the same SQL position: a row
+      // THIS session cleared off its own agenda (P-008 / D-008) must stop being
+      // an obligation for it, while staying one for its addressee.
       const rows = await listOwnerDirectives({
         workspaceId,
         state: ['pending', 'open'],
+        viewerOwnerId: ownerId,
         limit: OWNER_DIRECTIVES_RENDER_MAX_ROWS,
       });
       return rows.map((row) => ({

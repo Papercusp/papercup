@@ -141,7 +141,7 @@ export interface LoopFireDeps {
    *  workspace (defaults to renderOpenOwnerDirectivesBlock). Best-effort. */
   renderOwnerDirectives?: (
     workspaceId: string | null | undefined,
-    opts?: { sql?: Sql },
+    opts?: { sql?: Sql; viewerOwnerId?: string | null },
   ) => Promise<string | null>;
   /** EI-10901: read the owner's currently-active BLOCKING awaits (defaults to
    *  listParkedAwaitsForSubscribers, scoped to one owner). */
@@ -1077,11 +1077,16 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // never delays the fire.
   const renderDirectives =
     deps.renderOwnerDirectives ??
-    (async (ws: string | null | undefined, o?: { sql?: Sql }) => {
+    (async (ws: string | null | undefined, o?: { sql?: Sql; viewerOwnerId?: string | null }) => {
       const { renderOpenOwnerDirectivesBlock } = await import('../../owner-directives');
       return renderOpenOwnerDirectivesBlock(ws, o);
     });
-  const ownerDirectivesBlock = await renderDirectives(input.workspaceId, { sql: input.sql }).catch(() => null);
+  // The wake renders FOR this loop's owner, so its own cleared rows drop out
+  // (P-008 / D-008); the directive stays open for everyone else.
+  const ownerDirectivesBlock = await renderDirectives(input.workspaceId, {
+    sql: input.sql,
+    viewerOwnerId: input.targetOwnerId,
+  }).catch(() => null);
   // EI-19501119110607678 — MEASURE the frozen goal instead of only cautioning about it.
   // Judge the persisted `goal` when the loop has one; otherwise the kickoff's first
   // line, which is the text the wake actually renders as "Arm-time goal" — the check

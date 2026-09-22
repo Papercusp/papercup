@@ -33,6 +33,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
+import { agendaClearedExclusionSql } from './owner-directive-agenda';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -273,6 +274,16 @@ export interface ListOwnerDirectivesOpts {
    * absence. Combined with `open`, both predicates apply (AND).
    */
   state?: OwnerDirectiveState | readonly OwnerDirectiveState[];
+  /**
+   * P-008 / D-008: the session this list is being rendered FOR. When given,
+   * directives that session has cleared off its own agenda are excluded — for
+   * that session only, changing nothing for the addressee or any peer.
+   *
+   * Omitted = the LEDGER view (orders:list, the disposition audit trail), which
+   * must keep showing rows a session has personally discharged. Only banner /
+   * obligation render points pass it.
+   */
+  viewerOwnerId?: string | null;
   limit?: number;
 }
 
@@ -290,6 +301,7 @@ export async function listOwnerDirectives(
     SELECT * FROM harness_shared.owner_directives
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
        ${opts.open === true ? s`AND dispositioned_at IS NULL AND capture_status <> 'dismissed'` : opts.open === false ? s`AND (dispositioned_at IS NOT NULL OR capture_status = 'dismissed')` : s``}
+       ${agendaClearedExclusionSql(s, opts.viewerOwnerId)}
        ${
          states && states.length > 0
            ? // Mirrors ownerDirectiveState() exactly, in the same precedence order.
@@ -310,23 +322,40 @@ export async function listOwnerDirectives(
   return rows.map(rowOf);
 }
 
-/** The hot read every render point uses: open directives, OLDEST first. */
+/**
+ * The hot read every render point uses: open directives, OLDEST first.
+ *
+ * `viewerOwnerId` is the session the banner is being rendered FOR; passing it
+ * drops the rows that session has cleared from its own agenda (P-008 / D-008).
+ * It is the LAST parameter and optional, so a caller with no session in scope
+ * keeps the workspace-wide view rather than accidentally rendering somebody
+ * else's agenda.
+ */
 export async function listOpenOwnerDirectives(
   workspaceId: string,
   limit: number = OWNER_DIRECTIVES_RENDER_MAX_ROWS,
   sql?: Sql,
+  viewerOwnerId?: string | null,
 ): Promise<OwnerDirectiveRow[]> {
-  return listOwnerDirectives({ workspaceId, open: true, limit }, sql);
+  return listOwnerDirectives({ workspaceId, open: true, limit, viewerOwnerId }, sql);
 }
 
-export async function countOpenOwnerDirectives(workspaceId: string, sql?: Sql): Promise<number> {
+export async function countOpenOwnerDirectives(
+  workspaceId: string,
+  sql?: Sql,
+  viewerOwnerId?: string | null,
+): Promise<number> {
   const s = db(sql);
   const ws = resolveConcreteWorkspaceId(workspaceId);
+  // The count must apply the SAME exclusion as the list above, or a banner that
+  // hides three cleared rows still announces "+3 more" and sends the reader to
+  // orders:list looking for directives its own banner is deliberately hiding.
   const rows = await s<Array<{ n: string | number }>>`
     SELECT count(*) AS n FROM harness_shared.owner_directives
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
        AND dispositioned_at IS NULL
        AND capture_status <> 'dismissed'
+       ${agendaClearedExclusionSql(s, viewerOwnerId)}
   `;
   return Number(rows[0]?.n ?? 0);
 }
@@ -494,7 +523,7 @@ export function renderOwnerDirectivesBlock(
  */
 export async function renderOpenOwnerDirectivesBlock(
   workspaceId: string | null | undefined,
-  opts: { nowMs?: number; sql?: Sql } = {},
+  opts: { nowMs?: number; sql?: Sql; viewerOwnerId?: string | null } = {},
 ): Promise<string | null> {
   // A workspace-less caller (e.g. a loop routine armed without one) falls back
   // to the active workspace — an open owner directive must not be skippable by
@@ -502,11 +531,11 @@ export async function renderOpenOwnerDirectivesBlock(
   const ws = workspaceId || activeWorkspaceId();
   if (!ws) return null;
   try {
-    const rows = await listOpenOwnerDirectives(ws, OWNER_DIRECTIVES_RENDER_MAX_ROWS, opts.sql);
+    const rows = await listOpenOwnerDirectives(ws, OWNER_DIRECTIVES_RENDER_MAX_ROWS, opts.sql, opts.viewerOwnerId);
     if (!rows.length) return null;
     const totalOpen =
       rows.length >= OWNER_DIRECTIVES_RENDER_MAX_ROWS
-        ? await countOpenOwnerDirectives(ws, opts.sql).catch(() => rows.length)
+        ? await countOpenOwnerDirectives(ws, opts.sql, opts.viewerOwnerId).catch(() => rows.length)
         : rows.length;
     return renderOwnerDirectivesBlock(rows, { nowMs: opts.nowMs, totalOpen });
   } catch {

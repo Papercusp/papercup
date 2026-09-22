@@ -3992,7 +3992,9 @@ export default defineTool({
     try {
       const { renderOpenOwnerDirectivesBlock } = await import('../../../owner-directives');
       const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-      ownerDirectives = (await renderOpenOwnerDirectivesBlock(ws)) ?? undefined;
+      // Rendered FOR the orienting session (P-008 / D-008): rows it cleared off
+      // its own agenda drop out here and stay open for every other session.
+      ownerDirectives = (await renderOpenOwnerDirectivesBlock(ws, { viewerOwnerId: ownerId })) ?? undefined;
     } catch {
       /* fail-soft */
     }

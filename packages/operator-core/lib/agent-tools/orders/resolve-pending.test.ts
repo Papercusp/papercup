@@ -31,6 +31,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   promoteOwnerDirective: vi.fn(),
   dismissOwnerDirective: vi.fn(),
+  directiveActionVerdict: vi.fn(async () => ({ allowed: true as const, because: 'addressee' as const })),
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-test-owner' })),
 }));
 
@@ -41,6 +42,20 @@ vi.mock('../../owner-directives', async (importOriginal) => {
     promoteOwnerDirective: h.promoteOwnerDirective,
     dismissOwnerDirective: h.dismissOwnerDirective,
   };
+});
+
+// P-008 added an ownership rail AHEAD of both writers: promote/dismiss now ask
+// `directiveActionVerdict` whether this caller may act on the directive at all.
+// That helper is a REAL Postgres read, so without this seam every case below
+// that reaches a writer dies on the unit-test live-DB guard
+// (EI-19311807188719573) — a failure about database access, in a file whose
+// subject is the reason rule. Stubbed ALLOWED on purpose: the refusal side is
+// the subject of resolve-pending-foreign-directive.test.ts, and duplicating it
+// here would make two files fail for one regression while this one's own rule
+// went untested.
+vi.mock('../../owner-directive-agenda', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../owner-directive-agenda')>();
+  return { ...actual, directiveActionVerdict: h.directiveActionVerdict };
 });
 
 vi.mock('../coordination/identity', async (importOriginal) => {
@@ -68,6 +83,7 @@ describe('orders:resolve-pending — dismissal requires a reason (AUTO-BAR-R-5-P
   beforeEach(() => {
     h.promoteOwnerDirective.mockReset();
     h.dismissOwnerDirective.mockReset();
+    h.directiveActionVerdict.mockResolvedValue({ allowed: true, because: 'addressee' });
     h.resolveAgentIdentity.mockReturnValue({ ownerId: 'su-test-owner' });
   });
 

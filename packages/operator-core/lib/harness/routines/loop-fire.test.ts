@@ -278,7 +278,16 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
 
     await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'work plan X' } }, deps);
 
-    expect(deps.renderOwnerDirectives).toHaveBeenCalledWith('papercusp-workspace', { sql: undefined });
+    // P-008 / D-008: the wake renders the banner FOR the pinned target session,
+    // so the viewer id rides with the read and rows THAT session cleared off its
+    // own agenda drop out. Kept as an EXACT call-shape assertion rather than
+    // objectContaining — a viewerOwnerId that silently went missing (or became
+    // some other session's) is the whole failure mode, and is invisible to a
+    // looser matcher.
+    expect(deps.renderOwnerDirectives).toHaveBeenCalledWith('papercusp-workspace', {
+      sql: undefined,
+      viewerOwnerId: baseInput.targetOwnerId,
+    });
     const summary = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary as string;
     // Directives ride ABOVE everything after the kickoff; the WI-5092 first-carry-note
     // mandate (confirmed-empty note here) renders after them.

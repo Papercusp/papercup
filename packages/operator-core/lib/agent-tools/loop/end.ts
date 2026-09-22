@@ -215,6 +215,10 @@ export default defineTool({
         workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId,
         acknowledged: args.acknowledgeOpenDirectives,
         action: 'loop:end',
+        // The CALLER's banner, not the loop owner's: the guard asks whether the
+        // session about to lose its wake surface still has directives on its
+        // own agenda (P-008 / D-008).
+        viewerOwnerId: identity.ownerId,
       });
       if (guard) {
         return {

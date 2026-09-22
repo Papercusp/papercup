@@ -183,6 +183,35 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       .toMatchObject({ decision: 'deny', code: 'capability_unsatisfied' });
   });
 
+  // WI-10001769 / identities-v1 R-3 `authority-reduction-fails-closed`: a FAILED
+  // reduction must bind the NARROWER authority, never retain the wider one.
+  // identity-management writes the narrowed specificationArtifact into the
+  // launch record in the SAME transaction that requests the activation, before
+  // any render; a later render failure (failControlTransitionActivation) leaves
+  // `applied` on the wider revision with prepared:null/status:'failed'. The
+  // kernel checks the applied receipt AND the record's current specification,
+  // so the narrowing binds in every pending phase — including the exact row
+  // shape the failure writer leaves behind.
+  it('binds a failed authority reduction to the narrower specification instead of retaining the wider one', async () => {
+    const wide = fixture();
+    const narrowed = fixture({ requires: [] });
+    // Positive control: the wide receipt on its own authorises the tool.
+    expect(await checkIdentityGrantKernel(wide.request, wide.state, wide.record, async () => wide.policy))
+      .toMatchObject({ decision: 'allow', revisionSource: 'applied' });
+    const record = { ...narrowed.record, stateRevision: 'state-b', identityHistory: [wide.record] };
+    for (const status of ['desired', 'prepared', 'failed'] as const) {
+      const state = {
+        activation: {
+          applied: wide.applied, prepared: null, status,
+          ...(status === 'failed' ? { failure: 'stack transition render failed' } : {}),
+        },
+        policyRevision: 'control:2',
+      };
+      expect(await checkIdentityGrantKernel(wide.request, state, record, async () => wide.policy))
+        .toMatchObject({ decision: 'deny', code: 'capability_unsatisfied' });
+    }
+  });
+
   it('cannot widen a previously empty grant set with an unacknowledged revision', async () => {
     const f = fixture({ requires: [] });
     const broad = fixture();

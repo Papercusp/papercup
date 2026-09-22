@@ -11,7 +11,9 @@ import {
   GRADING_AUDIT_QUOTA_BACKOFF_DEFAULT_MS,
   GRADING_AUDIT_QUOTA_BACKOFF_MAX_MS,
   GRADING_AUDIT_QUOTA_BACKOFF_MIN_MS,
+  GRADING_AUDIT_DISPATCH_ACTOR,
   GRADING_INTEGRITY_RUBRIC_REF,
+  gradingAuditorLaunchCtx,
   reconcilePendingGradingAudits,
   resolveGradingAuditQuotaBackoff,
   type GradingAuditReservationResult,
@@ -34,6 +36,21 @@ function launchResult(data: unknown): LaunchResult {
 }
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp' } as DispatchPendingGradingAuditsInput['ctx'];
+
+// Fresh auditors launch as the system dispatch actor, never as the dispatching
+// caller — the caller is often the card author (EI-23911815311476758). Spelled
+// out literally rather than via gradingAuditorLaunchCtx(ctx) so a regression in
+// that helper cannot also rewrite the expectation.
+const auditorCtx = {
+  ...ctx,
+  uiClientId: null,
+  isSuperuser: false,
+  isPowerUser: false,
+  principal: { kind: 'system', slug: GRADING_AUDIT_DISPATCH_ACTOR, workspaceId: 'ws-test' },
+  ownerId: GRADING_AUDIT_DISPATCH_ACTOR,
+  ownerLabel: 'grading audit dispatch',
+  userId: null,
+};
 
 function card(issueId: string, over: Partial<ScorecardRow> = {}): ScorecardRow {
   return {
@@ -321,13 +338,40 @@ describe('dispatchPendingGradingAudits', () => {
         label: 'grading-audit:EI-audit-1',
         idempotencyKey: 'grading-audit:EI-audit-1',
       }),
-      ctx,
+      auditorCtx,
     );
     expect(d.launch).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ idempotencyKey: 'grading-audit:EI-audit-1' }),
-      ctx,
+      auditorCtx,
     );
+  });
+
+  it("launches a fresh auditor as the system dispatch actor, never inside the calling card author's lineage", async () => {
+    // EI-23911815311476758 / EI-23987538343141495: dispatch runs inside the card
+    // AUTHOR's own scorecards:emit. Forwarding that caller context stamped the
+    // author as the judge's --launched-by, and the emit-side lineage guard then
+    // refused the finished audit as self_audit_refused — every time.
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-author-emit', { createdBy: 'su-card-author' })]);
+    const authorCtx = { ...ctx, ownerId: 'su-card-author' } as DispatchPendingGradingAuditsInput['ctx'];
+
+    await dispatchPendingGradingAudits({ targetIds: ['EI-author-emit'], ctx: authorCtx }, d);
+
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    const launchCtx = d.launch.mock.calls[0]?.[1] as { ownerId?: string; principal?: unknown; workspaceId?: string };
+    expect(launchCtx.ownerId).not.toBe('su-card-author');
+    expect(launchCtx.ownerId).toBe(GRADING_AUDIT_DISPATCH_ACTOR);
+    expect(launchCtx.principal).toEqual({ kind: 'system', slug: GRADING_AUDIT_DISPATCH_ACTOR, workspaceId: 'ws-test' });
+    expect(launchCtx.workspaceId).toBe('ws-test');
+  });
+
+  it('keeps the caller context when no concrete workspace can scope a system principal', () => {
+    const unscoped = { ...ctx, workspaceId: '*', ownerId: 'su-caller' } as DispatchPendingGradingAuditsInput['ctx'];
+    // Whitespace-only trims to empty — the same "no concrete workspace" branch as an absent one.
+    const missing = { ...ctx, workspaceId: '  ', ownerId: 'su-caller' } as DispatchPendingGradingAuditsInput['ctx'];
+    expect(gradingAuditorLaunchCtx(unscoped)).toBe(unscoped);
+    expect(gradingAuditorLaunchCtx(missing)).toBe(missing);
   });
 
   it('dedupes against a live same-label auditor after its reservation epoch expires', async () => {
@@ -431,7 +475,7 @@ describe('dispatchPendingGradingAudits', () => {
           /^grading-audit:EI-live-terminal-auditor:recovery:[a-f0-9]{16}$/,
         ),
       }),
-      ctx,
+      auditorCtx,
     );
     expect(result.receipts).toEqual([
       expect.objectContaining({
@@ -714,7 +758,7 @@ describe('dispatchPendingGradingAudits', () => {
     );
 
     expect(d.launch).toHaveBeenCalledTimes(1);
-    expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: 'grading-audit:EI-current' }), ctx);
+    expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: 'grading-audit:EI-current' }), auditorCtx);
     expect(d.launch.mock.calls[0]?.[0]).not.toHaveProperty('harness');
     // EI-23414612968722239 regression: `role:'judge'` is a HARNESS-SCOPED persona, so it must
     // be gated on the SAME condition as `harness` itself. Sending the role without a harness

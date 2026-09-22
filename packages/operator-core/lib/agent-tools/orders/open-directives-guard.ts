@@ -57,14 +57,16 @@ export async function checkOpenDirectivesGuard(opts: {
   acknowledged: boolean | undefined;
   action: string;
   sql?: Sql;
+  /** The session being guarded; rows it cleared off its own agenda do not block it. */
+  viewerOwnerId?: string | null;
 }): Promise<OpenDirectivesGuardResult | null> {
   if (opts.acknowledged || !opts.workspaceId) return null;
   try {
-    const rows = await listOpenOwnerDirectives(opts.workspaceId, 5, opts.sql);
+    const rows = await listOpenOwnerDirectives(opts.workspaceId, 5, opts.sql, opts.viewerOwnerId);
     if (!rows.length) return null;
     const totalOpen =
       rows.length >= 5
-        ? await countOpenOwnerDirectives(opts.workspaceId, opts.sql).catch(() => rows.length)
+        ? await countOpenOwnerDirectives(opts.workspaceId, opts.sql, opts.viewerOwnerId).catch(() => rows.length)
         : rows.length;
     return buildOpenDirectivesGuard(rows, totalOpen, opts.action);
   } catch {

@@ -9,6 +9,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { listOwnerDirectives, OWNER_DIRECTIVE_STATES, ownerDirectiveState } from '../../owner-directives';
+import { listClearedDirectiveIds } from '../../owner-directive-agenda';
+import { resolveAgentIdentity } from '../coordination/identity';
 
 const LIST_BODY_CAP = 500;
 
@@ -48,6 +50,18 @@ export default defineTool({
       state: args.state as Parameters<typeof listOwnerDirectives>[0]['state'],
       limit: args.limit,
     });
+    // This is the LEDGER, so it deliberately does NOT apply `viewerOwnerId`:
+    // the rows you cleared off your own banner must stay findable here, or
+    // `clear` becomes an untraceable disappearance rather than a per-session
+    // agenda action. They are ANNOTATED instead — that annotation is also what
+    // explains why a row visible here is absent from your Orientation banner.
+    let clearedByMe = new Set<number>();
+    try {
+      const ownerId = resolveAgentIdentity(ctx).ownerId;
+      clearedByMe = await listClearedDirectiveIds({ ownerId, workspaceId });
+    } catch {
+      /* unattributable caller — no agenda to annotate against */
+    }
     return {
       content: [
         {
@@ -61,6 +75,9 @@ export default defineTool({
               state: ownerDirectiveState(r),
               captureStatus: r.captureStatus ?? 'open',
               ...(r.captureStatus === 'pending' ? { needsResolution: true } : {}),
+              ...(clearedByMe.has(r.id)
+                ? { clearedFromYourAgenda: true, clearedNote: 'Cleared from YOUR banner only — still open for its addressee. orders:resolve-pending { action: \'clear\' } is reversible.' }
+                : {}),
               verbatim:
                 r.verbatimText.length > LIST_BODY_CAP
                   ? `${r.verbatimText.slice(0, LIST_BODY_CAP)}… [orders:get #${r.id}]`

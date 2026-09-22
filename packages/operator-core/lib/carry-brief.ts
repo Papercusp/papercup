@@ -1401,10 +1401,14 @@ export async function buildCarryBrief(ownerId: string, opts: BuildCarryBriefOpts
         (async (ws: string) => {
           const { listOpenOwnerDirectives, countOpenOwnerDirectives, OWNER_DIRECTIVES_RENDER_MAX_ROWS } =
             await import('./owner-directives');
-          const rows = await listOpenOwnerDirectives(ws, OWNER_DIRECTIVES_RENDER_MAX_ROWS, opts.sql);
+          // Workspace-scoped, but rendered FOR this owner: rows THIS session
+          // cleared off its own agenda drop out (P-008 / D-008). That is not a
+          // narrowing of the survives-its-recorder rule above — the directive
+          // stays open, and every other session still carries it.
+          const rows = await listOpenOwnerDirectives(ws, OWNER_DIRECTIVES_RENDER_MAX_ROWS, opts.sql, ownerId);
           const totalOpen =
             rows.length >= OWNER_DIRECTIVES_RENDER_MAX_ROWS
-              ? await countOpenOwnerDirectives(ws, opts.sql).catch(() => rows.length)
+              ? await countOpenOwnerDirectives(ws, opts.sql, ownerId).catch(() => rows.length)
               : rows.length;
           return { rows, totalOpen };
         });

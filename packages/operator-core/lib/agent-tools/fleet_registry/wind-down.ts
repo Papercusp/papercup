@@ -78,10 +78,20 @@ export default defineTool({
     // surface-loss moment as a direct loop:end. Warn while open owner
     // directives remain; acknowledgeOpenDirectives:true proceeds. Fail-open.
     const { checkOpenDirectivesGuard } = await import('../orders/open-directives-guard');
+    const { resolveAgentIdentity } = await import('../coordination/identity');
+    // Soft resolve, like the rest of this fail-open guard: an unattributable
+    // caller simply gets the workspace-wide view instead of its own agenda.
+    let viewerOwnerId: string | undefined;
+    try {
+      viewerOwnerId = resolveAgentIdentity(ctx).ownerId;
+    } catch {
+      viewerOwnerId = undefined;
+    }
     const guard = await checkOpenDirectivesGuard({
       workspaceId: (ctx as { workspaceId?: string | null }).workspaceId ?? ctx.principal?.workspaceId,
       acknowledged: args.acknowledgeOpenDirectives,
       action: 'fleet:wind-down',
+      viewerOwnerId,
     });
     if (guard) return json(guard as unknown as Record<string, unknown>, true);
     const result = await applyFleetControl(ctx, args.fleet, 'wind-down', args.reason, {
