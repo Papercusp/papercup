@@ -201,6 +201,25 @@ describe('test-time evidence continuity', () => {
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
     expect(bundle.verificationFingerprint).toBeTruthy();
   });
+  // WI-10002465: the admin reporter writes JSON.stringify(details) through
+  // postgres-js's multi-row helper, so the ledger column holds a jsonb STRING
+  // scalar and the ledger read hands recovery a JS string — not the object the
+  // other cases here feed it. Every detached run arrived in this shape and was
+  // rejected as review-required, so no integration file past the foreground
+  // cap could settle its spec evidence.
+  it('settles a reporter row whose details are stored as the jsonb string encoding', async () => {
+    const { bundle } = await pendingRecovery(JSON.stringify(measured));
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
+    expect(bundle.verificationFingerprint).toBeTruthy();
+  });
+  it.each([
+    '{not json', '"just a string"', JSON.stringify([measured]),
+    JSON.stringify({ ...measured, root: '/other' }), JSON.stringify({ ...measured, extra: true }),
+  ])('keeps an undecodable or wrong-scope string encoding unproven: %s', async detail => {
+    const { bundle } = await pendingRecovery(detail);
+    expect(bundle.rows[0]).toMatchObject({ phase: 'review-required', outcome: 'unknown' });
+    expect(bundle.verificationFingerprint).toBeNull();
+  });
   it.each([
     ['selected proof', 'pass'],
     [null, 'skip'],
