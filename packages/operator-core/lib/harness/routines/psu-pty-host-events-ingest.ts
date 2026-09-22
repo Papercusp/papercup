@@ -85,6 +85,22 @@ export interface PsuPtyHostEventsIngestResult {
   ingestErrors: number;
   /** First INSERT failure of the run, for triage without trawling logs. */
   firstIngestError?: string;
+  /**
+   * Every `.events.jsonl` file present, NOT just the ones this run selected.
+   *
+   * `filesScanned` is a per-run budget, so on its own it reads as a total and a routine that
+   * is structurally blind to most of its input looks healthy (`filesScanned: 500`, no error).
+   * Reporting the population beside the sample is what makes a bounded measurement legible
+   * as bounded — the same discipline the repo applies to any capped aggregate.
+   */
+  filesEligible: number;
+  /** Eligible files this run did NOT select. Persistently non-zero ⇒ the budget is too small. */
+  filesUnprocessed: number;
+  /**
+   * Files already past the GC cutoff that this run could not select. This is the directory's
+   * unbounded-growth signal: it only falls when the drain outruns new arrivals.
+   */
+  gcBacklog: number;
 }
 
 /** Stable stringify so a digest does not change with JS key insertion order. */
@@ -221,6 +237,9 @@ export async function ingestPsuPtyHostEvents(
     rowRetentionDays,
     fileRetentionDays,
     dryRun,
+    filesEligible: 0,
+    filesUnprocessed: 0,
+    gcBacklog: 0,
   };
 
   let entries: string[];
@@ -231,8 +250,52 @@ export async function ingestPsuPtyHostEvents(
     return result;
   }
 
-  const candidates = entries.filter((e) => e.endsWith('.events.jsonl')).slice(0, maxFilesPerRun);
   const fileGcCutoff = now() - fileRetentionDays * DAY_MS;
+
+  // ⚠ SELECTION IS BY MTIME, NEVER BY READDIR ORDER. This used to be
+  // `entries.filter(...).slice(0, maxFilesPerRun)` — an UNSORTED prefix of readdir, which is
+  // stable for an unchanging directory. The consequence, measured 2026-09-22: of 15,040
+  // eligible files the routine processed the SAME arbitrary 500 every run (3.3%) and could
+  // never reach the other 14,540 — including every file written that day. It reported
+  // filesScanned:500 and looked perfectly healthy while the table sat frozen at 2,028 rows
+  // for 92 minutes across multiple fires. The GC below is inside this same loop, so it was
+  // trapped in the same window: that is WHY the directory had grown to 15,040 files. One
+  // root cause, two symptoms — a stalled data plane and an unbounded population.
+  const eligible = entries.filter((e) => e.endsWith('.events.jsonl'));
+  result.filesEligible = eligible.length;
+
+  const stated: Array<{ filename: string; mtimeMs: number }> = [];
+  for (const filename of eligible) {
+    try {
+      stated.push({ filename, mtimeMs: (await stat(join(dir, filename))).mtimeMs });
+    } catch {
+      // Raced with the owning host (rotation/cleanup). Not selectable this run.
+    }
+  }
+
+  const byNewest = [...stated].sort((a, b) => b.mtimeMs - a.mtimeMs);
+  // A file may only be GC'd AFTER a successful ingest (the retained-uningested invariant
+  // below), so draining the backlog requires SELECTING those files. A newest-only window
+  // would keep telemetry fresh and still let the directory grow without bound, so the
+  // budget is split: freshest first, then the oldest GC-eligible files, then more fresh.
+  const gcDrain = stated
+    .filter((f) => f.mtimeMs < fileGcCutoff)
+    .sort((a, b) => a.mtimeMs - b.mtimeMs);
+
+  const selected = new Set<string>();
+  const take = (list: Array<{ filename: string }>, budget: number) => {
+    for (const f of list) {
+      if (selected.size >= budget) break;
+      selected.add(f.filename);
+    }
+  };
+  take(byNewest, Math.max(1, Math.ceil(maxFilesPerRun / 2)));
+  take(gcDrain, maxFilesPerRun);
+  take(byNewest, maxFilesPerRun);
+
+  const candidates = [...selected];
+  result.filesUnprocessed = Math.max(0, stated.length - candidates.length);
+  result.gcBacklog = gcDrain.filter((f) => !selected.has(f.filename)).length;
 
   for (const filename of candidates) {
     const ownerId = ownerIdFromEventLogFilename(filename);
