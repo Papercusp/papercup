@@ -110,6 +110,9 @@ function isLensTaggedFeatureCapture(tc: ToolCallEvent): boolean {
 
 export const SU_S28_IDEATE_PASS_CLOSES_LOOP: Scenario = {
   id: 'su-S28-ideate-pass-closes-loop',
+  // The world claims IDEATE is active (orient fixture above); bind its definition layer so the
+  // SUT sees the prompt a real IDEATE session sees (EI-23996297775579005).
+  targetConfig: { modes: ['ideate'] },
   version: 1,
   target: 'su',
   transport: 'in-process',

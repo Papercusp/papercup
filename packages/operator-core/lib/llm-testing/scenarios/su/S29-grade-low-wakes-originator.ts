@@ -113,6 +113,9 @@ function isLowGradeWithCritique(tc: ToolCallEvent): boolean {
 
 export const SU_S29_GRADE_LOW_WAKES_ORIGINATOR: Scenario = {
   id: 'su-S29-grade-low-wakes-originator',
+  // The world claims GRADE is active; the registry write applies the implication closure
+  // (grade implies auto), so bind both, as a live GRADE session is bound (EI-23996297775579005).
+  targetConfig: { modes: ['grade', 'auto'] },
   version: 1,
   target: 'su',
   transport: 'in-process',
