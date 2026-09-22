@@ -452,6 +452,46 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
     );
   });
 
+  // A reviewer who SHOWS their recomputation before signing used to have that
+  // evidence block handed to JSON.parse, so their valid receipt below it was
+  // never read and the refusal claimed the body contained no JSON. The more
+  // rigorous the reviewer, the more likely their approval was rejected — the
+  // exact opposite of the incentive an approval receipt exists to create.
+  // Observed live: WI-10002280 post 972067.
+  it('prefers the ```json receipt over an earlier untagged evidence fence', () => {
+    const body = [
+      '## APPROVED — all six hashes recomputed and matched',
+      '',
+      '```',
+      'R-1: MATCH  computed=3f1ec48198ea5952…',
+      'R-6: MATCH  computed=bd0d0ce59b11c8d9…',
+      'VERDICT=ALL_MATCH',
+      '```',
+      '',
+      '```json',
+      '{"kind":"acceptance-bar-amendment-approval","bars":[{"barKey":"R-1"}]}',
+      '```',
+    ].join('\n');
+
+    expect(approvalReceiptJsonSource(body)).toBe(
+      '{"kind":"acceptance-bar-amendment-approval","bars":[{"barKey":"R-1"}]}',
+    );
+    // CONTROL: the old first-wins behaviour returned the evidence block, which
+    // is what made this a silent, misattributed refusal.
+    expect(approvalReceiptJsonSource(body)).not.toContain('VERDICT=ALL_MATCH');
+  });
+
+  it('falls back to the first fence that actually parses when none is tagged json', () => {
+    const body = ['```', 'not json at all', '```', '', '```', '{"b":2}', '```'].join('\n');
+    expect(approvalReceiptJsonSource(body)).toBe('{"b":2}');
+  });
+
+  it('CONTROL: a body whose only fence is unparseable still reaches JSON.parse to report its own error', () => {
+    // Never silently swallow a malformed receipt — the caller must still see a
+    // parse failure rather than an empty string that looks like an absent body.
+    expect(approvalReceiptJsonSource('```\n{oops\n```')).toBe('{oops');
+  });
+
   it('accepts a fenced reviewer receipt', async () => {
     await expect(resolve('```json\n' + JSON.stringify(RECEIPT) + '\n```')).resolves.toMatchObject({
       approvalRef: 'thread-post:123',

@@ -193,8 +193,41 @@ export type AcceptanceBarApproval = z.infer<typeof acceptanceBarApprovalSchema>;
  * and the append-only post row, never from how the body was framed. A body with
  * no fence is returned unchanged. */
 export function approvalReceiptJsonSource(body: string): string {
-  const fenced = /```(?:json)?\s*\n([\s\S]*?)\n?```/i.exec(body);
-  return fenced ? fenced[1] : body;
+  // Scan EVERY fence, not just the first. The original first-wins form
+  // penalised exactly the reviewer behaviour this receipt exists to elicit: an
+  // approver who SHOWS their work — e.g. a plain fence of recomputed barHashes
+  // ending `VERDICT=ALL_MATCH` — had that block handed to JSON.parse, and their
+  // perfectly valid ```json receipt below it was never read. The refusal then
+  // claimed the body contained no JSON, which was false and sent the caller
+  // looking at the reviewer's formatting instead of at this function. The more
+  // rigorous the reviewer, the more likely their approval was rejected.
+  const fences = [...body.matchAll(/```([^\n`]*)\n([\s\S]*?)\n?```/g)].map((m) => ({
+    tag: (m[1] ?? '').trim().toLowerCase(),
+    content: m[2] ?? '',
+  }));
+
+  const parses = (text: string): boolean => {
+    try {
+      JSON.parse(text);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // An explicitly json-tagged fence is the author's own declaration of intent,
+  // so it outranks position.
+  const tagged = fences.find((f) => f.tag === 'json' && parses(f.content));
+  if (tagged) return tagged.content;
+
+  // Otherwise the first fence that is actually JSON — untagged fences are
+  // common and the receipt is still unambiguous among them.
+  const parsable = fences.find((f) => parses(f.content));
+  if (parsable) return parsable.content;
+
+  // Preserve the historical shape: first fence if any, else the whole body, so
+  // a malformed receipt still reaches JSON.parse and reports its own error.
+  return fences[0]?.content ?? body;
 }
 
 export async function resolveAcceptanceBarApproval(
