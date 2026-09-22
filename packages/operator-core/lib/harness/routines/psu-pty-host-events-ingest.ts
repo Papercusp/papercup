@@ -75,6 +75,16 @@ export interface PsuPtyHostEventsIngestResult {
   rowRetentionDays: number;
   fileRetentionDays: number;
   dryRun: boolean;
+  /**
+   * Files whose INSERT threw. Non-zero means rows were READ but NOT persisted — the state a
+   * bare `catch {}` used to render indistinguishable from "there was nothing to ingest"
+   * (measured 2026-09-22: 2,016 rows read, 0 inserted, no error surfaced anywhere).
+   * `rowsRead > 0 && rowsInserted === 0 && ingestErrors > 0` is the signature of a total
+   * write failure, and is what the routine's own health check should assert on.
+   */
+  ingestErrors: number;
+  /** First INSERT failure of the run, for triage without trawling logs. */
+  firstIngestError?: string;
 }
 
 /** Stable stringify so a digest does not change with JS key insertion order. */
@@ -203,6 +213,7 @@ export async function ingestPsuPtyHostEvents(
     filesIngested: 0,
     rowsRead: 0,
     rowsInserted: 0,
+    ingestErrors: 0,
     rowsMalformed: 0,
     filesDeleted: 0,
     filesRetainedUningested: 0,
@@ -267,25 +278,50 @@ export async function ingestPsuPtyHostEvents(
           // which is also why it does not typecheck here (TS2769: a Record<string, unknown>
           // is not a bindable parameter). UNNEST of one array per column keeps it to a single
           // statement per chunk AND makes every column's type explicit at the boundary.
+          //
+          // ⚠ `ts` IS BOUND AS text[] AND CAST PER-COLUMN, NOT AS ::timestamptz[]. Binding a
+          // string[] to ::timestamptz[] THROWS on this client — `TypeError
+          // ERR_INVALID_ARG_TYPE: The "string" argument must be of type string or an instance
+          // of Buffer or ArrayBuffer. Received an instance of Array` — and it is the ONLY
+          // column that does: text[] and jsonb[] both bind fine, and Date[] fails too
+          // (42846 `cannot cast type timestamp with time zone to timestamp with time zone[]`).
+          // Measured 2026-09-22 by bisecting each column type; the comment above had
+          // anticipated a jsonb footgun that does not actually fire here, while this one did,
+          // silently, on EVERY row (2,016 read / 0 inserted, table empty for a full day).
           const inserted = await sql`
             INSERT INTO harness_shared.psu_pty_host_events
                         (workspace_id, owner_id, ts, kind, payload, row_digest)
-                 SELECT * FROM unnest(
+                 SELECT w, o, t::timestamptz, k, p, d
+                   FROM unnest(
                           ${chunk.map((r) => r.workspace_id)}::text[],
                           ${chunk.map((r) => r.owner_id)}::text[],
-                          ${chunk.map((r) => r.ts)}::timestamptz[],
+                          ${chunk.map((r) => r.ts)}::text[],
                           ${chunk.map((r) => r.kind)}::text[],
                           ${chunk.map((r) => JSON.stringify(r.payload))}::jsonb[],
                           ${chunk.map((r) => r.row_digest)}::text[]
-                        )
+                        ) AS u(w, o, t, k, p, d)
             ON CONFLICT (row_digest) DO NOTHING
           `;
           result.rowsInserted += inserted.count ?? 0;
         }
         ingested = true;
-      } catch {
+      } catch (err) {
         // Leave the file alone. An un-ingested file MUST NOT be GC'd below.
         ingested = false;
+        // ⚠ NEVER SWALLOW THIS. A bare `catch {}` here is what let a 100%-failing INSERT look
+        // exactly like "there was nothing to ingest": the routine reported rowsInserted:0 with
+        // no error anywhere, the table stayed empty, and P-007 read as shipped for a full day.
+        // The retained-file counter below records that the population is knowingly unbounded,
+        // but only this message says WHY, which is the difference between a visible failure
+        // and an invisible one.
+        result.ingestErrors++;
+        if (!result.firstIngestError) {
+          result.firstIngestError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+        }
+        console.error(
+          `[psu-pty-host-events-ingest] INSERT failed for ${ownerId} (${rows.length} row(s) left on disk): ` +
+            `${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`,
+        );
       }
     }
     if (ingested) result.filesIngested++;
