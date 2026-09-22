@@ -604,13 +604,17 @@ export function ownerReportObligation(input: OwnerReportProviderInput): AgentObl
  * hand-maintain). Adding a code here is a deliberate ownership decision, which is
  * exactly the moment it should be made.
  *
- * - `grader`    — waiting on an INDEPENDENT GRADER. Yields `status:'due'` plus a
- *                 `delegate` action, i.e. it may recruit/wake a peer.
+ * - `grader`    — waiting on an INDEPENDENT GRADER. `status:'due'` plus a `delegate`
+ *                 action: the ONLY class that may recruit/wake a peer.
  * - `author`    — waiting on the plan's OWN author. Upstream (`causalRank: 0`), so
- *                 it outranks any downstream symptom. NEVER recruits a peer.
+ *                 it outranks any downstream symptom. ALSO `status:'due'` (D-009
+ *                 ruling 3) — the author can start it this second, and rendering it
+ *                 `[BLOCKED]` told the one agent who could act that it could not.
+ *                 Its action is `repair`, so it still NEVER recruits a peer.
  * - `unmeasured`— the gate could not MEASURE the plan (a read/lineage failure). Not
  *                 a repair anyone owns; it needs a retry or a fixed instrument, and
- *                 must not be dressed up as either party's work.
+ *                 must not be dressed up as either party's work — so it stays
+ *                 `blocked` and takes an `inspect` action, never `repair`.
  * - `not-here`  — deliberately handled EARLIER in this provider and never reaching
  *                 classification (see `gradeable` for `plan_items_unfinished`).
  *
@@ -621,10 +625,15 @@ export function ownerReportObligation(input: OwnerReportProviderInput): AgentObl
  * ("These repairs are the plan author's alone — do not recruit or wake a peer for
  * them."). Widening it here would make that rendered sentence a lie.
  */
-const GATE_CODE_OWNERSHIP: Record<
-  PlanAcceptanceGateCode,
-  'grader' | 'author' | 'unmeasured' | 'not-here'
-> = {
+export type PlanAcceptanceGateCodeOwnership = 'grader' | 'author' | 'unmeasured' | 'not-here';
+
+/**
+ * Exported so the guard test can DERIVE the full code population from this Record's
+ * own keys (`Object.keys`) instead of hand-listing the union a second time — a
+ * hand-listed copy is exactly the drift this Record was introduced to kill, and a
+ * test carrying one would silently stop covering the next code anyone adds.
+ */
+export const GATE_CODE_OWNERSHIP: Record<PlanAcceptanceGateCode, PlanAcceptanceGateCodeOwnership> = {
   // --- waiting on an independent grader -------------------------------------
   acceptance_ungraded: 'grader',
   self_graded_only: 'grader',
@@ -794,18 +803,31 @@ export function independentVerificationObligation(input: IndependentVerification
     causalRank: authorRepair ? 0 : 2,
     applicableDemand: 1,
     evidence: [evidence(evidenceRef, input.observedAt, input.sourceGeneration, code ?? 'gate-refused')],
-    action: graderGap
+    // ⛔ `isDelegable` — NOT `isActionable` — gates this branch. It is the single
+    // line that decides whether a refusal may recruit a stranger, and the whole
+    // point of the split is that making author work visible never widens it.
+    action: isDelegable
       ? {
           kind: 'delegate',
           summary: `route ${input.planSlug} to a lineage-independent acceptance grader`,
           targetRef: input.planSlug,
         }
-      : {
-          kind: 'repair',
-          summary: `repair ${code ?? 'the unreadable acceptance prerequisite'} before requesting a grader`,
-          targetRef: input.planSlug,
-          continuesCurrentWork: code === 'plan_items_unfinished',
-        },
+      : ownership === 'author' || ownership === 'not-here'
+        ? {
+            kind: 'repair',
+            summary: `repair ${code ?? 'the unreadable acceptance prerequisite'} before requesting a grader`,
+            targetRef: input.planSlug,
+            continuesCurrentWork: code === 'plan_items_unfinished',
+          }
+        : {
+            // `unmeasured` (or a code the gate did not report): the gate never
+            // READ the plan, so there is no repair to name and nobody to route to.
+            kind: 'inspect',
+            summary: `re-read the acceptance gate for ${input.planSlug}: ${
+              code ?? 'the refusal'
+            } is a failed measurement, not a repair either party owns`,
+            targetRef: 'evaluatePlanAcceptanceGate',
+          },
     ...(reviewAgeMs == null ? {} : { ageMs: reviewAgeMs }),
   });
 }
