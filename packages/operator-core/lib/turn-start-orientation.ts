@@ -3258,7 +3258,7 @@ export function defaultOrientationDeps(): OrientationDeps {
           SELECT DISTINCT source_plan_slug, harness_slug
             FROM harness_shared.work_items
            WHERE workspace_id = ${ws}
-             AND assignee = ${ownerId}
+             AND taken_by = ${ownerId}
              AND source_plan_slug IS NOT NULL
              AND lane IS DISTINCT FROM 'observation'
              AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
