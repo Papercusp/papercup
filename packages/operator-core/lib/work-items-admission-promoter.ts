@@ -38,7 +38,7 @@ import {
   withWorkItemDependencyAdmissionTransaction,
   type StoredWorkItemDependencyRow,
 } from './dbos/work-item-deps-store';
-import { isHarnessInScope, recordWorkScopeDecision, workScopeSqlTerms } from './work-scope-policy';
+import { isHarnessInScope, primeWorkScopePolicy, recordWorkScopeDecision, workScopeSqlTerms } from './work-scope-policy';
 import type { OrgSql } from './work-items';
 import { effectiveStoredProseProfileIdSql } from './search/prose-vector-dims';
 
@@ -4583,6 +4583,10 @@ export async function runWorkItemAdmissionPromoter(opts: {
   // PROMOTED — its pending rows stay `pending` (visibly not admitted, never deleted) until
   // the policy widens. Recorded on the policy ledger once per harness per process so a
   // 25-harness tick does not flood the ring; with no policy this is one cached read.
+  // PRIME FIRST (WI-10002448): the policy cache is filled by an async refresh and an empty
+  // cache reads as "not enforced", so the first tick after a boot would PROMOTE rows in a
+  // harness the stored policy holds. Memoised — one awaited read per process.
+  await primeWorkScopePolicy();
   if (!isHarnessInScope(opts.harnessSlug)) {
     if (!scopeHeldHarnessesNoted.has(opts.harnessSlug)) {
       scopeHeldHarnessesNoted.add(opts.harnessSlug);

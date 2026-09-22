@@ -73,7 +73,7 @@ import {
 import { applyPlanDrainTransition, type PlanDrainTransitionSkip } from './plan-drain-transition';
 import { listPlanIndexRowsForWorkspace, planItemsForRow, type PlanIndexRow } from './source';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { isHarnessInScope } from '../../work-scope-policy';
+import { isHarnessInScope, primeWorkScopePolicy } from '../../work-scope-policy';
 
 /**
  * The only stored statuses `derivePlanStatusTransition` can move a plan OFF.
@@ -160,6 +160,11 @@ export async function sweepDrainedPlanStatuses(
   };
 
   const candidates: PlanIndexRow[] = [];
+  // PRIME BEFORE FILTERING (WI-10002448) — never drop this await. The scope filter below
+  // reads a cache an async refresh fills; empty reads as "not enforced", so the first sweep
+  // after a boot would transition plans the STORED policy puts out of scope. With no stored
+  // policy it still never skips.
+  await primeWorkScopePolicy();
   for (const status of PLAN_DRAIN_SWEEP_SOURCE_STATUSES) {
     // `includeInstances` deliberately left at its default false — see the header.
     const rows = await listPlanIndexRowsForWorkspace({

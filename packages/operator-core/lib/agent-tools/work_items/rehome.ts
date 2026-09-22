@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { classifyForRehome, isHarnessInScope, recordWorkScopeDecision } from '../../work-scope-policy';
+import { classifyForRehome, isHarnessInScope, primeWorkScopePolicy, recordWorkScopeDecision } from '../../work-scope-policy';
 
 /**
  * Every `harness_shared` relation carrying (workspace_id, harness_slug, feature_id)
@@ -195,6 +195,12 @@ export default defineTool({
     }
     const row = rows[0]!;
     const payload = row.payload ?? {};
+    // PRIME BEFORE CLASSIFYING (WI-10002448) — never drop this await. BOTH readers below
+    // (`classifyForRehome`'s default scope and `isHarnessInScope`) sync-read a cache an async
+    // refresh fills, and an empty cache reads as "not enforced". This is the exact case
+    // primeWorkScopePolicy's docstring measured (2026-09-05): the first classify after a
+    // :3170 restart answered in-scope for a `calendar` item the stored policy excluded.
+    await primeWorkScopePolicy();
     const verdict = classifyForRehome({
       harness: row.harness_slug,
       title: row.title,

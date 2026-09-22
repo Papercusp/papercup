@@ -58,6 +58,7 @@ import { FLAGS } from '@papercusp/flags';
 import { evaluatePlanAcceptanceGate } from '../../plan-acceptance-gate';
 import { setWorkItemState } from '../../work-items';
 import {
+  ACCEPTANCE_DRAIN_ACTOR,
   ensureAcceptanceDrainFiling,
   ACCEPTANCE_DRAIN_NON_TERMINAL_STATUSES,
   acceptanceDrainObservationSignals,
@@ -65,7 +66,7 @@ import {
 } from './acceptance-drain-filing';
 import { listPlanIndexRowsForWorkspace, type PlanIndexRow } from './source';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { isHarnessInScope } from '../../work-scope-policy';
+import { isHarnessInScope, primeWorkScopePolicy } from '../../work-scope-policy';
 
 /** Upper bound on work items filed in a single run. See the rails note above. */
 export const ACCEPTANCE_DRAIN_MAX_FILINGS_PER_RUN = 25;
@@ -273,6 +274,12 @@ export async function runAcceptanceDrainSweepOnce(
   let deferred = 0;
   let scopeSkipped = 0;
 
+  // PRIME BEFORE FILTERING (WI-10002448) — never drop this await. `isHarnessInScope`'s
+  // default policy is a SYNC read of a cache an async refresh fills, and an empty cache
+  // reads as "not enforced", so the first sweep after a boot would file acceptance-drain
+  // work into harnesses the STORED policy forbids. Priming makes that tick judge the stored
+  // policy; with no stored policy it still never skips (the P-007 contract below holds).
+  await primeWorkScopePolicy();
   for (const row of candidates) {
     // workspace-work-scope-policy-2026-09-04 P-007: a plan homed outside the workspace
     // work-scope policy gets no acceptance-drain filing — filing it would place work in an
@@ -363,7 +370,7 @@ export async function runAcceptanceDrainSweepOnce(
     try {
       await setWorkItemState(filing.featureId, state, {
         harness: filing.harnessSlug,
-        by: 'system:acceptance-drain',
+        by: ACCEPTANCE_DRAIN_ACTOR,
         completionRef: `Acceptance filing ${state === 'resolved' ? 'resolved' : 'dropped'}: plan ${ref} observed ${filing.planStatus ?? 'missing'}${filing.archived ? ' and archived' : ''}.`,
       });
       reconciled++;

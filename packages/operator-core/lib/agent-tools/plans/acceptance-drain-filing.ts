@@ -57,6 +57,15 @@ import {
 } from '../../coord/condition-upsert';
 
 /**
+ * Author of every acceptance-drain filing. The acceptance grader's in-flight
+ * guard keys on it: a drain filing is the implementer's carry item and quotes
+ * the gate's `scorecards:emit` remedy, so without this identity it reads as a
+ * grading request and suppresses the very recruitment it exists to trigger
+ * (WI-10002453).
+ */
+export const ACCEPTANCE_DRAIN_ACTOR = 'system:acceptance-drain';
+
+/**
  * Work-item statuses that mean an existing filing is still outstanding.
  *
  * Kept identical to `SPEC_TRIAD_NON_TERMINAL_STATUSES` rather than imported from
@@ -284,7 +293,7 @@ export async function ensureAcceptanceDrainCarryInTransaction(
       kind: 'task',
       harness: input.harnessSlug,
       workspaceId: input.workspaceId,
-      createdBy: 'system:acceptance-drain',
+      createdBy: ACCEPTANCE_DRAIN_ACTOR,
       assignee: input.accountableOwnerId ?? undefined,
       title: `Carry plan '${input.planSlug}' through acceptance/shipment`,
       summary: acceptanceDrainCarryBody(input.planSlug),
@@ -384,7 +393,7 @@ export async function ensureAcceptanceDrainFiling(
         kind: 'task',
         harness: input.harnessSlug,
         workspaceId: input.workspaceId,
-        createdBy: 'system:acceptance-drain',
+        createdBy: ACCEPTANCE_DRAIN_ACTOR,
         title: observationTitle(input.planSlug, acceptanceDrainObservationSignals(observation, null, observedAt, input.planSlug)),
         summary: observationSummary(input.planSlug, input.code, input.message, acceptanceDrainObservationSignals(observation, null, observedAt, input.planSlug)),
         payload: {

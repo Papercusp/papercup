@@ -282,6 +282,17 @@ const ALLOWLIST: Record<string, Classification> = {
     // dispositioned, so they must follow a re-bound live session. Closed rows
     // remain historical attribution and rebindIdentity deliberately leaves them.
   },
+  // Migration 1195 (directive-visibility-and-ownership-2026-09-22, P-008 / D-008).
+  // The PER-SESSION agenda row that replaces the global capture_status column: it
+  // says whether THIS owner still has the directive on its own banner, so a
+  // stranded row re-renders a directive the session already cleared (or, worse,
+  // silently keeps one cleared for an id nobody is running). It is this session's
+  // own live control state, so it must follow a re-bound session exactly as the
+  // owner_directives rows above do.
+  'owner_directive_agenda.owner_id': {
+    status: 'covered',
+    surface: 'directive-agenda',
+  },
   'tui_view_state.owner_id': {
     status: 'exempt',
     reason: 'per-agent UI preference (panel layout etc.) — a rebind losing it means the new sid sees default UI state, not a lost claim or a wrongly-freed resource.',
