@@ -1,18 +1,37 @@
 /**
  * Recurrence guard for WI-10002186, extended for P-007.
  *
- * The hybrid capture contract must survive the actual SU prompt assembler, not
- * merely exist in an un-rendered source file. This pins the live blueprint
- * `su.md` path and asks renderSuPlaybook for the same deterministic composition
- * used by a new interactive session.
+ * Clause AUTO-BAR-R-10-P-007@2 requires that "the prompt text delivered to a
+ * freshly launched session states that the agent must promote or dismiss each
+ * captured directive, for both the engineer and the power su role", and names
+ * its own falsifier: "the instruction is present only in a generated or legacy
+ * copy that no live session is launched from."
  *
- * P-007 (clause AUTO-BAR-R-10-P-007@2) requires the instruction to reach BOTH
- * the engineer and the power su role. `playbookCandidates` falls back to the
- * engineer overlay when a profile-specific one is missing, so asserting the
- * directive text alone would pass vacuously for `power` even if that profile
- * stopped rendering its own playbook. Each case therefore also pins the
- * profile's OWN overlay header — that is what makes this two real cases rather
- * than the same case run twice.
+ * So the subject here is deliberately the LIVE launch composition: this renders
+ * through `renderSuPlaybook`, the same function `role-launch-spec.ts` calls to
+ * build a real psu launch, over the same base a real launch supplies.
+ *
+ * MEASURED LAUNCH FACTS — recorded because two plausible-sounding anti-vacuity
+ * controls are structurally IMPOSSIBLE here, and both were tried (and wrongly
+ * suspected of being a product bug) before this note existed:
+ *
+ *  - `baseSource` cannot discriminate the profiles. `SU_BLUEPRINT_PERSONA` is
+ *    DEFAULT-ON, so a live launch resolves the base through the blueprint
+ *    prompt-resolve chain (`blueprints/base/prompts/su.md`) and passes it
+ *    EXPLICITLY, for both profiles alike; `playbookCandidates(profile)` — which
+ *    is what would pick `papercusp-su-<profile>.tools.md` — is bypassed on that
+ *    path. (It also does not fall back to engineer for `power`: only `generic`
+ *    has a fallback candidate, every other profile is single-candidate and
+ *    throws on a miss.)
+ *  - `overlaySource` cannot discriminate them either: it is the per-AGENT
+ *    overlay (`papercusp-su.<agent>.md`), profile-invariant by construction.
+ *
+ * The one thing `profile` actually changes in this render is
+ * `injectSharedBaseNotes({ repoSpecific: profile === 'engineer' })`, which adds
+ * the repo-specific deploy-pipeline note for engineer only. That is therefore
+ * the real anti-vacuity control, and it is asserted in BOTH directions —
+ * present for engineer, ABSENT for power. Without it `power` could silently
+ * render as a duplicate engineer case and this file would still be green.
  */
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
@@ -40,17 +59,10 @@ const BLUEPRINT_SU = process.env.PAPERCUSP_SU_BASE_SOURCE ?? DEFAULT_BLUEPRINT_S
 const OPERATOR_PROMPTS = join(REPO_ROOT, 'apps', 'operator', 'prompts');
 
 /**
- * The anti-vacuity control is the RESOLVED OVERLAY PATH, not overlay prose:
- * `renderSuPlaybook().text` carries the base playbook, so no overlay heading
- * appears in it and content matching cannot discriminate the profiles.
- * `overlaySource` can, and it is precisely the thing that goes wrong —
- * `playbookCandidates()` falls back to the engineer overlay, so a power
- * regression would otherwise pass as a duplicate engineer case.
+ * The measured profile discriminator (see the header): the repo-specific note
+ * `renderDeployPipelineNote()` emits, injected only when `repoSpecific` is true.
  */
-const PROFILE_OVERLAY_FILE: Record<'engineer' | 'power', string> = {
-  engineer: 'papercusp-su-engineer.tools.md',
-  power: 'papercusp-su-power.tools.md',
-};
+const ENGINEER_ONLY_NOTE = '## The deploy pipeline is ASYNC';
 
 const SU_PROFILES = ['engineer', 'power'] as const;
 
@@ -69,14 +81,11 @@ describe('rendered SU persona — hybrid owner-directive capture (WI-10002186, P
 
       expect(rendered.baseSource).toBe(BLUEPRINT_SU);
 
-      // Anti-vacuity (partial): the render resolved SOME overlay for this
-      // profile. TODO(P-007): tighten to the profile's own overlay file —
-      // `overlaySource` did not contain PROFILE_OVERLAY_FILE[profile] when
-      // measured, so the exact value must be inspected before asserting it.
-      // Until then `power` is NOT proven distinct from the engineer fallback.
-      expect(typeof rendered.overlaySource).toBe('string');
-      expect(PROFILE_OVERLAY_FILE[profile]).toBeTruthy();
+      // ANTI-VACUITY, both directions: proves `profile` is load-bearing in THIS
+      // render, so the power case is not the engineer case run twice.
+      expect(rendered.text.includes(ENGINEER_ONLY_NOTE)).toBe(profile === 'engineer');
 
+      // The clause itself: the promote/dismiss instruction reaches BOTH roles.
       expect(rendered.text).toContain('## Owner directives — durable capture and resolution');
       expect(rendered.text).toContain(
         'UserPromptSubmit hook records the owner turn verbatim as a PENDING row',
