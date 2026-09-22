@@ -199,6 +199,7 @@ interface ClassProbe {
  * `loopArmed` probe flips it OFF, which is the direction that renders a warning.
  */
 const BASELINE: OrientationState = {
+  planDecisions: undefined,
   held: [],
   unansweredDirected: 0,
   unansweredStale: 0,
@@ -286,6 +287,28 @@ const CLASS_PROBES: Record<string, ClassProbe> = {
       },
     },
     marker: /authority: exec act-with-disclosure/,
+  },
+  planDecisions: {
+    // Against a null committed cursor NOTHING has been seen yet, so every
+    // decision is fresh and renders — the same diff shape as `authorityVerdict`
+    // above. The seen/fresh transition and the two incompleteness disclosures
+    // are pinned separately; this probe only has to prove the class reaches the
+    // rendered prompt at all.
+    patch: {
+      planDecisions: {
+        decisions: [
+          {
+            ref: 'demo-plan#D-001',
+            planSlug: 'demo-plan',
+            id: 'D-001',
+            title: 'The ruling a claimed lane must read before acting',
+          },
+        ],
+        omitted: 0,
+        authorityReadFailed: false,
+      },
+    },
+    marker: /plan demo-plan D-001:/,
   },
   modes: {
     // Against a null committed cursor every row is NEW, so this renders. The
@@ -1126,6 +1149,14 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'rail already renders the modes it derives from, with attribution this line does not carry, so ' +
           'importing the verdict would add a poorer second copy of its own input (same argument as `modes`).',
       ),
+      planDecisions: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'New governing decisions on plans the reader holds claimed items on.',
+        'A plan Decision is a CONSTRAINT on how claimed work may be done, not an instruction placed on this ' +
+          'agent: there is nothing to promote, dismiss, or drive to a terminal state, so it carries no ' +
+          'disposition for this rail to track. The popup lists obligations the reader must CLOSE OUT, and a ' +
+          'standing ruling never closes — it would sit there permanently unactioned, training the reader to ' +
+          'ignore the list. The turn-start class delivers it as a diff instead, which is the right shape.',
+      ),
       loopArmed: AGENT_ORDERS_NOT_AN_OBLIGATION(
         'Whether the reader has a wake source armed.',
         'The popup reads loop state live from the carry brief (`carry.loopActive`, `loopIntervalSec`), ' +
@@ -1268,6 +1299,16 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'which their own turn-start block already delivers. The fleet-scoped question a leader acts on is ' +
           "whether a MEMBER's authority differs from what the leader believes they granted — per-member data " +
           'that belongs on the member rows, not on this reader-scoped class.',
+      },
+      planDecisions: {
+        kind: 'not-applicable',
+        reason:
+          'DIFFERENT SUBJECT, by the same reader-scoped argument as `authorityVerdict` directly above. This ' +
+          'class resolves from the plans on which the READER holds claimed items, so on a leader brief it ' +
+          "would report the LEADER's own claimed-plan decisions — which their own turn-start block already " +
+          'delivers. The fleet-scoped question a leader acts on is whether a MEMBER has yet been SHOWN a ' +
+          'governing ruling, which is per-member cursor data belonging on the member rows, not on this ' +
+          'reader-scoped class.',
       },
       loopArmed: {
         kind: 'not-applicable',
@@ -1461,6 +1502,18 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'reason `modes` records directly above: the line diffs against the committed cursor of the turn it ' +
           'renders on, and a carry document is assembled for a session that has taken no turn, so there is no ' +
           'prior cursor to diff against. Same shape as `carryBlindWindow` under D-069 and `modes` under D-071.',
+      },
+      planDecisions: {
+        kind: 'other-shared-mechanism',
+        mechanism: "the carry document's plan-authority block (`latest governing decisions`)",
+        reason:
+          'MEASURED, not inferred: carry-doc.ts already emits `- latest governing decisions (+N older):` and ' +
+          'then each decision with its id, title and a `plans:get { slug, decisionId }` recovery call — ' +
+          'strictly richer than this one-line class, so registering it here would add a second, poorer copy. ' +
+          '⚠ And the TRANSITION half is temporally unavailable for exactly the reason `modes` and ' +
+          '`authorityVerdict` record above: this class diffs FRESH-vs-SEEN against the committed cursor of ' +
+          'the turn it renders on, and a carry document is assembled for a session that has taken no turn, so ' +
+          'there is no prior cursor to diff against.',
       },
       inboxRecent: {
         kind: 'not-applicable',

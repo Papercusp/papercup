@@ -52,6 +52,7 @@ function stateWith(
   extra: Partial<OrientationState> = {},
 ): OrientationState {
   return {
+    planDecisions: undefined,
     held: [],
     unansweredDirected: 0,
     unansweredStale: 0,

@@ -153,6 +153,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     // Unrelated orientation sources are stable; the agenda, projection, final
     // composer and PostgreSQL cursor are the production path under test.
     const deps: OrientationDeps = {
+      planDecisions: async () => undefined,
       held: async () => [],
       historyUpdates: async () => [],
       effortUpdates: async () => [],

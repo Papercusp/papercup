@@ -37,6 +37,7 @@ import { defaultOrientationDeps, type OrientationDeps } from './turn-start-orien
  * so excluding them would reopen the hole this file closes.
  */
 const EVERY_ORIENTATION_DEP: Record<keyof OrientationDeps, true> = {
+  planDecisions: true,
   held: true,
   ownerDirectives: true,
   historyUpdates: true,

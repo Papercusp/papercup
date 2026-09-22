@@ -36,6 +36,7 @@ const EPOCH = 7;
 
 /** A live-shaped session that is otherwise completely quiet and UNCHANGING. */
 const BASE: OrientationState = {
+  planDecisions: undefined,
   held: [{ id: 'WI-10002197', status: 'wip', checkpoint: 'class-b re-inject in progress' }],
   unansweredDirected: 0,
   unansweredStale: 0,

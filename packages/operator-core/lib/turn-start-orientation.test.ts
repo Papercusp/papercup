@@ -30,6 +30,7 @@ import { selectUntriaged } from './harness/improvements/triage-core';
 import type { ScoredItem } from './harness/improvements/digest';
 
 const base: OrientationState = {
+  planDecisions: undefined,
   held: [],
   historyUpdates: [],
   effortUpdates: [],
@@ -49,6 +50,7 @@ const base: OrientationState = {
   carryBlindWindow: null,
 };
 const withWork: OrientationState = {
+  planDecisions: undefined,
   held: [
     {
       id: 'WI-1',
