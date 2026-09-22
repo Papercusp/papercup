@@ -9633,6 +9633,64 @@ export async function promoteToPipeline(
   return { workItem: issueToWorkItem(res.issue), feature: res.feature };
 }
 
+/** Outcome of binding an existing work-item to an owner directive. */
+export type BindDirectiveRefResult =
+  | { ok: true; changed: boolean }
+  | { ok: false; error: 'not_found' }
+  | { ok: false; error: 'directive_ref_conflict'; existing: number };
+
+/**
+ * Bind an EXISTING work-item to the owner directive it is carrying out
+ * (directive-visibility-and-ownership-2026-09-22, P-005).
+ *
+ * `work_items:create { directiveRef }` covers the case where the work-item is
+ * minted for the directive. This covers the other half the plan names: an item
+ * that already exists and is being CLAIMED to carry a directive out. Both write
+ * the same column; neither ever writes the directive row (D-005).
+ *
+ * WRITE-ONCE, NEVER OVERWRITE. The guarded `IS NULL` makes the first bind win
+ * and a re-bind to the SAME id a no-op success (`changed:false`), while a bind
+ * to a DIFFERENT id is refused rather than silently rewriting provenance. That
+ * asymmetry is the point: provenance whose value can change under a later
+ * caller is not provenance, and a conflicting bind is a real signal — two
+ * directives both believing they own one item — that a silent overwrite would
+ * destroy.
+ */
+export async function bindWorkItemDirectiveRef(
+  workspaceId: string,
+  workItemId: string,
+  directiveRef: number,
+): Promise<BindDirectiveRefResult> {
+  const { sql } = getOrgPg();
+  const rows = (await sql`
+    UPDATE harness_shared.work_items
+       SET directive_ref = ${directiveRef}
+     WHERE workspace_id = ${workspaceId}
+       AND feature_id = ${workItemId}
+       AND directive_ref IS NULL
+ RETURNING feature_id
+  `) as unknown as Array<{ feature_id: string }>;
+  if (rows.length > 0) return { ok: true, changed: true };
+  // Nothing updated: either the row does not exist, or it already carries a ref.
+  // Those are different answers and the caller acts differently on each, so read
+  // the row rather than collapsing both into one failure.
+  const existing = (await sql`
+    SELECT directive_ref
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId}
+       AND feature_id = ${workItemId}
+     LIMIT 1
+  `) as unknown as Array<{ directive_ref: string | number | null }>;
+  if (existing.length === 0) return { ok: false, error: 'not_found' };
+  // postgres.js returns bigint as a STRING — compare as numbers, or an
+  // idempotent re-bind reads as a conflict.
+  const held = existing[0].directive_ref == null ? null : Number(existing[0].directive_ref);
+  if (held === directiveRef) return { ok: true, changed: false };
+  // `held === null` here means the row lost a race between the two statements;
+  // report it as a conflict rather than inventing a value we did not observe.
+  return { ok: false, error: 'directive_ref_conflict', existing: held ?? directiveRef };
+}
+
 /** One work-item carrying `directive_ref`, projected to exactly what the
  *  directive-status derivation consumes. */
 export interface DirectiveLinkedWorkItemRow {
