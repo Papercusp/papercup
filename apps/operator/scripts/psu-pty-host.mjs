@@ -6179,6 +6179,37 @@ export function hostThroughPty(o) {
         reason: 'quota-blocked',
         terminated: false,
       });
+    } else if (!result.aborted && !result.exhausted) {
+      // P-007 — THE SUCCESS ROW, and the reason it did not exist before.
+      //
+      // Every other appendHostEvent kind in this host (51 distinct spellings,
+      // enumerated from source 2026-09-22) is a failure, drop, expiry, refusal,
+      // retry or lifecycle marker. The failure side of wake delivery was
+      // therefore fully instrumented while the DENOMINATOR was absent, so a
+      // delivery success rate was not computable at all — and with no rate, no
+      // fix to this path (P-003's verifier included) could be shown to work
+      // rather than merely asserted. That is the gap this row closes.
+      //
+      // The predicate is the verifier's OWN settled verdict, not a
+      // re-derivation of it: `aborted === null && exhausted === false` is
+      // reachable only by falling out of the poll window with output still
+      // flowing (`quietFor < quietMs` -> continue), or after a resubmit that
+      // demonstrably woke the turn. notifyExhausted() early-returns while
+      // `resubmits < maxResubmits`, so an ordinary quiet gap cannot set
+      // `exhausted`.
+      //
+      // Counting anything looser would invert the metric. In particular a bare
+      // `!result.aborted` folds the EXHAUSTED case — max resubmits with no
+      // output, i.e. the wake provably not delivered — into the numerator, so
+      // the reported delivery rate would climb as delivery actually failed.
+      // `aborted === 'human-input'` is excluded for the opposite reason: the
+      // owner typing mid-verify makes delivery genuinely undecidable here, and
+      // an undecidable case must not be counted as a success.
+      appendHostEvent(ownerId, 'turn-delivered', {
+        label,
+        polls: result.polls,
+        resubmits: result.resubmits,
+      });
     }
     return result;
   };
