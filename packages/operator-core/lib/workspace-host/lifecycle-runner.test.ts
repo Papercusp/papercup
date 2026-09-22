@@ -116,6 +116,7 @@ function storeHarness() {
     appendEvent: vi.fn(async () => 'event-1'),
     recordObservation: vi.fn(async () => {}),
     recordRecoveryPoint: vi.fn(async () => {}),
+    recordImage: vi.fn(async () => {}),
   };
   return { store, checkpoints: () => checkpoints };
 }
@@ -366,6 +367,17 @@ describe('runWorkspaceHostLifecycle', () => {
     expect(store.appendEvent).toHaveBeenLastCalledWith(
       expect.objectContaining({ phase: 'complete', message: expect.stringContaining('CANNOT SERVE') }),
     );
+    // WI-10002494: the host row and desired spec must follow the host onto the new image, or the
+    // next recreate built from that spec silently undoes the upgrade.
+    expect(store.recordImage).toHaveBeenCalledTimes(1);
+    // ...and through the controller fence, like every other write the operation makes.
+    expect(store.recordImage).toHaveBeenCalledWith({
+      workspaceId: 'workspace-1',
+      hostId: 'host-1',
+      image: { id: 'projects/images/global/images/papercusp-v2' },
+      operationId: 'op-1',
+      controllerAuthority: expect.objectContaining({ fence: expect.any(Number) }),
+    });
   });
 
   it('reports repair as provider-succeeded but not servable, in the result AND the ledger', async () => {
@@ -402,6 +414,8 @@ describe('runWorkspaceHostLifecycle', () => {
     expect(store.appendEvent).toHaveBeenLastCalledWith(
       expect.objectContaining({ phase: 'complete', message: expect.stringContaining('CANNOT SERVE') }),
     );
+    // Repair resets the existing instance on its current image; it must not rewrite the image.
+    expect(store.recordImage).not.toHaveBeenCalled();
   });
 
   it('leaves an initialization-preserving action reporting a plain completion', async () => {
@@ -424,6 +438,7 @@ describe('runWorkspaceHostLifecycle', () => {
     expect(store.updateOperation).toHaveBeenLastCalledWith(
       expect.objectContaining({ message: 'Workspace-host start completed' }),
     );
+    expect(store.recordImage).not.toHaveBeenCalled();
   });
 
   it('fails closed when restore does not name a distinct desired host', async () => {
