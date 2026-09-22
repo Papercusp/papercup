@@ -43,10 +43,11 @@
 # Per-owner CURSOR (generation + the last complete glance snapshot) persists in
 # $PAPERCUSP_LOCKS_CACHE_DIR/activity-hook-bundle-<owner>.json — the same
 # cache dir + per-owner-file convention the old coord-inbox hook used for its
-# `coord-cursor-<owner>.json`. The glance observation time drives a bounded 15s
-# force-resync on an active tool stream, and the objective-title hook reads this
-# same cache instead of making a second coord:glance RPC. The server owns the
-# inbox floor; a first call still cannot seed itself past unread mail.
+# `coord-cursor-<owner>.json`. The glance observation time drives a bounded
+# refresh of the GLANCE leg on an active tool stream, and the objective-title
+# hook reads this same cache instead of making a second coord:glance RPC. The
+# server owns the inbox floor; a first call still cannot seed itself past unread
+# mail.
 #
 # Scope guard: runs ONLY in a psu session (PAPERCUSP_SID set + su-token present),
 # exactly like the deleted coord-inbox hook. A plain `claude`/`codex` elsewhere has no
@@ -102,7 +103,13 @@ coord_fold = coord_fold_flag != '0'
 HTTP_TIMEOUT = 4
 STR_CAP = 500
 ACTIVITY_HOOK_BUNDLE_SCHEMA = 'activity-hook-bundle-v1'
-GLANCE_MAX_AGE_SEC = 15
+# The GLANCE display cache TTL — and, since the legs were split, a budget that
+# is paid by the glance leg ALONE. It used to set `force_resync`, so this one
+# constant governed how often every agent re-hydrated its INBOX too: measured
+# over 3h, that made force-resync 61% of all folds (1,946 of 3,170) while only
+# 12.7% of folds delivered this owner any mail. Now it refreshes fleet-health
+# display and nothing else, so it is free to be coarse (WI-10002436, B).
+GLANCE_MAX_AGE_SEC = 60
 
 try:
     ev = json.loads(raw)
@@ -299,13 +306,21 @@ if coord_fold:
         'generation': generation,
     }
     # A null generation already forces a full baseline. Once a generation exists,
-    # a missing/corrupt/stale glance explicitly forces the same complete bundle so
-    # title/fleet display age stays bounded on an otherwise owner-irrelevant stream.
+    # a missing/corrupt/stale glance asks for the GLANCE leg only, so title/fleet
+    # display age stays bounded on an otherwise owner-irrelevant stream WITHOUT
+    # dragging the delivery leg through a hydration it did not need.
+    #
+    # Every condition here is a statement about the DISPLAY CACHE — absent,
+    # unparseable, clock-skewed, or simply old. None of them is evidence that
+    # this owner has unread mail, which is why none of them may claim
+    # `force_resync` (that word means "replace everything" and is the server's
+    # documented resync contract). The inbox leg stays governed by the generation
+    # gate alone, unchanged and still fail-open.
     if generation is not None:
         observed = observed_epoch(cached_glance_observed_at)
         age = None if observed is None else time.time() - observed
         if cached_glance is None or age is None or age < 0 or age > GLANCE_MAX_AGE_SEC:
-            args['hook_bundle']['force_resync'] = True
+            args['hook_bundle']['glance_stale'] = True
 
 body = json.dumps({
     'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',

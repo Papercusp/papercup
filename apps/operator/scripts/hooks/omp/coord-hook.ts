@@ -3333,15 +3333,22 @@ export async function consumeActivityHookBundle(
     return { reminder: '' };
   }
   let reminder = '';
-  if (bundle.changed) {
-    if (bundle.surfaces?.inbox) reminder = consumeInboxDelta(bundle.surfaces.inbox).reminder;
-    if (bundle.surfaces?.glance) {
-      await applyStatusDisplay(
-        bundle.surfaces.glance as { self?: { objective?: string | null }; display?: GlanceDisplayBlock | null },
-        pi,
-        ctx,
-      );
-    }
+  // Apply each surface on its own PRESENCE, not on `bundle.changed`.
+  //
+  // The server only ever populates a surface it actually hydrated, so for every
+  // response shape that predates the leg split this is byte-identical: the quiet
+  // path returns no `surfaces` at all. What it additionally handles is a
+  // `glance-only` fold — `changed:false` (the INBOX gate stayed shut, correctly)
+  // carrying a fresh glance. Gating on `changed` would silently discard that
+  // snapshot, i.e. re-couple the legs in the consumer right after the producer
+  // split them. See hook-bundle.ts `glance_stale` (WI-10002436, compromise B).
+  if (bundle.surfaces?.inbox) reminder = consumeInboxDelta(bundle.surfaces.inbox).reminder;
+  if (bundle.surfaces?.glance) {
+    await applyStatusDisplay(
+      bundle.surfaces.glance as { self?: { objective?: string | null }; display?: GlanceDisplayBlock | null },
+      pi,
+      ctx,
+    );
   }
   _hookBundleGeneration = bundle.complete ? bundle.generation : null;
   return { reminder };

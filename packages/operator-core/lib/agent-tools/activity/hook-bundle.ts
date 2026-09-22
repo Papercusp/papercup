@@ -45,6 +45,23 @@ export interface ActivityHookBundleRequest {
   generation?: string | null;
   since_ts?: string | null;
   force_resync?: boolean;
+  /**
+   * "My GLANCE snapshot aged out — refresh that leg." NOT a resync.
+   *
+   * The client used to express this by setting `force_resync`, which is a
+   * request to replace EVERYTHING. Measured over a 3h window, that made
+   * force-resync 61% of all folds (1,946 of 3,170) while only 12.7% of folds
+   * advanced this owner's inbox: a display cache with a 15s TTL was dragging the
+   * DELIVERY leg through a full hydration several times a minute. Splitting the
+   * two lets glance take a coarse cadence without rationing inbox, whose
+   * staleness is a correctness problem rather than a cosmetic one (WI-10002436,
+   * compromise B).
+   *
+   * Strictly additive: a client that still sends `force_resync` keeps the old
+   * replace-everything semantics, so an older hook against a newer operator is
+   * unaffected.
+   */
+  glance_stale?: boolean;
 }
 
 export interface ActivityHookBundleSurface {
@@ -343,6 +360,15 @@ export async function buildActivityHookBundle(
       }
     }
   }
+  // THE SPLIT (WI-10002436 compromise B). `changed` is, and stays, the INBOX
+  // gate — every condition above it is untouched, so delivery cannot regress by
+  // construction. The glance leg simply stops being welded to it: a client whose
+  // display cache aged out now refreshes THAT leg alone instead of forcing the
+  // inbox through a hydration it did not need.
+  //
+  // `glanceOnly` is deliberately `!changed && …`: when the inbox gate is already
+  // open both surfaces hydrate together exactly as before.
+  const glanceOnly = !changed && request.glance_stale === true;
   const gateMs = deps.now().getTime() - startedMs;
   const base: Omit<ActivityHookBundle, 'complete' | 'surfaces'> = {
     schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA,
@@ -359,7 +385,7 @@ export async function buildActivityHookBundle(
       request: { generation: null, force_resync: true as const },
     },
   };
-  if (!changed) {
+  if (!changed && !glanceOnly) {
     observe?.(
       censusCoordFold({
         changed,
@@ -374,9 +400,46 @@ export async function buildActivityHookBundle(
         hydrateMs: 0,
         inboxAdvanced: false,
         inboxTotal: null,
+        glanceOnly: false,
       }),
     );
     return { ...base, complete: true };
+  }
+
+  if (glanceOnly) {
+    // The display leg, alone. Deliberately NOT reached: the watermark read, the
+    // inbox hydration, and above all `stageInboxCursor` — advancing the delivery
+    // cursor here would mark mail as received that this fold never assembled.
+    //
+    // `complete` still governs the client's generation advance, and the inbox
+    // gate that produced `changed === false` is the same one whose quiet path
+    // already advances it, so this returns the same generation that path would.
+    // A failed glance hydrate yields `complete: false`, which makes the client
+    // retry rather than bank a snapshot it did not get.
+    const glance = await deps.glance(ctx).catch(() => null);
+    const endedGlanceMs = deps.now().getTime();
+    observe?.(
+      censusCoordFold({
+        changed,
+        complete: glance !== null,
+        forceResync: request.force_resync === true,
+        reqGen: request.generation,
+        gen: generation,
+        foldMs: endedGlanceMs - startedMs,
+        gateMs,
+        hydrateMs: endedGlanceMs - startedMs - gateMs,
+        // The inbox leg did not run, so it cannot have advanced and carried no
+        // rows. `null` is "the leg did not run", which is exactly the case here.
+        inboxAdvanced: false,
+        inboxTotal: null,
+        glanceOnly: true,
+      }),
+    );
+    return {
+      ...base,
+      complete: glance !== null,
+      ...(glance ? { surfaces: { glance } } : {}),
+    };
   }
 
   const legacyWatermark = await deps.readWatermark(ownerId).catch(() => null);
@@ -424,6 +487,8 @@ export async function buildActivityHookBundle(
       hydrateMs: endedMs - startedMs - gateMs,
       inboxAdvanced: inboxDidAdvance(inbox, sinceTs),
       inboxTotal: inboxTotalCount(inbox),
+      // The inbox gate opened, so both legs hydrated together on this path.
+      glanceOnly: false,
     }),
   );
   return {
