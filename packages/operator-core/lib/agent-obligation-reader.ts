@@ -30,6 +30,14 @@ import type { GoalOwnerReportObligation } from './system-health/goal-owner-repor
 
 export const AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS = 900;
 
+/**
+ * The cost bound on how many plans one turn-start read raises an acceptance
+ * obligation for. It predates P-026 (it capped the declared plan context alone);
+ * D-012 item 2 widened that context to the delegated goal worklist and
+ * deliberately reused this bound rather than inventing a second one.
+ */
+export const PLAN_CONTEXT_MAX = 8;
+
 export interface AgentObligationReaderDeps {
   goalSubject: (workspaceId: string, ownerId: string) => Promise<string | null>;
   planSlugs: (workspaceId: string, ownerId: string) => Promise<string[]>;
@@ -176,7 +184,8 @@ export async function readAgentObligationAgenda(input: {
       : boundedRead('plan-context', deps.planSlugs(input.workspaceId, input.ownerId), [], sourceTimeoutMs),
   ]);
   const goalId = goalOutcome.value;
-  const planSlugs = [...new Set(plansOutcome.value.map((slug) => slug.trim()).filter(Boolean))].slice(0, 8);
+  const ownPlanSlugs = [...new Set(plansOutcome.value.map((slug) => slug.trim()).filter(Boolean))]
+    .slice(0, PLAN_CONTEXT_MAX);
   const degradedSources = [
     ...(goalOutcome.degraded ? [readFailure('goal subject', goalOutcome)] : []),
     ...(plansOutcome.degraded ? [readFailure('plan context', plansOutcome)] : []),
@@ -222,14 +231,51 @@ export async function readAgentObligationAgenda(input: {
         sourceTimeoutMs,
       )
     : Promise.resolve<ReadOutcome<GoalOwnerReportObligation | null>>({ value: null, degraded: false, elapsedMs: 0 });
-  const acceptancePromises = planSlugs.map((planSlug) =>
+  const readAcceptance = (planSlug: string) =>
     boundedRead(
       'plan-acceptance:' + planSlug,
       deps.planAcceptance(planSlug),
       null as PlanAcceptanceGateVerdict | null,
       sourceTimeoutMs,
-    ),
-  );
+    );
+  const ownAcceptancePromises = ownPlanSlugs.map(readAcceptance);
+  // P-026 / D-012 item 2: the acceptance obligation covers the DELEGATED
+  // worklist, not only the plan this agent declared itself on. A GOAL holder
+  // that delegates plan X never declares itself on X — the fleet leader does —
+  // so closure for X was previously unobservable to the holder entirely.
+  //
+  // The worklist slugs are knowable only AFTER the portfolio resolves, so this
+  // CHAINS off `portfolioPromise` instead of awaiting it: every other read in
+  // this wave still starts immediately and runs concurrently, and the one new
+  // dependency edge (portfolio -> its own plans' acceptance) is intrinsic.
+  const worklistAcceptancePromise = portfolioPromise.then(async (portfolioOutcome) => {
+    const empty = { planSlugs: [] as string[], acceptances: [] as ReadOutcome<PlanAcceptanceGateVerdict | null>[] };
+    const budget = PLAN_CONTEXT_MAX - ownPlanSlugs.length;
+    if (budget <= 0) return empty;
+    const seen = new Set(ownPlanSlugs);
+    const candidates = (portfolioOutcome.value?.worklist ?? []).filter((entry) => {
+      const slug = entry.slug?.trim();
+      if (!slug || seen.has(slug)) return false;
+      seen.add(slug);
+      // `closure: null` means the question does not arise yet (the plan is not
+      // administratively complete). Per D-012 that is NEVER a reading of
+      // "closed", so such a plan stays in scope.
+      return entry.placement.closure?.state !== 'closed';
+    });
+    if (candidates.length === 0) return empty;
+    // `PLAN_CONTEXT_MAX` is the pre-existing cost bound, not a new cap — but it
+    // decides WHICH plans keep an obligation, so order under it is load-bearing.
+    // A plan with a RESOLVED, non-closed closure is exactly P-026's population
+    // (administratively complete, evidence outstanding), so it takes the budget
+    // first; plans still in flight follow in worklist order.
+    const slugs = [
+      ...candidates.filter((entry) => entry.placement.closure !== null),
+      ...candidates.filter((entry) => entry.placement.closure === null),
+    ]
+      .slice(0, budget)
+      .map((entry) => entry.slug.trim());
+    return { planSlugs: slugs, acceptances: await Promise.all(slugs.map(readAcceptance)) };
+  });
   // Deliberately NOT gated on goalId: see AgentObligationReaderDeps.ownerDirectives.
   const directivesPromise = boundedRead(
     'owner-directives',
@@ -245,15 +291,19 @@ export async function readAgentObligationAgenda(input: {
     [] as WaitingOnObligationRow[],
     sourceTimeoutMs,
   );
-  const [portfolio, launch, fleet, report, acceptances, directives, waits] = await Promise.all([
-    portfolioPromise,
-    launchPromise,
-    fleetPromise,
-    reportPromise,
-    Promise.all(acceptancePromises),
-    directivesPromise,
-    waitingOnPromise,
-  ]);
+  const [portfolio, launch, fleet, report, ownAcceptances, worklistAcceptance, directives, waits] =
+    await Promise.all([
+      portfolioPromise,
+      launchPromise,
+      fleetPromise,
+      reportPromise,
+      Promise.all(ownAcceptancePromises),
+      worklistAcceptancePromise,
+      directivesPromise,
+      waitingOnPromise,
+    ]);
+  const planSlugs = [...ownPlanSlugs, ...worklistAcceptance.planSlugs];
+  const acceptances = [...ownAcceptances, ...worklistAcceptance.acceptances];
   if (directives.degraded) degradedSources.push(readFailure('owner directives', directives));
   if (waits.degraded) degradedSources.push(readFailure('waiting-on', waits));
   const waitingOn: WaitingOnProviderInput = {
@@ -703,13 +753,13 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
       // an obligation for it, while staying one for its addressee.
       const rows = await listOwnerDirectives({
         workspaceId,
-        state: ['pending', 'open'],
+        state: ['open'],
         viewerOwnerId: ownerId,
         limit: OWNER_DIRECTIVES_RENDER_MAX_ROWS,
       });
       return rows.map((row) => ({
         id: row.id,
-        state: row.captureStatus === 'pending' ? ('pending' as const) : ('open' as const),
+        state: 'open' as const,
         excerpt: ownerDirectiveExcerpt(row.verbatimText),
         recordedAt: new Date(row.createdAtMs).toISOString(),
         recordedBy: row.recordedBy,

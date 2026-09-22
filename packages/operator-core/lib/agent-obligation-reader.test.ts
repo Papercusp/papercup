@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  PLAN_CONTEXT_MAX,
   projectAgentObligationBrief,
   projectAgentTurnStartObligationBrief,
   readAgentObligationAgenda,
@@ -360,5 +361,167 @@ describe('shared agent obligation reader', () => {
     });
     expect(providerDeps.goalPortfolio).not.toHaveBeenCalled();
     expect(providerDeps.planAcceptance).not.toHaveBeenCalled();
+  });
+});
+
+describe('P-026 / D-012 item 2: the acceptance obligation covers the delegated worklist', () => {
+  function worklistPlan(
+    slug: string,
+    closure: GoalPortfolioBrief['worklist'][number]['placement']['closure'],
+    ordinal = 1,
+  ): GoalPortfolioBrief['worklist'][number] {
+    return {
+      ref: `plan:papercusp/${slug}`,
+      ordinal,
+      harness: 'papercusp',
+      slug,
+      title: slug,
+      status: 'awaiting-acceptance',
+      next: null,
+      counts: { todo: 0, wip: 0, blocked: 0, needsHuman: 0, done: 3 },
+      ambiguousMatches: 0,
+      placement: {
+        state: closure?.state === 'closed' ? 'terminal' : 'awaiting-closure',
+        activeLane: null,
+        fleet: null,
+        launchTransaction: null,
+        reconciliation: { consistent: true, action: 'none', reason: 'none', toolCall: null },
+        closure,
+      },
+    };
+  }
+
+  function closure(
+    state: 'closed' | 'open' | 'partial' | 'unknown',
+  ): NonNullable<GoalPortfolioBrief['worklist'][number]['placement']['closure']> {
+    return {
+      state,
+      evidenceSatisfied: state === 'closed',
+      reportOutstandingOnly: false,
+      reason: `closure is ${state}`,
+    };
+  }
+
+  function withWorklist(entries: GoalPortfolioBrief['worklist']): GoalPortfolioBrief {
+    const brief = portfolio();
+    brief.worklist = entries;
+    return brief;
+  }
+
+  async function read(brief: GoalPortfolioBrief, overrides: Partial<AgentObligationReaderDeps> = {}) {
+    return readAgentObligationAgenda({
+      workspaceId: 'ws',
+      ownerId: 'su-holder',
+      now: NOW,
+      deps: deps({ goalPortfolio: vi.fn(async () => brief), ...overrides }),
+    });
+  }
+
+  it('raises an acceptance obligation for a plan the holder delegated and never declared on', async () => {
+    const result = await read(withWorklist([worklistPlan('delegated-plan', closure('open'))]));
+
+    // The holder declared itself on plan-a only; before D-012 item 2 the
+    // delegated plan carried no acceptance obligation at all.
+    expect(result.planSlugs).toEqual(['plan-a', 'delegated-plan']);
+    expect(result.agenda.evaluations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          family: 'independent-verification',
+          scope: expect.objectContaining({ planSlug: 'delegated-plan' }),
+        }),
+      ]),
+    );
+  });
+
+  it('drops a worklist plan whose closure is already closed', async () => {
+    const result = await read(
+      withWorklist([worklistPlan('closed-plan', closure('closed')), worklistPlan('open-plan', closure('open'), 2)]),
+    );
+
+    expect(result.planSlugs).toEqual(['plan-a', 'open-plan']);
+  });
+
+  it.each(['open', 'partial', 'unknown'] as const)(
+    'keeps a worklist plan whose closure is %s in scope',
+    async (state) => {
+      const result = await read(withWorklist([worklistPlan('p', closure(state))]));
+      expect(result.planSlugs).toContain('p');
+    },
+  );
+
+  it('keeps an in-flight plan (closure null) in scope — null is never a reading of closed', async () => {
+    const result = await read(withWorklist([worklistPlan('in-flight', null)]));
+    expect(result.planSlugs).toContain('in-flight');
+  });
+
+  it('does not re-add the plan the holder already declared on', async () => {
+    const result = await read(withWorklist([worklistPlan('plan-a', closure('open'))]));
+
+    expect(result.planSlugs).toEqual(['plan-a']);
+  });
+
+  it('spends the existing cost bound on plans awaiting closure before plans still in flight', async () => {
+    // Ten candidates for seven remaining slots (plan-a takes the first), with
+    // the in-flight plans deliberately placed FIRST in worklist order: if the
+    // cap were spent in raw order the awaiting-closure plans — P-026's whole
+    // population — would be the ones dropped.
+    const entries = [
+      ...Array.from({ length: 5 }, (_, i) => worklistPlan(`in-flight-${i}`, null, i + 1)),
+      ...Array.from({ length: 5 }, (_, i) => worklistPlan(`awaiting-${i}`, closure('open'), i + 6)),
+    ];
+
+    const result = await read(withWorklist(entries));
+
+    expect(result.planSlugs).toHaveLength(PLAN_CONTEXT_MAX);
+    expect(result.planSlugs.slice(0, 6)).toEqual([
+      'plan-a',
+      'awaiting-0',
+      'awaiting-1',
+      'awaiting-2',
+      'awaiting-3',
+      'awaiting-4',
+    ]);
+    expect(result.planSlugs).not.toContain('in-flight-2');
+  });
+
+  it('reads the worklist acceptance gates WITHOUT delaying the other canonical reads', async () => {
+    // The worklist slugs are only knowable after the portfolio resolves, so the
+    // reader chains off that promise instead of awaiting it. A refactor that
+    // "simplifies" this into `await portfolioPromise` before building the rest
+    // of the wave serialises every read below behind the portfolio, which is
+    // exactly what this case fails on.
+    let releasePortfolio: () => void = () => {};
+    const portfolioGate = new Promise<void>((resolve) => {
+      releasePortfolio = resolve;
+    });
+    const started: string[] = [];
+    const brief = withWorklist([worklistPlan('delegated-plan', closure('open'))]);
+
+    const pending = read(brief, {
+      goalPortfolio: vi.fn(async () => {
+        started.push('portfolio');
+        await portfolioGate;
+        return brief;
+      }),
+      goalLaunch: vi.fn(async () => {
+        started.push('launch');
+        return launch();
+      }),
+      planFleet: vi.fn(async (): Promise<GoalPlanFleetObservation> => {
+        started.push('fleet');
+        return { status: 'known', alert: null, applicablePlanCount: 0 };
+      }),
+      waitingOn: vi.fn(async () => {
+        started.push('waiting-on');
+        return [];
+      }),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(started).toEqual(expect.arrayContaining(['portfolio', 'launch', 'fleet', 'waiting-on']));
+
+    releasePortfolio();
+    const result = await pending;
+    expect(result.planSlugs).toContain('delegated-plan');
   });
 });
