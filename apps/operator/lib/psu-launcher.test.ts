@@ -5640,7 +5640,7 @@ describe("psu-launcher arg parsing", () => {
     ).toBeLessThan(next.indexOf("[features]"));
     expect(next).toContain('base_url = "http://127.0.0.1:8788/v1"');
     expect(next).toContain(
-      'http_headers = { "x-papercusp-account" = "codex-main" }',
+      'http_headers = { "originator" = "codex_cli_rs", "x-papercusp-account" = "codex-main" }',
     );
     expect(next).not.toContain('"old"');
 
@@ -5650,6 +5650,8 @@ describe("psu-launcher arg parsing", () => {
       priority: "su",
     });
     expect(auto).toContain('model_provider = "papercusp-codex-gateway"');
+    expect(auto).toContain('model_catalog_url = "http://127.0.0.1:8788/v1/models"');
+    expect(auto).toContain('"originator" = "codex_cli_rs"');
     expect(auto).toContain('"x-papercusp-owner" = "su-codex"');
     expect(auto).toContain('"x-papercusp-priority" = "su"');
     expect(auto).not.toContain("x-papercusp-account");
