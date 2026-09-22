@@ -4,8 +4,10 @@ import type { Sql } from 'postgres';
 import { createHostedPrincipal, type HostedPrincipal } from '../auth/hosted-principal';
 import type { VerifiedTenantServerContext } from '@papercusp/db-org';
 import type { SyncEvent } from '../sync-sse';
+import type { HostedFirstWorkspace, HostedFirstWorkspaceResult } from '../auth/hosted/first-workspace';
 import {
   HOSTED_BROWSER_ACTION_PATH,
+  HOSTED_BROWSER_FIRST_WORKSPACE_PATH,
   HOSTED_BROWSER_QUERY_NAME,
   HOSTED_BROWSER_REST_QUERY_PATH,
   HOSTED_BROWSER_SSE_PATH,
@@ -324,5 +326,177 @@ describe('hosted browser route boundary', () => {
     abort.abort();
     await reader.cancel();
     expect(close).toHaveBeenCalled();
+  });
+});
+
+describe('hosted first-workspace bootstrap route', () => {
+  const unselected = createHostedPrincipal({
+    workspaceId: CONTROL_PLANE_WORKSPACE,
+    userId: 'user-1',
+    activeOrganizationId: 'org-1',
+    sessionId: 'session-1',
+    sessionVersion: 3,
+    permissions: ['workspace:operate', 'cloud-connection:manage'],
+  });
+  const expiresAt = new Date('2026-10-01T00:00:00.000Z');
+  const created: HostedFirstWorkspaceResult = {
+    ok: true,
+    workspaceId: 'ws-derived',
+    connectionId: 'conn-derived',
+    provisionOperationId: 'prov-derived',
+    sessionId: 'session-rotated',
+    sessionExpiresAt: expiresAt,
+  };
+
+  function bootstrap(result: HostedFirstWorkspaceResult = created) {
+    const run = vi.fn(async () => result);
+    const issueSessionCookie = vi.fn((sessionId: string) => `hosted_session=${sessionId}; HttpOnly`);
+    const handler = routeHandler(
+      createHostedBrowserRoutes({
+        publicOrigin: ORIGIN,
+        controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+        dependencies: {
+          firstWorkspace: { run } as unknown as HostedFirstWorkspace,
+          issueSessionCookie,
+        },
+      }).routes,
+      HOSTED_BROWSER_FIRST_WORKSPACE_PATH,
+    );
+    return { run, issueSessionCookie, handler };
+  }
+
+  function post(body: unknown, origin: string | null = ORIGIN): Request {
+    return new Request(`${ORIGIN}/api${HOSTED_BROWSER_FIRST_WORKSPACE_PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) },
+      body: JSON.stringify(body),
+    });
+  }
+
+  const validBody = {
+    attemptKey: 'attempt-0123456789abcdef',
+    displayName: 'My workspace',
+    label: 'My GCP project',
+    configuration: { provider: 'gcp' },
+  };
+
+  it('refuses a session that already has a workspace — the door is for the FIRST one only', async () => {
+    const { run, handler } = bootstrap();
+
+    const response = await handler(post(validBody), context(principal));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'workspace_already_selected' });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('refuses a principal bound to a different control plane', async () => {
+    const { run, handler } = bootstrap();
+    const foreign = createHostedPrincipal({
+      workspaceId: 'other-control-plane',
+      userId: 'user-1',
+      activeOrganizationId: 'org-1',
+      sessionId: 'session-1',
+      sessionVersion: 3,
+      permissions: ['workspace:operate', 'cloud-connection:manage'],
+    });
+
+    const response = await handler(post(validBody), context(foreign));
+
+    expect(response.status).toBe(403);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('requires the exact configured Origin', async () => {
+    const { run, handler } = bootstrap();
+
+    const missing = await handler(post(validBody, null), context(unselected));
+    const wrong = await handler(post(validBody, 'https://evil.example'), context(unselected));
+
+    expect(missing.status).toBe(403);
+    expect(wrong.status).toBe(403);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('answers 501 rather than a half-wired admission when the runtime supplied no bootstrap', async () => {
+    const handler = routeHandler(
+      createHostedBrowserRoutes({ publicOrigin: ORIGIN, controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE }).routes,
+      HOSTED_BROWSER_FIRST_WORKSPACE_PATH,
+    );
+
+    const response = await handler(post(validBody), context(unselected));
+
+    expect(response.status).toBe(501);
+    expect(await response.json()).toMatchObject({ error: 'first_workspace_unavailable' });
+  });
+
+  it('takes tenant and identifiers from the session, never from the body', async () => {
+    const { run, handler } = bootstrap();
+
+    await handler(
+      post({
+        ...validBody,
+        organizationId: 'org-victim',
+        userId: 'user-victim',
+        workspaceId: 'ws-victim',
+        connectionId: 'conn-victim',
+        credentialRef: 'delegation://ws-victim/conn-victim',
+      }),
+      context(unselected),
+    );
+
+    expect(run).toHaveBeenCalledTimes(1);
+    const request = (run.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
+    expect(request).toMatchObject({
+      organizationId: 'org-1',
+      userId: 'user-1',
+      sessionId: 'session-1',
+      sessionVersion: 3,
+      attemptKey: validBody.attemptKey,
+    });
+    expect(Object.keys(request).sort()).toEqual(
+      ['attemptKey', 'configuration', 'displayName', 'label', 'organizationId', 'sessionId', 'sessionVersion', 'userId'],
+    );
+    expect(JSON.stringify(request)).not.toContain('victim');
+  });
+
+  it('returns 201 and re-issues the cookie for the ROTATED session', async () => {
+    const { handler, issueSessionCookie } = bootstrap();
+
+    const response = await handler(post(validBody), context(unselected));
+
+    expect(response.status).toBe(201);
+    expect(response.headers.get('set-cookie')).toBe('hosted_session=session-rotated; HttpOnly');
+    expect(issueSessionCookie).toHaveBeenCalledWith('session-rotated', expiresAt);
+    expect(await response.json()).toEqual({
+      ok: true,
+      workspaceId: 'ws-derived',
+      connectionId: 'conn-derived',
+      provisionOperationId: 'prov-derived',
+    });
+  });
+
+  it('passes a pending delegation through with its grant template and no cookie', async () => {
+    const template = { provider: 'gcp', steps: ['grant roles/iam.serviceAccountTokenCreator'] };
+    const { handler, issueSessionCookie } = bootstrap({
+      ok: false,
+      code: 'delegation_pending',
+      status: 409,
+      retryable: true,
+      template,
+      connectionId: 'conn-derived',
+    } as unknown as HostedFirstWorkspaceResult);
+
+    const response = await handler(post(validBody), context(unselected));
+
+    expect(response.status).toBe(409);
+    expect(response.headers.get('set-cookie')).toBeNull();
+    expect(issueSessionCookie).not.toHaveBeenCalled();
+    expect(await response.json()).toMatchObject({
+      error: 'delegation_pending',
+      retryable: true,
+      template,
+      connectionId: 'conn-derived',
+    });
   });
 });
