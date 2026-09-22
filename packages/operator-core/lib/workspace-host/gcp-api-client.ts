@@ -432,6 +432,8 @@ interface RawDisk extends RawResource {
 }
 
 interface RawInstance extends RawResource {
+  /** uint64, which the Compute API serializes as a decimal string. */
+  id?: string;
   status?: GcpComputeInstanceStatus;
   machineType?: string;
   tags?: { items?: string[] };
@@ -1177,6 +1179,7 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
     return {
       ...observedResource(raw, this.now()),
       status: raw.status ?? 'PROVISIONING',
+      ...(raw.id !== undefined && raw.id !== null ? { instanceId: String(raw.id) } : {}),
       attachedDiskNames: (raw.disks ?? [])
         .map(({ source }) => lastSegment(source))
         .filter((item): item is string => !!item),

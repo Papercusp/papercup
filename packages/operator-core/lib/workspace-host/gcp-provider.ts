@@ -101,6 +101,8 @@ export interface GcpFirewallObservation extends GcpResourceObservation {
 
 export interface GcpInstanceObservation extends GcpResourceObservation {
   status: GcpComputeInstanceStatus;
+  /** GCE numeric id: fresh on every insert, so it tells two incarnations of one name apart. */
+  instanceId?: string;
   metadataFingerprint?: string;
   sourceImage?: string;
   attachedDiskNames: readonly string[];
