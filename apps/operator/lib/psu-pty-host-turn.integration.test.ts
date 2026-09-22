@@ -117,7 +117,14 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
           [KICKOFF_PROOF_PATH_ENV]: proofPath,
           [KICKOFF_PROOF_TOKEN_ENV]: '0123456789abcdef0123456789abcdef0123456789abcdef',
           PAPERCUSP_PSU_PTY_IDLE_MS: '20',
-          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '60',
+          // not-ready is the one scenario that reaches the ORDINARY busy gate (no startup proof,
+          // so the fresh-composer bypass must not fire). With a 60ms quiet window a CPU-starved
+          // child that stalls its 15ms repaint for >60ms looks exactly like a prompt, and the
+          // carry is (correctly, by the gate's own definition) delivered — observed as a flake
+          // at one commit (test_runs 19041094 pass / 19042018 fail). A quiet window LONGER than
+          // the busy cap means no single gate attempt can ever see enough silence, so this
+          // scenario asserts the proof requirement, not scheduler timing.
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: scenario === 'not-ready' ? '600' : '60',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '250',
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '650',
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '10',
