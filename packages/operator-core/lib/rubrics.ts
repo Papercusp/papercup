@@ -3927,7 +3927,19 @@ async function amendAcceptanceBarRubric(
                AND item_id = ANY(${itemIds}::text[])`
         : [];
       const liveItems = new Set(itemRows.filter((row) => row.status !== 'dropped').map((row) => row.item_id));
+      // A RETIRED bar has no discharge mapping BY CONSTRUCTION — that is what retiring it
+      // means. Demanding one made retirement unreachable: the only thing that could satisfy
+      // this check for a removed bar is its own surviving projection linkage, and a surviving
+      // linkage is exactly what makes synchronizeAcceptanceBarRevision throw
+      // `acceptance_bar_revision_projection_unmapped` a few statements later. The two
+      // requirements are mutually exclusive, so every started-bar retirement refused whichever
+      // way the caller turned. This check exists to stop an amendment binding a bar to DEAD
+      // work; a removal is the one case where "no mapped item" is the correct end state.
+      const removedBars = new Set(
+        guard.changes.filter((change) => change.kind === 'removed').map((change) => change.barKey),
+      );
       for (const barKey of changedBars) {
+        if (removedBars.has(barKey)) continue;
         const mappedItemIds = new Set([
           ...clauses.filter((clause) => clause.source_bar_key === barKey).map((clause) => clause.plan_item_id),
           ...(desiredMappingByBar.get(barKey)?.planItemIds ?? []),
