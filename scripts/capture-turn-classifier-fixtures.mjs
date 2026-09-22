@@ -46,6 +46,8 @@ import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { TURN_ROW_CLASSIFIERS } from '../apps/operator/scripts/psu-pty-host.mjs';
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_OUT = resolve(HERE, '..', 'apps', 'operator', 'lib', '__fixtures__', 'turn-transcripts');
 
@@ -151,29 +153,95 @@ function main() {
     try { return JSON.parse(l); } catch { throw new Error(`source line ${i + 1} is not valid JSON`); }
   });
 
-  // Anchor on the LAST completion — the freshest real evidence in the file.
+  /**
+   * Walk completions NEWEST-FIRST and take the first window that actually
+   * DISCRIMINATES. Taking the last completion unconditionally is the obvious
+   * implementation and it is a trap: measured on a real 3,071-row claude
+   * transcript, the final turn was a bare question-and-answer with no tool
+   * calls at all, so the captured window held zero tool_result rows and the
+   * fixture could not tell the correct classifier from the naive codex port.
+   * A fixture that cannot fail is worse than no fixture, because it reads as
+   * coverage. Prefer freshness, but never at the cost of discriminating power.
+   */
+  const completions = [];
+  for (let i = rows.length - 1; i >= 0; i -= 1) if (rules.isCompletion(rows[i])) completions.push(i);
+  if (!completions.length) {
+    throw new Error(`no completion row found in ${source} — pick a transcript with a finished turn`);
+  }
+
   let anchor = -1;
-  for (let i = rows.length - 1; i >= 0; i -= 1) {
-    if (rules.isCompletion(rows[i])) { anchor = i; break; }
-  }
-  if (anchor < 0) throw new Error(`no completion row found in ${source} — pick a transcript with a finished turn`);
-
-  // Walk back to the turn-start that opened it.
   let start = -1;
-  for (let i = anchor - 1; i >= 0; i -= 1) {
-    if (rules.isTurnStart(rows[i])) { start = i; break; }
-  }
-  if (start < 0) throw new Error(`no turn-start row precedes the final completion in ${source}`);
+  let end = -1;
+  let rejectedForWeakness = 0;
+  for (const candidate of completions) {
+    let candidateStart = -1;
+    for (let i = candidate - 1; i >= 0; i -= 1) {
+      if (rules.isTurnStart(rows[i])) { candidateStart = i; break; }
+    }
+    if (candidateStart < 0) continue;
 
-  // Include the rows that TRAIL the completion, up to (not including) the next
-  // real turn-start. These prove trailing rows do not clobber a completion.
-  let end = rows.length - 1;
-  for (let i = anchor + 1; i < rows.length; i += 1) {
-    if (rules.isTurnStart(rows[i])) { end = i - 1; break; }
+    // Include the rows that TRAIL the completion, up to (not including) the
+    // next real turn-start. These prove trailing rows do not clobber it.
+    let candidateEnd = rows.length - 1;
+    for (let i = candidate + 1; i < rows.length; i += 1) {
+      if (rules.isTurnStart(rows[i])) { candidateEnd = i - 1; break; }
+    }
+
+    if (!rules.discriminates(rows.slice(candidateStart, candidateEnd + 1))) {
+      rejectedForWeakness += 1;
+      continue;
+    }
+    anchor = candidate;
+    start = candidateStart;
+    end = candidateEnd;
+    break;
+  }
+
+  if (anchor < 0) {
+    throw new Error(
+      `no DISCRIMINATING window in ${source}: every one of ${completions.length} completed turn(s) `
+      + `failed the ${agent} discriminator (${rules.discriminatorDescription}). `
+      + 'Refusing to emit a fixture that would pass vacuously — capture from a transcript with real tool activity.',
+    );
   }
 
   const window = rows.slice(start, end + 1);
   const sanitized = window.map(rules.sanitize);
+
+  /**
+   * PROVE the sanitizer is verdict-preserving, rather than asserting it in a
+   * comment. Dropping a field the classifier turns out to read would produce a
+   * fixture that is real-looking, committed, and quietly testing different
+   * behaviour than production sees — the failure would surface as a passing
+   * test. Comparing raw against sanitized across the fence boundaries is cheap
+   * and makes the claim falsifiable at the moment of capture.
+   */
+  const classify = TURN_ROW_CLASSIFIERS[agent];
+  if (typeof classify !== 'function') {
+    throw new Error(`no registered classifier for '${agent}' — the registry and this script disagree`);
+  }
+  const stamps = window.map((r) => Date.parse(r?.timestamp)).filter((n) => Number.isFinite(n));
+  if (!stamps.length) throw new Error('captured window has no parseable timestamps');
+  const lo = Math.min(...stamps);
+  const hi = Math.max(...stamps);
+  // Both an in-fence and an out-of-fence context, so a dropped timestamp or
+  // identity field cannot hide behind one lenient comparison.
+  const contexts = [
+    { receivedAtMs: lo, nowMs: hi + 1 },
+    { receivedAtMs: hi + 1, nowMs: hi + 2 },
+  ];
+  for (const ctx of contexts) {
+    for (let i = 0; i < window.length; i += 1) {
+      const before = classify(window[i], ctx);
+      const after = classify(sanitized[i], ctx);
+      if (before !== after) {
+        throw new Error(
+          `sanitizer changed the verdict for captured row ${i} (${before} -> ${after}). `
+          + 'The fixture would not represent production behaviour; widen the sanitizer allowlist.',
+        );
+      }
+    }
+  }
 
   mkdirSync(args.out ? resolve(args.out) : DEFAULT_OUT, { recursive: true });
   const outDir = args.out ? resolve(args.out) : DEFAULT_OUT;
@@ -193,6 +261,10 @@ function main() {
     windowStartIndex: start,
     completionIndex: anchor,
     trailingRowCount: end - anchor,
+    discriminator: rules.discriminatorDescription,
+    verdictPreservingSanitizer: 'proven at capture: raw vs sanitized agree on every row, in-fence and out-of-fence',
+    completionsConsidered: completions.length,
+    windowsRejectedAsNonDiscriminating: rejectedForWeakness,
     note: 'Captured from a real on-disk transcript; every field the classifier does not read was dropped at capture time.',
   };
   writeFileSync(join(outDir, `${agent}.meta.json`), `${JSON.stringify(meta, null, 2)}\n`);
