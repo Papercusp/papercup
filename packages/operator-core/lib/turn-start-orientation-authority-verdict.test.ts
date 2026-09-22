@@ -206,12 +206,19 @@ describe('D-073 — the trace watermark is the WRONG diff key for authority', ()
     return Object.fromEntries(trace.decisions.map((d) => [d.key, d.effective?.value ?? null]));
   }
 
-  it('emits exactly the three decisions the orientation line renders, in that order', () => {
-    expect(buildInstructionPrecedenceTrace(FLEET_AUTO).decisions.map((d) => d.key)).toEqual([
-      'execution-authorization',
-      'mission',
-      'ideation',
-    ]);
+  it('leads with the three decisions the line renders, and DECLARES the rest as a known omission', () => {
+    const keys = buildInstructionPrecedenceTrace(FLEET_AUTO).decisions.map((d) => d.key);
+
+    // The binding that matters: a rename on EITHER side breaks this.
+    expect(keys.slice(0, 3)).toEqual(['execution-authorization', 'mission', 'ideation']);
+
+    // DECLARED DEBT, not "not applicable" (D-070 ruling 2). `recurrence` is in
+    // the trace and is NOT rendered, so a change in it is invisible at
+    // turn-start. P-013's item text scopes the line to three decisions, and
+    // this case pins WHICH ones that leaves out — so a FOURTH unrendered
+    // decision fails here and forces a scope call instead of silently
+    // disappearing. If this list grows, decide; do not widen it.
+    expect(keys.slice(3)).toEqual(['recurrence']);
   });
 
   it('FALSIFIER: claiming one more plan item moves the watermark while the authority is unchanged', () => {
