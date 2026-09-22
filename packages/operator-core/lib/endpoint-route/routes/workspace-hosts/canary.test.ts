@@ -348,20 +348,56 @@ describe('POST /workspace-hosts/:hostId/canary', () => {
   });
 
   it('distinguishes preflight rejection from a failure after a durable phase starts', async () => {
-    const preflight = harness();
-    preflight.runCanary.mockRejectedValueOnce(new Error('secret preflight detail'));
-    const rejected = await post(preflight.dependencies, requestBody());
-    expect(rejected.status).toBe(422);
-    expect(JSON.stringify(await rejected.json())).not.toContain('secret preflight detail');
+    // Both branches now RECORD the untyped error server-side (the response stays opaque —
+    // asserted below). The spy is required because this suite runs vitest-fail-on-console;
+    // it also lets each branch assert the operator-facing record actually happened.
+    const recorded = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const preflight = harness();
+      preflight.runCanary.mockRejectedValueOnce(new Error('secret preflight detail'));
+      const rejected = await post(preflight.dependencies, requestBody());
+      expect(rejected.status).toBe(422);
+      expect(JSON.stringify(await rejected.json())).not.toContain('secret preflight detail');
+      expect(recorded.mock.calls.map((call) => call.map(String).join(' ')).join('\n')).toContain(
+        'preflight rejected',
+      );
 
-    const runtime = harness();
-    runtime.runCanary.mockImplementationOnce(async (run) => {
-      run.onPhaseStart?.('initialize', 'canary:run-1:initialize');
-      throw new Error('remote output must not leak');
-    });
-    const failed = await post(runtime.dependencies, requestBody());
-    expect(failed.status).toBe(500);
-    expect(JSON.stringify(await failed.json())).not.toContain('remote output must not leak');
+      const runtime = harness();
+      runtime.runCanary.mockImplementationOnce(async (run) => {
+        run.onPhaseStart?.('initialize', 'canary:run-1:initialize');
+        throw new Error('remote output must not leak');
+      });
+      const failed = await post(runtime.dependencies, requestBody());
+      expect(failed.status).toBe(500);
+      expect(JSON.stringify(await failed.json())).not.toContain('remote output must not leak');
+      expect(recorded.mock.calls.map((call) => call.map(String).join(' ')).join('\n')).toContain(
+        'after a phase started',
+      );
+    } finally {
+      recorded.mockRestore();
+    }
+  });
+
+  it('records an untyped preflight error server-side while keeping the response opaque', async () => {
+    const { dependencies, runCanary } = harness();
+    const recorded = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      runCanary.mockRejectedValueOnce(new Error('secret preflight detail'));
+      const response = await post(dependencies, requestBody());
+
+      // CALIBRATION: the disclosure guard above must still hold — the caller learns nothing.
+      expect(response.status).toBe(422);
+      expect(JSON.stringify(await response.json())).not.toContain('secret preflight detail');
+
+      // THE REGRESSION THIS PINS: the route used to discard an untyped preflight error
+      // entirely, so a 17s preflight fault surfaced as a contentless 422 with no record on
+      // either side — undiagnosable by the caller (correctly) AND by the operator (a bug).
+      const logged = recorded.mock.calls.map((call) => call.map(String).join(' ')).join('\n');
+      expect(logged).toContain('[workspace-host-canary]');
+      expect(logged).toContain('secret preflight detail');
+    } finally {
+      recorded.mockRestore();
+    }
   });
 
   it('returns structured problems for a typed preflight rejection without exposing its message', async () => {

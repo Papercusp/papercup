@@ -260,8 +260,21 @@ export function createWorkspaceHostCanaryRoute(
           return requestError('workspace-host canary request rejected', 422, { problems: error.problems });
         }
         if (!phaseStarted) {
+          // The RESPONSE stays opaque deliberately: an untyped preflight error may carry
+          // provider, credential or remote-output detail, and canary.test.ts pins that it
+          // must not reach the caller. But discarding it entirely left a preflight fault
+          // undiagnosable from either side — a bare 422 with no record anywhere. Record it
+          // server-side (peer-route convention) while the response contract is unchanged.
+          console.error(
+            `[workspace-host-canary] preflight rejected for ${hostId} before any phase started:`,
+            error,
+          );
           return requestError('workspace-host canary request rejected', 422);
         }
+        console.error(
+          `[workspace-host-canary] run failed for ${hostId} after a phase started:`,
+          error,
+        );
         return requestError('workspace-host canary failed; see the host timeline for details', 500, { hostId });
       }
     },
