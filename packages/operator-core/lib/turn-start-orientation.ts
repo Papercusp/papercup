@@ -1605,8 +1605,24 @@ export interface OrientationDeps {
   ownerDirectives?: (workspaceId: string) => Promise<OrientationOwnerDirective[]>;
   historyUpdates: (ownerId: string, workspaceId: string) => Promise<OrientationHistoryUpdate[]>;
   effortUpdates: (ownerId: string, workspaceId: string) => Promise<OrientationEffortUpdate[]>;
-  /** P-010: unverified carried claims + open external blockers, each with its probe. */
-  openChecks: (ownerId: string, workspaceId: string) => Promise<OrientationOpenCheck[]>;
+  /**
+   * P-010: unverified carried claims + open external blockers, each with its probe.
+   *
+   * ⚠ OPTIONAL, AND THAT IS A RECORDED GAP — NOT A DESIGN CHOICE. `defaultOrientationDeps()`
+   * does not implement this yet, so in production this class is DECLARED, registered,
+   * watermarked and rendered-if-populated, but NOTHING POPULATES IT. That is precisely the
+   * 0-renders-in-334-turns failure this plan exists to detect, one level up: the coverage
+   * guard proves the RENDER path works (it supplies the state itself) and cannot see a
+   * missing RESOLVER.
+   *
+   * It was `required` and unimplemented, which left the COMMITTED tree type-broken and
+   * would have red-pinned the fleet gate. Made optional by su-c03852cb to unbreak the
+   * build WITHOUT inventing su-6b1151ea's reader design while that session was MCP-dark.
+   * The real fix is to implement it in `defaultOrientationDeps` (loop:checkpoint `checks`
+   * + open `work_items:set_blocker` rows) and make this REQUIRED again. Tracked — do not
+   * quietly accept the optionality as finished.
+   */
+  openChecks?: (ownerId: string, workspaceId: string) => Promise<OrientationOpenCheck[]>;
   inbox: (ownerId: string) => Promise<{
     count: number;
     newest: OrientationInboxEntry[];
@@ -1695,7 +1711,10 @@ export async function resolveOrientationState(
     // above: an empty list reads as "nothing left to falsify", which is the exact
     // false reassurance this class exists to deny. A read failure must stay silent
     // and preserve the prior token, never assert the all-clear.
-    d.openChecks(ownerId, workspaceId).catch(() => undefined),
+    // An ABSENT reader and a FAILED read are the same thing to this class, and both
+    // must resolve `undefined` rather than `[]` — see the dep's doc comment. `[]`
+    // would assert "nothing left to falsify", the false all-clear this class denies.
+    d.openChecks ? d.openChecks(ownerId, workspaceId).catch(() => undefined) : Promise.resolve(undefined),
     d.inbox(ownerId).catch(() => ({ count: 0, newest: [] as OrientationInboxEntry[] })),
     d.announcedGates(ownerId, workspaceId).catch(() => [] as OrientationAnnouncedGate[]),
     // Fail-soft to null, same rule as toolSurface below: "cannot tell" must
