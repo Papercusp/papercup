@@ -235,19 +235,48 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     expect(captures[0]!.args.sourceTurnRef).not.toBe(captures[1]!.args.sourceTurnRef);
   });
 
-  it('CONTROL: a VERIFIED machine-injected turn is never captured', async () => {
-    writeMachineRow();
-    const ctx = contextOf(
-      await runHook({
-        prompt: '⟦turn-origin:wake-pump nonce:aabbccddeeff0011⟧the injected payload',
-        session_id: 'native-session-ddd',
-      }),
-    );
-    expect(ctx).toContain('VERIFIED AGENT-ORIGIN');
-    // The falsifier this control exists for: capture escaping the owner branch
-    // and recording wake-pump / loop-fire turns as if the human had typed them.
-    expect(captureCalls()).toHaveLength(0);
-  });
+  /**
+   * AUTO-BAR-R-2-P-006: "A turn carrying any verified agent-origin provenance —
+   * loop fire, wake pump, self-compaction, fleet kickoff, watchdog or
+   * coordination injection — yields no directive record."
+   *
+   * That clause is UNIVERSAL over the origins it names, so one wake-pump case
+   * cannot establish it: capture sits in the hook's final else-branch, and the
+   * branch is only reached when classification declines to label the turn
+   * machine-generated. A per-origin regression — a new origin string the ledger
+   * writes but the classifier does not recognise — would fall straight through
+   * to the owner branch and start recording injected turns as owner directives,
+   * while a single-origin control stayed green. Each origin is therefore its own
+   * case, and the enumeration below is the clause's own list, verbatim.
+   */
+  const VERIFIED_ORIGINS = [
+    'loop-fire',
+    'wake-pump',
+    'self-compaction',
+    'fleet-kickoff',
+    'watchdog',
+    'coord-inject:coord:inbox-wake',
+  ] as const;
+
+  for (const origin of VERIFIED_ORIGINS) {
+    it(`CONTROL: a VERIFIED ${origin} turn is classified agent-origin and captures nothing`, async () => {
+      const payload = `the injected payload for ${origin}`;
+      writeMachineRow({ origin, sha256: sha256Normalized(payload) });
+      const ctx = contextOf(
+        await runHook({
+          prompt: `⟦turn-origin:${origin} nonce:aabbccddeeff0011⟧${payload}`,
+          session_id: 'native-session-ddd',
+        }),
+      );
+      // CALIBRATION: without this the case could pass vacuously — a prompt the
+      // hook failed to classify at all would also produce zero captures, and the
+      // control would read as proof of the branch guard rather than of a miss.
+      expect(ctx).toContain('VERIFIED AGENT-ORIGIN');
+      // The falsifier this control exists for: capture escaping the owner branch
+      // and recording injected turns as if the human had typed them.
+      expect(captureCalls()).toHaveLength(0);
+    });
+  }
 
   it('CONTROL: an empty prompt is a silent no-op and captures nothing', async () => {
     writeMachineRow();
