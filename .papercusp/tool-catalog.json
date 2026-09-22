@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 901,
+  "count": 900,
   "tools": [
     {
       "name": "ablation:report",
@@ -19529,14 +19529,14 @@
       }
     },
     {
-      "name": "orders:capture",
+      "name": "orders:capture-pending",
       "http": {
-        "path": "/api/agent-tools/orders/capture",
+        "path": "/api/agent-tools/orders/capture-pending",
         "methods": [
           "POST"
         ]
       },
-      "description": "Record an OWNER (interactive) prompt verbatim as an open owner directive. Called by the UserPromptSubmit hook; idempotent per source turn.",
+      "description": "Capture an OWNER (interactive) prompt verbatim as a pending owner directive for next-turn promotion or dismissal.",
       "capabilities": [
         "coord:write"
       ],
@@ -19559,48 +19559,7 @@
         "release-fixer",
         "content-fixer"
       ],
-      "profile": "engineer",
-      "guidance": {
-        "when": "Never by hand — the provenance hook calls it on every OWNER (interactive) turn.",
-        "notWhen": "Recording an owner order yourself (e.g. relayed by another channel) — orders:record."
-      }
-    },
-    {
-      "name": "orders:clear",
-      "http": {
-        "path": "/api/agent-tools/orders/clear",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Remove one owner directive from YOUR OWN banner only, with a reason. It stays open for its addressee and every other session; orders:list keeps showing it.",
-      "capabilities": [
-        "coord:write"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "documenter",
-        "curator",
-        "cup",
-        "mug",
-        "papercup",
-        "papercup-deep",
-        "kettle",
-        "doc-steward",
-        "release-fixer",
-        "content-fixer"
-      ],
-      "profile": "engineer",
-      "guidance": {
-        "when": "A directive addressed to ANOTHER session keeps rendering to you and is unrelated to your work.",
-        "notWhen": "The directive is yours — carry it out and close it with orders:disposition."
-      }
+      "profile": "engineer"
     },
     {
       "name": "orders:disposition",
@@ -19648,7 +19607,7 @@
           "POST"
         ]
       },
-      "description": "Fetch one recorded owner directive by id — the FULL verbatim text plus provenance, summary and disposition. The target of the \"[full text: orders:get #id]\" pointer every surface leaves on a long directive.",
+      "description": "Fetch one recorded owner directive by id — the FULL verbatim text plus provenance and disposition. The target of the \"[orders:get #id]\" pointer the budgeted wake/orient render leaves on long rows.",
       "capabilities": [
         "coord:read"
       ],
@@ -19673,7 +19632,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A render or orders:list showed a long directive as its summary and you need the owner's full words before acting.",
+        "when": "A wake/orient render or orders:list showed a truncated directive and you need the owner's full words before acting.",
         "notWhen": "Browsing the set — orders:list."
       }
     },
@@ -19685,7 +19644,7 @@
           "POST"
         ]
       },
-      "description": "List recorded owner directives for this workspace — open (the ones still owed) with { open: true }, closed with { open: false }, all when omitted. Directives ≤ 500 chars come back verbatim; longer ones as their agent summary + an orders:get pointer.",
+      "description": "List recorded owner directives for this workspace — open (undispositioned, the ones still owed) with { open: true }, closed with { open: false }, all when omitted. Bodies capped at 500 chars (orders:get for full verbatim).",
       "capabilities": [
         "coord:read"
       ],
@@ -19710,8 +19669,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Orienting on what the workspace still OWES the owner, before loop:end / wind-down, or auditing how past directives were closed. Use { state } to separate done from declined.",
-        "notWhen": "You have the id and want the full verbatim — orders:get. Do NOT filter the returned page client-side: `limit` truncates in SQL first, so a match can be cut before you see it — pass { state } instead."
+        "when": "Orienting on what the workspace still OWES the owner (the wake/orient render shows the same set), before loop:end / wind-down, or auditing how past directives were dispositioned. Use { state } to isolate one lifecycle stage — state:\"pending\" for the hook-captured queue awaiting promote/dismiss, state:\"dismissed\" for the audit trail of turns ruled not-directives.",
+        "notWhen": "You have the id and want the full verbatim — orders:get. Do NOT filter the returned page client-side on captureStatus: `limit` truncates in SQL first, so a match can be cut before you see it — pass { state } instead."
       }
     },
     {
@@ -19753,14 +19712,14 @@
       }
     },
     {
-      "name": "orders:summarize",
+      "name": "orders:resolve-pending",
       "http": {
-        "path": "/api/agent-tools/orders/summarize",
+        "path": "/api/agent-tools/orders/resolve-pending",
         "methods": [
           "POST"
         ]
       },
-      "description": "Write the summary (≤ 200 chars) of an open owner directive longer than 500 chars — what every other agent sees for it. Required before you end the turn that received it.",
+      "description": "Resolve one UserPromptSubmit-captured owner turn: promote it to an actionable open directive, or dismiss it with a mandatory reason.",
       "capabilities": [
         "coord:write"
       ],
@@ -19785,8 +19744,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "An owner directive addressed to you is over 500 chars and shows \"summary not written yet\". Summarize what the owner is asking for, faithfully, when you first read it.",
-        "notWhen": "The directive is 500 chars or shorter (it renders verbatim; refused as summary_not_needed), or it is addressed to another session."
+        "when": "The Orientation block shows a PENDING owner directive. Resolve every pending row on the next agent turn before starting new work.",
+        "notWhen": "Closing an already-promoted directive — use orders:disposition."
       }
     },
     {
@@ -31098,7 +31057,7 @@
           "POST"
         ]
       },
-      "description": "Call ANY tool in the full ~550-tool catalog by name, even one not in your loaded tool list. Pass the exact tool name (colon form, e.g. \"flags:set\") and its arguments object. The call is dispatched server-side and gated exactly as a direct call would be. Pair with tools:find: tools:find(\"<intent>\") to get the name + arg schema, then tools:invoke({ name, args }) to run it. Use this when a tool you need is not in your loaded set and your client has not surfaced it directly.",
+      "description": "Call ANY tool in the full ~550-tool catalog by name, even one not in your loaded tool list. ⚠ Pass the exact tool name in COLON form, e.g. \"flags:set\" — NEVER the underscored display name. Args go in `args`. The call is dispatched server-side and gated exactly as a direct call would be. Pair with tools:find: tools:find(\"<intent>\") to get the name + arg schema, then tools:invoke({ name, args }) to run it. Use this when a tool you need is not in your loaded set and your client has not surfaced it directly.",
       "capabilities": [
         "agent_tools:read"
       ],
