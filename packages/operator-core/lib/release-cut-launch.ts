@@ -133,6 +133,17 @@ export interface CutRuntimeEnv {
    *  0.0.18 shipped while every canonical manifest still read 0.0.17. This is the
    *  one place that knows BOTH roots, so it is where they get connected. */
   canonicalDesktopRoot?: string;
+  /** Override for the sparse-seed head-snapshot deadline, in ms.
+   *
+   *  cut-seed-cli already honours PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS, so a MANUAL
+   *  `bin/release-local.sh` run has always had this lever — a plain shell passes the
+   *  whole environment down. A cut launched through `release:cut` did not, because the
+   *  env below is an explicit allowlist rendered onto a `systemd-run` command: any name
+   *  not named here is dropped. That asymmetry left the release path with NO way to widen
+   *  the deadline, so the only remedies a scan overrun offered were a FULL seed or
+   *  quiescing the operator (a fleet-affecting outage) — neither of which is necessary
+   *  (EI-23917342543376581). Carrying it restores parity with the manual path. */
+  headSnapshotTimeoutMs?: number;
 }
 
 function requiredOwnerName(value: string): string {
@@ -192,6 +203,12 @@ export function buildCutEnv(
     env.PAPERCUSP_RELEASE_CANONICAL_DESKTOP_ROOT = canonicalDesktopRoot;
   }
   if (runtime.reuseSeed) env.PAPERCUSP_SKIP_SEED_CUT = '1';
+  // Only a usable positive integer is forwarded: cut-seed-cli REFUSES a malformed value,
+  // and failing the whole cut on a stray override would be worse than ignoring it.
+  const headSnapshotTimeoutMs = runtime.headSnapshotTimeoutMs;
+  if (Number.isSafeInteger(headSnapshotTimeoutMs) && (headSnapshotTimeoutMs as number) > 0) {
+    env.PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS = String(headSnapshotTimeoutMs);
+  }
   // A platform leg still runs the shared release-local collector. Non-Linux legs
   // must consume the already-successful Linux bytes through its existing,
   // provenance-checked salvage path; otherwise a Windows/macOS/arm64 retry

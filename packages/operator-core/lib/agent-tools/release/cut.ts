@@ -224,7 +224,22 @@ function cutRuntimeEnv(args: {
     // .git is an independent clone and the push leg is deleted under LOCAL-only,
     // so otherwise the bump has no route back and dies with the worktree.
     canonicalDesktopRoot: desktopRoot(),
+    // Restores parity with a manual `bin/release-local.sh` run, where this lever has
+    // always worked because a shell passes its whole environment down. The detached cut
+    // is launched with an explicit env allowlist, so without this the operator's own
+    // setting is silently dropped (EI-23917342543376581). Read here rather than inside
+    // buildCutEnv so that builder stays pure and unit-testable.
+    headSnapshotTimeoutMs: parsePositiveIntEnv(process.env.PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS),
   };
+}
+
+/** A malformed override is IGNORED, never fatal: cut-seed-cli refuses a bad value, and
+ *  killing a release cut over a stray env var would be worse than using the derived
+ *  deadline. Returns undefined for anything that is not a usable positive integer. */
+function parsePositiveIntEnv(raw: string | undefined): number | undefined {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  const parsed = Number(raw.trim());
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function parseWorktreeList(stdout: string): CutWorktree[] {

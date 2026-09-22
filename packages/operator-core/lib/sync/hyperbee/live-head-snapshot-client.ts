@@ -48,8 +48,25 @@ export const DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS = 45 * 60_000;
 /** Measured healthy scan: 1,101,530ms for 7,657,919 own-log blocks (2026-09-18). */
 export const HEAD_SNAPSHOT_MEASURED_MS_PER_BLOCK = 1_101_530 / 7_657_919;
 
-/** Headroom for machine variance and the append/flush tail after the scan. */
-export const HEAD_SNAPSHOT_TIMEOUT_SAFETY_FACTOR = 2;
+/**
+ * Headroom for machine variance and the append/flush tail after the scan.
+ *
+ * RAISED 2 -> 4 on 2026-09-21 (WI-10002143 / EI-23917342543376581). The ms/block constant
+ * above is calibrated from a SINGLE healthy scan, so it describes an unloaded box and
+ * nothing else. Measured on 2026-09-20 the same-size corpus ran more than 2x slower: the
+ * derived budget was ~36.7 min, attempt 1 burned 2,214,447ms and aborted on its own
+ * AbortSignal. That was a genuine scan overrun, NOT a holder recycle —
+ * ~/.papercusp/bghost-watchdog.log shows no restart inside the window (nearest activation
+ * 7 min before it started) and the routines ticker stayed healthy throughout.
+ *
+ * The asymmetry is what sets this number, not the mean. Over-granting costs NOTHING: the
+ * client returns the instant the holder answers, so a budget larger than the real scan is
+ * never waited out, and HEAD_SNAPSHOT_MAX_TIMEOUT_MS still bounds the worst case.
+ * Under-granting costs an entire ~45-min release cut AND degrades it to a full seed —
+ * exactly the mislabelled-sparse outcome the P-014/D-012 precondition exists to prevent.
+ * So this factor must cover the SLOW tail of a loaded box, not its median.
+ */
+export const HEAD_SNAPSHOT_TIMEOUT_SAFETY_FACTOR = 4;
 
 /** A small corpus still gets enough time for process/transport variance. */
 export const HEAD_SNAPSHOT_MIN_TIMEOUT_MS = 15 * 60_000;
