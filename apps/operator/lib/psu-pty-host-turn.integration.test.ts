@@ -1056,7 +1056,12 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
 
         const output = captured();
         expect((output.match(/ECHO:F03_DIAG folded-B/g) ?? []).length).toBe(1);
-        expect(output).not.toContain('ECHO:F03_DIAG parent-A');
+        // P-005 / D-007: the parent is DELIVERED now — re-armed at the next clean boundary
+        // instead of abandoned at the busy cap — so assert it arrived EXACTLY ONCE. That is
+        // strictly stronger than the original `not.toContain(...)`: it proves the re-arm ran
+        // AND that it did not double-inject alongside the folded retry, where the old form
+        // could only ever prove the wake had been lost.
+        expect((output.match(/ECHO:F03_DIAG parent-A/g) ?? []).length).toBe(1);
       } finally {
         await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
         await done;
