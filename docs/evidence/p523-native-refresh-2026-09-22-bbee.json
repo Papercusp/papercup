@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P523 native packaging and signing preparation checks (2026-09-22 refresh)",
+  "framework": "node",
+  "command": [
+    "scripts/pc-heavy.sh",
+    "node",
+    "--test",
+    "--test-reporter=tap",
+    "--test-reporter-destination=/tmp/p523-refresh-bbee-zzaDKB/tests.tap",
+    "--test-reporter=dot",
+    "--test-reporter-destination=stdout",
+    "--test-concurrency=1",
+    "papercusp-desktop/test/appimage-glfallback-guard.test.js",
+    "papercusp-desktop/test/appimage-gstreamer-guard.test.js",
+    "papercusp-desktop/test/appimage-hook-path-normalization.test.js",
+    "papercusp-desktop/test/appimage-pristine-derivation.test.js",
+    "papercusp-desktop/test/appimage-pristine-leg-wiring.test.js",
+    "papercusp-desktop/test/appimage-runtime-isolation.test.js",
+    "papercusp-desktop/test/bootstrap-node-install.test.js",
+    "papercusp-desktop/test/build-artifact-atomicity.test.js",
+    "papercusp-desktop/test/build-deb-archive-immutability.test.js",
+    "papercusp-desktop/test/build-deb-build-timeout.test.js",
+    "papercusp-desktop/test/build-deb-bundle-lock-path.test.js",
+    "papercusp-desktop/test/build-deb-placeholder-sidecar-guard.test.js",
+    "papercusp-desktop/test/build-deb-signing-key.test.js",
+    "papercusp-desktop/test/build-deb-stale-sidecar-guard.test.js",
+    "papercusp-desktop/test/build-desktop-sidecar-dependency-closure.test.js",
+    "papercusp-desktop/test/build-desktop-sidecar-lock.test.js",
+    "papercusp-desktop/test/build-desktop-sidecar-native-abi.test.js",
+    "papercusp-desktop/test/build-desktop-sidecar-onnx-gpu-providers.test.js",
+    "papercusp-desktop/test/build-desktop-sidecar-workspace-install.test.js",
+    "papercusp-desktop/test/build-linux-distribution-profile.test.js",
+    "papercusp-desktop/test/build-script-bundle-scope.test.js",
+    "papercusp-desktop/test/build-windows-identity.test.js",
+    "papercusp-desktop/test/innoextract-compat-preflight.test.js",
+    "papercusp-desktop/test/install-and-relaunch-verify.test.js",
+    "papercusp-desktop/test/installed-app-tree.test.js",
+    "papercusp-desktop/test/provenance-release-host-record.test.js",
+    "papercusp-desktop/test/provenance-sidecar-record.test.js",
+    "papercusp-desktop/test/release-baked-host-bytes.test.js",
+    "papercusp-desktop/test/release-gitleaks.test.js",
+    "papercusp-desktop/test/release-identity-case-insensitive.test.js",
+    "papercusp-desktop/test/release-identity-scan-archives.test.js",
+    "papercusp-desktop/test/release-local-linux-reuse.test.js",
+    "papercusp-desktop/test/release-local-precheck-exit.test.js",
+    "papercusp-desktop/test/release-local-sidecar-source.test.js",
+    "papercusp-desktop/test/release-sidecar-prune-and-scrub.test.js",
+    "papercusp-desktop/test/release-upload-content-skip.test.js",
+    "papercusp-desktop/test/release-vuln-leg-npm-coverage.test.js",
+    "papercusp-desktop/test/sidecar-freshness-guard.test.js",
+    "papercusp-desktop/test/sidecar-no-database-bake-guard.test.js",
+    "papercusp-desktop/test/sidecar-stray-cache-guard.test.js",
+    "papercusp-desktop/test/tauri-config-resources.test.js",
+    "papercusp-desktop/test/windows-source-repair.test.js"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-22T22:42:27Z",
+  "finishedAt": "2026-09-22T22:44:58Z",
+  "summary": "P523 preparation refresh: the 42 papercusp-desktop native Node test files whose names match release, sign, sidecar, windows, mac, install, provenance, tauri-config, seed, bundle or inno all passed on current source: 535 tests, 535 pass, 0 fail, 0 skipped, 0 cancelled, 0 todo, exit 0. They cover packaging-source behavior using source inspection, temporary fixture repositories and artifacts, and mocked install transports. This replaces the 2026-09-14 128-test run, whose declared input cohort had since drifted. It is NOT a full installer build, public signing, notarization, real-machine installation, P-521 physical acceptance, or a release-candidate test.",
+  "assertions": [
+    {
+      "id": "complete-native-run",
+      "passed": true,
+      "evidence": "The run wrote EXIT=0. The TAP output ended with 1..535, tests 535, pass 535, fail 0, cancelled 0, skipped 0, todo 0, duration_ms 148015.584708. grep counted 535 'ok' lines and 0 'not ok' lines."
+    },
+    {
+      "id": "source-snapshot",
+      "passed": true,
+      "evidence": "Pre-run heads: superproject 8dcb98e68c3b754fa4fd5a2ae1a17185bd71b4b6, papercusp-desktop e31862f2bb02547a7239b67252bffe3f69ef2c32. The last papercusp-desktop commit before the run was e31862f2 at 2026-09-22T22:37:41Z, so the tested desktop code was that commit. The post-run check found both heads unchanged and the tested paths clean. A later uncommitted peer edit to bin/release-local.sh (file mtime 2026-09-22T22:48:31Z, after this run finished) is NOT covered by this run."
+    },
+    {
+      "id": "updater-signature-refusal",
+      "passed": true,
+      "evidence": "TAP ok 48 - refuses to publish a deb when its updater signature is missing. TAP ok 49 - refuses to publish either final path when the staged signature is invalid."
+    },
+    {
+      "id": "signing-key-preflight",
+      "passed": true,
+      "evidence": "TAP ok 71 - loads the conventional mode-0600 updater key when no signing env is supplied. TAP ok 72 - honors TAURI_SIGNING_PRIVATE_KEY_PATH instead of the conventional path. TAP ok 75 - signing-key preflight runs before seed staging and the expensive build."
+    },
+    {
+      "id": "inno-corruption-refusal",
+      "passed": true,
+      "evidence": "TAP ok 180 - compatibility requires extraction, intact bytes, and corruption refusal."
+    },
+    {
+      "id": "installer-provenance",
+      "passed": true,
+      "evidence": "TAP ok 186 - a passing installed update writes a tag-scoped receipt bound to provenance bytes. TAP ok 188 - Windows refuses a provenance-listed Server span when any disk is absent. TAP ok 205 - macOS refuses a GUI-only transition when the matching Server DMG is absent."
+    },
+    {
+      "id": "sidecar-provenance",
+      "passed": true,
+      "evidence": "TAP ok 150 - the sidecar provenance receives the immutable build SHA and version. TAP ok 151 - vm-release sidecar reuse rejects provenance that differs from the launcher build SHA. TAP ok 233 - verify-provenance gates build-start dirt, not later cutter mutations. TAP ok 234 - verify-provenance rejects missing or non-boolean gitDirty attestations."
+    }
+  ],
+  "scope": {
+    "workItemId": "WI-2147009",
+    "planSlug": "p2p-public-release-endgame-2026-09-01",
+    "planItemId": "P-523",
+    "preparationOnly": true,
+    "repositoryRoot": ".",
+    "repositoryRootResolution": "Resolve from the canonical papercusp harness checkout containing this evidence file.",
+    "preRunSuperprojectHead": "8dcb98e68c3b754fa4fd5a2ae1a17185bd71b4b6",
+    "preRunDesktopHead": "e31862f2bb02547a7239b67252bffe3f69ef2c32",
+    "commitAcceptanceClaimed": false,
+    "companionEvidence": "docs/evidence/p523-preparation-refresh-2026-09-22-bbee.json (source route, signing inputs, final-candidate commands, operator vitest run 9fee2f9c-cfa9-4c15-95c1-6b5633c573fc)."
+  },
+  "rawEvidence": {
+    "tapPath": "/tmp/p523-refresh-bbee-zzaDKB/tests.tap",
+    "tapSha256": "5b4e89f99ef2a0ddc8d75854bd512e8206e2e1460a232c844b74fedb38579475",
+    "stdoutLogSha256": "8ae04bf404f94b34c3ce59173221208c5b1b023206dfb989a910a34c9d8d626a",
+    "fileListSha256": "6ed038940fd4937cd313029b15a2c19b555e4caa370c01572d86cff6fa2824ca",
+    "retention": "The /tmp originals are supplementary. This committed artifact preserves the command, observed outcome, assertion excerpts, source identity, and original digests for canonical recording. It does not promise indefinite retention of /tmp."
+  }
+}
