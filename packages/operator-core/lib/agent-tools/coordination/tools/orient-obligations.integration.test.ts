@@ -157,6 +157,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       // Lock transitions are unrelated to the agenda under test — undefined is
       // the silent value, so this fixture asserts no lock posture.
       lockTransitions: async () => undefined,
+      coupledPeers: async () => null,
       held: async () => [],
       historyUpdates: async () => [],
       effortUpdates: async () => [],

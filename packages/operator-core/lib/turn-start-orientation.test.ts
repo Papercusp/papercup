@@ -32,6 +32,7 @@ import type { ScoredItem } from './harness/improvements/digest';
 const base: OrientationState = {
   planDecisions: undefined,
   lockTransitions: undefined,
+  coupledPeers: [],
   held: [],
   historyUpdates: [],
   effortUpdates: [],
@@ -53,6 +54,7 @@ const base: OrientationState = {
 const withWork: OrientationState = {
   planDecisions: undefined,
   lockTransitions: undefined,
+  coupledPeers: [],
   held: [
     {
       id: 'WI-1',
@@ -918,6 +920,11 @@ describe('turn-start-orientation — what it says', () => {
       // unproducible by the default reader, so the assertion proves the value
       // came through the seam rather than merely that some value arrived.
       lockTransitions: async () => ({ held: [], blocked: [], observed: ['h:seam:proof'] }),
+      // P-016's leg, injected for the same reason as lockTransitions above: an
+      // UN-injected coupledPeers reaches the real coupling + presence tables.
+      // The owner id is unproducible by the default reader (no such session),
+      // so a match proves the value came through the seam.
+      coupledPeers: async () => [{ ownerId: 'su-seam-proof', ownerLabel: null, intent: 'seam proof' }],
     });
     expect(state).toEqual({
       held: [{ id: 'WI-9', checkpoint: 'continue here', checkpointStale: true }],
@@ -941,6 +948,7 @@ describe('turn-start-orientation — what it says', () => {
       ],
       authorityVerdict: null,
       lockTransitions: { held: [], blocked: [], observed: ['h:seam:proof'] },
+      coupledPeers: [{ ownerId: 'su-seam-proof', ownerLabel: null, intent: 'seam proof' }],
       loopArmed: true,
       loopFireWithheld: true,
       improvementTriage: {

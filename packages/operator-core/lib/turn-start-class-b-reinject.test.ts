@@ -38,6 +38,7 @@ const EPOCH = 7;
 const BASE: OrientationState = {
   planDecisions: undefined,
   lockTransitions: undefined,
+  coupledPeers: [],
   held: [{ id: 'WI-10002197', status: 'wip', checkpoint: 'class-b re-inject in progress' }],
   unansweredDirected: 0,
   unansweredStale: 0,

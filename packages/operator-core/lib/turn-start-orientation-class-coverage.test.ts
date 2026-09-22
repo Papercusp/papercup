@@ -206,6 +206,7 @@ const BASELINE: OrientationState = {
   // passing if the lock reader were entirely broken. `observed: []` is the
   // measured-empty identity set: this owner holds nothing and waits on nothing.
   lockTransitions: { held: [], blocked: [], observed: [] },
+  coupledPeers: [],
   held: [],
   unansweredDirected: 0,
   unansweredStale: 0,
@@ -366,6 +367,23 @@ const CLASS_PROBES: Record<string, ClassProbe> = {
       },
     },
     marker: /blocked on packages\/operator-core\/lib\/demo-contested\.ts — held by su · su-demo0/,
+  },
+  coupledPeers: {
+    // P-016. Against a null committed cursor every coupled peer is a NEW
+    // intent, so this renders. The steady-state-silent and change-once halves
+    // need a real prior cursor and are pinned in
+    // turn-start-orientation-coupled-peers.test.ts; this probe only has to
+    // prove the class reaches the rendered prompt at all.
+    patch: {
+      coupledPeers: [
+        {
+          ownerId: 'su-demo1111-1111-1111-1111-111111111111',
+          ownerLabel: 'su · su-demo1',
+          intent: 'rewiring the demo coupling reader',
+        },
+      ],
+    },
+    marker: /coupled su · su-demo1 → rewiring the demo coupling reader/,
   },
   modes: {
     // Against a null committed cursor every row is NEW, so this renders. The
@@ -1223,6 +1241,14 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'itself, which is the same "permanently unactioned row" failure `planDecisions` records directly ' +
           'above, one step worse. The turn-start diff is the right shape: it is news exactly once.',
       ),
+      coupledPeers: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        "A coupled peer's newly declared intent (P-016).",
+        'Nobody PLACED it on this agent: it is a fact about a peer the reader opted to watch, not an ' +
+          'instruction, so there is nothing to promote, dismiss, or drive to a terminal state. Like ' +
+          '`lockTransitions` directly above it is superseded without the reader acting — the peer simply ' +
+          'declares its next intent — so a close-out rail would accumulate rows that can never be closed. ' +
+          'The turn-start diff is the right shape: each intent change is news exactly once.',
+      ),
       loopArmed: AGENT_ORDERS_NOT_AN_OBLIGATION(
         'Whether the reader has a wake source armed.',
         'The popup reads loop state live from the carry brief (`carry.loopActive`, `loopIntervalSec`), ' +
@@ -1385,6 +1411,15 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'The fleet-scoped question a leader acts on is whether a MEMBER is stalled behind a lock, and that ' +
           'is per-member data belonging on the member rows (alongside `throttled` and the liveness verdicts), ' +
           'not on this reader-scoped class.',
+      },
+      coupledPeers: {
+        kind: 'not-applicable',
+        reason:
+          'DIFFERENT SUBJECT, by the same reader-scoped argument as `lockTransitions` directly above. This ' +
+          "class resolves from the READER's own `coord:couple` edges, so on a leader brief it would report " +
+          "the LEADER's own coupled peers — which their own turn-start block already delivers. What each " +
+          'MEMBER is currently doing is per-member data belonging on the member rows, not on this ' +
+          'reader-scoped class, and a leader need not be coupled to a member to supervise it.',
       },
       loopArmed: {
         kind: 'not-applicable',
@@ -1602,6 +1637,16 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'has taken no turn, so both conjuncts are unevaluable and every row would be suppressed — the ' +
           'class would register as applicable and then render nothing, forever. The one thing a cursorless ' +
           'sink COULD emit is the full current lock table, which is exactly what P-015 forbids.',
+      },
+      coupledPeers: {
+        kind: 'not-applicable',
+        reason:
+          'TEMPORALLY UNAVAILABLE, the same reason as `lockTransitions` directly above: the class is ' +
+          'definitionally a diff — a peer renders only when its intent token is ABSENT from the committed ' +
+          'cursor of the turn it renders on. A carry document is assembled for a session that has taken no ' +
+          'turn, so that conjunct is unevaluable. The one thing a cursorless sink could emit is every coupled ' +
+          "peer's STANDING intent, which is live state (`coord:presence`) rather than a change, and a " +
+          'snapshot of it in a carry document is stale by the time the successor reads it.',
       },
       inboxRecent: {
         kind: 'not-applicable',

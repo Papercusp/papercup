@@ -64,6 +64,7 @@ const EVERY_ORIENTATION_STATE_FIELD: Record<keyof OrientationState, true> = {
   held: true,
   planDecisions: true,
   lockTransitions: true,
+  coupledPeers: true,
   ownerDirectives: true,
   historyUpdates: true,
   effortUpdates: true,
@@ -93,6 +94,7 @@ const MINIMAL_STATE: OrientationState = {
   // key is required on OrientationState; the silence it produces is the
   // deliberate one (never assert "nothing changed" from a failed read).
   lockTransitions: undefined,
+  coupledPeers: [],
   held: [],
   unansweredDirected: 0,
   unansweredStale: 0,
@@ -239,6 +241,10 @@ describe('emitted priority order — the contract the coverage guard cannot asse
     // mandate above. 96 and 98 were equally free; 97 leaves a slot either side
     // for a future neighbour without re-homing anyone.
     [97, 'lockTransitions'],
+    // P-016 coupled-peer intent changes. Directly below the lock transitions and
+    // above the held rows: a coupled peer taking or leaving something adjacent
+    // to this lane is context for the work listed beneath it. 99 stays free.
+    [98, 'coupledPeers'],
     [100, 'held'],
     [110, 'held'],
     [120, 'obligations'],

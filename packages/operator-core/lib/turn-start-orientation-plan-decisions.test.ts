@@ -50,6 +50,7 @@ function stateWith(
   return {
     planDecisions,
     lockTransitions: undefined,
+    coupledPeers: [],
     held: [],
     unansweredDirected: 0,
     unansweredStale: 0,

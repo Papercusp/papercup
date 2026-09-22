@@ -41,6 +41,7 @@ const BASELINE: OrientationState = {
   // `undefined` (not omission) so this stays valid whether that field settles as
   // required or optional, and so the quiet shape is stated rather than implied.
   lockTransitions: undefined,
+  coupledPeers: [],
   planDecisions: undefined,
   held: [],
   unansweredDirected: 0,
