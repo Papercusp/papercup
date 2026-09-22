@@ -1098,7 +1098,11 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
       campaignRecentRows: 1,
     },
     {
-      caps: { memberVerdicts: 2, members: 1, advisories: 1, invariants: 1, announcedGates: 1, reservationMembers: 1 },
+      // P-025: never-drop facts are GUARD RAILS and their keys are short, so they
+      // are shed LAST — a leader that loses its wall facts to a budget squeeze is
+      // exactly the "antidote absent where the poison is strongest" failure this
+      // class exists to prevent. They cost a few characters; verbose rows go first.
+      caps: { memberVerdicts: 2, members: 1, advisories: 1, invariants: 1, announcedGates: 1, reservationMembers: 1, neverDropFacts: 6 },
       // Preserve every campaign axis and its exact aggregates before sacrificing
       // the pre-existing truthful truncation pointers. Recent rows remain
       // available from a standard/full follow-up and are the only lossy field.
@@ -1108,7 +1112,7 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
       // Last normal projection: retain one actionable member row plus truthful
       // zero-shown pointers for every other high-fanout family. This is still
       // materially richer than the emergency tier and keeps campaign aggregates.
-      caps: { memberVerdicts: 1, members: 1, advisories: 0, invariants: 0, announcedGates: 1, reservationMembers: 0 },
+      caps: { memberVerdicts: 1, members: 1, advisories: 0, invariants: 0, announcedGates: 1, reservationMembers: 0, neverDropFacts: 4 },
       campaignRecentRows: 0,
     },
     {
@@ -1117,7 +1121,10 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
       // the ceiling, keep the complete compact exceptional indexes + campaign
       // aggregates and truthfully report zero verbose rows before falling all
       // the way to the emergency projection (which drops campaign entirely).
-      caps: { memberVerdicts: 0, members: 0, advisories: 0, invariants: 0, announcedGates: 1, reservationMembers: 0 },
+      // Last attempt before the emergency projection: every verbose row is gone,
+      // but two guard-rail fact keys still fit and are worth more here than
+      // anything else on this list.
+      caps: { memberVerdicts: 0, members: 0, advisories: 0, invariants: 0, announcedGates: 1, reservationMembers: 0, neverDropFacts: 2 },
       campaignRecentRows: 0,
     },
   ];

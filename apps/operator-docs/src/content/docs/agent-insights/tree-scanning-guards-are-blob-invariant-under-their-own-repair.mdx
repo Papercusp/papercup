@@ -52,6 +52,8 @@ Suspect this class whenever **all** of these hold:
 
 That third point is the cheapest tell and the most often missed: **the guard is telling you where the repair belongs, and it is not in the guard.**
 
+⚠ The second point is the one that misfires. The walk is frequently **not in the file you are reading** — it lives in a script the test drives, behind a helper. Absence of a `readdir` in the named test file is not evidence; see [the audit that returns a false clean bill](#which-guards-are-untracked-sensitive--the-audit-that-returns-a-false-clean-bill).
+
 ## The method — settle it from committed blobs, without touching the tree
 
 Do **not** mutate the tree to prove the point, and do not re-run the suite hoping for a different answer. A tree-scanning guard almost always exports its detector; feed that detector the **committed blobs** on both sides.
@@ -116,6 +118,8 @@ CLAUDE.md warns that a **pass at tip is not proof the verdict was stale**, becau
 
 Applying the usual caveat here rejects a sound result. Check which direction the contamination actually runs before reaching for it.
 
+⚠ The inversion is licensed by the scanner **actually** walking untracked files — a property that is easy to get wrong in both directions, and whose obvious test is unsound. Establish it with the audit under [The dual](#which-guards-are-untracked-sensitive--the-audit-that-returns-a-false-clean-bill), not by reading the named test file for a `readdir`.
+
 ### Bounding a scanner's whole-tree pass to a specific ref
 
 The inversion above licenses the pass but does not by itself transfer it to `repairHead`, because a scanner's verdict is a function of the **whole tree**, not of one file. An offender could exist at `repairHead` and have been removed by `HEAD`. Bound it directly — the only files whose offender status can differ between two refs are the files that **differ** between them:
@@ -141,6 +145,32 @@ So the two readings compose rather than compete:
 - for **the guard itself**, a verdict that depends on untracked debris should be repaired so it is a function of the commit.
 
 Do not use the first as a reason to skip the second.
+
+### Which guards are untracked-sensitive — the audit that returns a false clean bill
+
+Repairing that defect presupposes you can tell which guards *have* it. The obvious classification is wrong, and it fails toward a **clean bill** — the direction that closes the investigation:
+
+> `readdirSync` / a glob ⇒ walks untracked files  ·  `git ls-files` ⇒ commit-pure
+
+Both halves leak. **`git ls-files --others` lists exactly the untracked files.** It is fully git-native, matches none of the filesystem tells above, and is maximally untracked-sensitive; "it uses git, not `readdir`" licenses nothing.
+
+Worse, the tell is usually **not in the file you are auditing**. Measured at `HEAD` on this page's own tree-scanner example, `check-unenrolled-mjs-imports`:
+
+| where you look | what you find |
+|---|---|
+| the failing test file the gate names | no `readdir`, no glob, **no `ls-files` at all** → clean bill |
+| `scripts/check-no-unenrolled-detached-import.mjs` — the guard it drives | `listFilesIncludingUntracked(ROOT)` at line 238 |
+| `scripts/lib/tracked-files.mjs:285` — the helper | `['ls-files','-z','--cached','--others','--exclude-standard']` |
+
+Three hops from the file containment measures to the `--others` that creates the sensitivity. This is the **same shape as the external-artifact row above**: the subject sits one hop outside the file you are reading, so *grep for the spawn, not for the import* generalizes to **follow the helper, not the test**.
+
+**Audit by the thing that creates the sensitivity — the `--others` flag and the helper name `listFilesIncludingUntracked` — across the guard's whole call graph, not by `readdir`-vs-git in the named file.** Strip comments before matching (`stripCommentsAndStrings` from `scripts/lib/strip-comments-and-strings.mjs`): that same script carries an explanatory comment naming the helper on line 233, five lines above the real call on 238, so a raw text match classifies on lines that execute nothing — and it does so in **either** direction.
+
+**What caught the misclassification was a positive control that failed.** A guard already known to be untracked-sensitive came back clean from the same pass, which is the only reason the rule was re-examined at all. This page already demands a mandatory control of a *detector*; the lesson here is that the demand applies one level up, to the **audit** — an audit that silently classifies nothing is indistinguishable from a corpus with no offenders.
+
+⚠ Do not carry a remembered caller count for this helper. Counts drift, and the denominators differ by what you include: a naive file-level match at `HEAD` returns 16 (10 non-test, 6 test), most of which are not gate guards. Re-measure, and say which denominator you used.
+
+*(Trap surfaced by su-f27cf391 while auditing this class; the call-graph hops and counts above independently re-measured at `HEAD` before being recorded here.)*
 
 ## Worked examples (both measured, same candidate, same day)
 
