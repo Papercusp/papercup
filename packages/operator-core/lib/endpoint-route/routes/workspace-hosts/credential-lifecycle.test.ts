@@ -143,6 +143,7 @@ describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
         projectId: 'active-alcove-504205-q3',
         zone: 'us-central1-a',
         instanceName: 'pc-workspace-1',
+        instanceId: '4715512353118305137',
         sshUser: 'papercusp-workspace',
         knownHostsFile: '/var/lib/papercusp/controller/known_hosts',
         remoteEntrypoint: '/opt/papercusp/current/bin/papercusp-workspace-initialize',

@@ -44,6 +44,7 @@ const PROFILE: GcpIapWorkspaceHostCredentialDeliveryProfile = {
   projectId: 'active-alcove-504205-q3',
   zone: 'us-central1-a',
   instanceName: 'p046-canary-03',
+  instanceId: '4715512353118305137',
   sshUser: 'papercusp',
   knownHostsFile: '/var/lib/papercusp/known_hosts',
   deliveryEntrypoint: '/opt/papercusp/bin/papercusp-deliver-material',
