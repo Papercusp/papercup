@@ -37,7 +37,17 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'userpromptsubmit-provenance.sh');
+/**
+ * PROBE_SCRIPT makes the subject path overridable so falsifiability can be
+ * demonstrated with the SAFE copy-out mutation tier (CLAUDE.md, "Proving a
+ * guard is falsifiable"): the probe mutates a COPY outside the tree and points
+ * this suite at it, instead of mutating the tracked hook in the shared
+ * checkout — where git-sync's periodic whole-tree sweep can commit the mutant
+ * even when nothing goes wrong, a race no restore-trap can close.
+ * Unset (the default, and always so in CI) it resolves the real hook.
+ */
+const SCRIPT =
+  process.env.PROBE_SCRIPT ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', 'userpromptsubmit-provenance.sh');
 const SID = 'su-capture-rail-test';
 
 type ToolCall = { name: string; args: Record<string, unknown> };
