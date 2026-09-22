@@ -1222,9 +1222,17 @@ export const HOST_HANDOFF_ENV_KEYS = Object.freeze([
   'PAPERCUSP_AUTO_MODE',
   'PAPERCUSP_DRAIN_MODE',
   'PAPERCUSP_MODEL',
-  // context-trimming trio (WI-2140943 lane 2) — see contextTrimmingEnv in psu-launcher.mjs.
+  // context-trimming keys (WI-2140943 lane 2) — see contextTrimmingEnv in psu-launcher.mjs.
+  // NOT a fixed "trio": this list is PINNED ⊇ that helper's key set by
+  // psu-host-handoff-env.test.ts, so every key the fresh path adds must be added here too or
+  // it falls out of the handoff exactly the way the original trio did.
   'ENABLE_TOOL_SEARCH',
   'PAPERCUSP_TOOLS',
+  // Added 2026-09-22: contextTrimmingEnv began emitting the compact delivery tier alongside
+  // PAPERCUSP_TOOLS, but this allowlist was not updated with it — so a successor adopting
+  // updated host code silently lost it across a handoff. That is the WI-2140943 regression
+  // verbatim, caught by the pin rather than in production this time.
+  'PAPERCUSP_TOOLS_COMPACT',
   'PAPERCUSP_CONTEXT_TIER',
   'CODEX_HOME',
   'CLAUDE_CONFIG_DIR',

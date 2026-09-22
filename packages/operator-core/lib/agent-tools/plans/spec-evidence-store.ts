@@ -1209,7 +1209,31 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   const measurementRoots = new Map<string, Promise<string>>();
   const serverMeasurements = await Promise.all(
     rows.map(async (row) => {
-      if (options.replaySnapshot) return null;
+      // A REPLAY RE-MEASURES UNLESS THE CALLER HANDS US SERVER-MEASURED PROOF.
+      // `currentProvenance:'server-measured'` is a caller saying "this pinned tuple is
+      // already server-measured; replay it as-is, do not read the live repository" —
+      // that opt-out is deliberate and stays exactly as it was.
+      //
+      // Every OTHER replay now measures. `replaySnapshot` pins the immutable CLAUSE
+      // SNAPSHOT (see specIsCurrent above); it must NOT also suppress the per-binding
+      // server measurement. It used to, and that made scorecards:emit structurally
+      // unable to certify freshness='pass' on ANY card: rerunRecipeFor always emits
+      // replaySnapshot:true PLUS a matching `current` tuple, so with measurement
+      // suppressed the classifier saw nothing but caller-authored fingerprints,
+      // attestedCurrentGuard fired precisely BECAUSE nothing was stale, and the replay
+      // was capped at 'unknown'. emit's gate requires the exact replay to reproduce
+      // every pass the card claims — so the evaluator's own recipe could not reproduce
+      // the evaluator's own verdict (WI-10002320, reproduced twice on P-023).
+      //
+      // Re-measuring launders nothing, which is what the suppression was protecting:
+      // `measured.current` is spread LAST so server values win over any caller tuple,
+      // source/test are never counted as attested, and an opaque dimension the caller
+      // supplied still degrades provenance to 'partially-server-measured' below. A
+      // binding with no persisted measurement basis is still labelled
+      // 'replayed-snapshot' and still capped. It is also the semantically correct
+      // behaviour for a FRESHNESS criterion: a card must stop replaying 'pass' once the
+      // code it was bound against moves.
+      if (options.replaySnapshot && options.currentProvenance === 'server-measured') return null;
       const recipe = measurementFromDetails(row.details);
       if (!recipe) return null;
       try {

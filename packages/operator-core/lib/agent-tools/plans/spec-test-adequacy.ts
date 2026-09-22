@@ -1558,6 +1558,15 @@ export function evaluateSpecTestAdequacy(input: {
               const callerAttestedCurrent = unknownEvidence.some(
                 (row) => row.currentness.provenance === 'attested-current',
               );
+              // A replayed tuple matched its stored values and is capped at `unknown`
+              // BECAUSE it matched — nothing is missing and nothing is stale. Without
+              // this arm the chain fell through to "Current fingerprints are missing",
+              // which states the opposite of what happened and sends the reader hunting
+              // for absent evidence (WI-10002320). The two arms above exist for exactly
+              // this reason on their own provenances.
+              const callerReplayedCurrent = unknownEvidence.some(
+                (row) => row.currentness.provenance === 'replayed-snapshot',
+              );
               const partiallyServerMeasured = unknownEvidence.filter(
                 (row) => row.currentness.provenance === 'partially-server-measured',
               );
@@ -1568,9 +1577,11 @@ export function evaluateSpecTestAdequacy(input: {
                       .join(', ')}.`
                 : callerAttestedCurrent
                   ? `Current fingerprints were caller-supplied and are labeled attested-current; matching stored values cannot establish independently measured freshness, so freshness is unknown for this replay input. Missing comparison for: ${refs}.`
-                  : callerOmittedCurrent
-                    ? `Current fingerprints were not supplied by this call (current[] was omitted), so freshness is unknown for this replay input—not evidence that stored bindings are stale. If replaying a rerunRecipe, pass rerunRecipe.current.fingerprints. Missing comparison for: ${refs}.`
-                    : `Current fingerprints are missing for: ${refs}.`;
+                  : callerReplayedCurrent
+                    ? `Current fingerprints were supplied by a replayed snapshot and MATCHED the stored values; a replayed tuple is not an independent measurement, so freshness is unknown for this replay input—nothing is missing and nothing is stale. Re-run so the server measures each binding's own persisted measurement basis. Awaiting independent measurement for: ${refs}.`
+                    : callerOmittedCurrent
+                      ? `Current fingerprints were not supplied by this call (current[] was omitted), so freshness is unknown for this replay input—not evidence that stored bindings are stale. If replaying a rerunRecipe, pass rerunRecipe.current.fingerprints. Missing comparison for: ${refs}.`
+                      : `Current fingerprints are missing for: ${refs}.`;
             })(),
             evidence.filter((row) => row.currentness.overall === 'unknown'),
           ),
