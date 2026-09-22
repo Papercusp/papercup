@@ -228,6 +228,23 @@ describe('ownerVisiblePromptText — what the OWNER sees in their chat pane (EI-
     expect(ownerVisiblePromptText(typed)).toBe(typed);
   });
 
+  // WI-10002461: PTY injectors now arrive as ONE Claude Code paste block. The bytes
+  // below are the shape of owner directive #170, a wake captured as an owner order.
+  it('HIDES a wake-pump delivery that arrived wrapped in a whole-prompt paste block', () => {
+    const real =
+      '\n\n<pasted_content id="4e03">\n⟦turn-origin:wake-pump nonce:cf7033781a55ad74⟧\n' +
+      '[await-event] work-item:done:WI-10002459 fired — WI-10002459 settled → done.\n' +
+      '</pasted_content id="4e03">\n';
+    expect(ownerVisiblePromptText(real)).toBe('');
+  });
+
+  it('SHOWS an owner turn that quotes a pasted wake inside their own words', () => {
+    const typed =
+      'why did this fire?\n\n<pasted_content id="19fa">\n⟦turn-origin:wake-pump nonce:cf7033781a55ad74⟧\n' +
+      '[await-event] x fired — y\n</pasted_content id="19fa">';
+    expect(ownerVisiblePromptText(typed)).not.toBe('');
+  });
+
   it('DRIFT RAIL: the origin the display filter allows is the SAME constant wake-executor mints', () => {
     // The dangerous direction. wake-executor tags owner-authored deliveries with
     // OWNER_CHAT_TURN_ORIGIN and this filter hides every user turn whose origin is

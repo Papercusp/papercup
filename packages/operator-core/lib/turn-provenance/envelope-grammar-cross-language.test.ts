@@ -37,6 +37,9 @@ import {
   ENVELOPE_STRIP_RE,
   envelopePatternSql,
   formatEnvelope,
+  PASTE_WRAPPER_RE,
+  PASTE_WRAPPER_SOURCE,
+  unwrapWholePaste,
 } from './envelope-grammar';
 
 // ── repo root ────────────────────────────────────────────────────────────────
@@ -127,6 +130,45 @@ function extractPythonLiteral(src: string, file: string): string {
   return m![1];
 }
 
+/**
+ * WI-10002461 — the whole-prompt paste wrapper. Its python copy lives in the same
+ * hook, so it gets the same real-python3 agreement check as the envelope. The
+ * rejects are the load-bearing half: each one is an OWNER turn that must never be
+ * unwrapped into a machine verdict.
+ */
+const WAKE_BODY = '⟦turn-origin:wake-pump nonce:cf7033781a55ad74⟧\n[await-event] x fired — resume';
+const PASTE_ACCEPT: readonly string[] = [
+  // Byte-for-byte the shape measured in owner directive #170.
+  `\n\n<pasted_content id="4e03">\n${WAKE_BODY}\n</pasted_content id="4e03">\n`,
+  `<pasted_content id="5f47">\n${WAKE_BODY}\n</pasted_content id="5f47">`,
+  '<pasted_content id="de34">\r\nplain pasted text, no envelope\r\n</pasted_content id="de34">',
+];
+const PASTE_REJECT: readonly string[] = [
+  // Directive #153's shape: the owner's words BEFORE and after the paste.
+  `should I expect this? "\n\n<pasted_content id="19fa">\n${WAKE_BODY}\n</pasted_content id="19fa">\n\n" page`,
+  // Owner words only AFTER the paste — what a head-only matcher would wrongly unwrap.
+  `<pasted_content id="4e03">\n${WAKE_BODY}\n</pasted_content id="4e03">\nwhy did this fire?`,
+  `<pasted_content id="4e03">\n${WAKE_BODY}\n</pasted_content id="9999">`,
+  `<pasted_content id="4e03">\n${WAKE_BODY}`,
+  WAKE_BODY,
+  '',
+];
+function pasteVectorFor(test: (s: string) => boolean): boolean[] {
+  return [...PASTE_ACCEPT, ...PASTE_REJECT].map(test);
+}
+const CANONICAL_PASTE_VECTOR = pasteVectorFor((s) => PASTE_WRAPPER_RE.test(s));
+
+/** `PASTE_WRAPPER_RE = re.compile(r'…')` → the pattern source. */
+function extractPythonPasteLiteral(src: string, file: string): string {
+  const m = /PASTE_WRAPPER_RE\s*=\s*re\.compile\(\s*r'(.+?)'\s*\)/.exec(src);
+  expect(
+    m,
+    `${file}: could not find \`PASTE_WRAPPER_RE = re.compile(r'…')\`. If the hook was ` +
+      `restructured, UPDATE THIS GUARD rather than removing it.`,
+  ).not.toBeNull();
+  return m![1];
+}
+
 /** Strip capture-group parens so a capturing and non-capturing copy compare equal. */
 function ungrouped(patternSource: string): string {
   return patternSource.replace(/\((\?:)?/g, '').replace(/\)/g, '');
@@ -185,6 +227,61 @@ describe('turn-origin envelope grammar — one definition across four languages'
       );
     }
     expect(JSON.parse(out) as boolean[]).toEqual(CANONICAL_VECTOR);
+  });
+
+  it('4b. WI-10002461: the paste-wrapper corpus is non-degenerate, and an unwrapped wake parses as an envelope', () => {
+    for (const s of PASTE_ACCEPT) expect(PASTE_WRAPPER_RE.test(s), `should ACCEPT: ${JSON.stringify(s)}`).toBe(true);
+    for (const s of PASTE_REJECT) expect(PASTE_WRAPPER_RE.test(s), `should REJECT: ${JSON.stringify(s)}`).toBe(false);
+    expect(unwrapWholePaste(PASTE_ACCEPT[0])).toBe(WAKE_BODY);
+    expect(ENVELOPE_RE.exec(unwrapWholePaste(PASTE_ACCEPT[0]))?.[1]).toBe('wake-pump');
+    // The unwrap is load-bearing: the head-anchored grammar alone misses the wrapped
+    // wake, which is the pre-fix path that fell through to the OWNER default.
+    expect(ENVELOPE_RE.test(PASTE_ACCEPT[0])).toBe(false);
+    // An owner turn comes back byte-identical.
+    expect(unwrapWholePaste(PASTE_REJECT[0])).toBe(PASTE_REJECT[0]);
+  });
+
+  it('4c. WI-10002461: the hook\'s python paste unwrap agrees — pattern text, verdicts AND the extracted body', () => {
+    const src = read(HOOK);
+    const literal = extractPythonPasteLiteral(src, 'userpromptsubmit-provenance.sh');
+    expect(literal).toBe(PASTE_WRAPPER_SOURCE);
+
+    const program = [
+      'import json,re,sys',
+      'payload = json.loads(sys.stdin.read())',
+      'rx = re.compile(payload["pattern"])',
+      'res = []',
+      'for s in payload["cases"]:',
+      '    m = rx.match(s)',
+      '    res.append(m.group(2) if m else None)',
+      'print(json.dumps(res))',
+    ].join('\n');
+
+    let out: string;
+    try {
+      out = execFileSync('python3', ['-c', program], {
+        input: JSON.stringify({ pattern: literal, cases: [...PASTE_ACCEPT, ...PASTE_REJECT] }),
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      });
+    } catch (err) {
+      throw new Error(
+        `could not execute the hook's python paste pattern through python3, so the ` +
+          `cross-language half of this guard did not run: ${String(err)}`,
+      );
+    }
+    const bodies = JSON.parse(out) as Array<string | null>;
+    expect(bodies.map((b) => b !== null)).toEqual(CANONICAL_PASTE_VECTOR);
+    expect(bodies).toEqual(
+      [...PASTE_ACCEPT, ...PASTE_REJECT].map((s) => (PASTE_WRAPPER_RE.test(s) ? unwrapWholePaste(s) : null)),
+    );
+  });
+
+  it('4d. CALIBRATION — a head-only paste matcher (no tail anchor) FAILS the paste corpus', () => {
+    const headOnly = new RegExp(PASTE_WRAPPER_SOURCE.replace(/\\s\*\$$/, ''));
+    expect(headOnly.source).not.toBe(PASTE_WRAPPER_RE.source);
+    expect(pasteVectorFor((s) => headOnly.test(s))).not.toEqual(CANONICAL_PASTE_VECTOR);
   });
 
   it('5a. the SQL copies in adv-agent-detail.ts equal the canonical POSIX rendering', () => {

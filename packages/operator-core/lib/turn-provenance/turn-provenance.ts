@@ -50,6 +50,7 @@ import { join } from 'node:path';
 import {
   ENVELOPE_RE as ENVELOPE_GRAMMAR_RE,
   formatEnvelope as formatEnvelopeGrammar,
+  unwrapWholePaste,
 } from './envelope-grammar';
 
 /** Default on-disk ledger dir. Every fs helper takes an explicit `dir` for tests. */
@@ -146,10 +147,14 @@ export interface ParsedEnvelope {
   payload: string;
 }
 
+/** A prompt that is entirely one Claude Code paste block is parsed as its pasted
+ *  text (WI-10002461 — PTY injectors now arrive wrapped); see `unwrapWholePaste`
+ *  for why a paste with the owner's words around it is NOT unwrapped. */
 export function parseEnvelope(text: string): ParsedEnvelope | null {
-  const m = ENVELOPE_RE.exec(text ?? '');
+  const inner = unwrapWholePaste(text ?? '');
+  const m = ENVELOPE_RE.exec(inner);
   if (!m) return null;
-  return { origin: m[1], nonce: m[2], payload: text.slice((m.index ?? 0) + m[0].length) };
+  return { origin: m[1], nonce: m[2], payload: inner.slice((m.index ?? 0) + m[0].length) };
 }
 
 // ─── Injected-turn chrome ───────────────────────────────────────────────────
@@ -554,6 +559,10 @@ export interface ClassifyResult {
  *  - no envelope + no match          → owner-interactive (AFFIRMATIVE owner
  *                                      stamp — this is the default a human
  *                                      typing into the terminal earns)
+ *
+ * Every path reads the prompt AFTER `unwrapWholePaste` (WI-10002461): a prompt
+ * that is entirely one Claude Code paste block is classified by its pasted text,
+ * so a PTY-injected turn is matched on the envelope and hash it was minted with.
  */
 export function classify(
   promptText: string,
@@ -563,7 +572,8 @@ export function classify(
   const nowMs = opts.nowMs ?? Date.now();
   const ttlMs = opts.ttlMs ?? ledgerTtlMs();
   const isLive = (r: LedgerRow) => nowMs - r.ts <= (r.ttlMs ?? ttlMs);
-  const env = parseEnvelope(promptText);
+  const text = unwrapWholePaste(promptText ?? '');
+  const env = parseEnvelope(text);
 
   if (env) {
     const row = rows.find((r) => r.nonce === env.nonce);
@@ -621,7 +631,7 @@ export function classify(
   // INVARIANT (D-006): an absent or expired row must never yield a MORE
   // authoritative verdict than a live row would have. Absence and expiry are
   // one class — GC deleting a row is just absence arriving on a schedule.
-  const hash = payloadSha256(promptText);
+  const hash = payloadSha256(text);
   const row = rows.find((r) => r.sha256 === hash);
   if (row && isLive(row)) {
     return {
@@ -649,7 +659,7 @@ export function classify(
   // self-labels "NOT USER INPUT") is unenrollable — no envelope, no ledger row —
   // but is definitely NOT the owner. Classify it as such instead of falling
   // through to the worst-case false-OWNER default (EI-9904).
-  if (detectMachineSurface(promptText)) {
+  if (detectMachineSurface(text)) {
     return {
       verdict: 'machine-surface',
       origin: null,

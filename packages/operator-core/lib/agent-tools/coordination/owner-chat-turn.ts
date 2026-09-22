@@ -73,6 +73,7 @@
 import {
   ENVELOPE_RE as ENVELOPE_GRAMMAR_RE,
   ENVELOPE_STRIP_RE,
+  unwrapWholePaste,
 } from '../../turn-provenance/envelope-grammar';
 import { isUnenrolledMachineSurface } from '../../turn-provenance/machine-surface-catalogue';
 
@@ -335,7 +336,11 @@ export type OwnerVisibilityVerdict = 'show' | 'hide' | 'inconclusive';
  */
 function classifyOwnerVisibility(text: string): { verdict: OwnerVisibilityVerdict; visible: string } {
   if (!text) return { verdict: 'inconclusive', visible: '' };
-  const origin = text.match(TURN_ORIGIN_CAPTURE_RE)?.[1];
+  // WI-10002461: a PTY-injected turn arrives as ONE Claude Code paste block, which
+  // pushes its envelope off the head. Read the origin from the pasted text. A
+  // bounded head cannot contain the closing tag, so it is not unwrapped and fails
+  // toward SHOW — divergence 1 below, the safe direction.
+  const origin = unwrapWholePaste(text).match(TURN_ORIGIN_CAPTURE_RE)?.[1];
   if (origin !== undefined) {
     if (origin !== OWNER_CHAT_TURN_ORIGIN) return { verdict: 'hide', visible: '' };
   } else {

@@ -81,6 +81,41 @@ export const ENVELOPE_RE = new RegExp(ENVELOPE_PATTERN_SOURCE);
 export const ENVELOPE_STRIP_RE = new RegExp(ENVELOPE_PATTERN_SOURCE + ENVELOPE_TRAILING_SOURCE);
 
 /**
+ * A prompt that is ENTIRELY one Claude Code paste block, as JS regex source:
+ * `m[1]` = paste id, `m[2]` = the pasted text.
+ *
+ * WI-10002461. Claude Code delivers a large bracketed paste to the model as
+ * `<pasted_content id="4e03">\n…\n</pasted_content id="4e03">`. Every machine
+ * injector that types through the PTY (wake-pump, self-compaction, fleet-kickoff)
+ * now arrives in that wrapper, which pushes the envelope off the head of the turn.
+ * The head anchor above then misses it, and the turn falls through to the
+ * affirmative OWNER default — so a wake became a pending owner directive, reached
+ * the owner-only mode-grant branch of the provenance hook, and rendered in the
+ * owner's chat pane as something they had said. Measured from `orders`: #170 and
+ * #173 are exactly `\n\n<pasted_content id="4e03">\n⟦turn-origin:wake-pump …⟧…\n</pasted_content id="4e03">\n`.
+ *
+ * WHOLE-PROMPT ONLY, deliberately. The opening tag must sit at the head and the
+ * MATCHING closing tag at the tail with nothing but whitespace outside them. A
+ * paste the owner surrounds with their own words (directive #153 is exactly that
+ * shape) is not unwrapped, so it keeps its OWNER verdict: that owner is quoting
+ * content, which is the same reason a mid-text envelope never classifies a turn.
+ * Unwrapping never grants authority by itself — the unwrapped text still has to
+ * carry a head envelope backed by a live ledger row to verify as agent-origin.
+ */
+export const PASTE_WRAPPER_SOURCE =
+  '^\\s*<pasted_content id="([A-Za-z0-9_-]{1,64})">\\r?\\n?([\\s\\S]*?)\\r?\\n?' +
+  '</pasted_content id="\\1">\\s*$';
+
+/** Canonical whole-prompt paste matcher: `m[1]` = paste id, `m[2]` = pasted text. */
+export const PASTE_WRAPPER_RE = new RegExp(PASTE_WRAPPER_SOURCE);
+
+/** The pasted text when `text` is entirely one paste block; otherwise `text` unchanged. */
+export function unwrapWholePaste(text: string): string {
+  const m = PASTE_WRAPPER_RE.exec(text ?? '');
+  return m ? m[2] : text;
+}
+
+/**
  * The same grammar in POSTGRES POSIX-regex dialect, for SQL `~` comparisons.
  *
  * Not interchangeable with the JS source: POSIX has no `\s`, and a JS pattern

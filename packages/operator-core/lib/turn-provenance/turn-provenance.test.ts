@@ -110,6 +110,64 @@ describe('hash normalization (PTY mangling)', () => {
   });
 });
 
+/** WI-10002461: a Claude Code paste block, the shape measured in owner directive #170. */
+function pasteBlock(id: string, body: string): string {
+  return `\n\n<pasted_content id="${id}">\n${body}\n</pasted_content id="${id}">\n`;
+}
+
+describe('WI-10002461: a prompt that is ENTIRELY one paste block is read by its pasted text', () => {
+  const text = 'wake: gate fired, resume work';
+
+  it('parseEnvelope finds the envelope inside a whole-prompt paste, payload excludes the wrapper', () => {
+    const parsed = parseEnvelope(pasteBlock('4e03', `${formatEnvelope('wake-pump', 'deadbeefdeadbeef')}\n${text}`));
+    expect(parsed).toMatchObject({ origin: 'wake-pump', nonce: 'deadbeefdeadbeef' });
+    expect(parsed!.payload).toBe(`\n${text}`);
+  });
+
+  it('classify: paste-wrapped envelope + live nonce → verified-agent with the hash corroborated', () => {
+    const r = row({ sha256: payloadSha256(text) });
+    const res = classify(pasteBlock('4e03', `${formatEnvelope('wake-pump', r.nonce)}\n${text}`), [r], {
+      nowMs: NOW + 1000,
+      ttlMs: TTL,
+    });
+    expect(res.verdict).toBe('verified-agent');
+    expect(res.matchedBy).toBe('nonce+hash');
+  });
+
+  it('classify: paste-wrapped envelope with no ledger row → unverified-claim, never owner', () => {
+    const res = classify(pasteBlock('5f47', `${formatEnvelope('self-compaction', 'ffffffffffffffff')}\n${text}`), [], {
+      nowMs: NOW,
+      ttlMs: TTL,
+    });
+    expect(res.verdict).toBe('unverified-claim');
+  });
+
+  it('classify: paste-wrapped text that lost its envelope still verifies by hash', () => {
+    const r = row({ origin: 'self-compaction', sha256: payloadSha256(text) });
+    const res = classify(pasteBlock('de34', text), [r], { nowMs: NOW + 1000, ttlMs: TTL });
+    expect(res.verdict).toBe('verified-agent');
+    expect(res.matchedBy).toBe('hash');
+  });
+
+  it('CONTROL: the owner quoting a paste inside their own words stays owner-interactive (#153 shape)', () => {
+    const r = row({ sha256: payloadSha256(text) });
+    const quoted = pasteBlock('19fa', `${formatEnvelope('wake-pump', r.nonce)}\n${text}`);
+    const res = classify(`why did this fire?${quoted}what now?`, [r], { nowMs: NOW + 1000, ttlMs: TTL });
+    expect(res.verdict).toBe('owner-interactive');
+    expect(parseEnvelope(`why did this fire?${quoted}`)).toBeNull();
+  });
+
+  it('CONTROL: mismatched opening/closing paste ids are not unwrapped', () => {
+    const r = row({ sha256: payloadSha256(text) });
+    const res = classify(
+      `<pasted_content id="4e03">\n${formatEnvelope('wake-pump', r.nonce)}\n${text}\n</pasted_content id="9999">`,
+      [r],
+      { nowMs: NOW + 1000, ttlMs: TTL },
+    );
+    expect(res.verdict).toBe('owner-interactive');
+  });
+});
+
 describe('classifier boundaries', () => {
   it('nonce + hash match → verified-agent (nonce+hash)', () => {
     const text = 'wake: gate fired, resume work';

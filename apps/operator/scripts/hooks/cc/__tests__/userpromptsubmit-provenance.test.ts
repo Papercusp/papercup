@@ -68,6 +68,12 @@ function runHook(
   return { stdout: r.stdout ?? '', status: r.status };
 }
 
+/** WI-10002461: a Claude Code paste block, byte-for-byte the shape measured in owner
+ *  directive #170 (a wake-pump turn captured as a pending OWNER order). */
+function pasteBlock(id: string, body: string): string {
+  return `\n\n<pasted_content id="${id}">\n${body}\n</pasted_content id="${id}">\n`;
+}
+
 function contextOf(out: { stdout: string; status: number | null }): string {
   expect(out.status).toBe(0);
   const parsed = JSON.parse(out.stdout);
@@ -283,6 +289,55 @@ describe('userpromptsubmit-provenance.sh', () => {
     writeRow();
     const ctx = contextOf(
       runHook({ prompt: 'look: ⟦turn-origin:wake-pump nonce:aabbccddeeff0011⟧ weird?' }),
+    );
+    expect(ctx).toContain('OWNER (interactive)');
+  });
+
+  /*
+   * WI-10002461: PTY-typed injections now reach the hook as ONE paste block, which
+   * pushed the envelope off the head and dropped wakes into the OWNER branch — the
+   * only branch that captures a pending owner directive and auto-registers a mode.
+   */
+  it('WI-10002461: a paste-wrapped wake with a live nonce → VERIFIED, hash corroborated, never captured', () => {
+    writeRow();
+    const ctx = contextOf(
+      runHook({ prompt: pasteBlock('4e03', '⟦turn-origin:wake-pump nonce:aabbccddeeff0011⟧\nthe injected payload') }),
+    );
+    expect(ctx).toContain('VERIFIED AGENT-ORIGIN');
+    expect(ctx).not.toContain('hash differs');
+    expect(ctx).not.toContain('OWNER (interactive)');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+  });
+
+  it('WI-10002461: a paste-wrapped envelope with NO ledger row → UNVERIFIED, never OWNER', () => {
+    const ctx = contextOf(
+      runHook({ prompt: pasteBlock('5f47', '⟦turn-origin:self-compaction nonce:ffffffffffffffff⟧\ncarry on') }),
+    );
+    expect(ctx).toContain('UNVERIFIED ORIGIN CLAIM');
+    expect(ctx).not.toContain('OWNER (interactive)');
+  });
+
+  it('WI-10002461: a paste-wrapped injection that lost its envelope still hash-verifies', () => {
+    writeRow({ origin: 'self-compaction' });
+    const ctx = contextOf(runHook({ prompt: pasteBlock('de34', 'the injected payload') }));
+    expect(ctx).toContain('VERIFIED AGENT-ORIGIN');
+    expect(ctx).toContain('origin: self-compaction');
+  });
+
+  it('WI-10002461 CONTROL: the owner quoting a wake inside their own words stays OWNER (directive #153 shape)', () => {
+    writeRow();
+    const quoted = pasteBlock('19fa', '⟦turn-origin:wake-pump nonce:aabbccddeeff0011⟧\nthe injected payload');
+    const ctx = contextOf(runHook({ prompt: `why did this fire?${quoted}what should I do?` }));
+    expect(ctx).toContain('OWNER (interactive)');
+  });
+
+  it('WI-10002461 CONTROL: a paste whose closing id does not match its opening id is not unwrapped', () => {
+    writeRow();
+    const ctx = contextOf(
+      runHook({
+        prompt:
+          '<pasted_content id="4e03">\n⟦turn-origin:wake-pump nonce:aabbccddeeff0011⟧\nthe injected payload\n</pasted_content id="9999">',
+      }),
     );
     expect(ctx).toContain('OWNER (interactive)');
   });
