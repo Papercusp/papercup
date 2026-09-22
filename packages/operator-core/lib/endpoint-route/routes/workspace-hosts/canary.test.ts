@@ -299,6 +299,42 @@ describe('POST /workspace-hosts/:hostId/canary', () => {
     expect(runCanary.mock.calls[0]?.[0].credentialMaterialSource).toBe(resolverSource);
   });
 
+  // D-338 (owner-directed) skips the funded Codex leg and continues on Claude and OMP. Before this
+  // was plumbed the canary planned all three unconditionally and died at its final `verify` step on
+  // `agent readiness did not pass for: codex (provider-usage-limit)` — so the scope was declared but
+  // unrunnable through the supported route. These three pin the seam in both directions.
+  it('forwards a narrowed agent scope to the controller so a skipped leg is expressible', async () => {
+    const { dependencies, runCanary } = harness();
+    const response = await post(dependencies, { ...requestBody(), requestedAgents: ['claude', 'omp'] });
+
+    expect(response.status).toBe(200);
+    expect(runCanary).toHaveBeenCalledWith(
+      expect.objectContaining({ requestedAgents: ['claude', 'omp'] }),
+    );
+  });
+
+  it('omits requestedAgents entirely when unscoped, preserving all-three coverage downstream', async () => {
+    const { dependencies, runCanary } = harness();
+    const response = await post(dependencies, requestBody());
+
+    expect(response.status).toBe(200);
+    // Must be ABSENT, not an explicit undefined/empty: the driver's resolver keys all-three
+    // coverage off `=== undefined`, so leaking the key through would change the default.
+    expect(runCanary.mock.calls[0]?.[0]).not.toHaveProperty('requestedAgents');
+  });
+
+  it('refuses a malformed agent scope before controller or host resolution', async () => {
+    for (const requestedAgents of [[], ['claude', 'claude'], ['claude', 'gemini'], 'claude']) {
+      const { dependencies, runCanary, resolveOperationsForHost } = harness();
+      const response = await post(dependencies, { ...requestBody(), requestedAgents });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ ok: false, error: expect.stringContaining('requestedAgents') });
+      expect(runCanary).not.toHaveBeenCalled();
+      expect(resolveOperationsForHost).not.toHaveBeenCalled();
+    }
+  });
+
   it('rejects malformed generation shapes before controller or host resolution', async () => {
     const { dependencies, resolveOperationsForHost } = harness();
     const response = await post(dependencies, {

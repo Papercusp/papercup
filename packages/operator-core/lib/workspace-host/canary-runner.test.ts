@@ -367,6 +367,63 @@ describe('runWorkspaceHostCanary', () => {
     expect(runLifecycle).toHaveBeenCalledTimes(4);
   });
 
+  // D-338 (owner-directed) skips the funded Codex leg and continues on Claude and OMP. The canary
+  // previously planned all three unconditionally, so that scope was declared but unrunnable: the
+  // live r38 run reached 5/6 steps and died on `agent readiness did not pass for: codex
+  // (provider-usage-limit)`. A narrowed scope must SKIP the omitted agent, never mark it ready.
+  it('honours a narrowed agent scope end to end, and still fails closed when the scope is absent', async () => {
+    // Mirrors a real scoped guest: it verifies — and therefore reports evidence for — Claude and
+    // OMP only. Held FIXED across both halves below so the declared scope is the single variable.
+    const codexSkippingGuest = async (run: WorkspaceHostInitializationRunInput) => {
+      const result = await fakeInitialization(run);
+      return {
+        ...result,
+        receipts: result.receipts.map((receipt) =>
+          'publicEvidence' in receipt && receipt.publicEvidence
+            ? {
+                ...receipt,
+                publicEvidence: {
+                  ...receipt.publicEvidence,
+                  agents: { claude: agentReport().agents.claude, omp: agentReport().agents.omp },
+                },
+              }
+            : receipt,
+        ),
+      };
+    };
+
+    const runInitialization = vi.fn(codexSkippingGuest);
+    const result = await runWorkspaceHostCanary(
+      input({ destroyFinalization: destroyFinalization(), requestedAgents: ['claude', 'omp'] }),
+      {
+        runInitialization,
+        runLifecycle: vi.fn(fakeLifecycle),
+        verifyAgentCredentialAdmission,
+        now: () => new Date(OBSERVED_AT),
+      },
+    );
+
+    // The scope must actually reach the initialization runner — that is what makes the guest verify
+    // the narrowed set at all, rather than the canary merely tolerating a short receipt.
+    expect(runInitialization).toHaveBeenCalledWith(
+      expect.objectContaining({ requestedAgents: ['claude', 'omp'] }),
+    );
+    expect(Object.keys(result.assembly.evidence.agents.agents).sort()).toEqual(['claude', 'omp']);
+    expect(result.assembly.validation).toEqual({ ok: true, errors: [] });
+
+    // FALSIFIER: identical guest, scope omitted. Codex evidence is then genuinely missing and the
+    // extractor must still fail closed. Without this the assertions above would pass unchanged even
+    // if requestedAgents were ignored end to end.
+    await expect(
+      runWorkspaceHostCanary(input({ destroyFinalization: destroyFinalization() }), {
+        runInitialization: vi.fn(codexSkippingGuest),
+        runLifecycle: vi.fn(fakeLifecycle),
+        verifyAgentCredentialAdmission,
+        now: () => new Date(OBSERVED_AT),
+      }),
+    ).rejects.toThrow(/missing 'codex' agent evidence/);
+  });
+
   it('resumes with identical phase identities and does not re-execute completed fake phases', async () => {
     const initializationCache = new Map<string, Awaited<ReturnType<typeof fakeInitialization>>>();
     const lifecycleCache = new Map<string, Awaited<ReturnType<typeof fakeLifecycle>>>();
