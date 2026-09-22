@@ -66,8 +66,10 @@ import type { OwnerDirectiveRow } from './owner-directives';
 import {
   deriveDirectiveStatus,
   directiveNeedsAction,
+  directiveStatusLabel,
   type DirectiveStatus,
 } from './owner-directive-status';
+import { directiveDisplayText, directiveNeedsSummary, shortOwner } from './owner-directive-display';
 
 /** A held work-item, reduced to what the fold actually prints. */
 export interface OrientationHeldItem {
@@ -108,8 +110,15 @@ export interface OrientationHeldItem {
  */
 export interface OrientationOwnerDirective {
   id: number;
-  captureStatus: 'pending' | 'open';
   verbatimText: string;
+  /**
+   * The agent-written summary of an over-cap directive and its author (D-004 of
+   * owner-directive-delivery-redesign-2026-09-22). Rendered in place of the
+   * verbatim text when the directive is too long to show whole — never a cut
+   * fragment of the owner's words.
+   */
+  summaryText?: string | null;
+  summaryBy?: string | null;
   /**
    * The session the owner was ADDRESSING (`orders.recordedBy`). Accurate at
    * capture and never mutated afterwards — directive rows are immutable owner
@@ -131,10 +140,15 @@ export interface OrientationOwnerDirective {
    */
   addressedToMe?: boolean;
   /**
-   * The derived status of the directive (P-006), already reconciled across
-   * capture AND disposition. Optional so a sink that cannot afford the
-   * work-item join still renders a correctly LABELLED line; absent means
-   * "not derived", never "unclaimed".
+   * TRUE when a directive addressed to ANOTHER session touches this session's
+   * work: the addressee has declared the same current plan (R-3 of
+   * owner-directive-delivery-redesign-2026-09-22). Decided in the reader.
+   */
+  relatedToMe?: boolean;
+  /**
+   * The derived status of the directive (P-006). Optional so a sink that cannot
+   * afford the work-item join still renders a correctly LABELLED line; absent
+   * means "not derived", never "unclaimed".
    */
   status?: DirectiveStatus;
 }
@@ -1075,8 +1089,10 @@ export function fingerprintOrientation(
       )
       .sort()
       .join(','),
+    // Directive rows are immutable owner speech, so a token changes only when a
+    // directive appears, closes, gains its summary, or changes hands.
     ownerDirectives: (state.ownerDirectives ?? [])
-      .map((d) => `${d.id}:${d.captureStatus}:${d.verbatimText}`)
+      .map((d) => `${d.id}:${d.status ? directiveStatusLabel(d.status) : ''}:${d.summaryText ?? ''}`)
       .join('|'),
     historyUpdates:
       state.historyUpdates === undefined
@@ -2030,8 +2046,12 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationOwnerDirective[]>({
     id: 'ownerDirectives',
-    // 2 verbatim directives + the class's own "+N more" line.
-    rowCeiling: { maxRows: 3, recoveryVerb: 'orders:list { open: true }' },
+    // Up to 5 directives + the class's own "+N more" line. Every session's open
+    // directives are visible to every agent (D-003 of
+    // owner-directive-delivery-redesign-2026-09-22) — naturally capped by the
+    // speed of one human typing — and the epoch-keyed cursor delivers each set
+    // once per context rather than every turn.
+    rowCeiling: { maxRows: 6, recoveryVerb: 'orders:list { open: true }' },
     watermarkTokens: ['ownerDirectives'],
     applicableSinks: TURN_START_AND_AGENT_ORDERS,
     populate: (state) => state.ownerDirectives ?? [],
@@ -2046,8 +2066,13 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
           // to decide whether it is still ASKING for something.
           const live = directives.filter((d) => !d.status || directiveNeedsAction(d.status));
           if (live.length === 0) return [];
+          // Your own directives first: they are the only ones that carry an obligation.
+          const ordered = [
+            ...live.filter((d) => d.addressedToMe === true),
+            ...live.filter((d) => d.addressedToMe !== true),
+          ];
           const lines: string[] = [];
-          for (const directive of live.slice(0, 2)) {
+          for (const directive of ordered.slice(0, 5)) {
             // DEFENSIVE, and load-bearing rather than belt-and-braces: this render
             // runs on the turn-start hot path inside projectOrientationRows, which
             // has NO per-segment error isolation — `for (const text of render(...))`
@@ -2061,17 +2086,23 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
             // required fields left recordedBy absent, and `.length` threw. So each
             // field read here degrades to a labelled value instead of throwing.
             const rawText = typeof directive.verbatimText === 'string' ? directive.verbatimText : '';
-            const text = rawText.replace(/\s+/g, ' ').trim();
-            const excerpt = text.length > 110 ? `${text.slice(0, 109)}…` : text || '(no text recorded)';
-            // Same 12-char truncation as renderOwnerDirectiveRow (owner-directives.ts)
-            // — reused rather than re-invented so one handle convention exists.
+            // D-004: full verbatim under the cap, the labelled agent summary over it,
+            // never a cut fragment of the owner's words.
+            const shown = rawText.trim()
+              ? directiveDisplayText({
+                  id: directive.id,
+                  verbatimText: rawText,
+                  summaryText: directive.summaryText ?? null,
+                  summaryBy: directive.summaryBy ?? null,
+                })
+              : '(no text recorded)';
             // `unknown` is deliberately NOT a session id: it can never equal an
             // ownerId, so an unattributable row can only ever render as NOT-mine.
             const recordedBy =
               typeof directive.recordedBy === 'string' && directive.recordedBy.length > 0
                 ? directive.recordedBy
                 : null;
-            const by = recordedBy === null ? 'unknown' : recordedBy.length > 12 ? recordedBy.slice(0, 12) : recordedBy;
+            const by = recordedBy === null ? 'unknown' : shortOwner(recordedBy);
             // NOTE: a segment `render` receives only (state, committed) — no ownerId
             // — so addressing is resolved in the READER, which does have it, and
             // arrives here as a decided boolean. Undecided (`undefined`) must fall to
@@ -2081,34 +2112,33 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
             const claimedBy = directive.status?.kind === 'claimed' ? directive.status.claimedBy : undefined;
             // `capturedByHook: false` means an AGENT asserted this, not the owner.
             // Labelled, never silently promoted to owner speech.
-            const origin = directive.capturedByHook ? '' : ' owner-candidate';
+            const origin = directive.capturedByHook ? '' : ' [owner-candidate]';
 
-            // THREE BUCKETS, THREE DIFFERENT IMPERATIVES (D-004). Before this split
-            // every line ended in "orders:resolve-pending first." regardless of whom
-            // the owner was addressing — and because `owner_directives` rows are
-            // WORKSPACE-GLOBAL, an agent obeying that on someone else's directive did
-            // not merely mishandle its own agenda, it DESTROYED the addressee's row
+            if (mine) {
+              // OBLIGATION framing — only ever for the session the owner addressed
+              // (R-3). An over-cap directive without a summary asks for one: the
+              // summary is what every OTHER agent will see (D-004).
+              const summaryAsk =
+                rawText.trim() && directiveNeedsSummary({ verbatimText: rawText }) && !directive.summaryText
+                  ? ` It is long: write what other agents will see first — orders:summarize { id: ${directive.id}, summary }.`
+                  : '';
+              lines.push(
+                `- 📌 YOUR owner directive #${directive.id}${origin}: ${shown} — carry out, then orders:disposition { id: ${directive.id}, status, note }.${summaryAsk}`,
+              );
+              continue;
+            }
+            // AWARENESS framing for every other session's directive (D-003): the
+            // owner wants the whole team to know what everyone is working on, but
+            // a line here is never an obligation — acting on another session's
+            // directive without taking it is how rows got destroyed
             // (WI-10002426 / WI-10002437).
-            const imperative = mine
-              ? // (1) addressed to me — carry it out.
-                directive.captureStatus === 'pending'
-                ? 'YOURS — orders:resolve-pending, then carry out.'
-                : 'YOURS — carry out, then orders:disposition.'
-              : claimedBy
-                ? // (3) another session's, and someone is already on it: awareness
-                  //     only. NO imperative — this line exists so you do not
-                  //     duplicate the work, not so you act.
-                  `addressed to ${by} · claimed by ${claimedBy.slice(0, 12)} — FYI only, do not act or resolve.`
-                : // (2) another session's and unclaimed: visible (the owner asked for
-                  //     that) but you must take a work-item carrying directiveRef
-                  //     BEFORE touching it, which is what the write-side rail enforces.
-                  `addressed to ${by} — NOT yours to resolve; to take it, work_items:create { directiveRef: ${directive.id} } first.`;
-
+            const related = directive.relatedToMe === true ? ' [related to your work]' : '';
+            const holder = claimedBy ? `, claimed by ${shortOwner(claimedBy)}` : '';
             lines.push(
-              `- 📌 owner directive #${directive.id} [${directive.captureStatus}${origin}] ${JSON.stringify(excerpt)} — ${imperative}`,
+              `- 📌 team · #${directive.id} to ${by}${holder}${related}${origin}: ${shown} — awareness only; take it only via work_items:create { directiveRef: ${directive.id} }.`,
             );
           }
-          if (live.length > 2) lines.push(`- 📌 +${live.length - 2} more owner directives — orders:list { open: true }.`);
+          if (ordered.length > 5) lines.push(`- 📌 +${ordered.length - 5} more open owner directives — orders:list { open: true }.`);
           return lines;
         },
       },
@@ -3473,11 +3503,33 @@ export function defaultOrientationDeps(): OrientationDeps {
       // directive itself is untouched for its addressee and every peer, which
       // is what makes clearing a foreign directive a safe, expected action
       // rather than the erase-a-peer's-order defect D-009 measured.
-      const rows: OwnerDirectiveRow[] = await listOpenOwnerDirectives(workspaceId, 12, undefined, ownerId);
-      const live = rows.filter(
-        (row) => row.captureStatus === 'pending' || row.captureStatus === 'open',
-      );
+      const live: OwnerDirectiveRow[] = await listOpenOwnerDirectives(workspaceId, 12, undefined, ownerId);
       if (live.length === 0) return [];
+
+      // "Related to your work" (R-3): another session's directive is flagged when
+      // its addressee has declared the same current plan as this session. One
+      // batched presence read; failure only loses the flag, never the line.
+      let relatedAddressees = new Set<string>();
+      try {
+        const { getOrgPg } = await import('@papercusp/db-org');
+        const addressees = [...new Set(live.map((r) => r.recordedBy).filter((id) => id && id !== ownerId))];
+        if (addressees.length > 0) {
+          const plans = (await getOrgPg().sql`
+            SELECT DISTINCT ON (owner_id) owner_id, current_plan_slug
+              FROM harness_shared.coord_presence
+             WHERE owner_id = ANY(${[ownerId, ...addressees]})
+             ORDER BY owner_id, last_active_at DESC NULLS LAST
+          `) as { owner_id: string; current_plan_slug: string | null }[];
+          const myPlan = plans.find((p) => p.owner_id === ownerId)?.current_plan_slug ?? null;
+          if (myPlan) {
+            relatedAddressees = new Set(
+              plans.filter((p) => p.owner_id !== ownerId && p.current_plan_slug === myPlan).map((p) => p.owner_id),
+            );
+          }
+        }
+      } catch {
+        relatedAddressees = new Set();
+      }
 
       // ONE batched join for the whole banner, never one query per row: this runs on
       // the turn-start hot path under a hard 2.5s wall shared with every other source.
@@ -3500,8 +3552,10 @@ export function defaultOrientationDeps(): OrientationDeps {
 
       return live.map((row) => ({
         id: row.id,
-        captureStatus: (row.captureStatus === 'pending' ? 'pending' : 'open') as 'pending' | 'open',
         verbatimText: row.verbatimText,
+        summaryText: row.summaryText ?? null,
+        summaryBy: row.summaryBy ?? null,
+        relatedToMe: relatedAddressees.has(row.recordedBy),
         // The two fields whose absence WAS the bug (D-006). The parallel obligation
         // rail has always mapped both; this is the same mapping, not a new source.
         recordedBy: row.recordedBy,
