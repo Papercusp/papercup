@@ -524,6 +524,34 @@ async function build(): Promise<{
   };
 }
 
+/**
+ * The verdict `--check` renders, extracted from main() so BOTH branches are unit-
+ * testable without a subprocess and without mutating the shared tree.
+ *
+ * R-5 of deterministic-tool-definition-delivery-2026-09-21 claims the committed
+ * artifact cannot diverge from its inputs without failing the build. That claim was
+ * carried by an inline `current === built.text` comparison inside main(), which no
+ * test could reach: proving it meant either spawning the CLI or mutating the real
+ * artifact, and mutating a tracked file here races the git-sync sweep that commits
+ * the whole tree every few minutes. So the guard had never been observed to FAIL,
+ * and a guard that has only ever been seen to pass is not evidence of anything.
+ *
+ * Byte-exact by design: comparing trimmed or normalized text would let a generator
+ * whose only change is trailing whitespace report `current`, which is precisely the
+ * silent drift this guard exists to catch.
+ */
+export type ToolDeliveryDriftVerdict =
+  | { ok: true; reason: 'current' }
+  | { ok: false; reason: 'missing' | 'stale' };
+
+export function toolDeliveryDriftVerdict(
+  current: string | null,
+  built: string,
+): ToolDeliveryDriftVerdict {
+  if (current === null) return { ok: false, reason: 'missing' };
+  return current === built ? { ok: true, reason: 'current' } : { ok: false, reason: 'stale' };
+}
+
 async function main(): Promise<number> {
   const check = process.argv.includes('--check');
   const report = process.argv.includes('--report');
@@ -554,12 +582,13 @@ async function main(): Promise<number> {
     } catch {
       current = null;
     }
-    if (current === built.text) {
+    const verdict = toolDeliveryDriftVerdict(current, built.text);
+    if (verdict.ok) {
       process.stdout.write(`GEN_TOOL_DELIVERY_CHECK ok ${OUT_PATH}\n`);
       return 0;
     }
     process.stderr.write(
-      `✖ gen:tool-delivery:check — ${OUT_PATH} is ${current === null ? 'MISSING' : 'STALE'}.\n` +
+      `✖ gen:tool-delivery:check — ${OUT_PATH} is ${verdict.reason === 'missing' ? 'MISSING' : 'STALE'}.\n` +
         '  The resolved delivery map no longer matches its inputs. Most often a tool’s schema or\n' +
         '  guidance grew, which silently changes which OTHER tools fit the budget.\n' +
         '  Regenerate and review the diff:  npm run gen:tool-delivery\n',
