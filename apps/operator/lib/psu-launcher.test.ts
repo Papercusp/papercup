@@ -343,6 +343,7 @@ import { CORE_MCP_TOOL_NAMES } from "@papercusp/orchestrator";
 // removed from the source — it would drift the moment the policy re-resolves.
 import {
   CLAUDE_TOOL_DELIVERY as CLAUDE_TOOL_DELIVERY_ARTIFACT,
+  CODEX_TOOL_DELIVERY as CODEX_TOOL_DELIVERY_ARTIFACT,
   OMP_TOOL_DELIVERY as OMP_TOOL_DELIVERY_ARTIFACT,
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore -- generated .mjs data module, no type declarations.
@@ -2667,11 +2668,15 @@ describe("claudeSeedToolNames (EI-23319364088969722 — Claude's own minimal see
   });
 
   it("treats unset / '0' / 'false' as derived (a hatch that opens on \"0\" is worse than none)", () => {
-    const derived = CLAUDE_TOOL_DELIVERY_ARTIFACT.advertised.length;
+    // Compare the NAMES, not the count: an equal-length curated list would satisfy a
+    // length check while advertising a different set of tools, which is precisely the
+    // hand-maintained second copy this plan removed. Length is a proxy; identity is the
+    // claim.
+    const derived = [...CLAUDE_TOOL_DELIVERY_ARTIFACT.advertised];
     for (const v of ["", "0", "false", "False"]) {
       expect(
-        claudeSeedToolNames(processEnv({ PAPERCUSP_CLAUDE_FULL_SEED: v })).length,
-      ).toBe(derived);
+        claudeSeedToolNames(processEnv({ PAPERCUSP_CLAUDE_FULL_SEED: v })),
+      ).toEqual(derived);
     }
   });
 
@@ -2710,6 +2715,35 @@ describe("claudeSeedToolNames (EI-23319364088969722 — Claude's own minimal see
         CLAUDE_TOOL_DELIVERY_ARTIFACT.spentBytes) +
       1;
     expect(overrun).toBeGreaterThan(CLAUDE_TOOL_DELIVERY_ARTIFACT.budgetBytes);
+  });
+
+  it("BUDGET: a non-zero overrun fails the build for EVERY agent kind, not just claude", () => {
+    // The guard above covers claude alone, which made "no agent kind ships over budget" a
+    // claim about one third of the artifact. D-009 unified all three kinds onto ONE
+    // budget, so all three owe the same assertion — otherwise a codex/omp regrowth ships
+    // over budget with every test still green.
+    //
+    // WHAT THIS ACTUALLY ASSERTS, stated precisely because the loose version is vacuous:
+    // floors are never DEFERRED (resolveToolDelivery admits every floor even when the
+    // floors alone exceed the budget — see tool-delivery-policy.test.ts:162-176, which
+    // expects deferred=0 with overrun=500). The overrun is then REPORTED rather than
+    // silently absorbed, and a non-zero report fails HERE. So "a floor was dropped to fit"
+    // is unreachable by construction; "we shipped over budget" is what this catches.
+    for (const [kind, artifact] of [
+      ["claude", CLAUDE_TOOL_DELIVERY_ARTIFACT],
+      ["codex", CODEX_TOOL_DELIVERY_ARTIFACT],
+      ["omp", OMP_TOOL_DELIVERY_ARTIFACT],
+    ] as const) {
+      expect(artifact.budgetOverrun, `${kind} ships with a non-zero budget overrun`).toBe(0);
+      expect(
+        artifact.spentBytes,
+        `${kind} spends more than its budget`,
+      ).toBeLessThanOrEqual(artifact.budgetBytes);
+      // Non-vacuity, per kind: an empty or degraded map would satisfy both assertions
+      // above while measuring nothing at all.
+      expect(artifact.advertised.length, `${kind} advertises a degenerate map`).toBeGreaterThan(40);
+      expect(artifact.spentBytes, `${kind} spends a degenerate number of bytes`).toBeGreaterThan(50_000);
+    }
   });
 
   it("ONE POLICY produces every agent kind's seed (D-005) — they are no longer disjoint lists", () => {

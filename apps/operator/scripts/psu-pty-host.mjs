@@ -2762,7 +2762,23 @@ export function makeCarryRearmController({
       // row is keyed by `mode` instead — never a fabricated/empty drillId.
       const extra = isDrill
         ? { drillId, sessionClass: msg.sessionClass ?? '', reason: 'busy-gate-expired', capMs }
-        : { mode, reason: 'busy-gate-expired', capMs };
+        : {
+          mode,
+          reason: 'busy-gate-expired',
+          capMs,
+          ...(msg?.deliveryId ? { deliveryId: String(msg.deliveryId) } : {}),
+        };
+      // R-1 JOIN KEY. Every terminal row of a production re-arm names EVERY
+      // delivery id it settles (a supersede folds later messages into the same
+      // key), so a census can prove each queued deferral reached exactly one
+      // outcome. Without it, "N queued, M delivered" is existence-only: one
+      // abandoned deferral among hundreds of deliveries reads as healthy.
+      const settledIds = () => [...(pendingMessages.get(key) ?? [])]
+        .map((m) => m?.deliveryId)
+        .filter(Boolean)
+        .map(String);
+      // Drill rows keep their P-020 shape; only production rows gain the key.
+      const terminalIds = () => (isDrill ? {} : { deliveryIds: settledIds() });
       emitEvent(queuedKind, extra);
       void (async () => {
         // WI-5623: a DRILL is a one-shot test — it re-arms ONCE then drops
@@ -2790,7 +2806,7 @@ export function makeCarryRearmController({
           if (!isSuperseded(candidate)) return false;
           emitEvent(droppedKind, {
             ...extra, rearmed: true, reason: 'superseded',
-            observedMaxQuietMs, attempts: attemptsMade,
+            observedMaxQuietMs, attempts: attemptsMade, ...terminalIds(),
           });
           settle(key, { delivered: false, reason: 'superseded' });
           return true;
@@ -2872,7 +2888,24 @@ export function makeCarryRearmController({
                     drillId,
                     sessionClass: deliver.sessionClass ?? '',
                   });
-                settle(key, result ?? { delivered: false, reason: 'recycle-outcome-unavailable' });
+                const outcome = result ?? { delivered: false, reason: 'recycle-outcome-unavailable' };
+                // R-1: the newly-covered modes had NO terminal row on this path.
+                // A performDelivery that returned delivered:false (the turn
+                // verifier aborted or exhausted) settled silently — the one
+                // outcome the re-arm exists to make impossible. carry-respawn
+                // keeps its existing recycle-side rows (renaming would orphan
+                // the drill ledger), and drills keep their P-020 shape.
+                if (performDelivery && !isDrill && mode !== 'carry-respawn') {
+                  emitEvent(outcome.delivered ? 'wake-rearm-delivered' : droppedKind, {
+                    ...extra,
+                    rearmed: true,
+                    reason: outcome.delivered ? 'delivered' : String(outcome.reason ?? 'undelivered'),
+                    observedMaxQuietMs,
+                    attempts: attemptsMade,
+                    ...terminalIds(),
+                  });
+                }
+                settle(key, outcome);
                 return;
               }
             } finally {
@@ -2904,7 +2937,7 @@ export function makeCarryRearmController({
           // anti-spin cap without ever idling — terminal, loud.
           emitEvent(droppedKind, {
             ...extra, rearmed: true, reason: deferReason,
-            observedMaxQuietMs, attempts: attemptsMade,
+            observedMaxQuietMs, attempts: attemptsMade, ...terminalIds(),
           });
           settle(key, { delivered: false, reason: deferReason });
         } catch (error) {
@@ -2913,6 +2946,7 @@ export function makeCarryRearmController({
             rearmed: true,
             reason: 'rearm-error',
             detail: String(error?.message ?? error).slice(0, 200),
+            ...terminalIds(),
           });
           settle(key, { delivered: false, reason: 'rearm-error' });
         } finally {

@@ -381,11 +381,11 @@ function replaceCheckpoint(
 }
 
 function knownResources(
-  target: StoredWorkspaceHostDestroyTarget,
+  target: StoredWorkspaceHostDestroyTarget | undefined,
   checkpoints: readonly WorkspaceHostResourceCheckpoint[],
 ): WorkspaceHostResourceRef[] {
   const byIdentity = new Map<string, WorkspaceHostResourceRef>();
-  for (const resource of target.resources.map((entry) => entry.resource)) {
+  for (const resource of (target?.resources ?? []).map((entry) => entry.resource)) {
     byIdentity.set(`${resource.target}:${resource.kind}:${resource.providerId}`, resource);
   }
   for (const checkpoint of checkpoints) {
@@ -495,14 +495,24 @@ async function observe(
   target: StoredWorkspaceHostDestroyTarget,
   store: WorkspaceHostLifecycleStore,
   context: WorkspaceHostProviderContext,
+  checkpoints: readonly WorkspaceHostResourceCheckpoint[],
 ): Promise<WorkspaceHostObservation | undefined> {
   try {
     const observation = await input.provider.observe(
-      {
-        hostId: input.action === 'restore' ? input.desired!.hostId : input.hostId,
-        target: target.desired.target,
-        resources: target.resources.map((entry) => entry.resource),
-      },
+      // A restore built a distinct host: observe what THIS operation created, never the source's
+      // population (that stamped the source VM's state onto the new host id, and had nothing to
+      // read at all once the source was destroyed).
+      input.action === 'restore'
+        ? {
+            hostId: input.desired!.hostId,
+            target: input.desired!.target,
+            resources: knownResources(undefined, checkpoints),
+          }
+        : {
+            hostId: input.hostId,
+            target: target.desired.target,
+            resources: target.resources.map((entry) => entry.resource),
+          },
       context,
     );
     await store.recordObservation(input.workspaceId, observation);
@@ -530,10 +540,15 @@ export async function runWorkspaceHostLifecycle(
   const operationId = nonEmpty(input.operationId ?? randomUUID(), 'operationId');
   const target = await baseStore.readTarget(workspaceId, hostId);
   if (!target) throw new WorkspaceHostProvisioningRequestError([`workspace host '${hostId}' was not found`]);
-  if (target.observedState === 'absent') {
+  // D-388: a snapshot exists for the day its source is gone, and a destroyed source is observed
+  // absent with its resources deregistered — so restore alone may name one, and only from a snapshot
+  // of that exact host. The provider's READY / managed-label / same-project checks remain the gate.
+  const restoresOwnSnapshot =
+    input.action === 'restore' && input.snapshot?.hostId === hostId && input.snapshot.target === target.target;
+  if (target.observedState === 'absent' && !restoresOwnSnapshot) {
     throw new WorkspaceHostProvisioningRequestError(['workspace host is absent']);
   }
-  if (target.resources.length === 0) {
+  if (target.resources.length === 0 && !restoresOwnSnapshot) {
     throw new WorkspaceHostProvisioningRequestError(['workspace host has no registered provider resource population']);
   }
   if (target.id !== hostId || target.desired.hostId !== hostId) {
@@ -834,7 +849,7 @@ export async function runWorkspaceHostLifecycle(
     }
 
     if (action.kind === 'complete' && action.status === 'succeeded') {
-      await observe(input, target, store, context);
+      await observe(input, target, store, context, checkpoints);
       /*
        * This branch is generic across every lifecycle action, so on its own it can only ever
        * describe the PROVIDER mutation — never whether the host can serve. For most actions

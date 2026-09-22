@@ -9,15 +9,34 @@
  * listing_kind='blueprint'.
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // Map blueprint id → an on-disk blueprint.yaml the route reads with real fs.
 const bpPath: Record<string, string> = {};
 
+// What the fake `git clone` of github_url materializes: a multi-blueprint library
+// (one top-level dir per blueprint), exactly the layout the official mirror serves.
+let servedIds: string[] = ['coding', 'base'];
+const clonedTo: string[] = [];
+// What the release preparer was handed, captured WHILE the clone still exists
+// (the route removes the clone afterwards, so a later read would fall through).
+const prepareSaw: Array<{ blueprintFile: string; blueprintExists: boolean; base: string | null }> = [];
+
 vi.mock('../../blueprint/installed-blueprints', () => ({
   operatorResolveExtends: () => (id: string) => bpPath[id] ?? null,
+}));
+vi.mock('../../cupboard/install-io', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../cupboard/install-io')>()),
+  gitCloneShallow: vi.fn(async (_url: string, dest: string) => {
+    clonedTo.push(dest);
+    for (const id of servedIds) {
+      mkdirSync(join(dest, id), { recursive: true });
+      writeFileSync(join(dest, id, 'blueprint.yaml'), `id: ${id}\nvisibility: public\n# served copy\n`, 'utf8');
+    }
+    mkdirSync(dest, { recursive: true });
+  }),
 }));
 vi.mock('../../cupboard/publish-listing', () => ({
   publishListingToCupboard: vi.fn(async () => ({ ok: true, status: 200, data: { id: 'lst-bp-1' } })),
@@ -32,7 +51,13 @@ vi.mock('../../cupboard/blueprint-release', () => {
   }
   return {
     BlueprintLifecycleError,
-    prepareBlueprintPublicRelease: vi.fn(async ({ listingRef }: { listingRef: string }) => ({
+    prepareBlueprintPublicRelease: vi.fn(async ({ listingRef, blueprintFile, resolveExtends }: {
+      listingRef: string;
+      blueprintFile: string;
+      resolveExtends: (id: string) => string | null;
+    }) => {
+      prepareSaw.push({ blueprintFile, blueprintExists: existsSync(blueprintFile), base: resolveExtends('base') });
+      return {
       source: {
         id: listingRef,
         version: '1.0.0',
@@ -45,13 +70,15 @@ vi.mock('../../cupboard/blueprint-release', () => {
       },
       release: { visibility: 'public', manifest: {}, bytes: Buffer.from('release') },
       manifest: {},
-    })),
+      };
+    }),
   };
 });
 
 import route from '../routes/cupboard-publish-blueprint';
 import { publishListingToCupboard } from '../../cupboard/publish-listing';
 import { parseGithubRemote, fetchGithubRepoMeta } from '../../cupboard/resolve-repo-coords';
+import { gitCloneShallow } from '../../cupboard/install-io';
 
 let tmpRoot: string;
 
@@ -65,6 +92,9 @@ beforeAll(() => {
   write('coding', 'id: coding\nvisibility: public\ndescription: The coding hive\n');
   write('audit', 'id: audit\nkind: harness\ndescription: Internal audit loop\n');
   write('papercup', 'id: papercup\nvisibility: internal\ndescription: Internal infra\n');
+  // The publisher's LOCAL parent — deliberately a different file from the served
+  // `base`, as the official mirror's base differs from the bundled one.
+  write('base', 'id: base\n# host copy\n');
 });
 
 afterAll(() => {
@@ -87,6 +117,46 @@ beforeEach(() => {
   vi.mocked(parseGithubRemote).mockReturnValue({ owner: 'Papercusp', repo: 'blueprints' } as never);
   vi.mocked(fetchGithubRepoMeta).mockClear();
   vi.mocked(fetchGithubRepoMeta).mockResolvedValue({ id: 42, html_url: 'https://github.com/Papercusp/blueprints' } as never);
+  vi.mocked(gitCloneShallow).mockClear();
+  servedIds = ['coding', 'base'];
+  clonedTo.length = 0;
+  prepareSaw.length = 0;
+});
+
+describe('POST /cupboard/publish-blueprint — signs the SERVED bytes (WI-10001750 / EI-23992492696259433)', () => {
+  it('prepares the release from a clone of github_url through the install seam, not from the local copy', async () => {
+    const res = await post({ id: 'coding', github_url: 'https://github.com/Papercusp/blueprints' });
+    expect(res.status).toBe(200);
+    expect(gitCloneShallow).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(gitCloneShallow).mock.calls[0][0]).toBe('https://github.com/Papercusp/blueprints');
+    const clone = clonedTo[0];
+    expect(prepareSaw).toHaveLength(1);
+    // The blueprint signed is the one the listing serves...
+    expect(prepareSaw[0].blueprintFile).toBe(join(clone, 'coding', 'blueprint.yaml'));
+    expect(prepareSaw[0].blueprintFile).not.toBe(bpPath.coding);
+    expect(prepareSaw[0].blueprintExists).toBe(true);
+    // ...and its `extends` parent resolves to the SERVED base, not the host's.
+    expect(prepareSaw[0].base).toBe(join(clone, 'base', 'blueprint.yaml'));
+    expect(prepareSaw[0].base).not.toBe(bpPath.base);
+    // The scratch clone never outlives the request.
+    expect(existsSync(clone)).toBe(false);
+  });
+
+  it('refuses to sign (422, nothing published) when the served repo does not carry the listing ref', async () => {
+    servedIds = ['base'];
+    const res = await post({ id: 'coding', github_url: 'https://github.com/Papercusp/blueprints' });
+    expect(res.status).toBe(422);
+    expect((await res.json()).error).toBe('blueprint_release_invalid');
+    expect(prepareSaw).toHaveLength(0);
+    expect(publishListingToCupboard).not.toHaveBeenCalled();
+    expect(existsSync(clonedTo[0])).toBe(false);
+  });
+
+  it('never clones for a blueprint the visibility gate refuses', async () => {
+    const res = await post({ id: 'audit', github_url: 'https://github.com/Papercusp/blueprints' });
+    expect(res.status).toBe(422);
+    expect(gitCloneShallow).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /cupboard/publish-blueprint — public-visibility gate (P-002)', () => {

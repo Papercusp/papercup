@@ -211,6 +211,12 @@ const argsSchema = z
       .max(20)
       .optional()
       .describe('Recover exact raw refs from this plan history; missing refs remain explicit.'),
+    operationalBrief: z
+      .boolean()
+      .optional()
+      .describe(
+        "Add `operationalBrief`: current phase, next executable item, blockers, authority, acceptance state and last verified evidence, projected from this same read. Fields not measured here are explicit `unknown` with a reason, never zero. Combine with shipReadiness:true for a measured ship verdict.",
+      ),
     shipReadiness: z
       .boolean()
       .optional()
@@ -1297,6 +1303,19 @@ export default defineTool({
             }).`,
           };
         }
+      }
+    }
+    // use-existing-router-for-review-requests-2026-09-08 P-007 (D-008/D-009):
+    // the opt-in plan operational brief. A pure projection over the result
+    // record just assembled — AFTER shipReadiness so a requested ship verdict
+    // feeds the brief's acceptance state instead of a second evaluation — and
+    // outside cachedRead for the same staleness reason as shipReadiness.
+    if (args.operationalBrief) {
+      const { projectPlanOperationalBrief, renderOperationalBrief } = await import('../../operational-brief');
+      for (const result of env.results as Array<Record<string, unknown>>) {
+        if (result.ok !== true) continue;
+        const brief = projectPlanOperationalBrief(result, { itemsComplete: !requestedItemIds });
+        result.operationalBrief = { ...brief, text: renderOperationalBrief(brief) };
       }
     }
     // EI-22638466916646751: the plan-start consult used to be visible only as a

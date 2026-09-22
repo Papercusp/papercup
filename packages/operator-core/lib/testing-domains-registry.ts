@@ -1596,6 +1596,7 @@ defineTestDomain({
       runners: [
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/federation-asserts.selftest.sh'], label: 'federation port self-discovery' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/release-artifacts.selftest.sh'], label: 'release artifacts guard' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/release-content-identity.selftest.sh'], label: 'release content identity — per-platform stage identity + receipt invalidation' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/release-tag-pin.selftest.sh'], label: 'release tag pin + exact repair guard' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/gen-latest-manifest.selftest.sh'], label: 'latest-manifest generation' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/live-federation-gate-reaper.selftest.sh'], label: 'live-federation-gate reaper' },
@@ -1622,6 +1623,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/disk-preflight.selftest.sh'], label: 'Build disk preflight: refuses ENOSPC(28) up front, fails open when unmeasurable, and every staging entry point calls it (EI-20090527288494606)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/mac-vm-fresh-state.selftest.sh'], label: 'macOS fresh-install state isolation: trap-restores both Papercusp roots across PASS/FAIL/TERM and refuses stale backups (EI-20332777704574867)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/streak-escalation.selftest.sh'], label: 'live-federation-gate streak escalation: a run of consecutive non-GREEN verdicts computes its own streak length and escalates, instead of going quiet because each repeat reason was already filed (WI-39354)' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/remote-object-state.selftest.sh'], label: 'upload-release.sh remote_state: a multipart object is never accepted on SIZE alone, so a rebuilt-but-same-size artifact cannot be silently kept as already-uploaded (EI-23963309971611146)' },
       ],
     },
   ],

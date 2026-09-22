@@ -85,7 +85,10 @@ function providerHarness() {
   return { provider, apply, reconcile };
 }
 
-function storeHarness(seed: readonly WorkspaceHostResourceCheckpoint[] = []) {
+function storeHarness(
+  seed: readonly WorkspaceHostResourceCheckpoint[] = [],
+  source: { observedState?: string; resources?: readonly (typeof vm)[] } = {},
+) {
   let checkpoints: WorkspaceHostResourceCheckpoint[] = seed.map((entry) => ({ ...entry }));
   const store: WorkspaceHostLifecycleStore = {
     readTarget: vi.fn(async () => ({
@@ -93,12 +96,12 @@ function storeHarness(seed: readonly WorkspaceHostResourceCheckpoint[] = []) {
       name: 'Host one',
       connectionId: 'connection-1',
       target: 'gcp',
-      observedState: 'stopped',
+      observedState: source.observedState ?? 'stopped',
       hostGeneration: 1,
       desiredRevision: 1,
       observedRevision: 1,
       desired,
-      resources: [{ resource: vm, registeredAt: '2026-08-26T00:00:00Z' }],
+      resources: (source.resources ?? [vm]).map((resource) => ({ resource, registeredAt: '2026-08-26T00:00:00Z' })),
     })),
     upsertHost: vi.fn(async () => {}),
     beginOperation: vi.fn(async () => {}),
@@ -357,6 +360,82 @@ describe('snapshot restore (P-018)', () => {
       providerResource: expect.objectContaining({ providerId: 'pc-host-restored' }),
     });
     expect(diskRow).toMatchObject({ state: 'failed', retryClass: 'terminal' });
+  });
+
+  // D-388: a backup exists for the day its source is gone. The source row of a destroyed host is
+  // observed `absent` and its provider resources are deregistered, so refusing an absent source
+  // made recovery-after-loss impossible by construction — the one journey restore is for.
+  describe('from a destroyed source (D-388)', () => {
+    const restoredVm = { ...vm, providerId: 'pc-host-restored' };
+    const destroyedSource = { observedState: 'absent', resources: [] } as const;
+
+    it('restores onto the NEW host id when the snapshot belongs to that exact source', async () => {
+      const { store } = storeHarness([], destroyedSource);
+      const { provider, apply } = restoreHarness();
+      apply.mockResolvedValue({
+        operationId: 'op-restore-1',
+        stepId: 'restore-instance',
+        state: 'applied',
+        observedAt: '2026-08-27T00:00:05Z',
+        resource: restoredVm,
+      } satisfies WorkspaceHostApplyResult);
+
+      await expect(runWorkspaceHostLifecycle(restoreInput(provider, store))).resolves.toMatchObject({
+        status: 'succeeded',
+        hostId: 'host-restored',
+      });
+      // The provider still gets the gate it owns (READY, managed labels, same project): it is asked
+      // to plan with the snapshot of the source, and an empty source population, not a fabricated one.
+      expect(provider.plan).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'restore', snapshot, host: expect.objectContaining({ resources: [] }) }),
+        expect.anything(),
+      );
+    });
+
+    it('still refuses an absent source when the snapshot belongs to a DIFFERENT host', async () => {
+      const { store } = storeHarness([], destroyedSource);
+      const { provider } = restoreHarness();
+
+      await expect(
+        runWorkspaceHostLifecycle({ ...restoreInput(provider, store), snapshot: { ...snapshot, hostId: 'host-other' } }),
+      ).rejects.toMatchObject({
+        name: 'WorkspaceHostProvisioningRequestError',
+        problems: ['workspace host is absent'],
+      });
+      expect(provider.plan).not.toHaveBeenCalled();
+    });
+
+    it('still refuses every non-restore action on an absent host', async () => {
+      const { store } = storeHarness([], destroyedSource);
+      const { provider, apply } = providerHarness();
+
+      await expect(runWorkspaceHostLifecycle(input(provider, store))).rejects.toMatchObject({
+        name: 'WorkspaceHostProvisioningRequestError',
+        problems: ['workspace host is absent'],
+      });
+      expect(apply).not.toHaveBeenCalled();
+    });
+
+    it("observes the RESTORED host's own resources, never the source's", async () => {
+      // With the source present this read the SOURCE VM and stamped its state onto the new host id;
+      // with the source gone it had no project to read at all.
+      const { store } = storeHarness();
+      const { provider, apply } = restoreHarness();
+      apply.mockResolvedValue({
+        operationId: 'op-restore-1',
+        stepId: 'restore-instance',
+        state: 'applied',
+        observedAt: '2026-08-27T00:00:05Z',
+        resource: restoredVm,
+      } satisfies WorkspaceHostApplyResult);
+
+      await runWorkspaceHostLifecycle(restoreInput(provider, store));
+
+      expect(provider.observe).toHaveBeenCalledWith(
+        expect.objectContaining({ hostId: 'host-restored', resources: [restoredVm] }),
+        expect.anything(),
+      );
+    });
   });
 });
 
