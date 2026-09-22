@@ -2531,7 +2531,16 @@ export function fingerprintDeliveredOrientation(
  */
 export interface OrientationDeps {
   held: (ownerId: string, workspaceId: string) => Promise<OrientationHeldItem[]>;
-  ownerDirectives?: (workspaceId: string) => Promise<OrientationOwnerDirective[]>;
+  /**
+   * ⚠ `ownerId` LABELS, it never FILTERS. This reader returns EVERY directive in
+   * the workspace — that is what the owner asked for (D-004: "agents seeing all
+   * the directives so that agent knows what needs to be done/is being done").
+   * The id is here only so `addressedToMe` can be decided, because a segment
+   * `render` receives (state, committed) and has no way to know whose turn it is.
+   * A future reader that narrows the QUERY by ownerId reintroduces the opposite
+   * bug — directives invisible to everyone but their addressee.
+   */
+  ownerDirectives?: (workspaceId: string, ownerId: string) => Promise<OrientationOwnerDirective[]>;
   historyUpdates: (ownerId: string, workspaceId: string) => Promise<OrientationHistoryUpdate[]>;
   effortUpdates: (ownerId: string, workspaceId: string) => Promise<OrientationEffortUpdate[]>;
   /**

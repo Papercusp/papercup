@@ -138,6 +138,27 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: 'append-only activity LOG (who did what, when) — not a current-holder claim any reader treats as live.',
   },
+  'orientation_class_reach.owner_id': {
+    status: 'exempt',
+    reason:
+      'migration 1192 per-owner orientation TELEMETRY counters (turns_rendered / rows_rendered, first/last_rendered_at) — ' +
+      'a historical measurement of what was actually rendered to an id, not a current-holder claim. Re-keying would ' +
+      'restate one agent reach as another and corrupt the metric, so stranding it is the correct outcome.',
+  },
+  'orientation_obligation_action.owner_id': {
+    status: 'exempt',
+    reason:
+      'migration 1192 per-owner obligation LATENCY telemetry (turns_outstanding, turns_to_disposition, dispositions) — ' +
+      'measures how long the id that actually saw an obligation took to disposition it. No reaper or reader treats the ' +
+      'row as a live claim, and rebinding would attribute one agent latency to another.',
+  },
+  'psu_pty_host_events.owner_id': {
+    status: 'exempt',
+    reason:
+      'append-only psu pty host EVENT LOG (ts / kind / payload / row_digest) carrying its own TTL retention sweep — ' +
+      'psu-pty-host-events-ingest.ts DELETEs aged rows, so this is provenance of which id emitted the event and is ' +
+      'aged out rather than re-keyed.',
+  },
   'event_wake_attempts.subscriber_id': {
     status: 'exempt',
     reason:
