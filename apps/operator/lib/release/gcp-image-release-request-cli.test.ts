@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
+  WORKSPACE_HOST_DESKTOP_SESSION_ENTRYPOINT,
   WORKSPACE_HOST_PUI_COMPANION_PATH,
   WORKSPACE_HOST_PUI_ENTRYPOINT,
   WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
@@ -68,6 +69,8 @@ const REQUIRED_MATERIAL_BODIES: Readonly<Record<string, string>> = {
     "#!/usr/bin/env node\n// fixture stand-in for the remote initializer\n",
   [WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT]:
     "#!/usr/bin/env node\n// fixture stand-in for the material-delivery program\n",
+  [WORKSPACE_HOST_DESKTOP_SESSION_ENTRYPOINT]:
+    "#!/usr/bin/env node\n// fixture stand-in for the desktop session entrypoint\n",
   [WORKSPACE_HOST_PUI_ENTRYPOINT]: "#!/usr/bin/env bash\nexit 0\n",
   [WORKSPACE_HOST_PUI_COMPANION_PATH]: "fixture pui companion",
   [WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH]: '{"schemaVersion":1}\n',
