@@ -1239,6 +1239,41 @@ export interface OrientationClassSegment<T> {
 }
 
 /**
+ * P-019: the hard per-class row ceiling, and the verb that recovers what it evicts.
+ *
+ * WHY A CEILING AT ALL, given the composer already has a character budget: the
+ * outer budget in {@link composeOrientationBlock} BREAKS on the first line that
+ * does not fit, so a chatty class does not truncate ITSELF — it evicts every
+ * class ordered after it. Two classes are genuinely unbounded without this:
+ * `obligations` spreads whatever its provider returns (it TRUSTS the reader's
+ * `maxEntries`, it does not enforce it), and `announcedGates` emits one warning
+ * line per gate with no cap. Either one, given a runaway provider, silently
+ * starves `neverDropFacts` — the guard-rail class whose whole contract is that
+ * it is never dropped. A per-class ceiling is what makes the emission order in
+ * this registry SAFE, which is why P-019 pairs the two.
+ *
+ * REQUIRED, never optional. An optional ceiling reproduces exactly the defect it
+ * exists to prevent: the next class lands unbounded because nobody thought about
+ * it, and nothing fails. Required makes that omission a COMPILE error instead
+ * (the same rule D-073 ruling 5 applied to `OrientationDeps`).
+ *
+ * The ceiling counts rows across ALL of a class's segments, because "per class"
+ * is the unit P-019 names and the unit a reader experiences — `held` contributes
+ * four segments that are one paragraph to the agent reading them.
+ */
+export interface OrientationRowCeiling {
+  /** Max rows this class may contribute, summed over its segments. */
+  readonly maxRows: number;
+  /**
+   * The verb a reader runs to recover rows the ceiling evicted, rendered into
+   * the `+N omitted` disclosure. Required even for a class that cannot reach
+   * its ceiling today: the disclosure must never be the first place someone
+   * discovers that recovery was never worked out.
+   */
+  readonly recoveryVerb: string;
+}
+
+/**
  * The shared, sink-parameterized declaration of ONE orientation state category:
  * its data source (`populate`), its rendering (`segments`), its watermark token
  * and the prompt surfaces it applies to.
@@ -1263,6 +1298,8 @@ export interface OrientationClassEntry<T> {
   readonly populate: (state: OrientationState) => T;
   /** RENDERING: ordered segments; see {@link OrientationClassSegment}. */
   readonly segments: readonly OrientationClassSegment<T>[];
+  /** P-019: the hard row ceiling for this class. REQUIRED — see {@link OrientationRowCeiling}. */
+  readonly rowCeiling: OrientationRowCeiling;
   /**
    * Set when the class is declared but deliberately renders NOTHING, carrying
    * the reason. A dropped class is a decision, not a coverage gap.
@@ -1275,6 +1312,8 @@ export interface RegisteredOrientationClass {
   readonly id: keyof OrientationState;
   readonly watermarkTokens: readonly string[];
   readonly applicableSinks: readonly OrientationSink[];
+  /** P-019: see {@link OrientationRowCeiling}. Required, so a new class cannot land unbounded. */
+  readonly rowCeiling: OrientationRowCeiling;
   readonly unrenderedReason?: string;
   readonly segments: readonly {
     readonly order: number;
@@ -1292,6 +1331,7 @@ function orientationClass<T>(entry: OrientationClassEntry<T>): RegisteredOrienta
     id: entry.id,
     watermarkTokens: entry.watermarkTokens,
     applicableSinks: entry.applicableSinks,
+    rowCeiling: entry.rowCeiling,
     ...(entry.unrenderedReason === undefined ? {} : { unrenderedReason: entry.unrenderedReason }),
     segments: entry.segments.map((segment) => ({
       order: segment.order,
@@ -1408,6 +1448,7 @@ const TURN_START_LEADER_BRIEF_CARRY_AND_AGENT_ORDERS: readonly OrientationSink[]
 export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] = [
   orientationClass<OrientationToolSurface | null>({
     id: 'toolSurface',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'agent_tools:list' },
     watermarkTokens: ['toolSurface'],
     applicableSinks: TURN_START,
     populate: (state) => state.toolSurface,
@@ -1433,6 +1474,8 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationOwnerDirective[]>({
     id: 'ownerDirectives',
+    // 2 verbatim directives + the class's own "+N more" line.
+    rowCeiling: { maxRows: 3, recoveryVerb: 'orders:list { open: true }' },
     watermarkTokens: ['ownerDirectives'],
     applicableSinks: TURN_START_AND_AGENT_ORDERS,
     populate: (state) => state.ownerDirectives ?? [],
@@ -1459,6 +1502,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<CarryBlindWindow | null>({
     id: 'carryBlindWindow',
+    rowCeiling: { maxRows: 1, recoveryVerb: "sessions:search { session:'self' }" },
     watermarkTokens: ['carryBlind'],
     applicableSinks: TURN_START,
     populate: (state) => state.carryBlindWindow,
@@ -1478,6 +1522,8 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationOpenCheck[] | undefined>({
     id: 'openChecks',
+    // 2 claim/blocker rows + the class's own "+N more" line.
+    rowCeiling: { maxRows: 3, recoveryVerb: 'loop:status / work_items:get' },
     watermarkTokens: ['openChecks'],
     applicableSinks: TURN_START_AND_AGENT_ORDERS,
     populate: (state) => state.openChecks,
@@ -1527,6 +1573,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationHistoryUpdate[] | undefined>({
     id: 'historyUpdates',
+    rowCeiling: { maxRows: 2, recoveryVerb: 'work_items:get' },
     watermarkTokens: ['historyUpdates'],
     applicableSinks: TURN_START,
     populate: (state) => state.historyUpdates,
@@ -1546,6 +1593,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationEffortUpdate[] | undefined>({
     id: 'effortUpdates',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'plans:get' },
     watermarkTokens: ['effortUpdates'],
     applicableSinks: TURN_START,
     populate: (state) => state.effortUpdates,
@@ -1564,6 +1612,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<number>({
     id: 'unansweredDirected',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'coord:inbox { unanswered: true }' },
     watermarkTokens: ['unanswered'],
     applicableSinks: TURN_START_AND_AGENT_ORDERS,
     populate: (state) => state.unansweredDirected,
@@ -1580,6 +1629,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<number>({
     id: 'unansweredStale',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'coord:inbox { unanswered: true }' },
     watermarkTokens: ['unansweredStale'],
     applicableSinks: TURN_START,
     populate: (state) => state.unansweredStale,
@@ -1599,6 +1649,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationOpenAsk | null>({
     id: 'openAsks',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'coord:inbox' },
     watermarkTokens: ['openAsks'],
     applicableSinks: TURN_START,
     populate: (state) => state.openAsks,
@@ -1619,6 +1670,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<{ authorityVerdict: OrientationAuthorityVerdict | null }>({
     id: 'authorityVerdict',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'mode:get' },
     watermarkTokens: ['authority'],
     applicableSinks: TURN_START,
     populate: (state) => ({ authorityVerdict: state.authorityVerdict }),
@@ -1635,6 +1687,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<{ modes: OrientationModeState[] | null }>({
     id: 'modes',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'mode:get' },
     watermarkTokens: ['modes'],
     applicableSinks: TURN_START,
     populate: (state) => ({ modes: state.modes }),
@@ -1651,6 +1704,8 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<{ armed: boolean; withheld: boolean }>({
     id: 'loopArmed',
+    // two segments (armed line + the wake-source warning).
+    rowCeiling: { maxRows: 2, recoveryVerb: 'loop:status' },
     watermarkTokens: ['loop'],
     applicableSinks: TURN_START,
     populate: (state) => ({ armed: state.loopArmed, withheld: state.loopFireWithheld }),
@@ -1678,6 +1733,8 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationHeldItem[]>({
     id: 'held',
+    // four segments: stale/missing/held/checkpoint.
+    rowCeiling: { maxRows: 4, recoveryVerb: 'work_items:get' },
     watermarkTokens: ['held'],
     applicableSinks: TURN_START,
     populate: (state) => state.held,
@@ -1723,6 +1780,10 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<AgentObligationBrief | null | undefined>({
     id: 'obligations',
+    // detailRef line + the provider's projected actions. The reader's own
+    // maxEntries is 3, but it is the PROVIDER's number and this class only
+    // spreads whatever it returns - this ceiling is what actually enforces it.
+    rowCeiling: { maxRows: 4, recoveryVerb: 'orders:list { open: true }' },
     watermarkTokens: ['obligations'],
     applicableSinks: TURN_START_AND_AGENT_ORDERS,
     populate: (state) => state.obligations,
@@ -1756,6 +1817,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<string[]>({
     id: 'neverDropFacts',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'facts:list' },
     watermarkTokens: ['facts'],
     // P-025: also declared for the leader-brief sink, which genuinely selects it
     // (see TURN_START_AND_LEADER_BRIEF above). A fleet leader has the widest
@@ -1787,6 +1849,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationExecutableFrontier | null>({
     id: 'executableFrontier',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'plans:items { actionable: true }' },
     watermarkTokens: ['frontier'],
     applicableSinks: TURN_START,
     populate: (state) => state.executableFrontier,
@@ -1803,6 +1866,8 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationAnnouncedGate[]>({
     id: 'announcedGates',
+    // one line per gate WARNING (uncapped in the renderer) + the gate list.
+    rowCeiling: { maxRows: 3, recoveryVerb: 'events:catalog' },
     watermarkTokens: ['gates'],
     // P-027: the leader brief ALREADY rendered announced gates, but from an
     // undeclared read — so this table under-reported which surfaces carry the
@@ -1836,6 +1901,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationInboxEntry[]>({
     id: 'inboxRecent',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'coord:inbox' },
     watermarkTokens: ['inbox'],
     applicableSinks: TURN_START,
     populate: (state) => state.inboxRecent,
@@ -1852,6 +1918,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<boolean>({
     id: 'loopFireWithheld',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'loop:status' },
     watermarkTokens: ['loopWithheld'],
     applicableSinks: TURN_START,
     populate: (state) => state.loopFireWithheld,
@@ -1863,6 +1930,8 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationImprovementTriage | null>({
     id: 'improvementTriage',
+    // P-017 withdrew the line; the class renders nothing by decision.
+    rowCeiling: { maxRows: 0, recoveryVerb: 'improvements:capture' },
     watermarkTokens: [],
     applicableSinks: TURN_START,
     populate: (state) => state.improvementTriage,
@@ -1957,7 +2026,91 @@ export function projectOrientationRows(
       rows.push({ classId, order, text });
     }
   }
-  return rows;
+  return boundOrientationRows(rows, registry);
+}
+
+/**
+ * PURE: enforce each class's {@link OrientationRowCeiling} on a projected row list,
+ * disclosing what it evicted (P-019).
+ *
+ * Applied INSIDE {@link projectOrientationRows} rather than at each sink, so every
+ * surface is bounded by construction and the P-018 "same rows everywhere" equality
+ * still holds — a sink that bounded itself would be the second row builder that
+ * registry exists to prevent.
+ *
+ * EVICTION ORDER is the registry's own ascending `order`, NOT a second ranking.
+ * P-019's parenthetical (owner directives > walls > waiting-on > directed msgs)
+ * reads as a rival cross-class order, and implementing it literally would have put
+ * `neverDropFacts` second while the registry deliberately places it at 130, after
+ * the obligation recovery route that must fit first (see that class's comment).
+ * Two contradictory priority rules in one file is the defect, not the fix. What the
+ * parenthetical was actually reaching for — walls must not be starved by a chattier
+ * class — is delivered by the ceiling itself: once `obligations` and `announcedGates`
+ * cannot run away, the classes ordered after them stop being collateral. See D-076.
+ *
+ * WITHIN a class the leading rows are kept, which is each renderer's own priority
+ * order (openChecks sorts contested-first; ownerDirectives emits newest-first) — the
+ * bounder cannot re-derive recency from a rendered string and does not pretend to.
+ */
+export function boundOrientationRows(
+  rows: readonly OrientationRow[],
+  registry: readonly RegisteredOrientationClass[] = ORIENTATION_CLASS_REGISTRY,
+): OrientationRow[] {
+  const ceilings = new Map(registry.map((entry) => [entry.id, entry.rowCeiling] as const));
+  const kept: OrientationRow[] = [];
+  const seen = new Map<keyof OrientationState, number>();
+  const evicted = new Map<keyof OrientationState, { count: number; order: number }>();
+
+  for (const row of rows) {
+    const ceiling = ceilings.get(row.classId);
+    // An unregistered class is left ALONE rather than silently dropped: this is a
+    // bounder, and a row it cannot find a ceiling for is a registry gap for the
+    // coverage test to report, not content for this function to delete.
+    if (!ceiling) {
+      kept.push(row);
+      continue;
+    }
+    const count = seen.get(row.classId) ?? 0;
+    if (count >= ceiling.maxRows) {
+      const prior = evicted.get(row.classId);
+      evicted.set(row.classId, { count: (prior?.count ?? 0) + 1, order: prior?.order ?? row.order });
+      continue;
+    }
+    seen.set(row.classId, count + 1);
+    kept.push(row);
+  }
+
+  if (evicted.size === 0) return kept;
+
+  const out = [...kept];
+  for (const [classId, info] of evicted) {
+    const ceiling = ceilings.get(classId);
+    if (!ceiling) continue;
+    const disclosure: OrientationRow = {
+      classId,
+      order: info.order,
+      text: `- ${classId}: +${info.count} omitted — ${ceiling.recoveryVerb}`,
+    };
+    // Anchor the disclosure to its OWN class so it inherits that class's priority
+    // under the outer character budget: a recovery route that outlives the rows it
+    // describes, or one that drifts to the tail and is trimmed, are both useless.
+    let lastIndex = -1;
+    for (let i = out.length - 1; i >= 0; i -= 1) {
+      if (out[i].classId === classId) {
+        lastIndex = i;
+        break;
+      }
+    }
+    if (lastIndex >= 0) {
+      out.splice(lastIndex + 1, 0, disclosure);
+      continue;
+    }
+    // maxRows: 0 — nothing of the class survived to anchor to, so fall back to the
+    // order slot its first row would have occupied.
+    const insertAt = out.findIndex((row) => row.order > info.order);
+    out.splice(insertAt < 0 ? out.length : insertAt, 0, disclosure);
+  }
+  return out;
 }
 
 /**
