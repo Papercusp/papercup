@@ -44,6 +44,13 @@ import {
   type HostedProviderDelegationRecord,
 } from '../workspace-host/hosted-provider-delegation';
 import { resolveHostedGcpAuth } from '../workspace-host/hosted-gcp-auth';
+import { HostedSessionCookieCodec } from '../auth/hosted-session';
+import { createHostedFirstWorkspace } from '../auth/hosted/first-workspace';
+import {
+  createHostedFirstWorkspaceDependencies,
+  HOSTED_FIRST_WORKSPACE_ORGANIZATIONS_ENV,
+  parseFirstWorkspaceOrganizations,
+} from '../auth/hosted/first-workspace-dependencies';
 
 export const HOSTED_CONTROL_PLANE_DISTRIBUTION_PROFILE = 'hosted-control-plane';
 
@@ -62,6 +69,7 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'POST /hosted/browser/workspace-hosts/connection',
   'POST /hosted/browser/workspace-hosts/provision',
   'POST /hosted/browser/workspace-hosts/action',
+  'POST /hosted/browser/onboarding/first-workspace',
   'POST /hosted/workspaces/:workspaceId/connectors/enroll',
   'POST /hosted/workspaces/:workspaceId/connectors/rotate',
   'POST /hosted/workspaces/:workspaceId/connectors/revoke',
@@ -89,6 +97,8 @@ export interface HostedRuntimeConfiguration {
   readonly workosCookiePasswordRef: string;
   readonly workosWebhookSecretRef: string;
   readonly workosWebhookSignatureKeyRef?: string;
+  /** Organizations admitted through the first-workspace door (D-384). Absent = closed. */
+  readonly firstWorkspaceOrganizations?: ReadonlySet<string>;
 }
 
 export type HostedRuntimeSecretResolver = (reference: string) => Promise<string>;
@@ -229,6 +239,9 @@ export function readHostedRuntimeConfiguration(env: NodeJS.ProcessEnv = process.
     ...(env.WORKOS_WEBHOOK_SECRET_KEY_REF?.trim()
       ? { workosWebhookSignatureKeyRef: env.WORKOS_WEBHOOK_SECRET_KEY_REF.trim() }
       : {}),
+    ...(env[HOSTED_FIRST_WORKSPACE_ORGANIZATIONS_ENV]?.trim()
+      ? { firstWorkspaceOrganizations: parseFirstWorkspaceOrganizations(env[HOSTED_FIRST_WORKSPACE_ORGANIZATIONS_ENV]) }
+      : {}),
   };
 }
 
@@ -355,6 +368,22 @@ export async function createHostedRuntime(
     },
   });
 
+  // The first-workspace door (D-384) is the one browser leaf that runs OUTSIDE the tenant
+  // runner: it is the bootstrap that creates the tenant's first binding. Its gate defaults
+  // closed — an empty organization set admits nobody.
+  const firstWorkspace = dependencies.hostedBrowser?.firstWorkspace ?? createHostedFirstWorkspace(
+    createHostedFirstWorkspaceDependencies({
+      controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,
+      runService,
+      delegationAdapters,
+      enabledOrganizations: configuration.firstWorkspaceOrganizations ?? new Set(),
+      ...(dependencies.hostedBrowser?.provisioningAvailable
+        ? { provisioningAvailable: dependencies.hostedBrowser.provisioningAvailable }
+        : {}),
+    }),
+  );
+  const sessionCookies = new HostedSessionCookieCodec(sessionCookieSecret);
+
   // The hosted SPA gets its own explicit browser boundary. Keep the browser
   // leaf on the same tenant runner as the hosted identity/session stack so
   // every customer read/write enters the RLS transaction exactly once.
@@ -364,6 +393,10 @@ export async function createHostedRuntime(
     dependencies: {
       ...(dependencies.hostedBrowser ?? {}),
       runTenant: dependencies.hostedBrowser?.runTenant ?? runTenant,
+      firstWorkspace,
+      issueSessionCookie:
+        dependencies.hostedBrowser?.issueSessionCookie ??
+        ((sessionId, expiresAt) => sessionCookies.serialize(sessionId, expiresAt, new Date())),
     },
   });
 

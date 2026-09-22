@@ -47,12 +47,15 @@ import {
   type StartWorkspaceHostProvisioningInput,
 } from '../dbos/workspace-host-provision-workflow';
 import { dbosStarted } from '../dbos/bootstrap';
+import type { HostedFirstWorkspace } from '../auth/hosted/first-workspace';
 
 export const HOSTED_BROWSER_REST_QUERY_PATH = '/hosted/browser/rest-query' as const;
 export const HOSTED_BROWSER_SSE_PATH = '/hosted/browser/sse' as const;
 export const HOSTED_BROWSER_CONNECTION_PATH = '/hosted/browser/workspace-hosts/connection' as const;
 export const HOSTED_BROWSER_PROVISION_PATH = '/hosted/browser/workspace-hosts/provision' as const;
 export const HOSTED_BROWSER_ACTION_PATH = '/hosted/browser/workspace-hosts/action' as const;
+/** The ONE hosted browser route reachable without a selected workspace (D-384). */
+export const HOSTED_BROWSER_FIRST_WORKSPACE_PATH = '/hosted/browser/onboarding/first-workspace' as const;
 
 export const HOSTED_BROWSER_QUERY_NAME = 'workspaceHosts.control' as const;
 
@@ -63,6 +66,7 @@ export const HOSTED_BROWSER_ROUTE_ALLOWLIST = [
   { method: 'POST', path: HOSTED_BROWSER_CONNECTION_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_PROVISION_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_ACTION_PATH, access: 'authenticated' },
+  { method: 'POST', path: HOSTED_BROWSER_FIRST_WORKSPACE_PATH, access: 'authenticated' },
 ] as const;
 
 const HOSTED_VIEW_AUTH = {
@@ -77,6 +81,11 @@ const HOSTED_OPERATE_AUTH = {
 } as const;
 const HOSTED_CONNECTION_AUTH = {
   capabilities: ['cloud-connection:manage'],
+  kind: ['user'],
+  trust: ['verified'],
+} as const;
+const HOSTED_FIRST_WORKSPACE_AUTH = {
+  capabilities: ['cloud-connection:manage', 'workspace:operate'],
   kind: ['user'],
   trust: ['verified'],
 } as const;
@@ -111,6 +120,13 @@ export interface HostedBrowserRouteDependencies {
   ) => ReturnType<typeof startWorkspaceHostLifecycleWorkflow>;
   readonly subscribe?: typeof subscribe;
   readonly backfillSince?: typeof backfillSince;
+  /**
+   * First-workspace bootstrap (D-384). Absent ⇒ the route answers 501, never a silent
+   * fallback onto a workspace-scoped path.
+   */
+  readonly firstWorkspace?: HostedFirstWorkspace;
+  /** Serializes the rotated hosted session cookie after the new workspace is selected. */
+  readonly issueSessionCookie?: (sessionId: string, expiresAt: Date) => string;
 }
 
 export interface HostedBrowserRouteConfiguration {
@@ -171,6 +187,25 @@ function selectedHostedPrincipal(ctx: RouteContext, controlPlaneWorkspaceId: str
   }
   if (!ctx.principal.selectedWorkspaceId) {
     return { ok: false, response: jsonError('workspace_not_selected', 403) };
+  }
+  return { ok: true, principal: ctx.principal };
+}
+
+/**
+ * The bootstrap sibling of `selectedHostedPrincipal`: identical checks EXCEPT that it
+ * requires the ABSENCE of a selected workspace. It is used by exactly one route and does
+ * not widen any workspace-scoped route — a principal that already holds a workspace is
+ * refused here, so this door cannot be used to act beside an existing tenant binding.
+ */
+function bootstrapHostedPrincipal(ctx: RouteContext, controlPlaneWorkspaceId: string): HostedPrincipalSelection {
+  if (!ctx.principal || !isHostedPrincipal(ctx.principal)) {
+    return { ok: false, response: jsonError('hosted_principal_required', 401) };
+  }
+  if (ctx.principal.workspaceId !== controlPlaneWorkspaceId) {
+    return { ok: false, response: jsonError('control_plane_binding_mismatch', 403) };
+  }
+  if (ctx.principal.selectedWorkspaceId) {
+    return { ok: false, response: jsonError('workspace_already_selected', 409) };
   }
   return { ok: true, principal: ctx.principal };
 }
@@ -519,8 +554,66 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     },
   });
 
+  const firstWorkspace = defineTool({
+    method: 'POST',
+    path: HOSTED_BROWSER_FIRST_WORKSPACE_PATH,
+    auth: HOSTED_FIRST_WORKSPACE_AUTH,
+    cors: { origins: [origin] },
+    async handler(request, ctx) {
+      const selection = bootstrapHostedPrincipal(ctx, controlPlaneWorkspaceId);
+      if (!selection.ok) return selection.response;
+      const { principal } = selection;
+      const csrf = exactOriginOr403(request, origin);
+      if (csrf) return csrf;
+      if (!deps.firstWorkspace || !deps.issueSessionCookie) return jsonError('first_workspace_unavailable', 501);
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return jsonError('invalid_json', 400);
+      }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonError('invalid_request', 400);
+      const fields = body as Record<string, unknown>;
+      // Only display text, the attempt key and the delegation configuration are read from
+      // the body. Tenant and identifier fields (organization, workspace, connection,
+      // credential reference) come from the verified session or are server-derived.
+      const result = await deps.firstWorkspace.run({
+        organizationId: principal.activeOrganizationId,
+        userId: principal.userId,
+        sessionId: principal.sessionId,
+        sessionVersion: principal.sessionVersion,
+        attemptKey: fields.attemptKey as string,
+        displayName: fields.displayName as string,
+        label: fields.label as string,
+        configuration: fields.configuration as never,
+      });
+      if (!result.ok) {
+        return jsonError(result.code, result.status, {
+          retryable: result.retryable,
+          ...(result.template ? { template: result.template } : {}),
+          ...(result.connectionId ? { connectionId: result.connectionId } : {}),
+        });
+      }
+      return Response.json(
+        {
+          ok: true,
+          workspaceId: result.workspaceId,
+          connectionId: result.connectionId,
+          provisionOperationId: result.provisionOperationId,
+        },
+        {
+          status: 201,
+          headers: {
+            'cache-control': 'no-store',
+            'set-cookie': deps.issueSessionCookie(result.sessionId, result.sessionExpiresAt),
+          },
+        },
+      );
+    },
+  });
+
   return {
-    routes: [query, sse, connection, provision, action],
+    routes: [query, sse, connection, provision, action, firstWorkspace],
     allowlist: HOSTED_BROWSER_ROUTE_ALLOWLIST,
   };
 }
