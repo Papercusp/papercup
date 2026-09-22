@@ -2877,11 +2877,36 @@ describe('template_data persistence boundary — the set-template-data door', ()
       approvedBy: 'amendment-actor',
     });
     expect(ineligibleScreen!.implementers).toContain('amendment-actor');
+    // WI-10002357: `amendment-actor` is in this population ONLY because it is the CALLER —
+    // `actorId` is injected unconditionally — so `eligible:false` on a SELF-screen is an
+    // artifact of who asked rather than implementer history, and is structurally guaranteed
+    // (`areAcceptanceLineageRelated(x, x)` is trivially true). It must STAY false, because it
+    // correctly predicts this caller's own apply (asserted below); what the two new fields add
+    // is that the condition is CURABLE by letting a different agent perform the apply.
+    // Measured on WI-10001779: before this was distinguishable, a provably eligible approver
+    // recused itself and the item bounced across six sessions.
     expect(ineligibleScreen!.approverEligibility).toEqual({
       approvedBy: 'amendment-actor',
       eligible: false,
       relatedImplementer: 'amendment-actor',
+      relatedVia: 'caller',
+      eligibleWithUnrelatedApplier: true,
     });
+    // The other half of that pair, and it is load-bearing: a DURABLE relation must not be
+    // reported as curable, or `eligibleWithUnrelatedApplier` would be vacuously true for
+    // everyone and the distinction above would carry no information.
+    const durableImplementer = ineligibleScreen!.implementers!.find((id) => id !== 'amendment-actor');
+    expect(durableImplementer).toBeTruthy();
+    const durableScreen = await rubrics.previewAcceptanceBarAmendment({
+      ...amendment,
+      approvedBy: durableImplementer!,
+    });
+    expect(durableScreen!.approverEligibility).toMatchObject({
+      eligible: false,
+      relatedImplementer: durableImplementer!,
+      eligibleWithUnrelatedApplier: false,
+    });
+    expect(durableScreen!.approverEligibility!.relatedVia).not.toBe('caller');
     const eligibleScreen = await rubrics.previewAcceptanceBarAmendment({
       ...amendment,
       approvedBy: 'outside-reviewer',
@@ -2891,6 +2916,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
       approvedBy: 'outside-reviewer',
       eligible: true,
       relatedImplementer: null,
+      eligibleWithUnrelatedApplier: true,
     });
     // Naming no approver asks no eligibility question, so none is answered — but the
     // independence population is still published for a caller screening candidates.

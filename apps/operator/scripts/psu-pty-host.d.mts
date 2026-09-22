@@ -138,6 +138,43 @@ export function tagSessionPortTurn(text: string, sid: string, env?: EnvironmentM
  * units is at most 64 KiB of UTF-8, keeping node-pty writes bounded while the
  * concatenated stream remains byte-identical. */
 export function ptyWriteChunks(value: any, maxCodeUnits?: number): string[];
+/**
+ * P-006 (psu-pty-turn-boundary-generalization-2026-09-22): may a ROUTINE host
+ * diagnostic be written to stderr right now?
+ *
+ * psu-launcher.mjs imports this host IN-PROCESS, and `bridgeTty` defaults to
+ * `stdin.isTTY`, so a bare `process.stderr.write` from a gated-delivery defer
+ * interleaves straight into the agent TUI the OWNER is reading — which is how
+ * the busy-gate defer line became a user-visible "error" for a defer that was
+ * working exactly as designed (owner report 2026-09-22, session 25a7969c).
+ * These outcomes are already recorded durably by appendHostEvent(), so the
+ * terminal copy is redundant, not load-bearing.
+ *
+ * ⚠ Deliberately does NOT quote the emitted line verbatim. psu-pty-busy-gate-
+ * durable-evidence.test.ts anchors the busy-gate handler with a bare
+ * `src.indexOf('DEFERRED/' + 'REFUSED')` and documents that literal as "unique
+ * in the file"; a prose copy ABOVE the real call site silently captures that
+ * anchor and makes the guard fail with `no enclosing if (atPrompt.deferred)`.
+ * Measured here on 2026-09-22 — 6 tests broke on a comment, not on code.
+ *
+ * Suppression is scoped to the ROUTINE defer diagnostics only. Host lifecycle
+ * and genuinely-unexpected failures keep writing unconditionally: silencing
+ * those would trade a cosmetic problem for an undiagnosable one.
+ *
+ * `PAPERCUSP_PTY_HOST_DIAG=1` forces them back on for interactive debugging.
+ * Pure + exported so the gate is unit-testable without a pty.
+ *
+ * @param {{ bridgeTty?: boolean, env?: EnvironmentMap }} [options] the explicit
+ *   JSDoc is load-bearing: destructuring defaults alone make gen:declarations
+ *   infer the param type from `env = process.env` ONLY, dropping `bridgeTty`
+ *   and rejecting every real caller (same failure mode as waitAtPrompt's
+ *   `verifiedBoundary = null` below).
+ * @returns {boolean}
+ */
+export function shouldWriteHostDiagnostic({ bridgeTty, env }?: {
+    bridgeTty?: boolean;
+    env?: EnvironmentMap;
+}): boolean;
 /** The carry prompt's unique first line is the strongest cross-backend proof
  * that the fresh native transcript accepted THIS successor turn. */
 export function leadingTurnOriginMarker(text: any): string | null;

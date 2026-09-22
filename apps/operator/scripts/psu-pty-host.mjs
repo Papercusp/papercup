@@ -492,6 +492,44 @@ export function ptyWriteChunks(value, maxCodeUnits = 16 * 1024) {
   return chunks;
 }
 
+/**
+ * P-006 (psu-pty-turn-boundary-generalization-2026-09-22): may a ROUTINE host
+ * diagnostic be written to stderr right now?
+ *
+ * psu-launcher.mjs imports this host IN-PROCESS, and `bridgeTty` defaults to
+ * `stdin.isTTY`, so a bare `process.stderr.write` from a gated-delivery defer
+ * interleaves straight into the agent TUI the OWNER is reading — which is how
+ * the busy-gate defer line became a user-visible "error" for a defer that was
+ * working exactly as designed (owner report 2026-09-22, session 25a7969c).
+ * These outcomes are already recorded durably by appendHostEvent(), so the
+ * terminal copy is redundant, not load-bearing.
+ *
+ * ⚠ Deliberately does NOT quote the emitted line verbatim. psu-pty-busy-gate-
+ * durable-evidence.test.ts anchors the busy-gate handler with a bare
+ * `src.indexOf('DEFERRED/' + 'REFUSED')` and documents that literal as "unique
+ * in the file"; a prose copy ABOVE the real call site silently captures that
+ * anchor and makes the guard fail with `no enclosing if (atPrompt.deferred)`.
+ * Measured here on 2026-09-22 — 6 tests broke on a comment, not on code.
+ *
+ * Suppression is scoped to the ROUTINE defer diagnostics only. Host lifecycle
+ * and genuinely-unexpected failures keep writing unconditionally: silencing
+ * those would trade a cosmetic problem for an undiagnosable one.
+ *
+ * `PAPERCUSP_PTY_HOST_DIAG=1` forces them back on for interactive debugging.
+ * Pure + exported so the gate is unit-testable without a pty.
+ *
+ * @param {{ bridgeTty?: boolean, env?: EnvironmentMap }} [options] the explicit
+ *   JSDoc is load-bearing: destructuring defaults alone make gen:declarations
+ *   infer the param type from `env = process.env` ONLY, dropping `bridgeTty`
+ *   and rejecting every real caller (same failure mode as waitAtPrompt's
+ *   `verifiedBoundary = null` below).
+ * @returns {boolean}
+ */
+export function shouldWriteHostDiagnostic({ bridgeTty, env = process.env } = {}) {
+  if (String(env?.PAPERCUSP_PTY_HOST_DIAG ?? '') === '1') return true;
+  return !bridgeTty;
+}
+
 function nativeTranscriptRoot(agent, env, home) {
   if (agent === 'claude') {
     const root = env.CLAUDE_CONFIG_DIR ? String(env.CLAUDE_CONFIG_DIR) : join(home, '.claude');
@@ -5258,6 +5296,19 @@ export function hostThroughPty(o) {
   const stdout = o.io?.stdout ?? process.stdout;
   const onExit = o.onExit ?? ((code) => process.exit(code ?? 0));
   const bridgeTty = o.bridgeTty ?? !!(stdin.isTTY && typeof stdin.setRawMode === 'function');
+  /** P-006: ROUTINE defer diagnostics go through here, never bare stderr — see
+   *  shouldWriteHostDiagnostic. Returns whether the line was actually written,
+   *  so a caller can tell "suppressed" from "failed" if it ever needs to. */
+  const writeHostDiagnostic = (text) => {
+    if (!shouldWriteHostDiagnostic({ bridgeTty, env })) return false;
+    try {
+      process.stderr.write(text);
+      return true;
+    } catch {
+      /* never let a diagnostic write break the session */
+      return false;
+    }
+  };
   const normalizedLogPath =
     String(o.normalizedLogPath ?? env[HEADLESS_NORMALIZED_LOG_ENV] ?? '').trim() || null;
   const normalizedLog = normalizedLogPath
@@ -6798,14 +6849,12 @@ export function hostThroughPty(o) {
         };
         appendHostEvent(ownerId, 'turn-deferred-for-owner-input', extra);
         noteOwnerInputDefer(pendingLength);
-        try {
-          process.stderr.write(
-            `psu-pty-host: ${msg.mode} DEFERRED for ${ownerId} (${reason}) — ` +
-              'owner has an unsubmitted input line; left in inbox for the next natural turn\n',
-          );
-        } catch {
-          /* diagnostic only */
-        }
+        // P-006: durable trace is the appendHostEvent above; this terminal copy
+        // is redundant and, on a bridged TTY, lands in the owner's own TUI.
+        writeHostDiagnostic(
+          `psu-pty-host: ${msg.mode} DEFERRED for ${ownerId} (${reason}) — ` +
+            'owner has an unsubmitted input line; left in inbox for the next natural turn\n',
+        );
         // P-001a: a deferred waiter must release its coalesce slot; a later wake
         // must be able to start a fresh delivery after the owner submits/cancels.
         claimCoalesced();
@@ -6861,15 +6910,14 @@ export function hostThroughPty(o) {
             // durably in the recipient's inbox and is seen on its next natural
             // turn (queue-to-next-turn); a reset/recycle refused here simply never
             // fires this cycle (no partial kill, no data loss).
-            try {
-              process.stderr.write(
-                `psu-pty-host: ${msg.mode} DEFERRED/REFUSED for ${ownerId} ` +
-                  `(agent mid-turn > ${turnInjectBusyCapMs}ms cap); ` +
-                  `left in inbox for the next natural turn\n`,
-              );
-            } catch {
-              /* never let a diagnostic write break the session */
-            }
+            // P-006: this is THE line the owner reported seeing (2026-09-22,
+            // session 25a7969c). The defer it reports was correct; the durable
+            // record is the busy-gate-expired event appended just below.
+            writeHostDiagnostic(
+              `psu-pty-host: ${msg.mode} DEFERRED/REFUSED for ${ownerId} ` +
+                `(agent mid-turn > ${turnInjectBusyCapMs}ms cap); ` +
+                `left in inbox for the next natural turn\n`,
+            );
             // EI-19480099650947832: record WHY the delivery could not fire, not
             // just that it didn't. `busy-gate-expired` alone cannot distinguish a
             // genuinely-busy agent (longest quiet gap ≈ 0ms — something is
@@ -6976,14 +7024,11 @@ export function hostThroughPty(o) {
           if ((msg.mode === 'turn' || msg.mode === 'reset') && quotaBlockDetector.isBlocked()) {
             const extra = { mode: msg.mode, reason: 'quota-blocked' };
             appendHostEvent(ownerId, 'turn-deferred-quota-blocked', extra);
-            try {
-              process.stderr.write(
-                `psu-pty-host: ${msg.mode} DEFERRED for ${ownerId} (quota-blocked; ` +
-                  `usage-limit banner on screen) — left in inbox for the next natural turn\n`,
-              );
-            } catch {
-              /* diagnostic only */
-            }
+            // P-006: durable trace is the turn-deferred-quota-blocked event above.
+            writeHostDiagnostic(
+              `psu-pty-host: ${msg.mode} DEFERRED for ${ownerId} (quota-blocked; ` +
+                `usage-limit banner on screen) — left in inbox for the next natural turn\n`,
+            );
             claimCoalesced();
             return { ok: false, reason: 'deferred-quota-blocked' };
           }
