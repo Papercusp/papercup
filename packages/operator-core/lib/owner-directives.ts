@@ -369,12 +369,39 @@ export async function dispositionOwnerDirective(
   sql?: Sql,
 ): Promise<DispositionOwnerDirectiveResult> {
   const s = db(sql);
+  // A disposition is strictly STRONGER than a promotion: it asserts the directive was
+  // carried out, or consciously declined, which is only coherent for a real owner order.
+  // So it must resolve a still-pending CAPTURE in the same write.
+  //
+  // Leaving capture_status = 'pending' here is a permanent deadlock, not an untidy edge.
+  // deriveState() gives capture_status priority over disposition, so the row renders
+  // `pending` forever — and promoteOwnerDirective/dismissOwnerDirective BOTH carry
+  // `AND dispositioned_at IS NULL`, so after this UPDATE neither verb can ever match it
+  // again. Directives #86/#87 sat in exactly that state: answered at 14:58Z, yet still
+  // emitting a "[DUE] promote or dismiss" obligation into every agent's Orientation in
+  // the workspace, with no tool able to clear them.
+  //
+  // `declined` promotes to 'open', not 'dismissed': declining is a conscious refusal of a
+  // genuine order, whereas 'dismissed' claims the turn was never a directive at all.
+  // On the RHS of SET, capture_status reads its OLD value — that is what makes the CASE
+  // guards correct rather than self-referential.
   const rows = await s<RawRow[]>`
     UPDATE harness_shared.owner_directives
        SET dispositioned_at = now(),
            disposition_status = ${input.status},
            disposition_note = ${input.note},
-           dispositioned_by = ${input.dispositionedBy}
+           dispositioned_by = ${input.dispositionedBy},
+           capture_status =
+             CASE WHEN capture_status = 'pending' THEN 'open' ELSE capture_status END,
+           capture_promoted_at =
+             CASE WHEN capture_status = 'pending' THEN now() ELSE capture_promoted_at END,
+           capture_promoted_by =
+             CASE WHEN capture_status = 'pending' THEN ${input.dispositionedBy}
+                  ELSE capture_promoted_by END,
+           capture_promoted_note =
+             CASE WHEN capture_status = 'pending'
+                  THEN 'auto-promoted by disposition (' || ${input.status} || ')'
+                  ELSE capture_promoted_note END
      WHERE id = ${input.id}
        AND dispositioned_at IS NULL
      RETURNING *
