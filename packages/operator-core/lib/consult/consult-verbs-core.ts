@@ -156,8 +156,9 @@ export interface ConsultVerbDeps {
 }
 
 export type ConsultVerbError =
-  | { error: 'not_a_consult' }
+  | { error: 'not_a_consult'; hint?: string }
   | { error: 'not_a_participant'; hint: string }
+  | { error: 'conversation_id_ambiguous'; candidates: string[]; hint: string }
   | { error: 'not_the_responder' }
   | { error: 'consult_not_open'; state: string; hint: string }
   | { error: 'invalid_kind'; role: 'requester' | 'responder'; allowed: readonly string[]; hint: string }
@@ -174,6 +175,127 @@ const POSTABLE_STATES = new Set(['awaiting_responder', 'active']);
 function oneLine(s: string, n = 96): string {
   const t = s.replace(/\s+/g, ' ').trim();
   return t.length <= n ? t : `${t.slice(0, n - 1)}…`;
+}
+
+/**
+ * A full conversation id looks like `conv-mucapfpl-0000-<32 hex>` (51 chars).
+ * The LEADING SHORT SEGMENT is what surfaces and prose routinely render, so an
+ * id that reaches an agent second-hand is very often clipped to `conv-mucapfpl`
+ * — the same `<short>-<n>-<32 hex>` shape, and the same truncation-at-source
+ * hazard, that `resolveMessageRef` already resolves for coord `msg_id`s
+ * (coordination/messages.ts; surfaced by coord:read and coord:thread).
+ */
+const FULL_CONVERSATION_ID_SHAPE = /^[^\s]+-\d+-[0-9a-f]{32}$/i;
+
+/** Candidate cap for a truncated-prefix scan — mirrors REF_CANDIDATE_CAP. */
+const CONVERSATION_REF_CANDIDATE_CAP = 5;
+
+type ConversationRefResolution =
+  | { status: 'found'; conversationId: string; resolvedFrom: 'exact' | 'prefix' }
+  | { status: 'not-found'; looksTruncated: boolean }
+  | { status: 'ambiguous'; candidates: string[] };
+
+/**
+ * Resolve a conversation_id REF (a full id, or a unique leading prefix) to the
+ * id of a real `consult_state` row.
+ *
+ * WHY THIS EXISTS (EI-23942597240908282, MEASURED 2026-09-22). A grader was
+ * told "you remain the assigned grader on conv-mucapfpl until consult:decline
+ * advances it", fired exactly that, and got a bare `not_a_consult`. The refusal
+ * was CORRECT — the row's real id was the 51-char
+ * `conv-mucapfpl-0000-30e383612d604ea88789d3c06b3a01fe` — but it was
+ * indistinguishable from "this is not a consult, you have no decline to make",
+ * so the decline went unregistered, the cascade did not advance, and the plan
+ * sat in awaiting-acceptance with nobody grading. Two independent ids in that
+ * one incident (`conv-mucapfpl`, `conv-mucb58ib`) both arrived clipped at
+ * EXACTLY the first segment boundary, which is a structural shortening rather
+ * than a byte-offset coincidence of any one body cap.
+ *
+ * AMBIGUITY REFUSES rather than guessing: acting on the wrong consult would
+ * post a decline into a stranger's cascade, which is worse than the refusal
+ * this replaces. A well-formed FULL id that misses is a genuine not-found and
+ * skips the scan entirely — so the common path costs nothing.
+ */
+async function resolveConversationRef(
+  sql: Sql,
+  workspaceId: string,
+  ref: string,
+): Promise<ConversationRefResolution> {
+  const conversationId = (ref ?? '').trim();
+  if (!conversationId) return { status: 'not-found', looksTruncated: false };
+
+  const exact = (await sql`
+    SELECT conversation_id
+      FROM harness_shared.consult_state
+     WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+     LIMIT 1
+  `) as unknown as Array<{ conversation_id: string }>;
+  if (exact[0]) return { status: 'found', conversationId, resolvedFrom: 'exact' };
+
+  // A well-formed full id that missed is a genuine miss — no prefix scan.
+  if (FULL_CONVERSATION_ID_SHAPE.test(conversationId)) {
+    return { status: 'not-found', looksTruncated: false };
+  }
+
+  const candidates = (await sql`
+    SELECT conversation_id
+      FROM harness_shared.consult_state
+     WHERE workspace_id = ${workspaceId}
+       AND conversation_id LIKE ${conversationId + '%'}
+     ORDER BY conversation_id
+     LIMIT ${CONVERSATION_REF_CANDIDATE_CAP + 1}
+  `) as unknown as Array<{ conversation_id: string }>;
+  if (candidates.length === 0) return { status: 'not-found', looksTruncated: true };
+  if (candidates.length > 1) {
+    return {
+      status: 'ambiguous',
+      candidates: candidates.slice(0, CONVERSATION_REF_CANDIDATE_CAP).map((c) => c.conversation_id),
+    };
+  }
+  return { status: 'found', conversationId: candidates[0]!.conversation_id, resolvedFrom: 'prefix' };
+}
+
+/**
+ * Normalize a verb request so the ENTIRE verb body — every read AND every
+ * write — operates on the resolved id.
+ *
+ * ⚠ THIS MUST REBIND THE REQUEST, NOT JUST THE LOOKUP. `conversationId` feeds
+ * ~30 downstream sites here (the post, the consult_post_meta INSERT, the
+ * consult_state UPDATE, the park key, the cascade wake). Resolving a prefix for
+ * the gate read ALONE would let a verb pass its gate and then write against the
+ * truncated id — every UPDATE matching zero rows while the verb reports
+ * success. That is strictly worse than the honest refusal this replaces, so the
+ * resolution happens once, here, before any of them.
+ */
+async function normalizeConversationRef<T extends { workspaceId: string; conversationId: string }>(
+  sql: Sql,
+  req: T,
+): Promise<{ req: T } | ConsultVerbError> {
+  const resolved = await resolveConversationRef(sql, req.workspaceId, req.conversationId);
+  if (resolved.status === 'ambiguous') {
+    return {
+      error: 'conversation_id_ambiguous',
+      candidates: resolved.candidates,
+      hint:
+        `'${req.conversationId}' is a TRUNCATED conversation id matching ${resolved.candidates.length}+ consults — ` +
+        `supply more of the id, or the full one from your wake/brief.`,
+    };
+  }
+  if (resolved.status === 'not-found') {
+    return {
+      error: 'not_a_consult',
+      ...(resolved.looksTruncated
+        ? {
+            hint:
+              `No consult id starts with '${req.conversationId}'. Note this is NOT a full conversation id ` +
+              `(expected '<short>-0000-<32 hex>') — if you copied it out of prose or a coord line it may have ` +
+              `been truncated at the source; cite the full id from your wake/brief.`,
+          }
+        : {}),
+    };
+  }
+  if (resolved.conversationId === req.conversationId) return { req };
+  return { req: { ...req, conversationId: resolved.conversationId } };
 }
 
 async function readState(
@@ -328,6 +450,12 @@ export async function consultReplyCore(
 ): Promise<ConsultReplyResult | ConsultVerbError> {
   const sql = deps.getSql();
   const now = (deps.now ? deps.now() : new Date()).toISOString();
+
+  // Resolve a truncated conversation ref BEFORE any read or write — see
+  // normalizeConversationRef for why this must rebind the request.
+  const normalized = await normalizeConversationRef(sql, req);
+  if ('error' in normalized) return normalized;
+  req = normalized.req;
 
   let currentRow = await readState(sql, req.workspaceId, req.conversationId);
   const pendingClaim = currentRow && req.authorId === currentRow.responder_id
@@ -569,6 +697,13 @@ export async function consultDeclineCore(
 ): Promise<ConsultDeclineResult | ConsultVerbError> {
   const sql = deps.getSql();
   const now = (deps.now ? deps.now() : new Date()).toISOString();
+
+  // Resolve a truncated conversation ref BEFORE any read or write. This is the
+  // verb EI-23942597240908282 was filed against: the decline that could not be
+  // made because the id had been clipped to its leading segment in transit.
+  const normalized = await normalizeConversationRef(sql, req);
+  if ('error' in normalized) return normalized;
+  req = normalized.req;
 
   const gated = gateCommon(await readState(sql, req.workspaceId, req.conversationId));
   if ('error' in gated) return gated;
