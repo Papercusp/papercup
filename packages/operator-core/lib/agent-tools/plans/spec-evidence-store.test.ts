@@ -6,6 +6,7 @@ import { join } from 'node:path';
 const h = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
   scorecardRows: [] as Array<Record<string, unknown>>,
+  measurementRoot: '',
 }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => {
@@ -30,6 +31,19 @@ vi.mock('./source', async (importOriginal) => {
   };
 });
 
+// A replay that MEASURES resolves a real harness checkout. Point that resolution at this
+// suite's temp fixture root so the measuring path can be observed end to end; without this
+// the measurement can only ever fail with repo_measurement_harness_root_unavailable, which
+// would make the guards below pass for the wrong reason.
+vi.mock('../../harness-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../harness-registry')>();
+  return {
+    ...actual,
+    loadHarnessRegistry: async () => ({}) as never,
+    resolveHarnessContentPath: () => h.measurementRoot,
+  };
+});
+
 import {
   classifySpecEvidenceCurrentness,
   evidenceMeasurementSchema,
@@ -42,6 +56,7 @@ let measurementRoot = '';
 
 beforeAll(async () => {
   measurementRoot = await mkdtemp(join(tmpdir(), 'spec-evidence-measurement-'));
+  h.measurementRoot = measurementRoot;
   await Promise.all([
     mkdir(join(measurementRoot, 'src'), { recursive: true }),
     mkdir(join(measurementRoot, 'test'), { recursive: true }),
@@ -461,6 +476,156 @@ describe('listSpecEvidence timestamp normalization', () => {
       },
     });
     expect(row).not.toHaveProperty('serverMeasurement');
+  });
+
+  // RECURRENCE GUARD (WI-10002320), MATCHED SET with the test above. `rerunRecipeFor`
+  // ALWAYS emits `replaySnapshot: true`, so while that flag alone suppressed the
+  // per-binding server measurement, scorecards:emit was structurally unable to certify
+  // freshness='pass' on ANY card: the replay could not reproduce the very verdict it
+  // replayed, and the classifier — seeing nothing but caller-authored fingerprints —
+  // capped the criterion at 'unknown' precisely BECAUSE nothing was stale.
+  //
+  // Only `replaySnapshot` AND the explicit `currentProvenance: 'server-measured'` opt-out
+  // may suppress measurement. The first guard below is the zero-delta control: the row and
+  // the caller tuple are byte-identical to the opt-out test above, and ONLY the opt-out is
+  // removed — so a regression that reinstates the unconditional suppression drops
+  // `serverMeasurement` and fails here, with no second variable to blame it on.
+  it('measures a pinned replay that does not opt out — replaySnapshot alone must not suppress measurement', async () => {
+    h.rows = [
+      {
+        id: 3,
+        work_item_id: 'WI-3',
+        plan_slug: 'plan-one',
+        spec_id: 'SPEC-001-01',
+        source_val_id: 'VAL-001-01',
+        spec_revision: 1,
+        current_revision: 2,
+        spec_fingerprint: 'sha256:spec-v1',
+        evidence_kind: 'test',
+        evidence_ref: 'vitest:replay',
+        source_fingerprint: 'git:graded',
+        test_fingerprint: 'sha256:test-graded',
+        fixture_fingerprint: null,
+        rubric_fingerprint: null,
+        environment_fingerprint: null,
+        coverage_evidence_ref: null,
+        coverage_evidence_present: false,
+        test_run_id: null,
+        test_run_present: false,
+        details: {
+          currentMeasurement: {
+            schemaVersion: 1,
+            kind: 'repo-files',
+            sourcePaths: ['src/feature.ts'],
+            testPaths: ['test/feature.test.ts'],
+          },
+        },
+        observed_at: '2026-08-20 17:10:00-04',
+        binding_fingerprint: 'sha256:binding',
+        created_by: 'su-test',
+        created_at: '2026-08-20T21:10:01.000Z',
+        spec_is_current: true,
+      },
+    ];
+
+    const [row] = await listSpecEvidence({
+      harnessSlug: 'papercusp',
+      planSlugs: ['plan-one'],
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-v1',
+      replaySnapshot: true,
+      // NO currentProvenance opt-out — that single omission is the whole delta.
+      current: [
+        {
+          evidenceKind: 'test',
+          evidenceRef: 'vitest:replay',
+          sourceFingerprint: 'git:graded',
+          testFingerprint: 'sha256:test-graded',
+        },
+      ],
+    });
+
+    expect(row).toHaveProperty('serverMeasurement.status', 'measured');
+    // The stored fingerprints are placeholders, so a REAL measurement of the fixture root
+    // cannot match them: 'stale' here is positive evidence that the server re-derived the
+    // tuple rather than echoing the caller's.
+    expect(row).toMatchObject({ currentness: { overall: 'stale' } });
+  });
+
+  // The positive half of the same defect: a replay must be able to reach 'current' with
+  // server-grade provenance, or no card can ever certify freshness='pass'. Calibration: the
+  // row's stored fingerprints are taken FROM a real measurement of the fixture root, so
+  // 'current' here means the server re-derived them — not that a caller tuple was laundered
+  // (the sibling guard at the top of this file pins that laundering shut independently).
+  it('lets a measured replay reach current with server provenance — this is what makes freshness certifiable', async () => {
+    const recipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'],
+      testPaths: ['test/feature.test.ts'],
+    };
+    // Derived at run time on purpose: an earlier test in this file rewrites src/feature.ts,
+    // so a hardcoded digest would bind this guard to test ordering.
+    const measured = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+
+    h.rows = [
+      {
+        id: 3,
+        work_item_id: 'WI-3',
+        plan_slug: 'plan-one',
+        spec_id: 'SPEC-001-01',
+        source_val_id: 'VAL-001-01',
+        spec_revision: 1,
+        current_revision: 2,
+        spec_fingerprint: 'sha256:spec-v1',
+        evidence_kind: 'test',
+        evidence_ref: 'vitest:replay',
+        source_fingerprint: measured.sourceFingerprint,
+        test_fingerprint: measured.testFingerprint,
+        fixture_fingerprint: null,
+        rubric_fingerprint: null,
+        environment_fingerprint: null,
+        coverage_evidence_ref: null,
+        coverage_evidence_present: false,
+        test_run_id: null,
+        test_run_present: false,
+        details: { currentMeasurement: recipe },
+        observed_at: '2026-08-20 17:10:00-04',
+        binding_fingerprint: 'sha256:binding',
+        created_by: 'su-test',
+        created_at: '2026-08-20T21:10:01.000Z',
+        spec_is_current: true,
+      },
+    ];
+
+    const [row] = await listSpecEvidence({
+      harnessSlug: 'papercusp',
+      planSlugs: ['plan-one'],
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-v1',
+      replaySnapshot: true,
+      current: [
+        {
+          evidenceKind: 'test',
+          evidenceRef: 'vitest:replay',
+          sourceFingerprint: measured.sourceFingerprint,
+          testFingerprint: measured.testFingerprint,
+        },
+      ],
+    });
+
+    expect(row).toHaveProperty('serverMeasurement.status', 'measured');
+    // source + test are never counted as attested, so a clean re-measurement yields
+    // 'server-measured' rather than the capped 'partially-server-measured'.
+    expect(row).not.toHaveProperty('serverMeasurement.attestedDimensions');
+    expect(row).toMatchObject({
+      currentness: {
+        overall: 'current',
+        provenance: 'server-measured',
+        staleReasons: [],
+        unknownReasons: [],
+      },
+    });
   });
 
   it('surfaces provisional scorecard proof bases on the returned binding row', async () => {
