@@ -211,6 +211,17 @@ function callbackRecoveryRedirect(origin: string, code: string): Response {
   const target = new URL('/', origin);
   target.searchParams.set('hosted_auth_error', code);
   target.searchParams.set('hosted_auth_recovery', '1');
+  // Every hosted-auth callback failure exits through here as a 303 back to '/',
+  // which is indistinguishable IN THE BROWSER from an ordinary bounce to the
+  // sign-in page. Until this line existed the route emitted NO server-side
+  // output at all (measured 2026-09-22: zero logging call sites in this file),
+  // so a real user-reported signup failure left no trace in any log or table —
+  // the refusal code was only ever visible in the user's own address bar.
+  // Keep this: it is the sole observability seam for state_required,
+  // signup_unavailable, signup_<code> and membership_required.
+  console.warn(
+    `[hosted-auth] callback recovery redirect code=${code} origin=${origin}`,
+  );
   return redirect(target.toString(), [deleteFlowCookie()]);
 }
 
@@ -431,6 +442,31 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
 
       let binding: HostedIdentityBinding | null = null;
       let admittedSession: HostedSession | null = null;
+      // Bind an identity the provider already knows. Shared by the `sign-in`
+      // intent and by the duplicate-identity sign-up fall-through below, so
+      // both reach membership admission through exactly one code path.
+      const bindExistingIdentity = async (): Promise<
+        { ok: true; binding: HostedIdentityBinding | null } | { ok: false; response: Response }
+      > => {
+        try {
+          return {
+            ok: true,
+            binding: await deps.bindIdentity({
+              providerId: deps.provider.providerId,
+              identity: upstream.identity,
+              ...(upstream.externalOrganizationId ? { externalOrganizationId: upstream.externalOrganizationId } : {}),
+            }),
+          };
+        } catch {
+          await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
+          return {
+            ok: false,
+            response: jsonError('identity_binding_unavailable', 'The local identity could not be resolved.', 503, {
+              'set-cookie': deleteFlowCookie(),
+            }),
+          };
+        }
+      };
       if (flow.intent === 'sign-up') {
         if (!deps.selfSignup) {
           await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
@@ -458,24 +494,30 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
           });
         }
         if (!admitted.ok) {
-          await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
-          return callbackRecoveryRedirect(origin, `signup_${admitted.code}`);
+          // `duplicate_identity` means the verified identity ALREADY exists —
+          // a returning user who clicked "Create account" instead of "Sign in".
+          // Refusing it stranded them in a loop: the callback bounced to `/`,
+          // the portal's generic recovery copy invited them to create an
+          // account again, and the next attempt failed identically. The owner
+          // hit this twice (WI-10002367). Treat it as the sign-in it actually
+          // is. Admission stays fail-closed: binding an identity never creates
+          // membership, so an account without one still reaches
+          // `membership_required` below instead of receiving a session.
+          if (admitted.code !== 'duplicate_identity') {
+            await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
+            return callbackRecoveryRedirect(origin, `signup_${admitted.code}`);
+          }
+          const bound = await bindExistingIdentity();
+          if (!bound.ok) return bound.response;
+          binding = bound.binding;
+        } else {
+          binding = admitted.binding;
+          admittedSession = admitted.session;
         }
-        binding = admitted.binding;
-        admittedSession = admitted.session;
       } else {
-        try {
-          binding = await deps.bindIdentity({
-            providerId: deps.provider.providerId,
-            identity: upstream.identity,
-            ...(upstream.externalOrganizationId ? { externalOrganizationId: upstream.externalOrganizationId } : {}),
-          });
-        } catch {
-          await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
-          return jsonError('identity_binding_unavailable', 'The local identity could not be resolved.', 503, {
-            'set-cookie': deleteFlowCookie(),
-          });
-        }
+        const bound = await bindExistingIdentity();
+        if (!bound.ok) return bound.response;
+        binding = bound.binding;
       }
       if (!binding || !validBinding(binding)) {
         await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
