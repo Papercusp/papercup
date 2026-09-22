@@ -79,14 +79,24 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
     process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
     _resetHarnessAdminUrlCacheForTests();
 
-    // Warm the org-admin pool HERE, not inside a test. The first `getOrgPg()`
-    // after the env re-route notices its target moved and logs a one-time
-    // `[db] org-admin pool rebound` warning — which `vitest-fail-on-console`
-    // turns into a test failure attributed to whichever case happened to be
-    // first. Absorbing it in setup keeps that rebind from masquerading as a
-    // verdict about the subject.
+    // Clear the store-identity pin, and warm the org-admin pool, HERE — not
+    // inside a test. The first `getOrgPg()` after the env re-route notices its
+    // target moved and logs a one-time `[db] org-admin pool rebound` warning —
+    // which `vitest-fail-on-console` turns into a test failure attributed to
+    // whichever case happened to be first. Absorbing it in setup keeps that
+    // rebind from masquerading as a verdict about the subject.
+    //
+    // ⚠ The pin reset is load-bearing, not tidiness: `createOrgTestDb`
+    // provisions through the real cluster on :5432, which pins store identity
+    // THERE. Without clearing it, the production readers below
+    // (`prodReadGraderActivity` → `getOrgPg()`, and the dedup read inside
+    // `resolveAcceptanceGrader`) keep answering off the pinned store, so every
+    // row this test seeds is invisible and all three verdicts collapse to
+    // `unreadable` / a fall-through launch — a fixture fault wearing the
+    // costume of a verdict about the subject.
     {
-      const { getOrgPg } = await import('@papercusp/db-org');
+      const { getOrgPg, _resetStoreIdentityForTests } = await import('@papercusp/db-org');
+      _resetStoreIdentityForTests();
       await getOrgPg().sql`SELECT 1`;
     }
 
@@ -132,11 +142,17 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
 
   describe('the pickup verdict is three-valued, read from the grader\'s own record', () => {
     it('CONFIRMED — activity strictly after the wake, via the PRODUCTION reader', async () => {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const diag = await getOrgPg().sql`
+        SELECT current_database() AS db,
+               (SELECT count(*)::int FROM harness_shared.coord_presence) AS presence_rows,
+               (SELECT count(*)::int FROM harness_shared.coord_presence WHERE owner_id = 'su-grader-confirmed') AS mine`;
       const obs = await observeGraderPickup({
         graderId: 'su-grader-confirmed',
         wakeInstantMs: WAKE_INSTANT_MS,
         nowMs: WAKE_INSTANT_MS + 120_000,
       });
+      expect(`DIAG ${JSON.stringify(diag)} OBS ${JSON.stringify(obs)}`).toBe('SHOWME');
       expect(obs.verdict).toBe('confirmed');
       expect(obs.sinceWakeMs).toBeGreaterThan(0);
       // The reading came from a real row, not a literal handed to the classifier.
