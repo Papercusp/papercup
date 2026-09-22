@@ -69,6 +69,11 @@ export interface HostedFirstWorkspaceDependencies {
   isEnabledFor(organizationId: string): boolean;
   /** A workspace that cannot be provisioned must not be admitted. */
   provisioningAvailable(): boolean;
+  /**
+   * The Papercusp identity customers grant impersonation to (D-386), in IAM member form. It is
+   * the server's own identity, so it is never read from the request body.
+   */
+  delegationSourcePrincipal(): Promise<string>;
   /** Ids of the organization's live (non-deleted) workspace bindings. */
   organizationWorkspaceIds(organizationId: string): Promise<readonly string[]>;
   /** Control-plane-privileged delegation store/manager, keyed by the derived workspace id. */
@@ -91,6 +96,7 @@ export type HostedFirstWorkspaceFailureCode =
   | 'organization_already_has_workspace'
   | 'provider_not_supported'
   | 'provisioning_unavailable'
+  | 'delegation_source_unavailable'
   | 'delegation_conflict'
   | 'delegation_revoked'
   | 'delegation_pending'
@@ -228,12 +234,26 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
       }
       if (!deps.provisioningAvailable()) return failure('provisioning_unavailable', 503, true);
 
+      // The grant names the principal Papercusp impersonates FROM. Only the server knows it, and
+      // a browser-supplied value could only produce a grant that never verifies (D-386).
+      let configuration = request.configuration;
+      const source = configuration.source as { method?: unknown } | undefined;
+      if (source && typeof source === 'object' && source.method === 'service-account-impersonation') {
+        let trustedPrincipal: string;
+        try {
+          trustedPrincipal = await deps.delegationSourcePrincipal();
+        } catch {
+          return failure('delegation_source_unavailable', 503, true);
+        }
+        configuration = { ...configuration, source: { ...configuration.source, trustedPrincipal } } as typeof configuration;
+      }
+
       const onboardingInput: HostedProviderDelegationOnboardingInput = {
         workspaceId: identity.workspaceId,
         connectionId: identity.connectionId,
         label,
         credentialRef: identity.credentialRef,
-        configuration: request.configuration,
+        configuration,
       };
       let planned: HostedProviderDelegationOnboarding;
       try {

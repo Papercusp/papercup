@@ -22,6 +22,9 @@ const GCP: HostedProviderDelegationConfiguration = {
   },
 };
 
+/** The server's own delegation source identity — deliberately NOT the GCP fixture's value. */
+const SERVER_PRINCIPAL = 'serviceAccount:papercusp-delegation@papercusp.iam.gserviceaccount.com';
+
 const REQUEST: HostedFirstWorkspaceRequest = {
   organizationId: 'org-a',
   userId: 'user-a',
@@ -43,6 +46,7 @@ function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
   const deps: HostedFirstWorkspaceDependencies = {
     isEnabledFor: (organizationId) => organizationId === 'org-a',
     provisioningAvailable: () => true,
+    delegationSourcePrincipal: async () => SERVER_PRINCIPAL,
     organizationWorkspaceIds: async () => [],
     readDelegation: async (workspaceId, connectionId) => records.get(`${workspaceId}/${connectionId}`) ?? null,
     onboardDelegation: vi.fn(async (input) => {
@@ -161,6 +165,32 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
     const result = await createHostedFirstWorkspace(deps).run(REQUEST);
     expect(result).toMatchObject({ ok: false, code: 'provisioning_unavailable', status: 503 });
     expect(ensureProvisioned).not.toHaveBeenCalled();
+  });
+
+  it('grants to the SERVER principal, whatever trustedPrincipal the browser sent (D-386)', async () => {
+    const { deps, records } = harness({
+      verifyDelegation: vi.fn(async () => {
+        throw new Error('hosted_provider_delegation_verification_failed');
+      }),
+    });
+    const result = await createHostedFirstWorkspace(deps).run(REQUEST);
+    const identity = firstWorkspaceIdentity('org-a', REQUEST.attemptKey);
+    const recorded = records.get(`${identity.workspaceId}/${identity.connectionId}`);
+    expect(recorded?.configuration.source).toMatchObject({ trustedPrincipal: SERVER_PRINCIPAL });
+    expect(JSON.stringify(result.ok === false && result.template)).toContain(SERVER_PRINCIPAL);
+    // The browser-sent principal (the GCP fixture's) never reaches the grant.
+    expect(JSON.stringify(result)).not.toContain('control-plane@papercusp');
+  });
+
+  it('fails closed, before recording anything, when the delegation source is unavailable', async () => {
+    const { deps } = harness({
+      delegationSourcePrincipal: async () => {
+        throw new Error('gcp_workspace_host_delegation_source_unreadable');
+      },
+    });
+    const result = await createHostedFirstWorkspace(deps).run(REQUEST);
+    expect(result).toMatchObject({ ok: false, code: 'delegation_source_unavailable', status: 503, retryable: true });
+    expect(deps.onboardDelegation).not.toHaveBeenCalled();
   });
 
   it('rejects a malformed attempt key and non-GCP providers', async () => {

@@ -27,6 +27,7 @@ import {
   PostgresHostedProviderDelegationStore,
   type HostedProviderDelegationAdapter,
 } from '../../workspace-host/hosted-provider-delegation';
+import { hostedGcpDelegationSource } from '../../workspace-host/hosted-gcp-auth';
 import type { HostedFirstWorkspaceDependencies } from './first-workspace';
 import { createHostedWorkspaceAdmission } from './workspace-admission';
 import { createDefaultHostedWorkspaceAdmissionDependencies } from './workspace-admission-dependencies';
@@ -62,6 +63,8 @@ export interface HostedFirstWorkspaceRuntimeOptions {
    */
   readonly provisioning?: WorkspaceHostProvisioningEnqueuer;
   readonly provisioningAvailable?: () => boolean;
+  /** Default: the configured GCP delegation source (D-386), the same one the resolver uses. */
+  readonly delegationSourcePrincipal?: () => Promise<string>;
 }
 
 export function createHostedFirstWorkspaceDependencies(
@@ -78,6 +81,7 @@ export function createHostedFirstWorkspaceDependencies(
   return {
     isEnabledFor: (organizationId) => options.enabledOrganizations.has(organizationId),
     provisioningAvailable: options.provisioningAvailable ?? (provisioning ? () => true : dbosStarted),
+    delegationSourcePrincipal: options.delegationSourcePrincipal ?? (() => hostedGcpDelegationSource().principal()),
 
     organizationWorkspaceIds(organizationId) {
       return withWorkspace(controlPlaneWorkspaceId, async (sql) => {
