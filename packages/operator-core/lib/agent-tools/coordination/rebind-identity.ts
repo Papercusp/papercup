@@ -689,6 +689,45 @@ export async function rebindIdentity(
     r.moved = moved.length;
   });
 
+  // 11c. PER-SESSION directive agenda (migration 1195, plan
+  // directive-visibility-and-ownership-2026-09-22 / D-008). Which directives
+  // THIS session has cleared from its own banner.
+  //
+  // Unlike surface 11b above, this one genuinely matches rows: the column
+  // holds coord session ids. (11b's `owner_directives.owner_id` holds the
+  // HUMAN owner label — measured 'owner' ×85, 'Avi' ×22, zero session-shaped —
+  // so its predicate can never match. Filed as WI-10002452; deliberately NOT
+  // fixed here, because correcting it is coupled to its `covered` entry in
+  // identity-keyed-state-inventory and is its own change.)
+  //
+  // This MUST follow the agent: agenda state is what stops a session being
+  // re-nagged by directives it already cleared, so stranding it under a dead
+  // sid re-delivers every cleared row to the successor — the precise nuisance
+  // per-session agenda exists to remove.
+  await run('directive-agenda', async (r) => {
+    // The successor may already have acted on the same directive. Its own
+    // decision is fresher, so drop the predecessor row rather than clobber it
+    // — same precedent as the agent-modes surface below, and required anyway
+    // because (workspace_id, directive_id, owner_id) is the primary key and a
+    // bare UPDATE would violate it.
+    await sql`
+      DELETE FROM harness_shared.owner_directive_agenda AS predecessor
+       WHERE predecessor.owner_id = ${f}
+         AND EXISTS (
+           SELECT 1 FROM harness_shared.owner_directive_agenda AS successor
+            WHERE successor.owner_id = ${t}
+              AND successor.workspace_id = predecessor.workspace_id
+              AND successor.directive_id = predecessor.directive_id
+         )
+    `;
+    const moved = await sql<Array<{ directive_id: number }>>`
+      UPDATE harness_shared.owner_directive_agenda SET owner_id = ${t}
+       WHERE owner_id = ${f}
+       RETURNING directive_id
+    `;
+    r.moved = moved.length;
+  });
+
   // 12c. Current mode posture — unlike agent_mode_changes, this is live
   // per-owner state, not attribution history. Re-key every non-colliding axis
   // wholesale so GOAL's subject, lease epoch, and bounded handoff fields stay

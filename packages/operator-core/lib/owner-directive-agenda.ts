@@ -47,24 +47,11 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { TERMINAL_WORK_ITEM_STATES } from './work-items';
 
 function db(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
 }
-
-/**
- * NON-terminal work-item statuses, as an explicit ALLOWLIST.
- *
- * Deliberately not the complement of a terminal denylist. This set decides
- * whether a work-item still confers authority over an owner's directive, so it
- * must fail CLOSED: a status nobody here anticipated should grant NOTHING.
- * Measured 2026-09-22, `harness_shared.work_items.status` holds eleven distinct
- * values — open, done, resolved, dropped, closed, blocked, passed, todo,
- * needs-human, deprecated, wip — and an earlier draft of this guard listed four
- * terminal ones, which would have silently treated `deprecated` and `passed`
- * as live and handed their assignee authority it should not have.
- */
-const NON_TERMINAL_WORK_ITEM_STATUSES = ['open', 'wip', 'todo', 'blocked', 'needs-human'] as const;
 
 export type DirectiveAgendaState = 'open' | 'dismissed';
 
@@ -197,13 +184,21 @@ export async function directiveActionVerdict(
 
   // Non-terminal is the load-bearing word: a DONE work-item that once carried
   // this directive must not keep granting its assignee authority over the
-  // owner's order forever. Expressed as an allowlist so an unrecognised status
-  // grants nothing — see NON_TERMINAL_WORK_ITEM_STATUSES.
+  // owner's order forever.
+  //
+  // The terminal set is the CANONICAL maintained constant, never a local list.
+  // An earlier draft of this guard hand-spelled four terminal statuses; the
+  // live column holds eleven, so `deprecated` and `passed` would have counted
+  // as live and handed their assignee authority over an owner's directive. A
+  // second copy of a truth the code already owns is exactly the drift the
+  // derived-truth ladder warns about — and here the drift direction is
+  // permissive, which is the worst one for a guard. Same `NOT (… = ANY(…))`
+  // form issues-engineer.ts uses against the same constant.
   const holders = await s<Array<{ assignee: string | null }>>`
     SELECT assignee FROM harness_shared.work_items
      WHERE workspace_id = ${input.workspaceId}
        AND directive_ref = ${input.directiveId}
-       AND status = ANY(${[...NON_TERMINAL_WORK_ITEM_STATUSES]}::text[])
+       AND NOT (status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]))
        AND assignee IS NOT NULL
   `;
   const holderIds = holders.map((h) => h.assignee!).filter(Boolean);
