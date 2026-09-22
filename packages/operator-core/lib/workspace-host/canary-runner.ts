@@ -86,6 +86,20 @@ export interface WorkspaceHostCanaryRunInput {
   };
   readonly operations: WorkspaceHostInitializationHostOperations;
   /**
+   * Agents to initialize AND verify; omission retains all-three coverage.
+   *
+   * Exists so a scoped decision to drop an agent leg is expressible through the supported route
+   * instead of being unrunnable. D-338 (owner-directed, 2026-09-15) skips the funded Codex leg and
+   * continues on Claude and OMP; without this the canary planned all three unconditionally and died
+   * at its final `verify` step on `agent readiness did not pass for: codex (provider-usage-limit)` —
+   * the very failure `agent-credential-admission` had already predicted via its `unfundedAgents`
+   * verdict and then discarded.
+   *
+   * A narrowed set SKIPS the omitted agent; it never marks it ready. `allReady` is therefore scoped
+   * to the REQUESTED set, which is exactly the supersession D-338 authorizes and no wider.
+   */
+  readonly requestedAgents?: readonly (typeof WORKSPACE_HOST_CANARY_AGENTS)[number][];
+  /**
    * The executing provider's declared transport features — pass the provider's real profile
    * (`profile.transportProfile.features`). The canary binds git and agent channels, so a provider
    * declaring `fileTransfer: false` is refused in preflight rather than after a VM is provisioned.
@@ -221,8 +235,18 @@ function validateAgentEvidence(
   return value as unknown as WorkspaceHostAgentVerificationEvidence;
 }
 
-/** Extract only the fail-closed evidence emitted by the plan's verify-initialization step. */
-export function extractWorkspaceHostCanaryInitializationObservation(result: WorkspaceHostInitializationRunResult): {
+/**
+ * Extract only the fail-closed evidence emitted by the plan's verify-initialization step.
+ *
+ * `requestedAgents` must be the SAME set the initialization was planned with; omission means
+ * all-three, matching `resolveWorkspaceHostRequestedAgents`. Evidence is demanded for exactly the
+ * requested agents, so a scoped run (D-338's Codex skip) neither fails on the omitted agent nor
+ * fabricates a ready verdict for it.
+ */
+export function extractWorkspaceHostCanaryInitializationObservation(
+  result: WorkspaceHostInitializationRunResult,
+  requestedAgents: readonly (typeof WORKSPACE_HOST_CANARY_AGENTS)[number][] = WORKSPACE_HOST_CANARY_AGENTS,
+): {
   readonly observedAt: string;
   readonly repository: { readonly visibility: 'private'; readonly cloned: true };
   readonly agents: WorkspaceHostAgentVerificationReport;
@@ -262,7 +286,7 @@ export function extractWorkspaceHostCanaryInitializationObservation(result: Work
   const rawAgents = isRecord(evidence.agents) ? evidence.agents : {};
   const agents: Partial<Record<(typeof WORKSPACE_HOST_CANARY_AGENTS)[number], WorkspaceHostAgentVerificationEvidence>> =
     {};
-  for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
+  for (const agent of requestedAgents) {
     const validated = validateAgentEvidence(agent, rawAgents[agent], problems);
     if (validated) agents[agent] = validated;
   }
@@ -313,6 +337,7 @@ function preflight(
     source: input.source,
     credentialRefs: input.credentials.initial.credentialRefs,
     credentialDelivery: input.credentials.initial.delivery,
+    ...(input.requestedAgents !== undefined ? { requestedAgents: input.requestedAgents } : {}),
   });
   planWorkspaceHostCredentialLifecycle({
     contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
@@ -421,12 +446,16 @@ export async function runWorkspaceHostCanary(
     credentialDelivery: input.credentials.initial.delivery,
     credentialMaterialSource: input.credentialMaterialSource,
     additionalCredentialAdmissions,
+    ...(input.requestedAgents !== undefined ? { requestedAgents: input.requestedAgents } : {}),
     // The initialization runner invokes this only after the exact stored agent generation passed
     // admission and before it creates the operation row. A revoked generation therefore remains a
     // canary preflight rejection rather than masquerading as a durable remote-phase failure.
     onPlanned: () => input.onPhaseStart?.('initialize', operationIds.initialize),
   } satisfies WorkspaceHostInitializationRunInput);
-  const initializationObservation = extractWorkspaceHostCanaryInitializationObservation(initialization);
+  const initializationObservation = extractWorkspaceHostCanaryInitializationObservation(
+    initialization,
+    input.requestedAgents,
+  );
 
   const lifecycleOperations = {
     execute: (step: Parameters<WorkspaceHostCredentialLifecycleRunInput['operations']['execute']>[0]) =>

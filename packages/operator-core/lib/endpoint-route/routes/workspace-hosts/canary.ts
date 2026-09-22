@@ -1,6 +1,7 @@
 /** POST /workspace-hosts/:hostId/canary — resumable production P-046 canary controller. */
 import { defineTool } from '@papercusp/agent-mcp';
 import {
+  WORKSPACE_HOST_CANARY_AGENTS,
   WorkspaceHostDestroyEvidenceError,
   workspaceHostCanaryIdentityProblems,
   type WorkspaceHostDesiredSpec,
@@ -28,6 +29,7 @@ interface CanaryBody extends Record<string, unknown> {
   requestedAt?: unknown;
   source?: unknown;
   credentials?: unknown;
+  requestedAgents?: unknown;
   destroyFinalization?: unknown;
 }
 
@@ -45,6 +47,20 @@ function hasCredentials(value: unknown): boolean {
     hasCredentialGeneration(value.rotated) &&
     hasCredentialGeneration(value.restored)
   );
+}
+
+/**
+ * Mirrors `resolveWorkspaceHostRequestedAgents` so a bad scope is refused as a 400 here rather than
+ * surfacing as a 500 from deep inside the driver. Narrowing the set SKIPS the omitted agent — it
+ * never marks one ready (D-338 supersedes the all-ready requirement only for the Codex leg).
+ */
+function requestedAgentsProblem(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const invalid = 'requestedAgents must be a nonempty array of distinct claude, codex, or omp agents';
+  if (!Array.isArray(value) || value.length === 0) return invalid;
+  if (new Set(value).size !== value.length) return invalid;
+  if (value.some((agent) => !WORKSPACE_HOST_CANARY_AGENTS.includes(agent as never))) return invalid;
+  return undefined;
 }
 
 function hasDestroyFinalization(value: unknown): boolean {
@@ -128,6 +144,8 @@ export function createWorkspaceHostCanaryRoute(
           400,
         );
       }
+      const agentScopeProblem = requestedAgentsProblem(body.requestedAgents);
+      if (agentScopeProblem) return requestError(agentScopeProblem, 400);
       if (body.destroyFinalization !== undefined && !hasDestroyFinalization(body.destroyFinalization)) {
         return requestError(
           'destroyFinalization requires operationId, credentialTeardown, teardown, and destroyEvidence',
@@ -205,6 +223,9 @@ export function createWorkspaceHostCanaryRoute(
           requestedAt: body.requestedAt,
           source: body.source as never,
           credentials: body.credentials as never,
+          ...(body.requestedAgents !== undefined
+            ? { requestedAgents: body.requestedAgents as never }
+            : {}),
           operations,
           deliveryCapabilities,
           credentialMaterialSource,
