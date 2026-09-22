@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import launchAgentTool from './agent-tools/capability/launch-agent';
 import { resolveAgentIdentity } from './agent-tools/coordination/identity';
+import { ACCEPTANCE_DRAIN_ACTOR } from './agent-tools/plans/acceptance-drain-filing';
 import { readPlanBySlug } from './agent-tools/plans/source';
 import { resolveAggregatedVettingCritics } from './agent-tools/scorecards/grader-eligibility';
 import { areAcceptanceLineageRelated } from './acceptance-author-identity';
@@ -101,18 +102,55 @@ function containsPlanSlug(text: string, planSlug: string): boolean {
   return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`, 'i').test(text);
 }
 
-/** Pure identity predicate for a delegated, non-terminal acceptance-grading task. */
+/**
+ * Pure identity predicate for a delegated, non-terminal acceptance-grading task.
+ *
+ * An acceptance-drain filing is never one, whatever its prose says: it is the
+ * implementer's carry item, and it quotes the gate refusal VERBATIM — which names
+ * the `scorecards:emit` remedy. Matched on text alone it reads as an in-flight
+ * grading request, so the recruiter dedupes against the very item filed to get
+ * the plan graded, and nobody is ever recruited (WI-10002453). Authorship, not
+ * wording, decides it.
+ */
 export function isAcceptanceGradingRequestForPlan(
-  workItem: Pick<WorkItem, 'title' | 'summary'>,
+  workItem: Pick<WorkItem, 'title' | 'summary' | 'createdBy'>,
   planSlug: string,
 ): boolean {
   const normalizedPlanSlug = planSlug.trim();
   if (!normalizedPlanSlug) return false;
+  if (workItem.createdBy === ACCEPTANCE_DRAIN_ACTOR) return false;
   const text = `${workItem.title ?? ''}\n${workItem.summary ?? ''}`;
   return (
     containsPlanSlug(text, normalizedPlanSlug) &&
     ACCEPTANCE_GRADING_REQUEST_MARKERS.some((marker) => marker.test(text))
   );
+}
+
+/**
+ * How long an UNHELD grading request keeps suppressing dispatch after it was filed
+ * (or last progressed). The window is what EI-22678191183363422 protects: a request
+ * the scheduler has not placed yet must not be raced by a second grader. It spans
+ * several admission (fail-open at 60 min) and claim cycles, so a request still
+ * unheld past it has been passed over, not queued. Measured when this was set:
+ * every unheld request blocking recruitment was 1–4 WEEKS old (WI-10002453).
+ */
+export const ACCEPTANCE_GRADING_REQUEST_UNHELD_GRACE_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Is this task a grading request that is actually IN FLIGHT — the only kind that may
+ * suppress recruiting a grader? Identity alone is not enough: an unheld request is
+ * graded by nobody, and suppressing dispatch behind it strands the plan for good.
+ * An unreadable timestamp counts as not-fresh, keeping the guard fail-open.
+ */
+export function isInFlightAcceptanceGradingRequest(
+  workItem: Pick<WorkItem, 'title' | 'summary' | 'createdBy' | 'assignee' | 'createdAt' | 'lastProgressAt'>,
+  planSlug: string,
+  nowMs: number,
+): boolean {
+  if (!isAcceptanceGradingRequestForPlan(workItem, planSlug)) return false;
+  if (workItem.assignee) return true;
+  const lastMovedMs = Date.parse(workItem.lastProgressAt ?? workItem.createdAt);
+  return Number.isFinite(lastMovedMs) && nowMs - lastMovedMs < ACCEPTANCE_GRADING_REQUEST_UNHELD_GRACE_MS;
 }
 
 /** One entry of the assigned grader MENU, with its selection provenance. */
@@ -1322,6 +1360,7 @@ export async function resolveAcceptanceGrader(
     openCascade?: typeof prodOpenGradingCascade;
     readSettlement?: typeof readAcceptanceGradingSettlement;
     reserveReviewTarget?: typeof reserveAcceptanceReviewTarget;
+    nowMs?: () => number;
   } = {},
 ): Promise<AcceptanceGraderLifecycle> {
   let settlement: AcceptanceGradingSettlement | undefined;
@@ -1376,7 +1415,9 @@ export async function resolveAcceptanceGrader(
       // A delegated acceptance-grading request can be a plain `task` whose
       // source_plan_slug is NULL. The plan slug is therefore searched in the
       // bounded title/summary population, then the pure identity predicate
-      // rejects ordinary plan tasks that merely mention the same slug.
+      // rejects ordinary plan tasks that merely mention the same slug — and
+      // only a request someone holds (or that was filed within the grace
+      // window) counts as in flight; an abandoned one grades nothing.
       let existingGradingRequest: WorkItem | undefined;
       try {
         const candidates = await (deps.listWork ?? listWorkItems)({
@@ -1386,8 +1427,9 @@ export async function resolveAcceptanceGrader(
           q: planSlug,
           limit: 100,
         });
+        const nowMs = (deps.nowMs ?? Date.now)();
         existingGradingRequest = candidates.find((candidate) =>
-          isAcceptanceGradingRequestForPlan(candidate, planSlug),
+          isInFlightAcceptanceGradingRequest(candidate, planSlug, nowMs),
         );
       } catch (err) {
         // This read is a duplicate guard, not a prerequisite for grading. A

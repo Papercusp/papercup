@@ -7,6 +7,7 @@ import {
   detectAcceptanceGraderTerminalFailure,
   launchAcceptanceGrader,
   isAcceptanceGradingRequestForPlan,
+  ACCEPTANCE_GRADING_REQUEST_UNHELD_GRACE_MS,
   resolveAcceptanceGraderDiscoveryExtraExclusions,
   resolveAcceptanceGrader,
   selectableGraderLiveness,
@@ -251,6 +252,7 @@ describe('isAcceptanceGradingRequestForPlan', () => {
         {
           title: 'Independent acceptance grade (non-lineage): plan ship-the-thing',
           summary: 'Run scorecards:emit for the plan.',
+          createdBy: 'su-delegator',
         },
         'ship-the-thing',
       ),
@@ -263,6 +265,7 @@ describe('isAcceptanceGradingRequestForPlan', () => {
         {
           title: 'Please take this delegated task',
           summary: 'Acceptance-grading request for plan ship-the-thing; use scorecards:emit.',
+          createdBy: 'su-delegator',
         },
         'ship-the-thing',
       ),
@@ -272,7 +275,7 @@ describe('isAcceptanceGradingRequestForPlan', () => {
   it('does not match an unrelated task that mentions the plan', () => {
     expect(
       isAcceptanceGradingRequestForPlan(
-        { title: 'Implement ship-the-thing follow-up', summary: 'Fix the remaining plan item.' },
+        { title: 'Implement ship-the-thing follow-up', summary: 'Fix the remaining plan item.', createdBy: 'su-delegator' },
         'ship-the-thing',
       ),
     ).toBe(false);
@@ -281,7 +284,7 @@ describe('isAcceptanceGradingRequestForPlan', () => {
   it('does not match a grading request for another plan', () => {
     expect(
       isAcceptanceGradingRequestForPlan(
-        { title: 'Independent acceptance grade for another-plan', summary: 'Use scorecards:emit.' },
+        { title: 'Independent acceptance grade for another-plan', summary: 'Use scorecards:emit.', createdBy: 'su-delegator' },
         'ship-the-thing',
       ),
     ).toBe(false);
@@ -293,12 +296,31 @@ describe('isAcceptanceGradingRequestForPlan', () => {
         {
           title: 'Acceptance review-target reservation — ship-the-thing (acceptance-ship-the-thing)',
           summary: 'Canonical reviewer assignment for acceptance target ship-the-thing at rubric revision 3.',
+          createdBy: 'su-delegator',
+        },
+        'ship-the-thing',
+      ),
+    ).toBe(false);
+  });
+
+  it('never treats an acceptance-drain carry filing as a grading request, though it quotes the remedy (WI-10002453)', () => {
+    expect(
+      isAcceptanceGradingRequestForPlan(
+        {
+          title: "Unstick plan 'ship-the-thing' from awaiting-acceptance — blocked on acceptance_ungraded",
+          summary:
+            "Plan `ship-the-thing` is sitting in `awaiting-acceptance`. Gate refusal: independent grading has not " +
+            "happened — a non-implementer must run scorecards:emit { rubricRef:'acceptance-ship-the-thing' }.",
+          createdBy: 'system:acceptance-drain',
         },
         'ship-the-thing',
       ),
     ).toBe(false);
   });
 });
+
+/** Fixed clock for the in-flight grace window; fixtures date themselves against it. */
+const NOW = Date.parse('2026-09-22T18:00:00.000Z');
 
 function deps(launch: ReturnType<typeof vi.fn>) {
   const reviewReservation = {
@@ -319,6 +341,7 @@ function deps(launch: ReturnType<typeof vi.fn>) {
     readSettlement: vi.fn(async () => ({ settled: false, reason: 'no_author_acceptance' as const, rubricRevision: 7 })),
     lineageRelated: vi.fn(async () => false),
     reserveReviewTarget: vi.fn(async () => ({ ...reviewReservation, created: true })),
+    nowMs: () => NOW,
   };
 }
 
@@ -1294,6 +1317,10 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
         state: 'open',
         title: 'Independent acceptance grade: plan ship-the-thing',
         summary: 'Use scorecards:emit as the non-lineage grader.',
+        createdBy: 'su-delegator',
+        assignee: null,
+        createdAt: new Date(NOW - 5 * 60_000).toISOString(),
+        lastProgressAt: null,
       },
     ]);
 
@@ -1336,6 +1363,10 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
         state: 'blocked',
         title: 'Delegated task',
         summary: 'Acceptance-grading request for plan ship-the-thing; scorecards:emit is required.',
+        createdBy: 'su-delegator',
+        assignee: 'su-independent',
+        createdAt: new Date(NOW - 30 * 86_400_000).toISOString(),
+        lastProgressAt: null,
       },
     ]);
 
@@ -1350,6 +1381,70 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
     expect(discover).not.toHaveBeenCalled();
     expect(openCascade).not.toHaveBeenCalled();
     expect(launch).not.toHaveBeenCalled();
+  });
+
+  describe('only an IN-FLIGHT grading request suppresses recruitment (WI-10002453)', () => {
+    const assigned = () =>
+      vi.fn(async () => ({
+        verdict: 'assigned' as const,
+        graders: [{ ownerId: 'su-independent', score: 0.71, liveness: 'live', via: 'floor' as const }],
+        routing: { selection: { min: 1, max: 2, selected: [] } },
+        excluded: [],
+      }));
+
+    it('recruits past an UNHELD request that has outlived the grace window', async () => {
+      const discover = assigned();
+      const listWork = vi.fn(async () => [
+        {
+          id: 'WI-grading-abandoned',
+          kind: 'task',
+          state: 'open',
+          title: 'Independent acceptance grade: plan ship-the-thing',
+          summary: 'Use scorecards:emit as the non-lineage grader.',
+          createdBy: 'su-delegator',
+          assignee: null,
+          createdAt: new Date(NOW - ACCEPTANCE_GRADING_REQUEST_UNHELD_GRACE_MS - 60_000).toISOString(),
+          lastProgressAt: null,
+        },
+      ]);
+
+      const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+        ...deps(freshLaunch()),
+        listWork: listWork as never,
+        discover: discover as never,
+        openCascade: vi.fn(async () => ({ conversationId: 'conv-1', woke: 1 })) as never,
+      });
+
+      expect(result.state).not.toBe('deduped');
+      expect(discover).toHaveBeenCalled();
+    });
+
+    it('recruits past the acceptance-drain carry item HELD by the implementer', async () => {
+      const discover = assigned();
+      const listWork = vi.fn(async () => [
+        {
+          id: 'WI-drain-carry',
+          kind: 'task',
+          state: 'blocked',
+          title: "Unstick plan 'ship-the-thing' from awaiting-acceptance — blocked on acceptance_ungraded",
+          summary: "Gate refusal: a non-implementer must run scorecards:emit { rubricRef:'acceptance-ship-the-thing' }.",
+          createdBy: 'system:acceptance-drain',
+          assignee: 'su-implementer',
+          createdAt: new Date(NOW - 60_000).toISOString(),
+          lastProgressAt: new Date(NOW - 60_000).toISOString(),
+        },
+      ]);
+
+      const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+        ...deps(freshLaunch()),
+        listWork: listWork as never,
+        discover: discover as never,
+        openCascade: vi.fn(async () => ({ conversationId: 'conv-1', woke: 1 })) as never,
+      });
+
+      expect(result.state).not.toBe('deduped');
+      expect(discover).toHaveBeenCalled();
+    });
   });
 
   it('NOT-settled grading → dispatches exactly as before, and records the reading it acted on', async () => {

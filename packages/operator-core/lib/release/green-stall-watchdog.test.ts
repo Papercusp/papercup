@@ -3373,7 +3373,9 @@ describe('evaluateStrandedRepairQueue (WI-10002439)', () => {
 
   it('startGreenStallWatchdog actually RUNS the pass — the promised-but-unwired class this item exists for', async () => {
     const { readFileSync } = await import('node:fs');
-    const src = readFileSync(new URL('./green-stall-watchdog.ts', import.meta.url), 'utf8');
+    // Overridable so scripts/mutation-probe.sh can point this guard at a mutated COPY (tier 2).
+    const subject = process.env.STRANDED_WIRING_SUBJECT ?? new URL('./green-stall-watchdog.ts', import.meta.url);
+    const src = readFileSync(subject, 'utf8');
     const starter = src.slice(src.indexOf('export function startGreenStallWatchdog('));
     expect(starter.length).toBeGreaterThan(0);
     expect(starter).toMatch(/\n\s*void checkStrandedRepairQueue\(sql\);/);
