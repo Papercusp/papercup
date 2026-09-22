@@ -2007,16 +2007,44 @@ and the wrong door looks identical to no door.**
   server-side kernel preflight evaluated AFTER the request is accepted, so a
   different client, port or transport reaches the byte-identical denial — the
   documented transport fallback is not an escape hatch for this class (WI-10002028).
-  The door is **`coord:orient { afterCompaction: true }`**: it is exempt from that
-  preflight by design, and it is the only caller that converges the activation
-  (`acknowledgeControlTransition`), so it repairs rather than merely answering.
-  Should a stale DEPLOYED build still refuse it, converge out-of-band — compare
+
+  ⛔ **`coord:orient` is NOT reliably the door — READ `activation.status` FIRST and
+  branch on it.** This text used to say `coord:orient { afterCompaction: true }` is
+  "exempt from that preflight by design" and to treat the SQL converge as a rare
+  fallback. Measured otherwise, twice in one 30-minute session (2026-09-22,
+  su-14342fa6; class EI-23703586803892464, repeatCount 7+): `coord:orient` was
+  refused with the byte-identical `Kernel preflight denied tool "coord:orient":
+  Identity capability (unresolved): stale-artifact`. Believing the old wording costs
+  you a wasted call and — worse — reads as "I am locked out with no door left",
+  which is exactly when an agent escalates a self-fixable blocker to the owner.
+
+  **The discriminator is `control_state->'activation'->>'status'`:**
+
+  ```
+  sudo -n -u postgres psql -d papercusp -At -c "SELECT jsonb_pretty(control_state->'activation')
+    FROM harness_shared.session_briefs WHERE owner_id = '<your-su-id>';"
+  ```
+
+  - `status:'failed'` (with a `failure` string such as `stack transition render
+    failed`) — the activation never rendered, so there is nothing for
+    `coord:orient` to acknowledge. **Go straight to the SQL converge; do not call
+    `coord:orient` first.**
+  - `status:'desired'`/`'prepared'` with `applied` merely lagging — `coord:orient
+    { afterCompaction: true }` may converge it via
+    `acknowledgeControlTransition`. Try it once, then fall through.
+
+  **The converge (works for both, and is the only move for `failed`):** compare
   `adv_sessions.launch_spec->>'specificationRevision'` (what you are provably
-  running) against `session_briefs.control_state->'activation'`, and when they
-  differ set `applied` AND `prepared` := `desired`, `status` := `'applied'`,
-  guarded by a `WHERE` on that exact desired revision, via
-  `sudo -n -u postgres psql -d papercusp`. The tool surface returns immediately;
-  no relaunch is needed.
+  running) against `session_briefs.control_state->'activation'`; when they differ set
+  `applied` AND `prepared` := `desired`, `status` := `'applied'`, guarded by a
+  `WHERE` on that exact desired revision, via `sudo -n -u postgres psql -d papercusp`.
+  The tool surface returns immediately; no relaunch is needed. ⚠ Converge only when
+  `launch_spec` shows you are ALREADY running the desired revision — that is what
+  makes `applied := desired` a true statement rather than a forged one.
+
+  ⚠ This repair is a MITIGATION, not a fix: a recurrence inside one session means
+  the writer that leaves activation `failed` is still armed. Add your occurrence to
+  EI-23703586803892464 rather than filing a fresh row.
 
 
 ## `cd` outside the repo tree does NOT persist across Bash calls — a failed one silently falls back to the repo ROOT
