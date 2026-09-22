@@ -315,6 +315,33 @@ export interface OrientationToolSurface {
   windowMinutes: number;
 }
 
+/**
+ * One ACTIVE mode row, reduced to the fields the attribution line needs
+ * (P-012). Deliberately NOT the full `ModeRow`: `setAt` is excluded because a
+ * time-derived component would re-emit the line every turn and defeat the very
+ * diff this class exists to be — the same rule `openAsks` and `frontier`
+ * already follow above.
+ */
+export interface OrientationModeState {
+  /** The axis this mode occupies; part of the identity because axes are exclusive. */
+  axisKey: string;
+  mode: string;
+  reason: string;
+  /** The actor that set it — the "setting actor" the acceptance bar requires. */
+  setBy: string;
+  /**
+   * Whether `setBy` IS this agent. Resolved in the deps layer, which knows the
+   * ownerId, because a segment's render signature is (value, state, committed)
+   * and carries no identity — so the self-vs-peer split cannot be decided at
+   * render time. Collapsing a peer-set mode into "self-set" would attribute a
+   * flip the agent never made to the agent itself.
+   */
+  setBySelf: boolean;
+  ownerDirected: boolean;
+  /** The SOURCE mode when an implication cascade inserted this row, else null. */
+  impliedBy: string | null;
+}
+
 export interface OrientationState {
   /** Non-terminal work-items assigned to this agent. */
   held: OrientationHeldItem[];
@@ -349,6 +376,12 @@ export interface OrientationState {
   openAsks: OrientationOpenAsk | null;
   /** Declared-but-unfired gates visible to the caller's fleet/plan/harness. */
   announcedGates: OrientationAnnouncedGate[];
+  /** Active modes with their attribution; null means unreadable, `[]` means
+   *  genuinely none. The distinction is load-bearing — see
+   *  `fingerprintOrientation`, which preserves the committed token on null so a
+   *  transient read failure cannot erase the cursor and fake a fresh transition
+   *  on recovery. */
+  modes: OrientationModeState[] | null;
   /** Whether an engine loop is armed — i.e. whether a wake source exists. */
   loopArmed: boolean;
   /** Whether the armed loop's most recent fire was withheld before delivery. */
@@ -545,6 +578,12 @@ function undischargedObligationsOnly(state: OrientationState): OrientationState 
     inboxRecent: [],
     openAsks: null,
     announcedGates: [],
+    // `[]`, not null: the QUIET value. Empty renders no transition line, which
+    // is right for an obligations-only re-emit — the modes have not changed, so
+    // repeating their attribution would be the signal decay this projection
+    // exists to avoid. null would mean "unreadable", which is a different and
+    // untrue claim on a turn where we simply did not look.
+    modes: [],
     loopArmed: true,
     loopFireWithheld: false,
     improvementTriage: null,
@@ -569,6 +608,13 @@ export function isEmptyOrientation(state: OrientationState): boolean {
     state.openAsks === null &&
     state.inboxRecent.length === 0 &&
     state.announcedGates.length === 0 &&
+    // A mode row holds the block OPEN, exactly like `loopArmed` beside it.
+    // Without this conjunct an agent whose only signal is its posture (a fresh
+    // AUTO session holding nothing, with an empty inbox) is judged "nothing
+    // worth saying" and returns '' BEFORE the watermark is ever consulted — so
+    // the transition line could never render at all. Holding the block open is
+    // safe: `orientationUnchanged` still suppresses it on every later turn.
+    (state.modes?.length ?? 0) === 0 &&
     !state.loopArmed &&
     !state.loopFireWithheld &&
     // improvementTriage is NOT a conjunct here (P-017): it no longer renders,
@@ -746,6 +792,19 @@ export function fingerprintOrientation(
       .map(encodeAnnouncedGate)
       .sort()
       .join('|'),
+    // IDENTITY, never `setAt` (P-012 / D-071): a time-derived component would
+    // re-emit every turn purely because time passed — the trap `openAsks` and
+    // `frontier` are already commented against in this same function.
+    //
+    // UNKNOWN preserves the last known token, exactly like `frontier` below. A
+    // transient failure to read the mode store must not erase the cursor, or
+    // the next successful read would re-render an unchanged posture as if it
+    // were a fresh transition.
+    modes: state.modes
+      ? encodeModeStates(state.modes)
+      : typeof committed?.modes === 'string'
+        ? committed.modes
+        : '',
     loop: state.loopArmed ? 1 : 0,
     loopWithheld: state.loopFireWithheld ? 1 : 0,
     // `triage` is deliberately ABSENT from the watermark (P-017). It stopped
@@ -815,6 +874,13 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
     a.gates === b.gates &&
     a.loop === b.loop &&
     a.loopWithheld === b.loopWithheld &&
+    // REQUIRED, and the single easiest line in this change to omit: writing the
+    // `modes` token in fingerprintOrientation does NOTHING unless it is
+    // compared HERE. Drop this and a mode transition never makes the block
+    // eligible to emit on its own — the line then appears only when some
+    // unrelated token happens to change, which is precisely the one-shot-with-
+    // no-visible-symptom failure the comments above describe three times over.
+    (a.modes ?? '') === (b.modes ?? '') &&
     (a.obligations ?? '') === (b.obligations ?? '') &&
     // REQUIRED, and easy to omit: fingerprintOrientation writing a `facts` token
     // does nothing on its own — this whitelist is what decides re-emission. Without
@@ -855,6 +921,56 @@ function renderExecutableFrontierLine(
     `- frontier: ${previous.planSlug}@${previous.executableWidth} -> ` +
     `${frontier.planSlug}@${frontier.executableWidth} executable.`
   );
+}
+
+/**
+ * The attribution IDENTITY of one mode row — the unit the P-012 diff is keyed
+ * on. Excludes `setAt` deliberately (see {@link OrientationModeState}) and
+ * `reason` incidentally: a reason is free text, and a watermark component that
+ * can grow without bound is a cursor that can outgrow the row it describes.
+ */
+function encodeModeState(row: OrientationModeState): string {
+  return [row.axisKey, row.mode, row.setBy, row.ownerDirected ? '1' : '0', row.impliedBy ?? ''].join(':');
+}
+
+function encodeModeStates(rows: readonly OrientationModeState[]): string {
+  return rows.map(encodeModeState).sort().join('|');
+}
+
+/**
+ * P-012 / D-071: the lines for modes that are NEW SINCE the committed cursor.
+ *
+ * This comparison — NOT the `modes` watermark token — is what satisfies "does
+ * not render again while the mode is unchanged". `composeOrientationBlock` is
+ * all-or-nothing by design: when ANY token changes, every class re-renders. So
+ * a mode line gated only on its own token would reappear verbatim on the next
+ * turn an unrelated inbox message arrived. `renderExecutableFrontierLine`
+ * above solves the identical problem the identical way.
+ */
+function renderModeTransitionLines(
+  modes: OrientationModeState[] | null,
+  committed: CursorState | null,
+): string[] {
+  // null is UNREADABLE, not "no modes": say nothing rather than assert a
+  // posture we could not read.
+  if (!modes || modes.length === 0) return [];
+  const encoded = typeof committed?.modes === 'string' ? committed.modes : '';
+  const previous = new Set(encoded ? encoded.split('|') : []);
+  return modes
+    .filter((row) => !previous.has(encodeModeState(row)))
+    .map((row) => {
+      const reason = row.reason.replace(/\s+/g, ' ').trim();
+      const suffix = reason ? ` (reason: ${compactHeadline(reason)})` : '';
+      // MOST SPECIFIC FIRST. An implied row still carries a `setBy`, and may
+      // also carry `ownerDirected` inherited from the directive that triggered
+      // the cascade — so testing either of those first would render a derived
+      // posture as a decision the actor took directly, and the "implied by"
+      // shape the item explicitly names could never appear.
+      if (row.impliedBy) return `- mode ${row.mode} ON — implied by ${row.impliedBy}${suffix}.`;
+      if (row.ownerDirected) return `- mode ${row.mode} ON — owner-directed${suffix}.`;
+      if (row.setBySelf) return `- mode ${row.mode} ON — self-set${suffix}.`;
+      return `- mode ${row.mode} ON — set by ${compactActor(row.setBy)}${suffix}.`;
+    });
 }
 
 function compactIds(ids: string[], cap: number): string {
@@ -1295,6 +1411,22 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
     ],
   }),
 
+  orientationClass<{ modes: OrientationModeState[] | null }>({
+    id: 'modes',
+    watermarkTokens: ['modes'],
+    applicableSinks: TURN_START,
+    populate: (state) => ({ modes: state.modes }),
+    segments: [
+      {
+        // Just ABOVE the loop warning: posture is the frame the reader needs
+        // before the lines that depend on it, and a transition is rare enough
+        // to earn a high slot on the turns it does appear.
+        order: 85,
+        render: ({ modes }, _state, committed) => renderModeTransitionLines(modes, committed),
+      },
+    ],
+  }),
+
   orientationClass<{ armed: boolean; withheld: boolean }>({
     id: 'loopArmed',
     watermarkTokens: ['loop'],
@@ -1686,6 +1818,9 @@ export interface OrientationDeps {
    *  answered; null for none/unreadable — same fail-soft contract as every
    *  other source here. */
   openAsks: (ownerId: string) => Promise<OrientationOpenAsk | null>;
+  /** Active modes with attribution; null for unreadable (never `[]`, which
+   *  means genuinely none). */
+  modes: (ownerId: string, workspaceId: string) => Promise<OrientationModeState[] | null>;
   loopArmed: (ownerId: string) => Promise<boolean>;
   loopFireWithheld: (ownerId: string) => Promise<boolean>;
   /** Existing improvement triage/ranking path, reduced to one bounded row. */
@@ -1743,6 +1878,7 @@ export async function resolveOrientationState(
     inbox,
     announcedGates,
     openAsks,
+    modes,
     loopArmed,
     loopFireWithheld,
     improvementTriage,
@@ -1771,6 +1907,10 @@ export async function resolveOrientationState(
     // Fail-soft to null, same rule as toolSurface below: "cannot tell" must
     // render as silence, never as a false "nothing outstanding".
     d.openAsks(ownerId).catch(() => null as OrientationOpenAsk | null),
+    // Fail-soft to NULL, not `[]`: "could not read" must stay distinguishable
+    // from "no modes set", or the fingerprint erases the cursor and fakes a
+    // fresh transition on recovery.
+    d.modes(ownerId, workspaceId).catch(() => null as OrientationModeState[] | null),
     d.loopArmed(ownerId).catch(() => false),
     d.loopFireWithheld(ownerId).catch(() => false),
     d.improvementTriage(workspaceId).catch(() => null),
@@ -1806,6 +1946,7 @@ export async function resolveOrientationState(
     inboxRecent: inbox.newest,
     announcedGates,
     openAsks,
+    modes,
     loopArmed,
     loopFireWithheld,
     improvementTriage,
@@ -2242,6 +2383,23 @@ export function defaultOrientationDeps(): OrientationDeps {
               }
             : {}),
         }));
+    },
+    // P-012: reuse the mode store's own reader rather than re-querying
+    // agent_modes here — the registry is already the single source for posture,
+    // and a second query would be a second truth to keep in step.
+    modes: async (ownerId, workspaceId) => {
+      const { getModes } = await import('./modes/store');
+      const rows = await getModes(workspaceId, ownerId);
+      return rows.map((row) => ({
+        axisKey: row.axisKey,
+        mode: row.mode,
+        reason: row.reason,
+        setBy: row.setBy,
+        // Resolved HERE because render has no identity (see OrientationModeState).
+        setBySelf: row.setBy === ownerId,
+        ownerDirected: row.ownerDirected,
+        impliedBy: row.impliedBy?.mode ?? null,
+      }));
     },
     loopArmed: async (ownerId) => {
       const { activeLoopOwners } = await import('./adv-roster');

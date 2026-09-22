@@ -201,6 +201,10 @@ const BASELINE: OrientationState = {
   inboxRecent: [],
   openAsks: null,
   announcedGates: [],
+  // `[]` — READABLE and empty, the quiet shape. `null` would also render
+  // nothing, but it means UNREADABLE, so using it here would make the baseline
+  // silent for the wrong reason and hide a genuinely broken reader.
+  modes: [],
   loopArmed: true,
   loopFireWithheld: false,
   improvementTriage: null,
@@ -259,6 +263,25 @@ const CLASS_PROBES: Record<string, ClassProbe> = {
   announcedGates: {
     patch: { announcedGates: [{ event: 'fleet:demo:phase1-green' }] },
     marker: /announced gates:/,
+  },
+  modes: {
+    // Against a null committed cursor every row is NEW, so this renders. The
+    // three attribution shapes are pinned individually in turn-start-orientation.test.ts;
+    // this probe only has to prove the class reaches the rendered prompt at all.
+    patch: {
+      modes: [
+        {
+          axisKey: 'autonomy',
+          mode: 'auto',
+          reason: 'owner said run autonomously',
+          setBy: 'su-c03852cb',
+          setBySelf: false,
+          ownerDirected: true,
+          impliedBy: null,
+        },
+      ],
+    },
+    marker: /mode auto ON — owner-directed/,
   },
   loopArmed: {
     patch: { loopArmed: false },
@@ -1058,6 +1081,14 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
         kind: 'not-applicable',
         reason: "The reader's own outstanding asks. Fleet-scoped blocking is carried by the member rows instead.",
       },
+      modes: {
+        kind: 'not-applicable',
+        reason:
+          "DIFFERENT SUBJECT, not a missing copy. This class populates from the READER's own mode registry " +
+          '(`getModes(ownerId)`), so on a leader brief it would report the leader\'s own posture — which their ' +
+          'own turn-start block already delivers. The fleet-scoped question a leader actually acts on is a ' +
+          "MEMBER's posture, which is per-member data and belongs on the member rows, not on this class.",
+      },
       loopArmed: {
         kind: 'not-applicable',
         reason:
@@ -1225,6 +1256,19 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'already reaches the document through the loop carry-note\'s own `left` / owner-facing-threads ' +
           'discipline — a prose carrier, not this class. If that proves insufficient, the fix is to claim this ' +
           'class here deliberately, not to widen the note.',
+      },
+      modes: {
+        kind: 'other-shared-mechanism',
+        mechanism: 'the carry document\'s control-anchor state block + its `## Session mode` section',
+        reason:
+          'The carry document ALREADY carries active modes verbatim — the control-anchor state block ' +
+          '(`control generation N: {"modes":[…]}`) and the `## Session mode` section both render them, and a ' +
+          'successor re-reads that state rather than inheriting a cursor. Registering this class here would ' +
+          'add a THIRD copy of the same posture. ⚠ And the TRANSITION half is not merely redundant but ' +
+          'temporally unavailable: the diff is against the committed cursor of the turn the line renders on, ' +
+          'and a carry document is assembled for a session that has taken no turn — so there is no prior ' +
+          'cursor to diff against. Same shape as `carryBlindWindow` under D-069. What a successor needs is ' +
+          'the CURRENT posture, which it already gets.',
       },
       inboxRecent: {
         kind: 'not-applicable',

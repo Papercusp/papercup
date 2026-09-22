@@ -45,6 +45,7 @@ const EVERY_ORIENTATION_DEP: Record<keyof OrientationDeps, true> = {
   inbox: true,
   announcedGates: true,
   openAsks: true,
+  modes: true,
   loopArmed: true,
   loopFireWithheld: true,
   improvementTriage: true,

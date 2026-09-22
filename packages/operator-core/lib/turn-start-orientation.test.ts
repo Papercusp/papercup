@@ -24,6 +24,7 @@ import {
   buildAnnouncedGateWarning,
   ORIENTATION_BUDGET_CHARS,
   type OrientationState,
+  type OrientationModeState,
 } from './turn-start-orientation';
 import { selectUntriaged } from './harness/improvements/triage-core';
 import type { ScoredItem } from './harness/improvements/digest';
@@ -37,6 +38,7 @@ const base: OrientationState = {
   openAsks: null,
   inboxRecent: [],
   announcedGates: [],
+  modes: [],
   loopArmed: false,
   loopFireWithheld: false,
   improvementTriage: null,
@@ -62,6 +64,7 @@ const withWork: OrientationState = {
   openAsks: null,
   inboxRecent: [{ msgId: 'm-1', from: 'su-peer', summary: 'Need your decision on the shared seam.' }],
   announcedGates: [{ event: 'fleet:atlas:phase-open', note: 'Phase 2 may begin.' }],
+  modes: [],
   loopArmed: true,
   loopFireWithheld: false,
   improvementTriage: null,
@@ -81,6 +84,7 @@ const quietDeps = {
   inbox: async () => ({ count: 0, newest: [] }),
   announcedGates: async () => [],
   openAsks: async () => null,
+  modes: async () => [],
   loopArmed: async () => false,
   loopFireWithheld: async () => false,
   improvementTriage: async () => null,
@@ -256,6 +260,121 @@ describe('turn-start-orientation — when it speaks', () => {
     const out = composeOrientationBlock({ state: unknown, committed, epoch: EPOCH });
     expect(out).not.toContain('frontier:');
     expect(fingerprintOrientation(unknown, EPOCH, committed).frontier).toBe(committed.frontier);
+  });
+
+  /**
+   * P-012 / D-071. CTRL carries mode IDS only, so an agent could read that it is
+   * in AUTO without ever learning WHO put it there or WHY — and "the owner told
+   * me to" versus "I set this myself" is precisely the distinction the
+   * provenance rules turn on. These pin the rendered attribution, not the
+   * registry state.
+   */
+  function modeRow(over: Partial<OrientationModeState> = {}): OrientationModeState {
+    return {
+      axisKey: 'autonomy',
+      mode: 'auto',
+      reason: 'owner said run autonomously',
+      setBy: 'su-c03852cb',
+      setBySelf: false,
+      ownerDirected: false,
+      impliedBy: null,
+      ...over,
+    };
+  }
+
+  it('renders each mode attribution shape distinguishably', () => {
+    const render = (over: Parameters<typeof modeRow>[0]) =>
+      composeOrientationBlock({ state: { ...base, modes: [modeRow(over)] }, committed: null, epoch: EPOCH });
+
+    expect(render({ ownerDirected: true })).toContain(
+      'mode auto ON — owner-directed (reason: owner said run autonomously)',
+    );
+    expect(render({ setBySelf: true, reason: 'self-armed for the drain' })).toContain(
+      'mode auto ON — self-set (reason: self-armed for the drain)',
+    );
+    // The fourth case the item text does not name. A peer-set mode rendered as
+    // "self-set" would attribute a flip this agent never made to this agent.
+    expect(render({ setBy: 'su-c03852cb', reason: 'leader set the lane posture' })).toContain(
+      'mode auto ON — set by su-c03852cb (reason: leader set the lane posture)',
+    );
+    expect(render({ mode: 'ideate', impliedBy: 'drain', reason: 'implication cascade' })).toContain(
+      'mode ideate ON — implied by drain (reason: implication cascade)',
+    );
+  });
+
+  it('attributes an implied row to its SOURCE even when the row also carries ownerDirected', () => {
+    // An implication cascade propagates the triggering directive's flags onto the
+    // rows it inserts, so this shape is the COMMON one, not a corner case: testing
+    // ownerDirected first would render every implied mode as a decision the owner
+    // took directly, and "implied by" could never appear at all.
+    const line = composeOrientationBlock({
+      state: { ...base, modes: [modeRow({ mode: 'auto', impliedBy: 'drain', ownerDirected: true, setBySelf: true })] },
+      committed: null,
+      epoch: EPOCH,
+    });
+    expect(line).toContain('mode auto ON — implied by drain');
+    expect(line).not.toContain('owner-directed');
+    expect(line).not.toContain('self-set');
+  });
+
+  it('states a mode ONCE — including on a later turn that re-renders for an unrelated reason', () => {
+    // The falsifying case for a watermark-token-only implementation.
+    // composeOrientationBlock is all-or-nothing: when ANY token changes every
+    // class re-renders, so a line gated only on its own token reappears verbatim
+    // on the next turn an unrelated message arrives. Only the diff against the
+    // committed cursor suppresses it.
+    const state: OrientationState = { ...base, modes: [modeRow({ ownerDirected: true })] };
+    expect(composeOrientationBlock({ state, committed: null, epoch: EPOCH })).toContain('mode auto ON');
+
+    const committed = fingerprintOrientation(state, EPOCH);
+    const unrelated = composeOrientationBlock({
+      state: { ...state, unansweredDirected: 3 },
+      committed,
+      epoch: EPOCH,
+    });
+    expect(unrelated).toContain('3 directed msg(s)');
+    expect(unrelated).not.toContain('mode auto ON');
+  });
+
+  it('announces only the NEWLY added mode when a second axis is set', () => {
+    const before: OrientationState = { ...base, modes: [modeRow({ ownerDirected: true })] };
+    const committed = fingerprintOrientation(before, EPOCH);
+    const after = composeOrientationBlock({
+      state: {
+        ...before,
+        modes: [modeRow({ ownerDirected: true }), modeRow({ axisKey: 'ideation', mode: 'ideate', setBySelf: true })],
+      },
+      committed,
+      epoch: EPOCH,
+    });
+    expect(after).toContain('mode ideate ON — self-set');
+    expect(after).not.toContain('mode auto ON');
+  });
+
+  it('re-announces a mode whose ATTRIBUTION changed, not merely its id', () => {
+    // The identity is (axis, mode, setter, ownerDirected, impliedBy) — a mode
+    // re-set by someone else is a different fact about the agent's authority,
+    // even though `modes: ['auto']` is byte-identical across the two turns.
+    const before: OrientationState = { ...base, modes: [modeRow({ setBySelf: true })] };
+    const committed = fingerprintOrientation(before, EPOCH);
+    expect(
+      composeOrientationBlock({
+        state: { ...before, modes: [modeRow({ ownerDirected: true })] },
+        committed,
+        epoch: EPOCH,
+      }),
+    ).toContain('mode auto ON — owner-directed');
+  });
+
+  it('stays silent on an UNREADABLE mode registry and preserves the committed cursor', () => {
+    // `null` is "could not read", not "no modes set". Asserting a posture we
+    // could not read is worse than saying nothing; and erasing the cursor would
+    // make the NEXT successful read re-announce a mode that never changed.
+    const previous: OrientationState = { ...base, modes: [modeRow({ ownerDirected: true })] };
+    const committed = fingerprintOrientation(previous, EPOCH);
+    const unreadable: OrientationState = { ...previous, unansweredDirected: 3, modes: null };
+    expect(composeOrientationBlock({ state: unreadable, committed, epoch: EPOCH })).not.toContain('mode auto');
+    expect(fingerprintOrientation(unreadable, EPOCH, committed).modes).toBe(committed.modes);
   });
 
   it('speaks again the moment ANY tracked field changes', () => {
@@ -748,6 +867,17 @@ describe('turn-start-orientation — what it says', () => {
         newest: [{ msgId: 'm-9', from: 'su-2', summary: 'Please answer.' }],
       }),
       announcedGates: async () => [{ event: 'fleet:f:ready' }],
+      modes: async () => [
+        {
+          axisKey: 'autonomy',
+          mode: 'auto',
+          reason: 'owner said run autonomously',
+          setBy: 'su-owner',
+          setBySelf: false,
+          ownerDirected: true,
+          impliedBy: null,
+        },
+      ],
       loopArmed: async () => true,
       loopFireWithheld: async () => true,
       improvementTriage: async () => ({
@@ -782,6 +912,17 @@ describe('turn-start-orientation — what it says', () => {
       openAsks: null,
       inboxRecent: [{ msgId: 'm-9', from: 'su-2', summary: 'Please answer.' }],
       announcedGates: [{ event: 'fleet:f:ready' }],
+      modes: [
+        {
+          axisKey: 'autonomy',
+          mode: 'auto',
+          reason: 'owner said run autonomously',
+          setBy: 'su-owner',
+          setBySelf: false,
+          ownerDirected: true,
+          impliedBy: null,
+        },
+      ],
       loopArmed: true,
       loopFireWithheld: true,
       improvementTriage: {

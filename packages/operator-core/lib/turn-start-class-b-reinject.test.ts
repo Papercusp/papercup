@@ -42,6 +42,7 @@ const BASE: OrientationState = {
   inboxRecent: [],
   openAsks: null,
   announcedGates: [],
+  modes: [],
   loopArmed: true,
   loopFireWithheld: false,
   improvementTriage: null,
