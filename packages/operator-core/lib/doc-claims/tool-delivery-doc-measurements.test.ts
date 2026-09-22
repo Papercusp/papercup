@@ -31,7 +31,9 @@ There are three tiers: full, compact and deferred.
 WIRE_BYTES       full=1599477  compact=649761  savedByCompact=949716
 GUIDANCE_BYTES   full=334797   summary=81030   savedBySummary=253767
 DEFINITION_BYTES  full=369616  compact=100418  savedByCompact=269198
-DEFINITION_TOKENS full=109945  compact=38329   savedByCompact=71616
+DEFINITION_TOKENS full=109945  compact=38329   savedByCompact=71616 provenance=measured
+DEFS_N1_BYTES  refs=1  inlined=800   referenced=855  addedByFactoring=55
+DEFS_N2_BYTES  refs=2  inlined=1526  referenced=941  savedByFactoring=585
 \`\`\`
 The byte figure is an UPPER BOUND on the context actually saved.
 `;
@@ -125,6 +127,98 @@ describe('fixture controls (the detector must be able to FAIL)', () => {
     const tokenSaving = (109945 - 38329) / 109945;
     const byteSaving = (369616 - 100418) / 369616;
     expect(tokenSaving).toBeLessThan(byteSaving);
+  });
+
+  // ── the $defs N=1 limit, and the token figure's provenance ────────────────────────
+  //
+  // Added after a rubric re-vet found R-7 VIOLATED BY ITS OWN SUBJECT: the published doc
+  // claimed -72.8% and 65.1% with zero mentions of `$defs`, `$ref`, `N=1` or a net loss,
+  // and nothing in this file could see it — every check was green while the bar was
+  // breached. These controls are what stop that recurring, so each one asserts a
+  // DIRECTION rather than the presence of a sentence.
+
+  it('catches a doc that claims the saving but never states the $defs N=1 limit', () => {
+    const v = judgeToolDeliveryDoc(GOOD.replace(/DEFS_N1_BYTES.*\n/, ''));
+    expect(v.ok).toBe(false);
+    expect(v.violations).toContain('missing-defs-n1-limit');
+    // the N>1 payoff half is a separate statement and must still read clean
+    expect(v.violations).not.toContain('missing-defs-payoff-threshold');
+  });
+
+  it('catches an N=1 triple whose arithmetic does not reconcile', () => {
+    const v = judgeToolDeliveryDoc(GOOD.replace('addedByFactoring=55', 'addedByFactoring=90'));
+    expect(v.ok).toBe(false);
+    expect(v.violations).toContain('defs-n1-bytes-do-not-reconcile');
+  });
+
+  it('catches numbers that show factoring WINNING at N=1 — the limit contradicted', () => {
+    // THE case prose cannot catch: the caveat is still written out above the block while
+    // the block's own numbers now say factoring one reference is free. A doc in that state
+    // has stopped stating this limit however faithfully it recites it.
+    const v = judgeToolDeliveryDoc(
+      GOOD.replace('inlined=800   referenced=855  addedByFactoring=55', 'inlined=800   referenced=800  addedByFactoring=0'),
+    );
+    expect(v.ok).toBe(false);
+    expect(v.violations).toContain('defs-n1-not-a-net-loss');
+  });
+
+  it('catches a swapped N=1 pair, where the labelled cost has the wrong sign', () => {
+    // Writing the win-direction numbers under a `addedByFactoring` label cannot reconcile:
+    // 745 - 800 is not +55. The parser deliberately carries no negatives, so a doc trying
+    // to state a saving here fails the identity rather than quietly redefining the key.
+    const v = judgeToolDeliveryDoc(GOOD.replace('inlined=800   referenced=855', 'inlined=855   referenced=800'));
+    expect(v.ok).toBe(false);
+    expect(v.violations).toContain('defs-n1-bytes-do-not-reconcile');
+  });
+
+  it('catches a doc that states the N=1 loss but never where factoring starts to PAY', () => {
+    // "It is a net loss at N=1" on its own reads as an argument against `$defs`. The
+    // threshold is what makes it a limit rather than a prohibition.
+    const v = judgeToolDeliveryDoc(GOOD.replace(/DEFS_N2_BYTES.*\n/, ''));
+    expect(v.ok).toBe(false);
+    expect(v.violations).toContain('missing-defs-payoff-threshold');
+    expect(v.violations).not.toContain('missing-defs-n1-limit');
+  });
+
+  it('catches an N=2 triple that does not reconcile, and one that does not pay', () => {
+    const stale = judgeToolDeliveryDoc(GOOD.replace('savedByFactoring=585', 'savedByFactoring=500'));
+    expect(stale.violations).toContain('defs-n2-bytes-do-not-reconcile');
+
+    const flat = judgeToolDeliveryDoc(
+      GOOD.replace('inlined=1526  referenced=941  savedByFactoring=585', 'inlined=1526  referenced=1526  savedByFactoring=0'),
+    );
+    expect(flat.violations).toContain('defs-n2-does-not-pay');
+  });
+
+  it('catches a token figure published with no provenance label', () => {
+    // R-7 requires a published token figure to be MEASURED, never inferred from the byte
+    // ratio, and before this rule nothing checked it at all. The label is the half that is
+    // checkable; the arithmetic half is `byte-saving-not-an-upper-bound`, which an
+    // inferred figure trips by reproducing the byte ratio exactly.
+    const v = judgeToolDeliveryDoc(GOOD.replace(' provenance=measured', ''));
+    expect(v.ok).toBe(false);
+    expect(v.violations).toContain('missing-token-provenance');
+    // and the triple itself is untouched, so this is the provenance rule firing alone
+    expect(v.violations).not.toContain('missing-definition-token-measurement');
+    expect(v.violations).not.toContain('definition-tokens-do-not-reconcile');
+  });
+
+  it('CALIBRATION: the passing fixture satisfies every new rule, so none is vacuous', () => {
+    const v = judgeToolDeliveryDoc(GOOD);
+    for (const code of [
+      'missing-defs-n1-limit',
+      'defs-n1-bytes-do-not-reconcile',
+      'defs-n1-not-a-net-loss',
+      'missing-defs-payoff-threshold',
+      'defs-n2-bytes-do-not-reconcile',
+      'defs-n2-does-not-pay',
+      'missing-token-provenance',
+    ]) {
+      expect(v.violations, code).not.toContain(code);
+    }
+    // and the flip the two lines encode is real on the published numbers
+    expect(855 - 800).toBeGreaterThan(0);
+    expect(1526 - 941).toBeGreaterThan(0);
   });
 
   it('does NOT confuse the wire `full` with the guidance `full` (both lines carry one)', () => {

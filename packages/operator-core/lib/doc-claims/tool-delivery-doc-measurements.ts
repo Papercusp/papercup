@@ -164,5 +164,62 @@ export function judgeToolDeliveryDoc(body: string): DocMeasurementVerdict {
     }
   }
 
+  // ── The token figure must declare itself MEASURED ─────────────────────────────────
+  //
+  // R-7 also requires that any published token figure be MEASURED and never inferred
+  // from the byte ratio, and nothing here used to check it at all. This is the half that
+  // CAN be checked: the line must carry its own provenance label, so a refresh that
+  // pastes a fresh number without re-measuring has to delete a token to stay green
+  // rather than silently inheriting the old claim.
+  //
+  // Stated plainly, because a guard that overclaims gets trusted past its reach: the
+  // label cannot detect a LIE. What it does detect is the common accident — an
+  // unlabelled number appearing where a labelled one used to be. The arithmetic half of
+  // "not inferred" is already carried by `byte-saving-not-an-upper-bound` above: a token
+  // figure derived by applying the byte ratio reproduces that ratio exactly, so the two
+  // percentages come out EQUAL and that check rejects it.
+  const tokenLine = body.split('\n').find((l) => l.includes('DEFINITION_TOKENS')) ?? '';
+  if (!/provenance\s*=\s*measured/.test(tokenLine)) {
+    violations.push('missing-token-provenance');
+  }
+
+  // ── The $defs/$ref N=1 net loss — the saving's own boundary condition ─────────────
+  //
+  // WHY THIS RULE EXISTS, AND WHY IT IS ARITHMETIC. R-7 requires the `$defs` N=1 net loss
+  // to be stated "wherever the saving is claimed". Before this rule the doc published
+  // -72.8% and 65.1% with zero mentions of `$defs`, `$ref`, `N=1` or a net loss: the bar
+  // was VIOLATED while every check in this file was green, which is the worst reading a
+  // guard can produce — a grader reads "healthy" off a check that cannot see the breach.
+  //
+  // A prose match would close that in the weakest available way. The thing a reader
+  // actually needs is a DIRECTION — at one reference, factoring must COST; from two, it
+  // must PAY — and a direction is checkable. So the doc has to publish both endpoints of
+  // the flip, each reconciling, and the sign of each is asserted. That also fails a doc
+  // whose prose still recites the caveat while its numbers have stopped supporting it,
+  // the same failure mode `byte-saving-not-an-upper-bound` exists for.
+  const defsN1 = lineScoped(body, 'DEFS_N1_BYTES');
+  const n1Inlined = pick(defsN1, 'inlined');
+  const n1Referenced = pick(defsN1, 'referenced');
+  const n1Added = pick(defsN1, 'addedByFactoring');
+  if (n1Inlined === null || n1Referenced === null || n1Added === null) {
+    violations.push('missing-defs-n1-limit');
+  } else if (n1Referenced - n1Inlined !== n1Added) {
+    violations.push('defs-n1-bytes-do-not-reconcile');
+  } else if (n1Added <= 0) {
+    violations.push('defs-n1-not-a-net-loss');
+  }
+
+  const defsN2 = lineScoped(body, 'DEFS_N2_BYTES');
+  const n2Inlined = pick(defsN2, 'inlined');
+  const n2Referenced = pick(defsN2, 'referenced');
+  const n2Saved = pick(defsN2, 'savedByFactoring');
+  if (n2Inlined === null || n2Referenced === null || n2Saved === null) {
+    violations.push('missing-defs-payoff-threshold');
+  } else if (n2Inlined - n2Referenced !== n2Saved) {
+    violations.push('defs-n2-bytes-do-not-reconcile');
+  } else if (n2Saved <= 0) {
+    violations.push('defs-n2-does-not-pay');
+  }
+
   return { ok: violations.length === 0, violations, pairs };
 }
