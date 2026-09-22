@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { checkedCommand, toolArgs } from "../../../scripts/verify-identities-r4.mjs";
+import { checkedCommand, serializeEvidence, toolArgs } from "../../../scripts/verify-identities-r4.mjs";
+import { findBoxIdentityPaths } from "../../../scripts/lib/identity-leak-patterns.mjs";
 
 const script = readFileSync(resolve(__dirname, "../../../scripts/verify-identities-r4.mjs"), "utf8");
 
@@ -88,6 +89,21 @@ describe("P-015 R-4 maintained identity UI verifier", () => {
     expect(page).toContain("container-type: inline-size");
     expect(page).toContain("@container identities (max-width: 900px)");
     expect(page).not.toContain("@media (max-width: 900px)");
+  });
+
+  it("writes an artifact git-sync's identity-leak guard will commit", () => {
+    // Built by concatenation so this tracked file does not itself spell a home path.
+    const toolPath = ["", "home", "zqxdev", ".local", "node25", "bin", "tauri-agent-tools"].join("/");
+    const evidence = {
+      steps: [{ label: "seed", command: `${toolPath} --pid 1 check --selector body` }],
+      error: `Error: Command failed: ${toolPath} eval --pid 1`,
+    };
+    // Positive control: the raw form DOES trip the detector, so the assertion below is not vacuous.
+    expect(findBoxIdentityPaths(JSON.stringify(evidence, null, 2)).length).toBeGreaterThan(0);
+    const written = serializeEvidence(evidence);
+    expect(findBoxIdentityPaths(written)).toEqual([]);
+    expect(JSON.parse(written).steps[0].command).toContain("tauri-agent-tools --pid 1 check");
+    expect(script.match(/writeFileSync\(`\$\{outDir\}\/evidence\.json`, serializeEvidence\(evidence\)\)/g)?.length).toBe(2);
   });
 
   it("propagates a failed assertion instead of replacing it with a later successful command", () => {
