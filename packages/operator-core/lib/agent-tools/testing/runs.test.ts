@@ -657,6 +657,36 @@ describe('testing:runs tenant scoping and window bounds', () => {
     expect(whereFragment()).toContain("source <> 'mutation-probe'");
   });
 
+  it('an exact testRunIds lookup does NOT exclude mutation-probe rows — a receipt read is not a browse', async () => {
+    // Measured 2026-09-22 (scorecard EI-23921807742712130): test_runs 18917525 /
+    // 18917527 were written by scripts/mutation-probe.sh and are plainly present
+    // in harness_shared.test_runs, but `testing:runs { testRunIds }` returned
+    // total 0 because the browse-time exclusion applied to an exact-ID lookup.
+    // An independent grading auditor read that zero as "the card cites test runs
+    // that do not exist" and failed the card's re-runnable-evidence criterion —
+    // a false ABSENCE, the failure class this repo documents repeatedly. The
+    // exclusion still guards browsing and rollups, where a deliberately-red
+    // probe row really would contaminate "what is failing".
+    await runsTool.handler({ testRunIds: [18917525, 18917527] } as never, {} as never);
+    const where = whereFragment();
+    expect(where).not.toContain("source <> 'mutation-probe'");
+    expect(where).toContain('id = ANY');
+  });
+
+  it('CONTROL: an ordinary browse with no testRunIds still excludes mutation-probe rows', async () => {
+    // Calibration for the test above — without it, deleting the exclusion
+    // outright would satisfy the exact-ID case while reopening the
+    // contamination the exclusion exists to prevent.
+    await runsTool.handler({ filePath: 'some/file.test.ts' } as never, {} as never);
+    expect(whereFragment()).toContain("source <> 'mutation-probe'");
+  });
+
+  it('CONTROL: an explicit source filter still wins over the exact-ID path', async () => {
+    await runsTool.handler({ testRunIds: [18917525], source: 'ci' } as never, {} as never);
+    const call = sqlCalls.find((c) => c.strings.some((part) => part.includes('file_path')));
+    expect(JSON.stringify(call?.values)).toContain('ci');
+  });
+
   it('accepts a sub-0.1-hour window and still applies the time predicate', () => {
     const parsed = runsTool.args.safeParse({ sinceHours: 0.05 });
     expect(parsed.success).toBe(true);

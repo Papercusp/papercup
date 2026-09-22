@@ -451,8 +451,19 @@ export default defineTool({
     const testRunIds = args.testRunIds ?? null;
     const runGroup = normalizeRunGroupFilter(args.runGroup, args.runGroupId);
     const source = defaultRollupSource(args.rollup, args.source);
+    // The mutation-probe exclusion protects BROWSING and AGGREGATION, where a
+    // deliberately-red probe row would contaminate "what is failing". An
+    // exact-ID lookup is neither: the caller already holds the receipt and is
+    // asking whether it exists. Applying the exclusion there answers `total: 0`
+    // for a row that is plainly in the ledger — an ABSENCE-shaped result that
+    // reads as "this citation is fabricated", which is precisely how a
+    // mutation-probe-backed spec-evidence binding gets its grading audit failed
+    // by an independent auditor doing the right thing with the wrong instrument
+    // (measured 2026-09-22 on scorecard EI-23921807742712130: rows 18917525 /
+    // 18917527 exist, `testing:runs { testRunIds }` returned 0). Exact ids are
+    // receipt reads, same reasoning as the `limit` default just above.
     const sourceFilter =
-      args.source === undefined && args.rollup === undefined
+      args.source === undefined && args.rollup === undefined && testRunIds == null
         ? sql`source <> 'mutation-probe'`
         : sql`(${source}::text IS NULL OR source = ${source})`;
     const workspace = args.workspace ?? null;
