@@ -1393,7 +1393,14 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
   orientationClass<OrientationAnnouncedGate[]>({
     id: 'announcedGates',
     watermarkTokens: ['gates'],
-    applicableSinks: TURN_START,
+    // P-027: the leader brief ALREADY rendered announced gates, but from an
+    // undeclared read — so this table under-reported which surfaces carry the
+    // class, which is exactly what P-024's (class x sink) matrix flagged.
+    // Declaring it here makes `readLeaderAnnouncedGates` consume the
+    // declaration (D-053: a structured sink consumes by `id`, not by
+    // `segments[].render`), so withdrawing the sink is a ONE-LINE change here
+    // and turns the leader field off with no second edit.
+    applicableSinks: TURN_START_AND_LEADER_BRIEF,
     populate: (state) => state.announcedGates,
     segments: [
       {
@@ -1977,7 +1984,7 @@ export function defaultOrientationDeps(): OrientationDeps {
     announcedGates: async (ownerId, workspaceId) => {
       const [
         { listActiveAnnouncements, countActiveAwaitsByPrefixes },
-        { announcementVisibleTo },
+        { selectVisibleAnnouncements },
         { getSessionBrief },
         { fetchPresenceFleet },
         { resolveAnnouncementOwnership },
@@ -1985,25 +1992,30 @@ export function defaultOrientationDeps(): OrientationDeps {
       ] =
         await Promise.all([
           import('./events/await/store'),
-          import('./events/await/announce-key'),
+          import('./events/await/announced-gate-view'),
           import('./session-brief'),
           import('./agent-tools/coordination/presence-fleet'),
           import('./agent-tools/events/status'),
           import('./bounded-timeout'),
         ]);
+      // The scope is not known until the brief and fleet membership resolve, so
+      // the announcement read stays CONCURRENT with them and the scoping is
+      // applied after. P-027 / D-063: the scoping itself is the shared unit
+      // (`selectVisibleAnnouncements`), used by the leader-brief sink too, so
+      // the two sinks cannot drift on what a reader may see. `unfiredOnly: true`
+      // is this sink's own choice — a fired gate is not something to await, and
+      // an always-present row is the signal decay P-017/D-003 ruled against.
       const [announcements, brief, memberships] = await Promise.all([
         listActiveAnnouncements({ unfiredOnly: true, limit: 50 }),
         getSessionBrief({ ownerId }),
         fetchPresenceFleet([ownerId]),
       ]);
       const fleet = memberships.get(ownerId)?.fleetSlug ?? null;
-      const visible = announcements.filter((announcement) =>
-        announcementVisibleTo(announcement, {
-          fleetSlug: fleet,
-          planSlug: brief?.currentPlanSlug ?? null,
-          harnessSlug: brief?.harnessSlug ?? null,
-        }),
-      );
+      const visible = selectVisibleAnnouncements(announcements, {
+        fleetSlug: fleet,
+        planSlug: brief?.currentPlanSlug ?? null,
+        harnessSlug: brief?.harnessSlug ?? null,
+      });
       // Metadata is advisory and independently bounded. A failure omits only
       // the affected optional fields; it must not erase the gate directory.
       const [countsResult, ownershipResult] = await Promise.all([

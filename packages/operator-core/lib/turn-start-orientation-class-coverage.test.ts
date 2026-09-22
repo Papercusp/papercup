@@ -58,7 +58,7 @@ import {
   ORIENTATION_CLASS_REGISTRY,
   type RegisteredOrientationClass,
 } from './orientation-class-registry';
-import { readLeaderNeverDropFacts } from './agent-tools/fleet/leader-brief';
+import { readLeaderNeverDropFacts, readLeaderAnnouncedGates } from './agent-tools/fleet/leader-brief';
 import type { AgentFact } from './agent-facts/store';
 
 const ORIENTATION_SOURCE = fileURLToPath(new URL('./turn-start-orientation.ts', import.meta.url));
@@ -293,6 +293,25 @@ const CLASS_PROBES: Record<string, ClassProbe> = {
       },
     },
     marker: /carry blind window:/,
+  },
+  // P-010 (WI-10002221, su-6b1151ea): registered here by su-c03852cb because the
+  // class landed without its per-sink classification while that session was
+  // MCP-dark, which reds this guard for the whole fleet. The author is welcome
+  // to re-word the omission reason below — the CLASSIFICATION is what the
+  // matrix requires, not any particular wording.
+  openChecks: {
+    patch: {
+      openChecks: [
+        {
+          id: 'coverage-probe-1',
+          claim: 'a carried claim that has not been re-verified',
+          recheck: 'run the recorded probe',
+          pointer: 'loop:status',
+          kind: 'check',
+        },
+      ],
+    },
+    marker: /🔎 \? UNVERIFIED/,
   },
 };
 
@@ -838,6 +857,39 @@ const leaderBriefNeverDropProbe: CellProbe = async () => {
 };
 
 /**
+ * The leader-brief cell probe for `announcedGates` (P-027), driven through the
+ * REAL consumer with only the announcement store and the waiter count stubbed.
+ *
+ * The announcement is scoped to the probe's own fleet, so it exercises the
+ * shared `selectVisibleAnnouncements` scoping rather than a bare pass-through:
+ * a scoping regression that stopped matching `fleet` would empty this and the
+ * cell would fail.
+ */
+const leaderBriefAnnouncedGatesProbe: CellProbe = async () => {
+  const out = await readLeaderAnnouncedGates(
+    { fleetSlug: 'coverage-probe-fleet', planSlug: null, harnessSlug: null },
+    {
+      listAnnouncements: async () =>
+        [
+          {
+            id: 1,
+            eventKey: 'fleet:coverage-probe:green',
+            logicalGateKey: null,
+            note: 'coverage probe gate',
+            scopeKind: 'fleet',
+            scopeRef: 'coverage-probe-fleet',
+            subscriberId: 'su-coverage-probe',
+            firedAt: null,
+            firedReason: null,
+          },
+        ] as never,
+      listAwaits: async () => [] as never,
+    },
+  );
+  return { reached: Array.isArray(out) && out.length > 0, detail: JSON.stringify(out) };
+};
+
+/**
  * THE PER-SINK COVERAGE REGISTRY (P-024).
  *
  * One entry per declared `OrientationSink`. For a `consuming` sink every
@@ -872,7 +924,16 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
       'block it never sees (EI-18725816532600240), so a safety class whose absence is unrecoverable is ' +
       'worth carrying here anyway. Every `not-applicable` below is judged against that standard, not ' +
       'against "the leader can get it elsewhere" alone.',
-    probes: { neverDropFacts: leaderBriefNeverDropProbe },
+    probes: {
+      neverDropFacts: leaderBriefNeverDropProbe,
+      // P-027: announced gates now reach this sink FROM THE DECLARATION. Before
+      // P-027 this cell sat in `omitted` as kind 'second-derivation' with
+      // collapsedBy: 'P-027' — the entry below is what that promise being kept
+      // looks like, and moving it here is forced by the matrix rather than
+      // optional (a claimed cell with no probe fails `classifies EVERY declared
+      // class`). That coupling is the instrument working.
+      announcedGates: leaderBriefAnnouncedGatesProbe,
+    },
     silent: {},
     omitted: {
       held: {
@@ -884,15 +945,6 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'of whether ONE assembler can serve both subjects — note leader-brief.ts already documents using ' +
           '"the same canonical held-item checkpoint reader as carry" — but that is an assembler question, ' +
           'not an `applicableSinks` change, and this entry deliberately does not pre-decide it.',
-      },
-      announcedGates: {
-        kind: 'second-derivation',
-        collapsedBy: 'P-027',
-        reason:
-          'MEASURED present at this sink from its OWN bounded read (leader-brief.ts `const announcedGates = ' +
-          'await boundedLeaderBriefRead(...)`), separate from the turn-start derivation of the same truth. ' +
-          'Two derivations of one value is the drift-prone shape the derived-truth ladder names, and it is ' +
-          'why this cell is DEBT rather than a finished decision.',
       },
       obligations: {
         kind: 'other-shared-mechanism',
@@ -983,6 +1035,15 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
       effortUpdates: {
         kind: 'not-applicable',
         reason: "Post-claim revisions to the READER's own plan/goal. Same reasoning as `historyUpdates`.",
+      },
+      openChecks: {
+        kind: 'not-applicable',
+        reason:
+          "P-010's unverified-claims / open-blocker rows, and they are self-scoped by construction: they come " +
+          "from the READER's own loop carry-note and its own held work-items, so a leader cannot act on another " +
+          "agent's carried claims from this payload. The fleet-scoped equivalent a leader DOES act on is already " +
+          'carried per member (claimHealth, stalled, intentStale). Recorded by su-c03852cb while the authoring ' +
+          'session was MCP-dark; su-6b1151ea should revisit if P-010 intended a leader-facing reading.',
       },
     },
   },

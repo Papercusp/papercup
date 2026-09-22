@@ -143,7 +143,12 @@ import {
   listVerifiedWaitTakeoversForSubscribers,
   type VerifiedWaitTakeoverAlert,
 } from '../../events/await/store';
-import { announcementVisibleTo } from '../../events/await/announce-key';
+// P-027 / D-063: the announced-gate read + visibility-scope pairing now lives in
+// ONE place shared with the turn-start sink. `announcementVisibleTo` is applied
+// inside it, so this file no longer imports the predicate directly — that is the
+// point: two hand-written copies of "list then scope" could diverge silently,
+// each still rendering a plausible-but-differently-scoped gate list.
+import { readVisibleAnnouncements } from '../../events/await/announced-gate-view';
 import type { TimeoutBehavior } from '../../events/await/types';
 import type { FilterNode } from '../../scheduler/claim-spec';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -563,19 +568,41 @@ export async function readLeaderAnnouncedGates(
   deps: {
     listAnnouncements?: typeof listActiveAnnouncements;
     listAwaits?: typeof listActiveAwaitsForKey;
+    registry?: readonly RegisteredOrientationClass[];
   } = {},
 ): Promise<LeaderBriefAnnouncedGate[] | undefined> {
+  // P-027: applicability is DECLARED in the shared orientation class registry,
+  // not assumed here. Same consumption shape as `readLeaderNeverDropFacts`
+  // (D-053): a STRUCTURED sink reads the declaration through
+  // `RegisteredOrientationClass.id` and emits its own field, rather than
+  // through `segments[].render` — pushing a rendered line into this JSON would
+  // be the "second copy of the line" the registry exists to prevent. Reading
+  // the declaration is what makes withdrawing the sink a ONE-LINE change in the
+  // registry with no second edit here.
+  const registry = deps.registry ?? ORIENTATION_CLASS_REGISTRY;
+  const declared = registry.some(
+    (entry) => entry.id === 'announcedGates' && entry.applicableSinks.includes('leader-brief'),
+  );
+  if (!declared) return undefined;
   const listAnnouncements = deps.listAnnouncements ?? listActiveAnnouncements;
   const listAwaits = deps.listAwaits ?? listActiveAwaitsForKey;
   const probe = await withBoundedTimeout(
     async () => {
-      const announcements = await listAnnouncements({ unfiredOnly: false, limit: 100 });
-      const visible = announcements.filter((announcement) =>
-        announcementVisibleTo(announcement, {
-          fleetSlug: input.fleetSlug,
-          planSlug: input.planSlug ?? null,
-          harnessSlug: input.harnessSlug ?? null,
-        }),
+      // P-027 / D-063: the read + visibility-scope pairing is shared with the
+      // turn-start sink. `unfiredOnly: false` is this sink's own choice and is
+      // the substantive difference — a leader cockpit must show FIRED latches,
+      // which a per-turn block deliberately must not carry.
+      const visible = await readVisibleAnnouncements(
+        {
+          scope: {
+            fleetSlug: input.fleetSlug,
+            planSlug: input.planSlug ?? null,
+            harnessSlug: input.harnessSlug ?? null,
+          },
+          unfiredOnly: false,
+          limit: 100,
+        },
+        { listAnnouncements },
       );
       return Promise.all(
         visible.map(async (announcement) => ({
