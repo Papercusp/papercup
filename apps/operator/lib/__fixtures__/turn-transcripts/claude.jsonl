@@ -1,0 +1,9 @@
+{"type":"user","timestamp":"2026-08-29T04:49:37.228Z","uuid":"63443b0e-5ce4-4284-9366-db67feb7801c","message":{}}
+{"type":"assistant","timestamp":"2026-08-29T04:49:47.534Z","uuid":"40e587b4-952e-47a1-8c25-279977d4975e","message":{"stop_reason":"end_turn","content":[{"type":"thinking"}]}}
+{"type":"assistant","timestamp":"2026-08-29T04:49:49.212Z","uuid":"6716c2a9-787d-49dc-9dd4-71144981fab6","message":{"stop_reason":"end_turn","content":[{"type":"text"}]}}
+{"type":"system","timestamp":"2026-08-29T04:49:49.287Z","uuid":"bb53b591-937a-411b-975d-debd09c2aece"}
+{"type":"system","timestamp":"2026-08-29T04:49:49.292Z","uuid":"b0cbc6bd-3085-437a-a6eb-0aaecf9133fe"}
+{"type":"artifact-autoreact-ledger"}
+{"type":"last-prompt"}
+{"type":"cost-state"}
+{"type":"artifact-comment-monitor"}

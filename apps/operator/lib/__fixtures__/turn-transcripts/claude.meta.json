@@ -1,0 +1,12 @@
+{
+  "agent": "claude",
+  "capturedAt": "2026-09-22T15:00:34.791Z",
+  "generator": "scripts/capture-turn-classifier-fixtures.mjs",
+  "sourceSha256": "85011158d13b20cdafd4ede5c4b438e198b703fc09092c69079fe6af27e7a50f",
+  "sourceRowCount": 3071,
+  "capturedRowCount": 9,
+  "windowStartIndex": 3062,
+  "completionIndex": 3064,
+  "trailingRowCount": 6,
+  "note": "Captured from a real on-disk transcript; every field the classifier does not read was dropped at capture time."
+}

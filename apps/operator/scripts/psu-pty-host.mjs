@@ -253,9 +253,52 @@ export function warnMissingReexecLoop({
  * launcher visibly tears down the TUI and a missed successor handoff falls into
  * the fresh-session wizard. Headless hosts have no such continuity boundary and
  * may still adopt current on-disk host code.
+ *
+ * ── P-009: WHY INTERACTIVE ADOPTION STAYS OFF BY DEFAULT (plan D-008) ──────────
+ * Measured 2026-09-22: 69 hosts logged `host-code-stale`, with
+ * `notAdoptingReason:'interactive-tty'` x302 — i.e. a long-lived interactive host
+ * NEVER adopts a new build, which is the mechanism behind "we shipped a fix and it
+ * recurred". The tempting fix is to let it adopt anyway. That is rejected, because
+ * the host process OWNS the pty the human is looking at: adoption means re-execing
+ * it, and if the successor handoff misses, the owner's session does not degrade —
+ * it dies, taking the screen (and any open dialog) with it. Trading a stale but
+ * WORKING session for a chance of a dead one is a bad trade at any staleness.
+ *
+ * Note the asymmetry that makes this different from the headless case: an
+ * interactive host has a HUMAN attached who can restart it deliberately, at a
+ * moment of their choosing, at zero risk. A headless host has nobody, which is
+ * exactly why adoption is worth the risk there and not here.
+ *
+ * The residual gap — a stale interactive host nobody KNOWS is stale — is closed by
+ * detection and durable accountability over the `host-code-stale` rows (P-007's
+ * Postgres tier + P-008's filing), NOT by a terminal warning: P-006 removed host
+ * diagnostics from the owner's terminal, so re-adding one here would undo a
+ * shipped item in this same plan.
+ *
+ * `allowInteractive` is the deliberate operator opt-in for someone who wants
+ * adoption anyway (a dev box, an unattended-but-bridged host). It is additionally
+ * gated on the re-exec loop being present: `onReexec && reexecCode` is what makes
+ * a handoff possible at all, so the opt-in cannot be enabled INTO the hard-exit
+ * configuration that `warnMissingReexecLoop` exists to warn about.
+ *
+ * @param {{ onReexec?: unknown, reexecCode?: unknown, bridgeTty?: unknown,
+ *           allowInteractive?: boolean }} args
  */
-export function shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty }) {
-  return Boolean(onReexec && reexecCode && !bridgeTty);
+export function shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty, allowInteractive = false }) {
+  if (!onReexec || !reexecCode) return false;
+  if (!bridgeTty) return true;
+  return Boolean(allowInteractive);
+}
+
+/**
+ * The operator opt-in behind {@link shouldAdoptHostCode}'s `allowInteractive`.
+ *
+ * Read from the environment at call time rather than captured at module load so a
+ * long-lived host picks up the choice on its next respawn boundary instead of only
+ * at the boot it can no longer perform.
+ */
+export function interactiveAdoptionOptIn(env = process.env) {
+  return env.PAPERCUSP_PSU_PTY_ADOPT_INTERACTIVE === '1';
 }
 
 /** The discovery dir. Owner-only (0700). Shared contract with the read side
@@ -721,8 +764,18 @@ export function classifyClaudeTranscriptRow(row, { receivedAtMs, nowMs }) {
   return ok ? 'turn-completed' : 'turn-started';
 }
 
-/** The registered row classifiers, by agent. Absent ⇒ unsupported backend. */
-const TURN_ROW_CLASSIFIERS = Object.freeze({
+/**
+ * The registered row classifiers, by agent. Absent ⇒ unsupported backend.
+ *
+ * P-010: EXPORTED so the fixture test can ENUMERATE the registry rather than
+ * hardcoding the two agents it happens to know about today. A registry no test
+ * can enumerate is one that grows a third backend with no fixture and no
+ * coverage, silently — and "silent" is the failure mode that matters here,
+ * because an unverified classifier does not throw, it just returns false
+ * forever (D-003). The enumerating guard fails the moment a key is added
+ * without a captured transcript to prove it against.
+ */
+export const TURN_ROW_CLASSIFIERS = Object.freeze({
   codex: classifyCodexTranscriptRow,
   claude: classifyClaudeTranscriptRow,
 });
@@ -8451,7 +8504,13 @@ export function hostThroughPty(o) {
       try {
         const hostCode = hostCodeStalenessFn();
         if (hostCode.stale) {
-          const adoptable = shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty });
+          const allowInteractive = interactiveAdoptionOptIn();
+          const adoptable = shouldAdoptHostCode({
+            onReexec,
+            reexecCode,
+            bridgeTty,
+            allowInteractive,
+          });
           appendHostEvent(ownerId, 'host-code-stale', {
             mode: respawnMode,
             loaded: hostCode.loaded,
@@ -8619,7 +8678,12 @@ export function hostThroughPty(o) {
       // would throw away the pending/completed dedup state before the operator
       // can confirm pickup. Ordinary respawns still adopt current code exactly
       // as before.
-      if (!quotaRecovery && shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty })) {
+      // Kept on ONE line deliberately: psu-pty-host.test.ts locates this block by the
+      // literal `if (!quotaRecovery && shouldAdoptHostCode` to assert the adoption body
+      // never fires the session-compacted event. Reformatting it silently turns that
+      // guard's indexOf into -1, which reads as the guard passing rather than failing.
+      const allowInteractive = interactiveAdoptionOptIn();
+      if (!quotaRecovery && shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty, allowInteractive })) {
         let hostCode = { stale: false };
         try {
           hostCode = hostCodeStalenessFn();
