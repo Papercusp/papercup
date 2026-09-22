@@ -211,6 +211,10 @@ describe('emitted priority order — the contract the coverage guard cannot asse
     [60, 'unansweredDirected'],
     [70, 'unansweredStale'],
     [80, 'openAsks'],
+    // P-013 / D-073: the verdict is what the agent may DO; the mode row at 85
+    // is WHY. A reader who sees only the first line of a budget-clipped block
+    // must get the mandate, not its cause — so the verdict sits ABOVE modes.
+    [84, 'authorityVerdict'],
     // P-012 / D-071: posture is the frame the lines below depend on, so a mode
     // TRANSITION renders just above the wake-source warning.
     [85, 'modes'],
