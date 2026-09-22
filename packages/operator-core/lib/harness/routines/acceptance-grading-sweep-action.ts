@@ -108,61 +108,18 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
      * consult-expiry-action.ts).
      */
     listCandidates: async (limit) => {
-      const rows = await sql<
-        Array<{
-          workspace_id: string;
-          plan_slug: string;
-          harness_slug: string | null;
-          rubric_slug: string | null;
-          gradeable_since: Date | null;
-        }>
-      >`
-        WITH acceptance_rubric AS (
-          SELECT workspace_id,
-                 template_data->>'subjectPlan' AS subject_plan,
-                 MIN(plan_slug)  AS rubric_slug,
-                 MIN(created_at) AS rubric_since
-            FROM harness_shared.harness_plans
-           WHERE template = ${RUBRIC_TEMPLATE_NAME}
-             AND template_slug IS NULL
-             AND template_data->>'kind' = 'acceptance'
-             AND template_data->>'subjectPlan' IS NOT NULL
-             AND archived = FALSE
-           GROUP BY workspace_id, template_data->>'subjectPlan'
-        ),
-        completion_audit AS (
-          SELECT workspace_id, plan_slug, MAX(created_at) AS audited_since
-            FROM harness_shared.plan_audits
-           WHERE audit_kind = 'completion'
-           GROUP BY workspace_id, plan_slug
-        )
-        SELECT p.workspace_id,
-               p.plan_slug,
-               p.harness_slug,
-               r.rubric_slug,
-               GREATEST(r.rubric_since, a.audited_since) AS gradeable_since
-          FROM harness_shared.harness_plans p
-          JOIN acceptance_rubric r
-            ON r.workspace_id = p.workspace_id AND r.subject_plan = p.plan_slug
-          JOIN completion_audit a
-            ON a.workspace_id = p.workspace_id AND a.plan_slug = p.plan_slug
-         WHERE p.archived = FALSE
-           AND p.status NOT IN ('shipped', 'superseded')
-           AND p.template IS DISTINCT FROM ${RUBRIC_TEMPLATE_NAME}
-         ORDER BY GREATEST(r.rubric_since, a.audited_since) ASC
-         LIMIT ${limit}`;
-
-      // workspace-work-scope-policy-2026-09-04 P-007: the select is workspace-wide;
-      // plans in a harness the work-scope policy excludes are not graded (no grader
-      // agent is dispatched for them) until the policy widens.
-      const { isHarnessInScope } = await import('../../work-scope-policy');
-      return rows.filter((r) => isHarnessInScope(r.harness_slug)).map((r) => ({
-        planSlug: r.plan_slug,
-        harnessSlug: r.harness_slug,
-        rubricRef: r.rubric_slug,
-        gradeableSinceMs: r.gradeable_since ? new Date(r.gradeable_since).getTime() : null,
-        // Carried for the per-row identity the downstream calls need.
-        workspaceId: r.workspace_id,
+      // The predicate itself (including the workspace-work-scope-policy-2026-09-04
+      // P-007 harness filter) moved to `lib/acceptance-awaiting-plans.ts` so the
+      // delegation-count provider can ask the SAME question this sweep asks
+      // (generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20 P-005).
+      // It is the one definition of "awaiting acceptance"; re-spelling it for the
+      // count would have let a plan be awaiting acceptance for the brief and not
+      // for the sweep, with no way to tell which was right.
+      const { listPlansAwaitingAcceptance } = await import('../../acceptance-awaiting-plans');
+      return (await listPlansAwaitingAcceptance({
+        sql,
+        rubricTemplateName: RUBRIC_TEMPLATE_NAME,
+        limit,
       })) as never;
     },
 
