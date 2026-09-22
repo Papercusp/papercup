@@ -968,17 +968,69 @@ export function projectAcceptanceBarContractSnapshot(
     // input here. Treat a not-pass card that never saw the current cohort as STALE — the
     // semantic the recruiter already honours ('Re-grade against the current rubric').
     //
-    // Deliberately narrow: PASS cards are untouched. A pass graded against superseded
-    // evidence raises the same question, but staling every pass on every evidence touch
-    // would churn plans fleet-wide; only not-pass blocks, so only not-pass needs the escape.
-    // This grants no pass — it summons an independent grader who may rate not-pass again.
+    // WHY NOT-PASS AND NOT PASS. The asymmetry is defeasibility, not convenience: a
+    // not-pass states a DEFEATER ("this evidence does not establish the outcome"), and new
+    // evidence can FALSIFY that stated basis — the cited defect is gone, so the reason no
+    // longer holds. A pass states the outcome WAS established, and later evidence does not
+    // retract an establishment that already happened. Same code either way; do not
+    // re-justify this by "only not-pass blocks", which argues from the fact that it unblocks
+    // the implementer. NAMED GAP, deliberately out of scope: evidence that SUPERSEDES a
+    // pass's basis (rather than adding to it) is a real hole this does not close.
+    //
+    // The trigger is COHORT IDENTITY, never a timestamp. `spec_evidence_bindings` is
+    // append-only — enforced by the `spec_evidence_bindings_immutable` trigger, which raises
+    // on DELETE and permits only a complete one-way retraction stamp — so the cohort a card
+    // could have seen is reconstructible from `created_at` alone, retroactively and with no
+    // schema change. Keying on "any row newer than the card" instead over-triggers ~3:1
+    // (measured: 55 rebinds across two specs, one agent, one afternoon, of which only 19
+    // moved the artifact set), because honest metadata repair rebinds the SAME artifact
+    // repeatedly. That is the default behaviour of a careful implementer, not an attack, so
+    // no cap can separate the two — comparing what a grader actually inspects does.
+    // NAMED GAP: `defaultReadEvidence` does not request retracted rows, so a retraction-only
+    // cohort change is invisible here and will NOT stale. That fails CLOSED (the bar stays
+    // stuck, as it does today) rather than open, which is the safe direction.
+    // The identity tracks what a GRADER WOULD SEE, not what the writer DID — which is why
+    // `createdAt` and `details` (writer-state) are out while the artifact is in. Execution
+    // is the field where that rule is easiest to misapply, because a raw `testRunId` LOOKS
+    // like evidence identity when it is really execution bookkeeping:
+    //   - EXCLUDING execution entirely rebuilds the D-030 dead end one level down. Judges
+    //     cite missing execution as the defect ("executable binding(s) attest execution
+    //     details but have NO testRunId or coverageEvidenceRef ... author-attested booleans
+    //     cannot establish execution-integrity"), so an implementer who finally RUNS the
+    //     test — the one repair the gate asked for — would fingerprint identical to the
+    //     unexecuted cohort and still not recruit.
+    //   - INCLUDING the raw id re-opens the over-trigger: every idempotent re-run mints a
+    //     new id, so re-running a green suite N times would re-roll a grader N times.
+    // So normalize to the grader-visible bit: executed or not.
+    // NAMED GAP (bounded follow-up): the fuller state is (hasExecution, verdict), so a
+    // fail→pass or pass→fail flip on the SAME binding is not yet material here. The verdict
+    // is not on the binding row (only testRunId/coverageEvidenceRef are) and needs a join
+    // into the execution ledger; `hasExecution` alone already closes the dead end above and
+    // is strictly better than excluding execution, so it ships without the verdict half.
+    const cohortIdentity = (rows: readonly AcceptanceBarEvidenceSource[]): string => {
+      const keys = new Set<string>();
+      for (const row of rows) {
+        const executed = row.testRunId !== null || row.coverageEvidenceRef !== null;
+        keys.add(
+          `${row.specId}\x00${row.evidenceKind}\x00${row.evidenceRef}\x00${executed ? 'executed' : 'unexecuted'}`,
+        );
+      }
+      return [...keys].sort().join('\x01');
+    };
+    // Both sides are reconstructed from the RAW append-only rows, never from
+    // `activeEvidence`: that set is already reduced to the newest row per identity, so
+    // filtering IT by time drops a superseded row entirely and makes an ordinary
+    // metadata-only rebind look like an emptied cohort. Same population, same reduction,
+    // differing only in the time cut — so the two fingerprints are actually comparable.
     const gradedAt = grading.card ? Date.parse(grading.card.createdAt) : Number.NaN;
-    const evidencePostdatesGrading =
-      Number.isFinite(gradedAt) &&
-      currentEvidence.some((row) => {
-        const boundAt = Date.parse(row.createdAt);
-        return Number.isFinite(boundAt) && boundAt > gradedAt;
-      });
+    const cohortWhenGraded = Number.isFinite(gradedAt)
+      ? evidence.filter((row) => {
+          const boundAt = Date.parse(row.createdAt);
+          return Number.isFinite(boundAt) && boundAt <= gradedAt;
+        })
+      : [];
+    const cohortChangedSinceGrading =
+      Number.isFinite(gradedAt) && cohortIdentity(cohortWhenGraded) !== cohortIdentity(evidence);
     const gradingState: AcceptanceBarTrace['grading']['state'] = input.scorecards.truncated
       ? 'truncated'
       : !grading.card || !rating
@@ -987,7 +1039,7 @@ export function projectAcceptanceBarContractSnapshot(
           ? 'stale'
           : passRatings.includes(rating.toLowerCase())
             ? 'pass'
-            : evidencePostdatesGrading
+            : cohortChangedSinceGrading
               ? 'stale'
               : 'not-pass';
     const mappingState: AcceptanceBarTrace['readiness']['mapping'] =
