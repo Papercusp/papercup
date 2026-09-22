@@ -15,6 +15,8 @@ import {
 } from './agent-obligations';
 import {
   buildAgentObligationAgenda,
+  type WaitingOnObligationRow,
+  type WaitingOnProviderInput,
   type IndependentVerificationProviderInput,
   type OwnerDirectiveObligationRow,
   type OwnerDirectivesProviderInput,
@@ -55,6 +57,22 @@ export interface AgentObligationReaderDeps {
    * that is read, populated, and then never reaches an agent that has no goal.
    */
   ownerDirectives: (workspaceId: string, ownerId: string) => Promise<OwnerDirectiveObligationRow[]>;
+  /**
+   * What this session is parked on: active awaits + queued lock tickets (P-011).
+   *
+   * REQUIRED, deliberately, and for the reason recorded against
+   * `OrientationDeps.openChecks` (EI-23953846527835643): an OPTIONAL dep is
+   * exactly what lets a class land declared, registered and probe-covered while
+   * production populates NOTHING, because the family-coverage guard supplies the
+   * obligations itself and so proves the RENDER path while staying structurally
+   * blind to a missing RESOLVER. Required means a reader-less landing fails to
+   * typecheck instead of rendering silence forever.
+   *
+   * Like `ownerDirectives` and unlike every goal-scoped source here, this is NOT
+   * gated on an active goal: a session parks on an event whether or not it holds
+   * one, and gating it would reproduce the same measured hole.
+   */
+  waitingOn: (workspaceId: string, ownerId: string) => Promise<WaitingOnObligationRow[]>;
 }
 
 interface ReadOutcome<T> {
@@ -219,15 +237,52 @@ export async function readAgentObligationAgenda(input: {
     [] as OwnerDirectiveObligationRow[],
     sourceTimeoutMs,
   );
-  const [portfolio, launch, fleet, report, acceptances, directives] = await Promise.all([
+  // Deliberately NOT gated on goalId, for the same reason as owner directives:
+  // see AgentObligationReaderDeps.waitingOn.
+  const waitingOnPromise = boundedRead(
+    'waiting-on',
+    deps.waitingOn(input.workspaceId, input.ownerId),
+    [] as WaitingOnObligationRow[],
+    sourceTimeoutMs,
+  );
+  const [portfolio, launch, fleet, report, acceptances, directives, waits] = await Promise.all([
     portfolioPromise,
     launchPromise,
     fleetPromise,
     reportPromise,
     Promise.all(acceptancePromises),
     directivesPromise,
+    waitingOnPromise,
   ]);
   if (directives.degraded) degradedSources.push(readFailure('owner directives', directives));
+  if (waits.degraded) degradedSources.push(readFailure('waiting-on', waits));
+  const waitingOn: WaitingOnProviderInput = {
+    workspaceId: input.workspaceId,
+    ownerId: input.ownerId,
+    observedAt,
+    // Row facts only — no observation clock. An unchanged set of waits keeps an
+    // unchanged generation across warm turns; a clock here would churn the
+    // obligation on every read and defeat the turn-start cursor's dedup.
+    sourceGeneration: agentObligationSourceGeneration({
+      waits: waits.degraded
+        ? 'unknown'
+        : waits.value.map((row) =>
+            row.kind === 'event-await'
+              ? [row.kind, row.key, row.timeoutAt, row.onTimeout]
+              : [row.kind, row.path, row.holder, row.holderIntent, row.holderExpiresAt],
+          ),
+    }),
+    read: waits.degraded
+      ? {
+          status: 'unknown',
+          failure: {
+            code: 'canonical-waiting-on-read-failed',
+            detail: readFailure('waiting-on', waits),
+            retry: 'retry listActiveAwaits and readQueue for this owner',
+          },
+        }
+      : { status: 'known', value: waits.value },
+  };
   const ownerDirectives: OwnerDirectivesProviderInput = {
     workspaceId: input.workspaceId,
     ownerId: input.ownerId,
@@ -419,7 +474,7 @@ export async function readAgentObligationAgenda(input: {
 
   return {
     agenda: buildAgentObligationAgenda(
-      { planPlacement, ownerReport, independentVerification, ownerDirectives },
+      { planPlacement, ownerReport, independentVerification, ownerDirectives, waitingOn },
       observedAt,
     ),
     goalId,
@@ -656,6 +711,65 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
         recordedBy: row.recordedBy,
         capturedByHook: row.capturedByHook === true,
       }));
+    },
+    waitingOn: async (_workspaceId, ownerId) => {
+      const [{ listActiveAwaits }, { readQueue }, { getOrgPg }] = await Promise.all([
+        import('./events/await/store'),
+        import('./agent-tools/locks/su-lock-store'),
+        import('@papercusp/db-org'),
+      ]);
+      // Both halves are EXISTING shared primitives, never a new query:
+      // `listActiveAwaits` is what events:status reads, and `readQueue` is what
+      // locks:queue reads — which is also why the recovery verb on each row can
+      // be handed to the agent verbatim and will show it the same rows.
+      const [awaits, queue] = await Promise.all([
+        listActiveAwaits(ownerId),
+        // `owner` filters the WAITING side in SQL. The active-lock rows come back
+        // unfiltered by design: they are how a queued ticket names the HOLDER it
+        // is queued behind, which is the whole point of the lock half here
+        // (D-055 A4 — "know WHAT you are queued behind, not merely THAT you are").
+        // `coordinationDomain: null` reads ACROSS domains on purpose. Domain
+        // scoping exists for the ENFORCEMENT path (two checkouts are two files
+        // and must not serialize against each other); this is a "what is THIS
+        // owner waiting on" read, where `owner` is already globally unique, so
+        // scoping it to one domain would silently drop a real wait.
+        readQueue(getOrgPg().sql, { owner: ownerId, coordinationDomain: null }),
+      ]);
+      // ActiveLockRow is one row PER PATH (`path`, singular) — a held lock set
+      // spanning N paths is N rows sharing one `lock_id`.
+      const holderOf = (path: string) =>
+        queue.active_locks.find((lock) => lock.path === path && lock.owner !== ownerId) ?? null;
+      const awaitRows: WaitingOnObligationRow[] = awaits.map((row) => ({
+        kind: 'event-await' as const,
+        key: row.eventKey,
+        timeoutAt: row.expiresTs ? new Date(row.expiresTs).toISOString() : null,
+        // A row whose behavior is not an explicit wake LAPSES with no turn.
+        // Default to the dangerous reading rather than the reassuring one:
+        // mislabelling an `expire` row as `wake` promises a wake that never comes.
+        onTimeout: row.timeoutBehavior === 'wake' ? ('wake' as const) : ('expire' as const),
+      }));
+      const lockRows: WaitingOnObligationRow[] = queue.waiting
+        .filter((ticket) => ticket.status === 'waiting' && ticket.owner === ownerId)
+        .flatMap((ticket) =>
+          ticket.paths.map((path) => {
+            const holder = holderOf(path);
+            return {
+              kind: 'lock-queue' as const,
+              path,
+              // An unresolvable holder is reported as UNKNOWN, never omitted: the
+              // ticket is queued either way, and dropping the row because one
+              // field could not be resolved would hide the wait itself.
+              holder: holder?.owner ?? 'unknown holder',
+              holderIntent: holder?.intent ?? null,
+              holderExpiresAt: holder?.expires_ts
+                ? new Date(holder.expires_ts).toISOString()
+                : ticket.holder_expires_ts
+                  ? new Date(ticket.holder_expires_ts).toISOString()
+                  : null,
+            };
+          }),
+        );
+      return [...awaitRows, ...lockRows];
     },
   };
 }

@@ -44,7 +44,7 @@ import {
   type AgentObligation,
   type AgentObligationFamily,
 } from './agent-obligations';
-import { ownerDirectiveObligations } from './agent-obligation-providers';
+import { ownerDirectiveObligations, waitingOnObligations } from './agent-obligation-providers';
 import {
   projectAgentTurnStartObligationBrief,
   type AgentObligationBrief,
@@ -489,6 +489,38 @@ const FAMILY_PROBES: Record<string, FamilyProbe> = {
         },
       }),
     marker: /owner directive .*#17|#17/,
+  },
+  // P-011: the real provider, on real row shapes. The probe carries BOTH row
+  // kinds because they render through different branches, and uses an `expire`
+  // await deliberately — that is the row whose absence from the prompt is
+  // unrecoverable (it lapses with no turn, so nothing else ever mentions it).
+  'waiting-on': {
+    build: () =>
+      waitingOnObligations({
+        workspaceId: 'papercusp-workspace',
+        ownerId: 'su-coverage-probe',
+        observedAt: FAMILY_OBSERVED_AT,
+        sourceGeneration: 'coverage-probe',
+        read: {
+          status: 'known',
+          value: [
+            {
+              kind: 'event-await',
+              key: 'gate:coverage-probe',
+              timeoutAt: '2026-09-21T16:00:00.000Z',
+              onTimeout: 'expire',
+            },
+            {
+              kind: 'lock-queue',
+              path: 'packages/operator-core/lib/coverage-probe.ts',
+              holder: 'su-probe-holder',
+              holderIntent: 'coverage probe holder intent',
+              holderExpiresAt: '2026-09-21T16:05:00.000Z',
+            },
+          ],
+        },
+      }),
+    marker: /gate:coverage-probe/,
   },
 };
 

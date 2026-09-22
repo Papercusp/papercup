@@ -112,6 +112,7 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
     // (agent-obligation-owner-directives.test.ts); here it is deliberately
     // empty so these cases keep measuring the goal/plan providers.
     ownerDirectives: vi.fn(async () => []),
+    waitingOn: vi.fn(async () => []),
     ...overrides,
   };
 }
@@ -176,6 +177,12 @@ describe('shared agent obligation reader', () => {
       // empty queue is reported as a measured not-applicable rather than as the
       // class being absent — those two must never render identically.
       ['owner-directive', 'not-applicable'],
+      // P-011: same unconditional-assembly contract as owner-directive above. A
+      // session waiting on nothing must report a MEASURED not-applicable; if the
+      // family were assembled only when rows exist, "no wait" and "the read never
+      // ran" would render identically — and the silent-expire await this class
+      // exists to surface is exactly what would vanish into that gap.
+      ['waiting-on', 'not-applicable'],
       ['independent-verification', 'blocked'],
     ]);
     expect(read.agenda.primary[0]?.family).toBe('independent-verification');
