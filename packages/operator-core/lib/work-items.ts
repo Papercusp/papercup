@@ -2453,6 +2453,19 @@ export interface CreateWorkItemInput {
   sourcePlanSlug?: string | null;
   /** Plan-item ids covered by this work-item; paired with sourcePlanSlug for both families. */
   sourcePlanItemIds?: string[] | null;
+  /**
+   * Owner-directive provenance (directive-visibility-and-ownership-2026-09-22, P-005):
+   * `harness_shared.owner_directives.id` this work-item was created to carry out.
+   *
+   * Deliberately the SAME SHAPE as `sourcePlanSlug` above — "where did this
+   * work-item come from" — rather than a new linking surface. The reference is
+   * LATE-BINDING and one-directional: the directive exists first and cannot know
+   * what it will spawn, so the work-item points back and the directive row is
+   * never written after capture (D-005). Omit ⇒ NULL, which is the DEFAULT and
+   * the common case, not a degenerate one: a directive is visible and actionable
+   * long before any work-item exists.
+   */
+  directiveRef?: number | null;
   /** Feature-family design lifecycle copied from accepted-spec provenance. */
   needsDesign?: boolean;
   designStatus?: WorkItemDesignStatus | null;
@@ -2788,6 +2801,20 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       cols.push('admitted_by');
       vals.push(`$${params.length}::text`);
     }
+  }
+  // OWNER-DIRECTIVE PROVENANCE (P-005) — appended with the same params.length-computed
+  // index as taken_by/admission above, NOT spliced into the fixed positional block at the
+  // top of this function: every value there is bound by a hand-written `$N`, so inserting
+  // a column mid-list silently renumbers the ones after it.
+  //
+  // Stamped in THIS INSERT rather than as a follow-up UPDATE for the same reason
+  // `taken_by` is: the derivation that reads it (deriveDirectiveStatus) answers "is anyone
+  // on this directive", and a row that exists for even one tick without its ref reads as
+  // UNCLAIMED — which is exactly the window in which a second agent picks the directive up.
+  if (input.directiveRef != null) {
+    params.push(input.directiveRef);
+    cols.push('directive_ref');
+    vals.push(`$${params.length}::bigint`);
   }
   // Always write the resolved workspace explicitly (never rely on the trigger's stale
   // 'default' fallback — see the resolution comment above).
@@ -9604,4 +9631,60 @@ export async function promoteToPipeline(
   const res = await promoteIssue(id, { harness: opts.harness, actor: opts.actor });
   if ('error' in res) return res;
   return { workItem: issueToWorkItem(res.issue), feature: res.feature };
+}
+
+/** One work-item carrying `directive_ref`, projected to exactly what the
+ *  directive-status derivation consumes. */
+export interface DirectiveLinkedWorkItemRow {
+  directiveRef: number;
+  id: string;
+  state: string;
+  assignee: string | null;
+}
+
+/**
+ * Every work-item pointing back at one of `directiveIds`
+ * (directive-visibility-and-ownership-2026-09-22, P-005/P-006).
+ *
+ * DELIBERATELY NOT ROUTED THROUGH `FEATURE_COLS` / `featureRowToWorkItem`. Those
+ * carry a documented parity contract with the claim-spec evaluator's FIELD_MAP,
+ * and widening them for a field the evaluator never filters on would put a
+ * guarded invariant at risk to serve a read that needs three columns. This
+ * projects only what `deriveDirectiveStatus` consumes, so nothing downstream can
+ * come to depend on a shape this query does not promise.
+ *
+ * BATCHED BY DESIGN: the caller renders N directives per turn on the turn-start
+ * hot path, under a hard wall. One query for the whole banner, never one per row.
+ *
+ * Returns ALL linked rows including terminal ones — the derivation, not this
+ * reader, decides what terminal means. A reader that pre-filtered to live rows
+ * would silently destroy the `workedButUndispositioned` distinction, and it
+ * would do so invisibly, since the verdict would still be `unclaimed`.
+ */
+export async function listWorkItemsByDirective(
+  workspaceId: string,
+  directiveIds: readonly number[],
+): Promise<DirectiveLinkedWorkItemRow[]> {
+  if (directiveIds.length === 0) return [];
+  const { sql } = getOrgPg();
+  const rows = (await sql`
+    SELECT directive_ref, feature_id, status, taken_by
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId}
+       AND directive_ref = ANY(${directiveIds as number[]}::bigint[])
+     ORDER BY directive_ref, created_ts
+  `) as unknown as Array<{
+    directive_ref: string | number;
+    feature_id: string;
+    status: string;
+    taken_by: string | null;
+  }>;
+  return rows.map((r) => ({
+    // postgres.js returns bigint as a STRING; the caller keys a Map by this, so a
+    // mixed string/number key set would silently miss every lookup.
+    directiveRef: Number(r.directive_ref),
+    id: r.feature_id,
+    state: r.status,
+    assignee: r.taken_by ?? null,
+  }));
 }
