@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { acknowledgeControlTransition, failControlTransitionActivation } from './agent-tools/coordination/control-anchor';
 import { recordCurrentSessionIdentityActivation } from './session-identity-attribution';
@@ -20,7 +21,8 @@ beforeAll(async () => {
   await db.sql.unsafe(`
     CREATE TABLE harness_shared.adv_sessions (
       id bigint PRIMARY KEY, workspace_id text NOT NULL, coord_owner_id text,
-      session_id text, started_at timestamptz NOT NULL, ended_at timestamptz
+      session_id text, started_at timestamptz NOT NULL, ended_at timestamptz,
+      ended_by text, launch_spec jsonb
     );
     CREATE TABLE harness_shared.session_briefs (
       owner_id text PRIMARY KEY, workspace_id text NOT NULL,
@@ -51,6 +53,17 @@ beforeAll(async () => {
 afterAll(async () => db?.cleanup());
 
 const ms = (iso: string) => new Date(iso).getTime();
+
+/** A launch record carrying a real compiled specification, as the kernel resolver requires. */
+function compiledLaunch(seed: string, stateRevision = `state-${seed}`) {
+  const artifact = compileAgentSpecification({
+    source: { id: `attribution-${seed}`, workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
+    prompt: { role: 'worker', text: `attribution fixture ${seed}` },
+    inputClosure: [],
+  });
+  const revision = { specificationRevision: artifact.specificationRevision, stateRevision };
+  return { revision, launchSpec: { ...revision, specificationArtifact: artifact } };
+}
 
 async function event(input: {
   id: number; phase: string; at: string; spec: string; state: string;
@@ -210,10 +223,49 @@ describe('P-009 activation span views', () => {
     expect(await read()).toEqual(expected);
   });
 
+  // EI-23703586803892464, the measured shape: a sibling launch record minted
+  // `desired`, but the kernel selects a DIFFERENT, still-open row. Acknowledging
+  // would have written an `applied` that row cannot resolve — a total tool wedge.
+  it('refuses to acknowledge a revision the gate-selected launch record does not run', async () => {
+    const owner = `${OWNER}-sibling`;
+    const running = compiledLaunch('running');
+    const sibling = compiledLaunch('sibling');
+    await db.sql`INSERT INTO harness_shared.adv_sessions (id,workspace_id,coord_owner_id,session_id,started_at,launch_spec)
+      VALUES (9101,${WS},${owner},'native-sibling','2026-09-22T21:43:05Z',${JSON.stringify(sibling.launchSpec)}::text::jsonb),
+             (9102,${WS},${owner},'native-running','2026-09-22T21:43:36Z',${JSON.stringify(running.launchSpec)}::text::jsonb)`;
+    const activation = {
+      schemaVersion: 1,
+      attribution: { actorId: 'actor-stable', principalId: 'principal-stable', sessionId: 'session-stable' },
+      desired: sibling.revision,
+      prepared: sibling.revision,
+      applied: running.revision,
+      status: 'prepared',
+    };
+    await db.sql`
+      INSERT INTO harness_shared.session_briefs
+        (owner_id,workspace_id,native_session_id,control_generation,control_delivered_generation,control_state)
+      VALUES (${owner},${WS},'native-running',50,49,${JSON.stringify({ activation })}::text::jsonb)`;
+
+    await expect(acknowledgeControlTransition(owner, WS, 50, db.sql, sibling.revision)).resolves.toBe(false);
+
+    const [row] = await db.sql<Array<{ delivered: string; applied: unknown; status: string }>>`
+      SELECT control_delivered_generation::text AS delivered,
+             control_state->'activation'->'applied' AS applied,
+             control_state #>> '{activation,status}' AS status
+        FROM harness_shared.session_briefs
+       WHERE owner_id = ${owner}`;
+    expect(row).toEqual({ delivered: '49', applied: running.revision, status: 'prepared' });
+  });
+
   it('rolls back applied state and watermark when the event insert fails', async () => {
     const owner = `${OWNER}-atomic`;
     const previous = { specificationRevision: SPEC_A, stateRevision: 'previous' };
-    const revision = { specificationRevision: SPEC_B, stateRevision: 'next' };
+    // The ack guard admits only a revision the selected launch record resolves,
+    // so this record must carry a REAL compiled specification — which also makes
+    // reaching the forced event failure below the real-PG proof that it admits.
+    const { revision, launchSpec } = compiledLaunch('atomic', 'next');
+    await db.sql`INSERT INTO harness_shared.adv_sessions (id,workspace_id,coord_owner_id,session_id,started_at,launch_spec)
+      VALUES (9001,${WS},${owner},'native-atomic','2026-09-22T00:00:00Z',${JSON.stringify(launchSpec)}::text::jsonb)`;
     const activation = {
       schemaVersion: 1,
       attribution: { actorId: 'actor-stable', principalId: 'principal-stable', sessionId: 'session-stable' },

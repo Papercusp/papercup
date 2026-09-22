@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileAgentSpecification, type ResolvedCapabilityProviderInput } from '@papercusp/orchestrator/blueprint';
 import type { KernelEnforcementRequest } from '@papercusp/agent-mcp';
-import { appliedIdentityArtifact, checkIdentityGrantKernel, IDENTITY_BREAK_GLASS, readIdentityGrantPolicy, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
+import { appliedIdentityArtifact, checkIdentityGrantKernel, launchRecordAdmitsApplied,IDENTITY_BREAK_GLASS, readIdentityGrantPolicy, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
 import { carryIdentityReceiptForControlActivation, type SuLaunchSpecRecord } from '../su-persona-render';
 
@@ -555,5 +555,35 @@ describe('P-005 install and runtime use the same ceiling', () => {
       .toMatchObject([{ cause: 'tool-unavailable', classRef: CLASS }]);
     expect(await validateIdentityInstallGrants(f.input, async () => ({ ...policy, protectedAdditions: ['mail:*'] })))
       .toMatchObject([{ cause: 'outside-ceiling', classRef: CLASS }]);
+  });
+});
+
+// EI-23703586803892464: acknowledgeControlTransition asks THIS before writing
+// `applied`, so an acknowledgement can never manufacture a stale-artifact wedge.
+describe('launchRecordAdmitsApplied — may this revision be acknowledged?', () => {
+  it('admits the revision the selected launch record carries', () => {
+    const f = fixture();
+    expect(launchRecordAdmitsApplied(f.record, f.applied)).toBe(true);
+  });
+
+  it('admits a control-only activation: same specification, new state revision', () => {
+    const f = fixture();
+    expect(launchRecordAdmitsApplied(f.record, { ...f.applied, stateRevision: 'state-next' })).toBe(true);
+  });
+
+  it('refuses a specification the selected record does not run (the sibling-record wedge)', () => {
+    const running = fixture();
+    const sibling = fixture({ optional: [CLASS] });
+    expect(sibling.applied.specificationRevision).not.toBe(running.applied.specificationRevision);
+    expect(launchRecordAdmitsApplied(running.record, sibling.applied)).toBe(false);
+  });
+
+  it('refuses when the record is tampered, absent, or not an object', () => {
+    const f = fixture();
+    const tampered = { ...f.record, specificationArtifact: { ...f.artifact, configuration: {} } };
+    expect(launchRecordAdmitsApplied(tampered, f.applied)).toBe(false);
+    for (const record of [null, undefined, 'launch-spec', [f.record]]) {
+      expect(launchRecordAdmitsApplied(record, f.applied)).toBe(false);
+    }
   });
 });

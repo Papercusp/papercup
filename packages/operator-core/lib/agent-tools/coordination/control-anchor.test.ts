@@ -9,6 +9,7 @@ import {
   CONTROL_TRANSITION_SCHEMA,
   acknowledgeControlTransition,
   controlStateHash,
+  convergeActivationToLaunchRecord,
   failControlTransitionActivation,
   markControlTransitionPrepared,
   decideControlTransitionDelivery,
@@ -561,6 +562,35 @@ describe('compact durable CTRL anchor', () => {
     ]);
     await expect(acknowledgeControlTransition('su-x', 'ws-test', 10, db.sql, revision)).resolves.toBe(true);
     expect(db.committed()).toBe(true);
+  });
+
+  // EI-23886889674609842 defect #1: a failed render after a relaunch on `desired`.
+  it('converges applied to a relaunched desired on render failure WITHOUT touching the delivery watermark', async () => {
+    const running = launched('h');
+    const previous = launched('i').revision;
+    const db = transactionalSqlSequence([
+      [{ launch_spec: running.launchSpec }],
+      [{ applied: previous }],
+      [{ control_generation: 11 }],
+      [{ id: 1 }],
+    ]);
+    await expect(convergeActivationToLaunchRecord('su-x', 'ws-test', 11, running.revision, db.sql)).resolves.toBe(true);
+    expect(db.calls[2]!.statement).toMatch(/activation,applied/);
+    expect(db.calls[2]!.statement).not.toMatch(/control_delivered_generation/);
+    expect(db.committed()).toBe(true);
+  });
+
+  it.each([
+    ['the selected record does not run desired', () => [[{ launch_spec: launched('j').launchSpec }]], 1],
+    ['the current applied still resolves (not wedged)', () => {
+      const running = launched('k');
+      return [[{ launch_spec: running.launchSpec }], [{ applied: { ...running.revision, stateRevision: 'older' } }]];
+    }, 2],
+    ['there is no applied receipt to strand', () => [[{ launch_spec: launched('k').launchSpec }], [{ applied: null }]], 2],
+  ])('does not converge when %s', async (_case, results, expectedCalls) => {
+    const db = transactionalSqlSequence(results());
+    await expect(convergeActivationToLaunchRecord('su-x', 'ws-test', 12, launched('k').revision, db.sql)).resolves.toBe(false);
+    expect(db.calls).toHaveLength(expectedCalls);
   });
 
   it.each([

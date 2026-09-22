@@ -765,6 +765,24 @@ export async function failControlTransitionActivation(
 export const consumePendingControlTransition = preparePendingControlTransition;
 
 /**
+ * The launch record the kernel gate judges for this owner: its selection verbatim
+ * (projected-tool-deps.ts), pinned by wedged-identity-activation-selection.pin.test.ts.
+ * Every writer of `activation.applied` vets against THIS row — vetting against any
+ * other is how an acknowledgement wedged a session (EI-23703586803892464).
+ */
+async function readGateSelectedLaunchSpec(tx: Sql, ownerId: string, workspaceId: string): Promise<unknown> {
+  const rows = await tx<Array<{ launch_spec: unknown }>>`
+    SELECT to_jsonb(s)->'launch_spec' AS launch_spec
+      FROM harness_shared.adv_sessions s
+     WHERE s.coord_owner_id = ${ownerId}
+       AND s.workspace_id = ${workspaceId}
+     ORDER BY (s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC
+     LIMIT 1
+  `;
+  return rows[0]?.launch_spec;
+}
+
+/**
  * Phase two of CTRL delivery: acknowledge one generation after the complete
  * prompt has been assembled successfully.
  *
@@ -782,8 +800,6 @@ export const consumePendingControlTransition = preparePendingControlTransition;
  * gate deny EVERY tool as `stale-artifact`, coord:orient included. A refusal
  * leaves the generation pending, so it is re-delivered and retried each turn
  * until the record carries it — the same wait a `relaunch-with-carry` takes.
- * The ORDER BY is the gate's selection verbatim, pinned by
- * wedged-identity-activation-selection.pin.test.ts.
  */
 export async function acknowledgeControlTransition(
   ownerId: string,
@@ -796,15 +812,8 @@ export async function acknowledgeControlTransition(
   if (activationRevision) {
     const { launchRecordAdmitsApplied } = await import('../../capability-envelope/identity-grants-port');
     return await sql.begin(async (tx) => {
-      const launch = await tx<Array<{ launch_spec: unknown }>>`
-        SELECT to_jsonb(s)->'launch_spec' AS launch_spec
-          FROM harness_shared.adv_sessions s
-         WHERE s.coord_owner_id = ${ownerId}
-           AND s.workspace_id = ${workspaceId}
-         ORDER BY (s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC
-         LIMIT 1
-      `;
-      if (!launchRecordAdmitsApplied(launch[0]?.launch_spec, activationRevision)) return false;
+      const launchSpec = await readGateSelectedLaunchSpec(tx as unknown as Sql, ownerId, workspaceId);
+      if (!launchRecordAdmitsApplied(launchSpec, activationRevision)) return false;
       const rows = await tx<Array<{ control_delivered_generation: number | string }>>`
         UPDATE harness_shared.session_briefs
            SET control_delivered_generation = GREATEST(control_delivered_generation, ${generation}),
@@ -844,6 +853,78 @@ export async function acknowledgeControlTransition(
     RETURNING control_delivered_generation
   `;
   return rows.length > 0;
+}
+
+/**
+ * EI-23886889674609842 (defect #1): a FAILED stack render must not strand the
+ * authority receipt behind a launch the session has already made.
+ *
+ * On a render failure turn-start skips prepare and ack, so `applied` keeps the
+ * previous revision. If the session was meanwhile relaunched on `desired` — its
+ * gate-selected launch record carries it — the gate can no longer resolve the old
+ * `applied` and denies every tool as `stale-artifact`, coord:orient included,
+ * until someone hand-writes SQL. The WI-10002021 rescue cannot help: it sits on
+ * the render-SUCCEEDED path.
+ *
+ * Two concerns share acknowledgement, and only one may move here:
+ *   - `activation.applied` (authority) converges to `desired`, because the record
+ *     the gate judges demonstrably runs it;
+ *   - `control_delivered_generation` (prompt text) is NOT touched, because the
+ *     stack block was not delivered and must be retried next turn.
+ *
+ * It writes only when that record admits `desired` AND no longer admits the
+ * current non-null `applied` — i.e. only when it replaces a certain total denial
+ * with the authority the launch already carries, never otherwise.
+ */
+export async function convergeActivationToLaunchRecord(
+  ownerId: string,
+  workspaceId: string,
+  generation: number,
+  revision: SessionActivation['desired'],
+  sql: Sql = getOrgPg().sql,
+): Promise<boolean> {
+  if (!Number.isSafeInteger(generation) || generation < 0) return false;
+  const { launchRecordAdmitsApplied } = await import('../../capability-envelope/identity-grants-port');
+  const rev = JSON.stringify({ specificationRevision: revision.specificationRevision, stateRevision: revision.stateRevision });
+  return await sql.begin(async (tx) => {
+    const launchSpec = await readGateSelectedLaunchSpec(tx as unknown as Sql, ownerId, workspaceId);
+    if (!launchRecordAdmitsApplied(launchSpec, revision)) return false;
+    const current = await tx<Array<{ applied: unknown }>>`
+      SELECT control_state->'activation'->'applied' AS applied
+        FROM harness_shared.session_briefs
+       WHERE owner_id = ${ownerId}
+         AND workspace_id = ${workspaceId}
+       FOR UPDATE
+    `;
+    const applied = current[0]?.applied as { specificationRevision?: unknown; stateRevision?: unknown } | null | undefined;
+    if (typeof applied?.specificationRevision !== 'string' || typeof applied.stateRevision !== 'string') return false;
+    const appliedRevision = { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision };
+    if (launchRecordAdmitsApplied(launchSpec, appliedRevision)) return false;
+    const rows = await tx<Array<{ control_generation: number | string }>>`
+      UPDATE harness_shared.session_briefs
+         SET control_state = jsonb_set(
+           jsonb_set(
+             jsonb_set(control_state, '{activation,applied}', ${rev}::text::jsonb, true),
+             '{activation,prepared}', 'null'::jsonb, true
+           ),
+           '{activation,status}', '"applied"'::jsonb, true
+         )
+       WHERE owner_id = ${ownerId}
+         AND workspace_id = ${workspaceId}
+         AND control_generation >= ${generation}
+         AND control_state->'activation'->'desired' = ${rev}::text::jsonb
+      RETURNING control_generation
+    `;
+    if (rows.length === 0) return false;
+    const recorded = await recordCurrentSessionIdentityActivation({
+      ownerId, workspaceId, generation, phase: 'applied', source: 'control', revision,
+      sql: tx as unknown as Sql,
+    });
+    if (recorded === 'missing') {
+      throw new Error('session_identity_activation_applied_not_recorded');
+    }
+    return true;
+  });
 }
 
 /**

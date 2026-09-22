@@ -58,3 +58,31 @@ describe('wedged-identity sweep selects the kernel’s launch record', () => {
     expect(kernelSelectionOrder(source)).toBe(LAUNCH_RECORD_SELECTION_ORDER);
   });
 });
+
+/**
+ * EI-23703586803892464 — the SECOND reader of the same row. Every writer of
+ * `activation.applied` in control-anchor.ts vets against readGateSelectedLaunchSpec;
+ * if its selection drifted, a writer would again vet one row while the gate judges
+ * another — the exact sibling-record wedge it exists to prevent. Overridable like
+ * the kernel subject, for the same copy-out reason.
+ */
+const ACK_SOURCE = process.env.WEDGED_IDENTITY_ACK_PIN_SUBJECT
+  ? new URL(`file://${process.env.WEDGED_IDENTITY_ACK_PIN_SUBJECT}`)
+  : new URL('../agent-tools/coordination/control-anchor.ts', import.meta.url);
+
+describe('the applied-writers’ launch-record read selects the kernel’s row', () => {
+  const full = readFileSync(ACK_SOURCE, 'utf8');
+  const start = full.indexOf('async function readGateSelectedLaunchSpec');
+  const ack = start === -1 ? '' : full.slice(start);
+
+  it('extracts a real ORDER BY from readGateSelectedLaunchSpec', () => {
+    const order = kernelSelectionOrder(ack);
+    expect(order).toBeTruthy();
+    expect(order).toContain('started_at');
+    expect(order).toContain('ended_at');
+  });
+
+  it('uses byte-identical ordering to the kernel', () => {
+    expect(kernelSelectionOrder(ack)).toBe(LAUNCH_RECORD_SELECTION_ORDER);
+  });
+});
