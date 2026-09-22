@@ -10,10 +10,20 @@
     "node scripts/mcp-call.mjs plans:get-specs --port 3070"
   ],
   "exitCode": 0,
-  "startedAt": "2026-09-22T12:08:03.395725+00:00",
-  "finishedAt": "2026-09-22T12:08:04.221257+00:00",
+  "startedAt": "2026-09-22T12:15:11.212388+00:00",
+  "finishedAt": "2026-09-22T12:15:12.844320+00:00",
   "summary": "R-6's deployed leg measured by the bar's own definition: the serving host's reported sha (be8396c6dd, matching release HEAD be8396c6dd with a clean checkout) together with containment of the changed content at that sha. All rendering-path files of the rendered requirement journey are byte-identical to the deployed copy; the two data-path files that differ are shown to differ only by other lanes' churn, with this plan's contract markers contained at equal counts.",
   "assertions": [
+    {
+      "id": "legacy-requirements-readable-on-deployed",
+      "passed": true,
+      "evidence": "Read through the DEPLOYED :3070 via scripts/mcp-call.mjs plans:get-specs. Legacy pre-contract plan production-readiness-acceptance-2026-06-10 returns renderedCount=28 with behavior/behaviorClass/lifecycleStatus/planItemId intact and exemption/falsifier rendered as explicit null rather than omitted or fabricated. Positive control: the modern contract plan returns renderedCount=15."
+    },
+    {
+      "id": "negative-control-absent-plan-does-not-read-as-success",
+      "passed": true,
+      "evidence": "A nonexistent plan slug returns a structurally DIFFERENT 136-byte response carrying no renderedCount/truncated census, versus 5780 bytes for the legacy subject. So an absence cannot be mistaken for a truncated-but-real read - the failure mode this probe exists to exclude."
+    },
     {
       "id": "build-identity-two-instruments",
       "passed": true,
@@ -33,6 +43,16 @@
       "id": "instrument-controls-fired",
       "passed": true,
       "evidence": "Negative control (bogus marker in the deployed rubrics.ts) = 0 occurrences, as required. Positive control ('export') = 86, so the instrument reads the file."
+    },
+    {
+      "id": "rendered-journey-dom-observed-today",
+      "passed": true,
+      "evidence": "Real Tauri shell (scripts/verify-tauri-headless.sh, own Xvfb display + dev port, tauri-agent-tools), run 2026-09-22T11:29:52.891375+00:00, navigating to /admin/plans?plan=unified-requirement-contract-2026-09-05&gate=<same>. Observed DOM: requirementFlow=1 (ol[aria-label=\"Requirement acceptance flow\"]), requirementsSection=1, gateSection=1, gateRubric=1, detailsUnavailable=0, gateUnavailable=0, bodyChars=182264. The two 'unavailable' fallbacks are ZERO, so the requirement journey rendered real data rather than a degraded placeholder. NOTE ON THE INSTRUMENT: the probe is deliberately non-fatal, so its EXIT=0 is NOT the verdict - the verdict is these counts together with the negative control below. The shell booted from the working tree, bridged to the deployed plane by the byte-identity of its rendering-path files recorded in this same record."
+    },
+    {
+      "id": "rendered-journey-negative-control",
+      "passed": true,
+      "evidence": "The same eval that counted the real handles also queried [data-testid=\"zzz-no-such-testid\"] and returned 0. A selector set that returns 1 for every real handle and 0 for a fabricated one discriminates; without this, the positive counts could not be distinguished from a querySelectorAll that matches anything."
     },
     {
       "id": "rendered-journey-passes",
