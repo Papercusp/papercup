@@ -32,7 +32,9 @@
  * into something that cannot fail, that test goes red — which is the only reason
  * the green of every other test here means anything.
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
@@ -51,6 +53,78 @@ import { renderOrientationLines, type OrientationState } from './turn-start-orie
 
 const ORIENTATION_SOURCE = fileURLToPath(new URL('./turn-start-orientation.ts', import.meta.url));
 const OBLIGATIONS_SOURCE = fileURLToPath(new URL('./agent-obligations.ts', import.meta.url));
+
+/**
+ * PROVENANCE OF THE PARSED INPUT — a diagnostic, never a failure.
+ *
+ * Every coverage assertion below derives its DECLARED set by reading
+ * `turn-start-orientation.ts` / `agent-obligations.ts` off disk at test time.
+ * That is deliberate (a hand-listed copy of a union the code owns drifts), but
+ * it makes the declared set an input that can MOVE: on the shared checkout a
+ * peer can be mid-edit in exactly those files.
+ *
+ * Measured 2026-09-22T00:45Z, while plan item P-023 was re-homing the
+ * orientation classes into a shared declaration: this file reported 20 of 32
+ * assertions failing, then 32 of 32 passing four minutes later, with no edit of
+ * my own in between and `turn-start-orientation.ts` carrying an uncommitted
+ * change throughout. A moving declared set fails the render probes with
+ * ORDINARY assertion text, so that transient red is indistinguishable from the
+ * real coverage regression this guard exists to catch — and the natural next
+ * move is to go "fix" render paths that were never broken.
+ *
+ * So the failure message says which input was moving. This NEVER changes a
+ * verdict: the note is EMPTY when every parsed source is committed-clean, which
+ * is the only state the green-checkpoint gate ever runs in (an isolated checkout
+ * at a frozen candidate). It buys nothing there and everything for an ad-hoc
+ * local run on a tree ~100 agents are mutating.
+ */
+type ParsedSourceProvenance =
+  | { status: 'clean' }
+  | { status: 'uncommitted'; paths: string[] }
+  | { status: 'unknown'; reason: string };
+
+function readParsedSourceProvenance(absolutePaths: string[]): ParsedSourceProvenance {
+  try {
+    const stdout = execFileSync('git', ['status', '--porcelain', '--', ...absolutePaths], {
+      cwd: dirname(ORIENTATION_SOURCE),
+      encoding: 'utf8',
+      timeout: 10_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    // Porcelain v1 is `XY <path>`; a diagnostic does not need rename parsing.
+    const paths = stdout
+      .split('\n')
+      .filter((line) => line.length > 3)
+      .map((line) => line.slice(3).trim());
+    return paths.length === 0 ? { status: 'clean' } : { status: 'uncommitted', paths };
+  } catch (error) {
+    return { status: 'unknown', reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+const PARSED_SOURCE_PROVENANCE = readParsedSourceProvenance([ORIENTATION_SOURCE, OBLIGATIONS_SOURCE]);
+
+/**
+ * '' exactly when every parsed source is committed-clean, so a genuine failure
+ * on a clean tree reads precisely as it did before this diagnostic existed.
+ *
+ * Takes its reading as a PARAMETER so the control test below can exercise all
+ * three branches without depending on the state of the tree it runs on.
+ */
+function parsedSourceNote(provenance: ParsedSourceProvenance): string {
+  if (provenance.status === 'clean') return '';
+  if (provenance.status === 'unknown') {
+    return (
+      ` [parsed-source provenance UNKNOWN (${provenance.reason}) — could not establish whether the` +
+      ` declared set above was read from a committed blob]`
+    );
+  }
+  return (
+    ` [⚠ the declared set above was parsed from UNCOMMITTED source: ${provenance.paths.join(', ')} —` +
+    ` a peer may be mid-edit, so this failure can be a MOVING INPUT rather than a coverage` +
+    ` regression. Re-run against a clean tree before believing it]`
+  );
+}
 
 /**
  * The DECLARED set, read from the interface rather than restated here.
@@ -249,15 +323,20 @@ function linesAddedBy(probe: ClassProbe): string[] {
 }
 
 /** THROWS when a declared class does not reach the rendered prompt. */
-function assertClassReachesRenderedPrompt(name: string, probe: ClassProbe): void {
+function assertClassReachesRenderedPrompt(
+  name: string,
+  probe: ClassProbe,
+  note = parsedSourceNote(PARSED_SOURCE_PROVENANCE),
+): void {
   const added = linesAddedBy(probe);
   if (added.length === 0) {
-    throw new Error(`declared orientation class '${name}' produced no rendered line`);
+    throw new Error(`declared orientation class '${name}' produced no rendered line` + note);
   }
   if (!added.some((line) => probe.marker.test(line))) {
     throw new Error(
       `declared orientation class '${name}' rendered ${added.length} line(s) but none matched ${probe.marker}: ` +
-        JSON.stringify(added),
+        JSON.stringify(added) +
+        note,
     );
   }
 }
@@ -395,15 +474,20 @@ function linesAddedByFamily(probe: FamilyProbe): string[] {
 }
 
 /** THROWS when a declared obligation family does not reach the rendered prompt. */
-function assertFamilyReachesRenderedPrompt(name: string, probe: FamilyProbe): void {
+function assertFamilyReachesRenderedPrompt(
+  name: string,
+  probe: FamilyProbe,
+  note = parsedSourceNote(PARSED_SOURCE_PROVENANCE),
+): void {
   const added = linesAddedByFamily(probe);
   if (added.length === 0) {
-    throw new Error(`declared obligation family '${name}' produced no rendered line`);
+    throw new Error(`declared obligation family '${name}' produced no rendered line` + note);
   }
   if (!added.some((line) => probe.marker.test(line))) {
     throw new Error(
       `declared obligation family '${name}' rendered ${added.length} line(s) but none matched ${probe.marker}: ` +
-        JSON.stringify(added),
+        JSON.stringify(added) +
+        note,
     );
   }
 }
@@ -543,6 +627,33 @@ describe('turn-start orientation class coverage', () => {
   it('fails when a declared class never renders (permanent falsifiability control)', () => {
     expect(() => assertClassReachesRenderedPrompt(CONTROL_CLASS, CONTROL_PROBE)).toThrow(
       /produced no rendered line/,
+    );
+  });
+
+  it('labels a failure with its parsed-source provenance, and stays silent when clean (permanent control)', () => {
+    // All three branches, driven by synthetic readings so this control cannot go
+    // vacuous on a clean tree (or on a dirty one). Weaken `parsedSourceNote`
+    // into something that always returns '' and three of these fail.
+    expect(parsedSourceNote({ status: 'clean' })).toBe('');
+    const dirty = parsedSourceNote({ status: 'uncommitted', paths: ['lib/turn-start-orientation.ts'] });
+    expect(dirty).toContain('UNCOMMITTED source');
+    expect(dirty).toContain('lib/turn-start-orientation.ts');
+    expect(parsedSourceNote({ status: 'unknown', reason: 'git missing' })).toContain('UNKNOWN');
+
+    // Calibration: the LIVE reading resolves to one of the three and never throws,
+    // so the diagnostic cannot itself become the reason this file goes red.
+    expect(['clean', 'uncommitted', 'unknown']).toContain(PARSED_SOURCE_PROVENANCE.status);
+  });
+
+  it('carries the parsed-source note into the message of a real coverage failure', () => {
+    // Reuses the permanent control probe, so the wiring under test is the same
+    // path an actual regression takes — not a parallel message built for a test.
+    const note = parsedSourceNote({ status: 'uncommitted', paths: ['lib/agent-obligations.ts'] });
+    expect(() => assertClassReachesRenderedPrompt(CONTROL_CLASS, CONTROL_PROBE, note)).toThrow(
+      /parsed from UNCOMMITTED source: lib\/agent-obligations\.ts/,
+    );
+    expect(() => assertFamilyReachesRenderedPrompt('control', FAMILY_CONTROL_PROBE, note)).toThrow(
+      /parsed from UNCOMMITTED source: lib\/agent-obligations\.ts/,
     );
   });
 
