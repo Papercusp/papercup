@@ -184,7 +184,12 @@ import {
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { SESSION_END_MARKER, SESSION_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import { classifySessionEnd, isMachineModelErrorText, type SessionEndReason } from '../../search/session-end-reason';
-import { parseUsageReset, clampUsageRearmDelayMs } from '@papercusp/papercusp-shared/agent';
+import {
+  parseUsageReset,
+  clampUsageRearmDelayMs,
+  MODEL_CAPACITY_RE,
+  MODEL_CAPACITY_RETRY_AFTER_MS,
+} from '@papercusp/papercusp-shared/agent';
 import { recordLoopTransition } from './loop-transition-log';
 import { countAgentToolCallsInWindow as defaultCountAgentToolCallsInWindow } from './loop';
 import { autoPauseLoopRoutine as defaultAutoPauseLoopRoutine } from './loop-cost-cap';
@@ -414,6 +419,15 @@ export function classifyLoopLifecycleTurn(
       // 7am") is held in full, while a bare-clock guess keeps the tight 6h rail.
       rearmDelayMs = clampUsageRearmDelayMs(reset.atMs - nowMs, intervalMs, reset.precision);
     }
+  }
+  // A model-CAPACITY wall is the one `model_error` shape with a known, short clearing time: the
+  // provider is shedding load on this model and the shared taxonomy already fixes that window at
+  // MODEL_CAPACITY_RETRY_AFTER_MS. Re-arming on the blind interval would let a loop tighter than
+  // that window spend its next wake walking straight back into the same wall — so FLOOR the delay
+  // at the provider's retry window. `Math.max` on purpose: a loop that already waits longer keeps
+  // its own slower cadence, because this is a minimum-wait rail, not a new schedule.
+  if (cls.reason === 'model_error' && MODEL_CAPACITY_RE.test(text)) {
+    rearmDelayMs = Math.max(rearmDelayMs, MODEL_CAPACITY_RETRY_AFTER_MS);
   }
   return { reason: cls.reason, evidence: cls.evidence, rearmDelayMs };
 }

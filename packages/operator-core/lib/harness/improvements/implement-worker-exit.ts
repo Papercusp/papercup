@@ -25,6 +25,7 @@
  * deps injectable for unit tests), mirroring the resolve-core / dispatch-ledger split.
  */
 
+import { MODEL_CAPACITY_RE } from '@papercusp/papercusp-shared/agent';
 import { markDispatchOrphaned } from './dispatch-ledger';
 import { mergeIssuePayload, getIssue, markLeaderTriage } from '../../issues-engineer';
 import { parseResetHoldUntil } from './reset-backoff';
@@ -58,6 +59,16 @@ export interface WorkerExitInfo {
 const ENV_FAILURE_PATTERNS: readonly RegExp[] = [
   /weekly limit/i,
   /rate.?limit/i,
+  // The Codex CLI's model-capacity wall ("Selected model is at capacity. Please try a different
+  // model."). Same disposition as the rate-limit shapes above — a provider-side wall that says
+  // nothing about the ITEM and self-heals on retry — but its wording names neither a limit, a
+  // quota, nor a 5xx, so it slipped EVERY pattern in this list: the death was CHARGED as a real
+  // attempt and tagged plain 'worker-exit-backedge', which the orphaned-dispatch watchdog then
+  // reads as "the implement lane is broken". That is the same self-amplifying false-EI loop the
+  // EI-6876 / EI-6890 / EI-7591 / EI-10568 entries below each closed for their own signature.
+  // Imported from the shared taxonomy (turn-error.ts) so this venue and `classifyTurnError`
+  // share ONE literal rather than drifting apart the way this list's history shows they do.
+  MODEL_CAPACITY_RE,
   /hit your .*limit/i,
   /usage limit/i,
   /\bresets\b.*\b(am|pm)\b/i,

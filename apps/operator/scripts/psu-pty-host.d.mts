@@ -201,6 +201,89 @@ export function codexCarryTurnCompleted({ agent, env, transcriptPath, receivedAt
     transcriptPath: any;
     receivedAtMs: any;
 }): boolean;
+/**
+ * codex row classifier — the VERIFIED pre-existing logic, moved verbatim.
+ *
+ * A `task_complete`/`turn_completed` row that FAILS the fence returns
+ * 'turn-started', not 'ignore'. That is deliberate and preserves the original
+ * behaviour exactly: the old loop ASSIGNED `completed = <predicate>` on such a
+ * row, so a failing predicate actively cleared a previously-latched completion.
+ * 'ignore' would instead leave it latched — a real behaviour change, and in the
+ * unsafe direction (an older completion could survive a newer failed one).
+ *
+ * @param {any} row
+ * @param {{receivedAtMs: number, nowMs: number}} ctx
+ * @returns {TurnRowVerdict}
+ */
+export function classifyCodexTranscriptRow(row: any, { receivedAtMs, nowMs }: {
+    receivedAtMs: number;
+    nowMs: number;
+}): TurnRowVerdict;
+/**
+ * claude row classifier — D-003, derived from MEASUREMENT, not from porting the
+ * codex rule (which would have been silently wrong here).
+ *
+ * Completion is `type:'assistant'` with `message.stop_reason === 'end_turn'`.
+ * Measured over three real transcripts: 913 `tool_use` vs 29 `end_turn` on a
+ * 3,071-row session — `end_turn` is rare and genuinely terminal.
+ *
+ * ⚠ The trap: Claude Code writes TOOL RESULTS as `type:'user'` rows (449 of 489
+ * user rows on that same transcript; only 31 were real owner turns). Porting
+ * codex's "user_message resets" literally would therefore reset the latch once
+ * per tool call — after the assistant's work and before its final message — so
+ * completion could never latch and the verifier would return false FOREVER.
+ * That is a silent no-op, the worst failure mode available here, so a user row
+ * resets only when it is a genuine turn start.
+ *
+ * Every other row type ('system', 'queue-operation', 'last-prompt', 'mode',
+ * 'cost-state', 'attachment', …) must be 'ignore': several of them legitimately
+ * occur AFTER the final `end_turn`, and resetting on one would discard a true
+ * completion. This is why the contract is three-valued rather than boolean.
+ *
+ * @param {any} row
+ * @param {{receivedAtMs: number, nowMs: number}} ctx
+ * @returns {TurnRowVerdict}
+ */
+export function classifyClaudeTranscriptRow(row: any, { receivedAtMs, nowMs }: {
+    receivedAtMs: number;
+    nowMs: number;
+}): TurnRowVerdict;
+/**
+ * P-002: is native turn-boundary verification available for this backend right
+ * now, and if not, WHY? Pure and cheap — safe to call on every gated delivery.
+ *
+ * The two negative reasons are kept distinct on purpose. 'no-classifier' is a
+ * permanent capability gap (omp/tui/pui have no verified completion marker and
+ * one must NOT be invented); 'no-isolated-root' is a configuration state that a
+ * correctly-launched session does satisfy. Collapsing them into one "not
+ * supported" would hide a misconfigured claude session inside a population of
+ * legitimately-unsupported omp ones.
+ *
+ * @param {string | undefined} agent
+ * @param {EnvironmentMap} [env]
+ * @returns {{supported: boolean, reason: 'no-classifier' | 'no-isolated-root' | null}}
+ */
+export function nativeTurnVerifierSupport(agent: string | undefined, env?: EnvironmentMap): {
+    supported: boolean;
+    reason: "no-classifier" | "no-isolated-root" | null;
+};
+/**
+ * Did the agent's native turn genuinely complete, per THIS transcript?
+ *
+ * Fail-soft by construction: every refusal path returns false, which falls back
+ * to the existing output-silence gate rather than releasing an inject.
+ *
+ * @param {{agent?: string, env?: EnvironmentMap, transcriptPath?: string | null,
+ *   receivedAtMs?: number, home?: string, nowMs?: number}} options
+ */
+export function nativeTurnCompletedInTranscript({ agent, env, transcriptPath, receivedAtMs, home, nowMs, }: {
+    agent?: string;
+    env?: EnvironmentMap;
+    transcriptPath?: string | null;
+    receivedAtMs?: number;
+    home?: string;
+    nowMs?: number;
+}): boolean;
 /** An ordinary warm Codex wake may use the CURRENT native turn's settled state
  * as its prompt boundary when idle TUI repaint prevents OUTPUT_QUIET_MS from
  * ever elapsing. Unlike the carry-specific probe above, this follows the newest
@@ -213,6 +296,27 @@ export function codexLatestTurnCompleted({ agent, env, completedAtOrAfterMs, }: 
     agent: any;
     env: any;
     completedAtOrAfterMs?: number | undefined;
+}): boolean;
+/**
+ * P-001: the backend-agnostic form of the probe above — an ordinary warm wake
+ * on ANY registered backend may use the current native turn's settled state as
+ * its prompt boundary when idle TUI repaint prevents OUTPUT_QUIET_MS from ever
+ * elapsing.
+ *
+ * This is the call that makes the fix real for claude. Before it, every
+ * claude/omp session gated on output-silence alone — a proxy a repainting TUI
+ * defeats by construction, which is why a wake could be deferred for the full
+ * 180s cap against an agent that was in fact idle at its prompt.
+ *
+ * @param {{agent?: string, env?: EnvironmentMap, completedAtOrAfterMs?: number,
+ *   home?: string, nowMs?: number}} options
+ */
+export function nativeLatestTurnCompleted({ agent, env, completedAtOrAfterMs, home, nowMs, }: {
+    agent?: string;
+    env?: EnvironmentMap;
+    completedAtOrAfterMs?: number;
+    home?: string;
+    nowMs?: number;
 }): boolean;
 /**
  * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,
@@ -2303,3 +2407,13 @@ export const SESSION_COMPACTED_EMIT_ENTRY: string;
  * ambient key that an application framework merges into NodeJS.ProcessEnv.
  */
 export type EnvironmentMap = Record<string, string | undefined>;
+/**
+ * P-001/P-002 (psu-pty-turn-boundary-generalization-2026-09-22): the ONE
+ * backend-agnostic native-transcript turn-boundary verifier. Everything that is
+ * dangerous or fiddly — isolated-root resolution, symlink + containment guards,
+ * the bounded tail read, partial-line rejection, the recency fence and error
+ * containment — lives HERE, once. A backend contributes only a pure row
+ * classifier, so a new agent can never re-introduce a subtly different copy of
+ * the file/IO/safety logic (which is exactly how this stayed codex-only).
+ */
+export type TurnRowVerdict = "turn-completed" | "turn-started" | "ignore";

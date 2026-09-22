@@ -485,6 +485,31 @@ describe('with the task manager ON', () => {
     info.mockRestore();
   });
 
+  it('WI-10002358: a COMMANDED deadline stop whose cleanup trap still holds the scope is INFO, not a warning', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const e = beginSyncEnrolment({ class: 'bash-job' });
+    m.readCgroupProcs.mockReturnValue([4242]);
+
+    // The deadline SIGTERMs precisely SO the job's own cleanup trap gets to run
+    // (WI-6677), so a still-populated scope is the DESIGNED outcome here rather
+    // than an abnormal client death. Warning on it was load-sensitive: under
+    // gate load the trap had not finished when the cgroup was sampled, so the
+    // warn escaped into vitest-fail-on-console and red-pinned the suite in CI
+    // while passing locally.
+    finishSyncEnrolment(
+      e,
+      { state: 'timed_out', exitCode: null, exitReason: 'exceeded 1000ms timeout' },
+      { scopeCgroupPath: '/user.slice/papercusp.slice/pc-test.scope' },
+    );
+
+    expect(closeTask).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('scope still holds processes'));
+    warn.mockRestore();
+    info.mockRestore();
+  });
+
   it('derives a confined scope path from the operator cgroup, never the client pid', () => {
     const e = beginSyncEnrolment({ class: 'bash-job' });
     expect(syncEnrolmentScopePath(e, 'bash-job')).toBe(

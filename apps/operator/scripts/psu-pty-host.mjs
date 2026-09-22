@@ -610,17 +610,179 @@ export function findNativeTranscriptMarker({
  * sessions or accept an older turn's completion. Missing/partial proof falls
  * back to the existing output gate. */
 export function codexCarryTurnCompleted({ agent, env, transcriptPath, receivedAtMs }) {
-  if (agent !== 'codex' || !env?.CODEX_HOME || !transcriptPath || !Number.isFinite(receivedAtMs)) return false;
+  if (agent !== 'codex') return false;
+  return nativeTurnCompletedInTranscript({ agent, env, transcriptPath, receivedAtMs });
+}
+
+/**
+ * P-001/P-002 (psu-pty-turn-boundary-generalization-2026-09-22): the ONE
+ * backend-agnostic native-transcript turn-boundary verifier. Everything that is
+ * dangerous or fiddly — isolated-root resolution, symlink + containment guards,
+ * the bounded tail read, partial-line rejection, the recency fence and error
+ * containment — lives HERE, once. A backend contributes only a pure row
+ * classifier, so a new agent can never re-introduce a subtly different copy of
+ * the file/IO/safety logic (which is exactly how this stayed codex-only).
+ *
+ * @typedef {'turn-completed' | 'turn-started' | 'ignore'} TurnRowVerdict
+ */
+
+/** Bytes of transcript tail a boundary probe will read. */
+const NATIVE_TURN_TAIL_BYTES = 256 * 1024;
+
+/**
+ * D-002: the per-session ISOLATED native-root env var per backend. A classifier
+ * is reachable ONLY when its backend's isolated root is set.
+ *
+ * This is a safety gate, not a convenience. `nativeTranscriptRoot()` falls back
+ * to the SHARED user-level home (`~/.codex`, `~/.claude`) when the per-session
+ * var is absent — and "newest transcript wins" against a shared root would read
+ * a DIFFERENT live session's completed turn and certify a boundary for a session
+ * that is still mid-turn. That is the precise wedge this gate exists to prevent,
+ * but with false authority, so it is strictly worse than no verifier at all.
+ * Refusing here reproduces codex's original `!env?.CODEX_HOME` bail exactly.
+ *
+ * Measured 2026-09-22: 110 live processes carry a per-session
+ * `CLAUDE_CONFIG_DIR=~/.papercusp/session-claude/role-<uuid>`
+ * (psu-launcher.mjs `sessionClaudeConfigDir`, EI-155), so claude genuinely
+ * satisfies this — it is not an aspiration.
+ */
+const NATIVE_ISOLATED_ROOT_ENV = Object.freeze({
+  codex: 'CODEX_HOME',
+  claude: 'CLAUDE_CONFIG_DIR',
+});
+
+/**
+ * codex row classifier — the VERIFIED pre-existing logic, moved verbatim.
+ *
+ * A `task_complete`/`turn_completed` row that FAILS the fence returns
+ * 'turn-started', not 'ignore'. That is deliberate and preserves the original
+ * behaviour exactly: the old loop ASSIGNED `completed = <predicate>` on such a
+ * row, so a failing predicate actively cleared a previously-latched completion.
+ * 'ignore' would instead leave it latched — a real behaviour change, and in the
+ * unsafe direction (an older completion could survive a newer failed one).
+ *
+ * @param {any} row
+ * @param {{receivedAtMs: number, nowMs: number}} ctx
+ * @returns {TurnRowVerdict}
+ */
+export function classifyCodexTranscriptRow(row, { receivedAtMs, nowMs }) {
+  if (row?.type !== 'event_msg') return 'ignore';
+  const kind = row.payload?.type;
+  if (kind === 'task_started' || kind === 'user_message' || kind === 'turn_aborted') return 'turn-started';
+  if (kind === 'task_complete' || kind === 'turn_completed') {
+    const at = Date.parse(row.timestamp);
+    const ok = Number.isFinite(at) && at >= receivedAtMs && at <= nowMs
+      && typeof row.payload?.turn_id === 'string' && row.payload.turn_id.length > 0;
+    return ok ? 'turn-completed' : 'turn-started';
+  }
+  return 'ignore';
+}
+
+/**
+ * claude row classifier — D-003, derived from MEASUREMENT, not from porting the
+ * codex rule (which would have been silently wrong here).
+ *
+ * Completion is `type:'assistant'` with `message.stop_reason === 'end_turn'`.
+ * Measured over three real transcripts: 913 `tool_use` vs 29 `end_turn` on a
+ * 3,071-row session — `end_turn` is rare and genuinely terminal.
+ *
+ * ⚠ The trap: Claude Code writes TOOL RESULTS as `type:'user'` rows (449 of 489
+ * user rows on that same transcript; only 31 were real owner turns). Porting
+ * codex's "user_message resets" literally would therefore reset the latch once
+ * per tool call — after the assistant's work and before its final message — so
+ * completion could never latch and the verifier would return false FOREVER.
+ * That is a silent no-op, the worst failure mode available here, so a user row
+ * resets only when it is a genuine turn start.
+ *
+ * Every other row type ('system', 'queue-operation', 'last-prompt', 'mode',
+ * 'cost-state', 'attachment', …) must be 'ignore': several of them legitimately
+ * occur AFTER the final `end_turn`, and resetting on one would discard a true
+ * completion. This is why the contract is three-valued rather than boolean.
+ *
+ * @param {any} row
+ * @param {{receivedAtMs: number, nowMs: number}} ctx
+ * @returns {TurnRowVerdict}
+ */
+export function classifyClaudeTranscriptRow(row, { receivedAtMs, nowMs }) {
+  if (row?.type === 'user') {
+    if (row.isMeta) return 'ignore';
+    const content = row.message?.content;
+    // A tool RESULT is not a new owner turn, however much it looks like one.
+    if (Array.isArray(content) && content.some((block) => block?.type === 'tool_result')) return 'ignore';
+    return 'turn-started';
+  }
+  if (row?.type !== 'assistant') return 'ignore';
+  if (row.message?.stop_reason !== 'end_turn') return 'ignore';
+  const at = Date.parse(row.timestamp);
+  // `uuid` is claude's structural analogue of codex's non-empty `turn_id`: a
+  // row without one is malformed and must not certify a boundary.
+  const ok = Number.isFinite(at) && at >= receivedAtMs && at <= nowMs
+    && typeof row.uuid === 'string' && row.uuid.length > 0;
+  return ok ? 'turn-completed' : 'turn-started';
+}
+
+/** The registered row classifiers, by agent. Absent ⇒ unsupported backend. */
+const TURN_ROW_CLASSIFIERS = Object.freeze({
+  codex: classifyCodexTranscriptRow,
+  claude: classifyClaudeTranscriptRow,
+});
+
+/**
+ * P-002: is native turn-boundary verification available for this backend right
+ * now, and if not, WHY? Pure and cheap — safe to call on every gated delivery.
+ *
+ * The two negative reasons are kept distinct on purpose. 'no-classifier' is a
+ * permanent capability gap (omp/tui/pui have no verified completion marker and
+ * one must NOT be invented); 'no-isolated-root' is a configuration state that a
+ * correctly-launched session does satisfy. Collapsing them into one "not
+ * supported" would hide a misconfigured claude session inside a population of
+ * legitimately-unsupported omp ones.
+ *
+ * @param {string | undefined} agent
+ * @param {EnvironmentMap} [env]
+ * @returns {{supported: boolean, reason: 'no-classifier' | 'no-isolated-root' | null}}
+ */
+export function nativeTurnVerifierSupport(agent, env = process.env) {
+  const key = NATIVE_ISOLATED_ROOT_ENV[/** @type {string} */ (agent)];
+  if (!agent || !TURN_ROW_CLASSIFIERS[agent] || !key) {
+    return { supported: false, reason: 'no-classifier' };
+  }
+  if (!env?.[key]) return { supported: false, reason: 'no-isolated-root' };
+  return { supported: true, reason: null };
+}
+
+/**
+ * Did the agent's native turn genuinely complete, per THIS transcript?
+ *
+ * Fail-soft by construction: every refusal path returns false, which falls back
+ * to the existing output-silence gate rather than releasing an inject.
+ *
+ * @param {{agent?: string, env?: EnvironmentMap, transcriptPath?: string | null,
+ *   receivedAtMs?: number, home?: string, nowMs?: number}} options
+ */
+export function nativeTurnCompletedInTranscript({
+  agent,
+  env = process.env,
+  transcriptPath,
+  receivedAtMs,
+  home = homedir(),
+  nowMs = Date.now(),
+}) {
+  if (!nativeTurnVerifierSupport(agent, env).supported) return false;
+  if (!transcriptPath || !Number.isFinite(receivedAtMs)) return false;
+  const classify = TURN_ROW_CLASSIFIERS[/** @type {string} */ (agent)];
   let fd;
   try {
-    const root = realpathSync(join(env.CODEX_HOME, 'sessions'));
+    const rootDir = nativeTranscriptRoot(agent, env, home);
+    if (!rootDir) return false;
+    const root = realpathSync(rootDir);
     const path = realpathSync(transcriptPath);
     const rel = relative(root, path);
     if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel) || !path.endsWith('.jsonl')) return false;
     fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const info = fstatSync(fd);
     if (!info.isFile() || info.size === 0) return false;
-    const length = Math.min(info.size, 256 * 1024);
+    const length = Math.min(info.size, NATIVE_TURN_TAIL_BYTES);
     const bytes = Buffer.alloc(length);
     const read = readSync(fd, bytes, 0, length, info.size - length);
     let tail = bytes.subarray(0, read).toString('utf8');
@@ -629,15 +791,14 @@ export function codexCarryTurnCompleted({ agent, env, transcriptPath, receivedAt
     let completed = false;
     for (const line of tail.split('\n')) {
       if (!line.trim()) continue;
+      // Deliberately NOT per-line guarded: a malformed row means the tail is
+      // corrupt, and the outer catch then refuses the whole probe. Swallowing it
+      // per line would let a truncated/garbled transcript certify a boundary
+      // from whatever rows happened to survive. Parity with the original.
       const row = JSON.parse(line);
-      if (row.type !== 'event_msg') continue;
-      const kind = row.payload?.type;
-      if (kind === 'task_started' || kind === 'user_message' || kind === 'turn_aborted') completed = false;
-      if (kind === 'task_complete' || kind === 'turn_completed') {
-        const at = Date.parse(row.timestamp);
-        completed = Number.isFinite(at) && at >= receivedAtMs && at <= Date.now()
-          && typeof row.payload?.turn_id === 'string' && row.payload.turn_id.length > 0;
-      }
+      const verdict = classify(row, { receivedAtMs: /** @type {number} */ (receivedAtMs), nowMs });
+      if (verdict === 'turn-completed') completed = true;
+      else if (verdict === 'turn-started') completed = false;
     }
     return completed;
   } catch {
@@ -647,15 +808,27 @@ export function codexCarryTurnCompleted({ agent, env, transcriptPath, receivedAt
   }
 }
 
-/** Return the newest regular Codex rollout beneath this session's isolated
- * CODEX_HOME. A resumed/carry chain can contain several native threads in the
+/** Return the newest regular native transcript beneath this session's ISOLATED
+ * root (D-002). A resumed/carry chain can contain several native threads in the
  * same home, so an ordinary warm wake must follow the current writer rather
  * than pinning the predecessor path forever. Symlinks and paths outside the
- * sessions root are never candidates; traversal shares the native-proof cap. */
-function newestCodexTranscriptPath(env) {
-  if (!env?.CODEX_HOME) return null;
+ * root are never candidates; traversal shares the native-proof cap.
+ *
+ * P-001: generalized from the codex-only original. The isolated-root gate is
+ * what makes "newest wins" safe — against a SHARED root it would happily return
+ * another live session's transcript.
+ *
+ * @param {string | undefined} agent
+ * @param {EnvironmentMap} [env]
+ * @param {string} [home]
+ * @returns {string | null}
+ */
+function newestNativeTranscriptPath(agent, env = process.env, home = homedir()) {
+  if (!nativeTurnVerifierSupport(agent, env).supported) return null;
+  const rootDir = nativeTranscriptRoot(agent, env, home);
+  if (!rootDir) return null;
   let root;
-  try { root = realpathSync(join(env.CODEX_HOME, 'sessions')); }
+  try { root = realpathSync(rootDir); }
   catch { return null; }
   const stack = [{ path: root, depth: 0 }];
   let visited = 0;
@@ -701,10 +874,37 @@ export function codexLatestTurnCompleted({
   env,
   completedAtOrAfterMs = 0,
 }) {
-  if (agent !== 'codex' || !Number.isFinite(completedAtOrAfterMs)) return false;
-  const transcriptPath = newestCodexTranscriptPath(env);
+  if (agent !== 'codex') return false;
+  return nativeLatestTurnCompleted({ agent, env, completedAtOrAfterMs });
+}
+
+/**
+ * P-001: the backend-agnostic form of the probe above — an ordinary warm wake
+ * on ANY registered backend may use the current native turn's settled state as
+ * its prompt boundary when idle TUI repaint prevents OUTPUT_QUIET_MS from ever
+ * elapsing.
+ *
+ * This is the call that makes the fix real for claude. Before it, every
+ * claude/omp session gated on output-silence alone — a proxy a repainting TUI
+ * defeats by construction, which is why a wake could be deferred for the full
+ * 180s cap against an agent that was in fact idle at its prompt.
+ *
+ * @param {{agent?: string, env?: EnvironmentMap, completedAtOrAfterMs?: number,
+ *   home?: string, nowMs?: number}} options
+ */
+export function nativeLatestTurnCompleted({
+  agent,
+  env = process.env,
+  completedAtOrAfterMs = 0,
+  home = homedir(),
+  nowMs = Date.now(),
+}) {
+  if (!Number.isFinite(completedAtOrAfterMs)) return false;
+  const transcriptPath = newestNativeTranscriptPath(agent, env, home);
   return transcriptPath
-    ? codexCarryTurnCompleted({ agent, env, transcriptPath, receivedAtMs: completedAtOrAfterMs })
+    ? nativeTurnCompletedInTranscript({
+      agent, env, transcriptPath, receivedAtMs: completedAtOrAfterMs, home, nowMs,
+    })
     : false;
 }
 
@@ -6473,15 +6673,74 @@ export function hostThroughPty(o) {
     env.PAPERCUSP_PSU_PTY_CARRY_STALE_MS,
     CARRY_RESPAWN_MAX_AGE_MS,
   );
+  /**
+   * P-003/P-005: reasons the native turn verifier is unavailable that have
+   * already been reported durably for this host process. The predicate below is
+   * polled in a tight loop up to the busy cap, so the capability gap is recorded
+   * once rather than tens of thousands of times.
+   * @type {Set<string | null>}
+   */
+  const turnVerifierGapReported = new Set();
+
+  /**
+   * P-003/P-005: the SINGLE place a gated delivery's native-boundary predicate
+   * is built.
+   *
+   * Both the first busy-gate attempt and its re-arm retry resolve their
+   * boundary through here, so the two legs cannot drift apart. They previously
+   * did: the first attempt had a `turn`-mode probe the retry leg lacked, so a
+   * retry could re-defer on output-silence alone against an agent the first
+   * attempt would have verified as idle.
+   *
+   * @param {{mode?: string, sourceTranscriptPath?: string | null, receivedAtMs?: number} | null} [msg]
+   * @returns {{boundary: (() => boolean) | null,
+   *   support: {supported: boolean, reason: 'no-classifier' | 'no-isolated-root' | null}}}
+   */
+  function verifiedBoundaryFor(msg) {
+    const agent = env.PAPERCUSP_AGENT;
+    const support = nativeTurnVerifierSupport(agent, env);
+    if (!support.supported) {
+      if (!turnVerifierGapReported.has(support.reason)) {
+        turnVerifierGapReported.add(support.reason);
+        appendHostEvent(ownerId, 'turn-verifier-unsupported', {
+          agent: String(agent ?? ''),
+          reason: support.reason,
+        });
+      }
+      return { boundary: null, support };
+    }
+    // carry-respawn stays PINNED to its source transcript — never widened to
+    // "newest", which would let another thread's completion certify this one.
+    if (msg?.mode === 'carry-respawn') {
+      return {
+        boundary: () => nativeTurnCompletedInTranscript({
+          agent,
+          env,
+          transcriptPath: msg?.sourceTranscriptPath,
+          receivedAtMs: msg?.receivedAtMs,
+        }),
+        support,
+      };
+    }
+    return {
+      boundary: () => nativeLatestTurnCompleted({
+        agent,
+        env,
+        completedAtOrAfterMs: Math.max(
+          Number(activity.snapshot().lastInputAt ?? 0),
+          lastMachineTurnSubmittedAtMs,
+        ),
+      }),
+      support,
+    };
+  }
+
   const carryRearm = makeCarryRearmController({
     acquireInject: () => injectMutex.acquire(),
     waitIdle: bridgeTty ? () => idleGate.waitIdle() : null,
     hasPendingOwnerInput: () => ownerComposerGate.hasPending(),
     waitForOwnerInputClear: bridgeTty ? () => ownerComposerGate.waitClear() : null,
-    waitAtPrompt: (cap, msg) => agentBusyGate.waitAtPrompt(cap, () => codexCarryTurnCompleted({
-      agent: env.PAPERCUSP_AGENT, env, transcriptPath: msg?.sourceTranscriptPath,
-      receivedAtMs: msg?.receivedAtMs,
-    })),
+    waitAtPrompt: (cap, msg) => agentBusyGate.waitAtPrompt(cap, verifiedBoundaryFor(msg).boundary),
     recycle: (data, opts) => recycleChild(data, opts),
     emitEvent: (kind, extra) => {
       appendHostEvent(ownerId, kind, extra);
@@ -6890,19 +7149,27 @@ export function hostThroughPty(o) {
           // it applies UNCONDITIONALLY for every gated verb (bridgeTty or not) —
           // gating it on bridgeTty left reset/recycle unguarded whenever the host
           // ran without a bridged terminal.
-          const verifiedBoundary = msg.mode === 'carry-respawn'
-            ? () => codexCarryTurnCompleted({ agent: env.PAPERCUSP_AGENT, env,
-              transcriptPath: msg.sourceTranscriptPath, receivedAtMs: msg.receivedAtMs })
-            : msg.mode === 'turn'
-              ? () => codexLatestTurnCompleted({
-                  agent: env.PAPERCUSP_AGENT,
-                  env,
-                  completedAtOrAfterMs: Math.max(
-                    Number(activity.snapshot().lastInputAt ?? 0),
-                    lastMachineTurnSubmittedAtMs,
-                  ),
-                })
-              : null;
+          // P-003: use the NATIVE turn-boundary proof for every registered
+          // backend and every gated mode — not just codex, and not just
+          // carry-respawn/turn.
+          //
+          // What this replaces: the two call sites below resolved to codex-only
+          // probes, so a claude or omp session gated on output-silence ALONE. On
+          // a repainting TUI that proxy is defeated by construction — the pty is
+          // never quiet for OUTPUT_QUIET_MS even when the agent is parked at its
+          // prompt — so the wake burned the full cap and deferred.
+          //
+          // Extending it to reset/recycle is deliberate, not incidental: those
+          // verbs KILL the child, and "the native turn completed" is far better
+          // evidence that no in-flight work will be lost than "the pty went
+          // quiet for 1.5s".
+          //
+          // carry-respawn keeps its PINNED transcript rather than following the
+          // newest one. That strictness is load-bearing (see the probe's
+          // docstring: never accept another session's or an older turn's
+          // completion), so an absent sourceTranscriptPath must fall back to the
+          // output gate, NOT silently widen to the newest transcript.
+          const { boundary: verifiedBoundary, support: verifierSupport } = verifiedBoundaryFor(msg);
           const atPrompt = await agentBusyGate.waitAtPrompt(undefined, verifiedBoundary);
           if (atPrompt.deferred) {
             // Agent stayed mid-turn past the cap. DROP the live inject/kill rather

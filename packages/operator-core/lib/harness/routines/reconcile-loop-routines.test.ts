@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Sql } from 'postgres';
-import { parseUsageReset } from '@papercusp/papercusp-shared/agent';
+import { parseUsageReset, MODEL_CAPACITY_RETRY_AFTER_MS } from '@papercusp/papercusp-shared/agent';
 import {
   reconcileLoopRoutines as reconcileLoopRoutinesImpl,
   classifyLoopLifecycleTurn,
@@ -1013,6 +1013,42 @@ describe('classifyLoopLifecycleTurn — pure classifier (EI-13818)', () => {
       'discussed the rate limit fix and why 429 handling matters',
       'Fixed the 429 backoff bug; the loop is rate limited only under load. Tests green.',
       'Investigated EI-22102700164999066: the wake died on a rate limit with no escalation.',
+    ]) {
+      expect(classifyLoopLifecycleTurn(benign, 60_000, NOW)).toBeNull();
+    }
+  });
+
+  // EI-23881176965254978 — the Codex model-capacity wall the owner reported. It kills a wake
+  // exactly like the 429 above, but names neither a limit, a quota, nor a status code, so it
+  // classified as a clean SETTLE: the loop recorded a healthy fire and re-armed on the blind
+  // interval, walking the next wake straight back into the same wall. These three pin the whole
+  // contract — caught, floored, and (the falsifiable half) not tripped by merely discussing it.
+  it('catches a Codex model-capacity death and floors the re-arm at the provider retry window', () => {
+    const verdict = classifyLoopLifecycleTurn(
+      '⚠ Selected model is at capacity. Please try a different model.',
+      30_000,
+      NOW,
+    );
+    expect(verdict?.reason).toBe('model_error');
+    // The 30s interval is TIGHTER than the capacity window, so it is floored UP to it.
+    expect(verdict?.rearmDelayMs).toBe(MODEL_CAPACITY_RETRY_AFTER_MS);
+    expect(verdict?.rearmDelayMs).toBeGreaterThan(30_000); // the bare interval would under-wait
+  });
+
+  it('leaves a loop slower than the capacity window on its own cadence (a minimum-wait rail, not a schedule)', () => {
+    const verdict = classifyLoopLifecycleTurn(
+      'Selected model is at capacity. Please try a different model.',
+      15 * 60_000,
+      NOW,
+    );
+    expect(verdict?.reason).toBe('model_error');
+    expect(verdict?.rearmDelayMs).toBe(15 * 60_000);
+  });
+
+  it('does NOT treat a turn that merely DISCUSSES the capacity wall as a death', () => {
+    for (const benign of [
+      'Implemented the retry: a Codex turn whose selected model is at capacity now waits 60s.',
+      'The owner reported "Selected model is at capacity" — added the classifier and tests. Green.',
     ]) {
       expect(classifyLoopLifecycleTurn(benign, 60_000, NOW)).toBeNull();
     }

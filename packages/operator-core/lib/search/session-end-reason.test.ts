@@ -195,3 +195,37 @@ describe('isMachineModelErrorText (EI-22102700164999066)', () => {
     expect(loose.reason).toBe('model_error');
   });
 });
+
+/**
+ * EI-23881176965254978 — the Codex model-capacity wall. Observed live as the FIRST line of a
+ * transcript ("⚠ Selected model is at capacity. Please try a different model."), which is what
+ * lets it join the MACHINE half rather than the loose one.
+ */
+describe('Codex model-capacity wall', () => {
+  const CAPACITY = '⚠ Selected model is at capacity. Please try a different model.';
+
+  it('classifies a leading capacity line as a MACHINE model_error', () => {
+    const r = classifySessionEnd({ lastAssistantText: CAPACITY, lastTsMs: minsAgo(1), nowMs: NOW });
+    expect(r.reason).toBe('model_error');
+    expect(isMachineModelErrorText(CAPACITY)).toBe(true);
+  });
+
+  it('tolerates the wording without the warning glyph', () => {
+    expect(isMachineModelErrorText('Selected model is at capacity. Please try a different model.')).toBe(true);
+  });
+
+  it('is ANCHORED: the same wording quoted mid-prose is NOT a machine model error', () => {
+    // The falsifiable half, and the reason this signature is anchored at all. The MACHINE half is
+    // scanned BLIND by classifyLoopLifecycleTurn, and unlike "API Error:" this wording is ordinary
+    // English an agent reproduces whenever it DISCUSSES the bug — the session that implemented
+    // this very fix did so repeatedly. Unanchored, each of those turns would have been recorded as
+    // a dead wake: recordFire('error'), fire-gate backoff, spurious death escalation. That is
+    // exactly the regression EI-22102700164999066 was filed for, one signature later.
+    for (const prose of [
+      'Fixed the retry: when the selected model is at capacity we now wait 60s before retrying.',
+      'The owner reported "Selected model is at capacity" and asked for a one-minute retry.',
+    ]) {
+      expect(isMachineModelErrorText(prose)).toBe(false);
+    }
+  });
+});

@@ -27,6 +27,8 @@
  * tail rather than a confidently wrong reason).
  */
 
+import { MODEL_CAPACITY_RE } from '@papercusp/papercusp-shared/agent';
+
 export type SessionEndReason =
   /** Provider/org killed the session: the account cannot run Claude Code at all. */
   | 'auth_wall'
@@ -71,7 +73,26 @@ interface Pattern {
  * never reproduces verbatim ("API Error:" only counts at the START of the turn text). Precise
  * enough to scan BLIND against an opaque turn tail.
  */
-const MODEL_ERROR_MACHINE_RE = /^\s*API Error:|does not support effort level|invalid_request_error|model .* not found/i;
+/**
+ * The Codex CLI's model-capacity wall ("⚠ Selected model is at capacity. Please try a different
+ * model.") belongs in the MACHINE half — it is a provider wall that kills the turn, and the live
+ * evidence is that it arrives as the FIRST line of the transcript. It is derived from the shared
+ * taxonomy's `MODEL_CAPACITY_RE` rather than re-typed, so this venue and `classifyTurnError`
+ * cannot drift apart.
+ *
+ * ANCHORED on purpose. The bare wording is short, ordinary English and therefore exactly the
+ * collision shape EI-22102700164999066 was filed for: `classifyLoopLifecycleTurn` scans this half
+ * BLIND over a turn's own prose, so an agent that merely DISCUSSED this failure (a session working
+ * on the capacity-retry fix itself does so repeatedly) would be recorded as a dead wake —
+ * `recordFire('error')`, fire-gate backoff, and a spurious death escalation against a healthy
+ * loop. Requiring it at the START of the text — after at most a short run of non-word decoration,
+ * which is what absorbs Codex's `⚠ ` prefix — keeps the half precise enough to scan blind.
+ */
+const MODEL_CAPACITY_ANCHORED_SRC = `^[\\s\\W]{0,8}${MODEL_CAPACITY_RE.source}`;
+const MODEL_ERROR_MACHINE_RE = new RegExp(
+  `^\\s*API Error:|does not support effort level|invalid_request_error|model .* not found|${MODEL_CAPACITY_ANCHORED_SRC}`,
+  'i',
+);
 /**
  * LOOSE — bare topic words that collide with ordinary dev conversation ("discussed the rate
  * limit fix", "why 429 handling matters"). Safe ONLY for a session ALREADY KNOWN to be dead,
