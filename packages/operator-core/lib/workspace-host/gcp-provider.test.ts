@@ -462,7 +462,13 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
   async createSnapshot(_projectId: string, zone: string, input: GcpSnapshotInsertInput, requestId: string) {
     return this.mutation(requestId, 'zone', zone, () => {
       this.snapshotCalls.push({ input, requestId });
-      this.snapshots.set(input.name, { name: input.name, status: 'READY', observedAt: NOW });
+      this.snapshots.set(input.name, {
+        name: input.name,
+        status: 'READY',
+        labels: input.labels,
+        sourceDisk: input.sourceDisk,
+        observedAt: NOW,
+      });
     });
   }
 
@@ -1328,6 +1334,55 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
         context(),
       ),
     ).rejects.toThrow("not labeled as managed by workspace host 'host-gcp-1'");
+  });
+
+  it('adopts its own READY destroy snapshot when a re-driven destroy finds the source disk already deleted', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    const destroyPlan = (operationId: string) =>
+      provider.plan(
+        {
+          action: 'destroy',
+          operationId,
+          idempotencyKey: operationId,
+          host,
+          disposition: 'snapshot',
+          confirmation: { expectedHostId: host.hostId, confirmedBy: 'vitest', confirmedAt: NOW },
+        },
+        context(),
+      );
+    const first = await destroyPlan('operation:destroy-1');
+    for (const step of first.steps) {
+      await provider.apply(
+        { planId: first.planId, operationId: first.operationId, step, knownResources: resources },
+        context(),
+      );
+    }
+    expect(client.snapshotCalls).toHaveLength(1);
+    const snapshotName = client.snapshotCalls[0]!.input.name;
+
+    // P-318 r38: the first destroy deleted the disk but failed its census, so it is re-driven under
+    // a NEW operation whose preserve step can no longer read its source disk.
+    const second = await destroyPlan('operation:destroy-2');
+    const preserve = second.steps.find(({ resourceKind }) => resourceKind === 'snapshot')!;
+    const applyPreserve = () =>
+      provider.apply(
+        { planId: second.planId, operationId: second.operationId, step: preserve, knownResources: resources },
+        context(),
+      );
+    await expect(applyPreserve()).resolves.toMatchObject({
+      state: 'unchanged',
+      snapshot: { target: 'gcp', providerId: snapshotName, hostId: host.hostId },
+    });
+    expect(client.snapshotCalls).toHaveLength(1);
+
+    // Calibration: an absent disk is not a blanket pass — only this host's READY snapshot of it is.
+    client.seedSnapshot(snapshotName, 'another-host');
+    await expect(applyPreserve()).rejects.toThrow("not labeled as managed by workspace host 'host-gcp-1'");
+    client.seedSnapshot(snapshotName, host.hostId, 'CREATING');
+    await expect(applyPreserve()).rejects.toThrow("GCP snapshot source disk 'pc-host-gcp-1-data' is absent");
+    client.seedSnapshot(snapshotName, host.hostId);
+    await expect(applyPreserve()).rejects.toThrow('was not taken from it');
   });
 
   it('refuses to delete a managed Router while a foreign NAT remains attached', async () => {

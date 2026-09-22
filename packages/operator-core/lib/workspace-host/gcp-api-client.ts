@@ -1212,10 +1212,17 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
   }
 
   async getSnapshot(projectId: string, name: string): Promise<GcpSnapshotObservation | undefined> {
-    const raw = await this.getOrUndefined<RawResource & { status?: GcpComputeSnapshotStatus }>(
-      `${this.projectBase(projectId)}/global/snapshots/${segment(name, 'snapshot_name')}`,
-    );
-    return raw ? { ...observedResource(raw, this.now()), status: raw.status ?? 'CREATING' } : undefined;
+    const raw = await this.getOrUndefined<
+      RawResource & { status?: GcpComputeSnapshotStatus; sourceDisk?: string; creationTimestamp?: string }
+    >(`${this.projectBase(projectId)}/global/snapshots/${segment(name, 'snapshot_name')}`);
+    if (!raw) return undefined;
+    const sourceDisk = lastSegment(raw.sourceDisk);
+    return {
+      ...observedResource(raw, this.now()),
+      status: raw.status ?? 'CREATING',
+      ...(sourceDisk ? { sourceDisk } : {}),
+      ...(raw.creationTimestamp ? { createdAt: raw.creationTimestamp } : {}),
+    };
   }
 
   insertNetwork(projectId: string, input: GcpNetworkInsertInput, requestId: string): Promise<GcpOperationRef> {

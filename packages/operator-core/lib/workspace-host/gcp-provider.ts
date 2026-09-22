@@ -119,6 +119,10 @@ export interface GcpDiskObservation extends GcpResourceObservation {
 
 export interface GcpSnapshotObservation extends GcpResourceObservation {
   status: GcpComputeSnapshotStatus;
+  /** Name of the disk the snapshot was taken from, when GCP still reports it. */
+  sourceDisk?: string;
+  /** GCP creationTimestamp — the recovery point's real time, unlike the read-time `observedAt`. */
+  createdAt?: string;
 }
 
 export interface GcpNetworkInsertInput {
@@ -2411,7 +2415,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       case 'create-snapshot': {
         requireKnownResource(request.knownResources, [DISK_KIND], request.step.id);
         const sourceDisk = await this.client.getDisk(input.projectId, input.zone, input.request.sourceDisk);
-        if (!sourceDisk) throw new Error(`GCP snapshot source disk '${input.request.sourceDisk}' is absent`);
+        if (!sourceDisk) return this.adoptSnapshotOfAbsentDisk(request, input);
         assertManagedHostResource(sourceDisk, input.hostId, 'snapshot source disk');
         const operation = await this.client.createSnapshot(input.projectId, input.zone, input.request, input.requestId);
         if (!(await this.settled(operation, ctx.signal))) return this.inProgress(request, operation.name);
@@ -2443,6 +2447,42 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       case 'delete-network':
         return this.deleteResource(request, input, ctx.signal);
     }
+  }
+
+  /**
+   * A snapshot step whose source disk is gone can never take a NEW recovery point, so it is
+   * satisfied only if an earlier attempt already took this exact snapshot — e.g. a destroy re-driven
+   * under a new operation after the first one snapshotted and deleted the disk but failed its census
+   * (P-318, r38). The step's snapshot name is deterministic, so adopt it as `unchanged` when it is
+   * READY, labeled for this host and taken from this disk. With the disk present we always take a
+   * fresh snapshot instead: adopting there would pass off an older point in time as current.
+   */
+  private async adoptSnapshotOfAbsentDisk(
+    request: WorkspaceHostApplyRequest,
+    input: Extract<GcpStepInput, { op: 'create-snapshot' }>,
+  ): Promise<WorkspaceHostApplyResult> {
+    const absent = `GCP snapshot source disk '${input.request.sourceDisk}' is absent`;
+    const existing = await this.client.getSnapshot(input.projectId, input.request.name);
+    if (existing?.status !== 'READY') throw new Error(absent);
+    assertManagedHostResource(existing, input.hostId, 'snapshot');
+    if (existing.sourceDisk !== input.request.sourceDisk) {
+      throw new Error(`${absent}, and snapshot '${existing.name}' was not taken from it`);
+    }
+    return {
+      operationId: request.operationId,
+      stepId: request.step.id,
+      state: 'unchanged',
+      observedAt: existing.observedAt,
+      snapshot: {
+        target: GCP_WORKSPACE_HOST_TARGET,
+        providerId: existing.name,
+        hostId: input.hostId,
+        createdAt: existing.createdAt ?? existing.observedAt,
+        ...(input.request.snapshotEncryptionKey?.kmsKeyName
+          ? { encryptionKeyRef: input.request.snapshotEncryptionKey.kmsKeyName }
+          : {}),
+      },
+    };
   }
 
   private async mutateInstance(
