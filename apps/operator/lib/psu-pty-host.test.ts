@@ -83,6 +83,7 @@ import {
   PSU_REEXEC_EXIT_CODE,
   reexecExitCodeFrom,
   shouldAdoptHostCode,
+  interactiveAdoptionOptIn,
   handoffPathFor,
   writeHostHandoff,
   readHostHandoff,
@@ -4640,6 +4641,42 @@ describe('host-code ADOPTION handshake (WI-38292 increment 2)', () => {
     expect(shouldAdoptHostCode({ onReexec, reexecCode: 87, bridgeTty: true })).toBe(false);
     expect(shouldAdoptHostCode({ onReexec, reexecCode: 87, bridgeTty: false })).toBe(true);
     expect(shouldAdoptHostCode({ onReexec: null, reexecCode: 87, bridgeTty: false })).toBe(false);
+  });
+
+  // P-009 / D-008. Interactive adoption stays OFF by default because the host owns the
+  // pty the human is looking at; the opt-in exists for an operator who accepts that.
+  it('adopts on an interactive PTY only under the explicit operator opt-in', () => {
+    const onReexec = () => {};
+    const base = { onReexec, reexecCode: 87, bridgeTty: true };
+    // Default is unchanged — the opt-in must be opt-IN, not a behaviour flip.
+    expect(shouldAdoptHostCode(base)).toBe(false);
+    expect(shouldAdoptHostCode({ ...base, allowInteractive: false })).toBe(false);
+    expect(shouldAdoptHostCode({ ...base, allowInteractive: true })).toBe(true);
+  });
+
+  it('cannot opt INTO adoption without a re-exec loop (the hard-exit configuration)', () => {
+    // The whole hazard warnMissingReexecLoop exists to flag: with no loop, an adoption
+    // is a hard exit that destroys the screen. The opt-in must not be able to reach it,
+    // or enabling a convenience silently arms a session-killer.
+    expect(
+      shouldAdoptHostCode({ onReexec: null, reexecCode: 87, bridgeTty: true, allowInteractive: true }),
+    ).toBe(false);
+    expect(
+      shouldAdoptHostCode({ onReexec: () => {}, reexecCode: null, bridgeTty: true, allowInteractive: true }),
+    ).toBe(false);
+    // ...and the same for a headless host, so the loop requirement is not TTY-specific.
+    expect(
+      shouldAdoptHostCode({ onReexec: null, reexecCode: 87, bridgeTty: false, allowInteractive: true }),
+    ).toBe(false);
+  });
+
+  it('reads the interactive opt-in from the environment, defaulting OFF', () => {
+    expect(interactiveAdoptionOptIn({})).toBe(false);
+    expect(interactiveAdoptionOptIn({ PAPERCUSP_PSU_PTY_ADOPT_INTERACTIVE: '0' })).toBe(false);
+    // Only the exact '1' enables it — a stray 'true'/'yes' must not silently arm a
+    // re-exec of the owner's live TUI.
+    expect(interactiveAdoptionOptIn({ PAPERCUSP_PSU_PTY_ADOPT_INTERACTIVE: 'true' })).toBe(false);
+    expect(interactiveAdoptionOptIn({ PAPERCUSP_PSU_PTY_ADOPT_INTERACTIVE: '1' })).toBe(true);
   });
 
   it('leaves the session-compacted announcement to the successor launcher', () => {
