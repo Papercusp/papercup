@@ -31,6 +31,21 @@ const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;
  * request held for twenty minutes.
  */
 export const CREDENTIAL_LIFECYCLE_BOOTSTRAP_READINESS_TIMEOUT_MS = 10 * 60_000;
+/**
+ * Room for the lifecycle steps themselves once the gate opens: a six-step reconnect against a
+ * ready host measured 29.5s and 29.9s (2026-09-22, r39), i.e. flush against the old 30s default.
+ */
+const CREDENTIAL_LIFECYCLE_STEPS_BUDGET_MS = 5 * 60_000;
+/**
+ * The route's own watchdog, DERIVED from the budgets it has to cover. Left at the route-stack's
+ * 30s default, a reconnect that waited out a post-upgrade bootstrap and then SUCCEEDED came back
+ * `408 route exceeded 30s` at t=294.9s (op p318-j1-reconnect-r39-20260922-5, 2026-09-22 22:37Z):
+ * the stack discards a handler's response once its abort fires, so the caller was told the
+ * reconnect failed after it had committed.
+ */
+export const CREDENTIAL_LIFECYCLE_ROUTE_TIMEOUT_SEC = Math.ceil(
+  (CREDENTIAL_LIFECYCLE_BOOTSTRAP_READINESS_TIMEOUT_MS + CREDENTIAL_LIFECYCLE_STEPS_BUDGET_MS) / 1000,
+);
 const BOOTSTRAP_NOT_READY_RETRY_AFTER_SEC = 60;
 
 interface LifecycleBody extends Record<string, unknown> {
@@ -75,6 +90,7 @@ export function createWorkspaceHostCredentialLifecycleRoute(
     method: 'POST',
     path: '/workspace-hosts/:hostId/credential-lifecycle',
     auth: 'loopback',
+    timeoutSec: CREDENTIAL_LIFECYCLE_ROUTE_TIMEOUT_SEC,
     async handler(req, ctx) {
       const hostId = String(ctx.params.hostId ?? '').trim();
       if (!SAFE_ID.test(hostId)) {

@@ -14,6 +14,7 @@ import {
 } from '../../../workspace-host/gcp-iap-initialization-operations';
 import {
   CREDENTIAL_LIFECYCLE_BOOTSTRAP_READINESS_TIMEOUT_MS,
+  CREDENTIAL_LIFECYCLE_ROUTE_TIMEOUT_SEC,
   createWorkspaceHostCredentialLifecycleRoute,
   type WorkspaceHostCredentialLifecycleRouteDependencies,
 } from './credential-lifecycle';
@@ -104,6 +105,16 @@ describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
       method: 'POST',
       path: '/workspace-hosts/:hostId/credential-lifecycle',
     });
+  });
+
+  // The route-stack's 30s default watchdog discards a handler's response once it fires, so a
+  // reconnect that waited out a post-upgrade bootstrap and then succeeded came back 408 (live,
+  // 2026-09-22 22:37Z). The route's watchdog must outlast the gate it holds the request open for.
+  it('declares a watchdog longer than its bootstrap gate plus the lifecycle steps', () => {
+    const route = createWorkspaceHostCredentialLifecycleRoute(harness().dependencies);
+    expect(route.timeoutSec).toBe(CREDENTIAL_LIFECYCLE_ROUTE_TIMEOUT_SEC);
+    expect(CREDENTIAL_LIFECYCLE_ROUTE_TIMEOUT_SEC * 1000)
+      .toBeGreaterThan(CREDENTIAL_LIFECYCLE_BOOTSTRAP_READINESS_TIMEOUT_MS + 60_000);
   });
 
   it.each(Object.entries(bodies))('accepts and forwards the %s action', async (action, body) => {
