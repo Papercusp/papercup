@@ -35,7 +35,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   return { ...actual, getOrgPg: () => ({ sql: M.sql }) };
 });
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
-vi.mock('../../work-scope-policy', () => ({ isHarnessInScope: () => true }));
+// primeWorkScopePolicy: the sweep awaits it before filtering (WI-10002448); a factory
+// mock without it throws "No export is defined on the mock" on that await.
+vi.mock('../../work-scope-policy', () => ({ isHarnessInScope: () => true, primeWorkScopePolicy: async () => {} }));
 vi.mock('./source', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./source')>();
   return { ...actual, listPlanIndexRowsForWorkspace: M.list };
