@@ -256,3 +256,43 @@ describe('staleReclaimRequeueCap', () => {
     expect(staleReclaimRequeueCap()).toBe(DEFAULT_STALE_RECLAIM_REQUEUE_CAP);
   });
 });
+
+/**
+ * P-028 / D-067: the cross-family terminal union has exactly ONE definition.
+ *
+ * `work-items.ts` carried a hand-written 6-element literal that duplicated
+ * `ANY_FAMILY_TERMINAL_STATES`. It was collapsed to a re-export. This guard exists
+ * because the two documented failures of this class were BOTH silent — a copy
+ * agrees with its source right up until a state is added to one side
+ * (EI-18653071581558556, EI-21921121818266895) — so nothing but an assertion
+ * notices a re-introduced literal.
+ */
+describe('TERMINAL_WORK_ITEM_STATES is DERIVED, not a copy (P-028 / D-067)', () => {
+  it('is the very same array object as the canonical union', async () => {
+    const { TERMINAL_WORK_ITEM_STATES } = await import('./work-items');
+    // Reference identity, deliberately stronger than deep-equality: a
+    // re-introduced literal that happens to match today would satisfy toEqual
+    // and is exactly the drift this guards. Only a re-export passes.
+    expect(TERMINAL_WORK_ITEM_STATES).toBe(ANY_FAMILY_TERMINAL_STATES);
+  });
+
+  it('CALIBRATION: the union really is the union of both families, and non-trivial', () => {
+    // Without this, a union that collapsed to one family — or to [] — would let
+    // the identity assertion above pass while meaning nothing.
+    const expected = [...new Set([...FEATURE_TERMINAL_STATES, ...ISSUE_TERMINAL_STATES])].sort();
+    expect([...ANY_FAMILY_TERMINAL_STATES].sort()).toEqual(expected);
+    expect(ANY_FAMILY_TERMINAL_STATES.length).toBeGreaterThanOrEqual(6);
+    // Both families must contribute a member the other lacks, or "cross-family"
+    // is a fiction and a single flat list would have been correct all along.
+    expect(FEATURE_TERMINAL_STATES.filter((s) => !ISSUE_TERMINAL_STATES.includes(s))).not.toEqual([]);
+    expect(ISSUE_TERMINAL_STATES.filter((s) => !FEATURE_TERMINAL_STATES.includes(s))).not.toEqual([]);
+  });
+
+  it('CONTROL: a hand-copied literal with identical CONTENT still fails the identity check', () => {
+    // The permanent counterexample: this is precisely what was removed, and it
+    // must not be able to pass. Proves the guard can fail.
+    const handCopy: readonly string[] = ['done', 'passed', 'resolved', 'closed', 'deprecated', 'dropped'];
+    expect([...handCopy].sort()).toEqual([...ANY_FAMILY_TERMINAL_STATES].sort()); // same content today
+    expect(handCopy).not.toBe(ANY_FAMILY_TERMINAL_STATES); // and still refused
+  });
+});

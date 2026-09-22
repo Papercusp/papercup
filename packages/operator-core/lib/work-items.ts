@@ -1128,14 +1128,25 @@ export interface ListWorkItemsFilter {
  * issue: resolved/closed/deprecated). Exported so audit consumers (work_items:list,
  * burn_down) share ONE definition.
  */
-export const TERMINAL_WORK_ITEM_STATES: readonly string[] = [
-  'done',
-  'passed',
-  'resolved',
-  'closed',
-  'deprecated',
-  'dropped',
-];
+/**
+ * The cross-family terminal set. DERIVED, never hand-listed (P-028 / D-067).
+ *
+ * This was a literal 6-element copy of exactly what `ANY_FAMILY_TERMINAL_STATES`
+ * already computes as `FEATURE_TERMINAL_STATES ∪ ISSUE_TERMINAL_STATES` — and that
+ * module is imported into THIS file already, so the copy bought nothing and could
+ * only drift. Measured equal at the moment of collapse (both
+ * `[closed, deprecated, done, dropped, passed, resolved]`), so this is a pure
+ * de-duplication with no behaviour change.
+ *
+ * Why it matters that it was a copy rather than merely redundant: this exact class
+ * has bitten here twice, and both are recorded next to the union's own definition —
+ * placement-watchdog's hand-copied union went stale across the 2026-07-19 status
+ * unification (EI-18653071581558556), and `ISSUE_TERMINAL_STATES` itself omitted
+ * `dropped` for over a month while 4,322 live issue-family rows carried it
+ * (EI-21921121818266895). A copy of a derived truth is a future drift with a date
+ * on it; the ladder's first rung is to derive it instead.
+ */
+export const TERMINAL_WORK_ITEM_STATES: readonly string[] = ANY_FAMILY_TERMINAL_STATES;
 
 /**
  * Recency comparator — newest `updatedAt` first. The default work-item order.

@@ -664,6 +664,23 @@ export const requirementAmendmentSchema = z
  * strips. NB: the rubric's top-level TITLE is NOT here — it derives from the plan
  * frontmatter title (one source of truth); the long-form narrative lives in the body.
  */
+/**
+ * WHO may produce the acceptance grading for the plan a rubric governs.
+ *
+ * generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20 D-002 — THE RUBRIC IS
+ * THE AUTHORITY BOUNDARY: this field is the only thing that answers the question, so no
+ * caller infers grading authority from goal identity, plan slug, or ambient context.
+ *
+ * A DERIVED union (derived-truth ladder rung 1): the zod schema below, the `Rubric`
+ * record's `gradingAuthority`, and the ship gate all read this one `as const` tuple, so
+ * adding a third authority cannot leave a consumer silently behind on a stale copy.
+ *
+ * `independent` is the DEFAULT and the FAIL-CLOSED value: absent/unparseable data must
+ * demand a non-implementer grader, never widen who may self-certify.
+ */
+export const RUBRIC_GRADING_AUTHORITIES = ['independent', 'owner-authorized'] as const;
+export type RubricGradingAuthority = (typeof RUBRIC_GRADING_AUTHORITIES)[number];
+
 export const rubricTemplateDataSchema = z
   .object({
     kind: z
@@ -673,6 +690,16 @@ export const rubricTemplateDataSchema = z
         "'standard' (the default when absent — every pre-kind rubric) = a reusable shared-standards " +
           "library entry; 'acceptance' = a one-shot per-plan definition-of-done linked via subjectPlan, " +
           'hidden from the default library reads / watchdog / ratification queue (acceptance-rubrics-on-every-plan-2026-08-11)',
+      ),
+    gradingAuthority: z
+      .enum(RUBRIC_GRADING_AUTHORITIES)
+      .optional()
+      .describe(
+        'who may grade the plan this rubric governs (D-002 — the rubric is the authority boundary). ' +
+          "'independent' (the DEFAULT when absent, and the fail-closed one) = a lineage-independent " +
+          "non-implementer must file the grading; 'owner-authorized' additionally admits an OWNER-filed " +
+          'grading even when the owner sits inside the implementer lineage. It never removes the ' +
+          'independent route — it only widens who else qualifies',
       ),
     subjectPlan: z
       .string()
