@@ -25,10 +25,13 @@ const TIER_CAPS: Record<
     invariants: number;
     announcedGates: number;
     reservationMembers: number;
+    /** P-025: never-drop FACT KEYS. Short strings, so the cap is higher than the
+     *  verbose row caps above while still bounding a pathological fact set. */
+    neverDropFacts: number;
   }
 > = {
-  trimmed: { memberVerdicts: 6, members: 3, advisories: 2, invariants: 2, announcedGates: 4, reservationMembers: 2 },
-  standard: { memberVerdicts: 10, members: 6, advisories: 3, invariants: 3, announcedGates: 8, reservationMembers: 3 },
+  trimmed: { memberVerdicts: 6, members: 3, advisories: 2, invariants: 2, announcedGates: 4, reservationMembers: 2, neverDropFacts: 8 },
+  standard: { memberVerdicts: 10, members: 6, advisories: 3, invariants: 3, announcedGates: 8, reservationMembers: 3, neverDropFacts: 16 },
 };
 
 const clip = (value: unknown, max = 180): string | null => {
@@ -1017,6 +1020,14 @@ function buildProjection(
   }
   if (Array.isArray(data.announcedGates)) {
     addCappedArray(out, data, 'announcedGates', caps.announcedGates, compactAnnouncedGate);
+  }
+  // P-025 / D-053 ruling 4: a class added to a STRUCTURED sink must carry its
+  // per-tier cap here, or it silently breaks the shaper's budget contract.
+  // Fact KEYS are short, so the cap is generous relative to the verbose rows
+  // above — but it is still a cap, and truncation stays disclosed via
+  // `neverDropFactsTruncated` rather than clipping the JSON.
+  if (Array.isArray(data.neverDropFacts)) {
+    addCappedArray(out, data, 'neverDropFacts', caps.neverDropFacts, (value) => value);
   }
   addAlertFields(out, data, decisionStringCap);
 
