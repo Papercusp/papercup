@@ -672,6 +672,9 @@ export default defineTool({
       resume: z.boolean().optional().describe(
         'Standalone one-item continuation view: current claim, complete structured next action, saved checks and exact evidence references, with freshness and scoped recovery. Uses checkpoint:{did,left,next} written by work_items:checkpoint; missing/unreadable state remains explicit. Do not combine with detail, checksOnly, threadLimit, or priorAttemptRefs; use a separate read for those enrichments.',
       ),
+      operationalBrief: z.boolean().optional().describe(
+        'Add `operationalBrief` per row: claim/state, blockers, last verified evidence, next action and successor residue, projected from this same read. Unmeasured fields are explicit `unknown` with a reason, never zero. Forces a complete read; not with resume or checksOnly.',
+      ),
       priorAttemptRefs: z
         .array(z.string().min(1))
         .max(20)
@@ -712,6 +715,9 @@ export default defineTool({
     .refine((a) => !a.resume || (mergeIds(a.id, a.ids).length === 1 && !a.checksOnly && !a.detail && a.threadLimit === undefined && a.priorAttemptRefs === undefined), {
       message: RESUME_ARGUMENT_CONSTRAINT,
     })
+    .refine((a) => !a.operationalBrief || (!a.resume && !a.checksOnly), {
+      message: 'operationalBrief projects the complete row; it cannot be combined with resume or checksOnly',
+    })
     .meta({ 'x-papercusp-call-constraint': RESUME_ARGUMENT_CONSTRAINT }),
   // EI-19447969329510166: without a declared shaper this tool fell through to the
   // framework's GENERIC bounded projection, which clips every string at a flat 800
@@ -739,7 +745,12 @@ export default defineTool({
   async handler(args, ctx) {
     const ids = mergeIds(args.id, args.ids);
     const bulkStartedAt = Date.now();
-    const sourceSelection = workItemsGetSourceSelection((ctx as SourceProjectionContext).sourceProjection);
+    // P-008: the operational brief projects from the whole row (payload for set_blocker
+    // records, checkpoint, holder, planItemBlocked), so a requested brief forces the
+    // complete read instead of letting a caller's pick narrow its inputs away.
+    const sourceSelection = args.operationalBrief
+      ? null
+      : workItemsGetSourceSelection((ctx as SourceProjectionContext).sourceProjection);
     const checksOnly = args.checksOnly === true;
     const hasThreadLimit = args.threadLimit !== undefined;
     const boundedThread = args.threadLimit !== undefined && args.threadLimit > 0;
@@ -1402,6 +1413,17 @@ export default defineTool({
       outerStageAttribution: 'tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time' as const,
     };
     ctx.metadata?.({ workItemsGet: read });
+    if (args.operationalBrief && !args.resume && !checksOnly) {
+      const { projectWorkItemOperationalBrief, renderOperationalBrief, renderWorkItemFactLines } = await import('../../operational-brief');
+      for (const result of env.results as Array<Record<string, unknown>>) {
+        if (result.ok !== true || result.availability !== 'available') continue;
+        const brief = projectWorkItemOperationalBrief(result, { linksRead: readDetail });
+        result.operationalBrief = {
+          ...brief,
+          text: [renderOperationalBrief(brief), ...renderWorkItemFactLines(brief)].join('\n'),
+        };
+      }
+    }
     return bulkContent({
       ...env,
       read,

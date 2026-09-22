@@ -36,6 +36,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import {
+  CARRY_NOTES_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
   WORK_ITEM_DEPS_DDL,
@@ -1060,5 +1061,108 @@ describe('work_items body/summary alias round-trip (WI-4492, real PG)', () => {
     expect(((got.results as Record<string, unknown>[])[0]!.workItem as Record<string, unknown>).summary).toBe(
       'BETA revised body via the summary alias',
     );
+  });
+});
+
+// OP-BRIEF-P008-WORKITEM (plan use-existing-router-for-review-requests-2026-09-08 P-008):
+// work_items:get { operationalBrief:true } through the real handler on real PG. The
+// brief must agree with the SAME payload and never hide an active claim, a blocker,
+// a missing checkpoint, or successor residue that the read exposes.
+describe('work_items:get { operationalBrief } — work-item brief (real PG)', () => {
+  type Field = { status: 'known'; value: unknown; source: string } | { status: 'unknown'; reason: string };
+  type Brief = {
+    surface: string;
+    subject: string;
+    state: Field;
+    owner: Field;
+    nextAction: Field;
+    blockers: Field;
+    facts: Record<string, Field>;
+    unknowns: string[];
+    text: string;
+  };
+  const STRUCTURED = ['## Did', 'Wrote the projection.', '', '## Left', 'Bind evidence.', '', '## Next action', 'Run the integration suite.'].join('\n');
+
+  beforeAll(async () => {
+    // The shared carry_notes fixture (column-complete through mig 1118): migration 472
+    // itself backfills from hive_wake, which this focused DB does not carry.
+    await db.sql.unsafe(CARRY_NOTES_DDL);
+  });
+  // The file-level beforeEach resets work items, so ids restart at WI-1 per test;
+  // clear checkpoints too or one test's checkpoint leaks onto the next test's WI-1.
+  beforeEach(async () => {
+    await db.sql`DELETE FROM harness_shared.carry_notes`;
+  });
+
+  async function readBrief(id: string): Promise<{ row: Record<string, unknown>; brief: Brief }> {
+    const got = await call(getTool, { id, operationalBrief: true });
+    const row = (got.results as Record<string, unknown>[])[0]!;
+    expect(row.ok).toBe(true);
+    return { row, brief: row.operationalBrief as Brief };
+  }
+
+  it('reports the active claim and the structured next action from the same read', async () => {
+    const created = await createOne({ kind: 'feature', title: 'brief: claimed', harness: 'papercup' });
+    const id = (created.workItem as Record<string, unknown>).id as string;
+    // The claim WRITER (fleet-membership side effects) is outside this focused DB and
+    // outside P-008; what is under test is that the READ projects a held claim. So hold
+    // it directly on the real row, exactly as a claim persists it (taken_by/taken_at).
+    await db.sql`
+      UPDATE harness_shared.work_items SET taken_by = 'su-tester', taken_at = now()
+       WHERE feature_id = ${id}`;
+    const { setWorkItemCheckpoint } = await import('../../work-item-checkpoint');
+    await setWorkItemCheckpoint({ harness: 'papercup', workItemId: id }, STRUCTURED);
+
+    const { row, brief } = await readBrief(id);
+    const workItem = row.workItem as Record<string, unknown>;
+    expect(row.checkpoint).toBe(STRUCTURED);
+    expect(brief).toMatchObject({ surface: 'work-item', subject: id });
+    expect(brief.state).toMatchObject({ status: 'known', value: workItem.state });
+    expect(workItem.assignee).toBe('su-tester');
+    expect(brief.owner).toMatchObject({ status: 'known', value: 'su-tester' });
+    expect(brief.facts.claim).toMatchObject({ status: 'known', value: { assignee: 'su-tester' } });
+    expect(brief.nextAction).toMatchObject({ status: 'known', value: 'Run the integration suite.' });
+    expect(brief.facts.checkpoint).toMatchObject({ status: 'known', value: { status: 'available', structured: true } });
+    expect(brief.facts.successorResidue).toMatchObject({ status: 'known', value: { left: 'Bind evidence.' } });
+    expect(brief.text).toContain('claim: su-tester');
+  });
+
+  it('reports an active set_blocker record stored on the row as a blocker', async () => {
+    const created = await createOne({ kind: 'feature', title: 'brief: blocked', harness: 'papercup' });
+    const id = (created.workItem as Record<string, unknown>).id as string;
+    const blocker = {
+      kind: 'gate', ref: 'green-checkpoint', summary: 'waiting on a green main', status: 'active',
+      createdAt: '2026-09-22T20:00:00.000Z', createdBy: 'su-tester', updatedAt: '2026-09-22T20:00:00.000Z',
+    };
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET payload = COALESCE(payload, '{}'::jsonb) || ${db.sql.json({ externalBlockers: [blocker] })}
+       WHERE feature_id = ${id}`;
+
+    const { brief } = await readBrief(id);
+    expect(brief.blockers).toMatchObject({ status: 'known', value: ['gate blocker green-checkpoint: waiting on a green main'] });
+    // Incoming blocks edges are outside this read — an explicit gap, never "none".
+    expect(brief.facts.blockedByLinks.status).toBe('unknown');
+    expect(brief.unknowns).toContain('facts.blockedByLinks');
+  });
+
+  it('shows a missing checkpoint on an unclaimed item instead of inventing progress', async () => {
+    const created = await createOne({ kind: 'feature', title: 'brief: no checkpoint', harness: 'papercup' });
+    const id = (created.workItem as Record<string, unknown>).id as string;
+
+    const { row, brief } = await readBrief(id);
+    expect(row.checkpoint).toBeNull();
+    expect(brief.owner).toMatchObject({ status: 'known', value: null });
+    expect(brief.facts.checkpoint).toMatchObject({ status: 'known', value: { status: 'absent' } });
+    expect(brief.nextAction).toMatchObject({ status: 'known', value: `claim it: work_items:claim { id: '${id}' }` });
+    expect(brief.facts.successorResidue.status).toBe('unknown');
+    expect(brief.text).toContain('checkpoint: absent');
+  });
+
+  it('is absent unless requested', async () => {
+    const created = await createOne({ kind: 'feature', title: 'brief: not requested', harness: 'papercup' });
+    const id = (created.workItem as Record<string, unknown>).id as string;
+    const got = await call(getTool, { id });
+    expect((got.results as Record<string, unknown>[])[0]!.operationalBrief).toBeUndefined();
   });
 });
