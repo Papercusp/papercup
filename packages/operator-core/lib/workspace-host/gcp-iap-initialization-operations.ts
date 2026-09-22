@@ -62,6 +62,8 @@ export const DEFAULT_GCP_IAP_INITIALIZATION_TIMEOUT_MS =
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
 const GCP_NAME = /^[a-z][a-z0-9-]{0,61}[a-z0-9]$/;
 const GCP_PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+/** GCE instance ids are unsigned 64-bit integers, serialized as decimal strings. */
+const GCE_INSTANCE_ID = /^[0-9]{1,20}$/;
 const SSH_USER = /^[a-z_][a-z0-9_-]{0,31}$/;
 const EXECUTABLE = /^(?:\/[A-Za-z0-9._+-]+)+$|^[A-Za-z0-9._+-]+$/;
 
@@ -69,6 +71,12 @@ export interface GcpIapWorkspaceHostInitializationProfile {
   projectId: string;
   zone: string;
   instanceName: string;
+  /**
+   * GCE numeric instance id — the INCARNATION behind `instanceName`. GCP assigns a fresh id on
+   * every insert, so a delete + re-insert under the same name (an upgrade, a repair) is a different
+   * machine with different host keys. The trust pin is bound to this, not to the name (WI-10002493).
+   */
+  instanceId: string;
   sshUser: string;
   /** Absolute path to a controller-owned, pre-enrolled known_hosts file. */
   knownHostsFile: string;
@@ -144,14 +152,37 @@ function positiveInteger(value: number, label: string): number {
   return value;
 }
 
-/** The one canonical alias derivation shared by command construction and trust enrollment. */
-export function gcpIapHostKeyAlias(
+/**
+ * The alias shared by every incarnation of one instance NAME. Never a pin by itself: it is the
+ * prefix that lets enrollment recognise, and prune, pins left behind by an earlier incarnation.
+ */
+export function gcpIapHostKeyAliasFamily(
   profile: Pick<GcpIapWorkspaceHostInitializationProfile, 'projectId' | 'zone' | 'instanceName'>,
 ): string {
   return `gcp-iap-${createHash('sha256')
     .update(`${profile.projectId}\0${profile.zone}\0${profile.instanceName}`)
     .digest('hex')
     .slice(0, 32)}`;
+}
+
+/**
+ * The one canonical alias derivation shared by command construction and trust enrollment.
+ *
+ * Bound to the INCARNATION (WI-10002493). A name-only alias made every controller-driven recreate
+ * permanently unreachable: GCP upgrade deletes the VM and inserts a new one under the same name,
+ * the new machine generates new host keys, and the name-keyed pin refused them on every later op.
+ * Keying on the GCE instance id gives a recreated machine its own pin — enrolled from the same
+ * authenticated guest-attribute source as the first — while a key change on the SAME incarnation
+ * still refuses.
+ */
+export function gcpIapHostKeyAlias(
+  profile: Pick<GcpIapWorkspaceHostInitializationProfile, 'projectId' | 'zone' | 'instanceName' | 'instanceId'>,
+): string {
+  requireCondition(
+    typeof profile.instanceId === 'string' && GCE_INSTANCE_ID.test(profile.instanceId),
+    'GCP instance id has an invalid value',
+  );
+  return `${gcpIapHostKeyAliasFamily(profile)}-${profile.instanceId}`;
 }
 
 export type GcpIapWorkspaceHostInitializationStep =
