@@ -4,6 +4,7 @@ import {
   beginQualificationTransaction,
   cancelQualificationTransaction,
   classifyQualificationVerdict,
+  describeQualificationSettleConflict,
   parseCheckpointQualificationTransaction,
   projectCheckpointQualificationState,
   qualificationIntentMatches,
@@ -98,6 +99,38 @@ describe('logical checkpoint qualification transaction', () => {
       nowMs: 300,
     });
     expect(duplicateFromOtherRun).toMatchObject({ status: 'terminal', transaction: first.transaction });
+  });
+
+  it('WI-10002454: names every identity behind a settle conflict, and nothing when identities agree', () => {
+    const reserved = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1',
+      runnerId: 'physical-1',
+      candidate: 'candidate-1',
+      leaseDurationMs: 1_000,
+      nowMs: 150,
+    }).transaction;
+    const stored = { ...reserved, runId: 'run-1' };
+    const verdict = { reason: 'not-green', green: false, nowMs: 200 };
+    const cases = [
+      { produced: { attemptId: 'attempt-2', candidate: 'candidate-1', runId: 'run-1' }, expected: ['attempt stored=attempt-1 produced=attempt-2'] },
+      { produced: { attemptId: 'attempt-1', candidate: 'candidate-2', runId: 'run-1' }, expected: ['candidate stored=candidate-1 produced=candidate-2'] },
+      { produced: { attemptId: 'attempt-1', candidate: 'candidate-1', runId: 'run-2' }, expected: ['run stored=run-1 produced=run-2'] },
+    ];
+    for (const { produced, expected } of cases) {
+      // Calibration: the REAL settle must call each of these a conflict, or the helper would be
+      // describing a disagreement the state machine does not have.
+      expect(settleQualificationTransaction(stored, { ...produced, ...verdict }).status).toBe('conflict');
+      expect(describeQualificationSettleConflict(stored, produced)).toEqual(expected);
+    }
+    // Every mismatch is named, not only the first one the settle short-circuits on.
+    expect(
+      describeQualificationSettleConflict(stored, { attemptId: 'attempt-2', candidate: 'candidate-2', runId: 'run-2' }),
+    ).toHaveLength(3);
+    // Agreeing (trimmed) or absent produced identities yield [] — the CAS-race signal, never a
+    // fabricated mismatch.
+    const agreeing = { attemptId: 'attempt-1', candidate: ' candidate-1 ', runId: null };
+    expect(settleQualificationTransaction(stored, { ...agreeing, ...verdict }).status).not.toBe('conflict');
+    expect(describeQualificationSettleConflict(stored, agreeing)).toEqual([]);
   });
 
   it('releases the singleton when an eligibility waiter never started, while preserving real waits', () => {

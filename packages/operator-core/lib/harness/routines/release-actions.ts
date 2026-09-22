@@ -90,6 +90,7 @@ import type { FlakeSuspect } from '../../dev-data';
 import { buildDeployTerminalShell, RELEASE_DEPLOY_UNIT } from '../../release-deploy-terminal';
 import {
   CHECKPOINT_QUALIFICATION_ATTEMPT_ENV,
+  describeQualificationSettleConflict,
   readStoredQualification,
   recordStoredQualificationVerdict,
 } from '../../release/checkpoint-qualification-transaction';
@@ -1881,11 +1882,22 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
         status: 'unreadable' as const,
         error: error instanceof Error ? error.message : String(error),
       }));
-  if (
-    transportedAttemptId &&
-    qualificationSettlement &&
-    (qualificationSettlement.status === 'conflict' || qualificationSettlement.status === 'unreadable')
-  ) {
+  if (transportedAttemptId && qualificationSettlement?.status === 'conflict') {
+    // WI-10002454 (b): this fires exactly when the state machine cannot decide, and the verdict
+    // is then DISCARDED below — so it must be loud and name BOTH sides of the disagreement.
+    const mismatches = describeQualificationSettleConflict(qualificationSettlement.transaction, {
+      attemptId: transportedAttemptId,
+      candidate: verdict.candidate ?? null,
+      runId: verdict.runId ?? null,
+    });
+    console.error(
+      `${orchestratorStdoutTag()} ⚠ logical qualification ${transportedAttemptId} could not settle (conflict) — ` +
+        (mismatches.length > 0
+          ? mismatches.join('; ')
+          : 'no identity mismatch: the stored row changed under a concurrent writer (CAS race)') +
+        `. This ${verdict.reason} verdict is DISCARDED, not recorded.`,
+    );
+  } else if (transportedAttemptId && qualificationSettlement?.status === 'unreadable') {
     console.warn(
       `${orchestratorStdoutTag()} logical qualification ${transportedAttemptId} could not settle ` +
         `(${qualificationSettlement.status}${'error' in qualificationSettlement && qualificationSettlement.error ? `: ${qualificationSettlement.error}` : ''})`,
