@@ -946,6 +946,37 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings.freshness.evidence).not.toContain('Current fingerprints are missing');
   });
 
+  // RECURRENCE GUARD (WI-10002320). A replayed tuple that MATCHED its stored values is
+  // capped at 'unknown' precisely BECAUSE it matched — so the one thing the message must
+  // never say is that fingerprints are missing. Without its own arm the chain fell through
+  // to 'Current fingerprints are missing', which states the opposite of what happened and
+  // sends the reader hunting for absent evidence that was never absent.
+  //
+  // Calibration: the sibling test above feeds a row differing ONLY in provenance
+  // ('partially-server-measured') and asserts ITS distinct message, so a regression that
+  // collapses these arms into one fails whichever arm it swallowed — neither assertion can
+  // pass vacuously while the other still holds.
+  it('explains a matched replayed snapshot without calling its fingerprints missing', () => {
+    const row = evidence({
+      currentness: {
+        ...evidence().currentness,
+        overall: 'unknown',
+        provenance: 'replayed-snapshot',
+        comparisonSupplied: true,
+        unknownReasons: ['current-fingerprints-replayed-not-independently-measured'],
+      },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [row],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.freshness).toMatchObject({ rating: 'unknown' });
+    expect(result.ratings.freshness.evidence).toContain('nothing is missing and nothing is stale');
+    expect(result.ratings.freshness.evidence).not.toContain('Current fingerprints are missing');
+  });
+
   it('grades only the exact current cohort when historical stale or unknown bindings coexist', () => {
     const staleHistorical = evidence({
       evidenceRef: 'surface:historical-stale',
