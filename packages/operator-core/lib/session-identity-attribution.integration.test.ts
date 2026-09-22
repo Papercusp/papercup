@@ -3,7 +3,11 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { acknowledgeControlTransition, failControlTransitionActivation } from './agent-tools/coordination/control-anchor';
+import {
+  acknowledgeControlTransition,
+  convergeActivationToLaunchRecord,
+  failControlTransitionActivation,
+} from './agent-tools/coordination/control-anchor';
 import { recordCurrentSessionIdentityActivation } from './session-identity-attribution';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -255,6 +259,36 @@ describe('P-009 activation span views', () => {
         FROM harness_shared.session_briefs
        WHERE owner_id = ${owner}`;
     expect(row).toEqual({ delivered: '49', applied: running.revision, status: 'prepared' });
+  });
+
+  // EI-23886889674609842 defect #1 on real PG: relaunched on `desired`, render failed.
+  it('converges applied to the relaunched desired but leaves the delivery watermark pending', async () => {
+    const owner = `${OWNER}-converge`;
+    const relaunched = compiledLaunch('relaunched');
+    const previous = compiledLaunch('previous').revision;
+    await db.sql`INSERT INTO harness_shared.adv_sessions (id,workspace_id,coord_owner_id,session_id,started_at,launch_spec)
+      VALUES (9201,${WS},${owner},'native-converge','2026-09-22T22:00:00Z',${JSON.stringify(relaunched.launchSpec)}::text::jsonb)`;
+    const activation = {
+      schemaVersion: 1,
+      attribution: { actorId: 'actor-stable', principalId: 'principal-stable', sessionId: 'session-stable' },
+      desired: relaunched.revision, prepared: null, applied: previous, status: 'failed',
+    };
+    await db.sql`
+      INSERT INTO harness_shared.session_briefs
+        (owner_id,workspace_id,native_session_id,control_generation,control_delivered_generation,control_state)
+      VALUES (${owner},${WS},'native-converge',60,59,${JSON.stringify({ activation })}::text::jsonb)`;
+
+    await expect(convergeActivationToLaunchRecord(owner, WS, 60, relaunched.revision, db.sql)).resolves.toBe(true);
+    // Idempotent: once applied resolves, a retry on the next failed render is a no-op.
+    await expect(convergeActivationToLaunchRecord(owner, WS, 60, relaunched.revision, db.sql)).resolves.toBe(false);
+
+    const [row] = await db.sql<Array<{ delivered: string; applied: unknown; status: string }>>`
+      SELECT control_delivered_generation::text AS delivered,
+             control_state->'activation'->'applied' AS applied,
+             control_state #>> '{activation,status}' AS status
+        FROM harness_shared.session_briefs
+       WHERE owner_id = ${owner}`;
+    expect(row).toEqual({ delivered: '59', applied: relaunched.revision, status: 'applied' });
   });
 
   it('rolls back applied state and watermark when the event insert fails', async () => {

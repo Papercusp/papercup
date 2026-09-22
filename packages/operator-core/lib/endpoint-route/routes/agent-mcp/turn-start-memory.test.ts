@@ -242,6 +242,27 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     expect(settled.text).toBe('');
     expect(preparePendingControlTransitionMock).toHaveBeenCalledTimes(3);
     expect(renderStackTransitionContextResultMock).toHaveBeenCalledTimes(2);
+    // No activation rides this transition, so there is no authority to converge.
+    expect(convergeActivationToLaunchRecordMock).not.toHaveBeenCalled();
+  });
+
+  // EI-23886889674609842 defect #1: a failed render must not strand `applied` behind
+  // a relaunch — but must never be ACKNOWLEDGED either (the stack block stays pending).
+  it('on a failed render with an activation, records the failure then offers convergence — never an ack', async () => {
+    buildMemoryContextBlockMock.mockResolvedValue(null);
+    const desired = { specificationRevision: 'spec-new', stateRevision: 'state-new' };
+    preparePendingControlTransitionMock.mockResolvedValue({
+      kind: 'mode', generation: 8, state: { activation: { desired } },
+    });
+    renderStackTransitionContextResultMock.mockResolvedValue({ text: '', rendered: false });
+
+    const out = await post({ owner: 'sess-1', prompt: 'render fails' });
+    expect(out.text).toBe('CTRL:mode');
+    expect(failControlTransitionActivationMock).toHaveBeenCalledWith(
+      'sess-1', 'ws-test', 8, desired, 'stack transition render failed');
+    expect(convergeActivationToLaunchRecordMock).toHaveBeenCalledWith('sess-1', 'ws-test', 8, desired);
+    expect(markControlTransitionPreparedMock).not.toHaveBeenCalled();
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
   });
 
   it('fail-soft: a throwing memory pipeline never surfaces an error into the turn', async () => {
