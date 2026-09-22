@@ -25,6 +25,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import {
+  defaultIdentityEnvPath,
+  describeOwnerIdentityLoad,
+  loadOwnerIdentityEnv,
+} from './owner-identity-env';
+import {
   HOLDING_PAGE_MARKER,
   PUBLISHED_CONTACT_EMAIL,
   findIdentityLeaks,
@@ -156,9 +161,10 @@ export function main(
       '[gate] 🔴 REFUSING TO CERTIFY — no owner-name literal resolved, so the owner\'s name ' +
         'cannot be detected on this page and a CLEAN verdict here would be meaningless.\n' +
         `  Cause: \`git config user.name\` is unset or belongs to an automation (a bot/CI identity).\n` +
-        `  Fix:   set ${OWNER_NAME_ENV}='<the owner's name>' for this publish — it is read at run\n` +
-        '         time and never stored, because writing the name into a source file to search\n' +
-        '         for it would itself be the leak, committed to git forever.',
+        `  Fix:   put ${OWNER_NAME_ENV}=<the owner's name> in ${defaultIdentityEnvPath()} — this\n` +
+        '         CLI reads that file automatically — or export it just for this publish, which\n' +
+        '         takes precedence. Either way it is read at RUN TIME and never written into a\n' +
+        '         source file: doing that would itself be the leak, committed to git forever.',
     );
     return 2;
   }
@@ -188,5 +194,17 @@ export function main(
 
 // `npx tsx gate-release-site.ts <dir>` — the form the publish script calls.
 if (isCliEntry(import.meta.url)) {
+  /**
+   * Resolve the owner identity BEFORE `main()` evaluates its default `literals`.
+   *
+   * This lives at the process boundary, not inside `identityLiterals()`, on purpose: the
+   * fail-closed branch above is the one branch that MUST be provable, and a file read
+   * buried in the resolver would make its test pass on a box that happens to have the
+   * config file and fail in CI, which is no guard at all.
+   *
+   * It only fills a gap — an exported value still wins — and a missing file is reported,
+   * not fatal, because refusing is `main()`'s job and it does it with a better message.
+   */
+  console.error(describeOwnerIdentityLoad(loadOwnerIdentityEnv()));
   process.exit(main());
 }
