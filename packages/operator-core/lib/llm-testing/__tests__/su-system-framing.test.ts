@@ -158,6 +158,34 @@ describe('su SUT eval-variant knob (test-gym-apiary P-001)', () => {
   });
 });
 
+describe('su SUT toolDefinitionTier — delivery-tier A/B seam (P-011/D-008)', () => {
+  it('parseSuConfigDelta accepts full/compact and rejects any other tier value', () => {
+    expect(parseSuConfigDelta({ toolDefinitionTier: 'compact' })).toEqual({
+      toolDefinitionTier: 'compact',
+    });
+    expect(parseSuConfigDelta({ toolDefinitionTier: 'full' })).toEqual({ toolDefinitionTier: 'full' });
+    // An unrecognised tier must fail at open() rather than silently degrade to
+    // full: a mislabelled baseline is the exact failure this A/B exists to avoid.
+    expect(() => parseSuConfigDelta({ toolDefinitionTier: 'partial' })).toThrow(
+      /toolDefinitionTier must be 'full' or 'compact'/,
+    );
+    expect(() =>
+      parseSuConfigDelta({ toolDefinitionTier: true as unknown as string }),
+    ).toThrow(/toolDefinitionTier must be 'full' or 'compact'/);
+  });
+
+  it('omitting the knob leaves the delta empty, so the default arm stays byte-identical', () => {
+    expect(parseSuConfigDelta({})).toEqual({});
+    expect(parseSuConfigDelta({ sutModel: 'x' }).toolDefinitionTier).toBeUndefined();
+  });
+
+  it('composes with the other knobs rather than replacing them', () => {
+    expect(
+      parseSuConfigDelta({ toolDefinitionTier: 'compact', excludeTools: ['code:run'] }),
+    ).toEqual({ toolDefinitionTier: 'compact', excludeTools: ['code:run'] });
+  });
+});
+
 describe('su SUT excludeTools — tool-availability A/B seam (code:run adoption)', () => {
   it('parseSuConfigDelta accepts excludeTools as a string array; rejects non-arrays/empties', () => {
     expect(parseSuConfigDelta({ excludeTools: ['code:run', 'code:tools'] })).toEqual({

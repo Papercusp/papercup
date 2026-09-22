@@ -53,6 +53,7 @@ import type {
 } from '@papercusp/testing-shell/llm';
 
 import { buildCatalog, type BuiltCatalog } from './su-catalog';
+import { projectCatalogToCompactTier } from './su-compact-catalog';
 import {
   callCodexResponsesTurn,
   isCodexResponsesModel,
@@ -411,11 +412,30 @@ export function buildSuSystemBlocks(
  * Anything else throws at open() — a silently-dropped knob would mislabel a
  * baseline run as the candidate.
  */
-const SU_CONFIG_DELTA_KEYS = new Set(['sutModel', 'systemPromptText', 'excludeTools']);
+const SU_CONFIG_DELTA_KEYS = new Set([
+  'sutModel',
+  'systemPromptText',
+  'excludeTools',
+  'toolDefinitionTier',
+]);
 
-export function parseSuConfigDelta(
-  delta: Record<string, unknown> | undefined,
-): { sutModel?: string; systemPromptText?: string; excludeTools?: string[] } {
+export interface SuConfigDelta {
+  sutModel?: string;
+  systemPromptText?: string;
+  excludeTools?: string[];
+  /**
+   * The DELIVERY-TIER seam (deterministic-tool-definition-delivery-2026-09-21
+   * P-011 / D-008). `'compact'` re-projects every offered definition through the
+   * same `summaryGuidanceDescription` + `compactInputSchema` pair the transport
+   * ships, preferring the LIVE registry row over the harness's curated
+   * stand-in. The tool NAME set, the scenarios and the asserts are untouched, so
+   * baseline-vs-compact differs in exactly one variable: how much of each
+   * definition the model was told. Default `'full'` is today's behaviour.
+   */
+  toolDefinitionTier?: 'full' | 'compact';
+}
+
+export function parseSuConfigDelta(delta: Record<string, unknown> | undefined): SuConfigDelta {
   if (!delta) return {};
   const unknown = Object.keys(delta).filter((k) => !SU_CONFIG_DELTA_KEYS.has(k));
   if (unknown.length > 0) {
@@ -424,7 +444,15 @@ export function parseSuConfigDelta(
         `supported: ${[...SU_CONFIG_DELTA_KEYS].join(', ')}`,
     );
   }
-  const out: { sutModel?: string; systemPromptText?: string; excludeTools?: string[] } = {};
+  const out: SuConfigDelta = {};
+  if (delta.toolDefinitionTier !== undefined) {
+    if (delta.toolDefinitionTier !== 'full' && delta.toolDefinitionTier !== 'compact') {
+      throw new Error(
+        "su target: variant configDelta.toolDefinitionTier must be 'full' or 'compact'",
+      );
+    }
+    out.toolDefinitionTier = delta.toolDefinitionTier;
+  }
   if (delta.sutModel !== undefined) {
     if (typeof delta.sutModel !== 'string' || !delta.sutModel.trim()) {
       throw new Error('su target: variant configDelta.sutModel must be a non-empty string');
@@ -507,10 +535,21 @@ export class SuTarget implements ChatTarget {
     // block; configDelta is validated HERE so an unknown knob fails the run at
     // open() (loud), not mid-conversation.
     const delta = parseSuConfigDelta(opts.variant?.configDelta);
+    // The DELIVERY-TIER A/B (P-011/D-008): re-project every offered definition
+    // onto COMPACT before the availability filter, so the two seams compose and
+    // the projected set is exactly what this session will be offered. Awaited
+    // here rather than in the constructor because the projection reads the live
+    // tool registry; a failure must surface as a loud open() error, never as a
+    // silent fall back to the curated definitions (which would make a full-tier
+    // run indistinguishable from a compact-tier one).
+    const tiered =
+      delta.toolDefinitionTier === 'compact'
+        ? (await projectCatalogToCompactTier(this.catalog)).catalog
+        : this.catalog;
     return new SuSession({
       runId: opts.runId,
       // Drop any excludeTools from the catalog offered to the SUT (the availability A/B seam).
-      catalog: filterCatalog(this.catalog, delta.excludeTools),
+      catalog: filterCatalog(tiered, delta.excludeTools),
       loadSystemPrompt: delta.systemPromptText !== undefined
         ? () => delta.systemPromptText!
         : this.loadSystemPrompt,

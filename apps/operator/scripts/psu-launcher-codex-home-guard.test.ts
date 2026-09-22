@@ -48,6 +48,18 @@ import {
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'psu-codex-guard-'));
+  // isCodexHomeLaunchReady requires a non-empty AGENTS.md ("this session's
+  // behavioral spine", psu-launcher.mjs) and reads it with readFileSync, which
+  // THROWS when the file is absent — the function's outer try/catch turns that
+  // throw into a bare `false`. A bare mkdtemp home therefore short-circuits on
+  // the FIRST check, before any of the config/owner/hooks logic below runs.
+  // That broke both arms of this file, in opposite and unequally visible ways:
+  // the launch-ready cases failed outright (the gate's 4 reds), while every
+  // "FALSE for ..." case kept passing VACUOUSLY — returning false for the
+  // missing prompt rather than for the condition it names, so it asserted
+  // nothing. Materializing a real home here is what makes both arms test what
+  // they claim; do not drop it to "simplify" the fixture.
+  writeFileSync(join(dir, 'AGENTS.md'), '# papercusp su\n');
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
