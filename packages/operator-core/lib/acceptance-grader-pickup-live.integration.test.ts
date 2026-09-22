@@ -29,11 +29,21 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { observeGraderPickup } from './acceptance-grader-pickup';
 import { isInFlightAcceptanceGradingRequest, resolveAcceptanceGrader } from './acceptance-grader';
+import { activeWorkspaceId } from './workspace-registry';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const { _resetHarnessAdminUrlCacheForTests } = await import('./embedded-pg-discovery');
 
 const WORKSPACE = 'r3-grader-pickup-ws';
+/**
+ * ⚠ The grading-request row must live under the workspace `listWorkItems`
+ * actually reads. That read is scoped by `activeWorkspaceId()` (an ambient
+ * value), NOT by anything the caller passes — so seeding the row under this
+ * file's own WORKSPACE constant makes the dedup guard find nothing and the
+ * resolver falls through to a launch. That failure looks like "dedup is
+ * broken" while really meaning "the fixture was invisible".
+ */
+const LIST_WORKSPACE = activeWorkspaceId();
 const HARNESS = 'papercusp';
 const PLAN_SLUG = 'r3-pickup-subject-plan';
 const RUBRIC_ID = 'acceptance-r3-pickup-subject-plan';
@@ -43,7 +53,7 @@ const WAKE_INSTANT_MS = Date.parse('2026-09-22T12:00:00.000Z');
 
 /** Minimal LaunchCtx — resolve only reads identity/workspace off it. */
 const ctx = {
-  workspaceId: WORKSPACE,
+  workspaceId: LIST_WORKSPACE,
   harnessSlug: HARNESS,
   ownerId: 'su-r3-shipper',
   emit: () => {},
@@ -53,10 +63,10 @@ const ctx = {
 async function dispatchFootprint(db: OrgTestDb): Promise<{ consults: number; conversations: number; tasks: number }> {
   const [[consults], [conversations], [tasks]] = await Promise.all([
     db.adminSql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.consult_state`,
-    db.adminSql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.conversations`,
+    db.adminSql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.coord_conversations`,
     db.adminSql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM harness_shared.work_items
-       WHERE workspace_id = ${WORKSPACE} AND item_kind = 'task'`,
+       WHERE workspace_id = ${LIST_WORKSPACE} AND item_kind = 'task'`,
   ]);
   return { consults: consults.n, conversations: conversations.n, tasks: tasks.n };
 }
@@ -68,6 +78,17 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
     db = await createOrgTestDb();
     process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
     _resetHarnessAdminUrlCacheForTests();
+
+    // Warm the org-admin pool HERE, not inside a test. The first `getOrgPg()`
+    // after the env re-route notices its target moved and logs a one-time
+    // `[db] org-admin pool rebound` warning — which `vitest-fail-on-console`
+    // turns into a test failure attributed to whichever case happened to be
+    // first. Absorbing it in setup keeps that rebind from masquerading as a
+    // verdict about the subject.
+    {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      await getOrgPg().sql`SELECT 1`;
+    }
 
     // Three graders, differing ONLY in what their own activity record says.
     await db.adminSql`
@@ -84,17 +105,22 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
         ('su-grader-unreadable', 'unreadable', ${WORKSPACE}, 'omp-hook-session', 'grading',
          '', NULL, now())`;
 
-    // A REAL in-flight acceptance-grading request: held (so `assignee` alone
-    // makes it in-flight), titled so the identity predicate matches, and filed
-    // by someone other than the drain actor.
+    // A REAL in-flight acceptance-grading request: HELD (a held request is
+    // in-flight on `assignee` alone, with no recency window to age out mid-run)
+    // and titled so the identity predicate matches.
+    //
+    // ⚠ The column is `taken_by` — `work_items` has no `assignee` and no
+    // `created_by`; `listWorkItems` projects those names. Leaving authorship
+    // unset is correct here: `createdBy` is read ONLY to exclude the
+    // acceptance-drain actor (WI-10002453), and this request is not one.
     await db.adminSql`
       INSERT INTO harness_shared.work_items
-        (workspace_id, harness_slug, feature_id, item_kind, title, summary, status, assignee, created_by, lane)
+        (workspace_id, harness_slug, feature_id, item_kind, title, summary, status, taken_by, last_progress_at)
       VALUES (
-        ${WORKSPACE}, ${HARNESS}, 'EI-R3-GRADING-REQUEST', 'task',
+        ${LIST_WORKSPACE}, ${HARNESS}, 'EI-R3-GRADING-REQUEST', 'task',
         ${`Acceptance grading for plan ${PLAN_SLUG}`},
         ${`A non-implementer grader must run scorecards:emit against ${PLAN_SLUG}.`},
-        'wip', 'su-grader-confirmed', 'su-r3-shipper', 'default')`;
+        'wip', 'su-grader-confirmed', now())`;
   }, 180_000);
 
   afterAll(async () => {
@@ -163,8 +189,8 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
   describe('recruitment is idempotent against an already-live grading', () => {
     it('the seeded request really is in-flight (instrument check)', async () => {
       const [row] = await db.adminSql<
-        Array<{ title: string; summary: string; assignee: string | null; created_by: string | null; created_at: string }>
-      >`SELECT title, summary, assignee, created_by, created_at
+        Array<{ title: string; summary: string; taken_by: string | null; created_ts: string; last_progress_at: string }>
+      >`SELECT title, summary, taken_by, created_ts, last_progress_at
           FROM harness_shared.work_items WHERE feature_id = 'EI-R3-GRADING-REQUEST'`;
       expect(row).toBeTruthy();
       // If this predicate ever stops matching, every assertion below would pass
@@ -175,10 +201,10 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
           {
             title: row.title,
             summary: row.summary,
-            createdBy: row.created_by,
-            assignee: row.assignee,
-            createdAt: row.created_at,
-            lastProgressAt: row.created_at,
+            createdBy: null,
+            assignee: row.taken_by,
+            createdAt: new Date(row.created_ts).toISOString(),
+            lastProgressAt: new Date(row.last_progress_at).toISOString(),
           } as Parameters<typeof isInFlightAcceptanceGradingRequest>[0],
           PLAN_SLUG,
           Date.now(),
@@ -193,7 +219,7 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
       // leave a trace if dedup failed — is left REAL.
       const deps = {
         readPlan: async () => ({
-          row: { workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug: PLAN_SLUG, content: '' },
+          row: { workspaceId: LIST_WORKSPACE, harnessSlug: HARNESS, planSlug: PLAN_SLUG, content: '' },
         }),
         getRubric: async () => ({ rubricId: RUBRIC_ID, revision: 4 }),
       } as unknown as Parameters<typeof resolveAcceptanceGrader>[2];
