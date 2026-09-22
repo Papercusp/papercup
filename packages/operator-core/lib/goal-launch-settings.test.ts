@@ -1394,6 +1394,39 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         actionableItemId: null,
         source: { claims: [lane], fleet },
       }),
+      // P-026 / D-012: administrative completion alone no longer terminates a
+      // plan. With NO closure reading supplied this is `awaiting-closure`, not
+      // `terminal` — "we never looked" must not read the same as "it closed".
+    ).toMatchObject({
+      state: 'awaiting-closure',
+      reconciliation: { action: 'close-plan', consistent: false, toolCall: null },
+    });
+  });
+
+  it('terminates the same shipped plan once its closure evidence is supplied', () => {
+    // The other half of the pair above: closure is what terminates a plan now,
+    // so the SAME input with evidenced closure must still reach `terminal`.
+    expect(
+      compileGoalPlanPlacement({
+        plan: { harness: 'papercusp', slug: 'shipped', ambiguousMatches: 1 },
+        status: 'shipped',
+        itemStatuses: ['done', 'done'],
+        actionableItemId: null,
+        // No lane/fleet needed: closure is what terminates the plan now, and
+        // supplying them would hide that by making the placement consistent anyway.
+        source: {},
+        closure: {
+          state: 'closed',
+          evidenceSatisfied: true,
+          reason: 'acceptance satisfied',
+          legs: {
+            terminalEvidence: 'pass',
+            verificationReadBack: 'pass',
+            independentRegrade: 'pass',
+            measuredReport: 'pass',
+          },
+        },
+      }),
     ).toMatchObject({
       state: 'terminal',
       reconciliation: { action: 'none', consistent: true, toolCall: null },

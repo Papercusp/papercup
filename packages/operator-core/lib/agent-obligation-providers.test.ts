@@ -58,6 +58,10 @@ function placement(
     action === 'restore-spawned-leader';
   const base: GoalPlanPlacement = {
     state,
+    // P-026 / D-012: these fixtures exercise placement states, not closure, so
+    // no closure reading was taken. `null` says exactly that — it is never a
+    // way to spell "closed".
+    closure: null,
     fleet:
       state === 'unplaced'
         ? null

@@ -140,6 +140,8 @@ function portfolioBrief(): GoalPortfolioBrief {
           fleet: null,
           launchTransaction: null,
           reconciliation: { consistent: true, action: 'none', reason: 'none', toolCall: null },
+          // Unplaced: the plan has open work, so closure does not yet arise.
+          closure: null,
         },
       },
     ],
