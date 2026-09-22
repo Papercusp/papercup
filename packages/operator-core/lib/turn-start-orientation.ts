@@ -821,173 +821,533 @@ function renderCheckpointLine(item: OrientationHeldItem): string | null {
 }
 
 /**
+ * A prompt surface that renders orientation state categories.
+ *
+ * D-015 (plan turn-start-memory-two-class-2026-09-21) ruled that the three
+ * briefs must NOT merge their payloads — they answer different questions with
+ * different watermark semantics. What they share is the DECLARATION of what
+ * each category IS; each surface then SELECTS from that shared declaration at
+ * its own budget. Turn-start keeps its cursor/watermark semantics via
+ * `watermarkTokens`; leader-brief is read-on-demand and uses none.
+ *
+ * REGISTERED CONSUMERS TODAY: `turn-start` only. `leader-brief` and
+ * `carry-brief` are named here because they are the surfaces the registry was
+ * built to serve, but registering them is P-024/P-025's lane, not this one —
+ * so no entry claims them until the surface actually selects from here. An
+ * `applicableSinks` that named a surface which does not consume the registry
+ * would be a false declaration, and the whole point of this table is that a
+ * category is declared once, truthfully.
+ */
+export type OrientationSink = 'turn-start' | 'leader-brief' | 'carry-brief';
+
+/**
+ * One ordered emission of a class.
+ *
+ * ⚠ A CLASS MAY OWN SEVERAL SEGMENTS, AND THAT IS THE WHOLE REASON THIS TYPE
+ * EXISTS. `renderOrientationLines` is NOT one block per category: `held`
+ * emits at FOUR distinct priorities (stale checkpoints, missing checkpoints,
+ * the holding line, checkpoint excerpts) and `loopArmed` at TWO (the not-armed
+ * WARNING near the top, the reassuring ARMED line last), interleaved with
+ * other categories. A registry keyed one-entry-per-category therefore CANNOT
+ * reproduce the emitted order — and it would scramble it SILENTLY, because
+ * the class-coverage guard asserts that each class reaches a rendered line, not
+ * WHERE it lands. `order` is the thing that keeps the priority rule below
+ * intact; it is asserted unique and order-preserving by the registry tests.
+ */
+export interface OrientationClassSegment<T> {
+  /** Ascending emission order. Spaced by 10 so a segment can be inserted between two. */
+  readonly order: number;
+  /** PURE: the lines this segment contributes; `[]` when it has nothing to say. */
+  readonly render: (value: T, state: OrientationState, committed: CursorState | null) => string[];
+}
+
+/**
+ * The shared, sink-parameterized declaration of ONE orientation state category:
+ * its data source (`populate`), its rendering (`segments`), its watermark token
+ * and the prompt surfaces it applies to.
+ */
+export interface OrientationClassEntry<T> {
+  /** The `OrientationState` field this class is declared by. Exactly one entry per field. */
+  readonly id: keyof OrientationState;
+  /**
+   * The `CursorState` keys this class contributes to, as produced by
+   * {@link fingerprintOrientation}. Empty means DELIBERATELY unwatermarked —
+   * see `improvementTriage`, whose token was withdrawn with its line (P-017).
+   * Plural because a class can own more than one token (`loopArmed` owns both
+   * `loop` and, through its ARMED variant, nothing else — while
+   * `loopFireWithheld` owns `loopWithheld`); a singular field would have to
+   * lie for at least one entry, and these are pinned against the real
+   * fingerprint keys by test.
+   */
+  readonly watermarkTokens: readonly string[];
+  /** The surfaces that render this class FROM THIS DECLARATION. */
+  readonly applicableSinks: readonly OrientationSink[];
+  /** DATA SOURCE: select this class's slice out of the orientation state. */
+  readonly populate: (state: OrientationState) => T;
+  /** RENDERING: ordered segments; see {@link OrientationClassSegment}. */
+  readonly segments: readonly OrientationClassSegment<T>[];
+  /**
+   * Set when the class is declared but deliberately renders NOTHING, carrying
+   * the reason. A dropped class is a decision, not a coverage gap.
+   */
+  readonly unrenderedReason?: string;
+}
+
+/** A registry row with its `populate` type erased and bound into its segments. */
+export interface RegisteredOrientationClass {
+  readonly id: keyof OrientationState;
+  readonly watermarkTokens: readonly string[];
+  readonly applicableSinks: readonly OrientationSink[];
+  readonly unrenderedReason?: string;
+  readonly segments: readonly {
+    readonly order: number;
+    readonly render: (state: OrientationState, committed: CursorState | null) => string[];
+  }[];
+}
+
+/**
+ * Bind one authored entry into the registry, erasing `T` by composing
+ * `populate` into each segment's `render`. Authoring stays fully typed per
+ * class; the table itself stays a flat, iterable list.
+ */
+function orientationClass<T>(entry: OrientationClassEntry<T>): RegisteredOrientationClass {
+  return {
+    id: entry.id,
+    watermarkTokens: entry.watermarkTokens,
+    applicableSinks: entry.applicableSinks,
+    ...(entry.unrenderedReason === undefined ? {} : { unrenderedReason: entry.unrenderedReason }),
+    segments: entry.segments.map((segment) => ({
+      order: segment.order,
+      render: (state: OrientationState, committed: CursorState | null) =>
+        segment.render(entry.populate(state), state, committed),
+    })),
+  };
+}
+
+const TURN_START: readonly OrientationSink[] = ['turn-start'];
+
+/**
+ * THE SHARED CLASS REGISTRY (P-023; mechanism per D-015).
+ *
+ * Every orientation state category is declared here exactly once, and every
+ * applicable surface renders it from this declaration. Adding a category to a
+ * surface is a change to `applicableSinks`, not a second copy of the line.
+ *
+ * The `order` values encode the playbook's own priority rule, highest-priority
+ * first so budget truncation drops the least important thing rather than an
+ * arbitrary tail: a directed message awaiting your answer outranks your own
+ * work, so it leads; the no-wake-source warning is next because an agent that
+ * cannot be re-woken silently halts, which is the most expensive failure on
+ * this list.
+ */
+export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] = [
+  orientationClass<OrientationToolSurface | null>({
+    id: 'toolSurface',
+    watermarkTokens: ['toolSurface'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.toolSurface,
+    segments: [
+      {
+        // FIRST, above even the directed-message line. An agent whose tool surface is
+        // empty cannot act on ANY line below this one — it cannot claim, checkpoint, or
+        // even answer the directed message that otherwise leads. Deliberately terse: the
+        // composer BREAKS on the first line that does not fit, so length spent here is
+        // taken from every line after it.
+        order: 10,
+        render: (toolSurface) =>
+          toolSurface
+            ? [
+                `- 🚨 MCP TOOLS NOT REGISTERED — 0 tool calls in ${toolSurface.windowMinutes}m vs ` +
+                  `${toolSurface.hookCalls} harness beats OK. Tool list loaded EMPTY; it cannot ` +
+                  `self-heal. RESTART THE SESSION (EI-21308269358666878).`,
+              ]
+            : [],
+      },
+    ],
+  }),
+
+  orientationClass<OrientationOwnerDirective[]>({
+    id: 'ownerDirectives',
+    watermarkTokens: ['ownerDirectives'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.ownerDirectives ?? [],
+    segments: [
+      {
+        order: 20,
+        render: (directives) => {
+          if (directives.length === 0) return [];
+          const lines: string[] = [];
+          for (const directive of directives.slice(0, 2)) {
+            const text = directive.verbatimText.replace(/\s+/g, ' ').trim();
+            const excerpt = text.length > 110 ? `${text.slice(0, 109)}…` : text;
+            lines.push(
+              `- 📌 owner directive #${directive.id} [${directive.captureStatus}] ${JSON.stringify(excerpt)} — ` +
+                (directive.captureStatus === 'pending' ? 'orders:resolve-pending first.' : 'carry/disposition when done.'),
+            );
+          }
+          if (directives.length > 2) lines.push(`- 📌 +${directives.length - 2} more owner directives — orders:list { open: true }.`);
+          return lines;
+        },
+      },
+    ],
+  }),
+
+  orientationClass<CarryBlindWindow | null>({
+    id: 'carryBlindWindow',
+    watermarkTokens: ['carryBlind'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.carryBlindWindow,
+    segments: [
+      {
+        // Second, and above the directed-message line for one reason: it is the only
+        // line here that DECAYS. Every other line describes state the agent can re-read
+        // at any point in the session; this one describes turns that exist solely in a
+        // dead predecessor's transcript, and an owner-salient deliverable stranded there
+        // (EI-21442716425230784: an OAuth consent URL the owner was told to act on) is
+        // discovered late or never. It renders once per respawn, so the cost is bounded.
+        order: 30,
+        render: (carryBlindWindow) => (carryBlindWindow ? [renderCarryBlindWindowLine(carryBlindWindow)] : []),
+      },
+    ],
+  }),
+
+  orientationClass<OrientationHistoryUpdate[] | undefined>({
+    id: 'historyUpdates',
+    watermarkTokens: ['historyUpdates'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.historyUpdates,
+    segments: [
+      {
+        order: 40,
+        render: (updates) => {
+          if (!updates || updates.length === 0) return [];
+          const shown = updates.slice(0, 2);
+          const total = updates.reduce((sum, update) => sum + update.count, 0);
+          const refs = shown.map((update) => workItemFetchHint(update.workItemId, update.harness)).join('; ');
+          return [`- ⚠ ${total} post-claim history update(s) on held work — read current context: ${refs}`];
+        },
+      },
+    ],
+  }),
+
+  orientationClass<OrientationEffortUpdate[] | undefined>({
+    id: 'effortUpdates',
+    watermarkTokens: ['effortUpdates'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.effortUpdates,
+    segments: [
+      {
+        order: 50,
+        render: (updates) => {
+          if (!updates || updates.length === 0) return [];
+          const total = updates.reduce((sum, update) => sum + update.count, 0);
+          const refs = updates.slice(0, 3).map((update) => `${update.level}:${update.ref}`).join(', ');
+          return [`- ⚠ ${total} post-claim plan/goal revision(s) (${refs}) — re-read the current plan/goal context.`];
+        },
+      },
+    ],
+  }),
+
+  orientationClass<number>({
+    id: 'unansweredDirected',
+    watermarkTokens: ['unanswered'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.unansweredDirected,
+    segments: [
+      {
+        order: 60,
+        render: (unansweredDirected) =>
+          unansweredDirected > 0
+            ? [`- ⚠ ${unansweredDirected} directed msg(s) awaiting YOUR reply — answer first.`]
+            : [],
+      },
+    ],
+  }),
+
+  orientationClass<number>({
+    id: 'unansweredStale',
+    watermarkTokens: ['unansweredStale'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.unansweredStale,
+    segments: [
+      {
+        // EI-20085805220385722: reported, but deliberately NOT as "answer first" —
+        // the sender is gone, so nobody is blocked and answering costs a turn nobody
+        // reads. Shown so the obligation is visible rather than silently vanished.
+        order: 70,
+        render: (unansweredStale) =>
+          unansweredStale > 0
+            ? [`- ${unansweredStale} more from ENDED senders — no one is waiting; close them out, don't prioritise.`]
+            : [],
+      },
+    ],
+  }),
+
+  orientationClass<OrientationOpenAsk | null>({
+    id: 'openAsks',
+    watermarkTokens: ['openAsks'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.openAsks,
+    segments: [
+      {
+        // The reciprocal counter (WI-2142142): asks THIS agent made that a peer has
+        // not yet answered. Lower priority than the line above (an ask you are
+        // owed never outranks an ask you owe), so it renders second.
+        order: 80,
+        render: (openAsks) => {
+          if (!openAsks) return [];
+          const { count, oldestAgeMs, oldestTo } = openAsks;
+          return [`- ${count} open ask(s) sent, oldest ${compactAgeHours(oldestAgeMs)} — awaiting ${compactActor(oldestTo)}.`];
+        },
+      },
+    ],
+  }),
+
+  orientationClass<{ armed: boolean; withheld: boolean }>({
+    id: 'loopArmed',
+    watermarkTokens: ['loop'],
+    applicableSinks: TURN_START,
+    populate: (state) => ({ armed: state.loopArmed, withheld: state.loopFireWithheld }),
+    segments: [
+      {
+        // A missing wake source can strand every line below it, so the WARNING is
+        // high-priority. The reassuring ARMED line is cheap context and goes last.
+        order: 90,
+        render: ({ armed }) =>
+          armed ? [] : ['- ⚠ engine loop: not armed — loop:arm open-ended work or you halt silently after this turn.'],
+      },
+      {
+        order: 190,
+        render: ({ armed, withheld }) =>
+          armed
+            ? [
+                withheld
+                  ? '- engine loop: ARMED — fire pending, withheld for interactive turn.'
+                  : '- engine loop: ARMED (a wake source exists).',
+              ]
+            : [],
+      },
+    ],
+  }),
+
+  orientationClass<OrientationHeldItem[]>({
+    id: 'held',
+    watermarkTokens: ['held'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.held,
+    segments: [
+      {
+        order: 100,
+        render: (held) => {
+          const stale = held.filter((h) => Boolean(h.checkpoint?.trim()) && h.checkpointStale).map((h) => h.id);
+          return stale.length > 0
+            ? [`- ⚠ stale checkpoint: ${compactIds(stale, HELD_DISPLAY_CAP)} — verify current files/state before trusting it.`]
+            : [];
+        },
+      },
+      {
+        order: 110,
+        render: (held) => {
+          const missing = held.filter((h) => !h.checkpoint?.trim()).map((h) => h.id);
+          return missing.length > 0
+            ? [`- ⚠ no checkpoint: ${compactIds(missing, HELD_DISPLAY_CAP)} — read work_items:get before acting.`]
+            : [];
+        },
+      },
+      {
+        order: 150,
+        render: (held) => {
+          if (held.length === 0) return ['- holding: nothing — claim before your first edit.'];
+          const shown = held.slice(0, HELD_DISPLAY_CAP);
+          const rest = held.length - shown.length;
+          const line = shown.map((h) => (h.status ? `${h.id} (${h.status})` : h.id)).join(', ');
+          return [`- holding: ${line}${rest > 0 ? ` +${rest} more` : ''}`];
+        },
+      },
+      {
+        order: 170,
+        render: (held) =>
+          held
+            .slice(0, CHECKPOINT_DISPLAY_CAP)
+            .map((item) => renderCheckpointLine(item))
+            .filter((line): line is string => line !== null),
+      },
+    ],
+  }),
+
+  orientationClass<AgentObligationBrief | null | undefined>({
+    id: 'obligations',
+    watermarkTokens: ['obligations'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.obligations,
+    segments: [
+      {
+        // ABOVE the "what to work on" lines (frontier / triage) on purpose. These say
+        // "not that way", and a do-not-repeat is worth almost nothing once the agent
+        // has already picked an approach — which is exactly what the lines below help
+        // it do. Deliberately short: the composer BREAKS on the first line that does
+        // not fit, so length spent here is taken from every line after it.
+        order: 120,
+        render: (obligations) => {
+          if (!obligations) return [];
+          const lines: string[] = [];
+          const projectedLines = obligations.projection.text.split('\n').filter(Boolean);
+          const omitted = obligations.projection.receipt.entriesOmitted;
+          if (omitted > 0) {
+            lines.push(`- obligations: +${omitted} omitted — ${obligations.detailRef}`);
+          } else if (projectedLines.length > 0) {
+            // An inner-complete projection can still lose its action at the outer
+            // budget. Keep recovery ahead of that action without claiming an omission
+            // that the final composer has not yet measured.
+            lines.push(`- obligations: ${obligations.detailRef}`);
+          }
+          lines.push(...projectedLines);
+          return lines;
+        },
+      },
+    ],
+  }),
+
+  orientationClass<string[]>({
+    id: 'neverDropFacts',
+    watermarkTokens: ['facts'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.neverDropFacts,
+    segments: [
+      {
+        // A never-drop fact still precedes plan/frontier/work lines, but a current
+        // obligation recovery route must fit first: if the outer budget drops the
+        // obligation action, this exact reader is the only truthful way to recover it.
+        order: 130,
+        render: (neverDropFacts) =>
+          neverDropFacts.length > 0
+            ? [`- 🛡️ never-drop facts: ${compactIds(neverDropFacts.map(compactFactKey), FACT_DISPLAY_CAP)} — facts:list before you plan.`]
+            : [],
+      },
+    ],
+  }),
+
+  orientationClass<OrientationExecutableFrontier | null>({
+    id: 'executableFrontier',
+    watermarkTokens: ['frontier'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.executableFrontier,
+    segments: [
+      {
+        order: 140,
+        render: (executableFrontier, _state, committed) => {
+          const frontierLine = renderExecutableFrontierLine(executableFrontier, committed);
+          return frontierLine ? [frontierLine] : [];
+        },
+      },
+    ],
+  }),
+
+  orientationClass<OrientationAnnouncedGate[]>({
+    id: 'announcedGates',
+    watermarkTokens: ['gates'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.announcedGates,
+    segments: [
+      {
+        order: 160,
+        render: (announcedGates) => {
+          if (announcedGates.length === 0) return [];
+          const lines: string[] = [];
+          for (const warning of announcedGates.map((gate) => gate.warning).filter(Boolean)) {
+            lines.push(`- ⚠ ${compactHeadline(warning)}`);
+          }
+          lines.push(
+            `- announced gates: ${compactIds(
+              announcedGates.map((gate) => gate.event),
+              GATE_DISPLAY_CAP,
+            )}${announcedGates.length > GATE_DISPLAY_CAP ? ' — events:catalog for all' : ''}`,
+          );
+          return lines;
+        },
+      },
+    ],
+  }),
+
+  orientationClass<OrientationInboxEntry[]>({
+    id: 'inboxRecent',
+    watermarkTokens: ['inbox'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.inboxRecent,
+    segments: [
+      {
+        order: 180,
+        render: (inboxRecent) =>
+          inboxRecent
+            .slice(0, INBOX_DISPLAY_CAP)
+            .map((entry) => `- inbox ${compactActor(entry.from)}: ${compactHeadline(entry.summary)}`),
+      },
+    ],
+  }),
+
+  orientationClass<boolean>({
+    id: 'loopFireWithheld',
+    watermarkTokens: ['loopWithheld'],
+    applicableSinks: TURN_START,
+    populate: (state) => state.loopFireWithheld,
+    segments: [],
+    unrenderedReason:
+      'Rendered as a VARIANT of the loopArmed ARMED line (order 190), not as a line of its own — see the loopArmed entry. ' +
+      'It keeps its OWN watermark token (`loopWithheld`) because the variant it selects is a visible change the reader must be re-shown.',
+  }),
+
+  orientationClass<OrientationImprovementTriage | null>({
+    id: 'improvementTriage',
+    watermarkTokens: [],
+    applicableSinks: TURN_START,
+    populate: (state) => state.improvementTriage,
+    segments: [],
+    unrenderedReason:
+      'DELIBERATELY NOT RENDERED (plan turn-start-memory-two-class-2026-09-21, P-017; rationale in D-003). It rendered on every ' +
+      'turn and produced zero observed action — the canonical signal-decay case: a row that is always present teaches the reader ' +
+      'to skip the whole block. The provider and `OrientationState.improvementTriage` REMAIN so the full coord:orient payload ' +
+      'keeps serving it on demand; only the unconditional per-turn line is withdrawn. Its watermark token was withdrawn WITH the ' +
+      'line: a component for an unrendered class would re-mark the block as changed for a signal the reader can no longer see. ' +
+      'The class-coverage guard records this as an entry in DELIBERATELY_UNRENDERED, because a dropped class is a decision, not ' +
+      'a coverage gap.',
+  }),
+];
+
+/**
+ * PURE: the segments an individual surface renders, in emission order.
+ *
+ * This is the SELECT half of the mechanism — each brief calls it with its own
+ * sink and spends its own budget on the result.
+ */
+export function selectOrientationSegments(
+  sink: OrientationSink,
+  registry: readonly RegisteredOrientationClass[] = ORIENTATION_CLASS_REGISTRY,
+): readonly { readonly order: number; readonly render: (state: OrientationState, committed: CursorState | null) => string[] }[] {
+  return registry
+    .filter((entry) => entry.applicableSinks.includes(sink))
+    .flatMap((entry) => entry.segments)
+    .slice()
+    .sort((a, b) => a.order - b.order);
+}
+
+/**
  * PURE: render the block, highest-priority line first so budget truncation drops
  * the least important thing rather than an arbitrary tail.
  *
  * The ORDER encodes the playbook's own priority rule: a directed message awaiting
  * your answer outranks your own work, so it leads. The no-wake-source warning is
  * next because an agent that cannot be re-woken silently halts, which is the most
- * expensive failure on this list.
+ * expensive failure on this list. That order now lives in the `order` field of
+ * {@link ORIENTATION_CLASS_REGISTRY}, which is where it is asserted.
  */
 export function renderOrientationLines(state: OrientationState, committed: CursorState | null = null): string[] {
   const lines: string[] = [];
-  // FIRST, above even the directed-message line. An agent whose tool surface is
-  // empty cannot act on ANY line below this one — it cannot claim, checkpoint, or
-  // even answer the directed message that otherwise leads. Deliberately terse: the
-  // composer BREAKS on the first line that does not fit, so length spent here is
-  // taken from every line after it.
-  if (state.toolSurface) {
-    lines.push(
-      `- 🚨 MCP TOOLS NOT REGISTERED — 0 tool calls in ${state.toolSurface.windowMinutes}m vs ` +
-        `${state.toolSurface.hookCalls} harness beats OK. Tool list loaded EMPTY; it cannot ` +
-        `self-heal. RESTART THE SESSION (EI-21308269358666878).`,
-    );
-  }
-  if (state.ownerDirectives && state.ownerDirectives.length > 0) {
-    for (const directive of state.ownerDirectives.slice(0, 2)) {
-      const text = directive.verbatimText.replace(/\s+/g, ' ').trim();
-      const excerpt = text.length > 110 ? `${text.slice(0, 109)}…` : text;
-      lines.push(
-        `- 📌 owner directive #${directive.id} [${directive.captureStatus}] ${JSON.stringify(excerpt)} — ` +
-          (directive.captureStatus === 'pending' ? 'orders:resolve-pending first.' : 'carry/disposition when done.'),
-      );
-    }
-    if (state.ownerDirectives.length > 2) lines.push(`- 📌 +${state.ownerDirectives.length - 2} more owner directives — orders:list { open: true }.`);
-  }
-  // Second, and above the directed-message line for one reason: it is the only
-  // line here that DECAYS. Every other line describes state the agent can re-read
-  // at any point in the session; this one describes turns that exist solely in a
-  // dead predecessor's transcript, and an owner-salient deliverable stranded there
-  // (EI-21442716425230784: an OAuth consent URL the owner was told to act on) is
-  // discovered late or never. It renders once per respawn, so the cost is bounded.
-  if (state.carryBlindWindow) {
-    lines.push(renderCarryBlindWindowLine(state.carryBlindWindow));
-  }
-  if (state.historyUpdates && state.historyUpdates.length > 0) {
-    const shown = state.historyUpdates.slice(0, 2);
-    const total = state.historyUpdates.reduce((sum, update) => sum + update.count, 0);
-    const refs = shown.map((update) => workItemFetchHint(update.workItemId, update.harness)).join('; ');
-    lines.push(
-      `- ⚠ ${total} post-claim history update(s) on held work — read current context: ${refs}`,
-    );
-  }
-  if (state.effortUpdates && state.effortUpdates.length > 0) {
-    const total = state.effortUpdates.reduce((sum, update) => sum + update.count, 0);
-    const refs = state.effortUpdates.slice(0, 3).map((update) => `${update.level}:${update.ref}`).join(', ');
-    lines.push(
-      `- ⚠ ${total} post-claim plan/goal revision(s) (${refs}) — re-read the current plan/goal context.`,
-    );
-  }
-  if (state.unansweredDirected > 0) {
-    lines.push(`- ⚠ ${state.unansweredDirected} directed msg(s) awaiting YOUR reply — answer first.`);
-  }
-  // EI-20085805220385722: reported, but deliberately NOT as "answer first" —
-  // the sender is gone, so nobody is blocked and answering costs a turn nobody
-  // reads. Shown so the obligation is visible rather than silently vanished.
-  if (state.unansweredStale > 0) {
-    lines.push(
-      `- ${state.unansweredStale} more from ENDED senders — no one is waiting; close them out, don't prioritise.`,
-    );
-  }
-  // The reciprocal counter (WI-2142142): asks THIS agent made that a peer has
-  // not yet answered. Lower priority than the line above (an ask you are
-  // owed never outranks an ask you owe), so it renders second.
-  if (state.openAsks) {
-    const { count, oldestAgeMs, oldestTo } = state.openAsks;
-    lines.push(
-      `- ${count} open ask(s) sent, oldest ${compactAgeHours(oldestAgeMs)} — awaiting ${compactActor(oldestTo)}.`,
-    );
-  }
-  // A missing wake source can strand every line below it, so the WARNING is
-  // high-priority. The reassuring ARMED line is cheap context and goes last.
-  if (!state.loopArmed) {
-    lines.push('- ⚠ engine loop: not armed — loop:arm open-ended work or you halt silently after this turn.');
-  }
-  const stale = state.held.filter((h) => Boolean(h.checkpoint?.trim()) && h.checkpointStale).map((h) => h.id);
-  if (stale.length > 0) {
-    lines.push(
-      `- ⚠ stale checkpoint: ${compactIds(stale, HELD_DISPLAY_CAP)} — verify current files/state before trusting it.`,
-    );
-  }
-  const missing = state.held.filter((h) => !h.checkpoint?.trim()).map((h) => h.id);
-  if (missing.length > 0) {
-    lines.push(`- ⚠ no checkpoint: ${compactIds(missing, HELD_DISPLAY_CAP)} — read work_items:get before acting.`);
-  }
-  // ABOVE the "what to work on" lines (frontier / triage) on purpose. These say
-  // "not that way", and a do-not-repeat is worth almost nothing once the agent
-  // has already picked an approach — which is exactly what the lines below help
-  // it do. Deliberately short: the composer BREAKS on the first line that does
-  // not fit, so length spent here is taken from every line after it.
-  if (state.obligations) {
-    const projectedLines = state.obligations.projection.text.split('\n').filter(Boolean);
-    const omitted = state.obligations.projection.receipt.entriesOmitted;
-    if (omitted > 0) {
-      lines.push(`- obligations: +${omitted} omitted — ${state.obligations.detailRef}`);
-    } else if (projectedLines.length > 0) {
-      // An inner-complete projection can still lose its action at the outer
-      // budget. Keep recovery ahead of that action without claiming an omission
-      // that the final composer has not yet measured.
-      lines.push(`- obligations: ${state.obligations.detailRef}`);
-    }
-    lines.push(...projectedLines);
-  }
-  // A never-drop fact still precedes plan/frontier/work lines, but a current
-  // obligation recovery route must fit first: if the outer budget drops the
-  // obligation action, this exact reader is the only truthful way to recover it.
-  if (state.neverDropFacts.length > 0) {
-    lines.push(
-      `- 🛡️ never-drop facts: ${compactIds(
-        state.neverDropFacts.map(compactFactKey),
-        FACT_DISPLAY_CAP,
-      )} — facts:list before you plan.`,
-    );
-  }
-  const frontierLine = renderExecutableFrontierLine(state.executableFrontier, committed);
-  if (frontierLine) lines.push(frontierLine);
-  // improvementTriage is DELIBERATELY NOT RENDERED here (plan
-  // turn-start-memory-two-class-2026-09-21, P-017; rationale in D-003). It
-  // rendered on every turn and produced zero observed action — the canonical
-  // signal-decay case: a row that is always present teaches the reader to skip
-  // the whole block. The provider and `OrientationState.improvementTriage`
-  // REMAIN so the full coord:orient payload keeps serving it on demand; only
-  // the unconditional per-turn line is withdrawn. The class-coverage guard
-  // records this as an entry in DELIBERATELY_UNRENDERED, because a dropped
-  // class is a decision, not a coverage gap.
-  if (state.held.length > 0) {
-    const shown = state.held.slice(0, HELD_DISPLAY_CAP);
-    const rest = state.held.length - shown.length;
-    const held = shown.map((h) => (h.status ? `${h.id} (${h.status})` : h.id)).join(', ');
-    lines.push(`- holding: ${held}${rest > 0 ? ` +${rest} more` : ''}`);
-  } else {
-    lines.push('- holding: nothing — claim before your first edit.');
-  }
-  if (state.announcedGates.length > 0) {
-    for (const warning of state.announcedGates.map((gate) => gate.warning).filter(Boolean)) {
-      lines.push(`- ⚠ ${compactHeadline(warning)}`);
-    }
-    lines.push(
-      `- announced gates: ${compactIds(
-        state.announcedGates.map((gate) => gate.event),
-        GATE_DISPLAY_CAP,
-      )}${state.announcedGates.length > GATE_DISPLAY_CAP ? ' — events:catalog for all' : ''}`,
-    );
-  }
-  for (const item of state.held.slice(0, CHECKPOINT_DISPLAY_CAP)) {
-    const line = renderCheckpointLine(item);
-    if (line) lines.push(line);
-  }
-  for (const entry of state.inboxRecent.slice(0, INBOX_DISPLAY_CAP)) {
-    lines.push(`- inbox ${compactActor(entry.from)}: ${compactHeadline(entry.summary)}`);
-  }
-  if (state.loopArmed) {
-    lines.push(
-      state.loopFireWithheld
-        ? '- engine loop: ARMED — fire pending, withheld for interactive turn.'
-        : '- engine loop: ARMED (a wake source exists).',
-    );
+  for (const segment of selectOrientationSegments('turn-start')) {
+    lines.push(...segment.render(state, committed));
   }
   return lines;
 }
+
 
 /**
  * PURE: compose the final injected block, or '' for "say nothing this turn".
