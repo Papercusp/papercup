@@ -2362,6 +2362,69 @@ describe('work_items:complete (keyed-array)', () => {
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
+    // WI-10002404: a pending-audit refusal that names no recovery lever is a closed loop —
+    // the same defect WI-10002063 fixed for the FAILED branch one ternary down. Measured
+    // 2026-09-22: 46 grading audits stranded (max 13.2d) while scorecards:repair, the
+    // callable path behind this very dispatcher, appeared nowhere a caller could see it.
+    it('names scorecards:repair as the recovery lever on a PENDING grading audit (WI-10002404)', async () => {
+      getWorkItem.mockResolvedValue(linkedFeature);
+      const pendingTargets = ['EI-pending-needs-a-lever'];
+      specTestAdequacyCompletionGate.mockResolvedValue({
+        ok: false,
+        applicable: true,
+        retryable: true,
+        reason: 'SPEC-004-01@1: no current terminal complete scorecard',
+        checked: [],
+        pendingGradingAuditTargetIds: pendingTargets,
+      });
+      dispatchPendingGradingAudits.mockResolvedValue({
+        requestedTargetIds: pendingTargets,
+        receipts: [
+          {
+            issueId: pendingTargets[0],
+            state: 'skipped' as const,
+            reason: 'another dispatcher already reserved this scorecard',
+          },
+        ],
+      });
+
+      const r = await one({
+        id: 'F-101',
+        state: 'passed',
+        completion: { summary: 'shipped', filesChanged: [behaviorChangePath] },
+        specAdequacy,
+      });
+
+      expect(r.ok).toBe(false);
+      const message = String(r.error ?? '');
+      // The lever itself — the whole point of the fix.
+      expect(message).toContain('scorecards:repair');
+      // The two misreadings that stranded cards: re-emitting, and repairing too early.
+      expect(message).toMatch(/DUPLICATE/i);
+      expect(message).toMatch(/15-minute reservation lease/i);
+
+      // Calibration + dead-weight guard. The PRE-FIX opening is deliberately kept here as a
+      // permanent counterexample: it must FAIL the lever assertion while the real message
+      // must still carry it verbatim. Without this pair a later "simplification" of the
+      // guidance could satisfy the assertions above vacuously.
+      //
+      // WI-10002440: this anchor was TRIMMED to the still-true opening. It previously ran on
+      // through "Declines and expiry advance the existing cascade.", which pinned a FALSE
+      // claim into the contract — asserting the message must contain it meant correcting the
+      // falsehood broke this test. Keep the calibration, not the error.
+      const preFixStableOpening =
+        'Retry after binding current proof, emitting terminal scorecards, and settling any pending grading audits. The existing router selects independent auditors automatically; the returned gradingAuditDispatch receipts identify routed conversations or bounded launch fallback.';
+      expect(preFixStableOpening).not.toContain('scorecards:repair');
+      expect(message).toContain(preFixStableOpening);
+
+      // The cascade does NOT advance on its own: dispatch at emit and at completion is
+      // one-shot, and the only periodic re-dispatcher (acceptance-grading-sweep) was paused
+      // on 2026-09-15 — precisely the state that stranded 46 cards for up to 13.2d. The old
+      // sentence also flatly contradicted the repair instruction that now follows it.
+      expect(message).not.toContain('Declines and expiry advance the existing cascade');
+      expect(message).toMatch(/only advances the cascade while a dispatcher actually RUNS/);
+    });
+
     it('honors explicit spec adequacy on a successful feature close with no changed paths', async () => {
       getWorkItem.mockResolvedValue(linkedFeature);
       const pendingTargets = ['EI-feature-verification-audit'];

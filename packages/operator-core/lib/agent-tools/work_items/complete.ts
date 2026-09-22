@@ -3239,7 +3239,13 @@ async function completeOne(
           pendingGradingAuditTargetIds?.length && failedGradingAuditTargetIds?.length
             ? 'Retry after binding current proof, emitting terminal scorecards, settling any pending grading audits, and repairing the failed grading-integrity findings before emitting fresh terminal scorecards.'
             : pendingGradingAuditTargetIds?.length
-              ? 'Retry after binding current proof, emitting terminal scorecards, and settling any pending grading audits. The existing router selects independent auditors automatically; the returned gradingAuditDispatch receipts identify routed conversations or bounded launch fallback. Declines and expiry advance the existing cascade.'
+              ? // WI-10002404: same closed-loop defect as WI-10002063 one branch down. This
+                // branch told the caller to "settle" the audit without naming ANY lever to
+                // settle it with, so the only recovery an agent could infer was re-emitting —
+                // which files a DUPLICATE card that takes its own reservation. scorecards:repair
+                // is the callable path behind this very dispatcher and was named nowhere a
+                // caller could see it (only an internal comment in agent-tools/index.ts).
+                'Retry after binding current proof, emitting terminal scorecards, and settling any pending grading audits. The existing router selects independent auditors automatically; the returned gradingAuditDispatch receipts identify routed conversations or bounded launch fallback. A decline or expiry only advances the cascade while a dispatcher actually RUNS: dispatch from scorecards:emit and from this completion path is ONE-SHOT, and the sole periodic re-dispatcher (the acceptance-grading-sweep routine) may be paused, in which case nothing re-dispatches on its own. A receipt of state:"skipped" reading "another dispatcher already reserved this scorecard" means a live dispatch already owns this card: WAIT for it (audits that settle take ~450s at p50) and do NOT re-emit — re-emitting files a DUPLICATE card that takes its own reservation and is never the retry path. If the audit is STILL pending once its 15-minute reservation lease has expired, re-dispatch it yourself with scorecards:repair { targetIds: [<the pendingGradingAuditTargetIds above>] }, the callable path behind this same dispatcher.'
               : failedGradingAuditTargetIds?.length
                 ? `Retry after repairing the failed grading-integrity findings for scorecard(s) ${failedGradingAuditTargetIds.join(', ')}, then emit fresh terminal scorecards through scorecards:emit.${
                     failedAuditReadRefs.length
