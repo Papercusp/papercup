@@ -465,6 +465,84 @@ export interface OrientationPlanDecisions {
   authorityReadFailed: boolean;
 }
 
+/**
+ * P-015: one lock TRANSITION for this owner — never a row of the lock table.
+ *
+ * The two transitions this class exists for are the ones an agent cannot
+ * observe from its own tool results: a grant that lands while the agent is
+ * parked (it queued, ended its turn, and the lock became its own), and the
+ * moment it becomes blocked behind a peer. A lock that was already held and
+ * still is has no transition and MUST render nothing — that steady state is
+ * the full-lock-table read this class refuses to be.
+ *
+ * `key` is the DIFF KEY and is deliberately IDENTITY-derived, never a
+ * timestamp (P-012 / D-071, the same rule `modes` carries): `acquired_ts` and
+ * `queued_ts` are on the rows, and keying on either would re-emit an unchanged
+ * holding every turn purely because the clock moved.
+ */
+export interface OrientationLockTransition {
+  /** `granted` — a path this owner was BLOCKED on is now held by it.
+   *  `blocked` — this owner is newly waiting behind another holder. */
+  kind: 'granted' | 'blocked';
+  /** Repo-relative path (or the reserved `@external/*` key acquire assigns). */
+  path: string;
+  /**
+   * The lock namespace the row was observed in. Load-bearing for `blocked`:
+   * `readQueue` is called with `coordinationDomain: null` (the documented
+   * diagnostic read — correct here because `owner` is globally unique), and a
+   * cross-domain read may only attribute a blocker WITHIN a domain, never
+   * across one. Two checkouts are two different files.
+   */
+  coordinationDomain: string;
+  /** `blocked` only: who holds it, their intent, and when their hold expires —
+   *  the three things that decide whether to wait, pivot, or ask. Absent on a
+   *  `granted` row, and absent when the holder read could not attribute one. */
+  holder?: { owner: string; ownerLabel: string | null; intent: string; expiresTs: string };
+}
+
+/**
+ * P-015: this owner's lock position as a MEASURED CURRENT OBSERVATION — NOT a
+ * pre-computed diff.
+ *
+ * The split matters and was got wrong once: STATE is what is true right now,
+ * and the DIFF against `committed` happens in `render`, exactly as
+ * `planDecisions`, `authorityVerdict` and `modes` do it. `resolveOrientationState`
+ * has no access to the committed cursor, so a state shape that already knew
+ * which rows "changed" would have to plumb the cursor through a seam that
+ * deliberately has none.
+ *
+ * `undefined` on the state field means UNREADABLE and renders nothing; empty
+ * `held`/`blocked` arrays are the measured-empty value and are a different,
+ * true claim. The distinction is load-bearing here for the same reason it is
+ * on `planDecisions`: the watermark preserves the committed token on
+ * unreadable, so a transient failure cannot erase the cursor and re-emit every
+ * standing block as if it were fresh.
+ */
+export interface OrientationLockTransitions {
+  /**
+   * `kind:'granted'` CANDIDATE rows — every lock this owner holds RIGHT NOW.
+   * A row renders only when the render-time diff says the owner was QUEUED on
+   * it last turn; a lock it already held, or one its own tool call just
+   * returned, is steady state and renders nothing.
+   */
+  held: OrientationLockTransition[];
+  /**
+   * `kind:'blocked'` CANDIDATE rows — every ticket this owner is waiting on,
+   * carrying the holder attributed within the same coordination domain.
+   */
+  blocked: OrientationLockTransition[];
+  /**
+   * The owner's full held+waiting IDENTITY set as observed this turn
+   * (`h:<domain>:<path>` per held row, `b:<domain>:<path>` per waiting row),
+   * which is what the watermark token encodes. It is carried SEPARATELY from
+   * the rows on purpose: the token must describe the whole observed state (so
+   * the next turn can diff against it), while only a subset of the rows ever
+   * renders. Encoding the token from the RENDERED rows alone would make a
+   * released lock invisible and re-emit its grant forever.
+   */
+  observed: string[];
+}
+
 export interface OrientationState {
   /** Non-terminal work-items assigned to this agent. */
   held: OrientationHeldItem[];
@@ -524,6 +602,19 @@ export interface OrientationState {
    * value and is a different, true claim.
    */
   planDecisions: OrientationPlanDecisions | undefined;
+  /**
+   * P-015: this owner's CURRENT lock position — held rows, waiting rows, and
+   * the observed identity set. The transition is computed in `render` by
+   * diffing this observation against the committed cursor; the state itself
+   * never sees that cursor.
+   *
+   * `undefined` means UNREADABLE (no reader, or the read threw) and renders
+   * NOTHING — never "no lock changed". The same rule `planDecisions` above
+   * carries, and it bites harder here: a false silence on the GRANTED half
+   * strands an agent that queued and parked, waiting for a wake about a lock
+   * it already owns. Empty `held`/`blocked` arrays are the measured-empty value.
+   */
+  lockTransitions: OrientationLockTransitions | undefined;
   /** Whether an engine loop is armed — i.e. whether a wake source exists. */
   loopArmed: boolean;
   /** Whether the armed loop's most recent fire was withheld before delivery. */
@@ -739,6 +830,14 @@ function undischargedObligationsOnly(state: OrientationState): OrientationState 
     // empty. `{ decisions: [] }` would be the "no new decisions" assertion
     // D-081 ruling 3 forbids building on anything but a real read.
     planDecisions: undefined,
+    // `undefined` for the same reason as `planDecisions` directly above: this
+    // projection did not read the lock queue, so it must not claim the
+    // measured-empty `{ held: [], blocked: [], observed: [] }`. That value would
+    // assert "nothing about your locks changed" from a read that never
+    // happened — and, worse than for decisions, it would WRITE an empty
+    // observed-set token, so the next real read would see every standing hold
+    // as new.
+    lockTransitions: undefined,
     loopArmed: true,
     loopFireWithheld: false,
     improvementTriage: null,
@@ -785,6 +884,14 @@ export function isEmptyOrientation(state: OrientationState): boolean {
     // must NOT hold it open — that would spend a block on a class that renders
     // nothing.
     (state.planDecisions?.decisions.length ?? 0) === 0 &&
+    // P-015: the same `?? 0` shape, and for the same reason — an UNREADABLE
+    // read must NOT hold the block open, because the class renders nothing on
+    // it and the block would have no visible cause. A measured-empty set is
+    // likewise quiet: no transition means no line, which is the steady state
+    // this class is defined to stay silent through.
+    (state.lockTransitions?.held.length ?? 0) +
+      (state.lockTransitions?.blocked.length ?? 0) ===
+      0 &&
     !state.loopArmed &&
     !state.loopFireWithheld &&
     // improvementTriage is NOT a conjunct here (P-017): it no longer renders,
@@ -999,6 +1106,24 @@ export function fingerprintOrientation(
       : typeof committed?.planDecisions === 'string'
         ? committed.planDecisions
         : '',
+    // P-015: the token is the whole OBSERVED held+waiting identity set, sorted
+    // — NOT the transitions, and NOT a timestamp (P-012 / D-071). Three
+    // properties follow, and all three are load-bearing:
+    //   1. IDENTITY, so a lock held unchanged across turns produces a
+    //      byte-identical token and the class stays silent — the steady state
+    //      this class is defined by.
+    //   2. The WHOLE observed set, so a RELEASE moves the token too. Encoding
+    //      only the transitions would leave a released lock in the cursor
+    //      forever and re-emit its grant on the next acquire.
+    //   3. Preserve-on-unreadable, exactly as `planDecisions` above: an
+    //      UNREADABLE read carries the committed token forward, so a transient
+    //      queue-read failure cannot erase the cursor and re-emit every
+    //      standing hold as a fresh grant on recovery.
+    locks: state.lockTransitions
+      ? [...state.lockTransitions.observed].sort().join(',')
+      : typeof committed?.locks === 'string'
+        ? committed.locks
+        : '',
     authority: state.authorityVerdict
       ? encodeAuthorityVerdict(state.authorityVerdict)
       : typeof committed?.authority === 'string'
@@ -1095,6 +1220,12 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
     // governing ruling is silently suppressed as "unchanged" — the class would
     // pass every render test while never firing on the turn that matters.
     (a.planDecisions ?? '') === (b.planDecisions ?? '') &&
+    // P-015, and the SAME required pairing every token above carries: the
+    // `locks` token written in fingerprintOrientation is INERT unless it is
+    // compared HERE. Drop this line and a grant that lands while the agent is
+    // parked is suppressed as "unchanged" — the class would pass every render
+    // test while never firing on the one turn it exists for.
+    (a.locks ?? '') === (b.locks ?? '') &&
     (a.obligations ?? '') === (b.obligations ?? '') &&
     // REQUIRED, and easy to omit: fingerprintOrientation writing a `facts` token
     // does nothing on its own — this whitelist is what decides re-emission. Without
@@ -1286,6 +1417,88 @@ function renderPlanDecisionLines(
   }
   if (fresh.length > 0 && planDecisions.authorityReadFailed) {
     lines.push('- ⚠ inbound-decision read FAILED — absence here is not evidence of no inbound authority.');
+  }
+  return lines;
+}
+
+/**
+ * P-015: how many transition rows render before the `+N more` pointer takes
+ * over. Deliberately small — this class exists to say "something changed under
+ * you", not to reproduce `locks:queue`.
+ */
+const LOCK_TRANSITION_DISPLAY_CAP = 3;
+
+/**
+ * P-015: the lines for lock TRANSITIONS since the committed cursor.
+ *
+ * The whole class lives in this diff. `lockTransitions` is the CURRENT
+ * observation — everything this owner holds and everything it waits on — and
+ * emitting that set would be the full lock table the item forbids. What
+ * renders is only what CHANGED:
+ *
+ *   GRANTED  `h:<d>:<p>` observed now AND `b:<d>:<p>` ∈ seen AND `h:<d>:<p>` ∉ seen
+ *   BLOCKED  `b:<d>:<p>` observed now AND ∉ seen
+ *
+ * The `b ∈ seen` conjunct on GRANTED is load-bearing and is what keeps the
+ * item's word "QUEUED" true: a lock acquired INSTANTLY by this agent's own
+ * `locks:acquire` call was already reported to it by that call's own result,
+ * so re-announcing it is noise. Only a grant that landed while the agent was
+ * PARKED — it queued, ended its turn, and the lock became its own — is news it
+ * cannot otherwise have.
+ *
+ * Steady state (held last turn, still held) therefore renders NOTHING. That
+ * silence is the point of the class, not a gap in it.
+ */
+function renderLockTransitionLines(
+  lockTransitions: OrientationLockTransitions | undefined,
+  committed: CursorState | null,
+): string[] {
+  // UNREADABLE is not "nothing changed" — the same rule `planDecisions` above
+  // carries. A false all-clear here strands the exact agent this class exists
+  // for: one that queued on a lock, parked, and is waiting to be told it now
+  // owns it.
+  if (!lockTransitions) return [];
+  const seen = new Set(
+    typeof committed?.locks === 'string' && committed.locks.length > 0
+      ? committed.locks.split(',')
+      : [],
+  );
+  const lines: string[] = [];
+
+  const granted = lockTransitions.held.filter((row) => {
+    const heldToken = `h:${row.coordinationDomain}:${row.path}`;
+    const waitedToken = `b:${row.coordinationDomain}:${row.path}`;
+    return seen.has(waitedToken) && !seen.has(heldToken);
+  });
+  const newlyBlocked = lockTransitions.blocked.filter(
+    (row) => !seen.has(`b:${row.coordinationDomain}:${row.path}`),
+  );
+
+  // BLOCKED first: it is the row that stops the agent's next action, where a
+  // grant merely enables one.
+  const rows = [...newlyBlocked, ...granted];
+  const shown = rows.slice(0, LOCK_TRANSITION_DISPLAY_CAP);
+  for (const row of shown) {
+    if (row.kind === 'granted') {
+      lines.push(`- lock granted: ${row.path}`);
+      continue;
+    }
+    if (!row.holder) {
+      // Never invent a holder. "You are blocked here" is the load-bearing
+      // half and still renders; the recovery verb supplies the rest.
+      lines.push(
+        `- blocked on ${row.path} — holder not attributed; locks:queue { paths: ['${row.path}'] }.`,
+      );
+      continue;
+    }
+    const who = row.holder.ownerLabel ?? row.holder.owner;
+    lines.push(
+      `- blocked on ${row.path} — held by ${who} (${row.holder.intent}, expires ${row.holder.expiresTs})`,
+    );
+  }
+  const rest = rows.length - shown.length;
+  if (rest > 0) {
+    lines.push(`- +${rest} more lock transition(s) — locks:queue { paths }.`);
   }
   return lines;
 }
@@ -1682,11 +1895,30 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
           if (live.length === 0) return [];
           const lines: string[] = [];
           for (const directive of live.slice(0, 2)) {
-            const text = directive.verbatimText.replace(/\s+/g, ' ').trim();
-            const excerpt = text.length > 110 ? `${text.slice(0, 109)}…` : text;
+            // DEFENSIVE, and load-bearing rather than belt-and-braces: this render
+            // runs on the turn-start hot path inside projectOrientationRows, which
+            // has NO per-segment error isolation — `for (const text of render(...))`
+            // propagates, so ONE throw here blanks the ENTIRE orientation banner
+            // (every class, every row) for that agent, on every turn. The blast
+            // radius of a malformed row is the whole block, not one line.
+            //
+            // A row with a missing/NULL recordedBy is REACHABLE, not hypothetical:
+            // WI-10002437 measured 41 damaged directive rows, and this very failure
+            // is how it surfaced — a coverage fixture written before P-007 added the
+            // required fields left recordedBy absent, and `.length` threw. So each
+            // field read here degrades to a labelled value instead of throwing.
+            const rawText = typeof directive.verbatimText === 'string' ? directive.verbatimText : '';
+            const text = rawText.replace(/\s+/g, ' ').trim();
+            const excerpt = text.length > 110 ? `${text.slice(0, 109)}…` : text || '(no text recorded)';
             // Same 12-char truncation as renderOwnerDirectiveRow (owner-directives.ts)
             // — reused rather than re-invented so one handle convention exists.
-            const by = directive.recordedBy.length > 12 ? directive.recordedBy.slice(0, 12) : directive.recordedBy;
+            // `unknown` is deliberately NOT a session id: it can never equal an
+            // ownerId, so an unattributable row can only ever render as NOT-mine.
+            const recordedBy =
+              typeof directive.recordedBy === 'string' && directive.recordedBy.length > 0
+                ? directive.recordedBy
+                : null;
+            const by = recordedBy === null ? 'unknown' : recordedBy.length > 12 ? recordedBy.slice(0, 12) : recordedBy;
             // NOTE: a segment `render` receives only (state, committed) — no ownerId
             // — so addressing is resolved in the READER, which does have it, and
             // arrives here as a decided boolean. Undecided (`undefined`) must fall to
@@ -1929,8 +2161,46 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
         // governing ruling constrains HOW the held work may be done, so it has
         // to be read before the list of that work, but after the mandate that
         // frames both.
-        order: 90,
+        //
+        // 95, NOT 90 (WI-10002446). This segment shipped at 90 — an order
+        // `loopArmed` already held. A duplicated `order` leaves the emitted
+        // sequence non-deterministic BETWEEN ENGINES, which is the precise
+        // failure the registry's unique-order guard exists to prevent, so the
+        // collision was a live instability rather than a cosmetic tie. 95
+        // satisfies the stated intent above unchanged (below modes:85 and
+        // loopArmed:90, above held:100) while leaving loopArmed's long-pinned
+        // slot alone — the fix is one number, not a re-homing of a segment
+        // another lane placed deliberately.
+        order: 95,
         render: ({ planDecisions }, _state, committed) => renderPlanDecisionLines(planDecisions, committed),
+      },
+    ],
+  }),
+
+  orientationClass<{ lockTransitions: OrientationLockTransitions | undefined }>({
+    id: 'lockTransitions',
+    // LOCK_TRANSITION_DISPLAY_CAP transition rows + the `+N more` pointer. No
+    // disclosure rows to budget for: an unreadable observation renders NOTHING
+    // here (see renderLockTransitionLines), so unlike `planDecisions` there is
+    // no partial-read line that can appear alongside the list.
+    rowCeiling: { maxRows: LOCK_TRANSITION_DISPLAY_CAP + 1, recoveryVerb: 'locks:queue { paths }' },
+    watermarkTokens: ['locks'],
+    applicableSinks: TURN_START,
+    populate: (state) => ({ lockTransitions: state.lockTransitions }),
+    segments: [
+      {
+        // 97: below the governing ruling (planDecisions:95) and above the
+        // held-item rows (100). A lock transition is a fact about whether the
+        // agent can ACT on the work listed below it — a grant unblocks one of
+        // those rows, a block stops one — so it belongs with that work, not
+        // with the mandate that frames it.
+        //
+        // 96 and 98 are equally free; 97 leaves a slot on either side for a
+        // future neighbour without re-homing anyone. Orders are unique-guarded
+        // (WI-10002446): a duplicate leaves the emitted sequence
+        // non-deterministic between engines.
+        order: 97,
+        render: ({ lockTransitions }, _state, committed) => renderLockTransitionLines(lockTransitions, committed),
       },
     ],
   }),
@@ -2566,6 +2836,20 @@ export interface OrientationDeps {
    * typecheck instead of rendering silence forever.
    */
   planDecisions: (ownerId: string, workspaceId: string) => Promise<OrientationPlanDecisions | undefined>;
+  /**
+   * P-015: this owner's lock transitions, from the SHARED `readQueue` reader —
+   * never a query against the lock tables.
+   *
+   * REQUIRED for the third time in this interface, and for the same reason
+   * `openChecks` and `planDecisions` above are (EI-23953846527835643): an
+   * OPTIONAL dep lets a class land declared, registered, watermarked and
+   * rendered while production populates NOTHING, because the coverage guard
+   * supplies the state itself and so proves only the RENDER path.
+   */
+  lockTransitions: (
+    ownerId: string,
+    workspaceId: string,
+  ) => Promise<OrientationLockTransitions | undefined>;
   inbox: (ownerId: string) => Promise<{
     count: number;
     newest: OrientationInboxEntry[];
@@ -2654,6 +2938,7 @@ export async function resolveOrientationState(
     modes,
     authorityVerdict,
     planDecisions,
+    lockTransitions,
     loopArmed,
     loopFireWithheld,
     improvementTriage,
@@ -2664,7 +2949,7 @@ export async function resolveOrientationState(
     carryBlindWindow,
   ] = await Promise.all([
     d.held(ownerId, workspaceId).catch(() => [] as OrientationHeldItem[]),
-    ownerDirectivesReader(workspaceId).catch(() => [] as OrientationOwnerDirective[]),
+    ownerDirectivesReader(workspaceId, ownerId).catch(() => [] as OrientationOwnerDirective[]),
     // Unknown must remain distinct from measured-empty. Otherwise a transient
     // read failure advances the shared cursor past history the agent never saw.
     d.historyUpdates(ownerId, workspaceId).catch(() => undefined),
@@ -2696,6 +2981,12 @@ export async function resolveOrientationState(
     // did not happen, and the fingerprint would then advance the cursor past
     // rulings the agent never saw — so the decisions would never re-render.
     d.planDecisions(ownerId, workspaceId).catch(() => undefined),
+    // P-015: fail-soft to UNDEFINED, never a measured-empty
+    // `{ held: [], blocked: [], observed: [] }`. The empty value is worse here
+    // than for decisions: `observed` is what the watermark token encodes, so a
+    // failed read that claimed measured-empty would WRITE an empty token — and
+    // the next GOOD read would then see every standing hold as newly granted.
+    d.lockTransitions(ownerId, workspaceId).catch(() => undefined),
     d.loopArmed(ownerId).catch(() => false),
     d.loopFireWithheld(ownerId).catch(() => false),
     d.improvementTriage(workspaceId).catch(() => null),
@@ -2734,6 +3025,7 @@ export async function resolveOrientationState(
     modes,
     authorityVerdict,
     planDecisions,
+    lockTransitions,
     loopArmed,
     loopFireWithheld,
     improvementTriage,
@@ -2817,7 +3109,116 @@ export function defaultOrientationDeps(): OrientationDeps {
         return undefined;
       }
     },
-    ownerDirectives: async (workspaceId) => {
+    /**
+     * P-015: this owner's CURRENT lock position, via the SHARED `readQueue`
+     * reader `locks:queue` itself uses — never a query against the lock tables.
+     *
+     * `coordinationDomain: null` is the documented cross-checkout DIAGNOSTIC
+     * read (su-lock-store.ts), and is correct for an owner-scoped question
+     * because `owner` is globally unique. But a BLOCKER may only be attributed
+     * WITHIN a domain: two checkouts holding the same repo-relative path are
+     * two different files, so the holder join below is keyed on
+     * `(coordinationDomain, path)` and never on path alone.
+     *
+     * Cost: ONE owner-scoped read on the common path. `WaiterRow` does not
+     * carry the holder's owner/intent (only `holder_expires_ts`), so a SECOND,
+     * paths-scoped read supplies the holder — fired only when this owner is
+     * actually waiting on something, which is the rare case. That is what
+     * keeps the class off the turn-start budget.
+     */
+    lockTransitions: async (ownerId, _workspaceId) => {
+      try {
+        const { ensureBootstrap, getTxPool, readQueue } = await import(
+          './agent-tools/locks/su-lock-store'
+        );
+        await ensureBootstrap();
+        const sql = getTxPool();
+        const mine = await readQueue(sql, { coordinationDomain: null, owner: ownerId });
+
+        const held: OrientationLockTransition[] = mine.active_locks.map((row) => ({
+          kind: 'granted' as const,
+          path: row.path,
+          coordinationDomain: row.coordination_domain,
+        }));
+
+        // One waiter TICKET can span several paths; each path is its own
+        // potential block, so the rows are per-path, not per-ticket.
+        const waiting = mine.waiting.flatMap((row) =>
+          row.paths.map((path) => ({ path, coordinationDomain: row.coordination_domain })),
+        );
+
+        let blocked: OrientationLockTransition[] = waiting.map((w) => ({
+          kind: 'blocked' as const,
+          path: w.path,
+          coordinationDomain: w.coordinationDomain,
+        }));
+
+        // Only now — and only if this owner is waiting on anything — pay for
+        // the holder read. A `blocked` line without its holder still renders:
+        // "you are blocked here" is the load-bearing half, and a holder the
+        // read could not attribute must NOT be invented.
+        if (waiting.length > 0) {
+          try {
+            const holders = await readQueue(sql, {
+              coordinationDomain: null,
+              paths: [...new Set(waiting.map((w) => w.path))],
+            });
+            // JSON-encoded pair rather than a joined string: the key must be
+            // injective over (domain, path), and both halves are filesystem
+            // text that can contain any separator one might pick.
+            const byPathDomain = new Map<string, (typeof holders.active_locks)[number]>();
+            for (const row of holders.active_locks) {
+              // Never map this owner's own row onto a peer's: a self-held path
+              // is not a block on this owner.
+              if (row.owner === ownerId) continue;
+              byPathDomain.set(JSON.stringify([row.coordination_domain, row.path]), row);
+            }
+            blocked = blocked.map((row) => {
+              const holder = byPathDomain.get(
+                JSON.stringify([row.coordinationDomain, row.path]),
+              );
+              return holder
+                ? {
+                    ...row,
+                    holder: {
+                      owner: holder.owner,
+                      ownerLabel: holder.owner_label ?? null,
+                      intent: holder.intent,
+                      // `expires_ts` comes back as a Date from the lock store.
+                      // The line is read by an agent, so normalise to ISO-8601
+                      // here rather than letting a locale-dependent
+                      // `toString()` decide at template-interpolation time.
+                      expiresTs:
+                        holder.expires_ts instanceof Date
+                          ? holder.expires_ts.toISOString()
+                          : String(holder.expires_ts),
+                    },
+                  }
+                : row;
+            });
+          } catch {
+            // The holder read is an ENRICHMENT. Losing it must not lose the
+            // block itself, and must not downgrade the whole class to
+            // unreadable — that would erase the cursor over a detail.
+          }
+        }
+
+        return {
+          held,
+          blocked,
+          // The token set: the WHOLE observed position, held and waiting
+          // alike. Sorting happens at the fingerprint; membership is what the
+          // render diff tests.
+          observed: [
+            ...held.map((row) => `h:${row.coordinationDomain}:${row.path}`),
+            ...blocked.map((row) => `b:${row.coordinationDomain}:${row.path}`),
+          ],
+        };
+      } catch {
+        return undefined;
+      }
+    },
+    ownerDirectives: async (workspaceId, ownerId) => {
       const { listOpenOwnerDirectives } = await import('./owner-directives');
       const rows: OwnerDirectiveRow[] = await listOpenOwnerDirectives(workspaceId, 12);
       const live = rows.filter(
@@ -2852,6 +3253,8 @@ export function defaultOrientationDeps(): OrientationDeps {
         // rail has always mapped both; this is the same mapping, not a new source.
         recordedBy: row.recordedBy,
         capturedByHook: row.capturedByHook === true,
+        // LABEL, not filter — every row is returned either way (D-004).
+        addressedToMe: row.recordedBy === ownerId,
         status: deriveDirectiveStatus(row, byDirective.get(row.id) ?? []),
       }));
     },
