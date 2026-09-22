@@ -1,0 +1,213 @@
+/**
+ * owner-directive-agenda — PER-SESSION agenda state for owner directives.
+ *
+ * Companion to `owner-directives.ts`, deliberately a separate module because it
+ * answers a DIFFERENT question about the same row, and the whole defect this
+ * exists to fix was those two questions sharing one column.
+ *
+ *   owner-directives.ts  → "is this really an owner directive, and is it done?"
+ *                          GLOBAL facts about the directive.
+ *   this module          → "has THIS session discharged this row from ITS OWN
+ *                          banner?" A fact about a session.
+ *
+ * ORIGIN (plan `directive-visibility-and-ownership-2026-09-22`, D-008). Two
+ * peers measured contradictory bugs within 25 minutes:
+ *
+ *   (A) su-ebc936c4 / WI-10002437 — `capture_status` is ONE directive-scoped
+ *       column, so ANY agent's correct "not my lane" dismissal clears the row
+ *       for EVERY session, including the one the owner was addressing.
+ *       Existence proof: directive #96, the owner's own pause order typed into
+ *       su-ebc936c4's lane, dismissed by su-c03852cb at 15:12:43Z. Irreversible.
+ *
+ *   (B) su-14342fa6 — refusing FOREIGN resolution strands every foreign row in
+ *       every agent's Orientation forever, because a foreign row is exactly the
+ *       row you can never clear.
+ *
+ * Under one shared column no setting satisfies both: tighten it and you strand,
+ * loosen it and you erase. They are separated here by SCOPE. The directive row
+ * stays immutable, workspace-global owner speech; agenda state becomes
+ * per-(directive, session). Then (A) cannot occur — a dismissal is no longer
+ * global — and (B) cannot occur — clearing your OWN agenda row is always
+ * permitted, which is the only thing you were ever entitled to clear.
+ *
+ * ⚠ THE TWO GUARDS BELOW MUST NEVER SHARE A CALL SITE. D-008 is explicit that
+ * refusing foreign ACTION and refusing foreign AGENDA-CLEARING are different
+ * operations and must not share a guard. They are exported as two functions
+ * with deliberately asymmetric shapes — one returns a verdict object, the other
+ * does not exist at all, because agenda-clearing has NO foreign check by
+ * construction. If you ever find yourself adding an ownership test to the
+ * clear path, re-read D-008: that is defect (B), and it was designed into this
+ * plan once already before a peer caught it.
+ *
+ * ABSENCE IS THE DEFAULT. A (directive, session) pair with no row has simply
+ * not acted. This keeps the table proportional to actions rather than to
+ * sessions × directives, lets a NEW session inherit the correct agenda with no
+ * backfill, and makes the repair of the 47 measured foreign-dismissed rows a
+ * matter of absence rather than of reconstructing an overwritten state.
+ */
+import type { Sql } from 'postgres';
+import { getOrgPg } from '@papercusp/db-org';
+
+function db(sql?: Sql): Sql {
+  return sql ?? getOrgPg().sql;
+}
+
+/**
+ * NON-terminal work-item statuses, as an explicit ALLOWLIST.
+ *
+ * Deliberately not the complement of a terminal denylist. This set decides
+ * whether a work-item still confers authority over an owner's directive, so it
+ * must fail CLOSED: a status nobody here anticipated should grant NOTHING.
+ * Measured 2026-09-22, `harness_shared.work_items.status` holds eleven distinct
+ * values — open, done, resolved, dropped, closed, blocked, passed, todo,
+ * needs-human, deprecated, wip — and an earlier draft of this guard listed four
+ * terminal ones, which would have silently treated `deprecated` and `passed`
+ * as live and handed their assignee authority it should not have.
+ */
+const NON_TERMINAL_WORK_ITEM_STATUSES = ['open', 'wip', 'todo', 'blocked', 'needs-human'] as const;
+
+export type DirectiveAgendaState = 'open' | 'dismissed';
+
+export interface DirectiveAgendaRow {
+  workspaceId: string;
+  directiveId: number;
+  ownerId: string;
+  state: DirectiveAgendaState;
+  reason: string | null;
+  actedAt: string;
+}
+
+/**
+ * Clear one directive from THIS session's banner.
+ *
+ * Unconditional by design — there is no ownership check here and there must
+ * never be one. Clearing a FOREIGN directive from your own agenda is the
+ * correct, expected operation: you are not the addressee, so it is noise to
+ * you, and D-004 keeps it VISIBLE rather than filtered precisely so you can see
+ * what peers are doing. What you are not entitled to do is act on it, which is
+ * a different verb guarded by `directiveActionVerdict` below.
+ *
+ * Idempotent: re-clearing updates the reason and timestamp rather than
+ * erroring, because an agent re-clearing a row it already cleared is a no-op
+ * from the user's point of view and an error there would be pure friction.
+ */
+export async function clearDirectiveFromAgenda(
+  input: { directiveId: number; ownerId: string; workspaceId: string; reason: string },
+  sql?: Sql,
+): Promise<{ ok: true; state: DirectiveAgendaState }> {
+  const s = db(sql);
+  const reason = input.reason.trim();
+  await s`
+    INSERT INTO harness_shared.owner_directive_agenda
+      (workspace_id, directive_id, owner_id, state, reason, acted_at)
+    VALUES (${input.workspaceId}, ${input.directiveId}, ${input.ownerId}, 'dismissed', ${reason}, now())
+    ON CONFLICT (workspace_id, directive_id, owner_id)
+    DO UPDATE SET state = 'dismissed', reason = ${reason}, acted_at = now()
+  `;
+  return { ok: true, state: 'dismissed' };
+}
+
+/**
+ * Put a directive BACK on this session's banner after clearing it — the
+ * reversibility that makes clearing a safe, low-stakes action.
+ *
+ * This is the half the old global column could not offer at all: a dismissal
+ * was irreversible (`orders:resolve-pending promote` returns `not_pending`
+ * afterwards), which is why #96 was a permanent loss rather than a nuisance.
+ */
+export async function restoreDirectiveToAgenda(
+  input: { directiveId: number; ownerId: string; workspaceId: string },
+  sql?: Sql,
+): Promise<{ ok: true; state: DirectiveAgendaState }> {
+  const s = db(sql);
+  await s`
+    INSERT INTO harness_shared.owner_directive_agenda
+      (workspace_id, directive_id, owner_id, state, reason, acted_at)
+    VALUES (${input.workspaceId}, ${input.directiveId}, ${input.ownerId}, 'open', NULL, now())
+    ON CONFLICT (workspace_id, directive_id, owner_id)
+    DO UPDATE SET state = 'open', reason = NULL, acted_at = now()
+  `;
+  return { ok: true, state: 'open' };
+}
+
+/**
+ * The directive ids THIS session has cleared — what the Orientation renderer
+ * subtracts before rendering.
+ *
+ * Returns a Set rather than a list because every caller is asking a membership
+ * question per rendered row, and a list there turns one render into an O(n·m)
+ * scan over a block that is already on the hot per-turn path.
+ */
+export async function listClearedDirectiveIds(
+  input: { ownerId: string; workspaceId: string },
+  sql?: Sql,
+): Promise<Set<number>> {
+  const s = db(sql);
+  const rows = await s<Array<{ directive_id: string | number }>>`
+    SELECT directive_id
+      FROM harness_shared.owner_directive_agenda
+     WHERE workspace_id = ${input.workspaceId}
+       AND owner_id = ${input.ownerId}
+       AND state = 'dismissed'
+  `;
+  return new Set(rows.map((r) => Number(r.directive_id)));
+}
+
+export type DirectiveActionVerdict =
+  | { allowed: true; because: 'addressee' | 'holds-linking-work-item' }
+  | { allowed: false; addressedTo: string; holders: string[] };
+
+/**
+ * May THIS session ACT on this directive — promote it, or disposition it
+ * done/declined?
+ *
+ * This is the guard D-008 kept, and it is deliberately NOT applied to the
+ * clear path. Acting on a directive asserts something about the OWNER'S ORDER
+ * — that it is genuine, or that it has been carried out. Only two parties can
+ * truthfully assert that:
+ *
+ *   1. the session the owner was addressing (`recorded_by`), or
+ *   2. a session that actually holds work carrying it — a non-terminal
+ *      work-item whose `directive_ref` names this directive (migration 1194,
+ *      P-005). This is what lets work legitimately change hands without the
+ *      directive becoming unactionable.
+ *
+ * Rationale from the incident this plan exists for: on 2026-09-22 the acting
+ * agent had `recordedBy` one `orders:get` away and read past it, because the
+ * banner rendered a carry-out imperative and it believed it. A LABEL alone
+ * would not have stopped it — the refusal is what prevents recurrence, and the
+ * label (P-007) is what makes the refusal legible rather than mysterious.
+ *
+ * The refusal names the addressee AND any current holders so the caller's next
+ * move is obvious: message them, or clear it from your own agenda instead.
+ */
+export async function directiveActionVerdict(
+  input: { directiveId: number; ownerId: string; workspaceId: string },
+  sql?: Sql,
+): Promise<DirectiveActionVerdict | { allowed: false; notFound: true }> {
+  const s = db(sql);
+  const rows = await s<Array<{ recorded_by: string }>>`
+    SELECT recorded_by FROM harness_shared.owner_directives
+     WHERE id = ${input.directiveId} AND workspace_id = ${input.workspaceId}
+  `;
+  const directive = rows[0];
+  if (!directive) return { allowed: false, notFound: true };
+
+  if (directive.recorded_by === input.ownerId) return { allowed: true, because: 'addressee' };
+
+  // Non-terminal is the load-bearing word: a DONE work-item that once carried
+  // this directive must not keep granting its assignee authority over the
+  // owner's order forever. Expressed as an allowlist so an unrecognised status
+  // grants nothing — see NON_TERMINAL_WORK_ITEM_STATUSES.
+  const holders = await s<Array<{ assignee: string | null }>>`
+    SELECT assignee FROM harness_shared.work_items
+     WHERE workspace_id = ${input.workspaceId}
+       AND directive_ref = ${input.directiveId}
+       AND status = ANY(${[...NON_TERMINAL_WORK_ITEM_STATUSES]}::text[])
+       AND assignee IS NOT NULL
+  `;
+  const holderIds = holders.map((h) => h.assignee!).filter(Boolean);
+  if (holderIds.includes(input.ownerId)) return { allowed: true, because: 'holds-linking-work-item' };
+
+  return { allowed: false, addressedTo: directive.recorded_by, holders: [...new Set(holderIds)] };
+}
