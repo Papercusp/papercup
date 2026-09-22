@@ -328,6 +328,68 @@ export const DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES: Readonly<
   ],
 };
 
+/**
+ * The verification kinds a READY verdict for `agent` may legitimately carry, DERIVED from the
+ * probe table above rather than restated by each consumer.
+ *
+ * WI-10002402. Four call sites had each hand-copied this rule as a literal
+ * (`authenticated-account`, or `local-inference` when the agent is omp), and the copies had
+ * drifted from the table they describe — in opposite directions, so no two agreed:
+ *
+ * - Three of them (the canary evidence validator, the remote initializer's evidence assembler,
+ *   and the initialization verifier) demanded `authenticated-account` for claude. Claude's spec
+ *   set CANNOT emit that kind at all: its `authenticated-account` probe was deliberately removed
+ *   (WI-10001689) because it could never pass AND was forgeable — `claude auth status` reads its
+ *   subject from an ordinary writable JSON file and never contacts the endpoint it names, so an
+ *   invented token beside a hand-written `oauthAccount` block matched SUBJECT_PATTERN. Those
+ *   three sites therefore rejected a live GCP canary for presenting the STRONGER evidence that
+ *   deliberately replaced it, and no credential could ever have satisfied them.
+ * - The fourth (agent credential admission) already allowed `live-inference` for non-omp agents,
+ *   which is why the disagreement surfaced a layer later instead of at admission.
+ *
+ * Deriving it removes the class: a probe added, retired, or re-keyed moves every consumer with
+ * it, and a spec that cannot mark readiness cannot be presented as readiness evidence. Readiness
+ * is the filter (v4 / WI-10001694): codex's `authenticated-account` probe is
+ * `satisfiesReadiness: false` — it records WHO the credential claims to be, and only an
+ * inference probe may mark the agent ready — so it is correctly absent from this set.
+ */
+export function workspaceHostAgentAllowedVerificationKinds(
+  agent: WorkspaceHostCanaryAgent,
+  probes: Readonly<
+    Record<
+      WorkspaceHostCanaryAgent,
+      readonly WorkspaceHostAgentVerificationProbeSpec[]
+    >
+  > = DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES,
+): ReadonlySet<WorkspaceHostAgentVerificationKind> {
+  return new Set(
+    (probes[agent] ?? [])
+      .filter(workspaceHostAgentSpecSatisfiesReadiness)
+      .map((spec) => spec.verificationKind),
+  );
+}
+
+/**
+ * True when `kind` is a readiness-capable verification kind for `agent`.
+ *
+ * Consumers should prefer this over an inline literal comparison; see
+ * {@link workspaceHostAgentAllowedVerificationKinds} for why.
+ */
+export function workspaceHostAgentVerificationKindIsAllowed(
+  agent: WorkspaceHostCanaryAgent,
+  kind: unknown,
+  probes?: Readonly<
+    Record<
+      WorkspaceHostCanaryAgent,
+      readonly WorkspaceHostAgentVerificationProbeSpec[]
+    >
+  >,
+): boolean {
+  return workspaceHostAgentAllowedVerificationKinds(agent, probes).has(
+    kind as WorkspaceHostAgentVerificationKind,
+  );
+}
+
 export const DEFAULT_WORKSPACE_HOST_AGENT_PROBE_TIMEOUT_MS = 60_000;
 
 /**

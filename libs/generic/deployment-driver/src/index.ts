@@ -513,6 +513,8 @@ export {
   NodeWorkspaceHostAgentProbeRunner,
   workspaceHostAgentSubjectDigest,
   workspaceHostAgentSpecSatisfiesReadiness,
+  workspaceHostAgentAllowedVerificationKinds,
+  workspaceHostAgentVerificationKindIsAllowed,
   applyWorkspaceHostAgentRuntimePath,
   probeWorkspaceHostAgentVerification,
   probeWorkspaceHostAgents,
