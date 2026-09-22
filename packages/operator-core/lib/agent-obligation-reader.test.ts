@@ -177,13 +177,18 @@ describe('shared agent obligation reader', () => {
       // empty queue is reported as a measured not-applicable rather than as the
       // class being absent — those two must never render identically.
       ['owner-directive', 'not-applicable'],
+      // 'due', not 'blocked': D-009 ruling 3 split `graderGap` into `isDelegable`
+      // (grader only) and `isActionable` (grader OR author repair). This fixture's
+      // gate code is `acceptance_rubric_missing`, which is AUTHOR-owned, so the
+      // author can act this second. Rendering it `[BLOCKED]` told the one agent
+      // who CAN act that it cannot — which is the defect that ruling removed.
+      ['independent-verification', 'due'],
       // P-011: same unconditional-assembly contract as owner-directive above. A
       // session waiting on nothing must report a MEASURED not-applicable; if the
       // family were assembled only when rows exist, "no wait" and "the read never
       // ran" would render identically — and the silent-expire await this class
       // exists to surface is exactly what would vanish into that gap.
       ['waiting-on', 'not-applicable'],
-      ['independent-verification', 'blocked'],
     ]);
     expect(read.agenda.primary[0]?.family).toBe('independent-verification');
     expect(read.degradedSources).toEqual([]);
