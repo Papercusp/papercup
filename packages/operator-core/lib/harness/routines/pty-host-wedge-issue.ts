@@ -29,6 +29,7 @@
  * bookkeeping must never take down the detector that found an active outage.
  */
 import type { EngineerIssue, IssueSeverity } from '../../issues-engineer';
+import type { BornAdmission } from '../../work-items-admission';
 import type { WakeDeliveryHealth } from './psu-pty-delivery-rate';
 import { renderWakeDeliveryHealth } from './psu-pty-delivery-rate';
 
