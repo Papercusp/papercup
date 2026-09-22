@@ -37,6 +37,10 @@ const PEER = 'su-51a6b83f-a691-4e44-b550-0adfe7a0d3c5';
  * a neighbour. Mirrors the baseline in turn-start-orientation-class-coverage.
  */
 const BASELINE: OrientationState = {
+  // Required on OrientationState as of the P-015 lock-transition class. Explicit
+  // `undefined` (not omission) so this stays valid whether that field settles as
+  // required or optional, and so the quiet shape is stated rather than implied.
+  lockTransitions: undefined,
   planDecisions: undefined,
   held: [],
   unansweredDirected: 0,
@@ -197,6 +201,50 @@ describe('P-007 owner-directive buckets', () => {
 
     it('a HOOK-captured row carries no such qualifier', () => {
       expect(lines(directive({ capturedByHook: true }))[0]).not.toContain('owner-candidate');
+    });
+  });
+
+  describe('a malformed row degrades, and must never take the banner down', () => {
+    /**
+     * projectOrientationRows has NO per-segment error isolation: it iterates
+     * `for (const text of render(state, committed))`, so a throw inside ANY
+     * segment propagates and blanks the ENTIRE orientation block — every class,
+     * every row, for that agent, on every turn.
+     *
+     * This is not hypothetical. It is how the fixture strand below was found
+     * (`Cannot read properties of undefined (reading 'length')`), and
+     * WI-10002437 measured 41 damaged directive rows in the live workspace, so
+     * a row with a missing recordedBy is reachable from real data.
+     */
+    it('a row with NO recordedBy renders as unattributable instead of throwing', () => {
+      const malformed = { ...directive(), addressedToMe: undefined } as OrientationOwnerDirective;
+      delete (malformed as Partial<OrientationOwnerDirective>).recordedBy;
+
+      expect(() => lines(malformed)).not.toThrow();
+      const [line] = lines(malformed);
+      expect(line).toContain('unknown');
+      // An unattributable row can NEVER be claimed as mine: `unknown` is not a
+      // session id, so it cannot collide with a real ownerId.
+      expect(line).not.toContain('YOURS');
+    });
+
+    it('a row with NO verbatimText still renders, labelled, rather than throwing', () => {
+      const malformed = { ...directive() } as OrientationOwnerDirective;
+      delete (malformed as Partial<OrientationOwnerDirective>).verbatimText;
+
+      expect(() => lines(malformed)).not.toThrow();
+      expect(lines(malformed)[0]).toContain('(no text recorded)');
+    });
+
+    it('CALIBRATION — one malformed row does not suppress a well-formed sibling', () => {
+      // The property that actually matters. If the throw ever returns, this is
+      // the assertion that states the cost: the good row disappears too.
+      const malformed = { ...directive({ id: 1 }) } as OrientationOwnerDirective;
+      delete (malformed as Partial<OrientationOwnerDirective>).recordedBy;
+
+      const rendered = lines(malformed, directive({ id: 2, verbatimText: 'well formed' }));
+      expect(rendered).toHaveLength(2);
+      expect(rendered[1]).toContain('well formed');
     });
   });
 
