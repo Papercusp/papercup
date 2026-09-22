@@ -4861,3 +4861,87 @@ describe('observeKickoffModelTurnStart (WI-2140591 — a marker proves SUBMISSIO
     expect(result).toMatchObject({ started: false, observed: true, polls: 2 });
   });
 });
+
+describe('makeCarryRearmController — R-1 deferral→outcome join key (rubric rev 8, su-091ad703 finding 5)', () => {
+  // Before this, a re-armed `turn` whose performDelivery returned
+  // delivered:false settled with NO terminal row, and no row carried an id —
+  // so "N queued, M delivered" could not see one abandoned deferral among
+  // hundreds of deliveries. These pin: every production re-arm reaches exactly
+  // one terminal row, and that row names every delivery id it settles.
+  type Ev = { kind: string; [k: string]: any };
+  const TERMINAL = new Set(['wake-rearm-delivered', 'wake-rearm-dropped']);
+
+  function harness({
+    promptResults = [{ deferred: false }] as Array<{ deferred: boolean }>,
+    deliver = async (): Promise<{ delivered: boolean; reason?: string }> => ({ delivered: true }),
+  } = {}) {
+    const events: Ev[] = [];
+    let promptCalls = 0;
+    const controller = makeCarryRearmController({
+      acquireInject: async () => () => {},
+      waitAtPrompt: async () => {
+        const r = promptResults[Math.min(promptCalls, promptResults.length - 1)];
+        promptCalls += 1;
+        return r;
+      },
+      recycle: async () => {},
+      performDelivery: deliver,
+      emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
+      capMs: 10,
+    });
+    const drain = async () => {
+      for (let i = 0; i < 10; i += 1) await new Promise((r) => setImmediate(r));
+    };
+    return { controller, events, drain };
+  }
+
+  /** Every queued deliveryId must appear in EXACTLY one terminal row. */
+  function unjoined(events: Ev[]): string[] {
+    const queued = events.filter((e) => e.kind === 'wake-rearm-queued').map((e) => String(e.deliveryId));
+    const settled = events.filter((e) => TERMINAL.has(e.kind)).flatMap((e) => (e.deliveryIds ?? []) as string[]);
+    return queued.filter((id) => settled.filter((s) => s === id).length !== 1);
+  }
+
+  it('a delivered re-arm emits wake-rearm-delivered naming the delivery id', async () => {
+    const h = harness();
+    expect(h.controller.schedule({ mode: 'turn', data: 'wake', deliveryId: 'd-1' })).toBe('queued');
+    expect(h.events[0]).toMatchObject({ kind: 'wake-rearm-queued', mode: 'turn', deliveryId: 'd-1' });
+    await h.drain();
+    const terminal = h.events.filter((e) => TERMINAL.has(e.kind));
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]).toMatchObject({ kind: 'wake-rearm-delivered', reason: 'delivered', deliveryIds: ['d-1'] });
+    expect(unjoined(h.events)).toEqual([]);
+  });
+
+  it('an UNDELIVERED re-arm is no longer silent: it emits wake-rearm-dropped with the verifier reason', async () => {
+    const h = harness({ deliver: async () => ({ delivered: false, reason: 'exhausted' }) });
+    h.controller.schedule({ mode: 'turn', data: 'wake', deliveryId: 'd-2' });
+    await h.drain();
+    const terminal = h.events.filter((e) => TERMINAL.has(e.kind));
+    expect(terminal).toEqual([
+      expect.objectContaining({ kind: 'wake-rearm-dropped', reason: 'exhausted', deliveryIds: ['d-2'] }),
+    ]);
+    expect(unjoined(h.events)).toEqual([]);
+  });
+
+  it('a supersede folds the later id into the SAME terminal row, so both join', async () => {
+    const h = harness({ promptResults: [{ deferred: true }, { deferred: false }] });
+    expect(h.controller.schedule({ mode: 'turn', data: 'a', deliveryId: 'd-a' })).toBe('queued');
+    expect(h.controller.schedule({ mode: 'turn', data: 'b', deliveryId: 'd-b' })).toBe('superseded');
+    await h.drain();
+    const terminal = h.events.filter((e) => TERMINAL.has(e.kind));
+    expect(terminal).toHaveLength(1);
+    expect([...terminal[0].deliveryIds].sort()).toEqual(['d-a', 'd-b']);
+  });
+
+  it('carry-respawn keeps its verbatim kinds — no wake-rearm-delivered row is invented for it', async () => {
+    const h = harness();
+    h.controller.schedule({ mode: 'carry-respawn', data: 'carry', deliveryId: 'd-c' });
+    await h.drain();
+    expect(h.events.map((e) => e.kind)).toEqual(['respawn-rearm-queued']);
+  });
+
+  it('CONTROL: the join check is not vacuous — a queued id with no terminal row is reported', () => {
+    expect(unjoined([{ kind: 'wake-rearm-queued', deliveryId: 'lost' }])).toEqual(['lost']);
+  });
+});
