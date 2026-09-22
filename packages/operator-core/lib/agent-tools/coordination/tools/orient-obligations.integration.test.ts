@@ -157,6 +157,8 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       historyUpdates: async () => [],
       effortUpdates: async () => [],
       openChecks: async () => [],
+      // Unrelated to the agenda under test — null keeps the verdict line silent.
+      authorityVerdict: async () => null,
       inbox: async () => ({ count: 3, newest: [] }),
       announcedGates: async () => [],
       openAsks: async () => null,

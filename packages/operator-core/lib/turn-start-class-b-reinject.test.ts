@@ -43,6 +43,9 @@ const BASE: OrientationState = {
   openAsks: null,
   announcedGates: [],
   modes: [],
+  // null is UNREADABLE — the silent value, so this quiet fixture asserts no
+  // posture. Same convention as MINIMAL_STATE in the class-registry test.
+  authorityVerdict: null,
   loopArmed: true,
   loopFireWithheld: false,
   improvementTriage: null,
