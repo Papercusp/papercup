@@ -275,12 +275,37 @@ const ALLOWLIST: Record<string, Classification> = {
     reason:
       'a short-TTL P-016 boundary-refusal marker (migration 805) that only suppresses a duplicate refusal for the same boundary/owner pair; it never grants or holds a resource. A rebind strands at most a ten-minute marker, while the new owner can record its own refusal, and expiry bounds residue. The marker also fails open on storage trouble, so no live claim or reaper depends on this owner_id.',
   },
+  // WI-10002452. This entry used to read `covered`/'owner-directives', and was
+  // WRONG in the most expensive way available: the surface it named exists, so
+  // the cross-check below passed, while its predicate (`WHERE owner_id =
+  // <from-session-id>`) could never match a row. A NAMED surface is not a
+  // WORKING one, and the one guard built to catch stranded identity columns was
+  // certifying this one as protected.
+  //
+  // Measured over all 203 live rows: owner_id is 'owner' ×181 and 'Avi' ×22 —
+  // zero session-shaped values, and `owner_id = recorded_by` false for every
+  // row. It is the HUMAN owner's label, not a session id, so there is nothing
+  // for a rebind to re-key and stranding it is meaningless rather than safe-ish.
+  // The live binding moved to `recorded_by` below, which is what the original
+  // 'owner-directives' surface was always reaching for.
   'owner_directives.owner_id': {
+    status: 'exempt',
+    reason:
+      'the HUMAN owner label, not a coord session id — measured across all 203 live rows as ' +
+      "'owner' ×181 / 'Avi' ×22, zero session-shaped, and never equal to recorded_by. A rebind " +
+      'has nothing to re-key here; the live per-session binding is owner_directives.recorded_by, ' +
+      'which carries the real owner-directives surface (WI-10002452).',
+  },
+  // The column the name rule cannot see (provenance-SHAPED, identity-VALUED) —
+  // swept in deliberately via IDENTITY_COLUMNS_BY_DECLARATION. Open rows are
+  // binding control state rendered on every wake/orient until dispositioned, so
+  // they must follow a re-bound live session; dispositioned rows stay on the
+  // originating sid as immutable history and rebindIdentity leaves them. That
+  // was always the INTENT of the 'owner-directives' surface — it was simply
+  // pointed at the wrong column until WI-10002452.
+  'owner_directives.recorded_by': {
     status: 'covered',
     surface: 'owner-directives',
-    // Open rows are binding control state rendered on every wake/orient until
-    // dispositioned, so they must follow a re-bound live session. Closed rows
-    // remain historical attribution and rebindIdentity deliberately leaves them.
   },
   // Migration 1195 (directive-visibility-and-ownership-2026-09-22, P-008 / D-008).
   // The PER-SESSION agenda row that replaces the global capture_status column: it
@@ -545,6 +570,25 @@ const IDENTITY_COLUMN_NAMES = new Set([
   'scope_ref', // only identity-shaped when paired with scope='owner' (agent_facts) — swept in, classified by table.
 ]);
 
+/** Per-TABLE opt-ins: `table.column` pairs that ARE live holder identity even
+ *  though the NAME is provenance-shaped, so the deliberately-narrow name-only
+ *  sweep above cannot see them. The name rule stays as-is — widening it would
+ *  drag in every genuine `created_by`/`assigned_by` — but a table may declare
+ *  an exception, which is the explicit per-table opt-in WI-10002452 called for.
+ *
+ *  WI-10002452: `owner_directives` has its two columns' roles INVERTED relative
+ *  to their names, and that inversion is what hid a dead rebind surface for
+ *  months. `owner_id` is identity-SHAPED but holds the HUMAN owner label
+ *  (measured across all 203 live rows: 'owner' ×181, 'Avi' ×22, zero
+ *  session-shaped, and `owner_id = recorded_by` false for every row), while
+ *  `recorded_by` is provenance-SHAPED but is the REAL live session binding —
+ *  it is what says which session the owner was addressing, and what `orders:*`
+ *  and the turn-start Orientation banner key on. Opting it in forces it to be
+ *  classified, so it can be COVERED honestly instead of being invisible. */
+const IDENTITY_COLUMNS_BY_DECLARATION = new Set([
+  'owner_directives.recorded_by',
+]);
+
 /** camelCase field name -> its default drizzle-kit snake_case column name
  *  (used only when the column call omits an explicit `"snake_name"` arg,
  *  e.g. `owner: text().notNull()`). */
@@ -593,7 +637,8 @@ interface ScanHit {
 
 /** Static-parse schema.ts: track the current `harnessShared.table("name", {`
  *  block and record every column line whose db name matches
- *  IDENTITY_COLUMN_NAMES. A column line looks like `fieldName: type(...)` or
+ *  IDENTITY_COLUMN_NAMES, plus any `table.column` in
+ *  IDENTITY_COLUMNS_BY_DECLARATION. A column line looks like `fieldName: type(...)` or
  *  `fieldName: type("explicit_db_name")...` — take the explicit name when
  *  present, else derive it from the camelCase field name. Exported for the
  *  self-test below. */
@@ -615,7 +660,11 @@ export function scanIdentityColumns(schemaSrc: string): ScanHit[] {
     const cm = line.match(colLine);
     if (!cm || !currentTable) continue;
     const dbName = cm[2] ?? toSnakeCase(cm[1]);
-    if (IDENTITY_COLUMN_NAMES.has(dbName)) hits.push({ table: currentTable, column: dbName });
+    if (
+      IDENTITY_COLUMN_NAMES.has(dbName) ||
+      IDENTITY_COLUMNS_BY_DECLARATION.has(`${currentTable}.${dbName}`)
+    )
+      hits.push({ table: currentTable, column: dbName });
   }
   return hits;
 }
