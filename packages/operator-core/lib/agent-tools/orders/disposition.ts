@@ -9,6 +9,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { dispositionOwnerDirective, type OwnerDirectiveDisposition } from '../../owner-directives';
+import { directiveActionVerdict } from '../../owner-directive-agenda';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 const entry = z.object({
   id: z.number().int().positive().describe('The directive id (from orders:record / orders:list).'),
@@ -53,8 +55,33 @@ export default defineTool({
       ([{ id: args.id!, status: args.status! as OwnerDirectiveDisposition, note: args.note! }] as Array<
         z.infer<typeof entry>
       >);
+    const workspaceId = activeWorkspaceId();
     const results = [];
     for (const e of entries) {
+      // P-008 / D-008, the same rail orders:resolve-pending carries: `done` and
+      // `declined` are CLAIMS ABOUT THE OWNER'S ORDER, and closing it stops it
+      // rendering for EVERYONE — so a session that is neither the addressee nor
+      // a holder of work linking the directive may not speak for it.
+      //
+      // Applied PER ENTRY rather than rejecting the whole batch: one foreign id
+      // in a batch of fifty must not discard forty-nine legitimate closes, and
+      // a caller told only "batch refused" cannot tell which id was foreign.
+      const verdict = await directiveActionVerdict({ directiveId: e.id, ownerId: identity.ownerId, workspaceId })
+        .catch(() => null);
+      if (verdict && !verdict.allowed && !('notFound' in verdict)) {
+        results.push({
+          ok: false,
+          id: e.id,
+          error: 'foreign_directive',
+          addressedTo: verdict.addressedTo,
+          holders: verdict.holders,
+          // No `clear` redirect here: clearing is an AGENDA action and this verb
+          // has none. Taking a foreign row off your own banner is
+          // orders:resolve-pending { action: 'clear' }.
+          hint: `Directive #${e.id} was addressed to ${verdict.addressedTo}${verdict.holders.length ? ` and is held by ${verdict.holders.join(', ')}` : ''}. Closing it would stop it rendering for THEM. To take it off your OWN banner only, use orders:resolve-pending { action: 'clear' }.`,
+        });
+        continue;
+      }
       const r = await dispositionOwnerDirective({
         id: e.id,
         status: e.status,

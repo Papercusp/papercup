@@ -940,6 +940,34 @@ export function settleQualificationTransaction(
 }
 
 /**
+ * WI-10002454 (b): name the measurements behind a `settleQualificationTransaction` conflict —
+ * each identity the producer carried that disagrees with the stored transaction, as
+ * `<field> stored=<x> produced=<y>`. Mirrors the three conflict predicates above (attempt,
+ * candidate, run). Unlike the settle, it reports EVERY mismatch, not just the first.
+ * An EMPTY result is itself a finding: the conflict did not come from an identity
+ * mismatch but from the store-level CAS (a concurrent writer changed the row between read and
+ * update). Callers must say so rather than print nothing.
+ */
+export function describeQualificationSettleConflict(
+  stored: CheckpointQualificationTransaction,
+  produced: { attemptId: string; candidate?: string | null; runId?: string | null },
+): string[] {
+  const mismatches: string[] = [];
+  if (stored.attemptId !== produced.attemptId) {
+    mismatches.push(`attempt stored=${stored.attemptId} produced=${produced.attemptId}`);
+  }
+  const candidate = produced.candidate?.trim() || null;
+  if (stored.candidate && candidate && stored.candidate !== candidate) {
+    mismatches.push(`candidate stored=${stored.candidate} produced=${candidate}`);
+  }
+  const runId = produced.runId?.trim() || null;
+  if (stored.runId && runId && stored.runId !== runId) {
+    mismatches.push(`run stored=${stored.runId} produced=${runId}`);
+  }
+  return mismatches;
+}
+
+/**
  * Deliberately cancel one known physical runner without turning an ordinary external
  * SIGTERM into a retryable pre-suite wait. The caller must name both identities that
  * make the destructive action safe: the logical attempt and the systemd unit recorded
