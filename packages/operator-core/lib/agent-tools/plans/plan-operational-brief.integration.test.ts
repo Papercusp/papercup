@@ -107,8 +107,8 @@ afterAll(async () => {
   await fx?.dispose();
 });
 
-async function read(args: Record<string, unknown>): Promise<BriefResult> {
-  const out = (await plansGetTool.handler({ slug: PLAN, harness: HARNESS, ...args } as never, CTX)) as {
+async function read(args: Record<string, unknown>, slug = PLAN): Promise<BriefResult> {
+  const out = (await plansGetTool.handler({ slug, harness: HARNESS, ...args } as never, CTX)) as {
     data: { results: BriefResult[] };
   };
   return out.data.results[0]!;
@@ -147,5 +147,20 @@ describe('plans:get operationalBrief (real PG)', () => {
     const result = await read({ operationalBrief: true, items: ['P-002'] });
     expect(result.operationalBrief!.blockers.status).toBe('unknown');
     expect(result.operationalBrief!.facts.nextItem).toMatchObject({ status: 'known', value: { id: 'P-002' } });
+  });
+
+  it('reports a blocked next item — never an actionable one — when every remaining item is blocked', async () => {
+    const result = await read({ operationalBrief: true }, BLOCKED_PLAN);
+    const brief = result.operationalBrief!;
+
+    expect(brief.facts.nextItem).toMatchObject({ status: 'known', value: { id: 'P-001', reason: 'blocked' } });
+    const next = brief.facts.nextItem.status === 'known' ? (brief.facts.nextItem.value as { id: string; effectiveStatus: string }) : null;
+    expect(next?.effectiveStatus).toBe(result.items.find((item) => item.id === 'P-001')?.effectiveStatus);
+    expect(next?.effectiveStatus).toBe('blocked');
+    expect(brief.nextAction.status === 'known' && String(brief.nextAction.value).startsWith('Unblock P-001')).toBe(true);
+    expect(brief.blockers).toMatchObject({
+      status: 'known',
+      value: expect.arrayContaining(['P-001 explicitly blocked']),
+    });
   });
 });
