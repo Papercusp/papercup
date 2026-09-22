@@ -296,7 +296,7 @@ export async function synchronizeAcceptanceBarRevision(
        AND plan_slug = ${subjectPlan} FOR UPDATE`;
   if (!subjects.length) throw new Error('acceptance_bar_revision_subject_missing');
   const subject = subjects[0]!;
-  const { acceptanceBarBehaviorClass, parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
+  const { acceptanceBarBehaviorClass, acceptanceBarProjectedBehavior, parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
   const { computeAcceptanceBarHash } = await import('./rubrics');
   const byKey = new Map(data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
   const requirements = parseRequirementBars(subject.content);
@@ -393,7 +393,7 @@ export async function synchronizeAcceptanceBarRevision(
           specId,
           expectedRevision: 0,
           planItemId,
-          behavior: criterion.model!,
+          behavior: acceptanceBarProjectedBehavior(criterion),
           behaviorClass: acceptanceBarBehaviorClass(criterion.evidencePlane, criterion.requiredTestLayers),
           requiredEvidence: [criterion.evidencePlane],
           ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
@@ -461,7 +461,7 @@ export async function synchronizeAcceptanceBarRevision(
     const result = await setSpecClause({
       planSlug: subjectPlan, specId: clause.spec_id, sourceValId: clause.source_val_id,
       expectedRevision: Number(clause.current_revision), planItemId: clause.plan_item_id,
-      behavior: preserveRefinements ? clause.behavior : criterion.model!,
+      behavior: preserveRefinements ? clause.behavior : acceptanceBarProjectedBehavior(criterion),
       behaviorClass: preserveRefinements
         ? clause.behavior_class
         : acceptanceBarBehaviorClass(criterion.evidencePlane, criterion.requiredTestLayers),
