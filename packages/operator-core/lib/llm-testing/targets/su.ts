@@ -53,7 +53,7 @@ import type {
 } from '@papercusp/testing-shell/llm';
 
 import { buildCatalog, type BuiltCatalog } from './su-catalog';
-import { projectCatalogToCompactTier } from './su-compact-catalog';
+import { projectCatalogToCompactTier, buildShippingSeedCatalog } from './su-compact-catalog';
 import {
   callCodexResponsesTurn,
   isCodexResponsesModel,
@@ -417,6 +417,7 @@ const SU_CONFIG_DELTA_KEYS = new Set([
   'systemPromptText',
   'excludeTools',
   'toolDefinitionTier',
+  'catalogSource',
 ]);
 
 export interface SuConfigDelta {
@@ -433,6 +434,22 @@ export interface SuConfigDelta {
    * definition the model was told. Default `'full'` is today's behaviour.
    */
   toolDefinitionTier?: 'full' | 'compact';
+  /**
+   * WHICH tool set is offered, as opposed to how much of each definition
+   * (`toolDefinitionTier`) — D-019.
+   *
+   * `'curated'` (default, today's behaviour) offers `SU_CATALOG`, a
+   * hand-authored constant. Measured 2026-09-22 it overlaps the claude
+   * shipping seed by 27 of 63, so an A/B over it varies the tier on a surface
+   * that is 43% of what ships — the reason D-012 found this instrument could
+   * not answer D-008.
+   *
+   * `'shipping-seed'` offers exactly the names the generated delivery
+   * artifact says are DELIVERED, sourced from the live registry, so
+   * `toolDefinitionTier` then varies the one variable D-008 asks about on the
+   * surface that actually ships.
+   */
+  catalogSource?: 'curated' | 'shipping-seed';
 }
 
 export function parseSuConfigDelta(delta: Record<string, unknown> | undefined): SuConfigDelta {
@@ -452,6 +469,14 @@ export function parseSuConfigDelta(delta: Record<string, unknown> | undefined): 
       );
     }
     out.toolDefinitionTier = delta.toolDefinitionTier;
+  }
+  if (delta.catalogSource !== undefined) {
+    if (delta.catalogSource !== 'curated' && delta.catalogSource !== 'shipping-seed') {
+      throw new Error(
+        "su target: variant configDelta.catalogSource must be 'curated' or 'shipping-seed'",
+      );
+    }
+    out.catalogSource = delta.catalogSource;
   }
   if (delta.sutModel !== undefined) {
     if (typeof delta.sutModel !== 'string' || !delta.sutModel.trim()) {
@@ -542,10 +567,17 @@ export class SuTarget implements ChatTarget {
     // tool registry; a failure must surface as a loud open() error, never as a
     // silent fall back to the curated definitions (which would make a full-tier
     // run indistinguishable from a compact-tier one).
+    // D-019: `catalogSource` chooses the tool SET, `toolDefinitionTier` how
+    // much of each definition. The shipping-seed builder applies the tier
+    // itself (it projects straight from the live registry), so it is NOT then
+    // re-projected — doing both would summarise an already-summarised
+    // description and measure a tier that ships nowhere.
     const tiered =
-      delta.toolDefinitionTier === 'compact'
-        ? (await projectCatalogToCompactTier(this.catalog)).catalog
-        : this.catalog;
+      delta.catalogSource === 'shipping-seed'
+        ? (await buildShippingSeedCatalog(delta.toolDefinitionTier ?? 'full')).catalog
+        : delta.toolDefinitionTier === 'compact'
+          ? (await projectCatalogToCompactTier(this.catalog)).catalog
+          : this.catalog;
     return new SuSession({
       runId: opts.runId,
       // Drop any excludeTools from the catalog offered to the SUT (the availability A/B seam).

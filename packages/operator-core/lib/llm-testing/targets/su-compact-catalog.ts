@@ -168,3 +168,122 @@ export async function projectCatalogToCompactTier(
     liveCatalogSize: live.size,
   };
 }
+
+/**
+ * Below this share of the shipping seed resolving to a LIVE definition, the
+ * run is not measuring the shipped surface and must fail loudly rather than
+ * report a comparison it did not make. Calibrated against a real run (see the
+ * `coverage` field) — deliberately not 1.0, because a handful of seed names
+ * are plugin-provided and legitimately absent from the core registry.
+ */
+const MIN_SEED_LIVE_COVERAGE = 0.85;
+
+export interface ShippingSeedCatalog {
+  /** The offered catalog: exactly the shipping seed, at the requested tier. */
+  catalog: BuiltCatalog;
+  tier: 'full' | 'compact';
+  /** Canonical names the delivery artifact says are DELIVERED to this kind. */
+  seedNames: string[];
+  /** Seed names whose LIVE registry definition was used. */
+  usedLive: string[];
+  /** Seed names absent from the live registry, therefore omitted entirely. */
+  missingFromLive: string[];
+  /** usedLive / seedNames. */
+  coverage: number;
+  /** Serialized `{name, description, inputSchema}` bytes for the built set. */
+  bytes: number;
+  liveCatalogSize: number;
+}
+
+/**
+ * Build the catalog the SHIPPING configuration actually delivers, at a chosen
+ * tier (deterministic-tool-definition-delivery-2026-09-21 D-019).
+ *
+ * WHY THIS EXISTS, and why it is NOT `projectCatalogToCompactTier`. That
+ * function re-projects whatever catalog it is handed — for the `su` target
+ * that is `SU_CATALOG`, a hand-authored constant. Measured 2026-09-22, that
+ * constant overlaps the claude shipping seed by 27 of 63: 32 of its entries
+ * are never delivered, and 36 delivered tools are absent from it. So an A/B
+ * over it varies the tier on a surface that is 43% of what ships, which is
+ * why D-012 concluded the instrument cannot answer D-008.
+ *
+ * This builds the tool set from the GENERATED delivery artifact instead — the
+ * same file the launcher passes through as `PAPERCUSP_TOOLS_COMPACT` — so the
+ * offered names are exactly the shipped names. DEFERRAL needs no simulation:
+ * the other ~836 tools are absent from both arms by construction, so holding
+ * the set fixed and varying only `tier` isolates the one variable D-008 asks
+ * about.
+ *
+ * Fails closed on a thin registry read, exactly as `loadLiveDefinitions` does:
+ * a silent fallback to curated stand-ins would look like a shipping-seed run
+ * and would not be one.
+ */
+export async function buildShippingSeedCatalog(tier: 'full' | 'compact'): Promise<ShippingSeedCatalog> {
+  const live = await loadLiveDefinitions();
+  const mod = (await import(
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore -- generated .mjs artifact, no type declarations by design
+    '../../../../../apps/operator/scripts/tool-delivery.generated.mjs'
+  )) as { CLAUDE_TOOL_DELIVERY?: { tiers?: Record<string, string> } };
+  const tiers = mod.CLAUDE_TOOL_DELIVERY?.tiers;
+  if (!tiers || Object.keys(tiers).length === 0) {
+    throw new Error(
+      'su shipping-seed catalog: tool-delivery.generated.mjs exposed no CLAUDE_TOOL_DELIVERY.tiers. ' +
+        'Run `npm run gen:tool-delivery` — refusing to run an A/B against an empty seed.',
+    );
+  }
+  const seedNames = Object.keys(tiers).sort();
+
+  const { summaryGuidanceDescription, compactInputSchema } = await import('@papercusp/tooldef');
+
+  const usedLive: string[] = [];
+  const missingFromLive: string[] = [];
+  const tools: BuiltCatalog['tools'] = [];
+  const canonicalBySanitized = new Map<string, string>();
+  let bytes = 0;
+
+  for (const canonical of seedNames) {
+    const row = live.get(canonical);
+    if (!row) {
+      missingFromLive.push(canonical);
+      continue;
+    }
+    usedLive.push(canonical);
+    const sourceDescription = row.description ?? '';
+    const sourceSchema = row.inputSchema ?? {};
+    const description = tier === 'compact' ? summaryGuidanceDescription(sourceDescription) : sourceDescription;
+    const projected = tier === 'compact' ? compactInputSchema(sourceSchema) : sourceSchema;
+    // Anthropic requires input_schema.type === 'object'; a tool whose source
+    // schema is not an object would otherwise smuggle a malformed request into
+    // the run and fail as if the model had erred.
+    const input_schema =
+      projected && typeof projected === 'object' && (projected as { type?: unknown }).type === 'object'
+        ? (projected as Record<string, unknown>)
+        : { type: 'object' as const };
+    const sanitized = sanitizeToolName(canonical);
+    canonicalBySanitized.set(sanitized, canonical);
+    tools.push({ name: sanitized, description, input_schema });
+    bytes += wireBytes(canonical, description, input_schema);
+  }
+
+  const coverage = seedNames.length === 0 ? 0 : usedLive.length / seedNames.length;
+  if (coverage < MIN_SEED_LIVE_COVERAGE) {
+    throw new Error(
+      `su shipping-seed catalog: only ${usedLive.length} of ${seedNames.length} seed names ` +
+        `(${(coverage * 100).toFixed(1)}%) resolved to a live definition, below the ` +
+        `${(MIN_SEED_LIVE_COVERAGE * 100).toFixed(0)}% floor. Missing: ${missingFromLive.slice(0, 12).join(', ')}. ` +
+        'Refusing to report an A/B over a surface that is not the shipped one.',
+    );
+  }
+
+  return {
+    catalog: { tools, canonicalBySanitized },
+    tier,
+    seedNames,
+    usedLive,
+    missingFromLive,
+    coverage,
+    bytes,
+    liveCatalogSize: live.size,
+  };
+}
