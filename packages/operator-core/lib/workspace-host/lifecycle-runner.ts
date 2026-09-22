@@ -693,6 +693,11 @@ export async function runWorkspaceHostLifecycle(
     })),
     maxApplyAttempts: 3,
   } as const;
+  // The provider population this operation acts ON. A restore acts on a host it is building, so the
+  // source's resources are never its own: seeding them into the replacement's checkpoints stamped
+  // the source VM/disk identities onto the new host, and offering them as known resources let the
+  // "disk persisted before insert-instance" gate pass on a disk this operation never made.
+  const ownPopulation = input.action === 'restore' ? undefined : target;
   let checkpoints = await store.readCheckpoints(workspaceId, resultHostId, operationId);
   await store.beginOperation({
     workspaceId,
@@ -716,7 +721,7 @@ export async function runWorkspaceHostLifecycle(
     const action = nextWorkspaceHostControllerAction(workflow, checkpoints);
     if (action.kind === 'record-plan') {
       for (const resource of action.resources) {
-        const existing = matchingExistingResource(target, resource.step);
+        const existing = ownPopulation ? matchingExistingResource(ownPopulation, resource.step) : undefined;
         const checkpoint: WorkspaceHostResourceCheckpoint = {
           logicalKey: resource.logicalKey,
           state: 'planned',
@@ -754,7 +759,7 @@ export async function runWorkspaceHostLifecycle(
         planId: plan.planId,
         operationId,
         step: action.resource.step,
-        knownResources: knownResources(target, checkpoints),
+        knownResources: knownResources(ownPopulation, checkpoints),
       };
       let providerResult: WorkspaceHostApplyResult;
       try {

@@ -71,7 +71,11 @@ function desired(hostId: string): WorkspaceHostDesiredSpec {
 
 const snapshot = { target: 'gcp' as const, providerId: 'pc-snap-source', hostId: SOURCE };
 
-function restoreProvider(operationId: string, observeFails = false) {
+function restoreProvider(
+  operationId: string,
+  observeFails = false,
+  beforeApply?: (request: Parameters<WorkspaceHostProvider['apply']>[0]) => Promise<void>,
+) {
   const plan: WorkspaceHostPlan = {
     planId: `plan:${operationId}`,
     operationId,
@@ -91,13 +95,16 @@ function restoreProvider(operationId: string, observeFails = false) {
     ],
     warnings: [],
   };
-  const apply = vi.fn<WorkspaceHostProvider['apply']>(async (request) => ({
-    operationId,
-    stepId: request.step.id,
-    state: 'applied' as const,
-    observedAt: NOW,
-    resource: { target: 'gcp', kind: 'vm', providerId: 'pc-host-restored', zone: 'us-central1-a' },
-  }));
+  const apply = vi.fn<WorkspaceHostProvider['apply']>(async (request) => {
+    await beforeApply?.(request);
+    return {
+      operationId,
+      stepId: request.step.id,
+      state: 'applied' as const,
+      observedAt: NOW,
+      resource: { target: 'gcp', kind: 'vm', providerId: 'pc-host-restored', zone: 'us-central1-a' },
+    };
+  });
   const provider = makeFakeWorkspaceHostProvider({
     target: 'gcp',
     validateConnection: vi.fn(async () => ({ ok: true, checkedAt: NOW, warnings: [], errors: [] })),
@@ -238,6 +245,28 @@ describe('workspace-host snapshot restore (real PG + real RLS)', () => {
     });
     // The source is only READ by a restore: its revision and state must not move.
     await expect(hostRow(workspaceId, SOURCE)).resolves.toMatchObject({ host_generation: 1, desired_revision: 1 });
+  });
+
+  it('never lends the SOURCE host\'s resources to the replacement it is building', async () => {
+    const workspaceId = freshWorkspace();
+    await seedProvisionedSource(workspaceId);
+    const seen: { known: string[]; checkpointed: string | null }[] = [];
+    const { provider } = restoreProvider('op-restore-own', false, async (request) => {
+      const [row] = await db.adminSql<{ provider_id: string | null }[]>`
+        SELECT provider_id FROM harness_shared.workspace_host_resources
+        WHERE workspace_id = ${workspaceId} AND host_id = ${REPLACEMENT} AND logical_key = ${request.step.id}
+      `;
+      seen.push({
+        known: request.knownResources.map((resource) => resource.providerId),
+        checkpointed: row?.provider_id ?? null,
+      });
+    });
+
+    await restore(workspaceId, 'op-restore-own', provider);
+
+    // The source VM 'pc-host-source' is an applied, same-kind resource — exactly what the plan
+    // matcher used to adopt into the replacement's 'applying' checkpoint.
+    expect(seen).toEqual([{ known: [], checkpointed: null }]);
   });
 
   it('replays the same restore operation (a retried workflow step) without a second provider mutation', async () => {
