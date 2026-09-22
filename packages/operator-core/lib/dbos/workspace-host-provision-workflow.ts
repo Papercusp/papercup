@@ -215,17 +215,41 @@ async function workspaceHostProvisioningWorkflowImpl(
   }
 }
 
-export const workspaceHostProvisioningWorkflow = idempotentRegisterWorkflow('workspace-host-provision', () =>
+/** Registered workflow name AND queue name — a DBOS client enqueues by these strings. */
+export const WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME = 'workspace-host-provision';
+
+export const workspaceHostProvisioningWorkflow = idempotentRegisterWorkflow(WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME, () =>
   DBOS.registerWorkflow(workspaceHostProvisioningWorkflowImpl, {
-    name: 'workspace-host-provision',
+    name: WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME,
     maxRecoveryAttempts: 20,
   }),
 );
 
 export const workspaceHostProvisioningQueue = idempotentWorkflowQueue(
-  'workspace-host-provision',
-  () => new WorkflowQueue('workspace-host-provision', { concurrency: queueConcurrency(4) }),
+  WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME,
+  () => new WorkflowQueue(WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME, { concurrency: queueConcurrency(4) }),
 );
+
+/**
+ * The exact enqueue request for one provision. Both the in-process start below and the
+ * hosted control plane's DBOS client (`workspace-host-provision-client.ts`) build it here,
+ * so a client-enqueued provision carries the same workflow id, dedup key and input as an
+ * in-process one — and a replay of either collapses onto the same durable workflow.
+ */
+export function workspaceHostProvisioningEnqueueRequest(input: StartWorkspaceHostProvisioningInput): {
+  workflowInput: WorkspaceHostProvisioningWorkflowInput;
+  workflowId: string;
+  deduplicationId: string;
+} {
+  const operationId = input.operationId ?? randomUUID();
+  const workflowInput: WorkspaceHostProvisioningWorkflowInput = { ...input, action: 'provision', operationId };
+  const keys = workspaceHostWorkflowKeys({
+    workspaceId: input.workspaceId,
+    hostId: input.desired.hostId,
+    operationId,
+  });
+  return { workflowInput, workflowId: keys.workflowId, deduplicationId: keys.deduplicationId };
+}
 
 export class WorkspaceHostProvisioningConflictError extends Error {
   constructor(readonly hostId: string) {
@@ -276,19 +300,13 @@ function rehydrateWorkspaceHostProvisioningError(error: unknown): unknown {
 export async function startWorkspaceHostProvisioningWorkflow(
   input: StartWorkspaceHostProvisioningInput,
 ): Promise<WorkspaceHostProvisioningResult> {
-  const operationId = input.operationId ?? randomUUID();
-  const workflowInput: WorkspaceHostProvisioningWorkflowInput = { ...input, action: 'provision', operationId };
-  const keys = workspaceHostWorkflowKeys({
-    workspaceId: input.workspaceId,
-    hostId: input.desired.hostId,
-    operationId,
-  });
+  const request = workspaceHostProvisioningEnqueueRequest(input);
   try {
     const handle = await DBOS.startWorkflow(workspaceHostProvisioningWorkflow, {
-      workflowID: keys.workflowId,
+      workflowID: request.workflowId,
       queueName: workspaceHostProvisioningQueue.name,
-      enqueueOptions: { deduplicationID: keys.deduplicationId },
-    })(workflowInput);
+      enqueueOptions: { deduplicationID: request.deduplicationId },
+    })(request.workflowInput);
     return (await handle.getResult()) as WorkspaceHostProvisioningResult;
   } catch (error) {
     if (isWorkspaceHostProvisioningDedupConflict(error)) {

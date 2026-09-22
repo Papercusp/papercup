@@ -28,7 +28,10 @@ import {
   upsertWorkspaceHost,
 } from '../../workspace-host/observability-store';
 import { workspaceHostSpecColumns } from '../../workspace-host/desired-spec-host-row';
-import { startWorkspaceHostProvisioningWorkflow } from '../../dbos/workspace-host-provision-workflow';
+import {
+  startWorkspaceHostProvisioningWorkflow,
+  type StartWorkspaceHostProvisioningInput,
+} from '../../dbos/workspace-host-provision-workflow';
 import type {
   HostedWorkspaceAdmissionDependencies,
   HostedWorkspaceBinding,
@@ -50,6 +53,12 @@ export interface DefaultHostedWorkspaceAdmissionOptions {
    * rejection would be an unhandled promise rather than an observable event.
    */
   onProvisioningStartFailed?: (error: unknown, context: { hostId: string; operationId: string }) => void;
+  /**
+   * How the provision is put on the durable queue. Default = in-process DBOS; a process that
+   * does not run DBOS (the hosted control plane) passes a DBOS-client enqueuer instead
+   * (`dbos/workspace-host-provision-client.ts`).
+   */
+  startWorkflow?: (input: StartWorkspaceHostProvisioningInput) => Promise<unknown>;
 }
 
 export function createDefaultHostedWorkspaceAdmissionDependencies(
@@ -63,6 +72,8 @@ export function createDefaultHostedWorkspaceAdmissionDependencies(
         error,
       );
     });
+
+  const startWorkflow = options.startWorkflow ?? startWorkspaceHostProvisioningWorkflow;
 
   return {
     controlPlaneWorkspaceId: activeWorkspaceId,
@@ -152,7 +163,7 @@ export function createDefaultHostedWorkspaceAdmissionDependencies(
             `connection ${input.connectionId} disappeared between admission and provisioning`,
           );
         }
-        await startWorkspaceHostProvisioningWorkflow({
+        await startWorkflow({
           workspaceId: input.controlPlaneWorkspaceId,
           connectionId: input.connectionId,
           name: input.name,

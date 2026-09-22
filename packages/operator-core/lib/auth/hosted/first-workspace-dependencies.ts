@@ -20,6 +20,7 @@
  */
 import { withWorkspace } from '@papercusp/db-org';
 import { dbosStarted } from '../../dbos/bootstrap';
+import type { WorkspaceHostProvisioningEnqueuer } from '../../dbos/workspace-host-provision-client';
 import { HostedSessionStore } from '../hosted-session';
 import {
   HostedProviderDelegationManager,
@@ -54,6 +55,12 @@ export interface HostedFirstWorkspaceRuntimeOptions {
   readonly runService: HostedServiceContextRunner;
   readonly delegationAdapters: Readonly<Record<'gcp' | 'aws' | 'azure', HostedProviderDelegationAdapter>>;
   readonly enabledOrganizations: ReadonlySet<string>;
+  /**
+   * A DBOS-client enqueuer for a process that does not run DBOS (the hosted control plane).
+   * When present, provisioning is available by construction; when absent, provisioning runs
+   * in-process and is available only once DBOS has started.
+   */
+  readonly provisioning?: WorkspaceHostProvisioningEnqueuer;
   readonly provisioningAvailable?: () => boolean;
 }
 
@@ -66,10 +73,11 @@ export function createHostedFirstWorkspaceDependencies(
     controlPlaneWorkspaceId,
   );
   const manager = new HostedProviderDelegationManager(store, options.delegationAdapters);
+  const provisioning = options.provisioning;
 
   return {
     isEnabledFor: (organizationId) => options.enabledOrganizations.has(organizationId),
-    provisioningAvailable: options.provisioningAvailable ?? dbosStarted,
+    provisioningAvailable: options.provisioningAvailable ?? (provisioning ? () => true : dbosStarted),
 
     organizationWorkspaceIds(organizationId) {
       return withWorkspace(controlPlaneWorkspaceId, async (sql) => {
@@ -90,7 +98,10 @@ export function createHostedFirstWorkspaceDependencies(
 
     createAdmission: (resolveDesiredSpec) =>
       createHostedWorkspaceAdmission({
-        ...createDefaultHostedWorkspaceAdmissionDependencies({ resolveDesiredSpec }),
+        ...createDefaultHostedWorkspaceAdmissionDependencies({
+          resolveDesiredSpec,
+          ...(provisioning ? { startWorkflow: (input) => provisioning.enqueue(input) } : {}),
+        }),
         // The default reads the operator's active workspace; the hosted process is scoped by
         // its configured control plane instead, and the delegation store above uses the same.
         controlPlaneWorkspaceId: () => controlPlaneWorkspaceId,

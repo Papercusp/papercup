@@ -45,6 +45,8 @@ import {
 } from '../workspace-host/hosted-provider-delegation';
 import { resolveHostedGcpAuth } from '../workspace-host/hosted-gcp-auth';
 import { HostedSessionCookieCodec } from '../auth/hosted-session';
+import { createWorkspaceHostProvisioningClient } from '../dbos/workspace-host-provision-client';
+import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { createHostedFirstWorkspace } from '../auth/hosted/first-workspace';
 import {
   createHostedFirstWorkspaceDependencies,
@@ -99,6 +101,12 @@ export interface HostedRuntimeConfiguration {
   readonly workosWebhookSignatureKeyRef?: string;
   /** Organizations admitted through the first-workspace door (D-384). Absent = closed. */
   readonly firstWorkspaceOrganizations?: ReadonlySet<string>;
+  /**
+   * The DBOS primary's `applicationVersion` (its `DBOS__APPVERSION`; bg-host-v1 on this box).
+   * This process never runs DBOS, so provisioning is ENQUEUED onto that executor's queue.
+   * Absent = the first-workspace door answers provisioning_unavailable.
+   */
+  readonly provisioningDbosAppVersion?: string;
 }
 
 export type HostedRuntimeSecretResolver = (reference: string) => Promise<string>;
@@ -242,6 +250,9 @@ export function readHostedRuntimeConfiguration(env: NodeJS.ProcessEnv = process.
     ...(env[HOSTED_FIRST_WORKSPACE_ORGANIZATIONS_ENV]?.trim()
       ? { firstWorkspaceOrganizations: parseFirstWorkspaceOrganizations(env[HOSTED_FIRST_WORKSPACE_ORGANIZATIONS_ENV]) }
       : {}),
+    ...(env.PAPERCUSP_HOSTED_PROVISIONING_DBOS_APP_VERSION?.trim()
+      ? { provisioningDbosAppVersion: env.PAPERCUSP_HOSTED_PROVISIONING_DBOS_APP_VERSION.trim() }
+      : {}),
   };
 }
 
@@ -377,6 +388,14 @@ export async function createHostedRuntime(
       runService,
       delegationAdapters,
       enabledOrganizations: configuration.firstWorkspaceOrganizations ?? new Set(),
+      ...(configuration.provisioningDbosAppVersion
+        ? {
+            provisioning: createWorkspaceHostProvisioningClient({
+              systemDatabaseUrl: getHarnessAdminUrlWithSource().url,
+              appVersion: configuration.provisioningDbosAppVersion,
+            }),
+          }
+        : {}),
       ...(dependencies.hostedBrowser?.provisioningAvailable
         ? { provisioningAvailable: dependencies.hostedBrowser.provisioningAvailable }
         : {}),
