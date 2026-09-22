@@ -8,6 +8,7 @@ import type {
   WorkspaceHostDesiredSpec,
   WorkspaceHostDomainState,
   WorkspaceHostHealthAttestation,
+  WorkspaceHostImageRef,
   WorkspaceHostLifecycleAction,
   WorkspaceHostObservation,
   WorkspaceHostRuntimeRelease,
@@ -662,6 +663,45 @@ export async function recordWorkspaceHostRecoveryPoint(input: {
       WHERE workspace_id = ${input.workspaceId} AND id = ${input.hostId}
     `;
   });
+}
+
+/**
+ * Record the base image a successful `upgrade` moved the host onto (WI-10002494). Both copies move
+ * together: the `image` column the UI reads and `desired_spec.image`, which every later recreate
+ * (repair, restore) builds from — leaving either on the pre-upgrade image made the next recreate
+ * silently revert the host. Controller-fenced like every other write an operation makes.
+ */
+export async function recordWorkspaceHostImage(input: {
+  workspaceId: string;
+  hostId: string;
+  image: WorkspaceHostImageRef;
+  operationId?: string;
+  controllerAuthority?: WorkspaceHostControllerAuthority;
+}): Promise<void> {
+  await withWorkspace(input.workspaceId, async (tx) => {
+    await requireWorkspaceHostControllerAuthority(
+      tx,
+      input.workspaceId,
+      input.hostId,
+      input.operationId,
+      input.controllerAuthority,
+    );
+    const image = {
+      id: input.image.id,
+      ...(input.image.version ? { version: input.image.version } : {}),
+    };
+    await tx`
+      UPDATE harness_shared.workspace_hosts
+      SET image = ${image.id},
+          desired_spec = CASE
+            WHEN desired_spec IS NULL THEN desired_spec
+            ELSE jsonb_set(desired_spec, '{image}', ${tx.json(image as never)}, true)
+          END,
+          updated_at = now()
+      WHERE workspace_id = ${input.workspaceId} AND id = ${input.hostId}
+    `;
+  });
+  await pushControl();
 }
 
 export interface WorkspaceHostOperationInput {
