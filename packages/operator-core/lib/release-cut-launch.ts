@@ -774,8 +774,17 @@ function defaultGitRunner(repo: string, args: string[]): { ok: boolean; stdout: 
 }
 
 /**
- * Compare the release machinery in an isolated cut root against the canonical
- * checkout, which git-sync keeps current.
+ * Compare the release machinery in an isolated cut root against the INTEGRATION
+ * BRANCH's pin of the same submodule.
+ *
+ * The reference is deliberately NOT a checkout path. It used to be `desktopRoot()`,
+ * which resolves from `cwd` — and release:cut runs inside the :3070 operator, whose
+ * cwd is the release checkout at green main. That is routinely the very sha a stale
+ * cut root is pinned to, so the comparison read stale-vs-stale as 'current' and the
+ * check was vacuous in exactly the case it exists for (WI-10002449, caught by a live
+ * probe against the real paused root after every unit test was green). A cut root is a
+ * linked worktree sharing the canonical .git, so the branch ref is readable from the
+ * root itself and needs no path guess.
  *
  * The stale-file list is DERIVED from git rather than compared against a hand-kept
  * roster of "release-critical scripts" — such a roster rots silently, and a file
@@ -783,48 +792,59 @@ function defaultGitRunner(repo: string, args: string[]): { ok: boolean; stdout: 
  */
 export function releaseToolingDrift(args: {
   subjectDesktopRoot: string;
-  referenceDesktopRoot: string;
+  /** Default PAPERCUSP_INTEGRATION_BRANCH, else the same default release-config uses. */
+  integrationBranch?: string;
   git?: GitRunner;
 }): ReleaseToolingDrift {
-  const { subjectDesktopRoot, referenceDesktopRoot } = args;
+  const { subjectDesktopRoot } = args;
   const git = args.git ?? defaultGitRunner;
-
-  if (path.resolve(subjectDesktopRoot) === path.resolve(referenceDesktopRoot)) {
-    return { state: 'current', staleFiles: [], detail: 'cut root IS the canonical checkout' };
-  }
+  const branch = args.integrationBranch ?? process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging';
+  const superproject = path.dirname(subjectDesktopRoot);
+  const submodule = path.basename(subjectDesktopRoot);
 
   const subject = git(subjectDesktopRoot, ['rev-parse', 'HEAD']);
-  const reference = git(referenceDesktopRoot, ['rev-parse', 'HEAD']);
   const subjectPin = subject.ok ? subject.stdout.trim() : '';
+  if (!subjectPin) {
+    return { state: 'unknown', staleFiles: [], detail: `could not resolve HEAD in ${subjectDesktopRoot}` };
+  }
+  const reference = git(superproject, ['rev-parse', `${branch}:${submodule}`]);
   const referencePin = reference.ok ? reference.stdout.trim() : '';
-  if (!subjectPin || !referencePin) {
+  if (!referencePin) {
     return {
       state: 'unknown',
       staleFiles: [],
-      detail: `could not resolve HEAD in ${!subjectPin ? subjectDesktopRoot : referenceDesktopRoot}`,
+      subjectPin,
+      detail: `could not resolve the ${branch} branch's pin of ${submodule} from ${superproject}`,
     };
   }
   if (subjectPin === referencePin) {
     return { state: 'current', staleFiles: [], subjectPin, referencePin };
   }
 
-  // Every later question is asked of the reference repo, so BOTH commits must be
-  // readable there first. Without this, an unreadable object makes `diff` answer with
-  // an empty file list — indistinguishable from "nothing drifted", which is the exact
-  // reading that would wave a stale root through.
-  for (const pin of [subjectPin, referencePin]) {
-    if (!git(referenceDesktopRoot, ['cat-file', '-e', `${pin}^{commit}`]).ok) {
-      return {
-        state: 'unknown',
-        staleFiles: [],
-        subjectPin,
-        referencePin,
-        detail: `commit ${pin.slice(0, 12)} is not readable from ${referenceDesktopRoot}`,
-      };
-    }
+  // A cut root's submodule is typically a STANDALONE clone that has never fetched the
+  // newer pin, while the shared superproject store (<common-dir>/modules/<submodule>)
+  // holds both. Every later question needs BOTH commits readable in ONE store: an
+  // unreadable object makes `diff` answer with an empty file list, byte-identical to
+  // "nothing drifted" — the reading that would wave a stale root straight through.
+  const common = git(superproject, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  const candidates = [
+    ...(common.ok && common.stdout.trim() ? [path.join(common.stdout.trim(), 'modules', submodule)] : []),
+    subjectDesktopRoot,
+  ];
+  const store = candidates.find((repo) =>
+    [subjectPin, referencePin].every((pin) => git(repo, ['cat-file', '-e', `${pin}^{commit}`]).ok),
+  );
+  if (!store) {
+    return {
+      state: 'unknown',
+      staleFiles: [],
+      subjectPin,
+      referencePin,
+      detail: `no object store holds both ${subjectPin.slice(0, 12)} and ${referencePin.slice(0, 12)} (tried ${candidates.join(', ')})`,
+    };
   }
 
-  const diff = git(referenceDesktopRoot, [
+  const diff = git(store, [
     'diff',
     '--name-only',
     subjectPin,
@@ -841,7 +861,7 @@ export function releaseToolingDrift(args: {
     .filter((line) => line.length > 0)
     .sort();
 
-  const behind = git(referenceDesktopRoot, ['merge-base', '--is-ancestor', subjectPin, referencePin]).ok;
+  const behind = git(store, ['merge-base', '--is-ancestor', subjectPin, referencePin]).ok;
   return { state: behind ? 'behind' : 'diverged', staleFiles, subjectPin, referencePin };
 }
 
@@ -851,7 +871,7 @@ export interface PreflightDeps {
   /** HOME for resolving the signing key (default process.env.HOME). */
   home?: string;
   /** Override the release-tooling staleness probe (tests inject; default compares the
-   * cut root against desktopRoot()). */
+   * cut root against its integration branch's pin of the same submodule). */
   releaseToolingDrift?: (subjectDesktopRoot: string) => ReleaseToolingDrift;
 }
 
@@ -949,7 +969,7 @@ export function preflightCut(
   // drift state 'unknown' — true, but paid for with two spawned processes per preflight.
   const defaultDrift = (subjectDesktopRoot: string): ReleaseToolingDrift =>
     exists(path.join(subjectDesktopRoot, '.git'))
-      ? releaseToolingDrift({ subjectDesktopRoot, referenceDesktopRoot: desktopRoot() })
+      ? releaseToolingDrift({ subjectDesktopRoot })
       : {
           state: 'unknown',
           staleFiles: [],

@@ -721,8 +721,13 @@ describe('readOrCreateGate', () => {
  * drift is correct) from release machinery (must be current, drift re-executes old bugs).
  */
 describe('release-tooling staleness', () => {
+  // Real topology (measured on the paused 0.0.22 root): the cut root is a linked
+  // worktree sharing the canonical .git, its submodule is a STANDALONE clone lacking the
+  // newer pin, and the shared modules store holds both pins.
+  const SUPER = '/cut';
   const SUBJECT = '/cut/papercusp-desktop';
-  const REFERENCE = '/canonical/papercusp-desktop';
+  const COMMON = '/canonical/.git';
+  const STORE = '/canonical/.git/modules/papercusp-desktop';
   const SUBJECT_PIN = 'b396279eae52d2b7e96623ee48058423f0e3c9bb';
   const REFERENCE_PIN = '867b7ddf94475461710870d6aa3421bfce73202f';
 
@@ -735,50 +740,50 @@ describe('release-tooling staleness', () => {
   }
 
   const okv = (stdout = '') => ({ ok: true, stdout });
+  const FAIL = { ok: false, stdout: '' };
 
-  function behindTable(staleFiles: string[]) {
+  function behindTable(staleFiles: string[], branch = 'staging') {
     return {
       [`${SUBJECT}::rev-parse HEAD`]: okv(`${SUBJECT_PIN}\n`),
-      [`${REFERENCE}::rev-parse HEAD`]: okv(`${REFERENCE_PIN}\n`),
-      [`${REFERENCE}::cat-file -e ${SUBJECT_PIN}^{commit}`]: okv(),
-      [`${REFERENCE}::cat-file -e ${REFERENCE_PIN}^{commit}`]: okv(),
-      [`${REFERENCE}::diff --name-only ${SUBJECT_PIN} ${REFERENCE_PIN} -- ${RELEASE_TOOLING_SUBTREE}`]:
+      [`${SUPER}::rev-parse ${branch}:papercusp-desktop`]: okv(`${REFERENCE_PIN}\n`),
+      [`${SUPER}::rev-parse --path-format=absolute --git-common-dir`]: okv(`${COMMON}\n`),
+      [`${STORE}::cat-file -e ${SUBJECT_PIN}^{commit}`]: okv(),
+      [`${STORE}::cat-file -e ${REFERENCE_PIN}^{commit}`]: okv(),
+      [`${STORE}::diff --name-only ${SUBJECT_PIN} ${REFERENCE_PIN} -- ${RELEASE_TOOLING_SUBTREE}`]:
         okv(staleFiles.join('\n') + (staleFiles.length ? '\n' : '')),
-      [`${REFERENCE}::merge-base --is-ancestor ${SUBJECT_PIN} ${REFERENCE_PIN}`]: okv(),
+      [`${STORE}::merge-base --is-ancestor ${SUBJECT_PIN} ${REFERENCE_PIN}`]: okv(),
     };
   }
+  const drift = (table: Record<string, { ok: boolean; stdout: string }>, calls?: string[][], integrationBranch?: string) =>
+    releaseToolingDrift({ subjectDesktopRoot: SUBJECT, integrationBranch: integrationBranch ?? 'staging', git: fakeGit(table, calls) });
 
   describe('releaseToolingDrift', () => {
-    it('a cut root that IS the canonical checkout is current, and asks git nothing', () => {
+    it('reads the reference from the INTEGRATION BRANCH pin, never from a checkout path', () => {
+      // Regression for the vacuous version: a checkout-path reference resolved to the
+      // :3070 release checkout at green main — the same sha as a stale cut root — so
+      // stale-vs-stale read 'current'. The reference must be the branch's gitlink.
       const calls: string[][] = [];
-      const r = releaseToolingDrift({
-        subjectDesktopRoot: '/x/papercusp-desktop',
-        referenceDesktopRoot: '/x/./papercusp-desktop',
-        git: fakeGit({}, calls),
-      });
-      expect(r.state).toBe('current');
-      expect(calls).toEqual([]); // path equality short-circuits before any spawn
+      drift(behindTable(['bin/upload-release.sh']), calls);
+      expect(calls).toContainEqual([SUPER, 'rev-parse', 'staging:papercusp-desktop']);
+      expect(calls.some((c) => c[0] !== SUBJECT && c[1] === 'rev-parse' && c[2] === 'HEAD')).toBe(false);
+    });
+
+    it('honours an explicit integration branch', () => {
+      const r = drift(behindTable(['bin/release-local.sh'], 'trunk'), undefined, 'trunk');
+      expect(r.state).toBe('behind');
     });
 
     it('identical pins are current', () => {
-      const r = releaseToolingDrift({
-        subjectDesktopRoot: SUBJECT,
-        referenceDesktopRoot: REFERENCE,
-        git: fakeGit({
-          [`${SUBJECT}::rev-parse HEAD`]: okv(`${SUBJECT_PIN}\n`),
-          [`${REFERENCE}::rev-parse HEAD`]: okv(`${SUBJECT_PIN}\n`),
-        }),
+      const r = drift({
+        [`${SUBJECT}::rev-parse HEAD`]: okv(`${SUBJECT_PIN}\n`),
+        [`${SUPER}::rev-parse staging:papercusp-desktop`]: okv(`${SUBJECT_PIN}\n`),
       });
       expect(r.state).toBe('current');
       expect(r.staleFiles).toEqual([]);
     });
 
     it('an ancestor pin with differing bin/ files reads BEHIND, with the files sorted', () => {
-      const r = releaseToolingDrift({
-        subjectDesktopRoot: SUBJECT,
-        referenceDesktopRoot: REFERENCE,
-        git: fakeGit(behindTable(['bin/upload-release.sh', 'bin/lib/release-artifacts.sh'])),
-      });
+      const r = drift(behindTable(['bin/upload-release.sh', 'bin/lib/release-artifacts.sh']));
       expect(r.state).toBe('behind');
       expect(r.staleFiles).toEqual(['bin/lib/release-artifacts.sh', 'bin/upload-release.sh']);
       expect(r.subjectPin).toBe(SUBJECT_PIN);
@@ -787,11 +792,7 @@ describe('release-tooling staleness', () => {
 
     it('scopes the diff to the release-machinery subtree, not the whole tree', () => {
       const calls: string[][] = [];
-      releaseToolingDrift({
-        subjectDesktopRoot: SUBJECT,
-        referenceDesktopRoot: REFERENCE,
-        git: fakeGit(behindTable(['bin/release-local.sh']), calls),
-      });
+      drift(behindTable(['bin/release-local.sh']), calls);
       const diffCall = calls.find((c) => c.includes('diff'));
       expect(diffCall).toBeDefined();
       // Without the pathspec this would report product-source churn as stale machinery.
@@ -800,40 +801,42 @@ describe('release-tooling staleness', () => {
 
     it('a non-ancestor pin reads DIVERGED, not behind — a deliberate pin may be ahead', () => {
       const table = behindTable(['bin/release-local.sh']);
-      table[`${REFERENCE}::merge-base --is-ancestor ${SUBJECT_PIN} ${REFERENCE_PIN}`] = { ok: false, stdout: '' };
-      const r = releaseToolingDrift({
-        subjectDesktopRoot: SUBJECT,
-        referenceDesktopRoot: REFERENCE,
-        git: fakeGit(table),
-      });
+      table[`${STORE}::merge-base --is-ancestor ${SUBJECT_PIN} ${REFERENCE_PIN}`] = FAIL;
+      const r = drift(table);
       expect(r.state).toBe('diverged');
       expect(r.staleFiles).toEqual(['bin/release-local.sh']);
     });
 
-    it('an UNREADABLE commit is unknown — it must never read as clean', () => {
-      // The trap: git diff against an unresolvable object yields an EMPTY file list,
-      // which is byte-identical to "nothing drifted". That reading would wave a stale
-      // root straight through, so the object has to be proven readable first.
-      const table = behindTable(['bin/upload-release.sh']);
-      table[`${REFERENCE}::cat-file -e ${SUBJECT_PIN}^{commit}`] = { ok: false, stdout: '' };
-      const r = releaseToolingDrift({
-        subjectDesktopRoot: SUBJECT,
-        referenceDesktopRoot: REFERENCE,
-        git: fakeGit(table),
-      });
-      expect(r.state).toBe('unknown');
-      expect(r.state).not.toBe('current');
-      expect(r.detail).toMatch(/not readable/);
+    it('falls back to the subject clone when the shared store lacks a pin', () => {
+      const table: Record<string, { ok: boolean; stdout: string }> = {
+        ...behindTable([]),
+        [`${STORE}::cat-file -e ${REFERENCE_PIN}^{commit}`]: FAIL,
+        [`${SUBJECT}::cat-file -e ${SUBJECT_PIN}^{commit}`]: okv(),
+        [`${SUBJECT}::cat-file -e ${REFERENCE_PIN}^{commit}`]: okv(),
+        [`${SUBJECT}::diff --name-only ${SUBJECT_PIN} ${REFERENCE_PIN} -- ${RELEASE_TOOLING_SUBTREE}`]: okv('bin/upload-release.sh\n'),
+        [`${SUBJECT}::merge-base --is-ancestor ${SUBJECT_PIN} ${REFERENCE_PIN}`]: okv(),
+      };
+      const r = drift(table);
+      expect(r.state).toBe('behind');
+      expect(r.staleFiles).toEqual(['bin/upload-release.sh']);
     });
 
-    it('an unresolvable HEAD is unknown, naming which side failed', () => {
-      const r = releaseToolingDrift({
-        subjectDesktopRoot: SUBJECT,
-        referenceDesktopRoot: REFERENCE,
-        git: fakeGit({ [`${REFERENCE}::rev-parse HEAD`]: okv(`${REFERENCE_PIN}\n`) }),
-      });
+    it('no store holding BOTH pins is unknown — it must never read as clean', () => {
+      // The trap: git diff against an unresolvable object yields an EMPTY file list,
+      // byte-identical to "nothing drifted". The real cut-root submodule is a standalone
+      // clone lacking the newer pin, so this is the default outcome without the store.
+      const table = behindTable(['bin/upload-release.sh']);
+      table[`${STORE}::cat-file -e ${REFERENCE_PIN}^{commit}`] = FAIL;
+      const r = drift(table);
       expect(r.state).toBe('unknown');
-      expect(r.detail).toContain(SUBJECT);
+      expect(r.detail).toMatch(/no object store holds both/);
+    });
+
+    it('an unresolvable subject HEAD or branch pin is unknown, naming what failed', () => {
+      expect(drift({}).detail).toContain(SUBJECT);
+      const noBranch = drift({ [`${SUBJECT}::rev-parse HEAD`]: okv(`${SUBJECT_PIN}\n`) });
+      expect(noBranch.state).toBe('unknown');
+      expect(noBranch.detail).toMatch(/staging branch's pin of papercusp-desktop/);
     });
   });
 
