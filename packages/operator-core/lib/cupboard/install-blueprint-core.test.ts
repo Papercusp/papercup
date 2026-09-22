@@ -13,10 +13,12 @@ import { resolveBuiltinExtends, pinPackageInput, validateAgentInputClosure } fro
 import { resolvePromptFile } from '@papercusp/orchestrator';
 import { makeComposedResolveExtends } from '@papercusp/blueprint-distribution';
 import {
+  cloneFirstResolveExtends,
   installBlueprintFromCupboardCore,
   InstallBlueprintError,
   type InstallBlueprintCoreDeps,
 } from './install-blueprint-core';
+import { snapshotBlueprintReleaseSource } from './blueprint-release';
 import type { CapabilityProviderCandidate } from './capability-grant-resolver';
 
 let root: string;        // scratch root for fixtures + install target
@@ -244,6 +246,64 @@ describe('installBlueprintFromCupboardCore', () => {
     );
     expect(res.ok).toBe(true);
     expect(res.id).toBe('child-of-base');
+  });
+
+  it('verifies a listed pin over the CLONED parent, not the host copy of that parent (WI-10001750 / R-7)', async () => {
+    // The published library ships the child AND its parent. The host has its OWN,
+    // different copy of the parent (the way every host's built-in `base` drifts from
+    // the publisher's). Publish pins the closure over the library's parent, so a
+    // byte-identical listing must reproduce that pin on install.
+    const parentYaml = (label: string) =>
+      ['id: shared-parent', 'version: 1.0.0', `description: parent as shipped by ${label}`].join('\n');
+    await writeBlueprint(join(fixtureRepo, 'shared-parent'), parentYaml('the publisher'));
+    await writeBlueprint(join(fixtureRepo, 'layered-identity'), [
+      'id: layered-identity',
+      'extends: shared-parent',
+      'version: 0.1.0',
+      'description: an abstract identity layered on a shared parent',
+    ].join('\n'));
+    const hostParent = join(root, 'host-tier');
+    await writeBlueprint(join(hostParent, 'shared-parent'), parentYaml('this host'));
+    const hostResolve = makeComposedResolveExtends({ localDirs: [hostParent], installedDir });
+
+    const published = await snapshotBlueprintReleaseSource({
+      blueprintFile: join(fixtureRepo, 'layered-identity', 'blueprint.yaml'),
+      resolveExtends: makeComposedResolveExtends({ localDirs: [fixtureRepo], installedDir }),
+    });
+    const hostOnly = await snapshotBlueprintReleaseSource({
+      blueprintFile: join(fixtureRepo, 'layered-identity', 'blueprint.yaml'),
+      resolveExtends: hostResolve,
+    });
+    // Positive control: the fixture really does make the two parents hash apart, so
+    // the install assertion below discriminates rather than passing vacuously.
+    expect(hostOnly.archive.package.rootHash).not.toBe(published.archive.package.rootHash);
+
+    const res = await installBlueprintFromCupboardCore(
+      {
+        githubUrl: 'https://github.com/acme/blueprints',
+        listingRef: 'layered-identity',
+        expectedRelease: { version: '0.1.0', contentHash: published.archive.package.rootHash },
+      },
+      makeDeps({ resolveExtends: hostResolve }),
+    );
+    // A pin mismatch refuses with 422 before any bytes land, so reaching an installed
+    // release at the listed version IS the reproduced-pin verdict.
+    expect(res.ok).toBe(true);
+    expect(res.release.version).toBe('0.1.0');
+    expect(existsSync(join(installedDir, 'layered-identity', 'blueprint.yaml'))).toBe(true);
+  });
+
+  it('still resolves a parent the cloned library does not ship from the host tiers', () => {
+    const hostHit = join(root, 'host', 'only-on-host', 'blueprint.yaml');
+    const resolveFn = cloneFirstResolveExtends(
+      join(root, 'clone'),
+      join(root, 'clone', 'child'),
+      (id) => (id === 'only-on-host' ? hostHit : null),
+    );
+    expect(resolveFn('only-on-host')).toBe(hostHit);
+    // A single-blueprint repo (blueprint at the clone root) has no sibling library.
+    const rootOnly = cloneFirstResolveExtends(join(root, 'clone'), join(root, 'clone'), () => null);
+    expect(rootOnly('anything')).toBeNull();
   });
 
   it('installs an abstract parent-only blueprint (no workItem/spine) without full validation', async () => {
