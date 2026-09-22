@@ -386,7 +386,32 @@ const specAdequacyCompletionSpec = z
   })
   .describe(
     'Required on a terminal close that covers active test-requiring spec clauses. The gate recomputes per-clause adequacy over the optional exact evidenceRefs selection and accepts only exact current terminal scorecards whose grading audit is settled. Persisted evaluator rerun recipes may also supply specRevision + specFingerprint with replaySnapshot:true so the gate preserves the evaluator snapshot contract.',
-  );
+  )
+  // Same reuse as the completion record above, and the same fix: this attestation is
+  // reached from both the single-item branch and each `items[]` entry, so without an id
+  // tools/list copies the whole nested record per branch instead of emitting one `$defs`
+  // entry and two refs. MEASURED 1,591 B off this tool's compact definition — which is
+  // what puts the derived OMP/claude/codex seed back under D-009's 100,000 B budget
+  // (it was 100,189 B, floors alone, with nothing discretionary left to defer).
+  .meta({ id: 'work-items-spec-adequacy-attestation-v1' });
+
+/**
+ * ⚠ BOTH call sites MUST share THIS ONE instance — do not re-spell
+ * `specAdequacyCompletionSpec.optional()` per site.
+ *
+ * `strictArgs`' `deepStrictifyInPlace` (define-tool.ts) returns a NEW `.strict()` clone for
+ * every `object` node it visits and re-applies that node's registry metadata to the clone,
+ * and it deliberately re-visits a shared reference once per PATH it is reached from. Two
+ * separate `.optional()` spellings are two paths to this object, so it would be cloned
+ * twice, both clones would carry the id above, and Zod aborts the conversion of the WHOLE
+ * catalog with `Duplicate schema id … Two different schemas cannot share the same id`.
+ *
+ * Every non-object node (`optional` here) is instead mutated IN PLACE and returned as the
+ * same instance, so sharing one `.optional()` wrapper collapses both paths onto a single
+ * object instance — one `$defs` entry, two `$ref`s. (An id placed BEFORE `.strict()` does
+ * not survive either: `.strict()` drops registry metadata.)
+ */
+const specAdequacyCompletionField = specAdequacyCompletionSpec.optional();
 
 /**
  * EI-5269 / EI-18127483322976472: the canonical terminal states across BOTH families
@@ -607,7 +632,7 @@ const itemSpec = z.object({
    */
   outputPayload: z.unknown().optional(),
   /** Current proof attestation for a terminal close covering first-class spec clauses. */
-  specAdequacy: specAdequacyCompletionSpec.optional(),
+  specAdequacy: specAdequacyCompletionField,
   /** Evaluate the complete versioned close contract without recording evidence or changing lifecycle. */
   validateOnly: z.boolean().optional(),
   /**
@@ -5139,7 +5164,7 @@ export default defineTool({
             /** Optional kind-specific structured output (single-complete shorthand). */
             outputPayload: z.unknown().optional(),
             /** Current per-clause proof attestation for spec-covered terminal closes. */
-            specAdequacy: specAdequacyCompletionSpec.optional(),
+            specAdequacy: specAdequacyCompletionField,
             /** Read-only preflight: evaluate every applicable completion requirement without writing. */
             validateOnly: z.boolean().optional(),
             /** Required only when this single item requests a terminal close. */
