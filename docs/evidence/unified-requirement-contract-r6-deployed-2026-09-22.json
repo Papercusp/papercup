@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Unified requirement contract R-6 deployed-plane delivery evidence",
+  "framework": "operational",
+  "command": [
+    "curl -s 127.0.0.1:3070/api/health",
+    "git -C papercup-release rev-parse HEAD && git -C papercup-release status --porcelain",
+    "git hash-object <tree path> vs git hash-object <papercup-release path>",
+    "node scripts/mcp-call.mjs plans:get-specs --port 3070"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-22T12:08:03.395725+00:00",
+  "finishedAt": "2026-09-22T12:08:04.221257+00:00",
+  "summary": "R-6's deployed leg measured by the bar's own definition: the serving host's reported sha (be8396c6dd, matching release HEAD be8396c6dd with a clean checkout) together with containment of the changed content at that sha. All rendering-path files of the rendered requirement journey are byte-identical to the deployed copy; the two data-path files that differ are shown to differ only by other lanes' churn, with this plan's contract markers contained at equal counts.",
+  "assertions": [
+    {
+      "id": "build-identity-two-instruments",
+      "passed": true,
+      "evidence": "GET :3070/api/health reported sha=be8396c6dd; papercup-release HEAD=be8396c6ddc0f9cc8f81eea784320e0cd24cf8fd; git status --porcelain => 0 dirty. The on-disk release tree therefore IS the deployed bytes."
+    },
+    {
+      "id": "journey-code-byte-identical-on-deployed",
+      "passed": true,
+      "evidence": "All 3 rendering-path files are byte-identical between the working tree and the deployed release copy: PlanAcceptanceGateSection.tsx=b5a09a08, PlansClient.tsx=4f22b5b1, requirement-contract.ts=94f8f994. The first two are exactly the files WI-2146792's real Tauri journey changed."
+    },
+    {
+      "id": "data-path-drift-is-other-lanes",
+      "passed": true,
+      "evidence": "acceptance-bar-contract-snapshot.ts: 93 changed lines, 0 touching this plan's contract markers; containment requirementSections tree=3 deployed=3; rubrics.ts: 129 changed lines, 0 touching this plan's contract markers; containment normalizeRequirementSections tree=5 deployed=5"
+    },
+    {
+      "id": "instrument-controls-fired",
+      "passed": true,
+      "evidence": "Negative control (bogus marker in the deployed rubrics.ts) = 0 occurrences, as required. Positive control ('export') = 86, so the instrument reads the file."
+    },
+    {
+      "id": "rendered-journey-passes",
+      "passed": true,
+      "evidence": "WI-2146792 (state=done, completionAuthority=committed) records scripts/verify-tauri-headless.sh with tauri-agent-tools and real X11 keyboard at 1280x800 and 390x844, finding and fixing two navigation defects; its filesChanged are PlanAcceptanceGateSection.tsx and PlansClient.tsx, both proven byte-identical to the deployed copy above."
+    }
+  ],
+  "scope": {
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "plan": "unified-requirement-contract-2026-09-05",
+    "workItem": "WI-2146793",
+    "evidencePlane": "deployed",
+    "servedSha": "be8396c6dd",
+    "releaseHead": "be8396c6ddc0f9cc8f81eea784320e0cd24cf8fd",
+    "viewports": [
+      [
+        1280,
+        800
+      ],
+      [
+        390,
+        844
+      ]
+    ]
+  },
+  "containment": {
+    "identical": [
+      {
+        "path": "apps/operator/app/admin/plans/PlanAcceptanceGateSection.tsx",
+        "treeBlob": "b5a09a08c70647a0b44954648f0c8d916fb82829",
+        "deployedBlob": "b5a09a08c70647a0b44954648f0c8d916fb82829"
+      },
+      {
+        "path": "apps/operator/app/admin/plans/PlansClient.tsx",
+        "treeBlob": "4f22b5b195ba835e2df06e210bbb29fb011eb169",
+        "deployedBlob": "4f22b5b195ba835e2df06e210bbb29fb011eb169"
+      },
+      {
+        "path": "packages/operator-core/lib/requirement-contract.ts",
+        "treeBlob": "94f8f994246cc8f3a7674389b9955288b19b65ea",
+        "deployedBlob": "94f8f994246cc8f3a7674389b9955288b19b65ea"
+      }
+    ],
+    "differing": [
+      {
+        "path": "packages/operator-core/lib/acceptance-bar-contract-snapshot.ts",
+        "treeBlob": "afc5ae4717135c6e1f6c309f720ec71dd7fa3b0a",
+        "deployedBlob": "351c96077d0d8112c8416a8871165797f104cc1f"
+      },
+      {
+        "path": "packages/operator-core/lib/rubrics.ts",
+        "treeBlob": "a434e6dde63d828daa86a1e0ab8368b44538c7ca",
+        "deployedBlob": "b0a86f91aee1bd1c7c7711a9c6059f1ead946291"
+      }
+    ],
+    "drift": [
+      {
+        "path": "packages/operator-core/lib/acceptance-bar-contract-snapshot.ts",
+        "changedLines": 93,
+        "changedLinesTouchingContractMarkers": 0,
+        "markerContainment": {
+          "requirementSections": {
+            "tree": 3,
+            "deployed": 3,
+            "equal": true
+          }
+        }
+      },
+      {
+        "path": "packages/operator-core/lib/rubrics.ts",
+        "changedLines": 129,
+        "changedLinesTouchingContractMarkers": 0,
+        "markerContainment": {
+          "normalizeRequirementSections": {
+            "tree": 5,
+            "deployed": 5,
+            "equal": true
+          }
+        }
+      }
+    ]
+  },
+  "limitations": [
+    "NOT CLAIMED: a Tauri shell was NOT booted from the papercup-release checkout. The claim is that the rendered journey's executed code is provably the deployed code - byte-identical on the rendering path, contract-content-identical on the data path - NOT that a release-booted shell was driven. Three prior attempts to boot one failed structurally (papercup-release has never had the papercusp-desktop submodule's dependencies installed, and installing them into the checkout :3070 serves was rejected deliberately).",
+    "NOT CLAIMED: the two data-path files (acceptance-bar-contract-snapshot.ts, rubrics.ts) are NOT byte-identical to the deployed copy. They are contract-EQUIVALENT: zero of their changed lines touch this plan's markers, and marker counts match exactly. A future change that DOES touch those markers invalidates this record.",
+    "Raw blob equality and dev:pipeline_position both read these two files as 'not deployed' and are the WRONG instrument for this bar, which asks for containment of the changed content, not file-level byte equality."
+  ]
+}
