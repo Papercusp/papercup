@@ -30,6 +30,7 @@ import {
   type DelegationCountContext,
   type PopulationCount,
 } from './delegation-counts';
+import type { ProviderRead } from './agent-obligation-providers';
 
 /** A mutable stand-in for the four live populations. */
 function mutablePopulations() {
@@ -87,10 +88,18 @@ const COUNT_KEYS = [
   'activeDrainFleets',
 ] as const;
 
-/** Read one count's numeric value, failing loudly on an unknown. */
-function known(read: { status: string } & Record<string, unknown>): number {
+/**
+ * Read one count's numeric value, failing loudly on an unknown.
+ *
+ * The narrowing `throw` is not dead code: `expect` does not narrow the union for
+ * the compiler, and casting past it would let an `unknown` read silently yield
+ * `undefined` here — an unknown quietly becoming a number is the exact confusion
+ * the three-valued type exists to prevent.
+ */
+function known(read: ProviderRead<PopulationCount>): number {
   expect(read.status).toBe('known');
-  return (read as unknown as { value: PopulationCount }).value.count;
+  if (read.status !== 'known') throw new Error(`expected a known count, got: ${read.status}`);
+  return read.value.count;
 }
 
 describe('R-5 — one shared live provider for the four delegation counts', () => {
