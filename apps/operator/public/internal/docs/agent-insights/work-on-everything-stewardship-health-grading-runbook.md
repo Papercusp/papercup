@@ -112,3 +112,21 @@ When the goal is paused, new placement/throughput and traversal may be `unknown`
 Use rubric ref `work-on-everything-stewardship-health`. File all 15 criterion keys in one structured observation. Include the goal id, holder owner id, exact window, deployed generation, and attribution on every non-pass rating. Link concrete follow-up work at scorecard creation time. A partial/fail/severe finding without durable ownership is itself evidence against completion-flow health.
 
 The rubric is operational, not a release gate. Trends across windows matter more than one isolated card, but a severe boundary violation stands on one occurrence.
+
+## Evidence envelope and attribution (revision 21)
+
+Every new Work on everything scorecard rating is expected to carry a replayable `evidenceRef`, an `evidenceKind`, and an `attribution` (`subject`, `system`, `instrument`, `environment`, or `ambiguous`). Explicit absence/zero claims carry `absenceClaim:true` plus a `positiveControlRef`. Unknown ratings carry `unknownReason` and `nextEvidenceAction`; measurement gaps are never silently attributed to the goal holder. Historical prose-only cards remain readable, but they are not sufficient for a new re-grade.
+
+The server computes a categorical roll-up for this rubric. Critical failures dominate; critical unknowns or incomplete critical coverage produce `unassessable`; non-critical partials produce `partial`; all exercised criteria passing produces `pass` (or `exemplary` when every criterion is exemplary). Do not replace this roll-up with `mean10`.
+
+## Criterion ownership
+
+`delegated-execution-and-drain-health` owns standing drain execution and holder non-implementation only. `plan-fleet-materialization` owns per-worklist-plan fleet materialization. `claim-flow-and-completion-integrity` owns cohort-wide claimability and evidence-backed terminal completion. `end-to-end-stewardship-closure` owns one organic joined trace across selection → placement → execution → completion → feedback → reporting. Reuse evidence across these criteria only when the observation belongs to the criterion's declared owner; do not duplicate one proof obligation across multiple criteria.
+
+## Trend identity
+
+`rubrics:trend` reports filing time separately from subject observation windows and includes filing lag where subject windows exist. A card filed on September 20, 2026 for a September 5–6, 2026 run is fresh as a filing but historical as behavior; never describe it as a fresh run.
+
+## Registered instrument provenance
+
+Caller-supplied `instrumentSnapshots` are treated as self-reported. Only a server-executed registered resolver may stamp `platform-computed`. The current registered Work on everything base resolver binds an exact current `goal-mode-e2e` subject/window card, requires complete current-contract evidence and a settled grading audit, and persists the source scorecard id as `evidenceRef`.
