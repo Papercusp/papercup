@@ -537,6 +537,58 @@ export class UnsupportedWorkspaceHostInitializationTargetError extends Error {
 }
 
 /**
+ * The IAP SSH profile that reaches ONE incarnation of a GCP host through the controller's own,
+ * already-enrolled trust store. It enrolls nothing: a caller that must DETECT a recreated machine
+ * (the soak, D-391) uses this directly, so a new incarnation fails the host-key check instead of
+ * being quietly re-pinned. Initialization builds its adapter from the same function, so the two
+ * cannot disagree about the alias, user or trust store a host is reached with.
+ */
+export function resolveGcpIapWorkspaceHostInitializationProfile(
+  desired: WorkspaceHostDesiredSpec,
+  controller: WorkspaceHostInitializationControllerProfile,
+  incarnation: { instanceId: string },
+): GcpIapWorkspaceHostInitializationProfile {
+  if (desired.target !== GCP_WORKSPACE_HOST_TARGET) {
+    throw new UnsupportedWorkspaceHostInitializationTargetError(String(desired.target));
+  }
+  const identity = resolveGcpWorkspaceHostInstanceIdentity(desired);
+  return {
+    projectId: identity.projectId,
+    zone: identity.zone,
+    instanceName: identity.instanceName,
+    instanceId: incarnation.instanceId,
+    sshUser: controller.sshUser,
+    knownHostsFile: controller.knownHostsFile,
+    ...(controller.identityFile ? { identityFile: controller.identityFile } : {}),
+    ...(controller.sshExecutable ? { sshExecutable: controller.sshExecutable } : {}),
+    ...(controller.gcloudExecutable ? { gcloudExecutable: controller.gcloudExecutable } : {}),
+    remoteEntrypoint: controller.remoteEntrypoint,
+  };
+}
+
+/**
+ * The Compute client a host's own recorded credential reference authorizes. Hosted delegation
+ * refs resolve through verified delegation metadata; every other ref uses the controller's ADC.
+ */
+export function createGcpWorkspaceHostApiClientForDesired(
+  desired: WorkspaceHostDesiredSpec,
+  seams: { resolveHostedAuth?: typeof resolveHostedGcpAuth; gcpFetch?: typeof fetch } = {},
+): GcpWorkspaceHostApiClient {
+  const credentialRef = desired.credentials.cloudCredentialRef.ref;
+  const acquireAuth = isHostedProviderCredentialRef(credentialRef)
+    ? () => (seams.resolveHostedAuth ?? resolveHostedGcpAuth)({
+        credentialRef,
+        provider: desired.provider ?? {},
+      })
+    : createGcpWorkspaceHostAcquireAuth(credentialRef);
+  return createGcpWorkspaceHostApiClient({
+    acquireAuth,
+    credentialRef,
+    ...(seams.gcpFetch ? { fetch: seams.gcpFetch } : {}),
+  });
+}
+
+/**
  * Build the concrete host adapter for a desired spec.
  *
  * Throws `UnsupportedWorkspaceHostInitializationTargetError` for a target with no adapter, and
@@ -551,26 +603,8 @@ export function resolveWorkspaceHostInitializationOperations(
   incarnation: { instanceId: string },
   credentialMaterialSource?: WorkspaceHostCredentialMaterialSource,
 ): WorkspaceHostControllerOperations {
-  if (desired.target !== GCP_WORKSPACE_HOST_TARGET) {
-    throw new UnsupportedWorkspaceHostInitializationTargetError(String(desired.target));
-  }
-
-  const identity = resolveGcpWorkspaceHostInstanceIdentity(desired);
-  const transport = {
-    projectId: identity.projectId,
-    zone: identity.zone,
-    instanceName: identity.instanceName,
-    instanceId: incarnation.instanceId,
-    sshUser: controller.sshUser,
-    knownHostsFile: controller.knownHostsFile,
-    ...(controller.identityFile ? { identityFile: controller.identityFile } : {}),
-    ...(controller.sshExecutable ? { sshExecutable: controller.sshExecutable } : {}),
-    ...(controller.gcloudExecutable ? { gcloudExecutable: controller.gcloudExecutable } : {}),
-  };
-  const profile: GcpIapWorkspaceHostInitializationProfile = {
-    ...transport,
-    remoteEntrypoint: controller.remoteEntrypoint,
-  };
+  const profile = resolveGcpIapWorkspaceHostInitializationProfile(desired, controller, incarnation);
+  const { remoteEntrypoint: _remoteEntrypoint, ...transport } = profile;
 
   // The delivering wrapper is UNCONDITIONAL, not applied only when a material source is
   // configured. Delivery is required by the `git` and `agent` families whether or not this
@@ -782,22 +816,12 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
   // refuse without making a cloud call (or attempting to interpret an AWS/Azure spec as GCP).
   const deliveryCapabilities = resolveWorkspaceHostDeliveryCapabilities(desired);
   const identity = resolveGcpWorkspaceHostInstanceIdentity(desired);
-  const credentialRef = desired.credentials.cloudCredentialRef.ref;
   const client =
     input.gcpClient ??
-    (() => {
-      const acquireAuth = isHostedProviderCredentialRef(credentialRef)
-        ? () => (input.resolveHostedAuth ?? resolveHostedGcpAuth)({
-            credentialRef,
-            provider: desired.provider ?? {},
-          })
-        : createGcpWorkspaceHostAcquireAuth(credentialRef);
-      return createGcpWorkspaceHostApiClient({
-        acquireAuth,
-        credentialRef,
-        ...(input.gcpFetch ? { fetch: input.gcpFetch } : {}),
-      });
-    })();
+    createGcpWorkspaceHostApiClientForDesired(desired, {
+      ...(input.resolveHostedAuth ? { resolveHostedAuth: input.resolveHostedAuth } : {}),
+      ...(input.gcpFetch ? { gcpFetch: input.gcpFetch } : {}),
+    });
   // WI-10001685: wait out the guest agent's hostkeys/ publication instead of throwing on a fresh
   // VM. This read is the LAST thing resolution does and it runs BEFORE the initializer that owns
   // the bootstrap gate, so throwing here made that gate structurally unreachable and wrote no

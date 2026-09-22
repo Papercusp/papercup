@@ -1181,7 +1181,10 @@ export async function recordWorkspaceHostHealth(
       SET health_status = ${attestation.status},
           health_attested_at = ${attestation.observedAt},
           health_checks = ${tx.json(json(attestation.checks) as never)},
-          bootstrap_version = ${attestation.bootstrapVersion ?? null},
+          -- An attestation that does not carry a bootstrap version did not MEASURE one; absence
+          -- must not erase the version a bootstrap already reported (the soak attests every few
+          -- minutes and never reads it).
+          bootstrap_version = COALESCE(${attestation.bootstrapVersion ?? null}, bootstrap_version),
           updated_at = now()
       WHERE workspace_id = ${workspaceId} AND id = ${attestation.hostId}
     `;
