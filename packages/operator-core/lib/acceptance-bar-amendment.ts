@@ -470,6 +470,50 @@ export async function synchronizeAcceptanceBarRevision(
     if (revisions.has(clause.spec_id)) continue;
     const effectiveBarKey = barKeyOf(clause);
     const criterion = effectiveBarKey ? byKey.get(effectiveBarKey) : undefined;
+    // A bar the PREVIOUS revision carried and this one does not was RETIRED by an
+    // approved amendment, so its projection is an orphan and retiring it is this
+    // transaction's job. Throwing `unmapped` instead made the orphan the caller's
+    // problem, and their only lever was to clear the linkage by hand — which is
+    // precisely what makes the discharge check in rubrics.ts refuse the same
+    // amendment with `no_live_discharge_mapping`. Left unhandled the clause also
+    // keeps enforcing the retired bar's text against a live plan item: this one was
+    // holding P-009 to the literal behavior "-> P-009.", which asserts nothing and
+    // therefore could never be discharged. Supersede it and clear the source pin —
+    // a NULL `source_bar_key` on a superseded row is exactly the shape
+    // `unexpectedAcceptanceBarProjectionIds` recognises as a legitimately retired
+    // projection rather than a stray one.
+    if (!criterion && effectiveBarKey && previousByKey.has(effectiveBarKey)) {
+      const retired = await setSpecClause(
+        {
+          planSlug: subjectPlan,
+          specId: clause.spec_id,
+          sourceValId: clause.source_val_id,
+          expectedRevision: Number(clause.current_revision),
+          planItemId: clause.plan_item_id,
+          behavior:
+            `RETIRED with acceptance bar ${effectiveBarKey} (rubric ${args.rubricSlug} rev ${args.rubricRevision}). ` +
+            `The bar no longer exists, so this projection enforces nothing; its prior behavior is preserved in ` +
+            `revision ${clause.current_revision}.`,
+          behaviorClass: clause.behavior_class,
+          requiredEvidence: clause.required_evidence,
+          requiredTestLayers: clause.required_test_layers,
+          lifecycleStatus: 'superseded',
+          falsifier: null,
+          acceptanceRef: null,
+          sourceBar: null,
+          actorId: args.actorId,
+        },
+        { executor: sql, workspaceId: args.workspaceId, harnessSlug: args.harnessSlug },
+      );
+      if (retired.status !== 'created' && retired.status !== 'revised' && retired.status !== 'unchanged') {
+        throw new Error(
+          `acceptance_bar_revision_projection_conflict:${clause.spec_id}:${retired.status}`
+            + (retired.status === 'conflict'
+              ? `:expected=${retired.expectedRevision}:actual=${retired.actualRevision}` : ''),
+        );
+      }
+      continue;
+    }
     if (!effectiveBarKey || !criterion?.barHash || !criterion.evidencePlane || !data.barSetHash) {
       throw new Error(`acceptance_bar_revision_projection_unmapped:${clause.spec_id}`);
     }
