@@ -12,7 +12,8 @@ export type WorkspaceHostRequestPath =
   | '/api/workspace-hosts/action'
   | '/api/workspace-hosts/provision'
   | `/api/workspace-hosts/${string}/initialize`
-  | `/api/workspace-hosts/${string}/desktop-pack`;
+  | `/api/workspace-hosts/${string}/desktop-pack`
+  | `/api/workspace-hosts/${string}/soak`;
 
 export type WorkspaceHostRequestForwarder = (
   path: WorkspaceHostRequestPath,

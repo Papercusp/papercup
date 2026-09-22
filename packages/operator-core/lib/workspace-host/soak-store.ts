@@ -121,6 +121,16 @@ export async function readWorkspaceHostSoak(
   return { soakId, envelope, samples, malformedRows };
 }
 
+/** The release the host reports running (bundle digest + version), or null when unrecorded. */
+export async function readWorkspaceHostRuntimeRelease(workspaceId: string, hostId: string): Promise<unknown> {
+  const rows = await withWorkspace(workspaceId, (tx) => tx<Array<{ runtime_release: unknown }>>`
+    SELECT runtime_release
+      FROM harness_shared.workspace_hosts
+     WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+  `);
+  return rows[0]?.runtime_release ?? null;
+}
+
 /** The most recent soak recorded for a host, or null when it was never soaked. */
 export async function readLatestWorkspaceHostSoakId(workspaceId: string, hostId: string): Promise<string | null> {
   const rows = await withWorkspace(workspaceId, (tx) => tx<Array<{ soak_id: string | null }>>`

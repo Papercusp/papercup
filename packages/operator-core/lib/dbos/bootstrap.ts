@@ -319,6 +319,10 @@ async function startDbosOnce(): Promise<void> {
     });
   });
   await import('./workspace-host-provision-workflow');
+  // D-391: the day-long workspace-host soak runs on its OWN queue (the provisioning queue's
+  // host-scoped dedup would lock lifecycle actions out for the whole soak). Registered before
+  // launch so a controller restart mid-soak recovers it instead of orphaning a day of samples.
+  await import('./workspace-host-soak-workflow');
   // The director-cadence autoloop workflow is RETIRED (autoloop-pot-operator-
   // rebuild-2026-06-05 P-010 / D-009): it read `.papercusp/director-config.json`,
   // an enablement surface nothing wrote. Scheduled decider fires are the routines

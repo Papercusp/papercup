@@ -435,6 +435,7 @@ import workspaceHostConnection from './workspace-hosts/connection';
 import workspaceHostCredentialLifecycle from './workspace-hosts/credential-lifecycle';
 import workspaceHostInitialize from './workspace-hosts/initialize';
 import workspaceHostDesktopPack from './workspace-hosts/desktop-pack';
+import workspaceHostSoak from './workspace-hosts/soak';
 import workspaceHostProvision from './workspace-hosts/provision';
 import userActionsBySlug from './user-actions/by-slug';
 import userActionsLog from './user-actions/log';
@@ -926,6 +927,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(workspaceHostCredentialLifecycle as AnyRoute),
   ...flatten(workspaceHostInitialize as AnyRoute),
   ...flatten(workspaceHostDesktopPack as AnyRoute),
+  ...flatten(workspaceHostSoak as AnyRoute[]),
   ...flatten(workspaceHostProvision as AnyRoute),
   ...flatten(userActionsBySlug as AnyRoute),
   ...flatten(userActionsLog as AnyRoute),
