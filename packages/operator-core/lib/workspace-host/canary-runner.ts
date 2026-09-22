@@ -9,6 +9,7 @@
 import {
   WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
   WORKSPACE_HOST_CANARY_AGENTS,
+  resolveWorkspaceHostRequestedAgents,
   WORKSPACE_HOST_CREDENTIAL_CHANNELS,
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
   adaptWorkspaceHostDestroyCanaryEvidence,
@@ -245,7 +246,7 @@ function validateAgentEvidence(
  */
 export function extractWorkspaceHostCanaryInitializationObservation(
   result: WorkspaceHostInitializationRunResult,
-  requestedAgents: readonly (typeof WORKSPACE_HOST_CANARY_AGENTS)[number][] = WORKSPACE_HOST_CANARY_AGENTS,
+  requestedAgents?: readonly (typeof WORKSPACE_HOST_CANARY_AGENTS)[number][],
 ): {
   readonly observedAt: string;
   readonly repository: { readonly visibility: 'private'; readonly cloned: true };
@@ -286,7 +287,8 @@ export function extractWorkspaceHostCanaryInitializationObservation(
   const rawAgents = isRecord(evidence.agents) ? evidence.agents : {};
   const agents: Partial<Record<(typeof WORKSPACE_HOST_CANARY_AGENTS)[number], WorkspaceHostAgentVerificationEvidence>> =
     {};
-  for (const agent of requestedAgents) {
+  const coverage = resolveWorkspaceHostRequestedAgents(requestedAgents);
+  for (const agent of coverage) {
     const validated = validateAgentEvidence(agent, rawAgents[agent], problems);
     if (validated) agents[agent] = validated;
   }
@@ -301,7 +303,13 @@ export function extractWorkspaceHostCanaryInitializationObservation(
     agents: {
       contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
       observedAt: receipt.observedAt,
+      // Scoped to the REQUESTED set. A skipped agent is absent, never reported ready.
       allReady: true,
+      // Carry the coverage ON the report so every downstream validator derives the scope from the
+      // artifact instead of re-deciding it — `agents` alone cannot distinguish "codex was
+      // deliberately skipped" from "codex evidence went missing". Omitted when unscoped, which is
+      // exactly the legacy/default all-agent report shape the contract already documents.
+      ...(requestedAgents !== undefined ? { requestedAgents: coverage } : {}),
       agents: agents as WorkspaceHostAgentVerificationReport['agents'],
     },
   };

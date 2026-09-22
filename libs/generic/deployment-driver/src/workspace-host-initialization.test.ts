@@ -633,7 +633,12 @@ describe("validateWorkspaceHostInitializationCanary", () => {
 
   it("reports a missing agent and incomplete restore rebinding without raw logs", () => {
     const incomplete = evidence();
-    incomplete.agents.omp.ready = false as true;
+    // `agents` is Partial since coverage became declarable (D-369), so a fixture that intends to
+    // degrade OMP must first prove OMP is actually present — otherwise this case could silently
+    // become "OMP absent", which is a DIFFERENT assertion than "OMP not ready".
+    const omp = incomplete.agents.omp;
+    if (!omp) throw new Error("fixture must carry OMP evidence for this case");
+    omp.ready = false as true;
     incomplete.backupRestore.reboundChannels = ["cloud", "git"];
     const result = validateWorkspaceHostInitializationCanary(incomplete);
     expect(result.ok).toBe(false);

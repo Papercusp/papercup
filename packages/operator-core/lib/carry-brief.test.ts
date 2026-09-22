@@ -930,6 +930,90 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     expect(out.indexOf('CARRIED TRANSIENT EXEC HANDLE')).toBeLessThan(out.indexOf('You HELD'));
   });
 
+  it('P-029: renders NEVER-DROP fact keys, ahead of the owner-scoped standing-facts block', () => {
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      workspaceId: 'ws-test',
+      loop: null,
+      heldItems: [],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      // An OWNER-scoped standing fact, deliberately DIFFERENT from the
+      // never-drop keys below: the two blocks carry different folds, and this
+      // fixture is what proves the new one is not just re-rendering `facts`.
+      facts: [{ key: 'convention:owner-scoped-example', body: 'a standing convention' }],
+      neverDropFacts: ['dead-end:identity-stale-artifact', 'wall:capital-arming'],
+      awaits: [],
+      fleet: null,
+    };
+
+    const out = renderCarryBriefColdExtras(brief);
+    expect(out).toContain('NEVER-DROP facts');
+    expect(out).toContain('dead-end:identity-stale-artifact');
+    expect(out).toContain('wall:capital-arming');
+    // The WORKSPACE leg is the substance of P-029, so the block must tell its
+    // reader the list is not owner-only — otherwise a successor reconciling it
+    // against the owner-scoped block below reads the difference as corruption.
+    expect(out).toContain('WORKSPACE');
+    expect(out).toContain("facts:list { scope: 'workspace' }");
+    // Guard rails lead the facts family: a successor that reads nothing else
+    // must still read these.
+    expect(out.indexOf('NEVER-DROP facts')).toBeLessThan(out.indexOf('Your standing facts'));
+  });
+
+  it('P-029: the never-drop block survives composition into the CARRY DOCUMENT renderer', () => {
+    // THE END-TO-END PIN, and the reason it is separate from the cold-extras
+    // tests above. P-029's subject is the carry DOCUMENT, and the document does
+    // not call `renderCarryBriefColdExtras` itself: carry-doc.ts calls
+    // `renderCarryBriefText`, which composes its own sections and appends the
+    // cold extras at the tail. A refactor that stopped appending them — or that
+    // stripped this field the way `directives`/`citedRefs` are deliberately
+    // stripped to avoid double-rendering — would leave every cold-extras test
+    // above green while the document silently lost its guard rails again.
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      workspaceId: 'ws-test',
+      loop: null,
+      heldItems: [],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      neverDropFacts: ['dead-end:identity-stale-artifact'],
+      awaits: [],
+      fleet: null,
+    };
+
+    const text = renderCarryBriefText(brief);
+    expect(text).toContain('NEVER-DROP facts');
+    expect(text).toContain('dead-end:identity-stale-artifact');
+  });
+
+  it('P-029: omits the never-drop block entirely when the fold found nothing', () => {
+    // ABSENT, not an empty-looking "none apply" line. A rendered empty block
+    // would read as a measured all-clear, which is indistinguishable from the
+    // degraded read that `bestEffort` turns into `undefined`.
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      workspaceId: 'ws-test',
+      loop: null,
+      heldItems: [],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [{ key: 'convention:owner-scoped-example', body: 'a standing convention' }],
+      awaits: [],
+      fleet: null,
+    };
+
+    const out = renderCarryBriefColdExtras(brief);
+    expect(out).not.toContain('NEVER-DROP facts');
+    // Control: the renderer still ran and still produced the sibling block, so
+    // the absence above is a real omission rather than an empty render.
+    expect(out).toContain('Your standing facts');
+  });
+
   it('warns for the live Markdown-wrapped typecheck-session checkpoint shape', () => {
     const brief: CarryBrief = {
       ownerId: 'x',

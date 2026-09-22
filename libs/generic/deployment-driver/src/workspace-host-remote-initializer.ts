@@ -772,7 +772,12 @@ export function buildWorkspaceHostInitializationCanaryEvidence(
     }
   }
 
-  for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
+  // Derive coverage from the report itself rather than re-deciding it here: `requestedAgents` is
+  // the report's own declared scope and resolves to all three when absent, so a legacy/default
+  // report is unchanged while a deliberately scoped one (D-338's Codex skip) is not failed for the
+  // agent it was never asked to probe. Reading `agents` alone cannot tell "skipped" from "missing".
+  const coveredAgents = resolveWorkspaceHostRequestedAgents(input.agents?.requestedAgents);
+  for (const agent of coveredAgents) {
     const evidence = input.agents?.agents?.[agent];
     if (!evidence) {
       problems.push(`no readiness probe was run for '${agent}'`);
@@ -829,8 +834,11 @@ export function buildWorkspaceHostInitializationCanaryEvidence(
     ]),
   ) as WorkspaceHostInitializationCanaryEvidence["channels"];
 
+  // Same resolved coverage the validation loop above used — sharing the one binding is what stops
+  // the proven set and the emitted set from silently diverging (reading the constant here crashed
+  // on the skipped agent's absent evidence, after validation had correctly allowed it).
   const agents = Object.fromEntries(
-    WORKSPACE_HOST_CANARY_AGENTS.map((agent) => [
+    coveredAgents.map((agent) => [
       agent,
       {
         ready: true,
@@ -848,6 +856,10 @@ export function buildWorkspaceHostInitializationCanaryEvidence(
     observedAt: input.observedAt,
     repository: { visibility: "private", cloned: true },
     channels,
+    // Propagate the report's declared coverage onto the assembled artifact so the validator (and
+    // any later reader of ratified evidence) can tell a deliberately scoped run from a truncated
+    // one. Omitted when the report was unscoped, preserving the default artifact shape byte for byte.
+    ...(input.agents?.requestedAgents !== undefined ? { requestedAgents: coveredAgents } : {}),
     agents,
     backupRestore: {
       authorizationMaterial: "excluded",

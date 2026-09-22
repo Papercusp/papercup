@@ -57,6 +57,14 @@ export interface WedgeIssueDeps {
     createdBy?: string;
     foundDuring?: string;
     sourcePlanSlug?: string | null;
+    /**
+     * Admission the filing is born with, threaded through the seam rather than left to
+     * the writer's default. `work_items.admission` has NO column default, so an
+     * unstamped create mints NULL — which `isAdmitted` reads as pre-gate legacy and
+     * therefore immediately claimable. That is a SILENT born-pending bypass: no error,
+     * no warning, and indistinguishable in the database from the genuinely-legacy rows.
+     */
+    admission?: BornAdmission | null;
   }) => Promise<EngineerIssue>;
   commentIssue: (id: string, body: string, authorId?: string) => Promise<unknown>;
   mergeIssuePayload: (id: string, patch: Record<string, unknown>) => Promise<unknown>;
@@ -145,6 +153,14 @@ export async function recordWedgeEpisode(
         createdBy: 'system:sweep-wedged-pty-hosts',
         foundDuring: 'sweep-wedged-pty-hosts',
         sourcePlanSlug: 'psu-pty-turn-boundary-generalization-2026-09-22',
+        // 'pending', not 'auto': this is an automated detector's filing that no human
+        // has reviewed, so the promoter is exactly who should judge it. The same
+        // reasoning that picked `major` over `critical` above applies with more force
+        // here — the busy-gate class is explicitly detect-only with UNMEASURED
+        // precision, so a filing-time bypass would admit unreviewed, possibly-false
+        // episodes straight into the claimable queue. Rides in THIS insert rather than
+        // a post-create update, or the row is claimable in the gap between the two.
+        admission: 'pending',
       });
       await deps
         .mergeIssuePayload(created.id, { ptyHostWedge: { digest, lastSeenAt: input.nowIso ?? new Date().toISOString() } })

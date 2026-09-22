@@ -408,7 +408,10 @@ describe('runWorkspaceHostCanary', () => {
     expect(runInitialization).toHaveBeenCalledWith(
       expect.objectContaining({ requestedAgents: ['claude', 'omp'] }),
     );
-    expect(Object.keys(result.assembly.evidence.agents.agents).sort()).toEqual(['claude', 'omp']);
+    // The skipped agent is ABSENT from the ratified artifact, never present-and-passing, and the
+    // artifact declares its own coverage so a later reader can tell scoped from truncated.
+    expect(Object.keys(result.assembly.evidence.agents).sort()).toEqual(['claude', 'omp']);
+    expect(result.assembly.evidence.requestedAgents).toEqual(['claude', 'omp']);
     expect(result.assembly.validation).toEqual({ ok: true, errors: [] });
 
     // FALSIFIER: identical guest, scope omitted. Codex evidence is then genuinely missing and the

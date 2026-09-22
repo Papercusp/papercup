@@ -1331,11 +1331,22 @@ export interface WorkspaceHostInitializationCanaryEvidence {
       }
     >
   >;
-  agents: Readonly<{
-    claude: { ready: true; verificationKind: "authenticated-account" };
-    codex: { ready: true; verificationKind: "authenticated-account" };
-    omp: { ready: true; verificationKind: WorkspaceHostAgentVerificationKind };
-  }>;
+  /**
+   * Explicit agent coverage, mirroring `WorkspaceHostAgentVerificationReport.requestedAgents`:
+   * omitted on a default all-agent artifact, so existing evidence is unchanged.
+   *
+   * A deliberately skipped agent (D-338's Codex leg) is ABSENT from `agents` — never present and
+   * passing. Keeping the declaration ON the artifact is what lets a later reader tell a scoped
+   * run from a truncated one; `agents` alone cannot.
+   */
+  requestedAgents?: readonly WorkspaceHostCanaryAgent[];
+  agents: Readonly<
+    Partial<{
+      claude: { ready: true; verificationKind: "authenticated-account" };
+      codex: { ready: true; verificationKind: "authenticated-account" };
+      omp: { ready: true; verificationKind: WorkspaceHostAgentVerificationKind };
+    }>
+  >;
   backupRestore: {
     authorizationMaterial: "excluded";
     credentialReferences: "excluded";
@@ -1396,7 +1407,10 @@ export function validateWorkspaceHostInitializationCanary(
       errors.push(`${channel} credential lifecycle did not pass`);
     }
   }
-  for (const agent of ["claude", "codex", "omp"] as const) {
+  // Derive coverage from the artifact's own declaration (absent => all three, so default evidence
+  // validates exactly as before). A skipped agent is not validated here because it carries no
+  // evidence to validate — it is never treated as having passed.
+  for (const agent of resolveWorkspaceHostRequestedAgents(evidence.requestedAgents)) {
     const result = evidence.agents?.[agent];
     if (!result?.ready) errors.push(`${agent} live readiness did not pass`);
     if (
