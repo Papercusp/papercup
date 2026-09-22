@@ -346,7 +346,16 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
               AdvShell harness bar (AdvNowRunning), not here. */}
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
-          <RouteLink href="/cloud-workspaces" aria-label="Cloud Workspaces" {...navLinkProps('/cloud-workspaces')}>Cloud</RouteLink>
+          {/* Visible text is "Workspaces", NOT "Cloud" (owner directive #79,
+              2026-09-22: "I still don't see a way to create a workspace").
+              The route, the link and its ChromeShell.test.tsx assertion all
+              already existed — the only thing missing was the WORD the owner
+              was scanning the navbar for, which lived solely in the
+              aria-label. A nav label has to carry the noun the user is
+              hunting; "Cloud" names the implementation, "Workspaces" names
+              the thing. aria-label stays "Cloud Workspaces" so the accessible
+              name is unchanged and the existing test still pins it. */}
+          <RouteLink href="/cloud-workspaces" aria-label="Cloud Workspaces" {...navLinkProps('/cloud-workspaces')}>Workspaces</RouteLink>
           {testingFlag ? (
             <RouteLink href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</RouteLink>
           ) : null}
