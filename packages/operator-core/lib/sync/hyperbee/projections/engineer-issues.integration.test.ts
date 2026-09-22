@@ -1133,8 +1133,28 @@ describe('engineer-issues projection — WI-10002480 legacy-twin guard is index-
     return unserved;
   }
 
+  // Its OWN fresh database, deliberately not the file-level `db`. The earlier tests
+  // HOT-update work_items; building an index over a table with broken HOT chains sets
+  // pg_index.indcheckxmin, and the planner then ignores the new index while any older
+  // snapshot is open. Against the shared db that made the plan assertion flaky (red
+  // once, green on the identical re-run). An untouched table has no such chains.
+  let iso: FreshPgDb;
+  beforeAll(async () => {
+    iso = await createFreshPgDb('engineer-issues-1197');
+    await iso.sql.unsafe(`
+      DO $r$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'harness_app') THEN CREATE ROLE harness_app NOLOGIN; END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'harness_zero') THEN CREATE ROLE harness_zero NOLOGIN; END IF;
+      END $r$;
+    `);
+    await iso.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  });
+  afterAll(async () => {
+    await iso?.cleanup();
+  });
+
   async function guardPlan(): Promise<string> {
-    return db.sql.begin(async (tx) => {
+    return iso.sql.begin(async (tx) => {
       await tx.unsafe('SET LOCAL enable_seqscan = off');
       const rows = await tx.unsafe<{ 'QUERY PLAN': string }[]>(`EXPLAIN ${_testing.RETIRED_LEGACY_TWIN_SQL}`, [
         WS,
@@ -1146,24 +1166,20 @@ describe('engineer-issues projection — WI-10002480 legacy-twin guard is index-
   }
 
   it('control: without migration 1197 the guard has work_items accesses no marker index serves', async () => {
-    await db.sql.unsafe(`
-      DROP INDEX IF EXISTS harness_shared.work_items_twin_repair_marker_idx;
-      DROP INDEX IF EXISTS harness_shared.work_items_twin_rekey_marker_idx;
-    `);
     const plan = await guardPlan();
     expect(unservedAccesses(plan), plan).not.toEqual([]);
   });
 
   it('with migration 1197 applied, every work_items access is served by a marker partial index', async () => {
-    await db.sql.unsafe(readFileSync(MIGRATION_1197, 'utf8'));
+    await iso.sql.unsafe(readFileSync(MIGRATION_1197, 'utf8'));
     const plan = await guardPlan();
     expect(unservedAccesses(plan), plan).toEqual([]);
     for (const idx of MARKER_INDEXES) expect(plan).toContain(idx);
   });
 
   it('the index-served guard still answers correctly for both marker kinds and fails open otherwise', async () => {
-    await db.sql.unsafe(readFileSync(MIGRATION_1197, 'utf8'));
-    await db.sql`
+    await iso.sql.unsafe(readFileSync(MIGRATION_1197, 'utf8'));
+    await iso.sql`
       INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, item_kind, title, status, payload)
       VALUES
         (${WS}, ${SLUG}, 'EI-1197-merged', 'bug', 'merged survivor', 'open',
@@ -1172,7 +1188,7 @@ describe('engineer-issues projection — WI-10002480 legacy-twin guard is index-
          ${JSON.stringify({ _physicalTwinRekey: { migration: 826, oldId: 'EI-1197-old', sourceHarness: 'sibling-hive' } })}::text::jsonb)
       ON CONFLICT DO NOTHING`;
     const retired = async (issueId: string, sourceHarness: string): Promise<boolean> => {
-      const rows = await db.sql.unsafe<{ retired: boolean }[]>(_testing.RETIRED_LEGACY_TWIN_SQL, [
+      const rows = await iso.sql.unsafe<{ retired: boolean }[]>(_testing.RETIRED_LEGACY_TWIN_SQL, [
         WS,
         issueId,
         sourceHarness,
@@ -1184,7 +1200,7 @@ describe('engineer-issues projection — WI-10002480 legacy-twin guard is index-
     // Wrong source harness, unmarked id, and another workspace all fail open.
     expect(await retired('EI-1197-merged', 'other-hive')).toBe(false);
     expect(await retired('EI-1197-unmarked', 'sibling-hive')).toBe(false);
-    const other = await db.sql.unsafe<{ retired: boolean }[]>(_testing.RETIRED_LEGACY_TWIN_SQL, [
+    const other = await iso.sql.unsafe<{ retired: boolean }[]>(_testing.RETIRED_LEGACY_TWIN_SQL, [
       'ws-other',
       'EI-1197-old',
       'sibling-hive',
