@@ -1195,6 +1195,19 @@ const SUBMIT_VERIFY_QUIET_MS =
  *  back at its prompt. Must exceed the agent's busy repaint cadence (Claude Code's
  *  elapsed counter repaints ~1/s) so a working agent never reads as idle. */
 const OUTPUT_QUIET_MS = Number(process.env.PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS) || 1500;
+/**
+ * P-004: how many times the busy gate re-confirms an observed quiet window
+ * before treating it as a false alarm.
+ *
+ * 1 reproduces the old behaviour exactly (a single buffered onData chunk
+ * discards the observation). 3 lets a short burst of already-buffered chunks
+ * drain while still bounding the work per iteration, so a continuously-emitting
+ * child cannot be spun on.
+ */
+const QUIET_CONFIRM_ATTEMPTS = Math.max(
+  1,
+  Number(process.env.PAPERCUSP_PSU_PTY_QUIET_CONFIRM_ATTEMPTS) || 3,
+);
 /** Cap on how long a `turn` inject waits for the agent to return to its prompt.
  *  On cap we DO NOT write into the still-busy turn (that is the wedge) — we DROP
  *  the live inject: the wake message is already durably in the recipient's inbox
@@ -2387,6 +2400,9 @@ export function makeAgentBusyGate({
   quietMs = OUTPUT_QUIET_MS,
   capMs = TURN_INJECT_BUSY_CAP_MS,
   now = Date.now,
+  // P-004: bounded re-confirmation of an observed quiet window. Injectable so a
+  // test can pin it to 1 and assert the pre-fix behaviour is still reachable.
+  confirmAttempts = QUIET_CONFIRM_ATTEMPTS,
 } = {}) {
   const getLast = typeof lastOutputAt === 'function' ? lastOutputAt : () => 0;
   return {
@@ -2420,6 +2436,12 @@ export function makeAgentBusyGate({
       // impossible — measured live on 2026-08-04, where a respawn died with no
       // evidence either way.
       let maxQuietForMs = 0;
+      // P-004: how many post-setImmediate confirmations were spent. Reported on
+      // the DEFER path only — the success path's shape is asserted with a strict
+      // toEqual({ deferred: false }) by existing callers/tests, and widening it
+      // would be a gratuitous break for telemetry that is only interesting when
+      // the gate gave up.
+      let confirmAttemptsUsed = 0;
       // Re-check in case the agent keeps emitting during the wait.
       // eslint-disable-next-line no-constant-condition
       while (true) {
@@ -2436,13 +2458,44 @@ export function makeAgentBusyGate({
           // the stale pre-poll value can release an inject into a child that is
           // still emitting. setImmediate is deliberate here: unlike another
           // timer, it runs after the current iteration's poll callbacks.
-          await new Promise((resolve) => setImmediate(resolve));
-          const confirmedQuietFor = this.quietForMs();
-          if (confirmedQuietFor > maxQuietForMs) maxQuietForMs = confirmedQuietFor;
-          if (confirmedQuietFor >= quietMs) return { deferred: false };
+          //
+          // P-004: retry that confirmation a BOUNDED number of times instead of
+          // discarding an already-confirmed quiet window after one miss.
+          //
+          // The guard above drains ONE already-buffered onData callback. A burst
+          // of several buffered chunks therefore defeats it on every pass, so a
+          // genuinely-settled agent could never be released — measured across
+          // the host event logs, 629 of 3,485 defers (18.0%) had already
+          // observed a quiet window >= quietMs and deferred anyway, 243 of them
+          // in single-attempt turn mode.
+          //
+          // The race guard itself is UNCHANGED and still load-bearing: a release
+          // still requires a post-setImmediate re-read to clear the threshold.
+          // We only stop throwing away the observation after a single miss.
+          for (let attempt = 1; attempt <= confirmAttempts; attempt++) {
+            await new Promise((resolve) => setImmediate(resolve));
+            confirmAttemptsUsed++;
+            const confirmedQuietFor = this.quietForMs();
+            if (confirmedQuietFor > maxQuietForMs) maxQuietForMs = confirmedQuietFor;
+            if (confirmedQuietFor >= quietMs) return { deferred: false };
+            // Never let the retry loop outlive the caller's budget.
+            if (now() >= deadline) break;
+          }
         }
-        if (now() >= deadline) return { deferred: true, reason: 'agent-busy', maxQuietForMs, quietMs };
-        const need = quietMs - quietFor;
+        if (now() >= deadline) {
+          return { deferred: true, reason: 'agent-busy', maxQuietForMs, quietMs, confirmAttemptsUsed };
+        }
+        // P-004: recompute the sleep from the CURRENT quiet window, not the
+        // stale pre-confirmation `quietFor`.
+        //
+        // The old `quietMs - quietFor` went NEGATIVE precisely in the case above
+        // (quietFor >= quietMs but the confirmation collapsed), so
+        // `Math.max(10, wait)` pinned the loop to a 10ms spin — up to ~18,000
+        // iterations against the 180s cap — while re-reading a value that had
+        // just told us output was flowing. Reading it fresh yields a sleep of
+        // roughly the full quiet window, which is exactly how long we must wait
+        // for the threshold to be reachable again.
+        const need = Math.max(0, quietMs - this.quietForMs());
         const wait = Math.min(need, Math.max(0, deadline - now()));
         await new Promise((r) => setTimeout(r, Math.max(10, wait)));
       }
@@ -2514,6 +2567,18 @@ export function makeCarryRearmController({
   waitForOwnerInputClear = /** @type {null | (() => Promise<{ deferred: boolean, reason?: string } | void>)} */ (null),
   waitAtPrompt, // (capMs?) => Promise<{ deferred }>
   recycle, // (data, { systemPromptAddendum, drillId, sessionClass }) => Promise<void>
+  // P-005: how a re-armed message is actually DELIVERED once the agent finally
+  // idles. `recycle` above is carry-respawn's action (replace the child), which
+  // is why the re-arm was carry-only: a deferred `turn` must be RE-INJECTED,
+  // not recycled, and recycling one would destroy the very turn it was meant to
+  // deliver. Injecting this as a callback keeps every mode's delivery semantics
+  // owned by the host (which already has the verified primitives) while the
+  // supersede/duplicate/settle/anti-spin machinery stays here, shared.
+  //
+  // Defaulting to null preserves the existing unit callers that construct this
+  // controller with `recycle` alone.
+  /** @type {null | ((message: any, ctx: {drillId: string, mode: string, key: string}) => Promise<{delivered: boolean, reason?: string} | void>)} */
+  performDelivery = null,
   emitEvent, // (kind, extra) => void — writes BOTH the per-owner host log + shared ledger
   capMs = TURN_INJECT_BUSY_CAP_MS * 2,
   maxProductionAttempts = Number.POSITIVE_INFINITY,
@@ -2559,9 +2624,20 @@ export function makeCarryRearmController({
   // instead of being terminally dropped (see schedule() below).
   const latest = new Map();
   const pendingMessages = new Map();
+  /**
+   * P-005: the re-arm now covers EVERY gated mode, so the non-drill sentinel
+   * must be namespaced BY MODE.
+   *
+   * Sharing one `__non-drill__` slot across modes would make a deferred `turn`
+   * collide with a pending carry-respawn: whichever arrived second would be
+   * reported 'duplicate'/'superseded' by the other and never delivered —
+   * re-creating the exact drop this item removes, disguised as correct dedupe.
+   * Drills still dedupe per drillId, which is already unique.
+   */
+  const rearmModeOf = (msg) => String(msg?.mode || 'carry-respawn');
   const keyFor = (msg) => {
     const drillId = String(msg?.drillId || '');
-    return drillId || NON_DRILL_REARM_KEY;
+    return drillId || `${NON_DRILL_REARM_KEY}:${rearmModeOf(msg)}`;
   };
   const settle = (key, outcome) => {
     const messages = [...(pendingMessages.get(key) ?? [])];
@@ -2607,7 +2683,8 @@ export function makeCarryRearmController({
       // Drills dedupe per-drillId; a production respawn (no drillId) dedupes
       // under the shared sentinel — so a drill and a production respawn can be
       // pending independently, but two production respawns collapse to one.
-      const key = isDrill ? drillId : NON_DRILL_REARM_KEY;
+      const mode = rearmModeOf(msg);
+      const key = keyFor(msg);
       if (pending.has(key)) {
         // EI-19480099650947832: a SECOND production respawn arriving while the
         // first is still re-polling used to be terminally DROPPED as a
@@ -2629,13 +2706,22 @@ export function makeCarryRearmController({
       pending.add(key);
       pendingMessages.set(key, new Set([msg]));
       latest.set(key, msg);
-      const queuedKind = isDrill ? 'carry-drill-rearm-queued' : 'respawn-rearm-queued';
-      const droppedKind = isDrill ? 'carry-drill-carry-dropped' : 'respawn-carry-dropped';
+      // P-005: carry-respawn keeps its EXISTING kind names verbatim — the
+      // drill ledger, op:'report'/op:'verify' and the historical event census
+      // all key off them, so renaming would silently orphan that history. The
+      // newly-covered modes get their own kinds instead of being folded into a
+      // 'respawn-*' name that would misreport what was retried.
+      const queuedKind = isDrill
+        ? 'carry-drill-rearm-queued'
+        : mode === 'carry-respawn' ? 'respawn-rearm-queued' : 'wake-rearm-queued';
+      const droppedKind = isDrill
+        ? 'carry-drill-carry-dropped'
+        : mode === 'carry-respawn' ? 'respawn-carry-dropped' : 'wake-rearm-dropped';
       // Drill rows carry drillId + sessionClass (P-020 correlation); a production
-      // respawn row is keyed by `mode` instead — never a fabricated/empty drillId.
+      // row is keyed by `mode` instead — never a fabricated/empty drillId.
       const extra = isDrill
         ? { drillId, sessionClass: msg.sessionClass ?? '', reason: 'busy-gate-expired', capMs }
-        : { mode: 'carry-respawn', reason: 'busy-gate-expired', capMs };
+        : { mode, reason: 'busy-gate-expired', capMs };
       emitEvent(queuedKind, extra);
       void (async () => {
         // WI-5623: a DRILL is a one-shot test — it re-arms ONCE then drops
@@ -2738,11 +2824,13 @@ export function makeCarryRearmController({
                   settle(key, { delivered: false, reason: 'carry-stale' });
                   return;
                 }
-                const result = await recycle(deliver.data, {
-                  systemPromptAddendum: deliver.systemPromptAddendum ?? '',
-                  drillId,
-                  sessionClass: deliver.sessionClass ?? '',
-                });
+                const result = performDelivery
+                  ? await performDelivery(deliver, { drillId, mode, key })
+                  : await recycle(deliver.data, {
+                    systemPromptAddendum: deliver.systemPromptAddendum ?? '',
+                    drillId,
+                    sessionClass: deliver.sessionClass ?? '',
+                  });
                 settle(key, result ?? { delivered: false, reason: 'recycle-outcome-unavailable' });
                 return;
               }

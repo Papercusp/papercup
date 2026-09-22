@@ -915,7 +915,7 @@ export function shutdownRefusalReason({ launchedBy, headless, fleetSlug, lastInp
  * @param {number} [opts.capMs]
  * @param {() => number} [opts.now]
  */
-export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, }?: {
+export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, confirmAttempts, }?: {
     lastOutputAt?: (() => number) | undefined;
     quietMs?: number | undefined;
     capMs?: number | undefined;
@@ -942,17 +942,20 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, }?: {
         reason?: undefined;
         maxQuietForMs?: undefined;
         quietMs?: undefined;
+        confirmAttemptsUsed?: undefined;
     } | {
         deferred: boolean;
         boundary?: undefined;
         reason?: undefined;
         maxQuietForMs?: undefined;
         quietMs?: undefined;
+        confirmAttemptsUsed?: undefined;
     } | {
         deferred: boolean;
         reason: string;
         maxQuietForMs: number;
         quietMs: number;
+        confirmAttemptsUsed: number;
         boundary?: undefined;
     }>;
     /** WI-1872 (2): the START-RACE fix. Resolves as soon as output goes BUSY
@@ -967,7 +970,7 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, }?: {
         started: boolean;
     }>;
 };
-export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, emitEvent, capMs, maxProductionAttempts, yieldAfterDefer, onSettlement, isStale, isSuperseded, }: {
+export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, yieldAfterDefer, onSettlement, isStale, isSuperseded, }: {
     acquireInject: any;
     waitIdle?: (() => Promise<{
         deferred: boolean;
@@ -980,6 +983,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
     } | void>) | null | undefined;
     waitAtPrompt: any;
     recycle: any;
+    performDelivery?: null | undefined;
     emitEvent: any;
     capMs?: number | undefined;
     maxProductionAttempts?: number | undefined;
