@@ -197,6 +197,10 @@ describe('P-007: the four verdict cells', () => {
       'governor.resources',
       'host.memoryPressure',
       'memory.cgroupAttribution',
+      // directive-visibility-and-ownership-2026-09-22 P-007: "what is owed on directive N,
+      // and by whom". Nullable on purpose — an id that does not exist in this workspace has
+      // no status at all, which is why it is the one cell here carrying an `unknownHoist`.
+      'owner.directive.status',
       // deterministic-coverage-census-2026-08-17 P-005. A PAIR, split along the line
       // between a count and a ratio: the population is never unknown (it is a row
       // count, so 0 is a measurement), while the ratio has no answer at all when that

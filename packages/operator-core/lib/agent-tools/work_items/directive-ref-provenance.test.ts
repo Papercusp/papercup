@@ -66,6 +66,8 @@ vi.mock('./claim-hold-guard', async (importOriginal) => ({
 }));
 
 import { bindWorkItemDirectiveRef, claimWorkItem, getWorkItem } from '../../work-items';
+import { workItemFixture } from '../../testing/work-item-fixture';
+import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
 const claimM = vi.mocked(claimWorkItem);
 const getWorkItemM = vi.mocked(getWorkItem);
 const bindM = vi.mocked(bindWorkItemDirectiveRef);
@@ -82,9 +84,12 @@ beforeEach(() => {
   identity.ownerId = 'me';
   identity.workspaceId = 'ws-1';
   fleetAdmission.decision = { allowed: true, scoped: false };
-  claimM.mockImplementation(async (id: string) => ({ id, harness: 'papercusp', assignee: 'me' }) as never);
-  getWorkItemM.mockResolvedValue(null as never);
-  bindM.mockResolvedValue({ ok: true, changed: true } as never);
+  // Typed fixtures throughout (no `as never`): a new required field on WorkItem
+  // or BindDirectiveRefResult should be a compile error HERE, not a runtime
+  // failure at some peer's green-checkpoint.
+  mockImplementationTyped(claimM, async (id) => workItemFixture({ id, harness: 'papercusp', assignee: 'me' }));
+  mockResolvedTyped(getWorkItemM, null);
+  mockResolvedTyped(bindM, { ok: true, changed: true });
 });
 
 describe('P-005 schema: both named tools ACCEPT directiveRef', () => {
@@ -141,14 +146,14 @@ describe('P-005 behaviour: work_items:claim binds provenance only when the claim
   });
 
   it('does NOT bind when the claim itself fails — the link must not outlive the claim', async () => {
-    claimM.mockResolvedValue(null as never);
+    mockResolvedTyped(claimM, null);
     const b = await claimBody({ id: 'WI-1', directiveRef: 125 });
     expect(b.results[0].ok).toBe(false);
     expect(bindM).not.toHaveBeenCalled();
   });
 
   it('still claims, and WARNS, when the item already carries a different directive', async () => {
-    bindM.mockResolvedValue({ ok: false, error: 'directive_ref_conflict', existing: 99 } as never);
+    mockResolvedTyped(bindM, { ok: false, error: 'directive_ref_conflict', existing: 99 });
     const b = await claimBody({ id: 'WI-1', directiveRef: 125 });
     // The ownership mutation already committed; swallowing it to report a
     // provenance problem would lose the claim the caller actually made.

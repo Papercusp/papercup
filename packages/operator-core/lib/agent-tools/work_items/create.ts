@@ -85,6 +85,23 @@ const stateOnCreate = z
     "initial lifecycle state (EI-10897) — e.g. 'wip' to open an ad-hoc unit you are starting RIGHT NOW (pair with assign_to:'self'), or 'blocked'. Defaults to the kind's normal entry state (todo). Terminal states are rejected: complete the item instead, so its evidence is recorded.",
   );
 
+/**
+ * Owner-directive provenance (directive-visibility-and-ownership-2026-09-22, P-005).
+ * Shared by the inline-create and per-item shapes so the two schemas cannot drift.
+ *
+ * The turn-start Orientation banner TELLS agents to pass this — "to take it,
+ * work_items:create { directiveRef: N } first" — so the parameter and that
+ * instruction ship together or the instruction points at nothing.
+ */
+const directiveRefArg = z
+  .number()
+  .int()
+  .positive()
+  .optional()
+  .describe(
+    'owner-directive provenance: the orders id this work-item is being created to carry out (harness_shared.owner_directives.id). Late-binding and one-directional — the directive is never written back. Omit for ordinary work; a directive with zero linked work-items is healthy, not degenerate.',
+  );
+
 const linkSpec = z.object({
   rel: z.enum(LINK_RELS).describe('the relationship: blocks | relates | duplicates | fixes | investigates | about | caused-by | revises'),
   target_id: z.string().max(120).optional().describe('a target work-item id'),
@@ -230,6 +247,7 @@ const itemSpec = z.object({
     .describe('Plan item this work-item IMPLEMENTS (e.g. { slug:"my-plan", item:"P-003" }) — writes a forward work→plan_item coverage edge so the item rolls up into that plan item and plans:items stops showing it unworked. ONLY for work that implements the item: completing that plan item can auto-resolve its linked work-items as residue. A bug merely DISCOVERED while working an item is NOT implementing it — file it unlinked (EI-19460536530145188).'),
   links: z.array(linkSpec).max(20).optional().describe('inline typed links (WI-3956) written from the new item to targets on create — e.g. [{ rel:"investigates", target_id:"EI-9250" }]. Best-effort: a bad target is skipped, never fails the create.'),
   conditionKey: hardText(200).optional().describe('recurring-detector filing identity (WI-39604): an OPEN item already holding this key is refreshed and returned (see conditionUpsert on the result) instead of a sibling being filed — single-host system filers only.'),
+  directiveRef: directiveRefArg,
 })
   // WI-4492: strict — an unknown field name is a LOUD error naming it, never a silent drop
   // (the defect that filed WI-4491/WI-4492 as empty shells: a `body` arg was stripped).
@@ -344,6 +362,7 @@ export default defineTool({
         .describe('Plan item this work-item IMPLEMENTS (e.g. { slug:"my-plan", item:"P-003" }) — writes a forward work→plan_item coverage edge so the item rolls up into that plan item and plans:items stops showing it unworked. ONLY for work that implements the item: completing that plan item can auto-resolve its linked work-items as residue. A bug merely DISCOVERED while working an item is NOT implementing it — file it unlinked (EI-19460536530145188).'),
       links: z.array(linkSpec).max(20).optional().describe('inline typed links (WI-3956) written from the new item to targets on create — e.g. [{ rel:"investigates", target_id:"EI-9250" }]. Best-effort: a bad target is skipped, never fails the create.'),
       conditionKey: hardText(200).optional().describe('recurring-detector filing identity (WI-39604): an OPEN item already holding this key is refreshed and returned (see conditionUpsert on the result) instead of a sibling being filed — single-host system filers only.'),
+      directiveRef: directiveRefArg,
       // ── bulk-create (n≥1) ──
       items: z.array(itemSpec).min(1).max(100).optional().describe('create many work-items at once — each is a full create spec.'),
       assign_all_to_self: z.boolean().optional().describe('Claim every created item for YOU (your ownerId) — unless an item carries its own assign_to.'),
@@ -398,6 +417,7 @@ export default defineTool({
             urgent: args.urgent,
             force: args.force,
             conditionKey: args.conditionKey, // WI-39604 (items[] path carries it via ...rest)
+            directiveRef: args.directiveRef, // P-005 (items[] path carries it via ...rest)
             assign_to: resolveSelfLiteral(args.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
             ...(args.plan_item ? { targetPlanItem: { slug: args.plan_item.slug, itemId: args.plan_item.item } } : {}),
             ...(args.links ? { links: args.links } : {}),

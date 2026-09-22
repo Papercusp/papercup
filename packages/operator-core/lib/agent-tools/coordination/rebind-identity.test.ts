@@ -261,6 +261,7 @@ const BASE_SURFACES = [
   'held-work-items',
   'owner-facts',
   'owner-directives',
+  'directive-agenda',
   'agent-modes',
   'read-cursors',
   'pending-wakes',

@@ -20,6 +20,7 @@ import {
 } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import {
+  bindWorkItemDirectiveRef,
   claimWorkItem,
   classifyClaimFailure,
   commentWorkItem,
@@ -91,6 +92,9 @@ interface ClaimItem {
   force?: boolean;
   reason?: string;
   pilotRole?: PilotParticipantRole;
+  /** P-005: the owner directive this claim is taking the item on in order to
+   *  carry out. Bound AFTER the claim lands — see the bind below. */
+  directiveRef?: number;
 }
 
 /**
@@ -501,6 +505,29 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     ...(forceTakeoverAdmission ? { forceTakeoverAdmission } : {}),
     ...(legacyFleetScopeDowngradeAdmission ? { legacyFleetScopeDowngradeAdmission } : {}),
   });
+  // P-005: bind the owner-directive provenance AFTER the holder-CAS has landed.
+  // Order is load-bearing in both directions: binding first would stamp a
+  // directive onto an item this caller may fail to claim, and skipping the bind
+  // on a failed claim is exactly right — the link means "someone is on it", so
+  // it must not outlive the claim that justified it.
+  //
+  // A conflict does NOT fail the claim. The claim is a separate, already-
+  // committed fact, and swallowing it to report a provenance problem would lose
+  // the ownership mutation. It is surfaced on the result instead.
+  let directiveBindWarning: string | null = null;
+  if (workItem && it.directiveRef != null) {
+    const bound = await bindWorkItemDirectiveRef(
+      identity.workspaceId ?? '',
+      workItem.id ?? it.id,
+      it.directiveRef,
+    );
+    if (!bound.ok) {
+      directiveBindWarning =
+        bound.error === 'not_found'
+          ? `Claim landed, but directiveRef ${it.directiveRef} was NOT bound: work-item ${workItem.id ?? it.id} was not readable in this workspace.`
+          : `Claim landed, but directiveRef ${it.directiveRef} was NOT bound: this item already carries directive ${bound.existing}. Directive provenance is write-once — file a separate work-item for the second directive rather than re-pointing this one.`;
+    }
+  }
   if (workItem && forced) {
     // The CAS has landed; leave both a durable audit row and the same holder/owner
     // notification trail as a forced release, but identify this mutation as a claim
@@ -844,6 +871,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ...(planDecisionsResult
             ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
             : {}),
+          ...(directiveBindWarning ? { directiveBindWarning } : {}),
           checkpoint: hint.checkpoint,
           checkpointAgeMs: hint.checkpointAgeMs,
           checkpointWarning:
@@ -893,6 +921,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           workItem,
           ...(pilotBindingReceipt ? { pilotBindingReceipt } : {}),
           ...(forced ? { forced } : {}),
+          ...(directiveBindWarning ? { directiveBindWarning } : {}),
           ...(terminalWarning ? { terminalWarning } : {}),
           ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
           ...(blockedWarning ? { blockedWarning, blockedBy: unresolvedBlockers } : {}),
@@ -1139,6 +1168,7 @@ export default defineTool({
             force: z.boolean().optional(),
             reason: z.string().max(500).optional(),
             pilotRole: z.enum(PILOT_PARTICIPANT_ROLES).optional(),
+            directiveRef: z.number().int().positive().optional(),
           }),
         )
         .min(1)
@@ -1163,6 +1193,14 @@ export default defineTool({
         .enum(PILOT_PARTICIPANT_ROLES)
         .optional()
         .describe('directed-pair pilot only: mint a server-issued canonical binding receipt for this caller-owned claim'),
+      directiveRef: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          'owner-directive provenance (orders id): bind this already-existing item to the directive you are claiming it to carry out. Write-once — a claim on an item already bound to a DIFFERENT directive still claims, and reports directiveBindWarning rather than re-pointing it. Use work_items:create { directiveRef } instead when the item does not exist yet.',
+        ),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (a.ids?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id } for one, or { ids:[…] } / items:[{ id }] for many',
@@ -1189,6 +1227,7 @@ export default defineTool({
           force: it.force ?? args.force,
           reason: it.reason ?? args.reason,
           pilotRole: it.pilotRole ?? args.pilotRole,
+          directiveRef: it.directiveRef ?? args.directiveRef,
         }))
       : args.ids?.length
         ? args.ids.map((id) => ({
@@ -1198,6 +1237,7 @@ export default defineTool({
             force: args.force,
             reason: args.reason,
             pilotRole: args.pilotRole,
+            directiveRef: args.directiveRef,
           }))
         : [
             {
@@ -1207,6 +1247,7 @@ export default defineTool({
               force: args.force,
               reason: args.reason,
               pilotRole: args.pilotRole,
+              directiveRef: args.directiveRef,
             },
           ];
     const env = await runBulk(list, (it) => claimOne(it, ident, reader), {

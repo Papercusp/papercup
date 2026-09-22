@@ -141,6 +141,18 @@ export interface CreateOneWorkItemArgs {
    *  For single-host system filers (gates, routines, seeders) — NOT for producers
    *  whose rows federate in from other machines (see condition-upsert.ts header). */
   conditionKey?: string;
+  /**
+   * Owner-directive provenance (directive-visibility-and-ownership-2026-09-22,
+   * P-005): `harness_shared.owner_directives.id` this work-item is being created
+   * to carry out. LATE-BINDING and one-directional — the directive exists first
+   * and is never written back (D-005), so the reference rides in on the INSERT
+   * of the row that is created second.
+   *
+   * Omit ⇒ NULL, which is the DEFAULT and the common case: a directive is
+   * visible and actionable long before any work-item exists, so zero linked
+   * work-items is a healthy directive, never a degenerate one.
+   */
+  directiveRef?: number | null;
 }
 
 /** The acting agent identity the core needs (resolved by the caller from ctx). */
@@ -1162,6 +1174,11 @@ export async function createOneWorkItem(
       payload: payloadForCreate,
       sourcePlanSlug: args.targetPlanItem?.slug,
       sourcePlanItemIds: args.targetPlanItem?.itemId ? [args.targetPlanItem.itemId] : undefined,
+      // P-005: owner-directive provenance, deliberately the same shape as
+      // sourcePlanSlug above — "where did this work-item come from" — and
+      // written in the same INSERT rather than a post-create UPDATE, so a row
+      // is never briefly visible as unlinked work for a directive it carries.
+      directiveRef: args.directiveRef,
       createdBy: ctx.ownerId,
       urgent: args.urgent,
       // B-LOOP-4 (loop-routines P-007 / D-008): atomic create+claim. `assign_to`
