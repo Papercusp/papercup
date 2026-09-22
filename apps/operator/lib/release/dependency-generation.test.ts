@@ -312,6 +312,66 @@ afterEach(() => {
   }
 });
 
+// Commit EVERYTHING in the fixture. commitFixture() above hardcodes its `git add`
+// paths, so it cannot stage a patches/ file; this guard needs the whole tree.
+function commitAllFixture(integration: string, message: string): string {
+  if (!existsSync(join(integration, '.git'))) {
+    execFileSync('git', ['init', '-q', '-b', 'staging'], { cwd: integration });
+    execFileSync('git', ['config', 'user.email', 'fixture@example.invalid'], {
+      cwd: integration,
+    });
+    execFileSync('git', ['config', 'user.name', 'fixture'], { cwd: integration });
+  }
+  execFileSync('git', ['add', '-A'], { cwd: integration });
+  execFileSync('git', ['commit', '-qm', message], { cwd: integration });
+  return execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: integration,
+    encoding: 'utf8',
+  }).trim();
+}
+
+describe('WI-10002299: patch-package patches are dependency inputs', () => {
+  // The root package.json postinstall runs `patch-package`, so a patches/*.patch
+  // change alters the produced node_modules closure exactly as a lockfile change
+  // does. While only lockfiles keyed the fingerprint, a patch fix could never
+  // invalidate a cached generation: measured 2026-09-22, the release gate reused
+  // one generation for >2 days across a patch-only commit, which stranded the
+  // frozen repair queue ~46h on a lint:tsc red that was unfixable by construction.
+  it(
+    'moves the input fingerprint when ONLY a patches/*.patch file changes',
+    () => {
+      const integration = makeIntegration();
+      const patchPath = join(integration, 'patches/fixture-pkg+1.0.0.patch');
+      mkdirSync(dirname(patchPath), { recursive: true });
+      writeFileSync(patchPath, 'diff --git a/i.js b/i.js\n-old\n+new\n');
+      const before = commitAllFixture(integration, 'seed with a patch');
+
+      writeFileSync(patchPath, 'diff --git a/i.js b/i.js\n-old\n+CHANGED\n');
+      const afterPatch = commitAllFixture(integration, 'change ONLY the patch');
+
+      // Calibration control: a file that is neither a lockfile nor a patch must
+      // NOT move the key. Without this, a fingerprint that merely tracked the
+      // commit sha would satisfy the assertion above vacuously.
+      writeFileSync(join(integration, 'README.md'), 'unrelated\n');
+      const afterUnrelated = commitAllFixture(
+        integration,
+        'change an unrelated file',
+      );
+
+      const fp = (ref: string): string => {
+        const result = fingerprintRef(integration, ref);
+        expect(result.status).toBe(0);
+        return publishedInputFingerprint(result.stdout);
+      };
+
+      const baseline = fp(before);
+      expect(fp(afterPatch)).not.toBe(baseline);
+      expect(fp(afterUnrelated)).toBe(fp(afterPatch));
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+});
+
 describe('immutable dependency generation', () => {
   it('WI-322485: parses the whole long-running script before executing it', () => {
     const source = readFileSync(SCRIPT, 'utf8');
