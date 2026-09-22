@@ -728,11 +728,131 @@ export interface PreflightResult {
   blockers: string[];
 }
 
+/**
+ * The subtree holding release MACHINERY — the scripts that PERFORM a cut.
+ *
+ * A cut tree mixes two things that are governed differently. WHAT is being shipped
+ * (product source) is deliberately pinned to an exact sha by an isolated cut root —
+ * resolveCutRoot refuses auto-managed checkouts precisely so the tree cannot move
+ * mid-build — so drift there is CORRECT and must never be reported as a fault. The
+ * machinery performing the ship is the opposite: a bug in it corrupts the release
+ * process no matter which version is being shipped, so a frozen root silently
+ * re-executes whatever release bugs its pin carried.
+ *
+ * Only the second kind is a hazard, which is why this check is scoped to a subtree
+ * rather than to the tree as a whole.
+ */
+export const RELEASE_TOOLING_SUBTREE = 'bin';
+
+/** Runs git in `repo`. `ok` reflects the EXIT STATUS, which is the answer itself for
+ * predicates like `merge-base --is-ancestor` that communicate through exit code and
+ * write nothing to stdout. */
+export type GitRunner = (repo: string, args: string[]) => { ok: boolean; stdout: string };
+
+export interface ReleaseToolingDrift {
+  /** `behind` ⇒ subject is an ancestor of reference, so a differing file is genuinely
+   * superseded. `diverged` ⇒ the pins are unrelated or the subject is ahead, which a
+   * deliberate pin can legitimately produce. `unknown` ⇒ NOT MEASURED — never clean. */
+  state: 'current' | 'behind' | 'diverged' | 'unknown';
+  staleFiles: string[];
+  subjectPin?: string;
+  referencePin?: string;
+  detail?: string;
+}
+
+function defaultGitRunner(repo: string, args: string[]): { ok: boolean; stdout: string } {
+  try {
+    const stdout = execFileSync('git', ['-C', repo, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 1 << 20,
+    });
+    return { ok: true, stdout };
+  } catch {
+    return { ok: false, stdout: '' };
+  }
+}
+
+/**
+ * Compare the release machinery in an isolated cut root against the canonical
+ * checkout, which git-sync keeps current.
+ *
+ * The stale-file list is DERIVED from git rather than compared against a hand-kept
+ * roster of "release-critical scripts" — such a roster rots silently, and a file
+ * missing from it reads exactly like a file that did not change.
+ */
+export function releaseToolingDrift(args: {
+  subjectDesktopRoot: string;
+  referenceDesktopRoot: string;
+  git?: GitRunner;
+}): ReleaseToolingDrift {
+  const { subjectDesktopRoot, referenceDesktopRoot } = args;
+  const git = args.git ?? defaultGitRunner;
+
+  if (path.resolve(subjectDesktopRoot) === path.resolve(referenceDesktopRoot)) {
+    return { state: 'current', staleFiles: [], detail: 'cut root IS the canonical checkout' };
+  }
+
+  const subject = git(subjectDesktopRoot, ['rev-parse', 'HEAD']);
+  const reference = git(referenceDesktopRoot, ['rev-parse', 'HEAD']);
+  const subjectPin = subject.ok ? subject.stdout.trim() : '';
+  const referencePin = reference.ok ? reference.stdout.trim() : '';
+  if (!subjectPin || !referencePin) {
+    return {
+      state: 'unknown',
+      staleFiles: [],
+      detail: `could not resolve HEAD in ${!subjectPin ? subjectDesktopRoot : referenceDesktopRoot}`,
+    };
+  }
+  if (subjectPin === referencePin) {
+    return { state: 'current', staleFiles: [], subjectPin, referencePin };
+  }
+
+  // Every later question is asked of the reference repo, so BOTH commits must be
+  // readable there first. Without this, an unreadable object makes `diff` answer with
+  // an empty file list — indistinguishable from "nothing drifted", which is the exact
+  // reading that would wave a stale root through.
+  for (const pin of [subjectPin, referencePin]) {
+    if (!git(referenceDesktopRoot, ['cat-file', '-e', `${pin}^{commit}`]).ok) {
+      return {
+        state: 'unknown',
+        staleFiles: [],
+        subjectPin,
+        referencePin,
+        detail: `commit ${pin.slice(0, 12)} is not readable from ${referenceDesktopRoot}`,
+      };
+    }
+  }
+
+  const diff = git(referenceDesktopRoot, [
+    'diff',
+    '--name-only',
+    subjectPin,
+    referencePin,
+    '--',
+    RELEASE_TOOLING_SUBTREE,
+  ]);
+  if (!diff.ok) {
+    return { state: 'unknown', staleFiles: [], subjectPin, referencePin, detail: 'git diff failed' };
+  }
+  const staleFiles = diff.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .sort();
+
+  const behind = git(referenceDesktopRoot, ['merge-base', '--is-ancestor', subjectPin, referencePin]).ok;
+  return { state: behind ? 'behind' : 'diverged', staleFiles, subjectPin, referencePin };
+}
+
 export interface PreflightDeps {
   exists?: (p: string) => boolean;
   isUnitActive?: (unit: string) => boolean;
   /** HOME for resolving the signing key (default process.env.HOME). */
   home?: string;
+  /** Override the release-tooling staleness probe (tests inject; default compares the
+   * cut root against desktopRoot()). */
+  releaseToolingDrift?: (subjectDesktopRoot: string) => ReleaseToolingDrift;
 }
 
 /**
@@ -816,6 +936,70 @@ export function preflightCut(
     detail: inFlight
       ? `a cut is already running (unit ${unit}) — poll release:cut{op:status${opts.platform ? `,platform:'${opts.platform}'` : ''}} instead of starting a second`
       : 'no cut in flight',
+  });
+
+  // Every check above asks whether a file EXISTS. None asks what it CONTAINS, so a
+  // root frozen weeks ago with superseded release scripts satisfied all of them and
+  // returned go:true (WI-10002449). An isolated cut root is frozen on purpose, so the
+  // fix cannot be "refuse anything behind canonical" — it has to separate the product
+  // source being pinned from the machinery doing the pinning.
+  // Only ask git about a tree that IS a checkout. A linked worktree carries `.git` as a
+  // file rather than a directory, so existsSync covers both shapes. Without this the
+  // probe would shell out against any path at all and report the resulting failure as
+  // drift state 'unknown' — true, but paid for with two spawned processes per preflight.
+  const defaultDrift = (subjectDesktopRoot: string): ReleaseToolingDrift =>
+    exists(path.join(subjectDesktopRoot, '.git'))
+      ? releaseToolingDrift({ subjectDesktopRoot, referenceDesktopRoot: desktopRoot() })
+      : {
+          state: 'unknown',
+          staleFiles: [],
+          detail: `${path.join(subjectDesktopRoot, '.git')} not found — cut root is not a git checkout, so its release machinery cannot be dated`,
+        };
+  const drift = (deps.releaseToolingDrift ?? defaultDrift)(root);
+  const shortPin = (pin: string | undefined) => (pin ? pin.slice(0, 12) : '?');
+  const namedFiles = drift.staleFiles.slice(0, 6).join(', ') + (drift.staleFiles.length > 6 ? ', …' : '');
+  let toolingOk = true;
+  let toolingWarnOnly: boolean | undefined;
+  let toolingDetail: string;
+  switch (drift.state) {
+    case 'current':
+      toolingDetail = drift.detail ?? `release machinery matches the canonical checkout (${shortPin(drift.subjectPin)})`;
+      break;
+    case 'behind':
+      if (drift.staleFiles.length > 0) {
+        toolingOk = false;
+        toolingDetail =
+          `cut root's release machinery is STALE — ${drift.staleFiles.length} file(s) under papercusp-desktop/${RELEASE_TOOLING_SUBTREE} ` +
+          `are superseded (root ${shortPin(drift.subjectPin)} is an ancestor of canonical ${shortPin(drift.referencePin)}): ${namedFiles}. ` +
+          'This cut would re-execute those superseded scripts and rebuild any release bug they carried. ' +
+          're-pin the cut root with setup-release-checkout.sh against a commit carrying the fixes, then re-run preflight';
+      } else {
+        toolingDetail = `root is behind canonical but no file under papercusp-desktop/${RELEASE_TOOLING_SUBTREE} differs — product-source drift only, which an isolated pin is supposed to have`;
+      }
+      break;
+    case 'diverged':
+      if (drift.staleFiles.length > 0) {
+        toolingOk = false;
+        toolingWarnOnly = true;
+        toolingDetail =
+          `cut root's release machinery DIVERGES from canonical (${drift.staleFiles.length} file(s): ${namedFiles}), but root ` +
+          `${shortPin(drift.subjectPin)} is not an ancestor of canonical ${shortPin(drift.referencePin)} — confirm this pin is deliberate`;
+      } else {
+        toolingDetail = 'root diverges from canonical but its release machinery is identical';
+      }
+      break;
+    case 'unknown':
+    default:
+      toolingOk = false;
+      toolingWarnOnly = true;
+      toolingDetail = `could NOT verify release-machinery freshness (${drift.detail ?? 'no detail'}) — treat as UNMEASURED, not as clean`;
+      break;
+  }
+  checks.push({
+    name: 'release-tooling-current',
+    ok: toolingOk,
+    detail: toolingDetail,
+    ...(toolingWarnOnly ? { warnOnly: true } : {}),
   });
 
   if (legs.mac) {
