@@ -93,6 +93,31 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
     });
   });
 
+  // EI-23917342543376581. The env below is an explicit ALLOWLIST rendered onto a
+  // systemd-run command, so a name that is not forwarded here is silently dropped — which
+  // is how `release:cut` lost a lever that a manual bin/release-local.sh run has always
+  // had. Without it, a head-snapshot scan overrun offers only a FULL seed or an operator
+  // quiesce (a fleet-affecting outage). These assert the forwarding AND that a malformed
+  // override is ignored rather than fatal: cut-seed-cli refuses a bad value, and killing a
+  // ~45-minute release cut over a stray env var would be worse than the derived deadline.
+  it('forwards a valid head-snapshot timeout override, and ignores a malformed one', () => {
+    expect(
+      buildCutEnv({}, sourceSha, { ownerName: 'Avi', headSnapshotTimeoutMs: 5_400_000 }),
+    ).toMatchObject({ PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS: '5400000' });
+
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, undefined]) {
+      expect(
+        buildCutEnv({}, sourceSha, { ownerName: 'Avi', headSnapshotTimeoutMs: bad }),
+      ).not.toHaveProperty('PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS');
+    }
+
+    // Omitting it entirely must leave the env byte-identical to the baseline, so the
+    // default path keeps deriving the deadline from the corpus length.
+    expect(buildCutEnv({}, sourceSha, runtime)).not.toHaveProperty(
+      'PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS',
+    );
+  });
+
   it('refuses a missing runtime owner identity before constructing a cut command', () => {
     expect(() => buildCutEnv({}, sourceSha, { ownerName: '   ' })).toThrow(/release_owner_name_required/);
   });
