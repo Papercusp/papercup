@@ -759,6 +759,19 @@ describe('turn-start-orientation — what it says', () => {
       executableFrontier: async () => ({ planSlug: 'one-plan', executableWidth: 2 }),
       obligations: async () => obligationBrief(),
       neverDropFacts: async () => ['guard-rail:some-settled-thing'],
+      // P-010's leg. Injected rather than left to the default reader on purpose:
+      // this test's whole subject is that every fold leg resolves through an
+      // INJECTABLE seam, and an un-injected leg would silently reach the real
+      // loop/DB readers from a unit test.
+      openChecks: async () => [
+        {
+          id: 'claim:a carried claim nobody has re-probed',
+          claim: 'a carried claim nobody has re-probed',
+          recheck: 'run the stored probe',
+          pointer: 'loop:status',
+          kind: 'check' as const,
+        },
+      ],
     });
     expect(state).toEqual({
       held: [{ id: 'WI-9', checkpoint: 'continue here', checkpointStale: true }],
@@ -782,6 +795,15 @@ describe('turn-start-orientation — what it says', () => {
       neverDropFacts: ['guard-rail:some-settled-thing'],
       toolSurface: null,
       carryBlindWindow: null,
+      openChecks: [
+        {
+          id: 'claim:a carried claim nobody has re-probed',
+          claim: 'a carried claim nobody has re-probed',
+          recheck: 'run the stored probe',
+          pointer: 'loop:status',
+          kind: 'check',
+        },
+      ],
     });
   });
 

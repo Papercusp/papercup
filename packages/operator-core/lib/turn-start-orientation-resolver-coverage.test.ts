@@ -79,14 +79,13 @@ describe('orientation RESOLVER coverage: every declared class has a live reader'
     expect(depsMissingAReader(defaultOrientationDeps())).toEqual([]);
   });
 
-  it('every reader is callable and returns a promise, not a bare value', () => {
-    // A reader that throws synchronously, or returns a non-promise, would break
-    // the single `Promise.all` fan-out in resolveOrientationState and take the
-    // whole block down with it — the opposite of this file's fail-soft contract.
-    const deps = defaultOrientationDeps() as Record<string, unknown>;
+  it('names the offending dependency, one per reader', () => {
+    // Same predicate as above, asserted per-name so a failure reports WHICH
+    // reader is missing rather than an opaque array diff. Indexed through the
+    // typed key — no cast, so a renamed dep fails to compile here too.
+    const deps = defaultOrientationDeps();
     for (const name of DEP_NAMES) {
-      const reader = deps[name];
-      expect(typeof reader, `${name} must be a function`).toBe('function');
+      expect(typeof deps[name], `${name} must have a reader in defaultOrientationDeps`).toBe('function');
     }
   });
 
