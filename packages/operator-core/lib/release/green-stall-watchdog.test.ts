@@ -86,6 +86,8 @@ import {
   checkReleaseTriggerFreeze,
   lastReleaseTriggerPauseOwner,
   evaluateReleaseTriggerFireStale,
+  evaluateStrandedRepairQueue,
+  type StrandedRepairQueueSnapshot,
   checkReleaseTriggerFireStale,
   attributeVerdictStale,
   readLastGateRunEvidence,
@@ -3302,5 +3304,78 @@ describe('checkGreenStall P-003 verdict-rate alarm wiring (gate-verdict-liveness
     expect(
       warnSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('D-006 refire warranted')),
     ).toBe(false);
+  });
+});
+
+// WI-10002439: P-010 promised an 8h-rung age escalation for a held frozen candidate; nothing read
+// the rung, and a queue sat awaiting-fixer ~40h with no alarm. These pin the evaluator's contract.
+describe('evaluateStrandedRepairQueue (WI-10002439)', () => {
+  const H = 3_600_000;
+  const base = (over: Partial<StrandedRepairQueueSnapshot> = {}): StrandedRepairQueueSnapshot => ({
+    candidate: 'a'.repeat(40),
+    phase: 'awaiting-fixer',
+    ageMs: 9 * H,
+    ageEscalationRung: 1,
+    attempts: 1,
+    fixerSpawnId: 'spawn-1',
+    fixerAlive: false,
+    decision: 'recover-dead-fixer',
+    manifest: { legs: 2, red: 1, admitted: 0, green: 1, pathless: 0 },
+    ...over,
+  });
+
+  it('no queue ⇒ no alarm', () => {
+    expect(evaluateStrandedRepairQueue(null)).toEqual({ alarm: false, rung: 0, stranded: false, reason: null });
+  });
+
+  it('under the first 8h rung ⇒ no alarm, however stranded it looks', () => {
+    const v = evaluateStrandedRepairQueue(base({ ageMs: 7 * H, ageEscalationRung: 0 }));
+    expect(v.alarm).toBe(false);
+  });
+
+  it('the 40h incident shape (rung 5, awaiting-fixer, dead fixer) ⇒ STRANDED alarm naming the rung and the dead fixer', () => {
+    const v = evaluateStrandedRepairQueue(base({ ageMs: 40 * H, ageEscalationRung: 5 }));
+    expect(v.alarm).toBe(true);
+    expect(v.rung).toBe(5);
+    expect(v.stranded).toBe(true);
+    expect(v.reason).toContain('~40h');
+    expect(v.reason).toContain('DEAD');
+    expect(v.reason).toContain('STRANDED SHAPE');
+  });
+
+  it('no fixer ever recorded is stranded too (liveness null is NOT treated as live)', () => {
+    const v = evaluateStrandedRepairQueue(base({ fixerSpawnId: null, fixerAlive: null, attempts: 0 }));
+    expect(v.stranded).toBe(true);
+    expect(v.reason).toContain('NO fixer recorded');
+  });
+
+  it('a LIVE fixer still escalates on age (P-010: the rung is an alert cadence) but is not called stranded', () => {
+    const v = evaluateStrandedRepairQueue(base({ fixerAlive: true, decision: 'wait-for-fixer' }));
+    expect(v.alarm).toBe(true);
+    expect(v.stranded).toBe(false);
+    expect(v.reason).not.toContain('STRANDED SHAPE');
+  });
+
+  it('pathless manifest rows are REPORTED, never a trigger on their own (pathless = admittable by hand)', () => {
+    const young = evaluateStrandedRepairQueue(
+      base({ ageMs: 1 * H, ageEscalationRung: 0, manifest: { legs: 1, red: 1, admitted: 0, green: 0, pathless: 1 } }),
+    );
+    expect(young.alarm).toBe(false);
+    const old = evaluateStrandedRepairQueue(base({ manifest: { legs: 1, red: 1, admitted: 0, green: 0, pathless: 1 } }));
+    expect(old.reason).toContain('1 pathless (paths must be named by hand)');
+  });
+
+  it('non-awaiting-fixer phases escalate on age without the stranded label', () => {
+    const v = evaluateStrandedRepairQueue(base({ phase: 'blocked', decision: 'hold-exhausted' }));
+    expect(v.alarm).toBe(true);
+    expect(v.stranded).toBe(false);
+  });
+
+  it('startGreenStallWatchdog actually RUNS the pass — the promised-but-unwired class this item exists for', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('./green-stall-watchdog.ts', import.meta.url), 'utf8');
+    const starter = src.slice(src.indexOf('export function startGreenStallWatchdog('));
+    expect(starter.length).toBeGreaterThan(0);
+    expect(starter).toMatch(/\n\s*void checkStrandedRepairQueue\(sql\);/);
   });
 });

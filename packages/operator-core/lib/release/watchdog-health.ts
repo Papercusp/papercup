@@ -74,13 +74,14 @@ import type { Sql } from 'postgres';
  */
 export const WATCHDOG_HEALTH_METADATA_KEY = 'watchdog_health';
 
-/** The five passes in `green-stall-watchdog.ts` that swallow their own failure. */
+/** The six passes in `green-stall-watchdog.ts` that swallow their own failure. */
 export type WatchdogPassName =
   | 'paused-green-checkpoint'
   | 'green-stall'
   | 'main-behind-staging'
   | 'release-trigger-freeze'
-  | 'release-trigger-fire-stale';
+  | 'release-trigger-fire-stale'
+  | 'stranded-repair-queue';
 
 export interface WatchdogPassScope {
   /** `routines.name` of the routine this pass watches. */

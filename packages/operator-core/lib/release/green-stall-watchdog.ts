@@ -3405,6 +3405,207 @@ export async function checkReleaseTriggerFireStale(
   }
 }
 
+// ── WI-10002439: the frozen-repair-queue AGE alarm that P-010 promised and nothing fired ──
+//
+// P-010 (frozen-candidate-repair-queue.ts, `FROZEN_REPAIR_AGE_ESCALATION_INTERVAL_MS`) deleted
+// the 8h age budget as "an automatic retirement in disguise" and replaced it with prose: "the
+// gate escalates when the queue crosses 8h and again at every further 8h rung, clearing
+// nothing". The rung is computed (`frozenRepairAgeEscalationRung`, surfaced on the diagnostic as
+// `ageEscalationRung`) but NO production code read it — so a queue stranded at `awaiting-fixer`
+// for ~40h (EI-23917645695738835) raised nothing and surfaced only because a human noticed.
+//
+// This pass IS that escalation. It reads the rung the queue module already computes — it does
+// not re-derive age — and fires once per rung crossed, never clearing, blocking or retiring
+// anything (P-010's contract: an alert cadence only). Fixer liveness comes from the canonical
+// tri-state `releaseFixerSpawnAlive` (task-ledger keyed), NOT from a heartbeat: the fixer is a
+// release-fixer spawn, and a stale-heartbeat-but-alive reading is exactly what that reader was
+// built to avoid.
+//
+// DELIBERATELY NOT A TRIGGER: manifest `pathless` rows. `RepairManifestSummary.pathless` is
+// documented as "a fixer must name the paths by hand" — admittable, not unreachable — so alarming
+// on it would fire on healthy queues. Manifest counts are REPORTED in the alarm text only.
+const STRANDED_REPAIR_QUEUE_PHASE = 'stranded-repair-queue-watchdog';
+
+export interface StrandedRepairQueueSnapshot {
+  candidate: string;
+  phase: string;
+  ageMs: number;
+  /** `frozenRepairAgeEscalationRung` — 0 while under 8h, then +1 per further 8h. */
+  ageEscalationRung: number;
+  attempts: number;
+  fixerSpawnId: string | null;
+  /** true = live, false = definitively dead, null = unknown / no fixer recorded. */
+  fixerAlive: boolean | null;
+  /** The queue policy's own current decision kind (e.g. 'wait-for-fixer', 'hold-exhausted'). */
+  decision: string;
+  manifest: { legs: number; red: number; admitted: number; green: number; pathless: number } | null;
+}
+
+export interface StrandedRepairQueueVerdict {
+  alarm: boolean;
+  /** The rung this verdict is about; the check re-alarms only when this INCREASES. */
+  rung: number;
+  /** awaiting-fixer with no live fixer — the 40h shape, named explicitly in the alarm. */
+  stranded: boolean;
+  reason: string | null;
+}
+
+/** PURE. Alarm on any open frozen queue that has crossed an 8h age rung (P-010's contract). */
+export function evaluateStrandedRepairQueue(s: StrandedRepairQueueSnapshot | null): StrandedRepairQueueVerdict {
+  if (!s || !Number.isFinite(s.ageEscalationRung) || s.ageEscalationRung < 1) {
+    return { alarm: false, rung: 0, stranded: false, reason: null };
+  }
+  const stranded = s.phase === 'awaiting-fixer' && s.fixerAlive !== true;
+  const hours = Math.round(s.ageMs / 3_600_000);
+  const fixer = !s.fixerSpawnId
+    ? 'NO fixer recorded'
+    : s.fixerAlive === false
+      ? `fixer ${s.fixerSpawnId} is DEAD`
+      : s.fixerAlive === true
+        ? `fixer ${s.fixerSpawnId} is live`
+        : `fixer ${s.fixerSpawnId} liveness UNKNOWN`;
+  const m = s.manifest
+    ? ` Manifest: ${s.manifest.legs} leg(s) — ${s.manifest.red} red, ${s.manifest.admitted} admitted, ${s.manifest.green} green` +
+      `${s.manifest.pathless ? `, ${s.manifest.pathless} pathless (paths must be named by hand)` : ''}.`
+    : ' No repair manifest persisted.';
+  return {
+    alarm: true,
+    rung: s.ageEscalationRung,
+    stranded,
+    reason:
+      `Frozen candidate ${s.candidate.slice(0, 12)} has held main for ~${hours}h in phase '${s.phase}' ` +
+      `(age rung ${s.ageEscalationRung}, ${s.attempts} fixer attempt(s); ${fixer}; queue decision '${s.decision}').` +
+      m +
+      (stranded
+        ? ' STRANDED SHAPE: awaiting a fixer with none live — the queue cannot leave awaiting-fixer until one ' +
+          'is dispatched or a fix is admitted. '
+        : ' ') +
+      `Read release:repair-queue { op:'status' } for the per-leg picture. This alarm clears nothing (P-010): ` +
+      `land fixes with release:repair-queue { op:'admit', paths:[...] }; retire only per the documented ` +
+      `unreachable-green test.`,
+  };
+}
+
+/**
+ * One watchdog pass for the frozen-queue age escalation. Same shape as its siblings: own read,
+ * own escalation row keyed by `STRANDED_REPAIR_QUEUE_PHASE`, one-shot per (candidate, rung) and
+ * a resolved broadcast when the queue closes. Never throws.
+ */
+export async function checkStrandedRepairQueue(
+  sql: Sql,
+  opts: { installSlug?: string; workspaceId?: string; nowMs?: number } = {},
+): Promise<{ alarmed: boolean; recovered: boolean }> {
+  const out = { alarmed: false, recovered: false };
+  const installSlug = opts.installSlug ?? 'papercusp';
+  let passError: unknown;
+  try {
+    const rows = await sql<{ workspace_id: string }[]>`
+      SELECT workspace_id FROM harness_shared.routines
+       WHERE install_slug = ${installSlug} AND target_role = 'system:green-checkpoint'
+       LIMIT 1`;
+    if (rows.length === 0) return out;
+    const workspaceId = opts.workspaceId ?? rows[0].workspace_id;
+    const now = opts.nowMs ?? Date.now();
+
+    const { readFrozenCandidateRepairQueueState } = await import('../harness/routines/release-actions');
+    const { diagnoseFrozenCandidateRepairQueue } = await import('./frozen-candidate-repair-queue');
+    const { releaseFixerSpawnAlive } = await import('./fixer-liveness');
+    const read = await readFrozenCandidateRepairQueueState({ workspaceId, installSlug });
+    const queue = read.status === 'value' ? read.queue : null;
+    const fixerAlive = queue?.fixerSpawnId
+      ? await releaseFixerSpawnAlive(sql as never, queue.fixerSpawnId).catch(() => null)
+      : null;
+    const diag = diagnoseFrozenCandidateRepairQueue(queue, { nowMs: now, fixerAlive });
+    const verdict = evaluateStrandedRepairQueue(
+      diag
+        ? {
+            candidate: diag.candidate,
+            phase: queue!.phase,
+            ageMs: diag.ageMs,
+            ageEscalationRung: diag.ageEscalationRung,
+            attempts: diag.attempts,
+            fixerSpawnId: diag.fixerSpawnId,
+            fixerAlive: diag.fixerAlive,
+            decision: diag.decision,
+            manifest: diag.manifestSummary,
+          }
+        : null,
+    );
+
+    const existing = await sql<{ escalation: { candidate?: string; rung?: number } | null }[]>`
+      SELECT escalation FROM harness_shared.harness_escalations
+       WHERE harness_slug = ${installSlug} AND phase = ${STRANDED_REPAIR_QUEUE_PHASE}`;
+    const prior = existing[0]?.escalation ?? null;
+    const conditionKey = `stranded-repair-queue:${installSlug}`;
+
+    if (verdict.alarm && diag) {
+      // One-shot per rung: re-alarm only when the rung climbs or a DIFFERENT candidate froze.
+      if (prior && prior.candidate === diag.candidate && (prior.rung ?? 0) >= verdict.rung) return out;
+      const title = verdict.stranded
+        ? `Frozen repair queue STRANDED ~${Math.round(diag.ageMs / 3_600_000)}h — awaiting a fixer, none live`
+        : `Frozen repair queue has held main ~${Math.round(diag.ageMs / 3_600_000)}h`;
+      try {
+        const { notifyAttention } = await import('../attention-notify');
+        await notifyAttention({
+          kind: 'intervention',
+          title,
+          body: verdict.reason ?? '',
+          importance: verdict.stranded ? 'urgent' : 'normal',
+          workspaceId,
+          data: { candidate: diag.candidate, rung: verdict.rung, stranded: verdict.stranded },
+        });
+      } catch (e) {
+        console.warn(`[stranded-repair-queue-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);
+      }
+      await broadcastSevereEvent({
+        summary: `${title} on ${installSlug}.`,
+        body: verdict.reason ?? '',
+        category: 'severe-event',
+        conditionKey,
+        oneShot: true,
+      });
+      try {
+        await sql`
+          INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+          VALUES (${installSlug}, ${STRANDED_REPAIR_QUEUE_PHASE}, ${JSON.stringify({
+            kind: STRANDED_REPAIR_QUEUE_PHASE,
+            harness_slug: installSlug,
+            candidate: diag.candidate,
+            rung: verdict.rung,
+            stranded: verdict.stranded,
+            detail: verdict.reason,
+            emitted_at: now,
+          })}, ${now}, ${workspaceId})
+          ON CONFLICT (harness_slug, phase)
+          DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
+      } catch (e) {
+        console.warn(`[stranded-repair-queue-watchdog] escalation write failed: ${e instanceof Error ? e.message : e}`);
+      }
+      out.alarmed = true;
+      console.warn(`[stranded-repair-queue-watchdog] ALARM ${installSlug}: ${verdict.reason}`);
+    } else if (prior && (!diag || diag.candidate !== prior.candidate)) {
+      // Resolved only when that frozen candidate is GONE (green, promoted, or owner-retired) —
+      // never merely because a rung has not been crossed yet on a newer queue.
+      await sql`
+        UPDATE harness_shared.harness_escalations
+           SET escalation = NULL, mtime_ms = ${now}
+         WHERE harness_slug = ${installSlug} AND phase = ${STRANDED_REPAIR_QUEUE_PHASE} AND escalation IS NOT NULL`;
+      await broadcastSevereEventResolved({
+        conditionKey,
+        summary: `Frozen candidate ${String(prior.candidate ?? '').slice(0, 12)} on ${installSlug} is no longer held — the age alarm is stale.`,
+      });
+      out.recovered = true;
+    }
+    return out;
+  } catch (e) {
+    passError = e;
+    console.warn(`[stranded-repair-queue-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    return out;
+  } finally {
+    await recordWatchdogPassOutcome(sql, 'stranded-repair-queue', { routineName: 'green-checkpoint', installSlug }, passError);
+  }
+}
+
 let watchdogTimer: ManagedHandle | null = null;
 
 /**
@@ -3450,6 +3651,10 @@ export function startGreenStallWatchdog(
     // above cannot see that case at all (it only looks at active:false). Same
     // independent-of-the-routine-engine rationale as the checks above.
     void checkReleaseTriggerFireStale(sql);
+    // WI-10002439: P-010 promised an 8h-rung age escalation for a held frozen candidate and
+    // nothing fired it — a queue sat awaiting-fixer ~40h silently. Independent for the same
+    // reason as the checks above: a stranded queue produces no verdict for the gate to react to.
+    void checkStrandedRepairQueue(sql);
   };
 
   run(); // boot check
