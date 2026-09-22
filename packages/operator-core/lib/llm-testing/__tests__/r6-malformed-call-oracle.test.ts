@@ -6,6 +6,7 @@ import {
   buildOracleSchemaIndex,
   classifyArms,
   r6PrimaryVerdict,
+  UNMEASURED_KIND,
   validateToolCall,
   type OracleCatalogTool,
   type OracleToolCall,
@@ -105,6 +106,28 @@ describe('R-6 primary oracle — fixture integrity', () => {
         ),
       ),
     ).toBeTruthy();
+
+    // The constraint classes R-3 names. Counted, not merely present: the re-vet's finding
+    // was that MOST of this fixture's constraints went unchecked, so a regression to a
+    // top-level-only engine should be visible here as a number, not inferred from a
+    // one-property spot check.
+    const allProps = fixture.tools.flatMap((t) =>
+      Object.values((t.input_schema.properties ?? {}) as Record<string, Record<string, unknown>>),
+    );
+    const bounded = allProps.filter((p) =>
+      ['minimum', 'maximum', 'minLength', 'maxLength', 'minItems', 'maxItems'].some(
+        (k) => p[k] !== undefined,
+      ),
+    );
+    expect(bounded.length).toBeGreaterThanOrEqual(8);
+    // a nested shape (array items / map values) with its own constraints
+    expect(
+      allProps.some(
+        (p) =>
+          (p.items as Record<string, unknown> | undefined)?.minLength !== undefined ||
+          (p.additionalProperties as Record<string, unknown> | undefined)?.pattern !== undefined,
+      ),
+    ).toBe(true);
   });
 
   it('indexes every schema under BOTH the canonical and the sanitized spelling', () => {
@@ -188,6 +211,126 @@ describe('R-6 primary oracle — direction 1: it CATCHES each class it claims to
       checked++;
     }
     expect(checked).toBeGreaterThan(0);
+  });
+});
+
+describe('R-6 primary oracle — direction 1b: the classes R-3 names, beyond the top level', () => {
+  // WHY THESE EXIST. A rubric re-vet found the earlier six classes genuinely two-way
+  // validated and still the wrong instrument: R-3 defines the compact tier as preserving
+  // "numeric and length bounds, discriminators and nested shape", and a top-level walk
+  // checks none of those — so "ZERO malformed-call classes" was zero among six classes
+  // that deliberately excluded what a tier change is most likely to break. On THIS fixture
+  // 10 of 20 properties carried bounds the old engine ignored. Each case below therefore
+  // asserts its own constraint is still present in the fixture before using it: a fixture
+  // that quietly loses the bound makes the case pass vacuously, which is worse than absent.
+
+  const propWith = (predicate: (p: Record<string, unknown>) => boolean) => {
+    for (const tool of fixture.tools) {
+      const hit = Object.entries(propsOf(tool.canonical)).find(([, p]) => predicate(p));
+      if (hit) return { canonical: tool.canonical, key: hit[0], prop: hit[1] };
+    }
+    return undefined;
+  };
+
+  it('flags a NUMERIC bound violation', () => {
+    const found = propWith((p) => typeof p.maximum === 'number' && p.type === 'integer');
+    expect(found, 'fixture no longer carries a numeric maximum').toBeTruthy();
+    const { canonical, key, prop } = found!;
+    const over = (prop.maximum as number) + 1;
+    const violations = validateToolCall(schemas, canonical, { ...wellFormed(canonical), [key]: over });
+    expect(violations).toContainEqual({ kind: 'bound-violation:maximum', detail: key });
+  });
+
+  it('flags a LENGTH bound violation', () => {
+    const found = propWith((p) => typeof p.minLength === 'number' && (p.minLength as number) > 0 && p.type === 'string');
+    expect(found, 'fixture no longer carries a minLength').toBeTruthy();
+    const { canonical, key } = found!;
+    const violations = validateToolCall(schemas, canonical, { ...wellFormed(canonical), [key]: '' });
+    expect(violations).toContainEqual({ kind: 'bound-violation:minLength', detail: key });
+  });
+
+  it('flags a NESTED violation inside an array item, and says where', () => {
+    // The element the old engine was structurally blind to: the array itself is the right
+    // type and the right length, and the constraint that fails is one level down.
+    const found = propWith(
+      (p) =>
+        p.type === 'array' &&
+        typeof (p.items as Record<string, unknown> | undefined)?.minLength === 'number',
+    );
+    expect(found, 'fixture no longer carries a constrained array item').toBeTruthy();
+    const { canonical, key } = found!;
+    const violations = validateToolCall(schemas, canonical, { ...wellFormed(canonical), [key]: [''] });
+    expect(violations).toContainEqual({
+      kind: 'nested-bound-violation:minLength',
+      detail: `/${key}/0`,
+    });
+    // and the nesting is IN THE CLASS NAME, not flattened away — "a top-level bound broke"
+    // and "a bound three levels down broke" must not fold into one finding
+    expect(violations.every((v) => v.kind !== 'bound-violation:minLength')).toBe(true);
+  });
+
+  it('flags a NESTED pattern violation inside a map-valued object', () => {
+    const found = propWith(
+      (p) =>
+        p.type === 'object' &&
+        typeof (p.additionalProperties as Record<string, unknown> | undefined)?.pattern === 'string',
+    );
+    expect(found, 'fixture no longer carries a patterned map value').toBeTruthy();
+    const { canonical, key } = found!;
+    const violations = validateToolCall(schemas, canonical, {
+      ...wellFormed(canonical),
+      [key]: { OK: 'not matching the value pattern' },
+    });
+    expect(violations).toContainEqual({ kind: 'nested-pattern-violation', detail: `/${key}/OK` });
+  });
+
+  it('counts a call whose SCHEMA will not compile as UNMEASURED — never a class, never a pass', () => {
+    // The failure mode a stricter engine introduces, and the vacuous-pass bug in new
+    // clothing: an unresolvable $ref refuses identically in both arms, so folding it into a
+    // class would cancel it out and drain power while the verdict still read PASS.
+    const broken = new Map<string, Record<string, unknown>>([
+      ['broken:tool', { type: 'object', properties: { a: { $ref: '#/$defs/nope' } } }],
+    ]);
+    const violations = validateToolCall(broken, 'broken:tool', { a: 1 });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.kind).toBe(UNMEASURED_KIND);
+
+    const rows: OracleToolCall[] = [
+      { arm: COMPACT_ARM, name: 'broken:tool', input: { a: 1 } },
+      { arm: FULL_ARM, name: 'broken:tool', input: { a: 1 } },
+    ];
+    const verdict = r6PrimaryVerdict(rows, broken, ARMS);
+    expect(verdict.verdict).toBe('INDETERMINATE');
+    expect(verdict.compactClasses).toEqual([]);
+    expect(verdict.unmeasuredCalls[COMPACT_ARM]).toBe(1);
+    expect(verdict.unmeasuredCalls[FULL_ARM]).toBe(1);
+  });
+
+  it('reports unmeasured calls WITHOUT suppressing the classes it did judge', () => {
+    // A partially-blind arm is the realistic case: one tool's schema refuses, the rest
+    // validate. The verdict must still be reached on the judged calls, with the ceiling
+    // disclosed — not thrown away, and not silently ignored.
+    const canonical = firstWith((s) => ((s.required ?? []) as string[]).length > 0)!;
+    const missing = requiredOf(canonical)[0]!;
+    const brokenInput = wellFormed(canonical);
+    delete brokenInput[missing];
+    const withBroken = new Map(schemas);
+    withBroken.set('broken:tool', { type: 'object', properties: { a: { $ref: '#/$defs/nope' } } });
+
+    const verdict = r6PrimaryVerdict(
+      [
+        { arm: COMPACT_ARM, name: canonical, input: wellFormed(canonical) },
+        { arm: COMPACT_ARM, name: 'broken:tool', input: { a: 1 } },
+        { arm: COMPACT_ARM, name: canonical, input: brokenInput },
+        { arm: FULL_ARM, name: canonical, input: wellFormed(canonical) },
+      ],
+      withBroken,
+      ARMS,
+    );
+    expect(verdict.verdict).toBe('FAIL');
+    expect(verdict.onlyInCompact).toEqual([`${canonical} :: missing-required`]);
+    expect(verdict.unmeasuredCalls[COMPACT_ARM]).toBe(1);
+    expect(verdict.unmeasuredCalls[FULL_ARM]).toBeUndefined();
   });
 });
 
