@@ -9,11 +9,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { compactInputSchema, compactWireBytes, summaryGuidanceDescription } from '@papercusp/tooldef';
 import {
   parseToolsAllowlist,
   filterListingsByAllowlist,
   getSessionSurface,
   activateSessionTools,
+  applyCompactTier,
   __resetSessionSurfaces,
 } from './tool-allowlist';
 
@@ -170,5 +172,85 @@ describe('getSessionSurface / activateSessionTools (per-session mutable surface)
     // re-seed starts clean (activation floor only, no stale growth).
     const t1 = t0 + 7 * 60 * 60 * 1000;
     expect(getSessionSurface('sess-old', seed, t1)).toEqual(new Set(['coord:orient']));
+  });
+});
+
+/**
+ * P-010: the COMPACT tier's MEASUREMENT and its DELIVERY must stay in lockstep.
+ *
+ * This is the single most consequential invariant in the delivery policy, and
+ * it fails SILENTLY: if `applyCompactTier` ships prose that `compactWireBytes`
+ * priced at zero, every `spentBytes` figure in the generated artifact — and
+ * therefore the 100,000 B budget itself — becomes a fiction, while every test
+ * that only checks "compact is smaller than full" still passes. Nothing else
+ * in the suite compares the two sides against each other.
+ */
+describe('applyCompactTier — measured bytes equal delivered bytes', () => {
+  const TOOL = {
+    name: 'example:verb',
+    description:
+      'Claim the next eligible item under global floors. ⛔ NEVER run this against a live tree. ' +
+      'It then applies the stored claim-spec filter and ranks by affinity before returning.',
+    inputSchema: {
+      type: 'object',
+      description: 'prose that compaction removes',
+      properties: { id: { type: 'string', description: 'the id', minLength: 1 } },
+      required: ['id'],
+    },
+  };
+
+  it('delivers exactly what compactWireBytes priced', () => {
+    const [delivered] = applyCompactTier(
+      [TOOL],
+      new Set([TOOL.name]),
+      compactInputSchema,
+      summaryGuidanceDescription,
+    );
+    const measured = compactWireBytes(TOOL.name, TOOL);
+    const deliveredBytes = new TextEncoder().encode(
+      JSON.stringify({
+        name: delivered.name,
+        description: delivered.description,
+        inputSchema: delivered.inputSchema,
+      }),
+    ).byteLength;
+    expect(deliveredBytes).toBe(measured.compact);
+  });
+
+  it('ships a SUMMARY, not silence — and keeps the hard rail', () => {
+    const [delivered] = applyCompactTier(
+      [TOOL],
+      new Set([TOOL.name]),
+      compactInputSchema,
+      summaryGuidanceDescription,
+    );
+    expect(delivered.description).not.toBe('');
+    expect(delivered.description).toContain('NEVER run this against a live tree');
+    expect((delivered.description ?? '').length).toBeLessThan(TOOL.description.length);
+  });
+
+  it('FALSIFIABILITY CONTROL — the old empty-description behaviour would fail the lockstep', () => {
+    // The deliberately-wrong projection kept permanently as a control: this is
+    // exactly what the seam did before P-010. It must NOT reconcile.
+    const [wrong] = applyCompactTier([TOOL], new Set([TOOL.name]), compactInputSchema, () => '');
+    const measured = compactWireBytes(TOOL.name, TOOL);
+    const wrongBytes = new TextEncoder().encode(
+      JSON.stringify({
+        name: wrong.name,
+        description: wrong.description,
+        inputSchema: wrong.inputSchema,
+      }),
+    ).byteLength;
+    expect(wrongBytes).not.toBe(measured.compact);
+  });
+
+  it('leaves a tool that is not in the compact set untouched', () => {
+    const [untouched] = applyCompactTier(
+      [TOOL],
+      new Set(['someone:else']),
+      compactInputSchema,
+      summaryGuidanceDescription,
+    );
+    expect(untouched).toEqual(TOOL);
   });
 });

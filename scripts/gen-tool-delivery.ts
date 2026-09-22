@@ -90,6 +90,132 @@ interface GeneratedAgent {
   rows: GeneratedRow[];
 }
 
+/**
+ * One tool's PROSE half, measured separately from its schema half (P-010/D-006).
+ * `descFull` is what ships at FULL; `descPartial` is what the partial-guidance
+ * projection keeps; `descSummary` is what the COMPACT tier actually ships.
+ *
+ * ⚠ COMPACT no longer ships zero prose. D-011 replaced `description:''` with a
+ * capped SUMMARY after the partial projection measured only a 0.8% saving, so
+ * `descSummary` — not zero — is the prose cost of the delivered tier. Anything
+ * here that still prices COMPACT at zero is stale by exactly that decision.
+ */
+interface GuidanceHalf {
+  name: string;
+  descFull: number;
+  descPartial: number;
+  /** Bytes at the SUMMARY tier: one lead sentence + every hard rail. */
+  descSummary: number;
+  rails: number;
+  reduced: string[];
+  unlabelled: boolean;
+}
+
+/**
+ * The catalog-wide prose/schema split, and what CHANGING the COMPACT tier's
+ * prose depth would cost on the delivered seed.
+ *
+ * This exists to answer a specific owner question — "how verbose is the
+ * guidance, can it be shortened without losing information?" — with a measured
+ * LOSS SET rather than an assurance. It deliberately reports what partial
+ * REMOVES (reduced sections, tools left with no prose at all) beside what it
+ * saves, because a reduction reported only as a saving is a half-truth.
+ */
+function renderGuidanceReport(
+  agent: GeneratedAgent,
+  guidanceByName: Map<string, GuidanceHalf>,
+  catalogByName: Map<string, { name: string; fullBytes: number; compactBytes: number }>,
+): string {
+  const all = [...guidanceByName.values()];
+  const sum = (rows: GuidanceHalf[], f: (g: GuidanceHalf) => number) =>
+    rows.reduce((a, g) => a + f(g), 0);
+
+  const dFull = sum(all, (g) => g.descFull);
+  const dPartial = sum(all, (g) => g.descPartial);
+  const dSummary = sum(all, (g) => g.descSummary);
+  const railsKept = sum(all, (g) => g.rails);
+  const reducedNotWhen = all.filter((g) => g.reduced.includes('When NOT to use:')).length;
+  const reducedChaining = all.filter((g) => g.reduced.includes('Chaining:')).length;
+  const proseless = all.filter((g) => g.descPartial === 0 && g.descFull > 0).length;
+
+  const schemaFull = [...catalogByName.values()].reduce((a, c) => a + c.fullBytes, 0);
+  const schemaCompact = [...catalogByName.values()].reduce((a, c) => a + c.compactBytes, 0);
+
+  // What it would cost to CHANGE the compact tier's prose DEPTH.
+  //
+  // ⚠ D-011 flipped COMPACT from `description:''` to a capped SUMMARY, so
+  // `agent.spentBytes` ALREADY carries the summary prose of every compact tool.
+  // An upgrade must therefore be priced as a DELTA against the prose already
+  // delivered, never as an addition on top of the live spend: adding a full
+  // prose total to a spend that already contains the summary double-counts it
+  // and reports OVER for the very configuration shipping at overrun=0.
+  const compactNames = agent.rows.filter((r) => r.tier === 'compact').map((r) => r.name);
+  const proseOverCompact = (f: (g: GuidanceHalf) => number) =>
+    compactNames.reduce((a, n) => {
+      const g = guidanceByName.get(n);
+      return a + (g ? f(g) : 0);
+    }, 0);
+  const restoreFull = proseOverCompact((g) => g.descFull);
+  const restore = proseOverCompact((g) => g.descPartial);
+  // What the SHIPPING tier already pays for prose — the baseline both deltas
+  // below are measured against.
+  const delivered = proseOverCompact((g) => g.descSummary);
+  const wouldBe = agent.spentBytes + (restore - delivered);
+  const wouldBeFull = agent.spentBytes + (restoreFull - delivered);
+
+  const lines: string[] = [];
+  lines.push('');
+  lines.push('── GUIDANCE HALF vs SCHEMA HALF (catalog-wide, P-010/D-006) ──');
+  // Catalog-wide prose totals at each DEPTH. There is deliberately no `compact=`
+  // column: since D-011 the COMPACT tier ships the SUMMARY projection, so
+  // `summary=` IS compact's prose cost. The literal `compact=0` that used to sit
+  // here outlived the tier it described and read as "compact ships no prose".
+  lines.push(
+    `GUIDANCE_BYTES full=${dFull} partial=${dPartial} summary=${dSummary} savedByPartial=${dFull - dPartial} savedBySummary=${dFull - dSummary}`,
+  );
+  // NB these two are WIRE totals (name + description + schema), which is what
+  // the budget is actually spent in — NOT a schema-only figure. Named WIRE_
+  // so the number cannot be read as something narrower than it is.
+  lines.push(
+    `WIRE_BYTES full=${schemaFull} compact=${schemaCompact} savedByCompact=${schemaFull - schemaCompact}`,
+  );
+  lines.push('');
+  lines.push('── LOSS SET (what partial REMOVES — stated, not assured) ──');
+  lines.push(`GUIDANCE_LOSS reducedNotWhen=${reducedNotWhen} reducedChaining=${reducedChaining} railsRetained=${railsKept} toolsLeftProseless=${proseless}`);
+  // WHY partial can be a near-no-op: a tool declaring an EXPLICIT description
+  // never goes through describeFromGuidance, so its wire prose carries no
+  // section labels to reduce. Printed because a 0.8% saving is otherwise
+  // indistinguishable from a broken projection.
+  const unlabelled = all.filter((g) => g.unlabelled).length;
+  const composed = all.length - unlabelled;
+  lines.push(
+    `GUIDANCE_SHAPE tools=${all.length} explicitDescription=${unlabelled} composedFromGuidance=${composed} meanDescBytes=${Math.round(dFull / Math.max(1, all.length))}`,
+  );
+  lines.push('');
+  lines.push('── PROSE DEPTH ON THE COMPACT TIER (claude seed) ──');
+  // What the SHIPPING configuration already pays for prose. Stated FIRST so the
+  // two deltas below are read against a measured number rather than an assumed
+  // zero — the assumption that made the old RESTORE_* lines double-count.
+  // `composedAmongCompact` explains an otherwise alarming reading: partial only
+  // reduces prose for tools whose description was COMPOSED from guidance
+  // sections, so when this is 0 the PARTIAL and FULL deltas below are EQUAL by
+  // construction — not a copy-paste bug. Same reason GUIDANCE_SHAPE is printed.
+  const composedAmongCompact = compactNames.filter(
+    (n) => guidanceByName.get(n)?.unlabelled === false,
+  ).length;
+  lines.push(
+    `GUIDANCE_DELIVERED compactTools=${compactNames.length} composedAmongCompact=${composedAmongCompact} tier=summary proseBytes=${delivered} ofSpend=${agent.spentBytes} meanBytesPerTool=${Math.round(delivered / Math.max(1, compactNames.length))}`,
+  );
+  lines.push(
+    `GUIDANCE_UPGRADE_PARTIAL deltaBytes=${restore - delivered} wouldBe=${wouldBe} budget=${agent.budgetBytes} verdict=${wouldBe <= agent.budgetBytes ? 'FITS' : 'OVER'}`,
+  );
+  lines.push(
+    `GUIDANCE_UPGRADE_FULL deltaBytes=${restoreFull - delivered} wouldBe=${wouldBeFull} budget=${agent.budgetBytes} verdict=${wouldBeFull <= agent.budgetBytes ? 'FITS' : 'OVER'}`,
+  );
+  lines.push('');
+  return lines.join('\n');
+}
+
 /** Render the artifact. Pure given its inputs, so `--check` compares like with like. */
 export function renderArtifact(input: {
   snapshotCapturedAt: string;
@@ -247,10 +373,18 @@ async function build(): Promise<{
   baseline: SeedBaseline;
   catalogByName: Map<string, { name: string; fullBytes: number; compactBytes: number }>;
   demandByName: Map<string, { name: string; callers: number; calls: number }>;
+  guidanceByName: Map<string, GuidanceHalf>;
+  sweepLines: string[];
 }> {
   // Side-effect import FIRST: it registers the catalog that listAllProjectedTools reads.
   await import('../packages/operator-core/lib/agent-tools/index.ts');
-  const { listAllProjectedTools, compactWireBytes } = await import('@papercusp/tooldef');
+  const {
+    listAllProjectedTools,
+    compactWireBytes,
+    partialGuidanceLoss,
+    summaryGuidanceDescription,
+    compactInputSchema,
+  } = await import('@papercusp/tooldef');
   const { explainToolDelivery } = await import(
     '../packages/operator-core/lib/agent-tools/tool-delivery-policy.ts'
   );
@@ -273,6 +407,27 @@ async function build(): Promise<{
       return { name, fullBytes: bytes.full, compactBytes: bytes.compact };
     })
     .filter((t): t is { name: string; fullBytes: number; compactBytes: number } => t !== null);
+
+  // P-010/D-006: the PROSE half, measured independently of the schema half so
+  // the two can be traded against each other rather than moving as one lump.
+  const guidanceByName = new Map<string, GuidanceHalf>();
+  for (const t of projected as readonly {
+    expose?: { mcp?: { name?: string } };
+    description?: string;
+  }[]) {
+    const name = t.expose?.mcp?.name;
+    if (!name) continue;
+    const loss = partialGuidanceLoss(t.description);
+    guidanceByName.set(name, {
+      name,
+      descFull: loss.fullBytes,
+      descPartial: loss.partialBytes,
+      rails: loss.retainedSafetyClauses,
+      reduced: loss.reducedSections,
+      unlabelled: loss.unlabelled,
+      descSummary: loss.summaryBytes,
+    });
+  }
 
   const snapshot = JSON.parse(readFileSync(resolve(REPO_ROOT, SNAPSHOT_PATH), 'utf8')) as {
     capturedAt: string;
@@ -312,6 +467,42 @@ async function build(): Promise<{
     };
   }
 
+  // P-010 tuning instrument: the SUMMARY lead cap trades prose against seats,
+  // and the right value is a measurement, not a guess. Re-price the catalog at
+  // each candidate cap and re-resolve — both are pure, so this is cheap once
+  // the catalog is loaded (the expensive part is the barrel import above).
+  const sweepLines: string[] = [];
+  for (const cap of [0, 80, 100, 120, 140, 160, 200]) {
+    const capped = projected
+      .map((t: { expose?: { mcp?: { name?: string } }; description?: string; inputSchema?: unknown }) => {
+        const name = t.expose?.mcp?.name;
+        if (!name) return null;
+        const full = compactWireBytes(name, {
+          description: t.description,
+          inputSchema: t.inputSchema,
+        }).full;
+        const compactBytes = new TextEncoder().encode(
+          JSON.stringify({
+            name,
+            description: cap === 0 ? '' : summaryGuidanceDescription(t.description, cap),
+            inputSchema: compactInputSchema(t.inputSchema ?? {}),
+          }),
+        ).byteLength;
+        return { name, fullBytes: full, compactBytes };
+      })
+      .filter((t): t is { name: string; fullBytes: number; compactBytes: number } => t !== null);
+    const r = explainToolDelivery({
+      agentKind: 'claude',
+      catalog: capped,
+      demand: snapshot.tools,
+      floors,
+      budgetBytes: TRIMMED_BUDGET_BYTES.claude,
+    });
+    sweepLines.push(
+      `SUMMARY_CAP_SWEEP cap=${cap} full=${r.counts.full} compact=${r.counts.compact} spent=${r.spentBytes} overrun=${r.budgetOverrun} fits=${r.budgetOverrun === 0 ? 'YES' : 'NO'}`,
+    );
+  }
+
   const baseline = JSON.parse(readFileSync(resolve(REPO_ROOT, BASELINE_PATH), 'utf8')) as SeedBaseline;
   if (!Array.isArray(baseline.union) || baseline.union.length !== baseline.counts.union) {
     throw new Error(
@@ -327,6 +518,8 @@ async function build(): Promise<{
     baseline,
     catalogByName: byName,
     demandByName,
+    guidanceByName,
+    sweepLines,
   };
 }
 
@@ -346,6 +539,10 @@ async function main(): Promise<number> {
     process.stdout.write(
       renderBaselineDiff(built.agents.claude, built.baseline, built.catalogByName, built.demandByName),
     );
+    process.stdout.write(
+      renderGuidanceReport(built.agents.claude, built.guidanceByName, built.catalogByName),
+    );
+    process.stdout.write(`${built.sweepLines.join('\n')}\n`);
     return 0;
   }
 

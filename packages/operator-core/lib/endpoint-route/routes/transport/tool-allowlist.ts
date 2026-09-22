@@ -99,10 +99,18 @@ export function parseCompactToolNames(raw: string | null | undefined): Set<strin
  *
  * The compact form must match what the delivery policy BUDGETED, or the
  * generated artifact's `spentBytes` is a fiction: `compactWireBytes` measures
- * `{ name, description: '', inputSchema: compactInputSchema(...) }`, so this
- * drops the description and compacts the schema — nothing else. `_meta`,
- * `outputSchema` and `resultFormats` are left alone because they are protocol
- * fields, not prose, and a client that negotiated on them would break.
+ * `{ name, description: summaryGuidanceDescription(...), inputSchema:
+ * compactInputSchema(...) }`, so this SUMMARISES the description and compacts
+ * the schema — nothing else. `_meta`, `outputSchema` and `resultFormats` are
+ * left alone because they are protocol fields, not prose, and a client that
+ * negotiated on them would break.
+ *
+ * ⚠ P-010 CHANGED THIS SEAM AND ITS MEASUREMENT TOGETHER. Compact used to ship
+ * `description: ''` — a bare name plus a schema, for 67 of the 71 advertised
+ * tools. Measured catalog-wide, summarising instead of deleting costs 113 B per
+ * tool (7,559 B across the seed) and retains the lead sentence plus EVERY hard
+ * refusal/safety clause. If you change one side of this pair, change the other
+ * in the same commit.
  *
  * ⚠ This is a LISTING projection only. `tools/call` is untouched: a compact
  * tool validates against the SAME server-side schema as a full one, so a model
@@ -111,11 +119,20 @@ export function parseCompactToolNames(raw: string | null | undefined): Set<strin
  */
 export function applyCompactTier<
   T extends { name: string; description?: string; inputSchema?: unknown },
->(listings: readonly T[], compact: Set<string> | null, compactSchema: (s: unknown) => unknown): T[] {
+>(
+  listings: readonly T[],
+  compact: Set<string> | null,
+  compactSchema: (s: unknown) => unknown,
+  summariseDescription: (d: string | undefined) => string,
+): T[] {
   if (!compact || compact.size === 0) return [...listings];
   return listings.map((t) =>
     compact.has(t.name)
-      ? ({ ...t, description: '', inputSchema: compactSchema(t.inputSchema ?? {}) } as T)
+      ? ({
+          ...t,
+          description: summariseDescription(t.description),
+          inputSchema: compactSchema(t.inputSchema ?? {}),
+        } as T)
       : t,
   );
 }

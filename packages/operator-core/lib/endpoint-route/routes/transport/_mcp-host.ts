@@ -172,7 +172,11 @@ import { buildMcpPrelude } from '../../../memory/mcp-prelude';
 import { INSIGHTS_DIR } from '../../../memory/knowledge-read';
 import { getSessionUserOrDefault } from '../../../auth';
 import { advertisedArgsSchema } from '@papercusp/result-encoding';
-import { compactInputSchema, type ResultDoorSkipReason } from '@papercusp/tooldef';
+import {
+  compactInputSchema,
+  summaryGuidanceDescription,
+  type ResultDoorSkipReason,
+} from '@papercusp/tooldef';
 import { MCP_SERVER_CAPABILITIES } from './mcp-contract';
 import { withMcpDiagnosticWarnings, type McpCallResult } from './mcp-diagnostic-warnings';
 import { parseMcpToolText } from './mcp-result-text';
@@ -2816,6 +2820,7 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
       filterListingsByAllowlist(result, allow),
       compact,
       compactInputSchema,
+      summaryGuidanceDescription,
     ),
   };
 }
