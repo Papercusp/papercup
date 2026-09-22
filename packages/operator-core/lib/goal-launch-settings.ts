@@ -78,6 +78,10 @@ import {
 // derives its accepted values from it rather than declaring them a second time.
 import { FLEET_TYPES } from './agent-fleets-store';
 import { GOAL_KICKOFF_REQUIRED_READS } from './goals/kickoff-evidence';
+// Type-only: the placement compiler reads a closure VERDICT, it never resolves
+// one. Keeping this erased leaves the acceptance gate out of the portfolio
+// read's runtime graph.
+import type { PlanClosureState, PlanClosureVerdict } from './goals/plan-closure';
 
 function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
@@ -607,6 +611,15 @@ export type GoalPlanPlacementState =
   | 'independently-led'
   | 'working'
   | 'blocked'
+  /**
+   * Administratively complete — every item done/dropped, or the status says so —
+   * but closure is NOT evidenced (P-026 / D-012). The plan STAYS in the worklist.
+   *
+   * ⚠ Do not widen this to fall through to `terminal`. That collapse IS the
+   * defect: 258 unarchived plans on this harness satisfy the administrative
+   * predicate while unshipped, 205 of them sitting in `awaiting-acceptance`.
+   */
+  | 'awaiting-closure'
   | 'terminal';
 
 export type GoalPlanPlacementRepairAction =
@@ -617,7 +630,9 @@ export type GoalPlanPlacementRepairAction =
   | 'restore-spawned-leader'
   | 'reconcile-plan-lane-holder'
   | 'resolve-plan-identity'
-  | 'resolve-plan-blockers';
+  | 'resolve-plan-blockers'
+  /** Drive the plan to evidenced closure; never a fleet launch — no execution is owed. */
+  | 'close-plan';
 
 export interface GoalPlanPlacementToolCall {
   tool: 'fleet:launch-on-plan';
@@ -665,6 +680,20 @@ export interface GoalPlanPlacement {
     reason: string;
     toolCall: GoalPlanPlacementToolCall | null;
   };
+  /**
+   * P-026 / D-012: the closure reading, when one was resolved for this plan.
+   *
+   * `null` means closure was NOT resolved — which happens for every plan that is
+   * not administratively complete, where the question does not yet arise. It is
+   * NEVER a way to read "closed".
+   */
+  closure: {
+    state: PlanClosureState;
+    evidenceSatisfied: boolean;
+    /** True when the ONLY outstanding leg is the holder's measured report. */
+    reportOutstandingOnly: boolean;
+    reason: string;
+  } | null;
 }
 
 /**
@@ -779,6 +808,14 @@ export function compileGoalPlanPlacement(args: {
   actionableItemId: string | null;
   source: unknown;
   now?: Date;
+  /**
+   * P-026 / D-012. Administrative completion alone no longer makes a plan
+   * terminal; `closure.evidenceSatisfied` does. OMITTING this is NOT a way to
+   * get the old behaviour back: an administratively complete plan with no
+   * closure reading is `awaiting-closure`, because "we never looked" and "it
+   * closed" are the two readings this item exists to keep apart.
+   */
+  closure?: Pick<PlanClosureVerdict, 'state' | 'evidenceSatisfied' | 'reason' | 'legs'> | null;
 }): GoalPlanPlacement {
   const source = portfolioObject(args.source) ?? {};
   const nowMs = (args.now ?? new Date()).getTime();
@@ -831,11 +868,18 @@ export function compileGoalPlanPlacement(args: {
 
   const normalizedStatus = args.status?.trim().toLowerCase() ?? '';
   const normalizedItems = args.itemStatuses.map((status) => status.trim().toLowerCase());
-  const terminal =
+  // What the ADMINISTRATIVE records say. Historically this was the whole of
+  // terminality; P-026 demotes it to one input, because none of these three
+  // clauses observes whether the delegated execution produced any evidence.
+  const administrativelyComplete =
     normalizedStatus === 'done' ||
     normalizedStatus === 'shipped' ||
     normalizedStatus === 'superseded' ||
     (normalizedItems.length > 0 && normalizedItems.every((status) => status === 'done' || status === 'dropped'));
+  // A plan leaves the worklist only when its closure EVIDENCE legs are satisfied
+  // — terminal evidence, read-back verification and an independent regrade. An
+  // absent closure reading is not evidence, so it does not terminate the plan.
+  const terminal = administrativelyComplete && args.closure?.evidenceSatisfied === true;
   // A draft plan may contain dependency-free todo items, but the plan start
   // oracle still refuses it until the owner approves the plan and supplies all
   // declared inputs. Treating that row as `unplaced` produced a launch action
@@ -844,7 +888,7 @@ export function compileGoalPlanPlacement(args: {
   // paused/unknown operational) plans are therefore blocked at the portfolio
   // compiler; only an approved/active plan may emit a fleet launch call.
   const planStartable = normalizedStatus === 'ready' || normalizedStatus === 'active' || normalizedStatus === 'started';
-  const blocked = !terminal && args.actionableItemId == null;
+  const blocked = !administrativelyComplete && args.actionableItemId == null;
   const planHarness = args.plan.harness?.trim() || null;
   const planSlug = args.plan.slug.trim();
   const planIdentityProblem =
@@ -880,6 +924,15 @@ export function compileGoalPlanPlacement(args: {
     state = 'terminal';
     action = 'none';
     reason = 'The plan is terminal; no placement repair is required.';
+  } else if (administrativelyComplete) {
+    // The plan claims to be finished and its closure is not evidenced. Keep it
+    // in the worklist and name the repair — but never `launch-plan-fleet`: the
+    // execution already happened, what is missing is evidence of its closure.
+    state = 'awaiting-closure';
+    action = 'close-plan';
+    reason = args.closure
+      ? `The plan is administratively complete but closure is ${args.closure.state}: ${args.closure.reason}`
+      : 'The plan is administratively complete but no closure evidence was read; placement is not progress until it is.';
   } else if (planIdentityProblem) {
     state = 'blocked';
     action = 'resolve-plan-identity';
@@ -931,6 +984,17 @@ export function compileGoalPlanPlacement(args: {
     fleet,
     activeLane,
     launchTransaction,
+    closure: args.closure
+      ? {
+          state: args.closure.state,
+          evidenceSatisfied: args.closure.evidenceSatisfied,
+          // "Only the report is missing" is the one gap a fleet launch cannot
+          // repair, so the obligation needs it apart from every other gap.
+          reportOutstandingOnly:
+            args.closure.evidenceSatisfied && args.closure.legs.measuredReport !== 'pass',
+          reason: args.closure.reason,
+        }
+      : null,
     reconciliation: {
       consistent: action === 'none',
       action,
@@ -946,7 +1010,17 @@ export function compileGoalPlanPlacement(args: {
   };
 }
 
-function parsePortfolioWorklist(raw: unknown, now: Date): GoalPortfolioBrief['worklist'] {
+function parsePortfolioWorklist(
+  raw: unknown,
+  now: Date,
+  /**
+   * Closure verdicts by plan SLUG, for the second pass. Absent on the first pass
+   * by design: the parser cannot know which plans are administratively complete
+   * until it has compiled them, and resolving closure for a plan that still has
+   * open work would pay for the acceptance gate to tell us nothing.
+   */
+  closures?: ReadonlyMap<string, PlanClosureVerdict>,
+): GoalPortfolioBrief['worklist'] {
   return portfolioArray(raw).flatMap((value) => {
     const row = portfolioObject(value);
     const ref = portfolioString(row?.ref);
@@ -1003,6 +1077,7 @@ function parsePortfolioWorklist(raw: unknown, now: Date): GoalPortfolioBrief['wo
           actionableItemId: laneRow ? (portfolioString(laneRow.id) ?? 'unknown') : null,
           source: row.placement,
           now,
+          closure: closures?.get(slug) ?? null,
         }),
       },
     ];
@@ -1065,6 +1140,49 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
  * supplied by resolveGoalLaunchForGoal so a holder launch does not re-read it;
  * coord:orient omits it and pays the same canonical read here.
  */
+/**
+ * Resolve closure for the plans that CLAIM to be finished (P-026 / D-012).
+ *
+ * The acceptance gate is dynamically imported so the portfolio read — which runs
+ * on every GOAL `coord:orient` — does not pull it in for the common case where
+ * no worklist plan is administratively complete.
+ *
+ * ⚠ A gate that THROWS yields an `unreadable` closure, never an absent one. The
+ * difference decides the plan's placement: an unreadable closure keeps it at
+ * `awaiting-closure`, whereas dropping the entry would hand `compileGoalPlanPlacement`
+ * a `null` that reads the same as "never looked" — which is the same verdict, but
+ * arrived at without recording that a measurement was attempted and failed.
+ */
+async function resolveWorklistClosures(
+  slugs: readonly string[],
+  degradedReasons: string[],
+): Promise<Map<string, PlanClosureVerdict>> {
+  const closures = new Map<string, PlanClosureVerdict>();
+  if (slugs.length === 0) return closures;
+
+  const [{ evaluatePlanAcceptanceGate }, { resolvePlanClosure }] = await Promise.all([
+    import('./plan-acceptance-gate'),
+    import('./goals/plan-closure'),
+  ]);
+
+  await Promise.all(
+    slugs.map(async (planSlug) => {
+      try {
+        const gate = await evaluatePlanAcceptanceGate(planSlug);
+        closures.set(planSlug, resolvePlanClosure({ planSlug, status: 'read', gate }));
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        degradedReasons.push(`closure read failed for ${planSlug}: ${detail}`);
+        closures.set(
+          planSlug,
+          resolvePlanClosure({ planSlug, status: 'unreadable', failure: { code: 'gate-unreadable', detail } }),
+        );
+      }
+    }),
+  );
+  return closures;
+}
+
 export async function readGoalPortfolioBrief(args: {
   workspaceId: string;
   goalId: string;
@@ -1334,7 +1452,17 @@ export async function readGoalPortfolioBrief(args: {
     }
 
     const assembledAt = args.now ?? new Date();
-    const worklist = parsePortfolioWorklist(row.plans, assembledAt);
+    // TWO PASSES (P-026 / D-012). The first compiles placement with no closure
+    // evidence, which parks every administratively-complete plan at
+    // `awaiting-closure`. The second resolves closure for exactly those plans —
+    // the at-risk set, and nothing else — and recompiles. Cost is therefore
+    // proportional to plans that CLAIM to be finished, not to the worklist.
+    const firstPass = parsePortfolioWorklist(row.plans, assembledAt);
+    const closures = await resolveWorklistClosures(
+      firstPass.filter((plan) => plan.placement.state === 'awaiting-closure').map((plan) => plan.slug),
+      degradedReasons,
+    );
+    const worklist = closures.size > 0 ? parsePortfolioWorklist(row.plans, assembledAt, closures) : firstPass;
     for (const plan of worklist) {
       if (!plan.title) degradedReasons.push(`worklist ref ${plan.ref} does not resolve`);
       if (plan.ambiguousMatches > 1 && !plan.ref.slice('plan:'.length).includes('/')) {

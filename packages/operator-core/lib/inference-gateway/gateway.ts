@@ -135,6 +135,7 @@ import {
 import {
   aggregateCodexNonStreamResponse,
   buildCodexUpstreamHeaders,
+  CODEX_CHATGPT_BACKEND_BASE,
   codexBackendUrl,
   CodexNonStreamAggregateError,
   makeCodexNonStreamUpstreamBody,
@@ -546,6 +547,14 @@ const DEFAULT_CODEX_OAUTH_NONSTREAM_MAX_BYTES =
   Number(process.env.PAPERCUSP_GATEWAY_CODEX_OAUTH_NONSTREAM_MAX_BYTES) || 16 * 1024 * 1024;
 const DEFAULT_CODEX_OAUTH_NONSTREAM_TIMEOUT_MS =
   Number(process.env.PAPERCUSP_GATEWAY_CODEX_OAUTH_NONSTREAM_TIMEOUT_MS) || undefined;
+/** Account-scoped model discovery is metadata, but it still crosses the same OAuth + egress
+ * boundary as inference. Keep it short, cache it, and never let a catalog outage block Codex
+ * startup. The stale value remains a last-known-good fallback after TTL expiry. */
+const DEFAULT_CODEX_MODELS_CATALOG_TTL_MS =
+  Number(process.env.PAPERCUSP_GATEWAY_CODEX_MODELS_TTL_MS) || 5 * 60 * 1000;
+const DEFAULT_CODEX_MODELS_CATALOG_TIMEOUT_MS =
+  Number(process.env.PAPERCUSP_GATEWAY_CODEX_MODELS_TIMEOUT_MS) || 5_000;
+const CODEX_MODELS_CATALOG_MAX_BYTES = 2 * 1024 * 1024;
 
 /**
  * The OAuth adapter receives live SSE while deliberately withholding downstream
@@ -972,6 +981,11 @@ export interface GatewayDeps {
   /** Read a configured CLI account's native models cache. The default reads
    *  `<CODEX_HOME>/models_cache.json`; injected in tests to keep fixtures local. */
   codexModelsCacheRead?: (home: string) => unknown;
+  /** Fresh account-catalog cache lifetime. Zero disables freshness reuse while retaining
+   *  in-flight coalescing + the last-known-good failure fallback (test seam). */
+  codexModelsCatalogTtlMs?: number;
+  /** Whole OAuth-refresh + account-catalog lookup deadline (test seam). */
+  codexModelsCatalogTimeoutMs?: number;
   /** codex-gateway-oauth-proxy-2026-07-04 (WI-2198): when true, a codex-cli account serves a
    *  STREAMING /v1/responses by OAuth-reverse-proxying to the ChatGPT backend (codex-oauth-proxy.ts)
    *  instead of the one-shot exec bridge. Flag-resolved at the launch layer; default false. */
@@ -2149,6 +2163,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const codexCliRun = deps.codexCliRun ?? runCodexCliCompletion;
   const codexModelsCacheRead =
     deps.codexModelsCacheRead ?? ((home: string) => readFileSync(join(home, 'models_cache.json'), 'utf8'));
+  const codexModelsCatalogTtlMs = Math.max(
+    0,
+    Math.floor(deps.codexModelsCatalogTtlMs ?? DEFAULT_CODEX_MODELS_CATALOG_TTL_MS),
+  );
+  const codexModelsCatalogTimeoutMs = Math.max(
+    1,
+    Math.floor(deps.codexModelsCatalogTimeoutMs ?? DEFAULT_CODEX_MODELS_CATALOG_TIMEOUT_MS),
+  );
   const accountPoolSize = (accountPool?: AccountPool): number => {
     const size = accountPool?.size?.();
     if (typeof size === 'number' && Number.isFinite(size)) return Math.max(0, Math.floor(size));
@@ -4332,7 +4354,142 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
   }
 
-  function codexModelsResponse(cliHome?: string) {
+  type CodexModelsCatalog = { models: unknown[]; [key: string]: unknown };
+  type CachedCodexModelsCatalog = {
+    catalog: CodexModelsCatalog;
+    clientVersion: string | null;
+    freshUntil: number;
+  };
+  const codexModelsCatalogCache = new Map<string, CachedCodexModelsCatalog>();
+  const codexModelsCatalogInFlight = new Map<string, Promise<CodexModelsCatalog | null>>();
+
+  const parsedCodexModelsCatalog = (value: unknown): CodexModelsCatalog | null => {
+    let parsed = value;
+    if (typeof parsed === 'string' || Buffer.isBuffer(parsed)) {
+      try {
+        parsed = JSON.parse(String(parsed));
+      } catch {
+        return null;
+      }
+    }
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') return null;
+    const models = (parsed as Record<string, unknown>).models;
+    if (!Array.isArray(models)) return null;
+    const usable = models.filter(
+      (row) =>
+        row !== null &&
+        !Array.isArray(row) &&
+        typeof row === 'object' &&
+        typeof (row as Record<string, unknown>).slug === 'string' &&
+        ((row as Record<string, unknown>).slug as string).trim() !== '',
+    );
+    if (usable.length === 0) return null;
+    return { ...(parsed as Record<string, unknown>), models: usable } as CodexModelsCatalog;
+  };
+
+  const codexModelsClientVersion = (url: string): string | null => {
+    try {
+      const value = new URL(url, 'http://127.0.0.1').searchParams.get('client_version')?.trim();
+      return value || null;
+    } catch {
+      return null;
+    }
+  };
+
+  /** Fetch the selected subscription account's NATIVE catalog. The old implementation only
+   *  overlaid `<home>/models_cache.json`; pool homes are seldom launched directly, so their
+   *  caches can remain months stale and silently hide every newly released model. This lookup
+   *  uses the same account OAuth, refresh, and egress seams as Responses traffic. A failure
+   *  returns the stale last-known-good (if any), then the caller merges disk/static fallback. */
+  async function liveCodexModelsCatalog(cli: CodexCliAccount, url: string): Promise<CodexModelsCatalog | null> {
+    const clientVersion = codexModelsClientVersion(url);
+    const cached = codexModelsCatalogCache.get(cli.accountId);
+    if (cached && cached.clientVersion === clientVersion && cached.freshUntil > Date.now()) {
+      return cached.catalog;
+    }
+    const existing = codexModelsCatalogInFlight.get(cli.accountId);
+    if (existing) return existing;
+
+    const task = (async (): Promise<CodexModelsCatalog | null> => {
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort(new Error(`codex models catalog timed out after ${codexModelsCatalogTimeoutMs}ms`)),
+        codexModelsCatalogTimeoutMs,
+      );
+      timer.unref?.();
+      try {
+        // CodexCliAccount intentionally carries no token() method; dispatcherFor/pickEgress need only
+        // the common account-id/egress fields, so adapt it to the shared routing shape without copying
+        // credential material into the account object.
+        const routingAccount: ActiveAccount = {
+          accountId: cli.accountId,
+          token: async () => '',
+          egress: cli.egress,
+          egressPool: cli.egressPool,
+        };
+        const egress = pickEgress(routingAccount, Date.now());
+        const dispatcher = await dispatcherFor(routingAccount, egress.entry);
+        const fetchViaDispatcher = ((target: Parameters<typeof fetch>[0], init?: RequestInit) => {
+          const fetchInit: FetchInit = { ...init, signal: init?.signal ?? controller.signal };
+          if (dispatcher) fetchInit.dispatcher = dispatcher;
+          return doFetch(target, fetchInit);
+        }) as typeof fetch;
+
+        let auth = await resolveCodexAccessToken(cli.home, { fetchImpl: fetchViaDispatcher });
+        const upstreamUrl = new URL(`${CODEX_CHATGPT_BACKEND_BASE.replace(/\/$/, '')}/models`);
+        if (clientVersion) upstreamUrl.searchParams.set('client_version', clientVersion);
+
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const baseHeaders: Record<string, string> = { accept: 'application/json' };
+          if (clientVersion) baseHeaders['user-agent'] = `codex_cli_rs/${clientVersion}`;
+          const response = await fetchViaDispatcher(upstreamUrl, {
+            method: 'GET',
+            signal: controller.signal,
+            headers: buildCodexUpstreamHeaders({
+              base: baseHeaders,
+              accessToken: auth.accessToken,
+              accountId: auth.accountId,
+            }),
+          });
+          if (response.status === 401 && attempt === 0) {
+            await response.body?.cancel().catch(() => undefined);
+            auth = await refreshCodexToken(cli.home, auth, { fetchImpl: fetchViaDispatcher });
+            continue;
+          }
+          if (!response.ok) throw new Error(`upstream returned HTTP ${response.status}`);
+          const text = await response.text();
+          if (Buffer.byteLength(text, 'utf8') > CODEX_MODELS_CATALOG_MAX_BYTES) {
+            throw new Error(`upstream catalog exceeded ${CODEX_MODELS_CATALOG_MAX_BYTES} bytes`);
+          }
+          const catalog = parsedCodexModelsCatalog(text);
+          if (!catalog) throw new Error('upstream returned an invalid or empty catalog');
+          codexModelsCatalogCache.set(cli.accountId, {
+            catalog,
+            clientVersion,
+            freshUntil: Date.now() + codexModelsCatalogTtlMs,
+          });
+          return catalog;
+        }
+        throw new Error('upstream authentication retry was exhausted');
+      } catch (error) {
+        log(
+          'warn',
+          `inference-gateway: live Codex model catalog unavailable for '${cli.accountId}' — using last-known-good/local/static fallback (${(error as Error).message})`,
+        );
+        return cached?.catalog ?? null;
+      } finally {
+        clearTimeout(timer);
+      }
+    })().finally(() => {
+      if (codexModelsCatalogInFlight.get(cli.accountId) === task) {
+        codexModelsCatalogInFlight.delete(cli.accountId);
+      }
+    });
+    codexModelsCatalogInFlight.set(cli.accountId, task);
+    return task;
+  }
+
+  function codexModelsResponse(cliHome?: string, liveCatalog?: CodexModelsCatalog | null) {
     const reasoningDescriptions = {
       low: 'Fast responses with lighter reasoning',
       medium: 'Balances speed and reasoning depth for everyday tasks',
@@ -4422,6 +4579,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
         ultraReasoningLevels,
       ),
       model(
+        'gpt-6-sol',
+        'GPT-6-Sol',
+        'GPT-6 Sol Codex model.',
+        15,
+        272_000,
+        872_000,
+        ultraReasoningLevels,
+      ),
+      model(
+        'gpt-6-luna',
+        'GPT-6-Luna',
+        'GPT-6 Luna Codex model.',
+        14,
+        272_000,
+        872_000,
+        maxReasoningLevels,
+      ),
+      model(
         'gpt-5.6-terra',
         'GPT-5.6-Terra',
         'Balanced agentic coding model for everyday work.',
@@ -4459,15 +4634,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
             ];
           })
         : [];
-    const nativeModels = (() => {
-      if (!cliHome) return [] as CodexModel[];
-      try {
-        const raw = codexModelsCacheRead(cliHome);
-        const parsed = typeof raw === 'string' || Buffer.isBuffer(raw) ? JSON.parse(String(raw)) : raw;
-        if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') return [];
-        const rows = (parsed as Record<string, unknown>).models;
-        if (!Array.isArray(rows)) return [];
-        return rows.flatMap((row) => {
+    const modelsFromCatalog = (catalog: unknown): CodexModel[] => {
+      const parsed = parsedCodexModelsCatalog(catalog);
+      if (!parsed) return [];
+      return parsed.models.flatMap((row) => {
           if (!row || Array.isArray(row) || typeof row !== 'object') return [];
           const slug = (row as Record<string, unknown>).slug;
           if (typeof slug !== 'string' || slug.trim() === '') return [];
@@ -4477,11 +4647,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
           else delete normalized.supported_reasoning_levels;
           return [normalized];
         });
+    };
+    let localCatalog: unknown = null;
+    if (cliHome) {
+      try {
+        localCatalog = codexModelsCacheRead(cliHome);
       } catch {
-        return [] as CodexModel[];
+        /* live/static fallback below */
       }
-    })();
-    const nativeBySlug = new Map(nativeModels.map((entry) => [entry.slug, entry]));
+    }
+    const localModels = modelsFromCatalog(localCatalog);
+    const liveModels = modelsFromCatalog(liveCatalog);
     const mergeReasoningLevels = (native: unknown, fallback: unknown): ReasoningLevel[] => {
       const merged: ReasoningLevel[] = [];
       const seen = new Set<string>();
@@ -4492,20 +4668,30 @@ export function createInferenceGateway(deps: GatewayDeps) {
       }
       return merged;
     };
-    const models = fallbackModels.map((fallback) => {
-      const native = nativeBySlug.get(fallback.slug);
-      if (!native) return fallback;
-      nativeBySlug.delete(fallback.slug);
-      return {
-        ...fallback,
-        ...native,
-        supported_reasoning_levels: mergeReasoningLevels(
-          native.supported_reasoning_levels,
-          fallback.supported_reasoning_levels,
-        ),
-      };
-    });
-    models.push(...nativeBySlug.values());
+    const order = fallbackModels.map((entry) => entry.slug);
+    const modelsBySlug = new Map(fallbackModels.map((entry) => [entry.slug, entry]));
+    // Old pool-home cache first, then the freshly fetched account catalog. Later sources win
+    // metadata while retaining any reasoning level the safer fallback knew about.
+    for (const source of [localModels, liveModels]) {
+      for (const incoming of source) {
+        const prior = modelsBySlug.get(incoming.slug);
+        if (!prior) order.push(incoming.slug);
+        modelsBySlug.set(
+          incoming.slug,
+          prior
+            ? {
+                ...prior,
+                ...incoming,
+                supported_reasoning_levels: mergeReasoningLevels(
+                  incoming.supported_reasoning_levels,
+                  prior.supported_reasoning_levels,
+                ),
+              }
+            : incoming,
+        );
+      }
+    }
+    const models = order.map((slug) => modelsBySlug.get(slug)!).filter(Boolean);
     return {
       // Mirror of the ChatGPT backend's Codex model catalog so the Codex CLI
       // `/model` picker offers the full current lineup when routed THROUGH the
@@ -7882,7 +8068,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       codexRequests++;
       const routedAccount = cli ? cli.accountId : active.accountId;
       const pinYieldedFrom = cli ? cliInitialPinYieldedFrom : bearerInitialPinYieldedFrom;
-      sendJson(res, 200, codexModelsResponse(cli?.home), {
+      const liveCatalog = cli ? await liveCodexModelsCatalog(cli, url) : null;
+      sendJson(res, 200, codexModelsResponse(cli?.home, liveCatalog), {
         [ROUTED_ACCOUNT_HEADER]: routedAccount,
         ...(pinYieldedFrom ? { [PIN_YIELDED_HEADER]: `${pinYieldedFrom}->${routedAccount}` } : {}),
       });

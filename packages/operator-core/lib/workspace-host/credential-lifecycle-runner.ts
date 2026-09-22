@@ -21,6 +21,8 @@ import {
   workspaceHostInitializationStepFingerprint,
 } from '@papercusp/deployment-driver';
 import type {
+  WorkspaceHostBootstrapReadinessOptions,
+  WorkspaceHostBootstrapReadinessResult,
   WorkspaceHostCredentialEvidence,
   WorkspaceHostCredentialLifecyclePlan,
   WorkspaceHostCredentialLifecycleReceipt,
@@ -58,6 +60,18 @@ export interface WorkspaceHostCredentialLifecycleHostOperations {
   execute(
     step: WorkspaceHostCredentialLifecycleStep,
   ): Promise<WorkspaceHostInitializationHostOperationResult>;
+  /**
+   * OPTIONAL gate, run once before step 1 — the same contract as initialization's
+   * (WI-10001677). Absence means "no gate" for adapters that cannot probe their host.
+   *
+   * Lifecycle needs it too (WI-10002499): an `upgrade` recreates the boot disk, so the host
+   * re-runs its whole bootstrap and the conduits every step invokes are absent again until it
+   * finishes. A reconnect sent right after the upgrade landed inside harden-os and failed its
+   * first step with `Permission denied (publickey)`.
+   */
+  awaitBootstrapReady?(
+    options?: WorkspaceHostBootstrapReadinessOptions,
+  ): Promise<WorkspaceHostBootstrapReadinessResult>;
 }
 
 interface WorkspaceHostCredentialLifecycleRunBase {
@@ -74,6 +88,8 @@ interface WorkspaceHostCredentialLifecycleRunBase {
   deliveryCapabilities: WorkspaceHostDeliveryCapabilities;
   leaseOwner?: string;
   leaseTtlMs?: number;
+  /** Budget for `operations.awaitBootstrapReady`; omitted = the adapter's own default. */
+  bootstrapReadinessTimeoutMs?: number;
   onPlanned?: (plan: WorkspaceHostCredentialLifecyclePlan) => void;
   now?: () => Date;
 }
@@ -298,6 +314,41 @@ export async function runWorkspaceHostCredentialLifecycle(
   }
 
   try {
+    // Inside the failure boundary for the same reason as initialization: a readiness timeout
+    // must land as a durable failed operation carrying its own diagnosis, and it runs before
+    // step 1 so the failure names the bootstrap rather than whichever step happened to be first.
+    if (input.operations.awaitBootstrapReady) {
+      const readiness = await input.operations.awaitBootstrapReady({
+        ...(input.bootstrapReadinessTimeoutMs !== undefined
+          ? { timeoutMs: input.bootstrapReadinessTimeoutMs }
+          : {}),
+        onWaiting: async ({ elapsedMs, timeoutMs }) => {
+          await updateWorkspaceHostOperation({
+            workspaceId: input.workspaceId,
+            operationId,
+            status: 'running',
+            percent: 0,
+            message:
+              `Waiting for host bootstrap to finish before credential lifecycle '${plan.action}' ` +
+              `(${Math.round(elapsedMs / 1000)}s of ${Math.round(timeoutMs / 1000)}s)`,
+          });
+        },
+      });
+      if (!readiness.readyImmediately) {
+        await appendWorkspaceHostEvent({
+          workspaceId: input.workspaceId,
+          hostId: input.hostId,
+          operationId,
+          phase: `credential-lifecycle:${plan.action}:bootstrap-ready`,
+          status: 'running',
+          level: 'info',
+          source: 'controller',
+          message: `Host bootstrap became ready after ${Math.round(readiness.waitedMs / 1000)}s`,
+          details: { waitedMs: readiness.waitedMs, probes: readiness.probes },
+        });
+      }
+    }
+
     const receipts = await executeWorkspaceHostCredentialLifecycle(
       plan,
       new RemoteCredentialResolver(),

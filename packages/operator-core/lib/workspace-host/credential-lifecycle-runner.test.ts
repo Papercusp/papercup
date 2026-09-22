@@ -235,4 +235,97 @@ describe('runWorkspaceHostCredentialLifecycle', () => {
     expect(failed.message).not.toContain('secret-must-not-echo');
     expect(failed.percent).toBeLessThan(100);
   });
+
+  // WI-10002499: an upgrade recreates the boot disk, so the host re-runs its bootstrap and a
+  // reconnect sent right after raced it (`Permission denied (publickey)` inside harden-os).
+  describe('bootstrap-readiness gate', () => {
+    function gatedReconnect(
+      awaitBootstrapReady: (options?: {
+        timeoutMs?: number;
+        onWaiting?: (progress: { elapsedMs: number; timeoutMs: number; probes: number }) => unknown;
+      }) => Promise<{ waitedMs: number; probes: number; readyImmediately: boolean }>,
+    ) {
+      const current = credentials(1);
+      const order: string[] = [];
+      const recording = recordingOperations();
+      const operations = {
+        calls: recording.calls,
+        async execute(step: WorkspaceHostCredentialLifecycleStep) {
+          order.push(`execute:${step.id}`);
+          return recording.execute(step);
+        },
+        awaitBootstrapReady: vi.fn(async (options?: Parameters<typeof awaitBootstrapReady>[0]) => {
+          order.push('gate');
+          return awaitBootstrapReady(options);
+        }),
+      };
+      return {
+        order,
+        operations,
+        input: {
+          workspaceId: 'workspace-1', hostId: 'host-1', operationId: 'reconnect-gated',
+          requestedAt: REQUESTED_AT,
+          deliveryCapabilities: { fileTransfer: true },
+          action: 'reconnect' as const,
+          currentCredentialRefs: current.refs, currentDelivery: current.delivery,
+          bootstrapReadinessTimeoutMs: 600_000,
+          operations,
+        },
+      };
+    }
+
+    it('waits out an unfinished bootstrap before step 1 and records that it had to', async () => {
+      const { order, operations, input } = gatedReconnect(async (options) => {
+        await options?.onWaiting?.({ elapsedMs: 15_000, timeoutMs: options.timeoutMs ?? 0, probes: 1 });
+        return { waitedMs: 390_000, probes: 27, readyImmediately: false };
+      });
+
+      const result = await runWorkspaceHostCredentialLifecycle(input);
+
+      expect(operations.awaitBootstrapReady).toHaveBeenCalledTimes(1);
+      expect(operations.awaitBootstrapReady.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({ timeoutMs: 600_000 }),
+      );
+      expect(order[0]).toBe('gate');
+      expect(order.slice(1)).toEqual(result.plan.steps.map((step) => `execute:${step.id}`));
+      expect(h.update).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'running', percent: 0, message: expect.stringMatching(/Waiting for host bootstrap.*15s of 600s/),
+      }));
+      expect(h.event).toHaveBeenCalledWith(expect.objectContaining({
+        phase: 'credential-lifecycle:reconnect:bootstrap-ready',
+        details: { waitedMs: 390_000, probes: 27 },
+      }));
+      expect(h.update).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'succeeded', percent: 100 }));
+    });
+
+    it('adds no timeline line when the host was already ready (calibration)', async () => {
+      const { operations, input } = gatedReconnect(async () => ({
+        waitedMs: 0, probes: 1, readyImmediately: true,
+      }));
+      const result = await runWorkspaceHostCredentialLifecycle(input);
+      expect(operations.awaitBootstrapReady).toHaveBeenCalledTimes(1);
+      expect(operations.calls).toEqual(result.plan.steps.map((step) => step.id));
+      expect(h.event).not.toHaveBeenCalledWith(expect.objectContaining({
+        phase: expect.stringMatching(/bootstrap-ready$/),
+      }));
+    });
+
+    it('fails durably at 0% and runs no step when the bootstrap never becomes ready', async () => {
+      const notReady = new Error('bootstrap did not become ready');
+      const { operations, input } = gatedReconnect(async () => {
+        throw notReady;
+      });
+
+      await expect(runWorkspaceHostCredentialLifecycle(input)).rejects.toBe(notReady);
+
+      expect(operations.calls).toEqual([]);
+      expect(h.begin).toHaveBeenCalledTimes(1);
+      expect(h.update).toHaveBeenLastCalledWith(expect.objectContaining({
+        status: 'failed', percent: 0, message: expect.stringMatching(/after 0\/\d+ steps/),
+      }));
+      expect(h.event).toHaveBeenCalledWith(expect.objectContaining({
+        phase: 'credential-lifecycle:reconnect:failed',
+      }));
+    });
+  });
 });

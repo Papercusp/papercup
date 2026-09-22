@@ -304,6 +304,27 @@ describe('codex extended-window launch config', () => {
     });
   });
 
+  it.each(['gpt-6-sol', 'gpt-6-luna'])('%s uses the 1M fresh-home fallback and a registry max after discovery', (model) => {
+    const noRegistry = mkdtempSync(join(tmpdir(), `psu-codex-${model}-bare-`));
+    expect(codexContextWindowConfig(model, { home: noRegistry })).toMatchObject({
+      model,
+      window: 1_000_000,
+      autoCompactLimit: 900_000,
+      source: 'codex-official-1m-policy',
+    });
+    const sessionHome = mkdtempSync(join(tmpdir(), `psu-codex-${model}-session-`));
+    writeFileSync(
+      join(sessionHome, 'models_cache.json'),
+      JSON.stringify({ models: [{ slug: model, context_window: 272_000, max_context_window: 872_000 }] }),
+    );
+    expect(codexContextWindowConfig(model, { codexHome: sessionHome })).toMatchObject({
+      model,
+      window: 872_000,
+      autoCompactLimit: 784_800,
+      source: 'codex-model-cache-max',
+    });
+  });
+
   it('preserves registry-derived sub-1M extended-window behavior for unrecognised models', () => {
     const home = codexHome([
       { slug: 'gpt-registered-extended', context_window: 272_000, max_context_window: 400_000 },

@@ -244,6 +244,8 @@ function recordWindow(record) {
  * unrecognised extended-window models.
  */
 export const CODEX_EXTENDED_WINDOW_FALLBACK = Object.freeze({
+  'gpt-6-sol': 1_000_000,
+  'gpt-6-luna': 1_000_000,
   'gpt-5.6-sol': 1_000_000,
   'gpt-5.6-terra': 1_000_000,
   'gpt-5.6-luna': 1_000_000,
@@ -254,7 +256,7 @@ export const CODEX_EXTENDED_WINDOW_FALLBACK = Object.freeze({
   'gpt-6-astra': 1_000_000,
 });
 
-const CODEX_REGISTRY_FIRST_EXTENDED_IDS = new Set(['gpt-6-astra']);
+const CODEX_REGISTRY_FIRST_EXTENDED_IDS = new Set(['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna']);
 
 /** Ceiling on the window we will DECLARE to the Codex CLI (plan D-002). */
 export const CODEX_MAX_CONFIGURED_WINDOW = 1_000_000;

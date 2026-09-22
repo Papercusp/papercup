@@ -302,6 +302,8 @@ export function assertCodexModelAllowed(model: any): string;
  * unrecognised extended-window models.
  */
 export const CODEX_EXTENDED_WINDOW_FALLBACK: Readonly<{
+    'gpt-6-sol': 1000000;
+    'gpt-6-luna': 1000000;
     'gpt-5.6-sol': 1000000;
     'gpt-5.6-terra': 1000000;
     'gpt-5.6-luna': 1000000;

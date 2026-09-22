@@ -396,9 +396,13 @@ describe("cc PostToolUse activity-report hook — hook_bundle fold (stub operato
         additionalContext: "[coord+1] peer: hi",
       },
     });
+    // No glance is cached yet, so the client asks for the GLANCE leg — not a
+    // full resync. Pre-split this read `force_resync: true`, which is exactly
+    // the coupling WI-10002436 (compromise B) removed: an absent DISPLAY cache
+    // is not evidence that the delivery leg needs re-hydrating.
     expect(lastRequest?.body.params.arguments.hook_bundle).toEqual({
       generation: "host-a:1",
-      force_resync: true,
+      glance_stale: true,
     });
     const cur = cursorFor(sid);
     expect(cur).toEqual({ generation: "host-a:2" });
@@ -468,7 +472,7 @@ describe("cc PostToolUse activity-report hook — hook_bundle fold (stub operato
     });
   });
 
-  it("a >15s glance cache forces one complete resync and atomically replaces the snapshot", async () => {
+  it("an aged-out glance cache asks for the GLANCE leg only, and atomically replaces the snapshot", async () => {
     const sid = "sid-stale-glance";
     const oldGlance = { display: { title: "old title", notice: null } };
     const newGlance = { display: { title: "new title", notice: null } };
@@ -498,10 +502,16 @@ describe("cc PostToolUse activity-report hook — hook_bundle fold (stub operato
     };
     const r = await run(sid);
     expect(r.status).toBe(0);
+    // THE LEG SPLIT, asserted at the wire: a stale DISPLAY cache sends
+    // `glance_stale`, never `force_resync`. The distinction is the whole point —
+    // `force_resync` is the server's replace-everything contract and would drag
+    // the delivery leg through a hydration this client never needed
+    // (WI-10002436, compromise B; measured 61% of folds pre-split).
     expect(lastRequest?.body.params.arguments.hook_bundle).toEqual({
       generation: "host-a:2",
-      force_resync: true,
+      glance_stale: true,
     });
+    expect(lastRequest?.body.params.arguments.hook_bundle.force_resync).toBeUndefined();
     expect(cursorFor(sid)).toEqual({
       generation: "host-a:3",
       glance: newGlance,

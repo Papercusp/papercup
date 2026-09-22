@@ -169,6 +169,7 @@ const turnStartMemory = defineTool({
             preparePendingControlTransition,
             markControlTransitionPrepared,
             failControlTransitionActivation,
+            convergeActivationToLaunchRecord,
             acknowledgeControlTransition,
             renderControlTransitionContext,
           } = await import(
@@ -218,6 +219,17 @@ const turnStartMemory = defineTool({
               activationRevision,
               'stack transition render failed',
             ).catch(() => undefined);
+            // EI-23886889674609842: the failure record keeps the old `applied`, but a
+            // session already relaunched on `desired` is denied every tool while it
+            // does. Converge the authority receipt ONLY (never the delivery
+            // watermark) when the gate-selected launch record proves `desired` is
+            // what runs; the stack block stays pending for the next turn.
+            await convergeActivationToLaunchRecord(
+              owner,
+              workspaceId,
+              transition.generation,
+              activationRevision,
+            ).catch(() => false);
           }
           // WI-10002021: `requiresFreshContext` means "a successor host must carry this
           // before it is acknowledged" — a WAIT, not a permanent veto. But nothing ends

@@ -415,3 +415,172 @@ describe('coord-fold census — instrument before changing the gate', () => {
     );
   });
 });
+
+/**
+ * WI-10002436 compromise B — the glance leg is gated SEPARATELY from the inbox leg.
+ *
+ * This is a DELIVERY-REGRESSION guard before it is a ratio guard, per D-001 of
+ * observation-and-recall-surface-honesty-2026-08-16: this fold runs synchronously
+ * for every agent on every tool call, and getting it wrong does not fail loudly —
+ * it silently stops delivering coordination. So the assertions below are weighted
+ * toward "the inbox leg is untouched", not toward "fewer calls happened".
+ */
+describe('activity hook bundle — glance/inbox leg split', () => {
+  /**
+   * The property under test, stated once so the control below can be checked
+   * against the SAME predicate the real subject is.
+   *
+   * A glance-staleness signal is a statement about a DISPLAY CACHE. It may cost
+   * a glance hydration and nothing else — above all it must never advance the
+   * delivery cursor, which would mark mail as received that was never assembled.
+   */
+  function violatesDeliveryIsolation(observed: {
+    inboxHydrated: boolean;
+    deliveryCursorStaged: boolean;
+  }): boolean {
+    return observed.inboxHydrated || observed.deliveryCursorStaged;
+  }
+
+  it('THE GUARD: glance staleness alone never hydrates inbox and never advances the delivery cursor', async () => {
+    const d = deps();
+    const result = await buildActivityHookBundle(
+      'su-abc',
+      // Same generation the server holds => the inbox gate is SHUT. Only the
+      // display cache is stale.
+      { generation: 'host-a:42', glance_stale: true },
+      {} as never,
+      d.value,
+    );
+
+    expect(result).toMatchObject({ changed: false, complete: true });
+    expect(result.surfaces?.glance).toBeDefined();
+    expect(result.surfaces?.inbox).toBeUndefined();
+
+    expect(d.glance).toHaveBeenCalledTimes(1);
+    expect(d.inbox).not.toHaveBeenCalled();
+    expect(d.stageInboxCursor).not.toHaveBeenCalled();
+    expect(d.readWatermark).not.toHaveBeenCalled();
+
+    expect(
+      violatesDeliveryIsolation({
+        inboxHydrated: d.inbox.mock.calls.length > 0,
+        deliveryCursorStaged: d.stageInboxCursor.mock.calls.length > 0,
+      }),
+    ).toBe(false);
+  });
+
+  /**
+   * THE PERMANENT CONTROL (repo rule: prove falsifiability with a deliberately
+   * wrong implementation kept in the test file, never by mutating the shared
+   * tree).
+   *
+   * This is the PRE-SPLIT behaviour: glance staleness escalated to a full
+   * resync, so the inbox leg hydrated and the delivery cursor advanced. The
+   * predicate above MUST reject it. If this ever passes, the guard has stopped
+   * discriminating and the test above is vacuous.
+   */
+  it('CONTROL: the pre-split coupled behaviour FAILS the same predicate the real fold passes', () => {
+    const coupledLegsFold = { inboxHydrated: true, deliveryCursorStaged: true };
+    expect(violatesDeliveryIsolation(coupledLegsFold)).toBe(true);
+
+    // Calibration: the predicate is not simply always-true. A leg-split fold
+    // that hydrated ONLY glance must read as clean, or the control above would
+    // pass even with the property itself broken.
+    expect(violatesDeliveryIsolation({ inboxHydrated: false, deliveryCursorStaged: false })).toBe(false);
+  });
+
+  it('a real inbox delta still hydrates BOTH legs — glance_stale never shadows undelivered mail', async () => {
+    const d = deps('host-a:43');
+    const result = await buildActivityHookBundle(
+      'su-abc',
+      // The generation genuinely moved AND the display cache is stale. The inbox
+      // gate wins: this must behave exactly as it did before the split.
+      { generation: 'host-a:42', glance_stale: true },
+      {} as never,
+      d.value,
+    );
+
+    expect(result).toMatchObject({ changed: true, complete: true });
+    expect(result.surfaces?.inbox).toBeDefined();
+    expect(result.surfaces?.glance).toBeDefined();
+    expect(d.inbox).toHaveBeenCalledTimes(1);
+    expect(d.stageInboxCursor).toHaveBeenCalledTimes(1);
+  });
+
+  it('BACK-COMPAT: force_resync still means replace-everything, so an older hook is unaffected', async () => {
+    const d = deps();
+    const result = await buildActivityHookBundle(
+      'su-abc',
+      { generation: 'host-a:42', force_resync: true },
+      {} as never,
+      d.value,
+    );
+
+    expect(result).toMatchObject({ changed: true, complete: true });
+    expect(d.inbox).toHaveBeenCalledTimes(1);
+    expect(d.glance).toHaveBeenCalledTimes(1);
+  });
+
+  it('THE SAVING: N stale-display heartbeats cost N glance reads and ZERO inbox hydrations', async () => {
+    const d = deps();
+    for (let i = 0; i < 12; i += 1) {
+      const fold = await buildActivityHookBundle(
+        'su-abc',
+        { generation: 'host-a:42', glance_stale: true },
+        {} as never,
+        d.value,
+      );
+      expect(fold.changed).toBe(false);
+    }
+    expect(d.glance).toHaveBeenCalledTimes(12);
+    // Pre-split this was 12 full hydrations: the measured 61% force-resync bucket.
+    expect(d.inbox).not.toHaveBeenCalled();
+    expect(d.stageInboxCursor).not.toHaveBeenCalled();
+  });
+
+  it('a FAILED glance on a glance-only fold reports incomplete, so the client retries instead of banking it', async () => {
+    const d = deps();
+    d.glance.mockRejectedValueOnce(new Error('glance unavailable'));
+    const result = await buildActivityHookBundle(
+      'su-abc',
+      { generation: 'host-a:42', glance_stale: true },
+      {} as never,
+      d.value,
+    );
+
+    expect(result).toMatchObject({ changed: false, complete: false });
+    expect(result.surfaces).toBeUndefined();
+    // Still no delivery-side effect from a display-side failure.
+    expect(d.stageInboxCursor).not.toHaveBeenCalled();
+  });
+
+  it('censuses a glance-only fold as glance-only, not as a quiet fold that mysteriously hydrated', async () => {
+    const d = deps();
+    const observe = vi.fn();
+    await buildActivityHookBundle(
+      'su-abc',
+      { generation: 'host-a:42', glance_stale: true },
+      {} as never,
+      { ...d.value, observe },
+    );
+
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(observe.mock.calls[0]?.[0]).toMatchObject({
+      changed: false,
+      reason: 'glance-only',
+      glanceHydrated: true,
+      // The leg did not run, so it cannot report a count or an advance.
+      inboxAdvanced: false,
+      inboxTotal: null,
+    });
+  });
+
+  it('an absent glance_stale keeps the quiet path exactly as it was', async () => {
+    const d = deps();
+    const result = await buildActivityHookBundle('su-abc', { generation: 'host-a:42' }, {} as never, d.value);
+    expect(result).toMatchObject({ changed: false, complete: true });
+    expect(result.surfaces).toBeUndefined();
+    expect(d.glance).not.toHaveBeenCalled();
+    expect(d.inbox).not.toHaveBeenCalled();
+  });
+});

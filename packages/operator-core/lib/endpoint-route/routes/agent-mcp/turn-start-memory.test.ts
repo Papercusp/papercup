@@ -24,6 +24,7 @@ const {
   preparePendingControlTransitionMock,
   markControlTransitionPreparedMock,
   failControlTransitionActivationMock,
+  convergeActivationToLaunchRecordMock,
   acknowledgeControlTransitionMock,
   renderStackTransitionContextResultMock,
   detectHarnessSlugSyncMock,
@@ -38,6 +39,7 @@ const {
   preparePendingControlTransitionMock: vi.fn(),
   markControlTransitionPreparedMock: vi.fn(),
   failControlTransitionActivationMock: vi.fn(),
+  convergeActivationToLaunchRecordMock: vi.fn(),
   acknowledgeControlTransitionMock: vi.fn(),
   renderStackTransitionContextResultMock: vi.fn(),
   detectHarnessSlugSyncMock: vi.fn(),
@@ -60,6 +62,7 @@ vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
   preparePendingControlTransition: preparePendingControlTransitionMock,
   markControlTransitionPrepared: markControlTransitionPreparedMock,
   failControlTransitionActivation: failControlTransitionActivationMock,
+  convergeActivationToLaunchRecord: convergeActivationToLaunchRecordMock,
   acknowledgeControlTransition: acknowledgeControlTransitionMock,
   renderControlTransitionContext: (t: unknown) => `CTRL:${String((t as { kind?: string }).kind)}`,
 }));
@@ -113,6 +116,7 @@ beforeEach(() => {
   preparePendingControlTransitionMock.mockReset().mockResolvedValue(null);
   markControlTransitionPreparedMock.mockReset().mockResolvedValue(true);
   failControlTransitionActivationMock.mockReset().mockResolvedValue(true);
+  convergeActivationToLaunchRecordMock.mockReset().mockResolvedValue(false);
   acknowledgeControlTransitionMock.mockReset().mockResolvedValue(true);
   renderStackTransitionContextResultMock.mockReset().mockResolvedValue({ text: '', rendered: true });
   detectHarnessSlugSyncMock.mockReset().mockReturnValue({ slug: null, source: null });

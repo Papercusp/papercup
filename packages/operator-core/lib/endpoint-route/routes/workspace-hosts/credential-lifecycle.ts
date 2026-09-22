@@ -15,10 +15,23 @@ import {
 import { createOperatorWorkspaceHostCredentialMaterialSource } from '../../../workspace-host/credential-material-source';
 import {
   runWorkspaceHostCredentialLifecycle,
+  type WorkspaceHostCredentialLifecycleHostOperations,
   type WorkspaceHostCredentialLifecycleRunInput,
 } from '../../../workspace-host/credential-lifecycle-runner';
+import { GcpIapWorkspaceHostBootstrapNotReadyError } from '../../../workspace-host/gcp-iap-initialization-operations';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;
+
+/**
+ * How long this SYNCHRONOUS route holds the request open for the host's bootstrap (WI-10002499).
+ * Sized from the measured post-upgrade recreate: create 21:59:00Z -> startup-script exit 0 at
+ * 22:05:31Z (~6.5 min) on host-pc-p318-canary-20260922-r39. Deliberately below the adapter's
+ * 20-minute initialization default: initialization is a durable 202 enqueue, this route is not,
+ * and a stuck host should come back as a typed refusal the caller can retry rather than a
+ * request held for twenty minutes.
+ */
+export const CREDENTIAL_LIFECYCLE_BOOTSTRAP_READINESS_TIMEOUT_MS = 10 * 60_000;
+const BOOTSTRAP_NOT_READY_RETRY_AFTER_SEC = 60;
 
 interface LifecycleBody extends Record<string, unknown> {
   action?: unknown;
@@ -160,7 +173,7 @@ export function createWorkspaceHostCredentialLifecycleRoute(
         throw error;
       }
 
-      const operations = {
+      const operations: WorkspaceHostCredentialLifecycleHostOperations = {
         async execute(step: WorkspaceHostCredentialLifecycleStep) {
           // Keep the planner shape intact until the concrete transport boundary. The GCP IAP
           // adapter owns lifecycle-on-initializer wire encoding; encoding here as well would make
@@ -169,15 +182,23 @@ export function createWorkspaceHostCredentialLifecycleRoute(
             step as unknown as WorkspaceHostInitializationStep,
           );
         },
+        // Forwarded explicitly: this wrapper used to expose `execute` alone, which satisfied the
+        // type (the gate is optional) while silently dropping it — the same dead-gate shape
+        // gcp-iap-credential-delivery.ts documents for initialization (WI-10002499).
+        ...(hostOperations.awaitBootstrapReady
+          ? { awaitBootstrapReady: hostOperations.awaitBootstrapReady.bind(hostOperations) }
+          : {}),
       };
       const common = {
         workspaceId,
         hostId,
         operations,
         deliveryCapabilities,
+        bootstrapReadinessTimeoutMs: CREDENTIAL_LIFECYCLE_BOOTSTRAP_READINESS_TIMEOUT_MS,
         ...(typeof body.operationId === 'string' ? { operationId: body.operationId } : {}),
       };
       let planned = false;
+      let operationId: string | undefined;
 
       try {
         let input: WorkspaceHostCredentialLifecycleRunInput;
@@ -219,8 +240,9 @@ export function createWorkspaceHostCredentialLifecycleRoute(
             };
             break;
         }
-        input.onPlanned = () => {
+        input.onPlanned = (plan) => {
           planned = true;
+          operationId = plan.operationId;
         };
         const result = await dependencies.runLifecycle(input);
         return Response.json({
@@ -244,8 +266,35 @@ export function createWorkspaceHostCredentialLifecycleRoute(
             { status: 422 },
           );
         }
+        if (error instanceof GcpIapWorkspaceHostBootstrapNotReadyError) {
+          // `answered` separates a host that kept saying "conduit not there yet" (bootstrap
+          // unfinished: retryable, 503) from one that never gave a clean answer at all
+          // (transport / OS Login / IAP: an upstream failure, 502, and waiting will not fix it).
+          const unfinished = error.answered;
+          return Response.json(
+            {
+              ok: false,
+              error: unfinished
+                ? 'workspace host bootstrap has not finished; retry once it completes'
+                : 'workspace host was unreachable for the whole readiness window',
+              reason: unfinished ? 'host-bootstrap-unfinished' : 'host-unreachable',
+              hostId,
+              operationId,
+              waitedMs: error.waitedMs,
+              probes: error.probes,
+            },
+            unfinished
+              ? { status: 503, headers: { 'retry-after': String(BOOTSTRAP_NOT_READY_RETRY_AFTER_SEC) } }
+              : { status: 502 },
+          );
+        }
         return Response.json(
-          { ok: false, error: 'workspace host credential lifecycle failed; see the host timeline for details', hostId },
+          {
+            ok: false,
+            error: 'workspace host credential lifecycle failed; see the host timeline for details',
+            hostId,
+            operationId,
+          },
           { status: 500 },
         );
       }
