@@ -38,13 +38,26 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * PROBE_SCRIPT makes the subject path overridable so falsifiability can be
- * demonstrated with the SAFE copy-out mutation tier (CLAUDE.md, "Proving a
- * guard is falsifiable"): the probe mutates a COPY outside the tree and points
- * this suite at it, instead of mutating the tracked hook in the shared
- * checkout — where git-sync's periodic whole-tree sweep can commit the mutant
- * even when nothing goes wrong, a race no restore-trap can close.
- * Unset (the default, and always so in CI) it resolves the real hook.
+ * PROBE_SCRIPT makes the subject path overridable for the mutation probe
+ * (CLAUDE.md, "Proving a guard is falsifiable"). Unset — the default, and
+ * always so in CI — it resolves the real hook.
+ *
+ * ⛔ THE SNAPSHOT MUST LIVE IN THE HOOK'S OWN DIRECTORY. The copy-out tier's
+ * usual form (mutate a copy in /tmp, point the suite at it) does NOT work here
+ * and fails DISHONESTLY. The hook runs `python3 - "$PAPERCUSP_SID"
+ * "$(dirname "$0")"` and imports its sibling `mcp_response` module from that
+ * directory, so a snapshot anywhere else dies with `ModuleNotFoundError`,
+ * exits 0 with EMPTY stdout, and every case in this file then fails inside
+ * `contextOf`'s `JSON.parse` — which is indistinguishable from a caught
+ * mutant. Measured 2026-09-22: a historical-mode probe scored 12 of 13 cases
+ * "failing" against a snapshot that had never executed a line of
+ * classification logic. `mutation-probe.sh` caught it only because its
+ * CURRENT-source leg failed too and it refused to score
+ * (`verdict=harness-error`); a probe without that leg would have recorded a
+ * confident false pass.
+ *
+ * So: either place the snapshot beside the real hook, or use `--in-tree` while
+ * holding `locks:acquire` on the hook path (git-sync excludes locked paths).
  */
 const SCRIPT =
   process.env.PROBE_SCRIPT ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', 'userpromptsubmit-provenance.sh');
@@ -287,6 +300,66 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
       expect(captureCalls()).toHaveLength(0);
     });
   }
+
+  /**
+   * The clause (AUTO-BAR-R-2-P-002 / -P-006) names this fixture explicitly: "A
+   * carry-respawn turn-0 fixture, stamped owner-typed while its body is the
+   * agent's own carry note, is required and must yield no record." The controls
+   * above deliver the envelope BARE, and that is not how a carry-respawn turn-0
+   * actually arrives — the host wraps the whole continuation in a paste block,
+   * so the envelope is no longer at the head of the prompt.
+   *
+   * That gap was not hypothetical. Owner-directives #170–#181 are twelve
+   * machine-injected turns the hook recorded as pending OWNER directives
+   * between 2026-09-22T20:30Z and 20:57Z — every one a wrapped carry-respawn or
+   * wake prompt, each `captured_by_hook = true`. Classification declined to
+   * label them machine-generated, so they fell through to the affirmative owner
+   * default and were captured. `unwrap_whole_paste` (landed 20:42Z, committed
+   * 619fe9f50f) is the fix; no envelope-carrying capture has been recorded
+   * since. This case is what keeps it fixed — the per-origin controls above
+   * stayed green throughout that entire window.
+   */
+  it('a carry-respawn turn-0 arrives PASTE-WRAPPED and is still agent-origin — captures nothing', async () => {
+    const carryNote =
+      '⟦turn-origin:self-compaction nonce:aabbccddeeff0011⟧' +
+      'ADDRESSED TO su-capture-rail-test — continue where you left off; your carry document is in ' +
+      'the system prompt. Re-orient, then resume the active plan and its open items.';
+    writeMachineRow({ origin: 'self-compaction', sha256: sha256Normalized(carryNote.slice(carryNote.indexOf('⟧') + 1)) });
+    const ctx = contextOf(
+      await runHook({
+        prompt: `<pasted_content id="78f9">\n${carryNote}\n</pasted_content id="78f9">`,
+        session_id: 'native-session-fff',
+      }),
+    );
+    // CALIBRATION, as for the per-origin controls: a prompt the hook failed to
+    // classify at all would also capture nothing, and would read as proof.
+    expect(ctx).toContain('VERIFIED AGENT-ORIGIN');
+    expect(ctx).not.toContain('OWNER (interactive)');
+    expect(captureCalls()).toHaveLength(0);
+  });
+
+  /**
+   * The clause's "regardless of how that turn's provenance is stamped" half. The
+   * hook's own stated invariant is that an absent or expired ledger row must
+   * never yield a MORE authoritative verdict than a live row would have — so an
+   * unbacked envelope must not be promoted to the owner default, which is the
+   * only branch that captures (and the only one that honours a mode grant).
+   */
+  it('a paste-wrapped carry-respawn whose ledger row is ABSENT is still not owner — and captures nothing', async () => {
+    writeMachineRow({ nonce: 'ffffffffffffffff' }); // a live row, but for a DIFFERENT nonce
+    const carryNote =
+      '⟦turn-origin:self-compaction nonce:aabbccddeeff0011⟧' +
+      'ADDRESSED TO su-capture-rail-test — this continuation was written for that session.';
+    const ctx = contextOf(
+      await runHook({
+        prompt: `<pasted_content id="c854">\n${carryNote}\n</pasted_content id="c854">`,
+        session_id: 'native-session-ggg',
+      }),
+    );
+    expect(ctx).toContain('UNVERIFIED ORIGIN CLAIM');
+    expect(ctx).not.toContain('OWNER (interactive)');
+    expect(captureCalls()).toHaveLength(0);
+  });
 
   it('CONTROL: an empty prompt is a silent no-op and captures nothing', async () => {
     writeMachineRow();
