@@ -149,6 +149,7 @@ vi.mock('../../scheduler/get-next', () => ({
 import awaitTool from './await';
 import { getClaimSpecRecord, type ClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { registerAwait, cancelAwait, cancelAwaitsForSubscribersOnKeys, probeKeyFireEvidence, findAnnouncementsForKey, probePatternMatchScope } from '../../events/await/store';
+import type { AwaitRow } from '../../events/await/types';
 // Namespace view of the SAME mocked module — the coverage guard at the bottom of this
 // file checks its key set against production's import list.
 import * as storeMock from '../../events/await/store';
@@ -381,6 +382,41 @@ describe('events:await wrapper defaults', () => {
       on_timeout: 'wake',
       wake_handle: 'resumable',
     });
+  });
+
+  it('P-010: a pending one-shot wake registration carries an await-wait operational brief', async () => {
+    const pending: AwaitRow = {
+      id: 77,
+      workspaceId: 'ws',
+      subscriberId: 'su-caller',
+      eventKey: 'plan-run:finished:9',
+      policy: 'wake',
+      note: null,
+      wakeHandle: null,
+      timeoutBehavior: 'wake',
+      expiresTs: '2099-01-01T00:00:00.000Z',
+      createdAt: '2026-09-22T00:00:00.000Z',
+      firedAt: null,
+      firedReason: null,
+      cancelledAt: null,
+      cancelReason: null,
+      once: true,
+      minSleepSec: null,
+      urgency: false,
+      payloadFilter: null,
+      scopeKind: null,
+      scopeRef: null,
+    };
+    vi.mocked(registerAwait).mockResolvedValueOnce(pending);
+    const out = await call({ event: 'plan-run:finished:9' });
+    expect(out.operational_brief).toMatchObject({
+      schemaVersion: 'operational-brief-v1',
+      surface: 'await-wait',
+      subject: 'plan-run:finished:9',
+      deadline: { status: 'known', value: '2099-01-01T00:00:00.000Z' },
+      facts: { awaitId: 77, onTimeout: 'wake', retract: 'events:cancel { await_id: 77 }' },
+    });
+    expect(out.operational_brief.nextAction.status).toBe('known');
   });
 
   // ── EI-14225: re-registration retires the caller's own prior pending await

@@ -177,6 +177,31 @@ export function resolveIdentityArtifact(
   return { kind: 'governed', artifact, current };
 }
 
+/**
+ * May `revision` be ACKNOWLEDGED as the session's `applied` identity, given the
+ * launch record the kernel selects for it? (EI-23703586803892464 /
+ * EI-23886889674609842.)
+ *
+ * `acknowledgeControlTransition` is the only writer of `activation.applied`, and
+ * it used to write `desired` whenever `prepared` matched — without asking whether
+ * the record this gate judges could resolve it. When a sibling launch record
+ * minted `desired` but the gate selected a different, live row, the
+ * acknowledgement itself manufactured a `stale-artifact` denial of every tool,
+ * the coord:orient recovery door included.
+ *
+ * The answer is this gate's own, not a revision comparison (see WI-10002060
+ * above): an absent or malformed record cannot carry an acknowledged identity,
+ * and otherwise anything short of `stale-artifact` is admissible.
+ */
+export function launchRecordAdmitsApplied(
+  rawRecord: unknown,
+  revision: KernelExecutionRevision,
+): boolean {
+  const record = object(rawRecord);
+  if (!record) return false;
+  return resolveIdentityArtifact(record, revision).kind !== 'stale-artifact';
+}
+
 /** Reads existing stores; missing or failed policy reads must reach the caller. */
 export const readIdentityGrantPolicy: PolicyReader = async (input) => {
   const registry = await readOperatorState<HarnessRegistry>('harness_registry', input.workspaceId, { fresh: true });

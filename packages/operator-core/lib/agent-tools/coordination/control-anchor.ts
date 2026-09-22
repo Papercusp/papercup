@@ -774,6 +774,16 @@ export const consumePendingControlTransition = preparePendingControlTransition;
  * next turn. If the process dies before this call, the same generation is
  * returned again, preserving at-least-once delivery instead of losing a stack
  * mutation.
+ *
+ * With an `activationRevision` this is the ONLY writer of `activation.applied`,
+ * so it refuses (returns false, nothing written) unless the launch record the
+ * kernel gate selects admits that revision (EI-23703586803892464). Writing a
+ * revision that record cannot resolve does not grant anything — it makes the
+ * gate deny EVERY tool as `stale-artifact`, coord:orient included. A refusal
+ * leaves the generation pending, so it is re-delivered and retried each turn
+ * until the record carries it — the same wait a `relaunch-with-carry` takes.
+ * The ORDER BY is the gate's selection verbatim, pinned by
+ * wedged-identity-activation-selection.pin.test.ts.
  */
 export async function acknowledgeControlTransition(
   ownerId: string,
@@ -784,7 +794,17 @@ export async function acknowledgeControlTransition(
 ): Promise<boolean> {
   if (!Number.isSafeInteger(generation) || generation < 0) return false;
   if (activationRevision) {
+    const { launchRecordAdmitsApplied } = await import('../../capability-envelope/identity-grants-port');
     return await sql.begin(async (tx) => {
+      const launch = await tx<Array<{ launch_spec: unknown }>>`
+        SELECT to_jsonb(s)->'launch_spec' AS launch_spec
+          FROM harness_shared.adv_sessions s
+         WHERE s.coord_owner_id = ${ownerId}
+           AND s.workspace_id = ${workspaceId}
+         ORDER BY (s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC
+         LIMIT 1
+      `;
+      if (!launchRecordAdmitsApplied(launch[0]?.launch_spec, activationRevision)) return false;
       const rows = await tx<Array<{ control_delivered_generation: number | string }>>`
         UPDATE harness_shared.session_briefs
            SET control_delivered_generation = GREATEST(control_delivered_generation, ${generation}),

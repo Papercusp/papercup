@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
+import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { deriveClaimScope, rearmControlWitnessForContextWipe } from './control-anchor';
 import {
   CONTROL_ANCHOR_MAX_TOKENS,
@@ -68,6 +69,21 @@ function sqlReturning<T>(rows: T[]) {
     begin: async (callback: (tx: Sql) => Promise<unknown>) => callback(sql),
   });
   return { sql, calls };
+}
+
+/**
+ * A launch record carrying a REAL compiled specification, so the ack guard is
+ * exercised through the kernel's own resolver rather than a stub. `seed` varies
+ * the prompt, and therefore the specificationRevision.
+ */
+function launched(seed: string) {
+  const artifact = compileAgentSpecification({
+    source: { id: `ack-${seed}`, workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
+    prompt: { role: 'worker', text: `ack fixture ${seed}` },
+    inputClosure: [],
+  });
+  const revision = { specificationRevision: artifact.specificationRevision, stateRevision: `state-${seed}` };
+  return { artifact, revision, launchSpec: { ...revision, specificationArtifact: artifact } };
 }
 
 function transactionalSqlSequence(results: unknown[][]) {
@@ -489,18 +505,25 @@ describe('compact durable CTRL anchor', () => {
   });
 
   it('acknowledges a revision only when its prepared JSON matches (and keeps legacy SQL shape otherwise)', async () => {
-    const revision = { specificationRevision: 'b'.repeat(64), stateRevision: '2' };
-    const activationAck = sqlReturning([{ control_delivered_generation: 6 }]);
+    const { revision, launchSpec } = launched('b');
+    const activationAck = transactionalSqlSequence([
+      [{ launch_spec: launchSpec }],
+      [{ control_delivered_generation: 6 }],
+      [{ id: 1 }],
+    ]);
     await expect(acknowledgeControlTransition('su-x', 'ws-test', 6, activationAck.sql, revision)).resolves.toBe(true);
-    expect(activationAck.calls[0]!.statement).toMatch(/activation/);
+    expect(activationAck.calls[0]!.statement).toMatch(/adv_sessions/);
+    expect(activationAck.calls[1]!.statement).toMatch(/activation/);
     const legacyAck = sqlReturning([{ control_delivered_generation: 6 }]);
     await expect(acknowledgeControlTransition('su-x', 'ws-test', 6, legacyAck.sql)).resolves.toBe(true);
     expect(legacyAck.calls[0]!.statement).not.toMatch(/activation/);
+    expect(legacyAck.calls.some((call) => /adv_sessions/.test(call.statement))).toBe(false);
   });
 
   it('rolls back the applied watermark when the append-only activation event cannot be recorded', async () => {
-    const revision = { specificationRevision: 'c'.repeat(64), stateRevision: '3' };
+    const { revision, launchSpec } = launched('c');
     const db = transactionalSqlSequence([
+      [{ launch_spec: launchSpec }],
       [{ control_delivered_generation: 7 }],
       [],
       [],
@@ -510,7 +533,34 @@ describe('compact durable CTRL anchor', () => {
     ).rejects.toThrow('session_identity_activation_applied_not_recorded');
     expect(db.rolledBack()).toBe(true);
     expect(db.committed()).toBe(false);
-    expect(db.calls).toHaveLength(3);
+    expect(db.calls).toHaveLength(4);
+  });
+
+  // EI-23703586803892464: a sibling launch record minted `desired`, the gate
+  // selected a different live row, and acknowledging `desired` wedged every tool.
+  it.each([
+    ['the selected record runs a different specification', () => [{ launch_spec: launched('e').launchSpec }]],
+    ['the owner has no launch record', () => []],
+    ['the selected record has no launch_spec', () => [{ launch_spec: null }]],
+  ])('refuses to write applied when %s, leaving the generation pending', async (_case, selected) => {
+    const { revision } = launched('f');
+    const db = transactionalSqlSequence([selected(), [{ control_delivered_generation: 9 }], [{ id: 1 }]]);
+    await expect(acknowledgeControlTransition('su-x', 'ws-test', 9, db.sql, revision)).resolves.toBe(false);
+    expect(db.calls).toHaveLength(1);
+    expect(db.calls[0]!.statement).toMatch(/ORDER BY/);
+    expect(db.calls[0]!.values).toEqual(['su-x', 'ws-test']);
+  });
+
+  it('still acknowledges a control-only activation (same specification, new state revision)', async () => {
+    const { artifact, launchSpec } = launched('g');
+    const revision = { specificationRevision: artifact.specificationRevision, stateRevision: 'state-next' };
+    const db = transactionalSqlSequence([
+      [{ launch_spec: launchSpec }],
+      [{ control_delivered_generation: 10 }],
+      [{ id: 1 }],
+    ]);
+    await expect(acknowledgeControlTransition('su-x', 'ws-test', 10, db.sql, revision)).resolves.toBe(true);
+    expect(db.committed()).toBe(true);
   });
 
   it.each([
