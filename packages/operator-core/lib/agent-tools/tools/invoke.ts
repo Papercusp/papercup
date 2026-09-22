@@ -268,7 +268,18 @@ export default defineTool({
   timeoutSec: 660,
   description:
     'Call ANY tool in the full ~550-tool catalog by name, even one not in your loaded tool list. ' +
-    'Pass the exact tool name (colon form, e.g. "flags:set") and its arguments object. The call is ' +
+    // ⚠ THIS SENTENCE IS DELIBERATELY A HARD RAIL, AND MUST STAY ONE (D-047).
+    // `summaryGuidanceDescription` keeps "one lead sentence plus every hard rail",
+    // and `isSafetyClause` recognises a rail ONLY by a ⛔/🚨/⚠ glyph or an ALL-CAPS
+    // imperative. Spelled as ordinary prose it was dropped from the compact tier —
+    // and measured over the S25 A/B, two compact runs then passed the UNDERSCORED
+    // display spelling (`work_items__list`; `sanitizeToolName` maps ':' → '__'),
+    // reached no tool at all, and reported "no open work items found". Re-running
+    // the same arm with this contract delivered produced ZERO such calls in 12 runs.
+    // It is ALSO ≤100 chars on purpose: rails are truncated at SUMMARY_LEAD_MAX_CHARS,
+    // so a longer one would ship cut in half at exactly the tier that needs it.
+    '⚠ Pass the exact tool name in COLON form, e.g. "flags:set" — NEVER the underscored ' +
+    'display name. Args go in `args`. The call is ' +
     'dispatched server-side and gated exactly as a direct call would be. Pair with tools:find: ' +
     'tools:find("<intent>") to get the name + arg schema, then tools:invoke({ name, args }) to run it. ' +
     'Use this when a tool you need is not in your loaded set and your client has not surfaced it directly.',
