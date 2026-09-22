@@ -41,15 +41,22 @@ const SAVED_ADMIN_URL = process.env.HARNESS_ADMIN_DATABASE_URL;
  * mutating the shared tree.
  */
 const COLD_PROBE_SOURCE = `
+  const { writeSync } = await import('node:fs');
   const mod = process.env.PROBE_DELEGATION_MODULE || ${JSON.stringify(new URL('./delegation-counts.ts', import.meta.url).href)};
   const { readDelegationCounts } = await import(mod);
   const counts = await readDelegationCounts({ workspaceId: process.env.PROBE_WORKSPACE, sourceTimeoutMs: 30000 });
   const read = counts.plansAwaitingDelegation;
-  process.stdout.write('<<PROBE ' + JSON.stringify({
+  // writeSync + an EXPLICIT exit, both required. This module graph opens a
+  // Postgres pool and registers a 60s managed refresh interval, so the child
+  // would otherwise sit with a live event loop until spawnSync's timeout kills
+  // it — a hang that surfaces as status:null and reads like a broken subject
+  // rather than "the probe finished and nothing let it go".
+  writeSync(1, '<<PROBE ' + JSON.stringify({
     status: read.status,
     count: read.status === 'known' ? read.value.count : null,
     degradedSources: counts.degradedSources,
   }) + ' PROBE>>');
+  process.exit(0);
 `;
 
 /**
@@ -258,7 +265,12 @@ describe('R-5 live plan-agent counts (real PG + real liveness oracle)', () => {
         encoding: 'utf8',
         timeout: 120_000,
       });
-      expect(p.status, `cold probe exited non-zero: ${p.stderr}`).toBe(0);
+      // `status: null` is a KILL (spawnSync's timeout), not a non-zero exit, and the
+      // two want different fixes — name both rather than reporting one as the other.
+      expect(
+        p.status,
+        `cold probe did not exit 0 (status=${p.status} signal=${p.signal} error=${p.error?.message ?? 'none'}).\nstdout: ${p.stdout}\nstderr: ${p.stderr}`,
+      ).toBe(0);
       // A sentinel rather than a bare JSON.parse of stdout: the module graph this
       // child loads is free to log, and a parse failure on unrelated chatter would
       // read as a broken subject.
