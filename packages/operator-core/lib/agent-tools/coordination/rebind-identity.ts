@@ -680,10 +680,20 @@ export async function rebindIdentity(
   //      open row under the dead sid would silently drop the owner's binding
   //      instruction after an identity rebind. Dispositioned rows stay on the
   //      originating sid as immutable history; only live instructions follow.
+  //      WI-10002452: this surface re-keys `recorded_by`, NOT `owner_id`. The
+  //      two columns' roles are inverted relative to their names, and until
+  //      that was measured this UPDATE ran against `owner_id` — where it could
+  //      never match a row, because that column holds the HUMAN owner label
+  //      ('owner' ×181, 'Avi' ×22 across all 203 live rows; zero session-shaped,
+  //      never equal to recorded_by). `recorded_by` is the column that says
+  //      which SESSION the owner was addressing, and it is what `orders:*` and
+  //      the turn-start Orientation banner key on — so it is the one that has
+  //      to follow a re-bound agent. The intent above was always right; only
+  //      the column was wrong.
   await run('owner-directives', async (r) => {
     const moved = await sql<Array<{ id: number }>>`
-      UPDATE harness_shared.owner_directives SET owner_id = ${t}
-       WHERE owner_id = ${f} AND dispositioned_at IS NULL
+      UPDATE harness_shared.owner_directives SET recorded_by = ${t}
+       WHERE recorded_by = ${f} AND dispositioned_at IS NULL
        RETURNING id
     `;
     r.moved = moved.length;
@@ -693,12 +703,11 @@ export async function rebindIdentity(
   // directive-visibility-and-ownership-2026-09-22 / D-008). Which directives
   // THIS session has cleared from its own banner.
   //
-  // Unlike surface 11b above, this one genuinely matches rows: the column
-  // holds coord session ids. (11b's `owner_directives.owner_id` holds the
-  // HUMAN owner label — measured 'owner' ×85, 'Avi' ×22, zero session-shaped —
-  // so its predicate can never match. Filed as WI-10002452; deliberately NOT
-  // fixed here, because correcting it is coupled to its `covered` entry in
-  // identity-keyed-state-inventory and is its own change.)
+  // Like surface 12b above, this one genuinely matches rows: the column holds
+  // coord session ids. (12b USED to target `owner_directives.owner_id`, which
+  // holds the HUMAN owner label and so could never match; that was WI-10002452
+  // and is now fixed — 12b re-keys `recorded_by` instead, and the inventory's
+  // classification was corrected to match.)
   //
   // This MUST follow the agent: agenda state is what stops a session being
   // re-nagged by directives it already cleared, so stranding it under a dead
