@@ -867,12 +867,12 @@ export function independentVerificationObligation(input: IndependentVerification
 export interface OwnerDirectiveObligationRow {
   id: number;
   /**
-   * Always `open`: every owner turn is a directive awaiting disposition
-   * (owner-directive-delivery-redesign-2026-09-22, D-001). Terminal states
-   * (`done`/`declined`) are not obligations and must be filtered out by the
-   * reader, never represented here.
+   * `pending` — hook-captured, awaiting promote/dismiss.
+   * `open` — a promoted/recorded standing directive awaiting disposition.
+   * Terminal states (`dismissed`/`done`/`declined`) are not obligations and
+   * must be filtered out by the reader, never represented here.
    */
-  state: 'open';
+  state: 'pending' | 'open';
   /** VERBATIM owner text, budgeted by the caller. Never a paraphrase. */
   excerpt: string;
   /** The row's own created_at — a stable row fact, never an observation clock. */
@@ -897,8 +897,16 @@ const OWNER_DIRECTIVE_DISPOSITION: Record<
   OwnerDirectiveObligationRow['state'],
   { title: string; summary: string; tool: string; clearsWhen: string }
 > = {
-  // `summary` is spent once PER ROW in a 3-row/400-char sink, so it carries the
-  // disposition VERB and nothing else.
+  pending: {
+    title: 'Pending owner turn awaits promote-or-dismiss',
+    // `summary` is spent once PER ROW in a 3-row/400-char sink, so it carries the
+    // disposition VERB and nothing else; the prose that used to live here was
+    // identical on every row and cost a whole third row (measured: 133-char rows,
+    // 2 of 3 delivered, the third dropped on the character cap).
+    summary: 'promote or dismiss: orders:resolve-pending',
+    tool: 'orders:resolve-pending',
+    clearsWhen: 'the row leaves `pending` via promotion or a reasoned dismissal',
+  },
   open: {
     title: 'Open owner directive awaits disposition',
     summary: 'carry out, then close: orders:disposition',
@@ -949,10 +957,10 @@ export function ownerDirectiveObligations(input: OwnerDirectivesProviderInput): 
         reason: input.read.failure.detail,
         applicableDemand: 0,
         evidence: [],
-        action: { kind: 'inspect', summary: input.read.failure.retry, targetRef: 'orders:list { open: true }' },
+        action: { kind: 'inspect', summary: input.read.failure.retry, targetRef: 'orders:list { state: "pending" }' },
         clearsWhen: {
           id: 'owner-directive-queue-readable',
-          summary: 'the open directive queue is readable again',
+          summary: 'the pending/open directive queue is readable again',
           evidenceKind: 'state',
           sourceRef: 'harness_shared.owner_directives',
         },
@@ -970,19 +978,19 @@ export function ownerDirectiveObligations(input: OwnerDirectivesProviderInput): 
         status: 'not-applicable',
         priority: 'normal',
         authority: policyAuthority('owner-directives:listOwnerDirectives', OWNER_DIRECTIVE_OBLIGATION_REVISION),
-        reason: 'the canonical directive queue holds no open row for this workspace',
+        reason: 'the canonical directive queue holds no pending or open row for this workspace',
         applicableDemand: 0,
         evidence: [
           evidence(
             `owner-directives:${input.workspaceId}`,
             input.observedAt,
             input.sourceGeneration,
-            'empty open queue',
+            'empty pending/open queue',
           ),
         ],
         clearsWhen: {
           id: 'owner-directive-queue-empty',
-          summary: 'no open directive exists',
+          summary: 'no pending or open directive exists',
           evidenceKind: 'state',
           sourceRef: 'harness_shared.owner_directives',
         },

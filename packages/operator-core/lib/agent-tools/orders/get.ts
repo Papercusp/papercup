@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { directiveNeedsSummary, getOwnerDirective } from '../../owner-directives';
+import { getOwnerDirective } from '../../owner-directives';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { deriveDirectiveStatus } from '../../owner-directive-status';
 import { listWorkItemsByDirective } from '../../work-items';
@@ -15,9 +15,9 @@ export default defineTool({
   name: 'orders:get',
   profile: 'engineer',
   description:
-    'Fetch one recorded owner directive by id — the FULL verbatim text plus provenance, summary and disposition. The target of the "[full text: orders:get #id]" pointer every surface leaves on a long directive.',
+    'Fetch one recorded owner directive by id — the FULL verbatim text plus provenance and disposition. The target of the "[orders:get #id]" pointer the budgeted wake/orient render leaves on long rows.',
   guidance: {
-    when: 'A render or orders:list showed a long directive as its summary and you need the owner\'s full words before acting.',
+    when: 'A wake/orient render or orders:list showed a truncated directive and you need the owner\'s full words before acting.',
     notWhen: 'Browsing the set — orders:list.',
     seeAlso: ['orders:list', 'orders:disposition'],
   },
@@ -69,10 +69,11 @@ export default defineTool({
     const status = deriveDirectiveStatus(row, linked);
     // The ASSESSMENT, distinct from the headline `status.kind` on purpose (D-038):
     // an assessment must say what a measurement MEANS, and re-projecting the kind
-    // would add a field and no information. These codes are exactly the
+    // would add a field and no information. These five codes are exactly the
     // distinctions the bare kind CANNOT make — each one changes what the reader
-    // should do next; 'worked-awaiting-disposition' is the measured D-007 shape
-    // that must not render as an imperative.
+    // should do next, and two of them ('worked-awaiting-disposition',
+    // 'settled-capture-lagging') are the measured D-007 shapes this plan exists
+    // to stop rendering as imperatives.
     const assessments = {
       directiveStatus:
         status.kind === 'claimed'
@@ -81,7 +82,9 @@ export default defineTool({
             ? status.workedButUndispositioned
               ? 'worked-awaiting-disposition'
               : 'open-unworked'
-            : 'settled',
+            : status.captureLagging
+              ? 'settled-capture-lagging'
+              : 'settled',
     };
     return {
       content: [
@@ -100,14 +103,6 @@ export default defineTool({
               sessionRef: row.sessionRef,
               sourceTurnRef: row.sourceTurnRef,
               createdAt: new Date(row.createdAtMs).toISOString(),
-              // D-004: an over-cap directive renders to other agents as its summary.
-              ...(directiveNeedsSummary(row)
-                ? {
-                    summary: row.summaryText ?? null,
-                    summaryBy: row.summaryBy ?? null,
-                    ...(row.summaryAtMs != null ? { summaryAt: new Date(row.summaryAtMs).toISOString() } : {}),
-                  }
-                : {}),
               ...(row.dispositionedAtMs != null
                 ? {
                     dispositionStatus: row.dispositionStatus,

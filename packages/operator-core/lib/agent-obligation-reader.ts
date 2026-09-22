@@ -753,13 +753,13 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
       // an obligation for it, while staying one for its addressee.
       const rows = await listOwnerDirectives({
         workspaceId,
-        state: ['open'],
+        state: ['pending', 'open'],
         viewerOwnerId: ownerId,
         limit: OWNER_DIRECTIVES_RENDER_MAX_ROWS,
       });
       return rows.map((row) => ({
         id: row.id,
-        state: 'open' as const,
+        state: row.captureStatus === 'pending' ? ('pending' as const) : ('open' as const),
         excerpt: ownerDirectiveExcerpt(row.verbatimText),
         recordedAt: new Date(row.createdAtMs).toISOString(),
         recordedBy: row.recordedBy,

@@ -403,9 +403,8 @@ import './logs/read';
 // owner-directive slots (EI-11484): explicit owner orders, recorded verbatim,
 // rendered above the loop agenda every wake until dispositioned.
 import './orders/record';
-import './orders/capture';
-import './orders/clear';
-import './orders/summarize';
+import './orders/capture-pending';
+import './orders/resolve-pending';
 import './orders/disposition';
 import './orders/list';
 import './orders/get';

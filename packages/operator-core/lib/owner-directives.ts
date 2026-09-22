@@ -34,42 +34,43 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
 import { agendaClearedExclusionSql } from './owner-directive-agenda';
-import {
-  directiveDisplayText,
-  directiveNeedsSummary,
-  OWNER_DIRECTIVE_SUMMARY_MAX,
-  OWNER_DIRECTIVE_VERBATIM_CAP,
-  shortOwner,
-} from './owner-directive-display';
-
-export {
-  directiveDisplayText,
-  directiveNeedsSummary,
-  OWNER_DIRECTIVE_SUMMARY_MAX,
-  OWNER_DIRECTIVE_VERBATIM_CAP,
-} from './owner-directive-display';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
 export type OwnerDirectiveDisposition = 'done' | 'declined';
+export type OwnerDirectiveCaptureStatus = 'pending' | 'open' | 'dismissed';
 
 /**
- * The single LIFECYCLE state of a directive. Every owner turn is a directive
- * (D-001 of owner-directive-delivery-redesign-2026-09-22): a captured turn is
- * `open` the moment it lands, and it ends only as `done` or `declined` with a
- * reason. The former pending → promote/dismiss capture triage is gone; migration
- * 1198 folded pending rows into open and capture dismissals into declines, and a
- * BEFORE trigger keeps legacy writers inside this three-state space.
+ * The single LIFECYCLE state of a directive (P-005). `capture_status` and
+ * `disposition_status` are two orthogonal columns, which is why `orders:list`
+ * could only ever offer a boolean `open` that BUNDLED pending with open and
+ * dismissed with done/declined — so neither the pending queue nor the dismissed
+ * audit trail could be isolated. These five values are mutually exclusive and
+ * total over the row space, which is what makes them filterable.
  */
-export type OwnerDirectiveState = 'open' | 'done' | 'declined';
+export type OwnerDirectiveState = 'pending' | 'open' | 'dismissed' | 'done' | 'declined';
 
-export const OWNER_DIRECTIVE_STATES: readonly OwnerDirectiveState[] = ['open', 'done', 'declined'] as const;
+export const OWNER_DIRECTIVE_STATES: readonly OwnerDirectiveState[] = [
+  'pending',
+  'open',
+  'dismissed',
+  'done',
+  'declined',
+] as const;
 
-/** Derive the lifecycle state of one row. PURE; the SQL CASE in listOwnerDirectives mirrors it. */
+/**
+ * Derive the lifecycle state of one row. PURE, and deliberately the ONLY place
+ * the precedence is expressed: dismissal and pending are capture-plane facts
+ * that never carry a disposition (dismissOwnerDirective requires
+ * dispositioned_at IS NULL and does not set it), so they are checked first.
+ */
 export function ownerDirectiveState(row: {
+  captureStatus?: OwnerDirectiveCaptureStatus;
   dispositionedAtMs: number | null;
   dispositionStatus: OwnerDirectiveDisposition | null;
 }): OwnerDirectiveState {
+  if (row.captureStatus === 'pending') return 'pending';
+  if (row.captureStatus === 'dismissed') return 'dismissed';
   if (row.dispositionedAtMs != null) return row.dispositionStatus === 'declined' ? 'declined' : 'done';
   return 'open';
 }
@@ -87,17 +88,23 @@ export interface OwnerDirectiveRow {
   dispositionStatus: OwnerDirectiveDisposition | null;
   dispositionNote: string | null;
   dispositionedBy: string | null;
+  captureStatus?: OwnerDirectiveCaptureStatus;
+  captureDismissalReason?: string | null;
+  captureDismissedAtMs?: number | null;
+  captureDismissedBy?: string | null;
+  /** When a pending hook capture was promoted to an open directive; null until promotion. */
+  capturePromotedAtMs?: number | null;
+  capturePromotedBy?: string | null;
   /**
-   * Agent-written summary (≤ OWNER_DIRECTIVE_SUMMARY_MAX chars) of a directive
-   * whose verbatim text exceeds OWNER_DIRECTIVE_VERBATIM_CAP. It is what other
-   * agents see for a long open directive (D-004); null until orders:summarize.
+   * Optional note given at promotion time (orders:resolve-pending { action:'promote', reason }).
+   * Counterpart to captureDismissalReason; null when promoted without a note, or before
+   * migration 1189. Distinct from dispositionNote, which records the later done/declined call.
    */
-  summaryText?: string | null;
-  summaryBy?: string | null;
-  summaryAtMs?: number | null;
+  capturePromotedNote?: string | null;
   /**
    * True when the row came from the UserPromptSubmit provenance hook rather than an agent
-   * calling orders:record.
+   * calling orders:record. Unlike captureStatus this SURVIVES promotion, so provenance is
+   * still answerable once the row is acted on.
    */
   capturedByHook?: boolean;
 }
@@ -157,9 +164,13 @@ interface RawRow {
   disposition_status: string | null;
   disposition_note: string | null;
   dispositioned_by: string | null;
-  summary_text: string | null;
-  summary_by: string | null;
-  summary_at: string | Date | null;
+  capture_status: string | null;
+  capture_dismissal_reason: string | null;
+  capture_dismissed_at: string | Date | null;
+  capture_dismissed_by: string | null;
+  capture_promoted_at: string | Date | null;
+  capture_promoted_by: string | null;
+  capture_promoted_note: string | null;
   captured_by_hook: boolean | null;
 }
 
@@ -178,9 +189,14 @@ function rowOf(r: RawRow): OwnerDirectiveRow {
       r.disposition_status === 'done' || r.disposition_status === 'declined' ? r.disposition_status : null,
     dispositionNote: r.disposition_note,
     dispositionedBy: r.dispositioned_by,
-    summaryText: r.summary_text ?? null,
-    summaryBy: r.summary_by ?? null,
-    summaryAtMs: toMs(r.summary_at),
+    captureStatus:
+      r.capture_status === 'pending' || r.capture_status === 'dismissed' ? r.capture_status : 'open',
+    captureDismissalReason: r.capture_dismissal_reason,
+    captureDismissedAtMs: toMs(r.capture_dismissed_at),
+    captureDismissedBy: r.capture_dismissed_by,
+    capturePromotedAtMs: toMs(r.capture_promoted_at),
+    capturePromotedBy: r.capture_promoted_by,
+    capturePromotedNote: r.capture_promoted_note,
     capturedByHook: r.captured_by_hook === true,
   };
 }
@@ -197,15 +213,12 @@ export interface RecordOwnerDirectiveInput {
   verbatimText: string;
   /** The recording agent (coord ownerId). */
   recordedBy: string;
-  /** True only for the UserPromptSubmit hook's capture path. */
+  /** Hybrid capture lifecycle. Hook-created rows start pending; agents promote to open. */
+  captureStatus?: Exclude<OwnerDirectiveCaptureStatus, 'dismissed'>;
+  /** True only for the UserPromptSubmit hook's capture path; survives promotion. */
   capturedByHook?: boolean;
 }
 
-/**
- * Insert a directive, OPEN. Idempotent on (workspace, owner, source_turn_ref):
- * a retried capture of the same turn returns the row that already exists,
- * whatever state it has reached since, instead of failing.
- */
 export async function recordOwnerDirective(
   input: RecordOwnerDirectiveInput,
   sql?: Sql,
@@ -215,9 +228,10 @@ export async function recordOwnerDirective(
   const text = input.verbatimText.slice(0, OWNER_DIRECTIVE_VERBATIM_MAX);
   const rows = await s<RawRow[]>`
     INSERT INTO harness_shared.owner_directives
-      (workspace_id, owner_id, session_ref, source_turn_ref, verbatim_text, recorded_by, captured_by_hook)
+      (workspace_id, owner_id, session_ref, source_turn_ref, verbatim_text, recorded_by, capture_status, captured_by_hook)
     SELECT ${ws}, ${input.ownerId ?? OWNER_DIRECTIVE_DEFAULT_OWNER}, ${input.sessionRef ?? null},
-       ${input.sourceTurnRef ?? null}, ${text}, ${input.recordedBy}, ${input.capturedByHook === true}
+       ${input.sourceTurnRef ?? null}, ${text}, ${input.recordedBy}, ${input.captureStatus ?? 'open'},
+       ${input.capturedByHook === true}
     WHERE NOT EXISTS (
       SELECT 1 FROM harness_shared.owner_directives
        WHERE workspace_id = ${ws}
@@ -232,6 +246,7 @@ export async function recordOwnerDirective(
      WHERE workspace_id = ${ws}
        AND owner_id = ${input.ownerId ?? OWNER_DIRECTIVE_DEFAULT_OWNER}
        AND source_turn_ref = ${input.sourceTurnRef ?? null}
+       AND capture_status = 'pending'
      ORDER BY id DESC
      LIMIT 1
   `;
@@ -248,13 +263,15 @@ export async function getOwnerDirective(id: number, sql?: Sql): Promise<OwnerDir
 
 export interface ListOwnerDirectivesOpts {
   workspaceId: string;
-  /** true → only open rows; false → only dispositioned history; omitted → all. */
+  /** true → only unresolved capture rows; false → only dispositioned history; omitted → all. */
   open?: boolean;
   /**
-   * Filter by exact lifecycle state(s) — the only way to separate `done` from
-   * `declined`. Applied in SQL, BEFORE `limit`: filtering client-side on the
-   * returned page silently drops matching rows that the limit already truncated
-   * away, which reads as a real absence. Combined with `open`, both apply (AND).
+   * P-005: filter by exact lifecycle state(s) — the only way to isolate the
+   * `pending` queue or the `dismissed` audit trail, which the boolean `open`
+   * bundles with other states and therefore cannot express. Applied in SQL,
+   * BEFORE `limit`: filtering client-side on the returned page silently drops
+   * matching rows that the limit already truncated away, which reads as a real
+   * absence. Combined with `open`, both predicates apply (AND).
    */
   state?: OwnerDirectiveState | readonly OwnerDirectiveState[];
   /**
@@ -283,7 +300,7 @@ export async function listOwnerDirectives(
   const rows = await s<RawRow[]>`
     SELECT * FROM harness_shared.owner_directives
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
-       ${opts.open === true ? s`AND dispositioned_at IS NULL` : opts.open === false ? s`AND dispositioned_at IS NOT NULL` : s``}
+       ${opts.open === true ? s`AND dispositioned_at IS NULL AND capture_status <> 'dismissed'` : opts.open === false ? s`AND (dispositioned_at IS NOT NULL OR capture_status = 'dismissed')` : s``}
        ${agendaClearedExclusionSql(s, opts.viewerOwnerId)}
        ${
          states && states.length > 0
@@ -291,6 +308,8 @@ export async function listOwnerDirectives(
              // owner-directive-state-parity.test.ts asserts the two agree for every
              // state, so this CASE cannot silently drift from the TS derivation.
              s`AND CASE
+                 WHEN capture_status = 'pending' THEN 'pending'
+                 WHEN capture_status = 'dismissed' THEN 'dismissed'
                  WHEN dispositioned_at IS NOT NULL AND disposition_status = 'declined' THEN 'declined'
                  WHEN dispositioned_at IS NOT NULL THEN 'done'
                  ELSE 'open'
@@ -335,6 +354,7 @@ export async function countOpenOwnerDirectives(
     SELECT count(*) AS n FROM harness_shared.owner_directives
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
        AND dispositioned_at IS NULL
+       AND capture_status <> 'dismissed'
        ${agendaClearedExclusionSql(s, viewerOwnerId)}
   `;
   return Number(rows[0]?.n ?? 0);
@@ -349,12 +369,39 @@ export async function dispositionOwnerDirective(
   sql?: Sql,
 ): Promise<DispositionOwnerDirectiveResult> {
   const s = db(sql);
+  // A disposition is strictly STRONGER than a promotion: it asserts the directive was
+  // carried out, or consciously declined, which is only coherent for a real owner order.
+  // So it must resolve a still-pending CAPTURE in the same write.
+  //
+  // Leaving capture_status = 'pending' here is a permanent deadlock, not an untidy edge.
+  // deriveState() gives capture_status priority over disposition, so the row renders
+  // `pending` forever — and promoteOwnerDirective/dismissOwnerDirective BOTH carry
+  // `AND dispositioned_at IS NULL`, so after this UPDATE neither verb can ever match it
+  // again. Directives #86/#87 sat in exactly that state: answered at 14:58Z, yet still
+  // emitting a "[DUE] promote or dismiss" obligation into every agent's Orientation in
+  // the workspace, with no tool able to clear them.
+  //
+  // `declined` promotes to 'open', not 'dismissed': declining is a conscious refusal of a
+  // genuine order, whereas 'dismissed' claims the turn was never a directive at all.
+  // On the RHS of SET, capture_status reads its OLD value — that is what makes the CASE
+  // guards correct rather than self-referential.
   const rows = await s<RawRow[]>`
     UPDATE harness_shared.owner_directives
        SET dispositioned_at = now(),
            disposition_status = ${input.status},
            disposition_note = ${input.note},
-           dispositioned_by = ${input.dispositionedBy}
+           dispositioned_by = ${input.dispositionedBy},
+           capture_status =
+             CASE WHEN capture_status = 'pending' THEN 'open' ELSE capture_status END,
+           capture_promoted_at =
+             CASE WHEN capture_status = 'pending' THEN now() ELSE capture_promoted_at END,
+           capture_promoted_by =
+             CASE WHEN capture_status = 'pending' THEN ${input.dispositionedBy}
+                  ELSE capture_promoted_by END,
+           capture_promoted_note =
+             CASE WHEN capture_status = 'pending'
+                  THEN 'auto-promoted by disposition (' || ${input.status} || ')'
+                  ELSE capture_promoted_note END
      WHERE id = ${input.id}
        AND dispositioned_at IS NULL
      RETURNING *
@@ -365,42 +412,51 @@ export async function dispositionOwnerDirective(
   return { ok: false, error: 'already_dispositioned', row: existing };
 }
 
-export type SummarizeOwnerDirectiveResult =
+export type ResolvePendingOwnerDirectiveResult =
   | { ok: true; row: OwnerDirectiveRow }
-  | {
-      ok: false;
-      error: 'not_found' | 'already_dispositioned' | 'summary_not_needed' | 'summary_too_long' | 'summary_empty';
-      row?: OwnerDirectiveRow;
-    };
+  | { ok: false; error: 'not_found' | 'not_pending'; row?: OwnerDirectiveRow };
 
-/**
- * Write (or rewrite) the agent summary of an over-cap directive (D-004). The
- * summary is what every OTHER agent sees for a long open directive, so it is
- * refused for a directive short enough to render verbatim (a summary there
- * would only ever be a lossy duplicate) and for a closed one (closed
- * directives render nowhere, D-002). verbatim_text is never touched.
- */
-export async function summarizeOwnerDirective(
-  input: { id: number; summary: string; summarizedBy: string },
+/** Promote an auto-captured pending owner turn into an actionable directive. */
+export async function promoteOwnerDirective(
+  input: { id: number; promotedBy: string; note?: string | null },
   sql?: Sql,
-): Promise<SummarizeOwnerDirectiveResult> {
-  const summary = input.summary.trim().replace(/\s+/g, ' ');
-  if (!summary) return { ok: false, error: 'summary_empty' };
-  if (summary.length > OWNER_DIRECTIVE_SUMMARY_MAX) return { ok: false, error: 'summary_too_long' };
-  const existing = await getOwnerDirective(input.id, sql);
-  if (!existing) return { ok: false, error: 'not_found' };
-  if (!directiveNeedsSummary(existing)) return { ok: false, error: 'summary_not_needed', row: existing };
-  const rows = await db(sql)<RawRow[]>`
+): Promise<ResolvePendingOwnerDirectiveResult> {
+  const s = db(sql);
+  const note = input.note?.trim() ? input.note.trim() : null;
+  const rows = await s<RawRow[]>`
     UPDATE harness_shared.owner_directives
-       SET summary_text = ${summary},
-           summary_by = ${input.summarizedBy},
-           summary_at = now()
-     WHERE id = ${input.id}
-       AND dispositioned_at IS NULL
+       SET capture_status = 'open',
+           capture_promoted_at = now(),
+           capture_promoted_by = ${input.promotedBy},
+           capture_promoted_note = ${note}
+     WHERE id = ${input.id} AND capture_status = 'pending' AND dispositioned_at IS NULL
      RETURNING *
   `;
   if (rows[0]) return { ok: true, row: rowOf(rows[0]) };
-  return { ok: false, error: 'already_dispositioned', row: existing };
+  const existing = await getOwnerDirective(input.id, sql);
+  if (!existing) return { ok: false, error: 'not_found' };
+  return { ok: false, error: 'not_pending', row: existing };
+}
+
+/** Dismiss an auto-captured pending turn with an explicit, durable reason. */
+export async function dismissOwnerDirective(
+  input: { id: number; reason: string; dismissedBy: string },
+  sql?: Sql,
+): Promise<ResolvePendingOwnerDirectiveResult> {
+  const s = db(sql);
+  const rows = await s<RawRow[]>`
+    UPDATE harness_shared.owner_directives
+       SET capture_status = 'dismissed',
+           capture_dismissal_reason = ${input.reason},
+           capture_dismissed_at = now(),
+           capture_dismissed_by = ${input.dismissedBy}
+     WHERE id = ${input.id} AND capture_status = 'pending' AND dispositioned_at IS NULL
+     RETURNING *
+  `;
+  if (rows[0]) return { ok: true, row: rowOf(rows[0]) };
+  const existing = await getOwnerDirective(input.id, sql);
+  if (!existing) return { ok: false, error: 'not_found' };
+  return { ok: false, error: 'not_pending', row: existing };
 }
 
 // ── Renderer (pure) ───────────────────────────────────────────────────────────
@@ -440,16 +496,25 @@ export function ownerDirectiveExcerpt(verbatimText: string): string {
   return `${text.slice(0, OWNER_DIRECTIVE_EXCERPT_CHARS)}…`;
 }
 
-/** One row: id, age, addressee, and the D-004 display text. */
+/** One row, budgeted: whole when short, substr(0, EXCERPT) + pointer when long.
+ *  substr, never summarization — the full verbatim is one orders:get away. */
 export function renderOwnerDirectiveRow(row: OwnerDirectiveRow, nowMs: number = Date.now()): string {
   const age = humanAge(Math.max(0, nowMs - row.createdAtMs));
-  return `  • #${row.id} [${age} old, recorded by ${shortOwner(row.recordedBy)}] ${directiveDisplayText(row)}`;
+  const by = row.recordedBy.length > 12 ? row.recordedBy.slice(0, 12) : row.recordedBy;
+  const text = row.verbatimText.trim();
+  const excerpt = ownerDirectiveExcerpt(text);
+  const rendered =
+    excerpt.length === text.length
+      ? `"${text}"`
+      : `"${excerpt}" [full text: orders:get #${row.id}]`;
+  const pending = row.captureStatus === 'pending' ? ' [PENDING — resolve next turn]' : '';
+  return `  • #${row.id} [${age} old, recorded by ${by}]${pending} ${rendered}`;
 }
 
 export const OWNER_DIRECTIVES_BLOCK_HEADER =
-  '📌 OPEN OWNER DIRECTIVES — every owner turn is a directive, recorded verbatim. These OUTRANK your loop ' +
-  'agenda: re-read them BEFORE acting on the checkpoint below. Close each one you resolve with ' +
-  'orders:disposition { id, status: done|declined, note }.';
+  '📌 OPEN OWNER DIRECTIVES — explicit owner turns recorded verbatim; pending captures must be promoted or ' +
+  'dismissed before they stop injecting. These OUTRANK your loop agenda: re-read them BEFORE acting on ' +
+  'the checkpoint below, then use orders:resolve-pending or orders:disposition as appropriate.';
 
 /**
  * The block every render point injects. Returns null when there are no open
