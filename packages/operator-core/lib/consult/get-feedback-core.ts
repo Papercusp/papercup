@@ -470,27 +470,60 @@ async function rubricGraderExclusions(
  * it can never over-exclude a merely-similar re-ask.
  *
  * `responder_id` alone would miss a `declined` menu-exhaustion row's EARLIER
- * decliners (the column tracks only the cascade's current/last cursor), so
- * this also folds in every `kind: 'decline'` cascade_digest entry — the
- * append-only record of who declined this consult, in order.
+ * decliners (the column tracks only the cascade's current/last cursor).
+ *
+ * ⚠ WI-10002406 — `cascade_digest` IS NOT A COMPLETE RECORD, and this comment
+ * used to assert that it was ("the append-only record of who declined this
+ * consult, in order"). It is append-only with a SLIDING WINDOW: `cascade-core`
+ * writes `[...digestFromRow(prev), event].slice(-CASCADE_DIGEST_MAX_ENTRIES)`
+ * with a cap of 16, so once a cascade exceeds 16 chain-advancing events
+ * (replies + declines + expiries) its OLDEST entries are dropped. A decline
+ * that fell out of that window was invisible here, and the agent who made it
+ * became eligible to be re-offered the verbatim-identical question. The
+ * failure direction is the bad one — an under-report is indistinguishable from
+ * "nobody declined", so there is no error and nothing to notice.
+ *
+ * The COMPLETE decline record is `consult_post_meta`: one immutable row per
+ * decline post, neither truncated nor advanced, joined per conversation. Same
+ * source, and for the same reason, as `acceptance-grader.ts`'s
+ * `resolvePriorGradingDecliners` (WI-10002369).
+ *
+ * All three sources are UNIONED, never swapped:
+ *  - `consult_post_meta` is the complete, authoritative decline set;
+ *  - `responder_id` stays load-bearing for `closed_cant_help`, whose terminal
+ *    non-advancing close leaves the closer sitting in that column;
+ *  - the digest fold is retained as belt-and-braces, so a decline recorded as a
+ *    cascade event without a corresponding post row cannot be lost.
+ * Union-only means this can never exclude FEWER agents than before — the one
+ * direction that would reintroduce the bug.
  */
-async function priorNonHelpfulResponders(
+export async function priorNonHelpfulResponders(
   sql: Sql,
   workspaceId: string,
   requesterId: string,
   question: string,
 ): Promise<string[]> {
   const rows = (await sql`
-    SELECT responder_id, cascade_digest
-      FROM harness_shared.consult_state
-     WHERE workspace_id = ${workspaceId}
-       AND requester_id = ${requesterId}
-       AND question = ${question}
-       AND state IN ('closed_cant_help', 'declined')
-  `) as unknown as Array<{ responder_id: string | null; cascade_digest: unknown }>;
+    SELECT cs.responder_id, cs.cascade_digest, pm.author_id AS decline_author
+      FROM harness_shared.consult_state cs
+      LEFT JOIN harness_shared.consult_post_meta pm
+        ON pm.workspace_id = cs.workspace_id
+       AND pm.conversation_id = cs.conversation_id
+       AND pm.kind = 'decline'
+       AND pm.author_id IS NOT NULL
+     WHERE cs.workspace_id = ${workspaceId}
+       AND cs.requester_id = ${requesterId}
+       AND cs.question = ${question}
+       AND cs.state IN ('closed_cant_help', 'declined')
+  `) as unknown as Array<{
+    responder_id: string | null;
+    cascade_digest: unknown;
+    decline_author: string | null;
+  }>;
   const owners = new Set<string>();
   for (const row of rows) {
     if (row.responder_id) owners.add(row.responder_id);
+    if (row.decline_author) owners.add(row.decline_author);
     for (const entry of digestFromRow(row.cascade_digest)) {
       if (entry.kind === 'decline') owners.add(entry.ownerId);
     }
