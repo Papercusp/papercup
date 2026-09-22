@@ -268,6 +268,50 @@ describe('ingestPsuPtyHostEvents', () => {
     expect(res.filesScanned).toBe(2);
   });
 
+  /**
+   * REGRESSION GUARD (measured 2026-09-22). Selection was `entries.filter(...).slice(0, n)` —
+   * an UNSORTED readdir prefix. readdir order is stable for an unchanging directory, so the
+   * routine re-processed the SAME arbitrary files every run: 500 of 15,040 real files (3.3%),
+   * with the other 14,540 — including every file written that day — permanently unreachable.
+   * It still reported `filesScanned: 500` and no error while the table sat frozen for 92
+   * minutes across multiple fires, which is why nothing caught it from the result alone.
+   *
+   * The guard picks its victim FROM THE LIVE readdir order rather than assuming one, so it
+   * stays falsifying on any filesystem: whichever file the old prefix would have missed is
+   * made the newest, and the assertion is that its rows were ingested anyway.
+   */
+  it('selects the NEWEST files, not a readdir prefix', async () => {
+    const dir = await makeDir();
+    for (let i = 0; i < 6; i++) {
+      await writeFile(
+        join(dir, `su-${i}.events.jsonl`),
+        row('turn-delivered', '2026-09-22T00:00:00.000Z', { seq: i }),
+      );
+    }
+    const maxFilesPerRun = 2;
+    const order = (await readdir(dir)).filter((f) => f.endsWith('.events.jsonl'));
+    // The file the OLD prefix-slice could never reach.
+    const unreachable = order[order.length - 1];
+    expect(order.length).toBeGreaterThan(maxFilesPerRun);
+
+    const old = new Date(Date.now() - 10 * DAY_MS);
+    for (const f of order) await utimes(join(dir, f), old, old);
+    const fresh = new Date();
+    await utimes(join(dir, unreachable), fresh, fresh);
+
+    const { sql, inserts } = makeFakeSql();
+    const res = await ingestPsuPtyHostEvents({ sql, workspaceId: 'ws', dir, maxFilesPerRun });
+
+    expect(res.filesScanned).toBe(maxFilesPerRun);
+    // UNNEST binds one array per column in the order (workspace_id, owner_id, ts, kind, …),
+    // so the second array parameter is the owner column.
+    const owners = inserts.flatMap((i) => (i.values[1] as string[]) ?? []);
+    expect(owners).toContain(ownerIdFromEventLogFilename(unreachable));
+    // The population is reported beside the sample, so a bounded run cannot read as a total.
+    expect(res.filesEligible).toBe(order.length);
+    expect(res.filesUnprocessed).toBe(order.length - maxFilesPerRun);
+  });
+
   it('ignores files that are not per-owner event logs', async () => {
     const dir = await makeDir();
     await writeFile(join(dir, 'README.txt'), 'not an event log');
