@@ -160,6 +160,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       inbox: async () => ({ count: 3, newest: [] }),
       announcedGates: async () => [],
       openAsks: async () => null,
+      modes: async () => [],
       loopArmed: async () => true,
       loopFireWithheld: async () => false,
       improvementTriage: async () => null,
