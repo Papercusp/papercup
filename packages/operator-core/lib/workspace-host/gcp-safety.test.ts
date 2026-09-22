@@ -276,6 +276,46 @@ describe('GCP managed-resource census and orphan reaper', () => {
     expect(census.reaperPlan.map(({ resource: entry }) => entry.providerId)).toEqual(hostLabel === 'host-1' ? [providerId] : []);
   });
 
+  it('keeps a registered snapshot recovery point as a retained survivor, never an orphan to reap (D-389)', () => {
+    const observedSnapshots = ['backup-registered', 'backup-unregistered'].map((providerId) => ({
+      resource: resource('snapshot', providerId),
+      labels: labels(),
+      observedAt: NOW,
+    }));
+    const census = (retained: readonly ReturnType<typeof resource>[], observed = observedSnapshots) =>
+      censusGcpWorkspaceHostResources({
+        hostId: 'host-1',
+        workspaceId: 'workspace-1',
+        expected: [],
+        registeredHostResources: [],
+        retained,
+        observed,
+        inventoryEvidence: inventoryEvidence(),
+        evaluatedAt: NOW,
+        orphanGraceMs: HOUR,
+      });
+
+    const withRetained = census([resource('snapshot', 'backup-registered')]);
+    // CALIBRATION: the unregistered snapshot must STILL be an untracked, reapable finding — that is
+    // the evidence of the pre-fix bug on older hosts, and it proves `retained` is not a blanket pass.
+    expect(withRetained.untracked.map(({ resource: entry }) => entry.providerId)).toEqual(['backup-unregistered']);
+    expect(withRetained.reaperPlan.map(({ resource: entry }) => entry.providerId)).toEqual(['backup-unregistered']);
+    expect(withRetained.clean).toBe(false);
+
+    // Only the registered one observed: clean, and nothing planned for deletion.
+    const onlyRegistered = census([resource('snapshot', 'backup-registered')], [observedSnapshots[0]!]);
+    expect(onlyRegistered.clean).toBe(true);
+    expect(onlyRegistered.reaperPlan).toEqual([]);
+
+    // A retained recovery point the user already deleted is not a `missing` finding (unlike `expected`).
+    const deletedBackup = census([resource('snapshot', 'backup-registered')], []);
+    expect(deletedBackup.missing).toEqual([]);
+    expect(deletedBackup.clean).toBe(true);
+
+    // `retained` can never be used to exempt a billable non-snapshot survivor.
+    expect(() => census([resource('disk', 'backup-registered')])).toThrow(/must be a snapshot recovery point/);
+  });
+
   it('requires non-vacuous all-kind inventory evidence and detects deterministic Router/NAT orphans', () => {
     const evidence = inventoryEvidence().map((entry) =>
       entry.kind === 'router'

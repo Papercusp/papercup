@@ -628,6 +628,42 @@ export async function updateWorkspaceHostLifecycleState(input: {
   });
 }
 
+/**
+ * Record a recovery point taken from a host that stays in service (WI-10002470). Unlike
+ * `updateWorkspaceHostLifecycleState` this never touches the host's desired/observed state — a
+ * snapshot of a running host must not move it toward destroy — and it is controller-fenced exactly
+ * like every other write an operation makes.
+ */
+export async function recordWorkspaceHostRecoveryPoint(input: {
+  workspaceId: string;
+  hostId: string;
+  recoverability: {
+    kind: 'snapshot' | 'backup';
+    label: string;
+    updatedAt: string;
+  };
+  operationId?: string;
+  controllerAuthority?: WorkspaceHostControllerAuthority;
+}): Promise<void> {
+  await withWorkspace(input.workspaceId, async (tx) => {
+    await requireWorkspaceHostControllerAuthority(
+      tx,
+      input.workspaceId,
+      input.hostId,
+      input.operationId,
+      input.controllerAuthority,
+    );
+    await tx`
+      UPDATE harness_shared.workspace_hosts
+      SET recoverability_kind = ${input.recoverability.kind},
+          recoverability_label = ${input.recoverability.label},
+          recoverability_updated_at = ${input.recoverability.updatedAt},
+          updated_at = now()
+      WHERE workspace_id = ${input.workspaceId} AND id = ${input.hostId}
+    `;
+  });
+}
+
 export interface WorkspaceHostOperationInput {
   workspaceId: string;
   operationId: string;

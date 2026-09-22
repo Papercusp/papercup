@@ -392,6 +392,13 @@ export interface GcpWorkspaceHostResourceCensusInput {
    * peers outside this population are not defects. Omit for the strict workspace-wide canary census.
    */
   registeredHostResources?: readonly WorkspaceHostResourceRef[];
+  /**
+   * Registered recovery points that legitimately OUTLIVE the host (D-389): a snapshot the host's
+   * own snapshot operation recorded. They may survive without being untracked — so they are never
+   * planned for reaping — but unlike `expected` their absence is not a finding (a user may have
+   * deleted a backup). An UNREGISTERED managed snapshot stays untracked: that is a real finding.
+   */
+  retained?: readonly WorkspaceHostResourceRef[];
   observed: readonly GcpManagedWorkspaceHostResourceObservation[];
   inventoryEvidence: readonly GcpWorkspaceHostInventoryEvidence[];
   evaluatedAt: string;
@@ -440,6 +447,12 @@ export function censusGcpWorkspaceHostResources(
   input.registeredHostResources?.forEach((resource, index) =>
     assertGcpResource(resource, `census registeredHostResources[${index}]`),
   );
+  input.retained?.forEach((resource, index) => {
+    assertGcpResource(resource, `census retained[${index}]`);
+    if (resource.kind !== 'snapshot') {
+      throw new Error(`census retained[${index}] must be a snapshot recovery point, not '${resource.kind}'`);
+    }
+  });
   input.observed.forEach((entry, index) => assertGcpResource(entry.resource, `census observed[${index}].resource`));
   const inventoryByKind = new Map<GcpWorkspaceHostCensusResourceKind, GcpWorkspaceHostInventoryEvidence>();
   for (const [index, evidence] of input.inventoryEvidence.entries()) {
@@ -512,7 +525,10 @@ export function censusGcpWorkspaceHostResources(
           (input.registeredHostResources === undefined ||
             !entry.labels[GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]?.trim()))),
   );
-  const untracked = managed.filter((entry) => !expectedKeys.has(resourceKey(entry.resource)));
+  const retainedKeys = new Set(input.retained?.map(resourceKey));
+  const untracked = managed.filter(
+    (entry) => !expectedKeys.has(resourceKey(entry.resource)) && !retainedKeys.has(resourceKey(entry.resource)),
+  );
   const missing = input.expected.filter((entry) => {
     const observed = observedByKey.get(resourceKey(entry));
     return !observed || !matchesManagedIdentity(observed);

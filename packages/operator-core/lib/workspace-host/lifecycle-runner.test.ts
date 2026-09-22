@@ -115,6 +115,7 @@ function storeHarness() {
     }),
     appendEvent: vi.fn(async () => 'event-1'),
     recordObservation: vi.fn(async () => {}),
+    recordRecoveryPoint: vi.fn(async () => {}),
   };
   return { store, checkpoints: () => checkpoints };
 }

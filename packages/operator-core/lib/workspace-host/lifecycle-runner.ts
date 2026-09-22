@@ -32,6 +32,7 @@ import {
   readWorkspaceHostDestroyTarget,
   readWorkspaceHostResourceCheckpoints,
   recordWorkspaceHostObservation,
+  recordWorkspaceHostRecoveryPoint,
   updateWorkspaceHostOperation,
   upsertWorkspaceHostResourceCheckpoint,
   type StoredWorkspaceHostDestroyTarget,
@@ -96,6 +97,7 @@ export interface WorkspaceHostLifecycleStore {
   upsertCheckpoint: typeof upsertWorkspaceHostResourceCheckpoint;
   appendEvent: typeof appendWorkspaceHostEvent;
   recordObservation: typeof recordWorkspaceHostObservation;
+  recordRecoveryPoint: typeof recordWorkspaceHostRecoveryPoint;
 }
 
 export const WORKSPACE_HOST_PRODUCT_LIFECYCLE_STAGES = [
@@ -184,6 +186,7 @@ const DEFAULT_STORE: WorkspaceHostLifecycleStore = {
   upsertCheckpoint: upsertWorkspaceHostResourceCheckpoint,
   appendEvent: appendWorkspaceHostEvent,
   recordObservation: recordWorkspaceHostObservation,
+  recordRecoveryPoint: recordWorkspaceHostRecoveryPoint,
 };
 
 function controllerStore(
@@ -199,6 +202,7 @@ function controllerStore(
     appendEvent: (input) => store.appendEvent({ ...input, controllerAuthority }),
     recordObservation: (workspaceId, observation) =>
       store.recordObservation(workspaceId, observation, { operationId, controllerAuthority }),
+    recordRecoveryPoint: (input) => store.recordRecoveryPoint({ ...input, operationId, controllerAuthority }),
   };
 }
 
@@ -433,11 +437,18 @@ function resultCheckpoint(
       deletionConfirmation: result.confirmation,
     };
   }
+  // D-389: a snapshot step reports what it made as `result.snapshot`, never `result.resource`.
+  // Dropping it left the checkpoint with no provider identity, so the host never registered its
+  // own recovery point and every later destroy census called that snapshot an untracked orphan.
+  // Same mapping as the destroy runner's preserve-disk step.
+  const snapshotResource: WorkspaceHostResourceRef | undefined = result.snapshot
+    ? { target: result.snapshot.target, kind: 'snapshot', providerId: result.snapshot.providerId }
+    : undefined;
   return {
     ...common,
     state: result.state,
-    ...(result.resource || prior.providerResource
-      ? { providerResource: result.resource ?? prior.providerResource }
+    ...(result.resource || snapshotResource || prior.providerResource
+      ? { providerResource: result.resource ?? snapshotResource ?? prior.providerResource }
       : {}),
   };
 }
@@ -483,6 +494,10 @@ function matchingExistingResource(
   target: StoredWorkspaceHostDestroyTarget,
   step: WorkspaceHostPlan['steps'][number],
 ): WorkspaceHostResourceRef | undefined {
+  // A snapshot step always CREATES a new recovery point; its step input names neither an instance
+  // nor a resource, so the kind-only fallback below would pre-stamp the host's OLDEST registered
+  // snapshot onto a new snapshot's checkpoint (D-389 made snapshots registered resources).
+  if (step.resourceKind === 'snapshot') return undefined;
   const providerId = [step.input.instanceName, step.input.resourceName].find(
     (value): value is string => typeof value === 'string',
   );
@@ -860,6 +875,26 @@ export async function runWorkspaceHostLifecycle(
 
     if (action.kind === 'complete' && action.status === 'succeeded') {
       await observe(input, target, store, context, checkpoints);
+      if (input.action === 'snapshot') {
+        // WI-10002470: without this the host kept reading "No recovery point recorded" right after
+        // a successful snapshot — false, and it argues the user out of the restore they can do.
+        const recoveryPoints = checkpoints
+          .filter((entry) => entry.state === 'applied' || entry.state === 'unchanged')
+          .map((entry) => entry.providerResource)
+          .filter((entry): entry is WorkspaceHostResourceRef => entry?.kind === 'snapshot');
+        if (recoveryPoints.length === 0) {
+          throw new Error(`Workspace-host snapshot '${operationId}' completed without a provider snapshot identity`);
+        }
+        await store.recordRecoveryPoint({
+          workspaceId,
+          hostId: resultHostId,
+          recoverability: {
+            kind: 'snapshot',
+            label: recoveryPoints.map((resource) => resource.providerId).sort().join(', '),
+            updatedAt: new Date().toISOString(),
+          },
+        });
+      }
       /*
        * This branch is generic across every lifecycle action, so on its own it can only ever
        * describe the PROVIDER mutation — never whether the host can serve. For most actions

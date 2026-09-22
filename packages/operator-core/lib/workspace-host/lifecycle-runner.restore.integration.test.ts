@@ -36,6 +36,7 @@ const { DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY } = await import('./provisio
 const {
   WorkspaceHostControllerFenceError,
   beginWorkspaceHostOperation,
+  readWorkspaceHostDestroyTarget,
   updateWorkspaceHostLifecycleState,
   upsertWorkspaceHost,
   upsertWorkspaceHostResourceCheckpoint,
@@ -299,6 +300,74 @@ describe('workspace-host snapshot restore (real PG + real RLS)', () => {
       }),
     ).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
     await expect(operationRow(workspaceId, 'op-restore-second')).resolves.toBeUndefined();
+  });
+
+  it('registers a snapshot as a recovery point the host (and its destroy census) can see (D-389, WI-10002470)', async () => {
+    // Measured live: a succeeded snapshot op left its checkpoint with NULL provider identity and the
+    // host reading "No recovery point recorded", so the later destroy census called the host's own
+    // backup an untracked orphan. Both halves live in store SQL, which a fake store cannot see.
+    const workspaceId = freshWorkspace();
+    await seedProvisionedSource(workspaceId);
+    const operationId = 'op-snapshot-recovery-point';
+    const provider = makeFakeWorkspaceHostProvider({
+      target: 'gcp',
+      validateConnection: vi.fn(async () => ({ ok: true, checkedAt: NOW, warnings: [], errors: [] })),
+      plan: vi.fn(async () => ({
+        planId: `plan:${operationId}`,
+        operationId,
+        target: 'gcp' as const,
+        hostId: SOURCE,
+        generatedAt: NOW,
+        steps: [
+          {
+            id: 'snapshot-data-disk',
+            action: 'snapshot' as const,
+            resourceKind: 'snapshot',
+            dependsOn: [],
+            idempotencyKey: `snapshot:${operationId}`,
+            destructive: false,
+            input: { op: 'create-snapshot', request: { name: 'pc-snap-registered' } },
+          },
+        ],
+        warnings: [],
+      })),
+      apply: vi.fn<WorkspaceHostProvider['apply']>(async (request) => ({
+        operationId,
+        stepId: request.step.id,
+        state: 'applied' as const,
+        observedAt: NOW,
+        snapshot: { target: 'gcp', providerId: 'pc-snap-registered', hostId: SOURCE, createdAt: NOW },
+      })),
+      reconcile: vi.fn<WorkspaceHostProvider['reconcile']>(),
+      observe: vi.fn<WorkspaceHostProvider['observe']>(async (host) => ({
+        host,
+        state: 'running' as const,
+        resources: host.resources,
+        observedAt: NOW,
+        drift: [],
+      })),
+    });
+
+    await expect(
+      runWorkspaceHostLifecycle({
+        workspaceId,
+        hostId: SOURCE,
+        connection,
+        provider,
+        action: 'snapshot',
+        operationId,
+        name: 'pc-snap-registered',
+      }),
+    ).resolves.toMatchObject({ status: 'succeeded' });
+
+    const target = await readWorkspaceHostDestroyTarget(workspaceId, SOURCE);
+    const registered = target!.resources.map((entry) => `${entry.resource.kind}:${entry.resource.providerId}`);
+    // POSITIVE CONTROL: the seeded VM must read back, or an empty population would pass vacuously.
+    expect(registered).toContain('vm:pc-host-source');
+    expect(registered).toContain('snapshot:pc-snap-registered');
+    expect(target!.recoverability).toMatchObject({ kind: 'snapshot', label: 'pc-snap-registered' });
+    // A snapshot keeps the host in service: it must not move the host toward destroy.
+    await expect(hostRow(workspaceId, SOURCE)).resolves.toMatchObject({ observed_state: 'running' });
   });
 
   it('restores from a READY snapshot after its source host was destroyed (D-388)', async () => {

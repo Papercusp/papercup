@@ -1565,6 +1565,12 @@ async function finalizeOrdinaryDestroy(
       resource.step,
       target.resources.map((entry) => entry.resource),
     ));
+  // D-389: snapshots this host's own snapshot operations registered are recovery points that
+  // deliberately outlive it (GCP destroy never deletes snapshots). Without this every host that was
+  // ever snapshotted failed its terminal census on its own backup.
+  const retained = target.resources
+    .map((entry) => entry.resource)
+    .filter((resource) => resource.kind === 'snapshot');
   const settleMs = input.censusSettleMs ?? DESTROY_CENSUS_SETTLE_MS;
   const pollMs = Math.max(1, Math.min(DESTROY_CENSUS_POLL_MS, Math.floor(settleMs / 4)));
   const startedAt = Date.now();
@@ -1582,6 +1588,7 @@ async function finalizeOrdinaryDestroy(
       workspaceId: input.workspaceId,
       expected: preserved,
       registeredHostResources: target.resources.map((entry) => entry.resource),
+      retained,
       observed: inventory.observed,
       inventoryEvidence: inventory.inventoryEvidence,
       evaluatedAt: new Date().toISOString(),
