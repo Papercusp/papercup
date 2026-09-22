@@ -58,6 +58,11 @@ import { workItemFetchHint } from './work-item-fetch-hint';
 import { FEATURE_TERMINAL_STATES, ISSUE_TERMINAL_STATES } from './work-item-dispatch-states';
 import type { AgentObligationBrief } from './agent-obligation-reader';
 import type { OwnerDirectiveRow } from './owner-directives';
+import {
+  deriveDirectiveStatus,
+  directiveNeedsAction,
+  type DirectiveStatus,
+} from './owner-directive-status';
 
 /** A held work-item, reduced to what the fold actually prints. */
 export interface OrientationHeldItem {
@@ -75,11 +80,58 @@ export interface OrientationHeldItem {
   checkpointStale?: boolean;
 }
 
-/** Compact owner-directive context delivered on the deterministic turn-start rail. */
+/**
+ * Compact owner-directive context delivered on the deterministic turn-start rail.
+ *
+ * ⚠ THIS INTERFACE IS WHERE THE 2026-09-22 CROSS-SESSION DIRECTIVE LEAK LIVED
+ * (WI-10002426, plan `directive-visibility-and-ownership-2026-09-22` D-006).
+ * It carried exactly `{ id, captureStatus, verbatimText }`, so `recordedBy` was
+ * dropped by the TYPE one hop before the renderer — the renderer never had the
+ * field to print, and a workspace-wide rail rendered an ADDRESSED imperative
+ * ("orders:resolve-pending first.") with no addressee. Agents then carried out,
+ * and dismissed, other sessions' directives.
+ *
+ * The rail being workspace-wide is CORRECT and deliberate — the owner asked for
+ * every agent to see every directive (D-004), and this reader is typed
+ * `(workspaceId)` with no `ownerId` by construction. What was missing was the
+ * LABEL, not a filter. So do not "fix" a future leak by scoping this reader.
+ *
+ * Keep `recordedBy` and `capturedByHook` populated: the parallel obligation rail
+ * (`agent-obligation-reader.ts`) has always carried both, and the divergence
+ * between the two rails at exactly the field that identifies the addressee is
+ * what made this bug possible.
+ */
 export interface OrientationOwnerDirective {
   id: number;
   captureStatus: 'pending' | 'open';
   verbatimText: string;
+  /**
+   * The session the owner was ADDRESSING (`orders.recordedBy`). Accurate at
+   * capture and never mutated afterwards — directive rows are immutable owner
+   * speech. This is the field that decides which bucket the line renders in.
+   */
+  recordedBy: string;
+  /**
+   * TRUE when a provenance hook captured this from a real owner turn; FALSE when
+   * an agent asserted it. Rendered as `owner-candidate` rather than as owner
+   * speech, because conflating hook-captured with agent-asserted "is exactly how
+   * a note-to-self becomes an owner directive".
+   */
+  capturedByHook: boolean;
+  /**
+   * Whether `recordedBy` is THIS session — decided in the reader, which has the
+   * ownerId, because a segment `render` receives only (state, committed).
+   * Optional, and `undefined` deliberately renders as NOT-mine: an undecided
+   * addressing must never produce a carry-out imperative.
+   */
+  addressedToMe?: boolean;
+  /**
+   * The derived status of the directive (P-006), already reconciled across
+   * capture AND disposition. Optional so a sink that cannot afford the
+   * work-item join still renders a correctly LABELLED line; absent means
+   * "not derived", never "unclaimed".
+   */
+  status?: DirectiveStatus;
 }
 
 /**
@@ -1622,16 +1674,56 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
         order: 20,
         render: (directives) => {
           if (directives.length === 0) return [];
+          // A directive already settled by disposition renders in NO imperative
+          // bucket (P-006 / D-007). Dropping it here rather than at the reader is
+          // deliberate: the reader's job is to report the row, this class's job is
+          // to decide whether it is still ASKING for something.
+          const live = directives.filter((d) => !d.status || directiveNeedsAction(d.status));
+          if (live.length === 0) return [];
           const lines: string[] = [];
-          for (const directive of directives.slice(0, 2)) {
+          for (const directive of live.slice(0, 2)) {
             const text = directive.verbatimText.replace(/\s+/g, ' ').trim();
             const excerpt = text.length > 110 ? `${text.slice(0, 109)}…` : text;
+            // Same 12-char truncation as renderOwnerDirectiveRow (owner-directives.ts)
+            // — reused rather than re-invented so one handle convention exists.
+            const by = directive.recordedBy.length > 12 ? directive.recordedBy.slice(0, 12) : directive.recordedBy;
+            // NOTE: a segment `render` receives only (state, committed) — no ownerId
+            // — so addressing is resolved in the READER, which does have it, and
+            // arrives here as a decided boolean. Undecided (`undefined`) must fall to
+            // the NOT-mine branch: the expensive error is claiming a foreign
+            // directive, never being over-cautious about your own.
+            const mine = directive.addressedToMe === true;
+            const claimedBy = directive.status?.kind === 'claimed' ? directive.status.claimedBy : undefined;
+            // `capturedByHook: false` means an AGENT asserted this, not the owner.
+            // Labelled, never silently promoted to owner speech.
+            const origin = directive.capturedByHook ? '' : ' owner-candidate';
+
+            // THREE BUCKETS, THREE DIFFERENT IMPERATIVES (D-004). Before this split
+            // every line ended in "orders:resolve-pending first." regardless of whom
+            // the owner was addressing — and because `owner_directives` rows are
+            // WORKSPACE-GLOBAL, an agent obeying that on someone else's directive did
+            // not merely mishandle its own agenda, it DESTROYED the addressee's row
+            // (WI-10002426 / WI-10002437).
+            const imperative = mine
+              ? // (1) addressed to me — carry it out.
+                directive.captureStatus === 'pending'
+                ? 'YOURS — orders:resolve-pending, then carry out.'
+                : 'YOURS — carry out, then orders:disposition.'
+              : claimedBy
+                ? // (3) another session's, and someone is already on it: awareness
+                  //     only. NO imperative — this line exists so you do not
+                  //     duplicate the work, not so you act.
+                  `addressed to ${by} · claimed by ${claimedBy.slice(0, 12)} — FYI only, do not act or resolve.`
+                : // (2) another session's and unclaimed: visible (the owner asked for
+                  //     that) but you must take a work-item carrying directiveRef
+                  //     BEFORE touching it, which is what the write-side rail enforces.
+                  `addressed to ${by} — NOT yours to resolve; to take it, work_items:create { directiveRef: ${directive.id} } first.`;
+
             lines.push(
-              `- 📌 owner directive #${directive.id} [${directive.captureStatus}] ${JSON.stringify(excerpt)} — ` +
-                (directive.captureStatus === 'pending' ? 'orders:resolve-pending first.' : 'carry/disposition when done.'),
+              `- 📌 owner directive #${directive.id} [${directive.captureStatus}${origin}] ${JSON.stringify(excerpt)} — ${imperative}`,
             );
           }
-          if (directives.length > 2) lines.push(`- 📌 +${directives.length - 2} more owner directives — orders:list { open: true }.`);
+          if (live.length > 2) lines.push(`- 📌 +${live.length - 2} more owner directives — orders:list { open: true }.`);
           return lines;
         },
       },
@@ -2719,13 +2811,40 @@ export function defaultOrientationDeps(): OrientationDeps {
     ownerDirectives: async (workspaceId) => {
       const { listOpenOwnerDirectives } = await import('./owner-directives');
       const rows: OwnerDirectiveRow[] = await listOpenOwnerDirectives(workspaceId, 12);
-      return rows
-        .filter((row) => row.captureStatus === 'pending' || row.captureStatus === 'open')
-        .map((row) => ({
-          id: row.id,
-          captureStatus: row.captureStatus === 'pending' ? 'pending' : 'open',
-          verbatimText: row.verbatimText,
-        }));
+      const live = rows.filter(
+        (row) => row.captureStatus === 'pending' || row.captureStatus === 'open',
+      );
+      if (live.length === 0) return [];
+
+      // ONE batched join for the whole banner, never one query per row: this runs on
+      // the turn-start hot path under a hard 2.5s wall shared with every other source.
+      // Failure DEGRADES the line rather than the block — an undecorated directive is
+      // still correctly LABELLED with recordedBy, which is the half that prevents the
+      // leak; only the claimed/unclaimed split is lost.
+      let byDirective = new Map<number, Array<{ id: string; state: string; assignee: string | null }>>();
+      try {
+        const { listWorkItemsByDirective } = await import('./work-items');
+        const linked = await listWorkItemsByDirective(workspaceId, live.map((r) => r.id));
+        byDirective = linked.reduce((acc, item) => {
+          const bucket = acc.get(item.directiveRef);
+          if (bucket) bucket.push(item);
+          else acc.set(item.directiveRef, [item]);
+          return acc;
+        }, new Map<number, Array<{ id: string; state: string; assignee: string | null }>>());
+      } catch {
+        byDirective = new Map();
+      }
+
+      return live.map((row) => ({
+        id: row.id,
+        captureStatus: (row.captureStatus === 'pending' ? 'pending' : 'open') as 'pending' | 'open',
+        verbatimText: row.verbatimText,
+        // The two fields whose absence WAS the bug (D-006). The parallel obligation
+        // rail has always mapped both; this is the same mapping, not a new source.
+        recordedBy: row.recordedBy,
+        capturedByHook: row.capturedByHook === true,
+        status: deriveDirectiveStatus(row, byDirective.get(row.id) ?? []),
+      }));
     },
     effortUpdates: async (ownerId, workspaceId) => {
       const [{ getOrgPg }, { resolveConcreteWorkspaceId }] = await Promise.all([
