@@ -9,9 +9,11 @@ import {
 } from '../../../workspace-host/initialization-operations-resolver';
 import {
   GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
+  GcpIapWorkspaceHostBootstrapNotReadyError,
   GcpIapWorkspaceHostInitializationOperations,
 } from '../../../workspace-host/gcp-iap-initialization-operations';
 import {
+  CREDENTIAL_LIFECYCLE_BOOTSTRAP_READINESS_TIMEOUT_MS,
   createWorkspaceHostCredentialLifecycleRoute,
   type WorkspaceHostCredentialLifecycleRouteDependencies,
 } from './credential-lifecycle';
@@ -217,5 +219,115 @@ describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
     const failedResponse = await post(failed, bodies.reconnect);
     expect(failedResponse.status).toBe(500);
     expect(JSON.stringify(await failedResponse.json())).not.toContain('secret-must-not-echo');
+  });
+
+  // WI-10002499: the wrapper around the host operations exposed `execute` alone, so the
+  // adapter's bootstrap gate never reached the runner and a post-upgrade reconnect raced the
+  // recreated VM's bootstrap.
+  it('forwards the host bootstrap gate, bound to the real GCP adapter, with the sync budget', async () => {
+    const commands: string[][] = [];
+    const transport = vi.fn(async (command: { args: readonly string[] }) => {
+      commands.push([...command.args]);
+      if (command.args.includes('/bin/test')) return { exitCode: 0, stderr: '', stdout: '' };
+      return {
+        exitCode: 0,
+        stderr: '',
+        stdout: JSON.stringify({
+          protocolVersion: GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
+          stepId: step.id,
+          status: 'succeeded',
+          observedAt: '2026-08-26T10:01:00.000Z',
+          publicEvidence: {},
+        }),
+      };
+    });
+    const operations = new GcpIapWorkspaceHostInitializationOperations(
+      {
+        projectId: 'active-alcove-504205-q3',
+        zone: 'us-central1-a',
+        instanceName: 'pc-workspace-1',
+        instanceId: '4715512353118305137',
+        sshUser: 'papercusp-workspace',
+        knownHostsFile: '/var/lib/papercusp/controller/known_hosts',
+        identityFile: '/var/lib/papercusp/controller/os-login',
+        remoteEntrypoint: '/opt/papercusp/current/bin/papercusp-workspace-initialize',
+      },
+      { run: transport },
+    );
+    const { dependencies, runLifecycle } = harness();
+    dependencies.resolveOperationsForHost = vi.fn(async () => ({
+      desired: {} as never,
+      operations,
+      deliveryCapabilities: { fileTransfer: true },
+    }));
+    runLifecycle.mockImplementationOnce(async (input) => {
+      input.onPlanned?.({ action: input.action, operationId: 'op-gated' } as never);
+      await input.operations.awaitBootstrapReady?.();
+      await input.operations.execute(step);
+      return {
+        operationId: 'op-gated',
+        plan: { action: input.action, steps: [step] } as never,
+        receipts: [] as never,
+      };
+    });
+
+    const response = await post(dependencies, bodies.reconnect);
+
+    expect(response.status).toBe(200);
+    expect(runLifecycle).toHaveBeenCalledWith(expect.objectContaining({
+      bootstrapReadinessTimeoutMs: CREDENTIAL_LIFECYCLE_BOOTSTRAP_READINESS_TIMEOUT_MS,
+    }));
+    expect(commands).toHaveLength(2);
+    expect(commands[0]).toContain('/bin/test');
+    expect(commands[1]).not.toContain('/bin/test');
+  });
+
+  it('adds no gate for an adapter that declares none (calibration)', async () => {
+    const { dependencies, runLifecycle } = harness();
+    await post(dependencies, bodies.reconnect);
+    expect(runLifecycle.mock.calls[0]?.[0].operations.awaitBootstrapReady).toBeUndefined();
+  });
+
+  it('answers an unfinished bootstrap with a retryable 503 naming the operation', async () => {
+    const { dependencies } = harness();
+    dependencies.runLifecycle = vi.fn(async (input) => {
+      input.onPlanned?.({ operationId: 'op-waited' } as never);
+      throw new GcpIapWorkspaceHostBootstrapNotReadyError({
+        conduitPath: '/usr/local/bin/papercusp-workspace-host-initialize',
+        probes: 40, waitedMs: 600_000, answered: true, lastExitCode: 1,
+        lastStderr: 'secret-must-not-echo',
+      });
+    });
+
+    const response = await post(dependencies, bodies.reconnect);
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get('retry-after')).toBe('60');
+    const payload = await response.json();
+    expect(payload).toMatchObject({
+      ok: false, reason: 'host-bootstrap-unfinished', hostId: 'host-1', operationId: 'op-waited',
+      waitedMs: 600_000, probes: 40,
+    });
+    expect(JSON.stringify(payload)).not.toContain('secret-must-not-echo');
+  });
+
+  it('answers a host that never gave a clean probe answer with a 502, not a retry hint', async () => {
+    const { dependencies } = harness();
+    dependencies.runLifecycle = vi.fn(async (input) => {
+      input.onPlanned?.({ operationId: 'op-unreachable' } as never);
+      throw new GcpIapWorkspaceHostBootstrapNotReadyError({
+        conduitPath: '/usr/local/bin/papercusp-workspace-host-initialize',
+        probes: 40, waitedMs: 600_000, answered: false, lastExitCode: 255,
+        lastStderr: 'Permission denied (publickey) secret-must-not-echo',
+      });
+    });
+
+    const response = await post(dependencies, bodies.reconnect);
+
+    expect(response.status).toBe(502);
+    expect(response.headers.get('retry-after')).toBeNull();
+    const payload = await response.json();
+    expect(payload).toMatchObject({ ok: false, reason: 'host-unreachable', operationId: 'op-unreachable' });
+    expect(JSON.stringify(payload)).not.toContain('secret-must-not-echo');
   });
 });
