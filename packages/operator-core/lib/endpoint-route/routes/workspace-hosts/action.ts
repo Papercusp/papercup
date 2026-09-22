@@ -1,12 +1,14 @@
 /** POST /workspace-hosts/action — durable lifecycle admission used by the cloud-workspaces UI. */
 import { defineTool } from '@papercusp/agent-mcp';
 import {
+  isWorkspaceHostOperationAcceptance,
   startWorkspaceHostDestroyWorkflow,
   startWorkspaceHostLifecycleWorkflow,
   WorkspaceHostProvisioningConflictError,
   type StartWorkspaceHostDestroyInput,
   type StartWorkspaceHostLifecycleInput,
 } from '../../../dbos/workspace-host-provision-workflow';
+import { workspaceHostAuditUrl } from '../../../workspace-host/admission-window';
 import type {
   WorkspaceHostDesiredSpec,
   WorkspaceHostImageRef,
@@ -292,6 +294,23 @@ export function createWorkspaceHostActionRoute(
               ...(isRecord(body.snapshot) ? { snapshot: body.snapshot as unknown as WorkspaceHostSnapshotRef } : {}),
               ...(isRecord(body.desired) ? { desired: body.desired as unknown as WorkspaceHostDesiredSpec } : {}),
             });
+        if (isWorkspaceHostOperationAcceptance(result)) {
+          // Durably enqueued but still queued or running after the admission window: a 202 with
+          // the operation id, never a request held open past every upstream deadline
+          // (EI-23712230399040759). A 202 confirms acceptance, not the outcome.
+          const auditUrl = workspaceHostAuditUrl(result.hostId);
+          return Response.json(
+            {
+              ok: true,
+              status: 'accepted',
+              operationId: result.operationId,
+              hostId: result.hostId,
+              auditUrl,
+              message: `Workspace-host ${action} accepted; follow the host timeline for progress`,
+            },
+            { status: 202, headers: { location: auditUrl } },
+          );
+        }
         const response = {
           ok: result.status !== 'failed',
           status: result.status,

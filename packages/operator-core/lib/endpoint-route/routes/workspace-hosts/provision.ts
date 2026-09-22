@@ -6,10 +6,12 @@ import {
   type WorkspaceHostDesiredSpec,
 } from '@papercusp/deployment-driver';
 import {
+  isWorkspaceHostOperationAcceptance,
   startWorkspaceHostProvisioningWorkflow,
   WorkspaceHostProvisioningConflictError,
   type StartWorkspaceHostProvisioningInput,
 } from '../../../dbos/workspace-host-provision-workflow';
+import { workspaceHostAuditUrl } from '../../../workspace-host/admission-window';
 import { dbosStarted } from '../../../dbos/bootstrap';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import {
@@ -210,6 +212,22 @@ export function createWorkspaceHostProvisionRoute(
           connection: { ...stored.connection, scope: desired.scope },
           ...(typeof body.operationId === 'string' ? { operationId: body.operationId } : {}),
         });
+        if (isWorkspaceHostOperationAcceptance(result)) {
+          // Still queued or running after the admission window (EI-23712230399040759): 202 with
+          // the operation id to follow on the host timeline, never a request held for minutes.
+          const auditUrl = workspaceHostAuditUrl(result.hostId);
+          return Response.json(
+            {
+              ok: true,
+              status: 'accepted',
+              operationId: result.operationId,
+              hostId: result.hostId,
+              auditUrl,
+              message: 'Workspace-host provision accepted; follow the host timeline for progress',
+            },
+            { status: 202, headers: { location: auditUrl } },
+          );
+        }
         const response = {
           ok: result.status !== 'failed',
           status: result.status,

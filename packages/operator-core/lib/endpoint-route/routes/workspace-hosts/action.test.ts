@@ -382,4 +382,38 @@ describe('POST /workspace-hosts/action existing-host lifecycle', () => {
       expect.objectContaining({ action: 'restore', snapshot, desired: restored }),
     );
   });
+
+  // EI-23712230399040759: a workflow still running after the admission window is ACCEPTED work.
+  // Holding the request for its result is what made every forwarded upgrade/destroy read as a
+  // 504 'outcome unknown' while the operation succeeded.
+  it('answers 202 with the operation id and audit URL when the workflow outlives the admission window', async () => {
+    const { dependencies, startLifecycle, startDestroy } = harness();
+    startLifecycle.mockResolvedValueOnce({ status: 'accepted', operationId: 'op-upgrade-accepted-1', hostId: 'host-1' });
+    const upgrade = await post(dependencies, {
+      action: 'upgrade',
+      workspaceId: 'host-1',
+      operationId: 'op-upgrade-accepted-1',
+      image: { id: 'projects/images/global/images/papercusp-v2' },
+    });
+
+    expect(upgrade.status).toBe(202);
+    expect(upgrade.headers.get('location')).toBe('/api/workspace-hosts/host-1/audit');
+    await expect(upgrade.json()).resolves.toEqual({
+      ok: true,
+      status: 'accepted',
+      operationId: 'op-upgrade-accepted-1',
+      hostId: 'host-1',
+      auditUrl: '/api/workspace-hosts/host-1/audit',
+      message: 'Workspace-host upgrade accepted; follow the host timeline for progress',
+    });
+
+    startDestroy.mockResolvedValueOnce({ status: 'accepted', operationId: 'op-destroy-accepted-1', hostId: 'host-1' });
+    const destroy = await post(dependencies, { ...destroyBody, operationId: 'op-destroy-accepted-1' });
+    expect(destroy.status).toBe(202);
+    await expect(destroy.json()).resolves.toMatchObject({
+      ok: true,
+      status: 'accepted',
+      operationId: 'op-destroy-accepted-1',
+    });
+  });
 });

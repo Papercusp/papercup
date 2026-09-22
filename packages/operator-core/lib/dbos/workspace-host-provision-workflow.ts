@@ -31,6 +31,10 @@ import {
   type RunWorkspaceHostLifecycleInput,
 } from '../workspace-host/lifecycle-runner';
 import { recordWorkspaceHostOperationTerminalFailure } from '../workspace-host/observability-store';
+import {
+  WORKSPACE_HOST_ADMISSION_WINDOW_MS,
+  type WorkspaceHostOperationAcceptance,
+} from '../workspace-host/admission-window';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 
@@ -297,17 +301,41 @@ function rehydrateWorkspaceHostProvisioningError(error: unknown): unknown {
   return error;
 }
 
+/**
+ * Wait at most the admission window for a durably-enqueued workflow (EI-23712230399040759).
+ * `DBOS.getResult` rethrows the workflow's own failure, so a fast typed refusal still reaches
+ * the route's typed mapping; `null` means the workflow is queued or running and the caller
+ * answers 202 instead of holding the request open for minutes.
+ */
+async function settleWithinAdmissionWindow<T>(
+  workflowId: string,
+  accepted: WorkspaceHostOperationAcceptance,
+): Promise<T | WorkspaceHostOperationAcceptance> {
+  const settled = await DBOS.getResult<T>(workflowId, {
+    timeoutSeconds: WORKSPACE_HOST_ADMISSION_WINDOW_MS / 1_000,
+  });
+  return settled ?? accepted;
+}
+
+export function isWorkspaceHostOperationAcceptance(value: unknown): value is WorkspaceHostOperationAcceptance {
+  return typeof value === 'object' && value !== null && (value as { status?: unknown }).status === 'accepted';
+}
+
 export async function startWorkspaceHostProvisioningWorkflow(
   input: StartWorkspaceHostProvisioningInput,
-): Promise<WorkspaceHostProvisioningResult> {
+): Promise<WorkspaceHostProvisioningResult | WorkspaceHostOperationAcceptance> {
   const request = workspaceHostProvisioningEnqueueRequest(input);
   try {
-    const handle = await DBOS.startWorkflow(workspaceHostProvisioningWorkflow, {
+    await DBOS.startWorkflow(workspaceHostProvisioningWorkflow, {
       workflowID: request.workflowId,
       queueName: workspaceHostProvisioningQueue.name,
       enqueueOptions: { deduplicationID: request.deduplicationId },
     })(request.workflowInput);
-    return (await handle.getResult()) as WorkspaceHostProvisioningResult;
+    return await settleWithinAdmissionWindow<WorkspaceHostProvisioningResult>(request.workflowId, {
+      status: 'accepted',
+      operationId: request.workflowInput.operationId,
+      hostId: input.desired.hostId,
+    });
   } catch (error) {
     if (isWorkspaceHostProvisioningDedupConflict(error)) {
       throw new WorkspaceHostProvisioningConflictError(input.desired.hostId);
@@ -323,17 +351,21 @@ export async function startWorkspaceHostProvisioningWorkflow(
 
 export async function startWorkspaceHostDestroyWorkflow(
   input: StartWorkspaceHostDestroyInput,
-): Promise<WorkspaceHostDestroyResult> {
+): Promise<WorkspaceHostDestroyResult | WorkspaceHostOperationAcceptance> {
   const operationId = input.operationId ?? randomUUID();
   const workflowInput: WorkspaceHostDestroyWorkflowInput = { ...input, action: 'destroy', operationId };
   const keys = workspaceHostWorkflowKeys({ workspaceId: input.workspaceId, hostId: input.hostId, operationId });
   try {
-    const handle = await DBOS.startWorkflow(workspaceHostProvisioningWorkflow, {
+    await DBOS.startWorkflow(workspaceHostProvisioningWorkflow, {
       workflowID: keys.workflowId,
       queueName: workspaceHostProvisioningQueue.name,
       enqueueOptions: { deduplicationID: keys.deduplicationId },
     })(workflowInput);
-    return (await handle.getResult()) as WorkspaceHostDestroyResult;
+    return await settleWithinAdmissionWindow<WorkspaceHostDestroyResult>(keys.workflowId, {
+      status: 'accepted',
+      operationId,
+      hostId: input.hostId,
+    });
   } catch (error) {
     if (isWorkspaceHostProvisioningDedupConflict(error)) {
       throw new WorkspaceHostProvisioningConflictError(input.hostId);
@@ -344,17 +376,21 @@ export async function startWorkspaceHostDestroyWorkflow(
 
 export async function startWorkspaceHostLifecycleWorkflow(
   input: StartWorkspaceHostLifecycleInput,
-): Promise<WorkspaceHostProvisioningResult> {
+): Promise<WorkspaceHostProvisioningResult | WorkspaceHostOperationAcceptance> {
   const operationId = input.operationId ?? randomUUID();
   const workflowInput: WorkspaceHostLifecycleWorkflowInput = { ...input, operationId };
   const keys = workspaceHostWorkflowKeys({ workspaceId: input.workspaceId, hostId: input.hostId, operationId });
   try {
-    const handle = await DBOS.startWorkflow(workspaceHostProvisioningWorkflow, {
+    await DBOS.startWorkflow(workspaceHostProvisioningWorkflow, {
       workflowID: keys.workflowId,
       queueName: workspaceHostProvisioningQueue.name,
       enqueueOptions: { deduplicationID: keys.deduplicationId },
     })(workflowInput);
-    return (await handle.getResult()) as WorkspaceHostProvisioningResult;
+    return await settleWithinAdmissionWindow<WorkspaceHostProvisioningResult>(keys.workflowId, {
+      status: 'accepted',
+      operationId,
+      hostId: input.hostId,
+    });
   } catch (error) {
     if (isWorkspaceHostProvisioningDedupConflict(error)) {
       throw new WorkspaceHostProvisioningConflictError(input.hostId);

@@ -13,6 +13,10 @@ const control = vi.hoisted(() => ({
   resultError: null as unknown,
   storedInput: null as unknown,
   getResult: vi.fn(),
+  /** Simulates `DBOS.getResult` timing out: the workflow is still queued or running. */
+  admissionPending: false,
+  getResultOptions: null as unknown,
+  lastStarted: null as null | (() => Promise<unknown>),
   runInitialization: vi.fn(),
   runDesktopPack: vi.fn(),
   startOptions: null as null | Record<string, unknown>,
@@ -73,12 +77,20 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
       },
       sleep: control.sleep,
       registerWorkflow: (implementation: unknown) => implementation,
+      getResult: (_workflowId: string, options: unknown) => {
+        control.getResult();
+        control.getResultOptions = options;
+        if (control.admissionPending) return Promise.resolve(null);
+        return control.lastStarted!();
+      },
       startWorkflow:
         (workflow: (input: unknown) => Promise<unknown>, options: Record<string, unknown>) => (input: unknown) => {
           control.startOptions = options;
           if (control.dedupConflict) {
             return Promise.reject(Object.assign(new Error('duplicate'), { dbosErrorCode: 28 }));
           }
+          control.lastStarted = () =>
+            control.resultError === null ? workflow(input) : Promise.reject(control.resultError);
           return Promise.resolve({
             getWorkflowInputs: async () => [control.storedInput ?? input],
             getResult: () => {
@@ -94,6 +106,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
 import {
   setWorkspaceHostProvisioningExecutor,
   startWorkspaceHostDestroyWorkflow,
+  startWorkspaceHostLifecycleWorkflow,
   startWorkspaceHostProvisioningWorkflow,
   startWorkspaceHostInitializationWorkflow,
   startWorkspaceHostDesktopPackWorkflow,
@@ -144,6 +157,9 @@ beforeEach(() => {
   control.dedupConflict = false;
   control.resultError = null;
   control.storedInput = null;
+  control.admissionPending = false;
+  control.getResultOptions = null;
+  control.lastStarted = null;
   control.getResult.mockClear();
   control.runInitialization.mockReset();
   control.runDesktopPack.mockReset();
@@ -519,5 +535,64 @@ describe('workspace-host provisioning DBOS admission', () => {
     await expect(startWorkspaceHostProvisioningWorkflow(input)).rejects.toBeInstanceOf(
       WorkspaceHostProvisioningConflictError,
     );
+  });
+
+  // EI-23712230399040759: the HTTP admission must never hold the request for the workflow's whole
+  // run. A bounded wait that times out is ACCEPTED work, answered with the operation identity.
+  it('bounds the result wait by the admission window and returns acceptance when it has not settled', async () => {
+    control.admissionPending = true;
+    setWorkspaceHostProvisioningExecutor(async () => {
+      throw new Error('an unsettled admission must not observe the workflow result');
+    });
+
+    await expect(startWorkspaceHostProvisioningWorkflow(input)).resolves.toEqual({
+      status: 'accepted',
+      operationId: 'op-1',
+      hostId: 'host-1',
+    });
+    expect(control.getResultOptions).toEqual({ timeoutSeconds: 5 });
+
+    await expect(
+      startWorkspaceHostDestroyWorkflow({
+        workspaceId: 'ws-1',
+        hostId: 'host-1',
+        connectionId: 'connection-1',
+        connection,
+        disposition: 'discard',
+        confirmation: {
+          expectedHostId: 'host-1',
+          confirmedBy: 'operator:test',
+          confirmedAt: '2026-08-25T00:00:00Z',
+        },
+        operationId: 'destroy-accepted-1',
+      }),
+    ).resolves.toEqual({ status: 'accepted', operationId: 'destroy-accepted-1', hostId: 'host-1' });
+
+    await expect(
+      startWorkspaceHostLifecycleWorkflow({
+        workspaceId: 'ws-1',
+        hostId: 'host-1',
+        action: 'upgrade',
+        connection,
+        image: { id: 'projects/images/global/images/papercusp-v2' },
+        operationId: 'upgrade-accepted-1',
+      }),
+    ).resolves.toEqual({ status: 'accepted', operationId: 'upgrade-accepted-1', hostId: 'host-1' });
+    expect(control.getResult).toHaveBeenCalledTimes(3);
+  });
+
+  it('still returns a workflow that settles inside the admission window, including its typed refusal', async () => {
+    control.runProvisioning.mockResolvedValueOnce({
+      status: 'succeeded',
+      operationId: 'op-1',
+      hostId: 'host-1',
+      plan,
+      checkpoints: [],
+    });
+    await expect(startWorkspaceHostProvisioningWorkflow(input)).resolves.toMatchObject({ status: 'succeeded' });
+
+    const refused = new WorkspaceHostProvisioningRequestError(['upgrade image is required']);
+    control.resultError = refused;
+    await expect(startWorkspaceHostProvisioningWorkflow(input)).rejects.toBe(refused);
   });
 });

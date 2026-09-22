@@ -6,6 +6,7 @@ import {
   type SiblingManagedTimers,
 } from '../schedule-federation';
 import { requestOnlyHost } from '../background-workers';
+import { WORKSPACE_HOST_CONTROLLER_FORWARD_TIMEOUT_MS } from './admission-window';
 
 export type WorkspaceHostRequestPath =
   | '/api/workspace-hosts/action'
@@ -25,7 +26,7 @@ export interface WorkspaceHostControllerForwardingOptions {
   timeoutMs?: number;
 }
 
-export const DEFAULT_WORKSPACE_HOST_CONTROLLER_FORWARD_TIMEOUT_MS = 3_000;
+export const DEFAULT_WORKSPACE_HOST_CONTROLLER_FORWARD_TIMEOUT_MS = WORKSPACE_HOST_CONTROLLER_FORWARD_TIMEOUT_MS;
 
 function isDirectBackgroundController(row: SiblingManagedTimers): boolean {
   return (
@@ -128,10 +129,11 @@ export async function forwardWorkspaceHostRequest(
       },
     });
   } catch {
-    // The controller waits for the durable workflow's result, which can outlive
-    // this transport deadline. Once dispatched, a timeout or lost response says
-    // nothing about acceptance. Reserve null for local-controller bypass; otherwise the
-    // route reports an unavailable executor even while its mutation is running.
+    // The controller answers within its admission window (202 once enqueued), so this
+    // deadline firing means the controller itself is wedged or unreachable. Once
+    // dispatched, a timeout or lost response still says nothing about acceptance.
+    // Reserve null for local-controller bypass; otherwise the route reports an
+    // unavailable executor even while its mutation is running.
     return Response.json(
       {
         ok: false,

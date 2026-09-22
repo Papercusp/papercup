@@ -4,6 +4,7 @@ import {
   forwardWorkspaceHostRequest,
   type WorkspaceHostControllerForwardingOptions,
 } from './controller-forwarding';
+import { WORKSPACE_HOST_ADMISSION_WINDOW_MS } from './admission-window';
 
 type ControllerRow = Awaited<
   ReturnType<NonNullable<WorkspaceHostControllerForwardingOptions['collectControllers']>>
@@ -194,5 +195,13 @@ describe('workspace-host controller forwarding', () => {
       operationId: submittedOperationId,
     });
     expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  // EI-23712230399040759: a deadline at or under the controller's admission window reports every
+  // slow-but-healthy admission as a lost response with an unknown outcome.
+  it('outlives the controller admission window by a real margin', () => {
+    expect(DEFAULT_WORKSPACE_HOST_CONTROLLER_FORWARD_TIMEOUT_MS - WORKSPACE_HOST_ADMISSION_WINDOW_MS).toBeGreaterThanOrEqual(
+      5_000,
+    );
   });
 });

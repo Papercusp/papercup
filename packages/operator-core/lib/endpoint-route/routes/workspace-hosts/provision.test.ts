@@ -254,6 +254,23 @@ describe('POST /workspace-hosts/provision', () => {
     });
   });
 
+  it('answers 202 with the operation id and audit URL when the provision outlives the admission window', async () => {
+    const { dependencies, startProvisioning } = harness();
+    startProvisioning.mockResolvedValueOnce({ status: 'accepted', operationId: 'op-accepted-1', hostId: 'host-1' });
+
+    const response = await post(dependencies, { connectionId: 'connection-1', name: 'Host', desired });
+    expect(response.status).toBe(202);
+    expect(response.headers.get('location')).toBe('/api/workspace-hosts/host-1/audit');
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      status: 'accepted',
+      operationId: 'op-accepted-1',
+      hostId: 'host-1',
+      auditUrl: '/api/workspace-hosts/host-1/audit',
+      message: 'Workspace-host provision accepted; follow the host timeline for progress',
+    });
+  });
+
   it('maps unsupported targets and typed runner refusals without echoing internal failures', async () => {
     const unsupported = harness();
     unsupported.readConnection.mockResolvedValueOnce({
