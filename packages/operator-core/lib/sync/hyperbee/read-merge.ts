@@ -95,6 +95,26 @@ export const MERGE_YIELD_MAX_MS = 250;
  *  after the pass returned would capture nothing (the WI-2105 REV restart loop). */
 export const MERGE_PERSIST_EVERY_OPS = 5000;
 
+/** WI-10002474: minimum spacing between cursor-persist-failure warnings. The
+ *  persist stays best-effort (never aborts a pass), but a store that rejects
+ *  EVERY save must be visible: the in-memory position keeps advancing while
+ *  the durable one is frozen, and a restart silently re-folds the gap. */
+export const CURSOR_PERSIST_WARN_INTERVAL_MS = 60_000;
+let lastCursorPersistWarnAt = Number.NEGATIVE_INFINITY;
+function warnCursorPersistFailed(err: unknown): void {
+  const now = Date.now();
+  if (now - lastCursorPersistWarnAt < CURSOR_PERSIST_WARN_INTERVAL_MS) return;
+  lastCursorPersistWarnAt = now;
+  console.warn(
+    '[read-merge] merge cursor persist FAILED — durable position is NOT advancing (a restart re-folds from the last saved one):',
+    err instanceof Error ? err.message : String(err),
+  );
+}
+/** Test seam: reset the persist-failure warning throttle. */
+export function resetCursorPersistWarnThrottleForTests(): void {
+  lastCursorPersistWarnAt = Number.NEGATIVE_INFINITY;
+}
+
 /** WI-4020: default cap on `MergeCursor.winners`' entry count. `winners` is
  *  durable-for-the-process (unlike the transient per-call map in
  *  `mergeAdmittedLogs`) and grows by one entry per distinct (table, hbKey)
@@ -1441,10 +1461,21 @@ export async function mergeAdmittedLogsIncremental(
       if (onCursorAdvance && ++opsSincePersist >= MERGE_PERSIST_EVERY_OPS) {
         opsSincePersist = 0;
         cursor.positions.set(log.keyHex, effectivePos(pos));
+        // WI-10002474: a failure carried in from a PREVIOUS pass is resolved once
+        // this pass has applied past its position without deferring anything.
+        // Clear it HERE, not only at pass end. Otherwise every intra-pass persist
+        // writes an advanced position beside a failure BEHIND it, which violates
+        // the 1122 check `apply_failure.position >= position`. That fails the
+        // multi-row save for EVERY log, so a long catch-up pass persists nothing.
+        if (firstDeferredPos < 0 && previousFailure && pos > previousFailure.position) {
+          cursor.applyFailures?.delete(log.keyHex);
+        }
         try {
           await onCursorAdvance(cursor.positions);
-        } catch {
-          // best-effort: a failed persist must never abort the merge pass
+        } catch (err) {
+          // best-effort: a failed persist must never abort the merge pass —
+          // but it must never be SILENT either (WI-10002474 hid for hours).
+          warnCursorPersistFailed(err);
         }
       }
       // Distinguish "op resolved (possibly version-dropped)" from "unavailable"
@@ -1624,8 +1655,9 @@ export async function mergeAdmittedLogsIncremental(
     if (onCursorAdvance && (pos > from || firstDeferredPos >= 0 || previousFailure)) {
       try {
         await onCursorAdvance(cursor.positions);
-      } catch {
+      } catch (err) {
         // best-effort: a failed persist must never abort the merge pass
+        warnCursorPersistFailed(err);
       }
     }
     if (effectivePos(pos) < log.length) {

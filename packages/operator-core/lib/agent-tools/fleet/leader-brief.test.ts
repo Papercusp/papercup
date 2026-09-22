@@ -57,6 +57,8 @@ import {
   selectLeaderBriefMembers,
   shouldRefreshLeaderControlForBrief,
   topExcludedFloors,
+  selectLeaderBriefObligationFields,
+  leaderBriefObligationFields,
   type ComposedParkEntry,
   type DecoratedAgent,
 } from './leader-brief';
@@ -125,6 +127,97 @@ describe('P-026 owner-directive leader projection', () => {
     });
     expect(projected.directives[0]!.action).not.toHaveProperty('targetRef');
     expect(projected.projection.text).toContain('orders:get #27');
+  });
+
+  // The projection above was the only guarded half of P-026. Nothing drove the
+  // ASSEMBLY, so two mutation probes against it — hard-nulling the selection off
+  // the obligation read, and deleting the spread that puts the field on the
+  // returned brief — each left this suite GREEN while a leader's brief silently
+  // lost every owner directive (WI-10002415). The two hops are now exported and
+  // driven here, with a real projection rather than a hand-shaped stand-in.
+  function realOwnerDirectives() {
+    const obligation = {
+      id: 'obl:owner-directive:31',
+      ruleId: 'owner-directive-disposition',
+      ruleRevision: 'owner-directive-disposition-v1',
+      family: 'owner-directive' as const,
+      title: 'Owner directive #31: "ship the plan"',
+      scope: { workspaceId: 'ws', ownerId: 'leader' },
+      responsibleOwnerId: 'leader',
+      episode: 'open:31',
+      status: 'due' as const,
+      authority: { kind: 'owner' as const, sourceRef: 'owner-directive:31', turnOrigin: 'owner-typed' as const },
+      reason: 'ship the plan',
+      priority: 'critical' as const,
+      causalRank: 0,
+      applicableDemand: 1,
+      sourceGeneration: 'agenda-31',
+      evidence: [],
+      action: {
+        kind: 'repair' as const,
+        summary: 'carry out, then close: orders:disposition',
+        tool: 'orders:disposition',
+        args: { id: 31 },
+        targetRef: 'orders:get #31',
+        recoveryRef: 'orders:get #31',
+      },
+      clearsWhen: {
+        id: 'owner-directive-dispositioned:31', summary: 'close it',
+        evidenceKind: 'state' as const, sourceRef: 'owner-directive:31',
+      },
+    };
+    const agenda: AgentObligationAgenda = {
+      schemaVersion: 'agent-obligations-v1',
+      evaluatedAt: '2026-09-22T20:00:00.000Z',
+      sourceGeneration: 'agenda-31',
+      evaluations: [obligation],
+      primary: [obligation],
+      conflicts: [],
+    };
+    return projectLeaderBriefOwnerDirectives({
+      agenda,
+      projection: {
+        text: '- [DUE] Owner directive #31: "ship the plan" — carry out, then close: orders:disposition; full: orders:get #31',
+        entries: [obligation],
+        receipt: {
+          sink: 'fleet:leader-brief:owner-directives', mode: 'truncate', entriesAvailable: 1,
+          entriesDelivered: 1, entriesOmitted: 0, bodyDeliveredChars: 110, estimatedTokens: 28,
+          bodyTruncated: false, refused: false,
+        },
+      },
+      read: { elapsedMs: 4, degradedSources: [] },
+    });
+  }
+
+  it('carries the projected owner directives from the obligation read onto the brief', () => {
+    const ownerDirectives = realOwnerDirectives();
+    const selected = selectLeaderBriefObligationFields({ agentObligations: null, ownerDirectives });
+
+    expect(selected.ownerDirectives).toBe(ownerDirectives);
+    expect(leaderBriefObligationFields(selected)).toEqual({ ownerDirectives });
+    expect(leaderBriefObligationFields(selected).ownerDirectives?.directives[0]).toMatchObject({
+      id: 'obl:owner-directive:31',
+    });
+  });
+
+  it('CONTROL: an absent obligation read leaves the field OFF the brief, not rendered as null', () => {
+    // Without this the assertion above would pass against a wiring that always
+    // emits the key, and "the brief has ownerDirectives" would stop meaning
+    // "the leader has owner directives".
+    expect(selectLeaderBriefObligationFields(null)).toEqual({ agentObligations: null, ownerDirectives: null });
+    expect(selectLeaderBriefObligationFields(undefined)).toEqual({ agentObligations: null, ownerDirectives: null });
+    expect(leaderBriefObligationFields({ agentObligations: null, ownerDirectives: null })).toEqual({});
+    expect(leaderBriefObligationFields({ agentObligations: null, ownerDirectives: null })).not.toHaveProperty(
+      'ownerDirectives',
+    );
+  });
+
+  it('keeps owner directives a field of their own beside agent obligations, in that order (D-016)', () => {
+    const agentObligations = { text: 'agent obligations', read: { elapsedMs: 1, degradedSources: [] } };
+    const fields = leaderBriefObligationFields({ agentObligations, ownerDirectives: realOwnerDirectives() });
+
+    expect(Object.keys(fields)).toEqual(['agentObligations', 'ownerDirectives']);
+    expect(fields.agentObligations).toBe(agentObligations);
   });
 });
 

@@ -940,6 +940,45 @@ export function projectLeaderBriefOwnerDirectives(input: {
   };
 }
 
+export interface LeaderBriefObligationProjections<A> {
+  agentObligations: A | null;
+  ownerDirectives: LeaderBriefOwnerDirectives | null;
+}
+
+/**
+ * P-026 / D-016: the first of the two hops that put a leader's owner-directive
+ * projection ON the brief — reading it off an obligation read that is itself
+ * optional and best-effort. Extracted so the WIRING is reachable by a test:
+ * `projectLeaderBriefOwnerDirectives` above was already guarded, but nothing
+ * drove the assembly, so a mutation that hard-nulled this selection left the
+ * suite green (WI-10002415).
+ */
+export function selectLeaderBriefObligationFields<A>(
+  obligationProjections: LeaderBriefObligationProjections<A> | null | undefined,
+): LeaderBriefObligationProjections<A> {
+  return {
+    agentObligations: obligationProjections?.agentObligations ?? null,
+    ownerDirectives: obligationProjections?.ownerDirectives ?? null,
+  };
+}
+
+/**
+ * The second hop. The brief carries each field ONLY when it has one, so an
+ * absent obligation read stays absent instead of rendering as an explicit
+ * null. Field order is load-bearing: agent obligations first, then owner
+ * directives — D-016 keeps owner turns a distinct leader obligation, never
+ * folded into `members[].directiveActuation` (the leader→member
+ * DirectiveActuationSummary, P-030).
+ */
+export function leaderBriefObligationFields<A>(
+  fields: LeaderBriefObligationProjections<A>,
+): { agentObligations?: A; ownerDirectives?: LeaderBriefOwnerDirectives } {
+  return {
+    ...(fields.agentObligations ? { agentObligations: fields.agentObligations } : {}),
+    ...(fields.ownerDirectives ? { ownerDirectives: fields.ownerDirectives } : {}),
+  };
+}
+
 export interface LeaderBriefMemberVerdict {
   agentId: string;
   verdict: MemberVerdict | null;
@@ -4911,8 +4950,7 @@ export async function buildLeaderBrief(
         1_800,
       )
     : null;
-  const agentObligations = obligationProjections?.agentObligations ?? null;
-  const ownerDirectives = obligationProjections?.ownerDirectives ?? null;
+  const { agentObligations, ownerDirectives } = selectLeaderBriefObligationFields(obligationProjections);
   // P-009: detector-only projection over P-006's existing graph/liveness/
   // progress rows. Do not re-read any of those sources here: one measured view
   // feeds both the ranked table and this tri-state alarm.
@@ -5088,11 +5126,10 @@ export async function buildLeaderBrief(
       ...(leadershipClaimed ? { leadershipClaimed } : {}),
       ...(leaderControl ? { leaderControl } : {}),
       ...(monitoringBlindAdvisory ? { monitoringBlindAdvisory } : {}),
-      ...(agentObligations ? { agentObligations } : {}),
       // P-026 / D-016: owner turns are a distinct leader obligation. Do not
       // fold this into members[].directiveActuation, which is the
       // DirectiveActuationSummary for leader→member effects (P-030).
-      ...(ownerDirectives ? { ownerDirectives } : {}),
+      ...leaderBriefObligationFields({ agentObligations, ownerDirectives }),
       // P-019/P-012: the arbitrated "which layer is blocking my fleet" verdict, placed
       // ABOVE the summary on purpose — the alert booleans below are flat and co-fire, and
       // reading them in field order is what produced the inverted remedy this fixes.
