@@ -77,14 +77,23 @@ const WS = 'papercusp-workspace';
 const ME = 'su-mine';
 const THEM = 'su-theirs';
 
-/** Rows for a directive recorded by `recordedBy`; work_items rows from `holders`. */
+/**
+ * Rows for a directive recorded by `recordedBy`; work_items rows from `holders`.
+ *
+ * The holder rows MUST be keyed `taken_by` — the real column on
+ * harness_shared.work_items. Keying them `assignee` is what made the outage
+ * below invisible to this suite: the fixture agreed with the bug, so the
+ * oracle was not independent of the implementation and every assertion passed
+ * while the real query raised 42703. The control at the bottom of this file
+ * pins the spelling so the two cannot drift apart again.
+ */
 function directiveWorld(recordedBy: string | null, holders: Array<string | null> = []) {
   return (text: string) => {
     if (text.includes('harness_shared.owner_directives')) {
       return recordedBy == null ? [] : [{ recorded_by: recordedBy }];
     }
     if (text.includes('harness_shared.work_items')) {
-      return holders.map((assignee) => ({ assignee }));
+      return holders.map((takenBy) => ({ taken_by: takenBy }));
     }
     return [];
   };
@@ -283,5 +292,46 @@ describe('agenda writes — per-session, and deliberately UNGUARDED (D-008 defec
     expect(call!.text).toContain("state = 'dismissed'");
     expect(call!.values).toContain(ME);
     expect(call!.values).toContain(WS);
+  });
+});
+
+describe('control: the holder-column assertion is falsifiable (P-008 outage class)', () => {
+  // NOT hypothetical: the first draft of directiveActionVerdict selected
+  // `assignee` from harness_shared.work_items. That column does not exist on
+  // that table — the spelling belongs to the issue-family view — so the query
+  // raised 42703 and `orders:resolve-pending` failed 100% of calls fleet-wide
+  // until it was fixed.
+  //
+  // This suite did not catch it, and the reason is the point of this block:
+  // `directiveWorld` handed back rows keyed `assignee`, so the FIXTURE agreed
+  // with the bug. An oracle derived from the implementation cannot falsify it.
+  // Fixing the column alone would have left that trap armed — the fixture was
+  // then stranded the other way, silently yielding `undefined` for every
+  // holder — so the spelling is pinned here, on the generated SQL itself.
+  //
+  // Mutating the real module to re-prove this would dirty a swept shared tree,
+  // so the wrong implementation lives here permanently instead (repo
+  // mutation-probe tier 1, matching fleet_registry/pause-holds.test.ts).
+  it('the real holders query selects taken_by, and never assignee', async () => {
+    const sql = fakeSql(directiveWorld(THEM, [ME]));
+
+    const verdict = await directiveActionVerdict({ directiveId: 96, ownerId: ME, workspaceId: WS }, sql);
+
+    const call = sql.calls.find((c) => c.text.includes('harness_shared.work_items'));
+    expect(call, 'the work_items holder lookup must actually run').toBeDefined();
+    expect(call!.text).toContain('taken_by');
+    expect(call!.text).not.toContain('assignee');
+    // Calibration: the query must also be WIRED UP, not merely spelled right.
+    // Without this, a holders lookup whose rows never reach the verdict would
+    // still satisfy both assertions above.
+    expect(verdict).toEqual({ allowed: true, because: 'holds-linking-work-item' });
+  });
+
+  it('control: the pre-fix query FAILS both assertions the real one passes', () => {
+    const preFixSql =
+      'SELECT assignee FROM harness_shared.work_items WHERE workspace_id = ? AND assignee IS NOT NULL';
+
+    expect(preFixSql).not.toContain('taken_by');
+    expect(preFixSql).toContain('assignee');
   });
 });
