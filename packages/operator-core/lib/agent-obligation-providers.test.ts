@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GATE_CODE_OWNERSHIP,
   buildAgentObligationAgenda,
   independentVerificationObligation,
   ownerReportObligation,
   planPlacementObligation,
   type IndependentVerificationProviderInput,
   type OwnerReportProviderInput,
+  type PlanAcceptanceGateCodeOwnership,
   type PlanPlacementProviderInput,
 } from './agent-obligation-providers';
 import type { GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief } from './goal-launch-settings';
@@ -515,7 +517,13 @@ describe('frozen provider matrix: independent verification (6 opportunities)', (
   it.each([
     ['due', verifyInput(known(gate(false, 'acceptance_ungraded'))), 'delegate'],
     ['due', verifyInput(known(gate(false, 'self_graded_only'))), 'delegate'],
-    ['blocked', verifyInput(known(gate(false, 'acceptance_rubric_missing'))), 'repair'],
+    // D-009 ruling 3: author repair is DUE, not blocked. The author can start it
+    // this second, so `[BLOCKED]` was telling the only agent who could act that it
+    // could not. It is `repair`, never `delegate` — visibility recruits nobody.
+    ['due', verifyInput(known(gate(false, 'acceptance_rubric_missing'))), 'repair'],
+    // A failed MEASUREMENT is not work: nobody owns a repair for a gate read that
+    // never happened, so it stays blocked and asks to be re-read.
+    ['blocked', verifyInput(known(gate(false, 'acceptance_lineage_unreadable'))), 'inspect'],
     ['satisfied', verifyInput(known(gate(true))), undefined],
     ['not-applicable', verifyInput(known(gate(false, 'plan_items_unfinished'), false)), undefined],
     ['unknown', verifyInput({ status: 'unknown', failure }), 'inspect'],
@@ -531,6 +539,77 @@ describe('frozen provider matrix: independent verification (6 opportunities)', (
     const second = independentVerificationObligation({ ...verifyInput(read), sourceGeneration: 'generation-2' });
     expect(first.id).not.toBe(second.id);
   });
+
+  /**
+   * D-009 ruling 3, the safety half. Driven over EVERY key of GATE_CODE_OWNERSHIP —
+   * derived from the Record itself, so a code added later is covered automatically
+   * rather than silently escaping a hand-listed fixture.
+   *
+   * The invariant that must never break: making author-owned work VISIBLE (`due`)
+   * must not make it DELEGABLE. `acceptance-bar-lifecycle-evaluator.ts` renders a
+   * user-facing promise that a contract refusal "does NOT recruit a grader … do not
+   * recruit or wake a peer for them"; if this test ever fails, that rendered sentence
+   * has become a lie.
+   */
+  const ownershipCodes = Object.entries(GATE_CODE_OWNERSHIP) as [
+    keyof typeof GATE_CODE_OWNERSHIP,
+    PlanAcceptanceGateCodeOwnership,
+  ][];
+
+  it('covers the whole gate-code union (calibration: the derived population is non-trivial)', () => {
+    // Without this, a Record that somehow enumerated nothing would make every
+    // assertion below pass VACUOUSLY — the it.each would simply run zero cases.
+    expect(ownershipCodes.length).toBeGreaterThanOrEqual(20);
+    expect(ownershipCodes.filter(([, owner]) => owner === 'grader')).toHaveLength(2);
+  });
+
+  it.each(ownershipCodes)('%s (%s) routes by ownership, and only a grader gap delegates', (code, owner) => {
+    const result = independentVerificationObligation(verifyInput(known(gate(false, code))));
+
+    // THE safety invariant: delegation is reachable from `grader` and nothing else.
+    expect(result.action?.kind === 'delegate').toBe(owner === 'grader');
+
+    // The visibility half: actionable is strictly WIDER than delegable.
+    expect(result.status).toBe(owner === 'grader' || owner === 'author' ? 'due' : 'blocked');
+
+    // Author repair stays upstream so it cannot be outranked by a downstream symptom.
+    expect(result.causalRank).toBe(owner === 'author' ? 0 : 2);
+
+    // A failed measurement is never dressed up as somebody's repair.
+    if (owner === 'unmeasured') expect(result.action?.kind).toBe('inspect');
+  });
+
+  /**
+   * R-1's falsifier, verbatim: "Drive one plan to an `acceptance_ungraded` verdict
+   * twice … and count its plan-acceptance obligations after each pass; any count
+   * other than one falsifies R-1 on P-002."
+   */
+  it.each(['acceptance_ungraded', 'acceptance_bar_contract_not_ready'] as const)(
+    'reconciles a repeat %s verdict into exactly one obligation instead of a second',
+    (code) => {
+      const read = known(gate(false, code));
+      const pass = () =>
+        buildAgentObligationAgenda({ independentVerification: [verifyInput(read)] }, NOW).primary.filter(
+          (entry) => entry.family === 'independent-verification',
+        );
+
+      expect(pass()).toHaveLength(1);
+      // Same verdict, same source generation — a reconciliation, not a new episode.
+      const [first] = pass();
+      const [second] = pass();
+      expect(pass()).toHaveLength(1);
+      expect(second.id).toBe(first.id);
+      expect(second.status).toBe('due');
+
+      // Both passes agree, so the agenda must not flag a provider conflict.
+      expect(
+        buildAgentObligationAgenda(
+          { independentVerification: [verifyInput(read), verifyInput(read)] },
+          NOW,
+        ).conflicts,
+      ).toEqual([]);
+    },
+  );
 });
 
 describe('shared agenda composition', () => {
