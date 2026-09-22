@@ -58,7 +58,7 @@ export default defineTool({
     const workspaceId = activeWorkspaceId();
     const results = [];
     for (const e of entries) {
-      // P-008 / D-008, the same rail orders:resolve-pending carries: `done` and
+      // P-008 / D-008, the same rail orders:summarize carries: `done` and
       // `declined` are CLAIMS ABOUT THE OWNER'S ORDER, and closing it stops it
       // rendering for EVERYONE — so a session that is neither the addressee nor
       // a holder of work linking the directive may not speak for it.
@@ -75,10 +75,9 @@ export default defineTool({
           error: 'foreign_directive',
           addressedTo: verdict.addressedTo,
           holders: verdict.holders,
-          // No `clear` redirect here: clearing is an AGENDA action and this verb
-          // has none. Taking a foreign row off your own banner is
-          // orders:resolve-pending { action: 'clear' }.
-          hint: `Directive #${e.id} was addressed to ${verdict.addressedTo}${verdict.holders.length ? ` and is held by ${verdict.holders.join(', ')}` : ''}. Closing it would stop it rendering for THEM. To take it off your OWN banner only, use orders:resolve-pending { action: 'clear' }.`,
+          // Clearing is an AGENDA action this verb does not have; the hint
+          // names the verb that does, so the refusal redirects, never dead-ends.
+          hint: `Directive #${e.id} was addressed to ${verdict.addressedTo}${verdict.holders.length ? ` and is held by ${verdict.holders.join(', ')}` : ''}. Closing it would stop it rendering for THEM. To take it off your OWN banner only, use orders:clear { id, reason }.`,
         });
         continue;
       }
