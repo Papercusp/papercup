@@ -8,6 +8,7 @@
  * issues:* surface reads it.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, SUBSTRATE_OUTBOX_DDL } from '../../../../test/_work-items-schema';
 import { buildEngineerIssuesProjection, _testing, type EngineerIssueRow } from './engineer-issues';
@@ -1092,5 +1093,102 @@ describe('engineer-issues projection — EI-21467654382027859 federated columns 
     ])
       delete (legacy as unknown as Record<string, unknown>)[k];
     expect(_testing.decodeValue(legacy)).not.toBeNull();
+  });
+});
+
+/**
+ * WI-10002480 — the mig-826 legacy-twin guard runs once per legacy issue PUT on the
+ * peer-log merge hot path. Its old single-EXISTS/OR form had no usable index on either
+ * branch, so every call parallel-seq-scanned the workspace's whole work_items table
+ * (709.9ms over 177,720 rows on the P-203 rig) and bounded the fold to ~100 ops/s.
+ *
+ * This pins the fix at the planner: EXPLAIN the EXACT production SQL, with the real
+ * migration 1197 applied, under enable_seqscan=off (so a tiny fixture table cannot
+ * make a scan the cheap choice). The property is that EVERY work_items access is
+ * served by one of the two marker indexes. "No Seq Scan" alone is not enough: with
+ * seqscan disabled the planner happily substitutes a full scan of
+ * work_items_scoped_identity filtered row by row, which is exactly as slow. An index
+ * dropped, or either side's `migration = '826'` predicate reworded so the partial index
+ * no longer provably applies, leaves an unserved access. The control asserts the SAME
+ * predicate reports unserved accesses BEFORE the migration, so it cannot pass vacuously.
+ * Behaviour of both branches is covered by the "suppresses only legacy PUTs" test above.
+ */
+describe('engineer-issues projection — WI-10002480 legacy-twin guard is index-served (real PG)', () => {
+  const MIGRATION_1197 = new URL(
+    '../../../../../../libs/papercusp/libs/db/sql/1197-work-items-twin-marker-indexes.sql',
+    import.meta.url,
+  );
+  const MARKER_INDEXES = ['work_items_twin_repair_marker_idx', 'work_items_twin_rekey_marker_idx'];
+
+  /** Plan lines that read work_items WITHOUT going through a marker index. */
+  function unservedAccesses(plan: string): string[] {
+    const unserved: string[] = [];
+    for (const line of plan.split('\n')) {
+      if (/Seq Scan on work_items\b/.test(line)) unserved.push(line.trim());
+      const viaIndex = /(?:Index Scan|Index Only Scan) using (\S+) on work_items\b/.exec(line);
+      if (viaIndex && !MARKER_INDEXES.includes(viaIndex[1]!)) unserved.push(line.trim());
+      const bitmap = /Bitmap Index Scan on (\S+)/.exec(line);
+      if (bitmap && !MARKER_INDEXES.includes(bitmap[1]!)) unserved.push(line.trim());
+    }
+    return unserved;
+  }
+
+  async function guardPlan(): Promise<string> {
+    return db.sql.begin(async (tx) => {
+      await tx.unsafe('SET LOCAL enable_seqscan = off');
+      const rows = await tx.unsafe<{ 'QUERY PLAN': string }[]>(`EXPLAIN ${_testing.RETIRED_LEGACY_TWIN_SQL}`, [
+        WS,
+        'EI-826-probe',
+        'sibling-hive',
+      ]);
+      return rows.map((r) => r['QUERY PLAN']).join('\n');
+    });
+  }
+
+  it('control: without migration 1197 the guard has work_items accesses no marker index serves', async () => {
+    await db.sql.unsafe(`
+      DROP INDEX IF EXISTS harness_shared.work_items_twin_repair_marker_idx;
+      DROP INDEX IF EXISTS harness_shared.work_items_twin_rekey_marker_idx;
+    `);
+    const plan = await guardPlan();
+    expect(unservedAccesses(plan), plan).not.toEqual([]);
+  });
+
+  it('with migration 1197 applied, every work_items access is served by a marker partial index', async () => {
+    await db.sql.unsafe(readFileSync(MIGRATION_1197, 'utf8'));
+    const plan = await guardPlan();
+    expect(unservedAccesses(plan), plan).toEqual([]);
+    for (const idx of MARKER_INDEXES) expect(plan).toContain(idx);
+  });
+
+  it('the index-served guard still answers correctly for both marker kinds and fails open otherwise', async () => {
+    await db.sql.unsafe(readFileSync(MIGRATION_1197, 'utf8'));
+    await db.sql`
+      INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, item_kind, title, status, payload)
+      VALUES
+        (${WS}, ${SLUG}, 'EI-1197-merged', 'bug', 'merged survivor', 'open',
+         ${JSON.stringify({ _physicalTwinRepair: { migration: 826, sourceHarness: 'sibling-hive' } })}::text::jsonb),
+        (${WS}, 'sibling-hive', 'EI-1197-new-key', 'bug', 'rekeyed survivor', 'open',
+         ${JSON.stringify({ _physicalTwinRekey: { migration: 826, oldId: 'EI-1197-old', sourceHarness: 'sibling-hive' } })}::text::jsonb)
+      ON CONFLICT DO NOTHING`;
+    const retired = async (issueId: string, sourceHarness: string): Promise<boolean> => {
+      const rows = await db.sql.unsafe<{ retired: boolean }[]>(_testing.RETIRED_LEGACY_TWIN_SQL, [
+        WS,
+        issueId,
+        sourceHarness,
+      ]);
+      return rows[0]?.retired === true;
+    };
+    expect(await retired('EI-1197-merged', 'sibling-hive')).toBe(true);
+    expect(await retired('EI-1197-old', 'sibling-hive')).toBe(true);
+    // Wrong source harness, unmarked id, and another workspace all fail open.
+    expect(await retired('EI-1197-merged', 'other-hive')).toBe(false);
+    expect(await retired('EI-1197-unmarked', 'sibling-hive')).toBe(false);
+    const other = await db.sql.unsafe<{ retired: boolean }[]>(_testing.RETIRED_LEGACY_TWIN_SQL, [
+      'ws-other',
+      'EI-1197-old',
+      'sibling-hive',
+    ]);
+    expect(other[0]?.retired).toBe(false);
   });
 });

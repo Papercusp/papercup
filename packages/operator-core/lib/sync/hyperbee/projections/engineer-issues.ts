@@ -243,28 +243,52 @@ async function isDistinctEntityCollision(
  * repair would recreate the retired physical row.  The survivor markers are
  * the persisted identity proof; without one we fail open so unrelated legacy
  * history keeps converging.
+ *
+ * WI-10002480 — this runs once per legacy issue PUT on the merge hot path, so it
+ * MUST be index-served. The previous form was one EXISTS whose OR joined a
+ * non-leading `feature_id` match to an unindexed JSON predicate; neither branch
+ * had a usable index, so every call was a parallel sequential scan of the whole
+ * workspace's work_items. Measured on the P-203 rig: 709.9ms per call over
+ * 177,720 rows (656,959 buffer hits), active in 39 of 40 pg_stat_activity
+ * samples — it alone bounded the peer-log fold to ~33-107 ops/s.
+ *
+ * Now each marker branch is its own EXISTS, planned independently onto its own
+ * partial index from migration 1197. Each sub-select repeats its index's WHERE
+ * clause (`...->>'migration' = '826'`) VERBATIM: the planner uses a partial index
+ * only when it can prove the query implies that predicate, so rewording it
+ * silently restores the scan. Pinned by the "index-served" test in
+ * engineer-issues.integration.test.ts, which EXPLAINs this exact text.
+ * Parameters: $1 workspace id, $2 issue id, $3 source harness.
  */
+const RETIRED_LEGACY_TWIN_SQL = `
+  SELECT EXISTS (
+           SELECT 1
+             FROM harness_shared.work_items survivor
+            WHERE survivor.workspace_id = $1
+              AND survivor.feature_id = $2
+              AND survivor.payload->'_physicalTwinRepair'->>'migration' = '826'
+              AND survivor.payload->'_physicalTwinRepair'->>'sourceHarness' = $3
+         )
+      OR EXISTS (
+           SELECT 1
+             FROM harness_shared.work_items survivor
+            WHERE survivor.workspace_id = $1
+              AND survivor.payload->'_physicalTwinRekey'->>'migration' = '826'
+              AND survivor.payload->'_physicalTwinRekey'->>'oldId' = $2
+              AND survivor.payload->'_physicalTwinRekey'->>'sourceHarness' = $3
+         ) AS retired`;
+
 async function isRetiredLegacyTwinSource(
   sql: postgres.Sql,
   workspaceId: string,
   sourceHarness: string,
   issueId: string,
 ): Promise<boolean> {
-  const rows = await sql<{ retired: boolean }[]>`
-    SELECT EXISTS (
-      SELECT 1
-        FROM harness_shared.work_items survivor
-       WHERE survivor.workspace_id = ${workspaceId}
-         AND (
-           (survivor.feature_id = ${issueId}
-            AND survivor.payload->'_physicalTwinRepair'->>'migration' = '826'
-            AND survivor.payload->'_physicalTwinRepair'->>'sourceHarness' = ${sourceHarness})
-           OR
-           (survivor.payload->'_physicalTwinRekey'->>'migration' = '826'
-            AND survivor.payload->'_physicalTwinRekey'->>'oldId' = ${issueId}
-            AND survivor.payload->'_physicalTwinRekey'->>'sourceHarness' = ${sourceHarness})
-         )
-    ) AS retired`;
+  const rows = await sql.unsafe<{ retired: boolean }[]>(RETIRED_LEGACY_TWIN_SQL, [
+    workspaceId,
+    issueId,
+    sourceHarness,
+  ]);
   return rows[0]?.retired === true;
 }
 
@@ -856,4 +880,5 @@ export const _testing = {
   composeKey,
   decodeValue,
   isEngineerIssueRow,
+  RETIRED_LEGACY_TWIN_SQL,
 };
