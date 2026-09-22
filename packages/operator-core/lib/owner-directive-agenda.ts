@@ -140,6 +140,33 @@ export async function listClearedDirectiveIds(
   return new Set(rows.map((r) => Number(r.directive_id)));
 }
 
+/**
+ * SQL fragment that hides the directives THIS viewer has cleared off its own
+ * banner. Empty when no viewer is known, so an un-threaded caller keeps the
+ * pre-1195 behaviour (show everything) rather than silently hiding nothing or
+ * everything.
+ *
+ * IT MUST BE APPLIED INSIDE THE DIRECTIVE QUERY, BEFORE `LIMIT` — never as a
+ * filter over the returned page. The banner reads a fixed number of rows, so a
+ * post-filter spends render slots on rows the viewer will never see: clear
+ * three directives and the banner shows three FEWER live ones, which reads as
+ * "there is nothing else owed". Same failure the `state` predicate in
+ * listOwnerDirectives is documented to avoid.
+ *
+ * Correlated against the schema-qualified base table because both call sites
+ * select from it unaliased.
+ */
+export function agendaClearedExclusionSql(s: Sql, viewerOwnerId: string | null | undefined) {
+  if (!viewerOwnerId) return s``;
+  return s`AND NOT EXISTS (
+    SELECT 1 FROM harness_shared.owner_directive_agenda AS cleared
+     WHERE cleared.workspace_id = harness_shared.owner_directives.workspace_id
+       AND cleared.directive_id = harness_shared.owner_directives.id
+       AND cleared.owner_id = ${viewerOwnerId}
+       AND cleared.state = 'dismissed'
+  )`;
+}
+
 export type DirectiveActionVerdict =
   | { allowed: true; because: 'addressee' | 'holds-linking-work-item' }
   | { allowed: false; addressedTo: string; holders: string[] };
