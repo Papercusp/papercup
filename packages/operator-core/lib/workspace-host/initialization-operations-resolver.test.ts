@@ -28,6 +28,7 @@ import {
   WorkspaceHostInitializationControllerProfileError,
   WorkspaceHostHostKeyPublicationTimeoutError,
   WorkspaceHostInitializationHostKeyError,
+  WorkspaceHostInstanceUnavailableError,
   enrollGcpIapHostKeys,
   resolveWorkspaceHostInitializationControllerProfile,
   resolveWorkspaceHostInitializationOperations,
@@ -135,9 +136,26 @@ function desired(overrides: Partial<WorkspaceHostDesiredSpec> = {}): WorkspaceHo
   } as WorkspaceHostDesiredSpec;
 }
 
+/** A GCE instance id — the incarnation behind a name; fresh on every delete + re-insert. */
+const INSTANCE_ID = '4715512353118305137';
+const incarnation = { instanceId: INSTANCE_ID };
+
+/** `getInstance` fake answering one incarnation per call, in order (the last one repeats). */
+function liveInstance(...instanceIds: string[]) {
+  const ids = instanceIds.length > 0 ? instanceIds : [INSTANCE_ID];
+  let call = 0;
+  return async (_projectId: string, _zone: string, name: string) => ({
+    name,
+    instanceId: ids[Math.min(call++, ids.length - 1)]!,
+    status: 'RUNNING' as const,
+    attachedDiskNames: [],
+    observedAt: '2026-09-22T21:40:00.000Z',
+  });
+}
+
 describe('resolveWorkspaceHostInitializationOperations', () => {
   it('declares the initialization step kinds the GCP adapter supports', () => {
-    const operations = resolveWorkspaceHostInitializationOperations(desired(), controller);
+    const operations = resolveWorkspaceHostInitializationOperations(desired(), controller, incarnation);
     expect(operations.supportedStepKinds).toContain('create-workspace');
     expect(operations.supportedStepKinds).toContain('bind-credential');
   });
@@ -152,7 +170,7 @@ describe('resolveWorkspaceHostInitializationOperations', () => {
   // Asserting through the resolver, not the adapter, is the whole point of this test: it is the
   // only construction that exercises the wrapping the production routes actually perform.
   it('exposes the bootstrap-readiness gate through the delivering wrapper the routes resolve', () => {
-    const operations = resolveWorkspaceHostInitializationOperations(desired(), controller);
+    const operations = resolveWorkspaceHostInitializationOperations(desired(), controller, incarnation);
     expect(typeof operations.awaitBootstrapReady).toBe('function');
   });
 
@@ -167,6 +185,7 @@ describe('resolveWorkspaceHostInitializationOperations', () => {
         projectId: identity.projectId,
         zone: identity.zone,
         instanceName: identity.instanceName,
+        instanceId: INSTANCE_ID,
         ...controller,
       },
       {
@@ -197,26 +216,27 @@ describe('resolveWorkspaceHostInitializationOperations', () => {
   });
 
   it('refuses a target with no adapter instead of silently falling back', () => {
-    expect(() => resolveWorkspaceHostInitializationOperations(desired({ target: 'aws' } as never), controller)).toThrow(
-      UnsupportedWorkspaceHostInitializationTargetError,
-    );
+    expect(() =>
+      resolveWorkspaceHostInitializationOperations(desired({ target: 'aws' } as never), controller, incarnation),
+    ).toThrow(UnsupportedWorkspaceHostInitializationTargetError);
 
     expect(() =>
-      resolveWorkspaceHostInitializationOperations(desired({ target: 'azure' } as never), controller),
+      resolveWorkspaceHostInitializationOperations(desired({ target: 'azure' } as never), controller, incarnation),
     ).toThrow(/No workspace-host initialization adapter for target 'azure'/);
   });
 
   it("propagates the provider's own validation rules rather than softening them", () => {
     // zone must belong to region — the provider enforces this when provisioning, so the
     // initializer must not accept a spec the provider would have rejected.
-    expect(() => resolveWorkspaceHostInitializationOperations(desired({ zone: 'europe-west1-b' }), controller)).toThrow(
-      /zone must belong to/,
-    );
+    expect(() =>
+      resolveWorkspaceHostInitializationOperations(desired({ zone: 'europe-west1-b' }), controller, incarnation),
+    ).toThrow(/zone must belong to/);
 
     expect(() =>
       resolveWorkspaceHostInitializationOperations(
         desired({ provider: { projectId: 'some-other-project' } }),
         controller,
+        incarnation,
       ),
     ).toThrow(/projectId must match/);
   });
@@ -338,6 +358,7 @@ describe('resolveWorkspaceHostInitializationOperationsForHost', () => {
         controller,
         readDesiredSpec: async () => ({ desired: desired({ target: 'azure' } as never) }),
         gcpClient: {
+          getInstance: liveInstance(),
           async getInstanceGuestAttributes() {
             guestAttributeRead = true;
             return guestHostKeys();
@@ -355,7 +376,7 @@ describe('resolveWorkspaceHostInitializationOperationsForHost', () => {
       hostId: 'host-alpha',
       controller,
       readDesiredSpec: async () => ({ desired: spec }),
-      gcpClient: { getInstanceGuestAttributes: async () => guestHostKeys() },
+      gcpClient: { getInstance: liveInstance(), getInstanceGuestAttributes: async () => guestHostKeys() },
       enrollHostKeys: async () => undefined,
     });
 
@@ -373,6 +394,7 @@ describe('resolveWorkspaceHostInitializationOperationsForHost', () => {
       controller,
       readDesiredSpec: async () => ({ desired: spec }),
       gcpClient: {
+        getInstance: liveInstance(),
         async getInstanceGuestAttributes(projectId, zone, instanceName, queryPath) {
           calls.push(`read:${projectId}:${zone}:${instanceName}:${queryPath}`);
           return guestHostKeys();
@@ -404,9 +426,11 @@ describe('resolveWorkspaceHostInitializationOperationsForHost', () => {
       identity: 'workspace-host@papercusp-hosted-123.iam.gserviceaccount.com',
       projectId: 'active-alcove-504205-q3',
     }));
-    const gcpFetch = vi.fn<typeof fetch>(async (_input, init) => {
+    const gcpFetch = vi.fn<typeof fetch>(async (input, init) => {
       expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${DELEGATED_TOKEN}`);
-      return Response.json({ queryValue: { items: guestHostKeys() } });
+      return String(input).includes('/getGuestAttributes')
+        ? Response.json({ queryValue: { items: guestHostKeys() } })
+        : Response.json({ name: 'delegated-vm', id: INSTANCE_ID, status: 'RUNNING' });
     });
     const spec = desired({
       credentials: { cloudCredentialRef: { kind: 'cloud', ref: credentialRef } },
@@ -428,7 +452,71 @@ describe('resolveWorkspaceHostInitializationOperationsForHost', () => {
     });
 
     expect(resolveHostedAuth).toHaveBeenCalledWith({ credentialRef, provider: spec.provider });
-    expect(gcpFetch).toHaveBeenCalledTimes(1);
+    // incarnation read, hostkeys/ read, incarnation re-read (WI-10002493) — all on the delegated token.
+    expect(gcpFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('pins the incarnation read on BOTH sides of the key read, and hands the same id to the adapter', async () => {
+    const calls: string[] = [];
+    const enrolled: GcpIapHostKeyEnrollmentInput[] = [];
+    await resolveWorkspaceHostInitializationOperationsForHost({
+      workspaceId: 'ws-1',
+      hostId: 'host-alpha',
+      controller,
+      readDesiredSpec: async () => ({ desired: desired() }),
+      gcpClient: {
+        async getInstance(projectId, zone, name) {
+          calls.push('instance');
+          return liveInstance()(projectId, zone, name);
+        },
+        async getInstanceGuestAttributes() {
+          calls.push('hostkeys');
+          return guestHostKeys();
+        },
+      },
+      enrollHostKeys: async (input) => {
+        calls.push('enroll');
+        enrolled.push(input);
+      },
+    });
+    expect(calls).toEqual(['instance', 'hostkeys', 'instance', 'enroll']);
+    expect(enrolled[0]!.identity.instanceId).toBe(INSTANCE_ID);
+  });
+
+  it('refuses to enroll when the instance is recreated while its keys are read', async () => {
+    const enroll = vi.fn(async () => undefined);
+    await expect(
+      resolveWorkspaceHostInitializationOperationsForHost({
+        workspaceId: 'ws-1',
+        hostId: 'host-alpha',
+        controller,
+        readDesiredSpec: async () => ({ desired: desired() }),
+        gcpClient: { getInstance: liveInstance('1111', '2222'), getInstanceGuestAttributes: async () => guestHostKeys() },
+        enrollHostKeys: enroll,
+      }),
+    ).rejects.toThrow(/recreated while its host keys were read \(incarnation 1111 -> 2222\)/);
+    expect(enroll).not.toHaveBeenCalled();
+  });
+
+  it('refuses an absent instance before reading any host keys', async () => {
+    let guestAttributeRead = false;
+    await expect(
+      resolveWorkspaceHostInitializationOperationsForHost({
+        workspaceId: 'ws-1',
+        hostId: 'host-alpha',
+        controller,
+        readDesiredSpec: async () => ({ desired: desired() }),
+        gcpClient: {
+          getInstance: async () => undefined,
+          async getInstanceGuestAttributes() {
+            guestAttributeRead = true;
+            return guestHostKeys();
+          },
+        },
+        enrollHostKeys: async () => undefined,
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceHostInstanceUnavailableError);
+    expect(guestAttributeRead).toBe(false);
   });
 
   it('distinguishes an unknown host from a host with no recorded intent', async () => {
@@ -523,6 +611,7 @@ describe('hostkeys/ publication race (WI-10001685)', () => {
       controller,
       readDesiredSpec: async () => ({ desired: desired() }),
       gcpClient: {
+        getInstance: liveInstance(),
         async getInstanceGuestAttributes() {
           attempts += 1;
           if (attempts < 3) throw guestAttributeNotFound();
@@ -563,6 +652,7 @@ describe('hostkeys/ publication race (WI-10001685)', () => {
       controller,
       readDesiredSpec: async () => ({ desired: desired() }),
       gcpClient: {
+        getInstance: liveInstance(),
         async getInstanceGuestAttributes() {
           attempts += 1;
           return attempts < 2 ? guestHostKeys().slice(0, 1) : guestHostKeys();
@@ -586,6 +676,7 @@ describe('hostkeys/ publication race (WI-10001685)', () => {
         controller,
         readDesiredSpec: async () => ({ desired: desired() }),
         gcpClient: {
+          getInstance: liveInstance(),
           async getInstanceGuestAttributes() {
             attempts += 1;
             throw instanceNotFound();
@@ -611,6 +702,7 @@ describe('hostkeys/ publication race (WI-10001685)', () => {
         controller,
         readDesiredSpec: async () => ({ desired: desired() }),
         gcpClient: {
+          getInstance: liveInstance(),
           async getInstanceGuestAttributes() {
             attempts += 1;
             throw Object.assign(new Error('gcp_preflight_http_403: caller lacks permission'), {
@@ -638,6 +730,7 @@ describe('hostkeys/ publication race (WI-10001685)', () => {
         controller,
         readDesiredSpec: async () => ({ desired: desired() }),
         gcpClient: {
+          getInstance: liveInstance(),
           async getInstanceGuestAttributes() {
             attempts += 1;
             // A COMPLETE set (so the presence predicate is satisfied) whose blob is garbage.
@@ -666,6 +759,7 @@ describe('hostkeys/ publication race (WI-10001685)', () => {
         controller,
         readDesiredSpec: async () => ({ desired: desired() }),
         gcpClient: {
+          getInstance: liveInstance(),
           async getInstanceGuestAttributes() {
             attempts += 1;
             throw guestAttributeNotFound();
@@ -695,7 +789,7 @@ describe('GCP IAP controller known_hosts enrollment', () => {
     await writeFile(knownHostsFile, `${unrelated}\n`, { mode: 0o644 });
     try {
       const spec = desired();
-      const identity = resolveGcpWorkspaceHostInstanceIdentity(spec);
+      const identity = { ...resolveGcpWorkspaceHostInstanceIdentity(spec), ...incarnation };
       await enrollGcpIapHostKeys({ identity, knownHostsFile, attributes: guestHostKeys() });
       const written = await readFile(knownHostsFile, 'utf8');
       const alias = buildGcpIapWorkspaceHostInitializationCommand(
@@ -724,7 +818,7 @@ describe('GCP IAP controller known_hosts enrollment', () => {
   it('fails closed on missing, malformed, or changed host-key material without rewriting trust', async () => {
     const root = await mkdtemp(join(tmpdir(), 'papercusp-known-hosts-'));
     const knownHostsFile = join(root, 'known_hosts');
-    const identity = resolveGcpWorkspaceHostInstanceIdentity(desired());
+    const identity = { ...resolveGcpWorkspaceHostInstanceIdentity(desired()), ...incarnation };
     try {
       await expect(enrollGcpIapHostKeys({ identity, knownHostsFile, attributes: [] })).rejects.toBeInstanceOf(
         WorkspaceHostInitializationHostKeyError,
@@ -764,16 +858,66 @@ describe('GCP IAP controller known_hosts enrollment', () => {
     }
   });
 
+  // WI-10002493, measured live on P-318 r39: GCP upgrade deletes the VM and re-inserts it under the
+  // SAME name, and the new machine has new host keys. A name-keyed pin refused them forever.
+  it('re-enrolls a recreated incarnation of the same name and prunes the dead pins', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-known-hosts-'));
+    const knownHostsFile = join(root, 'known_hosts');
+    const name = resolveGcpWorkspaceHostInstanceIdentity(desired());
+    const before = { ...name, instanceId: '1111' };
+    const after = { ...name, instanceId: '2222' };
+    const aliasOf = (identity: typeof before) =>
+      buildGcpIapWorkspaceHostInitializationCommand(
+        { ...identity, ...controller, knownHostsFile },
+        { id: 'workspace', kind: 'create-workspace', dependsOn: [], idempotencyKey: 'k', input: {} },
+      )
+        .args.find((arg) => arg.startsWith('HostKeyAlias='))!
+        .slice('HostKeyAlias='.length);
+    const unrelated = `example.test ${publicKey('ssh-ed25519', 'unrelated').split(' ').slice(0, 2).join(' ')}`;
+    // The pre-fix, name-only alias: exactly the family prefix, with no incarnation suffix.
+    const legacy = `${aliasOf(before).slice(0, -'-1111'.length)} ${publicKey('ssh-ed25519', 'legacy').split(' ').slice(0, 2).join(' ')}`;
+    try {
+      await writeFile(knownHostsFile, `${unrelated}\n${legacy}\n`, { mode: 0o600 });
+      await enrollGcpIapHostKeys({ identity: before, knownHostsFile, attributes: guestHostKeys('before') });
+      await enrollGcpIapHostKeys({ identity: after, knownHostsFile, attributes: guestHostKeys('after') });
+
+      const written = await readFile(knownHostsFile, 'utf8');
+      expect(aliasOf(after)).not.toBe(aliasOf(before));
+      expect(written.match(new RegExp(`^${aliasOf(after)} `, 'gm'))).toHaveLength(3);
+      expect(written).not.toContain(`${aliasOf(before)} `);
+      expect(written).not.toContain(legacy);
+      expect(written).toContain(`${unrelated}\n`);
+
+      // The guard is intact: a changed key on the SAME incarnation still refuses, trust untouched.
+      await expect(
+        enrollGcpIapHostKeys({ identity: after, knownHostsFile, attributes: guestHostKeys('tampered') }),
+      ).rejects.toThrow(/host key changed or disappeared/);
+      await expect(readFile(knownHostsFile, 'utf8')).resolves.toBe(written);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an incarnation id that is not a GCE numeric id', async () => {
+    const identity = { ...resolveGcpWorkspaceHostInstanceIdentity(desired()), instanceId: '../x' };
+    await expect(
+      enrollGcpIapHostKeys({ identity, knownHostsFile: '/tmp/unused-known-hosts', attributes: guestHostKeys() }),
+    ).rejects.toThrow(/instance id has an invalid value/);
+  });
+
   it('serializes concurrent enrollments so atomic rewrites preserve every host alias', async () => {
     const root = await mkdtemp(join(tmpdir(), 'papercusp-known-hosts-'));
     const knownHostsFile = join(root, 'known_hosts');
-    const first = resolveGcpWorkspaceHostInstanceIdentity(desired());
-    const second = resolveGcpWorkspaceHostInstanceIdentity(
-      desired({
-        hostId: 'host-beta',
-        provider: { instanceName: 'host-beta', projectId: 'active-alcove-504205-q3' },
-      }),
-    );
+    const first = { ...resolveGcpWorkspaceHostInstanceIdentity(desired()), ...incarnation };
+    const second = {
+      ...resolveGcpWorkspaceHostInstanceIdentity(
+        desired({
+          hostId: 'host-beta',
+          provider: { instanceName: 'host-beta', projectId: 'active-alcove-504205-q3' },
+        }),
+      ),
+      instanceId: '2',
+    };
     try {
       await Promise.all([
         enrollGcpIapHostKeys({ identity: first, knownHostsFile, attributes: guestHostKeys('concurrent-first') }),
@@ -805,13 +949,16 @@ describe('GCP IAP controller known_hosts enrollment', () => {
     const knownHostsFile = join(root, 'controller', 'known_hosts');
     const lockRoot = join(root, 'mutexes');
     const barrierRoot = join(root, 'barrier');
-    const first = resolveGcpWorkspaceHostInstanceIdentity(desired());
-    const second = resolveGcpWorkspaceHostInstanceIdentity(
-      desired({
-        hostId: 'host-beta',
-        provider: { instanceName: 'host-beta', projectId: 'active-alcove-504205-q3' },
-      }),
-    );
+    const first = { ...resolveGcpWorkspaceHostInstanceIdentity(desired()), ...incarnation };
+    const second = {
+      ...resolveGcpWorkspaceHostInstanceIdentity(
+        desired({
+          hostId: 'host-beta',
+          provider: { instanceName: 'host-beta', projectId: 'active-alcove-504205-q3' },
+        }),
+      ),
+      instanceId: '2',
+    };
     const inputPaths = [join(root, 'first.json'), join(root, 'second.json')];
     await Promise.all([
       writeFile(
