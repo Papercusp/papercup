@@ -157,9 +157,35 @@ export function applyRepairLegMeasurements(
     head: string;
     round: number;
     nowMs: number;
+    /**
+     * The ids the QUEUE SIGNATURE already names as failing at the candidate.
+     *
+     * Why this exists (EI-23917645695738835, measured 2026-09-21): the signature and `legs`
+     * are populated by DIFFERENT paths — the signature at freeze time from the candidate's
+     * failing set, `legs` only by a repair tick that measured a leg FAILING. A leg that was
+     * red at the candidate but has never been measured failing BY A TICK therefore has no
+     * prior state, so its first PASSING measurement used to hit the `!prior` skip below and
+     * be discarded. The signature kept naming it, `legState()` kept returning undefined, and
+     * `buildRepairManifest` kept re-deriving `red-at-candidate` from that silence — forever.
+     * On a subject-less workspace-task leg (`subjectSource:'none'`, so `admitCommand:null`)
+     * there is also no admission that could ever clear it, so the queue could not leave
+     * `awaiting-fixer` by any route. One queue sat stranded ~40h that way with `legs: []`,
+     * freezing `main` for the whole fleet while both named legs measured GREEN at the repair
+     * head in the very same run.
+     *
+     * Passing the signature ids lets a measured pass RESOLVE such a leg. It does not weaken
+     * rule 2 in the module docblock: silence still changes nothing, and a leg outside the
+     * signature still takes the skip, so the cap is not filled with legs that never failed.
+     */
+    signatureIds?: readonly string[];
   },
 ): FrozenRepairLegState[] {
   const byId = new Map<string, FrozenRepairLegState>((existing ?? []).map((leg) => [leg.id, leg]));
+  const signatureIds = new Set(
+    (input.signatureIds ?? [])
+      .filter((id) => nonBlankString(id))
+      .map((id) => id.trim().slice(0, MAX_LEG_ID_CHARS)),
+  );
 
   for (const measurement of input.measurements) {
     if (!nonBlankString(measurement.id)) continue;
@@ -171,7 +197,29 @@ export function applyRepairLegMeasurements(
       // A PASSING leg with no prior state was never admitted, so there is nothing to record.
       // Persisting every green leg would fill the cap with legs that never failed and evict
       // the ones that did — the baseline loss capLegs exists to prevent.
-      if (!failing) continue;
+      //
+      // EXCEPT when the SIGNATURE already names it failing: that leg WAS admitted to the
+      // failing set (at freeze, from the candidate), it simply never got a `legs` row
+      // because no tick ever measured it failing. Dropping its pass is what stranded a
+      // queue for 40h, so resolve it instead. `failingRounds: 0` is the honest count — it
+      // never failed a repair ROUND, it was only ever red at the candidate.
+      if (!failing) {
+        if (!signatureIds.has(id)) continue;
+        byId.set(id, {
+          id,
+          state: 'fixed',
+          admittedRound: input.round,
+          admittedHead: input.head,
+          admittedAtMs: input.nowMs,
+          lastMeasuredHead: input.head,
+          lastMeasuredAtMs: input.nowMs,
+          lastMeasuredRound: input.round,
+          failingRounds: 0,
+          resolvedHead: input.head,
+          resolvedAtMs: input.nowMs,
+        });
+        continue;
+      }
       byId.set(id, {
         id,
         state: 'failing',

@@ -163,6 +163,62 @@ describe('P-002 / D-005 — a non-test leg has the lifecycle a test file has', (
     expect(summarizeRepairLegs(legs).measured).toBe(false);
   });
 
+  /**
+   * EI-23917645695738835 — RECURRENCE GUARD for the ~40h `main` freeze of 2026-09-21.
+   *
+   * The signature and `legs` are populated by DIFFERENT paths: the signature at freeze time
+   * from the candidate's failing set, `legs` only by a tick that measured a leg FAILING. A
+   * leg red at the candidate but never measured failing by a tick therefore has NO prior
+   * state, so its first passing measurement hit the `!prior` skip and was discarded. The
+   * signature kept naming it, `legState()` kept returning undefined, and the manifest kept
+   * re-deriving `red-at-candidate` from that silence. On a subject-less workspace-task leg
+   * (`subjectSource:'none'` ⇒ `admitCommand:null`) no admission could clear it either, so
+   * the queue could never leave `awaiting-fixer` — measured live with `legs: []` while both
+   * named legs passed at the repair head in the SAME run.
+   *
+   * These three cases pin the fix AND the two rules it must not break.
+   */
+  it('EI-23917645695738835: a SIGNATURE-named leg measured PASSING with no prior state RESOLVES — a pass is never discarded into an unclearable queue', () => {
+    const legs = applyRepairLegMeasurements([], {
+      measurements: [measure('@papercusp/web :: test', 'pass')],
+      head: HEAD_B,
+      round: 3,
+      nowMs: T0,
+      signatureIds: ['@papercusp/web :: test', '@papercusp/operator-core :: test:lane-pure'],
+    });
+    expect(legs).toHaveLength(1);
+    expect(legs[0]!.id).toBe('@papercusp/web :: test');
+    expect(legs[0]!.state).toBe('fixed');
+    expect(legs[0]!.resolvedHead).toBe(HEAD_B);
+    // It never failed a repair ROUND — it was only ever red at the candidate.
+    expect(legs[0]!.failingRounds).toBe(0);
+    // And the shrink reading must now SEE a measurement, which is what lets the queue converge.
+    expect(summarizeRepairLegs(legs).measured).toBe(true);
+  });
+
+  it('EI-23917645695738835: a leg OUTSIDE the signature measured passing is still skipped — the cap rule survives the fix', () => {
+    const legs = applyRepairLegMeasurements([], {
+      measurements: [measure('lint:perf', 'pass')],
+      head: HEAD_B,
+      round: 3,
+      nowMs: T0,
+      signatureIds: ['@papercusp/web :: test'],
+    });
+    expect(legs).toEqual([]);
+  });
+
+  it('EI-23917645695738835: SILENCE still resolves nothing — a signature id that was not measured is untouched (docblock rule 2)', () => {
+    const legs = applyRepairLegMeasurements([], {
+      measurements: [],
+      head: HEAD_B,
+      round: 3,
+      nowMs: T0,
+      signatureIds: ['@papercusp/web :: test', '@papercusp/operator-core :: test:lane-pure'],
+    });
+    expect(legs).toEqual([]);
+    expect(summarizeRepairLegs(legs).measured).toBe(false);
+  });
+
   it('failingRounds counts ROUNDS, not measurements — two ticks in one round is one round', () => {
     const once = admitted();
     const twiceSameRound = applyRepairLegMeasurements(once, {

@@ -2669,6 +2669,11 @@ export function recordFrozenRepairLegMeasurement(
     head: input.head,
     round,
     nowMs: input.nowMs,
+    // EI-23917645695738835: the signature is the OTHER population that names a leg failing.
+    // Without it, a leg red at the candidate but never measured failing by a tick has no
+    // prior state, so its first passing measurement is discarded and the manifest re-derives
+    // `red-at-candidate` from that silence forever.
+    signatureIds: (queue.signature ?? []).map((entry) => entry.id),
   });
   if (legs.length === 0) return queue;
   return { ...queue, legs, updatedAtMs: input.nowMs };
