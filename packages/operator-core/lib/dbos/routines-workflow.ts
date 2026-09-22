@@ -34,6 +34,7 @@ import {
   ROUTINES_HEAVY_QUEUE,
   ROUTINES_LOOP_QUEUE,
   ROUTINES_RELEASE_QUEUE,
+  ROUTINES_DEPLOY_QUEUE,
   ROUTINES_TRIGGERS_QUEUE,
   queueForRoutine,
   shouldFireUnderPoolShed,
@@ -141,6 +142,17 @@ const routinesReleaseQueue = idempotentWorkflowQueue(
   ROUTINES_RELEASE_QUEUE,
   () => new WorkflowQueue(ROUTINES_RELEASE_QUEUE, { concurrency: queueConcurrency(1) }),
 );
+// EI-23909857328600541: release-trigger is the deploy LAUNCHER — it evaluates the plan and
+// fires detached units (auto-deploy, exact-pin live certification) without awaiting them, so
+// it is quick, but a starved fire is a deploy that never happens. On the shared lane two fires
+// hung 49 and 37 minutes (ROUTINE_FIRE_TIMEOUT_MS is 2h, so a hung fire holds its slot that
+// long), the epoch computed available=0, and 426 green commits sat undeployed while nothing
+// remained to launch their certification. Serial: the units it starts are themselves
+// fixed-unit-name singletons, so concurrent evaluations buy nothing.
+const routinesDeployQueue = idempotentWorkflowQueue(
+  ROUTINES_DEPLOY_QUEUE,
+  () => new WorkflowQueue(ROUTINES_DEPLOY_QUEUE, { concurrency: queueConcurrency(1) }),
+);
 export const ROUTINE_FIRE_QUEUES = [
   routinesQueue.name,
   routinesHeavyQueue.name,
@@ -149,6 +161,7 @@ export const ROUTINE_FIRE_QUEUES = [
   routinesLoopQueue.name,
   routinesTriggersQueue.name,
   routinesReleaseQueue.name,
+  routinesDeployQueue.name,
 ] as const;
 
 type DueRoutine = {

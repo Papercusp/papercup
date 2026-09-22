@@ -30,6 +30,7 @@ export const ROUTINES_FLEET_CONTROL_QUEUE = 'routines-fleet-control';
 export const ROUTINES_LOOP_QUEUE = 'routines-loop';
 export const ROUTINES_TRIGGERS_QUEUE = 'routines-triggers';
 export const ROUTINES_RELEASE_QUEUE = 'routines-release';
+export const ROUTINES_DEPLOY_QUEUE = 'routines-deploy';
 export const ROUTINES_HEAVY_QUEUE = 'routines-heavy';
 
 /** Mirrors loop.ts's materialized target_role without importing that stateful module here. */
@@ -93,6 +94,34 @@ export const TRIGGER_POLL_ACTIONS = new Set<string>([
 export const HEAVY_ROUTINE_ACTIONS = new Set<string>(['gitnexus-reindex']);
 
 /**
+ * The DEPLOY LAUNCHER → its own bounded serial lane.
+ *
+ * `release-trigger` is the only thing that promotes a green `main` to the live operator:
+ * each fire evaluates the deploy plan and LAUNCHES detached systemd units (the auto-deploy
+ * and the exact-pin live certification). It never awaits them — launchLiveReleaseCertification
+ * resolves on `systemd-run`'s own exit — so it is QUICK, and its cadence (`0 *\/15 * * * *`)
+ * means a starved fire is a deploy that simply never happens.
+ *
+ * EI-23909857328600541 (measured 2026-09-22T01:50Z) is the starvation, and it is the same
+ * shape as the four classes above rather than a new one. release-trigger fell through
+ * queueForRoutine to the shared `routines` lane (concurrency 4). Two fires on that lane —
+ * `orphaned-mcp-reaper` and `gate-watcher-tick` — had been PENDING for 49 and 37 minutes,
+ * and because ROUTINE_FIRE_TIMEOUT_MS is 2 HOURS a hung fire keeps its durable slot for up
+ * to two hours. With the remaining slots churning, the dispatch epoch computed
+ * `inFlight=3, available=0` and withheld release-trigger fire after fire: 41 routines were
+ * overdue, release-trigger had not fired for ~50 minutes, and 426 green commits sat
+ * undeployed behind a live certification that nothing was left to launch.
+ *
+ * It does NOT belong on the existing lanes: `routines-critical` is deliberately git-sync-only
+ * (a guard test pins that set, and widening it re-creates the very contention that lane
+ * exists to prevent), and `routines-release` is the SERIAL lane for the operator-home
+ * green-checkpoint, whose ~25-minute fire would starve a 15-minute trigger outright.
+ * Serial, because two concurrent deploy evaluations have nothing to gain: the units they
+ * launch are themselves singletons, deduped by fixed unit name.
+ */
+export const DEPLOY_TRIGGER_ACTIONS = new Set<string>(['release-trigger']);
+
+/**
  * The queue NAME a routine fire should enqueue on, by its target role and (when
  * needed) install slug. The operator-home green-checkpoint is the workspace's
  * release finalizer: if it waits behind four long subject-hive gates, a frozen
@@ -103,8 +132,9 @@ export const HEAVY_ROUTINE_ACTIONS = new Set<string>(['gitnexus-reindex']);
  * A loop wake → the latency-isolated `routines-loop` lane; fleet restoration →
  * the serial `routines-fleet-control` lane; a critical quick SYSTEM action →
  * `routines-critical`; a quick external-source poll → `routines-triggers`; the
- * operator-home green-checkpoint → `routines-release`; a known heavy/background
- * action → `routines-heavy`; everything else → `routines`.
+ * operator-home green-checkpoint → `routines-release`; the deploy launcher →
+ * `routines-deploy`; a known heavy/background action → `routines-heavy`;
+ * everything else → `routines`.
  */
 export function queueForRoutine(targetRole: string, installSlug?: string | null): string {
   if (targetRole === LOOP_WAKE_TARGET_ROLE) return ROUTINES_LOOP_QUEUE;
@@ -116,6 +146,7 @@ export function queueForRoutine(targetRole: string, installSlug?: string | null)
     if (HEAVY_ROUTINE_ACTIONS.has(action)) return ROUTINES_HEAVY_QUEUE;
     if (FLEET_CONTROL_ACTIONS.has(action)) return ROUTINES_FLEET_CONTROL_QUEUE;
     if (CRITICAL_ROUTINE_ACTIONS.has(action)) return ROUTINES_CRITICAL_QUEUE;
+    if (DEPLOY_TRIGGER_ACTIONS.has(action)) return ROUTINES_DEPLOY_QUEUE;
     if (TRIGGER_POLL_ACTIONS.has(action)) return ROUTINES_TRIGGERS_QUEUE;
   }
   return ROUTINES_QUEUE;

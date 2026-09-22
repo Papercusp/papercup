@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAcceptanceBarSeed,
   parseBarMappings,
+  acceptanceBarProjectedBehavior,
   parseRequirementBars,
 } from './acceptance-bar-seed';
 import { computeAcceptanceBarSetHash, normalizeAcceptanceBarCriterion } from './rubrics';
@@ -342,5 +343,44 @@ describe('acceptance BAR seed builder', () => {
       subjectPlan: { status: planStatus, revision: input.subjectPlanRevision + 1, adoptionEpoch: 1, cohort: 'post-epoch' },
       actorId: input.actorId,
     })).toThrow('BAR meaning cannot change outside rubrics:amend');
+  });
+});
+
+describe('acceptanceBarProjectedBehavior', () => {
+  // A BAR model routinely opens by restating its own title. That reads fine in a
+  // rubric and is fatal in the DERIVED clause: two sentences fail
+  // atomic-observable-behavior, which blocks promotion and shipping. Repairing the
+  // projected clause instead does not survive — preserveRefinements only holds while
+  // the BAR hash material is unchanged (EI-23920059935763829).
+  const title = 'Every in-scope plan ships';
+  const behavior = 'Each of the ten plans named IN SCOPE by D-001 reads `status: shipped` in harness_plans';
+
+  it('strips a restated title so the projected behavior is atomic, where the raw model is not', () => {
+    const model = `${title}. ${behavior}`;
+    // Control first: the raw model is what the projection used to emit, and it FAILS.
+    // Without this the assertion below could pass against a checker that accepts anything.
+    expect(specBehaviorNonAtomicReason(model)).not.toBeNull();
+    expect(acceptanceBarProjectedBehavior({ title, model })).toBe(behavior);
+    expect(specBehaviorNonAtomicReason(acceptanceBarProjectedBehavior({ title, model }))).toBeNull();
+  });
+
+  it('tolerates a title written with its own trailing period', () => {
+    expect(acceptanceBarProjectedBehavior({ title: `${title}.`, model: `${title}. ${behavior}` })).toBe(behavior);
+  });
+
+  it('leaves a model that does not restate its title untouched', () => {
+    expect(acceptanceBarProjectedBehavior({ title, model: behavior })).toBe(behavior);
+    expect(acceptanceBarProjectedBehavior({ title, model: 'Every in-scope plan shipped somewhere. And more.' }))
+      .toBe('Every in-scope plan shipped somewhere. And more.');
+  });
+
+  it('keeps a model that is ONLY its own title rather than emptying the clause', () => {
+    expect(acceptanceBarProjectedBehavior({ title, model: `${title}.` })).toBe(`${title}.`);
+  });
+
+  it('is a no-op when either side is missing', () => {
+    expect(acceptanceBarProjectedBehavior({ title: '', model: behavior })).toBe(behavior);
+    expect(acceptanceBarProjectedBehavior({ title, model: '' })).toBe('');
+    expect(acceptanceBarProjectedBehavior({})).toBe('');
   });
 });

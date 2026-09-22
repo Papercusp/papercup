@@ -5,6 +5,7 @@ import {
   ROUTINES_FLEET_CONTROL_QUEUE,
   ROUTINES_LOOP_QUEUE,
   ROUTINES_RELEASE_QUEUE,
+  ROUTINES_DEPLOY_QUEUE,
   ROUTINES_TRIGGERS_QUEUE,
   ROUTINES_HEAVY_QUEUE,
   LOOP_WAKE_TARGET_ROLE,
@@ -12,6 +13,7 @@ import {
   FLEET_CONTROL_ACTIONS,
   TRIGGER_POLL_ACTIONS,
   HEAVY_ROUTINE_ACTIONS,
+  DEPLOY_TRIGGER_ACTIONS,
   queueForRoutine,
   shouldFireUnderPoolShed,
 } from './routines-queue-classification';
@@ -128,6 +130,57 @@ describe('queueForRoutine — bounded heavy/background lane (EI-2246949658731145
   it('does not widen the critical pool-pressure floor', () => {
     expect(shouldFireUnderPoolShed('system:gitnexus-reindex')).toBe(false);
     expect(CRITICAL_ROUTINE_ACTIONS.has('gitnexus-reindex')).toBe(false);
+  });
+});
+
+/**
+ * EI-23909857328600541 (measured 2026-09-22T01:50Z): release-trigger — the ONLY thing that
+ * promotes a green `main` to the live operator — fell through to the shared `routines` lane.
+ * Two unrelated fires on that lane (orphaned-mcp-reaper, gate-watcher-tick) sat PENDING for
+ * 49 and 37 minutes; because ROUTINE_FIRE_TIMEOUT_MS is 2h a hung fire keeps its durable slot
+ * that long, so the dispatch epoch reported `inFlight=3, available=0` and withheld
+ * release-trigger indefinitely. 41 routines were overdue and 426 green commits sat undeployed
+ * behind a live certification that nothing remained to launch. Same starvation shape as
+ * git-sync (2026-06-23), the loop lane, and the trigger polls — so it gets the same remedy.
+ */
+describe('queueForRoutine — the deploy-launcher lane (EI-23909857328600541)', () => {
+  it('routes the deploy launcher off the shared lane onto its own', () => {
+    expect(queueForRoutine('system:release-trigger')).toBe(ROUTINES_DEPLOY_QUEUE);
+    expect(queueForRoutine('system:release-trigger')).not.toBe(ROUTINES_QUEUE);
+  });
+
+  it('keeps the set exact — near-miss and non-system targets stay shared', () => {
+    expect([...DEPLOY_TRIGGER_ACTIONS]).toEqual(['release-trigger']);
+    expect(queueForRoutine('system:release-trigger-status')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:pre-release-trigger')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('release-trigger')).toBe(ROUTINES_QUEUE);
+  });
+
+  it('does NOT ride the git-sync critical lane, whose set stays git-sync-only', () => {
+    // The critical lane is concurrency-2 and deliberately single-action; widening it
+    // would re-create inside that lane the contention it exists to prevent.
+    expect(CRITICAL_ROUTINE_ACTIONS.has('release-trigger')).toBe(false);
+    expect(queueForRoutine('system:release-trigger')).not.toBe(ROUTINES_CRITICAL_QUEUE);
+    expect(shouldFireUnderPoolShed('system:release-trigger')).toBe(false);
+  });
+
+  it('does NOT share the serial release lane with the ~25m home green-checkpoint', () => {
+    // routines-release is serial for the home finalizer; a 15-minute trigger queued behind
+    // a ~25-minute gate fire would be starved by construction.
+    expect(queueForRoutine('system:release-trigger')).not.toBe(ROUTINES_RELEASE_QUEUE);
+    expect(queueForRoutine('system:green-checkpoint', operatorHomeHarnessSlug())).toBe(
+      ROUTINES_RELEASE_QUEUE,
+    );
+  });
+
+  it('isolates the launcher from the lanes that actually starved it', () => {
+    // The two fires that held the slots, and the third stuck lane, must all resolve
+    // somewhere other than the deploy lane.
+    for (const starver of ['system:orphaned-mcp-reaper', 'system:gate-watcher-tick']) {
+      expect(queueForRoutine(starver)).toBe(ROUTINES_QUEUE);
+      expect(queueForRoutine(starver)).not.toBe(ROUTINES_DEPLOY_QUEUE);
+    }
+    expect(queueForRoutine('system:google-gmail-poll')).toBe(ROUTINES_TRIGGERS_QUEUE);
   });
 });
 
