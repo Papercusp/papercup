@@ -13,6 +13,7 @@ import {
   isValidSourceSha,
   buildCutEnv,
   buildCutArgv,
+  parseCutStartedMarker,
   readCutStatus,
   collectHandoff,
   preflightCut,
@@ -910,5 +911,150 @@ describe('release-tooling staleness', () => {
       expect(check(r).detail).toMatch(/UNMEASURED/);
       expect(r.go).toBe(true);
     });
+  });
+});
+
+// ─── Managed-release journal identity (P-001) ──────────────────────────────────
+// The manual cut path minted no operation id, so release-local.sh's journal never ran
+// and an interrupted cut had nothing to resume from. These cover the threading and,
+// more importantly, the refusals that keep a half-configured or foreign cut from
+// reading as a good one.
+
+describe('buildCutEnv — managed-release journal identity', () => {
+  const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
+
+  it('threads BOTH ids so release-local.sh enables its phase journal', () => {
+    const env = buildCutEnv({}, sourceSha, {
+      ownerName: 'Avi',
+      releaseTaskId: 'task1',
+      releaseOperationId: 'op-1',
+      enqueuedAtMs: 1_700_000_000_000,
+    });
+    expect(env.PAPERCUSP_RELEASE_TASK_ID).toBe('task1');
+    expect(env.PAPERCUSP_RELEASE_OPERATION_ID).toBe('op-1');
+    expect(env.PAPERCUSP_RELEASE_ENQUEUED_AT_MS).toBe('1700000000000');
+  });
+
+  it('emits NEITHER id for an unmanaged cut — unchanged pre-P-001 behavior', () => {
+    const env = buildCutEnv({}, sourceSha, { ownerName: 'Avi' });
+    expect(env).not.toHaveProperty('PAPERCUSP_RELEASE_TASK_ID');
+    expect(env).not.toHaveProperty('PAPERCUSP_RELEASE_OPERATION_ID');
+    expect(env).not.toHaveProperty('PAPERCUSP_RELEASE_ENQUEUED_AT_MS');
+  });
+
+  it('REFUSES a half-set pair at build time instead of failing inside the detached unit', () => {
+    // release_task_journal_configure() exits 2 on this, but only after the cut is away —
+    // so the caller would see launched:true and learn nothing until it read the log.
+    expect(() =>
+      buildCutEnv({}, sourceSha, { ownerName: 'Avi', releaseTaskId: 'task1' }),
+    ).toThrow(/release_journal_identity_incomplete/);
+    expect(() =>
+      buildCutEnv({}, sourceSha, { ownerName: 'Avi', releaseOperationId: 'op-1' }),
+    ).toThrow(/release_journal_identity_incomplete/);
+  });
+
+  it('treats a blank id as absent, so whitespace cannot produce a half-set pair', () => {
+    expect(() =>
+      buildCutEnv({}, sourceSha, { ownerName: 'Avi', releaseTaskId: '  ', releaseOperationId: 'op-1' }),
+    ).toThrow(/release_journal_identity_incomplete/);
+    expect(
+      buildCutEnv({}, sourceSha, { ownerName: 'Avi', releaseTaskId: '  ', releaseOperationId: '  ' }),
+    ).not.toHaveProperty('PAPERCUSP_RELEASE_TASK_ID');
+  });
+
+  it('drops a malformed enqueue stamp rather than failing the cut over it', () => {
+    for (const bad of [0, -1, Number.NaN, 1.5]) {
+      const env = buildCutEnv({}, sourceSha, {
+        ownerName: 'Avi',
+        releaseTaskId: 'task1',
+        releaseOperationId: 'op-1',
+        enqueuedAtMs: bad,
+      });
+      expect(env).not.toHaveProperty('PAPERCUSP_RELEASE_ENQUEUED_AT_MS');
+      expect(env.PAPERCUSP_RELEASE_OPERATION_ID).toBe('op-1');
+    }
+  });
+});
+
+describe('buildCutArgv — the started marker carries the operation identity', () => {
+  const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
+  function inner(runtime: Parameters<typeof buildCutArgv>[6]): string {
+    const argv = buildCutArgv('/root/papercusp-desktop', '0.0.8', 'alpha', {}, sourceSha, '/bin', runtime);
+    return argv[argv.length - 1];
+  }
+
+  it('stamps OPERATION + TASK into the marker a managed cut writes', () => {
+    const cmd = inner({ ownerName: 'Avi', releaseTaskId: 'task1', releaseOperationId: 'op-1' });
+    expect(cmd).toContain("printf 'STARTED:%s\\nOPERATION:%s\\nTASK:%s\\n'");
+    expect(cmd).toContain("'op-1'");
+    expect(cmd).toContain("'task1'");
+    expect(cmd).toContain(`> ${CUT_STARTED}`);
+  });
+
+  it('writes the plain timestamp-only marker for an unmanaged cut', () => {
+    const cmd = inner({ ownerName: 'Avi' });
+    expect(cmd).toContain("printf 'STARTED:%s\\n'");
+    expect(cmd).not.toContain('OPERATION:');
+  });
+
+  it('single-quotes the ids so a hostile id cannot break out of the wrapper', () => {
+    const cmd = inner({ ownerName: 'Avi', releaseTaskId: 'task1', releaseOperationId: "o'p" });
+    expect(cmd).toContain(`'o'\"'\"'p'`);
+  });
+});
+
+describe('parseCutStartedMarker', () => {
+  it('reads the identified marker', () => {
+    expect(parseCutStartedMarker('STARTED:1700000000\nOPERATION:op-1\nTASK:task1\n')).toEqual({
+      operationId: 'op-1',
+      taskId: 'task1',
+      startedAtSec: 1_700_000_000,
+    });
+  });
+
+  it('accepts the pre-P-001 timestamp-only marker with null ids, rather than failing', () => {
+    // An in-flight cut launched by the older wrapper must stay readable across the upgrade.
+    expect(parseCutStartedMarker('STARTED:1700000000\n')).toEqual({
+      operationId: null,
+      taskId: null,
+      startedAtSec: 1_700_000_000,
+    });
+  });
+
+  it('reports nulls for an unparseable marker instead of throwing', () => {
+    expect(parseCutStartedMarker('garbage')).toEqual({
+      operationId: null,
+      taskId: null,
+      startedAtSec: null,
+    });
+  });
+});
+
+describe('readCutStatus — operation marker', () => {
+  it('surfaces the identity of the cut that owns the sentinels', () => {
+    const s = readCutStatus({
+      existsSync: (p: string) => p === CUT_STARTED,
+      readFileSync: () => 'STARTED:1700000000\nOPERATION:op-1\nTASK:task1\n',
+      isUnitActive: () => false,
+    });
+    expect(s.state).toBe('interrupted');
+    expect(s.operation).toEqual({ operationId: 'op-1', taskId: 'task1', startedAtSec: 1_700_000_000 });
+  });
+
+  it('reports a null operation when no cut has started on this host', () => {
+    expect(readCutStatus({ existsSync: () => false, isUnitActive: () => false }).operation).toBeNull();
+  });
+
+  it('keeps the interrupted verdict when the marker exists but cannot be read', () => {
+    // The marker's EXISTENCE is the evidence a cut started; only its identity degrades.
+    const s = readCutStatus({
+      existsSync: (p: string) => p === CUT_STARTED,
+      readFileSync: () => {
+        throw new Error('EACCES');
+      },
+      isUnitActive: () => false,
+    });
+    expect(s.state).toBe('interrupted');
+    expect(s.operation).toEqual({ operationId: null, taskId: null, startedAtSec: null });
   });
 });

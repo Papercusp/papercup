@@ -144,6 +144,16 @@ export interface CutRuntimeEnv {
    *  quiescing the operator (a fleet-affecting outage) — neither of which is necessary
    *  (EI-23917342543376581). Carrying it restores parity with the manual path. */
   headSnapshotTimeoutMs?: number;
+  /** Managed-release journal identity (P-001). release-local.sh runs its phase journal
+   *  — stage receipts, reuse/reconcile decisions, restart resume — only when BOTH of
+   *  these are present; absent, the cut runs UNMANAGED exactly as before, which is how
+   *  every manual `release:cut` ran until now while the nightly routine
+   *  (nightly-release-cut-action.ts) threaded them. Supplying them is what makes a
+   *  manual cut resumable and discoverable after an operator restart. */
+  releaseTaskId?: string;
+  releaseOperationId?: string;
+  /** Enqueue instant, so the journal can separate queue wait from build time. */
+  enqueuedAtMs?: number;
 }
 
 function requiredOwnerName(value: string): string {
@@ -203,6 +213,27 @@ export function buildCutEnv(
     env.PAPERCUSP_RELEASE_CANONICAL_DESKTOP_ROOT = canonicalDesktopRoot;
   }
   if (runtime.reuseSeed) env.PAPERCUSP_SKIP_SEED_CUT = '1';
+  // BOTH-OR-NEITHER, enforced HERE rather than discovered in the cut. release-local.sh's
+  // release_task_journal_configure() hard-refuses a half-configured pair (`managed release
+  // resume requires BOTH ...`, exit 2) — but that refusal happens inside the detached unit,
+  // so a caller that threads only one id gets a green `launched:true` and learns nothing
+  // until it reads a failed log. Refusing at build time turns that into an immediate,
+  // attributable error at the call site.
+  const releaseTaskId = runtime.releaseTaskId?.trim();
+  const releaseOperationId = runtime.releaseOperationId?.trim();
+  if (Boolean(releaseTaskId) !== Boolean(releaseOperationId)) {
+    throw new Error(
+      'release_journal_identity_incomplete — a managed cut needs BOTH releaseTaskId and releaseOperationId (release-local.sh refuses the pair otherwise); pass neither to run an unmanaged cut',
+    );
+  }
+  if (releaseTaskId && releaseOperationId) {
+    env.PAPERCUSP_RELEASE_TASK_ID = releaseTaskId;
+    env.PAPERCUSP_RELEASE_OPERATION_ID = releaseOperationId;
+    const enqueuedAtMs = runtime.enqueuedAtMs;
+    if (Number.isSafeInteger(enqueuedAtMs) && (enqueuedAtMs as number) > 0) {
+      env.PAPERCUSP_RELEASE_ENQUEUED_AT_MS = String(enqueuedAtMs);
+    }
+  }
   // Only a usable positive integer is forwarded: cut-seed-cli REFUSES a malformed value,
   // and failing the whole cut on a stray override would be worse than ignoring it.
   const headSnapshotTimeoutMs = runtime.headSnapshotTimeoutMs;
@@ -262,7 +293,22 @@ export function buildCutArgv(
     `bash -c 'source "$1" "$2" "$3"' ` +
     `${shellSingleQuote(targetEntrypoint)} ${shellSingleQuote(orchestratorEntrypoint)} ` +
     `${shellSingleQuote(version)} ${shellSingleQuote(channel)}`;
-  const inner = `rm -f ${done}; printf 'STARTED:%s\\n' "$(date +%s)" > ${started}; ` + `${resumeReset}${envPrefix} ${cutterInvocation} > ${log} 2>&1; ` + `echo "DONE:$?" > ${done}`;
+  // The started marker carries the OPERATION IDENTITY, not just a timestamp (P-001).
+  // The sentinels are per-PLATFORM and therefore SHARED across successive cuts of the
+  // same leg, so an anonymous marker cannot distinguish "my cut is still running" from
+  // "a later cut took this unit and my operation is long gone" — and the DONE sentinel a
+  // stale reader then picks up belongs to that other cut, which reads as a success the
+  // operation never had. Stamping the ids here is what lets restart discovery correlate
+  // a live unit back to its journal row instead of guessing from the log.
+  // `STARTED:<epoch>` stays the FIRST line so a marker written by an older launcher, or
+  // read by an older parser, still resolves.
+  const operationId = env.PAPERCUSP_RELEASE_OPERATION_ID;
+  const taskId = env.PAPERCUSP_RELEASE_TASK_ID;
+  const startedMarker =
+    operationId && taskId
+      ? `printf 'STARTED:%s\\nOPERATION:%s\\nTASK:%s\\n' "$(date +%s)" ${shellSingleQuote(operationId)} ${shellSingleQuote(taskId)} > ${started}; `
+      : `printf 'STARTED:%s\\n' "$(date +%s)" > ${started}; `;
+  const inner = `rm -f ${done}; ${startedMarker}` + `${resumeReset}${envPrefix} ${cutterInvocation} > ${log} 2>&1; ` + `echo "DONE:$?" > ${done}`;
   return [
     '--user',
     ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
@@ -304,6 +350,11 @@ export interface LaunchCutResult {
   argv: string[];
   logPath: string;
   donePath: string;
+  /** Managed-release journal identity this cut runs under, or null for an unmanaged cut.
+   *  Returned so the caller records WHICH operation it fired in its audit entry — a cut
+   *  whose id lives only in the detached unit's env is unrecoverable once it dies. */
+  operationId: string | null;
+  taskId: string | null;
   /** Present on a launch failure (e.g. the unit already exists ⇒ a cut is in flight). */
   reason?: string;
 }
@@ -341,6 +392,8 @@ export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spaw
       argv,
       logPath: cutLogFor(opts.platform),
       donePath: cutDoneFor(opts.platform),
+      operationId: opts.runtime.releaseOperationId?.trim() || null,
+      taskId: opts.runtime.releaseTaskId?.trim() || null,
     };
     let stderr = '';
     const child = spawnFn('systemd-run', argv);
@@ -366,6 +419,16 @@ export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spaw
 
 export type CutStateKind = 'idle' | 'running' | 'done' | 'failed' | 'interrupted';
 
+/** Who the on-host sentinels belong to, read back off the started marker (P-001).
+ *  `null` on every field for an UNMANAGED cut (no journal ids were threaded) — which is
+ *  distinct from "no marker at all", reported as a `null` operation on CutStatus. */
+export interface CutOperationMarker {
+  operationId: string | null;
+  taskId: string | null;
+  /** Epoch SECONDS as written by the wrapper's `date +%s` (null if unparseable). */
+  startedAtSec: number | null;
+}
+
 export interface CutStatus {
   state: CutStateKind;
   running: boolean;
@@ -375,6 +438,25 @@ export interface CutStatus {
   logTail: string | null;
   logPath: string;
   donePath: string;
+  /** Identity stamped by the launch wrapper; null when no started marker exists.
+   *  Restart discovery correlates THIS against the journal — the sentinels are shared
+   *  per platform, so without it a stale operation reads a newer cut's DONE sentinel
+   *  as its own outcome. */
+  operation: CutOperationMarker | null;
+}
+
+/** Pure: parse the started-marker body. Tolerates the pre-P-001 `STARTED:<epoch>` form
+ *  (an in-flight cut launched by the older wrapper) by reporting null ids rather than
+ *  failing — an unidentified marker is a real, representable state, not an error. */
+export function parseCutStartedMarker(text: string): CutOperationMarker {
+  const startedAt = text.match(/^STARTED:(\d+)/m);
+  const operation = text.match(/^OPERATION:(.+)$/m);
+  const task = text.match(/^TASK:(.+)$/m);
+  return {
+    operationId: operation?.[1]?.trim() || null,
+    taskId: task?.[1]?.trim() || null,
+    startedAtSec: startedAt ? Number(startedAt[1]) : null,
+  };
 }
 
 export interface ReadCutStatusDeps {
@@ -430,6 +512,16 @@ export function readCutStatus(deps: ReadCutStatusDeps = {}): CutStatus {
     }
   }
   const startedSeen = exists(startedPath);
+  // A marker that exists but cannot be read is still evidence a cut STARTED, so the
+  // state machine below must not lose that; only the identity degrades to null.
+  let operation: CutOperationMarker | null = null;
+  if (startedSeen) {
+    try {
+      operation = parseCutStartedMarker(read(startedPath));
+    } catch {
+      operation = { operationId: null, taskId: null, startedAtSec: null };
+    }
+  }
   const logTail = exists(logPath) ? tailLines(read(logPath), 40) : null;
 
   let state: CutStateKind;
@@ -438,7 +530,7 @@ export function readCutStatus(deps: ReadCutStatusDeps = {}): CutStatus {
   else if (startedSeen) state = 'interrupted';
   else state = 'idle';
 
-  return { state, running, exitCode, logTail, logPath, donePath };
+  return { state, running, exitCode, logTail, logPath, donePath, operation };
 }
 
 // ─── Hand-off (collect the LOCAL deliverable) ──────────────────────────────────

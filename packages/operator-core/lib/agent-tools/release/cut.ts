@@ -60,6 +60,7 @@ import {
   preflightCut,
   buildCutArgv,
   desktopRoot,
+  integrationRoot,
   isValidVersion,
   isValidSourceSha,
   CHANNELS,
@@ -76,6 +77,11 @@ import {
   type CutRuntimeEnv,
   type Platform,
 } from '../../release-cut-launch';
+import {
+  beginCutOperation,
+  readSourceGitlinks,
+  type BeginCutOperationResult,
+} from '../../release-cut-operation';
 
 const cutRootArg = z
   .string()
@@ -210,15 +216,24 @@ export function validateReleaseResumeResidue(input: {
  * would silently reintroduce the lost-version-bump class (WI-10001570). That failure
  * is invisible at cut time and only surfaces a release later, when every source build
  * still reports the previous version — so it must not be re-derived per call site. */
-function cutRuntimeEnv(args: {
-  ownerName: string;
-  ownerEmail?: string;
-  reuseSeed?: boolean;
-}): CutRuntimeEnv {
+function cutRuntimeEnv(
+  args: {
+    ownerName: string;
+    ownerEmail?: string;
+    reuseSeed?: boolean;
+  },
+  operation?: BeginCutOperationResult | null,
+): CutRuntimeEnv {
   return {
     ownerName: args.ownerName,
     ownerEmail: args.ownerEmail,
     reuseSeed: args.reuseSeed,
+    // P-001: present ⇒ release-local.sh runs its phase journal and the cut becomes
+    // resumable and discoverable; absent ⇒ unchanged unmanaged behavior. buildCutEnv
+    // refuses a half-set pair, so these two always travel together.
+    releaseTaskId: operation?.taskId,
+    releaseOperationId: operation?.operationId,
+    enqueuedAtMs: operation ? Date.now() : undefined,
     // release-local.sh derives its own ROOT from where the script lives, so a cut
     // launched against an isolated worktree must be TOLD where canonical is — its
     // .git is an independent clone and the push leg is deleted under LOCAL-only,
@@ -231,6 +246,45 @@ function cutRuntimeEnv(args: {
     // buildCutEnv so that builder stays pure and unit-testable.
     headSnapshotTimeoutMs: parsePositiveIntEnv(process.env.PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS),
   };
+}
+
+/**
+ * Open the managed-release operation for a cut about to fire (P-001), so the cut runs
+ * with a phase journal and is discoverable after an operator restart.
+ *
+ * DEGRADES rather than blocks. If the ledger write fails, the cut still fires — exactly
+ * as every manual cut did before — because failing a release over a bookkeeping write
+ * would be worse than cutting unmanaged. What it must NOT do is degrade SILENTLY: the
+ * reason is returned and surfaced on the tool response, since "this cut is unmanaged and
+ * cannot be resumed" is precisely the fact an operator needs at the 35-minute mark.
+ */
+async function openCutOperation(input: {
+  version: string;
+  channel: Channel;
+  platform: Platform | null;
+  sourceSha: string;
+  desktopRoot: string;
+}): Promise<{ operation: BeginCutOperationResult | null; reason?: string }> {
+  try {
+    const operation = await beginCutOperation({
+      identity: {
+        version: input.version,
+        channel: input.channel,
+        platform: input.platform,
+        sourceSha: input.sourceSha,
+        gitlinks: readSourceGitlinks(integrationRoot(), input.sourceSha),
+      },
+      cwd: input.desktopRoot,
+    });
+    return { operation };
+  } catch (error) {
+    return {
+      operation: null,
+      reason: `managed release journal unavailable — this cut runs UNMANAGED and cannot be resumed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
 }
 
 /** A malformed override is IGNORED, never fatal: cut-seed-cli refuses a bad value, and
@@ -779,7 +833,11 @@ export default defineTool({
             : status.state === 'failed'
               ? `The last ${legNote} FAILED (exit ${status.exitCode}). Inspect the log tail above / ${status.logPath}; fix and re-run.`
               : status.state === 'interrupted'
-                ? `The last ${legNote} was INTERRUPTED before its DONE sentinel was written. Inspect the log tail above / ${status.logPath}; fix or intentionally restart it.`
+                ? `The last ${legNote} was INTERRUPTED before its DONE sentinel was written. ${
+                    status.operation?.operationId
+                      ? `It ran under managed operation ${status.operation.operationId}, so its committed phase receipts survive — a re-run resumes from the last one rather than rebuilding.`
+                      : 'It ran UNMANAGED (no operation id on the started marker), so there are no phase receipts to resume from — a re-run rebuilds from the start.'
+                  } Inspect the log tail above / ${status.logPath}; fix or intentionally restart it.`
               : `No cut in flight and no recent result for ${legNote} on this host.`;
       return json({ ok: true, op: 'status', ...(args.platform ? { platform: args.platform } : {}), ...status, note });
     }
@@ -966,11 +1024,18 @@ export default defineTool({
 
       const { ownerLabel } = readIdentity(ctx);
       const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
+      const managed = await openCutOperation({
+        version: args.version,
+        channel,
+        platform,
+        sourceSha: args.sourceSha,
+        desktopRoot: selected.desktopRoot,
+      });
       const launch = await launchDetachedCut({
         version: args.version,
         channel,
         expectedSourceSha: args.sourceSha,
-        runtime: cutRuntimeEnv(args),
+        runtime: cutRuntimeEnv(args, managed.operation),
         legs,
         platform,
         root: selected.desktopRoot,
@@ -988,6 +1053,11 @@ export default defineTool({
         localOnly: true,
         launched: launch.launched,
         unit: launch.unit,
+        // The operation id is the only durable handle on this cut; an audit entry without
+        // it cannot be joined to the journal row later.
+        operationId: launch.operationId,
+        taskId: launch.taskId,
+        ...(managed.reason ? { managedSkipReason: managed.reason } : {}),
         ...(launch.reason ? { reason: launch.reason } : {}),
       });
       return json({
@@ -1005,6 +1075,10 @@ export default defineTool({
         localOnly: true,
         unit: launch.unit,
         logPath: launch.logPath,
+        managed: launch.operationId !== null,
+        operationId: launch.operationId,
+        taskId: launch.taskId,
+        ...(managed.reason ? { managedSkipReason: managed.reason } : {}),
         ...(launch.reason ? { reason: launch.reason } : {}),
         note: launch.launched
           ? `LOCAL ${platform} leg started (detached). Poll release:cut{op:status,platform:'${platform}'}. Once EVERY leg is done: run papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <sha> --require-signed per leg → release:cut{op:handoff,version} (handoff already collects across every leg's artifacts under the shared target tree).`
@@ -1094,11 +1168,18 @@ export default defineTool({
 
     const { ownerLabel } = readIdentity(ctx);
     const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
+    const managed = await openCutOperation({
+      version: args.version,
+      channel,
+      platform: null,
+      sourceSha: args.sourceSha,
+      desktopRoot: selected.desktopRoot,
+    });
     const launch = await launchDetachedCut({
       version: args.version,
       channel,
       expectedSourceSha: args.sourceSha,
-      runtime: cutRuntimeEnv(args),
+      runtime: cutRuntimeEnv(args, managed.operation),
       legs,
       root: selected.desktopRoot,
       orchestratorRoot,
@@ -1114,6 +1195,9 @@ export default defineTool({
       localOnly: true,
       launched: launch.launched,
       unit: launch.unit,
+      operationId: launch.operationId,
+      taskId: launch.taskId,
+      ...(managed.reason ? { managedSkipReason: managed.reason } : {}),
       ...(launch.reason ? { reason: launch.reason } : {}),
     });
     return json({
@@ -1130,6 +1214,10 @@ export default defineTool({
       localOnly: true,
       unit: launch.unit,
       logPath: launch.logPath,
+      managed: launch.operationId !== null,
+      operationId: launch.operationId,
+      taskId: launch.taskId,
+      ...(managed.reason ? { managedSkipReason: managed.reason } : {}),
       ...(launch.reason ? { reason: launch.reason } : {}),
       note: launch.launched
         ? 'LOCAL cut started (detached, ~35–60 min). Poll release:cut{op:status}; this connection is not tied to the build. When done: run papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <sha> --require-signed per leg → release:cut{op:handoff,version}.'
