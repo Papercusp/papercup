@@ -5453,8 +5453,14 @@ export async function writeFrozenCandidateRepairQueue(
   let manifested: import('../../release/repair-manifest').WithRepairManifestResult<FrozenCandidateRepairQueue> | null = null;
   if (queue) {
     const { withRepairManifest } = await import('../../release/repair-manifest');
+    // WI-10002500: the manifest is a PURE derivation, so the npm-workspace name→dir map is
+    // resolved here (the one place that may do I/O) and passed in. Without it a workspace-task
+    // leg's mined paths stay workspace-relative and can never join the repo-relative admission
+    // ledger, which made every such leg read `red-at-candidate` even after its fix had landed.
+    const { npmWorkspaceDirsByName } = await import('../../release/npm-workspace-dirs');
     manifested = withRepairManifest(queue, Date.now(), {
       legOutputs: await readRepairTickLegOutputs(sql, target),
+      workspaceDirs: npmWorkspaceDirsByName(resolveIntegrationRoot()),
     });
     queue = manifested.queue;
     // P-013 / D-007: project the convergence summary into `gate_health.convergence` in the
