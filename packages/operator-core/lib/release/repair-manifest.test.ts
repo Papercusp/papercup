@@ -272,3 +272,101 @@ describe('repair manifest — persistence and rendering', () => {
     expect(row.admitCommand).toContain('packages/x/f44.ts');
   });
 });
+
+/**
+ * WI-10002500. A workspace task runs with its package directory as cwd, so its runner prints
+ * `lib/foo.test.ts` while the admission ledger — and the admit command this manifest renders —
+ * are repo-relative. Before the `workspaceDirs` input, those two spaces were compared directly,
+ * so the join NEVER matched and every workspace-task leg reported `red-at-candidate` for the
+ * life of the queue, including legs whose fix had already been admitted. That erased the one
+ * signal that distinguishes "fixed, awaiting re-verification" from "nobody has ever repaired
+ * this leg", and a papercusp freeze ran ~14h with the orphan leg rendered like the repaired ones.
+ */
+describe('repair manifest — leg paths and the admission ledger are joined in ONE path space', () => {
+  // `@papercusp/web` → `apps/operator` is deliberate: its directory is NOT its package name's
+  // last segment. 7 of this repo's 105 workspaces are like that, so a basename-derived shortcut
+  // would pass a test written with a self-consistent name and still be wrong in production.
+  const WORKSPACE_DIRS = { '@papercusp/web': 'apps/operator', '@papercusp/operator-core': 'packages/operator-core' };
+  const LANE_OUTPUT = ' FAIL  lib/agent-obligation-owner-directives.test.ts > opens a real pool';
+  const REPO_PATH = 'apps/operator/lib/agent-obligation-owner-directives.test.ts';
+
+  function laneQueue(over: Partial<FrozenCandidateRepairQueue> = {}): FrozenCandidateRepairQueue {
+    return queue({
+      failingTests: ['@papercusp/web :: test:lane-pure'],
+      signature: [
+        {
+          kind: 'workspace-task',
+          id: '@papercusp/web :: test:lane-pure',
+          recipe: 'npm run test:lane-pure -w @papercusp/web',
+          workspace: '@papercusp/web',
+          admittedRound: 1,
+          measuredHead: CANDIDATE,
+        },
+      ],
+      ...over,
+    });
+  }
+
+  it('lifts a workspace-relative mined path to repo-relative using the leg workspace directory', () => {
+    const m = buildRepairManifest({
+      queue: laneQueue(),
+      nowMs: 10,
+      legOutputs: { '@papercusp/web :: test:lane-pure': LANE_OUTPUT },
+      workspaceDirs: WORKSPACE_DIRS,
+    });
+    const row = m.rows[0]!;
+    expect(row.subjectPaths).toEqual([REPO_PATH]);
+    // the rendered repair command must be pasteable from the repo root, which it was not before
+    expect(row.admitCommand).toContain(REPO_PATH);
+  });
+
+  it('an admission carrying the repo-relative path flips the leg to admitted-in-#N', () => {
+    const m = buildRepairManifest({
+      queue: laneQueue({ repairHead: HEAD1, admissions: [admission({ paths: [REPO_PATH], blobs: { [REPO_PATH]: 'f'.repeat(40) } })] }),
+      nowMs: 10,
+      legOutputs: { '@papercusp/web :: test:lane-pure': LANE_OUTPUT },
+      workspaceDirs: WORKSPACE_DIRS,
+    });
+    expect(m.rows[0]!.statusLabel).toBe(`admitted-in-#1@${HEAD1.slice(0, 8)}`);
+  });
+
+  it('CONTROL: the identical queue WITHOUT the map still reads red-at-candidate — the map is what does the work', () => {
+    const m = buildRepairManifest({
+      queue: laneQueue({ repairHead: HEAD1, admissions: [admission({ paths: [REPO_PATH], blobs: { [REPO_PATH]: 'f'.repeat(40) } })] }),
+      nowMs: 10,
+      legOutputs: { '@papercusp/web :: test:lane-pure': LANE_OUTPUT },
+    });
+    expect(m.rows[0]!.subjectPaths).toEqual(['lib/agent-obligation-owner-directives.test.ts']);
+    expect(m.rows[0]!.statusLabel).toBe('red-at-candidate');
+  });
+
+  it('does NOT double-prefix a mined path that is already repo-relative, including one in a sibling workspace', () => {
+    const m = buildRepairManifest({
+      queue: laneQueue(),
+      nowMs: 10,
+      legOutputs: {
+        '@papercusp/web :: test:lane-pure': [
+          'apps/operator/lib/already-repo-relative.ts:3:1 - error',
+          'packages/operator-core/lib/sibling.ts:9:2 - error',
+        ].join('\n'),
+      },
+      workspaceDirs: WORKSPACE_DIRS,
+    });
+    expect(m.rows[0]!.subjectPaths).toEqual([
+      'apps/operator/lib/already-repo-relative.ts',
+      'packages/operator-core/lib/sibling.ts',
+    ]);
+  });
+
+  it('a leg with no workspace is left exactly as mined — lifting only ever applies to a known workspace', () => {
+    const m = buildRepairManifest({
+      queue: queue(),
+      nowMs: 10,
+      legOutputs: { 'lint:tsc': TSC_OUTPUT },
+      workspaceDirs: WORKSPACE_DIRS,
+    });
+    const row = m.rows.find((r) => r.legId === 'lint:tsc')!;
+    expect(row.subjectPaths).toContain('packages/operator-core/lib/release/x.ts');
+    expect(row.subjectPaths).toContain('apps/operator/lib/release/green-checkpoint.ts');
+  });
+});

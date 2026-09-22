@@ -590,12 +590,19 @@ async function main(): Promise<void> {
     reuseExpiresAt: args.reuseExpiresAt ?? null,
     queueWaitMs: queueWaitMs(process.env),
   };
-  const requiredReuseEvidenceRefs =
-    args.stage === 'release.build.linux'
-      ? ['artifact-set:hash-signature-verified']
-      : args.stage === 'release.manifest'
-        ? ['artifact-ledger:exact-set-verified']
-        : [];
+  // P-003 clause 1 (D-008). This was written when linux was the only journalled
+  // build leg and named it LITERALLY, so when P-002 added windows and mac they
+  // silently fell to the `[]` arm: a cross-operation reuse hit for either leg
+  // required NO evidence, while linux required signed-and-verified bytes. The
+  // weaker rule is invisible at the call site — it looks like a stage that simply
+  // has no requirement, not one that lost its guarantee — so derive the rule from
+  // the stage FAMILY. A leg added later then inherits the requirement instead of
+  // inheriting the hole.
+  const requiredReuseEvidenceRefs = args.stage.startsWith('release.build.')
+    ? ['artifact-set:hash-signature-verified']
+    : args.stage === 'release.manifest'
+      ? ['artifact-ledger:exact-set-verified']
+      : [];
   const stage = {
     stage: args.stage,
     identity: args.identity,
@@ -626,6 +633,13 @@ async function main(): Promise<void> {
     freshness: result.freshness,
     lookupElapsedMs: result.lookupElapsedMs,
     reuseSource: result.reuseSource,
+    // P-003 clause 1 (D-008). Receipts recorded evidence that nothing could ever
+    // read: every evidence ref in release-local.sh was a WRITE, because this
+    // payload never carried them back. A reuse decision could therefore only
+    // re-derive trust from the current tree, never CHECK the bytes against what
+    // the receipt actually committed. On a `reuse`/`reconcile` action these are
+    // the PRIOR committed receipt's refs — the thing to verify against.
+    evidenceRefs: result.receipt?.evidenceRefs ?? [],
   })}\n`);
 }
 

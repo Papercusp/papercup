@@ -100,6 +100,17 @@ export interface BuildRepairManifestInput {
   legOutputs?: Readonly<Record<string, string | undefined>>;
   /** Per-leg subject paths the caller KNOWS (wins over every other source). */
   subjectPaths?: Readonly<Record<string, readonly string[] | undefined>>;
+  /**
+   * npm-workspace NAME → repo-relative DIRECTORY (`npm-workspace-dirs.ts`). Passed IN rather
+   * than read here so this function stays a pure derivation.
+   *
+   * WI-10002500: without it, paths mined from a workspace-task leg's output stay
+   * WORKSPACE-relative (`lib/foo.test.ts`, as vitest prints them) while the admission ledger is
+   * REPO-relative (`packages/operator-core/lib/foo.test.ts`). The two can never compare equal,
+   * so `admissionCovering` missed every time and EVERY workspace-task leg reported
+   * `red-at-candidate` for the life of the queue — including legs whose fix had already landed.
+   */
+  workspaceDirs?: Readonly<Record<string, string>>;
   /** The previous manifest, so leg claims survive a rebuild. */
   previous?: RepairManifest | null;
 }
@@ -140,6 +151,35 @@ export function extractSubjectPathsFromLegOutput(output: string | undefined | nu
   return out;
 }
 
+/**
+ * Lift a path MINED from a leg's output into repo-relative form (WI-10002500).
+ *
+ * A workspace task runs with its own package directory as cwd, so its runner prints paths
+ * relative to THAT (`lib/foo.test.ts`), while everything the queue ledgers is relative to the
+ * repo root. Joining the two spaces silently never matches, which is indistinguishable from
+ * "nobody has fixed this leg" — the reading that kept a 14h freeze looking uniform.
+ *
+ * Conservative by construction: it only ever PREFIXES, and only when the path is not already
+ * repo-relative. `workspaceDir` unknown ⇒ returned unchanged, so a caller that supplies no map
+ * gets exactly the previous behaviour. Deliberately NOT a suffix match against the ledger: that
+ * would mark leg A admitted because a DIFFERENT workspace admitted its own `lib/index.ts`, and a
+ * false `admitted-in-#N` tells the next agent to stop repairing a leg nobody has touched.
+ */
+function toRepoRelativeLegPath(
+  minedPath: string,
+  workspaceDir: string | undefined,
+  knownWorkspaceDirs: readonly string[],
+): string {
+  if (!workspaceDir) return minedPath;
+  if (minedPath === workspaceDir || minedPath.startsWith(`${workspaceDir}/`)) return minedPath;
+  // Some legs (lint, tsc) already print repo-relative paths, and a leg's output can name a file
+  // in a SIBLING workspace. Either way the path is already in the ledger's space — leave it.
+  for (const dir of knownWorkspaceDirs) {
+    if (minedPath.startsWith(`${dir}/`)) return minedPath;
+  }
+  return `${workspaceDir}/${minedPath}`;
+}
+
 function resolveSubjectPaths(
   entry: RepairSignatureEntry,
   input: BuildRepairManifestInput,
@@ -155,7 +195,18 @@ function resolveSubjectPaths(
   }
   if (entry.kind === 'seed') return { paths: [], source: 'none' };
   const mined = extractSubjectPathsFromLegOutput(input.legOutputs?.[entry.id]);
-  if (mined.length > 0) return { paths: mined, source: 'leg-output' };
+  if (mined.length > 0) {
+    // WI-10002500: mined paths are in the LEG's path space; the admission ledger and the
+    // `admitCommand` this manifest renders are both repo-relative. Lift them once, here, so both
+    // consumers are fixed by the same line.
+    const dirs = input.workspaceDirs;
+    const workspaceDir = entry.workspace && dirs ? dirs[entry.workspace] : undefined;
+    const knownDirs = dirs ? Object.values(dirs) : [];
+    const lifted = Array.from(
+      new Set(mined.map((p) => toRepoRelativeLegPath(p, workspaceDir, knownDirs))),
+    );
+    return { paths: lifted, source: 'leg-output' };
+  }
   return { paths: [], source: 'none' };
 }
 
@@ -262,7 +313,7 @@ export interface WithRepairManifestResult<Q extends BuildRepairManifestInput['qu
 export function withRepairManifest<Q extends BuildRepairManifestInput['queue'] & { manifest?: RepairManifest | null }>(
   queue: Q,
   nowMs: number,
-  extras: Pick<BuildRepairManifestInput, 'legOutputs' | 'subjectPaths'> = {},
+  extras: Pick<BuildRepairManifestInput, 'legOutputs' | 'subjectPaths' | 'workspaceDirs'> = {},
 ): WithRepairManifestResult<Q> {
   const previous = queue.manifest ?? null;
   const manifest = buildRepairManifest({ queue, nowMs, previous, ...extras });
