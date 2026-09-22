@@ -1029,7 +1029,20 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
         }
         expect(events).toContain('"kind":"busy-gate-expired"');
         await sleep(busyMs + 300);
-        expect(captured()).not.toContain('ECHO:F03_DIAG');
+        // P-005 / D-007: the PARENT is no longer abandoned when the busy cap expires — it
+        // is re-armed and delivered at the next clean boundary, so its own echo
+        // legitimately appears in this window. What THIS case guards is narrower and
+        // unchanged: the FOLDED delivery ID must not be burned by that settlement. So
+        // assert on the folded payload specifically. The original bare
+        // `not.toContain('ECHO:F03_DIAG')` matched either payload, which after P-005 is
+        // an assertion that the wake was ABANDONED — precisely the behavior the item
+        // exists to remove — so leaving it would have pinned the old defect in place.
+        expect(captured()).not.toContain('ECHO:F03_DIAG folded-B');
+        // Prove the re-arm actually ran, rather than inferring it from the absence of the
+        // folded echo: if the re-arm silently stopped firing, every assertion below would
+        // still pass while the wake-loss this plan fixes had quietly returned.
+        const afterCap = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+        expect(afterCap).toContain('"kind":"wake-rearm-queued"');
 
         const retry = await injectIntoHostWithConfirmation(sock, {
           ...envelope,
