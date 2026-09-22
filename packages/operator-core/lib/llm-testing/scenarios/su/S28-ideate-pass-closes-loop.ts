@@ -23,7 +23,7 @@ import { PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import type { Scenario, ToolCallEvent, ToolDispatchOverride } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertToolCalled, assertToolMatch } from './_asserts';
+import { assertToolMatch, effectiveToolCall } from './_asserts';
 
 function canonical(name: string): string {
   return name.replace(/^mcp__agentmcp__/, '').replace(/^mcp__[a-z0-9-]+__/i, '');
@@ -100,9 +100,10 @@ const IDEATE_WORLD: ToolDispatchOverride = {
 
 /** improvements:capture kind:'feature' carrying a non-empty ideation.lens (the lens-tag). */
 function isLensTaggedFeatureCapture(tc: ToolCallEvent): boolean {
-  if (canonical(tc.name) !== 'improvements:capture') return false;
-  const input = tc.input as Record<string, unknown> | null | undefined;
-  if (input?.kind !== 'feature') return false;
+  // Read through a `tools:invoke` dispatch: filing via that door is still a filing.
+  const { name, input } = effectiveToolCall(tc);
+  if (name !== 'improvements:capture') return false;
+  if (input.kind !== 'feature') return false;
   const ideation = input?.ideation as Record<string, unknown> | null | undefined;
   const lens = ideation?.lens;
   return typeof lens === 'string' && lens.trim().length > 0;
@@ -148,7 +149,9 @@ export const SU_S28_IDEATE_PASS_CLOSES_LOOP: Scenario = {
   runMatrix: { repeat: 2, variancePolicy: 'flag-if-disagreement' },
   toolOverride: IDEATE_WORLD,
   asserts: [
-    assertToolCalled(['blender:ideation-feedback'], {
+    // Grounding and closing read through tools:invoke too (effectiveToolCall): the 07:16 run on
+    // 2026-09-22 grounded via tools:invoke and was scored "never called" (WI-10002486).
+    assertToolMatch((tc) => effectiveToolCall(tc).name === 'blender:ideation-feedback', {
       name: 'grounds-on-prior-art',
       claim:
         'The IDEATE pass never called blender:ideation-feedback — it invented on a blank page instead of ' +
@@ -168,7 +171,7 @@ export const SU_S28_IDEATE_PASS_CLOSES_LOOP: Scenario = {
         "File the idea with improvements:capture { kind:'feature', ideation:{ lens:<the lens you ran>, " +
         'bet? } } so the row is attributable to the lens that produced it.',
     }),
-    assertToolCalled(['blender:ideate-pass-record'], {
+    assertToolMatch((tc) => effectiveToolCall(tc).name === 'blender:ideate-pass-record', {
       name: 'closes-the-pass-with-a-tick',
       claim:
         'The pass filed ideas but never recorded a tick (no blender:ideate-pass-record) — an OPEN loop. ' +

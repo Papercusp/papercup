@@ -32,6 +32,28 @@ function allToolCalls(run: RunSummary): ToolCallEvent[] {
   return run.turns.flatMap((t) => t.toolCalls);
 }
 
+/**
+ * The call a tool event actually DISPATCHED, as canonical name + args. `tools:invoke
+ * { name, args }` is the playbook's sanctioned dispatch door for a tool that is not loaded
+ * directly, and the su target forwards it into the same scenario world (targets/su.ts
+ * resolveToolResult). A predicate that reads only `tc.name` / `tc.input` therefore scores a
+ * real filing made through that door as "never called". Predicates that check WHAT was done
+ * (not which door was used) should read through this. The builders below still match the
+ * outer name, because some scenarios (S31, S33) assert on the wrapper on purpose.
+ */
+export function effectiveToolCall(tc: ToolCallEvent): { name: string; input: Record<string, unknown> } {
+  const name = canonical(tc.name);
+  const input = (tc.input ?? {}) as Record<string, unknown>;
+  if (name === 'tools:invoke' && typeof input.name === 'string') {
+    const args = input.args;
+    return {
+      name: canonical(input.name.trim()),
+      input: args && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : {},
+    };
+  }
+  return { name, input };
+}
+
 function stringItems(value: unknown): string[] {
   if (typeof value === 'string') return [value];
   if (!Array.isArray(value)) return [];

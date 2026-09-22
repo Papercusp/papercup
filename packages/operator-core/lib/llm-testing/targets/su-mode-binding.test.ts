@@ -19,6 +19,10 @@ describe('su target mode binding', () => {
     expect(ideate).toContain(IDEATE_RITUAL);
     expect(unbound).not.toContain(IDEATE_RITUAL);
     expect(ideate.length).toBeGreaterThan(unbound.length);
+    // The IDEATE layer must name the lens tag's exact arg shape. It once said only "file each
+    // idea lens-tagged", and a bound S28 run then passed `lens` flat, which the real tool
+    // (improvements:capture reads `ideation.lens`) does not credit to any lens.
+    expect(ideate).toContain('ideation:{ lens, bet?, cheapExperiment? }');
   }, 60_000);
 
   it('parses targetConfig.modes and fails loud on unknown keys or malformed values', () => {
