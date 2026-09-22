@@ -90,9 +90,22 @@ describe('R-8 acceptance-gate non-silence (real PG + real gate)', () => {
     // `createOrgTestDb`'s own provisioning connection; the gate then opens the
     // admin pool against this test database and the guard correctly reports a
     // different `system_identifier`.
+    //
+    // ⚠ `_resetForTests` and not just `_resetStoreIdentityForTests`: db-org's
+    // `adminUrl()` caches an env-sourced DSN for the life of the process
+    // ("Env is stable for process lifetime → safe to cache", connection.ts:597).
+    // That premise holds in production and is FALSE for the re-route above — if
+    // anything resolved the admin URL before this `beforeAll`, the cache
+    // short-circuits every later resolution, `endStalePool` compares the pool
+    // against that same stale URL and never rebinds, and the gate evaluates
+    // whatever database the PARENT process was pointed at instead of the plan
+    // seeded below. It fails toward the plan simply not being there, which reads
+    // as a different verdict rather than as a broken instrument.
+    // `_resetForTests` is db-org's one test-reset entrypoint and clears the URL
+    // caches, the store-identity pin and every built pool together.
     {
-      const { getOrgPg, _resetStoreIdentityForTests } = await import('@papercusp/db-org');
-      _resetStoreIdentityForTests();
+      const { getOrgPg, _resetForTests } = await import('@papercusp/db-org');
+      await _resetForTests();
       await getOrgPg().sql`SELECT 1`;
     }
 
@@ -128,10 +141,11 @@ describe('R-8 acceptance-gate non-silence (real PG + real gate)', () => {
     if (SAVED_ADMIN_URL === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
     else process.env.HARNESS_ADMIN_DATABASE_URL = SAVED_ADMIN_URL;
     _resetHarnessAdminUrlCacheForTests();
-    // Leave no pin on a database that is about to be dropped.
+    // Leave no cached URL, pin or live pool on a database that is about to be
+    // dropped — see the `beforeAll` note on db-org's process-lifetime env cache.
     {
-      const { _resetStoreIdentityForTests } = await import('@papercusp/db-org');
-      _resetStoreIdentityForTests();
+      const { _resetForTests } = await import('@papercusp/db-org');
+      await _resetForTests();
     }
     await db?.cleanup();
   });

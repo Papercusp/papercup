@@ -90,6 +90,26 @@ describe('R-5 live plan-agent counts (real PG + real liveness oracle)', () => {
     db = await createOrgTestDb();
     process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
     _resetHarnessAdminUrlCacheForTests();
+
+    // ⚠ db-org has its OWN url cache, and the reset above does not touch it.
+    // `adminUrl()` caches an env-sourced DSN for the life of the process
+    // ("Env is stable for process lifetime → safe to cache", connection.ts:597).
+    // That premise holds in production and is FALSE for the re-route above — if
+    // anything resolved the admin URL before this `beforeAll`, the cache
+    // short-circuits every later resolution, `endStalePool` compares the pool
+    // against that same stale URL and never rebinds, and `readDelegationCounts`
+    // counts rows in whatever database the PARENT process was pointed at rather
+    // than the ones seeded below. It fails toward a confident, well-formed zero,
+    // which is indistinguishable from a real empty population — the exact
+    // false-zero this file exists to rule out. `_resetForTests` is db-org's one
+    // test-reset entrypoint and clears the URL caches, the store-identity pin
+    // and every built pool together.
+    {
+      const { getOrgPg, _resetForTests } = await import('@papercusp/db-org');
+      await _resetForTests();
+      await getOrgPg().sql`SELECT 1`;
+    }
+
     deadPid = confirmedDeadPid();
 
     await db.adminSql`
@@ -123,6 +143,12 @@ describe('R-5 live plan-agent counts (real PG + real liveness oracle)', () => {
     if (SAVED_ADMIN_URL === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
     else process.env.HARNESS_ADMIN_DATABASE_URL = SAVED_ADMIN_URL;
     _resetHarnessAdminUrlCacheForTests();
+    // Leave no cached URL, pin or live pool on a database that is about to be
+    // dropped — see the `beforeAll` note on db-org's process-lifetime env cache.
+    {
+      const { _resetForTests } = await import('@papercusp/db-org');
+      await _resetForTests();
+    }
     await db?.cleanup();
   });
 

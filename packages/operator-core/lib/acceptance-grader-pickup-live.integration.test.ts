@@ -95,17 +95,29 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
     // case ran first. Resetting the pin at the same boundary as the URL cache
     // is the honest fix; suppressing the guard is not.
     //
-    // ⚠ NOT claimed: that this reset is what makes the seeded rows visible. On
-    // 2026-09-22 this file failed three cases with every grader reading back
-    // `unreadable` and the dedup case falling through to a launch, and it
-    // failed again WITH this reset in place — then passed 3/3 unchanged a few
-    // minutes later. So that failure is a TRANSIENT of the shared box, not a
-    // property of this setup block, and it is still unexplained. If it recurs,
-    // instrument `getOrgPg()`'s target from inside a case (a one-off
-    // `expect(...).toBe('SHOWME')` prints it) before theorising.
+    // ⚠ `_resetForTests` and not just `_resetStoreIdentityForTests`: db-org's
+    // `adminUrl()` caches an env-sourced DSN for the life of the process
+    // ("Env is stable for process lifetime → safe to cache", connection.ts:597).
+    // That premise holds in production and is FALSE for the re-route above — if
+    // anything resolved the admin URL before this `beforeAll`, the cache
+    // short-circuits every later resolution, `endStalePool` compares the pool
+    // against that same stale URL and never rebinds, and every read below runs
+    // against whatever database the PARENT process was pointed at, where none of
+    // the rows seeded here exist. `_resetForTests` is db-org's one test-reset
+    // entrypoint and clears the URL caches, the store-identity pin and every
+    // built pool together.
+    //
+    // That is what the three `unreadable` graders on 2026-09-22 were: this file
+    // failed under `testing:run` (whose child inherits :3070's live
+    // HARNESS_ADMIN_DATABASE_URL) and passed, unchanged, under a bare shell
+    // (which starts with the var unset, so the first resolution lands as
+    // `discovery` and is re-read every call). It read as a transient of the
+    // shared box because nothing in the file changed between the two — the
+    // RUNNER changed. The same one-variable A/B was measured on
+    // `plan-agent-brief-posture-live`: unset ⇒ 5/5 pass, set ⇒ 5/5 fail.
     {
-      const { getOrgPg, _resetStoreIdentityForTests } = await import('@papercusp/db-org');
-      _resetStoreIdentityForTests();
+      const { getOrgPg, _resetForTests } = await import('@papercusp/db-org');
+      await _resetForTests();
       await getOrgPg().sql`SELECT 1`;
     }
 
@@ -146,6 +158,12 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
     if (SAVED_ADMIN_URL === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
     else process.env.HARNESS_ADMIN_DATABASE_URL = SAVED_ADMIN_URL;
     _resetHarnessAdminUrlCacheForTests();
+    // Leave no cached URL, pin or live pool on a database that is about to be
+    // dropped — see the `beforeAll` note on db-org's process-lifetime env cache.
+    {
+      const { _resetForTests } = await import('@papercusp/db-org');
+      await _resetForTests();
+    }
     await db?.cleanup();
   });
 

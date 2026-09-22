@@ -43,6 +43,14 @@ import { operatorHomeHarnessSlug, canonicalHarnessSlug } from '../../harness/ope
 import { recentPipelineEvents } from '../../harness/git-sync/pipeline-events';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 import { statePlaneForDoor } from '../state-plane-door';
+import { deployTriggerRefusalReason } from '../../release/deploy-trigger-refusal';
+import { readGateOwnership, type CellOwnership } from '../../coord/gate-ownership';
+import {
+  projectGateWaitOperationalBrief,
+  renderGateWaitFactLines,
+  type GateWaitOperationalBrief,
+} from '../../operational-brief/gate-wait-brief';
+import { renderOperationalBrief } from '../../operational-brief/brief';
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
 
@@ -207,6 +215,34 @@ function statusBrief(s: DeployStatus) {
   };
 }
 
+const GATE_OWNERSHIP_READ_TIMEOUT_MS = 5_000;
+
+/**
+ * P-009 (spec OP-BRIEF-P009-GATE): the deploy/gate wait operational brief, projected from the
+ * status read already in hand plus the gate-ownership cell. A failed or slow ownership read
+ * yields an explicit unknown owner naming the failure — never a silent "unowned".
+ */
+export async function gateWaitBriefFor(
+  status: DeployStatus,
+  readOwnership: () => Promise<CellOwnership> = () => readGateOwnership(),
+): Promise<GateWaitOperationalBrief & { text: string }> {
+  let ownership: CellOwnership | null = null;
+  let ownershipReadError: string | undefined;
+  try {
+    const read = await withBoundedTimeout(readOwnership, {
+      fallback: null,
+      timeoutMs: GATE_OWNERSHIP_READ_TIMEOUT_MS,
+      label: 'release:deploy:gate-ownership',
+    });
+    ownership = read.value;
+    if (read.degraded || !read.value) ownershipReadError = 'gate ownership read timed out or returned nothing';
+  } catch (error) {
+    ownershipReadError = `gate ownership read failed: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  const brief = projectGateWaitOperationalBrief({ status, ownership, ownershipReadError });
+  return { ...brief, text: [renderOperationalBrief(brief), ...renderGateWaitFactLines(brief)].join('\n') };
+}
+
 async function readStatusBounded(readerOwnerId: string | null): Promise<BoundedTimeoutResult<DeployStatus | null>> {
   return withBoundedTimeout(() => readDeployStatus({ readerOwnerId }), {
     fallback: null,
@@ -329,7 +365,16 @@ export default defineTool({
   agentRoles: [...SU_ROLES, 'cup', 'release-fixer', 'release-manager'],
   rolesQuota: { operator: { perRun: 20 } },
   args: z.discriminatedUnion('op', [
-    z.object({ op: z.literal('status'), harness: harnessAssertion }),
+    z.object({
+      op: z.literal('status'),
+      harness: harnessAssertion,
+      operationalBrief: z
+        .boolean()
+        .optional()
+        .describe(
+          'Add `operationalBrief`: verdict, pin, gate owner, next available lever and deadline projected from this read; unmeasured fields are explicit `unknown`.',
+        ),
+    }),
     z.object({
       op: z.literal('gate-history'),
       harness: harnessAssertion,
@@ -417,6 +462,7 @@ export default defineTool({
           stagingHeadSha: status.deploy.stagingHeadSha,
           greenPinSha: status.deploy.greenPinSha,
         }),
+        ...(args.operationalBrief ? { operationalBrief: await gateWaitBriefFor(status) } : {}),
       };
       const plane = statePlaneForDoor(payload, 'release:deploy', args, ctx);
       return json({ ...payload, ...(plane ? { plane } : {}) });
@@ -452,22 +498,16 @@ export default defineTool({
 
     // ── trigger: expedite a GREEN-but-stalled deploy ──
     if (args.op === 'trigger') {
-      if (!status.canTriggerGreen) {
+      // P-009: the refusal decision lives in ONE pure predicate so the gate-wait operational
+      // brief reports the deploy lever from the same code this handler refuses on.
+      const triggerRefusal = deployTriggerRefusalReason(status);
+      if (triggerRefusal !== null) {
         return json({
           ok: false,
           op: 'trigger',
           refused: true,
           ...stamp,
-          reason:
-            // EI-18724155280048738: checked FIRST — a caller landing here after a trigger that
-            // returned a transport error needs "your deploy IS running", not a gate lecture.
-            status.deployInFlight?.active
-              ? `deploy_in_flight — a deploy is ALREADY RUNNING (unit ${status.deployInFlight.unit} is ${status.deployInFlight.activeState}${status.deployInFlight.startedAtMs ? `, started ${new Date(status.deployInFlight.startedAtMs).toISOString()}` : ''}). This is NOT a failed trigger: if your last trigger returned a transport error, it very likely still launched THIS deploy. Do not re-trigger — watch ${status.deployInFlight.logPath} or await release:deployed / deploy-failed.`
-              : status.state === 'gate-red'
-                ? 'gate_red — there is no green pin ahead of the live deploy to ship. Fix the reds first (release:deploy{op:status} for detail); trigger can only expedite GREEN code.'
-                : status.nothingToDeploy
-                  ? 'nothing_to_deploy — the live :3070 is already at the green pin.'
-                  : `not_green_deployable (${status.state}) — ${status.recommendation}`,
+          reason: triggerRefusal,
           status: statusBrief(status),
         });
       }

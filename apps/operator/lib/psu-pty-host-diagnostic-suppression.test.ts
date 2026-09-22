@@ -20,13 +20,39 @@
  * would trade a cosmetic problem for an undiagnosable one.
  */
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { shouldWriteHostDiagnostic } from '../scripts/psu-pty-host.mjs';
-
-const HOST_SRC_PATH = fileURLToPath(new URL('../scripts/psu-pty-host.mjs', import.meta.url));
+/**
+ * The subject path is OVERRIDABLE (`PROBE_SCRIPT`) and the subject is imported DYNAMICALLY
+ * from that path. A static `import … from '../scripts/psu-pty-host.mjs'` pins the real file,
+ * so a copy-out mutation probe (scripts/mutation-probe.sh, tier 2) never loads its mutant and
+ * every mutant falsely SURVIVES — measured by the psu-pty acceptance grader on 2026-09-22
+ * (`return !bridgeTty` → `return true` survived on a copy). Both the behavioural cases and the
+ * source-text guard below read the SAME subject path.
+ */
+const HOST_SRC_PATH =
+  process.env.PROBE_SCRIPT ?? fileURLToPath(new URL('../scripts/psu-pty-host.mjs', import.meta.url));
 const HOST_SRC = readFileSync(HOST_SRC_PATH, 'utf8');
+const { shouldWriteHostDiagnostic } = (await import(pathToFileURL(HOST_SRC_PATH).href)) as {
+  shouldWriteHostDiagnostic: (opts?: { bridgeTty?: boolean; env?: Record<string, string | undefined> }) => boolean;
+};
+
+type Gate = typeof shouldWriteHostDiagnostic;
+
+/** The behavioural contract, as data, so it can be replayed against the controls below. */
+const CONTRACT: ReadonlyArray<{ name: string; args: Parameters<Gate>[0]; want: boolean }> = [
+  { name: 'suppresses on a bridged TTY', args: { bridgeTty: true, env: {} }, want: false },
+  { name: 'writes with no bridged terminal', args: { bridgeTty: false, env: {} }, want: true },
+  { name: 'DIAG=1 forces it on', args: { bridgeTty: true, env: { PAPERCUSP_PTY_HOST_DIAG: '1' } }, want: true },
+  ...['0', '', 'true', 'yes', 'on'].map((value) => ({
+    name: `DIAG=${JSON.stringify(value)} does not re-enable`,
+    args: { bridgeTty: true, env: { PAPERCUSP_PTY_HOST_DIAG: value } },
+    want: false,
+  })),
+];
+
+const violations = (gate: Gate) => CONTRACT.filter((c) => gate(c.args) !== c.want).map((c) => c.name);
 
 describe('shouldWriteHostDiagnostic', () => {
   it('SUPPRESSES on a bridged TTY — this is the owner-visible case', () => {
@@ -53,6 +79,30 @@ describe('shouldWriteHostDiagnostic', () => {
 
   it('defaults are safe when called with no arguments at all', () => {
     expect(() => shouldWriteHostDiagnostic()).not.toThrow();
+  });
+});
+
+/**
+ * Permanently-kept WRONG implementations (rubric bar R-5, falsifiability). Each is a
+ * plausible regression of the gate; the contract above must reject every one. The
+ * calibration case pins that the REAL subject satisfies the same contract — without it,
+ * a broken contract (e.g. every `want` inverted) would make the controls "fail" vacuously.
+ */
+describe('contract falsifiability controls', () => {
+  it('CALIBRATION: the real subject satisfies the whole contract', () => {
+    expect(violations(shouldWriteHostDiagnostic)).toEqual([]);
+  });
+
+  const WRONG: ReadonlyArray<[string, Gate]> = [
+    ['always writes (the pre-P-006 behaviour)', () => true],
+    ['never writes (silences headless members too)', () => false],
+    ['ignores the DIAG opt-in', ({ bridgeTty } = {}) => !bridgeTty],
+    ['treats any truthy DIAG as opt-in', ({ bridgeTty, env = {} } = {}) => Boolean(env.PAPERCUSP_PTY_HOST_DIAG) || !bridgeTty],
+    ['inverts the tty test', ({ bridgeTty, env = {} } = {}) => env.PAPERCUSP_PTY_HOST_DIAG === '1' || Boolean(bridgeTty)],
+  ];
+
+  it.each(WRONG)('rejects the wrong implementation: %s', (_name, gate) => {
+    expect(violations(gate).length).toBeGreaterThan(0);
   });
 });
 

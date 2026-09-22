@@ -110,13 +110,29 @@ describe('R-6 live delegation posture (real PG through buildPlanContextBundle)',
     process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
     _resetHarnessAdminUrlCacheForTests();
 
-    // Clear the store-identity pin, and warm the org-admin pool, HERE — not
-    // inside a test.
-    //
+    // Reset db-org, and warm the org-admin pool, HERE — not inside a test.
     // Both are one-time, process-global side effects of the env re-route above,
     // and `vitest-fail-on-console` attributes whichever fires first to whichever
     // TEST ran first — a setup artefact wearing the costume of a verdict about
     // the subject.
+    //
+    // ⚠ `_resetForTests` and not just `_resetStoreIdentityForTests`: db-org's
+    // `adminUrl()` caches an env-sourced DSN for the life of the process
+    // ("Env is stable for process lifetime → safe to cache", connection.ts:597).
+    // That premise holds in production and is FALSE for the re-route above — if
+    // anything resolved the admin URL before this `beforeAll`, the cache
+    // short-circuits every later resolution, `endStalePool` compares the pool
+    // against that same stale URL and never rebinds, and every read below goes
+    // to whatever database the PARENT process was pointed at. So the outcome
+    // depended on the RUNNER: a bare shell starts with the var unset, so the
+    // first resolution lands as `discovery` (re-read every call) and the
+    // re-route wins; `testing:run`'s child inherits :3070's live
+    // HARNESS_ADMIN_DATABASE_URL and it does not. Measured one-variable:
+    // unset ⇒ 5/5 pass, set ⇒ 5/5 fail with `acceptance is outstanding:
+    // expected +0 to be 1` — the fixture's rows were being counted in the wrong
+    // database. `_resetForTests` is db-org's one test-reset entrypoint and
+    // clears the URL caches, the store-identity pin and every built pool
+    // together.
     //
     // The pin specifically: `createOrgTestDb` provisions through the real
     // cluster on :5432, which pins store identity there. `buildPlanContextBundle`
@@ -126,8 +142,8 @@ describe('R-6 live delegation posture (real PG through buildPlanContextBundle)',
     // stale with respect to a re-route this test makes deliberately, so it is
     // reset at the same boundary as the URL cache rather than suppressed.
     {
-      const { getOrgPg, _resetStoreIdentityForTests } = await import('@papercusp/db-org');
-      _resetStoreIdentityForTests();
+      const { getOrgPg, _resetForTests } = await import('@papercusp/db-org');
+      await _resetForTests();
       await getOrgPg().sql`SELECT 1`;
     }
 
@@ -192,12 +208,14 @@ describe('R-6 live delegation posture (real PG through buildPlanContextBundle)',
     if (SAVED_ADMIN_URL === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
     else process.env.HARNESS_ADMIN_DATABASE_URL = SAVED_ADMIN_URL;
     _resetHarnessAdminUrlCacheForTests();
-    // Leave no pin on a database that is about to be dropped: a later file in
-    // this process would otherwise inherit a pin to a store that no longer
-    // exists and report the real cluster as the impostor.
+    // Leave no pin — and no cached URL, and no live pool — on a database that is
+    // about to be dropped: a later file in this process would otherwise inherit
+    // a pin to a store that no longer exists and report the real cluster as the
+    // impostor, or keep resolving the admin DSN to this dropped database for the
+    // rest of the process (the same env-cache pin explained in `beforeAll`).
     {
-      const { _resetStoreIdentityForTests } = await import('@papercusp/db-org');
-      _resetStoreIdentityForTests();
+      const { _resetForTests } = await import('@papercusp/db-org');
+      await _resetForTests();
     }
     await db?.cleanup();
   });

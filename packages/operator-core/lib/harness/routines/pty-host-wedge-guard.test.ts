@@ -453,10 +453,78 @@ function sweepDeps(over: Partial<PtyHostWedgeSweepDeps> = {}): PtyHostWedgeSweep
     readStartedAt: () => HOST_STARTED,
     broadcast: vi.fn(async () => true),
     notify: vi.fn(async () => undefined),
+    // Always stubbed: the defaults import the real issue store / telemetry read, so an
+    // unstubbed sweep test would reach live infrastructure (and silently swallow the error).
+    recordEpisode: vi.fn(async () => ({ action: 'created' as const, id: 'EI-test' })),
+    readHealth: vi.fn(async () => ({ measured: false }) as never),
     now: NOW,
     ...over,
   };
 }
+
+type EpisodeCall = [{ wedgeClass: string; ownerIds: string[]; detail: string[]; health?: unknown }];
+const episodeCalls = (deps: PtyHostWedgeSweepDeps) =>
+  (deps.recordEpisode as unknown as { mock: { calls: EpisodeCall[] } }).mock.calls.map((c) => c[0]);
+
+/**
+ * P-008 / rubric bar R-4: the guard must be ACCOUNTABLE, not a detector that only logs.
+ * The issue module (pty-host-wedge-issue) is tested on its own, but nothing pinned that the
+ * guard actually CALLS it — so regressing the sweep to broadcast-only failed no test. These
+ * cases pin the wiring at the guard seam.
+ */
+describe('sweepWedgedPtyHosts — durable wedge record (recordEpisode)', () => {
+  it('records exactly one episode for a wedged class, carrying class, owners and health', async () => {
+    const deps = sweepDeps({ readHealth: vi.fn(async () => ({ probe: 'health' }) as never) });
+    await sweepWedgedPtyHosts({}, deps);
+    const calls = episodeCalls(deps);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].wedgeClass).toBe('composer');
+    expect(calls[0].ownerIds).toEqual(['su-test']);
+    expect(calls[0].detail.length).toBeGreaterThan(0);
+    expect(calls[0].health).toEqual({ probe: 'health' });
+  });
+
+  it('records nothing when no host is wedged', async () => {
+    const deps = sweepDeps({ readEvents: () => defers(2) });
+    await sweepWedgedPtyHosts({}, deps);
+    expect(deps.recordEpisode).not.toHaveBeenCalled();
+  });
+
+  it('records nothing under dryRun', async () => {
+    const deps = sweepDeps();
+    await sweepWedgedPtyHosts({ dryRun: true }, deps);
+    expect(deps.recordEpisode).not.toHaveBeenCalled();
+  });
+
+  it('records one episode PER class when a host is wedged both ways', async () => {
+    const deps = sweepDeps({ readEvents: () => [...defers(12), ...busyDefers(10)] });
+    await sweepWedgedPtyHosts({}, deps);
+    expect(episodeCalls(deps).map((c) => c.wedgeClass).sort()).toEqual(['busy-gate', 'composer']);
+  });
+
+  it('still records the episode when the health read fails (health omitted, not fatal)', async () => {
+    const deps = sweepDeps({
+      readHealth: vi.fn(async () => {
+        throw new Error('telemetry down');
+      }),
+    });
+    await sweepWedgedPtyHosts({}, deps);
+    const calls = episodeCalls(deps);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).not.toHaveProperty('health');
+  });
+
+  it('survives a recordEpisode failure without failing the sweep or the page', async () => {
+    const deps = sweepDeps({
+      recordEpisode: vi.fn(async () => {
+        throw new Error('issue store down');
+      }),
+    });
+    const res = await sweepWedgedPtyHosts({}, deps);
+    expect(res.wedged).toHaveLength(1);
+    expect(deps.notify).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('sweepWedgedPtyHosts', () => {
   it('reports a wedged host and broadcasts once', async () => {
