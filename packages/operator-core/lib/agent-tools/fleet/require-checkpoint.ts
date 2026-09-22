@@ -314,7 +314,7 @@ export default defineTool({
     chaining:
       "fleet:require-checkpoint { member, itemId } → itemStateSafe:true → stand down / kill / reassign; false → " +
       "follow nextAction (resume, flip wake-mode, or re-run with waitSec) BEFORE destroying state. Verdicts also " +
-      "surface on fleet:leader-brief members[].directives.",
+      "surface on fleet:leader-brief members[].directiveActuation.",
     seeAlso: [
       'work_items:checkpoint (what the MEMBER runs — this asks them to)',
       'fleet:leader-brief (whole-fleet health, incl. directives actuation)',

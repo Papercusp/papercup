@@ -76,7 +76,7 @@ export interface LeaderBriefUnansweredEntry {
 }
 
 /** Mirrors `UnansweredDirectedSummary` — what this member was ASKED and has not
- *  answered. Distinct from `directives` below, which is what HAPPENED. */
+ *  answered. Distinct from `directiveActuation` below, which is what HAPPENED. */
 export interface LeaderBriefUnanswered {
   count?: number;
   oldestAgeMs?: number;
@@ -85,8 +85,10 @@ export interface LeaderBriefUnanswered {
 }
 
 /** Mirrors `DirectiveActuationSummary` — of YOUR directives to this member that
- *  named a required side effect, how many the LEDGER shows were carried out. */
-export interface LeaderBriefDirectives {
+ *  named a required side effect, how many the LEDGER shows were carried out.
+ *  P-030: named for ACTUATION, not `LeaderBriefDirectives`, so it cannot be
+ *  mistaken for `LeaderBriefOwnerDirectives` below. Different concept entirely. */
+export interface LeaderBriefDirectiveActuation {
   total?: number;
   satisfied?: number;
   notYet?: number;
@@ -96,8 +98,9 @@ export interface LeaderBriefDirectives {
 }
 
 /** Mirrors the distinct owner-directive projection on fleet:leader-brief.
- * This is intentionally NOT `LeaderBriefDirectives`: that existing type is
- * the leader→member DirectiveActuationSummary and remains on each member row.
+ * This is intentionally NOT `LeaderBriefDirectiveActuation`: that type is
+ * the leader→member DirectiveActuationSummary and remains on each member row
+ * under `directiveActuation` (P-030).
  */
 export interface LeaderBriefOwnerDirective {
   id?: string;
@@ -170,7 +173,7 @@ export interface LeaderBriefMemberRow {
   throttled?: LeaderBriefThrottled;
   coordHook?: LeaderBriefCoordDeaf;
   unanswered?: LeaderBriefUnanswered;
-  directives?: LeaderBriefDirectives;
+  directiveActuation?: LeaderBriefDirectiveActuation;
   benchSuggestion?: LeaderBriefBenchSuggestion;
   verifiedWaitTakeovers?: LeaderBriefTakeover[];
   /** ms since the last PRODUCTIVE (non-housekeeping) tool call; null = none on
@@ -330,7 +333,8 @@ export interface LeaderBriefData {
   error?: string;
   hint?: string;
   summary?: LeaderBriefSummary;
-  /** Distinct owner-turn obligations; member `directives` remains actuation. */
+  /** Distinct owner-turn obligations; the member row's actuation ledger is
+   *  `directiveActuation` and is a different concept (P-030). */
   ownerDirectives?: LeaderBriefOwnerDirectives;
   members?: LeaderBriefMemberRow[];
   /** Set when the verbose member rows were bounded for transport. */

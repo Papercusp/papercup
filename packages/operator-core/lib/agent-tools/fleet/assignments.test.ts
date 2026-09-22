@@ -1177,8 +1177,11 @@ describe('decorateDirectiveActuation — P-013 (fleet-leadership-continuity-and-
   it('stamps the fetched summary per agent (injected fetcher)', async () => {
     const agents = [baseAgent({ agentId: 'a1' }), baseAgent({ agentId: 'a2' })];
     await decorateDirectiveActuation(agents, 'leader-1', async () => new Map([['a1', summary]]));
-    expect((agents[0] as { directives?: DirectiveActuationSummary }).directives).toEqual(summary);
-    expect((agents[1] as { directives?: DirectiveActuationSummary }).directives).toBeUndefined();
+    expect((agents[0] as { directiveActuation?: DirectiveActuationSummary }).directiveActuation).toEqual(summary);
+    expect((agents[1] as { directiveActuation?: DirectiveActuationSummary }).directiveActuation).toBeUndefined();
+    // P-030: the actuation ledger must NOT be reachable under the old name —
+    // that name now belongs exclusively to OWNER directives.
+    expect('directives' in (agents[0] as unknown as Record<string, unknown>)).toBe(false);
   });
 
   it('scopes the read to the CALLER as sender — a leader is accountable for its own directives', async () => {
@@ -1206,7 +1209,7 @@ describe('decorateDirectiveActuation — P-013 (fleet-leadership-continuity-and-
       'leader-1',
       async () => new Map([['a1', { total: 0, satisfied: 0, notYet: 0, unprovable: 0, outstanding: [] }]]),
     );
-    expect((agents[0] as { directives?: DirectiveActuationSummary }).directives).toBeUndefined();
+    expect((agents[0] as { directiveActuation?: DirectiveActuationSummary }).directiveActuation).toBeUndefined();
   });
 
   it('empty agent list is a no-op that never calls the fetcher', async () => {

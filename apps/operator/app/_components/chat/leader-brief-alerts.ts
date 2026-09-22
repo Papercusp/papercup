@@ -207,7 +207,7 @@ const MEMBER_ALERT_RANK: Record<string, number> = {
   throttled: 4,
   bench: 5,
   unanswered: 6,
-  directives: 7,
+  'directive-actuation': 7,
 };
 
 function fmtAge(ms: number | null | undefined): string {
@@ -341,15 +341,15 @@ export function deriveMemberAlerts(m: LeaderBriefMemberRow): MemberAlert[] {
     });
   }
 
-  const notYet = m.directives?.notYet ?? 0;
+  const notYet = m.directiveActuation?.notYet ?? 0;
   if (notYet > 0) {
-    const outstanding = m.directives?.outstanding ?? [];
+    const outstanding = m.directiveActuation?.outstanding ?? [];
     out.push({
-      key: 'directives',
+      key: 'directive-actuation',
       glyph: '!',
       severity: 'warn',
       title:
-        `${notYet} of your ${m.directives?.total ?? notYet} directive(s) to this member name a ` +
+        `${notYet} of your ${m.directiveActuation?.total ?? notYet} directive(s) to this member name a ` +
         'required side effect the ledger does NOT yet show. This is what HAPPENED, not what ' +
         'they said' +
         (outstanding.length > 0 ? `: ${outstanding.join('; ')}` : '') +

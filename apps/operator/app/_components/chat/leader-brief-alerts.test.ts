@@ -250,23 +250,31 @@ describe('deriveMemberAlerts — what they SAID vs what HAPPENED', () => {
     const alerts = deriveMemberAlerts(
       member({
         unanswered: { count: 2, oldestAgeMs: 4_800_000, newest: [{ summary: 'ship it' }] },
-        directives: { total: 3, satisfied: 1, notYet: 2, unprovable: 0, outstanding: ['WI-9 not closed'] },
+        directiveActuation: {
+          total: 3,
+          satisfied: 1,
+          notYet: 2,
+          unprovable: 0,
+          outstanding: ['WI-9 not closed'],
+        },
       }),
     );
     const unanswered = alerts.find((a) => a.key === 'unanswered')!;
-    const directives = alerts.find((a) => a.key === 'directives')!;
+    const actuation = alerts.find((a) => a.key === 'directive-actuation')!;
     expect(unanswered.title).toMatch(/ASKED/);
     expect(unanswered.title).toContain('ship it');
     expect(unanswered.title).toContain('80m');
-    expect(directives.title).toMatch(/HAPPENED/);
-    expect(directives.title).toContain('WI-9 not closed');
+    expect(actuation.title).toMatch(/HAPPENED/);
+    expect(actuation.title).toContain('WI-9 not closed');
+    // P-030: the actuation alert must not answer to the OWNER-directive name.
+    expect(alerts.find((a) => a.key === 'directives')).toBeUndefined();
   });
 
   it('is silent on both when the counts are zero', () => {
     const alerts = deriveMemberAlerts(
       member({
         unanswered: { count: 0, oldestAgeMs: 0, newest: [] },
-        directives: { total: 4, satisfied: 4, notYet: 0, unprovable: 0, outstanding: [] },
+        directiveActuation: { total: 4, satisfied: 4, notYet: 0, unprovable: 0, outstanding: [] },
       }),
     );
     expect(alerts).toEqual([]);

@@ -844,7 +844,7 @@ export async function decorateUnansweredDirected<
  * decorateUnansweredDirected/decorateContextPressure exactly.
  */
 export async function decorateDirectiveActuation<
-  T extends AgentAssignment & { directives?: DirectiveActuationSummary },
+  T extends AgentAssignment & { directiveActuation?: DirectiveActuationSummary },
 >(
   agents: T[],
   fromId: string | undefined,
@@ -862,9 +862,9 @@ export async function decorateDirectiveActuation<
     const d = summaries.get(a.agentId);
     // Only stamp a row that HAS expectations. A member nobody sent an
     // effect-bearing directive to must show no field at all, never a zeroed one —
-    // an all-zero `directives` block reads as "I checked and they complied with
-    // nothing", which is a claim we are not making.
-    if (d && d.total > 0) a.directives = d;
+    // an all-zero `directiveActuation` block reads as "I checked and they complied
+    // with nothing", which is a claim we are not making.
+    if (d && d.total > 0) a.directiveActuation = d;
   }
   return agents;
 }

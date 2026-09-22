@@ -268,7 +268,7 @@ export default defineTool({
     fromMsg: hardText(LIMITS.IDENT)
       .optional()
       .describe(
-        'coord-authority-hardening P-006: a coord msg_id — await the gate THAT message declared (its `gateRefs` stamps, read server-side). `fromMsg` resolves gateRefs only; it does not consume a coord:send `expectEffect` directive. ExpectEffect compliance is reported on fleet:leader-brief → members[].directives. Kills hand-typed key drift: you never re-type the key, the platform resolves it off the message. Exactly one gate on the message is required — none/many is a loud error naming what it found. Mutually exclusive with `event`/`spec`.',
+        'coord-authority-hardening P-006: a coord msg_id — await the gate THAT message declared (its `gateRefs` stamps, read server-side). `fromMsg` resolves gateRefs only; it does not consume a coord:send `expectEffect` directive. ExpectEffect compliance is reported on fleet:leader-brief → members[].directiveActuation. Kills hand-typed key drift: you never re-type the key, the platform resolves it off the message. Exactly one gate on the message is required — none/many is a loud error naming what it found. Mutually exclusive with `event`/`spec`.',
       ),
   })
     .refine(
@@ -434,7 +434,7 @@ export default defineTool({
                 advice:
                   gates.length === 0
                     ? hasExpectEffect
-                      ? `Message '${args.fromMsg}' carries an expectEffect directive, not a gateRefs stamp — fromMsg resolves gateRefs only, so nothing was registered. Read the derived compliance verdict on fleet:leader-brief → members[].directives; to await a gate, ask the sender to re-send with gateRefs:[<key>], or find the key via events:catalog and await it via \`event\`.`
+                      ? `Message '${args.fromMsg}' carries an expectEffect directive, not a gateRefs stamp — fromMsg resolves gateRefs only, so nothing was registered. Read the derived compliance verdict on fleet:leader-brief → members[].directiveActuation; to await a gate, ask the sender to re-send with gateRefs:[<key>], or find the key via events:catalog and await it via \`event\`.`
                       : `Message '${args.fromMsg}' carries no gateRefs stamp — fromMsg resolves gateRefs only, so nothing was registered. Ask the sender to re-send with gateRefs:[<key>], or find the key via events:catalog and await it via \`event\`.`
                     : `Message '${args.fromMsg}' declares ${gates.length} gates — pick one and await it via \`event\` (keys listed in gate_refs).`,
               }),

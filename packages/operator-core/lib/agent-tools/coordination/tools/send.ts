@@ -2216,7 +2216,7 @@ async function sendOne(
             ...msg.expectEffect,
             verifiedFrom: env.ts,
             verdict: 'pending' as const,
-            note: 'queued:1 is DELIVERY QUEUEING, not compliance. Read the derived verdict on fleet:leader-brief → members[].directives.',
+            note: 'queued:1 is DELIVERY QUEUEING, not compliance. Read the derived verdict on fleet:leader-brief → members[].directiveActuation.',
           },
         }
       : {}),
