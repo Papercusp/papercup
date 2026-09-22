@@ -98,13 +98,17 @@ interface SeedOpts {
   originTaskRef?: string | null;
   routing?: unknown;
   latency?: string;
+  /** Override the generated id. Needed for refs of the REAL
+   * `<short>-0000-<32 hex>` shape, which the truncated-prefix resolver
+   * branches on (EI-23942597240908282). */
+  id?: string;
 }
 
 /** Insert a consult_state row directly (P-003's writer owns the real path;
  * these verbs only ever see an existing row). Returns the conversation id. */
 async function seedConsult(opts: SeedOpts = {}): Promise<string> {
   convSeq += 1;
-  const id = `conv-v-${convSeq}`;
+  const id = opts.id ?? `conv-v-${convSeq}`;
   await rootSql`
     INSERT INTO harness_shared.consult_state
       (workspace_id, conversation_id, requester_id, responder_id, state, question,
@@ -339,9 +343,16 @@ describe('consultReplyCore — kind rules + transitions', () => {
       hint: expect.stringContaining('consult:get_feedback'),
     });
     expect(refused).toMatchObject({ hint: expect.stringContaining('conversations:join cannot enroll you') });
+    // 'conv-none' is NOT of the full `<short>-0000-<32 hex>` shape, so the
+    // truncated-ref resolver (EI-23942597240908282) scans for a prefix match,
+    // finds none, and attaches the remedy hint. That hint is the contract, not
+    // incidental: pin it rather than dropping back to a bare error match.
     expect(
       await consultReplyCore({ workspaceId: WS, authorId: RESPONDER, conversationId: 'conv-none', kind: 'new_fact', body: 'b' }, deps),
-    ).toEqual({ error: 'not_a_consult' });
+    ).toMatchObject({
+      error: 'not_a_consult',
+      hint: expect.stringContaining("No consult id starts with 'conv-none'"),
+    });
   });
 
   it('terminal states refuse posts, with the decline hint pointing at the cascade', async () => {
@@ -1260,5 +1271,83 @@ describe('advanceCascade — refill-exhaustion revival (EI-20864690354207496)', 
     expect(r.state).toBe('declined');
     const routingRow = parseRouting((await stateRow(id)).routing);
     expect(routingRow.selection?.underFilled).toMatchObject({ reason: 'no-revivable-candidate' });
+  });
+});
+
+/**
+ * A TRUNCATED conversation ref must resolve on EVERY verb that accepts one
+ * (EI-23942597240908282). The incident: a grader was told "you remain the
+ * assigned grader on conv-mucapfpl until consult:decline advances it", fired
+ * exactly that, and got a bare `not_a_consult` — the row's real id was the
+ * 51-char `conv-mucapfpl-0000-30e383612d604ea88789d3c06b3a01fe`, and the
+ * refusal was indistinguishable from "you have no decline to make". Reply and
+ * decline were wired first; CLOSE is the third verb of the same class and was
+ * missed, which is the gap these pin. Close matters most of the three: it is
+ * the verb that records the TERMINAL outcome, so a miss stranded exactly the
+ * consults that most needed a disposition.
+ */
+describe('truncated conversation ref resolution (EI-23942597240908282)', () => {
+  const FULL = 'conv-mucapfpl-0000-30e383612d604ea88789d3c06b3a01fe';
+  const PREFIX = 'conv-mucapfpl';
+
+  it('close resolves a unique prefix AND performs its WRITES against the resolved id', async () => {
+    await seedConsult({ id: FULL, state: 'active' });
+    const { deps, posts } = makeDeps();
+
+    const res = await consultCloseCore(
+      {
+        workspaceId: WS,
+        authorId: RESPONDER,
+        conversationId: PREFIX,
+        outcome: 'answered',
+        answer: 'resolved via a truncated ref',
+      },
+      deps,
+    );
+    if ('error' in res) throw new Error(`close refused a resolvable prefix: ${res.error}`);
+    expect(res.state).toBe('closed_answered');
+
+    // THE LOAD-BEARING ASSERTION, and the reason normalizeConversationRef
+    // rebinds the request instead of only resolving the gate read: a
+    // gate-only fix returns success here while every UPDATE and INSERT below
+    // it matches ZERO rows — reporting a close that never happened, which is
+    // strictly worse than the honest refusal it replaces.
+    const row = await stateRow(FULL);
+    expect(row.state).toBe('closed_answered');
+    expect(row.closed_at).not.toBeNull();
+    expect(posts.map((p) => p.conversation_id)).toEqual([FULL]);
+  });
+
+  it('REFUSES an ambiguous prefix rather than closing a stranger’s consult', async () => {
+    const a = `conv-ambigxy-0000-${'a'.repeat(32)}`;
+    const b = `conv-ambigxy-0000-${'b'.repeat(32)}`;
+    await seedConsult({ id: a, state: 'active' });
+    await seedConsult({ id: b, state: 'active' });
+    const { deps, posts } = makeDeps();
+
+    const res = await consultCloseCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: 'conv-ambigxy', outcome: 'answered', answer: 'x' },
+      deps,
+    );
+    expect('error' in res && res.error).toBe('conversation_id_ambiguous');
+    // Neither consult may be touched — guessing would post a terminal outcome
+    // into whichever cascade sorted first.
+    expect(posts).toHaveLength(0);
+    expect((await stateRow(a)).state).toBe('active');
+    expect((await stateRow(b)).state).toBe('active');
+  });
+
+  it('CALIBRATION: a well-formed FULL id that genuinely misses still refuses, with no truncation hint', async () => {
+    const { deps } = makeDeps();
+    const absent = `conv-absentxx-0000-${'c'.repeat(32)}`;
+
+    const res = await consultCloseCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: absent, outcome: 'answered', answer: 'x' },
+      deps,
+    );
+    // Exact equality is the point: a full-shaped id skips the prefix scan, so
+    // it must carry NO truncation hint. Without this the other two cases pass
+    // just as well against a resolver that sprays the hint onto every miss.
+    expect(res).toEqual({ error: 'not_a_consult' });
   });
 });

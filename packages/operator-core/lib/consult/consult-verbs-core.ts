@@ -874,6 +874,18 @@ export async function consultCloseCore(
   const sql = deps.getSql();
   const now = (deps.now ? deps.now() : new Date()).toISOString();
 
+  // Resolve a truncated conversation ref BEFORE any read or write, exactly as
+  // reply and decline do. Close was the THIRD verb of the same class and was
+  // missed by the original EI-23942597240908282 fix: a requester citing a
+  // clipped id got the same bare `not_a_consult`, and close is the verb that
+  // records the terminal outcome — so the miss stranded precisely the consults
+  // that most needed a disposition. Must run before the late-disposition read
+  // below, or that gate would admit on a resolved row while every write below
+  // still targeted the truncated id.
+  const normalized = await normalizeConversationRef(sql, req);
+  if ('error' in normalized) return normalized;
+  req = normalized.req;
+
   // Close-specific gate (WI-39862 / EI-20824019943814803): unlike reply and
   // decline, close ALSO admits the REQUESTER on a state='expired' row — a
   // LATE DISPOSITION. The repro: a cascade collected 3 substantive answers,
