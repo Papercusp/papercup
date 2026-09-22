@@ -221,6 +221,13 @@ export default defineTool({
   name: "work_items:list",
   profile: "engineer",
   description:
+    // ⛔ DO NOT add a "re-read after a change" rail here expecting it to fix the compact
+    // tier's lost re-read disposition — that was MEASURED and it does not work (D-048/D-049).
+    // An 85-char `⚠ Rows are a SNAPSHOT…` rail, verified DELIVERED UNCUT to the compact arm,
+    // left su-S25 at 4/12 against a full-tier control at 12/12 (Fisher p=0.0013), and the
+    // failing runs still made exactly ONE work_items:list call instead of two. It also cost
+    // +90 B, which evicted coord:read from the 100,000 B shipping seed. Re-proposing it needs
+    // new evidence, not a retry.
     "List work-items across kinds (feature/chunk/bug/change/task). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state, or q (a case-insensitive literal substring over title and body/summary). Returns the WorkItem array directly — each row's summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.",
   guidance: {
     when: "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Pass `q` for a case-insensitive literal substring over title and body/summary. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so a steerer can read the whole backlog's order in one call before steering it with work_items:set_priority.",
