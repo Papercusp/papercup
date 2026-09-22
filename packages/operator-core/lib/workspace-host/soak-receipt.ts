@@ -110,6 +110,8 @@ function stageContext(binding: WorkspaceHostSoakReleaseBinding): ReleaseTaskStag
       gitlinks: binding.gitlinks,
       version: binding.version,
       channel: WORKSPACE_HOST_SOAK_RELEASE_CHANNEL,
+      // Workspace-host releases are identified by bundle digest; the writer matches it exactly.
+      bundleSha256: binding.bundleSha256,
     },
   };
 }

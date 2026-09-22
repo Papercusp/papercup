@@ -34,6 +34,13 @@ export interface ReleaseTaskIdentity {
   gitlinks: Readonly<Record<string, string>>;
   version: string;
   channel: string;
+  /**
+   * Content digest of a BUNDLE artifact. Workspace-host publication tasks identify their artifact
+   * by digest alone (`artifactIdentity: { bundleSha256 }`), not by source/version/channel. When
+   * set, the journal must name exactly this digest — a stronger identity than the label tuple —
+   * and version/channel only label the stage preimage. Absent keeps the desktop-release rule.
+   */
+  bundleSha256?: string;
 }
 
 export interface ReleaseTaskStageContext {
@@ -115,6 +122,7 @@ export function releaseTaskStageContentIdentity(
     release: {
       version: context.identity.version,
       channel: context.identity.channel,
+      ...(context.identity.bundleSha256 !== undefined ? { bundleSha256: context.identity.bundleSha256 } : {}),
       ...(sourceScope === 'complete'
         ? {
             sourceSha: context.identity.sourceSha,
@@ -213,6 +221,16 @@ export function assertReleaseTaskIdentity(
     throw new Error('release journal has no immutable artifact identity');
   }
   const identity = artifact as Record<string, unknown>;
+  if (expected.bundleSha256 !== undefined) {
+    // Fail closed both ways: a digest-bound caller never matches a label-identified (desktop)
+    // journal, and a label-bound caller never matches a digest-identified one (below).
+    if (identity.bundleSha256 !== expected.bundleSha256) {
+      throw new Error(
+        `release journal artifact digest ${String(identity.bundleSha256 ?? '(none)')} does not match ${expected.bundleSha256}`,
+      );
+    }
+    return;
+  }
   if (
     identity.sourceSha !== expected.sourceSha ||
     identity.version !== expected.version ||

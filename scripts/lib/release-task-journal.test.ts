@@ -145,6 +145,32 @@ describe('release task journal identity', () => {
     );
   });
 
+  it('binds a digest-identified (workspace-host) journal by bundle digest, failing closed both ways', () => {
+    const digest = 'd'.repeat(64);
+    const bundleJournal = journal({ artifactIdentity: { bundleSha256: digest } });
+    const bound = { ...context().identity, version: '0.0.20-p318r37', channel: 'workspace-host', bundleSha256: digest };
+    expect(() => assertReleaseTaskIdentity(bundleJournal, bound)).not.toThrow();
+    expect(() => assertReleaseTaskIdentity(bundleJournal, { ...bound, bundleSha256: 'e'.repeat(64) })).toThrow(
+      /artifact digest d{64} does not match e{64}/,
+    );
+    // A label-bound (desktop) caller never matches a digest-only journal...
+    expect(() => assertReleaseTaskIdentity(bundleJournal, context().identity)).toThrow(/artifact identity/);
+    // ...and a digest-bound caller never matches a label-identified journal.
+    expect(() => assertReleaseTaskIdentity(journal(), bound)).toThrow(/artifact digest \(none\)/);
+    // The digest still sits behind the source + gitlink checks.
+    expect(() => assertReleaseTaskIdentity(bundleJournal, { ...bound, sourceSha: 'f'.repeat(40) })).toThrow(/source/);
+  });
+
+  it('leaves a label-bound stage preimage unchanged and binds a digest-bound one to its digest', () => {
+    const label = releaseTaskStageContentIdentity(context(), stage);
+    expect((label.release as Record<string, unknown>).bundleSha256).toBeUndefined();
+    const bound = releaseTaskStageContentIdentity(
+      { ...context(), identity: { ...context().identity, bundleSha256: 'd'.repeat(64) } },
+      stage,
+    );
+    expect((bound.release as Record<string, unknown>).bundleSha256).toBe('d'.repeat(64));
+  });
+
   it('content-addresses complete source, dependency/toolchain/profile/policy/signer/audit identity by stage', () => {
     const base = context();
     const complete = {

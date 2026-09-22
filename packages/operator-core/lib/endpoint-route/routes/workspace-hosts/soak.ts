@@ -30,6 +30,7 @@ import {
   resolveWorkspaceHostSoakPolicy,
   workspaceHostSoakQualifiesForAcceptance,
 } from '../../../workspace-host/soak';
+import { redactWorkspaceHostText } from '../../../workspace-host/observability-store';
 import { resolveGcpWorkspaceHostSoakSeams } from '../../../workspace-host/soak-gcp';
 import {
   WorkspaceHostSoakReleaseBindingError,
@@ -139,6 +140,13 @@ const start = defineTool({
       if (error instanceof WorkspaceHostInitializationControllerProfileError) {
         return Response.json({ ok: false, error: 'workspace-host controller is not configured', problems: error.problems }, { status: 503 });
       }
+      // The caller gets a closed message; the cause goes to the controller log, redacted, so an
+      // untyped refusal is diagnosable without reproducing it by hand.
+      console.error(
+        '[workspace-host-soak] admission failed',
+        { hostId, soakId },
+        redactWorkspaceHostText(error instanceof Error ? `${error.name}: ${error.message}` : String(error)).slice(0, 1000),
+      );
       return Response.json({ ok: false, error: 'soak admission failed; check the host timeline before retrying', outcome: 'unknown', hostId, soakId }, { status: 500 });
     }
   },
