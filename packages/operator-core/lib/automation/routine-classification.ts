@@ -373,6 +373,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'Advances one bounded, checkpointed local archive-import batch; no agent or model call',
   },
+  'system:psu-pty-host-events-ingest': {
+    spend: 'none',
+    why: 'Drains per-owner psu-pty host JSONL files into Postgres and applies row/file retention; filesystem plus SQL only, no agent or model call',
+  },
   'system:work-item-durable-park-audit': {
     spend: 'none',
     why: 'Runs a report-only durable-park audit and publishes evidence; no model call or dispatch',
