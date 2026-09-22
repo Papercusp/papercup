@@ -118,6 +118,22 @@ export interface OrientationOpenCheck {
   contested?: boolean;
 }
 
+/**
+ * How many work-items the `openChecks` resolver will scan for open external
+ * blockers. Bounded because this runs inside the 2.5s orientation wall on EVERY
+ * turn; an owner holding more than this many items has a lane problem the block
+ * cannot fix by rendering more rows.
+ */
+export const OPEN_CHECKS_BLOCKER_SCAN_LIMIT = 25;
+
+/**
+ * Hard cap on resolved rows. The renderer already shows 2 and summarizes the
+ * tail, so this exists to bound the WATERMARK (the fingerprint hashes the rows,
+ * not the rendered lines) — an unbounded row set would make the dedup key churn
+ * on rows nobody ever sees.
+ */
+export const OPEN_CHECKS_MAX_ROWS = 20;
+
 /** Post-claim discussion changes that the holder has not necessarily seen yet. */
 export interface OrientationHistoryUpdate {
   workItemId: string;
@@ -1608,21 +1624,15 @@ export interface OrientationDeps {
   /**
    * P-010: unverified carried claims + open external blockers, each with its probe.
    *
-   * ⚠ OPTIONAL, AND THAT IS A RECORDED GAP — NOT A DESIGN CHOICE. `defaultOrientationDeps()`
-   * does not implement this yet, so in production this class is DECLARED, registered,
-   * watermarked and rendered-if-populated, but NOTHING POPULATES IT. That is precisely the
-   * 0-renders-in-334-turns failure this plan exists to detect, one level up: the coverage
-   * guard proves the RENDER path works (it supplies the state itself) and cannot see a
-   * missing RESOLVER.
-   *
-   * It was `required` and unimplemented, which left the COMMITTED tree type-broken and
-   * would have red-pinned the fleet gate. Made optional by su-c03852cb to unbreak the
-   * build WITHOUT inventing su-6b1151ea's reader design while that session was MCP-dark.
-   * The real fix is to implement it in `defaultOrientationDeps` (loop:checkpoint `checks`
-   * + open `work_items:set_blocker` rows) and make this REQUIRED again. Tracked — do not
-   * quietly accept the optionality as finished.
+   * REQUIRED, and deliberately so. It briefly shipped OPTIONAL — the class was
+   * declared, registered, watermarked and rendered while `defaultOrientationDeps()`
+   * implemented no reader, so production populated NOTHING. An optional dep is
+   * exactly what let that pass for finished: the P-001 coverage guard supplies the
+   * state itself, so it proves the RENDER path and is structurally blind to a
+   * missing RESOLVER (EI-23953846527835643). Keeping this required means a future
+   * reader-less landing fails to typecheck instead of rendering silence forever.
    */
-  openChecks?: (ownerId: string, workspaceId: string) => Promise<OrientationOpenCheck[]>;
+  openChecks: (ownerId: string, workspaceId: string) => Promise<OrientationOpenCheck[]>;
   inbox: (ownerId: string) => Promise<{
     count: number;
     newest: OrientationInboxEntry[];
@@ -1966,6 +1976,115 @@ export function defaultOrientationDeps(): OrientationDeps {
           checkpointStale: Boolean(r.checkpoint?.trim()) && isStaleHeldCheckpoint(r, nowMs),
         }))
         .filter((r) => Boolean(r.id));
+    },
+    /**
+     * P-010 (WI-10002221): the two "do not inherit this claim" sources, each
+     * carrying the probe that settles it.
+     *
+     * RESCUE NOTE — why this reads as an afterthought and is not one. The class
+     * landed DECLARED, registered, watermarked and rendered-if-populated, with no
+     * resolver at all, so in production it populated nothing: the exact
+     * 0-renders-in-334-turns failure this plan exists to prevent, reproduced one
+     * level up inside the machinery built to detect it. The P-001 coverage guard
+     * is structurally blind to it because the guard SUPPLIES the state itself, so
+     * only a resolver-side check can see a missing reader (EI-23953846527835643).
+     *
+     * Both halves REUSE the canonical readers their owning surfaces already use —
+     * `getLoopStatus` + `getLoopCarryNoteWithMeta` + `splitCarryNoteChecks` for the
+     * carry-note rows, `activeExternalBlockers` for the payload rows — so this sink
+     * cannot disagree with the carry document about what is carried, nor with the
+     * blocked-items card about why something is blocked.
+     *
+     * Each half is caught INDEPENDENTLY: this file's contract is that a slow or
+     * broken source degrades its own line and never the block (see
+     * `resolveOrientationState`), and one unreadable half must not silently
+     * suppress the other.
+     */
+    openChecks: async (ownerId, workspaceId) => {
+      const out: OrientationOpenCheck[] = [];
+      // HALF 1 — carried claims that are NOT settled. A row holding `verified`
+      // evidence with no contradiction is done with; everything else is either
+      // PREDICTED (no evidence attached) or CONTESTED (evidence that disagrees
+      // with its own claim). Both are conclusions a successor will otherwise act
+      // on while they are wrong, which is the whole point of the class.
+      try {
+        const [{ getLoopStatus }, carryNote] = await Promise.all([
+          import('./harness/routines/loop'),
+          import('./carry-note'),
+        ]);
+        const loop = await getLoopStatus(ownerId);
+        if (loop) {
+          const meta = await carryNote.getLoopCarryNoteWithMeta({ harness: loop.harnessSlug, ownerId });
+          // `readFailed` is NOT "no rows" — a failed read must render silence
+          // rather than a manufactured all-clear.
+          if (!meta.readFailed && meta.note) {
+            for (const row of carryNote.splitCarryNoteChecks(meta.note).checks) {
+              const contested = Boolean(row.contested);
+              if (row.verified && !contested) continue;
+              const claim = (row.claim ?? '').trim();
+              if (!claim) continue;
+              const recheck = row.recheck?.trim();
+              out.push({
+                id: carryNote.carryRowKey(row),
+                claim,
+                ...(recheck ? { recheck } : {}),
+                pointer: 'loop:status',
+                kind: 'check',
+                ...(contested ? { contested: true } : {}),
+              });
+            }
+          }
+        }
+      } catch {
+        // Fail-soft by design: say less, never throw into the turn.
+      }
+      // HALF 2 — open external blockers on items this owner HOLDS. Deliberately
+      // NOT keyed on `status='blocked'`: `work_items:set_blocker` records an
+      // active blocker without necessarily parking the item, so keying on the
+      // status would miss exactly the rows that are still nominally in progress
+      // while actually waiting on something external.
+      try {
+        const [{ getOrgPg }, { resolveConcreteWorkspaceId }, { activeExternalBlockers }, { ALL_TERMINAL_STATUSES }] =
+          await Promise.all([
+            import('@papercusp/db-org'),
+            import('./workspace-registry'),
+            import('./external-blockers'),
+            import('./work-item-blocking'),
+          ]);
+        const { sql } = getOrgPg();
+        const ws = resolveConcreteWorkspaceId(workspaceId);
+        const terminal = [...ALL_TERMINAL_STATUSES];
+        const rows = await sql<
+          Array<{ feature_id: string; harness_slug: string | null; payload: unknown }>
+        >`
+          SELECT feature_id, harness_slug, payload
+            FROM harness_shared.work_items
+           WHERE workspace_id = ${ws}
+             AND taken_by = ${ownerId}
+             AND NOT (status = ANY(${terminal}::text[]))
+           ORDER BY updated_ts DESC NULLS LAST
+           LIMIT ${OPEN_CHECKS_BLOCKER_SCAN_LIMIT}`;
+        for (const row of rows) {
+          for (const blocker of activeExternalBlockers(row.payload)) {
+            const summary = blocker.summary.trim();
+            if (!summary) continue;
+            const nextVerb = blocker.nextVerb?.trim();
+            out.push({
+              // Blocker refs are unique only WITHIN an item, so the identity is
+              // item-qualified; otherwise two items waiting on the same gate
+              // would collapse into one row and one of them would go unseen.
+              id: `blocker:${row.feature_id}:${blocker.ref}`,
+              claim: summary,
+              ...(nextVerb ? { recheck: nextVerb } : {}),
+              pointer: `work_items:get ${row.feature_id}`,
+              kind: 'blocker',
+            });
+          }
+        }
+      } catch {
+        // Fail-soft, independently of HALF 1.
+      }
+      return out.slice(0, OPEN_CHECKS_MAX_ROWS);
     },
     // The SAME primitive fleet:assignments / leader-brief count with, so this
     // number can never disagree with the one a leader sees.
