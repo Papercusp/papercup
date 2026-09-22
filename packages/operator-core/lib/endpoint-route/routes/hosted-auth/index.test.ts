@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { vi } from 'vitest';
 import type { RouteDefinition } from '@papercusp/tooldef/define-tool';
 import {
@@ -160,6 +160,24 @@ async function beginWithIntent(
 }
 
 describe('hosted auth route contract', () => {
+  // `callbackRecoveryRedirect` deliberately logs the refusal code: a
+  // fail-closed callback 303s to `/`, which is indistinguishable in the
+  // browser from an ordinary bounce, so that line is the only server-side
+  // trace the refusal leaves. `vitest-fail-on-console` turns any console.warn
+  // into a suite failure, so capture it and ASSERT on it — silencing it with a
+  // bare mock would keep the suite green while quietly removing the guard on
+  // the observability seam.
+  let recoveryWarnings: string[] = [];
+  beforeEach(() => {
+    recoveryWarnings = [];
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      recoveryWarnings.push(args.map((value) => String(value)).join(' '));
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('publishes the explicit route manifest with concrete hosted auth posture', () => {
     expect(HOSTED_AUTH_ROUTES).toEqual([
       { method: 'GET', path: '/hosted/auth/sign-in', access: 'public' },
@@ -302,6 +320,95 @@ describe('hosted auth route contract', () => {
       `${ORIGIN}/?hosted_auth_error=signup_unavailable&hosted_auth_recovery=1`,
     );
     expect(s.sessionStore.created).toHaveLength(0);
+  });
+
+  it('signs in a returning user whose sign-up admission reports duplicate_identity', async () => {
+    const bindIdentity = vi.fn(async () => ({
+      userId: 'user-local-1',
+      organizationId: 'org-local-1',
+      workspaceId: 'workspace-local-1',
+      permissionVersion: 7,
+    }));
+    const complete = vi.fn(async () => ({
+      ok: false as const,
+      code: 'duplicate_identity' as const,
+      retryable: false,
+    }));
+    const s = setup(createFakeHostedIdentityProvider(), bindIdentity, { complete });
+    const started = await beginWithIntent(s, 'sign-up', '/workspaces/ws-1');
+    const response = await invoke(
+      s.route('GET', '/hosted/auth/callback'),
+      new Request(`${ORIGIN}${HOSTED_AUTH_CALLBACK_PATH}?code=code-1&state=${started.state}`, {
+        headers: { cookie: `${HOSTED_AUTH_FLOW_COOKIE}=${encodeURIComponent(started.flowCookie)}` },
+      }),
+    );
+
+    // An identity the provider already knows is a RETURNING user, not a
+    // refusal: bouncing them to `/` produced a loop, because the only action
+    // the portal then offered was the sign-up that had just failed.
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(`${ORIGIN}/workspaces/ws-1`);
+    expect(response.headers.get('location')).not.toContain('hosted_auth_error');
+    expect(response.headers.get('set-cookie')).toContain('__Host-papercusp_session=');
+    expect(bindIdentity).toHaveBeenCalledTimes(1);
+    expect(s.sessionStore.created).toHaveLength(1);
+    expect(s.provider.calls.revokeSession).toEqual([]);
+    // No recovery redirect happened, so the refusal seam must stay silent.
+    expect(recoveryWarnings).toEqual([]);
+  });
+
+  it('keeps duplicate_identity fail-closed when no membership is attached', async () => {
+    const complete = vi.fn(async () => ({
+      ok: false as const,
+      code: 'duplicate_identity' as const,
+      retryable: false,
+    }));
+    const s = setup(createFakeHostedIdentityProvider(), async () => null, { complete });
+    const started = await beginWithIntent(s, 'sign-up', '/workspaces/ws-1');
+    const response = await invoke(
+      s.route('GET', '/hosted/auth/callback'),
+      new Request(`${ORIGIN}${HOSTED_AUTH_CALLBACK_PATH}?code=code-1&state=${started.state}`, {
+        headers: { cookie: `${HOSTED_AUTH_FLOW_COOKIE}=${encodeURIComponent(started.flowCookie)}` },
+      }),
+    );
+
+    // Binding an existing identity never creates membership, so admission is
+    // still closed — the fall-through must not become a way in.
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(
+      `${ORIGIN}/?hosted_auth_error=membership_required&hosted_auth_recovery=1`,
+    );
+    expect(response.headers.get('set-cookie')).not.toContain('__Host-papercusp_session=');
+    expect(s.sessionStore.created).toHaveLength(0);
+  });
+
+  it('still recovers a non-duplicate sign-up admission failure without binding', async () => {
+    const bindIdentity = vi.fn(async () => {
+      throw new Error('sign-in binder must not run for a terminal sign-up failure');
+    });
+    const complete = vi.fn(async () => ({
+      ok: false as const,
+      code: 'rate_limited' as const,
+      retryable: false,
+    }));
+    const s = setup(createFakeHostedIdentityProvider(), bindIdentity, { complete });
+    const started = await beginWithIntent(s, 'sign-up', '/workspaces/ws-1');
+    const response = await invoke(
+      s.route('GET', '/hosted/auth/callback'),
+      new Request(`${ORIGIN}${HOSTED_AUTH_CALLBACK_PATH}?code=code-1&state=${started.state}`, {
+        headers: { cookie: `${HOSTED_AUTH_FLOW_COOKIE}=${encodeURIComponent(started.flowCookie)}` },
+      }),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(
+      `${ORIGIN}/?hosted_auth_error=signup_rate_limited&hosted_auth_recovery=1`,
+    );
+    expect(bindIdentity).not.toHaveBeenCalled();
+    expect(s.sessionStore.created).toHaveLength(0);
+    // The refusal code is the only server-side trace of this failure.
+    expect(recoveryWarnings).toHaveLength(1);
+    expect(recoveryWarnings[0]).toContain('code=signup_rate_limited');
   });
 
   it('rejects an external return target and a callback from the wrong browser', async () => {
