@@ -85,6 +85,18 @@ export interface WorkspaceHostCanaryRunInput {
   readonly credentials: {
     readonly initial: WorkspaceHostCanaryCredentialGeneration;
     readonly rotated: WorkspaceHostCanaryCredentialGeneration;
+    /**
+     * The generation `reconnect` delivers. REQUIRED and distinct from `rotated` (WI-10002402).
+     *
+     * `revoke` runs immediately before it across ALL channels, so by the time reconnect executes
+     * the rotated generation is revoked and the host holds no usable credential. Re-delivering
+     * `rotated` is therefore refused by the monotonic-generation guard —
+     * `WorkspaceHostRevokedCredentialGenerationError: generations through N have been revoked` —
+     * which is the guard working, not a fault: re-admitting a revoked generation is exactly the
+     * replay this canary exists to prove impossible. A reconnect may legitimately carry a NEW
+     * generation (see hosted-connector-client), so the canary must supply one.
+     */
+    readonly reconnected: WorkspaceHostCanaryCredentialGeneration;
     readonly restored: WorkspaceHostCanaryCredentialGeneration;
   };
   readonly operations: WorkspaceHostInitializationHostOperations;
@@ -362,6 +374,7 @@ function preflight(
   }
   requireCompleteCredentialGeneration('initial', input.credentials.initial);
   requireCompleteCredentialGeneration('rotated', input.credentials.rotated);
+  requireCompleteCredentialGeneration('reconnected', input.credentials.reconnected);
   requireCompleteCredentialGeneration('restored', input.credentials.restored);
 
   // Reuse the exact driver validators before any remote side effect. The runners rebuild these
@@ -447,12 +460,17 @@ export async function runWorkspaceHostCanary(
   const dependencies = { ...DEFAULT_DEPENDENCIES, ...overrides };
   const operationIds = workspaceHostCanaryOperationIds(input.runId);
   const { backupManifest, restoreRebindRequest } = preflight(input, operationIds);
-  // A canary names three exact agent generations. Authenticate the future rotate/restore inputs
-  // now, before the initialization runner creates the first paid/durable operation row. The
+  // A canary names four exact agent generations. Authenticate the future rotate/reconnect/restore
+  // inputs now, before the initialization runner creates the first paid/durable operation row. The
   // initialization runner verifies the initial generation at the same boundary and persists all
-  // three closed receipts together, so a healthy controller default cannot satisfy any of them.
+  // four closed receipts together, so a healthy controller default cannot satisfy any of them.
+  //
+  // WI-10002402: `reconnected` MUST be in this list. Every generation the canary later DELIVERS is
+  // pre-authenticated here; omitting one leaves that phase's agent credential unadmitted, which
+  // fails late — after durable, paid operations have already run — instead of at this cheap
+  // pre-flight boundary. Keep this set equal to the set of delivered generations.
   const additionalCredentialAdmissions: WorkspaceHostAgentCredentialAdmissionEvidence[] = [];
-  for (const label of ['rotated', 'restored'] as const) {
+  for (const label of ['rotated', 'reconnected', 'restored'] as const) {
     const credentialRef = input.credentials[label].credentialRefs.agentCredentialRef;
     const delivery = input.credentials[label].delivery.agent;
     if (!credentialRef || !delivery) {
@@ -536,10 +554,12 @@ export async function runWorkspaceHostCanary(
     currentDelivery: input.credentials.rotated.delivery,
     channels: [...WORKSPACE_HOST_CREDENTIAL_CHANNELS],
   });
+  // WI-10002402: `reconnected`, NOT `rotated` — the preceding revoke killed every channel at the
+  // rotated generation, so reconnecting with it is a replay the delivery guard refuses.
   const reconnect = await runLifecycle('reconnect', {
     action: 'reconnect',
-    currentCredentialRefs: input.credentials.rotated.credentialRefs,
-    currentDelivery: input.credentials.rotated.delivery,
+    currentCredentialRefs: input.credentials.reconnected.credentialRefs,
+    currentDelivery: input.credentials.reconnected.delivery,
   });
   const restoreRebind = await runLifecycle('restore-rebind', {
     ...restoreRebindRequest,

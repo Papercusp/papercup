@@ -45,6 +45,9 @@ function hasCredentials(value: unknown): boolean {
     isRecord(value) &&
     hasCredentialGeneration(value.initial) &&
     hasCredentialGeneration(value.rotated) &&
+    // WI-10002402: reconnect needs its OWN strictly-increasing generation — the preceding revoke
+    // kills the rotated one, so a payload without this cannot complete the lifecycle.
+    hasCredentialGeneration(value.reconnected) &&
     hasCredentialGeneration(value.restored)
   );
 }
@@ -140,7 +143,7 @@ export function createWorkspaceHostCanaryRoute(
       if (!isRecord(body.source)) return requestError('source must be an object', 400);
       if (!hasCredentials(body.credentials)) {
         return requestError(
-          'credentials must contain initial, rotated, and restored credentialRefs/delivery objects',
+          'credentials must contain initial, rotated, reconnected, and restored credentialRefs/delivery objects',
           400,
         );
       }

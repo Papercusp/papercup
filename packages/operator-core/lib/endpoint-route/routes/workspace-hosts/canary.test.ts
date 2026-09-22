@@ -218,6 +218,7 @@ function requestBody() {
     credentials: {
       initial: generation,
       rotated: generation,
+      reconnected: generation,
       restored: generation,
     },
   };
@@ -339,7 +340,7 @@ describe('POST /workspace-hosts/:hostId/canary', () => {
     const { dependencies, resolveOperationsForHost } = harness();
     const response = await post(dependencies, {
       ...requestBody(),
-      credentials: { initial: {}, rotated: {}, restored: {} },
+      credentials: { initial: {}, rotated: {}, reconnected: {}, restored: {} },
     });
 
     expect(response.status).toBe(400);

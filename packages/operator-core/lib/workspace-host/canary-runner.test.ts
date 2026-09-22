@@ -156,7 +156,10 @@ function input(overrides: Partial<WorkspaceHostCanaryRunInput> = {}): WorkspaceH
     credentials: {
       initial: { credentialRefs: refs(1), delivery: delivery(1) },
       rotated: { credentialRefs: refs(2), delivery: delivery(2) },
-      restored: { credentialRefs: refs(3), delivery: delivery(3) },
+      // WI-10002402: reconnect owns generation 3 — revoke kills everything through 2, so reusing
+      // `rotated` here is the replay the delivery guard refuses on a real host.
+      reconnected: { credentialRefs: refs(3), delivery: delivery(3) },
+      restored: { credentialRefs: refs(4), delivery: delivery(4) },
     },
     operations,
     credentialMaterialSource,
@@ -365,11 +368,17 @@ describe('runWorkspaceHostCanary', () => {
         additionalCredentialAdmissions: [
           expect.objectContaining({ binding: expect.objectContaining({ generation: 2 }) }),
           expect.objectContaining({ binding: expect.objectContaining({ generation: 3 }) }),
+          expect.objectContaining({ binding: expect.objectContaining({ generation: 4 }) }),
         ],
         onPlanned: expect.any(Function),
       }),
     );
-    expect(verifyAgentCredentialAdmission.mock.calls.map(([request]) => request.delivery.generation)).toEqual([2, 3]);
+    // WI-10002402: 2=rotated, 3=reconnected, 4=restored. Every DELIVERED generation is
+    // pre-authenticated; if this list ever loses one, that phase fails late on a live host after
+    // paid operations, instead of at the cheap pre-flight boundary.
+    expect(verifyAgentCredentialAdmission.mock.calls.map(([request]) => request.delivery.generation)).toEqual([
+      2, 3, 4,
+    ]);
     expect(runLifecycle).toHaveBeenCalledTimes(4);
   });
 
@@ -548,6 +557,45 @@ describe('runWorkspaceHostCanary', () => {
     )) as Error;
     expect(error).toBeInstanceOf(Error);
     expect(error.message).toMatch(/verificationKind "authenticated-account" is not allowed for 'claude'/);
+  });
+
+  it('gives reconnect a strictly increasing generation instead of replaying the revoked one', async () => {
+    // RECURRENCE GUARD (WI-10002402). reconnect used to reuse `credentials.rotated` — the exact
+    // generation the immediately-preceding revoke had just killed across every channel. On a real
+    // host the delivery guard refused it (`WorkspaceHostRevokedCredentialGenerationError:
+    // generations through 2 have been revoked`), stranding the canary at phase 4 of 5.
+    //
+    // The unit suite could not see it because the FAKE lifecycle does not enforce monotonic
+    // generations, so the invariant has to be asserted here explicitly — the same shape of blind
+    // spot as the fixtures that encoded impossible agent evidence.
+    const runLifecycle = vi.fn(fakeLifecycle);
+    await runWorkspaceHostCanary(input({ destroyFinalization: destroyFinalization() }), {
+      runInitialization: vi.fn(fakeInitialization),
+      runLifecycle,
+      verifyAgentCredentialAdmission,
+      now: () => new Date(OBSERVED_AT),
+    });
+
+    const byAction = new Map(
+      runLifecycle.mock.calls.map(([call]) => [
+        (call as WorkspaceHostCredentialLifecycleRunInput).action,
+        call as WorkspaceHostCredentialLifecycleRunInput,
+      ]),
+    );
+    const generationOf = (action: WorkspaceHostCredentialLifecycleRunInput['action']): number => {
+      const call = byAction.get(action);
+      if (!call || !('currentDelivery' in call) || !call.currentDelivery) {
+        throw new Error(`no ${action} call with a currentDelivery to read a generation from`);
+      }
+      const git = call.currentDelivery.git;
+      if (!git) throw new Error(`${action} call has no git delivery to read a generation from`);
+      return git.generation;
+    };
+
+    // INSTRUMENT CHECK: both phases must actually have run, or the comparison is vacuous.
+    expect(byAction.has('revoke')).toBe(true);
+    expect(byAction.has('reconnect')).toBe(true);
+    expect(generationOf('reconnect')).toBeGreaterThan(generationOf('revoke'));
   });
 
   it('resumes with identical phase identities and does not re-execute completed fake phases', async () => {
