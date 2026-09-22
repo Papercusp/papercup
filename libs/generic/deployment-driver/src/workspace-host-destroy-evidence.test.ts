@@ -38,8 +38,9 @@ function initialization(): WorkspaceHostInitializationCanaryEvidence {
     repository: { visibility: "private", cloned: true },
     channels,
     agents: {
-      claude: { ready: true, verificationKind: "authenticated-account" },
-      codex: { ready: true, verificationKind: "authenticated-account" },
+      // WI-10002402: the kind each agent's probe table can actually emit.
+      claude: { ready: true, verificationKind: "live-inference" },
+      codex: { ready: true, verificationKind: "live-inference" },
       omp: { ready: true, verificationKind: "local-inference" },
     },
     backupRestore: {

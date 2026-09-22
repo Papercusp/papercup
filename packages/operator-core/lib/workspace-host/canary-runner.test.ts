@@ -9,6 +9,7 @@ import {
   planWorkspaceHostCredentialLifecycle,
   planWorkspaceHostInitialization,
   workspaceHostCredentialReferenceDigest,
+  workspaceHostAgentAllowedVerificationKinds,
   type WorkspaceHostAgentVerificationReport,
   type WorkspaceHostAgentVerificationEvidence,
   type WorkspaceHostCredentialDeliverySet,
@@ -74,7 +75,12 @@ function agentReport(): WorkspaceHostAgentVerificationReport {
     contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
     agent,
     ready: true,
-    verificationKind: agent === 'omp' ? 'local-inference' : 'authenticated-account',
+    // WI-10002402. This said `authenticated-account` for claude/codex — evidence NEITHER agent's
+    // probe set can emit (claude's authenticated-account probe was removed as forgeable in
+    // WI-10001689; codex's is `satisfiesReadiness: false`). A fixture describing impossible
+    // evidence is why this suite stayed green for weeks while every real GCP canary was rejected
+    // at the same field. The guard test below pins these against the probe table itself.
+    verificationKind: agent === 'omp' ? 'local-inference' : 'live-inference',
     endpoint: `https://auth.example.invalid/${agent}`,
     exitStatus: 0,
     observedAt: OBSERVED_AT,
@@ -479,6 +485,69 @@ describe('runWorkspaceHostCanary', () => {
     // assertions above would pass just as well if the canary rejected every run for some other
     // reason, which is the vacuous-control failure this whole test exists to avoid.
     await expect(canary(intactClaude)).resolves.toBeDefined();
+  });
+
+  it('admits exactly the readiness-capable verification kinds each agent\'s own probe table declares', async () => {
+    // RECURRENCE GUARD (WI-10002402). The bug this pins was a hand-copied allowlist — four call
+    // sites each restated "authenticated-account, or local-inference when omp" as a literal, and
+    // the copies drifted from the probe table they describe. Three of them then rejected claude
+    // for presenting `live-inference`: the ONLY kind claude can emit, and the stronger evidence
+    // that deliberately replaced its removed, forgeable authenticated-account probe.
+    //
+    // This asserts the VALIDATOR against the PROBE TABLE, so re-introducing any literal at any of
+    // those sites fails here instead of on a live GCP host an hour and a VM later.
+    const intactOmp = agentReport().agents.omp;
+    const intactClaude = agentReport().agents.claude;
+    if (!intactClaude || !intactOmp) throw new Error('fixture requires claude + omp evidence');
+
+    const withClaudeEvidence = (claude: unknown) => async (run: WorkspaceHostInitializationRunInput) => {
+      const result = await fakeInitialization(run);
+      return {
+        ...result,
+        receipts: result.receipts.map((receipt) =>
+          'publicEvidence' in receipt && receipt.publicEvidence
+            ? {
+                ...receipt,
+                publicEvidence: { ...receipt.publicEvidence, agents: { claude, omp: intactOmp } },
+              }
+            : receipt,
+        ),
+      };
+    };
+
+    const canary = (claude: unknown) =>
+      runWorkspaceHostCanary(
+        input({ destroyFinalization: destroyFinalization(), requestedAgents: ['claude', 'omp'] }),
+        {
+          runInitialization: vi.fn(withClaudeEvidence(claude)),
+          runLifecycle: vi.fn(fakeLifecycle),
+          verifyAgentCredentialAdmission,
+          now: () => new Date(OBSERVED_AT),
+        },
+      );
+
+    const claudeKinds = [...workspaceHostAgentAllowedVerificationKinds('claude')];
+
+    // INSTRUMENT CHECK: an empty derived set would make the accept-loop below vacuous — it would
+    // iterate zero times and pass while proving nothing.
+    expect(claudeKinds.length).toBeGreaterThan(0);
+    // The two facts that made this bug possible, asserted directly against the table.
+    expect(claudeKinds).toContain('live-inference');
+    expect(claudeKinds).not.toContain('authenticated-account');
+
+    // Every kind the table declares readiness-capable must be ADMITTED.
+    for (const kind of claudeKinds) {
+      await expect(canary({ ...intactClaude, verificationKind: kind })).resolves.toBeDefined();
+    }
+
+    // CALIBRATION: a kind absent from claude's table must still be REFUSED, naming the field.
+    // Without this the loop above would pass just as well if the validator admitted everything —
+    // which is the failure mode that replacing a literal with a derived set could plausibly cause.
+    const error = (await canary({ ...intactClaude, verificationKind: 'authenticated-account' }).catch(
+      (thrown: unknown) => thrown,
+    )) as Error;
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toMatch(/verificationKind "authenticated-account" is not allowed for 'claude'/);
   });
 
   it('resumes with identical phase identities and does not re-execute completed fake phases', async () => {

@@ -140,7 +140,8 @@ function agentsReport(): WorkspaceHostAgentVerificationReport {
       contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
       agent,
       ready: true,
-      verificationKind: agent === 'omp' ? 'local-inference' : 'authenticated-account',
+      // WI-10002402: the kind each agent's probe table can actually emit.
+      verificationKind: agent === 'omp' ? 'local-inference' : 'live-inference',
       endpoint: `https://example.invalid/${agent}`,
       exitStatus: 0,
       observedAt: OBSERVED_AT,

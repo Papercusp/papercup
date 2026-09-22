@@ -86,8 +86,10 @@ function agentEvidence(
   agent: WorkspaceHostCanaryAgent,
   ready: boolean,
 ): WorkspaceHostAgentVerificationEvidence {
-  const verificationKind =
-    agent === "omp" ? "local-inference" : "authenticated-account";
+  // WI-10002402: claude/codex cannot emit `authenticated-account` — claude's probe was removed as
+  // forgeable (WI-10001689) and codex's is `satisfiesReadiness: false`. This fixture described
+  // evidence no host can produce, which is why the suite passed while real canaries were refused.
+  const verificationKind = agent === "omp" ? "local-inference" : "live-inference";
   return {
     contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
     agent,
@@ -1458,7 +1460,7 @@ describe("buildWorkspaceHostInitializationCanaryEvidence", () => {
       expect(evidence.agents[agent]).toEqual({
         ready: true,
         verificationKind:
-          agent === "omp" ? "local-inference" : "authenticated-account",
+          agent === "omp" ? "local-inference" : "live-inference",
       });
     }
   });
