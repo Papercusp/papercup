@@ -138,6 +138,18 @@ beforeAll(async () => {
         ))
         AND payload ->> 'watchdogKey' IS NOT NULL;
 
+    -- Migration 1157's real keyless admission-identity arbiter (WI-2142873).
+    CREATE UNIQUE INDEX IF NOT EXISTS work_items_keyless_title_identity_uq
+      ON harness_shared.work_items (workspace_id, harness_slug, (payload #>> '{admissionIdentity,titleKey}'))
+      WHERE item_kind IN ('bug', 'change', 'task')
+        AND (status IS NULL OR status <> ALL (
+          ARRAY['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped']::text[]
+        ))
+        AND NULLIF(btrim(payload ->> 'watchdogKey'), '') IS NULL
+        AND COALESCE(payload ->> 'lane', 'improvement') <> 'observation'
+        AND payload #>> '{admissionIdentity,schemaVersion}' = 'admission-identity-v1'
+        AND NULLIF(btrim(payload #>> '{admissionIdentity,titleKey}'), '') IS NOT NULL;
+
     -- A second partial index gives the negative control teeth: its 23505 must
     -- still escape the projection rather than being mistaken for migration 865.
     CREATE UNIQUE INDEX IF NOT EXISTS engineer_issues_projection_unrelated_uq
@@ -510,6 +522,61 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  // WI-2142873 live shape: a peer that had not replicated an open keyless filing
+  // minted a duplicate with the same server-authored titleKey; its replay raised
+  // a deterministic 23505 on migration 1157's index and pinned the tower's merge
+  // cursor for that peer log (2.7 days, 32k retries).
+  it('coalesces a duplicate keyless filing onto the live migration-1157 titleKey winner and stays idempotent', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = proj();
+      const admissionIdentity = { schemaVersion: 'admission-identity-v1', titleKey: 'bg-host drain stalls on join' };
+      await p.writeToPg(
+        issueRow({ issue_id: 'EI-keyless-winner', state: 'open', title: 'bg-host drain stalls on join', payload: { admissionIdentity } }),
+        { ts: 100, fedHlc: '100:00000:peer', origin: 'remote', authorPubkey: 'peer' },
+      );
+      const duplicate = issueRow({
+        issue_id: 'WI-keyless-dup',
+        state: 'open',
+        title: 'bg-host drain stalls on join',
+        payload: { admissionIdentity },
+      });
+      const provenance = { ts: 200, fedHlc: '200:00000:vm', origin: 'remote' as const, authorPubkey: 'vm' };
+
+      await p.writeToPg(duplicate, provenance);
+      // Recurrence guard: re-folding the identical op is still a no-op, never a
+      // new retryable cursor failure.
+      await p.writeToPg(duplicate, provenance);
+
+      expect(await getIssue('EI-keyless-winner')).not.toBeNull();
+      expect(await getIssue('WI-keyless-dup')).toBeNull();
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('winner=EI-keyless-winner'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('migration-1157 fixture index binds only rows inside its predicate (calibration for the coalesce test)', async () => {
+    // Calibration: a same-titleKey row OUTSIDE the predicate (another
+    // schemaVersion) must land untouched, so the coalesce test above is
+    // exercising the real partial arbiter rather than a broader accidental one.
+    // Any other index's 23505 still escapes: see the next test.
+    const admissionIdentity = { schemaVersion: 'admission-identity-v1', titleKey: 'shared normalized title' };
+    const p = proj();
+    await p.writeToPg(
+      issueRow({ issue_id: 'EI-keyless-live', state: 'open', payload: { admissionIdentity } }),
+      { ts: 100, origin: 'remote', authorPubkey: 'peer' },
+    );
+    // A second live row with a DIFFERENT schemaVersion does not enter the index,
+    // so it lands; this proves the fixture exercises the predicate, not a typo.
+    await p.writeToPg(
+      issueRow({ issue_id: 'EI-keyless-v0', state: 'open', payload: { admissionIdentity: { ...admissionIdentity, schemaVersion: 'v0' } } }),
+      { ts: 150, origin: 'remote', authorPubkey: 'peer' },
+    );
+    expect(await getIssue('EI-keyless-v0')).not.toBeNull();
   });
 
   it('does not swallow a 23505 from any unique index other than migration 865', async () => {

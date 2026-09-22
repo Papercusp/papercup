@@ -300,17 +300,125 @@ function watchdogIdentityFromPayload(payload: unknown): WatchdogIdentity | null 
   };
 }
 
-/** Only migration 865's arbiter is recoverable; every other 23505 remains fatal. */
-function isWatchdogIdentityConflict(error: unknown): boolean {
+/**
+ * Migration 1157's keyless admission-identity arbiter. Its `titleKey` is the
+ * server-authored durable identity of a keyless non-observation filing, so a
+ * second NON-TERMINAL row with the same titleKey in the same Pot is, by that
+ * migration's own definition, the same logical item. A peer that has not yet
+ * replicated the first filing (typically because its own merge is stalled) can
+ * mint such a duplicate; replaying it here raises a deterministic 23505 that no
+ * retry can clear, and the merge path would hold the whole peer log behind it
+ * (WI-2142873: tower cursor pinned 2.7 days / 32k attempts on one such op).
+ */
+const KEYLESS_TITLE_IDENTITY_INDEX = 'work_items_keyless_title_identity_uq';
+
+/**
+ * Only the named logical-identity arbiters (migrations 865 and 1157) are
+ * recoverable; every other 23505 remains fatal and visible to the merge path.
+ */
+function isNamedIdentityConflict(error: unknown, indexName: string): boolean {
   if (!error || typeof error !== 'object') return false;
   const candidate = error as Record<string, unknown>;
   if (String(candidate.code ?? '') !== '23505') return false;
-  if (candidate.constraint === WATCHDOG_IDENTITY_INDEX || candidate.constraint_name === WATCHDOG_IDENTITY_INDEX) {
+  if (candidate.constraint === indexName || candidate.constraint_name === indexName) {
     return true;
   }
   return [candidate.message, candidate.detail].some(
-    (value) => typeof value === 'string' && value.includes(`"${WATCHDOG_IDENTITY_INDEX}"`),
+    (value) => typeof value === 'string' && value.includes(`"${indexName}"`),
   );
+}
+
+/**
+ * Read the exact identity migration 1157 indexes from the incoming wire payload,
+ * mirroring every component of that partial index's predicate. Fail closed on
+ * anything malformed or outside the predicate: such a row cannot have raised
+ * this index's 23505 as the same logical item.
+ */
+function keylessTitleKeyFromPayload(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  const watchdogKey = record.watchdogKey;
+  if (watchdogKey !== undefined && watchdogKey !== null) {
+    if (typeof watchdogKey !== 'string' || watchdogKey.trim() !== '') return null;
+  }
+  if (record.lane !== undefined && record.lane !== null && typeof record.lane !== 'string') return null;
+  if (record.lane === 'observation') return null;
+  const admission = record.admissionIdentity;
+  if (!admission || typeof admission !== 'object' || Array.isArray(admission)) return null;
+  const { schemaVersion, titleKey } = admission as Record<string, unknown>;
+  if (schemaVersion !== 'admission-identity-v1') return null;
+  if (typeof titleKey !== 'string' || titleKey.trim() === '') return null;
+  return titleKey;
+}
+
+/** Same strictness as findWatchdogIdentityWinner: exactly one different live row. */
+async function findKeylessTitleIdentityWinner(
+  sql: postgres.Sql,
+  workspaceId: string,
+  harnessSlug: string,
+  incomingIssueId: string,
+  titleKey: string,
+): Promise<string | null> {
+  const rows = await sql<{ feature_id: string }[]>`
+    SELECT feature_id
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId}
+       AND harness_slug = ${harnessSlug}
+       AND feature_id <> ${incomingIssueId}
+       AND item_kind IN ('bug', 'change', 'task')
+       AND (status IS NULL OR status <> ALL (
+         ARRAY['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped']::text[]
+       ))
+       AND NULLIF(btrim(payload ->> 'watchdogKey'), '') IS NULL
+       AND COALESCE(payload ->> 'lane', 'improvement') <> 'observation'
+       AND payload #>> '{admissionIdentity,schemaVersion}' = 'admission-identity-v1'
+       AND payload #>> '{admissionIdentity,titleKey}' = ${titleKey}
+     ORDER BY feature_id
+     LIMIT 2`;
+  return rows.length === 1 ? rows[0]!.feature_id : null;
+}
+
+/**
+ * Resolve a named logical-identity 23505 to the existing live winner, or null
+ * (caller rethrows the ORIGINAL error). Returns the log line describing why the
+ * remote PUT is a no-op.
+ */
+async function resolveIdentityConflict(
+  error: unknown,
+  sql: postgres.Sql,
+  workspaceId: string,
+  harnessSlug: string,
+  incomingIssueId: string,
+  payload: unknown,
+): Promise<string | null> {
+  if (isNamedIdentityConflict(error, WATCHDOG_IDENTITY_INDEX)) {
+    const identity = watchdogIdentityFromPayload(payload);
+    if (!identity) return null;
+    const winnerId = await findWatchdogIdentityWinner(sql, workspaceId, harnessSlug, incomingIssueId, identity).catch(
+      () => null,
+    );
+    if (!winnerId) return null;
+    return (
+      `[engineer-issues projection] coalesced stale watchdog replay issue_id=${incomingIssueId} ` +
+      `onto existing non-terminal winner=${winnerId} (harness_slug=${harnessSlug}, ` +
+      `watchdogKey=${identity.watchdogKey}, signal_origin=${identity.signalOrigin}, lane=${identity.lane}); ` +
+      `remote PUT treated as no-op`
+    );
+  }
+  if (isNamedIdentityConflict(error, KEYLESS_TITLE_IDENTITY_INDEX)) {
+    const titleKey = keylessTitleKeyFromPayload(payload);
+    if (!titleKey) return null;
+    const winnerId = await findKeylessTitleIdentityWinner(sql, workspaceId, harnessSlug, incomingIssueId, titleKey).catch(
+      () => null,
+    );
+    if (!winnerId) return null;
+    return (
+      `[engineer-issues projection] coalesced duplicate keyless filing issue_id=${incomingIssueId} ` +
+      `onto existing non-terminal winner=${winnerId} (harness_slug=${harnessSlug}, titleKey=${titleKey}); ` +
+      `remote PUT treated as no-op`
+    );
+  }
+  return null;
 }
 
 /**
@@ -679,27 +787,18 @@ async function writeToPg(
     // already owns the same watchdog identity. Retrying that deterministic
     // 23505 forever pins every per-harness merge cursor on the same op.
     //
-    // Recover only the named index and only after the complete incoming
+    // Migration 1157's keyless title-identity index has the same shape: a peer
+    // that had not yet replicated an open filing mints a duplicate with the same
+    // server-authored titleKey, and its replay here is a deterministic 23505.
+    //
+    // Recover only those named indexes and only after the complete incoming
     // identity resolves to exactly one different non-terminal row. That row is
-    // the already-coalesced logical signal, so the obsolete physical-row PUT is
+    // the already-coalesced logical item, so the duplicate physical-row PUT is
     // a no-op. Any missing/malformed component, lookup failure, or other 23505
     // rethrows the original error and remains visible to the merge retry path.
-    if (!isWatchdogIdentityConflict(error)) throw error;
-    const identity = watchdogIdentityFromPayload(row.payload);
-    if (!identity) throw error;
-    let winnerId: string | null;
-    try {
-      winnerId = await findWatchdogIdentityWinner(sql, opts.workspaceId, vSlug, row.issue_id, identity);
-    } catch {
-      throw error;
-    }
-    if (!winnerId) throw error;
-    console.warn(
-      `[engineer-issues projection] coalesced stale watchdog replay issue_id=${row.issue_id} ` +
-        `onto existing non-terminal winner=${winnerId} (harness_slug=${vSlug}, ` +
-        `watchdogKey=${identity.watchdogKey}, signal_origin=${identity.signalOrigin}, lane=${identity.lane}); ` +
-        `remote PUT treated as no-op`,
-    );
+    const coalesced = await resolveIdentityConflict(error, sql, opts.workspaceId, vSlug, row.issue_id, row.payload);
+    if (!coalesced) throw error;
+    console.warn(coalesced);
   }
 }
 
