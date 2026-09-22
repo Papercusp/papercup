@@ -51,6 +51,13 @@ import { buildClaimableNowAggregate } from './leader-brief-aggregate';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
 import type { AgentIdentity } from '../coordination/identity';
+import { foldNeverDropFacts } from '../../agent-facts/store';
+// P-025 / D-053: imported from the sink-neutral seam, NOT from
+// `turn-start-orientation` directly — that module is the turn-start sink's own
+// home, and a non-turn-start sink reaching into it is a layering inversion even
+// though both names resolve to the same binding.
+import { ORIENTATION_CLASS_REGISTRY } from '../../orientation-class-registry';
+import type { RegisteredOrientationClass } from '../../orientation-class-registry';
 import {
   getFleet,
   getFleetHeadcountTarget,
@@ -591,6 +598,63 @@ export async function readLeaderAnnouncedGates(
     },
   );
   return probe.degraded || probe.value == null ? undefined : probe.value;
+}
+
+/**
+ * P-025: the never-drop facts that apply to THIS leader's scope.
+ *
+ * WHY THE LEADER SINK NEEDS THIS AT ALL. A fleet leader has the widest blast
+ * radius on the pot and, until this reader, received no dead-end / wall /
+ * guard-rail facts at all — the "antidote absent where the poison is strongest"
+ * failure EI-18725816532600240 established for cold wakes. Measured before
+ * writing it: `neverDrop|never-drop` occurred 0 times in this file, against a
+ * positive control (`announcedGates|announcement`) of 22 in the same file, so
+ * the zero was a measurement rather than a broken grep.
+ *
+ * ⚠ HOW THIS CONSUMES THE SHARED REGISTRY — see plan decision D-053.
+ * The registry (P-023 / D-015) declares each orientation class ONCE and every
+ * applicable surface renders it FROM that declaration. But its segments are
+ * LINE-oriented (`render` returns `string[]`), while this brief is a STRUCTURED,
+ * field-capped payload. So a structured sink reuses the declaration through
+ * `RegisteredOrientationClass.id` — which is typed `keyof OrientationState` —
+ * and NOT through `segments[].render`. Pushing a rendered line into this JSON
+ * payload would be exactly the "second copy of the line" the registry forbids.
+ * That is why this reads the registry for applicability instead of hardcoding
+ * the class: if `neverDropFacts` is ever withdrawn from the leader-brief sink,
+ * this returns undefined without a second edit here.
+ *
+ * The FACTS themselves come from `foldNeverDropFacts` — the same reader
+ * turn-start uses — so the two surfaces cannot drift on what counts as a
+ * never-drop fact. Selectors mirror turn-start's: workspace scope plus this
+ * leader's owner scope.
+ */
+export async function readLeaderNeverDropFacts(
+  input: { ownerId: string | null; workspaceId: string },
+  deps: {
+    fold?: typeof foldNeverDropFacts;
+    registry?: readonly RegisteredOrientationClass[];
+  } = {},
+): Promise<string[] | undefined> {
+  const registry = deps.registry ?? ORIENTATION_CLASS_REGISTRY;
+  const declared = registry.some(
+    (entry) => entry.id === 'neverDropFacts' && entry.applicableSinks.includes('leader-brief'),
+  );
+  // Not declared for this sink ⇒ render nothing. Reading the declaration rather
+  // than assuming it keeps `applicableSinks` the single source of truth.
+  if (!declared) return undefined;
+  const fold = deps.fold ?? foldNeverDropFacts;
+  const selectors = [
+    { scope: 'workspace' as const },
+    ...(input.ownerId ? [{ scope: 'owner' as const, scopeRef: input.ownerId }] : []),
+  ];
+  const facts = await fold(selectors, { workspaceId: input.workspaceId });
+  const keys = facts.map((fact) => fact.key).filter((key): key is string => Boolean(key));
+  // Deduped because one key can resolve from both selectors; sorted so the
+  // payload is stable across fold order and a diff means a real change.
+  const unique = [...new Set(keys)].sort();
+  // Successful-empty is ABSENT, not `[]`: an empty array in this payload reads
+  // as "measured, none apply", which is indistinguishable from a degraded read.
+  return unique.length > 0 ? unique : undefined;
 }
 
 export interface LeaderBriefMember {
@@ -4743,6 +4807,14 @@ export async function buildLeaderBrief(
       }),
     undefined,
   );
+  // P-025: never-drop facts for this leader's scope. Bounded and best-effort
+  // like every other optional leg — a guard-rail fact is worth surfacing, but
+  // never worth failing the whole brief for.
+  const neverDropFacts = await boundedLeaderBriefRead(
+    'never-drop-facts',
+    () => readLeaderNeverDropFacts({ ownerId: ownerId ?? null, workspaceId }),
+    undefined,
+  );
   // P-004 (shared-agent-obligations-and-briefs-2026-09-05): the SAME
   // evaluation path used by automatic turn-start orientation, projected to the
   // leader sink's wider budget. It is read-only and bounded per canonical
@@ -5043,6 +5115,11 @@ export async function buildLeaderBrief(
       // discovery leg was unavailable. The payload shaper caps verbose rows and
       // retains a truthful recovery pointer rather than clipping JSON.
       ...(announcedGates ? { announcedGates } : {}),
+      // P-025: the never-drop facts in this leader's scope, rendered from the
+      // shared orientation class declaration (D-053). ABSENT means either none
+      // apply or the bounded read was unavailable — deliberately not `[]`, which
+      // would read as a measured "none" and hide a degraded leg.
+      ...(neverDropFacts ? { neverDropFacts } : {}),
       // P-023: counts by cause. A cause that never fired is ABSENT, not 0 — a zero row
       // invites reading an unpopulated cause as a measured absence.
       idleCauses,
