@@ -42,9 +42,20 @@ import {
 } from './agent-tools/coordination/wake-mode';
 import type { CheckEntry, WallEntry } from './carry-note';
 import { readOrientDisclosures, type RecordedOrientDisclosures } from './agent-orient-disclosures';
+import {
+  projectOrientationRows,
+  resolveOrientationState,
+  type OrientationRow,
+} from './turn-start-orientation';
 
 /** Which orders signal failed to read this call — see D-003 above. */
-export type AgentOrdersSignalKey = 'mission' | 'modes' | 'wakeMode' | 'carry' | 'disclosures';
+export type AgentOrdersSignalKey =
+  | 'mission'
+  | 'modes'
+  | 'wakeMode'
+  | 'carry'
+  | 'disclosures'
+  | 'obligationRows';
 
 /**
  * The resolved instruction precedence, flattened for rendering.
@@ -202,6 +213,24 @@ export interface AgentOrders {
    *  does not touch keep compiling (the `lint:required-field-strands` trigger);
    *  `getAgentOrders` always populates it for real traffic. */
   disclosures?: RecordedOrientDisclosures | null;
+  /**
+   * P-018: THE OBLIGATION + DELTA ROWS, projected from the SAME declaration
+   * turn-start renders — `projectOrientationRows(state, 'agent-orders')`.
+   *
+   * ⚠ This is not a prettier copy of the fields above it. `walls`,
+   * `directives` and `facts` are the carry-brief's raw records — what is ON
+   * FILE for this agent. These rows are what the agent was TOLD, rendered by
+   * the registry's own segments at the registry's own priority. The two can
+   * legitimately differ (a directive on file that the turn-start budget never
+   * reached is a real finding, and one an observer can now SEE), which is
+   * exactly why both are carried rather than one being derived from the other.
+   *
+   * `null` is load-bearing and must not be rendered as "no obligations": it
+   * means the orientation state could not be resolved, which is a gap in OUR
+   * read, not a clean bill for the agent. Same D-003 rule the rest of this
+   * payload follows — see `unavailable`.
+   */
+  obligationRows?: OrientationRow[] | null;
   /** Signal keys whose read THREW this call (D-003). Empty = all resolved,
    *  even where some legitimately came back empty. */
   unavailable: AgentOrdersSignalKey[];
@@ -301,7 +330,7 @@ export async function getAgentOrders(owner: string): Promise<AgentOrders> {
   const workspaceId = activeWorkspaceId() ?? 'default';
   const unavailable: AgentOrdersSignalKey[] = [];
 
-  const [controlState, carryBrief, wakeMode, disclosures] = await Promise.all([
+  const [controlState, carryBrief, wakeMode, disclosures, obligationRows] = await Promise.all([
     buildControlAnchorState(owner, workspaceId).catch(() => {
       unavailable.push('modes');
       return null;
@@ -330,6 +359,25 @@ export async function getAgentOrders(owner: string): Promise<AgentOrders> {
     // honest reading: no recording, rendered as nothing rather than as a clean.
     readOrientDisclosures(owner).catch(() => {
       unavailable.push('disclosures');
+      return null;
+    }),
+    // P-018: the SAME projection turn-start renders, at the `agent-orders`
+    // sink. Joins this Promise.all rather than running after it so the fold
+    // costs wall-clock in parallel with the carry-brief gather it sits beside;
+    // the panel is fetch-gated on being open (SessionChatModal P-015), so a
+    // closed Orders rail still pays nothing.
+    //
+    // `committed: null` on purpose — BASELINE, not the agent's live cursor.
+    // Turn-start suppresses rows it already delivered (the watermark half of
+    // this plan); an OBSERVER asking "what is standing right now" must see the
+    // full set, or a directive would vanish from the screen precisely because
+    // it had been delivered once. The projection is identical either way: the
+    // cursor is an argument to it, not a fork of it.
+    (async (): Promise<OrientationRow[] | null> => {
+      const state = await resolveOrientationState(owner, workspaceId);
+      return projectOrientationRows(state, 'agent-orders', null);
+    })().catch(() => {
+      unavailable.push('obligationRows');
       return null;
     }),
   ]);
@@ -444,6 +492,7 @@ export async function getAgentOrders(owner: string): Promise<AgentOrders> {
     })),
     carry,
     disclosures,
+    obligationRows,
     unavailable,
   };
 }

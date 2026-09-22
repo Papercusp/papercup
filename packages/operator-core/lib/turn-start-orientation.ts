@@ -1607,7 +1607,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
     // workspace-scoped rails never reached it. See
     // TURN_START_LEADER_BRIEF_AND_CARRY above; consumer is
     // `readCarryNeverDropFacts` in carry-brief.ts.
-    applicableSinks: TURN_START_LEADER_BRIEF_AND_CARRY,
+    applicableSinks: TURN_START_LEADER_BRIEF_CARRY_AND_AGENT_ORDERS,
     populate: (state) => state.neverDropFacts,
     segments: [
       {
@@ -1744,11 +1744,87 @@ export function selectOrientationSegments(
  * {@link ORIENTATION_CLASS_REGISTRY}, which is where it is asserted.
  */
 export function renderOrientationLines(state: OrientationState, committed: CursorState | null = null): string[] {
-  const lines: string[] = [];
-  for (const segment of selectOrientationSegments('turn-start')) {
-    lines.push(...segment.render(state, committed));
+  return projectOrientationRows(state, 'turn-start', committed).map((row) => row.text);
+}
+
+/**
+ * ONE rendered obligation/delta row, carrying the class that produced it.
+ *
+ * `text` is the line VERBATIM — the exact string turn-start emits, not a
+ * re-spelling for the screen. That identity is the point of P-018: an observer
+ * reading the HUD Orders rail is reading what the agent was told, character for
+ * character, so a report of "the popup says X but the agent saw Y" cannot be a
+ * rendering artifact.
+ *
+ * `classId` and `order` ride along because a consumer that groups or evicts
+ * needs them: P-019's per-class ceilings and eviction order are applied to THIS
+ * row list, and a bare `string[]` gives a bounder nothing to bound BY.
+ */
+export interface OrientationRow {
+  /** The registry class that emitted this row (`keyof OrientationState`). */
+  readonly classId: keyof OrientationState;
+  /** The class segment's emission order — ascending, the shared priority rule. */
+  readonly order: number;
+  /** The rendered line, verbatim. */
+  readonly text: string;
+}
+
+/**
+ * PURE: THE SHARED OBLIGATION + DELTA PROJECTION (P-018).
+ *
+ * Every surface that answers "what was this agent told" renders from this one
+ * call — turn-start through {@link renderOrientationLines}, the HUD Orders rail
+ * through `getAgentOrders` — so the question has a single answer by
+ * construction rather than by two builders agreeing.
+ *
+ * ⚠ The SINK is what differs between callers, never the projection. A sink that
+ * wants fewer classes withdraws itself from `applicableSinks`; it does not get
+ * its own row builder. That is the whole mechanism: the moment a surface
+ * post-processes these rows into different text, the guarantee is gone and the
+ * P-018 equality test is what fails.
+ */
+export function projectOrientationRows(
+  state: OrientationState,
+  sink: OrientationSink,
+  committed: CursorState | null = null,
+  registry: readonly RegisteredOrientationClass[] = ORIENTATION_CLASS_REGISTRY,
+): OrientationRow[] {
+  const rows: OrientationRow[] = [];
+  for (const { classId, order, render } of selectOrientationClassSegments(sink, registry)) {
+    for (const text of render(state, committed)) {
+      rows.push({ classId, order, text });
+    }
   }
-  return lines;
+  return rows;
+}
+
+/**
+ * PURE: {@link selectOrientationSegments} with the emitting class preserved.
+ *
+ * The public `selectOrientationSegments` flattens the class away, which is
+ * correct for a caller that only concatenates lines and fatal for one that must
+ * bound or evict per class (P-019). Both sort by the SAME `order`, so the two
+ * views cannot disagree about emission sequence.
+ */
+function selectOrientationClassSegments(
+  sink: OrientationSink,
+  registry: readonly RegisteredOrientationClass[] = ORIENTATION_CLASS_REGISTRY,
+): readonly {
+  readonly classId: keyof OrientationState;
+  readonly order: number;
+  readonly render: (state: OrientationState, committed: CursorState | null) => string[];
+}[] {
+  return registry
+    .filter((entry) => entry.applicableSinks.includes(sink))
+    .flatMap((entry) =>
+      entry.segments.map((segment) => ({
+        classId: entry.id,
+        order: segment.order,
+        render: segment.render,
+      })),
+    )
+    .slice()
+    .sort((a, b) => a.order - b.order);
 }
 
 

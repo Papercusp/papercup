@@ -49,7 +49,11 @@ import {
   projectAgentTurnStartObligationBrief,
   type AgentObligationBrief,
 } from './agent-obligation-reader';
-import { renderOrientationLines, type OrientationState } from './turn-start-orientation';
+import {
+  projectOrientationRows,
+  renderOrientationLines,
+  type OrientationState,
+} from './turn-start-orientation';
 // P-024 — the sink axis. The registry is imported through its sink-NEUTRAL seam
 // (see orientation-class-registry.ts): this guard is no longer a turn-start-only
 // instrument, so reaching into the turn-start sink's own module for the shared
@@ -989,7 +993,147 @@ const leaderBriefAnnouncedGatesProbe: CellProbe = async () => {
  * class omitted from a sink is a RECORDED DECISION rather than a gap that
  * nothing notices — the matrix generalisation of `DELIBERATELY_UNRENDERED`.
  */
+/**
+ * The `agent-orders` cell probe (P-018), driven through the REAL shared
+ * projection at the REAL sink.
+ *
+ * Mirrors {@link linesAddedBy} exactly — same BASELINE, same patch, same
+ * marker — but projects at `'agent-orders'` instead of rendering turn-start.
+ * That parallel is the point: a class whose rows differ between the two sinks
+ * fails HERE, which is the P-018 guarantee stated as a coverage cell rather
+ * than as a comment.
+ *
+ * Deliberately NOT an assertion about `applicableSinks`. Re-reading the
+ * declaration would pass against a consumer that ignores the registry — the
+ * same trap `leaderBriefNeverDropProbe` above documents.
+ */
+function agentOrdersProbe(name: string): CellProbe {
+  return () => {
+    const probe = CLASS_PROBES[name];
+    if (!probe) return { reached: false, detail: `no CLASS_PROBES entry for ${name}` };
+    const baseline = projectOrientationRows(BASELINE, 'agent-orders', null).map((r) => r.text);
+    const populated = projectOrientationRows(
+      { ...BASELINE, ...probe.patch },
+      'agent-orders',
+      null,
+    ).map((r) => r.text);
+    const added = populated.filter((line) => !baseline.includes(line));
+    return { reached: added.some((line) => probe.marker.test(line)), detail: JSON.stringify(added) };
+  };
+}
+
+/** `obligations` renders from a built agenda rather than a flat patch, so its
+ *  probe mirrors {@link linesAddedByFamily} instead of {@link linesAddedBy}. */
+const agentOrdersObligationsProbe: CellProbe = () => {
+  const baseline = projectOrientationRows(BASELINE, 'agent-orders', null).map((r) => r.text);
+  const populated = projectOrientationRows(
+    { ...BASELINE, obligations: OBLIGATION_BRIEF },
+    'agent-orders',
+    null,
+  ).map((r) => r.text);
+  const added = populated.filter((line) => !baseline.includes(line));
+  return { reached: added.length > 0, detail: JSON.stringify(added) };
+};
+
+/** One reason shared by every class this sink does not claim. The Orders rail
+ *  answers "what standing obligation, and what changed, was this agent told
+ *  about" — see TURN_START_AND_AGENT_ORDERS. A class outside that question is
+ *  omitted for the same structural reason, stated per class below so
+ *  withdrawing any single one stays a visible edit. */
+const AGENT_ORDERS_NOT_AN_OBLIGATION = (what: string, why: string): SinkOmission => ({
+  kind: 'not-applicable',
+  reason:
+    `${what} ${why} The HUD popup may still render it as OBSERVER DETAIL from its own ` +
+    'sources (liveness, locks, the dossier rail) — this omission is about the shared ' +
+    'obligation object, not about what the screen is allowed to show.',
+});
+
 const SINK_COVERAGE: Record<string, SinkCoverage> = {
+  'agent-orders': {
+    status: 'consuming',
+    scope:
+      "The HUD conversation popup's Orders rail (SessionChatModal → agentOrders.byOwner → getAgentOrders). " +
+      'It answers ONE question for an observer: what standing obligation, and what changed, was this agent ' +
+      'told about? Narrower than turn-start on purpose — the popup renders MORE overall, but its obligation ' +
+      'section must be the rows turn-start rendered, character for character (P-018). A class belongs here ' +
+      'only if it is part of that question; observer embellishment stays outside the shared object.',
+    probes: {
+      ownerDirectives: agentOrdersProbe('ownerDirectives'),
+      openChecks: agentOrdersProbe('openChecks'),
+      unansweredDirected: agentOrdersProbe('unansweredDirected'),
+      neverDropFacts: agentOrdersProbe('neverDropFacts'),
+      obligations: agentOrdersObligationsProbe,
+    },
+    silent: {},
+    omitted: {
+      toolSurface: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'An MCP-registration alarm about the reader\'s OWN session.',
+        'It is an instrument fault, not something the agent was told to do, and the popup shows session ' +
+          'health from live presence rather than from a turn-start warning.',
+      ),
+      carryBlindWindow: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        "A warning about the reader's own carry gap.",
+        'It describes a property of the delivery channel, not an obligation standing against the agent.',
+      ),
+      historyUpdates: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'Post-claim history movement on items the reader holds.',
+        'A delta about work state rather than about what the agent was told; the popup already renders ' +
+          'held-item state from the carry brief, where it is richer.',
+      ),
+      effortUpdates: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'Post-claim plan/goal revisions.',
+        'Same reading as historyUpdates — a work-state delta, and the popup carries plan context separately.',
+      ),
+      unansweredStale: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        "The reader's stale-sender backlog.",
+        'A nudge about correspondence hygiene, not a standing obligation; `unansweredDirected` is the ' +
+          'obligation half and IS claimed.',
+      ),
+      openAsks: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'Asks the reader has OUTSTANDING against others.',
+        'The direction is inverted: these are obligations the agent placed on someone else, so they do not ' +
+          'answer what this agent was told.',
+      ),
+      modes: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'The reader\'s active modes.',
+        'The popup renders modes from `getAgentOrders.modes` WITH attribution the registry line does not ' +
+          'carry (who set it, whether the owner directed it) — a strictly richer read from the mode ' +
+          'registry itself, so importing the line would add a second, poorer copy.',
+      ),
+      loopArmed: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'Whether the reader has a wake source armed.',
+        'The popup reads loop state live from the carry brief (`carry.loopActive`, `loopIntervalSec`), ' +
+          'which is current rather than as-of-last-turn.',
+      ),
+      loopFireWithheld: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'A withheld loop fire.',
+        'Scheduler mechanics about the reader\'s own loop, not an instruction it received.',
+      ),
+      held: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        "The reader's held work-items and checkpoints.",
+        'The popup renders these from `carry.heldItems` with checkpoint ages and staleness verdicts the ' +
+          'turn-start line deliberately compresses away; that richer read is the dossier\'s job.',
+      ),
+      executableFrontier: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'What the reader could work on NEXT.',
+        'A suggestion, not an obligation — nobody told the agent to take it.',
+      ),
+      announcedGates: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'Gates declared in the reader\'s scope.',
+        'An availability signal about what it MAY await, not a standing instruction.',
+      ),
+      inboxRecent: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'Recent inbox excerpts.',
+        'The popup IS a conversation view — it renders the real messages beside this rail, so an excerpt ' +
+          'line would restate on screen what the screen already shows in full.',
+      ),
+      improvementTriage: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'The withdrawn improvement-triage line.',
+        'DELIBERATELY_UNRENDERED at turn-start since P-017 (signal decay: it rendered every turn and was ' +
+          'acted on by nobody), so there is no row for this sink to share.',
+      ),
+    },
+  },
   'turn-start': {
     status: 'consuming',
     scope:
