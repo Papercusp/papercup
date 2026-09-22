@@ -3321,7 +3321,35 @@ export interface AcceptanceBarAmendmentPreview {
    * apply, not to pre-empt it. The read that backs it is deliberately allowed to throw,
    * because silently shrinking an independence population is a fail-open gate.
    */
-  approverEligibility?: { approvedBy: string; eligible: boolean; relatedImplementer: string | null };
+  /**
+   * WI-10002357: `eligible` predicts the apply *as performed by THIS caller*, because the
+   * comparison population deliberately includes `actorId` (see the apply rail at the
+   * `acceptance_bar_approval_in_implementer_lineage` throw). That makes a SELF-screen
+   * (`approvedBy` === caller) structurally always `false` — `areAcceptanceLineageRelated(x, x)`
+   * is trivially true — so a bare `eligible:false` cannot distinguish "related to a real
+   * implementer" (durable) from "related to whoever happened to ask" (an artifact of the
+   * caller, curable by letting a different agent perform the apply).
+   *
+   * Measured 2026-09-22 on WI-10001779: the item bounced across 6 sessions, each recusing
+   * itself as implementer lineage. At least one of those recusals was provably an artifact —
+   * that caller appeared in NO genuine implementer identity (9 work_item + 6 plan_audit rows
+   * for the subject plan, positive controls non-zero, zero hits for the caller) and was
+   * therefore an eligible approver the whole time.
+   *
+   * So `relatedVia` names WHICH identity blocked, and `eligibleWithUnrelatedApplier` answers
+   * the question a router actually has: is this approver usable at all, given some other
+   * agent performs the apply? The apply rail is unchanged — this only stops a curable
+   * condition from reading as a permanent disqualification.
+   */
+  approverEligibility?: {
+    approvedBy: string;
+    eligible: boolean;
+    relatedImplementer: string | null;
+    /** Which injected identity the approver is related to. `'caller'` ⇒ artifact, not history. */
+    relatedVia?: 'caller' | 'rubric-author' | 'subject-owner' | 'plan-implementer';
+    /** `eligible` recomputed over the population EXCLUDING the caller. */
+    eligibleWithUnrelatedApplier?: boolean;
+  };
 }
 
 function amendmentFaultStage(input: AmendRubricInput): AmendRubricInput['faultInjection'] | undefined {
@@ -3965,38 +3993,58 @@ async function amendAcceptanceBarRubric(
         let previewImplementers: string[] | undefined;
         let approverEligibility: AcceptanceBarAmendmentPreview['approverEligibility'];
         if (changedBars.length > 0) {
-          previewImplementers = [
-            ...new Set([
-              actorId,
-              stored.createdBy,
-              subjectRow.owner,
-              ...(await resolvePlanImplementerIdentities(subjectPlanHint, {
-                sql: tx as never,
-                workspaceId: subjectScope.workspaceId,
-              })),
-            ]),
-          ]
-            .map((identity) => (identity ?? '').trim())
-            .filter(Boolean)
-            .sort();
-          const prospectiveApprover = (input.approvedBy ?? '').trim();
+          const norm = (identity: string | null | undefined) => (identity ?? '').trim();
+          // WI-10002357: the population stays byte-identical to the apply rail, but we now
+          // remember WHY each identity is in it. `actorId` is present because THIS caller
+          // would perform the apply — a curable condition — whereas the rubric author, the
+          // subject owner and the resolved plan implementers are durable history. Attribute
+          // the durable roles FIRST so a caller who is independently a real implementer keeps
+          // that attribution instead of being softened to 'caller'.
+          type RelatedVia = NonNullable<AcceptanceBarAmendmentPreview['approverEligibility']>['relatedVia'];
+          const roles = new Map<string, RelatedVia>();
+          const attribute = (identity: string | null | undefined, via: RelatedVia) => {
+            const key = norm(identity);
+            if (key && !roles.has(key)) roles.set(key, via);
+          };
+          for (const planImplementer of await resolvePlanImplementerIdentities(subjectPlanHint, {
+            sql: tx as never,
+            workspaceId: subjectScope.workspaceId,
+          })) {
+            attribute(planImplementer, 'plan-implementer');
+          }
+          attribute(stored.createdBy, 'rubric-author');
+          attribute(subjectRow.owner, 'subject-owner');
+          attribute(actorId, 'caller');
+          previewImplementers = [...roles.keys()].sort();
+          const prospectiveApprover = norm(input.approvedBy);
           if (prospectiveApprover) {
-            let relatedImplementer: string | null = null;
-            for (const implementer of previewImplementers) {
-              if (
-                await areAcceptanceLineageRelated(prospectiveApprover, implementer, {
-                  sql: tx as never,
-                  workspaceId: subjectScope.workspaceId,
-                })
-              ) {
-                relatedImplementer = implementer;
-                break;
+            const durable = previewImplementers.filter((identity) => roles.get(identity) !== 'caller');
+            const callerOnly = previewImplementers.filter((identity) => roles.get(identity) === 'caller');
+            const relatedTo = async (population: string[]) => {
+              for (const implementer of population) {
+                if (
+                  await areAcceptanceLineageRelated(prospectiveApprover, implementer, {
+                    sql: tx as never,
+                    workspaceId: subjectScope.workspaceId,
+                  })
+                ) {
+                  return implementer;
+                }
               }
-            }
+              return null;
+            };
+            // Scan the durable population first: a genuine disqualification should be the one
+            // reported even when the caller also relates, and it short-circuits the extra read.
+            const durableRelation = await relatedTo(durable);
+            const callerRelation = durableRelation === null ? await relatedTo(callerOnly) : null;
+            const relatedImplementer = durableRelation ?? callerRelation;
             approverEligibility = {
               approvedBy: prospectiveApprover,
+              // Unchanged semantics: predicts the apply as performed by THIS caller.
               eligible: relatedImplementer === null,
               relatedImplementer,
+              relatedVia: relatedImplementer === null ? undefined : roles.get(relatedImplementer),
+              eligibleWithUnrelatedApplier: durableRelation === null,
             };
           }
         }
