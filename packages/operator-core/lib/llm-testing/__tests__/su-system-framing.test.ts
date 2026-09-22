@@ -174,8 +174,38 @@ describe('su SUT toolDefinitionTier — delivery-tier A/B seam (P-011/D-008)', (
     ).toThrow(/toolDefinitionTier must be 'full' or 'compact'/);
   });
 
+  it('parseSuConfigDelta accepts catalogSource and rejects any other value (D-019)', () => {
+    expect(parseSuConfigDelta({ catalogSource: 'shipping-seed' })).toEqual({
+      catalogSource: 'shipping-seed',
+    });
+    expect(parseSuConfigDelta({ catalogSource: 'curated' })).toEqual({ catalogSource: 'curated' });
+    // Same reasoning as the tier knob: a mislabelled catalog source would
+    // report an A/B over the hand-authored SU_CATALOG as if it had run
+    // against the shipped seed, which is precisely the vacuous green D-012
+    // and D-019 exist to prevent.
+    expect(() => parseSuConfigDelta({ catalogSource: 'live' })).toThrow(
+      /catalogSource must be 'curated' or 'shipping-seed'/,
+    );
+    expect(() =>
+      parseSuConfigDelta({ catalogSource: true as unknown as string }),
+    ).toThrow(/catalogSource must be 'curated' or 'shipping-seed'/);
+  });
+
+  it('the two knobs are INDEPENDENT — set together they both survive parsing (D-019)', () => {
+    // The shipping-seed A/B varies the tier while holding the SET fixed, so a
+    // parser that dropped either knob would silently collapse the experiment
+    // into one arm.
+    expect(
+      parseSuConfigDelta({ catalogSource: 'shipping-seed', toolDefinitionTier: 'compact' }),
+    ).toEqual({ catalogSource: 'shipping-seed', toolDefinitionTier: 'compact' });
+    expect(
+      parseSuConfigDelta({ catalogSource: 'shipping-seed', toolDefinitionTier: 'full' }),
+    ).toEqual({ catalogSource: 'shipping-seed', toolDefinitionTier: 'full' });
+  });
+
   it('omitting the knob leaves the delta empty, so the default arm stays byte-identical', () => {
     expect(parseSuConfigDelta({})).toEqual({});
+    expect(parseSuConfigDelta({ sutModel: 'x' }).catalogSource).toBeUndefined();
     expect(parseSuConfigDelta({ sutModel: 'x' }).toolDefinitionTier).toBeUndefined();
   });
 
