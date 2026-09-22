@@ -586,23 +586,82 @@ export function ownerReportObligation(input: OwnerReportProviderInput): AgentObl
   });
 }
 
-const GRADER_GAP_CODES = new Set<PlanAcceptanceGateCode>(['acceptance_ungraded', 'self_graded_only']);
-const AUTHOR_REPAIR_CODES = new Set<PlanAcceptanceGateCode>([
-  'acceptance_rubric_missing',
-  'acceptance_rubric_ambiguous',
-  'acceptance_rubric_unvetted',
-  'acceptance_rubric_revision_unreadable',
-  'acceptance_rubric_vetted_after_grading',
-  'acceptance_not_recorded',
-  'acceptance_rejected',
-  'acceptance_unaudited',
-  'audit_coverage_stale',
-  'audit_citations_unresolved',
-  'requirement_unrealized',
-  'ephemeral_deliverable_unbacked',
-  'spec_proof_stale',
-  'spec_clause_unproven',
-]);
+/**
+ * Who owns the repair for each acceptance-gate refusal code.
+ *
+ * generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20 D-009: this was
+ * TWO hand-maintained `Set<PlanAcceptanceGateCode>`s (GRADER_GAP_CODES /
+ * AUTHOR_REPAIR_CODES). A code in NEITHER silently fell through to
+ * `causalRank: 2` — the DOWNSTREAM-symptom tier — while usually being upstream
+ * author work, so it was ranked below the very repairs that unblock it and read
+ * as nobody's work. Seven of the union's 23 codes had drifted into that hole,
+ * including `acceptance_bar_contract_not_ready`, the single most common real
+ * acceptance stall in this repo.
+ *
+ * An exhaustive `Record` is the fix rather than a test: TypeScript now REFUSES TO
+ * COMPILE when a code is added to `PlanAcceptanceGateCode` and left unclassified,
+ * so the hole cannot reopen silently (derived-truth ladder rung 1 — derive, don't
+ * hand-maintain). Adding a code here is a deliberate ownership decision, which is
+ * exactly the moment it should be made.
+ *
+ * - `grader`    — waiting on an INDEPENDENT GRADER. Yields `status:'due'` plus a
+ *                 `delegate` action, i.e. it may recruit/wake a peer.
+ * - `author`    — waiting on the plan's OWN author. Upstream (`causalRank: 0`), so
+ *                 it outranks any downstream symptom. NEVER recruits a peer.
+ * - `unmeasured`— the gate could not MEASURE the plan (a read/lineage failure). Not
+ *                 a repair anyone owns; it needs a retry or a fixed instrument, and
+ *                 must not be dressed up as either party's work.
+ * - `not-here`  — deliberately handled EARLIER in this provider and never reaching
+ *                 classification (see `gradeable` for `plan_items_unfinished`).
+ *
+ * ⛔ Do NOT reclassify a contract code (`acceptance_bar_*`) as `grader` to make a
+ * stall look actionable. `acceptance-bar-lifecycle-evaluator.ts` deliberately keeps
+ * recruitment to {acceptance_ungraded, self_graded_only} so a malformed rubric
+ * cannot spawn agents, and it RENDERS that promise to the user in the refusal text
+ * ("These repairs are the plan author's alone — do not recruit or wake a peer for
+ * them."). Widening it here would make that rendered sentence a lie.
+ */
+const GATE_CODE_OWNERSHIP: Record<
+  PlanAcceptanceGateCode,
+  'grader' | 'author' | 'unmeasured' | 'not-here'
+> = {
+  // --- waiting on an independent grader -------------------------------------
+  acceptance_ungraded: 'grader',
+  self_graded_only: 'grader',
+
+  // --- waiting on the plan's own author -------------------------------------
+  acceptance_rubric_missing: 'author',
+  acceptance_rubric_ambiguous: 'author',
+  acceptance_rubric_unvetted: 'author',
+  acceptance_rubric_revision_unreadable: 'author',
+  acceptance_rubric_vetted_after_grading: 'author',
+  acceptance_not_recorded: 'author',
+  acceptance_rejected: 'author',
+  acceptance_unaudited: 'author',
+  audit_coverage_stale: 'author',
+  audit_citations_unresolved: 'author',
+  requirement_unrealized: 'author',
+  ephemeral_deliverable_unbacked: 'author',
+  spec_proof_stale: 'author',
+  spec_clause_unproven: 'author',
+  // D-009: these four were UNCLASSIFIED and are author work. The bar-contract pair
+  // in particular is the repo's most frequent acceptance stall, so leaving it at
+  // the downstream rank actively mis-ordered the agenda against the fix.
+  acceptance_bar_contract_not_ready: 'author',
+  acceptance_bar_not_met: 'author',
+  design_evidence_unsatisfied: 'author',
+
+  // --- the gate could not measure the plan ----------------------------------
+  // A failed measurement is not a repair. Ranking these as author work would send
+  // someone to "fix" a plan whose state was never actually read.
+  acceptance_lineage_unreadable: 'unmeasured',
+  design_evidence_unavailable: 'unmeasured',
+  spec_coverage_unavailable: 'unmeasured',
+
+  // --- never reaches classification -----------------------------------------
+  // `gradeable` short-circuits this to a 'not-applicable' obligation well above.
+  plan_items_unfinished: 'not-here',
+};
 
 export interface IndependentVerificationProviderInput extends ProviderBase {
   planSlug: string;
@@ -692,8 +751,8 @@ export function independentVerificationObligation(input: IndependentVerification
     });
   }
   const code = gate.code;
-  const graderGap = Boolean(code && GRADER_GAP_CODES.has(code));
-  const authorRepair = Boolean(code && AUTHOR_REPAIR_CODES.has(code));
+  const graderGap = Boolean(code && GATE_CODE_OWNERSHIP[code] === 'grader');
+  const authorRepair = Boolean(code && GATE_CODE_OWNERSHIP[code] === 'author');
   return defineAgentObligation({
     ...common,
     title: graderGap
