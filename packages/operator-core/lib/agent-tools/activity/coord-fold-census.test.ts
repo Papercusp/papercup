@@ -35,6 +35,7 @@ function observation(over: Partial<CoordFoldObservation> = {}): CoordFoldObserva
     hydrateMs: 100,
     inboxAdvanced: false,
     inboxTotal: 0,
+    glanceOnly: false,
     ...over,
   };
 }
