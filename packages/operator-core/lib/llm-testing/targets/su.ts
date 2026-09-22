@@ -103,7 +103,8 @@ function sutModel(): string {
 // as a live SU launch, then cached per process.
 // ---------------------------------------------------------------------------
 
-let _playbookCache: Promise<string> | undefined;
+/** Keyed by the bound mode set (sorted, comma-joined; '' = no modes). */
+const _playbookCache = new Map<string, Promise<string>>();
 
 export function resolvePlaybookPath(): string {
   const override = process.env.PAPERCUSP_SU_PLAYBOOK_PATH?.trim();
@@ -153,9 +154,13 @@ function resolveOverlayDir(): string {
  * section. The project guide stays omitted: scenario worlds are hermetic and
  * must not inherit mutable repository facts unrelated to their fixtures.
  *
+ * `modes` binds the ACTIVE registry modes exactly as a live launch binds
+ * `agent_modes` (identities-v1 P-021): each mode's definition is an identity
+ * layer, so with no modes bound NO mode definition renders (EI-23996297775579005).
+ *
  * Uncached: callers are per-cycle, not per-model-call.
  */
-export async function loadPlaybookBody(): Promise<string> {
+export async function loadPlaybookBody(modes: readonly string[] | null = null): Promise<string> {
   const baseSource = resolvePlaybookPath();
   const overlayDir = resolveOverlayDir();
   let baseText: string | undefined;
@@ -164,7 +169,7 @@ export async function loadPlaybookBody(): Promise<string> {
     const harnessDir = resolve(baseSource, '..', '..', '..', '..');
     baseText = composeSuStackSource({
       harnessDir,
-      binding: suSessionBinding({ fleetRole: null, modes: null }),
+      binding: suSessionBinding({ fleetRole: null, modes }),
     }).text;
   } catch (error) {
     // Match buildSuLaunchSpec's production fallback: an unavailable slot
@@ -191,10 +196,35 @@ export const SU_PLAYBOOK_FRAMING =
   'You are a Papercusp superuser engineer-collaborator (a `psu` session). ' +
   'The following is your operating playbook — follow it exactly.\n\n';
 
-function loadPlaybook(): Promise<string> {
-  if (_playbookCache !== undefined) return _playbookCache;
-  _playbookCache = loadPlaybookBody().then((body) => SU_PLAYBOOK_FRAMING + body);
-  return _playbookCache;
+function loadPlaybook(modes: readonly string[] | null = null): Promise<string> {
+  const key = modes && modes.length ? [...modes].sort().join(',') : '';
+  const cached = _playbookCache.get(key);
+  if (cached !== undefined) return cached;
+  const next = loadPlaybookBody(key ? key.split(',') : null).then((body) => SU_PLAYBOOK_FRAMING + body);
+  _playbookCache.set(key, next);
+  return next;
+}
+
+/**
+ * Parse a scenario's `targetConfig` for the su target. The only key is `modes`:
+ * the ACTIVE registry modes the scenario's world claims, INCLUDING the implication
+ * closure the registry write applies (e.g. `grade` implies `auto`), because
+ * `suSessionBinding` binds exactly what it is given. Unknown keys and malformed
+ * values throw, so a typo cannot silently render the mode-less prompt.
+ */
+export function parseSuTargetConfig(
+  config: Readonly<Record<string, unknown>> | undefined,
+): { modes: string[] | null } {
+  if (config === undefined) return { modes: null };
+  for (const key of Object.keys(config)) {
+    if (key !== 'modes') throw new Error(`su target: unknown targetConfig key "${key}" (known: modes)`);
+  }
+  const modes = config.modes;
+  if (modes === undefined) return { modes: null };
+  if (!Array.isArray(modes) || modes.some((m) => typeof m !== 'string' || !m.trim())) {
+    throw new Error('su target: targetConfig.modes must be an array of non-empty mode names');
+  }
+  return { modes: modes.length ? modes.map((m: string) => m.trim()) : null };
 }
 
 // ---------------------------------------------------------------------------
@@ -544,6 +574,8 @@ export class SuTarget implements ChatTarget {
   readonly toolNames: readonly string[];
   private readonly catalog: BuiltCatalog;
   private readonly loadSystemPrompt: () => string | Promise<string>;
+  /** A sibling SUT supplied its own prompt loader, so targetConfig.modes cannot apply. */
+  private readonly customPrompt: boolean;
   private readonly codexFetch?: typeof fetch;
 
   constructor(opts: SuTargetOpts = {}) {
@@ -551,7 +583,8 @@ export class SuTarget implements ChatTarget {
     this.behaviors = opts.behaviors ?? BEHAVIORS;
     this.catalog = opts.catalog ?? buildCatalog();
     this.toolNames = [...this.catalog.canonicalBySanitized.values()];
-    this.loadSystemPrompt = opts.loadSystemPrompt ?? loadPlaybook;
+    this.loadSystemPrompt = opts.loadSystemPrompt ?? (() => loadPlaybook());
+    this.customPrompt = opts.loadSystemPrompt !== undefined;
     this.codexFetch = opts.codexFetch;
   }
 
@@ -560,6 +593,13 @@ export class SuTarget implements ChatTarget {
     // block; configDelta is validated HERE so an unknown knob fails the run at
     // open() (loud), not mid-conversation.
     const delta = parseSuConfigDelta(opts.variant?.configDelta);
+    const { modes } = parseSuTargetConfig(opts.targetConfig);
+    if (modes && (this.customPrompt || delta.systemPromptText !== undefined)) {
+      throw new Error(
+        'su target: targetConfig.modes binds mode layers into the canonical su render, but this session replaces ' +
+          'that prompt (a custom loadSystemPrompt or variant systemPromptText), so the modes would be silently dropped',
+      );
+    }
     // The DELIVERY-TIER A/B (P-011/D-008): re-project every offered definition
     // onto COMPACT before the availability filter, so the two seams compose and
     // the projected set is exactly what this session will be offered. Awaited
@@ -584,7 +624,9 @@ export class SuTarget implements ChatTarget {
       catalog: filterCatalog(tiered, delta.excludeTools),
       loadSystemPrompt: delta.systemPromptText !== undefined
         ? () => delta.systemPromptText!
-        : this.loadSystemPrompt,
+        : modes
+          ? () => loadPlaybook(modes)
+          : this.loadSystemPrompt,
       override: opts.dispatchOverride,
       ...(opts.variant?.promptOverlay ? { promptOverlay: opts.variant.promptOverlay } : {}),
       modelOverride: delta.sutModel ?? opts.sutModel,
