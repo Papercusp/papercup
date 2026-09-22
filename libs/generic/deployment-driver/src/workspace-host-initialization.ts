@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { assertWorkspaceHostSecretIsolation } from "./workspace-host-test-harness";
 import {
   resolveWorkspaceHostRequestedAgents,
+  workspaceHostAgentVerificationKindIsAllowed,
   type WorkspaceHostAgentVerificationKind,
   type WorkspaceHostCanaryAgent,
 } from "./workspace-host-agent-authentication";
@@ -1342,8 +1343,14 @@ export interface WorkspaceHostInitializationCanaryEvidence {
   requestedAgents?: readonly WorkspaceHostCanaryAgent[];
   agents: Readonly<
     Partial<{
-      claude: { ready: true; verificationKind: "authenticated-account" };
-      codex: { ready: true; verificationKind: "authenticated-account" };
+      // WI-10002402: the per-agent kind is NOT pinned here. Pinning claude/codex to
+      // `authenticated-account` made this type unable to REPRESENT the evidence those agents
+      // actually produce — claude emits `live-inference` and has no authenticated-account probe
+      // at all (WI-10001689) — so real evidence was unassignable while forged-shaped evidence
+      // typechecked. Which kinds are admissible is a runtime question answered from the probe
+      // table by workspaceHostAgentVerificationKindIsAllowed, not a literal restated here.
+      claude: { ready: true; verificationKind: WorkspaceHostAgentVerificationKind };
+      codex: { ready: true; verificationKind: WorkspaceHostAgentVerificationKind };
       omp: { ready: true; verificationKind: WorkspaceHostAgentVerificationKind };
     }>
   >;
@@ -1413,9 +1420,13 @@ export function validateWorkspaceHostInitializationCanary(
   for (const agent of resolveWorkspaceHostRequestedAgents(evidence.requestedAgents)) {
     const result = evidence.agents?.[agent];
     if (!result?.ready) errors.push(`${agent} live readiness did not pass`);
+    // WI-10002402: DERIVED from the agent's probe table — see
+    // workspaceHostAgentAllowedVerificationKinds.
     if (
-      result?.verificationKind !== "authenticated-account" &&
-      !(agent === "omp" && result?.verificationKind === "local-inference")
+      !workspaceHostAgentVerificationKindIsAllowed(
+        agent,
+        result?.verificationKind,
+      )
     ) {
       errors.push(`${agent} verification kind is not allowed`);
     }

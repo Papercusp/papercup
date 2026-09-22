@@ -37,6 +37,8 @@ import {
 import {
   WORKSPACE_HOST_CANARY_AGENTS,
   resolveWorkspaceHostRequestedAgents,
+  workspaceHostAgentAllowedVerificationKinds,
+  workspaceHostAgentVerificationKindIsAllowed,
   type WorkspaceHostCanaryAgent,
   type WorkspaceHostAgentVerificationReport,
 } from "./workspace-host-agent-authentication";
@@ -788,12 +790,19 @@ export function buildWorkspaceHostInitializationCanaryEvidence(
         `${agent} live readiness did not pass (${evidence.failure ?? "unknown"}, exit ${evidence.exitStatus})`,
       );
     }
+    // WI-10002402: DERIVED from the agent's probe table — see
+    // workspaceHostAgentAllowedVerificationKinds for why the literal this replaced could never
+    // admit a real claude credential.
     if (
-      evidence.verificationKind !== "authenticated-account" &&
-      !(agent === "omp" && evidence.verificationKind === "local-inference")
+      !workspaceHostAgentVerificationKindIsAllowed(
+        agent,
+        evidence.verificationKind,
+      )
     ) {
       problems.push(
-        `${agent} verification kind '${evidence.verificationKind}' is not allowed`,
+        `${agent} verification kind '${evidence.verificationKind}' is not allowed (allowed: ${[
+          ...workspaceHostAgentAllowedVerificationKinds(agent),
+        ].join(", ")})`,
       );
     }
   }
