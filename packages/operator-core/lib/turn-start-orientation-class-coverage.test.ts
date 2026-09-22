@@ -1119,6 +1119,13 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'carry (who set it, whether the owner directed it) — a strictly richer read from the mode ' +
           'registry itself, so importing the line would add a second, poorer copy.',
       ),
+      authorityVerdict: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'The reader\'s effective execution-authorization / mission / ideation verdict.',
+        'It is DERIVED from the mode registry and the fleet route, not an instruction anyone placed on this ' +
+          'agent — so it answers "what does that posture COMPUTE to", not "what was this agent told". The ' +
+          'rail already renders the modes it derives from, with attribution this line does not carry, so ' +
+          'importing the verdict would add a poorer second copy of its own input (same argument as `modes`).',
+      ),
       loopArmed: AGENT_ORDERS_NOT_AN_OBLIGATION(
         'Whether the reader has a wake source armed.',
         'The popup reads loop state live from the carry brief (`carry.loopActive`, `loopIntervalSec`), ' +
@@ -1251,6 +1258,16 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           '(`getModes(ownerId)`), so on a leader brief it would report the leader\'s own posture — which their ' +
           'own turn-start block already delivers. The fleet-scoped question a leader actually acts on is a ' +
           "MEMBER's posture, which is per-member data and belongs on the member rows, not on this class.",
+      },
+      authorityVerdict: {
+        kind: 'not-applicable',
+        reason:
+          'DIFFERENT SUBJECT, for the same reason as `modes` directly above — and one hop stronger, because ' +
+          "this class is DERIVED from that one. It resolves from the READER's own control-anchor state, so on " +
+          "a leader brief it would report the LEADER's own execution-authorization/mission/ideation verdict, " +
+          'which their own turn-start block already delivers. The fleet-scoped question a leader acts on is ' +
+          "whether a MEMBER's authority differs from what the leader believes they granted — per-member data " +
+          'that belongs on the member rows, not on this reader-scoped class.',
       },
       loopArmed: {
         kind: 'not-applicable',
@@ -1432,6 +1449,18 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'and a carry document is assembled for a session that has taken no turn — so there is no prior ' +
           'cursor to diff against. Same shape as `carryBlindWindow` under D-069. What a successor needs is ' +
           'the CURRENT posture, which it already gets.',
+      },
+      authorityVerdict: {
+        kind: 'other-shared-mechanism',
+        mechanism: "the carry document's `## Effective instruction precedence` block",
+        reason:
+          'MEASURED, not inferred: the carry document already renders this verdict VERBATIM as its own ' +
+          '`⟦INSTRUCTION-PRECEDENCE⟧` payload, carrying all three decisions plus their suppressed ' +
+          'alternatives and provenance — strictly richer than this one-line class. Registering it here would ' +
+          'add a second, poorer copy. ⚠ And the TRANSITION half is temporally unavailable for exactly the ' +
+          'reason `modes` records directly above: the line diffs against the committed cursor of the turn it ' +
+          'renders on, and a carry document is assembled for a session that has taken no turn, so there is no ' +
+          'prior cursor to diff against. Same shape as `carryBlindWindow` under D-069 and `modes` under D-071.',
       },
       inboxRecent: {
         kind: 'not-applicable',

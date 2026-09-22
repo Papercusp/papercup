@@ -926,6 +926,7 @@ describe('turn-start-orientation — what it says', () => {
           impliedBy: null,
         },
       ],
+      authorityVerdict: null,
       loopArmed: true,
       loopFireWithheld: true,
       improvementTriage: {
