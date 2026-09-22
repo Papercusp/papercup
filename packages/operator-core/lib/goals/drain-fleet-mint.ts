@@ -43,8 +43,31 @@ import { clearClaimSpec, fleetSpecBeeKey, setClaimSpec } from '../scheduler/clai
  * collision-resistant hex (`-3f9a1c`) is preserved — a plain right-truncation
  * would cut exactly the part that keeps two long-titled goals' fleets distinct.
  */
+/**
+ * The slug prefix every auto-minted goal drain fleet carries.
+ *
+ * Exported so the READ side (`isDrainFleetSlug`, used by the delegation-count
+ * provider's active-drain-fleet count) shares one constant with the WRITE side
+ * below, instead of re-spelling the literal. Two copies of an identity prefix is
+ * how a rename silently drops a whole population from a count while both sides
+ * keep looking correct.
+ */
+export const DRAIN_FLEET_SLUG_PREFIX = 'goal-drain-';
+
+/**
+ * Does this fleet slug name an auto-minted goal drain fleet?
+ *
+ * Prefix-only by construction: `drainFleetSlugForGoal` truncates long goal ids,
+ * so the slug's TAIL is lossy and cannot be matched back to a goal — the prefix
+ * is the only stable part, and this predicate deliberately claims no more than
+ * that.
+ */
+export function isDrainFleetSlug(fleetSlug: string | null | undefined): boolean {
+  return typeof fleetSlug === 'string' && fleetSlug.startsWith(DRAIN_FLEET_SLUG_PREFIX);
+}
+
 export function drainFleetSlugForGoal(goalId: string): string {
-  const prefix = 'goal-drain-';
+  const prefix = DRAIN_FLEET_SLUG_PREFIX;
   const budget = 60 - prefix.length;
   if (goalId.length <= budget) return `${prefix}${goalId}`;
   const tail = goalId.slice(-7);
