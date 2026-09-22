@@ -5,10 +5,13 @@ import {
   independentVerificationObligation,
   ownerReportObligation,
   planPlacementObligation,
+  waitingOnObligations,
   type IndependentVerificationProviderInput,
   type OwnerReportProviderInput,
   type PlanAcceptanceGateCodeOwnership,
   type PlanPlacementProviderInput,
+  type WaitingOnObligationRow,
+  type WaitingOnProviderInput,
 } from './agent-obligation-providers';
 import type { GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief } from './goal-launch-settings';
 import { compileGoalPlanPlacement } from './goal-launch-settings';
@@ -662,5 +665,129 @@ describe('shared agenda composition', () => {
     );
     expect(agenda.evaluations.map((entry) => entry.status).sort()).toEqual(['not-applicable', 'unknown']);
     expect(agenda.evaluations.some((entry) => entry.status === 'due')).toBe(false);
+  });
+});
+
+describe('frozen provider matrix: waiting-on (P-011)', () => {
+  const waitingInput = (read: WaitingOnProviderInput['read']): WaitingOnProviderInput => ({ ...base, read });
+  const awaitRow = (over: Partial<Extract<WaitingOnObligationRow, { kind: 'event-await' }>> = {}) =>
+    ({
+      kind: 'event-await' as const,
+      key: 'work-item:done:WI-10002222',
+      timeoutAt: '2026-09-05T21:00:00.000Z',
+      onTimeout: 'wake' as const,
+      ...over,
+    }) satisfies WaitingOnObligationRow;
+
+  it('reports a failed read as unknown rather than as "waiting on nothing"', () => {
+    const [row] = waitingOnObligations(waitingInput({ status: 'unknown', failure }));
+    // The reassuring reading is the dangerous one: a read that FAILED must never
+    // render as an empty wait list, or a silently-expiring await disappears.
+    expect(row!.status).toBe('unknown');
+    expect(row!.applicableDemand).toBe(0);
+    expect(row!.reason).toBe(failure.detail);
+    expect(row!.action?.targetRef).toBe('events:status');
+  });
+
+  it('reports a genuinely empty wait as not-applicable, not as absence of measurement', () => {
+    const [row] = waitingOnObligations(waitingInput({ status: 'known', value: [] }));
+    expect(row!.status).toBe('not-applicable');
+    expect(row!.priority).toBe('low');
+    expect(row!.applicableDemand).toBe(0);
+  });
+
+  it('carries the awaited key VERBATIM in the title, which is the only field the narrow sink renders', () => {
+    const [row] = waitingOnObligations(waitingInput({ status: 'known', value: [awaitRow()] }));
+    expect(row!.title).toContain('work-item:done:WI-10002222');
+    expect(row!.reason).toContain('work-item:done:WI-10002222');
+    // A hand-retyped key does not rendezvous — so the key must survive the hop
+    // into evidence too, where a successor recovers it.
+    expect(row!.evidence[0]!.ref).toBe('event-await:work-item:done:WI-10002222');
+  });
+
+  it('ranks a SILENTLY-expiring await above a waking one and says so in the title', () => {
+    const [waking] = waitingOnObligations(waitingInput({ status: 'known', value: [awaitRow()] }));
+    const [expiring] = waitingOnObligations(
+      waitingInput({ status: 'known', value: [awaitRow({ onTimeout: 'expire' })] }),
+    );
+    expect(waking!.priority).toBe('normal');
+    expect(waking!.title).not.toContain('expires SILENTLY');
+    // At the deadline a `wake` row still gets a turn; an `expire` row lapses with
+    // NO turn, so nothing in the session ever mentions it again.
+    expect(expiring!.priority).toBe('high');
+    expect(expiring!.title).toContain('expires SILENTLY');
+  });
+
+  it('keys the episode on the await itself, so a re-render on a new generation is not a new obligation', () => {
+    const first = waitingOnObligations(waitingInput({ status: 'known', value: [awaitRow()] }))[0]!;
+    const second = waitingOnObligations({
+      ...waitingInput({ status: 'known', value: [awaitRow()] }),
+      sourceGeneration: 'rev-43',
+      observedAt: '2026-09-05T20:30:00.000Z',
+    })[0]!;
+    // Same parked await, later turn: the SAME obligation, or a warm-turn dedup
+    // reads every re-render as brand-new and the row churns forever.
+    expect(second.episode).toBe(first.episode);
+    expect(second.id).toBe(first.id);
+  });
+
+  it('names WHAT a queued lock is behind — holder, intent and expiry — not merely THAT it is queued', () => {
+    const [row] = waitingOnObligations(
+      waitingInput({
+        status: 'known',
+        value: [
+          {
+            kind: 'lock-queue',
+            path: 'packages/operator-core/lib/agent-obligations.ts',
+            holder: 'su-peer',
+            holderIntent: 'rewriting the obligation union',
+            holderExpiresAt: '2026-09-05T20:10:00.000Z',
+          },
+        ],
+      }),
+    );
+    expect(row!.title).toContain('su-peer');
+    expect(row!.reason).toContain('rewriting the obligation union');
+    expect(row!.reason).toContain('2026-09-05T20:10:00.000Z');
+    expect(row!.action?.tool).toBe('locks:queue');
+    expect(row!.action?.args).toEqual({ paths: ['packages/operator-core/lib/agent-obligations.ts'] });
+  });
+
+  it('keeps a row whose holder could not be resolved, rather than dropping the wait itself', () => {
+    const [row] = waitingOnObligations(
+      waitingInput({
+        status: 'known',
+        value: [
+          {
+            kind: 'lock-queue',
+            path: 'packages/operator-core/lib/x.ts',
+            holder: 'unknown holder',
+            holderIntent: null,
+            holderExpiresAt: null,
+          },
+        ],
+      }),
+    );
+    // One unresolvable FIELD must never suppress the row: the ticket is queued
+    // either way, and a dropped row hides the wait completely.
+    expect(row!.status).toBe('blocked');
+    expect(row!.applicableDemand).toBe(1);
+    expect(row!.dueAt).toBeUndefined();
+  });
+
+  it('emits one row per wait, so two concurrent waits are both visible', () => {
+    const rows = waitingOnObligations(
+      waitingInput({
+        status: 'known',
+        value: [
+          awaitRow(),
+          awaitRow({ key: 'plan-item:done:turn-start-memory-two-class-2026-09-21:P-011', timeoutAt: null }),
+        ],
+      }),
+    );
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.episode)).size).toBe(2);
+    expect(rows[1]!.reason).toContain('no deadline');
+    expect(rows[1]!.dueAt).toBeUndefined();
   });
 });
