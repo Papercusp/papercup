@@ -153,7 +153,6 @@ import type { AwaitRow } from '../../events/await/types';
 // Namespace view of the SAME mocked module — the coverage guard at the bottom of this
 // file checks its key set against production's import list.
 import * as storeMock from '../../events/await/store';
-import type { AwaitRow } from '../../events/await/types';
 import { mockImplementationTyped } from '../../testing/typed-mock';
 import { assertMockCoversImports } from '../../testing/mock-import-coverage';
 import { getMessageById } from '../coordination/messages';
