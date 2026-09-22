@@ -43,6 +43,7 @@ import {
 } from '@papercusp/deployment-driver';
 import { describeFetchError, isTransientNetworkError } from '../loopback-fetch';
 import type { GcpWorkspaceHostInventoryRequest, GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
+import { workspaceHostSpecColumns } from './desired-spec-host-row';
 import {
   censusGcpWorkspaceHostResources,
   gcpWorkspaceHostLabelValue,
@@ -685,15 +686,6 @@ function inventoryProvider(provider: WorkspaceHostProvider): WorkspaceHostInvent
   return provider as WorkspaceHostInventoryProvider;
 }
 
-function networkLabel(desired: WorkspaceHostDesiredSpec): string {
-  const network = desired.provider?.network;
-  if (!network || typeof network !== 'object' || Array.isArray(network)) return 'provider-managed';
-  const record = network as Record<string, unknown>;
-  if (typeof record.networkName === 'string' && record.networkName.trim()) return record.networkName.trim();
-  if (typeof record.mode === 'string' && record.mode.trim()) return record.mode.trim();
-  return 'provider-managed';
-}
-
 function createdByOperation(step: WorkspaceHostPlanStep): boolean {
   const operation = typeof step.input.op === 'string' ? step.input.op : '';
   return !operation.startsWith('use-existing');
@@ -964,17 +956,14 @@ export async function runWorkspaceHostProvisioning(
   // exact desired spec before creating the operation/resource graph it governs.
   if (checkpoints.length === 0) {
     await store.upsertHost({
+      // The spec-derived columns come from the ONE shared projection, so this row and the
+      // one hosted admission writes before it can never describe different hosts.
+      ...workspaceHostSpecColumns(input.desired),
       workspaceId,
+      // `hostId` is the validated form of `desired.hostId`; prefer the validated value.
       id: hostId,
       name,
       connectionId,
-      target: input.desired.target,
-      scopeLabel: input.desired.scope.id,
-      region: input.desired.region,
-      size: input.desired.size,
-      image: input.desired.image.id,
-      diskGiB: input.desired.data.volumeGiB,
-      network: networkLabel(input.desired),
       // Provisioning is the current observation, not the requested steady state.
       // Keeping it as intent falsely reports running → provisioning after success.
       desiredState: 'running',
