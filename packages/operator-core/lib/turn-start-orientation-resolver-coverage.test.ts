@@ -38,6 +38,7 @@ import { defaultOrientationDeps, type OrientationDeps } from './turn-start-orien
  */
 const EVERY_ORIENTATION_DEP: Record<keyof OrientationDeps, true> = {
   planDecisions: true,
+  lockTransitions: true,
   held: true,
   ownerDirectives: true,
   historyUpdates: true,

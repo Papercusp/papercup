@@ -243,7 +243,25 @@ const CLASS_PROBES: Record<string, ClassProbe> = {
     marker: /holding: WI-10002196/,
   },
   ownerDirectives: {
-    patch: { ownerDirectives: [{ id: 17, captureStatus: 'pending', verbatimText: 'implement hybrid capture' }] },
+    // recordedBy + capturedByHook are REQUIRED on OrientationOwnerDirective since
+    // P-007 (directive-visibility-and-ownership-2026-09-22). This probe predated
+    // them and was never updated — a required-field strand — so the render threw
+    // `Cannot read properties of undefined (reading 'length')` and, because
+    // projectOrientationRows has no per-segment isolation, took the whole banner
+    // with it. recordedBy is set to a session id that is NOT the probe's owner so
+    // this stays a FOREIGN-directive fixture, which is the D-004 case worth
+    // pinning: the row must still RENDER (label, never filter).
+    patch: {
+      ownerDirectives: [
+        {
+          id: 17,
+          captureStatus: 'pending',
+          verbatimText: 'implement hybrid capture',
+          recordedBy: 'su-probe-other-session',
+          capturedByHook: true,
+        },
+      ],
+    },
     marker: /owner directive #17/,
   },
   historyUpdates: {
