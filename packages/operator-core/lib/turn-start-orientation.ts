@@ -52,10 +52,15 @@
 import type { CursorState } from './agent-tools/coordination/read-cursors';
 import type { ScoredItem } from './harness/improvements/digest';
 import type { Sql } from 'postgres';
+import { createHash } from 'node:crypto';
 import { renderCarryBlindWindowLine, type CarryBlindWindow } from './carry-blind-window';
 import { capPreservingOperativeDetailed } from './operative-clause';
 import { workItemFetchHint } from './work-item-fetch-hint';
-import { FEATURE_TERMINAL_STATES, ISSUE_TERMINAL_STATES } from './work-item-dispatch-states';
+import {
+  ANY_FAMILY_TERMINAL_STATES,
+  FEATURE_TERMINAL_STATES,
+  ISSUE_TERMINAL_STATES,
+} from './work-item-dispatch-states';
 import type { AgentObligationBrief } from './agent-obligation-reader';
 import type { OwnerDirectiveRow } from './owner-directives';
 import {
@@ -543,6 +548,29 @@ export interface OrientationLockTransitions {
   observed: string[];
 }
 
+/**
+ * P-016: one coupled peer and the intent it is CURRENTLY declaring.
+ *
+ * Coupling is opt-in and already paid for — `coord:couple` is an explicit act,
+ * and the pair pays for the edge on BOTH sides — so this class spends nothing
+ * on an agent that never coupled. It is the read that justifies the edge: the
+ * point of coupling is to see what the other agent is doing, and until now
+ * that required asking.
+ */
+export interface OrientationCoupledPeer {
+  ownerId: string;
+  /** Short display handle; `null` when presence carries no label. */
+  ownerLabel: string | null;
+  /**
+   * The peer's currently declared intent line. Never a timestamp: the token
+   * this feeds (see `fingerprintOrientation`) must be an IDENTITY, so an
+   * unchanged intent produces a byte-identical token and the class stays
+   * silent. `intent_declared_at` would re-emit on every RE-declaration of the
+   * SAME intent — exactly the noise this class is defined to avoid.
+   */
+  intent: string;
+}
+
 export interface OrientationState {
   /** Non-terminal work-items assigned to this agent. */
   held: OrientationHeldItem[];
@@ -615,6 +643,21 @@ export interface OrientationState {
    * it already owns. Empty `held`/`blocked` arrays are the measured-empty value.
    */
   lockTransitions: OrientationLockTransitions | undefined;
+  /**
+   * P-016: the peers this owner is COUPLED to, each with the intent it is
+   * currently declaring. The transition is computed in `render` by diffing
+   * this observation against the committed cursor; the state never sees that
+   * cursor — the same split `lockTransitions` above carries.
+   *
+   * `null` means UNREADABLE and renders NOTHING — never "no peer changed
+   * intent". `[]` is the MEASURED-empty value (this owner coupled to nobody,
+   * the overwhelmingly common case) and is equally silent. The distinction is
+   * load-bearing for the reason `modes` states: `fingerprintOrientation`
+   * preserves the committed token on null, so a transient presence-read
+   * failure cannot erase the cursor and re-emit every coupled peer's standing
+   * intent as a fresh change on recovery.
+   */
+  coupledPeers: OrientationCoupledPeer[] | null;
   /** Whether an engine loop is armed — i.e. whether a wake source exists. */
   loopArmed: boolean;
   /** Whether the armed loop's most recent fire was withheld before delivery. */
@@ -838,6 +881,15 @@ function undischargedObligationsOnly(state: OrientationState): OrientationState 
     // observed-set token, so the next real read would see every standing hold
     // as new.
     lockTransitions: undefined,
+    // `[]` — the MEASURED-empty value — is right here, and the asymmetry with
+    // `lockTransitions: undefined` directly above is deliberate, not an
+    // oversight. That field must be `undefined` because it WRITES a watermark
+    // token (`observed`), so a projection claiming measured-empty would erase
+    // the cursor. `coupledPeers` in THIS projection reaches no cursor at all —
+    // it is a render-only view — so the preserve-on-unreadable argument does
+    // not apply, and `[]` both renders nothing and asserts nothing. Same
+    // convention as `modes: []`.
+    coupledPeers: [],
     loopArmed: true,
     loopFireWithheld: false,
     improvementTriage: null,
@@ -892,6 +944,12 @@ export function isEmptyOrientation(state: OrientationState): boolean {
     (state.lockTransitions?.held.length ?? 0) +
       (state.lockTransitions?.blocked.length ?? 0) ===
       0 &&
+    // P-016: the same `?? 0` shape, and for the same reason — an UNREADABLE
+    // read (`null`) must NOT hold the block open, because the class renders
+    // nothing on it and the block would have no visible cause. A coupled peer
+    // whose intent is unchanged is likewise quiet: no transition, no line,
+    // which is the steady state this class is defined to stay silent through.
+    (state.coupledPeers?.length ?? 0) === 0 &&
     !state.loopArmed &&
     !state.loopFireWithheld &&
     // improvementTriage is NOT a conjunct here (P-017): it no longer renders,
@@ -1124,6 +1182,22 @@ export function fingerprintOrientation(
       : typeof committed?.locks === 'string'
         ? committed.locks
         : '',
+    // P-016: the token is the WHOLE observed coupled set — one `id:digest` per
+    // peer, sorted — for the same three reasons the `locks` token above lists:
+    //   1. IDENTITY, so a peer whose intent is unchanged across turns produces
+    //      a byte-identical token and the class stays silent.
+    //   2. The WHOLE set, so a DECOUPLE moves the token too. Encoding only the
+    //      CHANGED peers would leave a dropped edge in the cursor forever and
+    //      re-emit its intent on the next re-couple.
+    //   3. Preserve-on-unreadable, exactly as `locks` and `planDecisions`
+    //      above: an UNREADABLE read carries the committed token forward, so a
+    //      transient presence-read failure cannot erase the cursor and re-emit
+    //      every coupled peer's standing intent as a fresh change on recovery.
+    coupledPeers: state.coupledPeers
+      ? state.coupledPeers.map(encodeCoupledPeer).sort().join('|')
+      : typeof committed?.coupledPeers === 'string'
+        ? committed.coupledPeers
+        : '',
     authority: state.authorityVerdict
       ? encodeAuthorityVerdict(state.authorityVerdict)
       : typeof committed?.authority === 'string'
@@ -1226,6 +1300,14 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
     // parked is suppressed as "unchanged" — the class would pass every render
     // test while never firing on the one turn it exists for.
     (a.locks ?? '') === (b.locks ?? '') &&
+    // P-016, and the SAME required pairing every token above carries: the
+    // `coupledPeers` token written in fingerprintOrientation is INERT unless it
+    // is compared HERE. Drop this line and a peer changing intent never makes
+    // the block eligible to emit on its own — the line would appear only when
+    // some unrelated token happened to change, i.e. the one-shot-with-no-
+    // visible-symptom failure this file now warns about five times over, on the
+    // class whose entire purpose is to fire on that one transition.
+    (a.coupledPeers ?? '') === (b.coupledPeers ?? '') &&
     (a.obligations ?? '') === (b.obligations ?? '') &&
     // REQUIRED, and easy to omit: fingerprintOrientation writing a `facts` token
     // does nothing on its own — this whitelist is what decides re-emission. Without
@@ -1338,6 +1420,27 @@ const AUTHORITY_DECISIONS: ReadonlyArray<readonly [keyof OrientationAuthorityVer
  * from `buildInstructionPrecedenceTrace` (or the literal `conflict`), so `:`
  * cannot appear inside one and stays an unambiguous separator.
  */
+/**
+ * P-016 token for ONE coupled peer: its id plus a BOUNDED DIGEST of the intent
+ * it is declaring. Used by BOTH `fingerprintOrientation` and
+ * `renderCoupledPeerIntentLines` — they must agree byte-for-byte, or the
+ * watermark and the render disagree about what "already seen" means.
+ *
+ * HASHED, not truncated, and that choice is load-bearing. Truncating the
+ * intent makes two intents differing only PAST the cut encode identically, so
+ * a real intent change reads as "unchanged" and the line never renders. That
+ * is the silent half of this class's failure mode and the harder half to
+ * notice, because every fixture with short intents still passes. A digest is
+ * bounded just as tightly without the collision.
+ *
+ * Whitespace is normalised first so a reflowed-but-identical intent cannot
+ * fabricate a transition.
+ */
+function encodeCoupledPeer(peer: OrientationCoupledPeer): string {
+  const normalised = peer.intent.replace(/\s+/g, ' ').trim();
+  return `${peer.ownerId}:${createHash('sha256').update(normalised).digest('hex').slice(0, 12)}`;
+}
+
 function encodeAuthorityVerdict(verdict: OrientationAuthorityVerdict): string {
   return AUTHORITY_DECISIONS.map(([key]) => verdict[key]).join(':');
 }
@@ -1426,6 +1529,56 @@ function renderPlanDecisionLines(
  * over. Deliberately small — this class exists to say "something changed under
  * you", not to reproduce `locks:queue`.
  */
+const COUPLED_PEER_DISPLAY_CAP = 3;
+/** Display-only bound on the echoed intent. The TOKEN digests the full string
+ *  (see `encodeCoupledPeer`), so clipping here cannot collide two intents. */
+const COUPLED_PEER_INTENT_CHARS = 120;
+
+/**
+ * P-016 render: one line per coupled peer whose intent CHANGED since the
+ * committed cursor.
+ *
+ * A peer is rendered when its `id:digest` token is NOT in the committed set,
+ * which is true in exactly two cases: the intent changed, or the edge is newly
+ * coupled. Both are news. Steady state — coupled, intent unchanged — renders
+ * NOTHING, and that silence is the point of the class, not a gap in it.
+ *
+ * A DECOUPLED peer cannot render at all: `resolveCoupledPeers` applies
+ * suppression upstream, so a suppressed edge never reaches this function.
+ *
+ * UNREADABLE (`null`) is not "nothing changed" — the same rule every class
+ * above carries. It renders nothing AND preserves the committed token, so the
+ * next good read diffs against what the agent actually last saw rather than
+ * re-announcing every standing intent.
+ */
+function renderCoupledPeerIntentLines(
+  coupledPeers: OrientationCoupledPeer[] | null,
+  committed: CursorState | null,
+): string[] {
+  if (!coupledPeers) return [];
+  const seen = new Set(
+    typeof committed?.coupledPeers === 'string' && committed.coupledPeers.length > 0
+      ? committed.coupledPeers.split('|')
+      : [],
+  );
+  // The SAME encoder the watermark uses — if these two ever drift, the cursor
+  // and the render disagree about what "already seen" means.
+  const changed = coupledPeers.filter((peer) => !seen.has(encodeCoupledPeer(peer)));
+  if (changed.length === 0) return [];
+  const shown = changed.slice(0, COUPLED_PEER_DISPLAY_CAP);
+  const lines = shown.map((peer) => {
+    const intent =
+      peer.intent.length > COUPLED_PEER_INTENT_CHARS
+        ? `${peer.intent.slice(0, COUPLED_PEER_INTENT_CHARS)}…`
+        : peer.intent;
+    return `- coupled ${peer.ownerLabel ?? peer.ownerId} → ${intent}`;
+  });
+  if (changed.length > shown.length) {
+    lines.push(`- +${changed.length - shown.length} more coupled peer(s) changed intent — coord:presence`);
+  }
+  return lines;
+}
+
 const LOCK_TRANSITION_DISPLAY_CAP = 3;
 
 /**
@@ -2205,6 +2358,32 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
     ],
   }),
 
+  orientationClass<{ coupledPeers: OrientationCoupledPeer[] | null }>({
+    id: 'coupledPeers',
+    // COUPLED_PEER_DISPLAY_CAP rows + the `+N more` pointer. No disclosure row
+    // to budget for: an unreadable read renders NOTHING here (see
+    // renderCoupledPeerIntentLines), so unlike `planDecisions` there is no
+    // partial-read line that can appear alongside the list.
+    rowCeiling: { maxRows: COUPLED_PEER_DISPLAY_CAP + 1, recoveryVerb: 'coord:presence' },
+    watermarkTokens: ['coupledPeers'],
+    applicableSinks: TURN_START,
+    populate: (state) => ({ coupledPeers: state.coupledPeers }),
+    segments: [
+      {
+        // 98: directly below the lock transition (97) and above the held-item
+        // rows (100). A peer changing intent is context for the work listed
+        // below it — it can mean a peer just took, or just left, something
+        // adjacent to your lane — so it belongs with that work.
+        //
+        // 85/90/95/97/100 are taken; 98 is free and leaves 99 open for a future
+        // neighbour. Orders are unique-guarded (WI-10002446): a duplicate makes
+        // the emitted sequence non-deterministic between engines.
+        order: 98,
+        render: ({ coupledPeers }, _state, committed) => renderCoupledPeerIntentLines(coupledPeers, committed),
+      },
+    ],
+  }),
+
   orientationClass<{ modes: OrientationModeState[] | null }>({
     id: 'modes',
     rowCeiling: { maxRows: 1, recoveryVerb: 'mode:get' },
@@ -2850,6 +3029,14 @@ export interface OrientationDeps {
     ownerId: string,
     workspaceId: string,
   ) => Promise<OrientationLockTransitions | undefined>;
+  /**
+   * P-016. REQUIRED for the fourth time in this interface, and for the same
+   * reason (EI-23953846527835643): an OPTIONAL dep lets a class land declared,
+   * registered, watermarked and rendered while production populates NOTHING,
+   * because the coverage guard supplies the state itself and so proves only
+   * the RENDER path. `null` is UNREADABLE; `[]` is measured-empty.
+   */
+  coupledPeers: (ownerId: string, workspaceId: string) => Promise<OrientationCoupledPeer[] | null>;
   inbox: (ownerId: string) => Promise<{
     count: number;
     newest: OrientationInboxEntry[];
@@ -2939,6 +3126,7 @@ export async function resolveOrientationState(
     authorityVerdict,
     planDecisions,
     lockTransitions,
+    coupledPeers,
     loopArmed,
     loopFireWithheld,
     improvementTriage,
@@ -2987,6 +3175,10 @@ export async function resolveOrientationState(
     // failed read that claimed measured-empty would WRITE an empty token — and
     // the next GOOD read would then see every standing hold as newly granted.
     d.lockTransitions(ownerId, workspaceId).catch(() => undefined),
+    // P-016: fail-soft to NULL (the `modes` convention), never `[]`. A failed
+    // read that claimed measured-empty would WRITE an empty token, and the next
+    // good read would then re-render every coupled peer's standing intent as new.
+    d.coupledPeers(ownerId, workspaceId).catch(() => null as OrientationCoupledPeer[] | null),
     d.loopArmed(ownerId).catch(() => false),
     d.loopFireWithheld(ownerId).catch(() => false),
     d.improvementTriage(workspaceId).catch(() => null),
@@ -3026,6 +3218,7 @@ export async function resolveOrientationState(
     authorityVerdict,
     planDecisions,
     lockTransitions,
+    coupledPeers,
     loopArmed,
     loopFireWithheld,
     improvementTriage,
@@ -3068,7 +3261,7 @@ export function defaultOrientationDeps(): OrientationDeps {
              AND assignee = ${ownerId}
              AND source_plan_slug IS NOT NULL
              AND lane IS DISTINCT FROM 'observation'
-             AND status NOT IN ('done', 'dropped', 'closed', 'resolved')
+             AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
            LIMIT 8
         `) as { source_plan_slug: string; harness_slug: string | null }[];
         if (rows.length === 0) return { decisions: [], omitted: 0, authorityReadFailed: false };
@@ -3218,9 +3411,69 @@ export function defaultOrientationDeps(): OrientationDeps {
         return undefined;
       }
     },
+    /**
+     * P-016: the current intent of every peer this owner is coupled to by an
+     * opt-in `coord:couple` edge.
+     *
+     * Reuse-first, per D-078(b)/D-081 (no private notion of "coupled"): the edge
+     * set comes from `listCouplingsFor` and is resolved through the SHARED
+     * `resolveCoupledPeers` predicate, which applies decouple SUPPRESSION — so a
+     * decoupled peer never reaches the render. `derived` is passed EMPTY on
+     * purpose: the item names the declared `coord:couple` edges (coupling that is
+     * opt-in and already paid for). Passing `[]` narrows the INPUT; it does not
+     * re-implement the union.
+     *
+     * The intent itself has no existing owner-scoped reader (presence-fleet
+     * selects none, coupling-sources selects none), so it is ONE bounded read of
+     * `coord_presence.intent` for exactly those peer ids. `intent_declared_at` is
+     * deliberately NOT read: a re-declaration of the SAME intent bumps it, and
+     * encoding it would re-render an unchanged intent on every re-declare.
+     *
+     * Fail-soft to NULL (unreadable), never `[]` — see the resolver's call site.
+     */
+    coupledPeers: async (ownerId, workspaceId) => {
+      try {
+        const [{ getOrgPg }, { resolveConcreteWorkspaceId }, { listCouplingsFor, resolveCoupledPeers }] =
+          await Promise.all([
+            import('@papercusp/db-org'),
+            import('./workspace-registry'),
+            import('./coord/couplings'),
+          ]);
+        const ws = resolveConcreteWorkspaceId(workspaceId);
+        const edges = await listCouplingsFor(ownerId, ws);
+        const peerIds = [
+          ...new Set(resolveCoupledPeers(ownerId, [], edges).map((peer) => peer.ownerId)),
+        ].filter((id) => id !== ownerId);
+        if (peerIds.length === 0) return [];
+        // DISTINCT ON owner_id so the read is correct whatever the table's key
+        // is: the freshest presence row per peer carries its current intent.
+        const rows = (await getOrgPg().sql`
+          SELECT DISTINCT ON (owner_id) owner_id, owner_label, intent
+            FROM harness_shared.coord_presence
+           WHERE owner_id = ANY(${peerIds})
+           ORDER BY owner_id, last_active_at DESC NULLS LAST
+           LIMIT 32
+        `) as { owner_id: string; owner_label: string | null; intent: string | null }[];
+        const peers: OrientationCoupledPeer[] = [];
+        for (const row of rows) {
+          const intent = (row.intent ?? '').replace(/\s+/g, ' ').trim();
+          // No declared intent = nothing to tell the agent. It is not a change.
+          if (intent.length === 0) continue;
+          peers.push({ ownerId: row.owner_id, ownerLabel: row.owner_label, intent });
+        }
+        return peers.sort((a, b) => a.ownerId.localeCompare(b.ownerId));
+      } catch {
+        return null;
+      }
+    },
     ownerDirectives: async (workspaceId, ownerId) => {
       const { listOpenOwnerDirectives } = await import('./owner-directives');
-      const rows: OwnerDirectiveRow[] = await listOpenOwnerDirectives(workspaceId, 12);
+      // P-008 / D-008: the banner is rendered FOR this session, so rows it has
+      // cleared off its own agenda are excluded — here and nowhere else. The
+      // directive itself is untouched for its addressee and every peer, which
+      // is what makes clearing a foreign directive a safe, expected action
+      // rather than the erase-a-peer's-order defect D-009 measured.
+      const rows: OwnerDirectiveRow[] = await listOpenOwnerDirectives(workspaceId, 12, undefined, ownerId);
       const live = rows.filter(
         (row) => row.captureStatus === 'pending' || row.captureStatus === 'open',
       );
