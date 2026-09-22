@@ -17,17 +17,21 @@ import {
 
 /** Minimal postgres.js stand-in: callable as a template tag, with `.array()`. */
 function fakeSql(rows: Array<{ kind: string; n: number }>): Sql {
-  const fn = (() => Promise.resolve(rows)) as unknown as Sql & { array: (a: unknown[]) => unknown };
-  fn.array = (a: unknown[]) => a;
-  return fn as Sql;
+  const fn = () => Promise.resolve(rows);
+  // `sql.array(...)` is a passthrough for the bindings. Assign it through a NARROW
+  // structural cast, never `Sql & { array: ... }`: intersecting with Sql keeps
+  // postgres.js's generic `array` overload in the target type, which a plain
+  // passthrough cannot satisfy (TS2322). Same shape as the other Sql stubs here.
+  (fn as unknown as { array: (a: unknown[]) => unknown }).array = (a: unknown[]) => a;
+  return fn as unknown as Sql;
 }
 
 function throwingSql(message: string): Sql {
-  const fn = (() => {
+  const fn = () => {
     throw new Error(message);
-  }) as unknown as Sql & { array: (a: unknown[]) => unknown };
-  fn.array = (a: unknown[]) => a;
-  return fn as Sql;
+  };
+  (fn as unknown as { array: (a: unknown[]) => unknown }).array = (a: unknown[]) => a;
+  return fn as unknown as Sql;
 }
 
 describe('readWakeDeliveryHealth', () => {
