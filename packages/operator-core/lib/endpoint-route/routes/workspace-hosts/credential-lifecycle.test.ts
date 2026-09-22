@@ -225,10 +225,14 @@ describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
   // adapter's bootstrap gate never reached the runner and a post-upgrade reconnect raced the
   // recreated VM's bootstrap.
   it('forwards the host bootstrap gate, bound to the real GCP adapter, with the sync budget', async () => {
-    const commands: string[][] = [];
+    // ssh carries the remote command as ONE quoted argv element (the last), so the probe is
+    // recognised by that element's head, not by argv membership.
+    const remoteCommands: string[] = [];
+    const isProbe = (remote: string) => remote.startsWith(`'/bin/test' '-x'`);
     const transport = vi.fn(async (command: { args: readonly string[] }) => {
-      commands.push([...command.args]);
-      if (command.args.includes('/bin/test')) return { exitCode: 0, stderr: '', stdout: '' };
+      const remote = command.args.at(-1) ?? '';
+      remoteCommands.push(remote);
+      if (isProbe(remote)) return { exitCode: 0, stderr: '', stdout: '' };
       return {
         exitCode: 0,
         stderr: '',
@@ -277,9 +281,10 @@ describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
     expect(runLifecycle).toHaveBeenCalledWith(expect.objectContaining({
       bootstrapReadinessTimeoutMs: CREDENTIAL_LIFECYCLE_BOOTSTRAP_READINESS_TIMEOUT_MS,
     }));
-    expect(commands).toHaveLength(2);
-    expect(commands[0]).toContain('/bin/test');
-    expect(commands[1]).not.toContain('/bin/test');
+    expect(remoteCommands).toHaveLength(2);
+    expect(isProbe(remoteCommands[0] ?? '')).toBe(true);
+    expect(remoteCommands[1]).toContain('papercusp-workspace-initialize');
+    expect(isProbe(remoteCommands[1] ?? '')).toBe(false);
   });
 
   it('adds no gate for an adapter that declares none (calibration)', async () => {
