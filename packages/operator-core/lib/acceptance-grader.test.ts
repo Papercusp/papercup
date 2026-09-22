@@ -164,6 +164,9 @@ const ctx = baseCtx as never;
 const callerCtx = (ownerId: string) => ({ ...baseCtx, uiClientId: ownerId }) as never;
 
 describe('resolveAcceptanceGraderDiscoveryExtraExclusions', () => {
+  const SCOPE = { workspaceId: 'papercusp-workspace', planSlug: 'ship-the-thing' };
+  const noDecliners = async () => [] as string[];
+
   it('adds current-revision work-item vetting critics to the discovery exclusion set', async () => {
     const readVettingCritics = vi.fn(async () => ({
       critics: ['su-work-item-critic', 'su-second-critic', 'su-work-item-critic'],
@@ -178,11 +181,66 @@ describe('resolveAcceptanceGraderDiscoveryExtraExclusions', () => {
         createdBy: 'su-author',
       },
       'su-shipper',
+      SCOPE,
       readVettingCritics,
+      noDecliners,
     );
 
     expect(readVettingCritics).toHaveBeenCalledWith('acceptance-ship-the-thing', 2);
     expect(result).toEqual(['su-author', 'su-shipper', 'su-work-item-critic', 'su-second-critic']);
+  });
+
+  /**
+   * WI-10002369. The router already honours `excludeOwners` (D-007(7): "a
+   * decliner is excluded on the requester's re-call"); the acceptance path just
+   * never populated it, so every `plans:set-plan-status` opened a virgin
+   * cascade and re-offered the same agent.
+   */
+  it('adds agents who already DECLINED a grading cascade for this plan+rubric', async () => {
+    const readPriorDecliners = vi.fn(async () => ['su-declined-once', 'su-declined-twice']);
+
+    const result = await resolveAcceptanceGraderDiscoveryExtraExclusions(
+      { rubricId: 'acceptance-ship-the-thing', revision: 3, proposedBy: 'su-author' },
+      'su-shipper',
+      SCOPE,
+      async () => ({ critics: [], cardsConsidered: 0 }),
+      readPriorDecliners,
+    );
+
+    expect(readPriorDecliners).toHaveBeenCalledWith(SCOPE, 'acceptance-ship-the-thing');
+    expect(result).toContain('su-declined-once');
+    expect(result).toContain('su-declined-twice');
+  });
+
+  it('collapses an agent who is both a vetting critic and a prior decliner to one entry', async () => {
+    const result = await resolveAcceptanceGraderDiscoveryExtraExclusions(
+      { rubricId: 'acceptance-ship-the-thing', revision: 1 },
+      null,
+      SCOPE,
+      async () => ({ critics: ['su-both'], cardsConsidered: 1 }),
+      async () => ['su-both'],
+    );
+
+    expect(result).toEqual(['su-both']);
+  });
+
+  /**
+   * CONTROL. A swallowed decline read would silently stop excluding decliners —
+   * indistinguishable from the bug itself — so the fault must propagate. The
+   * caller's own degrade path mints a FRESH judge, which is the safe outcome.
+   */
+  it('propagates a decline-read fault instead of degrading to "nobody declined"', async () => {
+    await expect(
+      resolveAcceptanceGraderDiscoveryExtraExclusions(
+        { rubricId: 'acceptance-ship-the-thing', revision: 1 },
+        null,
+        SCOPE,
+        async () => ({ critics: [], cardsConsidered: 0 }),
+        async () => {
+          throw new Error('consult_post_meta unreachable');
+        },
+      ),
+    ).rejects.toThrow('consult_post_meta unreachable');
   });
 });
 
