@@ -24,6 +24,13 @@ import { readPlanBySlug, resolvePlanScope, type PlanSourceOpts } from './source'
 import { listPlanRevisions } from './revisions';
 import { PLAN_STATUSES, type PlanStatus } from './parser';
 import { readPlanHistoryContext, type PlanHistoryContext } from '../../prior-attempt-context';
+import {
+  readDelegationCounts,
+  renderDelegationCount,
+  type DelegationCounts,
+  type PopulationCount,
+} from '../../delegation-counts';
+import type { ProviderRead } from '../../agent-obligation-providers';
 
 const SECTION_RULE = '═══════════════════════════════════════════════════════════════';
 
@@ -83,6 +90,19 @@ export interface PlanBundleInput {
    *  `description` and to mark which are required. Never rendered itself. */
   inputSchema?: unknown;
   history?: PlanHistoryContext;
+  /**
+   * The four live delegation counts, read in THIS render pass (P-006 / R-5).
+   *
+   * Three distinct states, kept distinct on purpose:
+   *   - a `DelegationCounts` — render the posture block from these values;
+   *   - `null` — the provider was reached for and failed; render the block in its
+   *     explicit measurement-failed form, because a silent omission reads as "nothing
+   *     is pending";
+   *   - absent/`undefined` — no delegation read was attempted at all (a pure-assembly
+   *     unit test, or a caller that does not seed delegation), so the block is omitted
+   *     entirely and the seed is byte-identical to its pre-P-006 form.
+   */
+  delegation?: DelegationCounts | null;
 }
 
 /** The assembled bundle plus the launch metadata `plans:launch` needs. */
@@ -167,6 +187,182 @@ export function renderInputsBlock(inputs: unknown, inputSchema: unknown): string
   return [SECTION_RULE, 'INPUTS — the arguments this run was started with', SECTION_RULE, '', ...lines, ''].join('\n');
 }
 
+/** The four counts, in the order R-5 names them, with their brief labels. */
+const DELEGATION_COUNT_LABELS = [
+  ['planExecutionAgents', 'live plan-execution agents'],
+  ['plansAwaitingDelegation', 'actionable plans awaiting delegation'],
+  ['plansAwaitingAcceptance', 'plans awaiting acceptance'],
+  ['activeDrainFleets', 'active drain fleets'],
+] as const satisfies ReadonlyArray<readonly [keyof DelegationCounts, string]>;
+
+/**
+ * True only when the population is measured, empty, AND has no unmeasured residue.
+ *
+ * The residue check is the load-bearing half. `{ count: 0, unmeasured: 3 }` is a
+ * FLOOR of zero over a partially-classified population — "I found none among the
+ * ones I could classify" — which is not the same claim as "there are none", and
+ * only the second one may authorize a launch or an idle report. Collapsing the two
+ * would reintroduce the bounded-measurement-as-verdict error one layer above the
+ * provider that went to the trouble of reporting the residue.
+ */
+function isKnownZero(read: ProviderRead<PopulationCount>): boolean {
+  return read.status !== 'unknown' && read.value.count === 0 && read.value.unmeasured === 0;
+}
+
+/** True when at least one member is established. A positive count is sound even
+ *  with an unmeasured residue — the residue can only make a floor larger. */
+function isKnownPositive(read: ProviderRead<PopulationCount>): boolean {
+  return read.status !== 'unknown' && read.value.count > 0;
+}
+
+/**
+ * Decide the ONE next action the brief directs, under R-6's priority order.
+ *
+ * Acceptance outranks delegation, and delegation outranks idling. The interesting
+ * cases are the unmeasured ones, and they all resolve the same way: an unknown
+ * NEVER authorizes an action. Specifically —
+ *
+ *  - a launch needs THREE established facts (no pending acceptance, zero live
+ *    plan-execution agents, at least one plan awaiting delegation). An unknown in
+ *    any of the three withholds the launch, because D-005 makes launch conditional
+ *    on a live zero-agent count, and an unmeasured count is not a zero one;
+ *  - an IDLE report is also a claim, not a default. "No actionable plan exists"
+ *    read off a failed measurement is how a brief tells an agent to stand down
+ *    while work is in fact waiting, so an unknown reports the unknown instead.
+ *
+ * That asymmetry is deliberate: the two error directions are not symmetric in cost
+ * (spawning into taken work vs. idling past open work), but BOTH are wrong, so the
+ * unknown branch claims neither.
+ */
+function directedDelegationAction(counts: DelegationCounts): string {
+  if (isKnownPositive(counts.plansAwaitingAcceptance)) {
+    return (
+      'ACCEPTANCE FIRST — at least one plan is awaiting acceptance. Finish that acceptance flow ' +
+      '(grade it, or drive the recruited independent grader to a scorecard, then transition the plan ' +
+      'explicitly to `shipped`) BEFORE selecting any new plan to execute. Do not launch a plan fleet to ' +
+      'work around a pending acceptance.'
+    );
+  }
+
+  const acceptanceSettled = isKnownZero(counts.plansAwaitingAcceptance);
+  const noLiveAgents = isKnownZero(counts.planExecutionAgents);
+  const haveActionable = isKnownPositive(counts.plansAwaitingDelegation);
+
+  if (acceptanceSettled && noLiveAgents && haveActionable) {
+    return (
+      'DELEGATE — no acceptance is pending and live plan-execution agents is 0, so select the next ' +
+      'actionable plan and launch or attach a plan fleet for it. Confirm the plan you pick actually ' +
+      'yields a pickable item first (see the upper-bound note below).'
+    );
+  }
+
+  if (acceptanceSettled && isKnownZero(counts.plansAwaitingDelegation)) {
+    return (
+      'REPORT IDLE — no plan is awaiting acceptance and no actionable plan is awaiting delegation. ' +
+      'Report idle / no work. DO NOT launch an agent: there is nothing for it to pick up, and an idle ' +
+      'agent consumes budget while making the next real delegation harder to see.'
+    );
+  }
+
+  if (acceptanceSettled && noLiveAgents && isKnownZero(counts.plansAwaitingDelegation)) {
+    return 'REPORT IDLE — nothing is awaiting acceptance or delegation. Do not launch an agent.';
+  }
+
+  if (acceptanceSettled && haveActionable && !noLiveAgents) {
+    return (
+      'HOLD — an actionable plan is waiting, but live plan-execution agents is not an established 0 ' +
+      `(${renderDelegationCount(counts.planExecutionAgents)}). Plan execution is already staffed, or the ` +
+      'count could not be established. Either way, do not add another agent on top of it; report the ' +
+      'state instead.'
+    );
+  }
+
+  return (
+    'DO NOT SPAWN — the delegation picture is not established (see the counts above; ' +
+    `degraded sources: ${counts.degradedSources.length > 0 ? counts.degradedSources.join(', ') : 'none'}). ` +
+    'An unmeasured count is neither a zero nor a green light. Report what could not be measured and why, ' +
+    'and do not launch a plan fleet or claim idle off an unknown.'
+  );
+}
+
+/**
+ * Render the DELEGATION POSTURE block — the four LIVE counts plus the
+ * acceptance-first priority order (P-006, bars R-5 and R-6).
+ *
+ * Why this block exists at all: the launch preamble above it is static by design
+ * (D-002 — the seed is invariant), and a delegation count baked into static prompt
+ * text is stale the moment it is written. D-004 settles that these values come from
+ * the shared provider AT DECISION TIME, so they are rendered here, per launch, from
+ * a read taken in this same render pass — never from a constant.
+ *
+ * `counts === null` means the provider itself was unreachable. That renders as an
+ * explicit measurement failure rather than being omitted: a brief that silently
+ * drops the block looks identical to one reporting that nothing is pending, and the
+ * agent would then have no way to tell "nothing to do" from "I never looked".
+ */
+export function renderDelegationPostureBlock(counts: DelegationCounts | null): string {
+  const header = [SECTION_RULE, 'DELEGATION POSTURE — live at launch, not a prompt constant', SECTION_RULE, ''];
+
+  // The priority order is stated unconditionally, including on the failure path:
+  // it is a policy, so it does not depend on whether this read succeeded.
+  const priority = [
+    'PRIORITY ORDER — apply top-first; a lower rule never pre-empts a higher one:',
+    '  1. ACCEPTANCE — finish any plan awaiting acceptance before starting new plan execution.',
+    '  2. DELEGATION — only then, and only if live plan-execution agents is 0 and an actionable',
+    '     plan exists, select the next plan and launch or attach a plan fleet.',
+    '  3. IDLE — if no actionable plan exists, report idle / no work. Never spawn an idle agent.',
+    '',
+  ];
+
+  if (!counts) {
+    return [
+      ...header,
+      '⚠ The live delegation counts could not be read on this launch. They are UNKNOWN — which is not',
+      '  the same as zero, and must not be rounded to one.',
+      '',
+      ...priority,
+      'DIRECTED NEXT ACTION',
+      '  DO NOT SPAWN — the delegation picture was never measured. Report that the counts were',
+      '  unavailable; do not launch a plan fleet, and do not claim idle, off a failed measurement.',
+      '',
+    ].join('\n');
+  }
+
+  const pad = Math.max(...DELEGATION_COUNT_LABELS.map(([, label]) => label.length));
+  const countLines = DELEGATION_COUNT_LABELS.map(
+    ([key, label]) => `  ${label.padEnd(pad)} : ${renderDelegationCount(counts[key])}`,
+  );
+
+  const degraded =
+    counts.degradedSources.length > 0
+      ? ['', `⚠ Sources that degraded to unknown on this read: ${counts.degradedSources.join(', ')}.`]
+      : [];
+
+  return [
+    ...header,
+    `Read from the shared provider at ${counts.observedAt} (${counts.elapsedMs}ms, ${counts.schemaVersion}).`,
+    'These are point-in-time values. If you are about to act on one, re-read it — do not trust this',
+    'line an hour from now.',
+    '',
+    ...countLines,
+    ...degraded,
+    '',
+    ...priority,
+    'DIRECTED NEXT ACTION',
+    ...directedDelegationAction(counts)
+      .split('\n')
+      .map((line) => `  ${line}`),
+    '',
+    '⚠ `actionable plans awaiting delegation` is a PLAN-level UPPER BOUND, deliberately wider than',
+    '  `plans:items { actionable: true }`. It answers "does this plan need an agent?" and does not',
+    '  apply the item-level gating that withholds items with a linked blocked work-item, or items',
+    '  already under live coverage. So a plan whose only `todo` items are blocked is counted here and',
+    '  would still yield no pickable item. Before you launch against this number, confirm the plan you',
+    '  picked actually has a pickable item; a non-zero count is a reason to LOOK, not a guarantee.',
+    '',
+  ].join('\n');
+}
+
 /**
  * Assemble the seed text. Pure — no IO — so the assembly is unit
  * testable without the FS or the embedded PG; `buildPlanContextBundle`
@@ -189,9 +385,17 @@ export function assemblePlanContextBundleText(input: PlanBundleInput): string {
   // what it was given before it reads instructions that refer to those arguments.
   const inputsBlock = renderInputsBlock(input.inputs, input.inputSchema);
 
+  // The delegation posture sits directly under the preamble, ABOVE the plan body.
+  // Placement is behavioural, not cosmetic: R-6 forbids spawning when nothing is
+  // actionable, and the plan body is the text most likely to read as "go do this".
+  // The agent has to know the posture before it reads an instruction it might act on.
+  const delegationBlock =
+    input.delegation !== undefined ? renderDelegationPostureBlock(input.delegation) : '';
+
   return [
     LAUNCH_PREAMBLE,
     '',
+    ...(delegationBlock ? [delegationBlock] : []),
     SECTION_RULE,
     headerLines.join('\n'),
     SECTION_RULE,
@@ -236,6 +440,19 @@ export async function buildPlanContextBundle(
      * gate never approved. Omit to fall back to the plan's stored values.
      */
     inputs?: unknown;
+    /**
+     * The delegation read, injectable (P-006). Production omits it and gets
+     * `readDelegationCounts` against the resolved workspace.
+     *
+     * It is a seam rather than a module mock for two reasons. It lets R-6's falsifier
+     * be executed directly — force the actionable count to zero and read the directed
+     * action — instead of being approximated. And it keeps a unit test that merely
+     * builds a bundle from silently reaching for a database: without the seam that
+     * read still "passes" (the provider degrades every source to `unknown` rather
+     * than throwing), so the test would quietly assert against an all-unknown posture
+     * block while looking like it exercised a real one.
+     */
+    readDelegation?: (workspaceId: string) => Promise<DelegationCounts | null>;
   } = {},
 ): Promise<PlanContextBundle | null> {
   const read = await readPlanBySlug(slug, opts);
@@ -280,6 +497,28 @@ export async function buildPlanContextBundle(
       : null;
   const status = rowStatus ?? parsed.frontmatter.status ?? null;
   const history = await readPlanHistoryContext(slug, row.harnessSlug ?? opts.harnessSlug ?? '');
+
+  // R-5: the four counts are read HERE, in the render pass, from the one shared
+  // provider — never carried in from a constant or a cache. `readDelegationCounts`
+  // is itself uncached and bounds each source, so this cannot hang a launch.
+  //
+  // Best-effort in the same spirit as the revision digest above, with one deliberate
+  // difference: a failure degrades to `null`, NOT to an omitted block. Omitting it
+  // would render a seed indistinguishable from one where nothing is pending, and the
+  // agent decides whether to SPAWN off that distinction.
+  let delegation: DelegationCounts | null = null;
+  try {
+    const scope = await resolvePlanScope(opts);
+    delegation = opts.readDelegation
+      ? await opts.readDelegation(scope.workspaceId)
+      : await readDelegationCounts({ workspaceId: scope.workspaceId });
+  } catch (err) {
+    console.warn(
+      `[plan-context-bundle] delegation counts unavailable for ${slug}: ` +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+
   const text = assemblePlanContextBundleText({
     title,
     slug,
@@ -289,6 +528,7 @@ export async function buildPlanContextBundle(
     inputs: opts.inputs !== undefined ? opts.inputs : row.templateData,
     inputSchema: row.inputSchema,
     history,
+    delegation,
   });
 
   return {
