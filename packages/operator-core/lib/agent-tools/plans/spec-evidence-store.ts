@@ -296,7 +296,27 @@ export type BindSpecEvidenceResult =
   | { status: 'spec_not_found'; specId?: string; sourceValId?: string }
   | { status: 'spec_revision_not_found'; specId: string; specRevision: number }
   | { status: 'coverage_evidence_not_found'; coverageEvidenceRef: number }
-  | { status: 'test_run_not_found'; testRunId: number };
+  // The test-run lookup is tenant-scoped, so a row that EXISTS but carries a
+  // different (or NULL) harness_slug is indistinguishable from a fabricated id
+  // — both surface as a bare `test_run_not_found`, which reads as "you invented
+  // that id" and sends the caller hunting for the wrong bug. harness_slug is
+  // stamped from the runner's environment, so it is legitimately NULL whenever a
+  // run was started without a harness (for example `testing:run` called without
+  // its optional `harness` arg), and those rows are then permanently unbindable
+  // with no signal at the point of failure. `scopeMismatch` distinguishes the two
+  // cases and names the row's actual tenancy so the fix is obvious.
+  | {
+      status: 'test_run_not_found';
+      testRunId: number;
+      scopeMismatch?: {
+        foundOutsideScope: true;
+        rowHarnessSlug: string | null;
+        rowWorkspaceId: string | null;
+        expectedHarnessSlug: string;
+        expectedWorkspaceId: string;
+        hint: string;
+      };
+    };
 
 function canonicalJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalJson);
@@ -414,7 +434,32 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
          WHERE id = ${input.testRunId}
            AND workspace_id = ${scope.workspaceId}
            AND harness_slug = ${scope.harnessSlug}`;
-      if (!rows[0]) return { status: 'test_run_not_found', testRunId: input.testRunId };
+      if (!rows[0]) {
+        // Re-probe by id ALONE before reporting absence. The scoped miss above
+        // cannot tell a fabricated id from a real row in another tenancy, and the
+        // most common cause here is the latter: harness_slug is env-stamped, so a
+        // run started without a harness lands NULL and can never match.
+        const unscoped = await tx<{ harness_slug: string | null; workspace_id: string | null }[]>`
+          SELECT harness_slug, workspace_id FROM harness_shared.test_runs
+           WHERE id = ${input.testRunId}`;
+        const found = unscoped[0];
+        if (!found) return { status: 'test_run_not_found', testRunId: input.testRunId };
+        return {
+          status: 'test_run_not_found',
+          testRunId: input.testRunId,
+          scopeMismatch: {
+            foundOutsideScope: true,
+            rowHarnessSlug: found.harness_slug,
+            rowWorkspaceId: found.workspace_id,
+            expectedHarnessSlug: scope.harnessSlug,
+            expectedWorkspaceId: scope.workspaceId,
+            hint:
+              found.harness_slug === null
+                ? `test-run ${input.testRunId} EXISTS but its harness_slug is NULL, so it can never match this harness-scoped lookup. harness_slug is stamped from the runner's environment: re-run the test with the harness supplied (for example testing:run { harness: '${scope.harnessSlug}', files: [...] }, or PAPERCUSP_TEST_RUN_HARNESS=${scope.harnessSlug} for a shell runner) and bind the NEW run id. The id you passed is real — it is simply unbindable.`
+                : `test-run ${input.testRunId} EXISTS but belongs to harness '${found.harness_slug}' (workspace '${found.workspace_id ?? 'null'}'), not '${scope.harnessSlug}'. Bind a run recorded under this harness, or bind against the owning harness.`,
+          },
+        };
+      }
     }
 
     const evidenceRef = input.evidenceRef.trim();
