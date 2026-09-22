@@ -763,8 +763,11 @@ export interface LeaderBriefMember {
   /** P-013: of YOUR directives to this member that named a required side effect
    *  (`coord:send { expectEffect }`), how many the LEDGER shows were carried out.
    *  Absent when you sent none — never a zeroed block (see decorateDirectiveActuation).
-   *  Distinct from `unanswered`: that is what they SAID, this is what happened. */
-  directives?: DirectiveActuationSummary;
+   *  Distinct from `unanswered`: that is what they SAID, this is what happened.
+   *  P-030: named `directiveActuation`, NOT `directives` — the root
+   *  `ownerDirectives` projection on this same payload carries the owner's turns,
+   *  and one field name spanning both concepts is actively misleading. */
+  directiveActuation?: DirectiveActuationSummary;
   /** Active non-inbox-wake events:await keys — a deliberately-benched member.
    *  EI-18732218464905145: a composed (`spec`) registration renders as ONE
    *  `ComposedParkEntry` (its any/all/k-of-n mode + its OWN deadline), never as
@@ -864,9 +867,10 @@ export interface LeaderBriefMember {
 /**
  * P-026 / D-016: the owner's pending/open turns are a leader obligation, not
  * the member-directed actuation ledger below. Keep this root projection
- * deliberately separate from `members[].directives`, whose meaning is
+ * deliberately separate from `members[].directiveActuation`, whose meaning is
  * DirectiveActuationSummary (what the leader asked members to do and what was
- * observed). The action surface only carries `recoveryRef`; `targetRef` is
+ * observed). P-030 renamed that member field off `directives` precisely so the
+ * two can no longer be confused by name alone. The action surface only carries `recoveryRef`; `targetRef` is
  * diagnostic provenance for provider rows and is not an owner-facing call.
  */
 export interface LeaderBriefOwnerDirective {
@@ -2954,7 +2958,8 @@ export type DecoratedAgent = AgentAssignment & {
   coordHook?: CoordDeafState | null;
   coordLastReadAgoSec?: number | null;
   unanswered?: UnansweredDirectedSummary;
-  directives?: DirectiveActuationSummary;
+  /** P-030: the leader→member actuation ledger. Deliberately NOT `directives`. */
+  directiveActuation?: DirectiveActuationSummary;
   monitorState?: MonitorState | null;
   nextFireAt?: string | null;
   loopMode?: 'work' | 'monitor' | null;
@@ -3411,7 +3416,7 @@ export function projectMember(
     contextPressureAgeSec: a.contextPressureAgeSec ?? null,
     ...(a.coordHook ? { coordHook: a.coordHook } : {}),
     ...(a.unanswered ? { unanswered: a.unanswered } : {}),
-    ...(a.directives ? { directives: a.directives } : {}),
+    ...(a.directiveActuation ? { directiveActuation: a.directiveActuation } : {}),
     ...(() => {
       // EI-18732218464905145: prefer the composed-collapsed view when one was
       // resolved; fall back to the raw flat list (unresolved / non-composed /
@@ -3725,9 +3730,9 @@ export interface LeaderBriefCaller {
   agentIdentity?: AgentIdentity;
   /**
    * The owner the brief is computed FOR. This is NOT bookkeeping: it scopes
-   * `directives` (P-013 — the ledger's verdict on YOUR directives to each
-   * member), so a viewer passes the VIEWED LEADER's ownerId to see what that
-   * leader sees, not its own.
+   * `directiveActuation` (P-013 — the ledger's verdict on YOUR directives to
+   * each member), so a viewer passes the VIEWED LEADER's ownerId to see what
+   * that leader sees, not its own.
    */
   ownerId?: string;
   /** The caller's workspace, or null. Normalized through
@@ -5085,8 +5090,8 @@ export async function buildLeaderBrief(
       ...(monitoringBlindAdvisory ? { monitoringBlindAdvisory } : {}),
       ...(agentObligations ? { agentObligations } : {}),
       // P-026 / D-016: owner turns are a distinct leader obligation. Do not
-      // fold this into members[].directives, which is the DirectiveActuation
-      // Summary for leader→member effects.
+      // fold this into members[].directiveActuation, which is the
+      // DirectiveActuationSummary for leader→member effects (P-030).
       ...(ownerDirectives ? { ownerDirectives } : {}),
       // P-019/P-012: the arbitrated "which layer is blocking my fleet" verdict, placed
       // ABOVE the summary on purpose — the alert booleans below are flat and co-fire, and
