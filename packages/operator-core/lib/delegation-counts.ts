@@ -356,7 +356,21 @@ export function defaultDelegationCountDeps(): DelegationCountDeps {
                   WHERE item->>'status' = 'todo'
                )`;
 
-      const { isHarnessInScope } = await import('./work-scope-policy');
+      // PRIME BEFORE FILTERING — never drop this await. `isHarnessInScope`'s default
+      // `policy` argument is the SYNC `workScopePolicy()`, which reads a
+      // `placementOverride()` cache that starts EMPTY at boot and is filled by a 60s
+      // managed refresh. An empty policy is "not enforced", and `isHarnessInScope` then
+      // returns true for EVERY slug — it fails OPEN. Unprimed, this count therefore
+      // includes out-of-scope plans for the first ~60s of a process, which is D-014's
+      // measured 52-on-first-read / 51-thereafter, and this module's header states the
+      // platform SPAWNS AGENTS off these numbers: a cold-start over-count can launch a
+      // fleet against a harness the stored policy forbids. `primeWorkScopePolicy` is
+      // memoised once per process, is a no-op under VITEST (where the sync cache IS the
+      // fixture), and never throws — a failed refresh keeps the previous fail-open
+      // contract rather than breaking the caller. Guarded by WI-10002448; the property
+      // is R-5's "at decision time ... not a stale cached count".
+      const { isHarnessInScope, primeWorkScopePolicy } = await import('./work-scope-policy');
+      await primeWorkScopePolicy();
       const awaiting = rows.filter(
         (r) => isHarnessInScope(r.harness_slug) && !staffed.has(r.plan_slug),
       );
