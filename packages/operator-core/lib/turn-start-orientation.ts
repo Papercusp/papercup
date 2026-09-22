@@ -1617,6 +1617,22 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
     ],
   }),
 
+  orientationClass<{ authorityVerdict: OrientationAuthorityVerdict | null }>({
+    id: 'authorityVerdict',
+    watermarkTokens: ['authority'],
+    applicableSinks: TURN_START,
+    populate: (state) => ({ authorityVerdict: state.authorityVerdict }),
+    segments: [
+      {
+        // Just ABOVE the mode attribution line. The verdict is what the agent
+        // may DO; the mode row below is WHY. A reader who sees only the first
+        // line of a budget-clipped block should get the mandate, not its cause.
+        order: 84,
+        render: ({ authorityVerdict }, _state, committed) => renderAuthorityVerdictLine(authorityVerdict, committed),
+      },
+    ],
+  }),
+
   orientationClass<{ modes: OrientationModeState[] | null }>({
     id: 'modes',
     watermarkTokens: ['modes'],
@@ -2103,6 +2119,19 @@ export interface OrientationDeps {
   /** Active modes with attribution; null for unreadable (never `[]`, which
    *  means genuinely none). */
   modes: (ownerId: string, workspaceId: string) => Promise<OrientationModeState[] | null>;
+  /**
+   * P-013: the effective authority verdict; null for unreadable (never a
+   * fabricated confirm-first default, which would be a false statement about
+   * what this agent may do).
+   *
+   * REQUIRED, and deliberately so — the same rule `openChecks` above carries.
+   * The resolver-coverage guard enumerates `keyof OrientationDeps`, so a
+   * required dep makes a reader-less landing a COMPILE error instead of the
+   * P-010 trap: declared, registered, watermarked and rendered while production
+   * populates nothing, with the render-coverage guard staying green because it
+   * supplies the state itself (EI-23953846527835643).
+   */
+  authorityVerdict: (ownerId: string, workspaceId: string) => Promise<OrientationAuthorityVerdict | null>;
   loopArmed: (ownerId: string) => Promise<boolean>;
   loopFireWithheld: (ownerId: string) => Promise<boolean>;
   /** Existing improvement triage/ranking path, reduced to one bounded row. */
@@ -2161,6 +2190,7 @@ export async function resolveOrientationState(
     announcedGates,
     openAsks,
     modes,
+    authorityVerdict,
     loopArmed,
     loopFireWithheld,
     improvementTriage,
@@ -2193,6 +2223,11 @@ export async function resolveOrientationState(
     // from "no modes set", or the fingerprint erases the cursor and fakes a
     // fresh transition on recovery.
     d.modes(ownerId, workspaceId).catch(() => null as OrientationModeState[] | null),
+    // Fail-soft to NULL, and it matters more here than anywhere else in this set:
+    // a fabricated verdict is a false statement about what the agent is ALLOWED
+    // to do. "Could not read" must stay distinguishable from a real verdict, or
+    // the fingerprint erases the cursor and fakes a fresh transition on recovery.
+    d.authorityVerdict(ownerId, workspaceId).catch(() => null as OrientationAuthorityVerdict | null),
     d.loopArmed(ownerId).catch(() => false),
     d.loopFireWithheld(ownerId).catch(() => false),
     d.improvementTriage(workspaceId).catch(() => null),
@@ -2229,6 +2264,7 @@ export async function resolveOrientationState(
     announcedGates,
     openAsks,
     modes,
+    authorityVerdict,
     loopArmed,
     loopFireWithheld,
     improvementTriage,
@@ -2682,6 +2718,46 @@ export function defaultOrientationDeps(): OrientationDeps {
         ownerDirected: row.ownerDirected,
         impliedBy: row.impliedBy?.mode ?? null,
       }));
+    },
+    // P-013: REUSE, not a second truth. `buildControlAnchorState` already
+    // assembles this owner's modes + route + scope + loop from the authoritative
+    // stores, and `buildInstructionPrecedenceTrace` is PURE given that state — it
+    // costs one function call and no IO of its own. `adv-agent-orders.ts` already
+    // performs exactly this pairing for the HUD Orders rail; this is the same
+    // composition at a second sink, so the two surfaces cannot disagree about
+    // what the agent's authority is.
+    authorityVerdict: async (ownerId, workspaceId) => {
+      const [{ buildControlAnchorState }, { buildInstructionPrecedenceTrace }] = await Promise.all([
+        import('./agent-tools/coordination/control-anchor'),
+        import('./instruction-lint'),
+      ]);
+      const control = await buildControlAnchorState(ownerId, workspaceId);
+      const trace = buildInstructionPrecedenceTrace({
+        // The trace's `source` is a closed union of the surfaces that build one.
+        // We derive ours from the control-anchor state, so we declare it honestly
+        // rather than widening the union for one more reader.
+        source: 'control-anchor',
+        ownerId,
+        modes: control.modes,
+        route: control.route,
+        scope: control.scope,
+        loop: control.loop,
+      });
+      const byKey = new Map(trace.decisions.map((decision) => [decision.key, decision]));
+      // `conflict` is a VALUE, never an omission: an unreadable mode registry
+      // resolves execution-authorization to a conflict, and that is the single
+      // most action-worthy state this class has. A decision genuinely absent
+      // from the trace yields '' — say nothing about it rather than assert one.
+      const valueOf = (key: string): string => {
+        const decision = byKey.get(key);
+        if (!decision) return '';
+        return decision.status === 'conflict' ? 'conflict' : (decision.effective?.value ?? 'conflict');
+      };
+      return {
+        executionAuthorization: valueOf('execution-authorization'),
+        mission: valueOf('mission'),
+        ideation: valueOf('ideation'),
+      };
     },
     loopArmed: async (ownerId) => {
       const { activeLoopOwners } = await import('./adv-roster');

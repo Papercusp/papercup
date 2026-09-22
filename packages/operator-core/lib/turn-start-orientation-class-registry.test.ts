@@ -93,6 +93,8 @@ const MINIMAL_STATE: OrientationState = {
   // `[]` is "no modes set", which is a READABLE state — distinct from `null`
   // (unreadable), which must stay silent rather than assert a posture.
   modes: [],
+  // null is UNREADABLE — the silent value, same rationale as `modes: []` above.
+  authorityVerdict: null,
   loopArmed: false,
   loopFireWithheld: false,
   improvementTriage: null,

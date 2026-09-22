@@ -46,6 +46,7 @@ const EVERY_ORIENTATION_DEP: Record<keyof OrientationDeps, true> = {
   announcedGates: true,
   openAsks: true,
   modes: true,
+  authorityVerdict: true,
   loopArmed: true,
   loopFireWithheld: true,
   improvementTriage: true,

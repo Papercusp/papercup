@@ -209,6 +209,11 @@ const BASELINE: OrientationState = {
   // nothing, but it means UNREADABLE, so using it here would make the baseline
   // silent for the wrong reason and hide a genuinely broken reader.
   modes: [],
+  // `null` — UNREADABLE, which is the only quiet shape this class HAS: there is
+  // no empty AuthorityVerdict (three required strings), and a blank-valued one
+  // would render `- authority: exec  · mission  · …` on a cursorless baseline.
+  // The probe below is what proves the class still reaches the prompt.
+  authorityVerdict: null,
   loopArmed: true,
   loopFireWithheld: false,
   improvementTriage: null,
@@ -267,6 +272,20 @@ const CLASS_PROBES: Record<string, ClassProbe> = {
   announcedGates: {
     patch: { announcedGates: [{ event: 'fleet:demo:phase1-green' }] },
     marker: /announced gates:/,
+  },
+  authorityVerdict: {
+    // Against a null committed cursor there is no previous verdict to diff, so
+    // all three decisions render (D-073 ruling 3). The changed-only transition
+    // shape is pinned separately; this probe only has to prove the class
+    // reaches the rendered prompt at all.
+    patch: {
+      authorityVerdict: {
+        executionAuthorization: 'act-with-disclosure',
+        mission: 'execute-fleet-plan-only',
+        ideation: 'direct-improvements-only',
+      },
+    },
+    marker: /authority: exec act-with-disclosure/,
   },
   modes: {
     // Against a null committed cursor every row is NEW, so this renders. The
