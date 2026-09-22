@@ -33033,7 +33033,7 @@
           "POST"
         ]
       },
-      "description": "List work-items across kinds (feature/chunk/bug/change/task). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state, or q (a case-insensitive literal substring over title and body/summary). Returns the WorkItem array directly — each row's summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body. ⚠ Rows are a SNAPSHOT: after any change, re-read — NEVER answer from an earlier list.",
+      "description": "List work-items across kinds (feature/chunk/bug/change/task). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state, or q (a case-insensitive literal substring over title and body/summary). Returns the WorkItem array directly — each row's summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.",
       "capabilities": [
         "work_items:read"
       ],
