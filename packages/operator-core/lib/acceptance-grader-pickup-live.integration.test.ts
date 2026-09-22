@@ -86,14 +86,23 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
     // whichever case happened to be first. Absorbing it in setup keeps that
     // rebind from masquerading as a verdict about the subject.
     //
-    // ⚠ The pin reset is load-bearing, not tidiness: `createOrgTestDb`
-    // provisions through the real cluster on :5432, which pins store identity
-    // THERE. Without clearing it, the production readers below
-    // (`prodReadGraderActivity` → `getOrgPg()`, and the dedup read inside
-    // `resolveAcceptanceGrader`) keep answering off the pinned store, so every
-    // row this test seeds is invisible and all three verdicts collapse to
-    // `unreadable` / a fall-through launch — a fixture fault wearing the
-    // costume of a verdict about the subject.
+    // The pin reset is the same one `plan-agent-brief-posture-live` takes, for
+    // the same reason: `createOrgTestDb` provisions through the real cluster,
+    // which pins store identity there, and the admin pool this test then opens
+    // against its own throwaway database has a different `system_identifier` —
+    // which the guard correctly reports as a WRONG STORE via `console.error`,
+    // and `vitest-fail-on-console` turns into a failure attributed to whichever
+    // case ran first. Resetting the pin at the same boundary as the URL cache
+    // is the honest fix; suppressing the guard is not.
+    //
+    // ⚠ NOT claimed: that this reset is what makes the seeded rows visible. On
+    // 2026-09-22 this file failed three cases with every grader reading back
+    // `unreadable` and the dedup case falling through to a launch, and it
+    // failed again WITH this reset in place — then passed 3/3 unchanged a few
+    // minutes later. So that failure is a TRANSIENT of the shared box, not a
+    // property of this setup block, and it is still unexplained. If it recurs,
+    // instrument `getOrgPg()`'s target from inside a case (a one-off
+    // `expect(...).toBe('SHOWME')` prints it) before theorising.
     {
       const { getOrgPg, _resetStoreIdentityForTests } = await import('@papercusp/db-org');
       _resetStoreIdentityForTests();
@@ -142,17 +151,11 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
 
   describe('the pickup verdict is three-valued, read from the grader\'s own record', () => {
     it('CONFIRMED — activity strictly after the wake, via the PRODUCTION reader', async () => {
-      const { getOrgPg } = await import('@papercusp/db-org');
-      const diag = await getOrgPg().sql`
-        SELECT current_database() AS db,
-               (SELECT count(*)::int FROM harness_shared.coord_presence) AS presence_rows,
-               (SELECT count(*)::int FROM harness_shared.coord_presence WHERE owner_id = 'su-grader-confirmed') AS mine`;
       const obs = await observeGraderPickup({
         graderId: 'su-grader-confirmed',
         wakeInstantMs: WAKE_INSTANT_MS,
         nowMs: WAKE_INSTANT_MS + 120_000,
       });
-      expect(`DIAG ${JSON.stringify(diag)} OBS ${JSON.stringify(obs)}`).toBe('SHOWME');
       expect(obs.verdict).toBe('confirmed');
       expect(obs.sinceWakeMs).toBeGreaterThan(0);
       // The reading came from a real row, not a literal handed to the classifier.
