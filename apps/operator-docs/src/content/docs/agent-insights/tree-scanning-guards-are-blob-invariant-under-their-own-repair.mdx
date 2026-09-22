@@ -5,7 +5,7 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "A tree-scanning guard is blob-invariant under its own repair — why blob containment cannot settle its gate red"
-description: "Blob containment against a frozen candidate is the standard way to tell a current gate red from a stale one — but for a guard whose SUBJECT IS THE TREE it is structurally uninformative: the guard's own blob cannot change when the defect it detects is repaired, so identity is the EXPECTED state and reads as 'unfixed'. The cheap non-mutating settlement: feed COMMITTED blobs to the guard's own exported detector, with a mandatory positive control. Also records the staleness caveat that runs BACKWARDS for a scanner walking untracked files."
+description: "Blob containment against a frozen candidate is the standard way to tell a current gate red from a stale one — but it is informative only when the failing test's SUBJECT is reachable through that file's import graph. When the subject is the TREE (a scanner) or an ARTIFACT THE TEST SPAWNS (a shell script, a CLI), the repair lands somewhere containment never looks, so blob identity is the EXPECTED state and reads as 'unfixed'. This is what the gate cell renders as `fixInRepairHead: false` / `stillBrokenCount`. Two settlement methods, one per subject shape: feed COMMITTED blobs to a scanner's exported detector (with a mandatory positive control), or pin an external-artifact test's outcome-determining input set and run it once. Also records the staleness caveat that runs BACKWARDS for a scanner walking untracked files."
 type: Insight
 discovered: 2026-09-22
 tags: ["release-gate", "testing", "containment", "false-negatives", "frozen-candidate"]
@@ -20,6 +20,8 @@ plans:
 # A tree-scanning guard is blob-invariant under its own repair
 
 > **The containment RECIPES live in [git-evidence-and-containment-recipes](/internal/docs/agent-insights/git-evidence-and-containment-recipes). This page is about the case where running them correctly still cannot answer the question.**
+
+> **Arriving from the gate cell?** `state:read { cell: 'gate.greenCheckpoint.candidateFailures' }` renders this class as a row with **`fixInRepairHead: false`**, counted into **`stillBrokenCount`** / `stillBrokenNeedsRunCount` under the assessment code `repairs-outstanding`. That field is a blob compare, so for every subject shape described below it is **structurally uninformative — not evidence of unfixed work**. The cell says as much in its own `reading` and `safeAction` (*"needs `testing:run` on that ONE file at repairHead FIRST"*); this page is *why*, and what to run instead. Measured on frozen candidate `247e3140e590`: **every** `false` row on it resolved as already-fixed.
 
 ## The mistake this prevents
 
@@ -74,6 +76,38 @@ A settled result looks like this:
 
 Three cheap reads, no mutation, no suite, no lock — and they answer the question blob containment structurally could not.
 
+## The wider class — "tree-scanning" is one shape of a subject outside the import graph
+
+The mechanism above is not really about walking the filesystem. It is about **where the subject sits relative to the file containment measures**. Containment measures the failing test file, and is informative only when the subject is reachable through *that file's* import graph. Any arrangement that puts the subject elsewhere produces the same blob-invariance:
+
+| subject shape | the repair lands in | containment measures | settle it by |
+|---|---|---|---|
+| ordinary test — subject ⊂ its import graph | an imported module | a file that changed | blob containment (still the correct primary method) |
+| tree scanner — subject = the tree | a *scanned* file | the guard, unchanged | feed committed blobs to the exported detector (above) |
+| **external-artifact test — subject = something it `spawn`s / `execFileSync`es** | **the spawned artifact** | **the test, unchanged** | **pin the outcome-determining input set, then run it once** |
+
+The third row catches people who have already learned the second, because such a test **looks perfectly ordinary**: no `scan(ROOT)`, no glob, nothing walked. Its subject is a shell script, a generated binary, or a CLI it shells out to, and reading the `import` list will never reveal it. **Grep for the spawn, not for the import.**
+
+### Settling an external-artifact test
+
+There is no exported detector to feed, so the method differs: **enumerate the test's outcome-determining inputs, prove each is blob-identical between `repairHead` and your worktree, then run the test once.** A tip pass then transfers to `repairHead` by construction — every object the outcome can depend on is the same object.
+
+```bash
+# 1. Which REPO paths does the test actually touch? A join(tmpRoot, 'packages/a')
+#    fixture path is NOT an input; only paths resolving into the checkout are.
+grep -nE "bin/|scripts/|apps/|packages/|libs/" <test-file>
+
+# 2. Pin the test AND every repo path from step 1 across all three refs.
+for f in <test-file> <each repo path from step 1>; do
+  printf '%s\n  repairHead=%s\n  head=%s\n  worktree=%s\n' "$f" \
+    "$(git rev-parse "<repairHead>:$f")" "$(git rev-parse "HEAD:$f")" \
+    "$(git hash-object "$f")"
+done
+git status --porcelain -- <the same paths>   # must be EMPTY
+```
+
+Step 1 does the real work, and it is where the honesty lives: **if the grep returns paths you cannot account for, the input set is not pinned and the tip run does not transfer.** Say that, rather than rounding up to "green". This does not waive the standard *a pass at tip is not proof the verdict was stale* caveat — it **discharges** it, by pinning rather than by asserting.
+
 ## The staleness caveat runs BACKWARDS here
 
 CLAUDE.md warns that a **pass at tip is not proof the verdict was stale**, because `test:file` runs the working tree and a peer's uncommitted fix rides in silently. For an ordinary test that is exactly right.
@@ -81,6 +115,21 @@ CLAUDE.md warns that a **pass at tip is not proof the verdict was stale**, becau
 **For a scanner that walks untracked files by design, it inverts.** A dirty tree can only *add* offenders — extra files are extra opportunities to fail, never fewer. So a clean checkout is **strictly greener** than the dirty tree you measured, and a pass on a dirty tree is *stronger* evidence than a pass on a clean one, not weaker.
 
 Applying the usual caveat here rejects a sound result. Check which direction the contamination actually runs before reaching for it.
+
+### Bounding a scanner's whole-tree pass to a specific ref
+
+The inversion above licenses the pass but does not by itself transfer it to `repairHead`, because a scanner's verdict is a function of the **whole tree**, not of one file. An offender could exist at `repairHead` and have been removed by `HEAD`. Bound it directly — the only files whose offender status can differ between two refs are the files that **differ** between them:
+
+```bash
+# Every candidate-for-difference, checked AT repairHead. Expect zero hits.
+while IFS=$'\t' read -r st f; do
+  case "$f" in *.ts|*.tsx) ;; *) continue;; esac
+  blob=$(git rev-parse "<repairHead>:$f" 2>/dev/null) || continue
+  git cat-file blob "$blob" | grep -q '<the detector pattern>' && echo "HIT $st $f"
+done < <(git diff --name-status <repairHead> HEAD)
+```
+
+Run the identical grep against a blob you **know** offends (the candidate's own named offender) as a positive control — without it, a broken pattern reports zero and is indistinguishable from a clean delta. Files identical between the refs have identical status by definition, so zero hits plus a live control closes it.
 
 ## The dual — this property is also a real defect
 
@@ -93,7 +142,9 @@ So the two readings compose rather than compete:
 
 Do not use the first as a reason to skip the second.
 
-## Worked example (measured)
+## Worked examples (both measured, same candidate, same day)
+
+### 1 — tree scanner
 
 Frozen candidate `247e3140e590`, file `packages/operator-core/lib/__tests__/check-unenrolled-mjs-imports.test.ts`.
 
@@ -101,8 +152,18 @@ The guard's blob was byte-identical in the candidate and the repaired tree, so c
 
 Feeding committed blobs to the guard's own exported detector: the candidate blob produced **1 offender at line 347** — the candidate red explained from content — and the `HEAD` blob produced **0**. A synthetic bare import still tripped the detector, so it was not vacuous. `scan(ROOT)` returned a raw 1 against an empty BASELINE.
 
-The file was green, and the evidence cost roughly twenty seconds against a suite measured in tens of minutes.
+Independently, the whole-tree bound above returned **0 hits** across the `repairHead..HEAD` delta with the positive control returning **4** on the candidate's own offender blob, and the file ran **14 passed / 0 failed**. The evidence cost roughly twenty seconds against a suite measured in tens of minutes.
+
+### 2 — external artifact
+
+Same candidate, file `apps/operator/lib/release/dependency-generation.test.ts`. The cell reported `fixInRepairHead: false` and counted it into `stillBrokenCount`; it walks nothing and imports only `node:*` builtins and `vitest`, so it reads as a perfectly ordinary test whose red must be current.
+
+Its subject is line 29: `join(REPO_ROOT, 'apps/operator/bin/release/dependency-generation.sh')`, which it runs via `execFileSync`. That `.sh` **was** one of the paths admitted onto `repairHead` — so the repair landed exactly where containment does not look. The step-1 grep returned that single repo path; every other path in the file is a `join(tmpRoot, …)` fixture. With the test and the `.sh` both blob-identical at `repairHead == HEAD == worktree` and `git status` empty for both, one run settled it: **48 passed, exit 0**.
+
+Two different subject shapes, two different settlement methods, one shared root cause — and in both cases the "still broken" count was a false positive.
 
 ## What this does not cover
 
-This settles whether a *tree-scanning* guard's red is current. It says nothing about an ordinary test, where blob containment remains the correct primary method, and it is not a substitute for running the guard — it is what you do when running it on a moving tree cannot produce an attributable answer.
+This settles whether the red of a test whose **subject sits outside its own import graph** is current. It says nothing about an ordinary test, where blob containment remains the correct primary method. Neither method is a substitute for running the thing — they are what you do when running it on a moving tree cannot produce an *attributable* answer, and the external-artifact method ends in a real run by design.
+
+It also does not tell you the gate is green. Every technique here produces a **per-file** verdict from individually-pinned inputs; the gate's own run on the frozen lineage remains the only thing that turns those into a candidate verdict.

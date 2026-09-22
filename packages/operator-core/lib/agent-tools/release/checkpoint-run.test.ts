@@ -1344,6 +1344,57 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     };
   }
 
+  // WI-10002334: a `queue-origin-unknown` refusal must NAME its remedy. The queue is well-formed
+  // and merely carries no stamped origin (schema v3 permits a NULL qualificationAttemptId), so the
+  // ONLY way forward is pinning the never-judged repairHead via requiredAncestorSha. Measured
+  // 2026-09-22: without that hint the refusal reads as a POLICY WALL, and the caller's next move is
+  // to escalate — suspend a safety rule, retire the queue, force a deploy — rather than pass one
+  // argument. A frozen queue sat unjudged through exactly that chain until the pin was supplied.
+  it('a blocked queue-origin-unknown reconciliation names requiredAncestorSha as the remedy', async () => {
+    qualificationMocks.begin.mockImplementationOnce(async (_target: unknown, input: Record<string, unknown>) => ({
+      status: 'conflict',
+      transaction: qualificationTransaction(input),
+      repairQueueReconciliation: {
+        status: 'blocked',
+        reason: 'queue-origin-unknown',
+        predecessorAttemptId: 'attempt-old',
+        successorAttemptId: String(input.attemptId),
+        candidate: QUEUE_HEAD,
+      },
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ force: true }, MAKE_CTX())) as never);
+
+    expect(b).toMatchObject({ ok: false, launched: false, reason: 'qualification_transaction_conflict' });
+    expect(String(b.note)).toMatch(/REMEDY/);
+    expect(String(b.note)).toMatch(/requiredAncestorSha/);
+    expect(String(b.note)).toMatch(/repairQueue\.repairHead/);
+  });
+
+  // CONTROL, and the point of the pair: the remedy must be SPECIFIC to queue-origin-unknown, not
+  // pasted onto every refusal. Without this case the assertion above would still pass if the hint
+  // were unconditional, which would make a wrong remedy look authoritative on unrelated refusals.
+  it('does NOT advertise the requiredAncestorSha remedy for a different blocked reason', async () => {
+    qualificationMocks.begin.mockImplementationOnce(async (_target: unknown, input: Record<string, unknown>) => ({
+      status: 'conflict',
+      transaction: qualificationTransaction(input),
+      repairQueueReconciliation: {
+        status: 'blocked',
+        reason: 'queue-not-safe-unstarted',
+        predecessorAttemptId: 'attempt-old',
+        successorAttemptId: String(input.attemptId),
+        candidate: QUEUE_HEAD,
+      },
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ force: true }, MAKE_CTX())) as never);
+
+    expect(String(b.note)).toMatch(/NOT launched/);
+    expect(String(b.note)).not.toMatch(/requiredAncestorSha/);
+  });
+
   it('EI-214151 begins successor reconciliation before reading the queue-selected candidate', async () => {
     const order: string[] = [];
     qualificationMocks.begin.mockImplementationOnce(async (_target: unknown, input: Record<string, unknown>) => {

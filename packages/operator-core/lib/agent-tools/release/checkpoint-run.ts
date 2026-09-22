@@ -1143,6 +1143,27 @@ export default defineTool({
     );
     if (!qualificationMutationContinues(qualificationBegin)) {
       const transaction = 'transaction' in qualificationBegin ? qualificationBegin.transaction : null;
+      const reconciliation =
+        'repairQueueReconciliation' in qualificationBegin ? qualificationBegin.repairQueueReconciliation : undefined;
+      // A `queue-origin-unknown` refusal is DIAGNOSABLE but not SELF-REPAIRING, and the gap is
+      // expensive. The queue is well-formed and simply carries no stamped origin (schema v3
+      // permits a NULL `qualificationAttemptId` — WI-41667), so the ONLY way to hand it forward
+      // is for the caller to pin the exact never-judged repairHead: that is
+      // `unknownOriginPinnedToRepairHead` in assessTerminalRepairQueueReconciliation, which
+      // requires `successor.requiredAncestorSha === queue.repairHead`.
+      //
+      // Without naming that argument the refusal reads like a POLICY WALL, so the caller's next
+      // move is to argue with the gate — suspend a safety rule, retire the queue, force a deploy —
+      // instead of passing one argument. Measured 2026-09-22 (WI-10002334): a frozen queue sat
+      // unjudged while exactly that chain of escalations was considered, and the launch succeeded
+      // immediately once `requiredAncestorSha` was supplied. Naming the remedy here is the
+      // difference between a diagnosable refusal and an actionable one.
+      const originUnknownRemedy =
+        reconciliation?.status === 'blocked' && reconciliation?.reason === 'queue-origin-unknown'
+          ? ' REMEDY: this queue carries no stamped origin, so it is handed forward only when you PIN the exact never-judged repairHead —' +
+            " re-call with requiredAncestorSha set to repairQueue.repairHead (read it with release:repair-queue { op: 'get' })." +
+            ' An absent or mismatched pin stays blocked by design; this is a missing argument, not a policy wall.'
+          : '';
       return {
         content: [
           {
@@ -1159,15 +1180,13 @@ export default defineTool({
               logical_attempt_id: transaction?.attemptId ?? requestedAttemptId,
               phase: transaction?.phase ?? null,
               outcome: transaction?.outcome ?? null,
-              repair_queue_reconciliation:
-                'repairQueueReconciliation' in qualificationBegin
-                  ? qualificationBegin.repairQueueReconciliation
-                  : undefined,
+              repair_queue_reconciliation: reconciliation,
               error: 'error' in qualificationBegin ? qualificationBegin.error : undefined,
               note:
                 qualificationBegin.status === 'terminal'
                   ? 'NOT launched: this exact candidate/request already produced a terminal logical outcome. A real red or code-inconclusive verdict is never auto-retried; a newer candidate starts a new attempt.'
-                  : 'NOT launched: another non-terminal logical qualification owns the singleton transaction, the predecessor repair queue was not safe to retire, or the store is unavailable.',
+                  : 'NOT launched: another non-terminal logical qualification owns the singleton transaction, the predecessor repair queue was not safe to retire, or the store is unavailable.' +
+                    originUnknownRemedy,
             }),
           },
         ],
