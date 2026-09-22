@@ -3,9 +3,12 @@
  * plan `turn-start-memory-two-class-2026-09-21`, covering the four clauses that item
  * actually owns once the D-035 clause clobber was repaired (see D-039):
  *
- *   AUTO-BAR-R-3-P-005 "`orders:promote` and `orders:dismiss { reason }` exist, dismiss
- *                       refuses an empty reason, and a dismissed row stays queryable
- *                       rather than being deleted."
+ *   AUTO-BAR-R-3-P-005 "A freshly captured directive reads back in a state that is distinct
+ *                       from the promoted, dismissed and finished states."
+ *                      (This quote was STALE until 2026-09-22: it still carried the clause's
+ *                       pre-rev-8 text about promote/dismiss existing and a dismissed row
+ *                       staying queryable. That older sentence describes R-6's subject, and
+ *                       leaving it here is what got the case below mislabelled `R-3:`.)
  *   AUTO-BAR-R-4-P-005 "Promoting a captured directive leaves it readable in the open
  *                       standing state."
  *   AUTO-BAR-R-5-P-005 "A dismissal submitted with an absent or empty reason is refused
@@ -77,7 +80,7 @@ describe('owner-directive disposition read-back (P-005)', () => {
     await db?.cleanup?.();
   });
 
-  it('CALIBRATION: a freshly captured row reads back as pending — else every transition below is unobservable', async () => {
+  it('R-3 / CALIBRATION: a freshly captured row reads back in a state DISTINCT from promoted, dismissed and finished', async () => {
     const id = await recordPending('turn-calibration', 'a freshly captured owner turn');
     const row = await getOwnerDirective(id, db.adminSql);
     expect(row).not.toBeNull();
@@ -85,6 +88,12 @@ describe('owner-directive disposition read-back (P-005)', () => {
     // starting state were already the target state, every assertion below would pass
     // without the transition doing anything at all.
     expect(ownerDirectiveState(row!)).toBe('pending');
+    // AUTO-BAR-R-3-P-005 is "reads back in a state DISTINCT from the promoted, dismissed and
+    // finished states" — distinctness is the claim, so assert it rather than inferring it
+    // from the single equality above. Naming the three states explicitly also means this
+    // case fails, instead of silently weakening, if 'pending' is ever merged into one of
+    // them or a fourth decided state is added without revisiting R-3.
+    expect(['open', 'dismissed', 'finished']).not.toContain(ownerDirectiveState(row!));
   });
 
   it('R-4: promoting a captured directive leaves it READABLE in the open standing state', async () => {
@@ -127,7 +136,11 @@ describe('owner-directive disposition read-back (P-005)', () => {
     expect(readBack!.verbatimText).toBe('thinking out loud, not an order');
   });
 
-  it('R-3: a dismissed row stays QUERYABLE through the list read rather than being deleted', async () => {
+  // Labelled R-6, not R-3: "a dismissed row stays queryable rather than being deleted" is
+  // R-6's subject (a dismissed directive stays READABLE). It sat under `R-3:` because the
+  // header above quoted R-3's pre-rev-8 clause text; R-3 is now proved by the first case.
+  // This is the LIST-read half of R-6 and is deliberately kept separate from the by-id half.
+  it('R-6 (list read): a dismissed row stays QUERYABLE through the list read rather than being deleted', async () => {
     const id = await recordPending('turn-still-listed', 'a turn that will be dismissed');
     expect(
       (await dismissOwnerDirective({ id, reason: 'not a directive', dismissedBy: 'su-readback-test' }, db.adminSql))
