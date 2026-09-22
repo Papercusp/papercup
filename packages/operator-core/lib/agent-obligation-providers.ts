@@ -205,11 +205,17 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
     priority: 'high' as const,
     sourceGeneration: input.sourceGeneration,
     clearsWhen: {
-      id: 'goal-plan-placement-consistent-and-launch-admissible',
+      // P-026 / D-012: placement consistency USED to be the whole clear condition,
+      // which is what made a delegated plan count as progress the moment an agent
+      // was put on it. Closure is now the clear condition; placement is a step
+      // toward it, never a substitute for it.
+      id: 'goal-plan-closure-evidenced-and-launch-admissible',
       summary:
-        'every non-terminal goal worklist plan has a consistent independently led placement and its launch boundary is admissible',
+        'every non-terminal goal worklist plan has a consistent independently led placement, an admissible launch boundary, ' +
+        'and — once it claims to be finished — evidenced closure rather than merely completed items',
       evidenceKind: 'state' as const,
-      sourceRef: 'GoalPortfolioBrief.worklist[].placement+resolveGoalLaunch+classifyGoalPlanFleetCoverage',
+      sourceRef:
+        'GoalPortfolioBrief.worklist[].placement+resolvePlanClosure+resolveGoalLaunch+classifyGoalPlanFleetCoverage',
     },
     changeSignal: {
       event: goalPlanPlacementChangedKey(input.goalId),
@@ -445,16 +451,22 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
   };
   const isUnplaced = placement.state === 'unplaced';
   const isAdmitting = placement.state === 'admitting';
+  // P-026 / D-012. This plan says it is finished and its closure is not evidenced.
+  // It is `due` rather than `blocked`: nothing outside the holder is being waited
+  // on, and reporting it blocked would excuse exactly the work that is owed.
+  const isAwaitingClosure = placement.state === 'awaiting-closure';
   return defineAgentObligation({
     ...common,
     title: isUnplaced
       ? `Place goal plan ${selected.slug}`
       : isAdmitting
         ? `Finish verified placement of ${selected.slug}`
-        : `Repair goal plan placement for ${selected.slug}`,
+        : isAwaitingClosure
+          ? `Close goal plan ${selected.slug} — its items are finished but closure is not evidenced`
+          : `Repair goal plan placement for ${selected.slug}`,
     scope: { ...scope, planSlug: selected.slug },
     episode: `${placement.reconciliation.action}:${selected.slug}:${placement.launchTransaction?.transactionId ?? input.sourceGeneration}`,
-    status: isUnplaced ? 'due' : isAdmitting ? 'in-progress' : 'blocked',
+    status: isUnplaced || isAwaitingClosure ? 'due' : isAdmitting ? 'in-progress' : 'blocked',
     reason: placement.reconciliation.reason,
     causalRank: isUnplaced ? 1 : 0,
     applicableDemand: applicablePlans.length,
@@ -467,10 +479,20 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
         }
       : isAdmitting
         ? { ...baseAction, kind: 'continue', continuesCurrentWork: true }
-        : {
-            ...baseAction,
-            kind: 'repair',
-          },
+        : isAwaitingClosure && placement.closure?.reportOutstandingOnly
+          ? {
+              // Every evidence leg passed; what is owed is the holder's measured
+              // report. Deliberately NOT `delegate` — there is no execution left
+              // to place, and offering a launch here is how placement re-becomes
+              // the answer to a question about closure.
+              ...baseAction,
+              kind: 'report',
+              summary: `record the measured closure report (effect, cost, uncertainty, residue) for ${selected.slug}`,
+            }
+          : {
+              ...baseAction,
+              kind: 'repair',
+            },
     ...(ageMs == null ? {} : { ageMs }),
   });
 }
@@ -845,12 +867,12 @@ export function independentVerificationObligation(input: IndependentVerification
 export interface OwnerDirectiveObligationRow {
   id: number;
   /**
-   * `pending` — hook-captured, awaiting promote/dismiss.
-   * `open` — a promoted/recorded standing directive awaiting disposition.
-   * Terminal states (`dismissed`/`done`/`declined`) are not obligations and
-   * must be filtered out by the reader, never represented here.
+   * Always `open`: every owner turn is a directive awaiting disposition
+   * (owner-directive-delivery-redesign-2026-09-22, D-001). Terminal states
+   * (`done`/`declined`) are not obligations and must be filtered out by the
+   * reader, never represented here.
    */
-  state: 'pending' | 'open';
+  state: 'open';
   /** VERBATIM owner text, budgeted by the caller. Never a paraphrase. */
   excerpt: string;
   /** The row's own created_at — a stable row fact, never an observation clock. */
@@ -875,16 +897,8 @@ const OWNER_DIRECTIVE_DISPOSITION: Record<
   OwnerDirectiveObligationRow['state'],
   { title: string; summary: string; tool: string; clearsWhen: string }
 > = {
-  pending: {
-    title: 'Pending owner turn awaits promote-or-dismiss',
-    // `summary` is spent once PER ROW in a 3-row/400-char sink, so it carries the
-    // disposition VERB and nothing else; the prose that used to live here was
-    // identical on every row and cost a whole third row (measured: 133-char rows,
-    // 2 of 3 delivered, the third dropped on the character cap).
-    summary: 'promote or dismiss: orders:resolve-pending',
-    tool: 'orders:resolve-pending',
-    clearsWhen: 'the row leaves `pending` via promotion or a reasoned dismissal',
-  },
+  // `summary` is spent once PER ROW in a 3-row/400-char sink, so it carries the
+  // disposition VERB and nothing else.
   open: {
     title: 'Open owner directive awaits disposition',
     summary: 'carry out, then close: orders:disposition',
@@ -935,10 +949,10 @@ export function ownerDirectiveObligations(input: OwnerDirectivesProviderInput): 
         reason: input.read.failure.detail,
         applicableDemand: 0,
         evidence: [],
-        action: { kind: 'inspect', summary: input.read.failure.retry, targetRef: 'orders:list { state: "pending" }' },
+        action: { kind: 'inspect', summary: input.read.failure.retry, targetRef: 'orders:list { open: true }' },
         clearsWhen: {
           id: 'owner-directive-queue-readable',
-          summary: 'the pending/open directive queue is readable again',
+          summary: 'the open directive queue is readable again',
           evidenceKind: 'state',
           sourceRef: 'harness_shared.owner_directives',
         },
@@ -956,19 +970,19 @@ export function ownerDirectiveObligations(input: OwnerDirectivesProviderInput): 
         status: 'not-applicable',
         priority: 'normal',
         authority: policyAuthority('owner-directives:listOwnerDirectives', OWNER_DIRECTIVE_OBLIGATION_REVISION),
-        reason: 'the canonical directive queue holds no pending or open row for this workspace',
+        reason: 'the canonical directive queue holds no open row for this workspace',
         applicableDemand: 0,
         evidence: [
           evidence(
             `owner-directives:${input.workspaceId}`,
             input.observedAt,
             input.sourceGeneration,
-            'empty pending/open queue',
+            'empty open queue',
           ),
         ],
         clearsWhen: {
           id: 'owner-directive-queue-empty',
-          summary: 'no pending or open directive exists',
+          summary: 'no open directive exists',
           evidenceKind: 'state',
           sourceRef: 'harness_shared.owner_directives',
         },
