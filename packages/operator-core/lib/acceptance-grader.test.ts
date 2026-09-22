@@ -7,6 +7,8 @@ import {
   detectAcceptanceGraderTerminalFailure,
   launchAcceptanceGrader,
   isAcceptanceGradingRequestForPlan,
+  isInFlightAcceptanceGradingRequest,
+  ineligibleGradingHolders,
   ACCEPTANCE_GRADING_REQUEST_UNHELD_GRACE_MS,
   resolveAcceptanceGraderDiscoveryExtraExclusions,
   resolveAcceptanceGrader,
@@ -341,6 +343,10 @@ function deps(launch: ReturnType<typeof vi.fn>) {
     readSettlement: vi.fn(async () => ({ settled: false, reason: 'no_author_acceptance' as const, rubricRevision: 7 })),
     lineageRelated: vi.fn(async () => false),
     reserveReviewTarget: vi.fn(async () => ({ ...reviewReservation, created: true })),
+    // WI-10002459: a held grading request consults holder eligibility. Default to
+    // "every holder may grade" so pre-existing held-request cases keep deduping,
+    // and so no case reaches the org PG.
+    readIneligibleHolders: vi.fn(async () => new Set<string>()),
     nowMs: () => NOW,
   };
 }
@@ -1444,6 +1450,122 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
 
       expect(result.state).not.toBe('deduped');
       expect(discover).toHaveBeenCalled();
+    });
+  });
+
+  describe('a HELD request suppresses only when its holder could grade it (WI-10002459)', () => {
+    const assigned = () =>
+      vi.fn(async () => ({
+        verdict: 'assigned' as const,
+        graders: [{ ownerId: 'su-independent', score: 0.71, liveness: 'live', via: 'floor' as const }],
+        routing: { selection: { min: 1, max: 2, selected: [] } },
+        excluded: [],
+      }));
+    // The live instance's shape (WI-10002232): agent-filed, so rule 1 does not
+    // fire; held, so the grace window is never consulted; and its prose matches
+    // the identity markers because it tells its holder to REQUEST a grade.
+    const carryItem = {
+      id: 'WI-agent-carry',
+      kind: 'task',
+      state: 'blocked',
+      title: 'Remediate degraded acceptance BAR evidence for the ship-the-thing plan',
+      summary:
+        'Produce fresh evidence for every degraded BAR of plan ship-the-thing, bind it to the current rubric ' +
+        'revision, then request a new non-author acceptance grade.',
+      createdBy: 'su-rubric-author',
+      assignee: 'su-carrier',
+      createdAt: new Date(NOW - 60_000).toISOString(),
+      lastProgressAt: new Date(NOW - 60_000).toISOString(),
+    };
+
+    it('the fixture really is a matching identity, so these cases exercise the holder rule, not the markers', () => {
+      expect(isAcceptanceGradingRequestForPlan(carryItem, 'ship-the-thing')).toBe(true);
+      expect(isInFlightAcceptanceGradingRequest(carryItem, 'ship-the-thing', NOW)).toBe(true);
+    });
+
+    it('recruits past an agent-filed carry item whose holder is excluded from grading (the shipper)', async () => {
+      const discover = assigned();
+      const readIneligibleHolders = vi.fn(async () => new Set(['su-carrier']));
+
+      const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+        ...deps(freshLaunch()),
+        listWork: vi.fn(async () => [carryItem]) as never,
+        readIneligibleHolders: readIneligibleHolders as never,
+        discover: discover as never,
+        openCascade: vi.fn(async () => ({ conversationId: 'conv-1', woke: 1 })) as never,
+      });
+
+      expect(result.state).not.toBe('deduped');
+      expect(discover).toHaveBeenCalled();
+      expect(readIneligibleHolders).toHaveBeenCalledWith(expect.anything(), expect.anything(), ctx, ['su-carrier']);
+    });
+
+    it('still dedupes when the holder is an ELIGIBLE grader (EI-22678191183363422 stays protected)', async () => {
+      const discover = assigned();
+      const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+        ...deps(freshLaunch()),
+        listWork: vi.fn(async () => [{ ...carryItem, id: 'WI-live-grading', assignee: 'su-independent' }]) as never,
+        readIneligibleHolders: vi.fn(async () => new Set(['su-carrier'])) as never,
+        discover: discover as never,
+      });
+
+      expect(result).toMatchObject({ state: 'deduped', existingWorkItemId: 'WI-live-grading' });
+      expect(discover).not.toHaveBeenCalled();
+    });
+
+    it('fails OPEN when the eligibility read throws: recruits rather than suppressing behind an unverified holder', async () => {
+      const discover = assigned();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+        ...deps(freshLaunch()),
+        listWork: vi.fn(async () => [carryItem]) as never,
+        readIneligibleHolders: vi.fn(async () => {
+          throw new Error('org PG unreachable');
+        }) as never,
+        discover: discover as never,
+        openCascade: vi.fn(async () => ({ conversationId: 'conv-1', woke: 1 })) as never,
+      });
+
+      expect(result.state).not.toBe('deduped');
+      expect(discover).toHaveBeenCalled();
+      // The fault leaves a breadcrumb, so a dispatch the guard could not vet is
+      // distinguishable from one it vetted.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('holder eligibility read failed'));
+      warn.mockRestore();
+    });
+
+    it('does not read eligibility at all when no HELD request matched', async () => {
+      const readIneligibleHolders = vi.fn(async () => new Set<string>());
+      await resolveAcceptanceGrader('ship-the-thing', ctx, {
+        ...deps(freshLaunch()),
+        listWork: vi.fn(async () => [{ ...carryItem, assignee: null }]) as never,
+        readIneligibleHolders: readIneligibleHolders as never,
+        discover: assigned() as never,
+        openCascade: vi.fn(async () => ({ conversationId: 'conv-1', woke: 1 })) as never,
+      });
+
+      expect(readIneligibleHolders).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ineligibleGradingHolders', () => {
+    it('marks a holder who is directly in the exclusion set', () => {
+      expect([...ineligibleGradingHolders(['su-shipper', 'su-grader'], ['su-shipper'], new Map())]).toEqual(['su-shipper']);
+    });
+
+    it('marks a holder in the same D-008 party as an excluded identity, though the ids differ', () => {
+      const partyKeys = new Map([
+        ['su-author', 'party-a'],
+        ['su-author-rebound', 'party-a'],
+        ['su-grader', 'su-grader'],
+      ]);
+      expect([...ineligibleGradingHolders(['su-author-rebound', 'su-grader'], ['su-author'], partyKeys)]).toEqual([
+        'su-author-rebound',
+      ]);
+    });
+
+    it('leaves a holder of a distinct party eligible', () => {
+      expect(ineligibleGradingHolders(['su-grader'], ['su-author'], new Map()).size).toBe(0);
     });
   });
 

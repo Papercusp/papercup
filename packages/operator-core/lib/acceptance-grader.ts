@@ -1019,6 +1019,43 @@ export async function resolveAcceptanceGraderDiscoveryExtraExclusions(
   ];
 }
 
+/** The caller of the ship gate — the shipper D-009 excludes. Null when unattributable;
+ * the computed set still excludes implementers. */
+async function resolveShipperId(ctx: LaunchCtx): Promise<string | null> {
+  try {
+    const { resolveAgentIdentity } = await import('./agent-tools/coordination/identity');
+    return resolveAgentIdentity(ctx as never).ownerId;
+  } catch {
+    return null;
+  }
+}
+
+/** Prod wiring for the in-flight guard's holder check: the SAME exclusion set and
+ * party collapse grader discovery applies, read only when a held request matched.
+ * Injected as `deps.readIneligibleHolders` in tests — this default reaches the org PG. */
+async function prodReadIneligibleGradingHolders(
+  plan: NonNullable<Awaited<ReturnType<typeof readPlanBySlug>>>,
+  rubric: NonNullable<Awaited<ReturnType<typeof getAcceptanceRubricForPlan>>>,
+  ctx: LaunchCtx,
+  holders: readonly string[],
+): Promise<ReadonlySet<string>> {
+  const [{ getOrgPg }, { computeGraderExclusions }, { lineagePartyKeys }] = await Promise.all([
+    import('@papercusp/db-org'),
+    import('./consult/acceptance-grader-select'),
+    import('./acceptance-author-identity'),
+  ]);
+  const { workspaceId, planSlug } = plan.row;
+  const sql = getOrgPg().sql;
+  const extra = await resolveAcceptanceGraderDiscoveryExtraExclusions(
+    rubric as unknown as Parameters<typeof resolveAcceptanceGraderDiscoveryExtraExclusions>[0],
+    await resolveShipperId(ctx),
+    { workspaceId, planSlug },
+  );
+  const excluded = await computeGraderExclusions(sql, workspaceId, planSlug, extra);
+  const partyKeys = await lineagePartyKeys([...excluded, ...holders], { sql, workspaceId });
+  return ineligibleGradingHolders(holders, excluded, partyKeys);
+}
+
 /** Prod discovery wiring: the P-002 router + embedder + liveness oracle behind
  * selectAcceptanceGrader. Injected as `deps.discover` in tests — this default
  * reaches the org PG, which a unit test must never do. */
@@ -1380,6 +1417,7 @@ export async function resolveAcceptanceGrader(
     openCascade?: typeof prodOpenGradingCascade;
     readSettlement?: typeof readAcceptanceGradingSettlement;
     reserveReviewTarget?: typeof reserveAcceptanceReviewTarget;
+    readIneligibleHolders?: typeof prodReadIneligibleGradingHolders;
     nowMs?: () => number;
   } = {},
 ): Promise<AcceptanceGraderLifecycle> {
@@ -1436,8 +1474,9 @@ export async function resolveAcceptanceGrader(
       // source_plan_slug is NULL. The plan slug is therefore searched in the
       // bounded title/summary population, then the pure identity predicate
       // rejects ordinary plan tasks that merely mention the same slug — and
-      // only a request someone holds (or that was filed within the grace
-      // window) counts as in flight; an abandoned one grades nothing.
+      // only a request held by an agent who could grade it (or one filed within
+      // the grace window) counts as in flight; an abandoned one, or one held by
+      // the shipper or another excluded party, grades nothing (WI-10002459).
       let existingGradingRequest: WorkItem | undefined;
       try {
         const candidates = await (deps.listWork ?? listWorkItems)({
@@ -1448,8 +1487,29 @@ export async function resolveAcceptanceGrader(
           limit: 100,
         });
         const nowMs = (deps.nowMs ?? Date.now)();
+        const heldHolders = [
+          ...new Set(
+            candidates
+              .filter((candidate) => candidate.assignee && isAcceptanceGradingRequestForPlan(candidate, planSlug))
+              .map((candidate) => candidate.assignee as string),
+          ),
+        ];
+        // Read only when a held request matched — the common case pays nothing. A
+        // failed read treats every holder as ineligible: fail-open, like the reads
+        // around it, because a wrongly suppressed grading strands the plan for good.
+        const ineligibleHolders = heldHolders.length === 0
+          ? undefined
+          : await (deps.readIneligibleHolders ?? prodReadIneligibleGradingHolders)(plan, rubric, ctx, heldHolders).catch(
+              (err: unknown) => {
+                console.warn(
+                  `[acceptance-grader] grading-request holder eligibility read failed for plan ${planSlug}: ` +
+                    `${err instanceof Error ? err.message : String(err)}`,
+                );
+                return new Set(heldHolders);
+              },
+            );
         existingGradingRequest = candidates.find((candidate) =>
-          isInFlightAcceptanceGradingRequest(candidate, planSlug, nowMs),
+          isInFlightAcceptanceGradingRequest(candidate, planSlug, nowMs, ineligibleHolders),
         );
       } catch (err) {
         // This read is a duplicate guard, not a prerequisite for grading. A
