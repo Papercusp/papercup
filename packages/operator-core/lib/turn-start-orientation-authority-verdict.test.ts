@@ -261,3 +261,65 @@ describe('D-073 — the trace watermark is the WRONG diff key for authority', ()
     expect(late.provenance.observedAt).not.toBe(early.provenance.observedAt);
   });
 });
+
+/**
+ * The two SILENCES asserted at the top of this file are the whole point of the
+ * class — and a silence is the one assertion that also passes when the renderer
+ * is DEAD. `toEqual([])` holds equally for a guard that works, a class that
+ * never populated, and a verdict that never reached the renderer at all.
+ *
+ * TIER (CLAUDE.md falsifiability table): the subject is a MODULE we import, so
+ * the control is PERMANENT and in-file. Deliberately NOT an in-tree mutation of
+ * `turn-start-orientation.ts` — that is the last-resort tier, it races the
+ * git-sync sweep, and peers hold locks on that file.
+ *
+ * Each pair holds EVERY input fixed but one and asserts the output FLIPS, which
+ * pins execution to the guard under test. `renderAuthorityVerdictLine` has three
+ * exits, and a rendering changed-variant excludes the other two:
+ *   - `!verdict`  -> returns [] unconditionally, so the changed variant could
+ *                    not render at all; that it renders rules this path out.
+ *   - `!previous` -> renders the FULL three-decision line with no arrow, so a
+ *                    one-decision `->` line rules THAT path out.
+ * What remains is `changed.length === 0`, so deleting it turns the silence into
+ * a literal `- authority: .` and the top-of-file cases go red. That is the
+ * falsifiability claim, established without mutating the subject.
+ */
+describe('P-013 render guards — the silences are falsifiable, not vacuous', () => {
+  const COMMITTED = fingerprintOrientation(stateWith(AUTO, { inboxRecent: inbox('first') }), EPOCH);
+
+  /** One rig, one variable: only the verdict differs between calls. */
+  function renderAuthority(verdict: OrientationAuthorityVerdict | null): string[] {
+    const block = composeOrientationBlock({
+      state: stateWith(verdict, { inboxRecent: inbox('an unrelated peer message arrived') }),
+      committed: COMMITTED,
+      epoch: EPOCH,
+    });
+    // The block re-rendered for the unrelated class — otherwise every case here
+    // proves nothing, because an empty block trivially has no authority line.
+    expect(block).not.toBe('');
+    return authorityLines(block);
+  }
+
+  it('the UNCHANGED silence flips to a line on the one input that differs', () => {
+    expect(renderAuthority(AUTO)).toEqual([]);
+    expect(renderAuthority(CONFIRM)).toEqual([
+      '- authority: exec act-with-disclosure -> confirm-before-execution.',
+    ]);
+  });
+
+  it('the UNREADABLE silence flips to a line on the one input that differs', () => {
+    expect(renderAuthority(null)).toEqual([]);
+    expect(renderAuthority(CONFIRM)).toHaveLength(1);
+  });
+
+  it('the changed variant renders a ONE-decision diff — which is what excludes the first-turn path', () => {
+    const [line] = renderAuthority(CONFIRM);
+
+    expect(line).toContain(' -> ');
+    // A `!previous` first-turn render names all three decisions and carries no
+    // arrow. Excluding that shape is what makes the silences above attributable
+    // to the unchanged-guard rather than to an undecodable cursor.
+    expect(line).not.toContain('mission');
+    expect(line).not.toContain('ideation');
+  });
+});
