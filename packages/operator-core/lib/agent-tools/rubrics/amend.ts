@@ -142,7 +142,7 @@ export const rubricsAmendArgs = z
       .max(200)
       .optional()
       .describe(
-        'optional assertion of the reviewer identity; must match the approval post author. ALSO PASS IT ON dryRun:true TO SCREEN A CANDIDATE FIRST: the preview then returns approverEligibility { eligible, relatedImplementer } for this id, plus implementers[] so you can screen others from the same call. The spawn/rebind lineage rail is otherwise evaluated only at apply — after the reviewer has already spent a full review wake on an approval that was void from the moment you picked them (EI-23806582233421348).',
+        'optional assertion of the reviewer identity; must match the approval post author. ALSO PASS IT ON dryRun:true TO SCREEN A CANDIDATE FIRST, not after they spent a review wake on an approval void from the start (EI-23806582233421348): returns approverEligibility { eligible, relatedImplementer, relatedVia, eligibleWithUnrelatedApplier }. eligible predicts YOUR OWN apply and implementers[] includes YOU, so screening YOURSELF is always false and proves nothing (WI-10002357); relatedVia:"caller" is a curable artifact — have a different agent apply.',
       ),
     approvedAt: z
       .string()
