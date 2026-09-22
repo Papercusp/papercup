@@ -658,10 +658,18 @@ describe('remaining re-keys, totals, and error isolation', () => {
     const sql = fakeSql({ ownerDirectives: 2 });
     const res = await rebind(FROM, TO, sql);
     expect(surfaceOf(res, 'owner-directives')).toMatchObject({ moved: 2 });
-    const upd = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.owner_directives SET owner_id'));
+    const upd = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.owner_directives SET recorded_by'));
     expect(upd).toBeTruthy();
     expect(upd!.text).toContain('dispositioned_at IS NULL');
     expect(upd!.vals).toEqual([TO, FROM]);
+    // WI-10002452: pin the COLUMN, not just the table. This surface spent
+    // months targeting `owner_id`, where the predicate could never match a row
+    // — that column holds the HUMAN owner label ('owner'/'Avi'), while
+    // `recorded_by` is the live session binding. A table-level assertion passes
+    // happily against either, which is precisely how the dead UPDATE survived,
+    // so assert the predicate keys on recorded_by and never on owner_id.
+    expect(upd!.text).toMatch(/WHERE\s+recorded_by\s*=/);
+    expect(upd!.text).not.toContain('owner_id');
   });
 
   it('agent-modes re-keys live GOAL/AUTO/DRAIN posture and preserves the successor row on an axis collision', async () => {
