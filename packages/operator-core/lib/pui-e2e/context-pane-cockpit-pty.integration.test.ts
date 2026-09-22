@@ -62,39 +62,38 @@ function cargoTargetDir(): string | null {
 }
 
 function resolvePuiBinary(): string | null {
-  const candidates: Array<string | null | undefined> = [process.env.PUI_BIN];
   const targetDir = cargoTargetDir();
-  if (targetDir) {
-    candidates.push(path.join(targetDir, 'debug', 'pui'), path.join(targetDir, 'release', 'pui'));
-  }
-  candidates.push(
+  const candidates: Array<string | null> = [
+    targetDir ? path.join(targetDir, 'debug', 'pui') : null,
+    targetDir ? path.join(targetDir, 'release', 'pui') : null,
     path.join(TUI_DIR, 'target', 'debug', 'pui'),
     path.join(TUI_DIR, 'target', 'release', 'pui'),
-    path.join(REPO_ROOT, 'target', 'debug', 'pui'),
-    path.join(REPO_ROOT, 'target', 'release', 'pui'),
-  );
-  for (const c of candidates) {
-    if (c && existsSync(c)) return c;
-  }
-  const which = spawnSync('which', ['pui'], { encoding: 'utf8' });
-  if (which.status === 0 && which.stdout.trim()) return which.stdout.trim();
-  return null;
+  ];
+  return candidates.find((c): c is string => Boolean(c && existsSync(c))) ?? null;
 }
 
+/**
+ * PUI_BIN explicitly selects an installed artifact; otherwise ALWAYS build
+ * (incremental — a no-op when current). Reusing whatever binary already exists
+ * measured stale code while reporting a current pass, which then bound as
+ * evidence for source it never ran. Same contract as agent-chat-pty.
+ */
 function ensurePuiBinary(): string {
-  const found = resolvePuiBinary();
-  if (found) return found;
-  const build = spawnSync('cargo', ['build', '--bin', 'pui'], {
+  if (process.env.PUI_BIN) {
+    if (!existsSync(process.env.PUI_BIN)) throw new Error('The explicit PUI_BIN artifact does not exist');
+    return process.env.PUI_BIN;
+  }
+  const build = spawnSync('cargo', ['build', '--locked', '--bin', 'pui'], {
     cwd: TUI_DIR,
     encoding: 'utf8',
     timeout: 840_000,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   if (build.status !== 0) {
-    throw new Error(`cargo build --bin pui failed:\n${build.stderr?.slice(-4000)}`);
+    throw new Error(`cargo build --locked --bin pui failed:\n${build.stderr?.slice(-4000)}`);
   }
   const built = resolvePuiBinary();
-  if (!built) throw new Error('pui binary not found even after cargo build');
+  if (!built) throw new Error('pui binary is absent after a successful cargo build');
   return built;
 }
 
@@ -436,6 +435,11 @@ function paneEnv(operatorPort: number, home: string): Record<string, string> {
 
 function configureHudCockpitFixture(fake: FakeOperator): void {
   const plan = 'hud-cockpit-e2e';
+  // Roster rows feed the Sessions destination, whose default WHEN window is 7d
+  // against the real clock, so these stamps must be relative to now: absolute
+  // dates silently aged this fixture out of the default view a week after it
+  // was written.
+  const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
   const leader = {
     ownerId: 'su-hud-leader',
     label: 'HUD Leader',
@@ -446,7 +450,7 @@ function configureHudCockpitFixture(fake: FakeOperator): void {
     liveness: 'live',
     sessionState: 'live',
     heartbeatFresh: true,
-    heartbeatAt: '2026-08-27T03:40:00Z',
+    heartbeatAt: ago(20 * 60_000),
     fleetSlug: 'hud-fleet',
     fleetRole: 'leader',
     currentPlanSlug: plan,
@@ -462,7 +466,7 @@ function configureHudCockpitFixture(fake: FakeOperator): void {
     liveness: 'live',
     sessionState: 'ended',
     heartbeatFresh: true,
-    heartbeatAt: '2026-08-27T03:59:59Z',
+    heartbeatAt: ago(1_000),
     fleetSlug: 'hud-fleet',
     fleetRole: 'member',
     currentPlanSlug: plan,
@@ -472,7 +476,7 @@ function configureHudCockpitFixture(fake: FakeOperator): void {
     mode: 'console',
     transcriptRef: 'codex:hud-ended:4242',
     transcriptExcerpt: 'Durable ended-session transcript',
-    transcriptAt: '2026-08-27T03:59:58Z',
+    transcriptAt: ago(2_000),
   };
 
   fake.jsonRoutes.set('GET /api/adv/roster', {
@@ -499,6 +503,9 @@ function configureHudCockpitFixture(fake: FakeOperator): void {
         id: 'chat-hud-e2e',
         role: 'operator',
         title: 'HUD acceptance chat',
+        // Agent Chat's front door opens only a classified su-session chat;
+        // an unclassified one stays in the history picker and never loads.
+        su_runtime_class: 'su-session',
         turn_count: 2,
         created_at: '2026-08-27T03:20:00Z',
         updated_at: '2026-08-27T03:59:00Z',
@@ -1201,7 +1208,11 @@ describe('pui context-pane cockpit (installed binary, real PTY, fake canonical o
       await pane.waitFor('leader members');
       await pane.waitFor('hud-fleet');
       await pane.waitFor('Finished the prior lane');
-      expect(pane.contains('ended')).toBe(true);
+      // Assert on the ended ROW, not the screen: the legend alone contains
+      // "ended", and it truncates once the leader cockpit takes the right column.
+      // ○ is the draining/suspect/ended glyph — never the live ●.
+      const endedRow = pane.screen().split('\n').find((line) => line.includes('Finished the prior lane'));
+      expect(endedRow).toMatch(/○ codex\s+Finished the prior lane/);
 
       // The leader cockpit intentionally owns the right column while its
       // brief is available. A failed refresh must fall back to the canonical
@@ -1226,8 +1237,11 @@ describe('pui context-pane cockpit (installed binary, real PTY, fake canonical o
       // item-completed transition rather than collapsing it into roster state.
       pane.write('\t\t');
       await pane.waitFor('Transition tape');
-      await pane.waitFor('item-completed');
+      // The tape renders the transition through the semantic registry, so the
+      // item-completed kind appears as its label on the WI-HUD-DONE row.
       await pane.waitFor('WI-HUD-DONE');
+      const completedRow = pane.screen().split('\n').find((line) => line.includes('WI-HUD-DONE'));
+      expect(completedRow).toMatch(/Item completed\s+WI-HUD-DONE/);
 
       // Both the durable Sessions destination and Ctrl-S switcher keep ended
       // sessions browseable/resumable. The fixture's fresh heartbeat is a
