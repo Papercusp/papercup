@@ -1567,6 +1567,14 @@ export function fingerprintDeliveredOrientation(
     const delivered = block.includes('post-claim plan/goal revision(s)');
     if (!delivered) deliveredState = { ...deliveredState, effortUpdates: undefined };
   }
+  // Budget-truncated ⇒ NOT delivered ⇒ do not advance the token. Without this the
+  // first turn that trims this line marks the rows "seen" forever, and the agent
+  // inherits a claim it was never shown — a silent failure indistinguishable from
+  // the row having been re-checked.
+  if (state.openChecks?.length) {
+    const delivered = block.includes('🔎');
+    if (!delivered) deliveredState = { ...deliveredState, openChecks: undefined };
+  }
   const obligations = state.obligations;
   if (!obligations) return fingerprintOrientation(deliveredState, epoch, committed);
   const projectedLines = obligations.projection.text.split('\n').filter(Boolean);
@@ -1657,6 +1665,7 @@ export async function resolveOrientationState(
     ownerDirectives,
     historyUpdates,
     effortUpdates,
+    openChecks,
     inbox,
     announcedGates,
     openAsks,
@@ -1675,6 +1684,11 @@ export async function resolveOrientationState(
     // read failure advances the shared cursor past history the agent never saw.
     d.historyUpdates(ownerId, workspaceId).catch(() => undefined),
     d.effortUpdates(ownerId, workspaceId).catch(() => undefined),
+    // Same unknown-vs-measured-empty rule. It matters MORE here than for the two
+    // above: an empty list reads as "nothing left to falsify", which is the exact
+    // false reassurance this class exists to deny. A read failure must stay silent
+    // and preserve the prior token, never assert the all-clear.
+    d.openChecks(ownerId, workspaceId).catch(() => undefined),
     d.inbox(ownerId).catch(() => ({ count: 0, newest: [] as OrientationInboxEntry[] })),
     d.announcedGates(ownerId, workspaceId).catch(() => [] as OrientationAnnouncedGate[]),
     // Fail-soft to null, same rule as toolSurface below: "cannot tell" must
@@ -1706,6 +1720,7 @@ export async function resolveOrientationState(
     ...(ownerDirectives.length > 0 ? { ownerDirectives } : {}),
     historyUpdates,
     effortUpdates,
+    openChecks,
     unansweredDirected: inbox.count,
     // `in` rather than a plain read: an injected seam (tests, an older deps
     // object) may legitimately omit the field, and the union type says so.
