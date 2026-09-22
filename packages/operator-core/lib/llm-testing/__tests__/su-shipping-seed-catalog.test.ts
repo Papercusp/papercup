@@ -93,6 +93,45 @@ describe('buildShippingSeedCatalog — the offered set is the SHIPPED set (D-019
     expect(full.bytes).toBeGreaterThan(0);
   });
 
+  it('D-046: the compact arm delivers a seed-FULL tool at FULL fidelity, not compacted', async () => {
+    const seedFull = Object.entries(
+      (CLAUDE_TOOL_DELIVERY as { tiers: Record<string, string> }).tiers,
+    )
+      .filter(([, t]) => t === 'full')
+      .map(([name]) => name);
+
+    // Not an invariant of the artifact — if the seed ever ships nothing full
+    // this assertion is vacuous, and saying so is the point.
+    expect(seedFull.length).toBeGreaterThan(0);
+
+    const full = await buildShippingSeedCatalog('full');
+    const compact = await buildShippingSeedCatalog('compact');
+    const byCanonical = (built: Awaited<ReturnType<typeof buildShippingSeedCatalog>>) =>
+      new Map(
+        built.catalog.tools.map((t) => [
+          built.catalog.canonicalBySanitized.get(t.name) ?? t.name,
+          t,
+        ]),
+      );
+    const fullByName = byCanonical(full);
+    const compactByName = byCanonical(compact);
+
+    for (const name of seedFull) {
+      const f = fullByName.get(name);
+      const c = compactByName.get(name);
+      if (!f || !c) continue; // absent from the live registry; coverage covers that
+      // The whole point of D-046: over-compacting a tool the seed ships full
+      // makes the arm deliver LESS than production, so the A/B can only
+      // overstate the regression it is meant to measure.
+      expect(c.description).toBe(f.description);
+      expect(c.input_schema).toEqual(f.input_schema);
+    }
+
+    // …and the arm must still be compacting everything else, or this test
+    // would also pass against a compact arm that had stopped compacting.
+    expect(compact.bytes).toBeLessThan(full.bytes);
+  });
+
   it('every offered definition is a legal Anthropic tool schema', async () => {
     for (const tier of ['full', 'compact'] as const) {
       const built = await buildShippingSeedCatalog(tier);

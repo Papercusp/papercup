@@ -217,6 +217,23 @@ export interface ShippingSeedCatalog {
  * Fails closed on a thin registry read, exactly as `loadLiveDefinitions` does:
  * a silent fallback to curated stand-ins would look like a shipping-seed run
  * and would not be one.
+ *
+ * ⚠ `tier:'compact'` means PER-NAME, from the artifact's own `tiers` map — NOT
+ * "compact everything" (D-046). This used to compact every seed name uniformly,
+ * which was faithful only while the artifact read `{ full: 0, compact: 63 }`.
+ * That premise expired on 2026-09-22T21:46Z, when a byte repair freed enough
+ * budget to promote `coord:whoami` and `tools:invoke` to FULL. A uniform
+ * projection then delivered LESS than what ships, and the difference was not
+ * cosmetic: `tools:invoke` loses 475 B → 91 B of pure prose (its schema is
+ * unchanged), including the name-format contract "Pass the exact tool name
+ * (colon form…)". Two S25 blocks in that window duly emitted
+ * `work_items__list`, reached no tool, and answered "no open work items found"
+ * — a failure of the INSTRUMENT that the shipping seed does not have. An A/B
+ * arm that over-compacts cannot bound the shipping configuration's regression;
+ * it can only overstate it.
+ *
+ * `tier:'full'` remains the uniform all-full control arm: that is the contrast
+ * D-008 asks for, and it is what the compact arm is judged against.
  */
 export async function buildShippingSeedCatalog(tier: 'full' | 'compact'): Promise<ShippingSeedCatalog> {
   const live = await loadLiveDefinitions();
@@ -251,8 +268,13 @@ export async function buildShippingSeedCatalog(tier: 'full' | 'compact'): Promis
     usedLive.push(canonical);
     const sourceDescription = row.description ?? '';
     const sourceSchema = row.inputSchema ?? {};
-    const description = tier === 'compact' ? summaryGuidanceDescription(sourceDescription) : sourceDescription;
-    const projected = tier === 'compact' ? compactInputSchema(sourceSchema) : sourceSchema;
+    // D-046: on the compact arm the per-name tier is the artifact's own verdict,
+    // so a tool the seed ships FULL is delivered full here too. Anything other
+    // than the literal 'full' compacts — an unrecognised tier must not be read
+    // as a promotion.
+    const compactThisOne = tier === 'compact' && tiers[canonical] !== 'full';
+    const description = compactThisOne ? summaryGuidanceDescription(sourceDescription) : sourceDescription;
+    const projected = compactThisOne ? compactInputSchema(sourceSchema) : sourceSchema;
     // Anthropic requires input_schema.type === 'object'; a tool whose source
     // schema is not an object would otherwise smuggle a malformed request into
     // the run and fail as if the model had erred.
