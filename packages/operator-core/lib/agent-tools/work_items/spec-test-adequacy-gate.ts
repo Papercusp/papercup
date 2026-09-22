@@ -311,6 +311,32 @@ function evaluatorCapabilityFailureReason(label: string, result: SpecTestAdequac
     'This is not repairable by a grading-integrity audit; no pendingGradingAuditTargetIds were produced.';
 }
 
+/**
+ * WI-10002335: the caller-facing remedy offered when a spec-test-adequacy attestation is
+ * missing. It is a named export rather than an inline literal ONLY so the recurrence guard
+ * (`spec-adequacy-refusal-prescribes-workable-remedy.test.ts`) can assert against the real
+ * runtime string instead of re-parsing this source file — do not re-inline it.
+ *
+ * This text used to end "with `classRef` and current evidence fingerprints", instructing
+ * callers to hand-author fingerprints the gate resolves ITSELF. Measured cost on plan
+ * turn-start-memory-two-class-2026-09-21: it became plan Decision D-038 ("fingerprints you
+ * COPY from the evaluator") and cost several agents a rebind cycle each, because a refusal
+ * naming a specific laborious remedy is obeyed at exactly the moment the caller is most
+ * willing to comply. A message that prescribes a remedy must prescribe one that WORKS —
+ * i.e. one the attestation's own schema (`specAdequacyCompletionSpec`) actually accepts.
+ */
+export const SPEC_ADEQUACY_ATTESTATION_GUIDANCE =
+  'pass a TOP-LEVEL `specAdequacy` argument to work_items:complete — a SIBLING of ' +
+  '`completion`, never nested inside it (`completion.specAdequacy` is rejected). ' +
+  '`classRef` is the ONLY required key, and on its own it is SUFFICIENT once the evidence is ' +
+  'ready — the gate resolves the governing clauses, the bound evidence and every fingerprint ' +
+  'dimension itself. Do NOT hand-author fingerprints: `current` and `evidenceRefs` are optional ' +
+  'and exist only to NARROW the graded selection or REPLAY a persisted evaluator snapshot. ' +
+  'If it still refuses WITH `classRef` supplied, the blocker is UPSTREAM of this payload and no ' +
+  'attestation shape will fix it — check, in order: (1) the clause evaluates verdict=pass via ' +
+  'plans:evaluate-spec-test-adequacy, (2) an evaluator scorecard is filed for that clause, ' +
+  "(3) that scorecard's gradingAudit.state is 'passed' rather than 'pending'";
+
 export async function specTestAdequacyCompletionGate(
   input: {
     workItem: WorkItemForSpecGate;
@@ -462,23 +488,7 @@ export async function specTestAdequacyCompletionGate(
       reason:
         `current spec-test-adequacy attestation required for ${potentiallyTestRequiring
           .map((clause) => `${clause.specId}@${clause.revision}`)
-          .join(', ')}; pass a TOP-LEVEL \`specAdequacy\` argument to work_items:complete — a SIBLING of ` +
-        `\`completion\`, never nested inside it (\`completion.specAdequacy\` is rejected). ` +
-        // WI-10002335: this message used to end "with `classRef` and current evidence
-        // fingerprints", instructing callers to hand-author fingerprints the gate resolves
-        // ITSELF. Measured cost on plan turn-start-memory-two-class-2026-09-21: it became
-        // plan Decision D-038 ("fingerprints you COPY from the evaluator") and cost several
-        // agents a rebind cycle each, because a refusal that names a specific laborious
-        // remedy is obeyed at exactly the moment the caller is most willing to comply.
-        // A message that prescribes a remedy must prescribe the one that works.
-        `\`classRef\` is the ONLY required key, and on its own it is SUFFICIENT once the evidence is ` +
-        `ready — the gate resolves the governing clauses, the bound evidence and every fingerprint ` +
-        `dimension itself. Do NOT hand-author fingerprints: \`current\` and \`evidenceRefs\` are optional ` +
-        `and exist only to NARROW the graded selection or REPLAY a persisted evaluator snapshot. ` +
-        `If it still refuses WITH \`classRef\` supplied, the blocker is UPSTREAM of this payload and no ` +
-        `attestation shape will fix it — check, in order: (1) the clause evaluates verdict=pass via ` +
-        `plans:evaluate-spec-test-adequacy, (2) an evaluator scorecard is filed for that clause, ` +
-        `(3) that scorecard's gradingAudit.state is 'passed' rather than 'pending'`,
+          .join(', ')}; ${SPEC_ADEQUACY_ATTESTATION_GUIDANCE}`,
     });
   }
 
