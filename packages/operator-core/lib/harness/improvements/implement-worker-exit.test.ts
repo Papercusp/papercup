@@ -172,6 +172,22 @@ describe('isEnvFailureExit (EI-406 classifier)', () => {
     expect(v.env).toBe(false);
   });
 
+  // EI-23881176965254978 — the Codex model-capacity wall. Deliberately shaped to be
+  // NON-VACUOUS: the runtime is well past the DOA floor and the output is non-empty, so the
+  // dead-on-arrival and silent-death rules below both decline it. Without the capacity pattern
+  // in ENV_FAILURE_PATTERNS this returns env:false — i.e. the death is CHARGED as a real attempt
+  // and tagged plain 'worker-exit-backedge', which the orphaned-dispatch watchdog then reads as
+  // "the implement lane is broken". Same self-amplifying false-EI loop as EI-6876 / EI-6890 /
+  // EI-7591, one signature later.
+  it('EI-23881176965254978: a Codex model-capacity wall is an env failure, not a charged attempt', () => {
+    const v = isEnvFailureExit({
+      exitCode: 1,
+      runtimeMs: ENV_FAILURE_RUNTIME_FLOOR_MS + 210_000,
+      stdout: 'Selected model is at capacity. Please try a different model.',
+    });
+    expect(v.env).toBe(true);
+  });
+
   it('WI-716: "Prompt is too long" is classed env + tagged context-overflow (not a generic env signature)', () => {
     const v = isEnvFailureExit({
       exitCode: 1,

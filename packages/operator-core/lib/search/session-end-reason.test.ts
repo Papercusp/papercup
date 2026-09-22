@@ -5,6 +5,7 @@
  * classifier is that a wedged session must not be reported as a settled one.
  */
 import { describe, expect, it } from 'vitest';
+import { MODEL_CAPACITY_RE } from '@papercusp/papercusp-shared/agent';
 import { classifySessionEnd, classifyWedgeText, isMachineModelErrorText, isWedged } from './session-end-reason';
 
 const NOW = Date.UTC(2026, 6, 13, 12, 0, 0);
@@ -214,6 +215,13 @@ describe('Codex model-capacity wall', () => {
     expect(isMachineModelErrorText('Selected model is at capacity. Please try a different model.')).toBe(true);
   });
 
+  // Prose that MENTIONS the wall without being one. Shared by the two tests below so the guard
+  // and its control can never drift onto different fixtures.
+  const DISCUSSING_IT = [
+    'Fixed the retry: when the selected model is at capacity we now wait 60s before retrying.',
+    'The owner reported "Selected model is at capacity" and asked for a one-minute retry.',
+  ];
+
   it('is ANCHORED: the same wording quoted mid-prose is NOT a machine model error', () => {
     // The falsifiable half, and the reason this signature is anchored at all. The MACHINE half is
     // scanned BLIND by classifyLoopLifecycleTurn, and unlike "API Error:" this wording is ordinary
@@ -221,11 +229,22 @@ describe('Codex model-capacity wall', () => {
     // this very fix did so repeatedly. Unanchored, each of those turns would have been recorded as
     // a dead wake: recordFire('error'), fire-gate backoff, spurious death escalation. That is
     // exactly the regression EI-22102700164999066 was filed for, one signature later.
-    for (const prose of [
-      'Fixed the retry: when the selected model is at capacity we now wait 60s before retrying.',
-      'The owner reported "Selected model is at capacity" and asked for a one-minute retry.',
-    ]) {
-      expect(isMachineModelErrorText(prose)).toBe(false);
+    for (const prose of DISCUSSING_IT) expect(isMachineModelErrorText(prose)).toBe(false);
+  });
+
+  it('CONTROL: that prose really IS capacity-shaped — a deliberately UNANCHORED matcher trips on it', () => {
+    // Without this, the assertion above passes for free: a fixture that simply failed to contain
+    // the wording would also return false, and the anchor could be deleted tomorrow with every
+    // test still green. The deliberately-wrong matcher lives here permanently rather than being
+    // mutated into the source — the shared tree is swept into commits every few minutes, so a
+    // probe that edits real code can be committed mid-run even when nothing goes wrong.
+    const unanchored = new RegExp(MODEL_CAPACITY_RE.source, 'i');
+    for (const prose of DISCUSSING_IT) {
+      expect(unanchored.test(prose)).toBe(true); // the wording is present…
+      expect(isMachineModelErrorText(prose)).toBe(false); // …and the ANCHOR is what rejects it
     }
+    // Calibration: the same anchored subject must still accept the real machine-emitted line, or
+    // both assertions above would also pass with the signature removed altogether.
+    expect(isMachineModelErrorText(CAPACITY)).toBe(true);
   });
 });
