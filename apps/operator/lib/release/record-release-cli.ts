@@ -69,6 +69,7 @@ export {
 };
 import { generateChangelog } from './changelog-generate';
 import { OWNER_NAME_ENV, hasOwnerNameLiteral, identityLiterals } from './release-content-scrub';
+import { describeOwnerIdentityLoad, loadOwnerIdentityEnv } from './owner-identity-env';
 import {
   planPagePath,
   renderHistoryJson,
@@ -1451,6 +1452,17 @@ export function buildRunOpts(argv: string[]): RecordOpts {
 }
 
 if (isCliEntry(import.meta.url)) {
+  /**
+   * Resolve the owner identity at the process boundary, before anything reaches
+   * `identityLiterals()`. Same placement and same reasoning as gate-release-site.
+   *
+   * The stake here is the SCRUB rather than the gate, and it is the quieter of the two
+   * failures: with no owner-name literal the scrub redacts NOTHING while still emitting a
+   * complete-looking site. That is why the generator fails closed on `hasOwnerNameLiteral`
+   * — this loader is what keeps that rail from firing on a correctly-configured box
+   * merely because nobody remembered to source the config file first.
+   */
+  console.error(describeOwnerIdentityLoad(loadOwnerIdentityEnv()));
   main()
     .then((code) => process.exit(code))
     .catch((e) => {
