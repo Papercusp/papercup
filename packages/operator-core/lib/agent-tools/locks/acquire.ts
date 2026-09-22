@@ -68,6 +68,7 @@ import {
   type FileLockAcquireResult,
 } from '../../authority/file-lock-authority-ops';
 import { recordLockEvent } from '../../authority/lock-event-stream';
+import { projectLockWaitOperationalBrief } from '../../operational-brief/wait-brief';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC, MAX_LOCK_WAIT_SEC as MAX_WAIT_SEC } from './lock-config';
 import { hardText, LIMITS } from '../limits';
@@ -561,6 +562,18 @@ export default defineTool({
       // NOTIFY fast path (best-effort; the sweep reconciler is load-bearing).
       await ensureGrantListener(coordinationDomain, identity.workspaceId ?? undefined);
 
+      const queuedBusy = await enrichBusy(first.busy, { ownerId });
+      // P-010 (OP-BRIEF-P010-WAIT): the queued wake path is the one lock outcome that blocks
+      // the caller across turns, so it is the only one that carries a wait brief.
+      const operationalBrief = projectLockWaitOperationalBrief({
+        ticketId: inserted.ticket_id,
+        paths,
+        waitUntil: inserted.wait_until,
+        wakeAwait: awaitRow,
+        holders: queuedBusy,
+        applyOnGrant: pendingEdit !== undefined,
+      });
+
       return jsonResult({
         ok: false,
         queued_for_wake: true,
@@ -569,7 +582,8 @@ export default defineTool({
         await_id: awaitRow.id,
         queue_window_sec: WAKE_QUEUE_WINDOW_SEC,
         wake_handle: handleNote,
-        busy: await enrichBusy(first.busy, { ownerId }),
+        busy: queuedBusy,
+        ...(operationalBrief ? { operational_brief: operationalBrief } : {}),
         advice: pendingEdit
           ? `Queued WITH your edit attached (apply-on-grant). END YOUR TURN. On grant the server applies your edit to ${pendingEdit.file} iff old_string still matches exactly once, then drops a PASSIVE inbox note (category lock-edit-applied) — you are NOT woken and the lock is released for you. Only if the region changed under the holder are you woken (granted:true) to redo it. Retract with locks:cancel_wait + events:cancel.`
           : 'Queued. END YOUR TURN — you will be re-invoked when the grant cascade reaches your ticket (the wake carries lock_id + TTL, already running: edit, then locks:release). If the window lapses without a grant you are woken with granted:false. Retract with locks:cancel_wait + events:cancel.',

@@ -76,6 +76,8 @@ import { recordLockEvent } from '../../authority/lock-event-stream';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { readAgentStateStamp } from '../../agent-state-stamp';
 import { MAX_LOCK_TTL_SEC } from './lock-config';
+import { registerAwait } from '../../events/await/store';
+import type { AwaitRow } from '../../events/await/types';
 const normM = vi.mocked(normalizePaths);
 const insertM = vi.mocked(tryInsertWaiter);
 const txnM = vi.mocked(inWorkspaceTxn);
@@ -486,6 +488,55 @@ describe('locks:acquire — outcome branches', () => {
       await_id: 'A1',
       queue_window_sec: MAX_LOCK_TTL_SEC,
     });
+  });
+
+  it('P-010: a queued wake_on_grant wait carries a lock-wait operational brief built from the real waiter + await rows', async () => {
+    const waitUntil = new Date(Date.now() + 30 * 60_000);
+    routeM.mockResolvedValue({
+      value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2', owner_label: 'O2', intent: 'refactor', expires_ts: '2099-01-01T00:00:00.000Z' }] },
+      via: 'local-authority',
+    });
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-brief', wait_until: waitUntil });
+    const wakeRow: AwaitRow = {
+      id: 501,
+      workspaceId: 'ws-1',
+      subscriberId: 'me',
+      eventKey: 'grant:T-brief',
+      policy: 'wake',
+      note: 'lock wait: a.ts — edit',
+      wakeHandle: null,
+      timeoutBehavior: 'wake',
+      expiresTs: '2099-01-01T00:02:00.000Z',
+      createdAt: '2026-09-22T00:00:00.000Z',
+      firedAt: null,
+      firedReason: null,
+      cancelledAt: null,
+      cancelReason: null,
+      once: true,
+      minSleepSec: null,
+      urgency: false,
+      payloadFilter: null,
+      scopeKind: null,
+      scopeRef: null,
+    };
+    vi.mocked(registerAwait).mockResolvedValueOnce(wakeRow);
+    const b = body(await call({ wake_on_grant: true }));
+    expect(b.operational_brief).toMatchObject({
+      schemaVersion: 'operational-brief-v1',
+      surface: 'lock-wait',
+      subject: 'lock a.ts (ticket T-brief)',
+      owner: { status: 'known', value: 'o2' },
+      deadline: { status: 'known', value: waitUntil.toISOString() },
+      facts: { ticketId: 'T-brief', awaitId: { status: 'known', value: 501 }, grantEventKey: { status: 'known', value: 'grant:T-brief' } },
+    });
+    expect(b.operational_brief.nextAction.value).toMatch(/^END YOUR TURN\./);
+  });
+
+  it('P-010: synchronous outcomes (instant grant, busy without a queued wait) carry NO operational brief', async () => {
+    routeM.mockResolvedValue({ value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] }, via: 'local-authority' });
+    expect(body(await call({}))).not.toHaveProperty('operational_brief');
+    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] }, via: 'local-authority' });
+    expect(body(await call({}))).not.toHaveProperty('operational_brief');
   });
 
   it('wake_on_grant self-grant (path freed during insert) → ok', async () => {
