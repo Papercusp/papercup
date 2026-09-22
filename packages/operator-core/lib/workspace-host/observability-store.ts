@@ -700,7 +700,10 @@ export async function beginWorkspaceHostOperation(input: WorkspaceHostOperationI
             ${desiredRevision}::bigint IS NULL
             OR ${desiredRevision}::bigint > desired_revision
             OR (
-              ${input.action} = 'provision'
+              -- A host's FIRST operation may claim the revision its row was written with. Restore
+              -- is a first operation too: it writes the replacement Host at the new revision, then
+              -- opens its operation there — requiring "strictly newer" fenced that out forever.
+              ${input.action} IN ('provision', 'restore')
               AND ${desiredRevision}::bigint = desired_revision
               AND NOT EXISTS (
                 SELECT 1 FROM harness_shared.workspace_host_operations prior

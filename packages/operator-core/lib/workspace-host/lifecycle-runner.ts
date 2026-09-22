@@ -1,5 +1,6 @@
 /** Replay-safe production controller for an already-provisioned workspace host. */
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   assertWorkspaceHostSecretIsolation,
   assertWorkspaceHostReplacement,
@@ -520,7 +521,9 @@ async function observe(
   } catch (error) {
     await store.appendEvent({
       workspaceId: input.workspaceId,
-      hostId: input.hostId,
+      // The operation lives on the host this action produced; for restore that is NOT the source,
+      // and the fenced store refuses an event whose operation belongs to a different host.
+      hostId: input.action === 'restore' ? input.desired!.hostId : input.hostId,
       operationId: context.requestId,
       phase: 'observe',
       status: 'running',
@@ -638,9 +641,11 @@ export async function runWorkspaceHostLifecycle(
       },
       replacement,
     );
+    // Structural, not textual: the stored spec round-tripped through jsonb, which re-orders object
+    // keys, so a byte comparison refused an identical policy whose request listed keys differently.
     if (
-      JSON.stringify(input.desired!.data) !== JSON.stringify(target.desired.data) ||
-      JSON.stringify(input.desired!.credentials) !== JSON.stringify(target.desired.credentials)
+      !isDeepStrictEqual(input.desired!.data, target.desired.data) ||
+      !isDeepStrictEqual(input.desired!.credentials, target.desired.credentials)
     ) {
       throw new WorkspaceHostProvisioningRequestError([
         'restore replacement must preserve workspace data policy and credential permissions',
