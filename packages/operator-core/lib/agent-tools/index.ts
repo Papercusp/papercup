@@ -1000,6 +1000,7 @@ import './gym/set-gates';
 import './work_items/reclaim-config';
 // live-configurability-audit-2026-06-20 P-014 — handoff TTL + session-reaper grace config tools:
 import './coordination/handoff-config';
+import './coordination/orientation-telemetry';
 import './coordination/session-reaper-config';
 // live-configurability-audit-2026-06-20 P-015 — hive placement-watchdog control policy:
 import './pot/control-policy';
