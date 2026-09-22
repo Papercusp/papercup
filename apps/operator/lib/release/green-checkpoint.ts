@@ -14069,6 +14069,42 @@ const normalizeRepairTickRun = (
 ): { script: string; workspace: string | null } =>
   typeof run === "string" ? { script: run, workspace: null } : run;
 
+/** WI-10002399: the git fatals for a lock held by a LIVE writer during release-tree
+ *  setup — `.git/index.lock` (including a worktree's own
+ *  `.git/worktrees/<name>/index.lock`) and the repository `config.lock`. The checkpoint
+ *  tree is a worktree of the SHARED 37-worktree checkout, so `setupTree`'s git calls race
+ *  the fleet's own writers by construction; a live writer holds either lock only for the
+ *  milliseconds it takes to replace the file.
+ *
+ *  Deliberately NARROW. The measured papercusp population of repair-tick setup failures
+ *  was 4, and only ONE (2026-09-21T17:23Z, exit 128, index.lock) is this class. The other
+ *  three — exit 127 (command not found: an environment break) and exit 74 (from
+ *  dependency-generation.sh; its `NPM_INSTALL_SAFE guarding reader` line is INFORMATIONAL,
+ *  not a fault) — are real failures that must surface on the FIRST attempt. Widening this
+ *  predicate to "looks like a lock" would retry genuine breaks three times before
+ *  reporting them, which is strictly worse than today's behavior.
+ *
+ *  The wording mirrors git-sync's already-tested `isIndexLockFailure` /
+ *  `isConfigLockFailure` (packages/operator-core/lib/harness/git-sync/run-git-sync.ts).
+ *  It is re-stated here rather than imported because this CLI's static module graph
+ *  deliberately excludes that ~4.7k-line module (the same reason the escalate/broadcast
+ *  deps below use dynamic imports). Exported so a git wording change fails a focused test
+ *  instead of silently disabling the retry. */
+export function isTransientSetupLockContention(output: string): boolean {
+  return (
+    /Unable to create '[^']*index\.lock': File exists/i.test(output) ||
+    /could not lock config file [^\r\n]*[/\\]config: File exists/i.test(output)
+  );
+}
+
+/** Bounded retry budget for {@link isTransientSetupLockContention}. Small on purpose: a
+ *  live writer releases in milliseconds, so this rides out the contention dip without
+ *  holding the tick — and a genuinely WEDGED lock still reaches the honest unmeasured-tick
+ *  path in this same tick rather than being retried indefinitely. Exported so the test
+ *  does not hardcode the same magic number twice. */
+export const REPAIR_TICK_SETUP_LOCK_MAX_RETRIES = 3;
+export const REPAIR_TICK_SETUP_LOCK_RETRY_BASE_DELAY_MS = 100;
+
 /**
  * P-009: the seam-injected core of the repair-tick cheap-legs measurement, shared by the
  * real dep (realCheckpointDeps.runRepairTickLegs) and its tests. Every gate id in
@@ -14100,18 +14136,44 @@ export async function measureRepairTickLegs(
     ): Promise<{ code: number; tail: string }>;
     log(line: string): void;
     now?: () => number;
+    /** Injectable for tests so the bounded setup-contention retry below costs no real
+     *  wall-clock. Production uses a real timer. */
+    sleep?: (ms: number) => Promise<void>;
   },
   ref: string,
   registry: Record<string, readonly RepairTickRun[]> = NON_TEST_GATE_SCRIPTS,
 ): Promise<RepairTickLegs | null> {
   const now = io.now ?? Date.now;
-  try {
-    await io.setupTree(ref);
-  } catch (e) {
-    io.log(
-      `warn: repair-tick legs setup failed for ${ref.slice(0, 12)}: ${e instanceof Error ? e.message : e}`,
-    );
-    return null;
+  const sleep =
+    io.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  // WI-10002399: ride out a LIVE writer's brief hold on the checkpoint worktree's git
+  // locks instead of spending the whole tick on it. Returning null here is honest — an
+  // unmeasured tick never manufactures evidence, and that property is preserved on EVERY
+  // exit below — but on a frozen repair queue each tick is a convergence step, so losing
+  // one to a lock that clears in milliseconds is a workaround, not a fix. Only the
+  // narrow contention class is retried; anything else still fails on the FIRST attempt,
+  // and an exhausted budget still returns null rather than claiming a measurement.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await io.setupTree(ref);
+      break;
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      if (
+        !isTransientSetupLockContention(detail) ||
+        attempt >= REPAIR_TICK_SETUP_LOCK_MAX_RETRIES
+      ) {
+        io.log(
+          `warn: repair-tick legs setup failed for ${ref.slice(0, 12)}: ${detail}`,
+        );
+        return null;
+      }
+      const delayMs = REPAIR_TICK_SETUP_LOCK_RETRY_BASE_DELAY_MS * 2 ** attempt;
+      io.log(
+        `warn: repair-tick legs setup hit live git-lock contention for ${ref.slice(0, 12)} (attempt ${attempt + 1}/${REPAIR_TICK_SETUP_LOCK_MAX_RETRIES + 1}); retrying in ${delayMs}ms`,
+      );
+      await sleep(delayMs);
+    }
   }
   const verifiedHead = await io.resolveHead().catch(() => "unresolved");
   if (verifiedHead !== ref) {

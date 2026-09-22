@@ -25,11 +25,23 @@ import { createFrozenCandidateQueue } from "@papercusp/operator-core/lib/release
 import {
   augmentWithRepairTickLegs,
   checkNpmScript,
+  isTransientSetupLockContention,
   measureRepairTickLegs,
   NON_TEST_GATE_SCRIPTS,
+  REPAIR_TICK_SETUP_LOCK_MAX_RETRIES,
   type CheckpointResult,
   type RepairTickLegs,
 } from "./green-checkpoint";
+
+/** The git fatal observed in the 2026-09-21T17:23Z papercusp gate log — a live writer
+ *  holding the checkpoint WORKTREE's own index.lock. The git WORDING is kept verbatim so a
+ *  wording change fails here rather than silently disabling the retry (WI-10002399); the
+ *  leading directory is derived, never a hardcoded home path (EI-18759401203875869 — a
+ *  literal one reds the identity-lint leg and freezes `main` for the whole fleet). */
+const LIVE_INDEX_LOCK_FATAL =
+  "bash apps/operator/bin/release/setup-release-checkout.sh --ref a8bff3dc exited 128: " +
+  `fatal: Unable to create '${join(tmpdir(), "papercusp")}/.git/worktrees/` +
+  "papercusp-checkpoint/index.lock': File exists.";
 
 const HEAD = "a".repeat(40);
 const OTHER = "b".repeat(40);
@@ -241,6 +253,114 @@ describe("measureRepairTickLegs", () => {
     expect(measured).toBeNull();
     expect(io.runScript).not.toHaveBeenCalled();
     expect(io.log).toHaveBeenCalledWith(expect.stringContaining("setup failed"));
+  });
+
+  // WI-10002399 — setup contention. The checkpoint tree is a worktree of the SHARED
+  // checkout, so setupTree's git calls race the fleet's own writers; a live writer holds
+  // index.lock for milliseconds. Losing a whole convergence tick to that is a workaround,
+  // not a fix — but the retry must stay narrow enough never to mask a real break.
+  describe("transient setup lock contention (WI-10002399)", () => {
+    it("rides out a live index.lock holder and still measures the tick", async () => {
+      const sleep = vi.fn(async (_ms: number) => undefined);
+      let calls = 0;
+      const io = makeIo({
+        sleep,
+        setupTree: vi.fn(async () => {
+          if (++calls <= 2) throw new Error(LIVE_INDEX_LOCK_FATAL);
+          return undefined;
+        }),
+      });
+
+      const measured = await measureRepairTickLegs(io, HEAD, { a: ["s1"] });
+
+      // The tick is MEASURED, not lost.
+      expect(measured).not.toBeNull();
+      expect(measured?.head).toBe(HEAD);
+      expect(io.setupTree).toHaveBeenCalledTimes(3);
+      expect(io.runScript).toHaveBeenCalledTimes(1);
+      // Exponential backoff, and no real wall-clock burned.
+      expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([100, 200]);
+      // Never reported as a failure — it succeeded.
+      expect(io.log).not.toHaveBeenCalledWith(
+        expect.stringContaining("setup failed"),
+      );
+    });
+
+    it("does NOT retry a non-contention failure — a real break must surface on the FIRST attempt", async () => {
+      const sleep = vi.fn(async (_ms: number) => undefined);
+      // Exit 127 (command not found) and exit 74 both occurred in the measured population
+      // and are environment breaks, NOT contention. Retrying them would delay the report.
+      const io = makeIo({
+        sleep,
+        setupTree: vi.fn(async () => {
+          throw new Error(
+            "setup-release-checkout.sh exited 127: dependency-generation.sh: command not found",
+          );
+        }),
+      });
+
+      const measured = await measureRepairTickLegs(io, HEAD, { a: ["s1"] });
+
+      expect(measured).toBeNull();
+      expect(io.setupTree).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+      expect(io.runScript).not.toHaveBeenCalled();
+      expect(io.log).toHaveBeenCalledWith(expect.stringContaining("setup failed"));
+    });
+
+    it("an EXHAUSTED budget still returns null — a wedged lock must never be claimed as a measurement", async () => {
+      const sleep = vi.fn(async (_ms: number) => undefined);
+      const io = makeIo({
+        sleep,
+        setupTree: vi.fn(async () => {
+          throw new Error(LIVE_INDEX_LOCK_FATAL);
+        }),
+      });
+
+      const measured = await measureRepairTickLegs(io, HEAD, { a: ["s1"] });
+
+      expect(measured).toBeNull();
+      expect(io.setupTree).toHaveBeenCalledTimes(
+        REPAIR_TICK_SETUP_LOCK_MAX_RETRIES + 1,
+      );
+      expect(sleep).toHaveBeenCalledTimes(REPAIR_TICK_SETUP_LOCK_MAX_RETRIES);
+      expect(io.runScript).not.toHaveBeenCalled();
+      expect(io.log).toHaveBeenCalledWith(expect.stringContaining("setup failed"));
+    });
+
+    it("classifies only live git-lock contention — a wording change must fail here, not silently disable the retry", () => {
+      // The two real wordings, including a WORKTREE index.lock (the observed one).
+      expect(isTransientSetupLockContention(LIVE_INDEX_LOCK_FATAL)).toBe(true);
+      expect(
+        isTransientSetupLockContention(
+          "fatal: Unable to create '/repo/.git/index.lock': File exists",
+        ),
+      ).toBe(true);
+      expect(
+        isTransientSetupLockContention(
+          "error: could not lock config file /repo/.git/config: File exists",
+        ),
+      ).toBe(true);
+
+      // Near-misses that must NOT be retried.
+      expect(isTransientSetupLockContention("fetch failed")).toBe(false);
+      expect(
+        isTransientSetupLockContention("exited 127: command not found"),
+      ).toBe(false);
+      // Informational, not a fault: npm-install-safe.mjs logs this when it RUNS a
+      // command under its mutex. Reading it as contention was a real misdiagnosis.
+      expect(
+        isTransientSetupLockContention(
+          "NPM_INSTALL_SAFE guarding reader: bash dependency-generation.sh (lock=npm-install-79e4)",
+        ),
+      ).toBe(false);
+      // A lock that is GONE is a different failure than one that EXISTS.
+      expect(
+        isTransientSetupLockContention(
+          "fatal: Unable to create '/repo/.git/index.lock': Permission denied",
+        ),
+      ).toBe(false);
+    });
   });
 });
 
