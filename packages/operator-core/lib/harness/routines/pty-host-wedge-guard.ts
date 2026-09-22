@@ -77,6 +77,8 @@ import {
 } from '../../events/await/psu-pty-discovery';
 import type { AttentionNotifyInput } from '../../attention-notify';
 import { broadcastSevereEvent } from '../../severe-event-broadcast';
+import type { WedgeIssueInput, WedgeIssueResult } from './pty-host-wedge-issue';
+import type { WakeDeliveryHealth } from './psu-pty-delivery-rate';
 
 /** The host event kind that records a wake being refused for a staged owner line. */
 export const DEFER_KIND = 'turn-deferred-for-owner-input';
@@ -680,6 +682,19 @@ export interface PtyHostWedgeSweepDeps {
    * the rare wedge.
    */
   notify?: (input: AttentionNotifyInput) => Promise<void>;
+  /**
+   * P-008: file/update the durable work-item for a wedge class. Injectable for tests;
+   * defaults to the real issue-store path, imported dynamically at call time for the same
+   * reason `notify` is — `issues-engineer` pulls in the coord thread store, and a detector
+   * that runs every 20 minutes must not carry it just to file on the rare wedge.
+   */
+  recordEpisode?: (input: WedgeIssueInput) => Promise<WedgeIssueResult>;
+  /**
+   * P-007 telemetry read folded into the durable record. Injectable; defaults to the real
+   * aggregate. Returns an explicitly UNMEASURED reading rather than throwing, so a missing
+   * migration or empty window degrades the report instead of failing the sweep.
+   */
+  readHealth?: (ownerIds: readonly string[]) => Promise<WakeDeliveryHealth>;
   now?: number;
 }
 
@@ -853,6 +868,36 @@ export async function sweepWedgedPtyHosts(
     ];
 
     const broadcast = deps.broadcast ?? broadcastSevereEvent;
+
+    // P-007 telemetry, read ONCE for the whole sweep and scoped to the wedged hosts: the
+    // question a reader has is "are these hosts actually failing to receive wakes", which a
+    // fleet-wide average would dilute rather than answer. Fail-soft — an unmeasured reading
+    // is a legitimate, explicitly-labelled outcome, never a 0%.
+    const readHealth =
+      deps.readHealth ??
+      (async (ownerIds: readonly string[]) => {
+        const { readWakeDeliveryHealth } = await import('./psu-pty-delivery-rate');
+        return readWakeDeliveryHealth({ ownerIds });
+      });
+
+    // P-008: the durable record. Defaulted here rather than at module scope so the
+    // issue-store import (and its coord thread store) is only paid on an actual wedge.
+    const recordEpisode =
+      deps.recordEpisode ??
+      (async (input: WedgeIssueInput) => {
+        const [{ recordWedgeEpisode }, issues] = await Promise.all([
+          import('./pty-host-wedge-issue'),
+          import('../../issues-engineer'),
+        ]);
+        return recordWedgeEpisode(input, {
+          listIssues: (filter) => issues.listIssues(filter as Parameters<typeof issues.listIssues>[0]),
+          createIssue: (createInput) =>
+            issues.createIssue(createInput as Parameters<typeof issues.createIssue>[0]),
+          commentIssue: (id, body, authorId) => issues.commentIssue(id, body, authorId),
+          mergeIssuePayload: (id, patch) => issues.mergeIssuePayload(id, patch),
+        });
+      });
+
     for (const cls of classes) {
       const hits = wedged.filter((w) => w.wedgeClass === cls.wedgeClass);
       if (hits.length === 0) continue;
@@ -866,6 +911,23 @@ export async function sweepWedgedPtyHosts(
         });
       } catch {
         /* best-effort — a broadcast failure must never fail the sweep */
+      }
+
+      // The durable half. Unlike the broadcast above this is NOT one-shot: it is the record
+      // that outlives the episode, so a recurrence appends to an owned item instead of
+      // re-firing an alarm nobody can be accountable for.
+      try {
+        const ownerIds = [...owners];
+        const health = await readHealth(ownerIds).catch(() => undefined);
+        await recordEpisode({
+          wedgeClass: cls.wedgeClass,
+          ownerIds,
+          detail: hits.map(renderHost),
+          ...(health ? { health } : {}),
+          nowIso: new Date(now).toISOString(),
+        });
+      } catch {
+        /* best-effort — bookkeeping must never fail the detector that found the outage */
       }
     }
 
