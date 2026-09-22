@@ -97,6 +97,55 @@ describe('unified requirement contract', () => {
     expect(parsed.criteria[0]).not.toHaveProperty('verification');
   });
 
+  /**
+   * PERMANENT NEGATIVE CONTROL — falsifiability proof for AUTO-BAR-R-1-P-001 (P-006).
+   *
+   * The alias-conflict guard is what stops a wire alias silently overwriting the
+   * canonical promise, and a guard that has never failed is a guard nobody has
+   * tested. So the deliberately-wrong implementation lives HERE, in the test file,
+   * permanently: production code is never mutated to prove this (CLAUDE.md forbids
+   * proving falsifiability by mutating the shared tree, because git-sync can commit
+   * the mutant mid-probe).
+   *
+   * The wrong oracle is the exact `!==` -> `===` inversion of the comparison at
+   * requirement-contract.ts:68. Both directions are covered on purpose: a predicate
+   * forced always-on and one forced always-off fail differently, and either alone
+   * leaves the other half unproven. The `conflicts: false` rows are the calibration
+   * — without them a subject that simply threw on everything would pass.
+   */
+  const comparable = (value: unknown): unknown => {
+    // Mirrors the module-private comparable() at requirement-contract.ts:50, so the
+    // control differs from the subject in exactly one place: the conflict predicate.
+    if (typeof value === 'string') return value.replace(/\r\n?/g, '\n').trim();
+    if (Array.isArray(value)) return value.map(comparable).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    if (value && typeof value === 'object') return Object.fromEntries(
+      Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, v]) => [key, comparable(v)]),
+    );
+    return value;
+  };
+
+  it.each([
+    { label: 'a conflicting model alias', overlay: { model: 'Only export the first page.' },
+      alias: 'Only export the first page.', canonical: requirement.acceptance.condition, conflicts: true },
+    { label: 'an equivalent model alias differing only by whitespace', overlay: { model: `  ${requirement.acceptance.condition}\r\n` },
+      alias: `  ${requirement.acceptance.condition}\r\n`, canonical: requirement.acceptance.condition, conflicts: false },
+    { label: 'a conflicting requiredTestLayers alias', overlay: { requiredTestLayers: ['unit'] },
+      alias: ['unit'], canonical: requirement.acceptance.requiredTestLayers, conflicts: true },
+    { label: 'an equivalent requiredTestLayers alias in a different order', overlay: { requiredTestLayers: ['e2e', 'integration'] },
+      alias: ['e2e', 'integration'], canonical: requirement.acceptance.requiredTestLayers, conflicts: false },
+  ])('negative control: the guard follows the real comparison and contradicts the inverted one for $label', ({ overlay, alias, canonical, conflicts }) => {
+    const correctOracle = JSON.stringify(comparable(alias)) !== JSON.stringify(comparable(canonical));
+    const invertedOracle = JSON.stringify(comparable(alias)) === JSON.stringify(comparable(canonical));
+
+    // The two oracles must genuinely disagree, or this control proves nothing.
+    expect(correctOracle).toBe(conflicts);
+    expect(invertedOracle).toBe(!conflicts);
+
+    const subject = () => normalizeRequirementSections({ ...requirement, ...overlay });
+    if (conflicts) expect(subject).toThrow('requirement_alias_conflict');
+    else expect(subject).not.toThrow();
+  });
+
   it('reads persisted intent, canonical acceptance and method through the existing rubric store', () => {
     const canonical = normalizeAcceptanceBarCriterion(requirement);
     const rubric = planRowToRubric({
