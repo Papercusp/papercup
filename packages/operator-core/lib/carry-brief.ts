@@ -45,7 +45,19 @@ import {
 import { harnessOfScope } from './work-item-scope';
 import { renderOwnerDirectivesBlock, type OwnerDirectiveRow } from './owner-directives';
 import type { QueryHandle } from './ambient-push';
-import { DEAD_END_KEY_PREFIX, type FactSourceProvenance } from './agent-facts/store';
+import {
+  DEAD_END_KEY_PREFIX,
+  foldNeverDropFacts,
+  type FactSourceProvenance,
+} from './agent-facts/store';
+// P-029: the carry document is a DECLARED orientation sink, so it reads what it
+// is entitled to carry from the shared class registry rather than deciding for
+// itself. Imported through the sink-neutral seam on purpose — that module's own
+// docstring names carry-brief consumers as its intended importer, and reaching
+// into `turn-start-orientation` (the turn-start sink's own module) would be a
+// layering inversion even though it resolves to the same binding.
+import { ORIENTATION_CLASS_REGISTRY } from './orientation-class-registry';
+import type { RegisteredOrientationClass } from './orientation-class-registry';
 // TYPE-only: the runtime `markContestedFacts` is dynamically imported at its one
 // call site below, matching how this module already defers `foldFacts`.
 import type { FactContestMark } from './agent-tools/facts/contested-fold';
@@ -222,6 +234,29 @@ export interface CarryBrief {
    * renderers treat a missing array the same as an empty one.
    */
   factsStaleness?: FactStalenessResult[];
+  /**
+   * P-029: NEVER-DROP fact KEYS, folded at WORKSPACE **and** OWNER scope.
+   *
+   * ⚠ NOT a subset of `facts` above, and that gap is the whole reason this
+   * field exists. `facts` folds an OWNER selector ONLY, so a never-drop fact
+   * asserted at WORKSPACE scope — the scope a fleet-wide guard rail is actually
+   * asserted at — reaches turn-start and the leader brief but has never reached
+   * this document. The missing thing was the SELECTOR, not the projection,
+   * which is why "carry-brief already carries facts" reads like coverage and is
+   * not: the two folds ask different questions of the same store.
+   *
+   * This document's reader is the COLDEST in the system — it rebuilds from the
+   * document alone — so it is the reader least able to re-derive a dead-end or
+   * a guard rail, and the one for whom the omission is least recoverable. That
+   * is EI-18725816532600240's "antidote absent where the poison is strongest",
+   * one sink further out than P-025 fixed it for the leader brief.
+   *
+   * KEYS ONLY, deliberately: bodies are re-fetchable (`facts:list`) and `facts`
+   * above is the full-body carrier, whereas what a successor cannot reconstruct
+   * is the EXISTENCE of a rail it never saw. Absent (not `[]`) when none apply,
+   * so "measured, none apply" is never confused with a degraded read.
+   */
+  neverDropFacts?: string[];
   /** Armed event awaits (infra inbox-wake rows excluded) — they survive the
    *  boundary and WILL wake the successor. */
   awaits: Array<{ eventKey: string; note: string | null }>;
@@ -657,6 +692,62 @@ function epochMs(value: unknown): number | null {
  * re-activations update it); an absent/unreadable row is UNKNOWN, not proof
  * that the owner filed nothing.
  */
+/**
+ * P-029: the CARRY-DOCUMENT sink's consumer of the shared `neverDropFacts`
+ * declaration.
+ *
+ * ⚠ HOW THIS CONSUMES THE SHARED REGISTRY — plan decision D-053. The registry
+ * (P-023 / D-015) declares each orientation class ONCE and every applicable
+ * surface renders it FROM that declaration. But its segments are LINE-oriented
+ * (`render` returns `string[]`), while the carry document is assembled as a
+ * structured {@link CarryBrief} and emitted by its own cold-resume renderer. So
+ * this sink consumes the declaration through `RegisteredOrientationClass.id`
+ * (typed `keyof OrientationState`) and NOT through `segments[].render` —
+ * pushing a turn-start-shaped line into this document would be precisely the
+ * "second copy of the line" the registry exists to prevent. Same shape as
+ * `readLeaderNeverDropFacts`; D-053 rules both truthful.
+ *
+ * Reading the registry for applicability instead of hardcoding the class is what
+ * makes withdrawing this sink a ONE-LINE change in the registry with no second
+ * edit here.
+ *
+ * ⚠ THE SELECTORS ARE THE SUBSTANTIVE PART, not the fold. They mirror
+ * turn-start's and the leader brief's — WORKSPACE scope plus this owner's — and
+ * that is exactly what this document lacked: `buildCarryBrief`'s general `facts`
+ * fold passes an OWNER selector only, so a workspace-scoped guard rail reached
+ * the other two sinks and never this one. Do NOT "simplify" this into that fold:
+ * `facts` carries full bodies + contested marks under a different cap and serves
+ * a different section, so collapsing them would trade one gap for another.
+ */
+export async function readCarryNeverDropFacts(
+  input: { ownerId: string; workspaceId: string | undefined },
+  deps: {
+    fold?: typeof foldNeverDropFacts;
+    registry?: readonly RegisteredOrientationClass[];
+    sql?: Sql;
+  } = {},
+): Promise<string[] | undefined> {
+  const registry = deps.registry ?? ORIENTATION_CLASS_REGISTRY;
+  const declared = registry.some(
+    (entry) => entry.id === 'neverDropFacts' && entry.applicableSinks.includes('carry-brief'),
+  );
+  // Not declared for this sink ⇒ carry nothing, with no second edit needed here.
+  if (!declared) return undefined;
+  const fold = deps.fold ?? foldNeverDropFacts;
+  const selectors = [
+    { scope: 'workspace' as const },
+    ...(input.ownerId ? [{ scope: 'owner' as const, scopeRef: input.ownerId }] : []),
+  ];
+  const facts = await fold(selectors, { workspaceId: input.workspaceId }, deps.sql);
+  const keys = facts.map((fact) => fact.key).filter((key): key is string => Boolean(key));
+  // Deduped because one key can legitimately resolve from BOTH selectors; sorted
+  // so the document is stable across fold order and a diff means a real change.
+  const unique = [...new Set(keys)].sort();
+  // Successful-empty is ABSENT, not `[]`: an empty array in this document reads
+  // as "measured, none apply", which is indistinguishable from a degraded read.
+  return unique.length > 0 ? unique : undefined;
+}
+
 export async function readCurrentSessionStartedAtMs(
   ownerId: string,
   workspaceId: string,
@@ -1471,6 +1562,16 @@ export async function buildCarryBrief(ownerId: string, opts: BuildCarryBriefOpts
     return bestEffort(() => checkStaleness(facts), [] as FactStalenessResult[]);
   });
 
+  // P-029: DELIBERATELY INDEPENDENT of factsPromise above, not derived from it.
+  // That fold is owner-scoped; this one is workspace+owner, so deriving one from
+  // the other would reintroduce exactly the selector gap this closes. Degrades
+  // to `undefined` (absent) rather than `[]` so a failed read is never rendered
+  // as a measured "no guard rails apply".
+  const neverDropFactsPromise = bestEffort(
+    () => readCarryNeverDropFacts({ ownerId, workspaceId }, { sql: opts.sql }),
+    undefined as string[] | undefined,
+  );
+
   const [
     directives,
     loopRead,
@@ -1483,6 +1584,7 @@ export async function buildCarryBrief(ownerId: string, opts: BuildCarryBriefOpts
     citedRefs,
     postNoteInbox,
     factsStaleness,
+    neverDropFacts,
   ] = await Promise.all([
     directivesPromise,
     loopPromise,
@@ -1495,6 +1597,7 @@ export async function buildCarryBrief(ownerId: string, opts: BuildCarryBriefOpts
     citedRefsPromise,
     postNoteInboxPromise,
     factsStalenessPromise,
+    neverDropFactsPromise,
   ]);
 
   brief.directives = directives.rows;
@@ -1509,6 +1612,9 @@ export async function buildCarryBrief(ownerId: string, opts: BuildCarryBriefOpts
   if (postNoteInbox !== undefined) brief.postNoteInbox = postNoteInbox;
   brief.facts = facts;
   brief.factsStaleness = factsStaleness;
+  // Assigned only when non-empty, so the field's ABSENCE keeps meaning "nothing
+  // applies or the read degraded" rather than silently becoming a present `[]`.
+  if (neverDropFacts !== undefined) brief.neverDropFacts = neverDropFacts;
   brief.awaits = awaits;
   brief.fleet = fleet;
 
@@ -1994,6 +2100,23 @@ export function renderCarryBriefColdExtras(
         `releases every claim you held (session-death-claim-release-2026-07-11), so a claim listed here CAN already be released by the time you read this. ` +
         `Do not trust "HOLD" at face value: re-verify with work_items:get (or coord:orient { afterCompaction: true }, which re-queries live) and re-claim ` +
         `(work_items:claim) before editing if assignee is not you:\n${lines.join('\n')}`,
+    );
+  }
+  // P-029: the carry document's consumption of the `neverDropFacts` class.
+  // FIRST of the facts family on purpose — these are the guard rails, dead-ends
+  // and walls whose absence is unrecoverable for this document's reader, and a
+  // successor that reads nothing else should still read these.
+  if ((brief.neverDropFacts?.length ?? 0) > 0) {
+    sections.push(
+      `🛡️ NEVER-DROP facts — guard rails, dead-ends and walls that MUST survive this cut ` +
+        `(folded at WORKSPACE + owner scope):\n` +
+        `  ${brief.neverDropFacts!.join(', ')}\n` +
+        `  Read the bodies BEFORE you plan — facts:list { scope: 'workspace' } and ` +
+        `facts:list { scope: 'owner' }; a dead-end key records an approach already proven not to ` +
+        `work, so re-attempting it is the specific waste these exist to prevent.\n` +
+        `  ⚠ KEYS ONLY, and folded at WORKSPACE scope as well — so this list deliberately carries ` +
+        `rails the owner-scoped standing-facts block below does NOT. An entry here with no entry ` +
+        `there is CORRECT, not a discrepancy to reconcile.`,
     );
   }
   if (brief.facts.length > 0) {
