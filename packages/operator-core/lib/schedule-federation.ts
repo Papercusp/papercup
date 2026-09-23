@@ -130,6 +130,7 @@ export interface SiblingManagedTimers {
    */
   stallWaker: StallWakerStatus | null;
   error?: string;
+  probeFailure?: 'timeout';
   elapsedMs: number;
 }
 
@@ -238,7 +239,12 @@ type FetchLike = (url: string, init: { signal: AbortSignal; headers: Record<stri
   json: () => Promise<unknown>;
 }>;
 
-function degraded(s: SiblingOperator, error: string, elapsedMs: number): SiblingManagedTimers {
+function degraded(
+  s: SiblingOperator,
+  error: string,
+  elapsedMs: number,
+  probeFailure?: 'timeout',
+): SiblingManagedTimers {
   return {
     port: s.port,
     pid: s.pid,
@@ -249,6 +255,7 @@ function degraded(s: SiblingOperator, error: string, elapsedMs: number): Sibling
     dbosSchedules: [],
     stallWaker: null,
     error,
+    ...(probeFailure ? { probeFailure } : {}),
     elapsedMs,
   };
 }
@@ -333,12 +340,13 @@ export async function probeSibling(
   const timeoutMs = opts.timeoutMs ?? DEFAULT_SIBLING_PROBE_TIMEOUT_MS;
   const doFetch = (opts.fetchImpl ?? (globalThis.fetch as unknown as FetchLike));
   const startedAt = Date.now();
+  const signal = AbortSignal.timeout(timeoutMs);
   try {
     const res = await doFetch(`http://127.0.0.1:${s.port}${SIBLING_PROBE_PATH}`, {
       // AbortSignal.timeout aborts the BODY read too, not just the connect — the
       // observed bg-host failure mode is a connection that opens and then returns
       // zero bytes for 45s, which a connect-only timeout would sail straight past.
-      signal: AbortSignal.timeout(timeoutMs),
+      signal,
       headers: { accept: 'application/json' },
     });
     if (!res.ok) return [degraded(s, `HTTP ${res.status}`, Date.now() - startedAt)];
@@ -379,7 +387,14 @@ export async function probeSibling(
     );
     return primaryRow ? [workerRow, primaryRow] : [workerRow];
   } catch (e) {
-    return [degraded(s, e instanceof Error ? e.message : String(e), Date.now() - startedAt)];
+    return [
+      degraded(
+        s,
+        e instanceof Error ? e.message : String(e),
+        Date.now() - startedAt,
+        signal.aborted ? 'timeout' : undefined,
+      ),
+    ];
   }
 }
 
@@ -428,7 +443,7 @@ export async function collectSiblingManagedTimers(
       Promise.race([
         probeSibling(s, { timeoutMs, fetchImpl: opts.fetchImpl }),
         budgetExpiry(budgetMs, () => [
-          degraded(s, `probe budget ${budgetMs}ms exceeded`, budgetMs),
+          degraded(s, `probe budget ${budgetMs}ms exceeded`, budgetMs, 'timeout'),
         ]),
       ]),
     ),

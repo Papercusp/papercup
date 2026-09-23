@@ -194,6 +194,21 @@ describe('probeSibling', () => {
     expect(garbage).toHaveLength(1);
     expect(garbage[0]).toMatchObject({ ok: true, timers: [] });
   });
+
+  it('marks an aborted sibling probe as a timeout', async () => {
+    const got = await probeSibling(sibling(), {
+      timeoutMs: 5,
+      fetchImpl: async (_url, { signal }) => {
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+        return { ok: true, status: 200, json: async () => ({ process: 'bg-host' }) };
+      },
+    });
+
+    expect(got).toHaveLength(1);
+    expect(got[0]).toMatchObject({ ok: false, probeFailure: 'timeout' });
+  });
 });
 
 describe('collectSiblingManagedTimers — a wedged sibling cannot block the inventory', () => {
@@ -220,7 +235,7 @@ describe('collectSiblingManagedTimers — a wedged sibling cannot block the inve
 
     expect(elapsed).toBeLessThan(2_000);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ ok: false, port: 3271, timers: [] });
+    expect(rows[0]).toMatchObject({ ok: false, port: 3271, timers: [], probeFailure: 'timeout' });
     expect(rows[0].error).toContain('budget');
   });
 
