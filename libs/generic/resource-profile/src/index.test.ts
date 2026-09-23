@@ -8,6 +8,7 @@ import {
   diffPgSettings,
   getResourceProfile,
   parsePgSizeToBytes,
+  parsePgDurationToMs,
   pgSettingRequiresRestart,
   PG_RESTART_ONLY_SETTINGS,
   resetResourceProfile,
@@ -588,6 +589,39 @@ describe('databaseTuningToSettings — renders GUC strings with units', () => {
     expect(small.max_slot_wal_keep_size).toBe('32GB');
   });
 
+  it('scales max_wal_size with shared_buffers: big hosts stop forcing early checkpoints, small hosts keep the 1GB default', () => {
+    // 2026-09-23 dev host (128 cores / 252 GiB): at PG's 1 GB default, 2,217 of
+    // 5,338 checkpoints were WAL-volume FORCED, and every forced checkpoint
+    // re-arms full-page images for every hot page. A big dedicated host must
+    // leave that default; a small/embedded host must not grow its WAL footprint.
+    const big = databaseTuningToSettings(
+      deriveDatabaseTuning(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB })),
+    );
+    const mid = databaseTuningToSettings(
+      deriveDatabaseTuning(signals({ cores: 16, embeddedPg: false, totalMemBytes: 64 * GIB })),
+    );
+    const small = databaseTuningToSettings(
+      deriveDatabaseTuning(signals({ cores: 2, embeddedPg: true, totalMemBytes: 4 * GIB })),
+    );
+    expect(big.max_wal_size).toBe('8192MB');
+    expect(mid.max_wal_size).toBe('2048MB');
+    expect(small.max_wal_size).toBe('1024MB');
+  });
+
+  it('checkpoint_timeout is a fixed 15min workload-shape setting and reloads without a restart', () => {
+    const big = databaseTuningToSettings(
+      deriveDatabaseTuning(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB })),
+    );
+    const small = databaseTuningToSettings(
+      deriveDatabaseTuning(signals({ cores: 2, embeddedPg: true, totalMemBytes: 4 * GIB })),
+    );
+    expect(big.checkpoint_timeout).toBe('15min');
+    expect(small.checkpoint_timeout).toBe('15min');
+    // Applying either must not cost the fleet a PG restart (pg-autotune --apply reloads).
+    expect(pgSettingRequiresRestart('max_wal_size')).toBe(false);
+    expect(pgSettingRequiresRestart('checkpoint_timeout')).toBe(false);
+  });
+
   // WI-6859 — the JIT-compilation defense. PG gates its LLVM passes on the
   // PLANNER'S COST ESTIMATE, which this workload's jsonb/LATERAL shapes cannot
   // produce reliably: measured 2,101,755 estimated for a plan touching 97
@@ -718,6 +752,37 @@ describe('diffPgSettings — the drift detector', () => {
     expect(d.inSync).toBe(true);
     expect(d.diverged).toEqual([]);
     expect(d.reloadSuffices).toBe(false); // no drift ⇒ nothing to reload FOR
+  });
+
+  // 2026-09-23: `pg-autotune --apply` set checkpoint_timeout to 15min, the server
+  // reported its canonical 900 + unit `s`, and the verify compared the strings and
+  // reported a correctly applied setting as "did NOT take effect". Durations must
+  // compare by value exactly like sizes do.
+  it('compares time-valued GUCs by duration, not by spelling', () => {
+    const d = diffPgSettings({ checkpoint_timeout: '15min' }, [
+      { name: 'checkpoint_timeout', setting: '900', unit: 's', context: 'sighup' },
+    ]);
+    expect(d.inSync).toBe(true);
+    expect(d.diverged).toEqual([]);
+  });
+
+  it('still reports a genuinely different duration as drift', () => {
+    const d = diffPgSettings({ checkpoint_timeout: '15min' }, [
+      { name: 'checkpoint_timeout', setting: '300', unit: 's', context: 'sighup' },
+    ]);
+    expect(d.inSync).toBe(false);
+    expect(d.diverged.map((x) => x.name)).toEqual(['checkpoint_timeout']);
+    expect(d.reloadSuffices).toBe(true);
+  });
+
+  it('parsePgDurationToMs reads config-file duration spellings', () => {
+    expect(parsePgDurationToMs('15min')).toBe(900_000);
+    expect(parsePgDurationToMs('900s')).toBe(900_000);
+    expect(parsePgDurationToMs('300', 1000)).toBe(300_000);
+    expect(parsePgDurationToMs('250ms')).toBe(250);
+    expect(parsePgDurationToMs('1h')).toBe(3_600_000);
+    expect(parsePgDurationToMs('-1', 1000)).toBe(-1000);
+    expect(parsePgDurationToMs('64MB')).toBeNull();
   });
 
   it('catches the real regression: max_slot_wal_keep_size unapplied at PG default -1', () => {

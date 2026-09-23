@@ -127,6 +127,8 @@ export interface DatabaseTuning {
   readonly effectiveIoConcurrency: number;
   /** `wal_buffers` (MiB). */
   readonly walBuffersMb: number;
+  /** `max_wal_size` (MiB) — WAL volume between checkpoints before one is FORCED. */
+  readonly maxWalSizeMb: number;
   /** `max_worker_processes` — background-worker slot ceiling (>= the parallel
    *  caps below + replication senders). */
   readonly maxWorkerProcesses: number;
@@ -242,6 +244,7 @@ function clamp(n: number, lo: number, hi: number): number {
  * | randomPageCost                | supported SSD/NVMe storage profile                 |  1.1  |    1.1   |
  * | effectiveIoConcurrency        | supported SSD/NVMe storage profile                 |  200  |    200   |
  * | walBuffersMb                  | sharedBuffers * 0.03                                |    4  |     64   |
+ * | maxWalSizeMb                  | sharedBuffers / 8                                   | 1024  |   8192   |
  * | maxWorkerProcesses            | cores                                              |    8  |    256   |
  * | maxParallelWorkers            | cores                                              |    8  |    256   |
  * | maxParallelWorkersPerGather   | round(cores / 2)                                   |    1  |      8   |
@@ -280,6 +283,15 @@ export function deriveDatabaseTuning(signals: ResourceSignals): DatabaseTuning {
   const randomPageCost = 1.1;
   const effectiveIoConcurrency = 200;
   const walBuffersMb = clamp(Math.round(sharedBuffersMb * 0.03), 4, 64);
+  // max_wal_size — PG's 1 GB default forces a checkpoint whenever 1 GB of WAL
+  // accrues, and the first write to every page after a checkpoint logs a FULL-PAGE
+  // image, which inflates WAL and brings the next forced checkpoint closer. Measured
+  // on the 128-core / 252 GiB dev host (2026-09-23): 2,217 of 5,338 checkpoints
+  // were REQUESTED (WAL-volume forced) rather than timed, while 43-71 of ~110
+  // active backends queued on LWLock:WALInsert. Scale with shared_buffers so a
+  // small/embedded host keeps the stock 1 GB (bounded disk) and a big dedicated
+  // host gets room to reach checkpoint_timeout instead of being forced early.
+  const maxWalSizeMb = clamp(Math.round(sharedBuffersMb / 8), 1024, 8192);
   const maxWorkerProcesses = clamp(cores, 8, 256);
   const maxParallelWorkers = clamp(cores, 8, 256);
   const maxParallelWorkersPerGather = clamp(Math.round(cores / 2), 1, 8);
@@ -295,6 +307,7 @@ export function deriveDatabaseTuning(signals: ResourceSignals): DatabaseTuning {
     randomPageCost,
     effectiveIoConcurrency,
     walBuffersMb,
+    maxWalSizeMb,
     maxWorkerProcesses,
     maxParallelWorkers,
     maxParallelWorkersPerGather,
@@ -388,6 +401,13 @@ export function databaseTuningToSettings(t: DatabaseTuning): Record<string, stri
     random_page_cost: String(t.randomPageCost),
     effective_io_concurrency: String(t.effectiveIoConcurrency),
     wal_buffers: `${t.walBuffersMb}MB`,
+    // max_wal_size is host-scaled (see deriveDatabaseTuning). checkpoint_timeout is
+    // FIXED like the JIT knobs below: it encodes a workload shape (write-heavy, many
+    // hot pages rewritten per interval), not a machine size. At PG's 5 min default
+    // every hot page pays a full-page image 12x an hour; 15 min cuts that to 4x.
+    // Crash recovery stays bounded by max_wal_size. Both are SIGHUP-reloadable.
+    max_wal_size: `${t.maxWalSizeMb}MB`,
+    checkpoint_timeout: '15min',
     // max_slot_wal_keep_size — disk-fill-SPOF defense (WI-347; complements the
     // WARN-only detector in operator-core storage/replication-slot-alarm.ts).
     // With PG's default -1 (UNLIMITED), a stuck/abandoned replication slot pins
@@ -565,6 +585,38 @@ export function parsePgSizeToBytes(value: string, defaultUnitBytes = 1): number 
   return n * SIZE_UNIT_BYTES[m[2]];
 }
 
+/** PostgreSQL's time units, in milliseconds (the units `pg_settings.unit` and config files use). */
+const TIME_UNIT_MS: Record<string, number> = { us: 0.001, ms: 1, s: 1000, min: 60_000, h: 3_600_000, d: 86_400_000 };
+
+/** A `pg_settings.unit` for a time-valued GUC (`s`, `ms`, `min`) → milliseconds; null otherwise. */
+function timeUnitToMs(unit: string | null | undefined): number | null {
+  if (!unit) return null;
+  const m = /^(\d*)(us|ms|s|min|h|d)$/.exec(unit.trim());
+  if (!m) return null;
+  const mult = m[1] ? Number(m[1]) : 1;
+  return mult * (TIME_UNIT_MS[m[2]] ?? 0);
+}
+
+/**
+ * Parse a time-valued GUC written the way a config file writes it (`15min`, `900s`,
+ * `300`) into milliseconds. A bare number is interpreted in `defaultUnitMs`. Returns
+ * null when the value is not a duration.
+ *
+ * Without this, a target of `15min` never compares equal to the live server's
+ * canonical `900` + unit `s`: the apply verify reported a correctly applied
+ * `checkpoint_timeout` as "did NOT take effect", and `--check` would have failed on
+ * it forever (2026-09-23).
+ */
+export function parsePgDurationToMs(value: string, defaultUnitMs = 1): number | null {
+  const v = value.trim();
+  const m = /^(-?\d+(?:\.\d+)?)\s*(us|ms|s|min|h|d)?$/.exec(v);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n)) return null;
+  if (!m[2]) return n * defaultUnitMs;
+  return n * (TIME_UNIT_MS[m[2]] ?? 0);
+}
+
 /** `'a,b'` / `a, b` → a normalized set-comparable key, so list GUCs ignore order + quoting. */
 function normalizeListValue(value: string): string {
   return value
@@ -583,6 +635,12 @@ function pgValuesEqual(target: string, live: PgLiveSetting): boolean {
   if (unitBytes != null) {
     const t = parsePgSizeToBytes(target, unitBytes);
     const l = parsePgSizeToBytes(live.setting, unitBytes);
+    if (t != null && l != null) return t === l;
+  }
+  const unitMs = timeUnitToMs(live.unit);
+  if (unitMs != null) {
+    const t = parsePgDurationToMs(target, unitMs);
+    const l = parsePgDurationToMs(live.setting, unitMs);
     if (t != null && l != null) return t === l;
   }
   const tNum = Number(target.trim());
