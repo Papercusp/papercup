@@ -151,6 +151,15 @@ beforeAll(async () => {
         AND payload #>> '{admissionIdentity,schemaVersion}' = 'admission-identity-v1'
         AND NULLIF(btrim(payload #>> '{admissionIdentity,titleKey}'), '') IS NOT NULL;
 
+    -- Migration 986's real resource-governor receipt arbiter (WI-2142873, VM wedge).
+    CREATE UNIQUE INDEX IF NOT EXISTS work_items_resource_governor_identity_uq
+      ON harness_shared.work_items (
+        workspace_id,
+        ((payload -> 'resource_governor') ->> 'namespace'),
+        ((payload -> 'resource_governor') ->> 'idempotencyKey')
+      )
+      WHERE ((payload -> 'resource_governor') ->> 'schemaVersion') = '1';
+
     -- A second partial index gives the negative control teeth: its 23505 must
     -- still escape the projection rather than being mistaken for migration 865.
     CREATE UNIQUE INDEX IF NOT EXISTS engineer_issues_projection_unrelated_uq
@@ -578,6 +587,54 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
       { ts: 150, origin: 'remote', authorPubkey: 'peer' },
     );
     expect(await getIssue('EI-keyless-v0')).not.toBeNull();
+  });
+
+  // WI-2142873 VM shape (2026-09-23): the Mac VM held its own affected-tests
+  // governor receipt for a commit, then replayed the tower's receipt for the same
+  // idempotencyKey. Migration 986's index has no status or harness predicate, so
+  // the replay raised a deterministic 23505 and pinned the VM's cursor for the
+  // tower log (2,486 retries at position 5868039).
+  it('coalesces a duplicate resource-governor receipt onto the migration-986 winner, even a terminal one, and stays idempotent', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = proj();
+      const resource_governor = {
+        schemaVersion: 1,
+        namespace: 'affected-tests-process',
+        idempotencyKey: 'test-process:affected-tests:84d54d2804bf5d10291ce16d84e3b23980e81847',
+      };
+      await p.writeToPg(
+        issueRow({ issue_id: 'WI-governor-local', kind: 'task', state: 'done', payload: { resource_governor } }),
+        { ts: 100, origin: 'remote', authorPubkey: 'vm' },
+      );
+      const duplicate = issueRow({ issue_id: 'WI-governor-peer', kind: 'task', state: 'open', payload: { resource_governor } });
+      const provenance = { ts: 200, fedHlc: '200:00000:tower', origin: 'remote' as const, authorPubkey: 'tower' };
+
+      await p.writeToPg(duplicate, provenance);
+      await p.writeToPg(duplicate, provenance);
+
+      expect(await getIssue('WI-governor-local')).not.toBeNull();
+      expect(await getIssue('WI-governor-peer')).toBeNull();
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`winner=${SLUG}/WI-governor-local`));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('a governor receipt outside the migration-986 predicate lands untouched (calibration)', async () => {
+    const p = proj();
+    const resource_governor = { schemaVersion: 1, namespace: 'testing-run-process', idempotencyKey: 'same-key' };
+    await p.writeToPg(issueRow({ issue_id: 'WI-governor-v1', kind: 'task', payload: { resource_governor } }), {
+      ts: 100,
+      origin: 'remote',
+      authorPubkey: 'peer',
+    });
+    await p.writeToPg(
+      issueRow({ issue_id: 'WI-governor-v2', kind: 'task', payload: { resource_governor: { ...resource_governor, schemaVersion: 2 } } }),
+      { ts: 150, origin: 'remote', authorPubkey: 'peer' },
+    );
+    expect(await getIssue('WI-governor-v2')).not.toBeNull();
   });
 
   it('does not swallow a 23505 from any unique index other than migration 865', async () => {
