@@ -40,6 +40,19 @@ describe("staging systemd drop-ins keep sync, bundle and runtime on one isolated
     );
   });
 
+  // EI-24049239243821100: moving PAPERCUSP_INTEGRATION_ROOT off the edit tree without
+  // naming the edit tree made every working-tree reader on :3170 describe the clean
+  // mirror, so dev:pipeline_position reported an uncommitted edit as clean and live.
+  it("declares the canonical EDIT tree separately from the served mirror", () => {
+    const envValue = (name: string): string | null =>
+      checkout.match(new RegExp(`^Environment=${name}=(\\S+)\\s*$`, "m"))?.[1] ?? null;
+    const served = envValue("PAPERCUSP_INTEGRATION_ROOT");
+    const edited = envValue("PAPERCUSP_CANONICAL_TREE");
+    expect(served).toBe("%h/papercupai-workspace/papercusp-staging");
+    expect(edited).toBe("%h/papercupai-workspace/papercusp");
+    expect(edited).not.toBe(served);
+  });
+
   it("builds from that same tree and enables proof-bound reuse before plain-node start", () => {
     expect(bundle).toContain("Environment=PAPERCUSP_BUNDLE_REUSE_FRESH=1");
     expect(bundle).toContain(
