@@ -32,6 +32,9 @@ export interface HostedDesktopWorkspaceProps {
   roster: readonly HostedDesktopRosterEntry[];
   rosterState: HostedDesktopQueryState;
   rosterError: string | null;
+  /** The automatic desktop start of D-405, for a workspace with none running. */
+  startState: HostedDesktopQueryState;
+  startError: string | null;
   thumbnails: Readonly<Record<string, HostedDesktopThumbnailResult>>;
   selectedDesktop: DesktopSelection | null;
   viewerState: HostedDesktopViewerState | null;
@@ -55,6 +58,8 @@ export function HostedDesktopWorkspace({
   roster,
   rosterState,
   rosterError,
+  startState,
+  startError,
   thumbnails,
   selectedDesktop,
   viewerState,
@@ -103,6 +108,16 @@ export function HostedDesktopWorkspace({
     emptyTitle = "Finding your desktops…";
     emptyDescription =
       "Waiting for the workspace to report its available screens.";
+  } else if (roster.length === 0 && startState === "loading") {
+    emptyTitle = "Starting your desktop…";
+    emptyDescription =
+      "Your workspace is starting its desktop. This takes up to about 20 seconds.";
+  } else if (roster.length === 0 && startState === "error") {
+    emptyTitle = "Your desktop could not be started";
+    emptyDescription =
+      startError === "controller_required"
+        ? "Another tab controls this workspace. Start the desktop from that tab."
+        : "Refresh the desktop list to try again.";
   } else if (roster.length === 0) {
     emptyTitle = "No desktops are available yet";
     emptyDescription =
