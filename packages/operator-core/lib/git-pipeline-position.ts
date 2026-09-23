@@ -63,6 +63,7 @@ import { gateAbortLever, gateAbortRefireClause, gateAbortVintage } from './relea
 import { formatIdleAge } from './format/relative-time';
 import {
   reconcileGateVerdictFreshnessWithCheckpointRun,
+  reconcileGateVerdictFreshnessWithPinnedRepair,
   reconcileGateVerdictFreshnessWithRepairQueue,
   type GateVerdictFreshness,
 } from './release/gate-verdict-freshness';
@@ -80,6 +81,7 @@ import {
   type FreezeDispositionCellProjection,
 } from './release/freeze-disposition';
 import {
+  isJudgingPinnedActiveRepair,
   projectFrozenRepairConvergenceCell,
   type FrozenRepairConvergenceCellProjection,
 } from './release/frozen-candidate-repair-queue';
@@ -5816,19 +5818,41 @@ export async function gitPipelinePosition(
   // 'repair-in-progress', which is never banked — so the timestamps look identical to a skipped
   // fire while the gate is healthy. Applied AFTER the run-lock reconciler so a live run still
   // wins: "wait for this run" is more immediate than the convergence it sits inside.
-  const gateFreshness = reconcileGateVerdictFreshnessWithRepairQueue(
-    reconcileGateVerdictFreshnessWithCheckpointRun(
+  // WI-10002121: the THIRD link, and the only one that RELEASES a classification rather than
+  // refining it. Rule 5 ('candidate-fossil') judges the candidate's wall-clock age, on the premise
+  // that an old candidate was selected by ACCIDENT. Under freeze-and-converge that premise is
+  // inverted: the queue pins one immutable sha on purpose and its head ages by design, so rule 5
+  // tells a reader to re-judge at tip and NOT to fix the named tests — backwards on both halves,
+  // since that red IS the signature the queue needs and re-cutting discards the queue (D-007).
+  // D-004 records the write-side withholding rule and this read-side release as a COUPLED PAIR.
+  // Ordering note: this keys on 'candidate-fossil' and the two inner links key on
+  // 'writer-starved', so all three are disjoint — the nesting is for readability, not precedence.
+  const gateFreshness = reconcileGateVerdictFreshnessWithPinnedRepair(
+    reconcileGateVerdictFreshnessWithRepairQueue(
+      reconcileGateVerdictFreshnessWithCheckpointRun(
+        {
+          stale: snap.gate.verdictStale,
+          reason: snap.gate.verdictStaleReason,
+          reasonCode: snap.gate.verdictStaleReasonCode ?? null,
+          candidateAgeMs: snap.gate.candidateAgeMs,
+        },
+        checkpointRunInFlight,
+      ),
       {
-        stale: snap.gate.verdictStale,
-        reason: snap.gate.verdictStaleReason,
-        reasonCode: snap.gate.verdictStaleReasonCode ?? null,
-        candidateAgeMs: snap.gate.candidateAgeMs,
+        status: snap.gate.inconclusive?.status ?? null,
+        phase: snap.gate.repairQueue?.phase ?? null,
       },
-      checkpointRunInFlight,
     ),
     {
-      status: snap.gate.inconclusive?.status ?? null,
-      phase: snap.gate.repairQueue?.phase ?? null,
+      // The JUDGED sha, never the tip and never the frozen pin: the exemption is about what this
+      // verdict actually measured. The single shared predicate owns the comparison (including the
+      // blocked-queue negative) so the read and write sides cannot drift.
+      judgingPinnedActiveRepair:
+        snap.gate.observedCandidate != null &&
+        isJudgingPinnedActiveRepair({
+          candidate: snap.gate.observedCandidate,
+          repairQueue: snap.gate.repairQueue ?? null,
+        }),
     },
   );
   // P-005: ONE reading, used both by ownerBrief below and verdictProvenance later.
