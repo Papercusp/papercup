@@ -4656,7 +4656,7 @@ export default defineTool({
         harnessSlug: harness,
         planSlug: planSlug ?? null,
         model: modelSpec,
-        modelSource: folded.modelSource ?? null,
+        modelSource: folded.agent === 'codex' ? (folded.modelSource ?? null) : null,
         effort: modelEffortFromSpec(modelSpec),
         account: folded.account ?? 'default',
         carry: folded.carry ?? 'warm',

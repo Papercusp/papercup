@@ -111,6 +111,12 @@ const MULTI_OBSERVABLE_CONJUNCTION_RE = new RegExp(
   `\\b${OBSERVABLE_VERB}\\b[^.;\\n]{0,160}\\b(?:and|or)\\b[^.;\\n]{0,160}\\b${OBSERVABLE_VERB}\\b`,
   'i',
 );
+const MULTI_SUBJECT_SHARED_PREDICATE_RE =
+  /\b(?:[^,.;]+,\s*){2,}(?:and|or)\s+[^,.;]+\s+(?:is|are|was|were|has|have|accepts?|allows?|becomes?|creates?|deletes?|denies|emits?|fails?|includes?|omits?|records?|rejects?|remains?|returns?|shows?|starts?|stops?|updates?|writes?)\b/i;
+const IMPLEMENTATION_PRESENCE_RE =
+  /\b(?:(?:is|are|was|were)\s+)?(?:present|implemented|exists?)\s+in\s+(?:the\s+)?(?:current\s+)?(?:source(?:\s+code)?|code(?:base)?|repository|repo|tree|implementation)\b/i;
+const IMPLEMENTATION_CONTAINS_RE =
+  /\b(?:the\s+)?(?:current\s+)?(?:source(?:\s+code)?|code(?:base)?|repository|repo|tree|implementation)\s+(?:contains?|includes?|has)\b/i;
 const GENERIC_NON_FALSIFIABLE_RE =
   /^(?:(?:it|this|the (?:feature|flow|system))\s+)?(?:works|behaves|functions)(?:\s+(?:correctly|properly|as expected))?[.!]?$/i;
 const PLACEHOLDER_RE = /\b(?:TBD|TODO|to be determined|as appropriate|somehow)\b/i;
@@ -181,8 +187,19 @@ export function specBehaviorNonAtomicReason(rawBehavior: string): string | null 
   const behavior = normalizeSpecSemanticText(rawBehavior);
   if (/;\s*\S/.test(behavior)) return 'behavior contains multiple semicolon-separated assertions';
   if (/[.!?]\s+(?=[A-Z0-9])/.test(behavior)) return 'behavior contains multiple sentences';
+  if (MULTI_SUBJECT_SHARED_PREDICATE_RE.test(behavior)) {
+    return 'behavior groups multiple subjects under one predicate';
+  }
   if (MULTI_OBSERVABLE_CONJUNCTION_RE.test(behavior)) {
     return 'behavior joins multiple independently observable outcomes';
+  }
+  return null;
+}
+
+export function specBehaviorImplementationPresenceReason(rawBehavior: string): string | null {
+  const behavior = normalizeSpecSemanticText(rawBehavior);
+  if (IMPLEMENTATION_PRESENCE_RE.test(behavior) || IMPLEMENTATION_CONTAINS_RE.test(behavior)) {
+    return 'behavior asserts source-code presence instead of an observable outcome';
   }
   return null;
 }
@@ -191,6 +208,8 @@ export function specBehaviorNonFalsifiableReason(rawBehavior: string): string | 
   const behavior = normalizeSpecSemanticText(rawBehavior);
   if (!behavior) return 'behavior is empty';
   if (PLACEHOLDER_RE.test(behavior)) return 'behavior contains placeholder or discretionary wording';
+  const implementationPresence = specBehaviorImplementationPresenceReason(behavior);
+  if (implementationPresence) return implementationPresence;
   if (GENERIC_NON_FALSIFIABLE_RE.test(behavior)) return 'behavior states only that something works';
   return null;
 }

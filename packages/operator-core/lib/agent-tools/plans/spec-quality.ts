@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import {
   computeSpecSetHash,
+  normalizeSpecSemanticText,
+  specBehaviorImplementationPresenceReason,
   specBehaviorNonAtomicReason,
   specBehaviorNonFalsifiableReason,
 } from './spec-clause-compiler';
@@ -64,6 +66,10 @@ function fail(evidence: string, suggestion: string): SpecQualityRatingEntry {
   return { rating: 'fail', evidence, suggestion };
 }
 
+function unknown(evidence: string): SpecQualityRatingEntry {
+  return { rating: 'unknown', evidence };
+}
+
 function notApplicable(evidence: string): SpecQualityRatingEntry {
   return { rating: 'not-applicable', evidence };
 }
@@ -72,9 +78,15 @@ function rerunnableEvidence(
   input: { planSlug: string; harnessSlug: string; classRef: PlanClassRubricRef },
   criterion: SpecQualityCriterion,
   evidence: string,
+  expectedSpecSetHash: string,
 ): string {
   const planArgs = `slug:${JSON.stringify(input.planSlug)}, harness:${JSON.stringify(input.harnessSlug)}`;
-  const evaluationArgs = `${planArgs}, classRef:${JSON.stringify(input.classRef)}`;
+  const evaluationArgs =
+    planArgs +
+    ', classRef:' +
+    JSON.stringify(input.classRef) +
+    ', expectedSpecSetHash:' +
+    JSON.stringify(expectedSpecSetHash);
   return (
     `Source store: plans:get-specs { ${planArgs} }. ` +
     `Re-run exactly: plans:evaluate-spec-quality { ${evaluationArgs} }; ` +
@@ -94,6 +106,8 @@ function validExplicitExemption(clause: SpecClauseRevision): boolean {
 }
 
 function implementationCouplingReason(behavior: string): string | null {
+  const sourcePresence = specBehaviorImplementationPresenceReason(behavior);
+  if (sourcePresence) return sourcePresence;
   if (/\.(?:[cm]?[jt]sx?|rs|py|sql|sh)\b/i.test(behavior)) return 'names an implementation file';
   if (/\b(?:function|class|method|variable|private field|implementation detail)\s+[`'"A-Za-z_$]/i.test(behavior)) {
     return 'names an implementation construct instead of an observable contract';
@@ -157,6 +171,7 @@ export function evaluatePlanSpecQuality(input: {
   planItemIds: readonly string[];
   clauses: readonly SpecClauseRevision[];
   classRef: PlanClassRubricRef;
+  expectedSpecSetHash?: string;
 }): PlanSpecQualityResult {
   const planItemIds = [...new Set(input.planItemIds)].sort();
   const currentSet = input.clauses
@@ -209,6 +224,20 @@ export function evaluatePlanSpecQuality(input: {
       )
     : pass(provenanceEvidence);
 
+  const behaviorGroups = new Map<string, SpecClauseRevision[]>();
+  for (const clause of behavioral) {
+    const key = normalizeSpecSemanticText(clause.behavior);
+    const group = behaviorGroups.get(key) ?? [];
+    group.push(clause);
+    behaviorGroups.set(key, group);
+  }
+  const duplicateBehaviorReuse = [...behaviorGroups.values()]
+    .filter((group) => new Set(group.map((clause) => clause.planItemId)).size > 1)
+    .map((group) => {
+      const specIds = [...new Set(group.map((clause) => clause.specId))].sort();
+      const itemIds = [...new Set(group.map((clause) => clause.planItemId))].sort();
+      return 'specs ' + specIds.join(', ') + ' reuse the same behavior text across plan items ' + itemIds.join(', ');
+    });
   const coveredItems = new Set([...behavioral, ...validExemptions].map((clause) => clause.planItemId));
   const uncoveredPlanItemIds = planItemIds.filter((itemId) => !coveredItems.has(itemId));
   ratings['item-contract-coverage'] = uncoveredPlanItemIds.length
@@ -216,7 +245,13 @@ export function evaluatePlanSpecQuality(input: {
         `Plan item(s) lack an active clause or valid explicit exemption: ${uncoveredPlanItemIds.join(', ')}.`,
         'Add at least one active behavioral clause per item, or an explicit non-automated exemption with justification and provenance.',
       )
-    : pass(`All ${planItemIds.length} plan item(s) are covered by active clauses or explicit exemptions.`);
+    : duplicateBehaviorReuse.length
+      ? unknown(
+          'Potential contract coverage issue: ' +
+            duplicateBehaviorReuse.join('; ') +
+            '. Review whether these clauses represent independent item contracts.',
+        )
+      : pass(`All ${planItemIds.length} plan item(s) are covered by active clauses or explicit exemptions.`);
 
   const atomicityFailures = behavioral
     .map((clause) => ({ clause, reason: specBehaviorNonAtomicReason(clause.behavior) }))
@@ -285,9 +320,16 @@ export function evaluatePlanSpecQuality(input: {
           `Evaluate against the correct class (${PLAN_CLASS_RUBRIC_REFS.join(', ')}) or add its required behavior class.`,
         );
 
-  ratings['spec-set-freshness'] = pass(
-    `Verdict is pinned to exact current specSetHash ${specSetHash} over ${currentSet.length} clause(s).`,
-  );
+  ratings['spec-set-freshness'] =
+    input.expectedSpecSetHash && input.expectedSpecSetHash !== specSetHash
+      ? unknown(
+          'Expected specSetHash ' +
+            input.expectedSpecSetHash +
+            ', but the current clauses hash to ' +
+            specSetHash +
+            '; the replayed probe describes a different clause set.',
+        )
+      : pass('Verdict is pinned to exact current specSetHash ' + specSetHash + ' over ' + currentSet.length + ' clause(s).');
 
   // The start gate pins the exact ratings fingerprint, so the evaluator itself
   // must emit evidence that a non-author can execute verbatim. Otherwise a
@@ -298,7 +340,7 @@ export function evaluatePlanSpecQuality(input: {
     const entry = ratings[criterion];
     ratings[criterion] = {
       ...entry,
-      evidence: rerunnableEvidence(input, criterion, entry.evidence),
+      evidence: rerunnableEvidence(input, criterion, entry.evidence, specSetHash),
     };
   }
 

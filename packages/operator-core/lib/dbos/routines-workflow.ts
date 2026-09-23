@@ -24,7 +24,7 @@
  * while the engine is new, so a host restart never auto-fires stale/unknown
  * routines unsupervised. Registered only when `bootstrap.ts` imports this module.
  */
-import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { DBOS, DBOSClient, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 import {
@@ -40,6 +40,7 @@ import {
   shouldFireUnderPoolShed,
 } from './routines-queue-classification';
 import { getOrgPg, listDueCronRoutines, type RoutineRow } from '@papercusp/db-org';
+import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
 import { claimDueRoutine, claimedRoutineDispatchAllowed } from '../harness/routines/claim';
@@ -76,11 +77,32 @@ import '../harness/routines/register-system-actions';
 // Side-effect import (F-E1 phase 1): wire papercusp-routines-per-workspace into the routines lib.
 import '../harness/routines/configure-per-workspace';
 import { operatorApiBase } from '../operator-api-base';
-import { dbosStarted } from './bootstrap';
+import { dbosStarted, withDbosIdleTxGrace } from './bootstrap';
 
 // 6-field crontab (seconds). Default: every 30s, matching the legacy ticker.
 const TICK_CRONTAB = process.env.PAPERCUSP_DBOS_ROUTINES_CRONTAB || '*/30 * * * * *';
 const operatorBase = operatorApiBase;
+const ROUTINE_FIRE_WORKFLOW_NAME = 'routineFire';
+let routineFireDbosClient: Promise<DBOSClient> | null = null;
+
+function routineFirePrimaryAppVersion(): string {
+  return (
+    process.env.PAPERCUSP_HOSTED_PROVISIONING_DBOS_APP_VERSION?.trim() ||
+    process.env.DBOS__APPVERSION?.trim() ||
+    'bg-host-v1'
+  );
+}
+
+function getRoutineFireDbosClient(): Promise<DBOSClient> {
+  routineFireDbosClient ??= DBOSClient.create({
+    systemDatabaseUrl: withDbosIdleTxGrace(getHarnessAdminUrlWithSource().url),
+    systemDatabaseSchemaName: 'dbos',
+  }).catch((error: unknown) => {
+    routineFireDbosClient = null;
+    throw error;
+  });
+  return routineFireDbosClient;
+}
 
 // WI-4015 (critical, 2026-07-11): idempotentWorkflowQueue guards against a second
 // top-level module evaluation throwing "Workflow Queue '<name>' defined multiple
@@ -494,24 +516,8 @@ export async function enqueueRoutineFire(routine: RoutineFireRow): Promise<Routi
   const deduplicationId = `routine:${routine.id}`;
   const queueName = queueForRoutine(routine.targetRole, routine.installSlug);
   const timeoutMs = routineFireTimeoutMs(routine.targetRole);
-  if (!dbosStarted()) {
-    return {
-      ok: false,
-      status: 'unavailable',
-      reason: 'dbos-not-started',
-      routineId: routine.id,
-      deduplicationId,
-      queueName,
-      timeoutMs,
-    };
-  }
-
   try {
-    await DBOS.startWorkflow(routineFireWorkflow, {
-      queueName,
-      timeoutMS: timeoutMs,
-      enqueueOptions: { deduplicationID: deduplicationId },
-    }) (
+    const workflowArgs = [
       routine.id,
       routine.workspaceId,
       routine.installSlug,
@@ -521,7 +527,25 @@ export async function enqueueRoutineFire(routine: RoutineFireRow): Promise<Routi
       routine.name,
       routine.rescheduleIntervalSec,
       routine.targetOwnerId,
-    );
+    ] as const;
+    if (dbosStarted()) {
+      await DBOS.startWorkflow(routineFireWorkflow, {
+        queueName,
+        timeoutMS: timeoutMs,
+        enqueueOptions: { deduplicationID: deduplicationId },
+      })(...workflowArgs);
+    } else {
+      await (await getRoutineFireDbosClient()).enqueue<typeof routineFireImpl>(
+        {
+          queueName,
+          workflowName: ROUTINE_FIRE_WORKFLOW_NAME,
+          deduplicationID: deduplicationId,
+          workflowTimeoutMS: timeoutMs,
+          appVersion: routineFirePrimaryAppVersion(),
+        },
+        ...workflowArgs,
+      );
+    }
     return {
       ok: true,
       status: 'enqueued',
@@ -832,9 +856,9 @@ async function routineFireImpl(
   });
 }
 
-export const routineFireWorkflow = idempotentRegisterWorkflow('routineFire', () =>
+export const routineFireWorkflow = idempotentRegisterWorkflow(ROUTINE_FIRE_WORKFLOW_NAME, () =>
   DBOS.registerWorkflow(routineFireImpl, {
-    name: 'routineFire',
+    name: ROUTINE_FIRE_WORKFLOW_NAME,
     maxRecoveryAttempts: 5,
   }),
 );

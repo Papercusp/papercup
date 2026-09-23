@@ -235,4 +235,39 @@ describe('compileSpecClauses', () => {
       'GET /x returns 200 and POST /audit emits a record',
     );
   });
+
+  it('rejects coordinated subject lists with a source-presence predicate', () => {
+    const behavior =
+      'Implemented provider contracts, durable controller, credential lifecycle, artifact boundaries, and ordinary lifecycle semantics are present in the current tree.';
+    const result = compileSpecClauses(
+      plan('  - **[VAL-demo-bundled]**', '    - **Verify:** ' + behavior),
+      {
+        enrichments: {
+          'VAL-demo-bundled': { behaviorClass: 'happy-path', lifecycleStatus: 'active' },
+        },
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(
+      expect.arrayContaining(['behavior-non-atomic', 'behavior-not-falsifiable']),
+    );
+  });
+
+  it('keeps one observable behavior over multiple input values atomic', () => {
+    const result = compileSpecClauses(
+      plan(
+        '  - **[VAL-demo-inputs]**',
+        '    - **Verify:** GET /events returns 202 for alpha, beta, and gamma event types',
+      ),
+      {
+        enrichments: {
+          'VAL-demo-inputs': { behaviorClass: 'happy-path', lifecycleStatus: 'active' },
+        },
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.diagnostics).toEqual([]);
+  });
 });

@@ -48,7 +48,9 @@ describe('evaluatePlanSpecQuality', () => {
     for (const [criterion, entry] of Object.entries(result.ratings)) {
       expect(entry.evidence).toContain('Source store: plans:get-specs { slug:"quality-plan", harness:"papercusp" }.');
       expect(entry.evidence).toContain(
-        'Re-run exactly: plans:evaluate-spec-quality { slug:"quality-plan", harness:"papercusp", classRef:"plan-class-feature-ship" }',
+        'Re-run exactly: plans:evaluate-spec-quality { slug:"quality-plan", harness:"papercusp", classRef:"plan-class-feature-ship", expectedSpecSetHash:"' +
+          result.specSetHash +
+          '" }',
       );
       expect(entry.evidence).toContain(`inspect ratings["${criterion}"]`);
     }
@@ -66,6 +68,73 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.verdict).toBe('fail');
     expect(result.details.uncoveredPlanItemIds).toEqual(['P-002']);
     expect(result.wouldBlock).toContain('item-contract-coverage');
+  });
+
+  it('flags a multi-subject source-presence clause instead of returning a false all-pass', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [
+        clause({
+          behavior:
+            'Implemented provider contracts, durable controller, credential lifecycle, artifact boundaries, and ordinary lifecycle semantics are present in the current tree.',
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['atomic-observable-behavior'].rating).toBe('fail');
+    expect(result.ratings.falsifiability.rating).toBe('fail');
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+    expect(result.verdict).toBe('fail');
+    expect(result.wouldBlock).toEqual(
+      expect.arrayContaining([
+        'atomic-observable-behavior',
+        'falsifiability',
+        'implementation-independence',
+      ]),
+    );
+  });
+
+  it('does not count byte-identical behavior text as independent coverage for multiple plan items', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001', 'P-002'],
+      clauses: [
+        clause(),
+        clause({
+          specId: 'SPEC-002-01',
+          sourceValId: 'VAL-002-01',
+          planItemId: 'P-002',
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['item-contract-coverage'].rating).toBe('unknown');
+    expect(result.ratings['item-contract-coverage'].evidence).toContain('same behavior text');
+    expect(result.verdict).toBe('unknown');
+    expect(result.wouldBlock).toContain('item-contract-coverage');
+  });
+
+  it('blocks replay probes when the current clause set no longer matches the expected hash', () => {
+    const expectedSpecSetHash = '0'.repeat(64);
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause()],
+      classRef: 'plan-class-feature-ship',
+      expectedSpecSetHash,
+    });
+
+    expect(result.ratings['spec-set-freshness'].rating).toBe('unknown');
+    expect(result.ratings['spec-set-freshness'].evidence).toContain(expectedSpecSetHash);
+    expect(result.ratings['spec-set-freshness'].evidence).toContain(result.specSetHash);
+    expect(result.verdict).toBe('unknown');
+    expect(result.wouldBlock).toContain('spec-set-freshness');
   });
 
   it('partitions draft clauses from acceptance-provenance evidence', () => {
@@ -188,6 +257,23 @@ describe('evaluatePlanSpecQuality', () => {
 });
 
 describe('spec-quality activation guidance', () => {
+  it('accepts only a valid exact specSetHash replay guard', () => {
+    expect(
+      evaluateSpecQualityTool.args.safeParse({
+        harness: 'papercusp',
+        slug: 'quality-plan',
+        expectedSpecSetHash: 'a'.repeat(64),
+      }).success,
+    ).toBe(true);
+    expect(
+      evaluateSpecQualityTool.args.safeParse({
+        harness: 'papercusp',
+        slug: 'quality-plan',
+        expectedSpecSetHash: 'not-a-hash',
+      }).success,
+    ).toBe(false);
+  });
+
   it('publishes the complete scorecard → independent-audit → start sequence and reviewer recipe', () => {
     const evaluateGuidance = [
       evaluateSpecQualityTool.description,

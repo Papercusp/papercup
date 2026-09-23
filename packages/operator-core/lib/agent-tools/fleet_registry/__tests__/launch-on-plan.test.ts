@@ -3641,8 +3641,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     // Owner directive 2026-09-15 (WI-10001535): the canary — attestation[0] IS the
     // canary-first member — launches as opus 5 xhigh on the inference gateway's `auto`
     // routing, replacing the gateway-BYPASSING `default` credential and the previously
-    // unset model. Both halves of the directive are asserted on purpose: this is the
-    // exact record it was about, so a silent revert shows up as a diff.
+    // unset model.
     //
     // `model` carries the `[1m]` marker deliberately — modelWindowForSpec reads it to
     // launch the 1M auto-compact window, and a bare `opus` spec silently runs 200k.
@@ -3651,7 +3650,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     // rather than the suffix being stripped somewhere in the fold.
     expect(firstVerification.expectedAttestations[0]).toMatchObject({
       model: 'opus[1m]:xhigh',
-      modelSource: 'configured-default',
+      modelSource: null,
       effort: 'xhigh',
       account: 'auto',
       carry: 'warm',

@@ -14,6 +14,9 @@ import { getAcceptanceRubricsForPlan } from '../../rubrics';
 const argsSchema = z.object({
   harness: harnessArg,
   slug: z.string().min(1),
+  expectedSpecSetHash: z.string().regex(/^[a-f0-9]{64}$/).optional().describe(
+    'Optional replay guard. When supplied, the current clauses must hash to this exact value or spec-set-freshness is unknown and blocks the verdict.',
+  ),
   classRef: z.enum(PLAN_CLASS_RUBRIC_REFS).optional().describe(
     'Optional assertion against the authoritative persisted acceptance-rubric class. Omit to derive it; a mismatch is refused, never used as an override.',
   ),
@@ -134,6 +137,7 @@ export default defineTool({
       planItemIds,
       clauses: clauseRead.value,
       classRef: classResolution.classRef,
+      expectedSpecSetHash: args.expectedSpecSetHash,
     });
     return {
       data: {

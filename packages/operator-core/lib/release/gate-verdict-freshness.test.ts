@@ -16,8 +16,13 @@ import {
   evaluateGateVerdictFreshness,
   GATE_FIRE_INTERVAL_MS,
   reconcileGateVerdictFreshnessWithCheckpointRun,
+  reconcileGateVerdictFreshnessWithPinnedRepair,
   reconcileGateVerdictFreshnessWithRepairQueue,
 } from './gate-verdict-freshness';
+// WI-10002121: the read side must consume the SAME predicate the write side does, so these tests
+// drive the reading through it rather than hand-passing a boolean — a hand-passed `true` would
+// still pass while the two sides drifted, which is the exact failure D-004 names.
+import { isJudgingPinnedActiveRepair } from './frozen-candidate-repair-queue';
 // EI-20571364274022293: the reasonCode's whole contract is what this correction does with it, so
 // the two are asserted together rather than each against its own private idea of the other.
 import { pinProvenGateCorrection } from '../git-pipeline-stats';
@@ -639,5 +644,146 @@ describe('evaluateGateVerdictFreshness', () => {
         naive.reasonCode,
       );
     });
+  });
+});
+
+/**
+ * WI-10002121 / D-004. Rule 5 judges the candidate's wall-clock age on the premise that an old
+ * candidate was selected by ACCIDENT. Freeze-and-converge inverts that premise: the queue pins one
+ * immutable sha on purpose and its head ages by design, so the fossil advice ("re-judge at tip, do
+ * NOT fix the tests it names") is backwards on both halves — that red IS the signature the queue
+ * needs, and re-cutting discards the queue.
+ */
+describe('reconcileGateVerdictFreshnessWithPinnedRepair — a frozen repair head is not a fossil', () => {
+  const UNTOUCHED_BY_OTHER_RULES = {
+    consecutiveReds: 1,
+    observedFromPin: 'e79857e2d593',
+    currentGreenPinSha: 'e79857e2d593',
+    lastFiredAtMs: null,
+  };
+  const FOSSIL_VERDICT_AT = Date.parse('2026-08-02T12:53:12Z');
+  const FOSSIL_CANDIDATE_AT = Date.parse('2026-08-02T02:01:48Z');
+
+  /** The REAL rule-5 output, not a hand-made stand-in that could drift from the rule. */
+  const fossil = evaluateGateVerdictFreshness({
+    ...UNTOUCHED_BY_OTHER_RULES,
+    observedAtMs: FOSSIL_VERDICT_AT,
+    candidateCommittedAtMs: FOSSIL_CANDIDATE_AT,
+  });
+
+  const REPAIR_HEAD = '9f41c0d2ab77';
+  const ACTIVE_QUEUE = {
+    candidate: 'aaaaaaaaaaaa',
+    repairHead: REPAIR_HEAD,
+    phase: 'ready-to-verify' as const,
+    blockedReason: null,
+  };
+
+  /** Exactly how git-pipeline-position composes the reading: the shared predicate, judged sha. */
+  const reading = (
+    queue: Parameters<typeof isJudgingPinnedActiveRepair>[0]['repairQueue'],
+    candidate: string = REPAIR_HEAD,
+  ) => ({ judgingPinnedActiveRepair: isJudgingPinnedActiveRepair({ candidate, repairQueue: queue }) });
+
+  it('calibration: the fixture really is a candidate-fossil before anything reconciles it', () => {
+    expect(fossil.stale).toBe(true);
+    expect(fossil.reasonCode).toBe('candidate-fossil');
+    expect(fossil.reason).toMatch(/Do NOT go fix the test\(s\) it names/);
+  });
+
+  it('⭐ releases the fossil when the verdict judged a pinned, still-active repair head', () => {
+    const out = reconcileGateVerdictFreshnessWithPinnedRepair(fossil, reading(ACTIVE_QUEUE));
+
+    expect(out.stale).toBe(false);
+    expect(out.reasonCode).toBeNull();
+    expect(out.reason).toBeNull();
+    // The age is REAL and stays readable: what was wrong is calling it a fossil, not reporting it.
+    expect(out.candidateAgeMs).toBe(fossil.candidateAgeMs);
+    expect(out.candidateAgeMs).toBeGreaterThan(0);
+  });
+
+  // ⭐ THE NEGATIVE. A queue that has GIVEN UP is deliberately not exempt: no repair is advancing,
+  // so the red stops being anybody's working signature and the ordinary fossil advice is correct
+  // again. Releasing here would be the strictly worse bug — it would tell a reader to go fix tests
+  // on a lineage nothing is driving.
+  it.each([
+    ['phase blocked', { ...ACTIVE_QUEUE, phase: 'blocked' as const }],
+    ['attempts-exhausted', { ...ACTIVE_QUEUE, blockedReason: 'attempts-exhausted' as const }],
+    ['dispatch-infeasible', { ...ACTIVE_QUEUE, blockedReason: 'dispatch-infeasible' as const }],
+  ])('⭐ keeps the fossil when the queue has given up (%s)', (_label, gaveUp) => {
+    const out = reconcileGateVerdictFreshnessWithPinnedRepair(fossil, reading(gaveUp));
+    expect(out).toEqual(fossil);
+    expect(out.reason).toMatch(/Do NOT go fix the test\(s\) it names/);
+  });
+
+  it('keeps the fossil when the verdict judged something OTHER than the repair head', () => {
+    // The steady state of a live queue: the tip moves on, but THIS verdict measured an unrelated
+    // sha, so the pin cannot vouch for it.
+    const out = reconcileGateVerdictFreshnessWithPinnedRepair(
+      fossil,
+      reading(ACTIVE_QUEUE, 'deadbeefcafe'),
+    );
+    expect(out).toEqual(fossil);
+  });
+
+  it.each([
+    ['no queue at all', reading(null)],
+    ['a null reading', null],
+    ['an absent reading', undefined],
+  ])('leaves the fossil untouched with %s', (_label, r) => {
+    expect(reconcileGateVerdictFreshnessWithPinnedRepair(fossil, r)).toEqual(fossil);
+  });
+
+  it('never touches a reason code it does not own', () => {
+    const starved = evaluateGateVerdictFreshness(LIVE_INCIDENT);
+    expect(starved.reasonCode).toBe('writer-starved');
+    expect(
+      reconcileGateVerdictFreshnessWithPinnedRepair(starved, { judgingPinnedActiveRepair: true }),
+    ).toEqual(starved);
+  });
+
+  it('is disjoint from both sibling reconcilers, so chain order is not load-bearing', () => {
+    const pinned = reading(ACTIVE_QUEUE);
+    const queue = { status: 'repair-in-progress' as const, phase: 'ready-to-verify' as const };
+    const run = { active: true, activeSource: 'run-lock' as const };
+
+    const asShipped = reconcileGateVerdictFreshnessWithPinnedRepair(
+      reconcileGateVerdictFreshnessWithRepairQueue(
+        reconcileGateVerdictFreshnessWithCheckpointRun(fossil, run),
+        queue,
+      ),
+      pinned,
+    );
+    const reversed = reconcileGateVerdictFreshnessWithCheckpointRun(
+      reconcileGateVerdictFreshnessWithRepairQueue(
+        reconcileGateVerdictFreshnessWithPinnedRepair(fossil, pinned),
+        queue,
+      ),
+      run,
+    );
+
+    expect(asShipped).toEqual(reversed);
+    expect(asShipped.stale).toBe(false);
+  });
+
+  // PERMANENT WRONG-IMPLEMENTATION CONTROL. Keep this: it is what proves the guard above can
+  // actually fail. The tempting shortcut — "a frozen queue exists, so the age is deliberate" —
+  // is expressed directly and asserted to DIVERGE on the input that separates them: a queue that
+  // has given up. If these two ever stop diverging, the blocked-queue carve-out has been lost.
+  it('DIVERGES from the naive "any frozen queue releases the fossil" rule', () => {
+    const naiveRelease = (f: typeof fossil, queue: unknown) =>
+      queue ? { ...f, stale: false, reason: null, reasonCode: null } : f;
+
+    const gaveUp = { ...ACTIVE_QUEUE, phase: 'blocked' as const };
+    const real = reconcileGateVerdictFreshnessWithPinnedRepair(fossil, reading(gaveUp));
+
+    expect(real.stale).not.toBe(naiveRelease(fossil, gaveUp).stale);
+    expect(real.reasonCode).toBe('candidate-fossil');
+
+    // Calibration: on an input where the two SHOULD agree (a genuinely active queue), they must —
+    // otherwise this control would "pass" against an implementation that never releases anything.
+    expect(reconcileGateVerdictFreshnessWithPinnedRepair(fossil, reading(ACTIVE_QUEUE)).stale).toBe(
+      naiveRelease(fossil, ACTIVE_QUEUE).stale,
+    );
   });
 });

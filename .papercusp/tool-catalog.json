@@ -27667,7 +27667,7 @@
           "POST"
         ]
       },
-      "description": "Enqueue one live scheduled routine immediately without changing its cron, active flag, or next_fire_at. This mutating call must run on the background-worker MCP host, where DBOS is launched; request-only operator hosts return dbos-not-started. Reads the routine from the current workspace, uses the routine target to select the same DBOS queue and timeout as the scheduler, and reports enqueued, deduplicated, or DBOS-unavailable explicitly.",
+      "description": "Enqueue one live scheduled routine immediately without changing its cron, active flag, or next_fire_at. Uses local DBOS when started or a pinned client to the background primary from request-only hosts, with the same queue, timeout, and deduplication as the scheduler.",
       "capabilities": [
         "operator:write"
       ],
@@ -27685,9 +27685,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You need to run a routine once now to verify or recover it without retuning its schedule, from the background-worker MCP host.",
-        "notWhen": "Do not issue a mutating fire from a request-only operator host (:3070/:3170 on the canonical dev host); those processes do not own DBOS. Route it through the background-worker MCP host. If it still returns dbos-not-started there, inspect DBOS boot/health instead of retrying. For release promotion, use release:deploy { op: \"status\" } then its op:\"trigger\" path for an already-green pin; do not manually fire release-trigger. To change cadence or pause/resume, use routines:set; to inspect routine configuration, use routines:list.",
-        "chaining": "routines:list → routines:fire { name, installSlug } from the background-worker MCP host → inspect DBOS/routine health. For release promotion, use release:deploy { op: \"status\" } → op:\"trigger\" for an already-green pin."
+        "when": "You need to run a routine once now to verify or recover it without retuning its schedule.",
+        "notWhen": "For release promotion, use release:deploy { op: \"status\" } then op:\"trigger\" for an already-green pin; do not manually fire release-trigger. To change cadence or pause/resume, use routines:set; to inspect routine configuration, use routines:list.",
+        "chaining": "routines:list → routines:fire { name, installSlug } → inspect DBOS/routine health. For release promotion, use release:deploy { op: \"status\" } → op:\"trigger\" for an already-green pin."
       }
     },
     {
