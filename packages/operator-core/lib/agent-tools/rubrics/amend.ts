@@ -135,7 +135,7 @@ export const rubricsAmendArgs = z
       .max(240)
       .optional()
       .describe(
-        'thread-post:<id> containing the preview approval JSON, authored by an authenticated outside-lineage reviewer',
+        'thread-post:<id> containing the preview approval JSON, authored by an authenticated outside-lineage reviewer. This authorizes a patch but is not itself a patch; include at least one amendment field.',
       ),
     approvedBy: z
       .string()
@@ -171,13 +171,30 @@ export const rubricsAmendArgs = z
           'criteria is the complete replacement set and cannot be combined with criterion, criterionClass, or criterionEvidencePlane patches',
       });
     }
+    const hasPatch =
+      args.requirement !== undefined ||
+      args.criteria !== undefined ||
+      args.criterionEvidencePlane !== undefined ||
+      args.criterion !== undefined ||
+      args.criterionClass !== undefined ||
+      args.methodRef !== undefined ||
+      args.classRef !== undefined ||
+      args.composes !== undefined;
+    if (!hasPatch) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [],
+        message:
+          'nothing to amend — include at least one amendment field; approvalRef authorizes a patch but does not supply one',
+      });
+    }
   });
 
 export default defineTool({
   name: 'rubrics:amend',
   profile: 'engineer',
   description:
-    "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. Use rubrics:propose for standard rubric revisions. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. For a started BAR meaning change, use dryRun:true, store the returned approval on the work item, send the reviewer a pointer, then apply approvalRef:'thread-post:<id>'. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
+    "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric revisions. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. For a started BAR meaning change, use dryRun:true, store the returned approval on the work item, send the reviewer a pointer, then apply approvalRef:'thread-post:<id>'. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
   guidance: {
     when: 'A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.',
     notWhen:
