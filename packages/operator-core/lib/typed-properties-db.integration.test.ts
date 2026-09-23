@@ -16,10 +16,12 @@
  * write cycle (same core on the harness_plans PK); and derivePropertySurface
  * (effective = stored else declaration default).
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { getDatatype, upsertDatatype } from './datatype-registry-store';
 import { canonicalWorklistDeclaration } from './goals/package-property-datatypes';
+import setGoalProperty from './agent-tools/goals/set-property';
+import { readGoalPortfolioBrief } from './goal-launch-settings';
 import {
   applyGoalPropertyWrite,
   applyPlanPropertyWrite,
@@ -28,6 +30,12 @@ import {
 } from './typed-properties-db';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
+
+// Keep test notifications out of the live coordination log. The tool's authority
+// check, typed property writer, and portfolio reader use the real fixture DB.
+vi.mock('./agent-tools/coordination/plan-events', () => ({
+  emitPlanEventForCaller: vi.fn().mockResolvedValue(undefined),
+}));
 
 const WS = 'ws-typed-props';
 const HARNESS = 'tp-harness';
@@ -182,6 +190,49 @@ describe('typed-properties-db (real PG, migration 923)', () => {
     expect(surface.propertySchema.worklist).toEqual(canonicalWorklistDeclaration());
     expect(surface.effective.worklist).toEqual(worklist.value);
     expect(surface.properties.worklist).toMatchObject({ value: worklist.value, version: 8 });
+  });
+
+  it('makes an existing goal worklist visible through the property tool and canonical portfolio reader', async () => {
+    const value = ['plan:tp-harness/tp-plan-2026-08-23'];
+    await db.adminSql`
+      INSERT INTO harness_shared.goals
+        (id, install_slug, workspace_id, title, status, properties)
+      VALUES ('g-tp-tool', ${HARNESS}, ${WS}, 'tool worklist regression', 'active',
+              ${JSON.stringify({ worklist: {
+                value,
+                version: 1,
+                edited_at: '2026-09-19T23:59:35.692Z',
+                edited_by: 'original-holder',
+                provenance: 'agent-edit',
+              } })}::text::jsonb)`;
+    const result = await db.adminSql.begin(async (tx) => setGoalProperty.handler({
+      goalId: 'g-tp-tool',
+      property: 'worklist',
+      value,
+      expectedVersion: 1,
+    } as never, {
+      workspaceId: WS,
+      isSuperuser: true,
+      uiClientId: 'su-worklist-integration',
+      tx,
+    } as never)) as unknown as { isError?: boolean; content: Array<{ text: string }> };
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toMatchObject({
+      ok: true, goalId: 'g-tp-tool', property: 'worklist', version: 2,
+    });
+    const portfolio = await readGoalPortfolioBrief({
+      workspaceId: WS,
+      goalId: 'g-tp-tool',
+      sql: db.adminSql,
+    });
+    expect(portfolio).not.toBeNull();
+    expect(portfolio!.worklist).toEqual([
+      expect.objectContaining({
+        ref: value[0],
+        slug: 'tp-plan-2026-08-23',
+        title: 'typed props plan',
+      }),
+    ]);
   });
 
   it('does not persist a legacy declaration for an invalid or stale worklist write', async () => {
