@@ -677,6 +677,8 @@ const CARRY_SOURCE_PATTERNS: readonly {
 ];
 
 const CARRY_STRONG_SELECTION_ACTIONS = String.raw`(?:use|select|choose|take|derive|pin|cut|recut|base|set|treat|resolve)`;
+const CARRY_PIN_INSTRUCTION_PREFIX =
+  /^(?:(?:and\s+)?(?:then|now|please)\s+)*(?:(?:you|we|they|the\s+(?:agent|successor|runner))\s+)?(?:(?:should|must|need\s+to|have\s+to|can|will)\s+)?$/i;
 const CARRY_EXECUTION_ACTIONS = String.raw`(?:create|check\s*out|checkout|launch|run|test|verify|judge|evaluate)`;
 const CARRY_JUDGED_CONTEXT =
   /\b(?:candidate|judged|canonical(?:\s+(?:test|verification|verdict|run))|verdict|verification|worktree|root\s+test|full[-\s]+suite)\b/i;
@@ -782,7 +784,11 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
             ? { index: sourceStart, end: sourceStart + directRelationAfter[0].length }
             : null;
         const strongActionName = strongAction?.[1]?.toLowerCase() ?? '';
-        const strongActionIsCandidateSpecific = strongActionName === 'pin';
+        const pinInstructionPrefix = clause
+          .slice(0, strongAction?.index ?? 0)
+          .replace(/^(?:[A-Z][A-Z0-9_-]{0,15}\s*[—:]\s*)+/, '');
+        const strongActionIsCandidateSpecific =
+          strongActionName === 'pin' && CARRY_PIN_INSTRUCTION_PREFIX.test(pinInstructionPrefix);
         const positive =
           relation ??
           (strongAction && (strongActionHasJudgedContext || strongActionIsCandidateSpecific)

@@ -78,7 +78,10 @@ vi.mock('../../../console-launcher', () => ({
   })),
 }));
 vi.mock('../../../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/tmp/pc' }));
-vi.mock('../../../mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://localhost:3070' }));
+vi.mock('../../../mcp-base-url', () => ({
+  resolveSpawnHostOperatorBaseUrl: () => 'http://localhost:3070',
+  resolveLongLivedSessionMcpBaseUrl: () => 'http://127.0.0.1:9071',
+}));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
 vi.mock('../../../interactive-safety-floor', () => ({
   checkInteractiveSafetyFloor: vi.fn(async () => ({ ok: true as const })),
@@ -340,11 +343,14 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
   });
 });
 
-describe('launch-su — the terminal child gets a RE-DERIVED operator base, never the inherited one (WI-6821 DEFECT A)', () => {
+describe('launch-su — the terminal child gets a stable session MCP base', () => {
   const ORIGINAL = process.env.PAPERCUSP_OPERATOR_URL;
+  const ORIGINAL_HONO_PORT = process.env.PAPERCUSP_HONO_PORT;
   afterEach(() => {
     if (ORIGINAL === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
     else process.env.PAPERCUSP_OPERATOR_URL = ORIGINAL;
+    if (ORIGINAL_HONO_PORT === undefined) delete process.env.PAPERCUSP_HONO_PORT;
+    else process.env.PAPERCUSP_HONO_PORT = ORIGINAL_HONO_PORT;
   });
 
   /** The env the route actually handed the terminal. */
@@ -388,6 +394,7 @@ describe('launch-su — the terminal child gets a RE-DERIVED operator base, neve
     // and the launch dies silently, leaving the adv_sessions row stuck on
     // "Starting up — waiting for this session to come online…".
     process.env.PAPERCUSP_OPERATOR_URL = 'http://localhost:3070/api/mcp';
+    process.env.PAPERCUSP_HONO_PORT = '3170';
     await launch({ headless: false });
 
     expect(spawnInTerminalMock).toHaveBeenCalledTimes(1);
@@ -395,16 +402,17 @@ describe('launch-su — the terminal child gets a RE-DERIVED operator base, neve
     // The assertion that matters is the ABSENCE of the suffix — asserting only
     // the mocked value would still pass if the route stopped setting it at all.
     expect(passed).not.toMatch(/\/api\/mcp/);
-    expect(passed).toBe('http://localhost:3070'); // from resolveSpawnHostOperatorBaseUrl
+    expect(passed).toBe('http://127.0.0.1:9071');
   });
 
   it('re-derives the base even when the operator carries NO pin of its own', async () => {
     delete process.env.PAPERCUSP_OPERATOR_URL;
+    process.env.PAPERCUSP_HONO_PORT = '3170';
     await launch({ headless: false });
     // Re-derived, not merely passed through: a child left with no pin would fall
     // back to its own resolution order and could reach a DIFFERENT operator than
     // the one that just pre-minted its coord owner and adv_sessions row.
-    expect(headedEnv().PAPERCUSP_OPERATOR_URL).toBe('http://localhost:3070');
+    expect(headedEnv().PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9071');
   });
 
   it('leaves the rest of the operator env intact — this is a targeted override, not a scrub', async () => {

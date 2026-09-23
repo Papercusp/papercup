@@ -580,6 +580,9 @@ describe('release:cut — handoff (LOCAL deliverable)', () => {
     expect(b).toMatchObject({ ok: true, op: 'handoff', found: true });
     expect(b.artifacts[0]).toMatchObject({ sha256: 'deadbeef', signed: true });
     expect(b.shipGate).toMatch(/bin\/verify-provenance\.sh/);
+    expect(b.shipGate).toMatch(/D-019's published signable suffixes/);
+    expect(b.shipGate).toMatch(/DiskSpanning \.bin slices are intentionally excluded/);
+    expect(b.shipGate).toMatch(/normalized \.zip remains signature-required/);
     expect(b.note).toMatch(/Never publish to GitHub/i);
   });
   it('loudly blocks hand-off when an UPDATER artifact is unsigned', async () => {

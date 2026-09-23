@@ -389,7 +389,7 @@ describe('buildConsoleEnvelope PAPERCUSP_OPERATOR_URL (WI-1773 follow-up)', () =
     else process.env.PAPERCUSP_MCP_PROXY_BASE = ORIGINAL;
   });
 
-  it('bakes the raw operator base into the child env when no proxy is configured', async () => {
+  it('uses the stable proxy fallback for a long-lived session when no proxy base is configured', async () => {
     delete process.env.PAPERCUSP_MCP_PROXY_BASE;
     const envelope = await buildConsoleEnvelope({
       workspaceId: 'default',
@@ -398,7 +398,7 @@ describe('buildConsoleEnvelope PAPERCUSP_OPERATOR_URL (WI-1773 follow-up)', () =
       runCommand: 'true',
       skipMcpJson: true,
     });
-    expect(envelope.env.PAPERCUSP_OPERATOR_URL).toBe('http://localhost:3070');
+    expect(envelope.env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9071');
   });
 
   it('routes the child env through the resilient proxy when PAPERCUSP_MCP_PROXY_BASE is set — a console/fleet/capability:terminal launch must NOT permanently pin :3070 past a spawned session (the exact WI-1773 regression: an inherited PAPERCUSP_OPERATOR_URL override silently disables psu-launcher\'s proxy-first default)', async () => {
@@ -411,6 +411,28 @@ describe('buildConsoleEnvelope PAPERCUSP_OPERATOR_URL (WI-1773 follow-up)', () =
       skipMcpJson: true,
     });
     expect(envelope.env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9071');
+  });
+
+  it('keeps a fleet session off the staging host port unless an A/B endpoint is explicit', async () => {
+    process.env.PAPERCUSP_MCP_PROXY_BASE = 'http://127.0.0.1:9071';
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3170',
+      runCommand: 'true',
+      skipMcpJson: true,
+    });
+    expect(envelope.env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9071');
+
+    const abEnvelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3170',
+      agentMcpBaseUrl: 'http://localhost:3170',
+      runCommand: 'true',
+      skipMcpJson: true,
+    });
+    expect(abEnvelope.env.PAPERCUSP_OPERATOR_URL).toBe('http://localhost:3170');
   });
 });
 

@@ -115,10 +115,10 @@ describe('mcp-call operator port selection', () => {
     });
   });
 
-  it('retains canonical recovery fallback for a stale inherited port hint', () => {
+  it('retains canonical and proxy recovery fallbacks for a stale inherited port hint', () => {
     expect(resolveCandidatePorts({}, { PAPERCUSP_HONO_PORT: '3170' })).toEqual({
       configuredPort: '3170',
-      candidatePorts: ['3170', '3070'],
+      candidatePorts: ['3170', '3070', '9071'],
       pinned: false,
     });
   });

@@ -888,7 +888,7 @@ export default defineTool({
         shipGate:
           h.unsignedNames.length > 0
             ? `⚠ ${h.unsignedNames.length} UPDATER artifact(s) are UNSIGNED (${h.unsignedNames.join(', ')}) — the updater can't verify them. Do NOT hand these over; re-cut with the signing key present.${sigInfo}`
-            : `All updater artifacts are signed.${sigInfo} Run the ship-gate before hand-off: papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <leg sha> --require-signed per leg for a release cut (use the leg's own health sha; never substitute the DEV :3070 health sha).`,
+            : `All updater artifacts are signed.${sigInfo} Run the ship-gate before hand-off: papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <leg sha> --require-signed per leg for a release cut (use the leg's own health sha; never substitute the DEV :3070 health sha). --require-signed enforces D-019's published signable suffixes; DiskSpanning .bin slices are intentionally excluded, while their normalized .zip remains signature-required.`,
         note: 'LOCAL-only hand-off: give the OWNER these local paths + sha256 to upload. ⚠ Windows Inno *-setup-N.bin payload slices MUST be uploaded into the same directory as their setup.exe. Never publish to GitHub.',
       });
     }

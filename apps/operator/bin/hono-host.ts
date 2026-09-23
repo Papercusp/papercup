@@ -104,6 +104,7 @@ import { pinSpawnerSocketForCluster } from '@papercusp/operator-core/lib/fleet/s
 import { pinSetupTokenForCluster } from '@papercusp/operator-core/lib/auth-setup-token';
 import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
 import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
+import { markSpawnOffloadHost } from '@papercusp/operator-core/lib/fleet/git-via-sidecar';
 import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
 import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
 import { runLiveHealthMonitorMain } from '@papercusp/operator-core/lib/resource-governor/live-health-monitor-main';
@@ -165,6 +166,14 @@ if (sidecarMode === 'resource-health') {
     process.exit(1);
   });
 }
+// WI-10002709: this process (primary AND every cluster worker — each re-evaluates
+// this entry) is a request host whose RSS makes a local fork cost ~240 ms of dead
+// event loop, so every sidecar-capable spawn seam should default to the spawner
+// sidecar here, not only the two sites a drop-in opted in by name. In-memory on
+// purpose (never an env var, which children would inherit); see
+// markSpawnOffloadHost. A sidecar-mode process must never mark itself — the
+// spawner sidecar executing through itself would recurse.
+if (sidecarMode === null) markSpawnOffloadHost();
 
 // Resilience guard: the multi-tenant host must never let ONE bad inbound frame
 // crash-loop :3070 for the entire fleet. Two known classes originate inside the

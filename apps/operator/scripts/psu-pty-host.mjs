@@ -44,6 +44,9 @@ import { constants as osConstants, homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+// Keep the interactive bootstrap independent of operator packages while using
+// the same dependency-free signature as the governed turn taxonomy.
+import { makeModelCapacityDetector } from '../../../libs/papercusp-shared/src/agent/model-capacity.mjs';
 import {
   mkdirSync,
   readdirSync,
@@ -5821,6 +5824,13 @@ export function hostThroughPty(o) {
     deferUntilSubmit: env.PAPERCUSP_AGENT === 'codex' &&
       args.some((arg) => arg === 'resume' || arg === 'fork'),
   });
+  // The interactive Codex CLI remains under the owner's control. Classify its
+  // transient capacity copy for the durable event stream without retrying or
+  // substituting models behind the owner's back.
+  const modelCapacityDetector =
+    String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex'
+      ? makeModelCapacityDetector()
+      : null;
   const quotaBlockStarvationGuard = makeQuotaBlockStarvationGuard({
     thresholdMs: positiveNumber(
       env.PAPERCUSP_PSU_PTY_QUOTA_STARVATION_MS,
@@ -8042,6 +8052,7 @@ export function hostThroughPty(o) {
     // WI-41386: one guard per child — it carries partial-escape state, so a
     // respawn must not inherit the dead child's tail.
     const scrollbackGuard = makeScrollbackGuard();
+    modelCapacityDetector?.reset();
     if (headlessClaudeOnboardingExpiryTimer) {
       clearTimeout(headlessClaudeOnboardingExpiryTimer);
       headlessClaudeOnboardingExpiryTimer = null;
@@ -8155,6 +8166,17 @@ export function hostThroughPty(o) {
               }
             : {},
         );
+      }
+      const modelCapacity = modelCapacityDetector?.observe(stripAnsi(raw) ?? '') ?? null;
+      if (modelCapacity) {
+        appendHostEvent(ownerId, 'model-capacity-detected', {
+          agent: 'codex',
+          errorClass: modelCapacity.errorClass,
+          retryable: modelCapacity.retryable,
+          retryAfterMs: modelCapacity.retryAfterMs,
+          matchedPattern: modelCapacity.matchedPattern,
+          matchedExcerpt: modelCapacity.matchedExcerpt,
+        });
       }
       activity.touchOutput();
       // Headless launchers keep the original raw PTY bytes on stdout for the

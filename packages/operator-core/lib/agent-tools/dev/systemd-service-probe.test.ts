@@ -12,9 +12,11 @@
  * manually verified against the REAL systemd on this box (see the doc comment on
  * `resolveUnitName` below for the exact commands + output that found the bug).
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getSidecarFallbackStats, resetSidecarFallbackStatsForTest } from '../../fleet/git-via-sidecar';
 import {
   type ServiceStartInfo,
+  execProbeCommand,
   parseMultiUnitShowOutput,
   parseSystemctlShowOutput,
   probeServiceStart,
@@ -442,5 +444,87 @@ describe('resolveServiceStartMs (WI-10550: measured start beats a late-biased de
     expect(resolveServiceStartMs({ ok: true, mainPid: 0, activeState: 'inactive' }, NOW)).toBeNull();
     // probe failed outright
     expect(resolveServiceStartMs({ ok: false }, NOW)).toBeNull();
+  });
+});
+
+// WI-10002709: the probe's systemctl/ps spawns run on the request operator's hot
+// path; a local execFile from a ~2 GB :3070 worker blocks the loop ~240 ms per fork.
+// On a sidecar host they go through the spawner sidecar, with execFile semantics
+// preserved and a local fallback that never changes the probe's answer.
+describe('execProbeCommand (WI-10002709: sidecar-first, execFile semantics)', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    resetSidecarFallbackStatsForTest();
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    resetSidecarFallbackStatsForTest();
+  });
+
+  const neverLocal = async (): Promise<{ stdout: string }> => {
+    throw new Error('local spawn must not run');
+  };
+
+  it('routes through the sidecar when enabled and returns its stdout, without a local fork', async () => {
+    const viaSidecar = vi.fn(async () => ({ code: 0, stdout: 'MainPID=42\n', stderr: '' }));
+    const out = await execProbeCommand('systemctl', ['--user', 'show'], 3000, {
+      sidecarEnabled: () => true,
+      viaSidecar,
+      local: neverLocal,
+    });
+    expect(out).toEqual({ stdout: 'MainPID=42\n' });
+    expect(viaSidecar).toHaveBeenCalledWith('systemctl', ['--user', 'show'], { timeoutMs: 3000 });
+    expect(getSidecarFallbackStats().total).toBe(0);
+  });
+
+  it('rejects on a non-zero exit through the sidecar, exactly as execFile would (no local retry)', async () => {
+    const local = vi.fn(async () => ({ stdout: 'should not be used' }));
+    await expect(
+      execProbeCommand('ps', ['-o', 'etimes=', '-p', '999999'], 3000, {
+        sidecarEnabled: () => true,
+        viaSidecar: async () => ({ code: 1, stdout: '', stderr: '' }),
+        local,
+      }),
+    ).rejects.toThrow(/exited 1/);
+    expect(local).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a local spawn when the sidecar transport fails, and counts the fallback', async () => {
+    const local = vi.fn(async () => ({ stdout: 'local-out' }));
+    const out = await execProbeCommand('systemctl', ['--user', 'show'], 3000, {
+      sidecarEnabled: () => true,
+      viaSidecar: async () => {
+        throw new Error('ECONNREFUSED');
+      },
+      local,
+    });
+    expect(out).toEqual({ stdout: 'local-out' });
+    expect(local).toHaveBeenCalledWith('systemctl', ['--user', 'show'], { timeout: 3000 });
+    expect(getSidecarFallbackStats().bySubsystem['systemd-service-probe']?.count).toBe(1);
+  });
+
+  it("falls back on the sidecar's OWN fault (admission failure) instead of reporting it as the child's answer", async () => {
+    const local = vi.fn(async () => ({ stdout: 'local-out' }));
+    const out = await execProbeCommand('systemctl', ['--user', 'show'], 3000, {
+      sidecarEnabled: () => true,
+      viaSidecar: async () => ({ code: -1, stdout: '', stderr: 'spawner sidecar admission failed: denied' }),
+      local,
+    });
+    expect(out).toEqual({ stdout: 'local-out' });
+    expect(getSidecarFallbackStats().bySubsystem['systemd-service-probe']?.lastReason).toMatch(/admission failed/);
+  });
+
+  it('uses the local spawn directly when the sidecar is not enabled (desktop / CLI / tests)', async () => {
+    const viaSidecar = vi.fn(async () => ({ code: 0, stdout: 'x', stderr: '' }));
+    const local = vi.fn(async () => ({ stdout: 'local-out' }));
+    const out = await execProbeCommand('systemctl', ['--user', 'show'], 5000, {
+      sidecarEnabled: () => false,
+      viaSidecar,
+      local,
+    });
+    expect(out).toEqual({ stdout: 'local-out' });
+    expect(viaSidecar).not.toHaveBeenCalled();
+    expect(getSidecarFallbackStats().total).toBe(0);
   });
 });

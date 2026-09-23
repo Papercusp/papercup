@@ -12,6 +12,7 @@ import {
   WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
+  WORKSPACE_HOST_CONNECTOR_ENROLLMENT_CONDUIT,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
   buildWorkspaceHostBuildManifest,
@@ -361,5 +362,27 @@ describe('workspace-host provision bootstrap profile', () => {
     // Same host + same controller configuration must render the same bytes; a bootstrap that
     // varied per call could not be reasoned about from the configuration alone.
     expect(renderWorkspaceHostProvisionBootstrap('host-p046-1', profile)).toBe(script);
+  });
+
+  it('installs the desktop connector enrollment conduit only when the controller names a control plane (D-403)', async () => {
+    const without = await resolveWorkspaceHostProvisionBootstrapProfile({
+      env: env(),
+      readTextFile: reader(FILES),
+      controllerProfile: CONTROLLER,
+    });
+    expect(without.hostedConnector).toBeUndefined();
+    expect(renderWorkspaceHostProvisionBootstrap('host-p046-1', without)).not.toContain(
+      WORKSPACE_HOST_CONNECTOR_ENROLLMENT_CONDUIT,
+    );
+
+    const configured = await resolveWorkspaceHostProvisionBootstrapProfile({
+      env: env({ [WORKSPACE_HOST_PROVISION_ENV.connectorOrigin]: ' https://app.papercusp.com ' }),
+      readTextFile: reader(FILES),
+      controllerProfile: CONTROLLER,
+    });
+    expect(configured.hostedConnector).toEqual({ controlPlaneOrigin: 'https://app.papercusp.com' });
+    const script = renderWorkspaceHostProvisionBootstrap('host-p046-1', configured);
+    expect(script).toContain(WORKSPACE_HOST_CONNECTOR_ENROLLMENT_CONDUIT);
+    expect(script).toContain("ORIGIN='https://app.papercusp.com'");
   });
 });

@@ -21,6 +21,8 @@ const setWorkItemCheckpoint = vi.fn();
 const toolCallRowsFor = vi.fn();
 const renderToolCallLog = vi.fn();
 const applySessionTaskOp = vi.fn();
+// An owner with no attached PUI conversation keeps its own task list (D-019).
+const taskSessionIdForOwner = vi.fn(async (_sql: unknown, _workspaceId: string, ownerId: string) => ownerId);
 const getLoopStatus = vi.fn();
 const listActiveAwaits = vi.fn();
 const recentTurnJournal = vi.fn();
@@ -43,6 +45,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 vi.mock('./session-tasks', () => ({
   applySessionTaskOp: (...a: unknown[]) => applySessionTaskOp(...a),
+  taskSessionIdForOwner: (...a: [unknown, string, string]) => taskSessionIdForOwner(...a),
 }));
 vi.mock('./harness/routines/loop', () => ({
   getLoopStatus: (...a: unknown[]) => getLoopStatus(...a),
@@ -189,6 +192,18 @@ describe('open-task reminder IO (P-005)', () => {
       workspaceId: 'ws-1',
     });
     expect(second?.tripwire.attempt).toBe(2);
+  });
+
+  it('reads the attached PUI conversation list for an SU owner bound to one (D-019)', async () => {
+    taskSessionIdForOwner.mockResolvedValueOnce('chat-pui-1');
+    applySessionTaskOp.mockResolvedValue({ op: 'view', changedTaskId: null, tasks: [activeTask], links: [] });
+    getLoopStatus.mockResolvedValue({ active: false });
+    listActiveAwaits.mockResolvedValue([]);
+    recentTurnJournal.mockResolvedValue([]);
+
+    expect(await sweepOpenTaskReminder({ ownerId: 'su-attached-1', workspaceId: 'ws-1' })).not.toBeNull();
+    expect(taskSessionIdForOwner).toHaveBeenCalledWith(sql, 'ws-1', 'su-attached-1');
+    expect(applySessionTaskOp).toHaveBeenCalledWith(sql, expect.objectContaining({ sessionId: 'chat-pui-1' }));
   });
 
   it('suppresses when a loop or bounded await already guarantees continuation', async () => {

@@ -184,6 +184,10 @@ export interface ProjectConversationContextInput {
   linkedWorkItemId: string | null;
   transcript: TranscriptTurn[];
   loopSession: LoopSessionRow | null;
+  /** The chat is homed on the SU-session host (su_runtime_class 'su-session'):
+   * its canonical task list is owner-writable without an owned-loop ledger
+   * (pui-first-party-public-release-2026-09-07 D-019). */
+  suSessionChat?: boolean;
   tasks?: SessionTask[];
   taskBlockerStates?: ReadonlyMap<string, SessionTaskBlockerState>;
   approvals?: LoopApprovalRequestRow[];
@@ -354,7 +358,9 @@ export function projectConversationContext(
     },
     capabilities: {
       liveFrames: freshLoopLedger,
-      taskWrite: freshLoopLedger,
+      // The task list is keyed on the conversation, not on who runs it: the
+      // owned loop and an attached SU agent both operate this chat's list.
+      taskWrite: freshLoopLedger || (input.sourceKind === 'agent_chat' && input.suSessionChat === true),
       approvalWrite: freshLoopLedger,
     },
     frames: [
@@ -880,6 +886,7 @@ interface AgentChatProjectionRow {
   role: string;
   feature_id: string | null;
   linked_plan_slug: string | null;
+  su_runtime_class: string | null;
   transcript: TranscriptTurn[] | string | null;
 }
 
@@ -908,7 +915,7 @@ export async function readConversationContextProjection(args: {
   if (args.sourceKind !== 'agent_chat') return null;
   const rows = await sql<AgentChatProjectionRow[]>`
     SELECT chat.id, chat.harness_slug, chat.role, chat.feature_id, chat.transcript,
-           linked.source_plan_slug AS linked_plan_slug
+           chat.su_runtime_class, linked.source_plan_slug AS linked_plan_slug
       FROM harness_shared.agent_chats_consolidated chat
       LEFT JOIN LATERAL (
         SELECT wi.source_plan_slug
@@ -958,6 +965,7 @@ export async function readConversationContextProjection(args: {
     linkedWorkItemId: row.feature_id,
     transcript,
     loopSession,
+    suSessionChat: row.su_runtime_class === 'su-session',
     tasks: reconciledTasks.tasks,
     taskBlockerStates: reconciledTasks.states,
     approvals,

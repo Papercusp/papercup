@@ -1054,6 +1054,7 @@ describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009
     'blocked-session',
     'work-item-blocked',
     'decision-owed',
+    'unhandled-directive',
   ];
 
   it('the kind to category map covers every AttentionKind (no kind silently uncategorized)', () => {

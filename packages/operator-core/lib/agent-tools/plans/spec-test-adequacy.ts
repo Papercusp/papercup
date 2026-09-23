@@ -1230,10 +1230,23 @@ export function evaluateSpecTestAdequacy(input: {
     );
   });
   const clauseFalsifierScenarioIds = new Set(clause.falsifier?.requiredScenarios ?? []);
+  // WI-10002724: a clause that declares NO falsifier.requiredScenarios has no scenario id to name,
+  // so under the scenario-only rule its falsifiability could never pass (4,026 of 4,136 active
+  // clauses on 2026-09-23). For such a clause the clause itself is the case: a target naming its
+  // own specId is the clause-scoped claim. Obligation ids are lower-case
+  // (SPEC_PROOF_OBLIGATION_ID_RE), so the specId is compared lower-cased. A boolean target and a
+  // target naming a sibling spec or scenario stay insufficient, and a clause that DOES declare
+  // scenarios keeps the scenario-only rule.
+  const clauseSelfTarget = clauseFalsifierScenarioIds.size === 0 ? clause.specId.toLowerCase() : null;
   const clauseScopedMutationOrCounterexample = boundMutationOrCounterexample.filter((row) => {
     const targeted = detailsOf(row).targeted;
-    return typeof targeted === 'string' && clauseFalsifierScenarioIds.has(targeted);
+    if (typeof targeted !== 'string') return false;
+    return clauseFalsifierScenarioIds.has(targeted) || (clauseSelfTarget !== null && targeted === clauseSelfTarget);
   });
+  const clauseTargetRequirement =
+    clauseSelfTarget !== null
+      ? `this clause's own specId (adequacy.targeted = '${clauseSelfTarget}'; it declares no falsifier.requiredScenarios)`
+      : "a scenario id in this clause's falsifier.requiredScenarios";
   const exactMutationOrCounterexample = exactEvidence.filter(
     (row) => row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample',
   );

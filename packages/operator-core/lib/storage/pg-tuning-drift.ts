@@ -33,6 +33,7 @@
  * (`pg-autotune --apply`) does not apply to it. The check skips that host rather
  * than emitting an alarm nobody can act on.
  */
+import { readFileSync } from 'node:fs';
 import { generated, getOrgPg } from '@papercusp/db-org';
 import {
   databaseTuningToSettings,

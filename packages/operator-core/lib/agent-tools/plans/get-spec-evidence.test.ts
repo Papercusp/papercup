@@ -103,6 +103,7 @@ describe('plans:get-spec-evidence detail levels', () => {
       ok: true,
       detail: 'summary',
       count: 3,
+      bounded: { limit: 200, truncatedByLimit: false },
       currentness: { current: 1, stale: 1, unknown: 1 },
       fullBody: {
         tool: 'plans:get-spec-evidence',
@@ -135,5 +136,28 @@ describe('plans:get-spec-evidence detail levels', () => {
     // The selector never reaches the store as a filter.
     expect(listEvidence).toHaveBeenCalledWith(expect.not.objectContaining({ detail: expect.anything() }));
     expect(JSON.stringify(summary).length).toBeLessThan(JSON.stringify(full).length / 2);
+  });
+
+  it('reports when a limited read omits rows from the aggregate population', async () => {
+    const population = [
+      binding(1, 'SPEC-A', 'current'),
+      binding(2, 'SPEC-A', 'stale'),
+      binding(3, 'SPEC-A', 'unknown'),
+      binding(4, 'SPEC-B', 'current'),
+    ];
+    listEvidence.mockImplementation(async (options) => population.slice(0, options.limit ?? 200));
+
+    const result = await call({ harness: 'papercusp', slug: 'plan-a', limit: 3 });
+
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      limit: 4,
+      planSlugs: ['plan-a'],
+    }));
+    expect(result).toMatchObject({
+      count: 3,
+      bounded: { limit: 3, truncatedByLimit: true },
+      byClause: [{ specId: 'SPEC-A', specRevision: 1, bindings: 3, current: 1, stale: 1, unknown: 1 }],
+    });
+    expect(result.evidence).toHaveLength(3);
   });
 });

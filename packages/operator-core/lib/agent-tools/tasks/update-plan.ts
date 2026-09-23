@@ -55,13 +55,14 @@ export default defineTool({
   },
   args: argsSchema,
   async handler(args, ctx: PapercuspUnifiedToolContext) {
-    const runtime = resolveSessionTaskRuntime(ctx);
+    const runtime = await resolveSessionTaskRuntime(ctx);
     if (!runtime) return workspaceRequiredResponse('tasks:update_plan');
     try {
       const bridge = await createSessionTaskLedgerBridge({
         workspaceId: runtime.workspaceId,
         sessionId: runtime.sessionId,
         actorId: runtime.actorId,
+        claimOwnerId: runtime.claimOwnerId,
         defaultHarness: runtime.defaultHarness,
         sql: runtime.tx,
       });

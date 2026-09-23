@@ -777,12 +777,9 @@ async function handleLaunchSu(req: Request): Promise<Response> {
     // `session_id NULL` for its whole window. That is exactly the "Starting up
     // — waiting for this session to come online…" the owner reported (reproduced
     // 2026-08-02: bare base → launches; same url + `/api/mcp` → dead in 0.4s).
-    // Re-derive it from THIS operator — the one that just pre-minted the coord
-    // owner and is about to write the row — using the same helper the headless
-    // branch already uses (it prefers PAPERCUSP_HONO_PORT and strips the
-    // suffix). Mirrors psu-launcher's rule for PAPERCUSP_TTY: a launch's
-    // operator identity is ALWAYS RE-DERIVED, NEVER INHERITED.
-    const [{ resolveSpawnHostOperatorBaseUrl }, { keepWindowOpenOnFailure }] = await Promise.all([
+    // The session outlives this operator process, so its MCP transport uses the
+    // stable proxy rather than the current host's restart-prone serving port.
+    const [{ resolveLongLivedSessionMcpBaseUrl }, { keepWindowOpenOnFailure }] = await Promise.all([
       import('../../../mcp-base-url'),
       import('../../../console-spawn'),
     ]);
@@ -816,7 +813,7 @@ async function handleLaunchSu(req: Request): Promise<Response> {
       }),
       env: {
         ...process.env,
-        PAPERCUSP_OPERATOR_URL: resolveSpawnHostOperatorBaseUrl(),
+        PAPERCUSP_OPERATOR_URL: resolveLongLivedSessionMcpBaseUrl(),
         // The bash -lc child inherits this env (the operator-URL var above
         // already rides the same seam) — spawn-safe, unlike a --kickoff argv.
         ...(kickoffPrompt ? { PAPERCUSP_KICKOFF_PROMPT: kickoffPrompt } : {}),

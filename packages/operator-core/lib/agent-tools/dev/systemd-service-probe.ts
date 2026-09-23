@@ -23,7 +23,69 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import {
+  gitSidecarEnabled,
+  isSidecarInfrastructureFault,
+  noteSidecarFallback,
+  runCommandViaSpawnerSidecar,
+} from '../../fleet/git-via-sidecar';
+
 const run = promisify(execFile);
+
+/** Per-site override for {@link execProbeCommand}'s sidecar route (`0` = force local). */
+export const SYSTEMD_PROBE_SIDECAR_VAR = 'PAPERCUSP_SYSTEMD_PROBE_SPAWN_SIDECAR';
+
+export interface ExecProbeCommandDeps {
+  sidecarEnabled?: () => boolean;
+  viaSidecar?: typeof runCommandViaSpawnerSidecar;
+  local?: (command: string, args: string[], options: { timeout: number }) => Promise<{ stdout: string }>;
+}
+
+/**
+ * Run one probe subprocess (`systemctl` / `ps`) with execFile semantics — resolve
+ * `{ stdout }` on exit 0, REJECT otherwise — routed through the spawner sidecar
+ * where the host has one (WI-10002709).
+ *
+ * Why: this probe runs on the request operator's hot path (dev:pipeline_position's
+ * `serving` leg, dev:restart's coalesce check, dev:service_health). A local
+ * `execFile` from a ~2 GB :3070 cluster worker blocks the event loop ~240 ms per
+ * spawn for the fork alone, and probeServiceStart pays two (systemctl + ps) —
+ * measured as ~25% of main-thread samples in one sentinel window. The sidecar's
+ * fork is cheap and the caller pays only a socket round-trip.
+ *
+ * A transport failure or a sidecar-infrastructure fault falls back to the local
+ * spawn (counted via noteSidecarFallback, which also feeds the circuit breaker),
+ * so a sick sidecar degrades latency, never the probe's answer.
+ */
+export async function execProbeCommand(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  deps: ExecProbeCommandDeps = {},
+): Promise<{ stdout: string }> {
+  const sidecarEnabled = deps.sidecarEnabled ?? (() => gitSidecarEnabled(SYSTEMD_PROBE_SIDECAR_VAR));
+  if (sidecarEnabled()) {
+    let res: Awaited<ReturnType<typeof runCommandViaSpawnerSidecar>> | null = null;
+    try {
+      res = await (deps.viaSidecar ?? runCommandViaSpawnerSidecar)(command, args, { timeoutMs });
+    } catch (e) {
+      noteSidecarFallback('systemd-service-probe', e);
+    }
+    if (res && isSidecarInfrastructureFault(res)) {
+      noteSidecarFallback('systemd-service-probe', new Error(res.stderr));
+      res = null;
+    }
+    if (res) {
+      if (res.code !== 0) {
+        throw new Error(`${command} ${args.join(' ')} exited ${res.code} (via spawner sidecar): ${res.stderr.trim()}`);
+      }
+      return { stdout: res.stdout };
+    }
+  }
+  const local = deps.local ?? ((c: string, a: string[], o: { timeout: number }) => run(c, a, o));
+  const { stdout } = await local(command, args, { timeout: timeoutMs });
+  return { stdout };
+}
 
 export interface ServiceStartInfo {
   /** false ⇒ could not determine (no systemd / non-linux / probe error) —
@@ -330,7 +392,7 @@ const defaultSystemctlExec: SystemctlExec = async (args) => {
   // `systemctl show` exits 0 even for a not-found unit, but a manager that is
   // entirely absent (no user bus) exits non-zero — execFile rejects there, and
   // the caller records the scope as unavailable rather than inventing states.
-  const { stdout } = await run('systemctl', args, { timeout: 5000 });
+  const { stdout } = await execProbeCommand('systemctl', args, 5000);
   return stdout;
 };
 
@@ -443,10 +505,8 @@ export type ServiceStartExec = (
   options: { timeout: number },
 ) => Promise<{ stdout: string }>;
 
-const defaultServiceStartExec: ServiceStartExec = async (command, args, options) => {
-  const { stdout } = await run(command, args, options);
-  return { stdout };
-};
+const defaultServiceStartExec: ServiceStartExec = async (command, args, options) =>
+  execProbeCommand(command, args, options.timeout);
 
 export async function probeServiceStart(
   unit: string,

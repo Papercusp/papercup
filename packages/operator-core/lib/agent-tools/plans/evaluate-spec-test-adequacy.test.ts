@@ -97,6 +97,55 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(result.rows).toHaveLength(1);
   });
 
+  it('marks draft clauses excluded from successful reads, including an empty exclusion', async () => {
+    listClauses.mockResolvedValue([
+      clause('active'),
+      { ...clause('draft'), specId: 'SPEC-DRAFT', planItemId: 'P-002' } as never,
+    ]);
+
+    const base = {
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+    };
+    const mixed = await call(base);
+
+    expect(mixed).toMatchObject({
+      ok: true,
+      count: 1,
+      includeDraft: false,
+      excludedDraftCount: 1,
+      excludedDraftSpecIds: ['SPEC-DRAFT'],
+      excludedClauses: [{ specId: 'SPEC-DRAFT', revision: 1, lifecycleStatus: 'draft' }],
+    });
+
+    listClauses.mockResolvedValue([clause('active')]);
+    const none = await call(base);
+
+    expect(none).toMatchObject({
+      ok: true,
+      includeDraft: false,
+      excludedDraftCount: 0,
+      excludedDraftSpecIds: [],
+      excludedClauses: [],
+    });
+
+    listClauses.mockResolvedValue([
+      clause('active'),
+      { ...clause('draft'), specId: 'SPEC-DRAFT', planItemId: 'P-002' } as never,
+    ]);
+    const included = await call({ ...base, includeDraft: true });
+
+    expect(included).toMatchObject({
+      ok: true,
+      count: 2,
+      includeDraft: true,
+      excludedDraftCount: 0,
+      excludedDraftSpecIds: [],
+      excludedClauses: [],
+    });
+  });
+
   it('echoes the live evaluator build and reports drift for a pinned older replay', async () => {
     listClauses.mockResolvedValue([clause('active')]);
 

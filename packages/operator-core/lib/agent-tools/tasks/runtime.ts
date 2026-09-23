@@ -7,6 +7,7 @@ import {
   SESSION_TASK_OPS,
   SESSION_TASK_STATUSES,
   SessionTaskValidationError,
+  taskSessionIdForOwner,
   type SessionTask,
   type SessionTaskBridge,
   type SessionTaskOp,
@@ -32,6 +33,11 @@ export interface SessionTaskLedgerBridgeArgs {
   sessionId: string;
   /** The caller performing this mutation; promotion creation is attributed here. */
   actorId: string;
+  /**
+   * Whose active claim seeds `for` links. Defaults to `sessionId`; differs only
+   * when an SU owner operates its attached PUI conversation's list (D-019).
+   */
+  claimOwnerId?: string;
   defaultHarness?: string;
   /** Carried by both MCP and endpoint adapters so the factory stays transport-neutral. */
   sql?: SqlLike;
@@ -97,7 +103,7 @@ export async function createSessionTaskLedgerBridge(
   // their transaction handle even though the existing claim/work-item/checkpoint
   // substrates own their own workspace-safe transactions today.
   void args.sql;
-  const claim = await getActiveClaimForOwner(workspaceId, sessionId);
+  const claim = await getActiveClaimForOwner(workspaceId, args.claimOwnerId?.trim() || sessionId);
   const seedWorkItem: SessionTaskWorkItemLink | null = claim
     ? {
         workItemId: claim.workItemId,
@@ -159,18 +165,21 @@ export function taskToolText(value: unknown, isError = false) {
   };
 }
 
-export function resolveSessionTaskRuntime(ctx: PapercuspUnifiedToolContext) {
+export async function resolveSessionTaskRuntime(ctx: PapercuspUnifiedToolContext) {
   const identity = resolveAgentIdentity(ctx);
   const workspaceId = (ctx.workspaceId ?? identity.workspaceId ?? '').trim();
   if (!workspaceId || workspaceId === '*' || !ctx.tx) return null;
 
   const runId = typeof ctx.runId === 'string' ? ctx.runId.trim() : '';
   const spawnId = typeof ctx.spawnId === 'string' ? ctx.spawnId.trim() : '';
-  const sessionId = runId && spawnId === `agent-loop-${runId}` ? runId : identity.ownerId;
+  const ownedLoopChatId = runId && spawnId === `agent-loop-${runId}` ? runId : null;
+  const sessionId = ownedLoopChatId
+    ?? await taskSessionIdForOwner(ctx.tx, workspaceId, identity.ownerId);
   return {
     workspaceId,
     sessionId,
     actorId: identity.ownerId,
+    claimOwnerId: ownedLoopChatId ?? identity.ownerId,
     // NOT `ctx.harnessSlug?.trim() || undefined`: the all-harnesses sentinel is a
     // TRUTHY string, so that form handed '*'/'all' downstream as if it were a
     // concrete harness slug. The canonical resolver returns null for the sentinel.

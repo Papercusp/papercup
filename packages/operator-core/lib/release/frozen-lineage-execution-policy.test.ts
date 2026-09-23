@@ -577,6 +577,13 @@ describe('frozen lineage carry policy', () => {
     expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
   });
 
+  it('allows a descriptive green-pin distance measurement without treating pin as an instruction', () => {
+    const text =
+      'READING: the green pin lacks my fix ONLY because it IS the frozen lineage, 88 commits behind staging';
+
+    expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
+  });
+
   it.each([
     'Select staging as the judged candidate even though it is 32 commits behind the repair head.',
     'Run the canonical verification against staging as the judged candidate.',

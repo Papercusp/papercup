@@ -20,6 +20,8 @@ import {
   type SpecEvidenceForAdequacy,
 } from './spec-test-adequacy';
 
+const DRAG_SCENARIO = 'dragging-row-named';
+
 function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   return {
     planSlug: 'drag-plan',
@@ -36,7 +38,12 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
     lifecycleStatus: 'active',
     supersedes: null,
     exemption: null,
-    falsifier: null,
+    // Falsifiability links a mutation/counterexample to a DECLARED scenario
+    // (EI-23935395295801259), so the fixture clause names the one it targets.
+    falsifier: {
+      observation: 'A sufficient current binding is dragged by an older row, or the failure names no binding.',
+      requiredScenarios: [DRAG_SCENARIO],
+    },
     contentHash: 'sha256:drag-v1',
     createdBy: 'su-test',
     createdAt: '2026-09-23T00:00:00.000Z',
@@ -105,7 +112,8 @@ function row(
         skipped: false,
         executed: true,
         outcome: 'passed',
-        targeted: true,
+        targeted: DRAG_SCENARIO,
+        scenarioIds: [DRAG_SCENARIO],
         coverageRungs: { l3: true },
         ...adequacy,
       },

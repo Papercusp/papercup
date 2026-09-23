@@ -36,7 +36,7 @@ import { papercuspPathForWorkspace } from './papercusp-root';
 // EI-10938: resolve the workspace's home CHECKOUT for a no-slug launch.
 import { detectPapercupRoot, hasPapercupMarkers } from './harness/register-papercusp';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
-import { resolveAgentMcpBaseUrl } from './mcp-base-url';
+import { resolveAgentMcpBaseUrl, resolveLongLivedSessionMcpBaseUrl } from './mcp-base-url';
 import { advSessionsByTranscriptHandles } from './adv-sessions';
 import { wakeAccountRouteFromArgv } from './inference-gateway/spawn-env';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
@@ -101,6 +101,8 @@ export interface BuildEnvelopeOpts {
   slug: string | null;
   /** The operator's own base URL (e.g. http://localhost:3070). */
   operatorBaseUrl: string;
+  /** Explicit MCP endpoint for a deliberate short A/B session. */
+  agentMcpBaseUrl?: string;
   /**
    * scoped-superuser-workspace-clamp D-004 — deliberate cross-workspace ("god
    * mode") console. Default false ⇒ the MCP url bakes the concrete `&workspace=`
@@ -320,6 +322,8 @@ export async function buildConsoleEnvelope(
     cwd = await resolveWorkspaceHomeCwd(opts.workspaceId);
   }
 
+  const agentMcpBaseUrl = opts.agentMcpBaseUrl ?? resolveLongLivedSessionMcpBaseUrl();
+
   // 2. Build env — same shape as the Pi pty (PI_CODING_AGENT_DIR if
   //    we have a state dir, PAPERCUSP_HARNESS_SLUG if we have a slug,
   //    PAPERCUSP_API_BASE for callbacks), plus workspace + home so a
@@ -336,17 +340,7 @@ export async function buildConsoleEnvelope(
     // explicit marker so psu clears inherited gateway credentials before
     // restoring the system login (EI-21575557995965463).
     PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default',
-    // WI-1773 follow-up: route through the resilient-proxy resolver, same as
-    // buildSuperuserMcpUrl below. Previously this baked the RAW operatorBaseUrl
-    // (e.g. direct :3070) into the child's env unconditionally — psu-launcher's
-    // resolveOperatorUrl() treats an explicit PAPERCUSP_OPERATOR_URL as the
-    // highest-precedence override, so every console/fleet/capability:terminal
-    // -spawned session inherited a permanent :3070 pin and silently bypassed the
-    // proxy-first default that bare `psu` CLI launches already get (WI-1457).
-    // Confirmed live 2026-07-03: a backlog-clearance fleet member's env carried
-    // PAPERCUSP_OPERATOR_URL=http://localhost:3070 despite papercup-mcp-proxy
-    // being active+healthy on :9071 at launch time.
-    PAPERCUSP_OPERATOR_URL: resolveAgentMcpBaseUrl(opts.operatorBaseUrl),
+    PAPERCUSP_OPERATOR_URL: resolveAgentMcpBaseUrl(agentMcpBaseUrl),
     // Scope HOME to the SELECTED workspace — using the global papercuspPath()
     // here was the latent bug that let a spawned agent carry
     // PAPERCUSP_WORKSPACE=<picked> alongside PAPERCUSP_HOME=<active>.
@@ -419,7 +413,7 @@ export async function buildConsoleEnvelope(
     // '*' which most first-party tools reject. Baking &workspace=<slug>
     // gives the user's agent useful defaults; tool-by-tool override via
     // args still works.
-    const mcpUrl = buildSuperuserMcpUrl(opts.operatorBaseUrl, opts.workspaceId, opts.allWorkspaces);
+    const mcpUrl = buildSuperuserMcpUrl(agentMcpBaseUrl, opts.workspaceId, opts.allWorkspaces);
     mcpJsonContents = JSON.stringify(
       {
         mcpServers: {

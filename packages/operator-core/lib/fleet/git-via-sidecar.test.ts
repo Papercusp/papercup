@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'vitest';
-import { gitSidecarEnabled } from './git-via-sidecar';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import {
+  gitSidecarEnabled,
+  isSidecarInfrastructureFault,
+  isSpawnOffloadHost,
+  markSpawnOffloadHost,
+  resetSpawnOffloadHostForTest,
+} from './git-via-sidecar';
 import { execProcess, type ExecProcessDeps } from './sidecar-exec-process';
 import type { GovernedExecution } from '../resource-governor/execution';
 
@@ -84,6 +90,58 @@ describe('gitSidecarEnabled', () => {
     };
     expect(gitSidecarEnabled('PAPERCUSP_POT_GIT_SPAWN_SIDECAR', env)).toBe(false);
     expect(gitSidecarEnabled('PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR', env)).toBe(true);
+  });
+});
+
+// WI-10002709: a MARKED spawn-offload host (the request operator, hono-host.ts)
+// defaults every seam to the sidecar once its socket exists — so a site nobody
+// opted in by name (git-pipeline-position on :3070) stops forking from a ~2 GB
+// worker. The marker is in-memory, never inherited through env.
+describe('gitSidecarEnabled on a marked spawn-offload host (WI-10002709)', () => {
+  const SOCKET = { PAPERCUSP_SPAWNER_IPC_SOCKET: '/tmp/papercusp-spawner-1.sock' };
+  beforeEach(() => resetSpawnOffloadHostForTest());
+  afterEach(() => resetSpawnOffloadHostForTest());
+
+  it('control: an UNMARKED process with a socket in env stays OFF (inherited env alone never enables it)', () => {
+    expect(isSpawnOffloadHost()).toBe(false);
+    expect(gitSidecarEnabled('PAPERCUSP_GIT_PIPELINE_SPAWN_SIDECAR', SOCKET)).toBe(false);
+  });
+
+  it('a marked host with an established socket defaults an un-opted-in site ON', () => {
+    markSpawnOffloadHost();
+    expect(gitSidecarEnabled('PAPERCUSP_GIT_PIPELINE_SPAWN_SIDECAR', SOCKET)).toBe(true);
+    expect(gitSidecarEnabled(undefined, SOCKET)).toBe(true);
+  });
+
+  it('a marked host with NO socket yet stays OFF (never spawns a sidecar just for git)', () => {
+    markSpawnOffloadHost();
+    expect(gitSidecarEnabled('PAPERCUSP_GIT_PIPELINE_SPAWN_SIDECAR', {})).toBe(false);
+    expect(gitSidecarEnabled('PAPERCUSP_GIT_PIPELINE_SPAWN_SIDECAR', { PAPERCUSP_SPAWNER_IPC_SOCKET: '  ' })).toBe(false);
+  });
+
+  it("the site's explicit var still wins on a marked host (per-site kill-switch)", () => {
+    markSpawnOffloadHost();
+    expect(
+      gitSidecarEnabled('PAPERCUSP_GIT_PIPELINE_SPAWN_SIDECAR', { ...SOCKET, PAPERCUSP_GIT_PIPELINE_SPAWN_SIDECAR: '0' }),
+    ).toBe(false);
+  });
+
+  it('the MODE recursion guard beats the host marker (the sidecar never routes through itself)', () => {
+    markSpawnOffloadHost();
+    expect(gitSidecarEnabled(undefined, { ...SOCKET, PAPERCUSP_SPAWNER_SIDECAR_MODE: '1' })).toBe(false);
+  });
+});
+
+describe('isSidecarInfrastructureFault (WI-10002709)', () => {
+  it("names the sidecar's own faults, so callers fall back instead of reporting them as the child's exit", () => {
+    expect(isSidecarInfrastructureFault({ code: -1, stderr: 'spawner sidecar admission failed: x' })).toBe(true);
+    expect(isSidecarInfrastructureFault({ code: -1, stderr: 'spawner sidecar could not spawn process: x' })).toBe(true);
+  });
+
+  it("does not claim a real child failure (a timeout kill or a non-zero exit is the child's answer)", () => {
+    expect(isSidecarInfrastructureFault({ code: -1, stderr: 'systemctl --user show timed out after 3000ms' })).toBe(false);
+    expect(isSidecarInfrastructureFault({ code: 1, stderr: 'spawner sidecar admission failed' })).toBe(false);
+    expect(isSidecarInfrastructureFault({ code: 0, stderr: '' })).toBe(false);
   });
 });
 

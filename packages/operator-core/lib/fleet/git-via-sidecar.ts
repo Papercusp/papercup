@@ -45,6 +45,7 @@ import * as path from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 
 import { isSidecarEnabledFromEnv } from '../process-supervision/sidecar-spawn-shared';
+import { SPAWNER_SOCKET_ENV } from './spawner-socket-path';
 
 /** The shape every `RunGit` seam in the repo returns. */
 export interface GitRunResult {
@@ -105,24 +106,75 @@ function loadSidecarModules(): NonNullable<typeof sidecarModulesPromise> {
 }
 
 /**
+ * SPAWN-OFFLOAD HOST marker (WI-10002709).
+ *
+ * The per-site opt-in vars below made every NEW sidecar-capable site default to a
+ * LOCAL fork on any host that did not also set the global
+ * `PAPERCUSP_SPAWNER_SIDECAR=1`. The bg-host sets the global var; the request
+ * operator (`hono-host.ts`, :3070/:3170) never did — it opted in two sites by
+ * name (the WI-7160 drop-in: DEV_DEPLOY + SYSTEM_HEALTH). So git-pipeline-position,
+ * git-pipeline-hives, harness docs, git-sync and pot-git all kept forking from a
+ * ~2 GB cluster worker, and every site added later for the bg-host silently stayed
+ * local there. Measured on :3070 2026-09-23: the synchronous part of an async
+ * `spawn()` is ~240 ms p50 at 2 GB RSS (vs ~2 ms at 40 MB), and spawn self-time
+ * under gitPipelinePosition + probeServiceStart was ~45% of main-thread samples in
+ * one sentinel window.
+ *
+ * The fix is a HOST property, not a per-site one: the request host declares itself
+ * with {@link markSpawnOffloadHost} at boot, and then every seam defaults to the
+ * sidecar there. It is deliberately IN-MEMORY and never an env var: an env var is
+ * inherited by every agent shell / test run that host spawns (terminal-spawn only
+ * scrubs the per-site vars), and routing THOSE through a possibly-degraded sidecar
+ * is the WI-37487 flake class. Pinned so a split module record cannot give the
+ * boot code and a seam two different answers.
+ */
+const __spawnOffloadHost = pinModuleState<{ marked: boolean }>(
+  '@papercusp/operator-core.fleet.git-via-sidecar.spawn-offload-host',
+  () => ({ marked: false }),
+);
+
+/** Declare THIS process a spawn-offload host (the request operator). Idempotent. */
+export function markSpawnOffloadHost(): void {
+  __spawnOffloadHost.marked = true;
+}
+
+/** Whether {@link markSpawnOffloadHost} was called in this process. */
+export function isSpawnOffloadHost(): boolean {
+  return __spawnOffloadHost.marked;
+}
+
+/** Test-only: undo {@link markSpawnOffloadHost}. */
+export function resetSpawnOffloadHostForTest(): void {
+  __spawnOffloadHost.marked = false;
+}
+
+/**
  * Is the spawner sidecar enabled for this caller?
  *
- * `explicitVar` is the caller's own opt-in/opt-out override (checked before the
- * shared enable var), letting one subsystem be switched independently of the
- * others while a change is being rolled out or bisected.
+ * Precedence, first match wins:
+ *   1. `PAPERCUSP_SPAWNER_SIDECAR_MODE=1` → OFF (this IS the sidecar; never recurse).
+ *   2. `explicitVar` set → as set. The caller's own opt-in/opt-out override,
+ *      letting one subsystem be switched independently while a change is being
+ *      rolled out or bisected (and the kill-switch for this default).
+ *   3. `PAPERCUSP_SPAWNER_SIDECAR=1` → ON (the bg-host).
+ *   4. Otherwise ON iff this process is a {@link markSpawnOffloadHost marked}
+ *      spawn-offload host AND a spawner socket is already established for it
+ *      (`PAPERCUSP_SPAWNER_IPC_SOCKET`, pinned at boot for a clustered host or set
+ *      by the first sidecar spawn). The socket condition keeps a single-process
+ *      host that has never needed a sidecar (the desktop) from spawning one just
+ *      for git; the marker keeps inherited env from turning children on.
  */
 export function gitSidecarEnabled(
   explicitVar?: string,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  return isSidecarEnabledFromEnv(
-    {
-      enableVar: 'PAPERCUSP_SPAWNER_SIDECAR',
-      modeVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
-      explicitVar,
-    },
-    env,
-  );
+  const modeVar = 'PAPERCUSP_SPAWNER_SIDECAR_MODE';
+  if (env[modeVar] === '1') return false;
+  if (explicitVar && env[explicitVar] != null) {
+    return isSidecarEnabledFromEnv({ enableVar: 'PAPERCUSP_SPAWNER_SIDECAR', modeVar, explicitVar }, env);
+  }
+  if (isSidecarEnabledFromEnv({ enableVar: 'PAPERCUSP_SPAWNER_SIDECAR', modeVar }, env)) return true;
+  return isSpawnOffloadHost() && Boolean(env[SPAWNER_SOCKET_ENV]?.trim());
 }
 
 /**
@@ -426,16 +478,51 @@ export async function runGitViaSpawnerSidecar(
   env: NodeJS.ProcessEnv,
   opts: { idleTimeoutMs?: number } = {},
 ): Promise<GitRunResult> {
+  return runCommandViaSpawnerSidecar('git', args, { cwd, timeoutMs, env, idleTimeoutMs: opts.idleTimeoutMs });
+}
+
+/**
+ * Execute ANY `command <args>` inside the spawner sidecar (WI-10002709) — the
+ * same `process:exec` transport the git seam uses, which never restricted the
+ * command. For non-git spawns on a request host (systemctl / ps in the systemd
+ * probe) that would otherwise fork from the big process.
+ *
+ * Same contract as {@link runGitViaSpawnerSidecar}: REJECTS on any transport
+ * problem (circuit open, sidecar unreachable, IPC failure) so the caller falls
+ * back to a local spawn and reports it via {@link noteSidecarFallback}; a child
+ * that ran and exited non-zero RESOLVES with its code. `code: -1` with stderr
+ * starting `spawner sidecar ` is the sidecar's OWN infrastructure fault (handoff /
+ * admission / could-not-spawn, see sidecar-exec-process.ts) —
+ * {@link isSidecarInfrastructureFault} names it so callers can fall back instead
+ * of reporting it as the child's answer.
+ */
+export async function runCommandViaSpawnerSidecar(
+  command: string,
+  args: string[],
+  opts: { cwd?: string; timeoutMs: number; env?: NodeJS.ProcessEnv; idleTimeoutMs?: number },
+): Promise<GitRunResult> {
   assertSidecarCircuitClosed();
   const { spawnSpawnerSidecar, getSpawnerIpcClient } = await loadSidecarModules();
   await spawnSpawnerSidecar();
   const res = await getSpawnerIpcClient().call<GitRunResult>(
     'process:exec',
-    { command: 'git', args, cwd, env, timeoutMs, idleTimeoutMs: opts.idleTimeoutMs },
-    { timeoutMs: timeoutMs + 35_000 },
+    {
+      command,
+      args,
+      cwd: opts.cwd,
+      env: opts.env,
+      timeoutMs: opts.timeoutMs,
+      idleTimeoutMs: opts.idleTimeoutMs,
+    },
+    { timeoutMs: opts.timeoutMs + 35_000 },
   );
   noteSidecarSuccess();
   return res;
+}
+
+/** True when a sidecar `process:exec` result is the sidecar's own fault, not the child's exit. */
+export function isSidecarInfrastructureFault(res: { code: number; stderr: string }): boolean {
+  return res.code === -1 && res.stderr.startsWith('spawner sidecar ');
 }
 
 /**

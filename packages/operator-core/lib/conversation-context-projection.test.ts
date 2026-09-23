@@ -43,6 +43,20 @@ describe('conversation context projection', () => {
     expect(projected.frames.some((frame) => frame.kind === 'reasoning')).toBe(false);
   });
 
+  it('lets the owner write an SU-session conversation task list without an owned-loop ledger (D-019)', () => {
+    const transcript = [{ role: 'user' as const, content: 'hello', ts: '2026-08-26T00:00:00Z' }];
+    const su = projectConversationContext({ ...BASE, transcript, loopSession: null, suSessionChat: true });
+    // Only the task list is conversation-keyed; live frames and approvals stay loop-owned.
+    expect(su.session.capabilityTier).toBe('transcript-only');
+    expect(su.capabilities).toEqual({ liveFrames: false, taskWrite: true, approvalWrite: false });
+
+    // A producer session that merely claims the flag stays read-only.
+    const foreign = projectConversationContext({
+      ...BASE, sourceKind: 'claude', transcript, loopSession: null, suSessionChat: true,
+    });
+    expect(foreign.capabilities.taskWrite).toBe(false);
+  });
+
   it('normalizes the newest foreign whole-list task snapshot and native tool wrapper', () => {
     const rows: ForeignProjectionToolRow[] = [
       {
