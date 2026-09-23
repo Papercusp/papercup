@@ -124,6 +124,42 @@ describe('resolveAggregatedVettingCritics (EI-22182364716054326)', () => {
     expect(result).toEqual({ critics: ['su-reviewer-a'], cardsConsidered: 1 });
   });
 
+  it('reuses critics across method-only changes when the BAR meaning epoch is unchanged', async () => {
+    listScorecards.mockResolvedValue([
+      vettingCard({
+        vetting: {
+          consultId: 'conv-1',
+          rubricRevision: 6,
+          criteriaHash: 'hash-before-method-edit',
+          rubricMeaningRevision: 2,
+          critics: ['su-reviewer-a'],
+        },
+      }),
+    ]);
+
+    const result = await resolveAggregatedVettingCritics('ar-some-plan', 7, 'hash-after-method-edit', 2);
+
+    expect(result).toEqual({ critics: ['su-reviewer-a'], cardsConsidered: 1 });
+  });
+
+  it('excludes vetting from a prior BAR meaning epoch even when the criteria hash matches', async () => {
+    listScorecards.mockResolvedValue([
+      vettingCard({
+        vetting: {
+          consultId: 'conv-1',
+          rubricRevision: 7,
+          criteriaHash: 'hash-current',
+          rubricMeaningRevision: 2,
+          critics: ['su-reviewer-a'],
+        },
+      }),
+    ]);
+
+    const result = await resolveAggregatedVettingCritics('ar-some-plan', 7, 'hash-current', 3);
+
+    expect(result).toEqual({ critics: [], cardsConsidered: 0 });
+  });
+
   it('excludes a same-revision vetting card whose criteria hash is stale', async () => {
     listScorecards.mockResolvedValue([
       vettingCard({

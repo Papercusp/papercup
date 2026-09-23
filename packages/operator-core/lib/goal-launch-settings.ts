@@ -2463,13 +2463,16 @@ export async function resolveGoalLaunchForGoal(args: {
             `on goal_pots and this goal has no attached pots — while the diagnostic session leg shows that priced, ` +
             `goal-tagged spend does exist. Refusing rather than admitting: an unmeasurable ceiling that fails open ` +
             `never binds at all. HOW MUCH has been spent is deliberately not asserted here — the session leg is ` +
-            `diagnostic-only and may not control a ceiling. Levers: raise or clear budget_cents (an explicit owner ` +
-            `decision), or wind the goal down. ⚠ Do NOT attach a pot to make this measurable — that fabricates ` +
+            `diagnostic-only and may not control a ceiling. Repair the authoritative goal spend measurement and ` +
+            `its provenance; do not infer available headroom from the missing value or raise/clear the ceiling ` +
+            `merely to get a launch admitted. Wind the goal down or seek an explicit owner decision if the ` +
+            `existing measurement repair cannot proceed. ⚠ Do NOT attach a pot to make this measurable — that fabricates ` +
             `measurability without repairing anything, turning this loud refusal into a confident wrong number.`,
         };
         // Refusing without telling anyone would trade a silent fail-OPEN for a
         // silent fail-CLOSED — the same invisibility defect pointed the other
-        // way. The owner holds the only levers this refusal names.
+        // way. Keep the owner informed while the measurement repair is pursued;
+        // the refusal grants no authority to widen or clear the budget.
         escalateBudgetRefusal({
           workspaceId: args.workspaceId,
           goalId,

@@ -335,10 +335,10 @@ kind, and stable reference. Removing an attachment does not alter the file.
 Cross-project and unreadable paths are refused with the reason; PUI never falls
 back to a similarly named file.
 
-Settings > About and Support shows the PUI version, build/source identity,
-installed artifact identity, update channel, and effective operator endpoint.
-The command palette exposes Check for updates, Update, Roll back, Diagnostics,
-and Uninstall. Update, rollback, and uninstall preview the exact version/path,
+About PUI in the colon palette shows the PUI version, build/source identity,
+installed artifact identity and rollback target, update channel, and effective
+operator endpoint. There is no separate Settings screen; the same palette
+exposes Check for updates, Update, Roll back, Diagnostics, and Uninstall. Update, rollback, and uninstall preview the exact version/path,
 preserve configuration and history by default, and require confirmation.
 Diagnostics previews its redacted contents before saving or copying.
 
@@ -400,7 +400,7 @@ Every row in NATIVE_CAPABILITIES.md has an explicit in-PUI interaction:
 | Commands, help, skills and plugins | : opens the one palette; live catalog/recipe search discovers commands, skills, plugins, and tools; ? and F1 explain the focused surface. |
 | Files and attachments | Composer @ opens the project-scoped picker and displays exact stable references before send. |
 | Authentication and first-run setup | The three-step in-PUI setup validates endpoint/project and exposes live engine/account choices with a repair path. |
-| Installation, update and support | Settings > About and Support plus palette actions expose version, update, rollback, uninstall, and redacted diagnostics. |
+| Installation, update and support | Palette About PUI plus lifecycle actions expose version, update, rollback, uninstall, and redacted diagnostics. |
 
 ## Keyboard precedence
 

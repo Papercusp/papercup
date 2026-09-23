@@ -28,6 +28,11 @@ import {
 import type { SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import type { ScorecardRow } from './scorecards';
 import { evaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
+import {
+  BAR_READINESS_NOW_MARK,
+  reevaluateBarReadinessOnScopeWrite,
+  stampBarReadinessNowBlock,
+} from './agent-tools/plans/plan-scope-cascade';
 
 const iso = '2026-09-04T12:00:00.000Z';
 
@@ -1321,6 +1326,38 @@ describe('BAR reporting-layer repairs (bar-reporting-layer-repairs-2026-09-07)',
       expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_projection_stale');
     });
 
+    it('keeps grading and vetting current when only rubric metadata changes within the same BAR meaning epoch', () => {
+      const input = fixture(1);
+      const rubric = input.rubrics.rows[0]!;
+      rubric.revision = 3;
+      rubric.criteriaHash = 'criteria-hash-after-method-change';
+      rubric.barContract!.meaningRevision = 2;
+      input.planRows.rows[0]!.rubricRevision = 3;
+      for (const card of input.scorecards.rows) card.rubricMeaningRevision = 2;
+      for (const card of input.vettingScorecards.rows) {
+        if (card.vetting) card.vetting.rubricMeaningRevision = 2;
+      }
+
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+      expect(snapshot.bars[0]!.grading.state).toBe('pass');
+      expect(snapshot.grading.vetting.state).toBe('current');
+    });
+
+    it('stales grading and vetting when the BAR meaning epoch advances', () => {
+      const input = fixture(1);
+      input.rubrics.rows[0]!.barContract!.meaningRevision = 3;
+      for (const card of input.scorecards.rows) card.rubricMeaningRevision = 2;
+      for (const card of input.vettingScorecards.rows) {
+        if (card.vetting) card.vetting.rubricMeaningRevision = 2;
+      }
+
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+      expect(snapshot.bars[0]!.grading.state).toBe('stale');
+      expect(snapshot.grading.vetting.state).toBe('stale');
+    });
+
     it('CONTROL: a same-revision dependency identity change invalidates both', () => {
       const input = fixture(1);
       input.rubrics.rows[0]!.criteriaHash = 'criteria-hash-after-method-change';
@@ -1395,5 +1432,55 @@ describe('BAR reporting-layer repairs (bar-reporting-layer-repairs-2026-09-07)',
       expect(snapshot.grading.authorVerdict.state).toBe('missing');
       expect(snapshot.readiness.codes).not.toContain('bar_snapshot_author_accepted_pending_delivery');
     });
+  });
+});
+
+// review-system-rework-reduction-2026-09-23 P-030 (P-031 merged in by D-005), spec RSR-P-030-A:
+// a scope write re-evaluates BAR readiness IN THE SAME WRITE and surfaces the blocking code in
+// the plan's Now. This drives the REAL projection (the evaluator the ship gate uses) through the
+// cascade the drop write calls, so the code in the Now banner is the gate's own, not a fixture's.
+describe('scope-write cascade: dropping a BAR’s last live item (P-031 guard)', () => {
+  const nowPlan =
+    '---\ntitle: Plan A\nslug: plan-a\nstatus: active\n---\n\n# Plan A\n\n## Now\n\n' +
+    '**State:** Building.\n\n**Next:** Finish P-001.\n\n## Items\n\n- [ ] P-001 outcome\n';
+
+  it('the live readiness names bar_snapshot_mapping_dropped_only and the drop write stamps it into Now', async () => {
+    const live = fixture(1);
+    expect(projectAcceptanceBarContractSnapshot(live).readiness.codes).not.toContain(
+      'bar_snapshot_mapping_dropped_only',
+    );
+
+    const afterDrop: AcceptanceBarContractSnapshotInput = {
+      ...live,
+      planItems: rows([{ itemId: 'P-001', status: 'dropped' }], ACCEPTANCE_BAR_SNAPSHOT_PLAN_ITEM_LIMIT),
+    };
+    const snapshot = projectAcceptanceBarContractSnapshot(afterDrop);
+    expect(snapshot.readiness.state).toBe('blocked');
+    expect(snapshot.readiness.codes).toContain('bar_snapshot_mapping_dropped_only');
+
+    let body = nowPlan;
+    const result = await reevaluateBarReadinessOnScopeWrite(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', planSlug: 'plan-a', cause: 'item-dropped' },
+      {
+        async readBarReadiness() {
+          const { state, codes, nextRepair } = snapshot.readiness;
+          return { state, codes: [...codes], nextRepair };
+        },
+        async restampNow(_slug, _scope, reading, cause) {
+          const stamped = stampBarReadinessNowBlock(body, reading, cause, new Date(iso));
+          if (stamped === null) return false;
+          body = stamped;
+          return true;
+        },
+      },
+    );
+
+    expect(result.codes).toContain('bar_snapshot_mapping_dropped_only');
+    expect(result.nowStamped).toBe(true);
+    expect(body).toContain(BAR_READINESS_NOW_MARK);
+    expect(body).toMatch(/BAR READINESS BLOCKED[^\n]*bar_snapshot_mapping_dropped_only/);
+    // The author's Now survives beneath the banner.
+    expect(body).toContain('Building.');
+    expect(body).toContain('Finish P-001.');
   });
 });

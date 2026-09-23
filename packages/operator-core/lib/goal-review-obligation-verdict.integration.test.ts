@@ -1,5 +1,6 @@
 /**
- * R6's deterministic obligation plane, not a manual rubric grade or LLM trial.
+ * R6's deterministic obligation plane and P005's typed refusal reader path,
+ * not a manual rubric grade or LLM trial.
  * The review remains an assertion; plan coverage here is controlled fixture evidence.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -7,6 +8,7 @@ import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 import { setMode } from './modes/store';
 import { readAgentObligationAgenda } from './agent-obligation-reader';
+import type { GoalLaunchRefusal } from './goal-launch-settings';
 import { applyGoalPropertyWrite } from './typed-properties-db';
 import { seedPlan, cleanupPlans } from './agent-tools/plans/__tests__/_pg-tool-fixture';
 import { deriveIndexFromContent } from './agent-tools/plans/derive-index';
@@ -73,7 +75,7 @@ async function record(disposition: 'existing-plans-sufficient' | 'plan-needed') 
   expect('isError' in result && result.isError === true).toBe(false);
 }
 
-async function agenda() {
+async function agenda(refusal: GoalLaunchRefusal | null = null) {
   return (await readAgentObligationAgenda({ workspaceId: WS, ownerId: OWNER,
     // Real mode/goal/portfolio/tick/authority/obligation reads. Unrelated admission
     // and final acceptance are controlled, so this is not launch or closure proof.
@@ -82,7 +84,7 @@ async function agenda() {
       planAcceptance: async () => ({ satisfied: true, buildProvenance: { sha: null, version: 'fixture' } }),
       goalLaunch: async () => ({ goalId: GOAL, settings: null, goalBrief: null, effective: {},
         ceilings: { maxAgents: null, maxPerFleet: null }, headcount: { total: 0, fleet: null },
-        budget: null, refusal: null, degraded: false, degradedReasons: [] }),
+        budget: null, refusal, degraded: false, degradedReasons: [] }),
       planFleet: async () => ({ status: 'known', alert: null, applicablePlanCount: 0 }),
     },
   })).agenda;
@@ -137,5 +139,27 @@ describe('R6 public review-to-obligation verdicts', () => {
     expect(planning?.reason).toContain('Reconcile failed payments.');
     // No claim of two elapsed decision opportunities or a manual fail rating.
     expect(result.primary[0]?.family).toBe('plan-placement');
+  }, 90_000);
+});
+
+describe('P005 formed launch refusal through the canonical PG agenda', () => {
+  it.each([
+    ['goal_budget_unmeasurable', /budget measurement/i, /repair.*authoritative.*spend.*measurement/i],
+    ['goal_budget_exceeded', /goal budget/i, /owner.*budget.*direction/i],
+    ['goal_max_agents', /goal headcount/i, /within.*goal.*ceiling/i],
+    ['fleet_max_agents', /fleet headcount/i, /within.*fleet.*ceiling/i],
+  ] as const)('retains %s scope and a bounded non-launch repair', async (reason, title, repair) => {
+    // This seam supplies the typed resolver output, not a fabricated spend
+    // measurement. Resolver enforcement has separate goal-launch-settings tests.
+    const refusal: GoalLaunchRefusal = { reason, current: reason === 'goal_budget_unmeasurable' ? null : 10,
+      limit: 10, requested: 1, currentScope: 'fixture:canonical-refusal', message: `Refused: ${reason}` };
+    const result = await agenda(refusal);
+    const row = result.evaluations.find((entry) => entry.family === 'plan-placement');
+    expect(row).toMatchObject({ status: 'blocked', scope: { goalId: GOAL, planSlug: SLUG },
+      reason: refusal.message, action: { kind: 'repair', targetRef: `goal:${GOAL}` } });
+    expect(row?.title).toMatch(title);
+    expect(row?.action?.summary).toMatch(repair);
+    expect(row?.action?.tool).toBeUndefined();
+    expect(result.primary[0]?.id).toBe(row?.id);
   }, 90_000);
 });

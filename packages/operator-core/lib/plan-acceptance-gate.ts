@@ -1042,8 +1042,16 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       const currentness = vettedCards.map((card) => ({
         card,
         verdict: classifyRubricEvidenceCurrentness(
-          { revision: card.vetting?.rubricRevision, criteriaHash: card.vetting?.criteriaHash },
-          { revision: currentRevision, criteriaHash: rubric.criteriaHash },
+          {
+            revision: card.vetting?.rubricRevision,
+            criteriaHash: card.vetting?.criteriaHash,
+            meaningRevision: card.vetting?.rubricMeaningRevision,
+          },
+          {
+            revision: currentRevision,
+            criteriaHash: rubric.criteriaHash,
+            meaningRevision: rubric.barContract?.meaningRevision,
+          },
         ),
       }));
       const current = currentness.find((entry) => entry.verdict.state === 'current')?.card;
@@ -1134,8 +1142,16 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       !s.synthesized &&
       (!requireCurrentBarGrading ||
         (classifyRubricEvidenceCurrentness(
-          { revision: s.rubricRevision, criteriaHash: s.criteriaHash },
-          { revision: rubric.revision, criteriaHash: rubric.criteriaHash },
+          {
+            revision: s.rubricRevision,
+            criteriaHash: s.criteriaHash,
+            meaningRevision: s.rubricMeaningRevision,
+          },
+          {
+            revision: rubric.revision,
+            criteriaHash: rubric.criteriaHash,
+            meaningRevision: rubric.barContract?.meaningRevision,
+          },
         ).state === 'current' &&
           // WI-10002509: the rubric-revision test above cannot see a cohort-only
           // staleness — the card was graded against THIS revision, so it reads

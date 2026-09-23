@@ -155,6 +155,7 @@ async function reportGraderEligibility(
     workspaceId?: string | null;
     proposedBy?: string | null;
     createdBy?: string | null;
+    barContract?: { meaningRevision?: number | null } | null;
   },
   caller: ScorecardEvaluateCaller | undefined,
 ): Promise<GraderEligibilityReport> {

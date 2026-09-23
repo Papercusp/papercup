@@ -99,6 +99,7 @@ export interface GraderEligibilityDeps {
 export interface GraderEligibilityRubric {
   rubricId: string;
   criteriaHash?: string | null;
+  barContract?: { meaningRevision?: number | null } | null;
   status?: string | null;
   proposedBy?: string | null;
   createdBy?: string | null;
@@ -131,6 +132,7 @@ export interface VettingScorecardLike {
     consultId?: string | null;
     workItemId?: string | null;
     rubricRevision?: number | string | null;
+    rubricMeaningRevision?: number | null;
     criteriaHash?: string | null;
     critics?: readonly string[];
   } | null;
@@ -158,6 +160,7 @@ export async function resolveAggregatedVettingCritics(
   rubricId: string,
   currentRevision: number | string | null | undefined,
   currentCriteriaHash?: string | null,
+  currentMeaningRevision?: number | null,
 ): Promise<{ critics: string[]; cardsConsidered: number }> {
   const vettingCards = (await listScorecards({
     rubricRef: META_ACCEPTANCE_RUBRIC_ID,
@@ -171,8 +174,16 @@ export async function resolveAggregatedVettingCritics(
       !card.synthesized &&
       (card.vetting?.consultId != null || card.vetting?.workItemId != null) &&
       classifyRubricEvidenceCurrentness(
-        { revision: card.vetting?.rubricRevision, criteriaHash: card.vetting?.criteriaHash },
-        { revision: currentRevision, criteriaHash: currentCriteriaHash },
+        {
+          revision: card.vetting?.rubricRevision,
+          criteriaHash: card.vetting?.criteriaHash,
+          meaningRevision: card.vetting?.rubricMeaningRevision,
+        },
+        {
+          revision: currentRevision,
+          criteriaHash: currentCriteriaHash,
+          meaningRevision: currentMeaningRevision,
+        },
       ).state === 'current',
   );
   const seen = new Set<string>();
@@ -360,6 +371,7 @@ export async function resolveAcceptanceGraderEligibility(params: {
     rubric.rubricId,
     currentRevision,
     rubric.criteriaHash,
+    rubric.barContract?.meaningRevision,
   );
   // WI-905074: what preserves the three-party chain is an INDEPENDENT critic,
   // not a second row in the list. The old `critics.length === 1` made the

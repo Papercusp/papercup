@@ -52,6 +52,9 @@ import { checkSessionConfinement } from './capability-envelope/session-confineme
 // that import is what failed. A dynamic import here would reintroduce the exact
 // circularity it exists to break. The module has no imports of its own.
 import { isRecoveryDoorCall } from './capability-envelope/recovery-door';
+// Dependency-free leaf, like recovery-door: building the lazy launch-record
+// handle must not statically import the identity port it is handed to.
+import { lazyIdentityLaunchRecord, type LoadedIdentityLaunchRecord } from './capability-envelope/lazy-launch-record';
 import { checkAuditModeMutationGuard } from './capability-envelope/audit-mode-guard';
 // Imported for its INSTALL side effect (D-017 §5): loading the store assigns the session
 // confinement resolver. This gate fails SILENTLY when unresolved — no resolver means every
@@ -221,6 +224,90 @@ interface OperatorKernelState extends KernelContextState {
   authorityUnavailable?: boolean;
 }
 
+/**
+ * The launch record BODY, read only on an identity-resolution cache miss
+ * (WI-10002721). Scoped to the same owner + workspace as the header read, and
+ * returned with the row version it was read at so the gate can key the verdict
+ * on the snapshot it actually judged. A throw propagates: the kernel resolver
+ * fails closed on it exactly as on a failed control-anchor read.
+ */
+async function loadIdentityLaunchRecord(
+  advSessionId: number | string | null,
+  ownerId: string,
+  workspaceId: string,
+): Promise<LoadedIdentityLaunchRecord | null> {
+  if (advSessionId == null) return null;
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ launch_spec: unknown; launch_spec_xmin: string | null }>>`
+    SELECT s.launch_spec, s.xmin::text AS launch_spec_xmin
+      FROM harness_shared.adv_sessions s
+     WHERE s.id = ${advSessionId} AND s.coord_owner_id = ${ownerId} AND s.workspace_id = ${workspaceId}
+     LIMIT 1
+  `;
+  const row = rows[0];
+  return row ? { record: row.launch_spec, rowVersion: row.launch_spec_xmin ?? null } : null;
+}
+
+/**
+ * The launch-record header last read for an (owner, workspace), pinned to the
+ * adv_sessions row version it was read at (WI-10002721). Immutable per
+ * (id, xmin), so reuse is exact rather than a TTL guess; bounded like the
+ * identity-resolution cache.
+ */
+interface LaunchHeader {
+  sessionId: string;
+  rowVersion: string;
+  type: string | null;
+  workspaceId: unknown;
+  harnessSlug: unknown;
+}
+const LAUNCH_HEADER_MEMO_MAX = 512;
+const launchHeaderMemo = pinModuleState('@papercusp/operator-core.identity-launch-header-memo', () =>
+  new Map<string, LaunchHeader>(),
+);
+
+function resolveLaunchHeader(
+  memoKey: string,
+  known: LaunchHeader | undefined,
+  row: {
+    adv_session_id: number | string | null;
+    adv_session_xmin: string | null;
+    launch_header_known?: boolean | null;
+    launch_spec_type?: string | null;
+    launch_spec_workspace_id?: unknown;
+    launch_spec_harness_slug?: unknown;
+  } | undefined,
+): Pick<LaunchHeader, 'type' | 'workspaceId' | 'harnessSlug'> {
+  const read = {
+    type: row?.launch_spec_type ?? null,
+    workspaceId: row?.launch_spec_workspace_id ?? null,
+    harnessSlug: row?.launch_spec_harness_slug ?? null,
+  };
+  if (row?.adv_session_id == null || row.adv_session_xmin == null) return read;
+  const sessionId = String(row.adv_session_id);
+  const rowVersion = String(row.adv_session_xmin);
+  // PostgreSQL skipped the header ONLY when it matched the version passed in;
+  // re-check against that same captured entry so a concurrent memo write can
+  // never pair one row version with another version's header.
+  if (row.launch_header_known === true && known?.sessionId === sessionId && known.rowVersion === rowVersion) {
+    launchHeaderMemo.delete(memoKey);
+    launchHeaderMemo.set(memoKey, known);
+    return known;
+  }
+  launchHeaderMemo.delete(memoKey);
+  // Skipped but unpairable cannot happen (both sides come from `known`); if it
+  // ever did, the nulls must not be remembered — this call fails closed on an
+  // absent header and the next one re-reads it.
+  if (row.launch_header_known === true) return read;
+  launchHeaderMemo.set(memoKey, { sessionId, rowVersion, ...read });
+  while (launchHeaderMemo.size > LAUNCH_HEADER_MEMO_MAX) {
+    const oldest = launchHeaderMemo.keys().next().value;
+    if (oldest === undefined) break;
+    launchHeaderMemo.delete(oldest);
+  }
+  return read;
+}
+
 export async function readControlAnchorKernelState(
   request: KernelEnforcementRequest,
 ): Promise<OperatorKernelState | null> {
@@ -239,6 +326,23 @@ export async function readControlAnchorKernelState(
   if (!workspaceId) return null;
 
   const { sql } = getOrgPg();
+  // WI-10002721: the hot read carries the launch record's HEADER only — its
+  // type and the two top-level fields the identity gate keys and checks on —
+  // never the body (live avg 884KB, max 3.9MB, JSON-parsed on the main thread
+  // every preflight). The body is read by `loadIdentityLaunchRecord` on an
+  // identity-resolution cache miss. The old `to_jsonb(s)->'launch_spec'` also
+  // serialised the WHOLE adv_sessions row in PostgreSQL to extract one column.
+  //
+  // Even the header costs a full detoast: `jsonb_typeof` / `->` decompress the
+  // whole TOASTed value (measured on a ~1MB spec: 203 shared buffers, 8.7ms of
+  // PG CPU per preflight). A row version's header is immutable — any UPDATE
+  // moves xmin — so the last header seen for this (owner, workspace) is passed
+  // back in, and the CASE guards skip the detoast while the newest row is still
+  // that exact (id, xmin) (measured: 16 buffers, 0.12ms).
+  const memoKey = JSON.stringify([ownerId, workspaceId]);
+  const knownHeader = launchHeaderMemo.get(memoKey);
+  const knownId = knownHeader?.sessionId ?? null;
+  const knownXmin = knownHeader?.rowVersion ?? null;
   let stateRow:
     | {
         control_state: unknown;
@@ -246,7 +350,10 @@ export async function readControlAnchorKernelState(
         workspace_id: string | null;
         adv_session_id: number | string | null;
         adv_session_xmin: string | null;
-        launch_spec?: unknown;
+        launch_header_known?: boolean | null;
+        launch_spec_type?: string | null;
+        launch_spec_workspace_id?: unknown;
+        launch_spec_harness_slug?: unknown;
       }
     | undefined;
   let controlReadFailed = false;
@@ -257,10 +364,15 @@ export async function readControlAnchorKernelState(
       workspace_id: string | null;
       adv_session_id: number | string | null;
       adv_session_xmin: string | null;
-      launch_spec?: unknown;
+      launch_header_known?: boolean | null;
+      launch_spec_type?: string | null;
+      launch_spec_workspace_id?: unknown;
+      launch_spec_harness_slug?: unknown;
     }>>`
       SELECT b.control_state, b.control_generation, COALESCE(b.workspace_id, a.workspace_id) AS workspace_id,
-             a.id AS adv_session_id, a.launch_spec, a.launch_spec_xmin AS adv_session_xmin
+             a.id AS adv_session_id, a.launch_header_known,
+             a.launch_spec_type, a.launch_spec_workspace_id, a.launch_spec_harness_slug,
+             a.launch_spec_xmin AS adv_session_xmin
         FROM (
           SELECT control_state, control_generation, workspace_id
             FROM harness_shared.session_briefs
@@ -268,7 +380,14 @@ export async function readControlAnchorKernelState(
            LIMIT 1
         ) b
         FULL JOIN (
-          SELECT s.id, to_jsonb(s)->'launch_spec' AS launch_spec, s.xmin::text AS launch_spec_xmin, s.workspace_id
+          SELECT s.id, s.xmin::text AS launch_spec_xmin, s.workspace_id,
+                 (s.id::text = ${knownId} AND s.xmin::text = ${knownXmin}) AS launch_header_known,
+                 CASE WHEN s.id::text = ${knownId} AND s.xmin::text = ${knownXmin} THEN NULL
+                      ELSE jsonb_typeof(s.launch_spec) END AS launch_spec_type,
+                 CASE WHEN s.id::text = ${knownId} AND s.xmin::text = ${knownXmin} THEN NULL
+                      ELSE s.launch_spec->'workspaceId' END AS launch_spec_workspace_id,
+                 CASE WHEN s.id::text = ${knownId} AND s.xmin::text = ${knownXmin} THEN NULL
+                      ELSE s.launch_spec->'harnessSlug' END AS launch_spec_harness_slug
             FROM harness_shared.adv_sessions s
            WHERE s.coord_owner_id = ${ownerId} AND s.workspace_id = ${workspaceId}
            ORDER BY (s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC
@@ -339,11 +458,18 @@ export async function readControlAnchorKernelState(
     Object.prototype.hasOwnProperty.call(stateRow, 'adv_session_id') &&
     stateRow.adv_session_id == null,
   );
+  const launchSessionId = stateRow?.adv_session_id ?? null;
+  const launchHeader = resolveLaunchHeader(memoKey, knownHeader, stateRow);
   return {
     ...(controlReadFailed ? { authorityUnavailable: true } : {}),
     ...(identityLaunchRecordMissing ? { identityLaunchRecordMissing: true } : {}),
-    ...(stateRow && Object.prototype.hasOwnProperty.call(stateRow, 'launch_spec')
-      ? { identityLaunchRecord: stateRow.launch_spec } : {}),
+    ...(stateRow && Object.prototype.hasOwnProperty.call(stateRow, 'launch_spec_type')
+      ? { identityLaunchRecord: lazyIdentityLaunchRecord({
+          isObject: launchHeader.type === 'object',
+          workspaceId: launchHeader.workspaceId,
+          harnessSlug: launchHeader.harnessSlug,
+          load: () => loadIdentityLaunchRecord(launchSessionId, ownerId, workspaceId),
+        }) } : {}),
     ...(stateRow?.adv_session_id != null && stateRow.adv_session_xmin != null
       ? { identityLaunchRecordVersion: {
           sessionId: String(stateRow.adv_session_id), rowVersion: String(stateRow.adv_session_xmin),

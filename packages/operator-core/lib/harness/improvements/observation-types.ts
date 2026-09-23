@@ -346,6 +346,8 @@ export interface StructuredObservation {
   rubricRef?: string;
   /** The graded rubric's plan-row revision at emit time; absent on historical cards. */
   rubricRevision?: number;
+  /** Acceptance-BAR meaning epoch at emit time; absent on legacy or non-BAR cards. */
+  rubricMeaningRevision?: number;
   /**
    * The graded rubric's `criteriaHash` (WI-1393208) at emit time — a stable hash
    * over {characteristic, criteria, ratingScale, methodRef, description}. Unlike
@@ -692,6 +694,7 @@ export interface ScorecardGradingAuditCurrentness {
     | 'recorded-identity-missing'
     | 'live-identity-missing'
     | 'revision-mismatch'
+    | 'meaning-revision-mismatch'
     | 'criteria-hash-mismatch';
   recordedRevision: number | null;
   currentRevision: number | null;
@@ -751,6 +754,8 @@ export interface ScorecardVetting {
    *  the version read failed at emit; the gate then treats the card as NOT current
    *  whenever a current revision IS known (strict toward re-vetting). */
   rubricRevision?: number;
+  /** Acceptance-BAR meaning epoch of the vetted rubric, when present. */
+  rubricMeaningRevision?: number;
   /** The vetted rubric's `criteriaHash` (WI-1393208) at emit time — the graded-
    *  substance fingerprint alongside `rubricRevision`. Absent when the hash read
    *  failed at emit time. */
@@ -1105,6 +1110,9 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (typeof o.rubricRef === 'string' && o.rubricRef.trim()) out.rubricRef = o.rubricRef;
   if (typeof o.rubricRevision === 'number' && Number.isFinite(o.rubricRevision)) {
     out.rubricRevision = o.rubricRevision;
+  }
+  if (typeof o.rubricMeaningRevision === 'number' && Number.isInteger(o.rubricMeaningRevision) && o.rubricMeaningRevision > 0) {
+    out.rubricMeaningRevision = o.rubricMeaningRevision;
   }
   if (typeof o.criteriaHash === 'string' && o.criteriaHash.trim()) {
     out.criteriaHash = o.criteriaHash;
@@ -1576,6 +1584,11 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         ...(seat ? { seat } : {}),
         ...(typeof vet.rubricRevision === 'number' && Number.isFinite(vet.rubricRevision)
           ? { rubricRevision: vet.rubricRevision }
+          : {}),
+        ...(typeof vet.rubricMeaningRevision === 'number' &&
+        Number.isInteger(vet.rubricMeaningRevision) &&
+        vet.rubricMeaningRevision > 0
+          ? { rubricMeaningRevision: vet.rubricMeaningRevision }
           : {}),
         ...(typeof vet.criteriaHash === 'string' && vet.criteriaHash.trim() ? { criteriaHash: vet.criteriaHash } : {}),
         ...(typeof vet.critiquePosts === 'number' && Number.isInteger(vet.critiquePosts) && vet.critiquePosts >= 0

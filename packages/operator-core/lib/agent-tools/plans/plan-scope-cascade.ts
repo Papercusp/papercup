@@ -309,3 +309,161 @@ export async function propagatePlanScopeWrite(
   }
   return result;
 }
+
+// ── P-031 (merged into P-030 by D-005): re-evaluate BAR readiness on EVERY scope write ──
+//
+// WHY. A complete BAR can be made false by a LATER scope write: dropping the last live item
+// a BAR maps to (bar_snapshot_mapping_dropped_only), or a Decision that re-scopes the plan.
+// The acceptance-bar contract snapshot already computes that verdict live, but nothing read
+// it until the ship attempt, so the plan kept being worked toward an unshippable bar
+// (measured: R-1 became impossible on 09-19 via D-019 and surfaced only at the 09-23 ship).
+//
+// WHAT. The write that drops a plan item (plans:set-status → dropped) and the write that
+// records a Decision (plans:add-decision) re-read that SAME snapshot in the same call and
+// keep ONE banner in the plan's `## Now`: stamped (or replaced) while readiness is blocked,
+// removed once it is ready. orient's planNow leg folds the Now block, so the codes reach
+// every agent oriented on the plan; the write's own response carries them as `barReadiness`.
+
+/** Sentinel for the BAR-readiness banner in a plan's `## Now`. One per plan, replaced in place. */
+export const BAR_READINESS_NOW_MARK = '⚠ BAR READINESS BLOCKED';
+
+export type BarReadinessWriteCause = 'item-dropped' | 'decision-added';
+
+export interface BarReadinessReading {
+  /** `null` = NOT MEASURED (the read failed). Never treated as ready, never erases a banner. */
+  state: 'ready' | 'blocked' | 'not-applicable' | null;
+  codes: string[];
+  nextRepair: { code: string; barKey: string | null; action: string } | null;
+  error?: string;
+}
+
+const PARAGRAPH_SPLIT_RE = /\n\s*\n/;
+
+function isBarReadinessParagraph(paragraph: string): boolean {
+  return paragraph.trimStart().startsWith(BAR_READINESS_NOW_MARK);
+}
+
+/** The banner minus its `(date, after cause)` stamp, so an unchanged verdict is a no-op. */
+function barReadinessKey(paragraph: string): string {
+  const trimmed = paragraph.trim();
+  const rest = trimmed.slice(BAR_READINESS_NOW_MARK.length).replace(/^\s*\([^)]*\)/, '');
+  return `${BAR_READINESS_NOW_MARK}${rest}`;
+}
+
+function barReadinessBanner(reading: BarReadinessReading, cause: BarReadinessWriteCause, iso: string): string {
+  const repair = reading.nextRepair
+    ? ` Next repair: ${reading.nextRepair.action}${reading.nextRepair.barKey ? ` (${reading.nextRepair.barKey})` : ''}.`
+    : '';
+  return (
+    `${BAR_READINESS_NOW_MARK} (${iso}, after ${cause}): ${reading.codes.join(', ')}.${repair} ` +
+    `(re-evaluated in the same write by the scope-write cascade, P-030/P-031)`
+  );
+}
+
+/**
+ * Return the plan body with its BAR-readiness banner brought up to date, or `null` when there
+ * is nothing to write. Pure. Blocked + codes → stamp or replace the one banner at the top of
+ * the State; ready / not-applicable → remove a stale banner; not measured → never touch it.
+ * Everything else in the Now (the author's State/Next, other cascade banners) survives verbatim.
+ */
+export function stampBarReadinessNowBlock(
+  body: string,
+  reading: BarReadinessReading,
+  cause: BarReadinessWriteCause,
+  today?: Date,
+): string | null {
+  if (reading.state === null) return null;
+  const now = parsePlan(body).now;
+  if (!now) return null;
+
+  const markerAt = now.raw.search(FIRST_MARKER_RE);
+  const preamble = markerAt > 0 ? now.raw.slice(0, markerAt).trim() : '';
+  const freeProse = !now.state && !now.next ? now.raw.trim() : '';
+  const paragraphs = [preamble, now.state, freeProse]
+    .filter(Boolean)
+    .join('\n\n')
+    .split(PARAGRAPH_SPLIT_RE)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const existing = paragraphs.find(isBarReadinessParagraph) ?? null;
+  const rest = paragraphs.filter((p) => !isBarReadinessParagraph(p));
+
+  const blocked = reading.state === 'blocked' && reading.codes.length > 0;
+  let state: string;
+  if (blocked) {
+    const banner = barReadinessBanner(reading, cause, (today ?? new Date()).toISOString().slice(0, 10));
+    if (existing !== null && barReadinessKey(existing) === barReadinessKey(banner)) return null;
+    state = [banner, ...rest].join('\n\n');
+  } else {
+    if (existing === null) return null;
+    state = rest.join('\n\n') || '—';
+  }
+  const next = now.next || (blocked && reading.nextRepair ? reading.nextRepair.action : '—');
+  return replaceNowBlock(body, state, next);
+}
+
+export interface BarReadinessInput {
+  workspaceId: string;
+  harnessSlug: string | null;
+  planSlug: string;
+  cause: BarReadinessWriteCause;
+}
+
+export interface BarReadinessDeps {
+  readBarReadiness(planSlug: string, harnessSlug: string | null): Promise<BarReadinessReading>;
+  restampNow(
+    planSlug: string,
+    scope: { workspaceId: string; harnessSlug: string | null },
+    reading: BarReadinessReading,
+    cause: BarReadinessWriteCause,
+  ): Promise<boolean>;
+}
+
+export interface BarReadinessResult {
+  slug: string;
+  cause: BarReadinessWriteCause;
+  state: BarReadinessReading['state'];
+  codes: string[];
+  nextRepair: BarReadinessReading['nextRepair'];
+  /** The plan's `## Now` banner was written (stamped, replaced or cleared) by this call. */
+  nowStamped: boolean;
+  error?: string;
+}
+
+/**
+ * Re-read the plan's live BAR readiness after a scope write and bring its Now banner up to
+ * date. Never throws into the write that triggered it: a failed read is reported as
+ * `state: null` + `error`, and a failed stamp rides `error` beside the measured codes.
+ */
+export async function reevaluateBarReadinessOnScopeWrite(
+  input: BarReadinessInput,
+  deps: BarReadinessDeps,
+): Promise<BarReadinessResult> {
+  let reading: BarReadinessReading;
+  try {
+    reading = await deps.readBarReadiness(input.planSlug, input.harnessSlug);
+  } catch (err) {
+    reading = { state: null, codes: [], nextRepair: null, error: `readiness read failed: ${errText(err)}` };
+  }
+  const result: BarReadinessResult = {
+    slug: input.planSlug,
+    cause: input.cause,
+    state: reading.state,
+    codes: reading.codes,
+    nextRepair: reading.nextRepair,
+    nowStamped: false,
+    ...(reading.error ? { error: reading.error } : {}),
+  };
+  if (reading.state === null) return result;
+  try {
+    result.nowStamped = await deps.restampNow(
+      input.planSlug,
+      { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug },
+      reading,
+      input.cause,
+    );
+  } catch (err) {
+    result.error = `Now stamp failed: ${errText(err)}`;
+  }
+  return result;
+}

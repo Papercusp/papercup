@@ -1972,7 +1972,8 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   // BAR readiness in this same call, restamp the plan's Now (which orient folds), and carry
   // the codes on the response. Runs after the plan lock is released; never throws.
   let barReadiness: BarReadinessResult | undefined;
-  if (it.status === 'dropped' && result.value.oldStatus !== 'dropped') {
+  const lockScope = result.scope as typeof result.scope | undefined;
+  if (it.status === 'dropped' && result.value.oldStatus !== 'dropped' && lockScope) {
     let actor = 'system:scope-write-cascade';
     try {
       actor = resolveAgentIdentity(ctx).ownerId;
@@ -1981,8 +1982,8 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     }
     barReadiness = await reevaluateBarReadinessOnScopeWrite(
       {
-        workspaceId: result.scope.workspaceId,
-        harnessSlug: result.scope.harnessSlug,
+        workspaceId: lockScope.workspaceId,
+        harnessSlug: lockScope.harnessSlug,
         planSlug: it.slug,
         cause: 'item-dropped',
       },

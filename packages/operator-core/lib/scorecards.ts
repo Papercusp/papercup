@@ -754,6 +754,8 @@ export interface ScorecardRow {
   rubricRef: string;
   /** The graded rubric's plan-row revision at emit time; absent on historical cards. */
   rubricRevision?: number;
+  /** Acceptance-BAR meaning epoch at emit time; absent on legacy or non-BAR cards. */
+  rubricMeaningRevision?: number;
   /** The graded rubric's substantive criteria/method identity at emit time. */
   criteriaHash?: string;
   /** Per-criterion ratings, keyed by rubric criterion `key` (each {rating, evidence}). */
@@ -918,6 +920,7 @@ interface ScorecardEvidenceDb {
   created_at: string | Date;
   rubric_ref: string | null;
   rubric_revision: unknown;
+  rubric_meaning_revision: unknown;
   criteria_hash: string | null;
   evidence_fingerprint: string | null;
   source_hive: string | null;
@@ -948,6 +951,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
              scorecard.created_at,
              scorecard.payload -> 'observation' ->> 'rubricRef' AS rubric_ref,
              scorecard.payload -> 'observation' -> 'rubricRevision' AS rubric_revision,
+             scorecard.payload -> 'observation' -> 'rubricMeaningRevision' AS rubric_meaning_revision,
              scorecard.payload -> 'observation' ->> 'criteriaHash' AS criteria_hash,
              scorecard.payload -> 'observation' ->> 'evidenceFingerprint' AS evidence_fingerprint,
              scorecard.payload -> 'observation' ->> 'sourceHive' AS source_hive,
@@ -970,6 +974,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
   const observation = asStructuredObservation({
     rubricRef: row.rubric_ref,
     rubricRevision: row.rubric_revision,
+    rubricMeaningRevision: row.rubric_meaning_revision,
     criteriaHash: row.criteria_hash,
     evidenceFingerprint: row.evidence_fingerprint,
     sourceHive: row.source_hive,
@@ -1015,6 +1020,9 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
       createdBy: row.created_by,
       rubricRef: observation.rubricRef,
       ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
+      ...(observation.rubricMeaningRevision != null
+        ? { rubricMeaningRevision: observation.rubricMeaningRevision }
+        : {}),
       ...(observation.criteriaHash ? { criteriaHash: observation.criteriaHash } : {}),
       ...(observation.evidenceFingerprint ? { evidenceFingerprint: observation.evidenceFingerprint } : {}),
       ...(observation.sourceHive ? { sourceHive: observation.sourceHive } : {}),
@@ -2171,6 +2179,9 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       ...(observation.rerunRecipe ? { rerunRecipe: observation.rerunRecipe } : {}),
       rubricRef: observation.rubricRef,
       ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
+      ...(observation.rubricMeaningRevision != null
+        ? { rubricMeaningRevision: observation.rubricMeaningRevision }
+        : {}),
       ...(observation.criteriaHash ? { criteriaHash: observation.criteriaHash } : {}),
       ...(observation.rollup ? { rollup: observation.rollup } : {}),
       ratings,

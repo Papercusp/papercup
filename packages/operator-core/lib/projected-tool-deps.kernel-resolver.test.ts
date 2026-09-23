@@ -1,12 +1,58 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
 import type { IdentityGrantPolicy } from './capability-envelope/identity-grants-port';
 
 const db = vi.hoisted(() => {
   const rows: unknown[][] = [];
-  const sql = vi.fn(async (..._args: unknown[]) => rows.shift() ?? []);
-  return { rows, sql, failClient: false };
+  // Fixture rows keep a `launch_spec` field for readability. The anchor query
+  // (WI-10002721) no longer selects that column, so the mock returns what
+  // PostgreSQL would — jsonb_typeof + the two header fields — and keeps the body
+  // aside for the separate body query, which runs only on a cache miss.
+  const bodies = new Map<string, { launch_spec: unknown; launch_spec_xmin: string | null }>();
+  const loadOverrides: Array<unknown[] | Error> = [];
+  const typeOf = (value: unknown) =>
+    value === null || value === undefined ? null
+      : Array.isArray(value) ? 'array' : typeof value === 'object' ? 'object' : typeof value;
+  // `known` is the (id, xmin) the resolver passed back in; like the SQL CASE
+  // guards, a row still at that version returns no header at all.
+  const toWire = (row: unknown, known: { id: unknown; xmin: unknown }) => {
+    if (!row || typeof row !== 'object' || !Object.prototype.hasOwnProperty.call(row, 'launch_spec')) return row;
+    const { launch_spec: spec, ...rest } = row as Record<string, unknown>;
+    const header = typeOf(spec) === 'object' ? spec as Record<string, unknown> : {};
+    if (rest.adv_session_id != null) {
+      bodies.set(String(rest.adv_session_id), {
+        launch_spec: spec ?? null, launch_spec_xmin: (rest.adv_session_xmin as string | null | undefined) ?? null,
+      });
+    }
+    const skipped = rest.adv_session_id != null && rest.adv_session_xmin != null &&
+      known.id === String(rest.adv_session_id) && known.xmin === String(rest.adv_session_xmin);
+    return {
+      ...rest,
+      launch_header_known: known.id == null || known.xmin == null || rest.adv_session_id == null ? null : skipped,
+      launch_spec_type: skipped ? null : typeOf(spec),
+      launch_spec_workspace_id: skipped ? null : header.workspaceId ?? null,
+      launch_spec_harness_slug: skipped ? null : header.harnessSlug ?? null,
+    };
+  };
+  // The guard's first comparison is `(s.id::text = ${knownId} AND s.xmin::text = ${knownXmin})`.
+  const knownFrom = (strings: readonly string[], values: unknown[]) => {
+    const at = strings.findIndex((part) => part.endsWith('(s.id::text = '));
+    return at < 0 ? { id: null, xmin: null } : { id: values[at], xmin: values[at + 1] };
+  };
+  const sql = vi.fn(async (strings: readonly string[], ...values: unknown[]) => {
+    if (strings.join(' ').includes('SELECT s.launch_spec, s.xmin::text AS launch_spec_xmin')) {
+      const override = loadOverrides.shift();
+      if (override instanceof Error) throw override;
+      if (override) return override;
+      const body = bodies.get(String(values[0]));
+      return body ? [body] : [];
+    }
+    const known = knownFrom(strings, values);
+    return (rows.shift() ?? []).map((row) => toWire(row, known));
+  });
+  return { rows, sql, bodies, loadOverrides, failClient: false };
 });
 const grants = vi.hoisted(() => ({ read: vi.fn(), kernelThrows: false }));
 // Keep artifact validation and policy evaluation real; inject only policy I/O.
@@ -105,6 +151,12 @@ function appliedActivation(revision = REVISION_A) {
 
 beforeEach(() => {
   db.rows.splice(0, db.rows.length);
+  db.bodies.clear();
+  db.loadOverrides.splice(0, db.loadOverrides.length);
+  // The identity-resolution cache is process-pinned; a verdict cached by one
+  // test must not turn the next test's miss into a hit.
+  pinModuleState('@papercusp/operator-core.identity-resolution-cache', () => new Map<string, unknown>()).clear();
+  pinModuleState('@papercusp/operator-core.identity-launch-header-memo', () => new Map<string, unknown>()).clear();
   db.sql.mockClear();
   db.failClient = false;
   grants.read.mockReset();
@@ -126,7 +178,16 @@ describe('control-anchor kernel resolver (D-030)', () => {
     expect(db.sql).toHaveBeenCalledOnce();
     const [template, ...values] = db.sql.mock.calls[0] as unknown[];
     expect((template as readonly string[]).join(' ')).toContain('workspace_id =');
-    expect((template as readonly string[]).join(' ')).toContain("SELECT s.id, to_jsonb(s)->'launch_spec' AS launch_spec");
+    // WI-10002721: the anchor read carries the launch record's header, never its
+    // body, and no longer serialises the whole adv_sessions row to reach it.
+    const anchorSql = (template as readonly string[]).join(' ');
+    expect(anchorSql).toContain('ELSE jsonb_typeof(s.launch_spec) END AS launch_spec_type');
+    expect(anchorSql).toContain("ELSE s.launch_spec->'workspaceId' END AS launch_spec_workspace_id");
+    expect(anchorSql).toContain("ELSE s.launch_spec->'harnessSlug' END AS launch_spec_harness_slug");
+    expect(anchorSql).not.toContain('to_jsonb(s)');
+    expect(anchorSql).not.toMatch(/\ba\.launch_spec\s*,/);
+    // ...and even the header is skipped while the row is at a version already seen.
+    expect(anchorSql).toContain('CASE WHEN s.id::text =');
     expect(values).toContain('ws-a');
 
     const verdict = await controlAnchorKernelResolver(request());
@@ -147,6 +208,114 @@ describe('control-anchor kernel resolver (D-030)', () => {
     expect(state?.identityLaunchRecordVersion).toEqual({ sessionId: '27', rowVersion: '1549' });
     const [template] = db.sql.mock.calls[0] as unknown[];
     expect((template as readonly string[]).join(' ')).toContain("s.xmin::text AS launch_spec_xmin");
+  });
+
+  // WI-10002721 — the recurrence guard for the per-call body read. Every
+  // preflight used to select and JSON-parse the whole launch_spec (live avg
+  // 884KB, max 3.9MB) even when identityResolutionCache already held the
+  // verdict for that exact row version.
+  describe('launch record body is read only on an identity-resolution cache miss (WI-10002721)', () => {
+    const bodyReads = () => db.sql.mock.calls.filter(([template]) =>
+      (template as readonly string[]).join(' ').includes('SELECT s.launch_spec, s.xmin::text AS launch_spec_xmin')).length;
+    const rowAt = (xmin: string, over: Record<string, unknown> = {}) =>
+      anchorRow({ activation: appliedActivation() }, { adv_session_id: 31, adv_session_xmin: xmin, ...over });
+
+    it('reads the body once, then answers a repeat preflight on the same row version from the cache', async () => {
+      db.rows.push([rowAt('700')], [rowAt('700')]);
+      await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow' });
+      expect(bodyReads()).toBe(1);
+      await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow' });
+      expect(bodyReads()).toBe(1);
+      // Two anchor reads + one body read: the hit issued no body query at all.
+      expect(db.sql).toHaveBeenCalledTimes(3);
+      // The body query stays scoped to the anchor's owner and workspace.
+      const bodyCall = db.sql.mock.calls.find(([template]) =>
+        (template as readonly string[]).join(' ').includes('SELECT s.launch_spec'))!;
+      expect(bodyCall.slice(1)).toEqual([31, 'owner-a', 'ws-a']);
+    });
+
+    it('reads the body again when the launch row version changes', async () => {
+      db.rows.push([rowAt('700')], [rowAt('701')]);
+      await controlAnchorKernelResolver(request());
+      await controlAnchorKernelResolver(request());
+      expect(bodyReads()).toBe(2);
+    });
+
+    it('keys a miss on the row version the body was read at, not the header read', async () => {
+      const spec = anchorRow({}).launch_spec;
+      db.rows.push([rowAt('800')]);
+      db.loadOverrides.push([{ launch_spec: spec, launch_spec_xmin: '801' }]);
+      await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow' });
+      expect(bodyReads()).toBe(1);
+      // A preflight whose header is at the version the body was judged at hits.
+      db.rows.push([rowAt('801')]);
+      await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow' });
+      expect(bodyReads()).toBe(1);
+    });
+
+    it('never reads the body for a non-object launch_spec, and still refuses it as stale-artifact', async () => {
+      db.rows.push([rowAt('900', { launch_spec: 'not-a-record' })]);
+      await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+        decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
+      });
+      expect(bodyReads()).toBe(0);
+    });
+
+    it('refuses as stale-artifact when the row stops being a usable record between the two reads', async () => {
+      db.rows.push([rowAt('910')]);
+      db.loadOverrides.push([]);
+      await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+        decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
+      });
+    });
+
+    // The header is cheaper than the body but still costs PostgreSQL a full
+    // detoast of the TOASTed value, so an unchanged row version skips it too.
+    it('passes the last-seen row version back so PostgreSQL skips the header detoast', async () => {
+      db.rows.push([rowAt('700')], [rowAt('700')]);
+      await controlAnchorKernelResolver(request());
+      await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow' });
+      const anchorCalls = db.sql.mock.calls.filter(([template]) =>
+        (template as readonly string[]).join(' ').includes('FROM harness_shared.session_briefs'));
+      expect(anchorCalls).toHaveLength(2);
+      const known = (call: unknown[]) => {
+        const strings = call[0] as readonly string[];
+        const at = strings.findIndex((part) => part.endsWith('(s.id::text = '));
+        return [call[1 + at], call[2 + at]];
+      };
+      expect(known(anchorCalls[0])).toEqual([null, null]);
+      expect(known(anchorCalls[1])).toEqual(['31', '700']);
+      // The skipped header was served from the memo, and the verdict from the
+      // identity-resolution cache, so the body was still read exactly once.
+      expect(bodyReads()).toBe(1);
+    });
+
+    it('serves a skipped header from the memo and re-reads it once the launch row version moves', async () => {
+      db.rows.push([rowAt('700')], [rowAt('700')], [rowAt('702', {
+        launch_spec: { ...anchorRow({}).launch_spec as Record<string, unknown>, workspaceId: 'ws-other' },
+      })]);
+      const header = (state: Awaited<ReturnType<typeof readControlAnchorKernelState>>) => {
+        const { isObject, workspaceId, harnessSlug } = state?.identityLaunchRecord as Record<string, unknown>;
+        return { isObject, workspaceId, harnessSlug };
+      };
+      const first = await readControlAnchorKernelState(request());
+      const skipped = await readControlAnchorKernelState(request());
+      const moved = await readControlAnchorKernelState(request());
+      expect(header(first)).toEqual({ isObject: true, workspaceId: 'ws-a', harnessSlug: 'sales' });
+      // The wire row carried no header (PostgreSQL skipped it); the memo supplied it.
+      expect(header(skipped)).toEqual({ isObject: true, workspaceId: 'ws-a', harnessSlug: 'sales' });
+      // A new row version is read afresh: a stale memo would still say ws-a.
+      expect(header(moved)).toEqual({ isObject: true, workspaceId: 'ws-other', harnessSlug: 'sales' });
+      expect(bodyReads()).toBe(0);
+    });
+
+    it('fails closed when the body read itself fails', async () => {
+      db.rows.push([rowAt('920')]);
+      db.loadOverrides.push(new Error('adv_sessions read failed'));
+      await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+        decision: 'deny', code: 'policy-unavailable',
+      });
+    });
   });
 
   it('keeps a prepared revision visible but does not treat it as applied execution truth', async () => {

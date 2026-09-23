@@ -94,6 +94,55 @@ describe('getAcceptanceRubricVettingStatus grading-audit admission', () => {
     });
   });
 
+  it('reuses vetting across method-only changes when the BAR meaning epoch is unchanged', async () => {
+    const live = {
+      ...rubric,
+      revision: 6,
+      criteriaHash: 'hash-after-method-edit',
+      barContract: { meaningRevision: 2 },
+    } as Rubric;
+    await expect(
+      getAcceptanceRubricVettingStatus(
+        live,
+        {
+          ...deps([
+            card({
+              vetting: {
+                consultId: 'consult-vetting',
+                rubricRevision: 4,
+                criteriaHash: 'hash-before-method-edit',
+                rubricMeaningRevision: 2,
+              },
+            }),
+          ]),
+          getRubricPlanRevision: async () => 6,
+        },
+      ),
+    ).resolves.toMatchObject({ satisfied: true, state: 'vetted', reason: 'current' });
+  });
+
+  it('stales vetting when the BAR meaning epoch changes even if the hash matches', async () => {
+    const live = {
+      ...rubric,
+      barContract: { meaningRevision: 5 },
+    } as Rubric;
+    await expect(
+      getAcceptanceRubricVettingStatus(
+        live,
+        deps([
+          card({
+            vetting: {
+              consultId: 'consult-vetting',
+              rubricRevision: 4,
+              criteriaHash: 'hash-current',
+              rubricMeaningRevision: 4,
+            },
+          }),
+        ]),
+      ),
+    ).resolves.toMatchObject({ satisfied: false, state: 'unvetted', reason: 'stale-attestation' });
+  });
+
   it('invalidates same-revision vetting when criterion or method identity changes', async () => {
     await expect(
       getAcceptanceRubricVettingStatus(
