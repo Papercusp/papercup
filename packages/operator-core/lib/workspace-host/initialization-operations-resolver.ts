@@ -61,7 +61,7 @@ import {
   type GcpInstanceGuestAttribute,
   type GcpWorkspaceHostApiClient,
 } from './gcp-provider';
-import { readWorkspaceHostDesiredSpec } from './observability-store';
+import { readWorkspaceHostConnection, readWorkspaceHostDesiredSpec } from './observability-store';
 
 /** Public typed initializer transport; keep implementation-private fields out of the seam. */
 export type WorkspaceHostControllerOperations = WorkspaceHostInitializationHostOperations &
@@ -568,18 +568,24 @@ export function resolveGcpIapWorkspaceHostInitializationProfile(
 
 /**
  * The Compute client a host's own recorded credential reference authorizes. Hosted delegation
- * refs resolve through verified delegation metadata; every other ref uses the controller's ADC.
+ * refs resolve through the verified delegation on the host's CONNECTION — the same place
+ * provisioning reads it (gcp-provider.ts); the desired spec never carries it. Every other ref
+ * uses the controller's ADC.
  */
 export function createGcpWorkspaceHostApiClientForDesired(
   desired: WorkspaceHostDesiredSpec,
-  seams: { resolveHostedAuth?: typeof resolveHostedGcpAuth; gcpFetch?: typeof fetch } = {},
+  seams: {
+    connectionProvider?: Readonly<Record<string, unknown>>;
+    resolveHostedAuth?: typeof resolveHostedGcpAuth;
+    gcpFetch?: typeof fetch;
+  } = {},
 ): GcpWorkspaceHostApiClient {
   const credentialRef = desired.credentials.cloudCredentialRef.ref;
-  const acquireAuth = isHostedProviderCredentialRef(credentialRef)
-    ? () => (seams.resolveHostedAuth ?? resolveHostedGcpAuth)({
-        credentialRef,
-        provider: desired.provider ?? {},
-      })
+  const hosted = isHostedProviderCredentialRef(credentialRef);
+  const { connectionProvider } = seams;
+  if (hosted && !connectionProvider) throw new Error('gcp_workspace_host_hosted_connection_required');
+  const acquireAuth = hosted
+    ? () => (seams.resolveHostedAuth ?? resolveHostedGcpAuth)({ credentialRef, provider: connectionProvider! })
     : createGcpWorkspaceHostAcquireAuth(credentialRef);
   return createGcpWorkspaceHostApiClient({
     acquireAuth,
@@ -773,6 +779,8 @@ export interface ResolveOperationsForHostInput {
   credentialMaterialSource?: WorkspaceHostCredentialMaterialSource;
   /** Test seam; defaults to the durable host record. */
   readDesiredSpec?: typeof readWorkspaceHostDesiredSpec;
+  /** Test seam; defaults to the durable connection record a hosted credential ref resolves through. */
+  readConnection?: typeof readWorkspaceHostConnection;
   /** Test seam; production uses the persisted cloud credential reference. */
   gcpClient?: Pick<GcpWorkspaceHostApiClient, 'getInstance' | 'getInstanceGuestAttributes'>;
   /** Test seam for the real GCP client path. */
@@ -816,9 +824,18 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
   // refuse without making a cloud call (or attempting to interpret an AWS/Azure spec as GCP).
   const deliveryCapabilities = resolveWorkspaceHostDeliveryCapabilities(desired);
   const identity = resolveGcpWorkspaceHostInstanceIdentity(desired);
+  let connectionProvider: Readonly<Record<string, unknown>> | undefined;
+  if (!input.gcpClient && isHostedProviderCredentialRef(desired.credentials.cloudCredentialRef.ref)) {
+    const stored = lookup.connectionId
+      ? await (input.readConnection ?? readWorkspaceHostConnection)(input.workspaceId, lookup.connectionId)
+      : null;
+    if (!stored) throw new Error('gcp_workspace_host_hosted_connection_missing');
+    connectionProvider = stored.connection.provider ?? {};
+  }
   const client =
     input.gcpClient ??
     createGcpWorkspaceHostApiClientForDesired(desired, {
+      ...(connectionProvider ? { connectionProvider } : {}),
       ...(input.resolveHostedAuth ? { resolveHostedAuth: input.resolveHostedAuth } : {}),
       ...(input.gcpFetch ? { gcpFetch: input.gcpFetch } : {}),
     });
