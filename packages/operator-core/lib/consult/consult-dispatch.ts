@@ -276,8 +276,14 @@ export async function dispatchConsultResponder(
     /** The expert whose TRANSCRIPT is the knowledge source (the routed pick). */
     sourceOwnerId: string;
     conversationId: string;
-    /** Delivered as the answering session's first turn. */
-    brief: string;
+    /**
+     * Delivered as the answering session's first turn. A FUNCTION is resolved
+     * per rank with the operation that rank actually implies, because a fork and
+     * a conversion inherit history differently and a brief that names the wrong
+     * one tells the session something false about its own provenance. A plain
+     * string is the operation-independent case.
+     */
+    brief: string | ((operation: DispatchOperation) => string);
   },
   ctx: ConsultDispatchContext,
   deps: Partial<ConsultDispatchDeps> = {},
@@ -423,7 +429,7 @@ export async function dispatchConsultResponder(
 /** One rank's launch. Never throws — a thrown launcher error is this rank's
  *  failure, and the walk owns what happens next. */
 async function launchAnsweringSession(
-  opts: { sourceOwnerId: string; conversationId: string; brief: string },
+  opts: { sourceOwnerId: string; conversationId: string; brief: string | ((operation: DispatchOperation) => string) },
   ctx: ConsultDispatchContext,
   d: ConsultDispatchDeps,
   target: ResumeTarget,
@@ -499,7 +505,8 @@ async function launchAnsweringSession(
         ...(codexHome ? { CODEX_HOME: codexHome } : {}),
         // The brief rides the ENV, never a --kickoff= value: free-form text
         // inside the console greeting one-liner breaks the shell.
-        PAPERCUSP_KICKOFF_PROMPT: opts.brief,
+        PAPERCUSP_KICKOFF_PROMPT:
+          typeof opts.brief === 'function' ? opts.brief(operation) : opts.brief,
       },
       greetingCmd: cmd,
       cwd: target.cwd ?? envelope.cwd,
@@ -641,24 +648,20 @@ export function makeConsultReachDispatcher(
   dispatch: ConsultDispatchResult;
 }> {
   return async (opts) => {
-    // Resolve the operation only to FRAME the brief; the walk re-decides it per
-    // rank (a walled rank-1 can change fork into convert), so this is a label,
-    // never the decision.
     const dispatch = await dispatchConsultResponder(
       {
         sourceOwnerId: opts.responder,
         conversationId: opts.conversationId,
-        brief: consultDispatchBrief({
-          conversationId: opts.conversationId,
-          sourceOwnerId: opts.responder,
-          // The brief is composed before the walk picks a rank, so frame it as
-          // the same-backend case and let the convert legs read as a fork of
-          // history they did in fact inherit. Naming the WRONG operation would
-          // be worse than naming the common one.
-          operation: 'fork',
-          summary: opts.summary,
-          body: opts.body,
-        }),
+        // Per-rank, because a walled rank-1 can turn a fork into a conversion and
+        // the two inherit history differently.
+        brief: (operation) =>
+          consultDispatchBrief({
+            conversationId: opts.conversationId,
+            sourceOwnerId: opts.responder,
+            operation,
+            summary: opts.summary,
+            body: opts.body,
+          }),
       },
       ctx,
       deps,
