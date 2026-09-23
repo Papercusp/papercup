@@ -57,6 +57,8 @@ import {
 } from './release/checkpoint-qualification-transaction';
 import { parseCandidateSnapshot, type CandidateSnapshot } from './release/candidate-snapshot';
 import type { CheckpointProcessAuthorityReading, CheckpointSystemdProbe } from './release-checkpoint-launch';
+import { releaseCheckpointConfig } from './release-checkpoint-config';
+import { highestRungCrossed } from './release/stall-escalation-ladder';
 
 /** Compact read health projected beside the normalized queue diagnostic. */
 export type FrozenRepairQueueReadProjection =
@@ -206,7 +208,7 @@ export interface GitPipelineSnapshot {
      */
     recordedVerdict: 'green' | 'not-green' | null;
     firstRedAtMs: number | null;
-    stalled: boolean;
+    stalled: boolean | null;
     /** WI-282: the green-checkpoint routine's last fire (epoch ms) + a freshness
      *  verdict, so a WEDGED / non-firing ticker is VISIBLE even though it produces
      *  0 reds — the reds-based `stalled` is structurally blind to a checkpoint that
@@ -961,9 +963,44 @@ export function releaseTriggerControlBlockReason(control: RoutineInfo | null): s
 
 export interface RawGateCounters {
   consecutiveReds: number;
-  stalled: boolean;
+  stalled: boolean | null;
   failingTests: string[];
   firstRedAtMs: number | null;
+}
+
+export function deriveInRoutineGateStalled(input: {
+  consecutiveReds: number | null;
+  stallAgeMs: number | null;
+  stallRedsThreshold: number;
+  stallAgeThresholdMs: number;
+}): boolean | null {
+  const redCondition =
+    input.consecutiveReds === null ||
+    !Number.isFinite(input.consecutiveReds) ||
+    !Number.isFinite(input.stallRedsThreshold) ||
+    input.stallRedsThreshold <= 0
+      ? null
+      : highestRungCrossed(input.consecutiveReds, input.stallRedsThreshold) !== null;
+  const ageCondition =
+    input.stallAgeMs === null ||
+    !Number.isFinite(input.stallAgeMs) ||
+    !Number.isFinite(input.stallAgeThresholdMs) ||
+    input.stallAgeThresholdMs <= 0
+      ? null
+      : highestRungCrossed(input.stallAgeMs, input.stallAgeThresholdMs) !== null;
+
+  if (redCondition === true || ageCondition === true) return true;
+  if (redCondition === false && ageCondition === false) return false;
+  return null;
+}
+
+export function combineGateStallSignals(
+  inRoutineStalled: boolean | null,
+  watchdogStalled: boolean | null,
+): boolean | null {
+  if (inRoutineStalled === true || watchdogStalled === true) return true;
+  if (inRoutineStalled === false && watchdogStalled === false) return false;
+  return null;
 }
 
 /**
@@ -1311,6 +1348,7 @@ export async function gitPipelineSnapshot(
   const gcLastFiredMs = dateMs(gcRow?.last_fired_at);
   let gcFireStale = pauseProjection.fireStale;
   let gcFireStaleReason: string | null = pauseProjection.fireStaleReason;
+  let gcWatchdogStalled: boolean | null = null;
   if (gcRow?.active === true) {
     try {
       const { evaluateGreenStall } = await import('./release/green-stall-watchdog');
@@ -1318,10 +1356,12 @@ export async function gitPipelineSnapshot(
         {
           lastFiredMs: gcLastFiredMs,
           lastGreenAt: num(gateHealth.lastGreenAt),
+          lastVerdictAtMs: num(gateHealth.observedAt),
           watchdogAlerted: gateHealth.watchdogAlerted === true,
         },
         Date.now(),
       );
+      gcWatchdogStalled = v.suppressed ? null : v.stalled;
       const fireFreshness = projectGreenCheckpointFireFreshness(v);
       gcFireStale = fireFreshness.fireStale;
       gcFireStaleReason = fireFreshness.fireStaleReason;
@@ -1436,6 +1476,14 @@ export async function gitPipelineSnapshot(
         )
       : null;
   const rawConsecutiveReds = measuredConsecutiveReds ?? 0;
+  const lastGreenAtMs = num(gateHealth.lastGreenAt);
+  const stallConfig = releaseCheckpointConfig();
+  const inRoutineStalled = deriveInRoutineGateStalled({
+    consecutiveReds: measuredConsecutiveReds,
+    stallAgeMs: lastGreenAtMs === null ? null : Date.now() - lastGreenAtMs,
+    stallRedsThreshold: stallConfig.stallReds,
+    stallAgeThresholdMs: stallConfig.stallAgeMs,
+  });
   const {
     stale: gcVerdictStale,
     reason: gcVerdictStaleReason,
@@ -1480,10 +1528,11 @@ export async function gitPipelineSnapshot(
   });
   const effectiveGate = pinProvenGateCorrection(gcVerdictStaleReasonCode, {
     consecutiveReds: rawConsecutiveReds,
-    stalled: gateHealth.stallAlerted === true,
+    stalled: inRoutineStalled,
     failingTests: failingTestsMeasurement.failingTests,
     firstRedAtMs: num(gateHealth.firstRedAt),
   });
+  const gateStalled = combineGateStallSignals(effectiveGate.stalled, gcWatchdogStalled);
 
   // EI-18672078222841101: resolve WHO owns this red, from state the system already keeps.
   // Only for an actually-red gate — a green gate has no ownership question, and asking one
@@ -1623,7 +1672,7 @@ export async function gitPipelineSnapshot(
       // recorded — never left as a stale, alarm-triggering streak (see `pinProvenGateCorrection`).
       consecutiveReds: effectiveGate.consecutiveReds,
       countersUnknown,
-      lastGreenAtMs: num(gateHealth.lastGreenAt),
+      lastGreenAtMs,
       // EI-20706962612084953: pass the writer's own verdict marker through UNCHANGED — it is
       // the one field here that is a statement rather than an inference. Anything other than
       // the two known values (including absent, i.e. a blob predating the marker) is `null`,
@@ -1638,7 +1687,7 @@ export async function gitPipelineSnapshot(
       // Zeroing this on that basis would hide a wedged writer behind someone else's green.
       consecutiveNoVerdict: num(gateHealth.consecutiveNoVerdict) ?? 0,
       // A stalled-streak alert can't survive proof the streak it was raised on has already ended.
-      stalled: effectiveGate.stalled,
+      stalled: gateStalled,
       lastFiredAtMs: gcLastFiredMs,
       fireStale: gcFireStale,
       fireStaleReason: gcFireStaleReason,
