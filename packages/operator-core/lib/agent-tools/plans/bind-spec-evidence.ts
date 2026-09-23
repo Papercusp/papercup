@@ -1,5 +1,6 @@
 /** plans:bind-spec-evidence — append exact work-item/spec-revision proof bindings. */
 import { z } from 'zod';
+import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
@@ -10,10 +11,13 @@ import {
   ADHOC_WORK_ITEM_SPEC_SCOPE,
   bindSpecEvidence,
   evidenceMeasurementSchema,
-  measureEvidenceForScope,
+  MEASUREMENT_PIN_DETAILS_KEY,
+  measureAndPinEvidenceForScope,
   retractSpecEvidence,
   SPEC_EVIDENCE_KINDS,
+  supersedeSpecEvidenceAtRevision,
 } from './spec-evidence-store';
+import { supersedeEligibilityGaps } from './spec-test-adequacy';
 import { SPEC_PROOF_OBLIGATION_ID_RE } from './spec-clauses-store';
 import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vetting';
 import { getAcceptanceRubricsForPlan } from '../../rubrics';
@@ -183,8 +187,8 @@ const retractionSchema = z.object({
     ),
 });
 
-const argsSchema = z
-  .object({
+const argsSchema = refineEvenWithShapeIssues(
+  z.object({
     harness: harnessArg,
     slug: z
       .string()
@@ -201,10 +205,103 @@ const argsSchema = z
       .max(100)
       .optional()
       .describe('Withdraw already-bound evidence instead of appending it. Mutually exclusive with binding/items.'),
-  })
-  .refine((args) => [args.binding, args.items, args.retract].filter(Boolean).length === 1, {
-    message: 'pass exactly one of binding, items or retract',
+    supersedeAtRevision: z
+      .boolean()
+      .optional()
+      .describe(
+        'After binding, retract every OTHER live row of the same evidenceKind at the same clause revision, stamped "superseded by binding N". Only a successful ledger-backed executable binding may supersede; a weaker one is bound but supersedes nothing (reported in supersession).',
+      ),
+  }),
+  // RSR-P-008-A: both combination rules are reported alongside any shape defect.
+  (args, ctx) => {
+    if ([args.binding, args.items, args.retract].filter(Boolean).length !== 1) {
+      ctx.addIssue({ code: 'custom', path: [], message: 'pass exactly one of binding, items or retract' });
+    }
+    if (args.supersedeAtRevision && args.retract) {
+      ctx.addIssue({ code: 'custom', path: [], message: 'supersedeAtRevision applies to binding/items, not retract' });
+    }
+  },
+);
+
+type SupersessionOutcome =
+  | {
+      bindingId: number;
+      status: 'superseded';
+      clause: string;
+      evidenceKind: string;
+      retracted: Array<{ bindingId: number; workItemId: string; evidenceRef: string }>;
+    }
+  | { bindingId: number; status: 'refused'; clause: string; reason: string };
+
+/**
+ * P-019 (review-system-rework-reduction-2026-09-23): `supersedeAtRevision:true`. The adequacy
+ * evaluator grades EVERY live binding at a clause revision, so fresh sufficient proof could not
+ * rescue a clause while an older weak/stale/failing row stood beside it (R-11: 13 rows retracted
+ * by hand before a targeted mutation proof could pass). Each successfully bound row that is
+ * itself sufficient retracts its same-kind siblings; rows bound in this call are never retracted
+ * by each other. Runs after the binds commit, so a failure leaves old rows live, never lost.
+ */
+async function supersedeSiblings(input: {
+  bindings: ReadonlyArray<z.infer<typeof bindingSchema>>;
+  results: ReadonlyArray<unknown>;
+  harnessSlug: string | undefined;
+  actorId: string;
+}): Promise<SupersessionOutcome[]> {
+  const bound = input.results.map((result) => {
+    const row = result as { ok?: unknown; id?: unknown; planSlug?: unknown; specId?: unknown; specRevision?: unknown };
+    return row.ok === true &&
+      typeof row.id === 'number' &&
+      typeof row.planSlug === 'string' &&
+      typeof row.specId === 'string' &&
+      typeof row.specRevision === 'number'
+      ? { id: row.id, planSlug: row.planSlug, specId: row.specId, specRevision: row.specRevision }
+      : null;
   });
+  const keepBindingIds = bound.flatMap((row) => (row ? [row.id] : []));
+  const outcomes: SupersessionOutcome[] = [];
+  for (const [index, row] of bound.entries()) {
+    const declared = input.bindings[index];
+    if (!row || !declared) continue;
+    const clause = `${row.specId}@${row.specRevision}`;
+    const gaps = supersedeEligibilityGaps({
+      evidenceKind: declared.evidenceKind,
+      testRunId: declared.testRunId,
+      coverageEvidenceRef: declared.coverageEvidenceRef,
+      details: declared.details,
+    });
+    if (gaps.length > 0) {
+      outcomes.push({
+        bindingId: row.id,
+        status: 'refused',
+        clause,
+        reason: `binding ${row.id} is bound but is not sufficient proof on its own, so it supersedes nothing: ${gaps.join(', ')}`,
+      });
+      continue;
+    }
+    const retracted = await supersedeSpecEvidenceAtRevision({
+      harnessSlug: input.harnessSlug,
+      planSlug: row.planSlug,
+      specId: row.specId,
+      specRevision: row.specRevision,
+      evidenceKind: declared.evidenceKind,
+      supersedingBindingId: row.id,
+      keepBindingIds,
+      actorId: input.actorId,
+    });
+    outcomes.push({
+      bindingId: row.id,
+      status: 'superseded',
+      clause,
+      evidenceKind: declared.evidenceKind,
+      retracted: retracted.map((r) => ({
+        bindingId: Number(r.id),
+        workItemId: r.work_item_id,
+        evidenceRef: r.evidence_ref,
+      })),
+    });
+  }
+  return outcomes;
+}
 
 const OK = new Set(['created', 'unchanged']);
 
@@ -261,7 +358,7 @@ export default defineTool({
       bindings,
       async (binding) => {
         const measured = binding.measurement
-          ? await measureEvidenceForScope(measurementScope!.workspaceId, harnessSlug, binding.measurement)
+          ? await measureAndPinEvidenceForScope(measurementScope!.workspaceId, harnessSlug, binding.measurement)
           : null;
         const { measurement, ...declared } = binding;
         const result = await bindSpecEvidence({
@@ -273,6 +370,9 @@ export default defineTool({
                 details: {
                   ...(binding.details ?? {}),
                   currentMeasurement: measurement,
+                  // P-018: the commit this proof was measured against, so a later stale
+                  // verdict names the moved paths. Excluded from the binding fingerprint.
+                  ...(measured?.pin ? { [MEASUREMENT_PIN_DETAILS_KEY]: measured.pin } : {}),
                 },
               }
             : {}),
@@ -303,6 +403,13 @@ export default defineTool({
         },
       ),
     );
-    return bulkContent(advisory ? { ...env, advisories: [advisory] } : env);
+    const supersession = args.supersedeAtRevision
+      ? await supersedeSiblings({ bindings, results: env.results, harnessSlug, actorId })
+      : undefined;
+    return bulkContent({
+      ...env,
+      ...(advisory ? { advisories: [advisory] } : {}),
+      ...(supersession ? { supersession } : {}),
+    });
   },
 });
