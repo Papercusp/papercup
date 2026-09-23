@@ -2,17 +2,13 @@
  * owner-directive-status.test.ts — P-006 + P-009(d) of plan
  * `directive-visibility-and-ownership-2026-09-22`.
  *
- * The centrepiece is `derives done for the MEASURED #86/#87 shape`: a row with
- * `dispositionStatus:'done'` AND `captureStatus:'pending'`. That shape exists
- * in the live queue right now and is re-delivered as a rank-0 `[DUE]`
- * imperative on every wake. It is the cheapest falsifiable guard in the plan
- * because its subject is real rather than hypothetical — the assertion fails
- * against the pre-fix reading (capture-only) and passes against the derivation.
- *
- * The controls are deliberately kept in the file rather than produced by
- * mutating the module: a permanently-present wrong implementation is the
- * sanctioned way to show these assertions can fail (repo testing policy), and
- * it costs nothing to keep.
+ * The centrepiece is `derives done for the MEASURED #86/#87 shape`: a row the
+ * owner's session had already closed with `dispositionStatus:'done'` that kept
+ * being re-delivered as a rank-0 `[DUE]` imperative. Since plan
+ * `owner-directive-delivery-redesign-2026-09-22` (D-001) there is no capture
+ * triage left: every owner turn lands open, and the disposition is the ONLY
+ * terminal route — so the derivation reads nothing but the disposition and
+ * the linked work-items.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -25,7 +21,6 @@ import {
 import { TERMINAL_WORK_ITEM_STATES } from './work-items';
 
 const FRESH: DirectiveStatusDirectiveInput = {
-  captureStatus: 'open',
   dispositionStatus: null,
   dispositionedAtMs: null,
 };
@@ -35,16 +30,6 @@ const wi = (id: string, state: string, assignee?: string): DirectiveLinkedWorkIt
   state,
   ...(assignee ? { assignee } : {}),
 });
-
-/**
- * THE PRE-FIX READING, kept as a permanent control. This is what the obligation
- * reader effectively does today: consult the CAPTURE field alone. Every test
- * that asserts the derivation is better than this must show this one
- * disagreeing, or the assertion proves nothing.
- */
-function captureOnlyReading(d: DirectiveStatusDirectiveInput): 'live' | 'finished' {
-  return d.captureStatus === 'pending' || d.captureStatus === 'open' ? 'live' : 'finished';
-}
 
 describe('deriveDirectiveStatus — the four states', () => {
   it('a fresh directive with no work-items and no disposition is unclaimed', () => {
@@ -69,46 +54,33 @@ describe('deriveDirectiveStatus — the four states', () => {
 
   it('a recorded done disposition is terminal and needs no action', () => {
     const s = deriveDirectiveStatus(
-      { captureStatus: 'open', dispositionStatus: 'done', dispositionedAtMs: 1_700_000_000_000 },
+      { dispositionStatus: 'done', dispositionedAtMs: 1_700_000_000_000 },
       [],
     );
     expect(s.kind).toBe('done');
-    expect(s.terminalSource).toBe('disposition');
     expect(directiveNeedsAction(s)).toBe(false);
   });
 
   it('a recorded declined disposition is terminal and distinct from done', () => {
     const s = deriveDirectiveStatus(
-      { captureStatus: 'open', dispositionStatus: 'declined', dispositionedAtMs: 1_700_000_000_000 },
+      { dispositionStatus: 'declined', dispositionedAtMs: 1_700_000_000_000 },
       [],
     );
     expect(s.kind).toBe('declined');
     expect(directiveNeedsAction(s)).toBe(false);
   });
 
-  it('a dismissed capture is declined, and says so via terminalSource', () => {
-    const s = deriveDirectiveStatus(
-      { captureStatus: 'dismissed', dispositionStatus: null, dispositionedAtMs: null },
-      [],
-    );
-    expect(s.kind).toBe('declined');
-    // The two terminal routes must stay distinguishable: "the owner's ask was
-    // declined" and "the capture was triaged as not-a-directive" are different
-    // facts, and collapsing them loses the second one.
-    expect(s.terminalSource).toBe('capture-dismissed');
-  });
 });
 
 describe('P-009(d) — the MEASURED #86/#87 regression', () => {
   /**
    * Measured 2026-09-22 via `orders:list { state:['pending','open'] }`:
-   * directives #86 and #87 simultaneously carried dispositionStatus 'done'
-   * (dispositionedBy their own recording session, 14:58:29Z / 15:01:00Z) and
-   * captureStatus 'pending' with needsResolution true — and were delivered as
-   * `[DUE] … promote or dismiss` for at least four consecutive wakes.
+   * directives #86 and #87 carried dispositionStatus 'done' (dispositionedBy
+   * their own recording session, 14:58:29Z / 15:01:00Z) and were still
+   * delivered as `[DUE] … promote or dismiss` for at least four consecutive
+   * wakes, because the reader consulted the capture field instead.
    */
   const MEASURED_86: DirectiveStatusDirectiveInput = {
-    captureStatus: 'pending',
     dispositionStatus: 'done',
     dispositionedAtMs: Date.parse('2026-09-22T14:58:29.000Z'),
   };
@@ -119,23 +91,9 @@ describe('P-009(d) — the MEASURED #86/#87 regression', () => {
     expect(directiveNeedsAction(s)).toBe(false);
   });
 
-  it('reports the capture lag instead of silently swallowing it', () => {
-    // The verdict alone would hide the fact that the capture row never caught
-    // up. Surfacing it is what lets a sweep find and repair the population.
-    expect(deriveDirectiveStatus(MEASURED_86, []).captureLagging).toBe(true);
-  });
-
-  it('CONTROL: the capture-only reading this replaces gets it wrong', () => {
-    // Without this the test above is unfalsifiable — it would pass for a
-    // derivation that merely echoed a correct input.
-    expect(captureOnlyReading(MEASURED_86)).toBe('live');
-    expect(deriveDirectiveStatus(MEASURED_86, []).kind).toBe('done');
-  });
-
-  it('CALIBRATION: the capture-only reading is right about a genuinely live row', () => {
-    // Proves the control is a real discriminator rather than a function that
-    // always says 'live' — otherwise the CONTROL above would pass vacuously.
-    expect(captureOnlyReading(FRESH)).toBe('live');
+  it('CALIBRATION: the same derivation still calls a genuinely fresh row live', () => {
+    // Proves the verdict above is a real discriminator rather than a function
+    // that always says 'done'.
     expect(deriveDirectiveStatus(FRESH, []).kind).toBe('unclaimed');
     expect(directiveNeedsAction(deriveDirectiveStatus(FRESH, []))).toBe(true);
   });
@@ -190,7 +148,7 @@ describe('work-item refs answer WHO is on it, never WHETHER it is finished', () 
 describe('precedence and defensive readings', () => {
   it('a disposition outranks a still-live work-item', () => {
     const s = deriveDirectiveStatus(
-      { captureStatus: 'open', dispositionStatus: 'done', dispositionedAtMs: 1 },
+      { dispositionStatus: 'done', dispositionedAtMs: 1 },
       [wi('WI-1', 'wip', 'su-aaa')],
     );
     expect(s.kind).toBe('done');
@@ -199,31 +157,16 @@ describe('precedence and defensive readings', () => {
     expect(s.activeWorkItemIds).toEqual(['WI-1']);
   });
 
-  it('a disposition outranks a dismissed capture', () => {
-    const s = deriveDirectiveStatus(
-      { captureStatus: 'dismissed', dispositionStatus: 'done', dispositionedAtMs: 1 },
-      [],
-    );
-    expect(s.kind).toBe('done');
-    expect(s.terminalSource).toBe('disposition');
-  });
-
   it('a status with NO recorded timestamp is not read as terminal', () => {
     // A half-written row must fail toward "still needs action", never toward a
     // silent close: the expensive direction of this error is dropping an
     // owner's order, not re-showing one.
     const s = deriveDirectiveStatus(
-      { captureStatus: 'open', dispositionStatus: 'done', dispositionedAtMs: null },
+      { dispositionStatus: 'done', dispositionedAtMs: null },
       [],
     );
     expect(s.kind).toBe('unclaimed');
     expect(directiveNeedsAction(s)).toBe(true);
-  });
-
-  it('an absent captureStatus (pre-capture row) is treated as live', () => {
-    const s = deriveDirectiveStatus({ dispositionStatus: null }, []);
-    expect(s.kind).toBe('unclaimed');
-    expect(s.captureLagging).toBe(false);
   });
 
   it('is pure: the same inputs give an equal verdict and the inputs are untouched', () => {
