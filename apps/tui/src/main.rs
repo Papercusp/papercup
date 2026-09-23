@@ -7150,6 +7150,7 @@ mod tests {
         assert_eq!(
             crate::su_session::decide_su_dispatch(crate::su_session::SuDispatchInputs {
                 attached: false,
+                ended_backend: None,
                 picked_backend: None,
                 loaded_class: Some(crate::su_session::PuiRuntimeClass::parse(
                     old_default.su_runtime_class.as_deref()

@@ -2854,11 +2854,12 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             format!("  reconciliation: {}", session.reconciliation),
             Theme::dim(),
         )));
+        // Wrapped, not truncated: a failure's recovery hint ("Please run
+        // /login") trails its cause, so a one-row cut drops the actionable part.
         if let Some(error) = session.error.as_deref() {
-            lines.push(Line::from(Span::styled(
-                format!("  {}", error),
-                Theme::danger(),
-            )));
+            for wl in wrap_text(error, inner_w.saturating_sub(2)) {
+                lines.push(Line::from(Span::styled(format!("  {wl}"), Theme::danger())));
+            }
         }
     }
     if app.chat_messages.is_empty() {
@@ -7020,6 +7021,31 @@ mod tests {
         app.toast = Some(ui_notif("high", "Decide P-009", None));
         let text = render(&app, 90, 12);
         assert!(text.contains("N history"), "toast must advertise N: {text}");
+    }
+
+    #[test]
+    fn a_long_session_error_wraps_so_its_recovery_hint_stays_visible() {
+        let mut app = App::new();
+        app.tab = crate::app::Tab::Operator;
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(crate::su_session::SuSessionBinding {
+            operation: "created".into(),
+            backend: crate::su_session::SuSessionBackend::Claude,
+            adv_session_id: 7,
+            owner_id: Some("su-1".into()),
+            workspace_id: Some("ws-1".into()),
+            harness_slug: Some("papercup".into()),
+            plan_slug: None,
+            native_session: None,
+        });
+        app.su_session.as_mut().unwrap().error = Some(
+            "Claude ended this turn without a usable reply (success): API Error: 401 \
+             authentication_error: OAuth token has expired · Please run /login"
+                .into(),
+        );
+        let text = render(&app, 100, 30);
+        assert!(text.contains("401"), "{text}");
+        assert!(text.contains("/login"), "the recovery hint was cut off: {text}");
     }
 
     #[test]

@@ -3009,7 +3009,7 @@ impl App {
         self.su_active_command_id = None;
         self.last_error = Some(message.to_string());
         self.session_note = Some(if !pending_draft {
-            "Session stopped — accepted messages remain in the transcript. Reconnect to continue."
+            "Session stopped — accepted messages remain in the transcript. Your next message reopens this conversation."
                 .into()
         } else if uncertain {
             "Delivery uncertain — draft retained. Enter checks the same turn.".into()
@@ -5873,8 +5873,14 @@ impl App {
     /// Where the next owner turn goes, and why. Pure over the app's current state
     /// so the policy can be exercised directly; the key handler applies it.
     pub fn su_dispatch_decision(&self) -> crate::su_session::SuDispatchDecision {
+        // A bound session whose runtime died is not "attached": sending into it
+        // can never succeed, so the next turn reopens this conversation instead.
+        let bound = self.su_session.as_ref();
         crate::su_session::decide_su_dispatch(crate::su_session::SuDispatchInputs {
-            attached: self.su_session.is_some(),
+            attached: bound.is_some_and(|session| session.is_live()),
+            ended_backend: bound
+                .filter(|session| !session.is_live())
+                .map(|session| session.backend()),
             picked_backend: self.su_backend,
             loaded_class: self.pui_runtime_class,
         })
@@ -13690,6 +13696,38 @@ mod tests {
             "at": "2026-08-28T00:00:00Z",
             "session": {"agentChatId":"chat-1","advSessionId":7,"backend":"claude","nativeSessionId":"native-1","ownerId":"su-1","workspaceId":"ws-1","harnessSlug":"papercup"}
         })
+    }
+
+    #[test]
+    fn a_dead_bound_session_reopens_its_conversation_on_its_own_backend() {
+        // P-009 R-06: after a mid-turn engine death the binding lingers; treating
+        // it as attached sent every retry into a runtime that can never answer.
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(crate::su_session::SuSessionBinding {
+            backend: crate::su_session::SuSessionBackend::Codex,
+            ..su_binding()
+        });
+        app.su_session.as_mut().unwrap().lifecycle = crate::su_session::SuSessionLifecycleState::Running;
+        assert_eq!(
+            app.su_dispatch_decision().target,
+            crate::su_session::SuDispatchTarget::AttachedSuSession
+        );
+        for dead in [
+            crate::su_session::SuSessionLifecycleState::Failed,
+            crate::su_session::SuSessionLifecycleState::Ended,
+        ] {
+            app.su_session.as_mut().unwrap().lifecycle = dead;
+            // Without the owner's pick, only the bound session names the backend.
+            app.su_backend = None;
+            let decision = app.su_dispatch_decision();
+            assert_eq!(
+                decision.target,
+                crate::su_session::SuDispatchTarget::OpenSuSession(crate::su_session::SuSessionBackend::Codex),
+                "{dead:?}"
+            );
+            assert_eq!(decision.reason, crate::su_session::SuDispatchReason::HomedSuSession);
+        }
     }
 
     #[test]

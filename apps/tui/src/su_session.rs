@@ -163,8 +163,11 @@ pub struct SuDispatchDecision {
 /// a pure function that tests can drive without an `App`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SuDispatchInputs {
-    /// An SU session is already attached to this conversation.
+    /// A LIVE SU session is attached to this conversation.
     pub attached: bool,
+    /// The backend of a bound SU session whose runtime has ended or failed.
+    /// Sending into it can never succeed, so the conversation reopens there.
+    pub ended_backend: Option<SuSessionBackend>,
     /// The owner picked a backend in the session picker.
     pub picked_backend: Option<SuSessionBackend>,
     /// The persisted policy of the conversation currently loaded, if any is
@@ -192,6 +195,15 @@ pub fn decide_su_dispatch(inputs: SuDispatchInputs) -> SuDispatchDecision {
         return SuDispatchDecision {
             target: SuDispatchTarget::OpenSuSession(backend),
             reason: SuDispatchReason::OwnerPickedBackend,
+        };
+    }
+    // 2b. A bound session whose runtime died is no longer a place a turn can go
+    //     (P-009 R-06): reopen this conversation on the backend it ran on, never
+    //     the default, so a Codex conversation does not come back as Claude.
+    if let Some(backend) = inputs.ended_backend {
+        return SuDispatchDecision {
+            target: SuDispatchTarget::OpenSuSession(backend),
+            reason: SuDispatchReason::HomedSuSession,
         };
     }
     // 3. A loaded conversation carries its own home, and every branch here is
@@ -575,6 +587,26 @@ impl SuSessionState {
             reconciliation: SuSessionReconciliation::Pending,
             rematerialize: None,
         }
+    }
+
+    /// Whether this bound session's runtime can still take a turn. A failed or
+    /// ended runtime, or one the host reconciled as orphaned/archived, cannot.
+    pub fn is_live(&self) -> bool {
+        !matches!(
+            self.lifecycle,
+            SuSessionLifecycleState::Ended | SuSessionLifecycleState::Failed
+        ) && !matches!(
+            self.reconciliation,
+            SuSessionReconciliation::FailedOrphaned | SuSessionReconciliation::EndedArchived
+        )
+    }
+
+    /// The backend this session runs on, preferring the host's own identity.
+    pub fn backend(&self) -> SuSessionBackend {
+        self.identity
+            .as_ref()
+            .map(|identity| identity.backend)
+            .unwrap_or(self.binding.backend)
     }
 
     pub fn selection_label(&self) -> String {
@@ -1144,9 +1176,34 @@ mod cutover_policy_tests {
     fn unbound() -> SuDispatchInputs {
         SuDispatchInputs {
             attached: false,
+            ended_backend: None,
             picked_backend: None,
             loaded_class: None,
         }
+    }
+
+    #[test]
+    fn an_ended_session_reopens_the_conversation_on_its_own_backend() {
+        let d = decide_su_dispatch(SuDispatchInputs {
+            ended_backend: Some(SuSessionBackend::Codex),
+            loaded_class: Some(PuiRuntimeClass::SuSession),
+            ..unbound()
+        });
+        assert_eq!(
+            d.target,
+            SuDispatchTarget::OpenSuSession(SuSessionBackend::Codex)
+        );
+        assert_eq!(d.reason, SuDispatchReason::HomedSuSession);
+        // An explicit owner pick still outranks it.
+        let d = decide_su_dispatch(SuDispatchInputs {
+            ended_backend: Some(SuSessionBackend::Codex),
+            picked_backend: Some(SuSessionBackend::Claude),
+            ..unbound()
+        });
+        assert_eq!(
+            d.target,
+            SuDispatchTarget::OpenSuSession(SuSessionBackend::Claude)
+        );
     }
 
     // ── config default ──────────────────────────────────────────────────────

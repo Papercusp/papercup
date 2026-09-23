@@ -2169,7 +2169,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
   const faults = [
     { mode: 'engine-death', cause: /PUI-E2E engine process died mid-turn/ },
     { mode: 'stream-loss', cause: /event stream closed unexpectedly/ },
-    { mode: 'auth-expired', cause: /OAuth token has expired/ },
+    { mode: 'auth-expired', cause: /401 authentication_error/ },
     { mode: 'rate-limit', cause: /rate_limit_error/ },
   ] as const;
   test.for(faults)('AUTO-BAR-R-06-P-009: $mode after acceptance leaves a usable composer within 15s', { timeout: 180_000 }, async ({ mode, cause }, { onTestFailed }) => {
