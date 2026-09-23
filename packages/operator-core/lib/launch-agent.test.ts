@@ -131,6 +131,7 @@ describe('launchAgent', () => {
         operation: 'create',
         backend,
         carry: 'warm',
+        agentChatId: 'pui-created-chat',
         slug: 'papercup',
         planSlug: 'pui-plan',
         model: 'selected-model',
@@ -150,11 +151,11 @@ describe('launchAgent', () => {
       });
       expect(firstBody()).toMatchObject({
         agent: backend,
+        agent_chat_id: 'pui-created-chat',
         model: 'selected-model',
-        // The account route is a WRITER, not an incidental default:
-        // launch-su persists it into the deferred row's launch_argv. Omitting
-        // it used to let bootstrap-su reinterpret the PUI launch as the
-        // owner-nominated gateway route.
+        // PUI's attached-engine launch persists this route with the durable
+        // conversation binding. Omitting it can silently use the owner's
+        // nominated gateway route instead of the requested system account.
         account: 'default',
         carry: 'warm',
         defer_spawn: false,
