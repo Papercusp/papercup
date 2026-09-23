@@ -29,7 +29,7 @@ export type AgentObligationFamily =
   | 'plan-placement'
   | 'owner-report'
   | 'independent-verification'
-  /** An owner turn awaiting promote/dismiss (pending) or disposition (open). */
+  /** An open owner turn awaiting disposition (done, or declined with a reason). */
   | 'owner-directive'
   /**
    * An event this session is parked on, or a lock it is queued behind (P-011).
