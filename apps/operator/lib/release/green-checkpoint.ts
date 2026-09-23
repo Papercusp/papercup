@@ -147,6 +147,7 @@ import {
   buildFrozenRepairStatusIdentity,
   classifyRepairSignature,
   classifyRepairSignatureEntry,
+  isJudgingPinnedActiveRepair,
   type FrozenCandidateRepairQueue,
   type FrozenCandidateRepairQueueRead,
   type RepairSignatureContext,
@@ -8888,19 +8889,13 @@ export { quietCutSecFromEnv };
  * still live, so the frozen base after the head moves, an accidentally-stale candidate, a
  * mismatched pin, and a repair that has already given up all keep the historical withholding
  * behaviour untouched.
+ *
+ * WI-10002121: the definition MOVED to `@papercusp/operator-core/lib/release/frozen-candidate-repair-queue`
+ * (the module owning the queue row) and is re-exported here unchanged, so this write-side rule and
+ * the READ-side fossil rule in `gate-verdict-freshness` share ONE predicate. D-004 says the two are
+ * a coupled pair that must not be fixed apart; a second copy is how they would drift apart again.
  */
-export function isJudgingPinnedActiveRepair(input: {
-  candidate: string;
-  repairQueue?: Pick<
-    FrozenCandidateRepairQueue,
-    "candidate" | "repairHead" | "phase" | "blockedReason"
-  > | null;
-}): boolean {
-  const { candidate, repairQueue } = input;
-  if (repairQueue == null || repairQueue.repairHead !== candidate) return false;
-  if (repairQueue.phase === "blocked") return false;
-  return repairQueue.blockedReason == null;
-}
+export { isJudgingPinnedActiveRepair };
 
 export function partialGreenGateEnabledFromEnv(
   env: NodeJS.ProcessEnv = process.env,
