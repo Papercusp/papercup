@@ -213,14 +213,24 @@ fn inside_zellij() -> bool {
     std::env::var_os("ZELLIJ").is_some()
 }
 
-/// Resolve the plugin wasm: `$PUI_COMPANION_WASM` override, else
-/// `~/.papercusp/pui-companion.wasm`. Returns `None` if neither exists.
+/// Resolve the plugin wasm: `$PUI_COMPANION_WASM` override, else the companion
+/// named by the release manifest beside the running binary (an installed release
+/// unit carries its own matched companion — P-011 / D-016 — and must never pick
+/// up a stale developer copy), else `~/.papercusp/pui-companion.wasm`. Returns
+/// `None` if none exists.
 fn companion_wasm_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("PUI_COMPANION_WASM") {
         let pb = PathBuf::from(p);
         if pb.exists() {
             return Some(pb);
         }
+    }
+    if let Some(pb) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| crate::install::release_companion_of(&exe))
+        .filter(|pb| pb.exists())
+    {
+        return Some(pb);
     }
     let pb = dirs::home_dir()?
         .join(".papercusp")

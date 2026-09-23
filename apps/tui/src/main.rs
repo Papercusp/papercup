@@ -45,6 +45,7 @@ mod notify;
 mod operator_voice_bus;
 mod plans_board;
 mod reap;
+mod self_install;
 mod semantic_tool_cards;
 mod session_config;
 mod session_panes;
@@ -88,7 +89,8 @@ Usage:
 Subcommands:
   workbench                  Open the full zellij workbench
   doctor                     Verify local artifacts, stale panes, and selected operator identity
-  hud                        Open the HUD pane
+  self <COMMAND>             Install, update, roll back or uninstall this PUI (`pui self --help`)
+  hud                      Open the HUD pane
   chat                       Open the operator chat dock
   brain-view [SCOPE]         View the live Queen/Overwatch transcript
   reap                       Remove leaked app-managed zellij sessions
@@ -272,6 +274,12 @@ async fn main() -> Result<()> {
     cli.export_launch_env();
     let subcommand = cli.positional(0).map(str::to_string);
     let subcommand_arg = cli.positional(1).map(str::to_string);
+    // `pui self …` owns its own help and flags (P-011 / D-016), so it is routed
+    // before the global --help/--version handling would swallow them.
+    if subcommand.as_deref() == Some("self") {
+        return self_install::run(&cli.positionals[1..]);
+    }
+    install::prefer_bundled_tools();
     if print_cli_help(subcommand.as_deref(), subcommand_arg.as_deref()) {
         return Ok(());
     }
@@ -891,7 +899,10 @@ async fn run_doctor() -> Result<()> {
             failures += 1;
             println!("PUI local install: ERROR");
             println!("problem:        {error:#}");
-            println!("repair:         run {}", install::INSTALL_COMMAND);
+            println!(
+                "repair:         run {}",
+                install::update_command(install::current_install_origin())
+            );
         }
     }
 
@@ -936,6 +947,10 @@ async fn run_doctor() -> Result<()> {
                 identity.build.sha.as_deref(),
                 &identity.endpoint,
                 operator_generation_caught_up,
+            )
+            .for_origin(
+                install::current_install_origin(),
+                identity.build.sha.as_deref(),
             );
             println!("PUI operator install: {}", freshness.status.label());
             println!("freshness:      {}", freshness.detail);
@@ -991,7 +1006,7 @@ async fn run_doctor() -> Result<()> {
         // which no amount of reinstalling pui can fix.
         anyhow::bail!(
             "pui doctor found {failures} issue(s); act on the repair line printed for each (local artifacts: {})",
-            install::INSTALL_COMMAND
+            install::update_command(install::current_install_origin())
         );
     }
     Ok(())

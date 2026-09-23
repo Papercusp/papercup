@@ -41,6 +41,88 @@ pub struct InstallManifest {
     /// is treated as "unknown", never as "no root exists".
     #[serde(default)]
     pub source_root: Option<String>,
+    /// Release version (`CARGO_PKG_VERSION` of the build). Written by the release
+    /// packager and the sidecar; `pui self` refuses to activate a unit without it
+    /// because the versioned release directory and the downgrade check need it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// `<os>-<arch>` the unit was built for (e.g. `linux-x86_64`), so a unit that
+    /// cannot run here is refused by name rather than by an exec error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
+/// Manifest filename, both beside a relocatable release unit and in `~/.papercusp`.
+pub const MANIFEST_NAME: &str = "pui-install.json";
+
+/// `<os>-<arch>` of this build, the same vocabulary the release packager names
+/// archives and manifests with.
+pub fn this_target() -> String {
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// The release unit root a binary at `<root>/bin/pui` belongs to, when that root
+/// carries a manifest. `None` for a loose binary (cargo install, target dir).
+pub fn release_root_of(exe: &Path) -> Option<PathBuf> {
+    exe.parent()
+        .and_then(Path::parent)
+        .filter(|root| root.join(MANIFEST_NAME).is_file())
+        .map(Path::to_path_buf)
+}
+
+/// The companion WASM named by the release manifest beside `exe`, if the binary
+/// runs from a release unit and that manifest resolves.
+pub fn release_companion_of(exe: &Path) -> Option<PathBuf> {
+    let manifest_path = release_root_of(exe)?.join(MANIFEST_NAME);
+    let manifest = read_manifest(&manifest_path).ok()?;
+    resolve_manifest_artifact(&manifest_path, &manifest.companion_path, "companionPath").ok()
+}
+
+/// When this binary runs from a versioned release unit that bundles its own
+/// `bin/zellij`, put that `bin/` first on PATH. The companion plugin API is
+/// version-coupled to zellij, and every `zellij` invocation (and pane) resolves
+/// the bare name, so the matched copy must win over whatever PATH holds. Units
+/// without a manifest `version` (the desktop sidecar, a loose cargo build) keep
+/// their existing PATH untouched.
+pub fn prefer_bundled_tools() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(root) = release_root_of(&exe) else {
+        return;
+    };
+    let versioned = read_manifest(&root.join(MANIFEST_NAME))
+        .map(|manifest| manifest.version.is_some())
+        .unwrap_or(false);
+    let bin = root.join("bin");
+    if !versioned || !bin.join("zellij").is_file() {
+        return;
+    }
+    let mut paths: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect())
+        .unwrap_or_default();
+    if paths.first() == Some(&bin) {
+        return;
+    }
+    paths.retain(|path| path != &bin);
+    paths.insert(0, bin);
+    if let Ok(joined) = std::env::join_paths(paths) {
+        std::env::set_var("PATH", joined);
+    }
+}
+
+pub fn read_manifest(manifest_path: &Path) -> Result<InstallManifest> {
+    let bytes = fs::read(manifest_path)
+        .with_context(|| format!("read install manifest {}", manifest_path.display()))?;
+    let manifest: InstallManifest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("decode install manifest {}", manifest_path.display()))?;
+    if manifest.schema_version != 1 {
+        bail!(
+            "unsupported pui install manifest schema {}",
+            manifest.schema_version
+        );
+    }
+    Ok(manifest)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,21 +205,16 @@ fn default_manifest_path(current_exe: &Path) -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("PUI_INSTALL_MANIFEST") {
         return Ok(PathBuf::from(path));
     }
-    if let Some(release_manifest) = current_exe
-        .parent()
-        .and_then(Path::parent)
-        .map(|root| root.join("pui-install.json"))
-        .filter(|path| path.is_file())
-    {
-        return Ok(release_manifest);
+    if let Some(root) = release_root_of(current_exe) {
+        return Ok(root.join(MANIFEST_NAME));
     }
     Ok(dirs::home_dir()
         .context("resolve home directory for pui install manifest")?
         .join(".papercusp")
-        .join("pui-install.json"))
+        .join(MANIFEST_NAME))
 }
 
-fn sha256_file(path: &Path) -> Result<String> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = [0_u8; 64 * 1024];
@@ -174,7 +251,11 @@ pub fn inspect_local_install() -> Result<LocalInstallCheck> {
     inspect_paths(&manifest_path, &current_exe, &BuildStamp::embedded())
 }
 
-fn resolve_manifest_artifact(manifest_path: &Path, raw: &str, label: &str) -> Result<PathBuf> {
+pub(crate) fn resolve_manifest_artifact(
+    manifest_path: &Path,
+    raw: &str,
+    label: &str,
+) -> Result<PathBuf> {
     let path = PathBuf::from(raw);
     if path.is_absolute() {
         return Ok(path);
@@ -196,16 +277,7 @@ pub fn inspect_paths(
     current_exe: &Path,
     build: &BuildStamp,
 ) -> Result<LocalInstallCheck> {
-    let bytes = fs::read(manifest_path)
-        .with_context(|| format!("read install manifest {}", manifest_path.display()))?;
-    let manifest: InstallManifest = serde_json::from_slice(&bytes)
-        .with_context(|| format!("decode install manifest {}", manifest_path.display()))?;
-    if manifest.schema_version != 1 {
-        bail!(
-            "unsupported pui install manifest schema {}",
-            manifest.schema_version
-        );
-    }
+    let manifest = read_manifest(manifest_path)?;
 
     let binary_path =
         resolve_manifest_artifact(manifest_path, &manifest.binary_path, "binaryPath")?;
@@ -390,6 +462,51 @@ pub fn operator_install_freshness(
     }
 }
 
+/// How the running binary was installed, which decides the repair doctor may
+/// name: a checkout build is updated by the source installer, while an installed
+/// release unit (P-011 / D-016) has no checkout or Cargo to rebuild with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallOrigin {
+    Checkout,
+    Release,
+}
+
+pub fn install_origin_of(exe: &Path) -> InstallOrigin {
+    release_root_of(exe)
+        .and_then(|root| read_manifest(&root.join(MANIFEST_NAME)).ok())
+        .filter(|manifest| manifest.version.is_some())
+        .map_or(InstallOrigin::Checkout, |_| InstallOrigin::Release)
+}
+
+pub fn current_install_origin() -> InstallOrigin {
+    std::env::current_exe()
+        .map(|exe| install_origin_of(&exe))
+        .unwrap_or(InstallOrigin::Checkout)
+}
+
+/// The supported command that updates an installation of this origin.
+pub fn update_command(origin: InstallOrigin) -> &'static str {
+    match origin {
+        InstallOrigin::Checkout => INSTALL_COMMAND,
+        InstallOrigin::Release => "pui self update --from <PUI release archive>",
+    }
+}
+
+impl OperatorInstallFreshness {
+    /// A release install cannot rebuild from a local tip, so its STALE repair is
+    /// to install the PUI release cut from the operator's own source generation.
+    pub fn for_origin(mut self, origin: InstallOrigin, operator_sha: Option<&str>) -> Self {
+        if origin == InstallOrigin::Release && self.status == InstallFreshnessStatus::Stale {
+            self.repair = Some(format!(
+                "install the PUI release built from the operator's source {}: {}",
+                operator_sha.unwrap_or("(unreported)"),
+                update_command(origin)
+            ));
+        }
+        self
+    }
+}
+
 /// Best-effort: is `operator_sha` an ancestor of (or equal to) `installed_sha` in
 /// the git history rooted at `source_root`? `Some(true)` means the installed pui
 /// already covers everything the operator's generation does, so a differing sha is
@@ -552,6 +669,7 @@ pub fn stale_zellij_panes(_installed_binary: &Path) -> Vec<StalePane> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tempfile::tempdir;
 
     fn stamp(source_sha: &str, epoch: u64, companion_sha256: &str) -> BuildStamp {
@@ -584,6 +702,8 @@ mod tests {
             companion_path: companion.display().to_string(),
             companion_sha256: companion_sha.clone(),
             source_root: None,
+            version: None,
+            target: None,
         };
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 
@@ -632,6 +752,8 @@ mod tests {
             companion_path: "pui-companion.wasm".into(),
             companion_sha256: companion_sha.clone(),
             source_root: None,
+            version: None,
+            target: None,
         };
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 
@@ -733,6 +855,49 @@ mod tests {
         assert_eq!(unknown.status.label(), "ERROR");
         assert!(!unknown.is_ok());
         assert!(unknown.repair.is_some());
+    }
+
+    #[test]
+    fn release_install_repair_names_self_update_not_the_checkout_script() {
+        let stale = operator_install_freshness("build-a", Some("build-b"), "http://op", None);
+        let checkout = stale.clone().for_origin(InstallOrigin::Checkout, Some("build-b"));
+        assert!(checkout.repair.as_deref().unwrap().contains(INSTALL_COMMAND));
+
+        let release = stale.for_origin(InstallOrigin::Release, Some("build-b"));
+        let repair = release.repair.expect("a stale release install still has a repair");
+        assert!(repair.contains("pui self update"), "{repair}");
+        assert!(repair.contains("build-b"), "{repair}");
+        assert!(!repair.contains(INSTALL_COMMAND), "{repair}");
+
+        let ok = operator_install_freshness("build-a", Some("build-a"), "http://op", None)
+            .for_origin(InstallOrigin::Release, Some("build-a"));
+        assert!(ok.repair.is_none());
+    }
+
+    #[test]
+    fn install_origin_is_release_only_for_a_versioned_unit() {
+        let dir = tempdir().unwrap();
+        let exe = dir.path().join("bin/pui");
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        fs::write(&exe, b"pui").unwrap();
+        assert_eq!(install_origin_of(&exe), InstallOrigin::Checkout);
+
+        let mut manifest = json!({
+            "schemaVersion": 1, "sourceSha": "abc", "sourceDirty": false, "builtAtEpoch": 1,
+            "binaryPath": "bin/pui", "binarySha256": "x",
+            "companionPath": "pui-companion.wasm", "companionSha256": "y",
+        });
+        let manifest_path = dir.path().join(MANIFEST_NAME);
+        fs::write(&manifest_path, manifest.to_string()).unwrap();
+        assert_eq!(
+            install_origin_of(&exe),
+            InstallOrigin::Checkout,
+            "the desktop sidecar's unversioned unit keeps checkout semantics"
+        );
+
+        manifest["version"] = json!("0.1.0");
+        fs::write(&manifest_path, manifest.to_string()).unwrap();
+        assert_eq!(install_origin_of(&exe), InstallOrigin::Release);
     }
 
     /// EI-22066271581968324: a differing sha against a PINNED-BEHIND operator
