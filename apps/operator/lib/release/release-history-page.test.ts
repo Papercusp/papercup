@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assertReleaseHistoryIndexSizeBudget,
   escapeHtml,
   formatBytes,
+  MAX_RELEASE_HISTORY_INDEX_BYTES,
   planPagePath,
   renderHoldingHtml,
   renderIndexHtml,
   renderPlanPageHtml,
+  renderProjectHistoryPage,
   renderWorkItemPageHtml,
   workItemPagePath,
   type Analytics,
@@ -113,7 +116,7 @@ describe('work-item detail pages and explicit navigation', () => {
     expect(workItemPagePath('../WI 123/secret')).toBe('work-items/..-WI-123-secret.html');
   });
 
-  it('links every item and plan explicitly from the release index', () => {
+  it('links preview items and plans explicitly from the release index', () => {
     const html = renderIndexHtml([hydrated()], {
       generatedAt: GENERATED_AT,
       analytics: null,
@@ -123,6 +126,43 @@ describe('work-item detail pages and explicit navigation', () => {
     expect(html).toContain('View full work item →');
     expect(html).toContain('href="plans/a-plan.html"');
     expect(html).toContain('View full plan →');
+    expect(html).toContain('href="changes/desktop-v0.0.9-alpha.html"');
+  });
+
+  it('fails generation when the index exceeds its UTF-8 byte budget (EI-23963957634267483)', () => {
+    const withinBudget = 'é'.repeat(Math.floor(MAX_RELEASE_HISTORY_INDEX_BYTES / 2));
+    expect(() => assertReleaseHistoryIndexSizeBudget(withinBudget)).not.toThrow();
+    expect(() => assertReleaseHistoryIndexSizeBudget(`${withinBudget}é`)).toThrow(
+      /exceeds its 5242880-byte generation budget/,
+    );
+  });
+
+  it('keeps the landing index bounded and leaves older items on the full release page (EI-23963957634267483)', () => {
+    const items = Array.from({ length: 2_000 }, (_, index) => ({
+      id: `WI-${String(index).padStart(4, '0')}`,
+      title: `Work item ${index}`,
+      summary: `LONG_BODY_${String(index).padStart(4, '0')}_${'x'.repeat(2_048)}`,
+      planSlug: null,
+    }));
+    const release = hydrated({
+      row: row({ workItemIds: items.map((item) => item.id), planSlugs: [] }),
+      items,
+      plans: [],
+      internalCount: 0,
+    });
+    const options = { generatedAt: GENERATED_AT, analytics: null, redact: [] };
+    const indexHtml = renderIndexHtml([release], options);
+
+    expect(indexHtml).toContain('Showing the 50 most recent of 2000 user-facing work items');
+    expect(indexHtml).toContain('LONG_BODY_1999');
+    expect(indexHtml).not.toContain('LONG_BODY_0000');
+    expect(indexHtml).toContain('href="work-items/WI-1999.html"');
+    expect(indexHtml).toContain('href="changes/desktop-v0.0.9-alpha.html"');
+    expect(indexHtml.length).toBeLessThan(1_000_000);
+
+    const releaseHtml = renderProjectHistoryPage(release, options);
+    expect(releaseHtml).toContain('LONG_BODY_0000');
+    expect(releaseHtml).toContain('LONG_BODY_1999');
   });
 
   it('renders canonical metadata and structured verification while escaping public content', () => {

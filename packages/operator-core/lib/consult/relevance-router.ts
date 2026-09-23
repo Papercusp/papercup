@@ -226,6 +226,13 @@ export interface RoutingSnapshot {
    * selects a menu through the same library as the consult, so "surfaces that
    * route without selecting" is no longer a standing category. */
   selection?: SnapshotSelection;
+  /** The named selection policy the consult was opened under (`selection-policies.ts`,
+   * e.g. 'rubric-vetting'). Persisted so the generic expiry sweep can tell a review
+   * consult from an ordinary one: a silent rubric-vetting consult at half its TTL becomes
+   * a pullable review work item instead of cascading
+   * (review-system-rework-reduction-2026-09-23 P-014). Absent on rows opened before
+   * this field existed and on consults opened without a policy. */
+  policy?: string;
   /** Consumer copy persists so generic decline/expiry/revival keeps its subject. */
   cascade?: import('./grading-cascade').SourceAuditCascadeMeta | import('./grading-cascade').GradingCascadeMeta;
 }

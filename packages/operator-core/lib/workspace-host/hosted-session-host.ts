@@ -856,7 +856,7 @@ export class HostedWorkspaceHostSessionAdapter {
       session.idleTimer = null;
     }
     session.channels.add(channelId);
-    this.channels.set(channelId, { kind: 'pty', sessionKey: key });
+    this.channels.set(channelId, { kind: 'pty', sessionKey: key, role });
     /**
      * `limits` is the upload CAPABILITY ADVERTISEMENT, and its absence is
      * load-bearing in the other direction.
@@ -943,7 +943,7 @@ export class HostedWorkspaceHostSessionAdapter {
       closed: false,
       teardown: [],
     };
-    this.channels.set(channelId, { kind: 'desktop', desktopSessionId });
+    this.channels.set(channelId, { kind: 'desktop', desktopSessionId, role });
     this.desktopChannels.set(channelId, channel);
 
     try {
@@ -1002,6 +1002,10 @@ export class HostedWorkspaceHostSessionAdapter {
     // already-authenticated principal — which `open()` established.
     if (type === 'desktop.roster' || type === 'desktop.thumbnail') {
       await this.relayHostDesktop(channelId, type, payload, this.channelIdentity(channelId, channel));
+      return;
+    }
+    if (type === 'desktop.start') {
+      await this.startHostDesktop(channelId, channel, payload);
       return;
     }
 
@@ -1279,6 +1283,40 @@ export class HostedWorkspaceHostSessionAdapter {
       const code = error instanceof SafeRootFileError ? error.code : 'desktop_query_failed';
       this.send(channelId, { type: 'operation.error', requestId, operation: type, code });
       this.audit('operation_denied', identity, channelId, code);
+    }
+  }
+
+  /**
+   * Start this workspace's desktop, or return the running one (D-404).
+   *
+   * A host-level operation like the roster, for the same reason: a viewer asks for
+   * it BEFORE any desktop exists to open a channel on. Unlike the roster it spends
+   * the customer's machine, so only a `controller` channel may ask; an observer is
+   * someone watching, and watching must never be what starts a desktop.
+   */
+  private async startHostDesktop(
+    channelId: string,
+    channel: Channel,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const identity = this.channelIdentity(channelId, channel);
+    const requestId = string(payload.requestId, 256);
+    const refuse = (code: string): void => {
+      this.send(channelId, { type: 'operation.error', ...(requestId ? { requestId } : {}), operation: 'desktop.start', code });
+      this.audit('operation_denied', identity, channelId, `desktop.start ${code}`);
+    };
+    if (!requestId) return refuse('request_id_required');
+    if (channel.role !== 'controller') return refuse('controller_required');
+    const backend = this.options.desktop;
+    if (!backend) return refuse('desktop_unsupported');
+
+    try {
+      const desktop = await backend.start();
+      if (!desktop) return refuse('desktop_unavailable');
+      this.send(channelId, { type: 'desktop.start.result', requestId, desktop });
+      this.audit('desktop_started', identity, channelId, `desktop=${desktop.desktopSessionId}`);
+    } catch (error) {
+      refuse(error instanceof SafeRootFileError ? error.code : 'desktop_start_failed');
     }
   }
 

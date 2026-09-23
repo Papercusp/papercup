@@ -175,6 +175,7 @@ describe('start-door contract completeness (requireCompleteContractBeforeProof)'
           'bar_snapshot_check_missing',
           'bar_snapshot_proof_depth_missing',
         ]),
+        contract: 'automated',
       },
     ]);
     expect(verdict.nextRepair?.action).toContain('METHOD is empty');

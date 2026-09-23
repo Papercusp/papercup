@@ -8,7 +8,7 @@
  *
  *   ... --dry-run            # print what it WOULD record + write; touch nothing
  *   ... --no-changelog       # explicitly record without changelog text (audited escape hatch)
- *   ... --since 2026-07-05   # explicit window start (only needed for the first release)
+ *   ... --since 2026-07-05   # explicit window start (overrides the default lookback)
  *   ... --out <dir>          # where the generated site lands (default: <bundle>/release-history)
  *
  * Runs AFTER the cut (release-local.sh builds + signs + writes latest.json and
@@ -77,6 +77,7 @@ import { describeOwnerIdentityLoad, loadOwnerIdentityEnv } from './owner-identit
 import { incompleteDesktopScopeRefusal } from './release-owner-approval';
 export { incompleteDesktopScopeRefusal } from './release-owner-approval';
 import {
+  assertReleaseHistoryIndexSizeBudget,
   planPagePath,
   renderHistoryJson,
   renderHoldingHtml,
@@ -89,10 +90,25 @@ import {
 } from './release-history-page';
 import { buildReleaseHistoryAssets, releaseHistoryStem, releaseProjectHistory } from './release-project-history';
 
-/** The window we snapshot when there is NO previous release to bound it. Bounded
- *  on purpose: an unbounded lower bound would sweep the entire history of the
- *  project into the first release's "what shipped" list. */
-const FIRST_RELEASE_LOOKBACK_DAYS = 14;
+/** Default maximum gap included in a newly recorded release snapshot. `--since`
+ * explicitly overrides this bound for a deliberate historical backfill. */
+export const DEFAULT_RELEASE_LOOKBACK_DAYS = 14;
+
+/** Choose the changelog snapshot's lower bound without applying a new default cap
+ * to an existing-version re-record. Existing-version re-records add late platform
+ * artifacts; `--since` remains the explicit override for either path. */
+export function resolveChangelogWindowStart(
+  cutAt: Date,
+  previousCutAt: Date | null,
+  explicitSince: Date | null,
+  reRecordingExistingVersion = false,
+): Date {
+  if (explicitSince) return explicitSince;
+  const defaultStart = new Date(cutAt.getTime() - DEFAULT_RELEASE_LOOKBACK_DAYS * 86_400_000);
+  const naturalStart = previousCutAt ?? defaultStart;
+  if (reRecordingExistingVersion) return naturalStart;
+  return naturalStart.getTime() < defaultStart.getTime() ? defaultStart : naturalStart;
+}
 
 /** This recorder writes Papercusp's workspace-level registry and public bucket/page. */
 export const PAPERCUSP_RELEASE_PRODUCT_NAME = 'Papercusp';
@@ -1007,6 +1023,9 @@ export async function generateSite(
   }
 
   const opts = { generatedAt: new Date(), analytics: POSTHOG_PUBLIC_DEFAULTS, redact };
+  const held = isPageHeld();
+  const indexHtml = held ? renderHoldingHtml(opts) : renderIndexHtml(hydratedAll, opts);
+  assertReleaseHistoryIndexSizeBudget(indexHtml);
   fs.mkdirSync(path.join(outDir, 'plans'), { recursive: true });
   fs.mkdirSync(path.join(outDir, 'work-items'), { recursive: true });
   fs.mkdirSync(path.join(outDir, 'changes'), { recursive: true });
@@ -1023,10 +1042,9 @@ export async function generateSite(
   // history), direct installer links keep resolving, and restoring the page is
   // just re-rendering this one file. A hold hides the page; it does not unship a
   // release.
-  const held = isPageHeld();
   fs.writeFileSync(
     path.join(outDir, 'index.html'),
-    held ? renderHoldingHtml(opts) : renderIndexHtml(hydratedAll, opts),
+    indexHtml,
     'utf8',
   );
   if (held) {
@@ -1096,6 +1114,8 @@ export async function run(opts: RecordOpts): Promise<number> {
   const sql = postgres(getHarnessAdminUrl(), { max: 1 });
   try {
     const tag = releaseTag(opts.version, opts.channel);
+    const priorReleases = await listReleases(sql, opts.scope.workspaceId, opts.channel);
+    const reRecordingExistingVersion = priorReleases.some((release) => release.version === opts.version);
 
     const prev = await previousCutAt(
       sql,
@@ -1104,14 +1124,27 @@ export async function run(opts: RecordOpts): Promise<number> {
       opts.cutAt,
       opts.version,
     );
-    const from =
-      opts.since ??
-      prev ??
-      new Date(opts.cutAt.getTime() - FIRST_RELEASE_LOOKBACK_DAYS * 86_400_000);
+    const from = resolveChangelogWindowStart(
+      opts.cutAt,
+      prev,
+      opts.since,
+      reRecordingExistingVersion,
+    );
     if (!opts.since && !prev) {
       console.log(
         `[record-release] no previous ${opts.channel} release on record — bounding the window at ` +
-          `${FIRST_RELEASE_LOOKBACK_DAYS}d before the cut (${from.toISOString()}). Pass --since to override.`,
+          `${DEFAULT_RELEASE_LOOKBACK_DAYS}d before the cut (${from.toISOString()}). Pass --since to override.`,
+      );
+    } else if (
+      !opts.since &&
+      !reRecordingExistingVersion &&
+      prev &&
+      from.getTime() > prev.getTime()
+    ) {
+      console.log(
+        `[record-release] previous ${opts.channel} release on record is older than the ` +
+          `${DEFAULT_RELEASE_LOOKBACK_DAYS}d default window; bounding at ${from.toISOString()}. ` +
+          `Pass --since ${prev.toISOString()} to include the full gap.`,
       );
     }
 
@@ -1218,7 +1251,6 @@ export async function run(opts: RecordOpts): Promise<number> {
     // against the immediately-previous same-channel release (the exact predicate
     // previousCutAt uses: a different version, cut before this one) and warn loudly
     // on a REGRESSION. NON-BLOCKING — a deliberate mobile skip is legal.
-    const priorReleases = await listReleases(sql, opts.scope.workspaceId, opts.channel);
     const previousRelease = priorReleases.find(
       (r) => r.version !== opts.version && r.cutAt < opts.cutAt,
     );

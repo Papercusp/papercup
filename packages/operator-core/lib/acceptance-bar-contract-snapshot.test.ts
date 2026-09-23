@@ -1213,7 +1213,9 @@ describe('BAR reporting-layer repairs (bar-reporting-layer-repairs-2026-09-07)',
     it('names the blocking barKey adjacent to its own codes', () => {
       const verdict = evaluateAcceptanceBarLifecycle(oneBlockedOfTwo(), 'pre-start');
 
-      expect(verdict.blockingBars).toEqual([{ barKey: 'R-1', codes: ['bar_snapshot_projection_stale'] }]);
+      expect(verdict.blockingBars).toEqual([
+        { barKey: 'R-1', codes: ['bar_snapshot_projection_stale'], contract: 'automated' },
+      ]);
       expect(verdict.message).toContain('R-1: bar_snapshot_projection_stale');
       // The clean BAR is counted out loud, so "one BAR is blocked" cannot be read as
       // "the whole contract regressed" — the misreading whose wrong next action is

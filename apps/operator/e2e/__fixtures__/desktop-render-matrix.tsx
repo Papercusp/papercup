@@ -36,11 +36,12 @@ function Fixture() {
     <HostedDesktopWorkspace
       hostName="Design acceptance fixture" workspaceId="fixture-workspace" hostId="fixture-host"
       routeLabel="fixture-route"
-      bridge={state === 'disconnected' ? null : { requestRoster: () => true, requestThumbnail: () => true }}
+      bridge={state === 'disconnected' ? null : { requestRoster: () => true, requestThumbnail: () => true, requestStart: () => true }}
       roster={state === 'ready' ? [{ desktopSessionId: 'fixture-display-1', displayNumber: 1,
         state: 'running', geometry: '1280x720', lastActiveAt: '2026-09-08T12:00:00Z' }] : []}
       rosterState={state === 'loading' ? 'loading' : state === 'error' ? 'error' : 'ready'}
-      rosterError={state === 'error' ? 'Controlled roster error' : null} thumbnails={{}}
+      rosterError={state === 'error' ? 'Controlled roster error' : null}
+      startState="idle" startError={null} thumbnails={{}}
       selectedDesktop={selected} viewerState={viewerState}
       onSelectDesktop={setSelected} onViewerStateChange={setViewerState}
     />

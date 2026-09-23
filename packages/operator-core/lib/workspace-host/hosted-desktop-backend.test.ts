@@ -271,9 +271,35 @@ describe('createHostedDesktopBackend', () => {
       leasedDesktop: (id) => (id === 'ds_1' ? lease() : undefined),
       listSessions: async () => [session()],
       touchSession: async () => {},
+      ensureDesktop: async () => 'ds_1',
       ...overrides,
     });
   }
+
+  it('start returns the leased desktop as a roster entry the viewer can open', async () => {
+    const ensureDesktop = vi.fn(async () => 'ds_1');
+    expect(await backend({ ensureDesktop }).start()).toMatchObject({ desktopSessionId: 'ds_1', displayNumber: 110 });
+    expect(ensureDesktop).toHaveBeenCalledTimes(1);
+  });
+
+  it('start returns null — never an unopenable id — when the row or the live lease is missing', async () => {
+    // Desktop running but never registered: nothing can name it.
+    expect(await backend({ ensureDesktop: async () => undefined }).start()).toBeNull();
+    // Registered but this process holds no lease: `lookup` could not dial it.
+    expect(await backend({ leasedDesktop: () => undefined }).start()).toBeNull();
+    // Leased and named, but the registry no longer lists it.
+    expect(await backend({ listSessions: async () => [] }).start()).toBeNull();
+  });
+
+  it('start propagates a provisioning failure so the relay reports it', async () => {
+    await expect(
+      backend({
+        ensureDesktop: async () => {
+          throw new Error('isolated desktop did not become ready');
+        },
+      }).start(),
+    ).rejects.toThrow('isolated desktop did not become ready');
+  });
 
   it('resolves a live lease and refuses an unknown id', async () => {
     expect(await backend().lookup('ds_1')).toMatchObject({ endpoint: { port: 6910 } });

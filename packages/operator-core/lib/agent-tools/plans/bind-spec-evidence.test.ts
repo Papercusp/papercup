@@ -123,6 +123,32 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
   });
 
   it.each([
+    'fixtureCalibrated',
+    'falsifiable',
+    'pathReachable',
+    'oracleIndependent',
+    'collected',
+    'skipped',
+    'executed',
+    'provisionalProofBase',
+  ])('rejects numeric nested adequacy metadata for %s', (field) => {
+    const parsed = bindingSchema.safeParse({
+      ...measuredBinding,
+      details: { adequacy: { [field]: 13 } },
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: ['details', 'adequacy', field],
+          message: expect.stringMatching(/boolean/i),
+        }),
+      ]),
+    );
+  });
+
+  it.each([
     { value: ['l3'], message: 'expected object' },
     { value: { l3: 'true' }, message: 'expected boolean' },
     { value: { l5: true }, message: 'unrecognized key' },

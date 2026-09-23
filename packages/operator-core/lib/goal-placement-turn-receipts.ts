@@ -2,9 +2,8 @@
 import { z } from 'zod';
 import { formatAgentObligationLine } from './agent-obligations';
 import type { AgentObligationBrief } from './agent-obligation-reader';
-import { readVerbatimTail, type TranscriptTailTurn } from './turn-journal';
-import { resolveSelfSession, resolveOwnerIsolatedSessionByPrefix, type SelfSession } from './search/self-session';
-import { createPgTelemetryStore } from './activity-pg-store';
+import type { TranscriptTailTurn } from './turn-journal';
+import type { SelfSession } from './search/self-session';
 import type { ActivityRecord } from '@papercusp/activity-bridge';
 
 export const GOAL_PLACEMENT_DELIVERY_KEY = 'goalPlacementDeliveryV1';
@@ -29,10 +28,14 @@ export interface GoalPlacementTurnReceiptDeps {
   now: () => number;
 }
 const defaults: GoalPlacementTurnReceiptDeps = {
-  current: resolveSelfSession,
-  lookup: resolveOwnerIsolatedSessionByPrefix,
-  tail: (session) => readVerbatimTail(session.filePath, session.sourceKind, 50),
-  append: (record) => createPgTelemetryStore().append(record),
+  current: async (ownerId) => (await import('./search/self-session')).resolveSelfSession(ownerId),
+  lookup: async (ownerId, sessionId) => {
+    const resolver = await import('./search/self-session');
+    const current = await resolver.resolveSelfSession(ownerId);
+    return current?.sessionId === sessionId ? current : resolver.resolveOwnerIsolatedSessionByPrefix(ownerId, sessionId);
+  },
+  tail: async (session) => (await import('./turn-journal')).readVerbatimTail(session.filePath, session.sourceKind, 50),
+  append: async (record) => (await import('./activity-pg-store')).createPgTelemetryStore().append(record),
   now: Date.now,
 };
 

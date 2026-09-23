@@ -16,6 +16,7 @@ import {
   LOOP_WAKE_EXPANDED_VERIFIED_CHECKS,
   LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS,
   LOOP_AWAIT_SUPPRESSION_MAX_QUIET_MS,
+  LOOP_AWAIT_HEARTBEAT_MS,
   type LoopFireDeps,
 } from './loop-fire';
 
@@ -37,6 +38,7 @@ function mkDeps(
     | 'takeWallNag'
     | 'renderOwnerDirectives'
     | 'listBlockingAwaits'
+    | 'readLastDeliveredAt'
     | 'rescheduleSuppressedWake'
     | 'ensureWakeArmed'
     | 'armWakeForColdRespawn'
@@ -67,6 +69,8 @@ function mkDeps(
     takeWallNag: vi.fn(async () => null) as never,
     renderOwnerDirectives: vi.fn(async () => null) as never,
     listBlockingAwaits: vi.fn(async () => []) as never,
+    // P-024: hermetic default — "never delivered" keeps the pre-heartbeat ceiling.
+    readLastDeliveredAt: vi.fn(async () => null) as never,
     rescheduleSuppressedWake: vi.fn(async () => true) as never,
     ensureWakeArmed: vi.fn(async () => false) as never,
     // EI-21417550055038906: mirrors the production default (armInboxWake succeeds);
@@ -1313,6 +1317,144 @@ describe('decideLoopAwaitSuppression — the pure suppression decision (EI-10901
       nowMs: now,
     });
     expect(out.suppress).toBe(false);
+  });
+});
+
+describe('RSR-P-024-A — no loop fire while parked on an await, beyond a slow heartbeat', () => {
+  const MIN = 60_000;
+
+  /** Replays a loop's scheduler against the pure decision: a suppressed tick re-arms at
+   *  `resumeAtMs` (rescheduleLoopAfterAwaitSuppression); a delivered tick stamps
+   *  last-delivered, runs a turn, then re-arms `intervalSec` after it settles. */
+  function replay(opts: {
+    awaitCreatedAtMs: number;
+    firstTickMs: number;
+    untilMs: number;
+    intervalSec: number;
+    turnMs: number;
+    useHeartbeat: boolean;
+  }): number[] {
+    const awaits = [{
+      eventKey: 'conversation:answered:conv-owner-question',
+      expiresTs: null,
+      createdAt: new Date(opts.awaitCreatedAtMs).toISOString(),
+      boundTo: { kind: 'conversation-question', ref: 'conv-owner-question' },
+    }];
+    const delivered: number[] = [];
+    let lastDeliveredAtMs: number | null = null;
+    let t = opts.firstTickMs;
+    for (let guard = 0; guard < 1000 && t <= opts.untilMs; guard++) {
+      const d = decideLoopAwaitSuppression({
+        awaits,
+        nowMs: t,
+        lastDeliveredAtMs: opts.useHeartbeat ? lastDeliveredAtMs : null,
+      });
+      if (d.suppress && d.resumeAtMs != null) {
+        t = d.resumeAtMs;
+        continue;
+      }
+      delivered.push(t);
+      lastDeliveredAtMs = t;
+      t = t + opts.turnMs + opts.intervalSec * 1000;
+    }
+    return delivered;
+  }
+
+  // Measured 2026-09-23 (routine_loop_transitions + event_awaits, su-77b3a99d): the owner-
+  // answer await was created 01:46:13Z with no deadline and stayed open until 09:12Z; the
+  // 900s loop was quiet until 02:16Z and then took 8 turns by 04:22:20Z.
+  const created = Date.parse('2026-09-23T01:46:13.000Z');
+  const incident = {
+    awaitCreatedAtMs: created,
+    firstTickMs: Date.parse('2026-09-23T01:46:33.000Z'),
+    untilMs: Date.parse('2026-09-23T04:22:20.000Z'),
+    intervalSec: 900,
+    turnMs: 150_000,
+  };
+
+  it('calibration: the pre-heartbeat ceiling reproduces the measured 8 turns', () => {
+    expect(replay({ ...incident, useHeartbeat: false }).length).toBeGreaterThanOrEqual(7);
+  });
+
+  it('the same timeline with the heartbeat takes one liveness turn per heartbeat period', () => {
+    const fires = replay({ ...incident, useHeartbeat: true });
+    expect(fires.length).toBeLessThanOrEqual(3);
+    expect(fires[0]).toBe(created + LOOP_AWAIT_SUPPRESSION_MAX_QUIET_MS);
+    for (let i = 1; i < fires.length; i++) {
+      expect(fires[i]! - fires[i - 1]!).toBeGreaterThanOrEqual(LOOP_AWAIT_HEARTBEAT_MS);
+    }
+  });
+
+  it('a 60s loop parked on an owner answer takes no turn inside the quiet window', () => {
+    const fires = replay({
+      awaitCreatedAtMs: created,
+      firstTickMs: created + 30_000,
+      untilMs: created + 29 * MIN,
+      intervalSec: 60,
+      turnMs: 30_000,
+      useHeartbeat: true,
+    });
+    expect(fires).toEqual([]);
+  });
+
+  it('a delivery DURING the await stretches the ceiling to lastDelivered + heartbeat', () => {
+    const lastDeliveredAtMs = created + 30 * MIN;
+    const out = decideLoopAwaitSuppression({
+      awaits: [{ eventKey: 'gate:x', expiresTs: null, createdAt: new Date(created).toISOString() }],
+      nowMs: created + 31 * MIN,
+      lastDeliveredAtMs,
+      heartbeatMs: 60 * MIN,
+    });
+    expect(out).toEqual({ suppress: true, resumeAtMs: lastDeliveredAtMs + 60 * MIN, drivingEventKey: 'gate:x' });
+  });
+
+  it('a delivery from BEFORE the await was created keeps the pre-heartbeat ceiling', () => {
+    const out = decideLoopAwaitSuppression({
+      awaits: [{ eventKey: 'gate:x', expiresTs: null, createdAt: new Date(created).toISOString() }],
+      nowMs: created + 31 * MIN,
+      lastDeliveredAtMs: created - MIN,
+    });
+    expect(out.suppress).toBe(false);
+  });
+
+  it("the await's own deadline still caps the heartbeat (the fallback wake is never silenced)", () => {
+    const deadline = created + 45 * MIN;
+    const out = decideLoopAwaitSuppression({
+      awaits: [{ eventKey: 'gate:x', expiresTs: new Date(deadline).toISOString(), createdAt: new Date(created).toISOString() }],
+      nowMs: created + 31 * MIN,
+      lastDeliveredAtMs: created + 30 * MIN,
+    });
+    expect(out.resumeAtMs).toBe(deadline);
+  });
+
+  it('fireLoopWake withholds a post-quiet tick once a heartbeat was delivered during the await', async () => {
+    const nowMs = Date.now();
+    const awaitRow = {
+      eventKey: 'conversation:answered:conv-q',
+      expiresTs: null,
+      createdAt: new Date(nowMs - 31 * MIN).toISOString(),
+    };
+    const withHeartbeat = mkDeps({
+      listBlockingAwaits: vi.fn(async () => [awaitRow]) as never,
+      readLastDeliveredAt: vi.fn(async () => nowMs - MIN) as never,
+    });
+    const r = await fireLoopWake(baseInput, withHeartbeat);
+    expect(r).toMatchObject({ fired: false, reason: 'await-blocking' });
+    expect(withHeartbeat.wake).not.toHaveBeenCalled();
+    expect(withHeartbeat.readLastDeliveredAt).toHaveBeenCalledWith(undefined, baseInput.routineId);
+
+    // A failed/unknown delivery read fails OPEN to the pre-heartbeat ceiling: the wake goes out.
+    const unknown = mkDeps({
+      listBlockingAwaits: vi.fn(async () => [awaitRow]) as never,
+      readLastDeliveredAt: vi.fn(async () => { throw new Error('pg down'); }) as never,
+    });
+    expect(await fireLoopWake(baseInput, unknown)).toMatchObject({ fired: true });
+  });
+
+  it('no blocking await ⇒ the delivery read is never paid', async () => {
+    const deps = mkDeps();
+    await fireLoopWake(baseInput, deps);
+    expect(deps.readLastDeliveredAt).not.toHaveBeenCalled();
   });
 });
 

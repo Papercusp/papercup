@@ -275,12 +275,39 @@ export async function stampLoopArmedAt(sql: Sql | undefined, routineId: string, 
  * Bump the loop's live fire counter (`metadata.fire_count`) after a fire. Single-flight per
  * loop (parked at 'infinity' while a turn runs), so no concurrent-increment race. Stored as a
  * jsonb number; read back via `(metadata->>'fire_count')::int`.
+ *
+ * P-024 (review-system-rework-reduction-2026-09-23): the SAME statement also stamps
+ * `metadata.last_delivered_at` — the instant the loop last REACHED its owner. The routine
+ * row's `last_fired_at` cannot answer that: `claimDueRoutine` stamps it on every CLAIM,
+ * including claims whose wake the await-suppression guard then withholds. The blocking-await
+ * heartbeat anchors on this stamp so a session parked on an owner answer gets one slow
+ * liveness fire per heartbeat period instead of one per interval.
  */
 export async function incrementLoopFireCount(sql: Sql | undefined, routineId: string): Promise<void> {
   const db = sql ?? getOrgPg().sql;
   await db`
     UPDATE harness_shared.routines
        SET metadata = COALESCE(metadata, '{}'::jsonb)
-                    || jsonb_build_object('fire_count', COALESCE((metadata->>'fire_count')::int, 0) + 1)
+                    || jsonb_build_object(
+                         'fire_count', COALESCE((metadata->>'fire_count')::int, 0) + 1,
+                         'last_delivered_at', to_jsonb(now())
+                       )
      WHERE id = ${routineId}`;
+}
+
+/**
+ * Read `metadata.last_delivered_at` (see `incrementLoopFireCount`) as epoch ms. `null` when
+ * the loop has never delivered since this stamp existed, or on any read failure — callers
+ * treat `null` as "unknown" and fall back to their pre-heartbeat behavior.
+ */
+export async function readLoopLastDeliveredAtMs(sql: Sql | undefined, routineId: string): Promise<number | null> {
+  const db = sql ?? getOrgPg().sql;
+  const rows = await db<Array<{ last_delivered_at: string | null }>>`
+    SELECT metadata->>'last_delivered_at' AS last_delivered_at
+      FROM harness_shared.routines
+     WHERE id = ${routineId}`;
+  const raw = rows[0]?.last_delivered_at;
+  if (!raw) return null;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
 }

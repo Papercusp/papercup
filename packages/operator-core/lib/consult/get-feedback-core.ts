@@ -1095,6 +1095,9 @@ export async function getFeedbackCore(
     isSelectable: (c) => c.ownerPaused !== true,
   });
   route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, selected);
+  // P-014: the policy rides on the persisted snapshot so the expiry sweep can
+  // recognize a review consult (rubric-vetting) and convert it to pullable work.
+  if (req.policy) route.snapshot.policy = req.policy;
   const chosenSel = selected[0] ?? null;
   const chosen = chosenSel?.candidate ?? null;
   const chosenVia: SelectionVia | null = chosenSel?.via ?? null;

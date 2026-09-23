@@ -21,6 +21,7 @@ import {
   MIN_PLAUSIBLE_ARTIFACT_BYTES,
   releaseBundleRoots,
   releaseTag,
+  resolveChangelogWindowStart,
   scanArtifacts,
   scanMobileArtifactSources,
   scanMobileArtifacts,
@@ -778,6 +779,35 @@ describe('buildRunOpts — the mobileRoot-drop regression guard', () => {
   it('requires changelog text by default and carries the explicit no-changelog escape hatch', () => {
     expect(buildRunOpts(['--version', '1.2.3']).allowNoChangelog).toBe(false);
     expect(buildRunOpts(['--version', '1.2.3', '--no-changelog']).allowNoChangelog).toBe(true);
+  });
+});
+
+describe('resolveChangelogWindowStart — bound new gaps without shrinking re-records', () => {
+  const cutAt = new Date('2026-09-22T12:00:00.000Z');
+  const maxLookback = new Date('2026-09-08T12:00:00.000Z');
+
+  it('uses a recent previous release as the lower bound', () => {
+    const previous = new Date('2026-09-20T12:00:00.000Z');
+    expect(resolveChangelogWindowStart(cutAt, previous, null).toISOString()).toBe(previous.toISOString());
+  });
+
+  it('caps a new release window when intermediate releases were not recorded', () => {
+    const previous = new Date('2026-08-21T00:12:37.239Z');
+    expect(resolveChangelogWindowStart(cutAt, previous, null).toISOString()).toBe(maxLookback.toISOString());
+  });
+
+  it('keeps an existing-version re-record on its previous-release window', () => {
+    const previous = new Date('2026-08-21T00:12:37.239Z');
+    expect(resolveChangelogWindowStart(cutAt, previous, null, true).toISOString()).toBe(previous.toISOString());
+  });
+
+  it('uses the bounded lookback when the channel has no previous release', () => {
+    expect(resolveChangelogWindowStart(cutAt, null, null).toISOString()).toBe(maxLookback.toISOString());
+  });
+
+  it('honors an explicit --since backfill even when the default is capped', () => {
+    const explicitSince = new Date('2026-08-21T00:12:37.239Z');
+    expect(resolveChangelogWindowStart(cutAt, explicitSince, explicitSince).toISOString()).toBe(explicitSince.toISOString());
   });
 });
 

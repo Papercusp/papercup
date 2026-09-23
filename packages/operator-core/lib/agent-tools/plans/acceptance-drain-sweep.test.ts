@@ -213,6 +213,85 @@ describe('runAcceptanceDrainSweepOnce — P-023 lifecycle characterization', () 
   });
 });
 
+describe('runAcceptanceDrainSweepOnce — P-016 backlog pass (review-system-rework-reduction-2026-09-23)', () => {
+  const ref = `${WS}/papercusp/held`;
+  const filing = (featureId: string, takenBy: string | null = null) => ({
+    feature_id: featureId,
+    harness_slug: 'papercusp',
+    ref,
+    gate_observation: 'blocked',
+    payload: { acceptanceDrainPlan: ref, gateObservation: 'blocked' },
+    taken_by: takenBy,
+    plan_status: 'awaiting-acceptance',
+    archived: false,
+  });
+
+  it('reads existing filings in the canonical order the writers use', async () => {
+    await runAcceptanceDrainSweepOnce({ workspaceId: WS });
+    const select = (M.sql.mock.calls[0]![0] as string[]).join('?');
+    expect(select).toMatch(/ORDER BY wi\.created_ts, wi\.feature_id/);
+  });
+
+  it('retires a second open filing for the same plan, keeping the canonical first row', async () => {
+    M.list.mockResolvedValue([row({ planSlug: 'held' })]);
+    M.sql.mockResolvedValue([filing('WI-OLDEST'), filing('WI-NEWER')]);
+    M.ensure.mockResolvedValue({ outcome: 'already-open', id: 'WI-OLDEST', ref });
+
+    const result = await runAcceptanceDrainSweepOnce({ workspaceId: WS });
+
+    expect(result).toMatchObject({ duplicatesRetired: 1, duplicatesHeld: 0, errors: [] });
+    expect(M.setState).toHaveBeenCalledExactlyOnceWith('WI-NEWER', 'dropped', expect.objectContaining({
+      by: 'system:acceptance-drain',
+      completionRef: expect.stringContaining('canonical filing is WI-OLDEST'),
+    }));
+    // The plan is still refreshed exactly once, through the canonical row.
+    expect(M.ensure).toHaveBeenCalledTimes(1);
+  });
+
+  it('control: a single open filing retires nothing', async () => {
+    M.list.mockResolvedValue([row({ planSlug: 'held' })]);
+    M.sql.mockResolvedValue([filing('WI-OLDEST')]);
+    M.ensure.mockResolvedValue({ outcome: 'already-open', id: 'WI-OLDEST', ref });
+
+    const result = await runAcceptanceDrainSweepOnce({ workspaceId: WS });
+
+    expect(result).toMatchObject({ duplicatesRetired: 0, duplicatesHeld: 0 });
+    expect(M.setState).not.toHaveBeenCalled();
+  });
+
+  it('leaves a claimed duplicate open rather than silently dropping its holder s claim', async () => {
+    M.list.mockResolvedValue([row({ planSlug: 'held' })]);
+    M.sql.mockResolvedValue([filing('WI-OLDEST'), filing('WI-NEWER', 'su-holder')]);
+    M.ensure.mockResolvedValue({ outcome: 'already-open', id: 'WI-OLDEST', ref });
+
+    const result = await runAcceptanceDrainSweepOnce({ workspaceId: WS });
+
+    expect(result).toMatchObject({ duplicatesRetired: 0, duplicatesHeld: 1 });
+    expect(M.setState).not.toHaveBeenCalled();
+  });
+
+  it('passes the plan s last write date to the writer and reports the class census', async () => {
+    M.list.mockResolvedValue([
+      row({ planSlug: 'old', updated: '2026-06-01' } as Partial<Row>),
+      row({ planSlug: 'shippable', updated: '2026-09-20' } as Partial<Row>),
+    ]);
+    M.evaluate.mockImplementation(async (slug: string) =>
+      slug === 'shippable'
+        ? { satisfied: true, message: 'ok' }
+        : { satisfied: false, code: 'acceptance_unaudited', message: 'run plans:audit' },
+    );
+    M.ensure.mockResolvedValue({
+      outcome: 'created', id: 'WI-OLD', ref: `${WS}/papercusp/old`, backlogClass: 'abandonment-candidate',
+    });
+
+    const result = await runAcceptanceDrainSweepOnce({ workspaceId: WS });
+
+    expect(M.ensure).toHaveBeenCalledWith(expect.objectContaining({ planSlug: 'old', planUpdated: '2026-06-01' }));
+    expect(result.byClass).toEqual({ 'abandonment-candidate': 1, ready: 1 });
+    expect(result.summary).toContain('classes: ');
+  });
+});
+
 describe('acceptanceDrainPlanRef', () => {
   it('qualifies the ref with workspace and harness', () => {
     expect(

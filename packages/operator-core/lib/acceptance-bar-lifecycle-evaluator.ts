@@ -29,7 +29,13 @@ export interface AcceptanceBarLifecycleVerdict {
   applicable: boolean;
   satisfied: boolean;
   codes: AcceptanceBarSnapshotCode[];
-  blockingBars: Array<{ barKey: string; codes: AcceptanceBarSnapshotCode[] }>;
+  /**
+   * `contract` (P-038, review-system-rework-reduction-2026-09-23): whether the BAR owes
+   * automated proof or is an explicit MANUAL contract (instrumentKey:'none'). Without it a
+   * reader of a proof code cannot tell "bind a test" from "this BAR never needed one" —
+   * measured: an agent drafted a 14-criterion amendment flipping manual BARs to automated.
+   */
+  blockingBars: Array<{ barKey: string; codes: AcceptanceBarSnapshotCode[]; contract?: 'manual' | 'automated' }>;
   /**
    * P-001: the half of `codes` that no BAR owns — source/completeness failures and
    * whole-contract obligations (bar set, vetting, author verdict). `blockingBars`
@@ -409,7 +415,11 @@ export function evaluateAcceptanceBarLifecycle(
       ...new Set([...baseBarCodes(snapshot, bar), ...executionBarCodes(bar, phase), ...gapCodes]),
     ];
     if (barCodes.length > 0) {
-      blockingBars.push({ barKey: bar.barKey, codes: barCodes });
+      blockingBars.push({
+        barKey: bar.barKey,
+        codes: barCodes,
+        contract: automatedProofRequired(bar) ? 'automated' : 'manual',
+      });
       for (const code of barCodes) addCode(codes, code);
     }
   }

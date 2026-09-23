@@ -46,7 +46,11 @@ import { findSemanticDupes, type SemanticDupeResult } from '../../agent-tools/wo
 import { acquireWithContentionRetry } from '../../agent-tools/locks/contention-retry';
 import type { DedupCandidateStamp } from '../../agent-tools/work_items/dedup-candidates-stamp';
 import { FLAGS } from '@papercusp/flags';
-import { normalizeSuspectedToolFailure, type SuspectedToolFailure } from './tool-error-classifier';
+import {
+  normalizeSuspectedToolFailure,
+  toolFailureSignatureKey,
+  type SuspectedToolFailure,
+} from './tool-error-classifier';
 import { getFlag } from '@papercusp/flags/server';
 import { classifyObservationFold, type FoldCandidate, type FoldClassification } from './observation-fold';
 import { trackDetached } from '../../detached-imports';
@@ -1583,27 +1587,181 @@ export async function captureToolInvocationFriction(
   };
   const normalized = normalizeSuspectedToolFailure(report);
   const kind = normalized.class === 'caller' || normalized.class === 'rate-limit' ? 'change' : 'bug';
-  // Migration 865's arbiter keys watchdogKey, not the nested class payload.
-  // Use the measured contract/build identity here so a new contract cannot
-  // collide with an old observation and impersonate corroboration on retry.
-  const watchdogKey = normalized.classKey;
-  return captureImprovement({
+  // D-010 (review-system-rework-reduction-2026-09-23): migration 865's arbiter
+  // keys watchdogKey, so the ROW identity is the build-independent signature.
+  // The contract/build class stays the CORROBORATION identity: it is the row's
+  // probation classKey and is tallied per class below, so a report on another
+  // build counts onto the row but can neither corroborate nor rewrite it.
+  const signatureKey = toolFailureSignatureKey(report, normalized.class);
+  const scope = harnessSlug ? `harness:${harnessSlug}` : 'operator';
+  const toolInvocation = { workspaceId, harnessSlug, ownerId, invokedAt };
+  const incomingProbation = {
+    ...normalized, watchdogKey: signatureKey, signatureKey, state: 'probation' as const, intendedKind: kind,
+    reporters: [ownerId], firstSeenAt: invokedAt, lastSeenAt: invokedAt, report,
+  };
+  const base: CaptureImprovementInput = {
     title: `${failure.toolName} tool-call failure (${failure.errorCode ?? failure.status})`,
     body: `Invocation telemetry observed ${failure.toolName} at ${invokedAt}.\n\n${failure.message}`,
-    kind, severity: 'nit', lane: 'observation',
-    scope: harnessSlug ? `harness:${harnessSlug}` : 'operator',
+    kind, severity: 'nit', lane: 'observation', scope,
     workspaceId, createdBy: ownerId, evidenceAt: invokedAt,
-    watchdogKey,
-    payloadExtra: {
-      toolFailureProbation: {
-        ...normalized, watchdogKey, state: 'probation', intendedKind: kind, reporters: [ownerId],
-        firstSeenAt: invokedAt, lastSeenAt: invokedAt, report,
-      },
-      toolInvocation: { workspaceId, harnessSlug, ownerId, invokedAt },
-    },
+    watchdogKey: signatureKey,
     // Do not set sourceRole:'system': an automated report is still this
     // caller's evidence, not a trusted watchdog promotion or review waiver.
-  }, deps);
+  };
+  // Fail open like every other capture lookup: an unreadable index mints, and
+  // migration 865's arbiter still refuses a second open row for the signature.
+  const signatureHits = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([signatureKey])
+    .catch(() => [] as EngineerIssue[]);
+  const signatureRow = signatureHits.find((issue) =>
+    (issue.payload as Record<string, unknown> | null)?.watchdogKey === signatureKey &&
+    isWatchdogNonTerminal(issue) &&
+    effectiveOrigin(issue.signalOrigin) === DEFAULT_SIGNAL_ORIGIN &&
+    issueScopeMatchesCapture(issue, scope));
+  const priorPayload = (signatureRow?.payload as Record<string, unknown> | null) ?? {};
+  const rowProbation = toolFailureProbationOf(priorPayload);
+  const occurrence: ToolFailureClassOccurrence = {
+    classKey: normalized.classKey, ownerId, at: invokedAt,
+    contractFingerprint: normalized.contractFingerprint, deployedRevision: normalized.deployedRevision,
+  };
+  const tally = tallyToolFailureClass(toolFailureSignatureOf(priorPayload), signatureKey, occurrence,
+    rowProbation?.classKey);
+  if (!signatureRow || rowProbation?.classKey === normalized.classKey) {
+    // A new signature, or the row's own class: the ordinary class-key route
+    // mints, coalesces or corroborates exactly as it did before D-010.
+    return captureImprovement({
+      ...base,
+      payloadExtra: { toolFailureProbation: incomingProbation, toolFailureSignature: tally, toolInvocation },
+    }, deps);
+  }
+  const identity = admissionIdentity(base.title, signatureKey);
+  const coverage: DedupCoverage = { lexical: 'skipped', semantic: 'skipped', degraded: false };
+  const harness = harnessFromScope(signatureRow.scope);
+  const repeatCount = (typeof priorPayload.repeatCount === 'number' ? priorPayload.repeatCount : 1) + 1;
+  // Another class of an observation still in probation: corroborated only when
+  // THIS class already has a different reporter. The row then adopts the
+  // corroborated class and is promoted; the uncorroborated first class never
+  // promotes it, and a single new-build report never rewrites it.
+  const earlierReporters = toolFailureSignatureOf(priorPayload)?.classes[normalized.classKey]?.reporters ?? [];
+  if (issueWatchdogLane(signatureRow) === 'observation' && rowProbation?.state === 'probation' &&
+      earlierReporters.length > 0 && !earlierReporters.includes(ownerId)) {
+    const classView: EngineerIssue = { ...signatureRow, payload: { ...priorPayload,
+      toolFailureProbation: { ...rowProbation, ...normalized, watchdogKey: signatureKey, signatureKey,
+        reporters: earlierReporters } } };
+    const input = { ...base, payloadExtra: { toolFailureProbation: incomingProbation, toolInvocation } };
+    const promoted = await promoteToolFailureProbation(classView, input, deps, signatureHits, true);
+    if (promoted) {
+      const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(promoted.id,
+        { repeatCount, lastSeenAt: new Date().toISOString(), toolFailureSignature: tally }).catch(() => null);
+      await appendCaptureOccurrence(deps, input, identity, 'promoted', promoted.id, [], coverage, harness);
+      return {
+        ok: true, created: false, reason: 'promoted', kind: promoted.kind as 'bug' | 'change',
+        improvementKind: kind, issue: merged ?? promoted, topics: [IMPROVEMENT_TOPIC],
+        possibleDuplicates: [], dedupCoverage: coverage,
+      };
+    }
+  }
+  // Otherwise the report is a counted occurrence: repeatCount and the class
+  // tally move; the row's probation, disposition, title and body do not.
+  const input = { ...base, payloadExtra: { toolFailureSignature: tally, toolInvocation } };
+  const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(signatureRow.id,
+    { repeatCount, lastSeenAt: new Date().toISOString(), toolFailureSignature: tally });
+  if (!merged) {
+    // The row left the open set under us: file through the ordinary door.
+    return captureImprovement({
+      ...base,
+      payloadExtra: { toolFailureProbation: incomingProbation, toolFailureSignature: tally, toolInvocation },
+    }, deps);
+  }
+  await appendCaptureOccurrence(deps, input, identity, 'coalesced', merged.id, [], coverage, harness);
+  return {
+    ok: true, created: false, reason: 'coalesced', kind: merged.kind as 'bug' | 'change',
+    improvementKind: kind, issue: merged, possibleDuplicates: [], dedupCoverage: coverage,
+  };
+}
+
+/** One build/contract class inside a signature row (D-010). */
+export interface ToolFailureSignatureClass {
+  reporters: string[];
+  count: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  contractFingerprint: string;
+  deployedRevision: string;
+}
+
+export interface ToolFailureSignaturePayload {
+  signatureKey: string;
+  classes: Record<string, ToolFailureSignatureClass>;
+}
+
+interface ToolFailureClassOccurrence {
+  classKey: string;
+  ownerId: string;
+  at: string;
+  contractFingerprint: string;
+  deployedRevision: string;
+}
+
+/** Classes kept per row. The oldest are dropped first; the probation class never is. */
+export const TOOL_FAILURE_SIGNATURE_MAX_CLASSES = 32;
+const TOOL_FAILURE_SIGNATURE_MAX_REPORTERS = 16;
+
+export function toolFailureSignatureOf(payload: Record<string, unknown> | null | undefined): ToolFailureSignaturePayload | null {
+  const candidate = payload?.toolFailureSignature as Partial<ToolFailureSignaturePayload> | undefined;
+  return candidate && typeof candidate === 'object' && candidate.classes && typeof candidate.classes === 'object'
+    ? (candidate as ToolFailureSignaturePayload)
+    : null;
+}
+
+/**
+ * Add one occurrence to a signature row's per-class tally (pure). A row keyed by
+ * signature can see a new class on every build, so the tally is bounded: the
+ * least-recently-seen classes go first, and the class the row's probation is
+ * about is always kept, because corroboration reads it.
+ */
+export function tallyToolFailureClass(
+  prior: ToolFailureSignaturePayload | null,
+  signatureKey: string,
+  occurrence: ToolFailureClassOccurrence,
+  keepClassKey?: string,
+): ToolFailureSignaturePayload {
+  return addToolFailureClassSnapshot(prior, signatureKey, occurrence.classKey, {
+    reporters: [occurrence.ownerId], count: 1, firstSeenAt: occurrence.at, lastSeenAt: occurrence.at,
+    contractFingerprint: occurrence.contractFingerprint, deployedRevision: occurrence.deployedRevision,
+  }, keepClassKey);
+}
+
+/**
+ * Add a whole class snapshot (reporters, count, first/last seen) to a signature
+ * tally (pure). Used for single occurrences and for folding a legacy per-class
+ * row into its signature row.
+ */
+export function addToolFailureClassSnapshot(
+  prior: ToolFailureSignaturePayload | null,
+  signatureKey: string,
+  classKey: string,
+  snapshot: ToolFailureSignatureClass,
+  keepClassKey?: string,
+): ToolFailureSignaturePayload {
+  const classes: Record<string, ToolFailureSignatureClass> = { ...(prior?.classes ?? {}) };
+  const before = classes[classKey];
+  const earliest = [before?.firstSeenAt, snapshot.firstSeenAt].filter(Boolean).sort()[0] ?? snapshot.firstSeenAt;
+  const latest = [before?.lastSeenAt, snapshot.lastSeenAt].filter(Boolean).sort().at(-1) ?? snapshot.lastSeenAt;
+  classes[classKey] = {
+    reporters: [...new Set([...(before?.reporters ?? []), ...snapshot.reporters])].slice(-TOOL_FAILURE_SIGNATURE_MAX_REPORTERS),
+    count: (before?.count ?? 0) + snapshot.count,
+    firstSeenAt: earliest,
+    lastSeenAt: latest,
+    contractFingerprint: snapshot.contractFingerprint,
+    deployedRevision: snapshot.deployedRevision,
+  };
+  const evictable = Object.entries(classes)
+    .filter(([key]) => key !== keepClassKey && key !== classKey)
+    .sort(([, a], [, b]) => a.lastSeenAt.localeCompare(b.lastSeenAt));
+  while (Object.keys(classes).length > TOOL_FAILURE_SIGNATURE_MAX_CLASSES && evictable.length > 0) {
+    delete classes[evictable.shift()![0]];
+  }
+  return { signatureKey, classes };
 }
 
 export async function captureImprovement(

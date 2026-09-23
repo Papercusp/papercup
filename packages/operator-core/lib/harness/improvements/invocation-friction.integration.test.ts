@@ -6,7 +6,6 @@ import { captureInvocationFriction, recoverInvocationFriction } from './invocati
 import { captureToolInvocationFriction, type CaptureDeps, type CaptureImprovementResult } from './capture-core';
 import type { EngineerIssue } from '../../issues-engineer';
 import type { RecordIssueOccurrenceInput } from '../../issue-occurrence-ledger';
-import { metadataToolFailure } from '../../agent-tools/plans/coordination-metadata-fixtures';
 
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 vi.mock('../../system-health/compute', () => ({ refreshHealthPanel: vi.fn(async () => {}) }));
@@ -137,22 +136,42 @@ describe('R7 private PostgreSQL delivery contract', () => {
     expect(f.occurrences.filter(row => row.canonicalId === id)).toHaveLength(4);
   });
 
-  it('keeps changed schema, loaded build, tool, harness and workspace reports separate through delivery', async () => {
+  it('keeps changed tool, harness and workspace reports separate through delivery', async () => {
     const f = persistedCapture();
     await f.invoke();
     const original = (await f.rows('ws-a'))[0];
-    for (const change of [
-      { schema: 'schema-two' }, { build: 'other-build' }, { tool: 'coord:handoff' },
-      { harness: 'other-pot' }, { workspace: 'ws-b' },
-    ]) await f.invoke({ ...change, owner: 'su-b' });
+    for (const change of [{ tool: 'coord:handoff' }, { harness: 'other-pot' }, { workspace: 'ws-b' }]) {
+      await f.invoke({ ...change, owner: 'su-b' });
+    }
     const local = await f.rows('ws-a');
     const other = await f.rows('ws-b');
-    expect(local).toHaveLength(5);
+    expect(local).toHaveLength(3);
     expect(other).toHaveLength(1);
     expect(local.find(row => row.id === original.id)).toEqual(original);
     for (const row of [...local, ...other]) expect(row.payload).toMatchObject({
       lane: 'observation', toolFailureProbation: { state: 'probation', direct: false },
     });
+  });
+
+  it('D-010: a changed schema or loaded build counts onto the signature row without corroborating it', async () => {
+    const f = persistedCapture();
+    await f.invoke();
+    const original = (await f.rows('ws-a'))[0];
+    // su-b is independent of su-a, but each report is a different contract/build
+    // class, so neither may promote or rewrite su-a's probation observation.
+    for (const change of [{ schema: 'schema-two' }, { build: 'other-build' }]) {
+      await f.invoke({ ...change, owner: 'su-b' });
+    }
+    const local = await f.rows('ws-a');
+    expect(local).toHaveLength(1);
+    expect(local[0].id).toBe(original.id);
+    expect(local[0].payload).toMatchObject({ lane: 'observation', repeatCount: 3,
+      watchdogKey: original.payload?.watchdogKey });
+    expect(local[0].payload?.toolFailureProbation).toEqual(original.payload?.toolFailureProbation);
+    const classes = Object.values((local[0].payload?.toolFailureSignature as { classes: object }).classes);
+    expect(classes).toHaveLength(3);
+    // One occurrence for the first filing, one per folded report.
+    expect(f.occurrences.filter(row => row.canonicalId === original.id)).toHaveLength(3);
   });
 
   it('rolls back failure, recovers below-threshold invalid calls and preserves other metadata', async () => {
@@ -196,32 +215,16 @@ describe('R7 private PostgreSQL delivery contract', () => {
     expect(JSON.stringify(plan)).toContain('tool_invocations_friction_pending_idx');
   });
 
-  it('different measured contracts fit the real unique index and cannot promote the old row', async () => {
-    const stored: EngineerIssue[] = [];
-    const deps: CaptureDeps = {
-      searchIssues: async () => [],
-      findIssuesByWatchdogKeys: async keys => stored.filter(row => keys.includes(String((row.payload as Record<string, unknown>)?.watchdogKey))),
-      findIssuesByToolFailureClassKeys: async () => stored,
-      recordIssueOccurrence: async () => null,
-      createIssue: async input => {
-        const id = `EI-${stored.length + 1}`;
-        await db.sql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,payload)
-          VALUES ('ws-a',${input.scope ?? 'operator'},${id},'change','open',${db.sql.json(input.payload as never)})`;
-        const row = { ...input, id, state: 'open', signalOrigin: 'organic' } as EngineerIssue;
-        stored.push(row); return row;
-      },
-      updateIssuePatch: async () => { throw new Error('Must not mutate the other contract'); },
-      mergeIssuePayload: async () => { throw new Error('Must not merge the other contract'); },
-    };
+  it('D-010: different measured contracts share one signature row under the real unique index and cannot promote it', async () => {
+    const f = persistedCapture();
     for (const revision of ['schema-one', 'schema-two']) {
-      await captureToolInvocationFriction({ workspaceId: 'ws-a', harnessSlug: 'papercusp', ownerId: revision,
-        invokedAt: '2026-09-08T12:00:00Z', failure: { ...metadataToolFailure, schemaRevision: revision } }, deps);
+      await f.invoke({ schema: revision, owner: revision });
     }
     const persisted = await db.sql`SELECT payload FROM harness_shared.work_items ORDER BY feature_id`;
-    expect(persisted).toHaveLength(2);
-    for (const row of persisted) expect(row.payload).toHaveProperty('watchdogKey', expect.any(String));
-    expect(new Set(persisted.map(row => row.payload.watchdogKey)).size).toBe(2);
-    for (const row of persisted) expect(row.payload.toolFailureProbation.state).toBe('probation');
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0].payload.watchdogKey).toMatch(/^tool-failure-signature:coord:send:/);
+    expect(persisted[0].payload.toolFailureProbation).toMatchObject({ state: 'probation', reporters: ['schema-one'] });
+    expect(persisted[0].payload.repeatCount).toBe(2);
     // Prove the real arbiter can refuse, rather than merely reading two rows
     // from a fixture whose JSON was accidentally encoded as a string.
     await expect(db.sql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,payload)

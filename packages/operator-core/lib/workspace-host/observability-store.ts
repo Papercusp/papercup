@@ -1159,7 +1159,7 @@ export async function recordWorkspaceHostObservation(
               WHERE operation.workspace_id = host.workspace_id
                 AND operation.host_id = host.id
                 AND operation.id = ${control?.operationId ?? null}
-                AND operation.action IN ('provision', 'restore')
+                AND operation.action IN ('provision', 'restore', 'repair')
                 AND operation.desired_revision = host.desired_revision
                 AND operation.controller_id = ${control?.controllerAuthority.controllerId ?? null}
                 AND operation.controller_fence = ${control?.controllerAuthority.fence ?? null}

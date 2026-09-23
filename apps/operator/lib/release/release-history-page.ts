@@ -828,11 +828,42 @@ ${items
     </ul>`;
 }
 
-function renderWork(rel: HydratedRelease): string {
+const MAX_INDEX_WORK_ITEM_PREVIEW = 50;
+
+/** Keep the shared beta landing page usable on mobile and fail generation if a
+ * future content change makes the index grow beyond this explicit budget. */
+export const MAX_RELEASE_HISTORY_INDEX_BYTES = 5 * 1024 * 1024;
+
+export function assertReleaseHistoryIndexSizeBudget(html: string): void {
+  const bytes = Buffer.byteLength(html, 'utf8');
+  if (bytes > MAX_RELEASE_HISTORY_INDEX_BYTES) {
+    throw new Error(
+      `Release-history index exceeds its ${MAX_RELEASE_HISTORY_INDEX_BYTES}-byte generation budget ` +
+        `(${bytes} bytes). Keep the landing page concise and link full content from detail pages.`,
+    );
+  }
+}
+
+function itemsInSnapshotOrder(rel: HydratedRelease) {
+  const byId = new Map(rel.items.map((item) => [item.id, item] as const));
+  const ordered = rel.row.workItemIds.flatMap((id) => {
+    const item = byId.get(id);
+    return item ? [item] : [];
+  });
+  return ordered.length === rel.items.length ? ordered : rel.items;
+}
+
+function renderWork(rel: HydratedRelease, maxItems?: number): string {
   if (rel.items.length === 0 && rel.internalCount === 0) return '';
 
-  const groups = groupItemsByPlan(rel.items, rel.plans);
-  const planCount = groups.filter((g) => g.plan !== null).length;
+  const snapshotItems = itemsInSnapshotOrder(rel);
+  const items = maxItems === undefined
+    ? snapshotItems
+    : snapshotItems.slice(Math.max(0, snapshotItems.length - maxItems));
+  const omittedItems = snapshotItems.length - items.length;
+  const allGroups = groupItemsByPlan(snapshotItems, rel.plans);
+  const groups = groupItemsByPlan(items, rel.plans);
+  const planCount = allGroups.filter((g) => g.plan !== null).length;
 
   const body = groups
     .map((g) => {
@@ -858,10 +889,15 @@ function renderWork(rel: HydratedRelease): string {
     rel.internalCount > 0
       ? `\n    <p class="n">Plus ${rel.internalCount} internal engineering-tooling fixes (not listed — they change how the agents work, not the product).</p>`
       : '';
+  const previewNote = omittedItems > 0
+    ? items.length > 0
+      ? `<p class="n">Showing the ${items.length} most recent of ${snapshotItems.length} user-facing work items. <a href="changes/${releaseHistoryStem(rel.row.version, rel.row.channel)}.html">Explore the complete release details →</a></p>`
+      : `<p class="n">All ${snapshotItems.length} work items are on the <a href="changes/${releaseHistoryStem(rel.row.version, rel.row.channel)}.html">complete release details page</a>.</p>`
+    : '';
 
   return `  <details>
-    <summary>${rel.items.length} work item${rel.items.length === 1 ? '' : 's'} across ${planCount} plan${planCount === 1 ? '' : 's'}</summary>
-${body}${internal}
+    <summary>${snapshotItems.length} work item${snapshotItems.length === 1 ? '' : 's'} across ${planCount} plan${planCount === 1 ? '' : 's'}</summary>
+${previewNote}${body}${internal}
   </details>`;
 }
 
@@ -939,7 +975,7 @@ function renderInstructions(): string {
  * It also keeps the prose honest — 0.0.8's changelog says "download the installer
  * above", which was a lie when the table rendered underneath it.
  */
-function renderRelease(rel: HydratedRelease, isCurrent: boolean): string {
+function renderRelease(rel: HydratedRelease, isCurrent: boolean, maxWorkItems?: number): string {
   const { row } = rel;
   const meta: string[] = [`Cut ${formatDate(row.cutAt)}`];
   if (row.publishedAt) meta.push(`published ${formatDate(row.publishedAt)}`);
@@ -959,7 +995,7 @@ function renderRelease(rel: HydratedRelease, isCurrent: boolean): string {
   ${renderArtifacts(row.artifacts)}
   ${changelog}
   <p><a class="detail-link" href="changes/${releaseHistoryStem(row.version, row.channel)}.html">Explore plans, completed work and verification →</a></p>
-${renderWork(rel)}
+${renderWork(rel, maxWorkItems)}
 </section>`;
 }
 
@@ -1036,6 +1072,12 @@ export function renderIndexHtml(releases: HydratedRelease[], opts: PageOptions):
   // It is the page's standing "how to get started", not a property of a release
   // — gating it on the registry having rows would mean the one page where a
   // reader has the least context is the page that explains the least.
+  let inlineWorkItemsRemaining = MAX_INDEX_WORK_ITEM_PREVIEW;
+  const releaseSections = releases.map((release, index) => {
+    const previewLimit = Math.min(inlineWorkItemsRemaining, release.items.length);
+    inlineWorkItemsRemaining -= previewLimit;
+    return renderRelease(release, index === 0, previewLimit);
+  });
   const body =
     releases.length === 0
       ? `<h1>Papercusp releases</h1>
@@ -1046,7 +1088,7 @@ ${renderInstructions()}`
 <p class="sub">Beta builds for testers. This page is unlisted — please don't share the link.</p>
 ${renderVideo()}
 ${renderInstructions()}
-${releases.map((r, i) => renderRelease(r, i === 0)).join('\n')}`;
+${releaseSections.join('\n')}`;
 
   const footer = `<footer>Generated ${formatDate(opts.generatedAt)} · unlisted beta page</footer>`;
   const beacon = opts.analytics

@@ -301,6 +301,7 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
     ['provision', 'stopped'],
     ['restore', 'running'],
     ['restore', 'stopped'],
+    ['repair', 'running'],
   ] as const)('repairs legacy provisioning intent through a current %s observation of %s', async (action, state) => {
     const workspaceId = freshWorkspace();
     const connectionId = await seedConnection(workspaceId);

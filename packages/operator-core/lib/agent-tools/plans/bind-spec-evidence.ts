@@ -41,9 +41,23 @@ const coverageRungsSchema = z
   .strict();
 const adequacyBindingDetailsSchema = z
   .object({
+    fixtureCalibrated: z.boolean().optional(),
+    falsifiable: z.boolean().optional(),
+    testLayer: z.string().optional(),
+    pathReachable: z.boolean().optional(),
+    oracleIndependent: z.boolean().optional(),
+    collected: z.boolean().optional(),
+    skipped: z.boolean().optional(),
+    executed: z.boolean().optional(),
+    outcome: z.string().optional(),
+    targeted: z
+      .union([z.boolean(), z.string().trim().min(1).max(200).regex(SPEC_PROOF_OBLIGATION_ID_RE)])
+      .optional(),
     coverageRungs: coverageRungsSchema.optional(),
     scenarioIds: proofCoverageIds.optional(),
     causalPairIds: proofCoverageIds.optional(),
+    provisionalProofBase: z.boolean().optional(),
+    disclosedGap: z.union([z.string(), z.array(z.string())]).optional(),
   })
   .passthrough();
 // Keep the evaluator's adequacy vocabulary out of the free-form details

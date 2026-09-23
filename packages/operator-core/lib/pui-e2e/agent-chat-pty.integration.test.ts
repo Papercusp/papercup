@@ -3026,7 +3026,14 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     // Secret-shaped and PUI_-prefixed, so Diagnostics lists it and must redact it.
     const secret = `pui-about-fixture-${randomUUID()}`;
     const installed = Boolean(process.env.PUI_BIN);
-    const pane = new PuiPane(bin, operatorPort, home, { cols: 160, rows: 48, env: { PUI_ABOUT_FIXTURE_TOKEN: secret } });
+    // About verifies the release the store names as current. A user's PUI reads
+    // the store it was installed into; the suite's own HOME has an empty one, so
+    // an installed run points PUI_HOME at the store release-acceptance wrote.
+    const store = process.env.PUI_RELEASE_STORE;
+    if (installed && !store) throw new Error('PUI_BIN needs PUI_RELEASE_STORE; run it through apps/tui/scripts/release-acceptance.sh');
+    const pane = new PuiPane(bin, operatorPort, home, {
+      cols: 160, rows: 48, env: { PUI_ABOUT_FIXTURE_TOKEN: secret, ...(store ? { PUI_HOME: store } : {}) },
+    });
     onTestFailed(() => console.info('PUI_ABOUT_SUPPORT_FAILURE', JSON.stringify(pane.failureEvidence())));
     const palette = async (command: string, title: string) => {
       pane.write(':');

@@ -519,6 +519,8 @@ function desktopHarness(
     roster?: Array<{ desktopSessionId: string; state: string }>;
     rosterError?: Error;
     thumbnail?: Buffer | null;
+    started?: { desktopSessionId: string; state: string } | null;
+    startError?: Error;
   } = {},
 ) {
   const sent: HostedHostOutboundEnvelope[] = [];
@@ -526,6 +528,7 @@ function desktopHarness(
   const sockets: FakeDesktopSocket[] = [];
   const dials: HostedDesktopDialInput[] = [];
   const beats: string[] = [];
+  let starts = 0;
   const backend: HostedDesktopBackend = {
     lookup: async (desktopSessionId) =>
       desktopSessionId === 'missing-desktop'
@@ -547,6 +550,11 @@ function desktopHarness(
       return overrides.roster ?? [{ desktopSessionId: 'desktop-1', state: 'ready' }];
     },
     thumbnail: async () => (overrides.thumbnail === undefined ? Buffer.from('jpeg-bytes') : overrides.thumbnail),
+    start: async () => {
+      starts += 1;
+      if (overrides.startError) throw overrides.startError;
+      return overrides.started === undefined ? { desktopSessionId: 'desktop-1', state: 'ready' } : overrides.started;
+    },
   };
   const adapter = new HostedWorkspaceHostSessionAdapter({
     binding,
@@ -580,7 +588,17 @@ function desktopHarness(
       .filter((message) => message.type === 'relay' && message.channelId === channelId)
       .map((message) => (message as { payload: unknown }).payload);
   const auditActions = () => audit.mock.calls.map((call) => (call[0] as { action: string }).action);
-  return { adapter, sent, audit, auditActions, sockets, dials, beats, openDesktop, relay, payloads };
+  const openTerminal = (channelId: string, role: 'controller' | 'observer') =>
+    adapter.accept({
+      type: 'relay.open',
+      channelId,
+      userId: 'user-1',
+      hostedSessionId: 'session-1',
+      audience: 'workspace-operator',
+      role,
+    });
+  const startCount = () => starts;
+  return { adapter, sent, audit, auditActions, sockets, dials, beats, openDesktop, openTerminal, relay, payloads, startCount };
 }
 
 describe('HostedWorkspaceHostSessionAdapter — desktop channels (P-013)', () => {
@@ -802,6 +820,7 @@ describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P
           { desktopSessionId: 'desktop-2', state: 'frozen' },
         ],
         thumbnail: async () => null,
+        start: async () => null,
       },
     });
     await adapter.accept({
@@ -928,6 +947,79 @@ describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P
     });
   });
 
+  it('starts the workspace desktop for a controller on a terminal channel, before any desktop exists (D-405)', async () => {
+    const { openTerminal, relay, payloads, auditActions, startCount } = desktopHarness({
+      started: { desktopSessionId: 'desktop-new', state: 'ready' },
+    });
+    await openTerminal('term-1', 'controller');
+    await relay('term-1', { type: 'desktop.start', requestId: 'req-1' });
+
+    expect(startCount()).toBe(1);
+    expect(payloads('term-1')).toContainEqual({
+      type: 'desktop.start.result',
+      requestId: 'req-1',
+      desktop: { desktopSessionId: 'desktop-new', state: 'ready' },
+    });
+    expect(auditActions()).toContain('desktop_started');
+  });
+
+  it('refuses desktop.start from an observer without touching the backend — watching never starts a desktop', async () => {
+    const terminal = desktopHarness();
+    await terminal.openTerminal('term-1', 'observer');
+    await terminal.relay('term-1', { type: 'desktop.start', requestId: 'req-1' });
+    expect(terminal.payloads('term-1')).toContainEqual({
+      type: 'operation.error',
+      requestId: 'req-1',
+      operation: 'desktop.start',
+      code: 'controller_required',
+    });
+
+    const watcher = desktopHarness();
+    await watcher.openDesktop('channel-1', 'observer');
+    await watcher.relay('channel-1', { type: 'desktop.start', requestId: 'req-2' });
+    expect(watcher.payloads('channel-1')).toContainEqual({
+      type: 'operation.error',
+      requestId: 'req-2',
+      operation: 'desktop.start',
+      code: 'controller_required',
+    });
+
+    expect(terminal.startCount() + watcher.startCount()).toBe(0);
+    expect(terminal.auditActions()).toContain('operation_denied');
+  });
+
+  it('reports a started desktop the host cannot serve, a failed start, and a missing request id as typed errors', async () => {
+    const unservable = desktopHarness({ started: null });
+    await unservable.openTerminal('term-1', 'controller');
+    await unservable.relay('term-1', { type: 'desktop.start', requestId: 'req-1' });
+    expect(unservable.payloads('term-1')).toContainEqual({
+      type: 'operation.error',
+      requestId: 'req-1',
+      operation: 'desktop.start',
+      code: 'desktop_unavailable',
+    });
+
+    const failing = desktopHarness({ startError: new Error('desktop pack socket refused') });
+    await failing.openTerminal('term-1', 'controller');
+    await failing.relay('term-1', { type: 'desktop.start', requestId: 'req-1' });
+    expect(failing.payloads('term-1')).toContainEqual({
+      type: 'operation.error',
+      requestId: 'req-1',
+      operation: 'desktop.start',
+      code: 'desktop_start_failed',
+    });
+
+    const bare = desktopHarness();
+    await bare.openTerminal('term-1', 'controller');
+    await bare.relay('term-1', { type: 'desktop.start' });
+    expect(bare.payloads('term-1')).toContainEqual({
+      type: 'operation.error',
+      operation: 'desktop.start',
+      code: 'request_id_required',
+    });
+    expect(bare.startCount()).toBe(0);
+  });
+
   it('reports desktop_unsupported on a host with no desktop backend', async () => {
     const root = await projectRoot();
     const { adapter, sent, open } = harness(root);
@@ -941,6 +1033,16 @@ describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P
       type: 'relay',
       channelId: 'term-1',
       payload: { type: 'operation.error', requestId: 'req-1', operation: 'desktop.roster', code: 'desktop_unsupported' },
+    });
+    await adapter.accept({
+      type: 'relay',
+      channelId: 'term-1',
+      payload: { type: 'desktop.start', requestId: 'req-2' },
+    });
+    expect(sent).toContainEqual({
+      type: 'relay',
+      channelId: 'term-1',
+      payload: { type: 'operation.error', requestId: 'req-2', operation: 'desktop.start', code: 'desktop_unsupported' },
     });
   });
 });

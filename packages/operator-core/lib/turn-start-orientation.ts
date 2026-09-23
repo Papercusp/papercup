@@ -63,6 +63,8 @@ import {
 } from './work-item-dispatch-states';
 import { projectAgentTurnStartObligationBrief, type AgentObligationBrief } from './agent-obligation-reader';
 import { formatAgentObligationLine, type AgentObligation } from './agent-obligations';
+import type { GoalPlacementTurnReceiptDeps } from './goal-placement-turn-receipts';
+import { trackDetached } from './detached-imports';
 import type { OwnerDirectiveRow } from './owner-directives';
 import {
   deriveDirectiveStatus,
@@ -4476,6 +4478,8 @@ export async function buildTurnStartOrientationBlock(input: {
   budgetChars?: number;
   confirmedDeliveryToken?: string | null;
   deps?: Partial<OrientationDeps>;
+  /** Test seam only; production always uses the receipt module's real writers. */
+  progressReceiptDeps?: GoalPlacementTurnReceiptDeps;
 }): Promise<TurnStartOrientationDelivery> {
   try {
     const { ownerId, workspaceId } = input;
@@ -4488,20 +4492,31 @@ export async function buildTurnStartOrientationBlock(input: {
     // source is: a broken generation read must degrade the dedup to its old
     // behaviour, never fail the block or the turn.
     const { contextEpoch: epochDep, contextTokens: tokensDep } = { ...defaultOrientationDeps(), ...(input.deps ?? {}) };
-    const [{ ackAndRead, stage }, state, epoch, contextTokens] = await Promise.all([
+    const [{ ackAndRead, stage }, state, epoch, contextTokens, progressReceipts] = await Promise.all([
       import('./agent-tools/coordination/read-cursors'),
       resolveOrientationState(ownerId, workspaceId, input.deps ?? {}),
       epochDep(ownerId).catch(() => 0),
       // P-006 reminder cadence; same fail-soft as the epoch: unknown ⇒ null,
       // which falls back to a wall-clock cadence rather than failing the block.
       tokensDep ? tokensDep(ownerId).catch(() => null) : Promise.resolve(null),
+      proof ? import('./goal-placement-turn-receipts') : Promise.resolve(null),
     ]);
-    if (isEmptyOrientation(state)) return NO_ORIENTATION;
+    if (isEmptyOrientation(state) && !proof) return NO_ORIENTATION;
     const ack = await ackAndRead(
       ownerId,
       ORIENTATION_CURSOR_SURFACE,
       proof ? { confirmedToken: input.confirmedDeliveryToken ?? null } : undefined,
     ).catch(() => null);
+    // A completed plan can leave no new orientation rows. Still settle its
+    // previously emitted receipt; an empty next block must not erase evidence.
+    if (progressReceipts && ack?.committed?.[progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY]) {
+      void trackDetached(progressReceipts.confirmGoalPlacementDelivery({
+        ownerId, workspaceId, confirmedToken: input.confirmedDeliveryToken,
+        candidate: ack.committed[progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY],
+        brief: state.obligations,
+      }, input.progressReceiptDeps)).catch(() => {});
+    }
+    if (isEmptyOrientation(state)) return NO_ORIENTATION;
     const composed = composeOrientationBlockWithRows({
       state,
       // A failed cursor read ⇒ treat as baseline and DELIVER. Fail-open: a delta
@@ -4542,10 +4557,26 @@ export async function buildTurnStartOrientationBlock(input: {
     // generation the agent was never actually told about, which would
     // reproduce the exact stale suppression this change removes.
     const deliveryToken = proof ? randomUUID() : undefined;
+    const deliveredFingerprint = fingerprintDeliveredOrientation(state, epoch, ack?.committed ?? null, block, contextTokens);
+    if (progressReceipts && deliveryToken) {
+      const rows = progressReceipts.deliveredGoalPlacementRows({ ownerId, workspaceId, brief: state.obligations, block });
+      if (rows.length) {
+        const { withBoundedTimeout } = await import('./bounded-timeout');
+        const measured = await withBoundedTimeout(
+          progressReceipts.prepareGoalPlacementDelivery({ ownerId, workspaceId, token: deliveryToken,
+            brief: state.obligations, block }, input.progressReceiptDeps),
+          { fallback: null, timeoutMs: 250, label: 'goal-placement-delivery-baseline' },
+        );
+        deliveredFingerprint[progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY] = measured.value ?? {
+          version: 1, unavailable: true, rows,
+          reason: measured.reason ?? 'native-baseline-unavailable',
+        };
+      }
+    }
     const staged = await stage(
       ownerId,
       ORIENTATION_CURSOR_SURFACE,
-      fingerprintDeliveredOrientation(state, epoch, ack?.committed ?? null, block, contextTokens),
+      deliveredFingerprint,
       deliveryToken ? { deliveryToken } : {},
     ).then(
       () => true,

@@ -117,6 +117,9 @@ export interface LoopFireDeps {
   incrementFireCount?: typeof defaultIncrementLoopFireCount;
   /** su-cold-auto P-003: read the prior fire count for the cold wakeCount cadence. */
   readFireCount?: typeof defaultReadLoopFireCount;
+  /** P-024: read when the loop last REACHED its owner (the blocking-await heartbeat anchor).
+   *  Only consulted when a blocking await exists; a failed read ⇒ null (pre-heartbeat ceiling). */
+  readLastDeliveredAt?: typeof defaultReadLoopLastDeliveredAtMs;
   /** EI-7809: read the CURRENT loop:checkpoint at fire time so wake text does not stale at arm time. */
   getLoopCarryNote?: typeof defaultGetLoopCarryNote;
   /** P-002: the meta-carrying read (note + write instant) the staleness stamp needs. */
@@ -1003,7 +1006,9 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   const blockingAwaits = await listBlockingAwaits(input.targetOwnerId).catch(() => []);
   const isMonitorLoop = input.payloadTemplate?.mode === 'monitor';
   if (!isMonitorLoop && blockingAwaits.length > 0) {
-    const decision = decideLoopAwaitSuppression({ awaits: blockingAwaits, nowMs: Date.now() });
+    const readLastDeliveredAt = deps.readLastDeliveredAt ?? defaultReadLoopLastDeliveredAtMs;
+    const lastDeliveredAtMs = await readLastDeliveredAt(input.sql ?? undefined, input.routineId).catch(() => null);
+    const decision = decideLoopAwaitSuppression({ awaits: blockingAwaits, nowMs: Date.now(), lastDeliveredAtMs });
     if (decision.suppress) {
       let rearmFailed = false;
       if (decision.resumeAtMs != null) {

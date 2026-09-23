@@ -3,6 +3,7 @@ import {
   HostedDesktopRelayChannel,
   buildDesktopDataRelay,
   buildDesktopRosterRequest,
+  buildDesktopStartRequest,
   buildDesktopThumbnailRequest,
   buildHostedDesktopSocketUrl,
   parseHostedDesktopProtocolMessage,
@@ -70,6 +71,9 @@ describe("hosted desktop browser protocol", () => {
     expect(buildDesktopRosterRequest("roster-1")).toBe(
       JSON.stringify({ type: "desktop.roster", requestId: "roster-1" }),
     );
+    expect(buildDesktopStartRequest("start-1")).toBe(
+      JSON.stringify({ type: "desktop.start", requestId: "start-1" }),
+    );
     expect(buildDesktopThumbnailRequest("thumb-1", "desktop-1")).toBe(
       JSON.stringify({
         type: "desktop.thumbnail",
@@ -85,6 +89,33 @@ describe("hosted desktop browser protocol", () => {
         "watch",
       ),
     ).toThrow("desktop_session_required");
+  });
+
+  it("parses a started desktop and rejects one the viewer could not open (D-405)", () => {
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "desktop.start.result",
+        requestId: "start-1",
+        desktop: { desktopSessionId: "desktop-9", state: "ready", displayNumber: 110 },
+      }),
+    ).toEqual({
+      kind: "started",
+      requestId: "start-1",
+      desktop: { desktopSessionId: "desktop-9", state: "ready", displayNumber: 110 },
+    });
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "desktop.start.result",
+        requestId: "start-1",
+        desktop: { desktopSessionId: "", state: "ready" },
+      }),
+    ).toBeNull();
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "desktop.start.result",
+        desktop: { desktopSessionId: "desktop-9", state: "ready" },
+      }),
+    ).toBeNull();
   });
 
   it("parses ready, roster, thumbnail, and explicit operation errors", () => {

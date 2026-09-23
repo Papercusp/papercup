@@ -566,6 +566,83 @@ describe("HostedWorkspaceSession", () => {
     expect((pathInput as HTMLInputElement).value).toBe(".");
   });
 
+  it("starts the workspace desktop over the PTY channel only as the controller (D-405)", async () => {
+    const onDesktopBridgeChange = vi.fn();
+    const onDesktopStarted = vi.fn();
+    const onDesktopQueryStateChange = vi.fn();
+    render(
+      <HostedWorkspaceSession
+        hostId="host-1"
+        routeLabel="workspace-relay"
+        workspaceName="research-control"
+        onDesktopBridgeChange={onDesktopBridgeChange}
+        onDesktopStarted={onDesktopStarted}
+        onDesktopQueryStateChange={onDesktopQueryStateChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(M.sockets).toHaveLength(1));
+    const socket = M.sockets[0];
+    socket.emit("message", {
+      data: JSON.stringify({ type: "pty.ready", role: "observer", resumed: false }),
+    });
+    await waitFor(() => expect(onDesktopBridgeChange).toHaveBeenCalled());
+    const bridge = onDesktopBridgeChange.mock.calls.at(-1)?.[0] as {
+      requestStart: () => boolean;
+    };
+    const sentTypes = () =>
+      socket.send.mock.calls.map(
+        (call) => (JSON.parse(String(call[0])) as { type: string }).type,
+      );
+
+    // An observer never asks: the host would refuse it, and watching must not start a desktop.
+    expect(bridge.requestStart()).toBe(false);
+    expect(sentTypes()).not.toContain("desktop.start");
+
+    socket.emit("message", {
+      data: JSON.stringify({ type: "session.role", role: "controller" }),
+    });
+    await waitFor(() => expect(bridge.requestStart()).toBe(true));
+    const startRequest = JSON.parse(
+      socket.send.mock.calls.at(-1)?.[0] as string,
+    ) as { type: string; requestId: string };
+    expect(startRequest.type).toBe("desktop.start");
+    expect(onDesktopQueryStateChange).toHaveBeenCalledWith("loading", "start");
+
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "desktop.start.result",
+        requestId: startRequest.requestId,
+        desktop: { desktopSessionId: "desktop-new", state: "ready", displayNumber: 110 },
+      }),
+    });
+    await waitFor(() =>
+      expect(onDesktopStarted).toHaveBeenCalledWith({
+        desktopSessionId: "desktop-new",
+        state: "ready",
+        displayNumber: 110,
+      }),
+    );
+    expect(onDesktopQueryStateChange).toHaveBeenCalledWith("ready", "start");
+
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "operation.error",
+        requestId: "desktop-start-2",
+        operation: "desktop.start",
+        code: "desktop_start_failed",
+      }),
+    });
+    await waitFor(() =>
+      expect(onDesktopQueryStateChange).toHaveBeenCalledWith(
+        "error",
+        "start",
+        "desktop_start_failed",
+      ),
+    );
+  });
+
   it("uses the authenticated PTY channel for desktop roster and thumbnail discovery", async () => {
     const onWorkspaceIdChange = vi.fn();
     const onDesktopBridgeChange = vi.fn();

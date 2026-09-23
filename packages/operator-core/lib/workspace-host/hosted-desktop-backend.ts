@@ -89,6 +89,12 @@ export interface HostedDesktopBackendDeps {
   listSessions: () => Promise<DesktopSessionRecord[]>;
   /** Touch `last_active_at` — `desktop-session-registry.touchDesktopSession`. */
   touchSession: (desktopSessionId: string) => Promise<void>;
+  /**
+   * Lease this workspace's one desktop (or return the live lease) and name its
+   * registry row — `desktop-lease.ensureHiveDesktop` + `hiveDesktopSessionId`.
+   * Undefined means the desktop runs but has no row, so nothing can resolve it.
+   */
+  ensureDesktop: () => Promise<string | undefined>;
   /** Override the capture directory (tests, or a pack that relocates it). */
   captureDir?: string;
   /** Override the KasmVNC websocket path. */
@@ -373,6 +379,16 @@ export function createHostedDesktopBackend(deps: HostedDesktopBackendDeps): Host
 
     async roster(): Promise<HostedDesktopRosterEntry[]> {
       return (await deps.listSessions()).map(rosterEntryForSession);
+    },
+
+    async start(): Promise<HostedDesktopRosterEntry | null> {
+      const desktopSessionId = await deps.ensureDesktop();
+      // Served only when BOTH halves hold: the row names it, and this process holds
+      // the live lease `lookup` dials through. Either alone gives the viewer an id
+      // that fails at open as `desktop_session_unknown`.
+      if (!desktopSessionId || !deps.leasedDesktop(desktopSessionId)) return null;
+      const session = (await deps.listSessions()).find((entry) => entry.id === desktopSessionId);
+      return session ? rosterEntryForSession(session) : null;
     },
 
     async thumbnail(desktopSessionId: string): Promise<Buffer | null> {
