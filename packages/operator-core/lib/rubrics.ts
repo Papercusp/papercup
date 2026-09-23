@@ -1415,7 +1415,7 @@ export async function searchRubrics(query: string, limit = 50, kind: RubricKindF
 export type ProposeRubricCriterion = Omit<RubricCriterion, 'model' | 'method' | 'driftMarkers'> &
   Partial<Pick<RubricCriterion, 'model' | 'method' | 'driftMarkers'>>;
 
-type AcceptanceBarHashInput = Pick<
+export type AcceptanceBarHashInput = Pick<
   ProposeRubricCriterion,
   | 'key'
   | 'intent'
@@ -1468,7 +1468,7 @@ function canonicalAcceptanceBarCheck(value: unknown): unknown {
  * set-like fields are deduplicated/sorted before hashing. Provenance is deliberately
  * excluded: it says WHEN the same promise entered the lifecycle, not WHAT it promises.
  */
-export function computeAcceptanceBarHash(criterion: AcceptanceBarHashInput): string {
+function acceptanceBarHashMaterial(criterion: AcceptanceBarHashInput): readonly (readonly [string, unknown])[] {
   const canonicalBar = normalizedBarText(criterion.model) || normalizedBarText(criterion.bar);
   if (!canonicalBar) {
     throw new Error(
@@ -1509,7 +1509,23 @@ export function computeAcceptanceBarHash(criterion: AcceptanceBarHashInput): str
     ['passRatings', normalizedBarSet(criterion.passRatings, true)],
     ['coversBarKeys', normalizedBarSet(criterion.coversBarKeys)],
   ] as const;
-  return hashPlanContent(JSON.stringify(material));
+  return material as readonly (readonly [string, unknown])[];
+}
+
+export function diffAcceptanceBarHashInputs(
+  before: AcceptanceBarHashInput,
+  after: AcceptanceBarHashInput,
+): string[] {
+  const beforeFields = new Map(acceptanceBarHashMaterial(before));
+  const afterFields = new Map(acceptanceBarHashMaterial(after));
+  return [...new Set([...beforeFields.keys(), ...afterFields.keys()])]
+    .filter((field) => JSON.stringify(beforeFields.get(field)) !== JSON.stringify(afterFields.get(field)))
+    .map((field) => field === 'bar' ? 'model' : field)
+    .sort();
+}
+
+export function computeAcceptanceBarHash(criterion: AcceptanceBarHashInput): string {
+  return hashPlanContent(JSON.stringify(acceptanceBarHashMaterial(criterion)));
 }
 
 /** Exact complete-set identity. Order-independent, duplicate-key refusing, and

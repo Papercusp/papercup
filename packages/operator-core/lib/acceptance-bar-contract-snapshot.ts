@@ -14,8 +14,10 @@ import {
   classifyRubricEvidenceCurrentness,
   computeAcceptanceBarHash,
   computeAcceptanceBarSetHash,
+  diffAcceptanceBarHashInputs,
   effectiveCriterionInstrumentKey,
   getAcceptanceRubricsForPlan,
+  type AcceptanceBarHashInput,
   type Rubric,
   type RubricCriterion,
 } from './rubrics';
@@ -224,7 +226,7 @@ export interface AcceptanceBarTrace {
   /** Explicit manual replication procedure, when the check uses instrument:'none'. */
   replication: string | null;
   falsifier: string;
-  role: string | null;
+  role: RubricCriterion['role'] | null;
   mandatory: boolean | null;
   requiredScope: string[];
   evidencePlane: 'tree' | 'deployed' | 'live' | null;
@@ -1831,12 +1833,34 @@ function sameValue(a: unknown, b: unknown): boolean {
 /** Pure semantic diff used by seed/amend/migration dry-runs. */
 export type AcceptanceBarContractDiffView = Pick<AcceptanceBarContractSnapshot, 'contentHash'> & {
   plan: Pick<AcceptanceBarSubjectPlanSource, 'cohort' | 'adoptionEpoch'> | null;
-  bars: Array<Pick<AcceptanceBarTrace, 'barKey' | 'barHash' | 'model' | 'method' | 'falsifier' |
-    'role' | 'mandatory' | 'requiredScope' | 'evidencePlane' | 'requiredTestLayers' | 'passRatings' |
-    'coversBarKeys' | 'provenance'> & {
+  bars: Array<Pick<AcceptanceBarTrace, 'barKey' | 'criterionKey' | 'barHash' | 'model' | 'check' | 'requirement' |
+    'method' | 'falsifier' | 'role' | 'mandatory' | 'requiredScope' | 'evidencePlane' | 'requiredTestLayers' |
+    'passRatings' | 'coversBarKeys' | 'provenance'> & {
       mappings: Array<{ planItemId: string; specId: string }>;
     }>;
 };
+
+function acceptanceBarHashInputFromTrace(
+  bar: AcceptanceBarContractDiffView['bars'][number],
+): AcceptanceBarHashInput & Record<keyof AcceptanceBarHashInput, unknown> {
+  return {
+    key: bar.criterionKey,
+    intent: bar.requirement?.intent ?? undefined,
+    model: bar.model,
+    bar: bar.model,
+    barKey: bar.barKey,
+    driftMarkers: bar.falsifier,
+    requiredScope: bar.requiredScope,
+    evidencePlane: bar.evidencePlane ?? undefined,
+    evidenceRuntime: bar.requirement?.acceptance.evidenceRuntime ?? undefined,
+    requiredTestLayers: bar.requiredTestLayers,
+    check: bar.check ?? undefined,
+    role: bar.role ?? undefined,
+    mandatory: bar.mandatory ?? undefined,
+    passRatings: bar.passRatings,
+    coversBarKeys: bar.coversBarKeys,
+  };
+}
 
 // The comparable subset also admits the canonical seed compiler's pre-write
 // view, before execution proof exists. It is never a separate gate authority.
@@ -1862,21 +1886,13 @@ export function diffAcceptanceBarContractSnapshots(
     }
     const kinds: AcceptanceBarDiffKind[] = [];
     const fields: string[] = [];
-    const meaningFields = [
-      'model',
-      'falsifier',
-      'role',
-      'mandatory',
-      'requiredScope',
-      'requiredTestLayers',
-      'passRatings',
-      'coversBarKeys',
-    ] as const;
-    for (const field of meaningFields) {
-      if (sameValue(a[field], b[field])) continue;
-      fields.push(field);
-    }
-    if (fields.length > 0 || a.barHash !== b.barHash) kinds.push('bar-meaning');
+    const changedMeaningFields = diffAcceptanceBarHashInputs(
+      acceptanceBarHashInputFromTrace(a),
+      acceptanceBarHashInputFromTrace(b),
+    ).filter((field) => field !== 'evidencePlane');
+    if (changedMeaningFields.length > 0 || a.barHash !== b.barHash) kinds.push('bar-meaning');
+    fields.push(...changedMeaningFields);
+    if (a.barHash !== b.barHash && changedMeaningFields.length === 0) fields.push('barHash');
     if (a.evidencePlane !== b.evidencePlane) {
       kinds.push('evidence-plane');
       fields.push('evidencePlane');
