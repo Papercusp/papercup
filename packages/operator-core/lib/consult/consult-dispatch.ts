@@ -550,6 +550,9 @@ async function launchAnsweringSession(
       model: rank.model,
       modelSource: 'explicit',
       headless: true,
+      // The wall probe measures the provider pool. Route pooled Claude/Codex
+      // launches through that same pool so another account's headroom is usable.
+      account: providerForBackend(rank.agent) ? 'auto' : 'default',
       ...(operation === 'fork' ? { ownerId: answeringOwnerId } : {}),
     });
   } catch (e) {

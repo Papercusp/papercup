@@ -191,6 +191,7 @@ describe('dispatchConsultResponder — the fork leg', () => {
     expect(cmd).toContain('--fork');
     expect(cmd).toContain('--owner-id=su-answer-1');
     expect(cmd).toContain('--model=opus');
+    expect(cmd).toContain('--account=auto');
     expect(cmd).toContain('--headless');
     expect(cmd).toContain('--launched-by=su-requester');
 
@@ -204,6 +205,17 @@ describe('dispatchConsultResponder — the fork leg', () => {
     // Verification polls the ANSWERING identity — the pre-pin is what makes that
     // possible for a fork at all.
     expect(calls.verify[0]).toMatchObject({ ownerId: 'su-answer-1', timeoutMs: DISPATCH_VERIFY_TIMEOUT_MS });
+  });
+
+  it.each([
+    { agent: 'codex' as const, model: 'sol', account: 'auto' },
+    { agent: 'omp' as const, model: 'sonnet', account: 'default' },
+  ])('routes $agent consult conversions with the appropriate account path', async ({ agent, model, account }) => {
+    const { deps, calls } = makeFakes({ loadRanks: async () => [{ rank: 1, agent, model }] });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+
+    expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent });
+    expect(calls.spawn[0]!.envelope.greetingCmd).toContain(`--account=${account}`);
   });
 
   it('FORKS a LIVE source rather than refusing it — the retired reviver refused here', async () => {
