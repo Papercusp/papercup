@@ -3,6 +3,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
 import type { IdentityGrantPolicy } from './capability-envelope/identity-grants-port';
+import { isLazyIdentityLaunchRecord } from './capability-envelope/lazy-launch-record';
 
 const db = vi.hoisted(() => {
   const rows: unknown[][] = [];
@@ -201,13 +202,22 @@ describe('control-anchor kernel resolver (D-030)', () => {
   });
 
   it('carries the database-owned launch row version into identity enforcement', async () => {
-    db.rows.push([anchorRow({ activation: appliedActivation() }, {
+    const launchRow = anchorRow({ activation: appliedActivation() }, {
       adv_session_id: 27, adv_session_xmin: '1549',
-    })]);
+    });
+    db.rows.push([launchRow]);
     const state = await readControlAnchorKernelState(request());
     expect(state?.identityLaunchRecordVersion).toEqual({ sessionId: '27', rowVersion: '1549' });
     const [template] = db.sql.mock.calls[0] as unknown[];
     expect((template as readonly string[]).join(' ')).toContain("s.xmin::text AS launch_spec_xmin");
+    const handle = state?.identityLaunchRecord;
+    if (!isLazyIdentityLaunchRecord(handle)) throw new Error('expected a lazy launch record');
+    expect(await handle.load()).toEqual({ record: launchRow.launch_spec, rowVersion: '1549' });
+    const [bodyTemplate, ...bodyParams] = db.sql.mock.calls[1] as unknown[];
+    const bodySql = (bodyTemplate as readonly string[]).join(' ');
+    expect(bodySql).toContain('SELECT s.launch_spec, s.xmin::text AS launch_spec_xmin');
+    expect(bodySql).toContain('FROM harness_shared.adv_sessions s');
+    expect(bodyParams).toEqual([27, 'owner-a', 'ws-a']);
   });
 
   // WI-10002721 — the recurrence guard for the per-call body read. Every
@@ -250,6 +260,17 @@ describe('control-anchor kernel resolver (D-030)', () => {
       // A preflight whose header is at the version the body was judged at hits.
       db.rows.push([rowAt('801')]);
       await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow' });
+      expect(bodyReads()).toBe(1);
+    });
+
+    it('enforces the loaded body rather than a previously valid header when the row changes between reads', async () => {
+      const changedBody = {
+        ...anchorRow({}).launch_spec as Record<string, unknown>, workspaceId: 'ws-other',
+      };
+      db.rows.push([rowAt('810')]);
+      db.loadOverrides.push([{ launch_spec: changedBody, launch_spec_xmin: '811' }]);
+      const verdict = await controlAnchorKernelResolver(request());
+      expect(verdict?.decision).toBe('deny');
       expect(bodyReads()).toBe(1);
     });
 

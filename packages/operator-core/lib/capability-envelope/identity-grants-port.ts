@@ -187,8 +187,8 @@ export function resolveIdentityArtifact(
 // dispatch stalls the operator event loop. PostgreSQL changes xmin on an
 // UPDATE; the applied pair is a separate control-state input and belongs in
 // the key as well. Policy is deliberately NOT cached here.
-const IDENTITY_RESOLUTION_CACHE_TTL_MS = 5 * 60_000;
-const IDENTITY_RESOLUTION_CACHE_MAX = 128;
+export const IDENTITY_RESOLUTION_CACHE_TTL_MS = 5 * 60_000;
+export const IDENTITY_RESOLUTION_CACHE_MAX = 128;
 const identityResolutionCache = pinModuleState('@papercusp/operator-core.identity-resolution-cache', () =>
   new Map<string, { validatedAt: number; resolution: IdentityArtifactResolution }>(),
 );
