@@ -17,10 +17,12 @@ import type { OrgTestDb } from '../test/_org-test-db';
 import { OWNER_DIRECTIVE_VERBATIM_CAP } from './owner-directive-display';
 import {
   dispositionOwnerDirective,
+  findCapturedTwin,
   getOwnerDirective,
   listOwnerDirectives,
   ownerDirectiveState,
   recordOwnerDirective,
+  reopenOwnerDirective,
   summarizeOwnerDirective,
 } from './owner-directives';
 
@@ -238,5 +240,49 @@ describe('owner-directive disposition + summary read-back', () => {
     await expect(
       db.adminSql`UPDATE harness_shared.owner_directives SET summary_text = 'no author' WHERE id = ${id}`,
     ).rejects.toThrow(/owner_directives_summary_consistent/);
+  });
+
+  // directive-ownership-clarity-2026-09-23 P-007: the undo that replaces the raw
+  // `UPDATE … SET disposition_status = NULL` an agent ran on 2026-09-23.
+  it('P-007: reopen makes a closed directive OPEN again and keeps the undone close auditable', async () => {
+    const id = await capture('turn-reopen', 'this was closed by the wrong session');
+    await dispositionOwnerDirective({ id, status: 'done', note: 'wrong close by text match', dispositionedBy: 'su-wrong' }, db.adminSql);
+
+    const result = await reopenOwnerDirective(
+      { id, workspaceId, reason: 'closed by a text match; not mine', reopenedBy: 'su-wrong' },
+      db.adminSql,
+    );
+
+    expect(result.ok).toBe(true);
+    const row = await getOwnerDirective(id, db.adminSql);
+    expect(ownerDirectiveState(row!)).toBe('open');
+    expect(row!.dispositionedBy).toBeNull();
+    expect(row!.reopenedBy).toBe('su-wrong');
+    expect(row!.reopenReason).toBe('closed by a text match; not mine');
+    expect(row!.reopenedFrom).toMatch(/^done by su-wrong at \d{4}-\d{2}-\d{2}T.*Z: wrong close by text match$/);
+    expect(row!.reopenedAtMs).not.toBeNull();
+  });
+
+  it('P-007: reopening an OPEN directive, or one in another workspace, changes nothing', async () => {
+    const id = await capture('turn-reopen-open', 'still open');
+    expect(await reopenOwnerDirective({ id, workspaceId, reason: 'nothing to undo', reopenedBy: 'su-x' }, db.adminSql))
+      .toMatchObject({ ok: false, error: 'not_dispositioned' });
+
+    await dispositionOwnerDirective({ id, status: 'declined', note: 'not doing it', dispositionedBy: 'su-x' }, db.adminSql);
+    expect(await reopenOwnerDirective({ id, workspaceId: 'some-other-ws', reason: 'wrong tenant', reopenedBy: 'su-x' }, db.adminSql))
+      .toMatchObject({ ok: false, error: 'not_found' });
+    expect(ownerDirectiveState((await getOwnerDirective(id, db.adminSql))!)).toBe('declined');
+  });
+
+  // P-004: a hand orders:record of a hook-captured turn must find the capture.
+  it('P-004: findCapturedTwin matches the same session\'s capture by whole text or quote, and nothing else', async () => {
+    const whole = 'okay pause your work until we implement these improvements';
+    const id = await capture('turn-twin', `${whole}\n\nand tell me when it is done`);
+
+    expect((await findCapturedTwin({ workspaceId, recordedBy: 'su-readback-test', verbatimText: whole }, db.adminSql))?.id).toBe(id);
+    // A different session never matches, even with identical text (the 2026-09-23 paste case).
+    expect(await findCapturedTwin({ workspaceId, recordedBy: 'su-someone-else', verbatimText: whole }, db.adminSql)).toBeNull();
+    // A quote too short to be specific never matches.
+    expect(await findCapturedTwin({ workspaceId, recordedBy: 'su-readback-test', verbatimText: 'okay pause' }, db.adminSql)).toBeNull();
   });
 });

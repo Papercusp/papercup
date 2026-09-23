@@ -2,10 +2,13 @@
  * orders:record — file an explicit OWNER DIRECTIVE, verbatim, into the
  * first-class owner-directives store (EI-11484).
  *
- * Recording is agent-EXPLICIT by owner ruling ("lets just have the agent
- * record the directive. they should decide what to keep") — there is no
- * auto-capture and no imperative detection. What the agent judges to be an
- * owner order gets filed HERE, not demoted to checkpoint prose: an open row
+ * Since owner-directive-delivery-redesign-2026-09-22 D-001 the UserPromptSubmit
+ * hook captures EVERY owner turn automatically (orders:capture) and tells the
+ * session "YOUR owner directive #N". This verb is now the fallback for an order
+ * that arrived without that notice; a re-record of an already-captured turn
+ * returns the captured row (directive-ownership-clarity-2026-09-23 P-004) instead
+ * of minting a twin. What the agent files here is not demoted to checkpoint
+ * prose: an open row
  * renders ABOVE the loop agenda in every wake, every orient, and every
  * post-compaction anchor until orders:disposition closes it — the re-injection
  * surface fresh owner directives lacked (the priority inversion that buried
@@ -24,6 +27,8 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import {
   recordOwnerDirective,
   countOpenOwnerDirectives,
+  findCapturedTwin,
+  OWNER_DIRECTIVE_DEFAULT_OWNER,
   OWNER_DIRECTIVE_VERBATIM_MAX,
 } from '../../owner-directives';
 
@@ -34,9 +39,9 @@ export default defineTool({
     "Record an explicit OWNER DIRECTIVE verbatim into the durable owner-directives store. The open row renders ABOVE your loop agenda in every wake, orient, and post-compaction anchor — across session death — until orders:disposition closes it. The verbatim text is verified against your transcript's human turns (a miss records loudly as unverified).",
   guidance: {
     when:
-      "The owner just issued you an order/directive ('do X', 'stop Y', 'implement Z now') — file it THE MOMENT it lands, verbatim, before starting the work. You decide what rises to a directive; when in doubt about whether it will survive your loop agenda, record it.",
+      "An owner order reached you WITHOUT a 'YOUR owner directive #N' notice (capture failed, or it came by another channel) — record it verbatim before starting the work.",
     notWhen:
-      'Your own notes-to-self or self-imposed discipline (loop:checkpoint / work_items:checkpoint), a peer request (coord messages), a standing conclusion (facts:assert). Never paraphrase — the field is the owner\'s literal words.',
+      "The turn already carries 'YOUR owner directive #N': it is recorded; use #N (a re-record returns #N). Notes-to-self, peer requests, standing conclusions. Never paraphrase.",
     chaining:
       'orders:record when the order lands → work it → orders:disposition { id, status, note } when done or declined. orders:list { open: true } shows what you still owe.',
     seeAlso: ['orders:disposition (close one)', 'orders:list (open set)', 'orders:get (full verbatim)'],
@@ -59,7 +64,7 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe("Who gave the order (default 'owner' — the single-owner default)."),
+      .describe("Deprecated, ignored: every row is stored under the single workspace owner ('owner') so one message never splits across two owner labels."),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -83,9 +88,31 @@ export default defineTool({
       /* stamp stays unverified */
     }
 
+    // P-004: the hook has usually captured this very turn already. Hand it back
+    // instead of minting a twin under a second owner label and turn ref.
+    const twin = await findCapturedTwin({ workspaceId, recordedBy: identity.ownerId, verbatimText: args.verbatim })
+      .catch(() => null);
+    if (twin) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: true,
+              id: twin.id,
+              deduplicated: true,
+              state: twin.dispositionStatus ?? 'open',
+              note: `Already captured automatically as your directive #${twin.id}; no second row was created. Refer to it as #${twin.id}.`,
+            }),
+          },
+        ],
+      };
+    }
+
     const row = await recordOwnerDirective({
       workspaceId,
-      ownerId: args.ownerName,
+      // D-004: one owner label for every row, whichever path wrote it.
+      ownerId: OWNER_DIRECTIVE_DEFAULT_OWNER,
       sessionRef,
       sourceTurnRef: args.sourceTurnRef ?? verifiedTurnRef,
       verbatimText: args.verbatim,

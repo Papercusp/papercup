@@ -2011,6 +2011,8 @@ export async function runLivenessAlarmTick(
           }
           if ((episode.recoveryObservationCount ?? 0) >= RECOVERY_CONFIRMATION_OBSERVATIONS) {
             toResolveSigs.push(recoverySignature);
+            episode.recoveryObservationCount = 0;
+            delete episode.lastRecoveryObservationAtMs;
           }
         }
       }

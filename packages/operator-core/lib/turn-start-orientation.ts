@@ -147,6 +147,15 @@ export interface OrientationOwnerDirective {
    */
   relatedToMe?: boolean;
   /**
+   * The addressee's session state and current declared intent, for the grouped
+   * render (directive-ownership-clarity-2026-09-23 P-003 / D-001): another
+   * session's directives are shown UNDER that session, next to what it is doing,
+   * so where a directive appears says whose it is. Optional: a failed read only
+   * loses the context, never the directive.
+   */
+  addresseeState?: string | null;
+  addresseeIntent?: string | null;
+  /**
    * The derived status of the directive (P-006). Optional so a sink that cannot
    * afford the work-item join still renders a correctly LABELLED line; absent
    * means "not derived", never "unclaimed".

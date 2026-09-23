@@ -359,6 +359,73 @@ export function reconcileGateVerdictFreshnessWithRepairQueue(
   };
 }
 
+/**
+ * The pinned-repair reading that may RELEASE a fossil classification — a single boolean, not the
+ * queue row, on purpose.
+ *
+ * The judgement itself belongs to the module that OWNS the queue (`isJudgingPinnedActiveRepair`,
+ * frozen-candidate-repair-queue), and this module imports that one with `import type` ONLY — see
+ * the note beside that import — specifically to avoid a runtime cycle. Pulling the predicate in as
+ * a value here would create exactly the cycle that `import type` exists to prevent. So the CALLER,
+ * which already depends on both modules, computes the answer and passes it. That also keeps ONE
+ * definition of the judgement: D-004 records that the write side (green-checkpoint's withholding
+ * rule) and this read side are a COUPLED PAIR, and a second hand-rolled copy of the test is
+ * exactly how the two drift back apart (WI-10002121).
+ */
+export interface PinnedActiveRepairReading {
+  /**
+   * Did this verdict judge the head of a DELIBERATELY PINNED, still-active repair lineage?
+   *
+   * Compute it with `isJudgingPinnedActiveRepair({ candidate: <the sha THIS verdict judged>,
+   * repairQueue })` — never by re-deriving the comparison inline. The candidate must be the JUDGED
+   * sha (`observedCandidate`), not the current tip and not the frozen pin: the exemption is about
+   * what this verdict actually measured.
+   */
+  judgingPinnedActiveRepair: boolean;
+}
+
+/**
+ * PURE: release rule 5 when the "fossil" it found is a DELIBERATELY FROZEN repair head.
+ *
+ * Rule 5 (`candidate-fossil`) catches an ACCIDENTALLY stale candidate, whose red can dispatch
+ * agents against code the gate never judged as current — so it tells the reader to re-judge at tip
+ * and NOT to fix the tests the verdict names. Under freeze-and-converge that advice INVERTS. A
+ * frozen repair queue judges one immutable sha ON PURPOSE, and its head is designed to age past
+ * any wall-clock threshold while fixes land on it; its red IS the failing-test signature the queue
+ * needs in order to advance, and re-judging at tip is the one move the policy forbids (it discards
+ * the queue and restarts the treadmill D-007 diagnosed).
+ *
+ * So on a pinned active repair head rule 5 emits a confident instruction that is backwards on BOTH
+ * halves. This is the READ-side twin of the WRITE-side withholding rule; D-004 records that the
+ * pair must be repaired together, because fixing either alone re-creates the livelock.
+ *
+ * Returns the canonical NON-STALE triple rather than minting a new reason code. Two reasons:
+ *   • the actionable sentence already has an owner — `frozenRepairQueueSafeLever` defers to the
+ *     queue's own `nextAction` ("land your fix with release:repair-queue { op:'converge' }"), and
+ *     inventing second advice here is precisely what that function's contract warns against;
+ *   • the reason travels to a field literally named `verdictStaleReason`, so a non-null string
+ *     beside `stale:false` reads as a staleness complaint to every consumer that renders it.
+ * `candidateAgeMs` is preserved deliberately: the age is REAL and worth surfacing — what is wrong
+ * is calling it a fossil, not reporting it.
+ *
+ * A queue that has GIVEN UP is NOT exempt: `blocked`/`blockedReason` means no repair is advancing,
+ * so the red stops being anybody's working signature and the ordinary rules apply. That test lives
+ * inside `isJudgingPinnedActiveRepair`, which is why this takes its answer rather than the row.
+ *
+ * Guard note: this keys on `'candidate-fossil'` while both sibling reconcilers key on
+ * `'writer-starved'`, so the three are DISJOINT and chain order is not load-bearing between them.
+ * Do not introduce an ordering dependency without a test that pins it.
+ */
+export function reconcileGateVerdictFreshnessWithPinnedRepair(
+  freshness: GateVerdictFreshness,
+  pinned: PinnedActiveRepairReading | null | undefined,
+): GateVerdictFreshness {
+  if (freshness.reasonCode !== 'candidate-fossil' || pinned?.judgingPinnedActiveRepair !== true) {
+    return freshness;
+  }
+  return { ...freshness, stale: false, reason: null, reasonCode: null };
+}
+
 const short = (sha: string): string => sha.slice(0, 12);
 
 /**

@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 902,
+  "count": 903,
   "tools": [
     {
       "name": "ablation:report",
@@ -19770,9 +19770,46 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The owner just issued you an order/directive ('do X', 'stop Y', 'implement Z now') — file it THE MOMENT it lands, verbatim, before starting the work. You decide what rises to a directive; when in doubt about whether it will survive your loop agenda, record it.",
-        "notWhen": "Your own notes-to-self or self-imposed discipline (loop:checkpoint / work_items:checkpoint), a peer request (coord messages), a standing conclusion (facts:assert). Never paraphrase — the field is the owner's literal words.",
+        "when": "An owner order reached you WITHOUT a 'YOUR owner directive #N' notice (capture failed, or it came by another channel) — record it verbatim before starting the work.",
+        "notWhen": "The turn already carries 'YOUR owner directive #N': it is recorded; use #N (a re-record returns #N). Notes-to-self, peer requests, standing conclusions. Never paraphrase.",
         "chaining": "orders:record when the order lands → work it → orders:disposition { id, status, note } when done or declined. orders:list { open: true } shows what you still owe."
+      }
+    },
+    {
+      "name": "orders:reopen",
+      "http": {
+        "path": "/api/agent-tools/orders/reopen",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Reopen an owner directive that was closed (done/declined) by mistake, with a MANDATORY reason. Records who reopened it, why, and which close it undid.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A directive was closed wrongly — e.g. you closed another session's directive. Never undo a close with SQL.",
+        "notWhen": "The owner re-issued the order: that is a new directive, not a reopen."
       }
     },
     {
