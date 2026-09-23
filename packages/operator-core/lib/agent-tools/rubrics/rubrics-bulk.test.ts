@@ -153,7 +153,7 @@ const mockAcceptanceVetting = (cards: unknown[]) => {
 describe('rubrics:get handler (bulk keyed-array)', () => {
   it('inline { rubricRef } returns a single result', async () => {
     getM.mockResolvedValue({ id: 'r-1', criteria: [] } as never);
-    const b = await body(getTool, { rubricRef: 'r-1' });
+    const b = await body(getTool, { rubricRef: 'r-1', detail: 'full' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, rubricRef: 'r-1', rubric: { id: 'r-1' } });
   });
@@ -165,7 +165,7 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     const dispatched = await dispatchProjectedTool(
       projected!,
       'rubrics:get',
-      { ref: 'r-1' },
+      { ref: 'r-1', detail: 'full' },
       {
         log: vi.fn(),
         signal: new AbortController().signal,
@@ -198,7 +198,7 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     const dispatched = await dispatchProjectedTool(
       projected!,
       'rubrics:get',
-      { slug: 'r-1' },
+      { slug: 'r-1', detail: 'full' },
       {
         log: vi.fn(),
         signal: new AbortController().signal,
@@ -231,7 +231,7 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     const dispatched = await dispatchProjectedTool(
       projected!,
       'rubrics:get',
-      { id: 'r-1' },
+      { id: 'r-1', detail: 'full' },
       {
         log: vi.fn(),
         signal: new AbortController().signal,
@@ -260,7 +260,7 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
   it('normalizes typed plan provenance refs for lookup while preserving the keyed input ref', async () => {
     getM.mockImplementation(async (id: string) => (id === 'plan-class-feature-ship' ? RUBRIC_R1 : null));
 
-    const b = await body(getTool, { ref: 'plan:plan-class-feature-ship' });
+    const b = await body(getTool, { ref: 'plan:plan-class-feature-ship', detail: 'full' });
 
     expect(b.results[0]).toMatchObject({
       ok: true,
@@ -291,7 +291,7 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     const dispatched = await dispatchProjectedTool(
       projected!,
       'rubrics:get',
-      { rubricRef: 'r-1', harness: 'papercusp' },
+      { rubricRef: 'r-1', harness: 'papercusp', detail: 'full' },
       {
         log: vi.fn(),
         signal: new AbortController().signal,
@@ -520,7 +520,9 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     }));
     mockResolvedTyped(getM, { ...RUBRIC_R1, rubricId: 'large-rubric', criteria });
 
-    const raw = await body(getTool, { rubricRef: 'large-rubric' });
+    // EI-21406267171411887's property now belongs to the FULL body (P-007 made summary the
+    // default): a grader who asks for detail:'full' must get every criterion un-projected.
+    const raw = await body(getTool, { rubricRef: 'large-rubric', detail: 'full' });
     const rawChars = JSON.stringify(raw).length;
     expect(rawChars).toBeGreaterThan(PAYLOAD_TIER_RATCHET_CHARS);
     expect(rawChars).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
@@ -531,7 +533,7 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     const dispatched = await dispatchProjectedTool(
       projected!,
       'rubrics:get',
-      { rubricRef: 'large-rubric' },
+      { rubricRef: 'large-rubric', detail: 'full' },
       {
         log: vi.fn(),
         signal: new AbortController().signal,
@@ -562,6 +564,45 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
       criteria.map((criterion) => criterion.key),
     );
     expect(payload?.results[0]?.rubric?.criteria.every((criterion) => criterion.method.length > 120)).toBe(true);
+  });
+
+  // review-system-rework-reduction-2026-09-23 P-007, clause RSR-P-007-A. Falsifier: the
+  // default response carries the full body, or omits the ref to it.
+  it('defaults to a criteria index plus a fullBody ref, and returns criteria prose only with detail:"full"', async () => {
+    const criteria = Array.from({ length: 26 }, (_, i) => ({
+      key: `criterion-${i + 1}`,
+      title: `Criterion ${i + 1}`,
+      model: `model-${i + 1} ${'m'.repeat(200)}`,
+      method: `method-${i + 1} ${'m'.repeat(200)}`,
+      driftMarkers: `drift-${i + 1} ${'d'.repeat(200)}`,
+    }));
+    mockResolvedTyped(getM, { ...RUBRIC_R1, rubricId: 'large-rubric', criteria, criteriaHash: 'sha256:criteria' });
+
+    const summary = await body(getTool, { rubricRef: 'large-rubric' });
+    const full = await body(getTool, { rubricRef: 'large-rubric', detail: 'full' });
+
+    const compact = summary.results[0];
+    expect(compact).toMatchObject({
+      ok: true,
+      rubricRef: 'large-rubric',
+      detail: 'summary',
+      rubric: { rubricId: 'large-rubric', criteriaHash: 'sha256:criteria' },
+      fullBody: {
+        tool: 'rubrics:get',
+        args: { rubricRef: 'large-rubric', detail: 'full' },
+        omitted: expect.arrayContaining(['rubric.criteria[].model', 'rubric.criteria[].method']),
+      },
+    });
+    expect(compact.rubric.criteria.map((c: { key: string }) => c.key)).toEqual(criteria.map((c) => c.key));
+    for (const criterion of compact.rubric.criteria) {
+      expect(criterion).not.toHaveProperty('model');
+      expect(criterion).not.toHaveProperty('method');
+      expect(criterion).not.toHaveProperty('driftMarkers');
+    }
+
+    expect(full.results[0]).not.toHaveProperty('fullBody');
+    expect(full.results[0].rubric.criteria[0].method.length).toBeGreaterThan(200);
+    expect(JSON.stringify(summary).length).toBeLessThan(JSON.stringify(full).length / 4);
   });
 
   it("declares the full rubric body oversize-by-design so the outer result door cannot hide criteria", () => {
@@ -610,7 +651,9 @@ describe('rubrics:ratify handler (bulk keyed-array)', () => {
  * 'rubricRef', so it stays true if the canonical spelling is ever renamed again.
  */
 describe('bulk result rows round-trip into the input schema', () => {
-  const NON_KEY_FIELDS = new Set(['ok', 'rubric', 'vetting', 'error', 'completeness', 'replicationSqlCheck']);
+  // `fullBody` (P-007) is a recovery REF to the full read, not an identifying key; its own
+  // `args` are asserted to be accepted input by the P-007 test above.
+  const NON_KEY_FIELDS = new Set(['ok', 'rubric', 'vetting', 'error', 'completeness', 'replicationSqlCheck', 'fullBody']);
 
   const inputKeys = (toolName: string): string[] => {
     const tool = lookupByMcpName(toolName);
