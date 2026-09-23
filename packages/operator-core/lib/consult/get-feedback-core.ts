@@ -236,7 +236,10 @@ async function stampAnsweringOwner(
        SET routing = jsonb_set(
              routing,
              ARRAY['selection', 'selected', ${String(cursor)}, 'answeringOwnerId'],
-             ${JSON.stringify(answeringOwnerId)}::jsonb
+             -- to_jsonb, NOT a JSON.stringify'd parameter cast ::jsonb — see
+             -- cascade-core's stamp: the double-encoded form stores "\"su-x\""
+             -- and the answering session is then refused not_a_participant.
+             to_jsonb(${answeringOwnerId}::text)
            )
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
        AND routing #>> ARRAY['selection', 'selected', ${String(cursor)}, 'ownerId'] IS NOT NULL

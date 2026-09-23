@@ -322,7 +322,12 @@ async function stampAnsweringOwner(
        SET routing = jsonb_set(
              routing,
              ARRAY['selection', 'selected', ${String(cursor)}, 'answeringOwnerId'],
-             ${JSON.stringify(answeringOwnerId)}::jsonb
+             -- to_jsonb, NOT a JSON.stringify'd parameter cast ::jsonb: the
+             -- driver JSON-encodes the already-quoted text again, storing
+             -- "\"su-x\"". The stamp then matches no author, so the answering
+             -- session is refused not_a_participant by its own launcher —
+             -- silently, because the write succeeds.
+             to_jsonb(${answeringOwnerId}::text)
            )
      WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
        AND routing #>> ARRAY['selection', 'selected', ${String(cursor)}, 'ownerId'] IS NOT NULL
