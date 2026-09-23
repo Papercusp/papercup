@@ -304,6 +304,23 @@ pub fn stamp_json() -> Value {
     })
 }
 
+/// Run an executable that was written moments ago. A fork on another thread
+/// can briefly inherit the writer's descriptor, and exec then fails ETXTBSY
+/// until that child execs; retry for a moment rather than refuse a good release.
+fn output_of_fresh_executable(command: &mut Command) -> std::io::Result<std::process::Output> {
+    const ETXTBSY: i32 = 26; // the same errno on Linux and macOS
+    let mut attempts = 0;
+    loop {
+        match command.output() {
+            Err(error) if error.raw_os_error() == Some(ETXTBSY) && attempts < 20 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            result => return result,
+        }
+    }
+}
+
 fn verify_executes_here(unit: &ReleaseUnit) -> Result<()> {
     let here = install::this_target();
     if let Some(target) = unit.manifest.target.as_deref() {
@@ -312,9 +329,7 @@ fn verify_executes_here(unit: &ReleaseUnit) -> Result<()> {
         }
     }
     let binary = unit.root.join("bin").join("pui");
-    let output = Command::new(&binary)
-        .args(["self", "stamp"])
-        .output()
+    let output = output_of_fresh_executable(Command::new(&binary).args(["self", "stamp"]))
         .with_context(|| format!("run {} on {here}", binary.display()))?;
     if !output.status.success() {
         bail!(
@@ -2228,6 +2243,27 @@ mod tests {
         drop(source);
         assert!(!unpacked.exists(), "the unpacked archive is cleaned up");
         assert_eq!(current_id(&layout).as_deref(), Some("0.1.0-aaaaaaaaaaaa"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_fresh_executable_still_open_for_writing_runs_once_released() {
+        use std::io::Write;
+        let dir = tempdir().unwrap();
+        let script = dir.path().join("probe");
+        let mut writer = fs::File::create(&script).unwrap();
+        writer.write_all(b"#!/bin/sh\necho ok\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        // The race a parallel fork produces: exec refused while a writer is open.
+        let busy = Command::new(&script).output().unwrap_err();
+        assert_eq!(busy.raw_os_error(), Some(26), "{busy}");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(writer);
+        });
+        let output = output_of_fresh_executable(&mut Command::new(&script)).unwrap();
+        release.join().unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
     }
 
     #[test]
