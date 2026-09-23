@@ -66,17 +66,27 @@ PASTE_WRAPPER_RE = re.compile(r'^\s*<pasted_content id="([A-Za-z0-9_-]{1,64})">\
 def unwrap_whole_paste(s):
     pm = PASTE_WRAPPER_RE.match(s)
     return pm.group(2) if pm else s
-# Known CLI-internal machine surfaces (e.g. Claude's background-task notification,
-# which self-labels "[SYSTEM NOTIFICATION - NOT USER INPUT]") are unenrollable —
-# no envelope, no ledger row — but are NOT the owner (EI-9904).
-MACHINE_SURFACE_RE = re.compile(r'\[\s*SYSTEM NOTIFICATION\b[^\]]*\bNOT USER INPUT\b[^\]]*\]', re.IGNORECASE)
+# Known CLI- and Papercusp-generated surfaces are unenrollable — they are NOT
+# owner speech even when they arrive beside owner text or without a usable ledger
+# row. EI-23939035885382855: a leading-only envelope check let a wake-pump block
+# appended to owner words fall through to the OWNER branch; #77 also showed a
+# checkpoint-only carry prompt being captured as an owner directive.
+MACHINE_SURFACE_RE = re.compile(
+    r'\[\s*SYSTEM NOTIFICATION\b[^\]]*\bNOT USER INPUT\b[^\]]*\]'
+    r'|⟦turn-origin:[A-Za-z0-9:._@-]+ nonce:[a-f0-9]{8,64}⟧'
+    r'|\[await-event\]'
+    r'|⟦CTRL:[^\r\n⟧]+⟧'
+    r'|^\s*## Orientation(?:\b|$)'
+    r'|^\s*loop:checkpoint\s+\{\s*checks\s*\}\s*\):',
+    re.IGNORECASE | re.MULTILINE,
+)
 # EI-18112745557098348: a native background-task completion can also arrive as
 # a BARE <task-notification> block with no banner around it — match the tag
 # itself (head-anchored, mirrors turn-ref.ts's MACHINE_SURFACE_PATTERNS).
-TASK_NOTIFICATION_TAG_RE = re.compile(r'^\s*<task-notification\b', re.IGNORECASE)
+TASK_NOTIFICATION_TAG_RE = re.compile(r'^\s*<task-notification\b', re.IGNORECASE | re.MULTILINE)
 
 def is_machine_surface(s):
-    return bool(MACHINE_SURFACE_RE.search(s) or TASK_NOTIFICATION_TAG_RE.match(s))
+    return bool(MACHINE_SURFACE_RE.search(s) or TASK_NOTIFICATION_TAG_RE.search(s))
 
 def normalize(s):
     return re.sub(r'\r\n?', '\n', s).strip()

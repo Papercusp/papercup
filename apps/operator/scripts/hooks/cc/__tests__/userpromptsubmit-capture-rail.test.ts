@@ -366,6 +366,36 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     expect(captureCalls()).toHaveLength(0);
   });
 
+  it('owner words followed by a wake-pump envelope are not stored as literal owner text', async () => {
+    const prompt =
+      'Please ship the approved change. ' +
+      '⟦turn-origin:wake-pump nonce:aabbccddeeff0011⟧\n' +
+      '[await-event] coord:inbox-wake:session-123 fired — continue the work that was waiting on it.';
+    const ctx = contextOf(await runHook({ prompt, session_id: 'native-session-mixed' }));
+
+    // The envelope is embedded after ordinary words, so the head-anchored
+    // classifier would otherwise call this OWNER and capture the whole string.
+    expect(ctx).toContain('MACHINE-GENERATED SURFACE');
+    expect(ctx).not.toContain('OWNER (interactive)');
+    expect(captureCalls()).toHaveLength(0);
+    expect(calls.some((c) => c.name === 'sessions:record-prompt-origin')).toBe(false);
+  });
+
+  it('a checkpoint-only carry prompt with no owner words is never captured as an owner directive', async () => {
+    const prompt =
+      'loop:checkpoint { checks }):\n' +
+      '  • ✓ On plan example-plan the stored checkpoint was refreshed by the prior agent.\n' +
+      'work_items:checkpoint { id: "EI-123", checkpoint: "continue the prior task" }';
+    const ctx = contextOf(await runHook({ prompt, session_id: 'native-session-checkpoint' }));
+
+    // Mirrors the observed #77 shape: a machine carry starts with a checkpoint
+    // render and contains no actual owner-typed words.
+    expect(ctx).toContain('MACHINE-GENERATED SURFACE');
+    expect(ctx).not.toContain('OWNER (interactive)');
+    expect(captureCalls()).toHaveLength(0);
+    expect(calls.some((c) => c.name === 'sessions:record-prompt-origin')).toBe(false);
+  });
+
   it('CONTROL: an empty prompt is a silent no-op and captures nothing', async () => {
     writeMachineRow();
     const out = await runHook({ prompt: '   ', session_id: 'native-session-eee' });
