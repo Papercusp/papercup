@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import type { Reporter, TestModule } from 'vitest/node';
 import {
-  parseAcceptanceLine, parseHarnessLine, REPO_ROOT, type EvidenceRow, type HarnessStamp,
+  parseAcceptanceLines, parseHarnessLine, REPO_ROOT, type EvidenceRow, type HarnessStamp,
 } from './release-acceptance';
 
 type ConsoleLog = Parameters<NonNullable<Reporter['onUserConsoleLog']>>[0];
@@ -61,25 +61,33 @@ export default class ReleaseAcceptanceReporter implements Reporter {
       let harness: HarnessStamp | null = null;
       for (const log of own) harness = parseHarnessLine(log.content) ?? harness;
       for (const log of own) {
-        const line = parseAcceptanceLine(log.content);
-        const testCase = line ? tests.get(log.taskId!) : undefined;
-        if (!line || !testCase) continue;
-        const binary = text(line.payload.binary) ?? harness?.binary ?? null;
-        rows.push({
-          tag: line.tag,
+        const testCase = tests.get(log.taskId!);
+        if (!testCase) continue;
+        const { lines, unparsed } = parseAcceptanceLines(log.content);
+        const base = {
           test: testCase.fullName,
           module: path.relative(REPO_ROOT, module.moduleId),
           state: testCase.result().state,
           harness,
           ...context,
-          binary,
-          binaryRealpath: realpath(binary),
-          binarySha256: text(line.payload.binarySha256) ?? harness?.binarySha256 ?? null,
-          correlation: {
-            chatId: text(line.payload.chatId),
-            traffic: Array.isArray(line.payload.traffic) ? line.payload.traffic : [],
-          },
-        });
+        };
+        for (const line of lines) {
+          const binary = text(line.payload.binary) ?? harness?.binary ?? null;
+          rows.push({
+            ...base,
+            tag: line.tag,
+            binary,
+            binaryRealpath: realpath(binary),
+            binarySha256: text(line.payload.binarySha256) ?? harness?.binarySha256 ?? null,
+            correlation: {
+              chatId: text(line.payload.chatId),
+              traffic: Array.isArray(line.payload.traffic) ? line.payload.traffic : [],
+            },
+          });
+        }
+        for (const tag of unparsed) {
+          rows.push({ ...base, tag, binary: null, binaryRealpath: null, binarySha256: null, correlation: null, unparsed: true });
+        }
       }
     }
     mkdirSync(path.dirname(out), { recursive: true });
