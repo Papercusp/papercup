@@ -432,28 +432,44 @@ describe('resolveWorkspaceHostInitializationOperationsForHost', () => {
         ? Response.json({ queryValue: { items: guestHostKeys() } })
         : Response.json({ name: 'delegated-vm', id: INSTANCE_ID, status: 'RUNNING' });
     });
-    const spec = desired({
-      credentials: { cloudCredentialRef: { kind: 'cloud', ref: credentialRef } },
-      provider: {
-        hostedDelegation: {
-          schemaVersion: 'hosted-provider-delegation-v1',
-          workspaceId: 'workspace-1', connectionId: 'connection-1', credentialRef,
-          provider: 'gcp', generation: 1, status: 'verified',
-        },
-      },
-    } as never);
+    const hostedDelegation = {
+      schemaVersion: 'hosted-provider-delegation-v1',
+      workspaceId: 'workspace-1', connectionId: 'connection-1', credentialRef,
+      provider: 'gcp', generation: 1, status: 'verified',
+    };
+    // Production shape: the delegation lives on the host's CONNECTION (hosted-provider-delegation.ts
+    // connectionProviderConfig), never in the desired spec — where provisioning reads it too.
+    const spec = desired({ credentials: { cloudCredentialRef: { kind: 'cloud', ref: credentialRef } } } as never);
+    const connectionProvider = { hostedDelegation, projectId: 'papercusp-hosted-workspaces' };
+    const readConnection = vi.fn(async () => ({
+      id: 'connection-1', label: 'hosted', target: 'gcp', status: 'connected' as const,
+      connection: { target: 'gcp', cloudCredentialRef: { kind: 'cloud', ref: credentialRef }, provider: connectionProvider },
+    }));
 
     await resolveWorkspaceHostInitializationOperationsForHost({
       workspaceId: 'workspace-1', hostId: spec.hostId, controller,
-      readDesiredSpec: async () => ({ desired: spec }),
+      readDesiredSpec: async () => ({ desired: spec, connectionId: 'connection-1' }),
+      readConnection: readConnection as never,
       resolveHostedAuth,
       gcpFetch,
       enrollHostKeys: async () => undefined,
     });
 
-    expect(resolveHostedAuth).toHaveBeenCalledWith({ credentialRef, provider: spec.provider });
+    expect(readConnection).toHaveBeenCalledWith('workspace-1', 'connection-1');
+    expect(resolveHostedAuth).toHaveBeenCalledWith({ credentialRef, provider: connectionProvider });
     // incarnation read, hostkeys/ read, incarnation re-read (WI-10002493) — all on the delegated token.
     expect(gcpFetch).toHaveBeenCalledTimes(3);
+
+    // A delegation carried only by the desired spec is not a credential source.
+    const authCalls = resolveHostedAuth.mock.calls.length;
+    await expect(resolveWorkspaceHostInitializationOperationsForHost({
+      workspaceId: 'workspace-1', hostId: spec.hostId, controller,
+      readDesiredSpec: async () => ({ desired: { ...spec, provider: { ...spec.provider, hostedDelegation } } }),
+      resolveHostedAuth,
+      gcpFetch,
+      enrollHostKeys: async () => undefined,
+    })).rejects.toThrow('gcp_workspace_host_hosted_connection_missing');
+    expect(resolveHostedAuth).toHaveBeenCalledTimes(authCalls);
   });
 
   it('pins the incarnation read on BOTH sides of the key read, and hands the same id to the adapter', async () => {
