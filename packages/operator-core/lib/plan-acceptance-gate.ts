@@ -136,6 +136,13 @@ export type PlanAcceptanceGateCode =
   /** Never accompanies a refusal (the census degrades to report-only), carried for the union's honesty. */
   | 'spec_coverage_unavailable';
 
+/** Codes that can be recorded in forcedPast. BAR lifecycle codes remain
+ * distinct from the gate's top-level refusal-code vocabulary. */
+export type PlanAcceptanceGateWaivedCheck =
+  | PlanAcceptanceGateCode
+  | 'bar_snapshot_proof_inadequate'
+  | 'bar_snapshot_proof_stale';
+
 export interface PlanAcceptanceGateVerdict {
   /** The loaded operator build that produced this time-sensitive verdict. */
   buildProvenance: BuildInfo;
@@ -259,7 +266,7 @@ export interface PlanAcceptanceGateVerdict {
   /** Set when an explicit reasoned `force` waived the code-truth checks (D-003). The
    *  caller stamps this on the plan so the waiver is permanent and visible, never a
    *  silent bypass — a force that is easy to hide is worth very little. */
-  forcedPast?: { reason: string; checks: PlanAcceptanceGateCode[] };
+  forcedPast?: { reason: string; checks: PlanAcceptanceGateWaivedCheck[] };
   /** EI-20821478338037350: the vetting attestation that satisfied the gate was made
    *  over a consult NOBODY critiqued, under an explicit recorded waiver. The ship is
    *  allowed (a dead reviewer pool is a real condition), but for the same reason
@@ -326,9 +333,11 @@ export interface PlanAcceptanceGateOpts {
    * It deliberately does NOT waive the rubric family. Those three refusals encode a
    * different owner ruling (an acceptance rubric, graded by someone other than its
    * author) and widening force to cover them would collapse two independent guards
-   * into one switch.
+   * into one switch. When `acceptanceBarProofMetadata` is true, the reason is instead
+   * confined to the two explicitly listed BAR proof metadata codes and does not
+   * activate this code-truth waiver.
    */
-  force?: { reason: string };
+  force?: { reason: string; acceptanceBarProofMetadata?: boolean };
   /**
    * Read the gate for GRADER RECRUITMENT rather than shipment. The real ship gate
    * remains strict: every plan item must be terminal. Recruitment may look past an
@@ -480,6 +489,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   // them: the code-truth checks and the rubric checks are independently killable, so
   // rolling back one must not silently disable the other.
   const rubricGate = await getFlag(FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE, 'system').catch(() => true);
+  const forcedChecks: PlanAcceptanceGateWaivedCheck[] = [];
   let deferredBarShipRefusal: PlanAcceptanceGateVerdictWithoutBuildProvenance | undefined;
   // A BAR can already have a complete grading that belongs to an older rubric
   // revision.  That is still a grader gap, but the ordinary rubric-family read
@@ -600,7 +610,17 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
             'Adopt the complete original requirement set and its work mappings before shipment; an as-built rubric or disclosure cannot replace it. This is not waived by force.',
         };
       }
-      if (!barLifecycle.satisfied) {
+      const proofMetadataCodes = opts.force?.acceptanceBarProofMetadata
+        ? barLifecycle.codes.filter((code): code is 'bar_snapshot_proof_inadequate' | 'bar_snapshot_proof_stale' =>
+            code === 'bar_snapshot_proof_inadequate' || code === 'bar_snapshot_proof_stale')
+        : [];
+      const proofMetadataOnlyFailure =
+        !barLifecycle.satisfied &&
+        barLifecycle.applicable &&
+        barLifecycle.codes.length > 0 &&
+        proofMetadataCodes.length === barLifecycle.codes.length;
+      if (proofMetadataOnlyFailure) forcedChecks.push(...proofMetadataCodes);
+      if (!barLifecycle.satisfied && !proofMetadataOnlyFailure) {
         const refusal: PlanAcceptanceGateVerdictWithoutBuildProvenance = {
           satisfied: false,
           code: 'acceptance_bar_contract_not_ready',
@@ -645,7 +665,6 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   // Ordered cheapest-to-understand first, and ahead of the rubric checks because the
   // audit is authored BEFORE the rubric (D-004): refusing on a missing rubric while
   // the plan still has unbuilt items would send the agent to the wrong repair.
-  const forcedChecks: PlanAcceptanceGateCode[] = [];
   // D-035: collected in the nested code-truth block below and read at the final return,
   // so it is declared at function scope alongside forcedChecks for the same reason.
   let requirementExemptions: ExemptMapping[] = [];
@@ -659,7 +678,9 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
    * than a separately-derived path list that could drift from it.
    */
   const citedEvidencePaths = new Set<string>();
-  const force = opts.force;
+  // Setting the BAR metadata option selects its narrow waiver lane: the reason
+  // must not also activate the separate code-truth waiver.
+  const force = opts.force?.acceptanceBarProofMetadata === true ? undefined : opts.force;
 
   // A plan's Now/decision prose is the durable hand-off read by the independent
   // grader. Refuse a ship when it cites only a scratch path, loopback preview, or
@@ -992,7 +1013,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       satisfied: true,
       skipped: 'flag-off',
       ...(specCoverage ? { specCoverage } : {}),
-      ...(forcedChecks.length > 0 && force ? { forcedPast: { reason: force.reason, checks: forcedChecks } } : {}),
+      ...(forcedChecks.length > 0 && opts.force ? { forcedPast: { reason: opts.force.reason, checks: forcedChecks } } : {}),
     };
   }
 
@@ -1547,7 +1568,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     gradedVia: independentVia,
     ...(unknownRatedCriteria.length > 0 ? { unknownRatedCriteria } : {}),
     ...(citationDeployment ? { citationDeployment } : {}),
-    ...(forcedChecks.length > 0 && force ? { forcedPast: { reason: force.reason, checks: forcedChecks } } : {}),
+    ...(forcedChecks.length > 0 && opts.force ? { forcedPast: { reason: opts.force.reason, checks: forcedChecks } } : {}),
   };
 }
 

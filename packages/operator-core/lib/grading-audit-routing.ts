@@ -11,12 +11,14 @@ import { resolveSessionStates, type LivenessVerdict } from './agent-tools/coordi
 export interface SourceAuditRouteInput {
   card: ScorecardRow;
   reservationKey: string;
+  reservationReservedAt: string;
   brief: string;
   ctx: ResolveIdentityCtx;
   harness?: string;
 }
 export type SourceAuditRouteResult =
   | { state: 'routed' | 'deduped'; conversationId: string; reason?: string }
+  | { state: 'reservation-lost'; reason: string }
   | { state: 'fallback'; reason: string };
 
 /** Resolve lineage BEFORE selection so minimum-fill, refill and revival all
@@ -45,6 +47,8 @@ export async function routeSourceGradingAudit(
   deps: {
     getSql?: () => Sql;
     feedback?: typeof getFeedbackProd;
+    /** The only authorized route is the dispatcher that still owns this exact lease epoch. */
+    confirmReservation?: () => Promise<boolean>;
     resolveParties?: typeof lineagePartyKeys;
     resolveResponderLiveness?: (
       ownerId: string,
@@ -54,6 +58,10 @@ export async function routeSourceGradingAudit(
   const identity = resolveAgentIdentity(input.ctx);
   const workspaceId = input.ctx.workspaceId?.trim() || identity.workspaceId;
   if (!workspaceId) throw new Error('source audit workspace is unknown');
+  const confirmReservation = deps.confirmReservation;
+  if (!input.reservationReservedAt?.trim() || !confirmReservation || !(await confirmReservation())) {
+    return { state: 'reservation-lost', reason: 'current grading-audit reservation epoch is not owned by this dispatch' };
+  }
   const sql = (deps.getSql ?? (() => getOrgPg().sql))();
   const resolveResponderState =
     deps.resolveResponderLiveness ??
@@ -115,6 +123,9 @@ export async function routeSourceGradingAudit(
   if (active[0] && !retiredStaleResponder && active[0].state !== 'closed_answered') {
     return { state: 'fallback', reason: `existing router cascade exhausted (${active[0].state}); bounded launch fallback` };
   }
+  if (!(await confirmReservation())) {
+    return { state: 'reservation-lost', reason: 'grading-audit reservation changed before consult recruitment' };
+  }
   const result = await (deps.feedback ?? getFeedbackProd)({
     workspaceId, requesterId: identity.ownerId,
     question: input.brief,
@@ -124,7 +135,7 @@ export async function routeSourceGradingAudit(
     latencyContract: 'hard-blocked',
     ...(input.harness ? { harnessSlug: input.harness } : {}),
     cascade: { flavor: 'grading-integrity', issueId: input.card.issueId,
-      reservationKey: input.reservationKey, brief: input.brief },
+      reservationKey: input.reservationKey, reservationReservedAt: input.reservationReservedAt, brief: input.brief },
   }, identity, {
     filterRoute: (route) => independentSourceAuditRoute(route, input.card, workspaceId, deps.resolveParties),
   });

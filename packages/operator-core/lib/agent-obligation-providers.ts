@@ -21,6 +21,7 @@ import type { GoalPlanFleetAlert } from './system-health/goal-drain-fleet-watchd
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import type { PlanAcceptanceGateCode, PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
+import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools/plans/plan-admission-preflight';
 
 export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v4';
 export const OWNER_REPORT_OBLIGATION_REVISION = 'goal-owner-report-v1';
@@ -167,6 +168,8 @@ export interface PlanPlacementProviderInput extends ProviderBase {
     portfolio: GoalPortfolioBrief | null;
     /** The exact launch-boundary resolution for the intended launch count. */
     launch: GoalLaunchResolution | null;
+    /** Caller-neutral exact-plan preflight by canonical plan ref; null means unreadable. */
+    admissions?: Record<string, ExactPlanAdmission | null>;
     /** The live cohort classifier corroborates the richer placement receipt. */
     alert: GoalPlanFleetAlert | null;
     /** Evidence ref for the exact joined cohort/classifier observation. */
@@ -179,6 +182,36 @@ export interface PlanPlacementProviderInput extends ProviderBase {
 }
 
 type GoalPortfolioPlan = GoalPortfolioBrief['worklist'][number];
+
+/** Use the same plan ordering for the reader's launch check and the provider's action. */
+export function selectGoalPlacementPlan(
+  portfolio: GoalPortfolioBrief,
+  admissions?: Readonly<Record<string, ExactPlanAdmission | null>>,
+): GoalPortfolioPlan | undefined {
+  const actionable = portfolio.worklist.filter(
+    (plan) => plan.placement.state !== 'terminal' && !plan.placement.reconciliation.consistent,
+  );
+  const candidates = actionable.filter((plan) =>
+    plan.placement.state === 'unplaced' || plan.placement.state === 'admitting',
+  );
+  // An already-admitting transaction stays actionable. For a fresh launch,
+  // prefer the first independently admissible plan over an earlier blocked one.
+  return (admissions
+    ? candidates.find((plan) => plan.placement.state === 'admitting' || admissions[plan.ref]?.ready)
+    : candidates[0]) ?? candidates[0] ?? actionable[0];
+}
+
+const EXACT_PLAN_REFUSAL_GUIDANCE = {
+  'plan-not-found': { status: 'unknown', summary: 'refresh the plan link and canonical worklist before deciding whether to create or adopt work' },
+  'no-actionable-plan-items': { status: 'blocked', summary: 'repair the plan DAG or finish evidenced closure; do not open an idle fleet' },
+  'promotion-lag': { status: 'blocked', summary: 'run the existing plans:start promotion path after its normal review and approval gates, then recheck admission' },
+  'duplicate-coverage': { status: 'blocked', summary: 'reconcile duplicate promoted work-item coverage before launching' },
+  'lane-unknown': { status: 'unknown', summary: 'refresh the exact-plan claim lane; unknown claimability is not an available seat' },
+  'floor-diagnostics-unavailable': { status: 'unknown', summary: 'repair the claim-lane diagnostic read before naming a floor or launching' },
+  'floor-gated': { status: 'blocked', summary: 'inspect the reported claim exclusions and repair the actual floor before retrying' },
+  'family-disagreement': { status: 'blocked', summary: 'reconcile the promoted row family and exact-plan claim filter before retrying' },
+  'insufficient-executable-width': { status: 'blocked', summary: 'reconcile occupied lanes and requested seats; launch only a separately verified executable width' },
+} satisfies Record<Exclude<ExactPlanAdmissionReason, 'ready'>, { status: 'blocked' | 'unknown'; summary: string }>;
 
 function placementNote(placement: GoalPlanPlacement): string {
   const fleet = placement.fleet
@@ -417,13 +450,10 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
   }
 
   const applicablePlans = portfolio.worklist.filter((plan) => plan.placement.state !== 'terminal');
-  const actionablePlans = applicablePlans.filter((plan) => !plan.placement.reconciliation.consistent);
   // Preserve canonical worklist ordering among feasible next actions. A
   // blocked earlier plan is not a prerequisite for an independent later one.
   // Retain the blocker as the fallback when no placement can advance.
-  const selected =
-    actionablePlans.find((plan) => plan.placement.state === 'unplaced' || plan.placement.state === 'admitting') ??
-    actionablePlans[0];
+  const selected = selectGoalPlacementPlan(portfolio, input.read.value.admissions);
   const progressPlan = selected ?? applicablePlans[0];
   let progressStalledAt: string | null = null;
   if (progressPlan && input.read.value.progress) {
@@ -525,6 +555,56 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
   const placement = selected.placement;
   const toolCall = placement.reconciliation.toolCall;
   const needsLaunch = toolCall !== null;
+  if (placement.state === 'unplaced' && needsLaunch && input.read.value.admissions) {
+    const admission = input.read.value.admissions[selected.ref];
+    if (!admission) return defineAgentObligation({
+      ...common,
+      scope: { ...scope, planSlug: selected.slug },
+      ...unknownPlacement(input, {
+        title: `Exact-plan admission for ${selected.slug} is unavailable`,
+        code: 'exact-plan-admission-unavailable',
+        detail: 'the exact-plan preflight for the selected action was not measured',
+        retry: 'refresh caller-neutral exact-plan admission for this plan and requested seat count',
+        applicableDemand: applicablePlans.length,
+        plan: selected,
+      }),
+    });
+    if (!admission.ready) {
+      const guidance = admission.reason === 'ready' ? null : EXACT_PLAN_REFUSAL_GUIDANCE[admission.reason];
+      if (!guidance) return defineAgentObligation({
+        ...common,
+        scope: { ...scope, planSlug: selected.slug },
+        ...unknownPlacement(input, {
+          title: `Exact-plan admission for ${selected.slug} is inconsistent`,
+          code: 'exact-plan-admission-inconsistent', detail: admission.message,
+          retry: 're-read the typed preflight verdict before selecting an action',
+          applicableDemand: applicablePlans.length, plan: selected,
+        }),
+      });
+      const admissionEvidence = evidence(
+        `exact-plan-admission:${selected.ref}:${input.sourceGeneration}`, input.observedAt,
+        input.sourceGeneration, `${admission.reason}: ${admission.message}`,
+      );
+      return defineAgentObligation({
+        ...common,
+        title: `Repair exact-plan admission for ${selected.slug}`,
+        scope: { ...scope, planSlug: selected.slug },
+        episode: `admission:${selected.ref}:${admission.reason}:${input.sourceGeneration}`,
+        status: guidance.status,
+        reason: admission.message,
+        causalRank: 0,
+        applicableDemand: applicablePlans.length,
+        evidence: [...placementEvidence(input, selected), admissionEvidence],
+        action: { kind: guidance.status === 'unknown' ? 'inspect' : 'repair',
+          summary: guidance.summary, targetRef: selected.ref },
+        ...(guidance.status === 'unknown' ? { measurementFailure: {
+          code: `exact-plan-admission-${admission.reason}`, detail: admission.message,
+          retry: guidance.summary,
+        } } : {}),
+        ...(ageMs == null ? {} : { ageMs }),
+      });
+    }
+  }
   if (needsLaunch && (!launch || launch.goalId !== input.goalId)) {
     return defineAgentObligation({
       ...common,

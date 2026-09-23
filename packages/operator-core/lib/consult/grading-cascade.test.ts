@@ -29,6 +29,9 @@ import {
   buildAssignedAcceptanceGraderBrief,
   buildMinimumFillAcceptanceGraderBrief,
   gradingCascadeWakeCopy,
+  sourceAuditCascadeMetaFromRouting,
+  sourceAuditWakeCopy,
+  type SourceAuditCascadeMeta,
   type GradingCascadeMeta,
 } from './grading-cascade';
 import { acceptanceReviewTargetConditionKey } from '../coord/condition-upsert';
@@ -70,6 +73,14 @@ const TARGET = {
 const RESERVATION = {
   conditionKey: acceptanceReviewTargetConditionKey(TARGET),
   id: 'WI-review-a',
+};
+
+const SOURCE_AUDIT: SourceAuditCascadeMeta = {
+  flavor: 'grading-integrity',
+  issueId: 'EI-source-audit',
+  reservationKey: 'grading-audit:EI-source-audit',
+  reservationReservedAt: '2026-09-23T18:00:00.000Z',
+  brief: 'Audit the frozen source evidence.',
 };
 
 describe('acceptance review-target reservation identity', () => {
@@ -167,5 +178,26 @@ describe('acceptance-grading no-claim guidance (EI-20249725405239230)', () => {
     // Guards the vacuity case directly: an empty FACT would make the line above
     // fail, but state it outright so the reason is legible at the failure site.
     expect(ACCEPTANCE_GRADING_NO_CLAIM_FACT.trim().length).toBeGreaterThan(40);
+  });
+});
+
+describe('grading-integrity reservation epoch guidance', () => {
+  it('preserves the exact dispatch lease and tells a later auditor to stop on mismatch', () => {
+    expect(sourceAuditCascadeMetaFromRouting({ cascade: SOURCE_AUDIT })).toEqual(SOURCE_AUDIT);
+    const legacy = sourceAuditCascadeMetaFromRouting({
+      cascade: { ...SOURCE_AUDIT, reservationReservedAt: undefined },
+    });
+    expect(legacy).toMatchObject({ flavor: 'grading-integrity', issueId: SOURCE_AUDIT.issueId });
+    expect(legacy?.reservationReservedAt).toBeUndefined();
+
+    const copy = sourceAuditWakeCopy(SOURCE_AUDIT, 'conv-source-audit');
+    expect(copy.body).toContain("key 'grading-audit:EI-source-audit'");
+    expect(copy.body).toContain("reservedAt '2026-09-23T18:00:00.000Z'");
+    expect(copy.body).toContain('Before reading criterion evidence');
+    expect(copy.body).toContain('If it does not, report the current state and stop.');
+
+    const legacyCopy = sourceAuditWakeCopy(legacy!, 'conv-legacy-source-audit');
+    expect(legacyCopy.body).toContain('Legacy grading-audit route');
+    expect(legacyCopy.body).toContain('report the missing epoch and stop');
   });
 });

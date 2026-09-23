@@ -128,8 +128,10 @@ describe('dispatchPendingGradingAudits', () => {
       expect.objectContaining({
         card: source,
         reservationKey: 'grading-audit:EI-routed',
+        reservationReservedAt: '2026-09-08T00:00:00.000Z',
         brief: expect.stringContaining('frozen-fingerprint'),
       }),
+      expect.objectContaining({ confirmReservation: expect.any(Function) }),
     );
     expect(result.receipts[0]).toMatchObject({ state: 'routed', conversationId: 'audit-consult' });
     expect(d.launch).not.toHaveBeenCalled();
@@ -143,6 +145,27 @@ describe('dispatchPendingGradingAudits', () => {
     const result = await reconcilePendingGradingAudits({ ctx }, d);
     expect(result.receipts[0]).toMatchObject({ state: 'deduped', conversationId: 'existing-consult' });
     expect(d.launch).not.toHaveBeenCalled();
+  });
+
+  it('skips a consult route that no longer owns the exact reservation epoch', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-reservation-lost')]);
+    d.route.mockResolvedValue({
+      state: 'reservation-lost',
+      reason: 'grading-audit reservation changed before consult recruitment',
+    });
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-reservation-lost'], ctx }, d);
+
+    expect(result.receipts[0]).toMatchObject({
+      state: 'skipped',
+      reason: 'grading-audit reservation changed before consult recruitment',
+    });
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(d.release).toHaveBeenCalledWith('EI-reservation-lost', 'grading-audit:EI-reservation-lost', {
+      workspaceId: 'ws-test',
+      reservedAt: '2026-09-08T00:00:00.000Z',
+    });
   });
 
   it('surfaces and backs off a routing failure, then a healthy retry creates exactly one consult', async () => {
@@ -160,9 +183,15 @@ describe('dispatchPendingGradingAudits', () => {
       .mockRejectedValueOnce(new Error('lineage unavailable'))
       .mockResolvedValueOnce({ state: 'routed', conversationId: 'healthy-consult' });
     d.reserve
-      .mockResolvedValueOnce({ status: 'claimed' })
+      .mockResolvedValueOnce({
+        status: 'claimed',
+        reservation: { key: 'grading-audit:EI-fault', reservedAt: '2026-09-08T00:00:00.000Z' },
+      })
       .mockResolvedValueOnce({ status: 'dispatch-backoff', backoff })
-      .mockResolvedValueOnce({ status: 'claimed' });
+      .mockResolvedValueOnce({
+        status: 'claimed',
+        reservation: { key: 'grading-audit:EI-fault', reservedAt: '2026-09-08T00:00:00.000Z' },
+      });
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const failed = await dispatchPendingGradingAudits({ targetIds: ['EI-fault'], ctx }, { ...d, now: () => now });
@@ -178,6 +207,7 @@ describe('dispatchPendingGradingAudits', () => {
       expect(failed.receipts[0]).toMatchObject({ state: 'failed', reason: 'lineage unavailable' });
       expect(d.release).toHaveBeenCalledWith('EI-fault', 'grading-audit:EI-fault', {
         workspaceId: 'ws-test',
+        reservedAt: '2026-09-08T00:00:00.000Z',
         backoff,
       });
       expect(warning).toHaveBeenCalledWith(
@@ -198,7 +228,10 @@ describe('dispatchPendingGradingAudits', () => {
   it('serializes concurrent routed dispatches through the existing card reservation', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-race')]);
-    d.reserve.mockResolvedValueOnce({ status: 'claimed' }).mockResolvedValue({ status: 'already-reserved' });
+    d.reserve.mockResolvedValueOnce({
+      status: 'claimed',
+      reservation: { key: 'grading-audit:EI-race', reservedAt: '2026-09-08T00:00:00.000Z' },
+    }).mockResolvedValue({ status: 'already-reserved' });
     d.route.mockResolvedValue({ state: 'routed', conversationId: 'one-consult' });
     const results = await Promise.all(
       [1, 2].map(() => dispatchPendingGradingAudits({ targetIds: ['EI-race'], ctx }, d)),
@@ -230,10 +263,11 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.confirmReservation).toHaveBeenCalledWith(
       'EI-settled-after-reservation',
       'grading-audit:EI-settled-after-reservation',
-      { workspaceId: 'ws-test' },
+      { workspaceId: 'ws-test', reservedAt: '2026-09-08T00:00:00.000Z' },
     );
     expect(d.release).toHaveBeenCalledWith('EI-settled-after-reservation', 'grading-audit:EI-settled-after-reservation', {
       workspaceId: 'ws-test',
+      reservedAt: '2026-09-08T00:00:00.000Z',
     });
     expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).not.toHaveBeenCalled();
@@ -263,6 +297,7 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.route).toHaveBeenCalledOnce();
     expect(d.release).toHaveBeenCalledWith('EI-settled-during-route', 'grading-audit:EI-settled-during-route', {
       workspaceId: 'ws-test',
+      reservedAt: '2026-09-08T00:00:00.000Z',
     });
     expect(d.launch).not.toHaveBeenCalled();
   });
@@ -421,6 +456,7 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch).not.toHaveBeenCalled();
     expect(d.release).toHaveBeenCalledWith('EI-live-auditor', 'grading-audit:EI-live-auditor', {
       workspaceId: 'ws-test',
+      reservedAt: '2026-09-08T00:00:00.000Z',
     });
   });
 
@@ -550,6 +586,8 @@ describe('dispatchPendingGradingAudits', () => {
     expect(brief).toContain("gradingAudit.state is exactly 'pending'");
     expect(brief).toContain("state is not 'pending' (including 'passed', 'failed', or 'cancelled')");
     expect(brief).toContain('superseded or retracted');
+    expect(brief).toContain("Dispatch lease: key 'grading-audit:EI-state-recheck', reservedAt '2026-09-08T00:00:00.000Z'");
+    expect(brief).toContain('Before reading criterion evidence');
   });
 
   it('selects a settled card whose audit identity is stale and forwards currentness for atomic reopening', async () => {
@@ -727,6 +765,7 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
     expect(d.release).toHaveBeenCalledWith('EI-launch-failure', 'grading-audit:EI-launch-failure', {
       workspaceId: 'ws-test',
+      reservedAt: '2026-09-08T00:00:00.000Z',
       backoff: {
         until: new Date(now + GRADING_AUDIT_FAILURE_BACKOFF_MS).toISOString(),
         source: 'retry-window',
@@ -1455,6 +1494,7 @@ describe('terminal grading-audit failures record a backoff only for a quota wall
 
     expect(d.release).toHaveBeenCalledWith('EI-walled', 'grading-audit:EI-walled', {
       workspaceId: 'ws-test',
+      reservedAt: '2026-09-08T00:00:00.000Z',
       backoff: {
         until: '2026-09-11T17:00:00.000Z',
         source: 'launcher-horizon',
@@ -1512,6 +1552,7 @@ describe('terminal grading-audit failures record a backoff only for a quota wall
     // Exact third argument: no `backoff` key at all, so the next sweep retries.
     expect(d.release).toHaveBeenCalledWith('EI-dead-receipt-twice', 'grading-audit:EI-dead-receipt-twice', {
       workspaceId: 'ws-test',
+      reservedAt: '2026-09-08T00:00:00.000Z',
     });
     expect(result.receipts[0]?.reason).not.toContain('suppressed');
   });

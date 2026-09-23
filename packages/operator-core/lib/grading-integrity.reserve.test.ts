@@ -4,7 +4,11 @@ const h = vi.hoisted(() => ({ boundedOrgTxn: vi.fn() }));
 
 vi.mock('./pg-bounded-txn', () => ({ boundedOrgTxn: h.boundedOrgTxn }));
 
-import { confirmPendingGradingAuditReservation, reservePendingGradingAudit } from './grading-integrity';
+import {
+  confirmPendingGradingAuditReservation,
+  releasePendingGradingAudit,
+  reservePendingGradingAudit,
+} from './grading-integrity';
 import type { ScorecardGradingAuditCurrentness } from './scorecards';
 
 type QueryResult = Record<string, unknown>[];
@@ -27,6 +31,7 @@ function transactionHarness(options: {
     if (text.includes('SELECT scorecard.feature_id') && text.includes("dispatchReservation'->>'key'")) {
       return options.confirmReservation ? [{ feature_id: 'EI-reserved' }] : [];
     }
+    if (text.includes("payload #- '{observation,gradingAudit,dispatchReservation}'")) return [];
     if (text.includes("'{observation,gradingAudit}'")) return [];
     if (text.includes("SELECT payload->'observation'->'gradingAudit'->>'state'")) {
       return [
@@ -59,6 +64,7 @@ describe('reservePendingGradingAudit', () => {
 
     const result = await confirmPendingGradingAuditReservation('EI-reserved', 'grading-audit:reserved', {
       workspaceId: 'ws-test',
+      reservedAt: '2026-09-08T00:00:00.000Z',
     });
 
     expect(result).toBe(true);
@@ -67,9 +73,16 @@ describe('reservePendingGradingAudit', () => {
         statement.text.includes('SELECT scorecard.feature_id') && statement.text.includes("dispatchReservation'->>'key'"),
     );
     expect(confirmation).toBeDefined();
-    expect(confirmation?.values).toEqual(['ws-test', 'EI-reserved', 'grading-audit:reserved']);
+    expect(confirmation?.values).toEqual([
+      'ws-test',
+      'EI-reserved',
+      'grading-audit:reserved',
+      '2026-09-08T00:00:00.000Z',
+      '2026-09-08T00:00:00.000Z',
+    ]);
     expect(confirmation?.text).toContain("gradingAudit'->>'state' = 'pending'");
     expect(confirmation?.text).toContain("gradingAudit'->'dispatchReservation'->>'key' = ?");
+    expect(confirmation?.text).toContain("gradingAudit'->'dispatchReservation'->>'reservedAt' = ?");
     expect(confirmation?.text).toContain("scorecard.payload->'observation'->'retracted' IS NULL");
     expect(confirmation?.text).toContain('NOT EXISTS');
     expect(confirmation?.text).toContain("superseder.payload->'observation'->>'supersedes' = scorecard.feature_id");
@@ -80,6 +93,21 @@ describe('reservePendingGradingAudit', () => {
       "superseder.payload->'observation'->>'sourceHive' IS NOT DISTINCT FROM scorecard.payload->'observation'->>'sourceHive'",
     );
     expect(confirmation?.text).toContain('FOR UPDATE');
+  });
+
+  it('releases only the reservation from its own epoch', async () => {
+    const { statements } = transactionHarness({ claim: false });
+
+    const result = await releasePendingGradingAudit('EI-reserved', 'grading-audit:reserved', {
+      workspaceId: 'ws-test',
+      reservedAt: '2026-09-08T00:00:00.000Z',
+    });
+
+    expect(result).toBe(false);
+    const release = statements.find((statement) => statement.text.includes('UPDATE harness_shared.work_items'));
+    expect(release?.text).toContain("gradingAudit'->'dispatchReservation'->>'key' = ?");
+    expect(release?.text).toContain("gradingAudit'->'dispatchReservation'->>'reservedAt' = ?");
+    expect(release?.values).toContain('2026-09-08T00:00:00.000Z');
   });
 
   it('does not report a live reservation for a retracted card from a stale candidate snapshot', async () => {

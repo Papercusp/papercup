@@ -19,7 +19,14 @@
  */
 
 import { getLongLivedAdminPool } from '../../long-lived-admin-pool';
-import type { MergeApplyFailure, MergeCursorPeerLifecycle, MergeCursorPeerLifecycleState, MergeCursorStore } from './read-merge';
+import {
+  NO_SNAPSHOT_APPLY,
+  type MergeApplyFailure,
+  type MergeCursorPeerLifecycle,
+  type MergeCursorPeerLifecycleState,
+  type MergeCursorStore,
+  type SnapshotApplyMark,
+} from './read-merge';
 
 /** Process-lived shared pool. `max: 2` is ample — the cursor does one load at boot + a
  *  small periodic upsert per fold, never a hot query path. Re-resolves the admin URL on
@@ -95,23 +102,61 @@ export function createPgMergeCursorStore(
       `;
       return new Map(rows.map((row) => [row.log_keyhex, row.apply_failure]));
     },
+    async loadSnapshotMarks(applyBinding: string | null): Promise<Map<string, SnapshotApplyMark>> {
+      // P-008 (migration 1206): the marks are trustworthy ONLY where their stamp equals
+      // the row's current position. A save that did not carry marks (an older build, a
+      // rolled-back build) moves `position` and leaves the stamp behind, and so does a
+      // hand edit of `position`. Both then read as unstamped (owe the next set), never
+      // as "skip".
+      const rows = await sqlProvider()<
+        { log_keyhex: string; snapshot_apply_through: string | number | null; snapshot_hole: string | number | null }[]
+      >`
+        SELECT log_keyhex, snapshot_apply_through, snapshot_hole
+        FROM harness_shared.substrate_merge_cursor
+        WHERE workspace_id = ${workspaceId}
+          AND harness_slug = ${harnessSlug}
+          AND apply_binding IS NOT DISTINCT FROM ${applyBinding}::text
+          AND snapshot_mark_position = position
+      `;
+      const out = new Map<string, SnapshotApplyMark>();
+      for (const r of rows) {
+        out.set(r.log_keyhex, {
+          applyThrough: r.snapshot_apply_through === null ? NO_SNAPSHOT_APPLY : Number(r.snapshot_apply_through),
+          hole: r.snapshot_hole === null ? null : Number(r.snapshot_hole),
+        });
+      }
+      return out;
+    },
     async save(
       positions: ReadonlyMap<string, number>,
       applyBinding: string | null,
       applyFailures?: ReadonlyMap<string, MergeApplyFailure>,
+      snapshotMarks?: ReadonlyMap<string, SnapshotApplyMark>,
     ): Promise<void> {
       if (positions.size === 0) return;
       const s = sqlProvider();
       const now = new Date();
-      const values = [...positions].map(([log_keyhex, position]) => ({
-        workspace_id: workspaceId,
-        harness_slug: harnessSlug,
-        log_keyhex,
-        position,
-        apply_binding: applyBinding,
-        updated_at: now,
-        ...(applyFailures ? { apply_failure: applyFailures.has(log_keyhex) ? s.json({ ...applyFailures.get(log_keyhex)! }) : null } : {}),
-      }));
+      const values = [...positions].map(([log_keyhex, position]) => {
+        // P-008: a log with no mark in a marks-carrying save gets a NULL stamp, so it
+        // reads back as unstamped instead of inheriting a mark from a stale position.
+        const mark = snapshotMarks?.get(log_keyhex);
+        return {
+          workspace_id: workspaceId,
+          harness_slug: harnessSlug,
+          log_keyhex,
+          position,
+          apply_binding: applyBinding,
+          updated_at: now,
+          ...(applyFailures ? { apply_failure: applyFailures.has(log_keyhex) ? s.json({ ...applyFailures.get(log_keyhex)! }) : null } : {}),
+          ...(snapshotMarks
+            ? {
+                snapshot_apply_through: mark && mark.applyThrough > NO_SNAPSHOT_APPLY ? mark.applyThrough : null,
+                snapshot_hole: mark ? mark.hole : null,
+                snapshot_mark_position: mark ? position : null,
+              }
+            : {}),
+        };
+      });
       await s`
         INSERT INTO harness_shared.substrate_merge_cursor ${s(
           values,
@@ -122,6 +167,9 @@ export function createPgMergeCursorStore(
           'apply_binding',
           'updated_at',
           ...(applyFailures ? ['apply_failure' as const] : []),
+          ...(snapshotMarks
+            ? (['snapshot_apply_through', 'snapshot_hole', 'snapshot_mark_position'] as const)
+            : []),
         )}
         ON CONFLICT (workspace_id, harness_slug, log_keyhex)
         DO UPDATE SET position = EXCLUDED.position,
@@ -130,6 +178,13 @@ export function createPgMergeCursorStore(
                       -- the healed progress would be discarded again on the next boot).
                       apply_binding = EXCLUDED.apply_binding,
                       ${applyFailures ? s`apply_failure = EXCLUDED.apply_failure,` : s``}
+                      ${
+                        snapshotMarks
+                          ? s`snapshot_apply_through = EXCLUDED.snapshot_apply_through,
+                              snapshot_hole = EXCLUDED.snapshot_hole,
+                              snapshot_mark_position = EXCLUDED.snapshot_mark_position,`
+                          : s``
+                      }
                       updated_at = EXCLUDED.updated_at
       `;
     },

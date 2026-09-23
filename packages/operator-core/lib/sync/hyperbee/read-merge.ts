@@ -533,6 +533,184 @@ export interface MergeCursor {
    * far-behind, for the life of this cursor.
    */
   snapshotSkipUnsafe?: Set<string>;
+  /**
+   * p2p-join-catchup-speed P-008 (endgame D-060): keyHex → the highest
+   * `coversUpTo` whose snapshot set this cursor OWES. A snapshot chunk is applied
+   * row by row only when its `coversUpTo` is at or below this watermark: the set
+   * this cursor was seeded from (fresh seed or the P-004 far-behind jump), or a set
+   * applied to cover a hole (below). Absent means -1. Any other skip-eligible set
+   * is redundant for this cursor, because it has already folded every op the set
+   * summarizes, so it is skipped without an apply (see `snapshotSetDisposition`).
+   *
+   * Monotone: raised, never cleared. Later sets sit at later positions with larger
+   * `coversUpTo`, so a stale watermark can never make one of them apply.
+   */
+  snapshotApplyThrough?: Map<string, number>;
+  /**
+   * P-008: keyHex → the highest log position this cursor moved PAST WITHOUT
+   * applying the op there: a null read (the D-024 version gate dropping an
+   * unknown-newer op, an undecodable op, or a WI-2003 dead-letter). Such a cursor
+   * has NOT folded the whole prefix, so the next snapshot set is not redundant for
+   * it. That set re-delivers the rows, which is the rolling-upgrade recovery
+   * `schema-skew-snapshot-recovery.test.ts` pins. While a hole is recorded, the next
+   * skip-eligible set is applied, and applying a set at `coversUpTo` c resolves
+   * every hole below c. Absent means no hole.
+   */
+  snapshotHole?: Map<string, number>;
+}
+
+/**
+ * P-008: the durable snapshot bookkeeping of one log, persisted beside its
+ * position (`substrate_merge_cursor.snapshot_apply_through` / `snapshot_hole`).
+ * `applyThrough` -1 means no seeded set is owed; `hole` null means none recorded.
+ */
+export interface SnapshotApplyMark {
+  applyThrough: number;
+  hole: number | null;
+}
+
+/** P-008: no seeded set owed. */
+export const NO_SNAPSHOT_APPLY = -1;
+
+/** P-008: how often an in-progress snapshot-set APPLY logs its progress. */
+export const SNAPSHOT_SET_PROGRESS_LOG_MS = 60_000;
+
+/**
+ * P-008: record that this cursor owes the snapshot set at `coversUpTo` (it was
+ * seeded or jumped there, or applies it to cover a hole). Raises the watermark and
+ * resolves every hole below `coversUpTo`, because the set re-delivers this log's
+ * winning op for every key below it.
+ */
+export function markSnapshotSeeded(cursor: MergeCursor, keyHex: string, coversUpTo: number): void {
+  const through = (cursor.snapshotApplyThrough ??= new Map());
+  through.set(keyHex, Math.max(through.get(keyHex) ?? NO_SNAPSHOT_APPLY, coversUpTo));
+  const hole = cursor.snapshotHole?.get(keyHex);
+  if (hole !== undefined && hole < coversUpTo) cursor.snapshotHole?.delete(keyHex);
+}
+
+/** P-008: the cursor moved past `position` without applying the op there. */
+export function recordSnapshotHole(cursor: MergeCursor, keyHex: string, position: number): void {
+  const holes = (cursor.snapshotHole ??= new Map());
+  holes.set(keyHex, Math.max(holes.get(keyHex) ?? position, position));
+}
+
+/** P-008: this cursor's durable snapshot bookkeeping for one log. */
+export function snapshotApplyMarkOf(cursor: MergeCursor, keyHex: string): SnapshotApplyMark {
+  return {
+    applyThrough: cursor.snapshotApplyThrough?.get(keyHex) ?? NO_SNAPSHOT_APPLY,
+    hole: cursor.snapshotHole?.get(keyHex) ?? null,
+  };
+}
+
+/** P-008: one mark per POSITIONED log, the shape `MergeCursorStore.save` persists. */
+export function snapshotApplyMarks(cursor: MergeCursor): Map<string, SnapshotApplyMark> {
+  const out = new Map<string, SnapshotApplyMark>();
+  for (const keyHex of cursor.positions.keys()) out.set(keyHex, snapshotApplyMarkOf(cursor, keyHex));
+  return out;
+}
+
+/**
+ * P-008: the mark to persist when two cursors fold the same log and the durable
+ * position is the LOWER of theirs (the WI-3985 memory replay). Both halves take the
+ * max, which can only cause extra applies, never a missed one. The resumed reader
+ * re-reads from the lower position, so it must still apply the set the other
+ * cursor jumped to (watermark). It must also still cover any hole either cursor
+ * recorded below its own position.
+ */
+export function combineSnapshotApplyMarks(a: SnapshotApplyMark, b: SnapshotApplyMark): SnapshotApplyMark {
+  return {
+    applyThrough: Math.max(a.applyThrough, b.applyThrough),
+    hole: a.hole === null ? b.hole : b.hole === null ? a.hole : Math.max(a.hole, b.hole),
+  };
+}
+
+/**
+ * P-008: load the durable bookkeeping of one log onto a cursor seeded at
+ * `position`. `mark` undefined means the row carries no valid stamp. The row was
+ * written by an older build, by a rolled-back build, or by a manual position edit
+ * that did not restamp it. An older build may have moved past gate-dropped ops,
+ * so an unstamped cursor above 0 owes the next set it crosses (a hole at 0). That
+ * is today's behaviour for exactly one set, then the skip takes over.
+ */
+function loadSnapshotApplyMark(
+  cursor: MergeCursor,
+  keyHex: string,
+  position: number,
+  mark: SnapshotApplyMark | undefined,
+): void {
+  if (!mark) {
+    if (position > 0) recordSnapshotHole(cursor, keyHex, 0);
+    return;
+  }
+  if (mark.applyThrough > NO_SNAPSHOT_APPLY) {
+    (cursor.snapshotApplyThrough ??= new Map()).set(keyHex, mark.applyThrough);
+  }
+  if (mark.hole !== null) recordSnapshotHole(cursor, keyHex, mark.hole);
+}
+
+/**
+ * P-008: whether a snapshot chunk at `pos` may ever be skipped. A skip is sound
+ * only for a set that summarizes THIS log's own prefix `[0, coversUpTo)`, which the
+ * cursor has read. Three shapes never qualify, and are always applied:
+ *  - `coversUpTo` missing, non-finite, or above the chunk's own position: malformed,
+ *    so the old apply path is kept.
+ *  - `coversUpTo` 0: there is no prefix to be redundant with. The seed core
+ *    (`produceFilteredSnapshotIntoLog`) is exactly this. It is a fresh core whose
+ *    only content is a set summarizing ANOTHER log, anchored at 0.
+ *  - `excludeTables`: the filtered producers. A filtered set written into a
+ *    separate core summarizes that other log, never this one's prefix.
+ */
+function isSkipEligibleSnapshot(payload: SnapshotPayload | undefined, pos: number): boolean {
+  if (!payload) return false;
+  const c = payload.coversUpTo;
+  if (typeof c !== 'number' || !Number.isFinite(c) || c <= 0 || c > pos) return false;
+  return !payload.excludeTables?.length;
+}
+
+/**
+ * P-008: apply or skip one snapshot chunk. `apply` covers the seeded set (at or
+ * below the watermark), a set that is not skip-eligible, and a skip-eligible set
+ * crossed while a hole is recorded. Covering a hole promotes the set to the
+ * watermark, so its remaining chunks apply too. `skip` covers a set this cursor
+ * already folded op by op.
+ */
+function snapshotSetDisposition(
+  cursor: MergeCursor,
+  keyHex: string,
+  payload: SnapshotPayload | undefined,
+  pos: number,
+): 'apply-seeded' | 'apply-hole' | 'apply-ineligible' | 'skip' {
+  if (!payload || !isSkipEligibleSnapshot(payload, pos)) return 'apply-ineligible';
+  const c = payload.coversUpTo;
+  if (c <= (cursor.snapshotApplyThrough?.get(keyHex) ?? NO_SNAPSHOT_APPLY)) return 'apply-seeded';
+  if (cursor.snapshotHole?.has(keyHex)) {
+    markSnapshotSeeded(cursor, keyHex, c);
+    return 'apply-hole';
+  }
+  return 'skip';
+}
+
+/** P-008: one in-progress snapshot-set crossing, for progress logging. */
+interface SnapshotSetCrossing {
+  coversUpTo: number;
+  mode: 'apply' | 'skip';
+  reason: string;
+  startedAt: number;
+  lastLogAt: number;
+  chunks: number;
+  rows: number;
+}
+
+/** P-008: a chunk's position within its set, for log lines. */
+function snapshotChunkLabel(payload: SnapshotPayload | undefined, pos: number): { idx: number; count: number } {
+  const count = typeof payload?.chunkCount === 'number' && payload.chunkCount > 0 ? payload.chunkCount : 1;
+  const idx =
+    typeof payload?.chunkIdx === 'number'
+      ? payload.chunkIdx
+      : typeof payload?.coversUpTo === 'number'
+        ? pos - payload.coversUpTo
+        : 0;
+  return { idx, count };
 }
 
 /** P-004: a verified complete set plus what it says about itself. */
@@ -926,7 +1104,11 @@ export async function seedCursorFromSnapshots(
     if (pos === undefined) {
       // Fresh log (P-007): seed at the newest complete set anywhere in the log.
       const set = await latestCompleteSnapshotMemoized(log, cursor, 0, maxLookback, getTimeoutMs, budgetMs);
-      if (set && set.seed.seedIndex > 0) cursor.positions.set(key, set.seed.seedIndex);
+      if (set && set.seed.seedIndex > 0) {
+        cursor.positions.set(key, set.seed.seedIndex);
+        // P-008: the seeded set is the ONE set this cursor must apply row by row.
+        markSnapshotSeeded(cursor, key, set.seed.coversUpTo);
+      }
       continue;
     }
     // P-004 (R-4): a far-behind cursor jumps forward to a complete set AHEAD of it.
@@ -935,6 +1117,8 @@ export async function seedCursorFromSnapshots(
     if (!set || set.seed.seedIndex <= pos) continue; // never rewinds
     if (!(await snapshotSetCoversSkip(log, pos, set.meta, getTimeoutMs))) continue;
     jumpCursorToSnapshot(cursor, key, pos, set.seed.seedIndex);
+    // P-008: the jumped-to set stands in for the skipped ops, so it must apply.
+    markSnapshotSeeded(cursor, key, set.seed.coversUpTo);
   }
 }
 
@@ -1210,10 +1394,22 @@ export interface MergeCursorStore {
     positions: ReadonlyMap<string, number>,
     applyBinding: string | null,
     applyFailures?: ReadonlyMap<string, MergeApplyFailure>,
+    /** P-008: each log's snapshot bookkeeping, stamped with the position it was
+     *  recorded at. Omitted leaves the stored marks untouched. Once the position
+     *  moves on, the old stamp no longer matches it, so the row reads as unstamped
+     *  (owe the next set) rather than as a skip. */
+    snapshotMarks?: ReadonlyMap<string, SnapshotApplyMark>,
   ): Promise<void>;
   /** Optional for position-only fakes. A failure at position ZERO must also be
    * seeded, so a later snapshot cannot skip the unapplied entry on restart. */
   loadApplyFailures?(applyBinding: string | null): Promise<Map<string, MergeApplyFailure>>;
+  /**
+   * P-008: the snapshot marks whose stamp matches the row's CURRENT position.
+   * Those are the only trustworthy ones. A log absent from the result is unstamped.
+   * Optional: a position-only store makes every seeded log unstamped, which is
+   * the conservative reading.
+   */
+  loadSnapshotMarks?(applyBinding: string | null): Promise<Map<string, SnapshotApplyMark>>;
   /**
    * Optional while non-PG/in-memory fakes retain the position-only contract.
    * The canonical PG implementation always provides this nested store.
@@ -1257,6 +1453,9 @@ export function seedCursorFromPgCache(
   saved: ReadonlyMap<string, number>,
   admittedKeyHexes?: Iterable<string>,
   failures?: ReadonlyMap<string, MergeApplyFailure>,
+  /** P-008: stamped marks (see `MergeCursorStore.loadSnapshotMarks`). A copied
+   *  position with no entry here is loaded as unstamped. */
+  snapshotMarks?: ReadonlyMap<string, SnapshotApplyMark>,
 ): void {
   const entries: Iterable<readonly [string, number]> = admittedKeyHexes
     ? (function* () {
@@ -1271,6 +1470,7 @@ export function seedCursorFromPgCache(
     if ((position > 0 || failure || (failures !== undefined && position === 0)) && !cursor.positions.has(keyHex)) {
       cursor.positions.set(keyHex, failure ? Math.min(position, failure.position) : position);
       if (failure) (cursor.applyFailures ??= new Map()).set(keyHex, failure);
+      loadSnapshotApplyMark(cursor, keyHex, position, snapshotMarks?.get(keyHex));
     }
   }
 }
@@ -1296,6 +1496,7 @@ export function pinUnknownDurableState(cursor: MergeCursor, keyHexes: Iterable<s
 export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
   let saved: ReadonlyMap<string, number> | undefined;
   let failures: ReadonlyMap<string, MergeApplyFailure> | undefined;
+  let marks: ReadonlyMap<string, SnapshotApplyMark> | undefined;
   let savedApplyBinding: string | null | undefined;
   let invalidated = false;
   let loadFailed = false;
@@ -1307,9 +1508,10 @@ export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
       }
       if (!saved || savedApplyBinding !== applyBinding) {
         try {
-          [saved, failures] = await Promise.all([
+          [saved, failures, marks] = await Promise.all([
             store.load(applyBinding),
             store.loadApplyFailures?.(applyBinding),
+            store.loadSnapshotMarks?.(applyBinding),
           ]);
           savedApplyBinding = applyBinding;
         } catch (error) {
@@ -1319,12 +1521,13 @@ export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
           throw error;
         }
       }
-      seedCursorFromPgCache(cursor, saved, admittedKeyHexes, failures);
+      seedCursorFromPgCache(cursor, saved, admittedKeyHexes, failures, marks);
     },
     invalidate() {
       invalidated = true;
       saved = undefined;
       failures = undefined;
+      marks = undefined;
       savedApplyBinding = undefined;
     },
   };
@@ -1361,11 +1564,12 @@ export async function seedCursorFromPg(
   store: MergeCursorStore,
   applyBinding: string | null,
 ): Promise<void> {
-  const [saved, failures] = await Promise.all([
+  const [saved, failures, marks] = await Promise.all([
     store.load(applyBinding),
     store.loadApplyFailures?.(applyBinding),
+    store.loadSnapshotMarks?.(applyBinding),
   ]);
-  seedCursorFromPgCache(cursor, saved, undefined, failures);
+  seedCursorFromPgCache(cursor, saved, undefined, failures, marks);
 }
 
 /**
@@ -1387,8 +1591,11 @@ export async function persistCursor(
   store: MergeCursorStore,
   applyBinding: string | null,
   applyFailures?: ReadonlyMap<string, MergeApplyFailure>,
+  /** P-008: stamped beside the positions (see `MergeCursorStore.save`). */
+  snapshotMarks?: ReadonlyMap<string, SnapshotApplyMark>,
 ): Promise<void> {
-  if (applyFailures) await store.save(positions, applyBinding, applyFailures);
+  if (snapshotMarks) await store.save(positions, applyBinding, applyFailures, snapshotMarks);
+  else if (applyFailures) await store.save(positions, applyBinding, applyFailures);
   else await store.save(positions, applyBinding);
 }
 
@@ -2017,6 +2224,63 @@ export async function mergeAdmittedLogsIncremental(
     };
     const effectivePos = (p: number): number =>
       firstDeferredPos >= 0 ? Math.min(p, firstDeferredPos) : p;
+    // P-008: the snapshot set this pass is crossing on this log, so a long APPLY is
+    // visible while it runs (start, every SNAPSHOT_SET_PROGRESS_LOG_MS, done) and a
+    // SKIP leaves one line. console.info, not warn: this is expected progress.
+    let crossing: SnapshotSetCrossing | null = null;
+    const setLabel = (c: number): string => `${cursorTag}P-008 snapshot set: log ${log.keyHex.slice(0, 12)} set@${c}`;
+    const noteSnapshotCrossing = (
+      payload: SnapshotPayload | undefined,
+      disposition: ReturnType<typeof snapshotSetDisposition>,
+      rowCount: number,
+    ): void => {
+      const mode = disposition === 'skip' ? 'skip' : 'apply';
+      const c = typeof payload?.coversUpTo === 'number' ? payload.coversUpTo : -1;
+      const { idx, count } = snapshotChunkLabel(payload, pos);
+      const now = Date.now();
+      if (!crossing || crossing.coversUpTo !== c || crossing.mode !== mode) {
+        const reason =
+          disposition === 'apply-seeded'
+            ? 'this cursor was seeded at it'
+            : disposition === 'apply-hole'
+              ? 'it covers an op this cursor moved past unapplied'
+              : disposition === 'apply-ineligible'
+                ? 'not skip-eligible'
+                : 'redundant';
+        crossing = { coversUpTo: c, mode, reason, startedAt: now, lastLogAt: now, chunks: 0, rows: 0 };
+        if (mode === 'apply' && idx < count - 1) {
+          console.info(
+            `[read-merge] ${setLabel(c)}: APPLYING (${reason}) from chunk ${idx + 1}/${count}; ` +
+              `progress every ${SNAPSHOT_SET_PROGRESS_LOG_MS / 1000}s.`,
+          );
+        }
+      }
+      crossing.chunks++;
+      crossing.rows += rowCount;
+      if (mode === 'apply' && idx < count - 1 && now - crossing.lastLogAt >= SNAPSHOT_SET_PROGRESS_LOG_MS) {
+        crossing.lastLogAt = now;
+        console.info(
+          `[read-merge] ${setLabel(c)}: chunk ${idx + 1}/${count}, ${crossing.rows} row(s) in ` +
+            `${((now - crossing.startedAt) / 1000).toFixed(1)}s so far.`,
+        );
+      }
+    };
+    /** P-008: close the crossing when its LAST chunk has been processed. */
+    const endSnapshotChunk = (payload: SnapshotPayload | undefined): void => {
+      if (!crossing) return;
+      const { idx, count } = snapshotChunkLabel(payload, pos);
+      if (idx < count - 1) return;
+      const c = crossing.coversUpTo;
+      const seconds = ((Date.now() - crossing.startedAt) / 1000).toFixed(1);
+      console.info(
+        crossing.mode === 'apply'
+          ? `[read-merge] ${setLabel(c)}: APPLIED ${crossing.chunks} chunk(s), ${crossing.rows} row(s) ` +
+              `in ${seconds}s (${crossing.reason}).`
+          : `[read-merge] ${setLabel(c)}: SKIPPED ${crossing.chunks} chunk(s), ${crossing.rows} row(s) ` +
+              `not re-applied; this cursor already folded [0, ${c}) op by op.`,
+      );
+      crossing = null;
+    };
 
     for (; pos < upper; pos++) {
       // EI-81: yield a macrotask every ~1k iterations — counted per pass
@@ -2183,15 +2447,39 @@ export async function mergeAdmittedLogsIncremental(
       } catch {
         break;
       }
-      if (!op) continue; // version-gated drop — advance past it
+      if (!op) {
+        // P-008: the cursor moves past this position without applying anything
+        // (version-gated drop, undecodable op, WI-2003 dead-letter). Its prefix is
+        // no longer fully folded, so the next snapshot set is owed, not redundant.
+        recordSnapshotHole(cursor, log.keyHex, pos);
+        continue; // version-gated drop — advance past it
+      }
       decoded++;
       // P-007 (design A): expand a snapshot op into its per-key rows and fold each
       // through the SAME ts-guarded apply path. One decode reconstitutes N keys —
       // exactly the cost win (the joiner's cursor can start AT this op's index and
       // skip the summarized prefix). `continue` advances the cursor past it.
       if (isSnapshotOp(op)) {
+        // P-008 (endgame D-060): a set is applied row by row only when this cursor
+        // OWES it: the set it was seeded or jumped at, one covering a hole, or one
+        // that is not skip-eligible. A cursor that folded this log's prefix op by op
+        // skips the set. Replaying it costs one PG apply per live row, and after a
+        // restart the in-memory winners are empty, so none of them are deduped
+        // (measured: 1.24M rows at ~25 rows/s on the P-203 VM).
+        const payload = op.value as SnapshotPayload | undefined;
+        const disposition = snapshotSetDisposition(cursor, log.keyHex, payload, pos);
+        const rows = snapshotRows(op);
+        noteSnapshotCrossing(payload, disposition, rows.length);
+        if (disposition === 'skip') {
+          endSnapshotChunk(payload);
+          continue;
+        }
+        // Rows, not ops, drive the persist cadence here: one chunk can hold thousands
+        // of rows, so a seeded set checkpoints about every MERGE_PERSIST_EVERY_OPS rows
+        // and a restart resumes mid-set. The watermark is persisted too, so it applies.
+        if (rows.length > 1) opsSincePersist += rows.length - 1;
         let retryable = false;
-        for (const row of snapshotRows(op)) {
+        for (const row of rows) {
           const env = snapshotRowToEnvelope(row, log.keyHex);
           const groupKey = `${env.table}::${env.hbKey}`;
           const prev = cursor.winners.get(groupKey);
@@ -2221,6 +2509,7 @@ export async function mergeAdmittedLogsIncremental(
           }
         }
         if (retryable) break;
+        endSnapshotChunk(payload);
         continue;
       }
       const env = toEnvelope(op, log.keyHex);

@@ -72,11 +72,15 @@ import {
   seedCursorFromSnapshots,
   persistCursor,
   findLatestCompleteSnapshot,
+  combineSnapshotApplyMarks,
+  snapshotApplyMarkOf,
+  snapshotApplyMarks,
   DEFAULT_GET_TIMEOUT_MS,
   type AdmittedLog,
   type MergeCursorPeerLifecycleUpdate,
   type MergeCursorStore,
   type MergeApplyFailure,
+  type SnapshotApplyMark,
 } from './read-merge';
 import {
   describeSnapshotSet,
@@ -3973,6 +3977,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         }
         return conservative;
       };
+      // P-008: the snapshot bookkeeping stamped beside those positions. While the
+      // WI-3985 replay runs, the durable position is the LOWER of the two cursors,
+      // so the resumed reader must owe every set and hole either cursor owes.
+      const durableSnapshotMarks = (): Map<string, SnapshotApplyMark> => {
+        const marks = snapshotApplyMarks(mergeCursor);
+        if (!memoryReplayCursor) return marks;
+        for (const [keyHex, mark] of marks) {
+          marks.set(keyHex, combineSnapshotApplyMarks(mark, snapshotApplyMarkOf(memoryReplayCursor, keyHex)));
+        }
+        return marks;
+      };
       const persistDurableCursor = (): Promise<void> | undefined =>
         pgMergeCursorStore
           ? persistCursor(
@@ -3985,6 +4000,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
                   // unresolved operation alongside the conservative position.
                   .sort((a, b) => b[1].position - a[1].position),
               ),
+              durableSnapshotMarks(),
             )
           : undefined;
 
@@ -4133,6 +4149,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               pgMergeCursorStore,
               currentApplyBinding(),
               mergeCursor.applyFailures ?? new Map(),
+              snapshotApplyMarks(mergeCursor),
             );
           }
         }

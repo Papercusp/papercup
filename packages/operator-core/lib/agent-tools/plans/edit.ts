@@ -9,7 +9,7 @@
  * line in `## Background`, or a paragraph in a decision body WITHOUT resending the
  * whole document (which for a large plan means a chunked re-upload).
  *
- * Safety — three guards, mirroring set-content, plus the Edit-tool match guard:
+ * Safety — shared set-content guards plus the Edit-tool match guard:
  *   1. MATCH guard. `old_string` must occur exactly once (unless `replace_all`).
  *      0 occurrences → `string_not_found`; >1 without replace_all →
  *      `string_not_unique`. This match IS the primary concurrency guard: if a
@@ -21,6 +21,8 @@
  *   3. Legacy-boundary + lint. The resulting body is parsed + linted in-memory
  *      (via the shared evaluateSetContent decision); a result that would degrade
  *      a real plan to legacy, or that fails lint, is rejected.
+ *   4. Lifecycle status. Plan-level status changes are routed to
+ *      plans:set-plan-status so this raw writer cannot skip lifecycle gates.
  *
  * Writes inside withPlanLock and records a plan revision, exactly like
  * set-content. Reuses evaluateSetContent for the CAS/legacy/lint/return so the
@@ -126,11 +128,11 @@ export async function evaluatePlanEdit(
 export default defineTool({
   name: 'plans:edit',
   description:
-    'Edit a plan in place by exact string replace (old_string → new_string), like the file Edit tool — the surgical way to fix a citation, a line, or a paragraph without resending the whole document. old_string must match exactly once (or pass replace_all). Rejects: string_not_found, string_not_unique, a result that would degrade the plan to legacy, or a lint failure. Records a plan revision. expectedHash is optional — the exact match is the concurrency guard.',
+    'Edit a plan in place by exact string replace (old_string → new_string), like the file Edit tool — the surgical way to fix a citation, a line, or a paragraph without resending the whole document. old_string must match exactly once (or pass replace_all). Rejects unmatched text, lifecycle status changes, frontmatter loss, and lint failures. Records a plan revision. expectedHash is optional — the exact match is the concurrency guard.',
   guidance: {
     when: 'Correcting or rewriting a SPECIFIC part of a plan body the structured verbs cannot reach — a stale citation, a wrong line, a paragraph in `## Background` or a decision body. The default for small/targeted prose fixes.',
     notWhen:
-      'Replacing the whole Now block (set-now), appending a decision/item (add-decision / add-item), or flipping status (set-status) — use the structured verb. A wholesale rewrite of most of the document — use plans:set-content / set-content-chunk.',
+      'Replacing the whole Now block, appending a decision/item, or changing plan lifecycle status — use plans:set-now, plans:add-decision / plans:add-item, or plans:set-plan-status. A wholesale rewrite of most of the document — use plans:set-content / set-content-chunk.',
     chaining:
       'Read the current text (plans:get) → plans:edit { slug, old_string, new_string }. For several edits, call plans:edit repeatedly (each is CAS-safe on its own match).',
   },
@@ -209,10 +211,8 @@ export default defineTool({
       };
     }
 
-    // NB: a targeted edit could in principle flip frontmatter status to terminal
-    // (by editing the `status:` line), but that's what set-plan-status is for;
-    // the started/paused cleanup is skipped here and plans:list self-heals it
-    // (reconcileStartStatus) on the next read.
+    // The shared evaluator refuses plan-level lifecycle status changes, keeping
+    // activation, acceptance, and terminal cleanup on plans:set-plan-status.
 
     // WI-40825: a targeted edit is the MOST likely writer to reword one item in
     // place, and the least likely to know who is already executing it. Report the

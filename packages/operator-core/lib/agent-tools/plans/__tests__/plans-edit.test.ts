@@ -129,6 +129,21 @@ describe('evaluatePlanEdit — CAS + lint inherited from evaluateSetContent', ()
     expect(r.value.ok).toBe(true);
   });
 
+  it('routes plan lifecycle status changes through plans:set-plan-status', async () => {
+    const r = await evaluatePlanEdit(VALID, 'status: active', 'status: shipped', false, SLUG, undefined);
+    expect(r.newBody).toBeNull();
+    expect(r.value).toMatchObject({
+      ok: false,
+      code: 'plan_status_change_requires_lifecycle_writer',
+      currentStatus: 'active',
+      proposedStatus: 'shipped',
+      writer: 'plans:set-plan-status',
+    });
+    if (!r.value.ok && r.value.code === 'plan_status_change_requires_lifecycle_writer') {
+      expect(r.value.message).toContain('plans:set-plan-status');
+    }
+  });
+
   it('lint_failed when the edit removes the required ## Now section', async () => {
     const r = await evaluatePlanEdit(VALID, '## Now', '## Nowww', false, SLUG, undefined);
     expect(r.value.ok === false && r.value.code).toBe('lint_failed');

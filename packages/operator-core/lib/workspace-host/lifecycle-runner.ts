@@ -48,6 +48,7 @@ import {
   nextWorkspaceHostControllerAuthority,
   resolveControllerWorkspaceHostBootstrap,
   WorkspaceHostProvisioningRequestError,
+  workspaceHostPlanDesiredRevision,
   type WorkspaceHostProvisioningResult,
 } from './provisioning-runner';
 import {
@@ -238,13 +239,6 @@ function persistedLifecyclePlan(stored: unknown): WorkspaceHostPlan | undefined 
   return plan.steps.every((step) => typeof step === 'object' && step !== null && 'input' in step)
     ? (plan as WorkspaceHostPlan)
     : undefined;
-}
-
-function persistedLifecyclePlanDesiredRevision(plan: WorkspaceHostPlan): number | undefined {
-  const match = /:desired-revision:(\d+)$/.exec(plan.planId);
-  if (!match) return undefined;
-  const revision = Number(match[1]);
-  return Number.isSafeInteger(revision) && revision >= 1 ? revision : undefined;
 }
 
 function canonicalProductJson(value: unknown): string {
@@ -928,7 +922,7 @@ export async function runWorkspaceHostLifecycle(
   const persistedPlan = persistedLifecyclePlan(await store.readOperationPlan(workspaceId, operationId));
   const desiredRevision =
     input.desiredRevision ??
-    (persistedPlan ? persistedLifecyclePlanDesiredRevision(persistedPlan) : undefined) ??
+    workspaceHostPlanDesiredRevision(persistedPlan?.planId) ??
     target.desiredRevision + 1;
   let plan: WorkspaceHostPlan;
   if (persistedPlan) {

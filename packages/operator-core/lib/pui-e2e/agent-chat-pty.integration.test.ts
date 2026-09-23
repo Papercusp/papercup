@@ -561,22 +561,37 @@ class PuiPane {
   // wait answers a visible request as an owner would. Scripted engines never ask.
   private readonly suToolApprovals: string[] | undefined = scriptedEngine.real ? [] : undefined;
   private suToolApprovalAt = 0;
+  // A native read outside the session's working directory asks the owner too;
+  // only a card naming a path a journey registered is approved, and only once.
+  private readonly nativeReadPaths = new Set<string>();
+  private readonly nativeReadApprovals: string[] = [];
 
   /** SU tool approvals this pane answered, in order. */
   get answeredSuToolApprovals(): readonly string[] { return this.suToolApprovals ?? []; }
 
+  /** Native file-read approvals this pane answered, as `<tool> <path>`. */
+  get answeredNativeReadApprovals(): readonly string[] { return this.nativeReadApprovals; }
+
+  /** Let a real engine's native read of `filePath` through its approval card. */
+  approveNativeReadOf(filePath: string): void { this.nativeReadPaths.add(filePath); }
+
   /** Answer a visible papercusp-su approval card: the remembered choice when
-   * the card offers one, otherwise Approve once. True when a key was sent. */
+   * the card offers one, otherwise Approve once. A native read of a registered
+   * path is approved once. True when a key was sent. */
   settleSuToolApproval(): boolean {
     if (!this.suToolApprovals || Date.now() - this.suToolApprovalAt < 750) return false;
     const lines = this.screen().split('\n').map((line) => line.replace(/[│┌┐└┘─]/g, ' ').trim());
     const tool = lines.map((line) => /^Allow (mcp__papercusp-su__[\w-]+)\?/.exec(line)?.[1]).find(Boolean);
-    if (!tool) return false;
+    const readAt = tool ? -1 : lines.findIndex((line) => /^Allow (Read|Grep|Glob)\?/.test(line));
+    const readPath = readAt < 0 ? undefined
+      : [...this.nativeReadPaths].find((p) => lines.slice(readAt + 1, readAt + 4).some((line) => line.includes(p)));
+    if (!tool && !readPath) return false;
     const option = (label: string) => lines.map((line) => new RegExp(`^(?:› )?(\\d)\\. ${label}\\b`).exec(line)?.[1]).find(Boolean);
-    const pick = option('Always allow') ?? option('Approve');
+    const pick = readPath ? option('Approve') : option('Always allow') ?? option('Approve');
     if (!pick) return false;
     this.pty.write(pick);
-    this.suToolApprovals.push(tool);
+    if (tool) this.suToolApprovals.push(tool);
+    else this.nativeReadApprovals.push(`${/^Allow (\w+)\?/.exec(lines[readAt])?.[1]} ${readPath}`);
     this.suToolApprovalAt = Date.now();
     return true;
   }
@@ -4896,6 +4911,9 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         expect(engine.nativeSession()).toMatchObject({ backend: scriptedEngine.backend, exactResumeSupported: true });
       }
 
+      // The fixture is outside the session's working directory, so a native
+      // read asks first; the owner approves exactly that read.
+      pane.approveNativeReadOf(fixturePath);
       pane.write(fileRequest);
       pane.enter();
       await pane.waitFor(fileResult, { timeoutMs: 120_000 });
@@ -5159,6 +5177,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           resumedDescriptor,
           readStart,
           readEnd,
+          nativeReadApprovals: pane.answeredNativeReadApprovals,
           streamingEvidence,
           commandTypes: commandPosts.map((command) => command.type),
           processes,

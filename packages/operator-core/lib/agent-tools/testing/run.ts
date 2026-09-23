@@ -112,6 +112,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { activeWorkspaceId } from '../../workspace-registry';
 import { managedSpawn, type ManagedSpawnResult } from '../../task-manager/managed-spawn';
 import { killScopeUnit, type ScopeControlOutcome } from '../../task-manager/control';
+import { activeMutationProbePaths } from './mutation-probe-fence';
 import {
   absCgroupDir,
   nodeCgroupFs,
@@ -1119,6 +1120,8 @@ export type TestFilesCoreResult =
       error:
         | 'invalid_root'
         | 'ambiguous_workspace_path'
+        | 'mutation_probe_active'
+        | 'mutation_probe_state_unknown'
         | 'aborted'
         | 'timeout'
         | 'route_error'
@@ -2600,6 +2603,35 @@ export async function runTestFilesCore(opts: {
   }
 
   const root = checkoutRootForTestFiles(requestedPaths.ok ? requestedPaths.files : opts.files, opts.root);
+
+  // An in-tree mutation probe holds its subject's file lock for the dirty
+  // window. Tests can import that source through any test file, so path-level
+  // lock overlap is not enough: refuse test execution for the whole checkout
+  // while the marker is active. The lock read is fail-closed; without a current
+  // answer, this runner cannot claim it avoided a mutant.
+  let mutationProbePaths: string[] = [];
+  if (existsSync(root)) {
+    try {
+      mutationProbePaths = await activeMutationProbePaths(root);
+    } catch (error) {
+      return {
+        ok: false,
+        runId,
+        root,
+        error: 'mutation_probe_state_unknown',
+        hint: `could not verify whether an in-tree mutation probe is active; no test process was started (${error instanceof Error ? error.message : String(error)})`,
+      };
+    }
+  }
+  if (mutationProbePaths.length > 0) {
+    return {
+      ok: false,
+      runId,
+      root,
+      error: 'mutation_probe_active',
+      hint: `no test process was started because this checkout has an active mutation probe on ${mutationProbePaths.join(', ')}; retry after the probe restores its source`,
+    };
+  }
 
   // WI-7189 / EI-19383071792758676: a wrong-tree resolution used to be SILENT —
   // a file that happens to exist (with stale content) at the resolved root ran

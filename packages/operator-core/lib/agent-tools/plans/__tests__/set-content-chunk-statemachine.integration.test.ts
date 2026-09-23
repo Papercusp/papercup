@@ -182,6 +182,21 @@ describe('plans:set-content-chunk — begin → append → commit round-trip', (
 });
 
 describe('plans:set-content-chunk — failure branches', () => {
+  it('commit rejects a raw terminal status transition without changing the plan', async () => {
+    const before = await liveContent();
+    const begin = await runChunk({ op: 'begin', chunk: NEW_HEAD.replace('status: active', 'status: shipped') });
+    const draftId = String(begin.data.draftId);
+    await runChunk({ op: 'append', draftId, chunk: NEW_TAIL });
+
+    const commit = await runChunk({ op: 'commit', draftId });
+    expect(commit.isError).toBe(true);
+    expect(failCode(commit.data)).toBe('plan_status_change_requires_lifecycle_writer');
+    expect(commit.data.writer).toBe('plans:set-plan-status');
+    expect(String(commit.data.message)).toContain('plans:set-plan-status');
+    expect(await liveContent()).toBe(before);
+    expect(await revisionCount()).toBe(0);
+  });
+
   it('commit with a bogus (well-formed) draftId → draft_not_found, nothing written', async () => {
     const before = await liveContent();
     const bogus = 'deadbeef-0000-4000-8000-000000000000'; // matches DRAFT_ID but no such draft.

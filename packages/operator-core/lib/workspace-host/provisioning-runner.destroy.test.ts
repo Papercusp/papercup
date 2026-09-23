@@ -213,6 +213,7 @@ function storeHarness(
       desired: targetDesired,
       resources: resources.map((resource) => ({ resource, registeredAt: NOW })),
     })),
+    readOperationPlan: vi.fn(async () => null),
     beginOperation: vi.fn(async () => {}),
     updateOperation,
     readCheckpoints: vi.fn(async () => checkpoints.map((entry) => ({ ...entry }))),
@@ -604,6 +605,55 @@ describe('runWorkspaceHostDestroy', () => {
     expect(apply.mock.calls.filter(([request]) => request.step.id === firewallStep!.id)).toHaveLength(1);
     expect(checkpoints().every((entry) => entry.state === 'absent')).toBe(true);
     expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'absent' }));
+  });
+
+  it('a resumed turn keeps the revision its first turn bound, after that turn advanced the host row (WI-10002786)', async () => {
+    const { provider, apply } = providerHarness();
+    const reconcile = vi.mocked(provider.reconcile);
+    const { store } = storeHarness({ ...desired, labels: undefined });
+    // What the real store does: beginOperation persists the request plan and advances the host's
+    // desired revision, so the NEXT turn reads the advanced revision back from the host row.
+    let hostRevision = 1;
+    let persistedPlan: unknown = null;
+    const readTarget = store.readTarget;
+    store.readTarget = vi.fn(async (workspaceId: string, hostId: string) => {
+      const target = await readTarget(workspaceId, hostId);
+      return target ? { ...target, desiredRevision: hostRevision } : target;
+    });
+    store.readOperationPlan = vi.fn(async () => persistedPlan);
+    const begin = vi.fn<WorkspaceHostDestroyStore['beginOperation']>(async (input) => {
+      persistedPlan ??= (input.request as { plan?: unknown } | undefined)?.plan ?? null;
+      hostRevision = Math.max(hostRevision, input.desiredRevision ?? hostRevision);
+    });
+    store.beginOperation = begin;
+    const [vmStep, diskStep, firewallStep] = steps();
+    const destroyed = (stepId: string, providerResourceId: string) => ({
+      operationId: 'op-destroy-1',
+      stepId,
+      state: 'destroyed' as const,
+      observedAt: LATER,
+      confirmation: { hostId: 'host-1', providerResourceId, confirmedAbsentAt: LATER, source: 'provider-read' as const },
+    });
+    apply
+      .mockResolvedValueOnce(destroyed(vmStep!.id, 'pc-host-vm'))
+      .mockResolvedValueOnce(destroyed(diskStep!.id, 'pc-host-data'))
+      .mockRejectedValueOnce(new Error('provider accepted firewall delete before socket reset'));
+    reconcile.mockResolvedValue(destroyed(firewallStep!.id, 'pc-host-iap'));
+
+    const partial = await runWorkspaceHostDestroy(ordinaryInput(provider, store));
+    expect(partial.status).toBe('in-progress');
+    expect(hostRevision).toBe(2);
+
+    const recovered = await runWorkspaceHostDestroy(ordinaryInput(provider, store));
+
+    expect(recovered.status).toBe('succeeded');
+    const keys = vi.mocked(provider.plan).mock.calls.map(([request]) => request.idempotencyKey);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toContain(':revision:2:');
+    expect(keys[1]).toBe(keys[0]);
+    expect(begin.mock.calls.map(([input]) => input.desiredRevision)).toEqual([2, 2]);
+    const planIds = begin.mock.calls.map(([input]) => (input.request as { plan: { planId: string } }).plan.planId);
+    expect(planIds[1]).toBe(planIds[0]);
   });
 
   it('rejects missing disposition, cross-host ownership, and an unverified backup before provider planning', async () => {

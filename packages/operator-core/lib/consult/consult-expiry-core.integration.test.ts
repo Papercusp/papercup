@@ -905,6 +905,27 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
     }
   });
 
+  it('keeps an early silent review consult open when its cascade menu is exhausted', async () => {
+    // The responder re-parked after routing, but the 30-minute review window
+    // has not reached P-014's half-TTL conversion point yet.
+    const routing = { policy: 'rubric-vetting', ...menuSnapshot(['resp-1']) };
+    const id = await seedReview({
+      routing,
+      createdMin: -3,
+      expiresMin: 27,
+      latency: 'hard-blocked',
+    });
+    const { deps, filed, reachCalls } = withFiler();
+    deps.findSilentResponders = async () => new Set([id]);
+
+    const result = await sweepExpiredConsults(deps);
+
+    expect(result).toMatchObject({ expired: 0, advanced: 0, converted: [], conversionFailures: [] });
+    expect(await rowOf(id)).toMatchObject({ state: 'awaiting_responder', closed_at: null, cascade_cursor: 0 });
+    expect(filed.filter((f) => f.conversationId === id)).toEqual([]);
+    expect(reachCalls.filter((c) => c.conversationId === id)).toEqual([]);
+  });
+
   it('converts a silent rubric-vetting consult past half its TTL to a work item instead of cascading', async () => {
     // Window -70min → +50min: the midpoint (-10min) is behind NOW; nobody has engaged.
     const id = await seedReview({ routing: VETTING, createdMin: -70, expiresMin: 50 });

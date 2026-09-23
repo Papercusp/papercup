@@ -156,14 +156,23 @@ const argsSchema = z
     // which is half of EI-20430092702151575: a plan that could not satisfy the gate
     // could not force past it either, and so could not ship at all.
     force: z
-      .object({ reason: z.string().min(1).max(2000) })
+      .object({
+        reason: z.string().min(1).max(2000),
+        acceptanceBarProofMetadata: z.boolean().optional().describe(
+          'Narrow ship-only waiver for bar_snapshot_proof_inadequate and bar_snapshot_proof_stale. When true, the reason applies only to these metadata codes: code-truth checks, other BAR codes, contract gaps, rubric checks, and non-waivable gates still block. The waived codes are recorded in forcedPast.',
+        ),
+      })
       .optional()
       .describe(
-        "status='shipped' or 'superseded': pass the gate anyway, recording the reason on the plan (`forcedPast`). A waived ship skips the acceptance gate's code-truth checks; a waived deprecate skips the unfinished-items refusal. Deliberately loud, never silent. Does NOT waive the independently-flagged checks the gate marks non-waivable.",
+        "status='shipped' or 'superseded': pass the applicable gate with a reason recorded on the plan (`forcedPast`). A normal force reason retains the existing code-truth waiver and supersede unfinished-items waiver. Set acceptanceBarProofMetadata:true for a narrow ship waiver of only BAR proof inadequacy/staleness metadata; code-truth checks, other BAR codes, rubric gates, and independent gates still block.",
       ),
   })
   .refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
     message: 'pass `slug` or `slugs`',
+  })
+  .refine((a) => !a.force?.acceptanceBarProofMetadata || normalizePlanStatus(a.status).status === 'shipped', {
+    message: 'force.acceptanceBarProofMetadata is only valid for a shipped target',
+    path: ['force', 'acceptanceBarProofMetadata'],
   });
 
 type SetPlanStatusValue =

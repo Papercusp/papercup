@@ -56,6 +56,7 @@ function asOk(r: GetFeedbackResult | GetFeedbackError): GetFeedbackResult {
 
 const WS = 'ws-consult-core';
 const NOW = new Date('2026-08-16T00:00:00Z');
+const SOURCE_AUDIT_RESERVED_AT = '2026-08-16T00:00:00.000Z';
 const MIGRATION_834 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/834-consult-threads.sql', import.meta.url),
 );
@@ -294,12 +295,14 @@ describe('source-audit dispatcher through persisted consult routing', () => {
         {
           card: { issueId, createdBy: 'source-author' } as ScorecardRow,
           reservationKey: `grading-audit:${issueId}`,
+          reservationReservedAt: SOURCE_AUDIT_RESERVED_AT,
           brief: 'Audit newly stale responder regression',
           ctx: { workspaceId: WS, uiClientId: `newly-stale-${sessionState}-requester`, isSuperuser: true },
         },
         {
           getSql: () => rootSql,
           feedback,
+          confirmReservation: async () => true,
           resolveParties: async (ids) =>
             new Map(ids.filter((id): id is string => Boolean(id)).map((id) => [id, id])),
           resolveResponderLiveness,
@@ -346,7 +349,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
           ${WS}, ${conversationId}, 'audit-requester', ${responderId}, 'awaiting_responder',
           'stale responder regression',
           ${rootSql.json({
-            cascade: { flavor: 'grading-integrity', reservationKey, issueId },
+            cascade: { flavor: 'grading-integrity', reservationKey, reservationReservedAt: SOURCE_AUDIT_RESERVED_AT, issueId },
           } as never)}, NULL
         )`;
 
@@ -392,12 +395,14 @@ describe('source-audit dispatcher through persisted consult routing', () => {
       const input = {
         card: { issueId, createdBy: 'source-author' } as ScorecardRow,
         reservationKey,
+        reservationReservedAt: SOURCE_AUDIT_RESERVED_AT,
         brief: 'Audit stale responder regression',
         ctx: { workspaceId: WS, uiClientId: `stale-${sessionState}-requester`, isSuperuser: true },
       };
       const routeDeps = {
         getSql: () => rootSql,
         feedback,
+        confirmReservation: async () => true,
         resolveParties: async (ids: readonly (string | null | undefined)[]) => new Map(
           ids.filter((id): id is string => Boolean(id)).map((id) => [id, id]),
         ),
@@ -449,8 +454,10 @@ describe('source-audit dispatcher through persisted consult routing', () => {
           return routeSourceGradingAudit({
             ...input,
             ...(broken && fault === 'duplicate-chain' ? { reservationKey: `${input.reservationKey}:${++attempt}` } : {}),
+            reservationReservedAt: SOURCE_AUDIT_RESERVED_AT,
           }, {
             getSql: () => rootSql,
+            confirmReservation: async () => true,
             resolveParties: async (ids) => new Map(ids.filter((id): id is string => Boolean(id))
               .map((id) => [id, id === 'author-child' ? 'excluded-author' : id])),
             feedback: async (req, _identity, options) => getFeedbackCore(req, {
@@ -511,22 +518,42 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     const fixture = makeDeps(routeOf([]));
     const input = {
       card: { issueId: 'EI-no-route', createdBy: 'source-author' } as ScorecardRow,
-      reservationKey: 'grading-audit:EI-no-route', brief: 'Audit empty route',
+      reservationKey: 'grading-audit:EI-no-route', reservationReservedAt: SOURCE_AUDIT_RESERVED_AT,
+      brief: 'Audit empty route',
       ctx: { workspaceId: WS, uiClientId: 'source-requester', isSuperuser: true },
     };
     const feedback = vi.fn(async (req: GetFeedbackRequest) => getFeedbackCore(req, fixture.deps));
-    const first = await routeSourceGradingAudit(input, { getSql: () => rootSql, feedback });
+    const first = await routeSourceGradingAudit(input, { getSql: () => rootSql, feedback, confirmReservation: async () => true });
     expect(first).toMatchObject({ state: 'fallback', reason: expect.stringContaining('no_qualified_responder') });
-    const replay = await routeSourceGradingAudit(input, { getSql: () => rootSql, feedback });
+    const replay = await routeSourceGradingAudit(input, { getSql: () => rootSql, feedback, confirmReservation: async () => true });
     expect(replay).toMatchObject({ state: 'fallback', reason: expect.stringContaining('reuse reserved launch fallback') });
     expect(feedback).toHaveBeenCalledOnce();
     expect(fixture.reached).toHaveLength(0);
   });
 
+  it('refuses consult recruitment when the current reservation epoch is no longer owned', async () => {
+    const feedback = vi.fn();
+    const issueId = 'EI-reservation-epoch-lost';
+    const result = await routeSourceGradingAudit({
+      card: { issueId, createdBy: 'source-author' } as ScorecardRow,
+      reservationKey: `grading-audit:${issueId}`,
+      reservationReservedAt: SOURCE_AUDIT_RESERVED_AT,
+      brief: 'Audit an epoch that was superseded',
+      ctx: { workspaceId: WS, uiClientId: 'stale-source-requester', isSuperuser: true },
+    }, {
+      getSql: () => rootSql,
+      feedback,
+      confirmReservation: async () => false,
+    });
+
+    expect(result).toMatchObject({ state: 'reservation-lost' });
+    expect(feedback).not.toHaveBeenCalled();
+  });
+
   it('repairs missed settlement cleanup on expiry without waking another auditor', async () => {
     const fixture = makeDeps(routeOf([cand('settled-a'), cand('settled-b')]));
     const result = asOk(await getFeedbackCore({ ...baseReq, question: 'settlement recovery', archiveFloor: 2,
-      cascade: { flavor: 'grading-integrity', issueId: 'EI-settled', reservationKey: 'settled', brief: 'Audit exact settled card.' },
+      cascade: { flavor: 'grading-integrity', issueId: 'EI-settled', reservationKey: 'settled', reservationReservedAt: SOURCE_AUDIT_RESERVED_AT, brief: 'Audit exact settled card.' },
     }, fixture.deps));
     await rootSql`INSERT INTO harness_shared.work_items (feature_id, payload) VALUES ('EI-settled', '{"observation":{"gradingAudit":{"state":"passed"}}}'::jsonb)`;
     await rootSql`UPDATE harness_shared.consult_state SET expires_at = ${new Date(NOW.getTime() - 1).toISOString()} WHERE conversation_id = ${result.conversation_id}`;
@@ -539,7 +566,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
   it('a DEAD audit expert is dispatched (not revived) and carries the audit brief, not a transcript-answer brief', async () => {
     const fixture = makeDeps(routeOf([cand('audit-dead', { liveness: 'ended' })]));
     await getFeedbackCore({ ...baseReq, question: 'audit dispatch', archiveFloor: 2,
-      cascade: { flavor: 'grading-integrity', issueId: 'EI-revived', reservationKey: 'revived', brief: 'Audit exact revival source.' },
+      cascade: { flavor: 'grading-integrity', issueId: 'EI-revived', reservationKey: 'revived', reservationReservedAt: SOURCE_AUDIT_RESERVED_AT, brief: 'Audit exact revival source.' },
     }, fixture.deps);
     // Deadness is not a gate any more (R-2): the expert is dispatched like any other.
     expect(fixture.reached).toHaveLength(1);
@@ -558,8 +585,12 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     const pool = ['source-author', 'author-child', 'critic', 'critic-child', 'independent-a', 'independent-b', 'independent-c'].map((id) => cand(id));
     const fixture = makeDeps(routeOf(pool));
     const launch = vi.fn();
-    const route = (input: Parameters<typeof routeSourceGradingAudit>[0]) => routeSourceGradingAudit(input, {
+    const route = (
+      input: Parameters<typeof routeSourceGradingAudit>[0],
+      routeDeps?: Parameters<typeof routeSourceGradingAudit>[1],
+    ) => routeSourceGradingAudit(input, {
       getSql: () => rootSql,
+      confirmReservation: routeDeps?.confirmReservation ?? (async () => true),
       resolveParties: async (ids) => new Map(ids.filter((id): id is string => Boolean(id)).map((id) => [id,
         id === 'author-child' ? 'source-author' : id === 'critic-child' ? 'critic' : id])),
       feedback: async (req, _identity, options) => getFeedbackCore(req, {
@@ -570,7 +601,10 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     const ctx = { workspaceId: WS, uiClientId: 'requester', isSuperuser: true } as DispatchPendingGradingAuditsInput['ctx'];
     const dispatchDeps = {
       listScorecards: async () => [source], getRubric: async () => ({ kind: 'standard' } as Rubric),
-      reserve: async () => ({ status: 'claimed' as const }), release: async () => true,
+      reserve: async (_issueId: string, reservationKey: string) => ({
+        status: 'claimed' as const,
+        reservation: { key: reservationKey, reservedAt: SOURCE_AUDIT_RESERVED_AT },
+      }), release: async () => true,
       confirmReservation: async () => true,
       listWorkspaceWideLoopStanddownOwners: async () => new Set<string>(), route, launch,
     };
@@ -584,7 +618,10 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     const row = await stateRow(conversationId);
     const snapshot = row.routing as RoutingSnapshot;
     expect(snapshot.candidates.map((c) => c.ownerId)).toEqual(['independent-a', 'independent-b', 'independent-c']);
-    expect(snapshot.cascade).toMatchObject({ flavor: 'grading-integrity', issueId: source.issueId });
+    expect(snapshot.cascade).toMatchObject({
+      flavor: 'grading-integrity', issueId: source.issueId,
+      reservationKey: `grading-audit:${source.issueId}`, reservationReservedAt: SOURCE_AUDIT_RESERVED_AT,
+    });
     const replay = await dispatchPendingGradingAudits({ targetIds: [source.issueId], ctx }, dispatchDeps);
     expect(replay.receipts[0]).toMatchObject({ state: 'deduped', conversationId });
     expect(fixture.opened).toHaveLength(1);
@@ -614,7 +651,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     const fixture = makeDeps(routeOf([], { all: [cand('audit-min-a'), cand('audit-min-b')] }));
     fixture.deps.reach = async (input) => { fixture.reached.push(input); return { queued: fixture.reached.length === 1 ? 0 : 1 }; };
     const result = asOk(await getFeedbackCore({ ...baseReq, question: 'audit minimum and failed wake', archiveFloor: 2, minResponders: 2,
-      cascade: { flavor: 'grading-integrity', issueId: 'EI-minimum', reservationKey: 'minimum', brief: 'Audit frozen minimum evidence.' },
+      cascade: { flavor: 'grading-integrity', issueId: 'EI-minimum', reservationKey: 'minimum', reservationReservedAt: SOURCE_AUDIT_RESERVED_AT, brief: 'Audit frozen minimum evidence.' },
     }, fixture.deps));
     expect(result.responder?.ownerId).toBe('audit-min-b');
     expect(fixture.reached).toHaveLength(2);

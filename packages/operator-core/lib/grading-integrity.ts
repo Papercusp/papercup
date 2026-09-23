@@ -281,9 +281,10 @@ export interface GradingAuditReservationResult {
 export async function confirmPendingGradingAuditReservation(
   issueId: string,
   reservationKey: string,
-  options: Pick<GradingAuditReservationOptions, 'workspaceId'> = {},
+  options: Pick<GradingAuditReservationOptions, 'workspaceId'> & { reservedAt?: string } = {},
 ): Promise<boolean> {
   const workspaceId = options.workspaceId?.trim() || (await resolveIssueWorkspace(issueId));
+  const reservedAt = options.reservedAt ?? null;
   const current = await boundedOrgTxn(
     async (tx: OrgSql) =>
       tx<{ feature_id: string }[]>`
@@ -294,6 +295,10 @@ export async function confirmPendingGradingAuditReservation(
          AND scorecard.item_kind = ANY (ARRAY['bug', 'change', 'task'])
          AND scorecard.payload->'observation'->'gradingAudit'->>'state' = 'pending'
          AND scorecard.payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${reservationKey}
+         AND (
+           ${reservedAt}::text IS NULL
+           OR scorecard.payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ${reservedAt}
+         )
          AND scorecard.payload->'observation'->'retracted' IS NULL
          AND NOT EXISTS (
            SELECT 1
@@ -640,10 +645,14 @@ export async function reservePendingGradingAudit(
 export async function releasePendingGradingAudit(
   issueId: string,
   reservationKey: string,
-  options: Pick<GradingAuditReservationOptions, 'workspaceId'> & { backoff?: GradingAuditDispatchBackoff } = {},
+  options: Pick<GradingAuditReservationOptions, 'workspaceId'> & {
+    backoff?: GradingAuditDispatchBackoff;
+    reservedAt?: string;
+  } = {},
 ): Promise<boolean> {
   const workspaceId = options.workspaceId?.trim() || (await resolveIssueWorkspace(issueId));
   const backoffJson = options.backoff ? JSON.stringify(options.backoff) : null;
+  const reservedAt = options.reservedAt ?? null;
   const released = await boundedOrgTxn(
     async (tx: OrgSql) =>
       tx<{ feature_id: string }[]>`
@@ -665,6 +674,10 @@ export async function releasePendingGradingAudit(
          AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
          AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
          AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${reservationKey}
+         AND (
+           ${reservedAt}::text IS NULL
+           OR payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ${reservedAt}
+         )
       RETURNING feature_id`,
   );
   return Boolean(released[0]);
@@ -687,12 +700,13 @@ function oldestFirst(a: ScorecardRow, b: ScorecardRow): number {
   return a.createdAt.localeCompare(b.createdAt) || a.issueId.localeCompare(b.issueId);
 }
 
-function gradingAuditBrief(card: ScorecardRow): string {
+function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): string {
   const scratchTemplate = `/tmp/grading-integrity-${card.issueId}.XXXXXX`;
   return [
     `You are the dedicated grading-integrity auditor for scorecard ${card.issueId}.`,
     `The target is a terminal standard-rubric scorecard for rubric '${card.rubricRef}'. Inspect that exact scorecard and grade whether its evidence and criterion explanations are complete and independently re-runnable.`,
     `Source subject: ${JSON.stringify(card.subject ?? null)}; evidence fingerprint: ${card.evidenceFingerprint ?? 'not recorded'}. Preserve the stored evidence scope; do not substitute a newer working tree.`,
+    `Dispatch lease: key 'grading-audit:${card.issueId}', reservedAt '${reservationReservedAt}'. Before reading criterion evidence, re-read the exact target and continue only if gradingAudit.state is 'pending' and dispatchReservation.key and dispatchReservation.reservedAt exactly match this lease. If either differs or is absent, report the current state and stop without grading or emitting.`,
     'Do not modify implementation files, run shell commands, recruit peers, emit an ordinary same-rubric scorecard, or broaden scope.',
     `If the ordinary MCP tools are unavailable and you must use the documented scripts/mcp-call.mjs recovery path, stream each JSON payload through quoted stdin (--json -). If an intermediate file is unavoidable, first create a private directory with \`mktemp -d ${scratchTemplate}\` and keep every file inside it. Never read or write shared fixed names such as /tmp/eval-args.json or /tmp/eval.json: other grading auditors run concurrently and can overwrite them.`,
     `Emit exactly one COMPLETE terminal scorecards:emit audit: { rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ref:'${card.issueId}' }, ratings:{...} }. Include concrete evidence for every criterion in the grading-integrity rubric.`,
@@ -840,6 +854,7 @@ export async function dispatchPendingGradingAudits(
       try {
         await release(issueId, idempotencyKey, {
           workspaceId: input.ctx.workspaceId,
+          reservedAt: reservationReservedAt,
           ...(backoff ? { backoff } : {}),
         });
       } catch {
@@ -850,6 +865,7 @@ export async function dispatchPendingGradingAudits(
     const confirmOwnedPendingReservation = async (): Promise<boolean> => {
       const current = await confirmReservation(issueId, idempotencyKey, {
         workspaceId: input.ctx.workspaceId,
+        reservedAt: reservationReservedAt,
       });
       if (current) return true;
       await releaseReservation();
@@ -1079,11 +1095,29 @@ export async function dispatchPendingGradingAudits(
       const routed = await (deps.route ?? routeSourceGradingAudit)({
         card,
         reservationKey: idempotencyKey,
-        brief: gradingAuditBrief(card),
+        reservationReservedAt,
+        brief: gradingAuditBrief(card, reservationReservedAt),
         ctx: input.ctx,
         ...(harnessResolved ? { harness } : {}),
+      }, {
+        confirmReservation: () =>
+          confirmReservation(issueId, idempotencyKey, {
+            workspaceId: input.ctx.workspaceId,
+            reservedAt: reservationReservedAt,
+          }),
       });
+      if (routed.state === 'reservation-lost') {
+        await releaseReservation();
+        return {
+          issueId,
+          rubricRef: card.rubricRef,
+          state: 'skipped',
+          idempotencyKey,
+          reason: routed.reason,
+        };
+      }
       if (routed.state !== 'fallback') {
+        if (!(await confirmOwnedPendingReservation())) return receipt!;
         return {
           issueId,
           rubricRef: card.rubricRef,
@@ -1106,7 +1140,7 @@ export async function dispatchPendingGradingAudits(
         const useFallback = launchBackend === GRADING_AUDIT_FALLBACK.agent;
         const result = (await launch(
           {
-            brief: gradingAuditBrief(card),
+            brief: gradingAuditBrief(card, reservationReservedAt),
             ...(harnessResolved ? { harness } : {}),
             workItem: issueId,
             headless: true,

@@ -23,7 +23,7 @@ import { domainFailureMessage } from './plan-activation-gate';
 import { listPlanIndexRows, resolvePlanScope } from './source';
 import { withWorkspace } from '@papercusp/db-org';
 import { validatePropertySchemaDeclaration } from '../../typed-properties-db';
-import { PLAN_STATUSES } from './parser';
+import { NON_TERMINAL_PLAN_STATUSES } from './plan-start-state';
 import { summarizeItemParse } from './item-parse-feedback';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -85,7 +85,8 @@ export const argsSchema = z
         'Topic slug in kebab-case. A -YYYY-MM-DD suffix is appended automatically if not already present (plan filename convention, §3.1).',
       ),
     title: hardText(LIMITS.SHORT_TITLE),
-    status: z.enum([...PLAN_STATUSES] as [string, ...string[]]).optional(),
+    status: z.enum([...NON_TERMINAL_PLAN_STATUSES] as [string, ...string[]]).optional()
+      .describe('Initial lifecycle status. Terminal statuses can only be reached through plans:set-plan-status.'),
     ownerEmail: z
       .string()
       .email()

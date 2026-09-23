@@ -14,6 +14,7 @@ import type { GoalLaunchResolution, GoalPortfolioBrief } from './goal-launch-set
 import type { PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
 import type { GoalPlanFleetObservation } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
+import type { ExactPlanAdmission } from './agent-tools/plans/plan-admission-preflight';
 
 const NOW = new Date('2026-09-05T20:00:00.000Z');
 
@@ -86,6 +87,10 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
       portfolioFingerprint: goalPlanningPortfolioFingerprint(portfolio()), reviewedAt: NOW.toISOString(),
     }, authorities: {} })),
     goalLaunch: vi.fn(async () => launch()),
+    planAdmission: vi.fn(async (): Promise<ExactPlanAdmission> => ({
+      ready: true, status: 'ready', reason: 'ready', message: 'exact plan is ready',
+      requestedSeats: 1, executableWidth: 1,
+    } as ExactPlanAdmission)),
     planFleet: vi.fn(
       async (): Promise<GoalPlanFleetObservation> => ({
         status: 'known',
@@ -494,6 +499,70 @@ describe('P-026 / D-012 item 2: the acceptance obligation covers the delegated w
     });
   }
 
+  it('measures launch feasibility for the selected plan fleet after skipping a blocked predecessor', async () => {
+    const blocked = worklistPlan('blocked-plan', null);
+    blocked.placement.state = 'blocked';
+    blocked.placement.reconciliation = {
+      consistent: false, action: 'resolve-plan-blockers', reason: 'dependency is unresolved', toolCall: null,
+    };
+    const ready = worklistPlan('ready-plan', null);
+    ready.placement.state = 'unplaced';
+    ready.placement.reconciliation = {
+      consistent: false, action: 'launch-plan-fleet', reason: 'ready to place',
+      toolCall: { tool: 'fleet:launch-on-plan', args: {
+        name: 'Ready Plan Fleet', plan: 'ready-plan', harness: 'papercusp', leader: 'spawn', headless: true,
+      } },
+    };
+    const goalLaunch = vi.fn(async ({ fleetSlug }: { fleetSlug: string | null }) => ({
+      ...launch(),
+      refusal: fleetSlug === 'ready-plan-fleet' ? {
+        reason: 'fleet_max_agents' as const, current: 1, currentScope: 'live-agents-in-fleet',
+        limit: 1, requested: 1,
+        message: 'selected fleet is full',
+      } : null,
+    }));
+    const result = await read(withWorklist([blocked, ready]), { goalLaunch });
+    expect(goalLaunch).toHaveBeenCalledWith({
+      workspaceId: 'ws', ownerId: 'su-holder', fleetSlug: 'ready-plan-fleet', count: 1,
+    });
+    expect(result.agenda.evaluations.find((row) => row.family === 'plan-placement')).toMatchObject({
+      scope: { planSlug: 'ready-plan' }, status: 'blocked',
+      action: { kind: 'repair' },
+    });
+  });
+
+  it('chooses a later admitted plan when the earlier independent launch has promotion lag', async () => {
+    const makeReadyPlan = (slug: string): GoalPortfolioBrief['worklist'][number] => {
+      const entry = worklistPlan(slug, null);
+      entry.placement.state = 'unplaced';
+      entry.placement.reconciliation = {
+        consistent: false, action: 'launch-plan-fleet', reason: 'ready to place',
+        toolCall: { tool: 'fleet:launch-on-plan', args: {
+          name: `${slug}-fleet`, plan: slug, harness: 'papercusp', leader: 'spawn', headless: true,
+        } },
+      };
+      return entry;
+    };
+    const first = makeReadyPlan('promotion-lagged');
+    const second = makeReadyPlan('admitted');
+    const planAdmission = vi.fn(async ({ planSlug }: { planSlug: string }) => ({
+      ready: planSlug === 'admitted', status: planSlug === 'admitted' ? 'ready' : 'blocked',
+      reason: planSlug === 'admitted' ? 'ready' : 'promotion-lag',
+      message: planSlug === 'admitted' ? 'ready' : 'promoted rows are missing',
+      requestedSeats: 1, executableWidth: planSlug === 'admitted' ? 1 : 0,
+    } as ExactPlanAdmission));
+    const goalLaunch = vi.fn(async () => launch());
+    const result = await read(withWorklist([first, second]), { planAdmission, goalLaunch });
+    expect(planAdmission).toHaveBeenCalledTimes(2);
+    expect(goalLaunch).toHaveBeenCalledWith({
+      workspaceId: 'ws', ownerId: 'su-holder', fleetSlug: 'admitted-fleet', count: 1,
+    });
+    expect(result.agenda.evaluations.find((row) => row.family === 'plan-placement')).toMatchObject({
+      scope: { planSlug: 'admitted' }, status: 'due',
+      action: { kind: 'delegate', args: { plan: 'admitted' } },
+    });
+  });
+
   it('threads the scoped durable clock through the real agenda reader without replacing it with read time', async () => {
     const plan = worklistPlan('clocked-plan', closure('open'));
     const at = '2026-09-05T19:55:00.000Z';
@@ -575,12 +644,12 @@ describe('P-026 / D-012 item 2: the acceptance obligation covers the delegated w
     expect(result.planSlugs).not.toContain('in-flight-2');
   });
 
-  it('reads the worklist acceptance gates WITHOUT delaying the other canonical reads', async () => {
+  it('reads the worklist acceptance gates WITHOUT delaying independent canonical reads', async () => {
     // The worklist slugs are only knowable after the portfolio resolves, so the
     // reader chains off that promise instead of awaiting it. A refactor that
     // "simplifies" this into `await portfolioPromise` before building the rest
-    // of the wave serialises every read below behind the portfolio, which is
-    // exactly what this case fails on.
+    // of the wave serialises independent reads behind the portfolio. Launch
+    // feasibility deliberately waits for the selected action and its fleet.
     let releasePortfolio: () => void = () => {};
     const portfolioGate = new Promise<void>((resolve) => {
       releasePortfolio = resolve;
@@ -609,7 +678,8 @@ describe('P-026 / D-012 item 2: the acceptance obligation covers the delegated w
     });
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(started).toEqual(expect.arrayContaining(['portfolio', 'launch', 'fleet', 'waiting-on']));
+    expect(started).toEqual(expect.arrayContaining(['portfolio', 'fleet', 'waiting-on']));
+    expect(started).not.toContain('launch');
 
     releasePortfolio();
     const result = await pending;

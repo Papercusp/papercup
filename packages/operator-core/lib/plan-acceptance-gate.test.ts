@@ -481,6 +481,78 @@ describe('evaluatePlanAcceptanceGate', () => {
       message: codes.length ? 'BAR proof or grading is incomplete' : null,
     });
 
+    it('records a narrow reasoned waiver for only inadequate or stale BAR proof metadata', async () => {
+      mockPg.mockReturnValue(sqlReturning([{
+        plan_slug: 'some-plan-2026-08-11', harness_slug: 'papercusp', template: null, template_slug: null,
+        acceptance_bar_epoch: 1,
+        content: '## Requirements\n\n**R-1 — Result.** The required result.\n',
+      }]));
+      mockBarLifecycle.mockResolvedValue(verdict('ship', [
+        'bar_snapshot_proof_inadequate',
+        'bar_snapshot_proof_stale',
+      ]));
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([
+        scorecard({ createdBy: 'su-implementer' }),
+        scorecard({ createdBy: 'su-grader' }),
+      ]);
+
+      const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', {
+        force: { reason: 'The proof metadata is stale; the waiver is recorded.', acceptanceBarProofMetadata: true },
+      });
+
+      expect(result.satisfied).toBe(true);
+      expect(result.forcedPast).toMatchObject({
+        reason: 'The proof metadata is stale; the waiver is recorded.',
+        checks: ['bar_snapshot_proof_inadequate', 'bar_snapshot_proof_stale'],
+      });
+    });
+
+    it('does not waive other BAR failures with the proof metadata option', async () => {
+      mockPg.mockReturnValue(sqlReturning([{
+        plan_slug: 'some-plan-2026-08-11', harness_slug: 'papercusp', template: null, template_slug: null,
+        acceptance_bar_epoch: 1,
+        content: '## Requirements\n\n**R-1 — Result.** The required result.\n',
+      }]));
+      mockBarLifecycle.mockResolvedValue(verdict('ship', [
+        'bar_snapshot_proof_inadequate',
+        'bar_snapshot_evidence_plane_unmet',
+      ]));
+
+      const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', {
+        force: { reason: 'This reason does not waive unrelated BAR failures.', acceptanceBarProofMetadata: true },
+      });
+
+      expect(result).toMatchObject({ satisfied: false, code: 'acceptance_bar_contract_not_ready' });
+      expect(result.forcedPast).toBeUndefined();
+      expect(mockRubrics).not.toHaveBeenCalled();
+    });
+
+    it('does not activate the separate code-truth force with the metadata-only option', async () => {
+      mockFlag.mockImplementation(async (flag) =>
+        flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE || flag === FLAGS.PLAN_SPEC_COVERAGE_GATE,
+      );
+      mockPg.mockReturnValue(sqlReturning([{
+        plan_slug: 'some-plan-2026-08-11', harness_slug: 'papercusp', template: null, template_slug: null,
+        acceptance_bar_epoch: 1,
+        content: '## Requirements\n\n**R-1 — Result.** The required result.\n',
+      }]));
+      mockBarLifecycle.mockResolvedValue(verdict('ship', ['bar_snapshot_proof_stale']));
+      mockSpecCoverage.mockResolvedValue(coverageVerdict({
+        satisfied: false,
+        code: 'spec_proof_stale',
+        wouldBlock: ['1-clause(s)-proven-only-at-a-superseded-revision'],
+        message: 'A separate code-truth proof is stale.',
+      }));
+
+      const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', {
+        force: { reason: 'This reason applies only to BAR proof metadata.', acceptanceBarProofMetadata: true },
+      });
+
+      expect(result).toMatchObject({ satisfied: false, code: 'spec_proof_stale' });
+      expect(result.forcedPast).toBeUndefined();
+    });
+
     it('requires original contract adoption for legacy Requirements even with an as-built rubric and force', async () => {
       mockPg.mockReturnValue(sqlReturning([{
         plan_slug: 'some-plan-2026-08-11', template: null, template_slug: null,

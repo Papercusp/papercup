@@ -5,6 +5,7 @@ import {
   mergeAdmittedLogsIncremental,
   createMergeCursor,
   findLatestSnapshotIndex,
+  markSnapshotSeeded,
   seedCursorFromSnapshots,
   type AdmittedLog,
 } from '../read-merge';
@@ -56,7 +57,13 @@ async function foldToPg(
 ): Promise<Record<string, unknown>> {
   const pg = new Map<string, unknown>();
   const cursor = createMergeCursor();
-  for (const l of logs) cursor.positions.set(l.keyHex, startIndex);
+  for (const l of logs) {
+    cursor.positions.set(l.keyHex, startIndex);
+    // P-008: starting AT a snapshot index is the snapshot seed, which owes that set
+    // (`seedCursorFromSnapshots` marks it). Without the mark the fold would treat the
+    // set as redundant for a reader that had folded the prefix, which this one has not.
+    if (startIndex > 0) markSnapshotSeeded(cursor, l.keyHex, startIndex);
+  }
   await mergeAdmittedLogsIncremental(logs, cursor, {
     getTimeoutMs: 0,
     maxOpsPerPass: 0, // no per-pass budget — fold everything in one pass

@@ -45,6 +45,12 @@ import {
 } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// Child startup is a different lifecycle from post-submit observation. The
+// host discovery file is written before the spawned Node runtime emits its
+// first byte, and that gap has exceeded waitForOutput's tight 3s delivery
+// default in full-file runs. Keep readiness explicit instead of weakening the
+// delivery assertions that use the default below.
+const CHILD_START_OUTPUT_TIMEOUT_MS = 10_000;
 
 // WI-2339 defect #2 (2026-07-04) added a process-IDENTITY check to findLiveHost:
 // the discovered pid's /proc/<pid>/cmdline must match /psu-(launcher|pty-host)/,
@@ -278,6 +284,12 @@ it('quota wall during launch kickoff preserves the host and publishes recovery t
     cwd: '/tmp',
     env: hermeticEnv({
       PAPERCUSP_SID: ownerId,
+      // This case measures quota detection/clearance, not production prompt
+      // settling. Keep the real idle/busy gates in the path, but make their
+      // test-local budgets deterministic relative to waitForOutput's 3s cap.
+      PAPERCUSP_PSU_PTY_IDLE_MS: '20',
+      PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
+      PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500',
       PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
       PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '4',
       PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '2',
@@ -1060,7 +1072,7 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
         const host = await waitForHost(ownerId);
         expect(host).not.toBeNull();
         // Do not race child startup: the busy gate must observe genuine output.
-        expect(await waitForOutput(captured, '.')).toBe(true);
+        expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
 
         const envelope = {
           mode: 'turn' as const,
@@ -1434,7 +1446,7 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       // still its pre-first-output default, which the busy gate treats as
       // "at prompt" (see makeAgentBusyGate's doc comment), letting the write
       // through immediately instead of exercising the hold-until-quiet path.
-      expect(await waitForOutput(captured, '.')).toBe(true);
+      expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
 
       // Inject the wake turn WHILE the agent is mid-turn (still emitting '.').
       const ok = await injectIntoHost(host!.sock, { mode: 'turn', data: 'midturn-wake' });
@@ -1507,7 +1519,7 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       const host = await waitForHost(ownerId);
       expect(host).not.toBeNull();
       // EI-7662: only inject once the child has GENUINELY started emitting.
-      expect(await waitForOutput(captured, '.')).toBe(true);
+      expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
 
       // Three same-source wakes while mid-turn: identical first line (the coalesce
       // key — a loop's wake texts share it), differing detail (the checkpoint splice).
@@ -1585,7 +1597,7 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
 
       // EI-7662: wait for genuine busy activity before injecting — see the
       // comment on the sibling MID-TURN test above; same node-startup race.
-      expect(await waitForOutput(captured, '.')).toBe(true);
+      expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
 
       const ok = await injectIntoHost(host!.sock, { mode: 'turn', data: 'dropped-wake' });
       expect(ok).toBe(true);
@@ -1659,7 +1671,7 @@ describe(
         });
 
         await waitForHost(ownerId);
-        expect(await waitForOutput(captured, '.')).toBe(true); // genuinely busy now
+        expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true); // genuinely busy now
 
         const bootsAtInject = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
         expect(bootsAtInject).toHaveLength(1);
@@ -1731,7 +1743,7 @@ describe(
         });
 
         await waitForHost(ownerId);
-        expect(await waitForOutput(captured, '.')).toBe(true); // genuinely busy now
+        expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true); // genuinely busy now
 
         const ok = await injectIntoHost(sock, { mode: 'reset', data: 'midturn-reset-carry' });
         expect(ok).toBe(true);

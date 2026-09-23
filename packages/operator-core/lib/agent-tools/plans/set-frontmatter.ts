@@ -31,15 +31,15 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { domainFailureMessage } from './plan-activation-gate';
-import { parsePlan, PLAN_STATUSES } from './parser';
+import { parsePlan } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
-import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
+import { clearStartedForTerminalPlan, isTerminalPlanStatus, NON_TERMINAL_PLAN_STATUSES } from './plan-start-state';
 import { stampTerminalNowBlock } from './terminal-now-stamp';
 import { stampGreenlitNowBlock } from './greenlit-now-stamp';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-const argsSchema = z.object({
+export const argsSchema = z.object({
   harness: harnessArg,
   slug: z.string().min(1).describe('Plan slug (filename stem). Written into the frontmatter.'),
   title: hardText(LIMITS.SHORT_TITLE)
@@ -50,8 +50,8 @@ const argsSchema = z.object({
   // vocabulary left this one verb silently rejecting it. A second copy of a
   // list the parser already owns is the exact drift this plan removes.
   status: z
-    .enum([...PLAN_STATUSES] as [string, ...string[]])
-    .describe('Plan-level status.'),
+    .enum([...NON_TERMINAL_PLAN_STATUSES] as [string, ...string[]])
+    .describe('Non-terminal initial status for legacy conversion; terminal transitions belong to plans:set-plan-status.'),
   created: z
     .string()
     .regex(DATE_RE)
@@ -124,11 +124,11 @@ type SetFrontmatterValue =
 export default defineTool({
   name: 'plans:set-frontmatter',
   description:
-    'Convert a legacy plan (no valid frontmatter) into a first-class plan by writing a complete `title`/`slug`/`created`/`updated`/`status`/`owner` block. Body untouched. Refuses a plan that already has valid frontmatter.',
+    'Convert a legacy plan (no valid frontmatter) into a first-class plan by writing a complete `title`/`slug`/`created`/`updated`/`status`/`owner` block with a non-terminal initial status. Body untouched. Refuses a plan that already has valid frontmatter; terminal transitions use plans:set-plan-status.',
   guidance: {
     when: 'Promoting a legacy plan — one with no/malformed frontmatter — to a tracked plan, e.g. from the Plans admin tab triage screen.',
     notWhen:
-      'Editing a plan that already has valid frontmatter — that would clobber keys this verb does not model; use plans:set-content for a deliberate raw edit. Routine status flips on items use plans:set-status.',
+      'Editing a plan that already has valid frontmatter — that would clobber keys this verb does not model; use plans:set-content for prose edits and plans:set-plan-status for lifecycle changes. Routine status flips on items use plans:set-status.',
     chaining: 'plans:list (isLegacy: true rows) → plans:set-frontmatter per plan → plans:get to confirm.',
     seeAlso: [
       'plans:set-frontmatter-field (change ONE field, not the whole block)',

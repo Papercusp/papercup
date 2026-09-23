@@ -85,6 +85,24 @@ describe('set-plan-status expectedCurrent vocabulary', () => {
   });
 });
 
+describe('set-plan-status BAR proof metadata force', () => {
+  it('accepts the reasoned waiver only for a shipped target', () => {
+    expect(setPlanStatusTool.args.safeParse({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      status: 'shipped',
+      force: { reason: 'BAR proof metadata is stale; recorded evidence remains reviewable.', acceptanceBarProofMetadata: true },
+    }).success).toBe(true);
+
+    expect(setPlanStatusTool.args.safeParse({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      status: 'superseded',
+      force: { reason: 'reason', acceptanceBarProofMetadata: true },
+    }).success).toBe(false);
+  });
+});
+
 describe('set-plan-status terminal repair gate (WI-38303)', () => {
   it('skips the completion gate for an explicit shipped→shipped repair replay', () => {
     expect(shouldEvaluateAcceptanceGate('shipped', 'shipped')).toBe(false);

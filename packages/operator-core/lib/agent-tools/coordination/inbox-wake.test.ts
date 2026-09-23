@@ -94,6 +94,28 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     }
   });
 
+  it('EI-24053245865903237: a stalled required-wake ledger write cannot hold a successful wake response', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      sqlMock.mockImplementationOnce(() => new Promise<never[]>(() => {}));
+      const pending = wakeRecipients(['s-1'], { requiredWake: true, workspaceId: 'ws-1' });
+      let settled = false;
+      void pending.then(() => { settled = true; });
+
+      await vi.waitFor(() => expect(sqlMock).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 10 });
+      await vi.advanceTimersByTimeAsync(COORD_WAKE_TARGET_TIMEOUT_MS + 1);
+
+      expect(settled).toBe(true);
+      await expect(pending).resolves.toMatchObject({ woken: 1, targets: ['s-1'] });
+      expect(emitAwaitedEvent).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('required-wake attempt ledger write failed'));
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
   it('required staged wakes do not create completed-fire evidence', async () => {
     vi.mocked(resolveWakeMode).mockResolvedValue('manual' as never);
     await wakeRecipients(['s-1'], { requiredWake: true, workspaceId: 'ws-1' });

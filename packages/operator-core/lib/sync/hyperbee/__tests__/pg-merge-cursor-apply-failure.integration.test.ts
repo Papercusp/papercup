@@ -5,7 +5,7 @@ import type postgres from 'postgres';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import {
   createMergeCursor, createPgMergeCursorSeedCache, mergeAdmittedLogsIncremental,
-  persistCursor, seedCursorFromPg, seedCursorFromSnapshots,
+  NO_SNAPSHOT_APPLY, persistCursor, seedCursorFromPg, seedCursorFromSnapshots, snapshotApplyMarkOf,
   type AdmittedLog, type MergeApplyFailure, type MergeCursor,
 } from '../read-merge';
 import { createPgMergeCursorStore } from '../pg-merge-cursor-store';
@@ -32,6 +32,9 @@ describe('P-515 durable unapplied entry recovery', () => {
     for (const name of [
       '493-substrate-merge-cursor.sql', '685-substrate-merge-cursor-apply-binding.sql',
       '1122-substrate-merge-cursor-apply-failure.sql', '1122-substrate-merge-cursor-apply-failure.sql',
+      // P-008: seedCursorFromPg now also loads the stamped snapshot marks. Applied twice:
+      // the runner can retry after a crash, so the additive migration must be idempotent.
+      '1206-substrate-merge-cursor-snapshot-apply-mark.sql', '1206-substrate-merge-cursor-snapshot-apply-mark.sql',
     ]) await applyMigrationForTest(sql, migrationPath(name));
     await sql`CREATE TABLE materialized (id text PRIMARY KEY, version bigint NOT NULL)`;
   }, 180_000);
@@ -154,5 +157,35 @@ describe('P-515 durable unapplied entry recovery', () => {
     await createPgMergeCursorSeedCache().seed(restarted, store, null, ['source']);
     expect((await mergeAdmittedLogsIncremental([source], restarted, { applyImpl: applyDependency, getTimeoutMs: 0 })).caughtUp).toBe(true);
     expect(await sql`SELECT id FROM child_rows`).toEqual([{ id: 'child' }]);
+  });
+
+  it('P-008: snapshot marks are trusted only while their stamp matches the row position', async () => {
+    const store = createPgMergeCursorStore('w', 'marks', () => sql);
+    await store.save(new Map([['a', 10], ['b', 20], ['c', 30]]), 'home', undefined, new Map([
+      ['a', { applyThrough: 7, hole: null }],
+      ['b', { applyThrough: NO_SNAPSHOT_APPLY, hole: 12 }],
+    ])); // 'c' carries no mark in a marks-carrying save, so it is written unstamped.
+    expect(await store.loadSnapshotMarks!('home')).toEqual(new Map([
+      ['a', { applyThrough: 7, hole: null }],
+      ['b', { applyThrough: NO_SNAPSHOT_APPLY, hole: 12 }],
+    ]));
+    expect(await store.loadSnapshotMarks!('another-home')).toEqual(new Map());
+
+    // A position-only save (an older or rolled-back build) moves the position and
+    // leaves the old stamp behind, and so does a hand edit of `position`.
+    await store.save(new Map([['a', 11]]), 'home');
+    await sql`UPDATE harness_shared.substrate_merge_cursor SET position = 21 WHERE harness_slug = 'marks' AND log_keyhex = 'b'`;
+    expect(await store.loadSnapshotMarks!('home')).toEqual(new Map());
+
+    // Unstamped rows above 0 seed as "owe the next set", never as "skip".
+    const cursor = createMergeCursor();
+    await seedCursorFromPg(cursor, store, 'home');
+    for (const key of ['a', 'b', 'c']) expect(snapshotApplyMarkOf(cursor, key)).toEqual({ applyThrough: NO_SNAPSHOT_APPLY, hole: 0 });
+
+    // A restamped row is trusted again, through the boot seed cache as well.
+    await store.save(new Map([['a', 11]]), 'home', undefined, new Map([['a', { applyThrough: 7, hole: null }]]));
+    const again = createMergeCursor();
+    await createPgMergeCursorSeedCache().seed(again, store, 'home', ['a']);
+    expect(snapshotApplyMarkOf(again, 'a')).toEqual({ applyThrough: 7, hole: null });
   });
 });

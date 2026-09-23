@@ -46,6 +46,8 @@ export interface SourceAuditCascadeMeta {
   flavor: 'grading-integrity';
   issueId: string;
   reservationKey: string;
+  /** Absent only on cascade rows written before reservation-epoch fencing. */
+  reservationReservedAt?: string;
   brief: string;
 }
 
@@ -61,11 +63,17 @@ export function sourceAuditCascadeMetaFromRouting(routing: unknown): SourceAudit
 }
 
 export function sourceAuditWakeCopy(meta: SourceAuditCascadeMeta, conversationId: string): CascadeWakeCopy {
+  const reservationGuidance = meta.reservationReservedAt
+    ? `Dispatch lease: key '${meta.reservationKey}', reservedAt '${meta.reservationReservedAt}'. ` +
+      `Before reading criterion evidence, re-read the exact target and proceed only if its pending ` +
+      `grading-audit reservation matches both values. If it does not, report the current state and stop.`
+    : 'Legacy grading-audit route: no reservation epoch token is recorded. Do not read evidence or emit; report the missing epoch and stop.';
   return {
     summary: `Grading-integrity audit: ${meta.issueId}`,
     body: `${meta.brief}\n\nThe existing relevance router selected you as an independent audit candidate; ` +
       `selection can be best-available below the floor. Audit the stored evidence on its merits; ` +
       `selection is not a claim that your transcript proves the result.\n` +
+      `${reservationGuidance}\n` +
       `Read the request in conversations:get { id:${JSON.stringify(conversationId)} }. ` +
       `If unable to audit, use consult:decline { conversation_id:${JSON.stringify(conversationId)}, reason:'...' }; ` +
       `the existing cascade selects the next candidate. Emit the exact audit card to finish; a consult reply does not settle it.`,

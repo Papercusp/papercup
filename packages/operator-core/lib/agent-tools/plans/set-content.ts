@@ -117,6 +117,14 @@ export type SetContentValue =
       itemTextChanges?: PlanItemTextChange[];
     }
   | { ok: false; code: 'not_found' }
+  | {
+      ok: false;
+      code: 'plan_status_change_requires_lifecycle_writer';
+      currentStatus: string | null;
+      proposedStatus: string | null;
+      writer: 'plans:set-plan-status' | 'plans:set-frontmatter';
+      message: string;
+    }
   | { ok: false; code: 'stale'; currentContent: string; currentHash: string; currentVersion?: number }
   | {
       ok: false;
@@ -432,11 +440,34 @@ export async function evaluateSetContent(
     return { newBody: null, value: { ok: false, code: 'would_orphan_frontmatter' } };
   }
 
-  // WI-38303: raw-content writers can change frontmatter status without going
-  // through plans:set-plan-status. Enforce the same terminal-Now invariant in
-  // their shared evaluator (set-content, set-content-chunk, and plans:edit),
-  // before lint and before the derived indexes are written. Idempotent and
-  // prepend-only; an absent Now block remains absent.
+  // Lifecycle status is owned by its structured writer. Raw content routes
+  // (plans:edit, set-content, and set-content-chunk) must not skip activation,
+  // admission, acceptance, supersede, or terminal cleanup gates. Legacy plans
+  // convert only through set-frontmatter, which now accepts non-terminal starts.
+  const currentStatus = currentParsed.frontmatter.status ?? null;
+  const proposedStatus = proposed.frontmatter.status ?? null;
+  const legacyConversion = currentParsed.isLegacy && !proposed.isLegacy;
+  if (legacyConversion || currentStatus !== proposedStatus) {
+    const writer = currentParsed.isLegacy ? 'plans:set-frontmatter' : 'plans:set-plan-status';
+    return {
+      newBody: null,
+      value: {
+        ok: false,
+        code: 'plan_status_change_requires_lifecycle_writer',
+        currentStatus,
+        proposedStatus,
+        writer,
+        message: writer === 'plans:set-frontmatter'
+          ? 'Legacy plans must be converted with plans:set-frontmatter and a non-terminal initial status.'
+          : 'Plan lifecycle status changes must use plans:set-plan-status so the lifecycle gates and cleanup run.',
+      },
+    };
+  }
+
+  // WI-38303: raw-content writers may still edit prose on an already-terminal
+  // plan. Preserve the terminal-Now invariant in the shared evaluator before
+  // lint and derived indexes are written. Idempotent and prepend-only; an
+  // absent Now block remains absent.
   const terminalStamp = stampTerminalNowBlock(body, proposed.frontmatter.status ?? '');
   const nowStamped = terminalStamp !== null;
   if (terminalStamp !== null) {
@@ -506,11 +537,11 @@ export async function evaluateSetContent(
 export default defineTool({
   name: 'plans:set-content',
   description:
-    'Replace a plan file wholesale, guarded by a compare-and-swap on `expectedHash`. For raw-prose edits the structured verbs cannot make. Rejects a stale write (file changed since load), a write that would strip a real plan back to legacy, and a write that fails lint. A successful write is recorded as a plan revision; pass `rationale` to capture the why. For large plan bodies, use plans:set-content-chunk instead so the provider sends multiple small tool calls.',
+    'Replace a plan file wholesale, guarded by a compare-and-swap on `expectedHash`. For raw-prose edits the structured verbs cannot make. Rejects stale writes, frontmatter loss, lifecycle status changes (use plans:set-plan-status), and writes that fail lint. A successful write is recorded as a plan revision; pass `rationale` to capture the why. For large plan bodies, use plans:set-content-chunk instead so the provider sends multiple small tool calls.',
   guidance: {
     when: 'A human is editing the raw markdown of a plan — prose sections the assisted verbs (set-now / set-status / add-decision / add-item) do not cover. Use only for small-to-medium bodies that fit comfortably in one tool call.',
     notWhen:
-      'A structured edit — flipping an item, replacing the Now block, appending a decision/item — use the assisted verb. Converting a legacy plan — use plans:set-frontmatter. Writing a large plan body — use plans:set-content-chunk begin → append* → commit.',
+      'A structured edit — changing a lifecycle status, flipping an item, replacing the Now block, or appending a decision/item — use its dedicated verb. Convert a legacy plan with plans:set-frontmatter. For a large plan body use plans:set-content-chunk begin → append* → commit.',
     chaining:
       'plans:get { slug } → carry `contentHash` → plans:set-content { slug, content, expectedHash: contentHash }. For large bodies: plans:set-content-chunk begin → append* → commit.',
     seeAlso: [
@@ -614,6 +645,10 @@ export default defineTool({
           `almost always a stale read clobbering someone else's completed work. Re-fetch via plans:get and carry its ` +
           `version/contentHash, or use plans:set-status for a real single-item flip. If the regression is genuinely ` +
           `intentional, retry with allowStatusRegression: true.`;
+      } else if (v.code === 'plan_status_change_requires_lifecycle_writer') {
+        payload.currentStatus = v.currentStatus;
+        payload.proposedStatus = v.proposedStatus;
+        payload.writer = v.writer;
       }
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -621,10 +656,9 @@ export default defineTool({
       };
     }
 
-    // Cross-store invariant: a whole-document write can flip the frontmatter
-    // status to a terminal value (e.g. rejectDraftPlan sets superseded). If
-    // it did, clear the operational started/paused row so a terminal plan is
-    // never counted as "waiting". Best-effort — plans:list self-heals on read.
+    // Cross-store invariant: an accepted prose write on an already-terminal
+    // plan can still reconcile a stale started/paused row. Lifecycle changes
+    // themselves are refused by the shared evaluator and use set-plan-status.
     if (isTerminalPlanStatus(parsePlan(args.content, { filePath: `${args.slug}.md` }).frontmatter.status)) {
       try {
         await clearStartedForTerminalPlan(result.scope.workspaceId, result.scope.harnessSlug, args.slug);

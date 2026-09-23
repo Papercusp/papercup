@@ -110,10 +110,58 @@ Updated state. The next concrete action, restated.
   });
 });
 
-describe('evaluateSetContent — terminal Now invariant (WI-38303)', () => {
-  it('stamps an actionable Now when a raw rewrite moves the plan to shipped', async () => {
+describe('evaluateSetContent — plan lifecycle status writer guard (WI-10002607)', () => {
+  it('refuses a raw content transition to shipped and routes it to plans:set-plan-status', async () => {
     const proposed = CURRENT.replace('status: draft', 'status: shipped');
     const { newBody, value } = await evaluateSetContent(CURRENT, proposed, 'ei-1812-test', undefined, {
+      allowShrink: true,
+    });
+
+    expect(newBody).toBeNull();
+    expect(value).toMatchObject({
+      ok: false,
+      code: 'plan_status_change_requires_lifecycle_writer',
+      currentStatus: 'draft',
+      proposedStatus: 'shipped',
+      writer: 'plans:set-plan-status',
+    });
+  });
+
+  it('routes legacy conversion through set-frontmatter', async () => {
+    const legacy = CURRENT.replace(/^---\n[\s\S]*?\n---\n/, '');
+    const { newBody, value } = await evaluateSetContent(legacy, CURRENT, 'ei-1812-test', undefined, {
+      allowShrink: true,
+    });
+
+    expect(newBody).toBeNull();
+    expect(value).toMatchObject({
+      ok: false,
+      code: 'plan_status_change_requires_lifecycle_writer',
+      writer: 'plans:set-frontmatter',
+    });
+  });
+
+  it('also blocks the chunked whole-document writer from changing lifecycle status', async () => {
+    const proposed = CURRENT.replace('status: draft', 'status: shipped');
+    const { newBody, value } = await evaluateSetContent(CURRENT, proposed, 'ei-1812-test', undefined, {
+      allowShrink: true,
+      wholeDocumentRewrite: true,
+    });
+
+    expect(newBody).toBeNull();
+    expect(value).toMatchObject({
+      ok: false,
+      code: 'plan_status_change_requires_lifecycle_writer',
+      writer: 'plans:set-plan-status',
+    });
+  });
+});
+
+describe('evaluateSetContent — terminal Now invariant (WI-38303)', () => {
+  it('stamps a prose rewrite of a plan that is already shipped', async () => {
+    const terminal = CURRENT.replace('status: draft', 'status: shipped');
+    const proposed = terminal.replace('Where it stands now.', 'The shipped state remains recorded.');
+    const { newBody, value } = await evaluateSetContent(terminal, proposed, 'ei-1812-test', undefined, {
       allowShrink: true,
     });
 
@@ -121,13 +169,13 @@ describe('evaluateSetContent — terminal Now invariant (WI-38303)', () => {
     if (!value.ok) return;
     expect(value.nowStamped).toBe(true);
     expect(newBody).toContain(TERMINAL_NOW_STAMP_MARK);
-    expect(newBody).toContain('Where it stands now.');
   });
 
   it('does not nest a second stamp on a later raw edit', async () => {
+    const terminal = CURRENT.replace('status: draft', 'status: shipped');
     const first = await evaluateSetContent(
-      CURRENT,
-      CURRENT.replace('status: draft', 'status: shipped'),
+      terminal,
+      terminal.replace('Where it stands now.', 'The shipped state remains recorded.'),
       'ei-1812-test',
       undefined,
       { allowShrink: true },

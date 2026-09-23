@@ -53,6 +53,7 @@ import {
   appendWorkspaceHostEvent,
   beginWorkspaceHostOperation,
   readWorkspaceHostDestroyTarget,
+  readWorkspaceHostOperationPlan,
   readWorkspaceHostResourceCheckpoints,
   recordWorkspaceHostObservation,
   recordWorkspaceHostSignals,
@@ -95,6 +96,19 @@ export function nextWorkspaceHostControllerAuthority(
   return current?.controllerId === normalized
     ? current
     : { controllerId: normalized, fence: (current?.fence ?? 0) + 1 };
+}
+
+/**
+ * The desired revision a plan was bound to by `bindWorkspaceHostPlanRevision`, read back from its
+ * planId suffix; undefined for a plan that was never bound. The one parser for that suffix, so a
+ * resumed operation turn recovers exactly the revision its first turn persisted.
+ */
+export function workspaceHostPlanDesiredRevision(planId: unknown): number | undefined {
+  if (typeof planId !== 'string') return undefined;
+  const match = /:desired-revision:(\d+)$/.exec(planId);
+  if (!match) return undefined;
+  const revision = Number(match[1]);
+  return Number.isSafeInteger(revision) && revision >= 1 ? revision : undefined;
 }
 
 /** Bind all provider-visible plan identities to the persisted desired revision. */
@@ -366,6 +380,8 @@ export interface WorkspaceHostDestroyResult extends WorkspaceHostProvisioningRes
 
 export interface WorkspaceHostDestroyStore {
   readTarget: typeof readWorkspaceHostDestroyTarget;
+  /** The plan this operation persisted on its first turn (null before it began): a resumed turn keeps its revision. */
+  readOperationPlan: typeof readWorkspaceHostOperationPlan;
   beginOperation: typeof beginWorkspaceHostOperation;
   updateOperation: typeof updateWorkspaceHostOperation;
   readCheckpoints: typeof readWorkspaceHostResourceCheckpoints;
@@ -379,6 +395,7 @@ export type WorkspaceHostDestroyDisposition = 'snapshot' | 'backup' | 'discard';
 
 const DEFAULT_DESTROY_STORE: WorkspaceHostDestroyStore = {
   readTarget: readWorkspaceHostDestroyTarget,
+  readOperationPlan: readWorkspaceHostOperationPlan,
   beginOperation: beginWorkspaceHostOperation,
   updateOperation: updateWorkspaceHostOperation,
   readCheckpoints: readWorkspaceHostResourceCheckpoints,
@@ -1727,7 +1744,12 @@ export async function runWorkspaceHostDestroy(
   }
   const controllerAuthority =
     input.controllerAuthority ?? nextWorkspaceHostControllerAuthority(target.controllerAuthority);
-  const desiredRevision = input.desiredRevision ?? target.desiredRevision + 1;
+  // WI-10002786: a resumed turn keeps the revision its first turn bound. That turn already advanced
+  // the host row to it, so `target.desiredRevision + 1` would name the NEXT revision: a different
+  // plan identity than the persisted operation row, refused by beginOperation as a stale fence.
+  const persistedPlan = (await baseStore.readOperationPlan(workspaceId, operationId)) as { planId?: unknown } | null;
+  const desiredRevision =
+    input.desiredRevision ?? workspaceHostPlanDesiredRevision(persistedPlan?.planId) ?? target.desiredRevision + 1;
   const store = controllerDestroyStore(baseStore, controllerAuthority, operationId);
 
   const context: WorkspaceHostProviderContext = {

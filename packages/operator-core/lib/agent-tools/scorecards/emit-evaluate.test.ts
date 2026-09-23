@@ -34,12 +34,27 @@ const readRunningGenerationM = vi.hoisted(() => vi.fn());
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
+  const getRubric = vi.fn();
+  const getRubricCriteriaHash = vi.fn(async (_rubricId: string): Promise<string | null> => null);
+  const getRubricPlanRevision = vi.fn(async (_rubricId: string): Promise<number | null> => 7);
   return {
     ...actual,
-    getRubric: vi.fn(),
-    getRubricCriteriaHash: vi.fn(async () => null),
-    getRubricPlanRevision: vi.fn(async () => 7),
+    getRubric,
+    getRubricCriteriaHash,
+    getRubricPlanRevision,
     readRubricPlanRevision: vi.fn(async () => ({ ok: true as const, revision: 7 })),
+    // emitScorecard reads revision/criteriaHash/meaningRevision through ONE call
+    // (getRubricEvidenceIdentity). The spread `actual` would run the REAL one,
+    // whose module-internal getRubric() call bypasses every mock above, so each
+    // revision-keyed guard (dedup, same-revision independent card) silently read
+    // revision:null (WI-10002787). Derive it from the mocked readers the tests steer.
+    getRubricEvidenceIdentity: vi.fn(async (rubricId: string) => ({
+      revision: await getRubricPlanRevision(rubricId),
+      criteriaHash: await getRubricCriteriaHash(rubricId),
+      meaningRevision:
+        ((await getRubric(rubricId)) as { barContract?: { meaningRevision?: number } } | null)?.barContract
+          ?.meaningRevision ?? null,
+    })),
   };
 });
 vi.mock('../../scout/generation-watermark', () => ({ readRunningGeneration: readRunningGenerationM }));

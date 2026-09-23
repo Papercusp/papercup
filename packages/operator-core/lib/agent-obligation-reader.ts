@@ -15,6 +15,7 @@ import {
 } from './agent-obligations';
 import {
   buildAgentObligationAgenda,
+  selectGoalPlacementPlan,
   type WaitingOnObligationRow,
   type WaitingOnProviderInput,
   type IndependentVerificationProviderInput,
@@ -32,6 +33,8 @@ import type { PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
 import type { GoalPlanFleetObservation } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import type { GoalPlacementProgressState } from './goal-placement-progress';
+import { fleetSlugFromName } from './agent-fleets-store';
+import type { ExactPlanAdmission } from './agent-tools/plans/plan-admission-preflight';
 
 export const AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS = 900;
 
@@ -59,6 +62,14 @@ export interface AgentObligationReaderDeps {
     fleetSlug: string | null;
     count: number;
   }) => Promise<GoalLaunchResolution>;
+  planAdmission: (input: {
+    workspaceId: string;
+    ownerId: string;
+    harnessSlug: string;
+    planSlug: string;
+    fleetSlug: string;
+    requestedSeats: number;
+  }) => Promise<ExactPlanAdmission>;
   planFleet: (workspaceId: string, goalId: string) => Promise<GoalPlanFleetObservation>;
   ownerReport: (
     workspaceId: string,
@@ -205,19 +216,52 @@ export async function readAgentObligationAgenda(input: {
   const portfolioPromise = goalId
     ? boundedRead('goal-portfolio', deps.goalPortfolio(input.workspaceId, goalId), null, sourceTimeoutMs)
     : Promise.resolve<ReadOutcome<GoalPortfolioBrief | null>>({ value: null, degraded: false, elapsedMs: 0 });
-  const launchPromise = goalId
-    ? boundedRead(
-        'goal-launch',
-        deps.goalLaunch({
-          workspaceId: input.workspaceId,
-          ownerId: input.ownerId,
-          fleetSlug: input.fleetSlug ?? null,
-          count: Math.max(1, Math.floor(input.launchCount ?? 1)),
+  const requestedSeats = Math.max(1, Math.floor(input.launchCount ?? 1));
+  const admissionPromise = portfolioPromise.then(async (portfolio) => {
+    const candidates = (portfolio.value?.worklist ?? []).filter((plan) =>
+      plan.placement.state === 'unplaced' && plan.placement.reconciliation.toolCall !== null,
+    ).slice(0, PLAN_CONTEXT_MAX);
+    const measured = await Promise.all(candidates.map(async (plan) => {
+      const call = plan.placement.reconciliation.toolCall!;
+      const result = await boundedRead(
+        `exact-plan-admission:${plan.slug}`,
+        deps.planAdmission({
+          workspaceId: input.workspaceId, ownerId: input.ownerId,
+          harnessSlug: call.args.harness, planSlug: call.args.plan,
+          fleetSlug: fleetSlugFromName(call.args.name), requestedSeats,
         }),
-        null as GoalLaunchResolution | null,
+        null as ExactPlanAdmission | null,
         sourceTimeoutMs,
-      )
-    : Promise.resolve<ReadOutcome<GoalLaunchResolution | null>>({ value: null, degraded: false, elapsedMs: 0 });
+      );
+      return [plan.ref, result] as const;
+    }));
+    return {
+      value: Object.fromEntries(measured.map(([ref, result]) => [ref, result.value])) as Record<string, ExactPlanAdmission | null>,
+      degraded: measured.some(([, result]) => result.degraded),
+      failures: measured.filter(([, result]) => result.degraded).map(([ref, result]) => `${ref}: ${readFailure('exact-plan admission', result)}`),
+    };
+  });
+  // The launch resolver's fleet ceiling is scoped to a fleet. Wait for the
+  // canonical portfolio to choose the action before measuring that ceiling;
+  // a null fleet can silently turn a real fleet refusal into apparent headroom.
+  const launchPromise = Promise.all([portfolioPromise, admissionPromise]).then(([portfolio, admissions]) => {
+    const selected = portfolio.value ? selectGoalPlacementPlan(portfolio.value, admissions.value) : undefined;
+    const call = selected?.placement.reconciliation.toolCall;
+    if (!goalId || !call || (selected?.placement.state === 'unplaced' && !admissions.value[selected.ref]?.ready)) {
+      return { value: null, degraded: false, elapsedMs: 0 } as ReadOutcome<GoalLaunchResolution | null>;
+    }
+    return boundedRead(
+      'goal-launch',
+      deps.goalLaunch({
+        workspaceId: input.workspaceId,
+        ownerId: input.ownerId,
+        fleetSlug: input.fleetSlug ?? fleetSlugFromName(call.args.name),
+        count: requestedSeats,
+      }),
+      null as GoalLaunchResolution | null,
+      sourceTimeoutMs,
+    );
+  });
   const planningPromise = goalId
     ? boundedRead('goal-planning', deps.goalPlanning(input.workspaceId, input.ownerId, goalId),
         { review: null, authorities: {} }, sourceTimeoutMs)
@@ -306,9 +350,10 @@ export async function readAgentObligationAgenda(input: {
     [] as WaitingOnObligationRow[],
     sourceTimeoutMs,
   );
-  const [portfolio, launch, fleet, report, ownAcceptances, worklistAcceptance, directives, waits, planning] =
+  const [portfolio, admission, launch, fleet, report, ownAcceptances, worklistAcceptance, directives, waits, planning] =
     await Promise.all([
       portfolioPromise,
+      admissionPromise,
       launchPromise,
       fleetPromise,
       reportPromise,
@@ -320,6 +365,7 @@ export async function readAgentObligationAgenda(input: {
     ]);
   const planSlugs = [...ownPlanSlugs, ...worklistAcceptance.planSlugs];
   const acceptances = [...ownAcceptances, ...worklistAcceptance.acceptances];
+  degradedSources.push(...admission.failures);
   if (directives.degraded) degradedSources.push(readFailure('owner directives', directives));
   if (waits.degraded) degradedSources.push(readFailure('waiting-on', waits));
   const waitingOn: WaitingOnProviderInput = {
@@ -441,6 +487,10 @@ export async function readAgentObligationAgenda(input: {
     };
     const placementGeneration = agentObligationSourceGeneration({
       portfolio: stablePortfolio(portfolio.value),
+      admission: Object.fromEntries(Object.entries(admission.value).map(([ref, verdict]) =>
+        [ref, verdict ? { ready: verdict.ready, status: verdict.status, reason: verdict.reason,
+          message: verdict.message, requestedSeats: verdict.requestedSeats,
+          executableWidth: verdict.executableWidth } : 'unknown'])),
       launch: stableLaunch(launch.value),
       fleet: fleet.value,
     });
@@ -471,6 +521,7 @@ export async function readAgentObligationAgenda(input: {
             status: 'known',
             value: {
               portfolio: portfolio.value,
+              admissions: admission.value,
               launch: launch.value,
               alert: fleet.value.alert,
               evidenceRef: `goal-plan-fleet-cohort:${goalId}:${placementGeneration}`,
@@ -787,6 +838,15 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
         goalRole: 'plan-fleet-leader',
         fleetSlug,
         count,
+      });
+    },
+    planAdmission: async ({ workspaceId, ownerId, harnessSlug, planSlug, fleetSlug, requestedSeats }) => {
+      const { preflightExactPlanAdmission } = await import('./agent-tools/plans/plan-admission-preflight');
+      return preflightExactPlanAdmission({
+        workspaceId, actor: ownerId, harnessSlug, planSlug, fleetSlug, requestedSeats,
+        // A GOAL holder's release cooldown does not apply to the different
+        // independent member that will claim the fleet's exact-plan lane.
+        specId: `goal-obligation-${fleetSlug}-plan`,
       });
     },
     planFleet: async (workspaceId, goalId) => {

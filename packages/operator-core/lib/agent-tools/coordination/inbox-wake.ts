@@ -23,7 +23,7 @@
  * thunder-herd N sleeping agents into N billable turns).
  */
 
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withDbCallDeadline } from '@papercusp/db-org';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { listActiveAwaitsForKey } from '../../events/await/store';
 // hive-agent-tabs P-007/D-005: the per-agent wake-mode gate (consumed below).
@@ -208,16 +208,25 @@ async function recordRequiredWakeAttempts(
     const subscriberIds = attempts.map((a) => a.subscriberId);
     const eventKeys = attempts.map((a) => a.eventKey);
     const outcomes = attempts.map((a) => a.outcome);
-    await sql`
-      INSERT INTO harness_shared.event_wake_attempts
-        (workspace_id, subscriber_id, event_key, outcome)
-      SELECT ${workspaceId}, subscriber_id, event_key, outcome
-        FROM unnest(
-          ${subscriberIds}::text[],
-          ${eventKeys}::text[],
-          ${outcomes}::text[]
-        ) AS attempt(subscriber_id, event_key, outcome)
-    `;
+    await withDbCallDeadline(
+      sql`
+        INSERT INTO harness_shared.event_wake_attempts
+          (workspace_id, subscriber_id, event_key, outcome)
+        SELECT ${workspaceId}, subscriber_id, event_key, outcome
+          FROM unnest(
+            ${subscriberIds}::text[],
+            ${eventKeys}::text[],
+            ${outcomes}::text[]
+          ) AS attempt(subscriber_id, event_key, outcome)
+      `,
+      {
+        // The inbox row and completed wake are already durable. Bound this
+        // diagnostic ledger write by the wake leg budget so it cannot make a
+        // successful coord:send exceed the transport deadline.
+        ms: COORD_WAKE_TARGET_TIMEOUT_MS,
+        label: 'coord:inbox-wake.required-attempt-ledger',
+      },
+    );
   } catch (e) {
     // The ledger is diagnostic/reclaim evidence, not part of the send's
     // delivery transaction. Never turn a successful inbox send into a failure.

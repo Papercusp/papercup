@@ -1,20 +1,11 @@
 /**
- * set-content-terminal-status.integration.test.ts — the cross-store side-effect
- * of the plans:set-content HANDLER when a whole-document write flips the plan's
- * frontmatter `status:` to a TERMINAL value.
+ * set-content-terminal-status.integration.test.ts — raw plans:set-content
+ * cannot bypass the dedicated plan lifecycle status writer.
  *
- * The pure decision core (evaluateSetContent) and the CAS/lint envelope are
- * covered elsewhere; the gap is the handler's post-write reconciliation:
- *
- *     if (isTerminalPlanStatus(parsePlan(content).frontmatter.status)) {
- *       await clearStartedForTerminalPlan(result.scope.workspaceId, result.scope.harnessSlug, slug);  // op_status → 'done'
- *     }
- *
- * Invariant (plan-start-state.ts): a plan that is operationally `started`/
- * `paused` must NEVER also be at a terminal lifecycle status. So a set-content
- * write that lands `status: superseded` (or `shipped`) must clear the started
- * op-row to 'done'; a NON-terminal write (`status: active`) must leave a started
- * row untouched.
+ * Lifecycle transitions to terminal states use plans:set-plan-status, which
+ * applies the gate and clears the started/paused op-row. Raw prose writes keep
+ * the current status and must leave both content and operational state
+ * untouched when asked to change it.
  *
  * Drives the REAL handler through Postgres via withPlanLock + the shared
  * baseline-schema fixture (setupPlanPgFixture / inject('baselineSchemaDsn')),
@@ -99,6 +90,14 @@ async function opStatus(): Promise<string | null> {
   return rows[0]?.op_status ?? null;
 }
 
+async function liveContent(): Promise<string> {
+  const rows = await admin<{ content: string }[]>`
+    SELECT content FROM harness_shared.harness_plans
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+  `;
+  return rows[0]?.content ?? '';
+}
+
 beforeAll(async () => {
   fx = await setupPlanPgFixture();
   admin = fx.admin;
@@ -113,30 +112,32 @@ beforeEach(async () => {
   await cleanupPlans(admin, WS, HARNESS).catch(() => {});
 });
 
-describe('plans:set-content handler — terminal-status clears the started op-row', () => {
-  it('writing a superseded body clears a STARTED plan to op_status=done', async () => {
+describe('plans:set-content handler — lifecycle status transitions stay on the dedicated writer', () => {
+  it('refuses a raw transition to superseded and leaves the started plan untouched', async () => {
     await seedStartedPlan('active');
     expect(await opStatus()).toBe('started');
 
     const { data, isError } = await runSetContent(planBody('superseded'));
-    expect(isError).toBe(false);
-    expect(data.ok).toBe(true);
-
-    // The cross-store side-effect ran: the started op-row was cleared.
-    expect(await opStatus()).toBe('done');
+    expect(isError).toBe(true);
+    expect(data.error).toBe('plan_status_change_requires_lifecycle_writer');
+    expect(data.writer).toBe('plans:set-plan-status');
+    expect(await opStatus()).toBe('started');
+    expect(await liveContent()).toBe(planBody('active'));
   });
 
-  it('writing a shipped body also clears a STARTED plan to done (the other terminal status)', async () => {
+  it('refuses a raw transition to shipped and leaves the started plan untouched', async () => {
     await seedStartedPlan('active');
     expect(await opStatus()).toBe('started');
 
-    const { isError } = await runSetContent(planBody('shipped'));
-    expect(isError).toBe(false);
-
-    expect(await opStatus()).toBe('done');
+    const { data, isError } = await runSetContent(planBody('shipped'));
+    expect(isError).toBe(true);
+    expect(data.error).toBe('plan_status_change_requires_lifecycle_writer');
+    expect(data.writer).toBe('plans:set-plan-status');
+    expect(await opStatus()).toBe('started');
+    expect(await liveContent()).toBe(planBody('active'));
   });
 
-  it('clears a PAUSED plan too (clearStartedForTerminalPlan targets started OR paused)', async () => {
+  it('refuses to supersede a PAUSED plan through the raw content writer', async () => {
     await seedStartedPlan('active');
     await admin`
       UPDATE harness_shared.harness_plans SET op_status = 'paused'
@@ -144,10 +145,11 @@ describe('plans:set-content handler — terminal-status clears the started op-ro
     `;
     expect(await opStatus()).toBe('paused');
 
-    const { isError } = await runSetContent(planBody('superseded'));
-    expect(isError).toBe(false);
-
-    expect(await opStatus()).toBe('done');
+    const { data, isError } = await runSetContent(planBody('superseded'));
+    expect(isError).toBe(true);
+    expect(data.error).toBe('plan_status_change_requires_lifecycle_writer');
+    expect(await opStatus()).toBe('paused');
+    expect(await liveContent()).toBe(planBody('active'));
   });
 });
 

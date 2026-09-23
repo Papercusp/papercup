@@ -83,8 +83,54 @@ interface DraftMeta {
 }
 
 type ChunkValue =
-  | { ok: true; op: ChunkOp; slug: string; draftId: string; bytes: number; chunks: number; contentHash?: string; warning?: string; filePath?: string; revision?: { seq: number } | null }
-  | { ok: false; code: 'missing_draft_id' | 'missing_chunk' | 'draft_not_found' | 'draft_mismatch' | 'not_found' | 'stale' | 'suspicious_shrink' | 'would_orphan_frontmatter' | 'lint_failed' | 'item_status_regression'; slug: string; draftId?: string; currentHash?: string; reason?: 'bytes' | 'structure'; currentLength?: number; proposedLength?: number; priorItems?: number; priorDecisions?: number; droppedItems?: number; droppedDecisions?: number; errors?: unknown[]; regressions?: { id: string; from: string; to: string }[] };
+  | {
+      ok: true;
+      op: ChunkOp;
+      slug: string;
+      draftId: string;
+      bytes: number;
+      chunks: number;
+      contentHash?: string;
+      warning?: string;
+      filePath?: string;
+      revision?: { seq: number } | null;
+    }
+  | {
+      ok: false;
+      code:
+        | 'missing_draft_id'
+        | 'missing_chunk'
+        | 'draft_not_found'
+        | 'draft_mismatch'
+        | 'not_found'
+        | 'stale'
+        | 'suspicious_shrink'
+        | 'would_orphan_frontmatter'
+        | 'lint_failed'
+        | 'item_status_regression';
+      slug: string;
+      draftId?: string;
+      currentHash?: string;
+      reason?: 'bytes' | 'structure';
+      currentLength?: number;
+      proposedLength?: number;
+      priorItems?: number;
+      priorDecisions?: number;
+      droppedItems?: number;
+      droppedDecisions?: number;
+      errors?: unknown[];
+      regressions?: { id: string; from: string; to: string }[];
+    }
+  | {
+      ok: false;
+      code: 'plan_status_change_requires_lifecycle_writer';
+      slug: string;
+      draftId: string;
+      currentStatus: string | null;
+      proposedStatus: string | null;
+      writer: 'plans:set-plan-status' | 'plans:set-frontmatter';
+      message: string;
+    };
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -265,6 +311,18 @@ function domainFailurePayload(v: SetContentValue, slug: string, draftId: string)
   if (v.code === 'item_status_regression') {
     return { ok: false, code: 'item_status_regression', slug, draftId, regressions: v.regressions };
   }
+  if (v.code === 'plan_status_change_requires_lifecycle_writer') {
+    return {
+      ok: false,
+      code: v.code,
+      slug,
+      draftId,
+      currentStatus: v.currentStatus,
+      proposedStatus: v.proposedStatus,
+      writer: v.writer,
+      message: v.message,
+    };
+  }
   return { ok: false, code: v.code, slug, draftId };
 }
 
@@ -288,12 +346,12 @@ export function shouldRemoveDraftOnFailure(code: Extract<ChunkValue, { ok: false
 export default defineTool({
   name: 'plans:set-content-chunk',
   description:
-    'Stage a large plans:set-content rewrite through small chunks. Use begin with expectedHash, append each markdown chunk, then commit. Commit validates/lints/CAS-writes exactly like plans:set-content and records one revision. Use this instead of plans:set-content for large plan bodies that may trip provider/tool-call limits.',
+    'Stage a large plans:set-content rewrite through small chunks. Use begin with expectedHash, append each markdown chunk, then commit. Commit validates/lints/CAS-writes exactly like plans:set-content, refuses lifecycle status changes, and records one revision. Use this instead of plans:set-content for large plan bodies that may trip provider/tool-call limits.',
   guidance: {
     when:
       'Writing or rewriting a large plan body. If the plan markdown is more than a few screens, use begin → append* → commit with chunks under 24k characters instead of sending one huge plans:set-content call.',
     notWhen:
-      'Small raw-prose edits — plans:set-content is simpler. Structured edits — use plans:set-now / plans:set-status / plans:add-decision / plans:add-item.',
+      'Small raw-prose edits — plans:set-content is simpler. Lifecycle status changes, item status changes, Now updates, and decisions/items — use their dedicated verbs.',
     chaining:
       'plans:get { slug } → plans:set-content-chunk { op:"begin", slug, expectedHash: contentHash, chunk:firstPart, rationale } → append remaining chunks → commit. If commit returns stale, plans:get again and restart the draft.',
     seeAlso: [

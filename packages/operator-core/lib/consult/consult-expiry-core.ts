@@ -342,6 +342,13 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
       continue;
     }
 
+    // Early silent-responder recovery may advance to another selectee, but an
+    // exhausted menu does not shorten the consult's configured TTL. Review
+    // consults still need to reach the half-TTL conversion point above; other
+    // consults remain eligible for the ordinary expiry sweep when expires_at
+    // is actually due.
+    if (!isDue) continue;
+
     // Menu exhausted → terminal expire. Guarded like the advance: a concurrent
     // close between the digest write and this flip turns it into a no-op.
     //

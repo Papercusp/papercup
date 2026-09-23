@@ -21,6 +21,7 @@ import { DEFAULT_CLAIM_SPEC } from './scheduler/claim-spec';
 import { goalPlanningPortfolioFingerprint, type GoalPlanningReview } from './goal-planning-review';
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey,
   type GoalPlacementProgressState } from './goal-placement-progress';
+import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools/plans/plan-admission-preflight';
 
 const NOW = '2026-09-05T20:00:00.000Z';
 const base = { workspaceId: 'ws', ownerId: 'su-goal', observedAt: NOW, sourceGeneration: 'rev-42' };
@@ -306,9 +307,51 @@ function knownPlacement(value: {
   evidenceRef: string;
   ageMs?: number;
   progress?: Record<string, GoalPlacementProgressState | null>;
+  admissions?: Record<string, ExactPlanAdmission | null>;
 }): PlanPlacementProviderInput['read'] {
   return { status: 'known', value: { alert: null, ...value } };
 }
+
+function exactAdmission(reason: ExactPlanAdmissionReason): ExactPlanAdmission {
+  return {
+    ready: reason === 'ready', status: reason === 'ready' ? 'ready' : 'blocked',
+    reason, message: `measured ${reason}`, requestedSeats: 1, executableWidth: reason === 'ready' ? 1 : 0,
+  } as ExactPlanAdmission;
+}
+
+describe('typed exact-plan admission guidance', () => {
+  it.each([
+    ['plan-not-found', 'unknown', 'refresh the plan link'],
+    ['no-actionable-plan-items', 'blocked', 'repair the plan DAG'],
+    ['promotion-lag', 'blocked', 'plans:start'],
+    ['duplicate-coverage', 'blocked', 'duplicate promoted'],
+    ['lane-unknown', 'unknown', 'refresh the exact-plan claim lane'],
+    ['floor-diagnostics-unavailable', 'unknown', 'repair the claim-lane diagnostic'],
+    ['floor-gated', 'blocked', 'claim exclusions'],
+    ['family-disagreement', 'blocked', 'promoted row family'],
+    ['insufficient-executable-width', 'blocked', 'requested seats'],
+  ] as const)('maps %s to a specific %s action', (reason, status, guidance) => {
+    const plan = worklistPlan(placement('unplaced', 'launch-plan-fleet'));
+    const result = planPlacementObligation(planInput(knownPlacement({
+      portfolio: portfolio([plan]), launch: null, evidenceRef: 'cohort:admission',
+      admissions: { [plan.ref]: exactAdmission(reason) },
+    })));
+    expect(result).toMatchObject({ status, scope: { planSlug: plan.slug },
+      action: { targetRef: plan.ref, summary: expect.stringContaining(guidance) } });
+    expect(result.action?.tool).toBeUndefined();
+    expect(result.reason).toContain(reason);
+  });
+  it('keeps an unreadable admission unknown and never offers a launch', () => {
+    const plan = worklistPlan(placement('unplaced', 'launch-plan-fleet'));
+    const result = planPlacementObligation(planInput(knownPlacement({
+      portfolio: portfolio([plan]), launch: null, evidenceRef: 'cohort:admission-unknown',
+      admissions: { [plan.ref]: null },
+    })));
+    expect(result).toMatchObject({ status: 'unknown',
+      measurementFailure: { code: 'exact-plan-admission-unavailable' } });
+    expect(result.action?.tool).toBeUndefined();
+  });
+});
 
 describe('persisted placement effect clock', () => {
   it('uses the first verified effect without resetting it on a later read or retry', () => {

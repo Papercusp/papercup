@@ -19,3 +19,15 @@ describe('plans:new idempotent-completion opt-in (EI-11507)', () => {
     expect((newPlan as { idempotent?: boolean }).idempotent).toBe(true);
   });
 });
+
+describe('plans:new initial lifecycle status', () => {
+  const base = { harness: 'papercusp', slug: 'initial-status-plan', title: 'Initial Status Plan' };
+
+  it('accepts non-terminal initial statuses', () => {
+    expect(newPlan.args.safeParse({ ...base, status: 'active' }).success).toBe(true);
+  });
+
+  it.each(['shipped', 'superseded'])('rejects terminal initial status %s', (status) => {
+    expect(newPlan.args.safeParse({ ...base, status }).success).toBe(false);
+  });
+});

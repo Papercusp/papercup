@@ -8,10 +8,9 @@
  * still can't express the rule cheaply across the parsed-vs-stored boundary,
  * so we enforce it at the write boundary + on read:
  *
- *   1. Every lifecycle transition to a terminal status clears the PG
- *      started/paused row (→ 'done') — {@link clearStartedForTerminalPlan},
- *      called from set-plan-status / set-content / set-content-chunk /
- *      set-frontmatter.
+ *   1. Lifecycle transitions to a terminal status go through
+ *      plans:set-plan-status, which clears the PG started/paused row (→ 'done').
+ *      Raw content writers cannot change the lifecycle status.
  *   2. `plans:start` refuses a plan whose frontmatter is already terminal —
  *      {@link isTerminalPlanStatus}.
  *   3. `plans:list` self-heals a stale started+terminal row on read —
@@ -51,9 +50,13 @@ export type StartStatus = 'started' | 'paused' | 'done' | null;
  * `npm run lint:tsc -- --files=<the files you edited>` before you finish, or the
  * feedback arrives ~55min later as a fleet-gate red (EI-19403475615161567).
  */
-import { TERMINAL_PLAN_STATUSES, isTerminalPlanStatus } from '@papercusp/plan-parser';
+import { PLAN_STATUSES, TERMINAL_PLAN_STATUSES, isTerminalPlanStatus } from '@papercusp/plan-parser';
 
 export { TERMINAL_PLAN_STATUSES, isTerminalPlanStatus };
+
+/** Statuses allowed when a plan is created or a legacy plan is converted.
+ * Terminal lifecycle transitions belong to plans:set-plan-status. */
+export const NON_TERMINAL_PLAN_STATUSES = PLAN_STATUSES.filter((status) => !isTerminalPlanStatus(status));
 
 /**
  * Reconcile the operational start-status reported to a reader against the
