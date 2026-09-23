@@ -289,6 +289,7 @@ function baseBarCodes(snapshot: AcceptanceBarContractSnapshot, bar: AcceptanceBa
         'bar_snapshot_proof_stale',
         'bar_snapshot_proof_depth_missing',
         'bar_snapshot_proof_inadequate',
+        'bar_snapshot_evidence_plane_unmet',
         'bar_snapshot_grading_missing',
         'bar_snapshot_grading_stale',
         'bar_snapshot_grading_not_pass',

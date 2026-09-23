@@ -1149,6 +1149,15 @@ export function projectAcceptanceBarContractSnapshot(
         : staleEvidence.length > 0
           ? 'stale'
           : 'missing';
+    const evidencePlanes = normalized(
+      currentEvidence.flatMap((row) => {
+        const details = row.details && typeof row.details === 'object'
+          ? row.details as Record<string, unknown>
+          : {};
+        const plane = details.evidencePlane ?? details.evidence_plane ?? details.plane;
+        return typeof plane === 'string' ? [plane] : [];
+      }),
+    );
     const codes: AcceptanceBarSnapshotCode[] = [];
     const addCode = (code: AcceptanceBarSnapshotCode) => {
       if (!codes.includes(code)) codes.push(code);
@@ -1171,6 +1180,11 @@ export function projectAcceptanceBarContractSnapshot(
     if (!criterion.barProvenance) addCode('bar_snapshot_bar_provenance_missing');
     if (mappingState === 'missing') addCode('bar_snapshot_mapping_missing');
     if (mappingState === 'dropped-only') addCode('bar_snapshot_mapping_dropped_only');
+    if (
+      criterion.evidencePlane !== 'tree' &&
+      !evidencePlanes.some((plane) => plane.toLowerCase() === criterion.evidencePlane)
+    )
+      addCode('bar_snapshot_evidence_plane_unmet');
     // P-001: a clause is stale when ITS OWN bar moved (bar hash, rubric, plane, layers),
     // never merely because the rubric-wide BAR set changed. An amendment deliberately
     // keeps an unchanged bar's clause at its revision, so that clause keeps the set hash
@@ -1271,14 +1285,7 @@ export function projectAcceptanceBarContractSnapshot(
             Object.values(currentness.dimensions ?? {}).some((value) => value === 'unknown')
           );
         }).length,
-        evidencePlanes: normalized(
-          currentEvidence.flatMap((row) => {
-            const details =
-              row.details && typeof row.details === 'object' ? (row.details as Record<string, unknown>) : {};
-            const plane = details.evidencePlane ?? details.evidence_plane ?? details.plane;
-            return typeof plane === 'string' ? [plane] : [];
-          }),
-        ),
+        evidencePlanes,
         evidenceRuntimes: normalized(
           currentEvidence.flatMap((row) => {
             const runtime = evidenceRuntimeOf(
