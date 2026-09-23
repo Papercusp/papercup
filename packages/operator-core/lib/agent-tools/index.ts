@@ -1059,6 +1059,8 @@ import './rubrics/repair';
 // rubrics:amend — the small-edit path: patch ONE criterion field / methodRef without
 // the whole-document propose replace (rubric-system-improvements-2026-07-12 P-003).
 import './rubrics/amend';
+import './rubrics/amend-status';
+import './rubrics/check-approver';
 import './rubrics/ratify';
 import './rubrics/retire';
 // rubrics:set-history-reset — declare the CONTRACT-GENERATION boundary (D-015): the
