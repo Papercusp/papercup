@@ -24,11 +24,8 @@ import {
 } from '../workspace-host/soak';
 import { readWorkspaceHostSoak, recordWorkspaceHostSoakSample } from '../workspace-host/soak-store';
 import { resolveGcpWorkspaceHostSoakSeams } from '../workspace-host/soak-gcp';
-import {
-  beginWorkspaceHostSoakReceipt,
-  settleWorkspaceHostSoakReceipt,
-  type WorkspaceHostSoakReleaseBinding,
-} from '../workspace-host/soak-receipt';
+import type { WorkspaceHostReleaseBinding } from '../workspace-host/release-stage-receipt';
+import { beginWorkspaceHostSoakReceipt, settleWorkspaceHostSoakReceipt } from '../workspace-host/soak-receipt';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 
@@ -43,7 +40,7 @@ export interface WorkspaceHostSoakWorkflowInput {
   soakId: string;
   policy: WorkspaceHostSoakPolicy;
   /** Present => the soak settles `acceptance.soak-24h` on this release task. */
-  releaseBinding: WorkspaceHostSoakReleaseBinding | null;
+  releaseBinding: WorkspaceHostReleaseBinding | null;
   requestedAt: string;
 }
 
@@ -200,7 +197,7 @@ export interface StartWorkspaceHostSoakInput {
   workspaceId: string;
   hostId: string;
   policy: WorkspaceHostSoakPolicy;
-  releaseBinding: WorkspaceHostSoakReleaseBinding | null;
+  releaseBinding: WorkspaceHostReleaseBinding | null;
   soakId?: string;
 }
 

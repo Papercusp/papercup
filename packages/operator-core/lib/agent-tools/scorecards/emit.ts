@@ -1220,7 +1220,12 @@ export async function emitScorecard(
           callerId: input.createdBy,
           subjectPlan: rubric.subjectPlan ?? null,
           workspaceId: identityWorkspace,
-          harness: input.ctxHarness ?? null,
+          // WI-10002535: a harness-less caller (operator/su session) has no
+          // ctxHarness, and a null harness turns the acceptance-drain leg of
+          // the succession query into FALSE — so the drain item the refusal
+          // tells the caller to claim could never match. The rubric pins its
+          // subject plan's tenant, which is exactly the disambiguation needed.
+          harness: input.ctxHarness ?? rubric.subjectHarnessSlug ?? null,
           resolveAuthorSessionState,
         });
         if (seat.eligible) {
@@ -1687,7 +1692,7 @@ export async function emitScorecard(
           callerId: input.createdBy,
           subjectPlan: vettedRubric.subjectPlan ?? null,
           workspaceId: vettingWorkspace,
-          harness: input.ctxHarness ?? null,
+          harness: input.ctxHarness ?? vettedRubric.subjectHarnessSlug ?? null, // WI-10002535
           resolveAuthorSessionState,
         });
         if (!seat.eligible) {

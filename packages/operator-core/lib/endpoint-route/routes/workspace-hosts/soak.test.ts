@@ -5,14 +5,14 @@ const IMAGE = 'projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v2
 
 const h = vi.hoisted(() => {
   class WorkspaceHostSoakConflictError extends Error {}
-  class WorkspaceHostSoakReleaseBindingError extends Error {
+  class WorkspaceHostReleaseBindingError extends Error {
     constructor(readonly reason: string, message: string) {
       super(message);
     }
   }
   return {
     WorkspaceHostSoakConflictError,
-    WorkspaceHostSoakReleaseBindingError,
+    WorkspaceHostReleaseBindingError,
     forward: vi.fn(async (): Promise<Response | null> => null),
     available: vi.fn(() => true),
     start: vi.fn(async (input: { soakId: string; hostId: string }) => ({
@@ -44,10 +44,12 @@ vi.mock('../../../dbos/workspace-host-soak-workflow', () => ({
 vi.mock('../../../workspace-host/soak-gcp', () => ({
   resolveGcpWorkspaceHostSoakSeams: async () => ({ readInstance: h.reading }),
 }));
+vi.mock('../../../workspace-host/release-stage-receipt', () => ({
+  resolveWorkspaceHostReleaseBinding: h.bind,
+  WorkspaceHostReleaseBindingError: h.WorkspaceHostReleaseBindingError,
+}));
 vi.mock('../../../workspace-host/soak-receipt', () => ({
-  resolveWorkspaceHostSoakReleaseBinding: h.bind,
   assertWorkspaceHostSoakReceiptWritable: h.writable,
-  WorkspaceHostSoakReleaseBindingError: h.WorkspaceHostSoakReleaseBindingError,
 }));
 vi.mock('../../../workspace-host/soak-store', () => ({
   readWorkspaceHostRuntimeRelease: h.runtimeRelease,
@@ -120,7 +122,7 @@ it('refuses a host that is not RUNNING before enqueueing anything', async () => 
 });
 
 it('maps a bundle mismatch to 409 with its reason', async () => {
-  h.bind.mockRejectedValueOnce(new h.WorkspaceHostSoakReleaseBindingError('bundle-mismatch', 'host runs other bytes'));
+  h.bind.mockRejectedValueOnce(new h.WorkspaceHostReleaseBindingError('bundle-mismatch', 'host runs other bytes'));
   const response = await start!.handler(post({ releaseTaskId: 'task-1' }), ctx);
   expect(response.status).toBe(409);
   expect(await response.json()).toMatchObject({ reason: 'bundle-mismatch' });

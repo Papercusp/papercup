@@ -8,7 +8,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => ({
 }));
 
 import { resolveWorkspaceHostSoakPolicy, type WorkspaceHostSoakInstanceReading, type WorkspaceHostSoakSample } from '../workspace-host/soak';
-import type { WorkspaceHostSoakReleaseBinding } from '../workspace-host/soak-receipt';
+import type { WorkspaceHostReleaseBinding } from '../workspace-host/release-stage-receipt';
 import {
   runWorkspaceHostSoak,
   workspaceHostSoakWorkflowKeys,
@@ -27,7 +27,7 @@ const RUNNING: WorkspaceHostSoakInstanceReading = {
 const POLICY = resolveWorkspaceHostSoakPolicy({ durationMs: 10 * 60_000, intervalMs: 60_000 });
 const PROBE_COST_MS = 20_000;
 
-const BINDING: WorkspaceHostSoakReleaseBinding = {
+const BINDING: WorkspaceHostReleaseBinding = {
   taskId: 'task-1',
   operationId: 'op-1',
   bundleSha256: 'a'.repeat(64),

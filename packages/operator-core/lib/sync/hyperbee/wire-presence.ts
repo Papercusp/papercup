@@ -45,6 +45,8 @@ import {
 } from './presence-gossip-wiring';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { pinModuleState } from '@papercusp/module-singleton';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 
 /** The booted-handle surface wire-presence needs — a structural subset of
  *  BootedHarnessHandle, so a test can pass a minimal mock. */
@@ -358,7 +360,15 @@ export async function wirePresenceAnnounceForHarness(
         )),
     onSessionClosed: opts.onSessionClosed,
   });
-  handle.registerCloseHook(() => loop.stop());
+  // WI-10002534: wiring is idempotent per handle. A re-wire of the SAME handle
+  // (boot-all's rewireSoon / onSwarmJoinRecovered) stops the prior announce loop
+  // before this one takes over, instead of leaving both beating.
+  announcerState.loopsByHandle.get(handle)?.stop();
+  announcerState.loopsByHandle.set(handle, loop);
+  handle.registerCloseHook(() => {
+    loop.stop();
+    if (announcerState.loopsByHandle.get(handle) === loop) announcerState.loopsByHandle.delete(handle);
+  });
 
   // ── P-005: the SESSION-GRAIN announcer (gossip-only). Every tick reads this
   // machine's LOCAL live-session roster and broadcasts it as one signed
@@ -366,17 +376,82 @@ export async function wirePresenceAnnounceForHarness(
   // A change-hash short-circuits identical sets so a quiet machine costs one
   // frame per SESSION_ANNOUNCE_REFRESH_MS keep-alive, not one per tick.
   // Gossip-writer-gated: no flag, no frames (log-path behavior byte-identical).
+  //
+  // WI-10002534: the roster is WORKSPACE-wide, so the announcer is shared by
+  // every handle on the same (workspace, topic) — refcounted, never one per
+  // handle. The tower wired 39 harnesses onto one topic, sent ~39 duplicate
+  // full-set frames per change, and the receiver rewrote every row per frame.
   if (gossipWriterOn && gossipTopicHex) {
-    const setIv = opts.setIntervalFn ?? setInterval;
-    const clearIv = opts.clearIntervalFn ?? clearInterval;
+    acquireSessionAnnouncer(handle, gossipTopicHex, opts);
+  }
+
+  return loop;
+}
+
+interface SessionAnnouncer {
+  /** Live handles sharing this announcer (object identity, so a re-wire of the
+   *  same handle is a no-op and two handles of one harness count separately). */
+  members: Set<PresenceWireHandle>;
+  stop: () => void;
+}
+
+/** Process-wide announcer registry, pinned so a split module record cannot run
+ *  a second copy of the same topic's announcer. */
+const announcerState = pinModuleState('@papercusp/operator-core.wire-presence.announcers', () => ({
+  sessionsByTopic: new Map<string, SessionAnnouncer>(),
+  loopsByHandle: new WeakMap<PresenceWireHandle, PresenceAnnounceLoopHandle>(),
+}));
+
+/** Test-only: stop and forget every session announcer (module state outlives a test). */
+export function __resetSessionAnnouncersForTests(): void {
+  for (const a of announcerState.sessionsByTopic.values()) a.stop();
+  announcerState.sessionsByTopic.clear();
+}
+
+function acquireSessionAnnouncer(
+  handle: PresenceWireHandle,
+  gossipTopicHex: string,
+  opts: WirePresenceOpts,
+): void {
+  const key = `${handle.workspaceId}::${gossipTopicHex}`;
+  let announcer = announcerState.sessionsByTopic.get(key);
+  if (!announcer) {
+    const members = new Set<PresenceWireHandle>();
+    announcer = { members, stop: startSessionAnnouncer(handle.workspaceId, gossipTopicHex, members, opts) };
+    announcerState.sessionsByTopic.set(key, announcer);
+  }
+  const shared = announcer;
+  if (shared.members.has(handle)) return; // same handle re-wired — its close hook is already registered
+  shared.members.add(handle);
+  handle.registerCloseHook(() => {
+    shared.members.delete(handle);
+    if (shared.members.size === 0 && announcerState.sessionsByTopic.get(key) === shared) {
+      shared.stop();
+      announcerState.sessionsByTopic.delete(key);
+    }
+  });
+}
+
+/** Arm one sessions announcer for (workspace, topic); returns its stop. */
+function startSessionAnnouncer(
+  workspaceId: string,
+  gossipTopicHex: string,
+  members: ReadonlySet<PresenceWireHandle>,
+  opts: WirePresenceOpts,
+): () => void {
+  {
     let lastHash = '';
     let lastSentMs = 0;
     const tickSessions = async (): Promise<void> => {
       try {
+        // harness_slug is a sender-declared label only (the receiver keys on
+        // workspace+owner+machine); take it from a live member so it stays stable.
+        const labelHandle = members.values().next().value as PresenceWireHandle | undefined;
+        if (!labelHandle) return;
         // Dynamic import (the EI-279 layering idiom): the local roster lives in
         // agent-tools/coordination; sync/hyperbee must not import it statically.
         const { listPresence } = await import('../../agent-tools/coordination/presence');
-        const records = await listPresence({ workspaceId: handle.workspaceId });
+        const records = await listPresence({ workspaceId });
         const nowMs = (opts.now ?? Date.now)();
         const sessions = (records ?? [])
           .filter((r) => typeof r?.ownerId === 'string' && r.ownerId.length > 0)
@@ -386,7 +461,7 @@ export async function wirePresenceAnnounceForHarness(
             kind: r.ownerId.startsWith('su-') ? 'su' : r.ownerId.startsWith('s-') ? 'cup' : 'agent',
             intent: r.intent ?? null,
             plan_slug: (r as { currentPlanSlug?: string | null }).currentPlanSlug ?? null,
-            harness_slug: handle.harnessSlug,
+            harness_slug: labelHandle.harnessSlug,
             last_active_ms: nowMs,
             fleet_slug: null as string | null,
             fleet_role: null as string | null,
@@ -423,11 +498,21 @@ export async function wirePresenceAnnounceForHarness(
         opts.onError?.(err);
       }
     };
-    const sessTimer = setIv(() => void tickSessions(), SESSION_ANNOUNCE_TICK_MS);
-    handle.registerCloseHook(() => clearIv(sessTimer));
+    // Injected seam (tests) or a NAMED managed interval, so schedule:inventory
+    // shows how many announcers are live — the count this bug hid.
+    if (opts.setIntervalFn) {
+      const clearIv = opts.clearIntervalFn ?? clearInterval;
+      const sessTimer = opts.setIntervalFn(() => void tickSessions(), SESSION_ANNOUNCE_TICK_MS);
+      return () => clearIv(sessTimer);
+    }
+    const managed = managedSetInterval(
+      'presence-sessions-announcer',
+      SESSION_ANNOUNCE_TICK_MS,
+      () => void tickSessions(),
+      { category: 'lifecycle', instanced: true },
+    );
+    return () => managed.stop();
   }
-
-  return loop;
 }
 
 /** Session-announcer cadence: tick (change-detect) + keep-alive refresh. The

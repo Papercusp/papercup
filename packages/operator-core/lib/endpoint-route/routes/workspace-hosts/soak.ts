@@ -33,10 +33,10 @@ import {
 import { redactWorkspaceHostText } from '../../../workspace-host/observability-store';
 import { resolveGcpWorkspaceHostSoakSeams } from '../../../workspace-host/soak-gcp';
 import {
-  WorkspaceHostSoakReleaseBindingError,
-  assertWorkspaceHostSoakReceiptWritable,
-  resolveWorkspaceHostSoakReleaseBinding,
-} from '../../../workspace-host/soak-receipt';
+  WorkspaceHostReleaseBindingError,
+  resolveWorkspaceHostReleaseBinding,
+} from '../../../workspace-host/release-stage-receipt';
+import { assertWorkspaceHostSoakReceiptWritable } from '../../../workspace-host/soak-receipt';
 import {
   readLatestWorkspaceHostSoakId,
   readWorkspaceHostRuntimeRelease,
@@ -103,8 +103,9 @@ const start = defineTool({
         if (!workspaceHostSoakQualifiesForAcceptance(policy)) {
           return badRequest(`a soak shorter than ${DEFAULT_WORKSPACE_HOST_SOAK_POLICY.durationMs / 1000}s cannot record ${WORKSPACE_HOST_SOAK_ACCEPTANCE_STAGE}`);
         }
-        releaseBinding = await resolveWorkspaceHostSoakReleaseBinding({
+        releaseBinding = await resolveWorkspaceHostReleaseBinding({
           releaseTaskId: body.releaseTaskId,
+          stage: WORKSPACE_HOST_SOAK_ACCEPTANCE_STAGE,
           hostRuntimeRelease: await readWorkspaceHostRuntimeRelease(workspaceId, hostId),
         });
         await assertWorkspaceHostSoakReceiptWritable(releaseBinding, policy);
@@ -122,7 +123,7 @@ const start = defineTool({
       );
     } catch (error) {
       if (error instanceof WorkspaceHostSoakPolicyError) return badRequest(error.message);
-      if (error instanceof WorkspaceHostSoakReleaseBindingError) {
+      if (error instanceof WorkspaceHostReleaseBindingError) {
         return Response.json({ ok: false, error: error.message, reason: error.reason }, { status: error.reason === 'task-not-found' ? 404 : 409 });
       }
       if (error instanceof WorkspaceHostSoakSubjectError) {

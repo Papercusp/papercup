@@ -16,6 +16,9 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
     // these fixtures describe a sha-only probe, and a sha-only probe identifies
     // no path, so there is no file whose generation any host could be running.
     runtimeGenerations: [],
+    // acceptance-runtime-plane P-001 made this REQUIRED; a sha-only probe names no path,
+    // so no runtime can be asked whether it executes it.
+    servingRuntimes: [],
     repoRoot: '/repo',
     submodule: null,
     // EI-18715870370005934 made this REQUIRED on PipelinePosition. `null` is the

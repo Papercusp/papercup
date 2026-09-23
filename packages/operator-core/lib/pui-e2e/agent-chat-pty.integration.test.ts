@@ -1800,11 +1800,13 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       await pane.waitFor('i type · v speak');
       pane.write('l');
       await pane.waitFor(beta.title);
-      // The picker marks its selection with `> `; step until it is beta.
+      // Rows read `[● ]<role> · <title> · N turns`; the selection carries the
+      // list's `> ` marker. Step until the selected row is beta.
       await vi.waitFor(() => {
-        if (!pane!.screen().includes(`> ${beta.title}`)) {
+        const selected = pane!.screen().split('\n').find((line) => /> (● )?operator · /.test(line));
+        if (!selected?.includes(beta.title)) {
           pane!.write('j');
-          throw new Error('picker has not reached beta yet');
+          throw new Error(`picker selection is not beta yet: ${selected ?? '(no selected row)'}`);
         }
       }, { timeout: 20_000, interval: 250 });
       pane.enter();
@@ -1961,8 +1963,42 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       pane.write('tutorial');
       pane.enter();
       await pane.waitFor('Welcome to pui — the Papercusp workbench');
+      pane.escape();
+      await pane.waitForGone('Welcome to pui — the Papercusp workbench');
+
+      // PUBLIC_RELEASE_UX.md: `:` is the one palette, and live catalog/recipe
+      // search discovers commands, skills, plugins and tools — then runs one.
+      // The executed action is a read-only catalog tool (`tools:find`) invoked
+      // through `tools:invoke`, the same server-gated plane extensions use.
+      pane.write(':');
+      await pane.waitFor('Command (Esc closes)');
+      pane.write('tool find tools by intent');
+      pane.enter();
+      await pane.waitFor('Tools · results (Esc closes)', { timeoutMs: 40_000 });
+      expect(pane.screen()).toMatch(/\d+ tool match(es)? · ↑\/↓ select · Enter arguments/);
+      await vi.waitFor(() => {
+        if (!/▶ tools:find\b/.test(pane.screen())) {
+          pane.write('\x1b[B');
+          throw new Error('tool palette selection is not tools:find yet');
+        }
+      }, { timeout: 20_000, interval: 250 });
+      pane.enter();
+      await pane.waitFor('Tools · arguments · tools:find');
+      await pane.waitFor('required 1/1  query');
+      pane.write('command palette');
+      pane.enter();
+      await pane.waitFor('optional extras JSON object');
+      pane.enter();
+      await pane.waitFor('Tools · result · tools:find', { timeoutMs: 40_000 });
+      // The result card leads with ✓ on success and ✗ on failure; the palette
+      // popup owns these rows, so read them from the popup, not the page.
+      const popup = pane.screen().split('\n')
+        .filter((line) => line.includes('✓') || line.includes('✗') || line.includes('error  '));
+      expect(popup.some((line) => line.includes('✓'))).toBe(true);
+      expect(popup.filter((line) => line.includes('✗') || line.includes('error  '))).toEqual([]);
       console.info('PUI_COMMANDS_ACCEPTANCE', JSON.stringify({
-        binary: bin, binarySha256, command: ':tutorial', frame: pane.screen(),
+        binary: bin, binarySha256, commands: [':tutorial', ':tool find tools by intent → tools:find'],
+        frame: pane.screen(),
       }));
     } finally {
       await pane.stop().catch(() => {});
@@ -2019,6 +2055,11 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
     await putViewState('Sessions');
 
     stage = 'open-sessions';
+    // The server-backed search below reaches the embedding leg, whose HNSW
+    // capability probe warns deterministically against this fixture's Postgres
+    // (measured: run 218aa430, alone). Allowed, never required — the same
+    // contract as work-items-urgent.test.ts — and any OTHER warning fails.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     pane = new PuiPane(bin, operatorPort, home);
     try {
       await pane.waitFor('sessions', { timeoutMs: 40_000 });
@@ -2075,10 +2116,13 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
          WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND id = ${siblingId}`;
       expect(sibling).toEqual({ title: 'P8 sibling', archived_at: null });
       expect(pane.screen()).not.toContain('sibling history');
+      expect(warn.mock.calls.filter(([message]) =>
+        typeof message !== 'string' || !message.startsWith('[hnsw-iterative-scan]'))).toEqual([]);
       console.info('PUI_SESSION_LIFECYCLE_ACCEPTANCE', JSON.stringify({
         binary: bin, binarySha256, stored, indexed, frame: pane.screen(),
       }));
     } finally {
+      warn.mockRestore();
       await pane.stop().catch(() => {});
     }
   }, 300_000);

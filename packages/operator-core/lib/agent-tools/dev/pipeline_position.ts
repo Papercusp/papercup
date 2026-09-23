@@ -259,6 +259,26 @@ function compactPipelineRuntime(
 }
 
 /**
+ * acceptance-runtime-plane P-001: one compact row per serving runtime. At most seven rows
+ * exist (the runtime catalog), so this ignores `arrayLimit` on purpose — truncating the
+ * list could drop exactly the runtime where the change is already live.
+ */
+function compactServingRuntimes(
+  value: unknown,
+  opts: { textChars: number; arrayLimit: number },
+): JsonRecord[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  return value.map(
+    (entry) =>
+      pickPipelineFields(
+        entry,
+        ['runtime', 'role', 'buildSha', 'buildShaSource', 'containsChange', 'method', 'instances', 'unknownReason'],
+        opts,
+      ) ?? {},
+  );
+}
+
+/**
  * EI-20742070351584478 — THE SUBJECT STAMP. `gitPipelinePosition` reads the
  * operator-home integration tree, green-checkpoint and deployed :3070 state. It
  * cannot answer a SideStage (or any other harness's) release question, but the
@@ -428,6 +448,8 @@ function compactPipelineResult(
           ) ?? {},
       );
   }
+  const servingRuntimes = compactServingRuntimes(source.servingRuntimes, opts);
+  if (servingRuntimes) out.servingRuntimes = servingRuntimes;
   if (Array.isArray(source.stages)) {
     out.stages = source.stages
       .slice(0, opts.arrayLimit)
@@ -481,6 +503,11 @@ function minimalPipelineResult(
     opts,
   );
   if (serving) out.serving = serving;
+  // acceptance-runtime-plane P-001: kept at EVERY tier — it is the answer to "where is my
+  // change running", and dropping it under budget pressure re-creates the runtime-blind
+  // read this field exists to replace.
+  const servingRuntimes = compactServingRuntimes(source.servingRuntimes, opts);
+  if (servingRuntimes) out.servingRuntimes = servingRuntimes;
   const gate = compactPipelineGate(source.gate, opts);
   if (gate) out.gate = gate;
   for (const field of ['verdictProvenance', 'changeInCandidate']) {

@@ -298,6 +298,37 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
+  // WI-10002535: a harness-less caller (an operator/su session) has no
+  // ctxHarness. Passing null made the acceptance-drain leg of the succession
+  // query FALSE, so the drain item the refusal told the caller to claim could
+  // never match. The rubric's own subjectHarnessSlug must fill the gap.
+  it('resolves seat succession in the rubric subject harness when the caller has no ctxHarness', async () => {
+    getRubric.mockImplementation(async (id: unknown) => {
+      if (id === 'meta-acceptance-rubric') return META_RUBRIC;
+      if (id === 'ar-some-plan') return { ...ACCEPTANCE_RUBRIC, subjectHarnessSlug: 'papercusp' };
+      return null;
+    });
+    const resolveAcceptanceSeatSuccession = vi.fn().mockResolvedValue({
+      eligible: false,
+      reason: 'caller_not_accountable_for_plan',
+      authorSessionState: 'ended',
+    });
+    const deps = {
+      sameAcceptanceAuthor: async () => false,
+      resolveAcceptanceSeatSuccession: resolveAcceptanceSeatSuccession as never,
+    };
+    await emitScorecard(vettingArgs() as never, { createdBy: 'su-harnessless' }, deps);
+    expect(resolveAcceptanceSeatSuccession).toHaveBeenLastCalledWith(
+      expect.objectContaining({ callerId: 'su-harnessless', harness: 'papercusp' }),
+    );
+
+    // A bound caller harness still wins over the rubric's.
+    await emitScorecard(vettingArgs() as never, { createdBy: 'su-bound', ctxHarness: 'other-hive' }, deps);
+    expect(resolveAcceptanceSeatSuccession).toHaveBeenLastCalledWith(
+      expect.objectContaining({ callerId: 'su-bound', harness: 'other-hive' }),
+    );
+  });
+
   it('stamps observation.vetting { consultId, rubricRevision, critiquePosts, critics } + subject when the consult carries critique', async () => {
     const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
     expect(res.ok).toBe(true);

@@ -2120,6 +2120,7 @@ describe('gitPipelinePosition (P-002)', () => {
       // summarizePosition fixture, not a compiler-silencer: these describe the
       // pure formatter over already-resolved facts and probe no hosts at all.
       runtimeGenerations: [],
+      servingRuntimes: [],
       repoRoot: '/repo',
       submodule: null,
       submodulePin: null,
@@ -4222,6 +4223,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
     const mk = (serving: ServingTruth): Omit<PipelinePosition, 'summary'> => ({
       input: { path: 'a.ts', sha: null },
       runtimeGenerations: [],
+      servingRuntimes: [],
       repoRoot: '/repo',
       submodule: null,
       submodulePin: null,
@@ -4663,6 +4665,7 @@ describe('changeInCandidate (P-004)', () => {
     const base = (over: Partial<Omit<PipelinePosition, 'summary'>> = {}): Omit<PipelinePosition, 'summary'> => ({
       input: { path: 'a.ts', sha: null },
       runtimeGenerations: [],
+      servingRuntimes: [],
       repoRoot: '/repo',
       submodule: null,
       submodulePin: null,

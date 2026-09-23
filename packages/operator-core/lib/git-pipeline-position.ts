@@ -85,6 +85,13 @@ import {
 } from './release/frozen-candidate-repair-queue';
 import { isAuthoritativeJudgingShaSource, type JudgingShaSource } from './judging-sha-source';
 import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
+import {
+  realListPtyHostInstances,
+  resolveServingRuntimes,
+  selectServingRuntimes,
+  servingRuntimesLead,
+  type ServingRuntimeEntry,
+} from './serving-runtimes';
 
 const pexec = promisify(execFile);
 
@@ -282,7 +289,7 @@ export interface PipelinePositionInput {
  * ------------------------------------------------------------------------- */
 
 /** The long-lived process that actually EXECUTES a given source path. */
-export type RuntimeHost = 'operator-release' | 'gateway' | 'bg-host' | 'embed-sidecar' | 'tauri-desktop';
+export type RuntimeHost = 'operator-release' | 'gateway' | 'bg-host' | 'embed-sidecar' | 'tauri-desktop' | 'psu-pty-host';
 
 /** A `dev:restart { target }` value. */
 export type RestartTargetName = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar';
@@ -666,6 +673,36 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
       restartTarget: 'bg-host',
       activation:
         'This is a guard implementation executed by a bg-host-only routine action or loop reconciler, which runs from the staging tree when PAPERCUSP_BACKGROUND_WORKERS=1. It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it (WI-39787).',
+    },
+  },
+  // acceptance-runtime-plane-not-main-2026-09-23: the psu-pty host-events ingest is
+  // executed ONLY by its `system:psu-pty-host-events-ingest` action in bg-host. Its other
+  // importers (the seed script, bespoke-active-seeds-check, routine-classification) read
+  // the routine NAME, never the ingest logic. Unmapped, it fell through to DEFAULT_OWNER
+  // and reported `deployed:false, blockedOn:gate` for code bg-host had been running for
+  // an hour — and the implementer and the independent grader both waited on main for it.
+  {
+    match: /^packages\/operator-core\/lib\/harness\/routines\/psu-pty-host-events-ingest\.ts$/,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'The psu-pty host-events ingest runs only inside its `system:psu-pty-host-events-ingest` routine action, dispatched by routinesTick in bg-host (PAPERCUSP_BACKGROUND_WORKERS=1), which bundles the canonical tree on every start. It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it.',
+    },
+  },
+  // The psu pty host is imported in-process by psu-launcher.mjs, one process per psu
+  // session, loaded from the canonical tree at LAUNCH. No deploy and no service restart
+  // carries it: every NEW session runs the current file; a running session keeps the
+  // version it launched with. `servingRuntimes` reports how many live sessions are current.
+  {
+    match: /^apps\/operator\/scripts\/psu-(pty-host|launcher)\.mjs$/,
+    own: {
+      host: 'psu-pty-host',
+      releasePipelineApplies: false,
+      restartTarget: null,
+      activation:
+        'Loaded in-process by psu-launcher.mjs when each psu session LAUNCHES, from the canonical tree. Every new psu session runs the current file; already-running sessions keep the version they launched with (relaunch/carry-respawn a session to pick it up). A :3070 deploy never changes it.',
     },
   },
   {
@@ -1745,6 +1782,15 @@ export interface PipelinePosition {
    */
   runtimeGenerations: RuntimeGeneration[];
   /**
+   * acceptance-runtime-plane-not-main-2026-09-23 P-001: every runtime that EXECUTES this
+   * path (owners from the runtime map, plus the canonical-tree hosts for shared library
+   * code), each with its OWN measured build identity and a three-valued
+   * `containsChange`. `positions.deployed` answers only for :3070; this answers "where is
+   * my change running right now", which is what acceptance evidence actually needs.
+   * Empty for a sha-only probe.
+   */
+  servingRuntimes: ServingRuntimeEntry[];
+  /**
    * P-004: does the commit the GATE is judging actually contain this path's current
    * content? Every other field here answers "where is my change in the pipeline";
    * this one answers the question that comes first and was unanswerable —
@@ -1999,6 +2045,9 @@ const SERVING_UNIT_BY_HOST: Record<RuntimeHost, string | null> = {
   'embed-sidecar': RESTART_TARGET_UNITS['embed-sidecar'],
   // Compiled into the desktop binary — no unit serves it, so no process probe can answer.
   'tauri-desktop': null,
+  // One process per psu session, each loaded at its own launch — there is no single unit;
+  // `servingRuntimes` answers it with per-session instance counts instead.
+  'psu-pty-host': null,
 };
 
 /** The lever that makes code live for each host, given its restart target. */
@@ -4309,6 +4358,12 @@ export interface PipelinePositionDeps {
   loadRuntimeVintage?: () => Promise<RuntimeVintageRow[]>;
   /** Injectable local hostname for the host+pid identity join. */
   localRuntimeHost?: string;
+  /** P-001 (acceptance-runtime-plane): per-port `/api/health` sha for servingRuntimes. */
+  probeHealthSha?: (port: number) => Promise<string | null>;
+  /** P-001: `/proc/<pid>/cgroup`, to join a unit's child process to its runtime-vintage row. */
+  readCgroup?: (pid: number) => Promise<string | null>;
+  /** P-001: live psu sessions (each loaded psu-pty-host.mjs at its own launch). */
+  listPtyHostInstances?: () => Promise<Array<{ pid: number; startedAtMs: number }> | null>;
   /** EI-19447523039740352: is a deploy running right now (so the serving restart lever is moot). */
   readDeployInFlight?: () => Promise<DeployInFlight>;
   /** P-003: mtime (ms) of a repo-relative file — what a working-tree tsx host would load. */
@@ -5044,7 +5099,20 @@ function leadClause(p: Omit<PipelinePosition, 'summary'>): string {
     : `BLOCKED AT ${at} → ${p.nextAction}. `;
 }
 
+/**
+ * acceptance-runtime-plane-not-main-2026-09-23 P-001: when the change is ALREADY
+ * executing on a runtime other than the release operator, say so FIRST — before any
+ * gate/deploy prose — because that is the fact that decides whether the reader waits.
+ * `servingRuntimesLead` returns null whenever it has nothing to add, so every other
+ * summary is unchanged.
+ */
 export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string {
+  const lead = servingRuntimesLead(p.servingRuntimes);
+  const body = summarizePositionBody(p);
+  return lead ? `${lead}${body}` : body;
+}
+
+function summarizePositionBody(p: Omit<PipelinePosition, 'summary'>): string {
   const tick = (b: boolean) => (b ? '✓' : '✗');
   const label = p.input.path ?? p.input.sha ?? '(none)';
   if (!p.targetSha) {
@@ -6245,6 +6313,7 @@ export async function gitPipelinePosition(
   }
 
   let runtimeGenerations: RuntimeGeneration[] = [];
+  let servingRuntimes: ServingRuntimeEntry[] = [];
   if (inp.path) {
     const probeUnit = deps.probeUnitStart ?? realProbeUnitStart;
     const mtimeOf = deps.fileMtimeMs ?? realFileMtimeMs;
@@ -6271,6 +6340,32 @@ export async function gitPipelinePosition(
     );
     const divergence = runtimeGenerationDivergenceNote(runtimeGenerations, inp.path);
     if (divergence) notes.push(divergence);
+
+    // P-001 (acceptance-runtime-plane-not-main-2026-09-23): per-runtime containment,
+    // each runtime measured against ITS OWN build identity — never the :3070 flag.
+    const servingPath = superRelPath ?? inp.path.replace(/^\.?\//, '');
+    const servingGitRead = gitReadForRepo(git, root);
+    const servingSubmodules = { submodules: submodule ? [submodule] : [] };
+    const containmentBySha = new Map<string, Promise<{ contains: boolean | null; unknown: CellUnknown | null }>>();
+    servingRuntimes = await resolveServingRuntimes(selectServingRuntimes(servingPath, runtimes), {
+      probeUnitStart: probeUnit,
+      probeHealthSha: deps.probeHealthSha,
+      vintageRows,
+      localHost: deps.localRuntimeHost ?? hostname(),
+      readCgroup: deps.readCgroup,
+      fileMtimeMs: workingTreeMtimeMs,
+      listPtyHostInstances: deps.listPtyHostInstances ?? realListPtyHostInstances,
+      blobContainsAt: (sha) => {
+        let pending = containmentBySha.get(sha);
+        if (!pending) {
+          pending = classifyPathsAgainstCandidate(servingGitRead, sha, [servingPath], 'HEAD', servingSubmodules).then(
+            ([row]) => ({ contains: row?.inCandidate ?? null, unknown: row?.unknownReason ?? null }),
+          );
+          containmentBySha.set(sha, pending);
+        }
+        return pending;
+      },
+    }).catch(() => []);
   }
 
   if (serving.startedSinceCodeChange === false) {
@@ -6577,6 +6672,7 @@ export async function gitPipelinePosition(
     runtimes,
     serving,
     runtimeGenerations,
+    servingRuntimes,
     changeInCandidate,
     sweepExposure,
     notes,

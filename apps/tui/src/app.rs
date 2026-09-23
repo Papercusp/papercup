@@ -9149,6 +9149,8 @@ impl App {
                 action
             }
             Event::Tick => self.on_tick(),
+            // Repaint at the new geometry immediately (see Event::Resize).
+            Event::Resize => Action::Render,
             Event::Plans(p) => {
                 self.set_plans(p);
                 self.publish_active_plan();
@@ -14098,6 +14100,14 @@ mod tests {
         app.update(key('t', KeyModifiers::CONTROL));
         app.update(key('o', KeyModifiers::NONE));
         assert_eq!(app.tab, Tab::Operator, "`o` always returns to Agent Chat");
+    }
+
+    #[test]
+    fn a_terminal_resize_repaints_at_once_even_when_idle() {
+        // Before Event::Resize existed an idle PUI kept the old geometry on
+        // screen until some unrelated event arrived.
+        let mut app = App::new();
+        assert_eq!(app.update(Event::Resize), Action::Render);
     }
 
     fn key(c: char, mods: KeyModifiers) -> Event {
