@@ -8,7 +8,7 @@ const h = vi.hoisted(() => ({
   routeConsult: vi.fn(),
   resolveSessionStates: vi.fn(),
   notifyAgents: vi.fn(),
-  makeConsultReviver: vi.fn(() => vi.fn()),
+  makeConsultReachDispatcher: vi.fn(() => vi.fn()),
 }));
 
 vi.mock('../coordination/identity', () => ({
@@ -34,7 +34,9 @@ vi.mock('../coordination/conversations', () => ({
   openConversation: vi.fn(),
 }));
 vi.mock('../coordination/notify-agents', () => ({ notifyAgents: h.notifyAgents }));
-vi.mock('../../consult/revive-responder', () => ({ makeConsultReviver: h.makeConsultReviver }));
+vi.mock('../../consult/consult-dispatch', () => ({
+  makeConsultReachDispatcher: h.makeConsultReachDispatcher,
+}));
 
 import tool from './get-feedback';
 
@@ -74,7 +76,7 @@ beforeEach(() => {
   h.reconcileInterestEventAwaits.mockReset().mockResolvedValue(handle);
   h.buildQueryEmbedderResolved.mockClear();
   h.interactiveEmbedAcquireBudgetMs.mockClear();
-  h.makeConsultReviver.mockClear();
+  h.makeConsultReachDispatcher.mockClear();
 });
 
 describe('consult:get_feedback requester interest handle (P-024)', () => {
@@ -99,22 +101,28 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
     expect(out).not.toHaveProperty('interest_watch');
   });
 
-  it('keeps revival enabled by default but honors an explicit allow_revival opt-out', async () => {
-    h.getFeedbackCore.mockImplementation(async (_request: unknown, deps: { revive?: unknown }) => {
-      expect(deps.revive).toEqual(expect.any(Function));
+  it('keeps dispatch enabled by default but honors an explicit allow_dispatch opt-out', async () => {
+    h.getFeedbackCore.mockImplementation(async (_request: unknown, deps: { reach?: unknown }) => {
+      expect(deps.reach).toEqual(expect.any(Function));
       return routed('proceed');
     });
     await call('proceed');
-    expect(h.makeConsultReviver).toHaveBeenCalledTimes(1);
+    expect(h.makeConsultReachDispatcher).toHaveBeenCalledTimes(1);
 
     h.getFeedbackCore.mockReset();
-    h.makeConsultReviver.mockClear();
-    h.getFeedbackCore.mockImplementation(async (_request: unknown, deps: { revive?: unknown }) => {
-      expect(deps.revive).toBeUndefined();
-      return routed('proceed');
-    });
-    await call('proceed', { allow_revival: false });
-    expect(h.makeConsultReviver).not.toHaveBeenCalled();
+    h.makeConsultReachDispatcher.mockClear();
+    // Opted out, the delivery seam is a LOCAL no-op stub, not an absent seam
+    // and never a wake: the dispatcher factory is not built at all.
+    h.getFeedbackCore.mockImplementation(
+      async (_request: unknown, deps: { reach?: (opts: unknown) => Promise<{ woke: number }> }) => {
+        expect(deps.reach).toEqual(expect.any(Function));
+        await expect(deps.reach!({})).resolves.toMatchObject({ queued: 0, woke: 0 });
+        return routed('proceed');
+      },
+    );
+    await call('proceed', { allow_dispatch: false });
+    expect(h.makeConsultReachDispatcher).not.toHaveBeenCalled();
+    expect(h.notifyAgents).not.toHaveBeenCalled();
   });
 
   it('uses a live PTY host as positive authority when annotating routing candidates', async () => {

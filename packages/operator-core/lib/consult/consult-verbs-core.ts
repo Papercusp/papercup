@@ -39,7 +39,14 @@
 import type { Sql, TransactionSql } from 'postgres';
 import type { PostResult } from '../agent-tools/coordination/conversations-core';
 import { DEAD_RESPONDER_STATES, consultParkKey as parkKey } from './get-feedback-core';
-import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting, type CascadeEventKind } from './cascade-core';
+import {
+  advanceCascade,
+  digestFromRow,
+  makeDigestEntry,
+  selectionFromRouting,
+  type CascadeDispatch,
+  type CascadeEventKind,
+} from './cascade-core';
 import { consultResponderVerbMenu } from './responder-verb-menu';
 
 export const RESPONDER_REPLY_KINDS = ['answer', 'clarifying_question', 'new_fact'] as const;
@@ -120,24 +127,36 @@ export interface ConsultVerbDeps {
     payload: Record<string, unknown>;
     to: string[];
   }) => Promise<void>;
-  /** Directed ping + wake (requester follow-up → responder), bound to
-   * notifyAgents in prod. Absent ⇒ deliver-by-subscription only, no wake. */
+  /**
+   * Directed ping + wake of the session ALREADY ANSWERING this consult — a
+   * requester FOLLOW-UP, and the ONE delivery in the whole consult surface that
+   * legitimately messages a live agent (D-011). That session is our own worker:
+   * this consult launched it, it is doing nothing else, and the follow-up
+   * belongs in the thread it is already holding. Prod binds notifyAgents.
+   *
+   * ⚠ Its addressee is the ANSWERING identity (selection.selected[cursor]
+   * .answeringOwnerId ?? responder_id), NOT the routed expert — on a fork those
+   * differ, and pinging the expert wakes an uninvolved agent while the session
+   * holding the thread hears nothing.
+   *
+   * Absent ⇒ deliver-by-subscription only, no wake.
+   */
   reach?: (opts: {
     responder: string;
     conversationId: string;
     summary: string;
     body: string;
   }) => Promise<{ woke: number }>;
-  /** EI-20864690354207496 refill-exhaustion revival: carry-respawn a dead
-   * above-floor candidate when the cascade exhausts below selection.min with
-   * no live untried candidate left to fill it (prod binds the WI-39852
-   * reviver; cascade-core enforces the persisted one-per-consult budget).
-   * Absent ⇒ the advance goes terminal with the honest under-filled label. */
-  revive?: (opts: {
-    ownerId: string;
-    conversationId: string;
-    brief: string;
-  }) => Promise<{ spawned: boolean; verified: boolean | null; detail: string }>;
+  /**
+   * The cascade DELIVERY seam (D-002/D-011) — fork/convert a NEW answering
+   * session from the next expert's transcript. Passed to every advanceCascade
+   * call from these verbs; prod binds makeConsultReachDispatcher.
+   *
+   * Never `reach`: an advance addresses an expert who is not in this
+   * conversation, and reaching them is exactly the live-agent wake P-003
+   * removes. Absent ⇒ the cursor advances and nobody is dispatched.
+   */
+  dispatch?: CascadeDispatch;
   /** P-005 graduation (D-004): mint the shared work item a 'graduate' close
    * hands off to — bound in prod (consult:close) to createWorkItem +
    * subscribe-both-participants + a rel:'relates' link to the conversation.
@@ -372,11 +391,12 @@ function isConsultParticipant(row: ConsultStateRow, authorId: string): boolean {
 }
 
 /**
- * A refill-exhaustion revival is reserved in selection.selected before the
- * carry-respawn starts. The revived process can answer during that await, so
- * claim the reservation atomically before the normal post/state path. This
- * returns a row snapshot with the reservation consumed; a concurrent finalizer
- * then fails its CAS and cannot overwrite the first-turn reply.
+ * Consume a HISTORICAL revivalPending reservation (D-002 retired the revival
+ * leg that wrote them, but a row reserved before this shipped can still be
+ * open). The reserved session can reply at any time, so claim the reservation
+ * atomically before the normal post/state path rather than refusing a reply the
+ * old apparatus asked for. Returns a row snapshot with the reservation
+ * consumed; nothing writes a new one.
  */
 async function claimPendingRevival(
   sql: Sql,
@@ -434,17 +454,17 @@ export interface ConsultReplyResult {
     attempted: boolean;
     woke: number;
   };
-  /** Present on a cascade-advancing perspective reply (D-005): who was woken
-   * next with the feedback-so-far digest, or exhausted:true when this
-   * selectee was the menu's last. refilled marks the WI-39861 min-ANSWERS
-   * refill round (the menu was extended once because answers < min); revival
-   * marks the EI-20864690354207496 refill-exhaustion revival. */
+  /** Present on a cascade-advancing perspective reply (D-005): which expert's
+   * transcript the next answering session was DISPATCHED from with the
+   * feedback-so-far digest (D-002 — no live agent is woken), or exhausted:true
+   * when this selectee was the menu's last. refilled marks the WI-39861
+   * min-ANSWERS refill round (the menu was extended once because
+   * answers < min). */
   cascade?: {
     advanced_to: string | null;
     exhausted: boolean;
     woke: number;
     refilled?: boolean;
-    revival?: { ownerId: string; spawned: boolean };
   };
   hint: string;
 }
@@ -576,8 +596,15 @@ export async function consultReplyCore(
 
   let woke = 0;
   if (willWake && deps.reach && row.responder_id) {
+    // D-011: address the session that is ANSWERING, not the expert who was
+    // routed. A fork answers under a new coord identity (stamped by dispatch as
+    // answeringOwnerId); `responder_id` still names the expert whose knowledge
+    // was selected, and waking THEM would ping an agent with no part in this
+    // consult while the session holding the thread never hears the follow-up.
+    const answering =
+      selectionFromRouting(row.routing)[row.cascade_cursor]?.answeringOwnerId ?? row.responder_id;
     const r = await deps.reach({
-      responder: row.responder_id,
+      responder: answering,
       conversationId: req.conversationId,
       summary: `🧭 consult follow-up from ${req.authorId}: ${oneLine(req.body, 72)}`,
       // EI-21761566265989000: a follow-up wake is the case where unread posts are GUARANTEED to
@@ -613,8 +640,7 @@ export async function consultReplyCore(
         nowIso: now,
       },
       sql,
-      deps.reach,
-      deps.revive,
+      deps.dispatch,
     );
     // A raced advance means a concurrent trigger (the expiry sweep, typically)
     // moved the chain first — its advance stands and already woke the next
@@ -625,13 +651,12 @@ export async function consultReplyCore(
         exhausted: adv.exhausted,
         woke: adv.woke,
         ...(adv.refilled ? { refilled: true } : {}),
-        ...(adv.revival ? { revival: { ownerId: adv.revival.ownerId, spawned: adv.revival.spawned } } : {}),
       };
     }
   }
   const cascadeNote = cascade
     ? cascade.advanced_to
-      ? ` Cascade advanced (D-005): ${cascade.advanced_to} was woken next with the feedback so far.${cascade.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`
+      ? ` Cascade advanced (D-005): an answering session was dispatched from ${cascade.advanced_to}'s transcript with the feedback so far (D-002 — forked/converted, never woken).${cascade.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`
       : ' Cascade menu exhausted — you were the last selectee.'
     : '';
 
@@ -680,15 +705,15 @@ export interface ConsultDeclineResult {
   /** 'awaiting_responder' when the cascade advanced to the next selectee
    * (D-005 — the consult stays open); 'declined' only on menu exhaustion. */
   state: 'awaiting_responder' | 'declined';
-  /** Cascade consequence of this decline (D-005). refilled marks the
-   * WI-39861 min-ANSWERS refill round; revival marks the EI-20864690354207496
-   * refill-exhaustion revival. */
+  /** Cascade consequence of this decline (D-005). `advanced_to` names the
+   * expert whose transcript the next answering session was DISPATCHED from
+   * (D-002 — no live agent is woken); refilled marks the WI-39861 min-ANSWERS
+   * refill round. */
   cascade: {
     advanced_to: string | null;
     exhausted: boolean;
     woke: number;
     refilled?: boolean;
-    revival?: { ownerId: string; spawned: boolean };
   };
   /** Route-time candidate refs — decliner excluded, route-time-dead filtered
    * (retrieval fallback; the SERVER drains the selected menu itself). */
@@ -751,8 +776,7 @@ export async function consultDeclineCore(
       nowIso: now,
     },
     sql,
-    deps.reach,
-    deps.revive,
+    deps.dispatch,
   );
   const remaining = remainingFromSnapshot(row.routing, req.authorId);
 
@@ -782,10 +806,9 @@ export async function consultDeclineCore(
         exhausted: false,
         woke: adv.woke,
         ...(adv.refilled ? { refilled: true } : {}),
-        ...(adv.revival ? { revival: { ownerId: adv.revival.ownerId, spawned: adv.revival.spawned } } : {}),
       },
       remaining_candidates: remaining,
-      hint: `Declined. Cascade advanced (D-005): ${adv.next?.ownerId ?? 'the next selectee'} was woken with the feedback so far — the consult stays open.${adv.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}${adv.revival?.spawned ? ` (refill-exhaustion revival, EI-20864690354207496: ${adv.revival.ownerId} was carry-respawned to fill the minimum — no live untried candidate remained.)` : ''}`,
+      hint: `Declined. Cascade advanced (D-005): an answering session was dispatched from ${adv.next?.ownerId ?? 'the next selectee'}'s transcript with the feedback so far — the consult stays open.${adv.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`,
     };
   }
 

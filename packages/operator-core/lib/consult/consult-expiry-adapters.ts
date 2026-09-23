@@ -6,7 +6,7 @@
  * `consult-expiry-core.ts` is pure and integration-tested, and that is exactly what
  * made this blind spot easy to miss: the CORE was covered, so the sweep read as
  * tested. But the three adapters that bind that core to real services —
- * `emitReplyEvent`, `reach`, `revive` — lived as lambdas inside the
+ * `emitReplyEvent`, `dispatch`, `notifyRequester` — lived as lambdas inside the
  * `registerSystemAction` closure in `../harness/routines/consult-expiry-action.ts`.
  * Nothing outside that closure could reach them, so a test could only pin their
  * SOURCE TEXT, never execute them.
@@ -24,15 +24,15 @@
  *     scope instead would silently address the wrong tenant — and would still pass
  *     every core test, because the core supplies the workspace and never checks where
  *     the adapter got it from.
- *   - `reach` must build its system identity per row from `opts.workspaceId`, and must
- *     narrow `notifyAgents`' richer result down to the `{ woke }` the core consumes.
- *   - `revive` must split one flat `opts` across the reviver's TWO parameters — the
- *     consult triple in the first, the workspace context in the second. Threading
- *     `workspaceId` into the wrong one is a one-word mistake with no type error.
+ *   - `dispatch` must build its dispatcher per row from `opts.workspaceId` (D-011),
+ *     stamp the sweep as `launchedBy`, and narrow the dispatcher's richer result down
+ *     to the `{ woke, answeringOwnerId }` the core consumes. Hoisting the factory call
+ *     out of the returned lambda would bind every workspace's launches to the first
+ *     row's tenant — and would still pass every core test.
  *
  * Dependencies arrive as parameters and the service shapes are declared structurally,
  * so a test can drive these with fakes and this module stays off the events-engine,
- * notify-agents, and reviver import graphs.
+ * notify-agents, and dispatcher import graphs.
  */
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import type { SendOptions } from '../agent-tools/coordination/messages';
@@ -40,7 +40,6 @@ import type { NotifyAgentsOpts, NotifyAgentsResult } from '../agent-tools/coordi
 import type { EmitAwaitedEventOpts, EmitResult } from '../events/await/engine';
 import type { ExpirySweepDeps, SilentResponderCandidate } from './consult-expiry-core';
 import { DEAD_RESPONDER_STATES, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
-import type { ConsultReviveContext, ConsultReviveResult } from './revive-responder';
 import type { ThreadableStore } from '@papercusp/coordination/capabilities';
 import { runWithWorkspace } from '../workspace-als';
 
@@ -67,12 +66,19 @@ export type RequesterAlertSender = (
   opts: SendOptions,
 ) => Promise<unknown>;
 
-/** What this module needs from `reviveConsultResponder` — note the TWO-parameter
- *  shape, which is the thing the adapter has to get right. */
-export type ResponderReviver = (
-  opts: { ownerId: string; conversationId: string; brief: string },
-  ctx: ConsultReviveContext,
-) => Promise<ConsultReviveResult>;
+/** What this module needs from `makeConsultReachDispatcher` — a FACTORY, because
+ *  the dispatch context is per-row workspace-scoped (the thing the adapter has to
+ *  get right, exactly as the old reviver's two-parameter split was). */
+export type ConsultDispatcherFactory = (ctx: {
+  workspaceId: string;
+  harnessSlug: string | null;
+  launchedBy: string;
+}) => (opts: {
+  responder: string;
+  conversationId: string;
+  summary: string;
+  body: string;
+}) => Promise<{ woke: number; answeringOwnerId: string | null }>;
 
 /** Narrow seams for the post-routing silent-responder detector. Keeping these
  * as injected functions makes the adapter executable in unit tests while the
@@ -155,44 +161,30 @@ export function consultExpiryNotifyRequester(
 }
 
 /**
- * D-005 cascade advance: an unanswered window elapsing wakes the NEXT selectee
- * exactly like a decline does — subscribe + ping + wake, so the selectee joins the
- * consult conversation durably.
+ * D-005 cascade advance, D-002/D-011 delivery: an unanswered window elapsing
+ * moves the chain exactly like a decline does — and the next selectee is
+ * DISPATCHED (a fresh answering session forked/converted from their transcript),
+ * never woken. `launchedBy` is stamped as the sweep so the launch is
+ * attributable back to it, and the dispatcher is built PER ROW because its
+ * context is workspace-scoped just like `reach`'s identity was.
  */
-export function consultExpiryReach(
-  notify: AgentNotifier,
-): NonNullable<ExpirySweepDeps['reach']> {
-  return async (opts) => {
-    const r = await runWithWorkspace(opts.workspaceId, () =>
-      notify(sweepIdentity(opts.workspaceId), {
-        addressees: [opts.responder],
-        objectRef: { kind: 'conversation', ref: opts.conversationId },
-        summary: opts.summary,
-        body: opts.body,
-        wake: true,
-      }),
-    );
-    return { woke: r.woke };
-  };
-}
-
-/**
- * EI-20864690354207496 refill-exhaustion revival: carry-respawn a dead above-floor
- * candidate when a due row's cascade exhausts below `selection.min`. `launchedBy` is
- * stamped as the sweep so the spawn is attributable back to it.
- */
-export function consultExpiryRevive(
-  revive: ResponderReviver,
-): NonNullable<ExpirySweepDeps['revive']> {
+export function consultExpiryDispatch(
+  makeDispatcher: ConsultDispatcherFactory,
+): NonNullable<ExpirySweepDeps['dispatch']> {
   return async (opts) =>
-    revive(
-      { ownerId: opts.ownerId, conversationId: opts.conversationId, brief: opts.brief },
-      {
+    runWithWorkspace(opts.workspaceId, async () => {
+      const r = await makeDispatcher({
         workspaceId: opts.workspaceId,
         harnessSlug: null,
         launchedBy: CONSULT_EXPIRY_SWEEP_OWNER_ID,
-      },
-    );
+      })({
+        responder: opts.responder,
+        conversationId: opts.conversationId,
+        summary: opts.summary,
+        body: opts.body,
+      });
+      return { woke: r.woke, answeringOwnerId: r.answeringOwnerId };
+    });
 }
 
 /** Detect post-routing no-pickup failures that otherwise wait for the full

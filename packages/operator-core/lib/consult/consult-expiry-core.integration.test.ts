@@ -503,7 +503,7 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     expect(row.cascade_digest).toMatchObject([
       {
         ownerId: 'resp-1',
-        kind: 'wake_failed',
+        kind: 'dispatch_failed',
         excerpt: 'queued responder did not produce a consult post before bounded pickup recovery (implicit decline)',
       },
     ]);

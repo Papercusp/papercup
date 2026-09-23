@@ -8,8 +8,8 @@
  *   - the sweep logic in `../../consult/consult-expiry-core.ts` (pure, integration-
  *     tested against the real migration-834 tables);
  *   - the production adapters in `../../consult/consult-expiry-adapters.ts`, which
- *     bind that core to org PG, the awaited-event engine, notifyAgents, and the
- *     WI-39852 reviver.
+ *     bind that core to org PG, the awaited-event engine, the durable requester
+ *     alert, and the D-002 fork/convert dispatcher.
  *
  * The adapters used to be lambdas inside the `registerSystemAction` closure below,
  * where no test could execute them — only pin their source text (EI-21559794492221235).
@@ -33,14 +33,15 @@ registerSystemAction('consult-expiry-sweep', async () => {
       consultExpiryEmitReplyEvent,
       consultExpiryFindSilentResponders,
       consultExpiryNotifyRequester,
-      consultExpiryReach,
-      consultExpiryRevive,
+      consultExpiryDispatch,
     },
+    { makeConsultReachDispatcher },
   ] = await Promise.all([
     import('@papercusp/db-org'),
     import('../../consult/consult-expiry-core'),
     import('../../events/await/engine'),
     import('../../consult/consult-expiry-adapters'),
+    import('../../consult/consult-dispatch'),
   ]);
 
   await sweepExpiredConsults({
@@ -50,14 +51,10 @@ registerSystemAction('consult-expiry-sweep', async () => {
       const { sendMessage } = await import('../../agent-tools/coordination/messages');
       return sendMessage(identity, opts);
     }),
-    reach: consultExpiryReach(async (identity, opts) => {
-      const { notifyAgents } = await import('../../agent-tools/coordination/notify-agents');
-      return notifyAgents(identity, opts);
-    }),
-    revive: consultExpiryRevive(async (opts, ctx) => {
-      const { reviveConsultResponder } = await import('../../consult/revive-responder');
-      return reviveConsultResponder(opts, ctx);
-    }),
+    // D-002/D-011: the sweep DISPATCHES the next selectee (fork/convert from
+    // their transcript) instead of waking them. notifyAgents is no longer on
+    // this binding at all, so the sweep cannot silently regain a wake.
+    dispatch: consultExpiryDispatch((ctx) => makeConsultReachDispatcher(ctx)),
     findSilentResponders: consultExpiryFindSilentResponders({
       getPresence: async (ownerId) => {
         const { getPresence } = await import('../../agent-tools/coordination/presence');

@@ -81,31 +81,20 @@ export interface ExpirySweepDeps {
     to: string[];
     workspaceId: string;
   }) => Promise<void>;
-  /** D-005 cascade advance: wake the next selectee (prod binds notifyAgents —
-   * subscribe + ping + wake — under a per-row workspace system identity;
-   * consult_state is workspace-partitioned and ONE sweep serves them all, so
-   * the workspace rides on each call rather than on the binding's scope).
-   * Absent ⇒ the advance still happens (cursor/responder/digest move) but
-   * nobody is woken — tests only; prod MUST bind it. */
-  reach?: (opts: {
+  /** D-005 cascade advance, D-002/D-011 delivery: DISPATCH the next selectee —
+   * fork/convert a fresh answering session from their transcript, never a wake
+   * (prod binds makeConsultReachDispatcher under a per-row workspace system
+   * identity; consult_state is workspace-partitioned and ONE sweep serves them
+   * all, so the workspace rides on each call rather than on the binding's
+   * scope). Absent ⇒ the advance still happens (cursor/responder/digest move)
+   * but nobody is dispatched — tests only; prod MUST bind it. */
+  dispatch?: (opts: {
     responder: string;
     conversationId: string;
     summary: string;
     body: string;
     workspaceId: string;
-  }) => Promise<{ woke: number }>;
-  /** EI-20864690354207496 refill-exhaustion revival (per-row workspace, like
-   * reach): carry-respawn a dead above-floor candidate when a due row's
-   * cascade exhausts below selection.min with no live untried candidate left.
-   * Prod binds the WI-39852 reviver; cascade-core enforces the persisted
-   * one-per-consult budget. Absent ⇒ terminal expiry with the honest
-   * under-filled label. */
-  revive?: (opts: {
-    ownerId: string;
-    conversationId: string;
-    brief: string;
-    workspaceId: string;
-  }) => Promise<{ spawned: boolean; verified: boolean | null; detail: string }>;
+  }) => Promise<{ woke: number; answeringOwnerId?: string | null }>;
   /** Durable requester alert for every stalled/expired lifecycle transition.
    * The caller supplies a deterministic replay key. A rejected alert blocks
    * the lifecycle write so the next sweep retries the same key. */
@@ -230,7 +219,10 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
           digest: row.cascade_digest,
           event: makeDigestEntry(
             row.responder_id ?? '(unrouted)',
-            isDue ? 'expired' : 'wake_failed',
+            // D-002: nothing is woken any more, so a no-pickup is a FAILED
+            // DISPATCH. 'wake_failed' survives in the enum only to render
+            // digests persisted before this shipped; it is never written.
+            isDue ? 'expired' : 'dispatch_failed',
             nowIso,
             isDue
               ? `expired unanswered (${row.latency_contract} window elapsed)`
@@ -240,11 +232,8 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
           nowIso,
         },
         sql,
-        deps.reach
-          ? (opts) => deps.reach!({ ...opts, workspaceId: row.workspace_id })
-          : undefined,
-        deps.revive
-          ? (opts) => deps.revive!({ ...opts, workspaceId: row.workspace_id })
+        deps.dispatch
+          ? (opts) => deps.dispatch!({ ...opts, workspaceId: row.workspace_id })
           : undefined,
       );
       if (adv.raced) continue; // a verb / concurrent tick won — nothing to do

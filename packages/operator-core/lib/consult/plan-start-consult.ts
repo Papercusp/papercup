@@ -164,14 +164,19 @@ export async function checkpointConsult(
 
   // D-001 §1 selection with the GLOBAL min/max defaults (D-003: min 1 —
   // reused from get-feedback-core so plan-start can never drift from the
-  // get_feedback semantics): floor-qualified live candidates best-first, then
-  // best-available live fill labeled via:'minimum' (D-002).
+  // get_feedback semantics): floor-qualified candidates best-first, then
+  // best-available fill labeled via:'minimum' (D-002).
+  //
+  // No liveness gate, for the same reason get-feedback-core dropped its one
+  // (D-002): delivery forks or converts the expert's TRANSCRIPT, so an
+  // `ended`/`recorded` session is no reason to pass over the best-matched
+  // expert. The owner PAUSE gate is different in kind and stays.
   const selected = selectResponders({
     qualified: route.qualified,
     allCandidates: route.snapshot.candidates,
     min: DEFAULT_MIN_RESPONDERS,
     max: DEFAULT_MAX_RESPONDERS,
-    isSelectable: (c) => !DEAD_RESPONDER_STATES.has(c.liveness),
+    isSelectable: (c) => c.ownerPaused !== true,
   });
 
   if (selected.length > 0) {

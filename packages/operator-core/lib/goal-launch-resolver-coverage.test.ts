@@ -61,13 +61,15 @@ const ALLOWLIST: Record<string, string> = {
     'with the REQUESTER on another host, and are enforced there when its goal agent calls the launch ' +
     'tool. This host holds no goal row and no session_briefs row for that remote owner, so a second ' +
     'check here could only ever resolve null; what it does enforce locally is seat accounting (Gate 4.6).',
-  'consult/revive-responder.ts':
-    'A REVIVAL, not a launch: it carry-respawns a session that already existed, under its ORIGINAL coord ' +
-    'identity, so no new agent joins the population and the revived session keeps whatever goal lineage it ' +
-    'already had. Binding a ceiling here would check a headcount the respawn does not change, and would ' +
-    'refuse to revive a dead responder because some unrelated goal is full. Its own bound is upstream and ' +
-    'tighter than a ceiling: the caller owns WHETHER to revive (MAX_REVIVALS_PER_CONSULT = 1 in ' +
-    'consult/get-feedback-core.ts, covered by get-feedback-core.integration.test.ts); this module owns only HOW.',
+  'consult/consult-dispatch.ts':
+    'A CONSULT ANSWER, not goal work (D-002/D-012). It forks or converts the routed expert\'s transcript into ' +
+    'a session whose whole job is to answer ONE question and end, and the launcher is frequently the expiry ' +
+    'sweep — a system identity with no goal context to resolve at all. Charging a goal ceiling would also ' +
+    'attribute it wrongly in both directions: the requester\'s goal did not ask for the expert\'s headcount, ' +
+    'and the expert\'s goal did not ask the question. Its bound is the consult itself and is tighter than a ' +
+    'ceiling: at most one dispatch per cascade step, over a menu the router already capped at max_agents ' +
+    '(≤ 8), each attempt walking the allowlist once (consult/consult-dispatch.ts, covered by ' +
+    'consult-dispatch.test.ts).',
   'endpoint-route/routes/admin/attention-bulk-resolve.ts':
     'The owner-facing Inbox action creates one short-lived resolver for the concrete items the owner ' +
     'submitted. It creates the resolver owner id only inside this request, before any agent session or ' +

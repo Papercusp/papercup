@@ -57,13 +57,13 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     // Heavy prod seams — imported per-call, never at registration.
-    const [{ getOrgPg }, { consultReplyCore }, conversations, { notifyAgents }, { makeConsultReviver }] =
+    const [{ getOrgPg }, { consultReplyCore }, conversations, { notifyAgents }, { makeConsultReachDispatcher }] =
       await Promise.all([
         import('@papercusp/db-org'),
         import('../../consult/consult-verbs-core'),
         import('../coordination/conversations'),
         import('../coordination/notify-agents'),
-        import('../../consult/revive-responder'),
+        import('../../consult/consult-dispatch'),
       ]);
 
     // Same partition resolver as the conversation writes (WI-1571).
@@ -88,6 +88,10 @@ export default defineTool({
             .then(({ emitAwaitedEvent }) => emitAwaitedEvent({ ...e, source: identity.ownerId }))
             .catch(() => {});
         },
+        // D-011 seam 1 of 2: the requester's follow-up, addressed to the
+        // session ALREADY answering this consult (consult-verbs-core resolves
+        // the answering identity). That session is our own worker, so this is
+        // the ONE consult delivery that legitimately notifies a live agent.
         reach: async (opts) => {
           const r = await notifyAgents(identity, {
             addressees: [opts.responder],
@@ -98,10 +102,10 @@ export default defineTool({
           });
           return { woke: r.woke };
         },
-        // EI-20864690354207496 refill-exhaustion revival: same WI-39852
-        // reviver the creation site binds — cascade-core enforces the
-        // persisted one-per-consult budget before calling it.
-        revive: makeConsultReviver({
+        // D-011 seam 2 of 2: a cascade advance addresses an expert who is NOT
+        // in this conversation — fork/convert a fresh answering session from
+        // their transcript, never a wake.
+        dispatch: makeConsultReachDispatcher({
           workspaceId,
           harnessSlug: ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null,
           launchedBy: identity.ownerId,

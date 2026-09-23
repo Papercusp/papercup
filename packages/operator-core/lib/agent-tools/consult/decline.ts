@@ -38,11 +38,11 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const [{ getOrgPg }, { consultDeclineCore }, conversations, { makeConsultReviver }] = await Promise.all([
+    const [{ getOrgPg }, { consultDeclineCore }, conversations, { makeConsultReachDispatcher }] = await Promise.all([
       import('@papercusp/db-org'),
       import('../../consult/consult-verbs-core'),
       import('../coordination/conversations'),
-      import('../../consult/revive-responder'),
+      import('../../consult/consult-dispatch'),
     ]);
     const workspaceId = conversations.withConversationsIdentityScope(identity, undefined, () =>
       conversations.conversationsScopeWorkspace(),
@@ -76,23 +76,11 @@ export default defineTool({
             .then(({ emitAwaitedEvent }) => emitAwaitedEvent({ ...e, source: identity.ownerId }))
             .catch(() => {});
         },
-        // D-005 cascade advance: wake the next selectee (subscribe + ping +
-        // wake — notifyAgents subscribes them into the consult conversation).
-        reach: async (opts) => {
-          const { notifyAgents } = await import('../coordination/notify-agents');
-          const r = await notifyAgents(identity, {
-            addressees: [opts.responder],
-            objectRef: { kind: 'conversation', ref: opts.conversationId },
-            summary: opts.summary,
-            body: opts.body,
-            wake: true,
-          });
-          return { woke: r.woke };
-        },
-        // EI-20864690354207496 refill-exhaustion revival: same WI-39852
-        // reviver the creation site binds — cascade-core enforces the
-        // persisted one-per-consult budget before calling it.
-        revive: makeConsultReviver({
+        // D-005 cascade advance, D-002/D-011 delivery: fork/convert a fresh
+        // answering session from the next selectee's transcript. No `reach`
+        // binding here at all — a decline has no requester follow-up, so this
+        // verb has no live agent it may legitimately message.
+        dispatch: makeConsultReachDispatcher({
           workspaceId,
           harnessSlug: ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null,
           launchedBy: identity.ownerId,
