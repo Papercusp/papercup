@@ -2423,6 +2423,7 @@ export function completionEvidenceFromRecord(
   const testsRun = nested.testsRun ?? rec.testsRun ?? rec.tests;
   const testResult = nested.testResult ?? rec.testResult;
   const verifiedHow = nested.verifiedHow ?? rec.verifiedHow;
+  const workOutcome = nested.workOutcome;
   const addedTests = nested.addedTests ?? rec.addedTests;
   const coverage = nested.coverage ?? rec.coverage;
   // P-021 / D-014: canonical-nested ONLY, deliberately no top-level alias. The aliases
@@ -2447,6 +2448,7 @@ export function completionEvidenceFromRecord(
   if (testsRun?.trim()) evidence.testsRun = testsRun;
   if (testResult?.trim()) evidence.testResult = testResult;
   if (verifiedHow) evidence.verifiedHow = verifiedHow;
+  if (workOutcome) evidence.workOutcome = workOutcome;
   if (addedTests !== undefined) evidence.addedTests = addedTests;
   if (coverage) evidence.coverage = coverage;
   return Object.keys(evidence).length > 0 ? evidence : undefined;
