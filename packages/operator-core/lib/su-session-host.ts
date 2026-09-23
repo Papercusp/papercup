@@ -461,6 +461,11 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     exitCode?: number | null;
     signal?: string | null;
   }): SuSessionEvent<B> | null {
+    // An engine's teardown can finish after its host was disposed (a reopen or
+    // session end released it first). Nothing can observe that exit any more,
+    // and emit() throws on a disposed host, which escaped as an unhandled error
+    // from the engine's own cleanup.
+    if (this.disposed) return null;
     const state: SuSessionLifecycleState = input.expected || input.exitCode === 0 ? 'ended' : 'failed';
     const detail =
       input.reason ??

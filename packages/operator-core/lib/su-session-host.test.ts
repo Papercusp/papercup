@@ -375,6 +375,15 @@ describe('SuSessionHost', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('ignores a runtime exit reported after the host was disposed', () => {
+    const host = new SuSessionHost({ descriptor: descriptor(), executeCommand: async () => ({ status: 'completed' }) });
+    host.dispose();
+    // An engine's cleanup can land after a reopen or session end disposed its
+    // host; that must not throw out of the engine's teardown.
+    expect(host.reconcileRuntimeExit({ expected: true })).toBeNull();
+    expect(host.reconcileRuntimeExit({ expected: false, exitCode: 137, signal: 'SIGKILL' })).toBeNull();
+  });
+
   it('releases a crashed runtime\'s executor so a replacement attaches to the same host', () => {
     const execute = vi.fn<SuSessionCommandExecutor<'claude'>>(async () => ({ status: 'completed' }));
     const saved = descriptor();

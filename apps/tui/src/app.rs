@@ -15435,6 +15435,64 @@ mod tests {
         json!({"action":"rematerialize","reason":"ended_archived","stalePid":true})
     }
 
+    /// REGRESSION (P-009). A reconnect after an engine death replays that death:
+    /// the retained window holds the dead runtime's `error`. The replay renders,
+    /// but it must not fail the owner's follow-up, which was sent after the
+    /// snapshot and never reached the dead runtime. Before the fix the follow-up
+    /// was marked not accepted and never dispatched to the recovered engine.
+    #[test]
+    fn su_replayed_error_does_not_fail_a_turn_sent_after_the_snapshot() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        app.apply_su_session_snapshot(serde_json::from_value(json!({
+            "ok": true,
+            "descriptor": {
+                "identity": {"agentChatId":"chat-1", "advSessionId":7, "backend":"claude", "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"},
+                "lifecycle":"resuming", "runtimeGeneration":2, "role":"su", "carry":"warm", "modes":[],
+                "capabilities": {"commands":{}, "features":{}},
+                "backendExtension": {"backend":"claude", "configDir":null, "configDirSource":null}
+            },
+            "floorSequence": 1, "lastSequence": 3, "terminal": false
+        })).expect("decode SU snapshot"));
+        app.su_pending_turn = Some(PendingSuTurn {
+            command_id: "pui-follow-up".into(),
+            content: "follow-up".into(),
+            draft: "follow-up".into(),
+            attachment_references: Vec::new(),
+            command: None,
+            uncertain: false,
+            error: None,
+        });
+        let error_at = |sequence: u64, message: &str| {
+            let mut event = su_event_base("error", sequence);
+            event["scope"] = json!("transport");
+            event["code"] = json!("claude_stream_failed");
+            event["message"] = json!(message);
+            event["recoverable"] = json!(true);
+            su_event(event)
+        };
+
+        app.apply_su_session_event(error_at(2, "engine process died mid-turn"));
+        assert_eq!(
+            app.su_session.as_ref().unwrap().error.as_deref(),
+            Some("engine process died mid-turn"),
+            "replayed history still renders"
+        );
+        assert_eq!(
+            app.su_pending_turn.as_ref().map(|p| p.error.clone()),
+            Some(None),
+            "a replayed error must not fail the turn sent after the snapshot"
+        );
+
+        // Past the snapshot head the error is live, and it fails the turn.
+        app.apply_su_session_event(error_at(4, "recovered engine failed"));
+        assert_eq!(
+            app.su_pending_turn.as_ref().and_then(|p| p.error.as_deref()),
+            Some("SU-session: recovered engine failed")
+        );
+    }
+
     /// REGRESSION (P-010). The snapshot cursor must be the FLOOR of the host's
     /// retained window, never its head.
     ///

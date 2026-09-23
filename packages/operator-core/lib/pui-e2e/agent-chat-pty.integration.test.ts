@@ -163,6 +163,9 @@ vi.mock('../su-session-claude-engine', async (original) => {
             .filter(([key]) => key !== 'NODE_OPTIONS')),
           signal: sdkOptions.abortController?.signal ?? new AbortController().signal,
         });
+        // The SDK's process transport observes child errors; an abort-driven
+        // kill emits one, and unobserved it escapes as an unhandled error.
+        native?.on('error', () => {});
         const output = new PassThrough({ objectMode: true });
         let nativeId = '';
         // Real Claude appends every native line to its per-session JSONL as it
