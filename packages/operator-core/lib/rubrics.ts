@@ -30,6 +30,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
+import type { ServingRuntimeId } from './serving-runtimes';
 import {
   normalizeRequirementSections,
   type RequirementIntent,
@@ -178,6 +179,9 @@ export interface RubricCriterion {
   requiredScope?: string[];
   /** Structural evidence plane; tree proof cannot satisfy deployed/live promises. */
   evidencePlane?: AcceptanceEvidencePlane;
+  /** deployed/live BARs: the runtime whose build the evidence must be measured on
+   * (acceptance-runtime-plane P-002). Absent ⇒ inferred + flagged, never :3070 by default. */
+  evidenceRuntime?: ServingRuntimeId;
   requiredTestLayers?: string[];
   /** Ratings that satisfy this BAR. Empty/absent remains legacy/unbound. */
   passRatings?: string[];
@@ -513,6 +517,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
         mandatory?: boolean;
         requiredScope?: string[];
         evidencePlane?: AcceptanceEvidencePlane;
+        evidenceRuntime?: ServingRuntimeId;
         passRatings?: string[];
         coversBarKeys?: string[];
         barProvenance?: AcceptanceBarProvenance;
@@ -532,6 +537,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
         ...(barFields.mandatory !== undefined ? { mandatory: barFields.mandatory } : {}),
         ...(barFields.requiredScope ? { requiredScope: barFields.requiredScope } : {}),
         ...(barFields.evidencePlane ? { evidencePlane: barFields.evidencePlane } : {}),
+        ...(barFields.evidenceRuntime ? { evidenceRuntime: barFields.evidenceRuntime } : {}),
         ...(c.requiredTestLayers ? { requiredTestLayers: c.requiredTestLayers } : {}),
         ...(barFields.passRatings ? { passRatings: barFields.passRatings } : {}),
         ...(barFields.coversBarKeys ? { coversBarKeys: barFields.coversBarKeys } : {}),
@@ -1411,6 +1417,7 @@ type AcceptanceBarHashInput = Pick<
   | 'driftMarkers'
   | 'requiredScope'
   | 'evidencePlane'
+  | 'evidenceRuntime'
   | 'requiredTestLayers'
   | 'check'
   | 'role'
@@ -1481,6 +1488,10 @@ export function computeAcceptanceBarHash(criterion: AcceptanceBarHashInput): str
     ['falsifier', normalizedBarText(criterion.driftMarkers)],
     ['requiredScope', normalizedBarSet(criterion.requiredScope)],
     ...(criterion.evidencePlane ? ([['evidencePlane', criterion.evidencePlane]] as const) : []),
+    // Conditional like evidencePlane: every BAR hashed before evidenceRuntime existed keeps
+    // its hash byte-for-byte, while declaring a runtime IS a meaning change (it moves where
+    // the promise must be proven) and so re-hashes.
+    ...(criterion.evidenceRuntime ? ([['evidenceRuntime', criterion.evidenceRuntime]] as const) : []),
     ...(criterion.requiredTestLayers
       ? [['requiredTestLayers', normalizedBarSet(criterion.requiredTestLayers, true)]]
       : []),
@@ -1533,6 +1544,7 @@ export function normalizeAcceptanceBarCriterion(criterion: ProposeRubricCriterio
     criterion.mandatory !== undefined ||
     criterion.requiredScope !== undefined ||
     criterion.evidencePlane !== undefined ||
+    criterion.evidenceRuntime !== undefined ||
     criterion.requiredTestLayers !== undefined ||
     criterion.passRatings !== undefined ||
     criterion.coversBarKeys !== undefined ||

@@ -1,5 +1,6 @@
 /** Unified authoring over the existing criterion fields. No second persisted BAR. */
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
+import type { ServingRuntimeId } from './serving-runtimes';
 
 export interface RequirementIntent {
   request: string;
@@ -13,6 +14,8 @@ export interface RequirementAcceptance {
   falsifier: string;
   requiredScope?: string[];
   evidencePlane?: 'tree' | 'deployed' | 'live';
+  /** WHICH runtime a deployed/live promise is measured on (acceptance-runtime-plane P-002). */
+  evidenceRuntime?: ServingRuntimeId;
   /** Required depth of outcome proof; changing this changes the promise. */
   requiredTestLayers?: string[];
   passRatings?: string[];
@@ -37,6 +40,7 @@ export interface RequirementSectionInput {
   driftMarkers?: string;
   requiredScope?: string[];
   evidencePlane?: 'tree' | 'deployed' | 'live';
+  evidenceRuntime?: ServingRuntimeId;
   requiredTestLayers?: string[];
   passRatings?: string[];
   mandatory?: boolean;
@@ -76,7 +80,7 @@ export function normalizeRequirementSections<T extends RequirementSectionInput>(
     }
     assign('model', acceptance.condition);
     assign('driftMarkers', acceptance.falsifier);
-    for (const key of ['requiredScope', 'evidencePlane', 'requiredTestLayers', 'passRatings', 'mandatory', 'role', 'coversBarKeys'] as const) {
+    for (const key of ['requiredScope', 'evidencePlane', 'evidenceRuntime', 'requiredTestLayers', 'passRatings', 'mandatory', 'role', 'coversBarKeys'] as const) {
       assign(key, acceptance[key]);
     }
   }
@@ -97,6 +101,7 @@ export function requirementSections(input: RequirementSectionInput) {
       falsifier: input.driftMarkers ?? '',
       requiredScope: input.requiredScope ?? [],
       evidencePlane: input.evidencePlane ?? null,
+      evidenceRuntime: input.evidenceRuntime ?? null,
       requiredTestLayers: input.requiredTestLayers ?? [],
       passRatings: input.passRatings ?? [],
       mandatory: input.mandatory ?? null,

@@ -120,7 +120,7 @@ describe('psu-pty regression: bg-host runs the fix, :3070 does not ⇒ not block
         git: git(INGEST),
         loadDeploy: async () => deploy(),
         loadSnapshot: async () => snap(),
-        resolveGateCandidates: async () => ({ judgingSha: null, judgingShaSource: null, nextCandidateSha: null }),
+        resolveGateCandidates: async () => ({ judgingSha: null, nextCandidateSha: null }),
         // bg-host's MainPID is a wrapper; its reporter is a child in the same cgroup.
         probeUnitStart: async (unit) => ({ pid: unit.includes('bg-host') ? 5000 : 6000, startedAtMs }),
         loadRuntimeVintage: async () => vintageRows,
@@ -148,7 +148,7 @@ describe('psu-pty regression: bg-host runs the fix, :3070 does not ⇒ not block
         git: git(PTY_HOST),
         loadDeploy: async () => deploy(),
         loadSnapshot: async () => snap(),
-        resolveGateCandidates: async () => ({ judgingSha: null, judgingShaSource: null, nextCandidateSha: null }),
+        resolveGateCandidates: async () => ({ judgingSha: null, nextCandidateSha: null }),
         probeUnitStart: async () => ({ pid: 1, startedAtMs: Date.now() - 1_000 }),
         loadRuntimeVintage: async () => [],
         fileMtimeMs: async () => 5_000,

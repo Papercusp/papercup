@@ -30,6 +30,12 @@ import { parseWorkedByHistory } from './work-item-prior-work';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { requirementSections } from './requirement-contract';
 import {
+  evidenceRecordsAbsent,
+  evidenceRuntimeOf,
+  resolveBarEvidenceRuntime,
+  type BarEvidenceRuntime,
+} from './acceptance-bar-evidence-runtime';
+import {
   ACCEPTANCE_BAR_CONTRACT_EPOCH,
   MAX_BAR_PROJECTION_EDGES,
   MAX_REQUIREMENT_BARS,
@@ -122,7 +128,14 @@ export type AcceptanceBarSnapshotCode =
   | 'bar_snapshot_proof_uncertain'
   | 'bar_snapshot_proof_depth_missing'
   | 'bar_snapshot_proof_inadequate'
-  | 'bar_snapshot_evidence_plane_unmet';
+  | 'bar_snapshot_evidence_plane_unmet'
+  /**
+   * acceptance-runtime-plane P-002: a deployed/live BAR DECLARES the runtime its evidence
+   * must be measured on, and no current evidence was measured there (or the evidence
+   * measured there records the change as absent). Inferred/unresolved runtimes never
+   * raise this — they are review flags on `evidenceRuntime`, not promises.
+   */
+  | 'bar_snapshot_evidence_runtime_unmet';
 
 export interface BoundedAcceptanceBarRows<T> {
   rows: T[];
@@ -210,6 +223,12 @@ export interface AcceptanceBarTrace {
   mandatory: boolean | null;
   requiredScope: string[];
   evidencePlane: 'tree' | 'deployed' | 'live' | null;
+  /**
+   * acceptance-runtime-plane P-002: WHICH runtime a deployed/live BAR is measured on —
+   * declared, inferred from its source paths (flagged for review), or unresolved (flagged).
+   * Absent on snapshots written before this field existed.
+   */
+  evidenceRuntime?: BarEvidenceRuntime;
   /** The projected clause class; absent on snapshots written before this field existed. */
   behaviorClass?: SpecBehaviorClass | null;
   /** Additive trace of the clause mutation obligation. */
@@ -264,6 +283,10 @@ export interface AcceptanceBarTrace {
     uncertainEvidence: number;
     /** Explicit planes recorded by evidence details, when producers supplied one. */
     evidencePlanes: string[];
+    /** P-002: runtimes current evidence says it was measured on (details.runtime). */
+    evidenceRuntimes?: string[];
+    /** P-002: runtimes whose current evidence recorded the change ABSENT (details.containsChange:false). */
+    runtimeAbsent?: string[];
     adequacy?: {
       state: 'pass' | 'fail' | 'unknown' | 'undeclared';
       checks: Array<{ specId: string; revision: number; verdict: 'pass' | 'fail' | 'unknown'; wouldBlock: string[]; evidenceRefs: string[] }>;
@@ -631,6 +654,8 @@ export function nextRepair(
       + 'A read-only shipReadiness probe supplies no current fingerprints, so freshness rates unknown and this code can persist however good the evidence is — '
       + 'supply current fingerprints before concluding the evidence itself is at fault.',
     bar_snapshot_evidence_plane_unmet: "Record current evidence on the BAR's declared evidence plane.",
+    bar_snapshot_evidence_runtime_unmet:
+      "Measure on the BAR's declared evidenceRuntime (dev:pipeline_position servingRuntimes names its build) and bind evidence with details.runtime set to it — green main is only required when that runtime IS release-operator.",
   };
   return { code, barKey: bar?.barKey ?? null, action: actions[code] };
 }
@@ -1141,6 +1166,7 @@ export function projectAcceptanceBarContractSnapshot(
       mandatory: criterion.mandatory ?? null,
       requiredScope: normalized(criterion.requiredScope),
       evidencePlane: criterion.evidencePlane ?? null,
+      evidenceRuntime: resolveBarEvidenceRuntime(criterion),
       behaviorClass,
       mutationRequired: clauses.some((clause) => clause.mutationRequired),
       automatedProofRequired,
@@ -1195,6 +1221,22 @@ export function projectAcceptanceBarContractSnapshot(
               row.details && typeof row.details === 'object' ? (row.details as Record<string, unknown>) : {};
             const plane = details.evidencePlane ?? details.evidence_plane ?? details.plane;
             return typeof plane === 'string' ? [plane] : [];
+          }),
+        ),
+        evidenceRuntimes: normalized(
+          currentEvidence.flatMap((row) => {
+            const runtime = evidenceRuntimeOf(
+              row.details && typeof row.details === 'object' ? (row.details as Record<string, unknown>) : null,
+            );
+            return runtime ? [runtime] : [];
+          }),
+        ),
+        runtimeAbsent: normalized(
+          currentEvidence.flatMap((row) => {
+            const details =
+              row.details && typeof row.details === 'object' ? (row.details as Record<string, unknown>) : null;
+            const runtime = evidenceRuntimeOf(details);
+            return runtime && evidenceRecordsAbsent(details) ? [runtime] : [];
           }),
         ),
       },

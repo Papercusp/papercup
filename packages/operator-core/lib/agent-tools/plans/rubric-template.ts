@@ -20,6 +20,7 @@
 import { z } from 'zod';
 import { normalizeRequirementSections } from '../../requirement-contract';
 import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
+import { SERVING_RUNTIME_IDS } from '../../serving-runtimes';
 import { registerPlanTemplate, type PlanTemplate } from './template-registry';
 
 /** The template TYPE name — a rubric-template plan's `template:` frontmatter/column. */
@@ -351,6 +352,17 @@ export function acceptancePassRatingsError(input: {
 export const acceptanceEvidencePlaneSchema = z.enum(['tree', 'deployed', 'live']);
 export type AcceptanceEvidencePlane = z.infer<typeof acceptanceEvidencePlaneSchema>;
 
+/**
+ * acceptance-runtime-plane-not-main-2026-09-23 P-002 — WHICH runtime a `deployed`/`live`
+ * promise is measured on. `live` used to have no definition, so agents and graders filled
+ * the gap with the one liveness instrument they knew (:3070 = green main) and waited on a
+ * deploy that could never change the code they were judging. Declaring the runtime makes
+ * the ship door check evidence from THAT runtime; an undeclared one is inferred from the
+ * BAR's source paths and flagged for review, never silently defaulted to :3070.
+ */
+export const acceptanceEvidenceRuntimeSchema = z.enum(SERVING_RUNTIME_IDS);
+export type AcceptanceEvidenceRuntime = z.infer<typeof acceptanceEvidenceRuntimeSchema>;
+
 /** Server-owned pin from a subject plan's activation seed to its rubric revision. */
 export const acceptanceBarContractSchema = z
   .object({
@@ -436,6 +448,11 @@ export const requirementAcceptanceSchema = z
       ),
     requiredScope: z.array(z.string().trim().min(1)).min(1).max(200).optional(),
     evidencePlane: acceptanceEvidencePlaneSchema.optional(),
+    evidenceRuntime: acceptanceEvidenceRuntimeSchema
+      .optional()
+      .describe(
+        'deployed/live BARs: the runtime the evidence must be measured on (release-operator is green main; staging-operator, bg-host, gateway, embed-sidecar, psu-pty-host and desktop-shell are not)',
+      ),
     requiredTestLayers: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
     passRatings: acceptancePassRatingsSchema,
     mandatory: z.boolean().optional(),
@@ -509,6 +526,11 @@ const rubricCriterionObjectSchema = z
     evidencePlane: acceptanceEvidencePlaneSchema
       .optional()
       .describe('acceptance-kind only: where this BAR must be evidenced (tree, deployed, or live)'),
+    evidenceRuntime: acceptanceEvidenceRuntimeSchema
+      .optional()
+      .describe(
+        'acceptance-kind deployed/live BARs only: the runtime whose build the evidence must be measured on; absent ⇒ inferred from source paths and flagged for review, never defaulted to :3070',
+      ),
     requiredTestLayers: requirementAcceptanceSchema.shape.requiredTestLayers.describe(
       'acceptance-kind only: required proof layers, such as integration or e2e; BAR amendment required to change',
     ),
@@ -914,6 +936,7 @@ export const rubricTemplateDataSchema = z
           'mandatory',
           'requiredScope',
           'evidencePlane',
+          'evidenceRuntime',
           'requiredTestLayers',
           'passRatings',
           'coversBarKeys',
@@ -1093,6 +1116,7 @@ const canonicalRubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.supe
       criterion.mandatory !== undefined ||
       criterion.requiredScope !== undefined ||
       criterion.evidencePlane !== undefined ||
+      criterion.evidenceRuntime !== undefined ||
       criterion.requiredTestLayers !== undefined ||
       criterion.passRatings !== undefined ||
       criterion.coversBarKeys !== undefined ||

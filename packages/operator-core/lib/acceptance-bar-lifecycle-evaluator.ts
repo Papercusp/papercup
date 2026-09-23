@@ -13,6 +13,7 @@ import type {
   AcceptanceBarTrace,
 } from './acceptance-bar-contract-snapshot';
 import { barRequiresAutomatedProof, readAcceptanceBarContractSnapshot } from './acceptance-bar-contract-snapshot';
+import { evidenceRuntimeUnmet } from './acceptance-bar-evidence-runtime';
 import type { EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
 import { deriveNonCodeItemProofs, type NonCodeItemProof } from './plan-requirement-realization';
 
@@ -202,6 +203,7 @@ function phaseSnapshotCodes(
     'bar_snapshot_proof_depth_missing',
     'bar_snapshot_proof_inadequate',
     'bar_snapshot_evidence_plane_unmet',
+    'bar_snapshot_evidence_runtime_unmet',
     'bar_snapshot_grading_missing',
     'bar_snapshot_grading_stale',
     'bar_snapshot_grading_not_pass',
@@ -294,6 +296,18 @@ function executionBarCodes(bar: AcceptanceBarTrace, phase: AcceptanceBarLifecycl
     if (bar.proof.uncertainEvidence > 0) addCode(codes, 'bar_snapshot_proof_uncertain');
     if (bar.evidencePlane !== 'tree' && !bar.proof.evidencePlanes.some((plane) => token(plane) === bar.evidencePlane)) {
       addCode(codes, 'bar_snapshot_evidence_plane_unmet');
+    }
+    // acceptance-runtime-plane P-002: a DECLARED runtime is a promise about WHERE the
+    // live/deployed proof comes from. Inferred/unresolved runtimes are review flags only.
+    if (
+      bar.evidencePlane !== 'tree' &&
+      evidenceRuntimeUnmet({
+        resolution: bar.evidenceRuntime,
+        evidenceRuntimes: bar.proof.evidenceRuntimes,
+        runtimeAbsent: bar.proof.runtimeAbsent,
+      })
+    ) {
+      addCode(codes, 'bar_snapshot_evidence_runtime_unmet');
     }
     const gatesShipping = bar.role === 'outcome' && bar.mandatory === true;
     if (gatesShipping && (bar.grading.state === 'missing' || bar.grading.state === 'truncated'))
