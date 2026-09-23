@@ -3022,6 +3022,56 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     } finally { await pane?.stop().catch(() => {}); }
   }, 240_000);
 
+  test('PUI-ABOUT-SUPPORT: palette About shows identity and Diagnostics previews and saves a redacted report', async ({ onTestFailed }) => {
+    // Secret-shaped and PUI_-prefixed, so Diagnostics lists it and must redact it.
+    const secret = `pui-about-fixture-${randomUUID()}`;
+    const installed = Boolean(process.env.PUI_BIN);
+    const pane = new PuiPane(bin, operatorPort, home, { cols: 160, rows: 48, env: { PUI_ABOUT_FIXTURE_TOKEN: secret } });
+    onTestFailed(() => console.info('PUI_ABOUT_SUPPORT_FAILURE', JSON.stringify(pane.failureEvidence())));
+    const palette = async (command: string, title: string) => {
+      pane.write(':');
+      await pane.waitFor('Command (Esc closes)');
+      pane.write(command);
+      pane.enter();
+      await pane.waitFor(title);
+    };
+    try {
+      await pane.waitFor('?:help', { timeoutMs: 40_000 });
+      await palette('about', 'About PUI');
+      await pane.waitFor(' · source ');
+      await pane.waitFor('update channel: ');
+      await pane.waitFor(`operator endpoint: http://127.0.0.1:${operatorPort}`);
+      // A release install names its release and verification; a dev build says
+      // it is not one, and the release reporter only accepts the installed sha.
+      if (installed) {
+        await pane.waitFor('running release: ');
+        await pane.waitFor('(verified)');
+      } else {
+        await pane.waitFor('installed from a source checkout');
+      }
+      const about = pane.screen();
+      pane.escape();
+      await pane.waitForGone('About PUI');
+
+      await palette('diagnostics', 'PUI diagnostics (redacted');
+      await pane.waitFor('y saves this report to a file');
+      const preview = pane.screen();
+      expect(preview).not.toContain(secret);
+      pane.write('y');
+      const saved = await vi.waitFor(() => {
+        const match = /✓ saved (\S+)/.exec(pane.screen());
+        expect(match).not.toBeNull();
+        return match![1];
+      }, { timeout: 15_000, interval: 150 });
+      const report = readFileSync(saved, 'utf8');
+      expect(report).toContain('PUI diagnostics (redacted');
+      expect(report).toContain('env PUI_ABOUT_FIXTURE_TOKEN=[redacted]');
+      expect(report).not.toContain(secret);
+      console.info('PUI_ABOUT_SUPPORT_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, installed,
+        about, preview, savedReport: saved, report }));
+    } finally { await pane.stop(); }
+  }, 120_000);
+
   test('Network loads on navigation, manual refresh, and saved-view restoration', async () => {
     const pane = new PuiPane(bin, operatorPort, home);
     const networkReads = () => namedQueryReplies.filter((reply) => reply.name === 'network.board' && reply.status === 200).length;
