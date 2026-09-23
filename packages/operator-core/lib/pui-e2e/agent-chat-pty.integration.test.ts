@@ -1737,36 +1737,215 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
     }
   }, 180_000);
 
-  test('AUTO-BAR-R-07-P-008: conversation stays primary and preserves the draft across compact resize', async () => {
-    await putViewState('Plans');
-    const draft = `P8 compact draft ${randomUUID()}`;
-    const pane = new PuiPane(bin, operatorPort, home, { cols: 150, rows: 44 });
+  // AUTO-BAR-R-03-P-008 — "The context pane displays the selected session's
+  // project and durable work context." Falsifier: "Switching sessions leaves
+  // another session's context or global test data in the pane."
+  test('AUTO-BAR-R-03-P-008: Context follows the selected session in the wide rail and the compact Ctrl-T surface', async ({ onTestFailed }) => {
+    const suffix = randomUUID().slice(0, 8);
+    const alpha = {
+      id: `pui-r03-alpha-${randomUUID()}`,
+      title: `P8 R03 alpha ${suffix}`,
+      task: `R03 alpha-only task ${suffix}`,
+    };
+    const beta = {
+      id: `pui-r03-beta-${randomUUID()}`,
+      title: `P8 R03 beta ${suffix}`,
+      task: `R03 beta-only task ${suffix}`,
+      workItem: `WI-P8R03-${suffix}`,
+    };
+    let stage = 'seed';
+    let pane: PuiPane | undefined;
+    onTestFailed(() => console.info('PUI_R03_CONTEXT_FAILURE', JSON.stringify({
+      stage, alpha, beta, ...(pane?.failureEvidence() ?? {}),
+    })));
+    // Alpha is the newest writable operator chat, so PUI binds it on launch;
+    // beta's linked work item keeps it out of that default. Both are later than
+    // every earlier case's chat in this sequential block.
+    const now = Date.now();
+    const turns = (label: string) => [
+      { role: 'user', content: `R03 ${label} question`, ts: new Date(now).toISOString() },
+      { role: 'assistant', content: `R03 ${label} answer`, ts: new Date(now).toISOString() },
+    ];
+    await seedAgentChat({
+      id: beta.id, title: beta.title, runtimeClass: 'su-session', featureId: beta.workItem,
+      transcript: turns('beta'), createdAt: now + 60_000, updatedAt: now + 60_000,
+    });
+    await seedAgentChat({
+      id: alpha.id, title: alpha.title, runtimeClass: 'su-session',
+      transcript: turns('alpha'), createdAt: now + 120_000, updatedAt: now + 120_000,
+    });
+    // Durable work context: one canonical task per session, keyed only by its
+    // own session id — the same rows the Context projection reads.
+    for (const [sessionId, content] of [[alpha.id, alpha.task], [beta.id, beta.task]]) {
+      await db.adminSql`
+        INSERT INTO harness_shared.session_tasks
+          (workspace_id, session_id, task_id, position, content, active_form, status, created_at, updated_at)
+        VALUES (${WORKSPACE}, ${sessionId}, 'r03-task', 0, ${content}, ${content}, 'in_progress', now(), now())`;
+    }
+    await putViewState('Operator');
+
+    pane = new PuiPane(bin, operatorPort, home, { cols: 170, rows: 44 });
     try {
-      await openComposer(pane, false);
-      await pane.waitFor('┌ Agent Chat');
-      pane.write(draft);
-      await pane.waitFor(draft);
+      stage = 'wide-alpha';
+      await openAgentChat(pane);
+      await pane.waitFor('R03 alpha answer', { timeoutMs: 40_000 });
+      await pane.waitFor('Context · Ctrl-T');
+      await pane.waitFor(alpha.task, { timeoutMs: 30_000 });
+      expect(pane.screen()).toMatch(new RegExp(`Harness\\s+${HARNESS}`));
+      expect(pane.screen()).not.toContain(beta.task);
+      expect(pane.screen()).not.toContain(beta.workItem);
 
-      // 100x22 is the contract's compact band (80–159 columns, 20–23 rows):
-      // Agent Chat remains the primary surface and the active draft is not
-      // replaced by unrelated global activity or clipped into a dead end.
+      stage = 'switch-to-beta';
+      pane.escape();
+      await pane.waitFor('i type · v speak');
+      pane.write('l');
+      await pane.waitFor(beta.title);
+      // The picker marks its selection with `> `; step until it is beta.
+      await vi.waitFor(() => {
+        if (!pane!.screen().includes(`> ${beta.title}`)) {
+          pane!.write('j');
+          throw new Error('picker has not reached beta yet');
+        }
+      }, { timeout: 20_000, interval: 250 });
+      pane.enter();
+
+      stage = 'wide-beta';
+      await pane.waitFor('R03 beta answer', { timeoutMs: 40_000 });
+      await pane.waitFor(beta.task, { timeoutMs: 30_000 });
+      await pane.waitFor(beta.workItem);
+      await pane.waitForGone(alpha.task, { timeoutMs: 30_000 });
+      expect(pane.screen()).toMatch(new RegExp(`Harness\\s+${HARNESS}`));
+
+      stage = 'compact-ctrl-t';
       pane.resize(100, 22);
+      await pane.waitForGone('Context · Ctrl-T');
+      pane.write('\x14');
+      await pane.waitFor('Esc/o Agent Chat');
+      await pane.waitFor(beta.task);
+      expect(pane.screen()).not.toContain(alpha.task);
+      pane.escape();
       await pane.waitFor('┌ Agent Chat');
-      await pane.waitFor(draft);
-      await pane.waitFor('Message — Enter send');
-      expect(pane.screen()).not.toContain('Terminal too small');
 
-      pane.resize(150, 44);
-      await pane.waitFor('┌ Agent Chat');
-      await pane.waitFor(draft);
-      console.info('PUI_R07_COMPACT_ACCEPTANCE', JSON.stringify({
-        binary: bin, binarySha256, draft, normal: '150x44', compact: '100x22',
-        frame: pane.screen(),
+      const tasks = await db.adminSql<Array<{ session_id: string; content: string }>>`
+        SELECT session_id, content FROM harness_shared.session_tasks
+         WHERE workspace_id = ${WORKSPACE} AND session_id IN (${alpha.id}, ${beta.id})
+         ORDER BY content`;
+      expect(tasks).toEqual([
+        { session_id: alpha.id, content: alpha.task },
+        { session_id: beta.id, content: beta.task },
+      ]);
+      console.info('PUI_R03_CONTEXT_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, alpha, beta, frame: pane.screen(),
       }));
     } finally {
       await pane.stop().catch(() => {});
     }
-  }, 120_000);
+  }, 240_000);
+
+  // AUTO-BAR-R-07-P-008 — "The default PUI view prioritizes the active
+  // conversation and its contextual work surface." Probe: normal and compact
+  // layouts with unrelated global activity present; inspect default focus and
+  // visible content. Falsifier: "Unrelated fleet or global system information
+  // displaces the active conversation on launch."
+  test('AUTO-BAR-R-07-P-008: a default launch opens on the active conversation and its Context despite unrelated activity, normal and compact', async ({ onTestFailed }) => {
+    const suffix = randomUUID().slice(0, 8);
+    const active = {
+      id: `pui-r07-active-${randomUUID()}`,
+      title: `P8 R07 active ${suffix}`,
+      answer: `R07 active answer ${suffix}`,
+      task: `R07 active task ${suffix}`,
+    };
+    // Newer than the active conversation and carrying its own work: the most
+    // recent activity in the workspace, but not a conversation the owner has
+    // open. It must not be what a default launch shows.
+    const unrelated = {
+      id: `pui-r07-unrelated-${randomUUID()}`,
+      title: `P8 R07 unrelated ${suffix}`,
+      answer: `R07 unrelated answer ${suffix}`,
+      task: `R07 unrelated task ${suffix}`,
+      workItem: `WI-P8R07-${suffix}`,
+    };
+    const draft = `P8 compact draft ${suffix}`;
+    let stage = 'seed';
+    let pane: PuiPane | undefined;
+    onTestFailed(() => console.info('PUI_R07_DEFAULT_FAILURE', JSON.stringify({
+      stage, active, unrelated, ...(pane?.failureEvidence() ?? {}),
+    })));
+    const now = Date.now();
+    const turns = (answer: string) => [
+      { role: 'user', content: 'R07 question', ts: new Date(now).toISOString() },
+      { role: 'assistant', content: answer, ts: new Date(now).toISOString() },
+    ];
+    await seedAgentChat({
+      id: active.id, title: active.title, runtimeClass: 'su-session', transcript: turns(active.answer),
+      createdAt: now + 300_000, updatedAt: now + 300_000,
+    });
+    await seedAgentChat({
+      id: unrelated.id, title: unrelated.title, runtimeClass: 'su-session', featureId: unrelated.workItem,
+      transcript: turns(unrelated.answer), createdAt: now + 400_000, updatedAt: now + 400_000,
+    });
+    for (const [sessionId, content] of [[active.id, active.task], [unrelated.id, unrelated.task]]) {
+      await db.adminSql`
+        INSERT INTO harness_shared.session_tasks
+          (workspace_id, session_id, task_id, position, content, active_form, status, created_at, updated_at)
+        VALUES (${WORKSPACE}, ${sessionId}, 'r07-task', 0, ${content}, ${content}, 'in_progress', now(), now())`;
+    }
+    // A DEFAULT launch: no saved destination for this owner at all.
+    await db.adminSql`DELETE FROM harness_shared.tui_view_state WHERE owner_id = ${OWNER}`;
+    const assertNoUnrelated = () => {
+      const frame = pane!.screen();
+      for (const marker of [unrelated.title, unrelated.answer, unrelated.task, unrelated.workItem]) {
+        expect(frame, `unrelated activity on screen (${stage})`).not.toContain(marker);
+      }
+    };
+
+    pane = new PuiPane(bin, operatorPort, home, { cols: 170, rows: 44 });
+    try {
+      stage = 'normal-launch';
+      await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
+      // First-run guidance is the one overlay a default launch may show.
+      if (pane.screen().includes('Welcome to pui')) {
+        pane.escape();
+        await pane.waitForGone('Welcome to pui');
+      }
+      // No navigation key: the launch itself must land on the conversation.
+      await pane.waitFor('┌ Agent Chat');
+      await pane.waitFor(active.answer, { timeoutMs: 40_000 });
+      await pane.waitFor('Context · Ctrl-T');
+      await pane.waitFor(active.task, { timeoutMs: 30_000 });
+      assertNoUnrelated();
+
+      stage = 'compose';
+      if (!pane.screen().includes('Message — Enter send')) pane.write('i');
+      await pane.waitFor('Message — Enter send');
+      pane.write(draft);
+      await pane.waitFor(draft);
+
+      // 100x22 is the contract's compact band (80–159 columns, 20–23 rows):
+      // one primary surface — Agent Chat with the draft — and no rail.
+      stage = 'compact';
+      pane.resize(100, 22);
+      await pane.waitForGone('Context · Ctrl-T');
+      await pane.waitFor('┌ Agent Chat');
+      await pane.waitFor(draft);
+      await pane.waitFor('Message — Enter send');
+      expect(pane.screen()).not.toContain('Terminal too small');
+      assertNoUnrelated();
+
+      stage = 'normal-again';
+      pane.resize(170, 44);
+      await pane.waitFor('Context · Ctrl-T');
+      await pane.waitFor(active.task);
+      await pane.waitFor(draft);
+      assertNoUnrelated();
+      console.info('PUI_R07_DEFAULT_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, active, unrelated, draft,
+        normal: '170x44', compact: '100x22', frame: pane.screen(),
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  }, 180_000);
 
   test('PUI-COMMANDS: help and the command palette discover and execute a harmless extension', async () => {
     await putViewState('Plans');

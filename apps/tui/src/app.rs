@@ -1311,9 +1311,11 @@ pub enum Tab {
     /// inside B-10's per-hive drill-in tabs). The user-facing name is
     /// "Network" — NEVER "Apiary" (C-5: reserved by the instance gym).
     Network,
-    /// Context — the server-normalized context projection for the live Sentinel
-    /// session. PANE-ONLY like Wake/Network: it renders solely as the dock's
-    /// pinned `pui context-pane`; the variant name stays stable for persisted
+    /// Context — the server-normalized context projection. Not a strip
+    /// destination: in the workbench it is the Ctrl-T focus over Agent Chat
+    /// for the conversation Agent Chat has selected (its wide-terminal rail is
+    /// drawn beside the chat, not as this tab); pinned, it is the dock's
+    /// `pui context-pane`. The variant name stays stable for persisted
     /// view-state compatibility with the former plans-board surface.
     PlansBoard,
 }
@@ -24169,8 +24171,11 @@ mod tests {
             ConversationContextSession,
         };
 
+        // `pui context-pane agent_chat chat-1 papercusp`: an explicit target.
         let mut app = App::new();
+        app.pinned = Some(Tab::PlansBoard);
         app.tab = Tab::PlansBoard;
+        app.context_projection_target_explicit = true;
         app.context_projection_target = Some(ConversationContextProjectionTarget::new(
             "agent_chat",
             "chat-1",
@@ -24255,8 +24260,11 @@ mod tests {
             ConversationContextSession,
         };
 
+        // `pui context-pane agent_chat chat-1 papercusp`: an explicit target.
         let mut app = App::new();
+        app.pinned = Some(Tab::PlansBoard);
         app.tab = Tab::PlansBoard;
+        app.context_projection_target_explicit = true;
         let target = ConversationContextProjectionTarget::new(
             "agent_chat",
             "chat-1",
