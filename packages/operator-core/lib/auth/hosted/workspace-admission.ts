@@ -90,6 +90,8 @@ export interface HostedWorkspaceAdmissionDependencies {
    */
   startProvisioning(input: {
     controlPlaneWorkspaceId: string;
+    /** The workspace this host serves; a bring-up (D-401) marks it active when it completes. */
+    customerWorkspaceId: string;
     connectionId: string;
     hostId: string;
     name: string;
@@ -240,6 +242,7 @@ export function createHostedWorkspaceAdmission(
       if (created) {
         deps.startProvisioning({
           controlPlaneWorkspaceId,
+          customerWorkspaceId: workspaceId,
           connectionId,
           hostId: derived.hostId,
           name: displayName,

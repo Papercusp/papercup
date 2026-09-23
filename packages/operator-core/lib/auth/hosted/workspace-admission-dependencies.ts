@@ -28,6 +28,7 @@ import {
   upsertWorkspaceHost,
 } from '../../workspace-host/observability-store';
 import { workspaceHostSpecColumns } from '../../workspace-host/desired-spec-host-row';
+import type { WorkspaceHostBringUp } from '../../workspace-host/hosted-bring-up';
 import {
   startWorkspaceHostProvisioningWorkflow,
   type StartWorkspaceHostProvisioningInput,
@@ -74,6 +75,11 @@ export interface DefaultHostedWorkspaceAdmissionOptions {
    * (`dbos/workspace-host-provision-client.ts`).
    */
   startWorkflow?: (input: StartWorkspaceHostProvisioningInput) => Promise<unknown>;
+  /**
+   * D-401: set the machine up once it is built. Only the Papercusp-hosted first-workspace door
+   * passes this; without it provisioning ends at the machine, as every other caller expects.
+   */
+  bringUp?: Pick<WorkspaceHostBringUp, 'requestedAgents'>;
 }
 
 export function createDefaultHostedWorkspaceAdmissionDependencies(
@@ -210,6 +216,14 @@ export function createDefaultHostedWorkspaceAdmissionDependencies(
           connection: stored.connection,
           operationId: input.operationId,
           actorId: input.actorId,
+          ...(options.bringUp
+            ? {
+                bringUp: {
+                  customerWorkspaceId: input.customerWorkspaceId,
+                  requestedAgents: options.bringUp.requestedAgents,
+                },
+              }
+            : {}),
         });
       })().catch((error: unknown) =>
         reportProvisioningFailure(error, { hostId: input.hostId, operationId: input.operationId }),
