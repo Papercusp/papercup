@@ -212,7 +212,11 @@ const retractionSchema = z.object({
  * from the recorded run (bind-from-test-run.ts). The run form is tried first because it is
  * strict and keyed on `fromTestRun`, so a hand-built binding never half-matches it.
  */
-const bindingOrTestRunSchema = z.union([testRunBindingSchema, bindingSchema]);
+// The same item contract appears in both the single-binding shorthand and the bulk array.
+// Give it an id so Zod publishes it once in $defs and both inputs reference that definition.
+const bindingOrTestRunSchema = z
+  .union([testRunBindingSchema, bindingSchema])
+  .meta({ id: 'PlansBindSpecEvidenceBindingV1' });
 
 function isTestRunBinding(item: object): item is TestRunBindingInput {
   return typeof (item as { fromTestRun?: unknown }).fromTestRun === 'number';
